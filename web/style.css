@@ -230,10 +230,14 @@ h1 .dot {
   color: #EAEAEA;
   border: 1px solid rgba(255, 193, 7, 0.15);
 }
-.btn-save:hover {
+.btn-save:hover:not(:disabled) {
   background: #2F5D8C;
   border-color: rgba(255, 193, 7, 0.3);
   box-shadow: 0 0 8px rgba(47, 93, 140, 0.4);
+}
+.btn-save:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .btn-row {

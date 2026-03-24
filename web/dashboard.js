@@ -3,14 +3,20 @@
 let configDirty = false;
 let pollTimer = null;
 
+function setConfigDirty(dirty) {
+  configDirty = dirty;
+  const btn = document.getElementById('btnSave');
+  if (btn) btn.disabled = !dirty;
+}
+
 function initDashboard() {
   startPolling();
   loadDevices();
 
   const udp = document.getElementById('udpPort');
   const auto_ = document.getElementById('autoStart');
-  if (udp) udp.addEventListener('input', () => { configDirty = true; });
-  if (auto_) auto_.addEventListener('change', () => { configDirty = true; });
+  if (udp) udp.addEventListener('input', () => { setConfigDirty(true); });
+  if (auto_) auto_.addEventListener('change', () => { setConfigDirty(true); });
 }
 
 // ── Polling ─────────────────────────────────────────────────────────────────
@@ -62,7 +68,7 @@ async function saveConfig() {
     udpPort: parseInt(document.getElementById('udpPort').value),
     autoStart: document.getElementById('autoStart').checked
   });
-  configDirty = false;
+  setConfigDirty(false);
   poll();
 }
 
