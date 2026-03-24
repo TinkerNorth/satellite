@@ -13,8 +13,10 @@ set INCLUDES=-Ivigem/include -Ilib
 echo === Building controller-forward ===
 echo.
 
+set SRC_FILES=src/main.cpp src/globals.cpp src/config.cpp src/crypto.cpp src/vigem.cpp src/receiver.cpp src/webserver.cpp src/pairing.cpp src/discovery.cpp src/tray.cpp
+
 echo [1/2] controller-receiver.exe  (tray + web UI)
-%CXX% %CXXFLAGS% %INCLUDES% -DCPPHTTPLIB_NO_EXCEPTIONS -o controller-receiver.exe controller-receiver.cpp -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -mwindows
+%CXX% %CXXFLAGS% %INCLUDES% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o controller-receiver.exe %SRC_FILES% -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] controller-receiver.exe
     exit /b 1

@@ -18,6 +18,7 @@
 #include <cstring>
 #include <csignal>
 #include <string>
+#include <vector>
 #include <fstream>
 
 #include <winsock2.h>
@@ -161,17 +162,105 @@ static bool doPairingHandshake(const char* host, int pairPort,
     return false;
 }
 
+// ── LAN Discovery ────────────────────────────────────────────────────────────
+
+struct DiscoveredReceiver {
+    std::string name;
+    std::string ip;
+    int udpPort;
+    int pairPort;
+};
+
+static std::string jsonGet(const std::string& json, const std::string& key) {
+    std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos + needle.size());
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < json.size() && json[pos] == ' ') pos++;
+    if (pos >= json.size()) return "";
+    if (json[pos] == '"') {
+        size_t end = json.find('"', pos + 1);
+        if (end == std::string::npos) return "";
+        return json.substr(pos + 1, end - pos - 1);
+    }
+    // numeric
+    size_t end = json.find_first_of(",} ", pos);
+    if (end == std::string::npos) end = json.size();
+    return json.substr(pos, end - pos);
+}
+
+static std::vector<DiscoveredReceiver> discoverReceivers(int timeoutSec = 3) {
+    std::vector<DiscoveredReceiver> found;
+
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) return found;
+
+    // Allow address reuse
+    BOOL reuse = TRUE;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+
+    // Bind to discovery port
+    sockaddr_in bindAddr{};
+    bindAddr.sin_family = AF_INET;
+    bindAddr.sin_port = htons(9879);
+    bindAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(sock, (sockaddr*)&bindAddr, sizeof(bindAddr)) == SOCKET_ERROR) {
+        closesocket(sock);
+        return found;
+    }
+
+    // Set receive timeout
+    DWORD timeout = timeoutSec * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    printf("[*] Scanning for receivers on LAN (%d seconds)...\n", timeoutSec);
+
+    DWORD startTime = GetTickCount();
+    while (GetTickCount() - startTime < (DWORD)(timeoutSec * 1000)) {
+        char buf[1024] = {};
+        sockaddr_in from{};
+        int fromLen = sizeof(from);
+
+        int n = recvfrom(sock, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &fromLen);
+        if (n <= 0) break;
+        buf[n] = 0;
+
+        std::string json(buf);
+        if (json.find("\"service\":\"controller-forward\"") == std::string::npos) continue;
+
+        // Get sender IP
+        char ipStr[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &from.sin_addr, ipStr, sizeof(ipStr));
+
+        std::string name = jsonGet(json, "name");
+        int udpP = atoi(jsonGet(json, "udpPort").c_str());
+        int pairP = atoi(jsonGet(json, "pairPort").c_str());
+
+        // Deduplicate by IP
+        bool exists = false;
+        for (auto& r : found) {
+            if (r.ip == ipStr) { exists = true; break; }
+        }
+        if (!exists) {
+            found.push_back({ name, ipStr, udpP, pairP });
+            printf("  [+] Found: %s (%s) — UDP:%d Pair:%d\n", name.c_str(), ipStr, udpP, pairP);
+        }
+    }
+
+    closesocket(sock);
+    return found;
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
-    const char* host = (argc > 1) ? argv[1] : "127.0.0.1";
-    const int   port = (argc > 2) ? atoi(argv[2]) : 9876;
-    const int   rate = (argc > 3) ? atoi(argv[3]) : 250;  // Hz
-    const int   user = (argc > 4) ? atoi(argv[4]) : 0;    // XInput user index
-    const int   pairPort = 9878;
+    const int rate = (argc > 2) ? atoi(argv[2]) : 250;  // Hz
+    const int user = (argc > 3) ? atoi(argv[3]) : 0;    // XInput user index
 
     printf("=== Controller Sender (C++ / XInput -> UDP) ===\n");
-    printf("[*] Target: %s:%d  Rate: %d Hz  Controller: %d\n", host, port, rate, user);
 
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
@@ -182,12 +271,62 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[!] WSAStartup failed\n"); return 1;
     }
 
+    std::string host;
+    int port = 9876;
+    int pairPort = 9878;
+
+    if (argc > 1) {
+        // Manual mode: IP passed as argument
+        host = argv[1];
+        port = (argc > 2) ? atoi(argv[2]) : 9876;
+        pairPort = 9878;
+        printf("[*] Target (manual): %s:%d  Rate: %d Hz  Controller: %d\n",
+               host.c_str(), port, rate, user);
+    } else {
+        // Discovery mode: scan LAN for receivers
+        auto receivers = discoverReceivers(4);
+
+        if (receivers.empty()) {
+            printf("[!] No receivers found on LAN.\n");
+            printf("[?] Enter receiver IP manually: ");
+            char ipBuf[64] = {};
+            if (scanf("%63s", ipBuf) != 1) { WSACleanup(); return 1; }
+            host = ipBuf;
+        } else if (receivers.size() == 1) {
+            printf("[*] Auto-selecting: %s (%s)\n",
+                   receivers[0].name.c_str(), receivers[0].ip.c_str());
+            host = receivers[0].ip;
+            port = receivers[0].udpPort;
+            pairPort = receivers[0].pairPort;
+        } else {
+            printf("\n[*] Found %zu receivers:\n", receivers.size());
+            for (size_t i = 0; i < receivers.size(); i++) {
+                printf("  [%zu] %s (%s) — UDP:%d\n",
+                       i + 1, receivers[i].name.c_str(),
+                       receivers[i].ip.c_str(), receivers[i].udpPort);
+            }
+            printf("[?] Select receiver (1-%zu): ", receivers.size());
+            int choice = 0;
+            if (scanf("%d", &choice) != 1 || choice < 1 || choice > (int)receivers.size()) {
+                printf("[!] Invalid selection\n");
+                WSACleanup(); return 1;
+            }
+            auto& sel = receivers[choice - 1];
+            host = sel.ip;
+            port = sel.udpPort;
+            pairPort = sel.pairPort;
+        }
+
+        printf("[*] Target: %s:%d  Rate: %d Hz  Controller: %d\n",
+               host.c_str(), port, rate, user);
+    }
+
     // ── Pairing handshake ──
     std::string deviceId = loadOrCreateDeviceId();
     std::string deviceName = getDeviceName();
     printf("[*] Device ID: %s  Name: %s\n", deviceId.c_str(), deviceName.c_str());
 
-    if (!doPairingHandshake(host, pairPort, deviceId, deviceName)) {
+    if (!doPairingHandshake(host.c_str(), pairPort, deviceId, deviceName)) {
         printf("[!] Pairing failed. Exiting.\n");
         WSACleanup();
         return 1;
@@ -202,7 +341,7 @@ int main(int argc, char* argv[]) {
     sockaddr_in dest{};
     dest.sin_family = AF_INET;
     dest.sin_port   = htons((u_short)port);
-    inet_pton(AF_INET, host, &dest.sin_addr);
+    inet_pton(AF_INET, host.c_str(), &dest.sin_addr);
 
     const DWORD sleepMs = (rate > 0) ? (1000 / rate) : 4;
     printf("[+] Polling every %lu ms — press Ctrl+C to quit\n\n", sleepMs);
