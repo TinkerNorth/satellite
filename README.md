@@ -2,6 +2,8 @@
 
 Low-latency Xbox controller forwarding over the network. Captures physical controller input on one machine and injects it as a virtual Xbox 360 controller on another — similar to how [Moonlight](https://github.com/moonlight-stream/moonlight-qt) / [Sunshine](https://github.com/LizardByte/Sunshine) handle input, but as a standalone tool.
 
+Runs as a **system tray application** with a built-in **web UI** for configuration — no console window required.
+
 ## How it works
 
 ```
@@ -16,9 +18,19 @@ Low-latency Xbox controller forwarding over the network. Captures physical contr
 
 **Sender** polls a physical Xbox controller via XInput at ~250 Hz and streams 12-byte `XUSB_REPORT` packets over UDP.
 
-**Receiver** listens for those packets and injects them into Windows as a virtual Xbox 360 controller through the ViGEmBus kernel driver — no DLLs required, communicates directly via `DeviceIoControl`.
+**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual Xbox 360 controller through the ViGEmBus kernel driver — no DLLs required, communicates directly via `DeviceIoControl`.
 
 The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()`.
+
+## Features
+
+- **System tray icon** — right-click for Start/Stop, Open Web UI, Exit
+- **Web-based configuration** — local dashboard at `http://localhost:9877`
+- **Live status** — packet count, sender IP, listening state
+- **Configurable UDP port** — change via the web UI
+- **Start with Windows** — optional auto-start via registry
+- **Zero dependencies** — statically linked, single exe, no DLLs needed
+- **Config persistence** — settings saved to `%APPDATA%\controller-forward\config.json`
 
 ## Prerequisites
 
@@ -41,23 +53,28 @@ build.bat
 Or manually:
 
 ```bash
-# Receiver
-g++ -O2 -Wall -std=c++17 -Ivigem/include -o controller-receiver.exe controller-receiver.cpp -lsetupapi -lws2_32
+# Receiver (tray app + web UI)
+g++ -O2 -Wall -std=c++17 -D_WIN32_WINNT=0x0A00 -static -DCPPHTTPLIB_NO_EXCEPTIONS \
+    -Ivigem/include -Ilib -o controller-receiver.exe controller-receiver.cpp \
+    -lsetupapi -lws2_32 -lshell32 -lole32 -mwindows
 
 # Sender
-g++ -O2 -Wall -std=c++17 -o controller-sender.exe controller-sender.cpp -lxinput1_4 -lws2_32
+g++ -O2 -Wall -std=c++17 -D_WIN32_WINNT=0x0A00 -static \
+    -o controller-sender.exe controller-sender.cpp -lxinput1_4 -lws2_32
 ```
 
 ## Usage
 
-**On the receiver** (the machine where the game runs):
+### Receiver (tray app)
 
-```
-controller-receiver.exe [port]
-controller-receiver.exe 9876
-```
+Run `controller-receiver.exe`. It starts minimized to the system tray.
 
-**On the sender** (the machine with the physical controller):
+- **Right-click** the tray icon → **Open Web UI** to configure
+- Or open `http://localhost:9877` in your browser
+- Click **Start** in the web UI to begin listening for controller input
+- Enable **Start with Windows** to auto-launch on boot
+
+### Sender (console app)
 
 ```
 controller-sender.exe <receiver-ip> [port] [poll-rate-hz] [controller-index]
@@ -71,6 +88,16 @@ controller-sender.exe 192.168.1.50 9876 250 0
 | `poll-rate-hz`     | `250`       | How often to poll the controller (Hz)|
 | `controller-index` | `0`         | XInput user index (0-3)              |
 
+## Architecture
+
+The receiver runs three threads:
+
+| Thread       | Role                                                        |
+|--------------|-------------------------------------------------------------|
+| **Main**     | Win32 message loop, system tray icon                        |
+| **Receiver** | UDP socket → ViGEmBus `DeviceIoControl` (the hot path)      |
+| **HTTP**     | Embedded web server ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) serving the config UI |
+
 ## Why UDP?
 
 TCP's reliability guarantees cause **head-of-line blocking** — if one packet is lost, all subsequent packets are held until retransmission completes. For controller input, only the latest state matters. A lost packet is better than a delayed one. This is the same approach used by Moonlight, Parsec, and Steam Remote Play.
@@ -78,8 +105,10 @@ TCP's reliability guarantees cause **head-of-line blocking** — if one packet i
 ## Project structure
 
 ```
-├── controller-receiver.cpp     # Receiver: UDP → ViGEmBus virtual controller
+├── controller-receiver.cpp     # Receiver: tray app + web UI + UDP → ViGEmBus
 ├── controller-sender.cpp       # Sender: XInput → UDP
+├── lib/
+│   └── httplib.h               # cpp-httplib (header-only HTTP server, vendored)
 ├── vigem/
 │   └── include/ViGEm/
 │       ├── Common.h            # XUSB_REPORT, button definitions
@@ -93,5 +122,6 @@ TCP's reliability guarantees cause **head-of-line blocking** — if one packet i
 
 MIT — see [LICENSE](LICENSE).
 
-ViGEm header definitions are derived from [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus) (MIT License).
+- [cpp-httplib](https://github.com/yhirose/cpp-httplib) by Yuji Hirose (MIT License)
+- ViGEm header definitions derived from [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus) (MIT License)
 

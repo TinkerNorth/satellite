@@ -20,3 +20,6 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Vendored libraries (tracked — do NOT ignore lib/)
+# lib/httplib.h is intentionally committed
+

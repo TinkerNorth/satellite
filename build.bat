@@ -7,14 +7,14 @@ REM ============================================================================
 setlocal
 
 set CXX=g++
-set CXXFLAGS=-O2 -Wall -Wextra -std=c++17
-set INCLUDES=-Ivigem/include
+set CXXFLAGS=-O2 -Wall -Wextra -std=c++17 -D_WIN32_WINNT=0x0A00 -static
+set INCLUDES=-Ivigem/include -Ilib
 
 echo === Building controller-forward ===
 echo.
 
-echo [1/2] controller-receiver.exe
-%CXX% %CXXFLAGS% %INCLUDES% -o controller-receiver.exe controller-receiver.cpp -lsetupapi -lws2_32
+echo [1/2] controller-receiver.exe  (tray + web UI)
+%CXX% %CXXFLAGS% %INCLUDES% -DCPPHTTPLIB_NO_EXCEPTIONS -o controller-receiver.exe controller-receiver.cpp -lsetupapi -lws2_32 -lshell32 -lole32 -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] controller-receiver.exe
     exit /b 1
