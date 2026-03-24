@@ -1,4 +1,4 @@
-# controller-forward
+# Satellite
 
 Low-latency Xbox controller forwarding over the network. Captures physical controller input on one machine and injects it as a virtual Xbox 360 controller on another — similar to how [Moonlight](https://github.com/moonlight-stream/moonlight-qt) / [Sunshine](https://github.com/LizardByte/Sunshine) handle input, but as a standalone tool.
 
@@ -30,7 +30,7 @@ The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()
 - **Configurable UDP port** — change via the web UI
 - **Start with Windows** — optional auto-start via registry
 - **Zero dependencies** — statically linked, single exe, no DLLs needed
-- **Config persistence** — settings saved to `%APPDATA%\controller-forward\config.json`
+- **Config persistence** — settings saved to `%APPDATA%\satellite\config.json`
 
 ## Prerequisites
 
