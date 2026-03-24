@@ -1,31 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Rajdhani:wght@500;600;700&display=swap');
+
+/* ── Reset ─────────────────────────────────────────────────────────── */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+/* ── Base ──────────────────────────────────────────────────────────── */
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #0f0f0f;
-  color: #e0e0e0;
+  font-family: 'Inter', sans-serif;
+  background: #0D0F12;
+  color: #EAEAEA;
   display: flex;
   justify-content: center;
   align-items: center;
   min-height: 100vh;
 }
 
+/* ── Card ──────────────────────────────────────────────────────────── */
 .card {
-  background: #1a1a2e;
-  border-radius: 16px;
+  background: #161A1F;
+  border-radius: 6px;
   padding: 32px;
-  width: 420px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  width: 440px;
+  border: 1px solid rgba(255, 193, 7, 0.12);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 40px rgba(255, 193, 7, 0.04);
 }
 
+/* ── Header ────────────────────────────────────────────────────────── */
 h1 {
-  font-size: 20px;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   margin-bottom: 24px;
-  color: #fff;
+  color: #FFC107;
+  text-shadow: 0 0 6px rgba(255, 193, 7, 0.4);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -39,32 +53,40 @@ h1 .dot {
 }
 
 .dot.on {
-  background: #00e676;
-  box-shadow: 0 0 8px #00e676;
+  background: #FFC107;
+  box-shadow: 0 0 8px #FFC107, 0 0 16px rgba(255, 193, 7, 0.4);
 }
 
 .dot.off {
-  background: #ff5252;
-  box-shadow: 0 0 8px #ff5252;
+  background: #A65F1E;
+  box-shadow: 0 0 6px rgba(166, 95, 30, 0.5);
 }
 
+/* ── Stats ─────────────────────────────────────────────────────────── */
 .stat {
   display: flex;
   justify-content: space-between;
   padding: 10px 0;
-  border-bottom: 1px solid #2a2a3e;
+  border-bottom: 1px solid #222831;
   font-size: 14px;
 }
 
 .stat .label {
-  color: #888;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: #6B7280;
+  text-transform: uppercase;
+  font-size: 12px;
 }
 
 .stat .value {
-  color: #fff;
+  color: #EAEAEA;
   font-family: 'Courier New', monospace;
+  font-size: 13px;
 }
 
+/* ── Controls ──────────────────────────────────────────────────────── */
 .controls {
   margin-top: 24px;
   display: flex;
@@ -79,26 +101,34 @@ h1 .dot {
 }
 
 .row label {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
   font-size: 13px;
-  color: #888;
+  letter-spacing: 0.04em;
+  color: #B0B3B8;
   min-width: 80px;
+  text-transform: uppercase;
 }
 
 .row input[type=number] {
   flex: 1;
-  background: #0f0f1a;
-  border: 1px solid #333;
-  border-radius: 8px;
+  background: #0D0F12;
+  border: 1px solid #222831;
+  border-radius: 4px;
   padding: 8px 12px;
-  color: #fff;
+  color: #EAEAEA;
+  font-family: 'Courier New', monospace;
   font-size: 14px;
+  transition: border-color 0.2s;
 }
 
 .row input[type=number]:focus {
   outline: none;
-  border-color: #7c4dff;
+  border-color: #FFC107;
+  box-shadow: 0 0 8px rgba(255, 193, 7, 0.2);
 }
 
+/* ── Toggle ─────────────────────────────────────────────────────────── */
 .toggle-row {
   display: flex;
   align-items: center;
@@ -107,8 +137,12 @@ h1 .dot {
 }
 
 .toggle-row span {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
   font-size: 13px;
-  color: #888;
+  letter-spacing: 0.04em;
+  color: #B0B3B8;
+  text-transform: uppercase;
 }
 
 .switch {
@@ -126,8 +160,8 @@ h1 .dot {
 .slider {
   position: absolute;
   inset: 0;
-  background: #333;
-  border-radius: 24px;
+  background: #222831;
+  border-radius: 4px;
   cursor: pointer;
   transition: 0.2s;
 }
@@ -139,39 +173,68 @@ h1 .dot {
   height: 18px;
   left: 3px;
   bottom: 3px;
-  background: #888;
-  border-radius: 50%;
+  background: #6B7280;
+  border-radius: 3px;
   transition: 0.2s;
 }
 
 .switch input:checked + .slider {
-  background: #7c4dff;
+  background: #C27A2C;
+  box-shadow: 0 0 8px rgba(194, 122, 44, 0.4);
 }
 
 .switch input:checked + .slider:before {
   transform: translateX(20px);
-  background: #fff;
+  background: #FFC107;
 }
 
+/* ── Buttons ───────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 10px 20px;
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
+  font-family: 'Rajdhani', sans-serif;
   font-size: 14px;
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   cursor: pointer;
   transition: 0.15s;
 }
 
-.btn-start { background: #00e676; color: #000; }
-.btn-start:hover { background: #00c853; }
-.btn-stop { background: #ff5252; color: #fff; }
-.btn-stop:hover { background: #ff1744; }
-.btn-save { background: #7c4dff; color: #fff; }
-.btn-save:hover { background: #651fff; }
+.btn-start {
+  background: #FFC107;
+  color: #0D0F12;
+  box-shadow: 0 0 12px rgba(255, 193, 7, 0.3);
+}
+.btn-start:hover {
+  background: #FFDA3A;
+  box-shadow: 0 0 16px rgba(255, 193, 7, 0.6);
+}
+
+.btn-stop {
+  background: #A65F1E;
+  color: #EAEAEA;
+  box-shadow: 0 0 8px rgba(166, 95, 30, 0.3);
+}
+.btn-stop:hover {
+  background: #C27A2C;
+  box-shadow: 0 0 12px rgba(194, 122, 44, 0.5);
+}
+
+.btn-save {
+  background: #1E3A5F;
+  color: #EAEAEA;
+  border: 1px solid rgba(255, 193, 7, 0.15);
+}
+.btn-save:hover {
+  background: #2F5D8C;
+  border-color: rgba(255, 193, 7, 0.3);
+  box-shadow: 0 0 8px rgba(47, 93, 140, 0.4);
+}
 
 .btn-row {
   display: flex;
@@ -179,3 +242,168 @@ h1 .dot {
   margin-top: 8px;
 }
 
+
+/* ── Form elements (setup/login) ──────────────────────────────────── */
+.subtitle {
+  color: #6B7280;
+  font-size: 13px;
+  margin: -16px 0 20px 0;
+}
+
+.form-group {
+  margin-bottom: 14px;
+}
+
+.form-label {
+  display: block;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #B0B3B8;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.form-input {
+  width: 100%;
+  background: #0D0F12;
+  border: 1px solid #222831;
+  border-radius: 4px;
+  padding: 10px 12px;
+  color: #EAEAEA;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  transition: border-color 0.2s;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #FFC107;
+  box-shadow: 0 0 8px rgba(255, 193, 7, 0.2);
+}
+
+.error-msg {
+  color: #E74C3C;
+  font-size: 12px;
+  min-height: 18px;
+  margin: 6px 0;
+}
+
+.btn-full {
+  width: 100%;
+  margin-top: 4px;
+}
+
+/* ── Header row (title + logout) ──────────────────────────────────── */
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-row h1 {
+  margin-bottom: 0;
+}
+
+.btn-icon {
+  background: none;
+  border: 1px solid #222831;
+  color: #6B7280;
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.15s;
+}
+
+.btn-icon:hover {
+  color: #FFC107;
+  border-color: rgba(255, 193, 7, 0.3);
+}
+
+.btn-icon.btn-danger:hover {
+  color: #E74C3C;
+  border-color: rgba(231, 76, 60, 0.3);
+}
+
+/* ── Sections (PIN, Devices) ──────────────────────────────────────── */
+.section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #222831;
+}
+
+.section-title {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #FFC107;
+  margin-bottom: 12px;
+  text-shadow: 0 0 4px rgba(255, 193, 7, 0.3);
+}
+
+h2.section-title { font-size: 14px; }
+
+.pin-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.pin-display {
+  font-family: 'Courier New', monospace;
+  font-size: 28px;
+  font-weight: bold;
+  color: #FFC107;
+  letter-spacing: 0.2em;
+  text-shadow: 0 0 8px rgba(255, 193, 7, 0.4);
+}
+
+.hint {
+  color: #6B7280;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+/* ── Device list ──────────────────────────────────────────────────── */
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.device-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #0D0F12;
+  border: 1px solid #222831;
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.device-name {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  color: #EAEAEA;
+}
+
+.device-meta {
+  font-size: 11px;
+  color: #6B7280;
+  font-family: 'Courier New', monospace;
+}

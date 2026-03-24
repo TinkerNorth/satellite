@@ -4,17 +4,60 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Controller Forward</title>
+  <link rel="icon" type="image/png" href="icon.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="card">
-    <h1><span class="dot off" id="dot"></span> Controller Forward</h1>
+
+  <!-- ── First-launch setup ── -->
+  <div class="card" id="view-setup" style="display:none">
+    <h1>⚡ Initial Setup</h1>
+    <p class="subtitle">Create your admin credentials</p>
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input type="text" id="setup-user" class="form-input" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <input type="password" id="setup-pass" class="form-input">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Confirm Password</label>
+      <input type="password" id="setup-pass2" class="form-input">
+    </div>
+    <div id="setup-error" class="error-msg"></div>
+    <button class="btn btn-start btn-full" onclick="doSetup()">Create Account</button>
+  </div>
+
+  <!-- ── Login ── -->
+  <div class="card" id="view-login" style="display:none">
+    <h1>🔒 Controller Forward</h1>
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input type="text" id="login-user" class="form-input" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <input type="password" id="login-pass" class="form-input">
+    </div>
+    <div id="login-error" class="error-msg"></div>
+    <button class="btn btn-start btn-full" onclick="doLogin()">Sign In</button>
+  </div>
+
+  <!-- ── Dashboard ── -->
+  <div class="card" id="view-dashboard" style="display:none">
+    <div class="header-row">
+      <h1><span class="dot off" id="dot"></span> Controller Forward</h1>
+      <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+    </div>
+
     <div id="stats">
       <div class="stat"><span class="label">Status</span><span class="value" id="s-status">Stopped</span></div>
       <div class="stat"><span class="label">Packets</span><span class="value" id="s-packets">0</span></div>
       <div class="stat"><span class="label">Sender</span><span class="value" id="s-sender">—</span></div>
       <div class="stat"><span class="label">UDP Port</span><span class="value" id="s-port">—</span></div>
     </div>
+
     <div class="controls">
       <div class="row">
         <label>UDP Port</label>
@@ -29,7 +72,26 @@
         <button class="btn btn-save" onclick="saveConfig()">Save Config</button>
       </div>
     </div>
+
+    <!-- ── PIN Pairing ── -->
+    <div class="section">
+      <h2 class="section-title">Device Pairing</h2>
+      <div class="pin-row">
+        <button class="btn btn-save" onclick="genPin()">Generate PIN</button>
+        <span class="pin-display" id="pin-display">—</span>
+      </div>
+      <p class="hint">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
+    </div>
+
+    <!-- ── Paired Devices ── -->
+    <div class="section">
+      <h2 class="section-title">Paired Devices</h2>
+      <div id="device-list" class="device-list">
+        <p class="hint">No paired devices</p>
+      </div>
+    </div>
   </div>
+
   <script src="app.js"></script>
 </body>
 </html>

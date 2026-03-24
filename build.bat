@@ -14,7 +14,7 @@ echo === Building controller-forward ===
 echo.
 
 echo [1/2] controller-receiver.exe  (tray + web UI)
-%CXX% %CXXFLAGS% %INCLUDES% -DCPPHTTPLIB_NO_EXCEPTIONS -o controller-receiver.exe controller-receiver.cpp -lsetupapi -lws2_32 -lshell32 -lole32 -mwindows
+%CXX% %CXXFLAGS% %INCLUDES% -DCPPHTTPLIB_NO_EXCEPTIONS -o controller-receiver.exe controller-receiver.cpp -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] controller-receiver.exe
     exit /b 1
@@ -22,7 +22,7 @@ if %ERRORLEVEL% neq 0 (
 echo [OK]  controller-receiver.exe
 
 echo [2/2] controller-sender.exe
-%CXX% %CXXFLAGS% -o controller-sender.exe controller-sender.cpp -lxinput1_4 -lws2_32
+%CXX% %CXXFLAGS% -o controller-sender.exe controller-sender.cpp -lxinput1_4 -lws2_32 -lshell32 -lole32
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] controller-sender.exe
     exit /b 1
