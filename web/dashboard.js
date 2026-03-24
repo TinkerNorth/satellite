@@ -2,11 +2,21 @@
 
 let configDirty = false;
 let pollTimer = null;
+let savedConfig = { udpPort: 9876, autoStart: false };
 
-function setConfigDirty(dirty) {
+function checkConfigDirty() {
+  const curPort = parseInt(document.getElementById('udpPort').value);
+  const curAuto = document.getElementById('autoStart').checked;
+  const dirty = curPort !== savedConfig.udpPort || curAuto !== savedConfig.autoStart;
   configDirty = dirty;
-  const btn = document.getElementById('btnSave');
-  if (btn) btn.disabled = !dirty;
+  document.getElementById('btnSave').disabled = !dirty;
+  document.getElementById('btnUndo').disabled = !dirty;
+}
+
+function undoConfig() {
+  document.getElementById('udpPort').value = savedConfig.udpPort;
+  document.getElementById('autoStart').checked = savedConfig.autoStart;
+  checkConfigDirty();
 }
 
 function initDashboard() {
@@ -15,8 +25,8 @@ function initDashboard() {
 
   const udp = document.getElementById('udpPort');
   const auto_ = document.getElementById('autoStart');
-  if (udp) udp.addEventListener('input', () => { setConfigDirty(true); });
-  if (auto_) auto_.addEventListener('change', () => { setConfigDirty(true); });
+  if (udp) udp.addEventListener('input', checkConfigDirty);
+  if (auto_) auto_.addEventListener('change', checkConfigDirty);
 }
 
 // ── Polling ─────────────────────────────────────────────────────────────────
@@ -49,6 +59,8 @@ async function poll() {
     btn.className = 'btn ' + (d.listening ? 'btn-stop' : 'btn-start');
 
     if (!configDirty) {
+      savedConfig.udpPort = d.udpPort;
+      savedConfig.autoStart = d.autoStart;
       document.getElementById('udpPort').value = d.udpPort;
       document.getElementById('autoStart').checked = d.autoStart;
     }
@@ -68,7 +80,9 @@ async function saveConfig() {
     udpPort: parseInt(document.getElementById('udpPort').value),
     autoStart: document.getElementById('autoStart').checked
   });
-  setConfigDirty(false);
+  savedConfig.udpPort = parseInt(document.getElementById('udpPort').value);
+  savedConfig.autoStart = document.getElementById('autoStart').checked;
+  checkConfigDirty();
   poll();
 }
 

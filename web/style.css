@@ -235,9 +235,20 @@ h1 .dot {
   border-color: rgba(255, 193, 7, 0.3);
   box-shadow: 0 0 8px rgba(47, 93, 140, 0.4);
 }
-.btn-save:disabled {
+.btn-save:disabled,
+.btn-undo:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+.btn-undo {
+  background: transparent;
+  color: #6B7280;
+  border: 1px solid #222831;
+}
+.btn-undo:hover:not(:disabled) {
+  color: #EAEAEA;
+  border-color: rgba(255, 193, 7, 0.3);
 }
 
 .btn-row {
