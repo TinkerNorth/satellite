@@ -324,126 +324,25 @@ static void receiverThread() {
     }
 }
 
-// ── Embedded Web UI (HTML) ───────────────────────────────────────────────────
+// ── Web UI directory (resolved relative to .exe location) ───────────────────
 
-static const char* WEB_UI_HTML = R"HTML(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Controller Forward</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-  background:#0f0f0f;color:#e0e0e0;display:flex;justify-content:center;
-  align-items:center;min-height:100vh}
-.card{background:#1a1a2e;border-radius:16px;padding:32px;width:420px;
-  box-shadow:0 8px 32px rgba(0,0,0,.5)}
-h1{font-size:20px;margin-bottom:24px;color:#fff;display:flex;align-items:center;gap:10px}
-h1 .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
-.dot.on{background:#00e676;box-shadow:0 0 8px #00e676}
-.dot.off{background:#ff5252;box-shadow:0 0 8px #ff5252}
-.stat{display:flex;justify-content:space-between;padding:10px 0;
-  border-bottom:1px solid #2a2a3e;font-size:14px}
-.stat .label{color:#888}.stat .value{color:#fff;font-family:'Courier New',monospace}
-.controls{margin-top:24px;display:flex;flex-direction:column;gap:12px}
-.row{display:flex;gap:12px;align-items:center}
-.row label{font-size:13px;color:#888;min-width:80px}
-.row input[type=number]{flex:1;background:#0f0f1a;border:1px solid #333;
-  border-radius:8px;padding:8px 12px;color:#fff;font-size:14px}
-.row input[type=number]:focus{outline:none;border-color:#7c4dff}
-.toggle-row{display:flex;align-items:center;justify-content:space-between;
-  padding:8px 0}
-.toggle-row span{font-size:13px;color:#888}
-.switch{position:relative;width:44px;height:24px}
-.switch input{opacity:0;width:0;height:0}
-.slider{position:absolute;inset:0;background:#333;border-radius:24px;
-  cursor:pointer;transition:.2s}
-.slider:before{content:'';position:absolute;width:18px;height:18px;left:3px;
-  bottom:3px;background:#888;border-radius:50%;transition:.2s}
-.switch input:checked+.slider{background:#7c4dff}
-.switch input:checked+.slider:before{transform:translateX(20px);background:#fff}
-btn,.btn{display:inline-flex;align-items:center;justify-content:center;
-  padding:10px 20px;border:none;border-radius:8px;font-size:14px;
-  font-weight:600;cursor:pointer;transition:.15s}
-.btn-start{background:#00e676;color:#000}.btn-start:hover{background:#00c853}
-.btn-stop{background:#ff5252;color:#fff}.btn-stop:hover{background:#ff1744}
-.btn-save{background:#7c4dff;color:#fff}.btn-save:hover{background:#651fff}
-.btn-row{display:flex;gap:12px;margin-top:8px}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1><span class="dot off" id="dot"></span> Controller Forward</h1>
-  <div id="stats">
-    <div class="stat"><span class="label">Status</span><span class="value" id="s-status">Stopped</span></div>
-    <div class="stat"><span class="label">Packets</span><span class="value" id="s-packets">0</span></div>
-    <div class="stat"><span class="label">Sender</span><span class="value" id="s-sender">—</span></div>
-    <div class="stat"><span class="label">UDP Port</span><span class="value" id="s-port">—</span></div>
-  </div>
-  <div class="controls">
-    <div class="row">
-      <label>UDP Port</label>
-      <input type="number" id="udpPort" min="1024" max="65535" value="9876">
-    </div>
-    <div class="toggle-row">
-      <span>Start with Windows</span>
-      <label class="switch"><input type="checkbox" id="autoStart"><span class="slider"></span></label>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-start" id="btnToggle" onclick="toggle()">Start</button>
-      <button class="btn btn-save" onclick="saveConfig()">Save Config</button>
-    </div>
-  </div>
-</div>
-<script>
-async function poll(){
-  try{
-    const r=await fetch('/api/status');
-    const d=await r.json();
-    document.getElementById('s-status').textContent=d.listening?'Listening':'Stopped';
-    document.getElementById('s-packets').textContent=d.packets.toLocaleString();
-    document.getElementById('s-sender').textContent=d.senderIP;
-    document.getElementById('s-port').textContent=d.udpPort;
-    const dot=document.getElementById('dot');
-    dot.className='dot '+(d.listening?'on':'off');
-    const btn=document.getElementById('btnToggle');
-    btn.textContent=d.listening?'Stop':'Start';
-    btn.className='btn '+(d.listening?'btn-stop':'btn-start');
-    document.getElementById('udpPort').value=d.udpPort;
-    document.getElementById('autoStart').checked=d.autoStart;
-  }catch(e){}
+static std::string getExeDir() {
+    char buf[MAX_PATH];
+    GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    std::string path(buf);
+    auto pos = path.find_last_of("\\/");
+    return (pos != std::string::npos) ? path.substr(0, pos) : ".";
 }
-async function toggle(){
-  const r=await fetch('/api/status');
-  const d=await r.json();
-  await fetch(d.listening?'/api/stop':'/api/start',{method:'POST'});
-  setTimeout(poll,300);
-}
-async function saveConfig(){
-  const body=JSON.stringify({
-    udpPort:parseInt(document.getElementById('udpPort').value),
-    autoStart:document.getElementById('autoStart').checked
-  });
-  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body});
-  poll();
-}
-poll();
-setInterval(poll,1000);
-</script>
-</body>
-</html>
-)HTML";
+
+static std::string g_webDir;
 
 // ── HTTP Server Thread ──────────────────────────────────────────────────────
 
 static httplib::Server g_httpServer;
 
 static void httpThread() {
-    g_httpServer.Get("/", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(WEB_UI_HTML, "text/html");
-    });
+    // Serve static files (index.html, style.css, app.js) from the web/ folder
+    g_httpServer.set_mount_point("/", g_webDir);
 
     g_httpServer.Get("/api/status", [](const httplib::Request&, httplib::Response& res) {
         std::string senderIP;
@@ -583,6 +482,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInst, nullptr);
 
     addTrayIcon(g_hwnd);
+
+    // Resolve web/ directory relative to the exe
+    g_webDir = getExeDir() + "\\web";
 
     // Launch worker threads
     std::thread recvTh(receiverThread);

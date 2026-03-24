@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Controller Forward</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="card">
+    <h1><span class="dot off" id="dot"></span> Controller Forward</h1>
+    <div id="stats">
+      <div class="stat"><span class="label">Status</span><span class="value" id="s-status">Stopped</span></div>
+      <div class="stat"><span class="label">Packets</span><span class="value" id="s-packets">0</span></div>
+      <div class="stat"><span class="label">Sender</span><span class="value" id="s-sender">—</span></div>
+      <div class="stat"><span class="label">UDP Port</span><span class="value" id="s-port">—</span></div>
+    </div>
+    <div class="controls">
+      <div class="row">
+        <label>UDP Port</label>
+        <input type="number" id="udpPort" min="1024" max="65535" value="9876">
+      </div>
+      <div class="toggle-row">
+        <span>Start with Windows</span>
+        <label class="switch"><input type="checkbox" id="autoStart"><span class="slider"></span></label>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-start" id="btnToggle" onclick="toggle()">Start</button>
+        <button class="btn btn-save" onclick="saveConfig()">Save Config</button>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
+
