@@ -31,8 +31,8 @@
 #include "httplib.h"
 
 // ── Constants ───────────────────────────────────────────────────────────────
-inline const char* APP_NAME          = "controller-forward";
-inline const char* APP_TITLE         = "Controller Forward";
+inline const char* APP_NAME          = "satellite";
+inline const char* APP_TITLE         = "Satellite";
 inline const int   DEFAULT_UDP_PORT  = 9876;
 inline const int   DEFAULT_WEB_PORT  = 9877;
 inline const int   DEFAULT_PAIR_PORT = 9878;

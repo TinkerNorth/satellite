@@ -44,8 +44,8 @@
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
 // ── Constants ───────────────────────────────────────────────────────────────
-static const char* APP_NAME          = "controller-forward";
-static const char* APP_TITLE         = "Controller Forward";
+static const char* APP_NAME          = "satellite";
+static const char* APP_TITLE         = "Satellite";
 static const int   DEFAULT_UDP_PORT  = 9876;
 static const int   DEFAULT_WEB_PORT  = 9877;
 static const int   DEFAULT_PAIR_PORT = 9878;
@@ -280,7 +280,7 @@ static std::string jsonGetString(const std::string& json, const std::string& key
 static std::string configPath() {
     char buf[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, buf))) {
-        std::string dir = std::string(buf) + "\\controller-forward";
+        std::string dir = std::string(buf) + "\\satellite";
         CreateDirectoryA(dir.c_str(), nullptr);
         return dir + "\\config.json";
     }

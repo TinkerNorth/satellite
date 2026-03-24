@@ -1,5 +1,5 @@
 /*
- * Controller Sender — reads local Xbox controller via XInput, streams over UDP
+ * Satellite Sender — reads local Xbox controller via XInput, streams over UDP
  *
  * Captures the state of a physical Xbox controller using XInput and sends
  * XUSB_REPORT packets (12 bytes) over UDP to a receiver running on a remote
@@ -50,7 +50,7 @@ static void signalHandler(int) { g_running = false; }
 static std::string getConfigDir() {
     char buf[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, buf))) {
-        std::string dir = std::string(buf) + "\\controller-forward";
+        std::string dir = std::string(buf) + "\\satellite";
         CreateDirectoryA(dir.c_str(), nullptr);
         return dir;
     }
@@ -229,7 +229,7 @@ static std::vector<DiscoveredReceiver> discoverReceivers(int timeoutSec = 3) {
         buf[n] = 0;
 
         std::string json(buf);
-        if (json.find("\"service\":\"controller-forward\"") == std::string::npos) continue;
+        if (json.find("\"service\":\"satellite\"") == std::string::npos) continue;
 
         // Get sender IP
         char ipStr[INET_ADDRSTRLEN];
@@ -260,7 +260,7 @@ int main(int argc, char* argv[]) {
     const int rate = (argc > 2) ? atoi(argv[2]) : 250;  // Hz
     const int user = (argc > 3) ? atoi(argv[3]) : 0;    // XInput user index
 
-    printf("=== Controller Sender (C++ / XInput -> UDP) ===\n");
+    printf("=== Satellite Sender (XInput -> UDP) ===\n");
 
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);

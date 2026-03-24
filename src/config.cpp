@@ -32,7 +32,7 @@ std::string jsonGetString(const std::string& json, const std::string& key) {
 std::string configPath() {
     char buf[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, buf))) {
-        std::string dir = std::string(buf) + "\\controller-forward";
+        std::string dir = std::string(buf) + "\\satellite";
         CreateDirectoryA(dir.c_str(), nullptr);
         return dir + "\\config.json";
     }

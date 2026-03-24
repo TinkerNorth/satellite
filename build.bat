@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  Build script for controller-forward
+REM  Build script for Satellite
 REM  Requires: MinGW-w64 (g++) in PATH
 REM ============================================================================
 
@@ -10,7 +10,7 @@ set CXX=g++
 set CXXFLAGS=-O2 -Wall -Wextra -std=c++17 -D_WIN32_WINNT=0x0A00 -static
 set INCLUDES=-Ivigem/include -Ilib
 
-echo === Building controller-forward ===
+echo === Building Satellite ===
 echo.
 
 set SRC_FILES=src/main.cpp src/globals.cpp src/config.cpp src/crypto.cpp src/vigem.cpp src/receiver.cpp src/webserver.cpp src/pairing.cpp src/discovery.cpp src/tray.cpp

@@ -33,7 +33,7 @@ void discoveryThread() {
         // Build beacon JSON
         char beacon[512];
         snprintf(beacon, sizeof(beacon),
-            R"({"service":"controller-forward","name":"%s","udpPort":%d,"pairPort":%d,"webPort":%d})",
+            R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"webPort":%d})",
             hostname, g_config.udpPort, g_config.pairPort, g_config.webPort);
 
         sendto(sock, beacon, (int)strlen(beacon), 0,
