@@ -8,22 +8,20 @@ static NOTIFYICONDATAA g_nid{};
 
 void addTrayIcon(HWND hwnd) {
     g_nid.cbSize = sizeof(g_nid);
-    g_nid.hWnd   = hwnd;
-    g_nid.uID    = 1;
+    g_nid.hWnd = hwnd;
+    g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
     // Load custom icon from icon.ico next to the exe, fall back to default
     std::string icoPath = getExeDir() + "\\icon.ico";
-    HICON hCustom = (HICON)LoadImageA(nullptr, icoPath.c_str(),
-        IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
-    g_nid.hIcon  = hCustom ? hCustom : LoadIcon(nullptr, IDI_APPLICATION);
+    HICON hCustom = (HICON)LoadImageA(nullptr, icoPath.c_str(), IMAGE_ICON, 0, 0,
+                                      LR_LOADFROMFILE | LR_DEFAULTSIZE);
+    g_nid.hIcon = hCustom ? hCustom : LoadIcon(nullptr, IDI_APPLICATION);
     strncpy(g_nid.szTip, APP_TITLE, sizeof(g_nid.szTip) - 1);
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 }
 
-void removeTrayIcon() {
-    Shell_NotifyIconA(NIM_DELETE, &g_nid);
-}
+void removeTrayIcon() { Shell_NotifyIconA(NIM_DELETE, &g_nid); }
 
 void showTrayMenu(HWND hwnd) {
     POINT pt;
@@ -43,9 +41,7 @@ void showTrayMenu(HWND hwnd) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_TRAYICON:
-        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) {
-            showTrayMenu(hwnd);
-        }
+        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) { showTrayMenu(hwnd); }
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
@@ -56,8 +52,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case IDM_TOGGLE:
-            if (g_listening.load()) g_wantListen = false;
-            else                    g_wantListen = true;
+            if (g_listening.load())
+                g_wantListen = false;
+            else
+                g_wantListen = true;
             break;
         case IDM_EXIT:
             PostQuitMessage(0);
@@ -70,4 +68,3 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
-

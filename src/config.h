@@ -13,7 +13,7 @@ std::string configPath();
 
 // ── Config persistence ──────────────────────────────────────────────────────
 Config loadConfig();
-void   saveConfig(const Config& cfg);
+void saveConfig(const Config& cfg);
 
 // ── Auto-start (Windows registry) ───────────────────────────────────────────
 void setAutoStart(bool enable);
@@ -22,4 +22,3 @@ bool getAutoStart();
 // ── Utility ─────────────────────────────────────────────────────────────────
 std::string getExeDir();
 std::string getCurrentDate();
-

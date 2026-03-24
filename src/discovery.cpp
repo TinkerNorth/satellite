@@ -9,14 +9,18 @@
 
 void discoveryThread() {
     WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) return;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
 
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) { WSACleanup(); return; }
+    if (sock == INVALID_SOCKET) {
+        WSACleanup();
+        return;
+    }
 
     // Enable broadcast
     BOOL bcast = TRUE;
-    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char*)&bcast, sizeof(bcast));
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&bcast),
+               sizeof(bcast));
 
     // Get computer name for beacon
     char hostname[256] = {};
@@ -33,11 +37,11 @@ void discoveryThread() {
         // Build beacon JSON
         char beacon[512];
         snprintf(beacon, sizeof(beacon),
-            R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"webPort":%d})",
-            hostname, g_config.udpPort, g_config.pairPort, g_config.webPort);
+                 R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"webPort":%d})",
+                 hostname, g_config.udpPort, g_config.pairPort, g_config.webPort);
 
-        sendto(sock, beacon, (int)strlen(beacon), 0,
-               (sockaddr*)&dest, sizeof(dest));
+        sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
+               sizeof(dest));
 
         // Sleep 2 seconds in 100ms increments to allow quick shutdown
         for (int i = 0; i < 20 && g_appRunning; i++) Sleep(100);
@@ -46,4 +50,3 @@ void discoveryThread() {
     closesocket(sock);
     WSACleanup();
 }
-

@@ -102,6 +102,57 @@ The receiver runs three threads:
 
 TCP's reliability guarantees cause **head-of-line blocking** — if one packet is lost, all subsequent packets are held until retransmission completes. For controller input, only the latest state matters. A lost packet is better than a delayed one. This is the same approach used by Moonlight, Parsec, and Steam Remote Play.
 
+## Code Quality
+
+The project uses industry-standard C++ tooling for formatting, linting, and static analysis.
+
+### Tools
+
+| Tool | Purpose | Config file | Equivalent in JS |
+|------|---------|-------------|------------------|
+| **clang-format** | Auto-formatting | `.clang-format` | Prettier |
+| **clang-tidy** | Linting & modernization | `.clang-tidy` | ESLint |
+| **cppcheck** | Deep static analysis (leaks, UB, bounds) | — | — |
+
+### Installing
+
+All three tools are available via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+
+```powershell
+winget install LLVM.ClangFormat      # clang-format
+winget install LLVM.LLVM             # clang-tidy (included in full LLVM)
+winget install Cppcheck.Cppcheck     # cppcheck
+```
+
+> **Note:** `clang-format` can also be installed standalone via `LLVM.ClangFormat` if you don't need the full LLVM toolchain. `clang-tidy` requires the full `LLVM.LLVM` package.
+
+After installing, restart your terminal so the tools are on your `PATH`.
+
+### Usage
+
+**Format all source files:**
+
+```powershell
+clang-format -i src/*.cpp src/*.h controller-sender.cpp controller-receiver.cpp
+```
+
+**Lint with clang-tidy:**
+
+```powershell
+clang-tidy src/*.cpp controller-sender.cpp controller-receiver.cpp -- -std=c++17 -Ivigem/include -Isrc -Ilib -D_WIN32_WINNT=0x0A00 -DCPPHTTPLIB_NO_EXCEPTIONS
+```
+
+**Run cppcheck:**
+
+```powershell
+cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem -Ivigem/include -Isrc -Ilib src/ controller-sender.cpp controller-receiver.cpp
+```
+
+### Editor Integration
+
+- **VS Code:** Install the [clang-format](https://marketplace.visualstudio.com/items?itemName=xaver.clang-format) extension and set it as your default C++ formatter. Format-on-save will use the `.clang-format` config automatically.
+- **clang-tidy** warnings appear inline if you use [clangd](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) as your language server.
+
 ## Project structure
 
 ```
@@ -113,6 +164,8 @@ TCP's reliability guarantees cause **head-of-line blocking** — if one packet i
 │   └── include/ViGEm/
 │       ├── Common.h            # XUSB_REPORT, button definitions
 │       └── BusShared.h         # IOCTL codes, driver structures
+├── .clang-format               # Code formatting rules (clang-format)
+├── .clang-tidy                 # Linting & modernization checks (clang-tidy)
 ├── build.bat                   # Build script
 ├── LICENSE                     # MIT
 └── README.md

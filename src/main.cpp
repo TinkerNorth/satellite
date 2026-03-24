@@ -12,7 +12,7 @@
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Initialize Winsock globally (needed by httplib)
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2,2), &wsa);
+    WSAStartup(MAKEWORD(2, 2), &wsa);
 
     // Load config
     g_config = loadConfig();
@@ -23,13 +23,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // Register hidden window class
     WNDCLASSA wc{};
-    wc.lpfnWndProc   = WndProc;
-    wc.hInstance      = hInst;
-    wc.lpszClassName  = "ControllerForwardTray";
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = "ControllerForwardTray";
     RegisterClassA(&wc);
 
-    g_hwnd = CreateWindowExA(0, wc.lpszClassName, APP_TITLE,
-        0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInst, nullptr);
+    g_hwnd = CreateWindowExA(0, wc.lpszClassName, APP_TITLE, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                             hInst, nullptr);
 
     addTrayIcon(g_hwnd);
 
@@ -65,4 +65,3 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     WSACleanup();
     return 0;
 }
-

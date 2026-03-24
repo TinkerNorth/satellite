@@ -5,4 +5,3 @@
 #include "globals.h"
 
 void discoveryThread();
-

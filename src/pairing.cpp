@@ -10,13 +10,14 @@ void pairingThread() {
     if (g_pairSock == INVALID_SOCKET) return;
 
     int opt = 1;
-    setsockopt(g_pairSock, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+    setsockopt(g_pairSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt),
+               sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons((u_short)g_config.pairPort);
     addr.sin_addr.s_addr = INADDR_ANY;
-    if (bind(g_pairSock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+    if (bind(g_pairSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
         closesocket(g_pairSock);
         g_pairSock = INVALID_SOCKET;
         return;
@@ -30,7 +31,7 @@ void pairingThread() {
     while (g_appRunning) {
         sockaddr_in client{};
         int clen = sizeof(client);
-        SOCKET cs = accept(g_pairSock, (sockaddr*)&client, &clen);
+        SOCKET cs = accept(g_pairSock, reinterpret_cast<sockaddr*>(&client), &clen);
         if (cs == INVALID_SOCKET) {
             Sleep(100);
             continue;
@@ -40,7 +41,8 @@ void pairingThread() {
         u_long blocking = 0;
         ioctlsocket(cs, FIONBIO, &blocking);
         DWORD timeout = 5000;
-        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
+                   sizeof(timeout));
 
         char buf[1024] = {};
         int n = recv(cs, buf, sizeof(buf) - 1, 0);
@@ -58,8 +60,11 @@ void pairingThread() {
             bool alreadyPaired = false;
             {
                 std::lock_guard<std::mutex> lk(g_configMtx);
-                for (auto& d : g_config.pairedDevices) {
-                    if (d.id == deviceId) { alreadyPaired = true; d.lastIP = clientIP; break; }
+                auto it = std::find_if(g_config.pairedDevices.begin(), g_config.pairedDevices.end(),
+                                       [&](const PairedDevice& d) { return d.id == deviceId; });
+                if (it != g_config.pairedDevices.end()) {
+                    alreadyPaired = true;
+                    it->lastIP = clientIP;
                 }
             }
 
@@ -89,4 +94,3 @@ void pairingThread() {
     closesocket(g_pairSock);
     g_pairSock = INVALID_SOCKET;
 }
-

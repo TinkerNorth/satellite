@@ -12,7 +12,10 @@ std::string base64Encode(const std::vector<BYTE>& data) {
     for (BYTE c : data) {
         val = (val << 8) + c;
         bits += 8;
-        while (bits >= 0) { out.push_back(b64chars[(val >> bits) & 0x3F]); bits -= 6; }
+        while (bits >= 0) {
+            out.push_back(b64chars[(val >> bits) & 0x3F]);
+            bits -= 6;
+        }
     }
     if (bits > -6) out.push_back(b64chars[((val << 8) >> (bits + 8)) & 0x3F]);
     while (out.size() % 4) out.push_back('=');
@@ -28,7 +31,10 @@ std::vector<BYTE> base64Decode(const std::string& s) {
         if (T[(unsigned char)c] == -1) break;
         val = (val << 6) + T[(unsigned char)c];
         bits += 6;
-        if (bits >= 0) { out.push_back((BYTE)(val >> bits)); bits -= 8; }
+        if (bits >= 0) {
+            out.push_back((BYTE)(val >> bits));
+            bits -= 8;
+        }
     }
     return out;
 }
@@ -45,7 +51,7 @@ std::string sha256hex(const std::string& input) {
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
     char hex[65];
-    for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", hash[i]);
+    for (int i = 0; i < 32; i++) sprintf(hex + static_cast<ptrdiff_t>(i) * 2, "%02x", hash[i]);
     hex[64] = 0;
     return std::string(hex);
 }
@@ -53,10 +59,9 @@ std::string sha256hex(const std::string& input) {
 // ── DPAPI encrypt/decrypt ───────────────────────────────────────────────────
 std::string dpapiEncrypt(const std::string& plaintext) {
     DATA_BLOB in, out;
-    in.pbData = (BYTE*)plaintext.data();
+    in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plaintext.data()));
     in.cbData = (DWORD)plaintext.size();
-    if (!CryptProtectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out))
-        return "";
+    if (!CryptProtectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) return "";
     std::vector<BYTE> blob(out.pbData, out.pbData + out.cbData);
     LocalFree(out.pbData);
     return base64Encode(blob);
@@ -67,9 +72,8 @@ std::string dpapiDecrypt(const std::string& encoded) {
     DATA_BLOB in, out;
     in.pbData = blob.data();
     in.cbData = (DWORD)blob.size();
-    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out))
-        return "";
-    std::string result((char*)out.pbData, out.cbData);
+    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) return "";
+    std::string result(reinterpret_cast<char*>(out.pbData), out.cbData);
     LocalFree(out.pbData);
     return result;
 }
@@ -81,7 +85,10 @@ std::string randomHex(int bytes) {
     std::uniform_int_distribution<> dis(0, 255);
     std::string out;
     char buf[3];
-    for (int i = 0; i < bytes; i++) { sprintf(buf, "%02x", dis(gen)); out += buf; }
+    for (int i = 0; i < bytes; i++) {
+        sprintf(buf, "%02x", dis(gen));
+        out += buf;
+    }
     return out;
 }
 
@@ -102,7 +109,8 @@ static const int SESSION_LIFETIME_HOURS = 24;
 std::string createSession() {
     std::string token = randomHex(32);
     std::lock_guard<std::mutex> lk(g_sessionMtx);
-    g_sessions[token] = std::chrono::steady_clock::now() + std::chrono::hours(SESSION_LIFETIME_HOURS);
+    g_sessions[token] =
+        std::chrono::steady_clock::now() + std::chrono::hours(SESSION_LIFETIME_HOURS);
     return token;
 }
 
@@ -134,9 +142,7 @@ std::string getSessionFromCookie(const httplib::Request& req) {
 }
 
 // ── Credential helpers ──────────────────────────────────────────────────────
-bool isConfigured(const Config& cfg) {
-    return !cfg.credentials.empty();
-}
+bool isConfigured(const Config& cfg) { return !cfg.credentials.empty(); }
 
 bool setupCredentials(Config& cfg, const std::string& username, const std::string& password) {
     std::string salt = randomHex(16);
@@ -146,7 +152,8 @@ bool setupCredentials(Config& cfg, const std::string& username, const std::strin
     return !cfg.credentials.empty();
 }
 
-bool verifyCredentials(const Config& cfg, const std::string& username, const std::string& password) {
+bool verifyCredentials(const Config& cfg, const std::string& username,
+                       const std::string& password) {
     std::string plain = dpapiDecrypt(cfg.credentials);
     if (plain.empty()) return false;
     auto p1 = plain.find(':');
@@ -178,4 +185,3 @@ bool verifyPin(const std::string& pin) {
     if (ok) g_currentPin.clear();
     return ok;
 }
-

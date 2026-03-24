@@ -31,4 +31,3 @@ bool verifyCredentials(const Config& cfg, const std::string& username, const std
 // ── PIN ─────────────────────────────────────────────────────────────────────
 std::string generatePin();
 bool verifyPin(const std::string& pin);
-

@@ -19,7 +19,10 @@ void receiverThread() {
 
         ULONG serialNo = 0;
         for (ULONG s = 1; s <= 16; ++s) {
-            if (pluginTarget(busDevice, s)) { serialNo = s; break; }
+            if (pluginTarget(busDevice, s)) {
+                serialNo = s;
+                break;
+            }
         }
         if (serialNo == 0) {
             CloseHandle(busDevice);
@@ -28,7 +31,7 @@ void receiverThread() {
         }
 
         WSADATA wsa;
-        if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
             unplugTarget(busDevice, serialNo);
             CloseHandle(busDevice);
             g_wantListen = false;
@@ -46,9 +49,9 @@ void receiverThread() {
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
-        addr.sin_port   = htons((u_short)port);
+        addr.sin_port = htons((u_short)port);
         addr.sin_addr.s_addr = INADDR_ANY;
-        if (bind(sock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
             closesocket(sock);
             unplugTarget(busDevice, serialNo);
             CloseHandle(busDevice);
@@ -62,7 +65,10 @@ void receiverThread() {
 
         g_listening = true;
         g_packetCount = 0;
-        { std::lock_guard<std::mutex> lk(g_senderMtx); g_senderIP = "none"; }
+        {
+            std::lock_guard<std::mutex> lk(g_senderMtx);
+            g_senderIP = "none";
+        }
 
         XUSB_REPORT report;
         XUSB_REPORT_INIT(&report);
@@ -71,7 +77,8 @@ void receiverThread() {
             sockaddr_in sender{};
             int slen = sizeof(sender);
             char buf[64];
-            int n = recvfrom(sock, buf, sizeof(buf), 0, (sockaddr*)&sender, &slen);
+            int n =
+                recvfrom(sock, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&sender), &slen);
 
             if (n == sizeof(XUSB_REPORT)) {
                 memcpy(&report, buf, sizeof(XUSB_REPORT));
@@ -98,4 +105,3 @@ void receiverThread() {
         WSACleanup();
     }
 }
-

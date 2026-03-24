@@ -44,15 +44,15 @@
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
 // ── Constants ───────────────────────────────────────────────────────────────
-static const char* APP_NAME          = "satellite";
-static const char* APP_TITLE         = "Satellite";
-static const int   DEFAULT_UDP_PORT  = 9876;
-static const int   DEFAULT_WEB_PORT  = 9877;
-static const int   DEFAULT_PAIR_PORT = 9878;
-static const UINT  WM_TRAYICON      = WM_APP + 1;
-static const UINT  IDM_OPEN_UI      = 1001;
-static const UINT  IDM_TOGGLE       = 1002;
-static const UINT  IDM_EXIT         = 1003;
+static const char* APP_NAME = "satellite";
+static const char* APP_TITLE = "Satellite";
+static const int DEFAULT_UDP_PORT = 9876;
+static const int DEFAULT_WEB_PORT = 9877;
+static const int DEFAULT_PAIR_PORT = 9878;
+static const UINT WM_TRAYICON = WM_APP + 1;
+static const UINT IDM_OPEN_UI = 1001;
+static const UINT IDM_TOGGLE = 1002;
+static const UINT IDM_EXIT = 1003;
 
 // ── Paired device info ──────────────────────────────────────────────────────
 struct PairedDevice {
@@ -64,12 +64,12 @@ struct PairedDevice {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 struct Config {
-    int  udpPort   = DEFAULT_UDP_PORT;
-    int  webPort   = DEFAULT_WEB_PORT;
-    int  pairPort  = DEFAULT_PAIR_PORT;
+    int udpPort = DEFAULT_UDP_PORT;
+    int webPort = DEFAULT_WEB_PORT;
+    int pairPort = DEFAULT_PAIR_PORT;
     bool autoStart = false;
     // Auth (DPAPI-encrypted blob, base64-encoded)
-    std::string credentials;  // "username:salt:sha256hash" encrypted
+    std::string credentials; // "username:salt:sha256hash" encrypted
     // Paired devices
     std::vector<PairedDevice> pairedDevices;
 };
@@ -83,7 +83,10 @@ static std::string base64Encode(const std::vector<BYTE>& data) {
     for (BYTE c : data) {
         val = (val << 8) + c;
         bits += 8;
-        while (bits >= 0) { out.push_back(b64chars[(val >> bits) & 0x3F]); bits -= 6; }
+        while (bits >= 0) {
+            out.push_back(b64chars[(val >> bits) & 0x3F]);
+            bits -= 6;
+        }
     }
     if (bits > -6) out.push_back(b64chars[((val << 8) >> (bits + 8)) & 0x3F]);
     while (out.size() % 4) out.push_back('=');
@@ -99,7 +102,10 @@ static std::vector<BYTE> base64Decode(const std::string& s) {
         if (T[(unsigned char)c] == -1) break;
         val = (val << 6) + T[(unsigned char)c];
         bits += 6;
-        if (bits >= 0) { out.push_back((BYTE)(val >> bits)); bits -= 8; }
+        if (bits >= 0) {
+            out.push_back((BYTE)(val >> bits));
+            bits -= 8;
+        }
     }
     return out;
 }
@@ -116,7 +122,7 @@ static std::string sha256hex(const std::string& input) {
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
     char hex[65];
-    for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", hash[i]);
+    for (int i = 0; i < 32; i++) sprintf(hex + static_cast<ptrdiff_t>(i) * 2, "%02x", hash[i]);
     hex[64] = 0;
     return std::string(hex);
 }
@@ -124,10 +130,9 @@ static std::string sha256hex(const std::string& input) {
 // ── DPAPI encrypt/decrypt ───────────────────────────────────────────────────
 static std::string dpapiEncrypt(const std::string& plaintext) {
     DATA_BLOB in, out;
-    in.pbData = (BYTE*)plaintext.data();
+    in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plaintext.data()));
     in.cbData = (DWORD)plaintext.size();
-    if (!CryptProtectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out))
-        return "";
+    if (!CryptProtectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) return "";
     std::vector<BYTE> blob(out.pbData, out.pbData + out.cbData);
     LocalFree(out.pbData);
     return base64Encode(blob);
@@ -138,9 +143,8 @@ static std::string dpapiDecrypt(const std::string& encoded) {
     DATA_BLOB in, out;
     in.pbData = blob.data();
     in.cbData = (DWORD)blob.size();
-    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out))
-        return "";
-    std::string result((char*)out.pbData, out.cbData);
+    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) return "";
+    std::string result(reinterpret_cast<char*>(out.pbData), out.cbData);
     LocalFree(out.pbData);
     return result;
 }
@@ -152,7 +156,10 @@ static std::string randomHex(int bytes) {
     std::uniform_int_distribution<> dis(0, 255);
     std::string out;
     char buf[3];
-    for (int i = 0; i < bytes; i++) { sprintf(buf, "%02x", dis(gen)); out += buf; }
+    for (int i = 0; i < bytes; i++) {
+        sprintf(buf, "%02x", dis(gen));
+        out += buf;
+    }
     return out;
 }
 
@@ -173,7 +180,8 @@ static const int SESSION_LIFETIME_HOURS = 24;
 static std::string createSession() {
     std::string token = randomHex(32);
     std::lock_guard<std::mutex> lk(g_sessionMtx);
-    g_sessions[token] = std::chrono::steady_clock::now() + std::chrono::hours(SESSION_LIFETIME_HOURS);
+    g_sessions[token] =
+        std::chrono::steady_clock::now() + std::chrono::hours(SESSION_LIFETIME_HOURS);
     return token;
 }
 
@@ -205,11 +213,10 @@ static std::string getSessionFromCookie(const httplib::Request& req) {
 }
 
 // ── Credential helpers ──────────────────────────────────────────────────────
-static bool isConfigured(const Config& cfg) {
-    return !cfg.credentials.empty();
-}
+static bool isConfigured(const Config& cfg) { return !cfg.credentials.empty(); }
 
-static bool setupCredentials(Config& cfg, const std::string& username, const std::string& password) {
+static bool setupCredentials(Config& cfg, const std::string& username,
+                             const std::string& password) {
     std::string salt = randomHex(16);
     std::string hash = sha256hex(salt + password);
     std::string plain = username + ":" + salt + ":" + hash;
@@ -217,7 +224,8 @@ static bool setupCredentials(Config& cfg, const std::string& username, const std
     return !cfg.credentials.empty();
 }
 
-static bool verifyCredentials(const Config& cfg, const std::string& username, const std::string& password) {
+static bool verifyCredentials(const Config& cfg, const std::string& username,
+                              const std::string& password) {
     std::string plain = dpapiDecrypt(cfg.credentials);
     if (plain.empty()) return false;
     // Parse "username:salt:hash"
@@ -247,7 +255,7 @@ static bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     if (g_currentPin.empty() || std::chrono::steady_clock::now() > g_pinExpiry) return false;
     bool ok = (pin == g_currentPin);
-    if (ok) g_currentPin.clear();  // one-time use
+    if (ok) g_currentPin.clear(); // one-time use
     return ok;
 }
 
@@ -255,10 +263,14 @@ static bool verifyPin(const std::string& pin) {
 static std::string jsonEscape(const std::string& s) {
     std::string out;
     for (char c : s) {
-        if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c == '\n') out += "\\n";
-        else out += c;
+        if (c == '"')
+            out += "\\\"";
+        else if (c == '\\')
+            out += "\\\\";
+        else if (c == '\n')
+            out += "\\n";
+        else
+            out += c;
     }
     return out;
 }
@@ -292,8 +304,7 @@ static Config loadConfig() {
     Config cfg;
     std::ifstream f(configPath());
     if (!f.is_open()) return cfg;
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
     // Parse simple fields
     auto getInt = [&](const char* key) -> int {
@@ -311,14 +322,15 @@ static Config loadConfig() {
         auto rest = content.substr(colon + 1, 10);
         return rest.find("true") != std::string::npos;
     };
-    auto getString = [&](const char* key) -> std::string {
-        return jsonGetString(content, key);
-    };
+    auto getString = [&](const char* key) -> std::string { return jsonGetString(content, key); };
 
-    int v;
-    v = getInt("udpPort");  if (v > 0) cfg.udpPort = v;
-    v = getInt("webPort");  if (v > 0) cfg.webPort = v;
-    v = getInt("pairPort"); if (v > 0) cfg.pairPort = v;
+    int v = 0;
+    v = getInt("udpPort");
+    if (v > 0) cfg.udpPort = v;
+    v = getInt("webPort");
+    if (v > 0) cfg.webPort = v;
+    v = getInt("pairPort");
+    if (v > 0) cfg.pairPort = v;
     cfg.autoStart = getBool("autoStart");
     cfg.credentials = getString("credentials");
 
@@ -353,18 +365,17 @@ static Config loadConfig() {
 static void saveConfig(const Config& cfg) {
     std::ofstream f(configPath());
     f << "{\n"
-      << "  \"udpPort\": "   << cfg.udpPort   << ",\n"
-      << "  \"webPort\": "   << cfg.webPort   << ",\n"
-      << "  \"pairPort\": "  << cfg.pairPort  << ",\n"
+      << "  \"udpPort\": " << cfg.udpPort << ",\n"
+      << "  \"webPort\": " << cfg.webPort << ",\n"
+      << "  \"pairPort\": " << cfg.pairPort << ",\n"
       << "  \"autoStart\": " << (cfg.autoStart ? "true" : "false") << ",\n"
       << "  \"credentials\": \"" << jsonEscape(cfg.credentials) << "\",\n"
       << "  \"pairedDevices\": [\n";
     for (size_t i = 0; i < cfg.pairedDevices.size(); i++) {
-        auto& d = cfg.pairedDevices[i];
-        f << "    {\"id\":\"" << jsonEscape(d.id)
-          << "\",\"name\":\"" << jsonEscape(d.name)
-          << "\",\"lastIP\":\"" << jsonEscape(d.lastIP)
-          << "\",\"pairedAt\":\"" << jsonEscape(d.pairedAt) << "\"}";
+        const auto& d = cfg.pairedDevices[i];
+        f << "    {\"id\":\"" << jsonEscape(d.id) << "\",\"name\":\"" << jsonEscape(d.name)
+          << "\",\"lastIP\":\"" << jsonEscape(d.lastIP) << "\",\"pairedAt\":\""
+          << jsonEscape(d.pairedAt) << "\"}";
         if (i + 1 < cfg.pairedDevices.size()) f << ",";
         f << "\n";
     }
@@ -372,15 +383,15 @@ static void saveConfig(const Config& cfg) {
 }
 
 // ── Shared state ────────────────────────────────────────────────────────────
-static Config              g_config;
-static std::mutex          g_configMtx;            // protects g_config writes
-static std::atomic<bool>   g_appRunning{true};     // overall app lifecycle
-static std::atomic<bool>   g_listening{false};      // UDP receiver active?
-static std::atomic<bool>   g_wantListen{false};     // request to start/stop
+static Config g_config;
+static std::mutex g_configMtx;                // protects g_config writes
+static std::atomic<bool> g_appRunning{true};  // overall app lifecycle
+static std::atomic<bool> g_listening{false};  // UDP receiver active?
+static std::atomic<bool> g_wantListen{false}; // request to start/stop
 static std::atomic<uint64_t> g_packetCount{0};
-static std::mutex          g_senderMtx;
-static std::string         g_senderIP = "none";
-static HWND                g_hwnd = nullptr;
+static std::mutex g_senderMtx;
+static std::string g_senderIP = "none";
+static HWND g_hwnd = nullptr;
 
 // ── ViGEmBus helpers (unchanged) ────────────────────────────────────────────
 
@@ -388,21 +399,20 @@ static HANDLE openVigemBus() {
     SP_DEVICE_INTERFACE_DATA did{};
     did.cbSize = sizeof(did);
     DWORD idx = 0, reqSize = 0;
-    HDEVINFO devInfo = SetupDiGetClassDevsW(
-        &GUID_DEVINTERFACE_BUSENUM_VIGEM, nullptr, nullptr,
-        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    HDEVINFO devInfo = SetupDiGetClassDevsW(&GUID_DEVINTERFACE_BUSENUM_VIGEM, nullptr, nullptr,
+                                            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
     if (devInfo == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
 
-    while (SetupDiEnumDeviceInterfaces(devInfo, nullptr,
-            &GUID_DEVINTERFACE_BUSENUM_VIGEM, idx++, &did)) {
+    while (SetupDiEnumDeviceInterfaces(devInfo, nullptr, &GUID_DEVINTERFACE_BUSENUM_VIGEM, idx++,
+                                       &did)) {
         SetupDiGetDeviceInterfaceDetailW(devInfo, &did, nullptr, 0, &reqSize, nullptr);
         auto* detail = (PSP_DEVICE_INTERFACE_DETAIL_DATA_W)malloc(reqSize);
+        if (!detail) continue;
         detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
         if (SetupDiGetDeviceInterfaceDetailW(devInfo, &did, detail, reqSize, nullptr, nullptr)) {
-            HANDLE h = CreateFileW(detail->DevicePath,
-                GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                nullptr, OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+            HANDLE h = CreateFileW(detail->DevicePath, GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
             free(detail);
             if (h != INVALID_HANDLE_VALUE) {
                 OVERLAPPED ov{};
@@ -410,8 +420,8 @@ static HANDLE openVigemBus() {
                 VIGEM_CHECK_VERSION ver;
                 VIGEM_CHECK_VERSION_INIT(&ver, VIGEM_COMMON_VERSION);
                 DWORD xfr = 0;
-                DeviceIoControl(h, IOCTL_VIGEM_CHECK_VERSION, &ver, ver.Size,
-                                nullptr, 0, &xfr, &ov);
+                DeviceIoControl(h, IOCTL_VIGEM_CHECK_VERSION, &ver, ver.Size, nullptr, 0, &xfr,
+                                &ov);
                 if (GetOverlappedResult(h, &ov, &xfr, TRUE)) {
                     CloseHandle(ov.hEvent);
                     SetupDiDestroyDeviceInfoList(devInfo);
@@ -436,21 +446,21 @@ static bool isVigemInstalled() {
 }
 
 static bool pluginTarget(HANDLE bus, ULONG serial) {
-    OVERLAPPED ov{}; ov.hEvent = CreateEvent(nullptr,FALSE,FALSE,nullptr);
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     DWORD xfr = 0;
     VIGEM_PLUGIN_TARGET plug;
     VIGEM_PLUGIN_TARGET_INIT(&plug, serial, Xbox360Wired);
-    plug.VendorId  = 0x045E;
+    plug.VendorId = 0x045E;
     plug.ProductId = 0x028E;
-    DeviceIoControl(bus, IOCTL_VIGEM_PLUGIN_TARGET, &plug, plug.Size,
-                    nullptr, 0, &xfr, &ov);
+    DeviceIoControl(bus, IOCTL_VIGEM_PLUGIN_TARGET, &plug, plug.Size, nullptr, 0, &xfr, &ov);
     bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
     if (ok) {
         VIGEM_WAIT_DEVICE_READY wr;
         VIGEM_WAIT_DEVICE_READY_INIT(&wr, serial);
-        OVERLAPPED ov2{}; ov2.hEvent = CreateEvent(nullptr,FALSE,FALSE,nullptr);
-        DeviceIoControl(bus, IOCTL_VIGEM_WAIT_DEVICE_READY, &wr, wr.Size,
-                        nullptr, 0, &xfr, &ov2);
+        OVERLAPPED ov2{};
+        ov2.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        DeviceIoControl(bus, IOCTL_VIGEM_WAIT_DEVICE_READY, &wr, wr.Size, nullptr, 0, &xfr, &ov2);
         GetOverlappedResult(bus, &ov2, &xfr, TRUE);
         CloseHandle(ov2.hEvent);
     }
@@ -459,25 +469,25 @@ static bool pluginTarget(HANDLE bus, ULONG serial) {
 }
 
 static bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt) {
-    OVERLAPPED ov{}; ov.hEvent = CreateEvent(nullptr,FALSE,FALSE,nullptr);
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     DWORD xfr = 0;
     XUSB_SUBMIT_REPORT sr;
     XUSB_SUBMIT_REPORT_INIT(&sr, serial);
     sr.Report = rpt;
-    DeviceIoControl(bus, IOCTL_XUSB_SUBMIT_REPORT, &sr, sr.Size,
-                    nullptr, 0, &xfr, &ov);
+    DeviceIoControl(bus, IOCTL_XUSB_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
     bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
     CloseHandle(ov.hEvent);
     return ok;
 }
 
 static void unplugTarget(HANDLE bus, ULONG serial) {
-    OVERLAPPED ov{}; ov.hEvent = CreateEvent(nullptr,FALSE,FALSE,nullptr);
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     DWORD xfr = 0;
     VIGEM_UNPLUG_TARGET up;
     VIGEM_UNPLUG_TARGET_INIT(&up, serial);
-    DeviceIoControl(bus, IOCTL_VIGEM_UNPLUG_TARGET, &up, up.Size,
-                    nullptr, 0, &xfr, &ov);
+    DeviceIoControl(bus, IOCTL_VIGEM_UNPLUG_TARGET, &up, up.Size, nullptr, 0, &xfr, &ov);
     GetOverlappedResult(bus, &ov, &xfr, TRUE);
     CloseHandle(ov.hEvent);
 }
@@ -487,12 +497,12 @@ static void unplugTarget(HANDLE bus, ULONG serial) {
 static void setAutoStart(bool enable) {
     HKEY key;
     const char* run = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
-        return;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return;
     if (enable) {
         char exePath[MAX_PATH];
         GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-        RegSetValueExA(key, APP_NAME, 0, REG_SZ, (BYTE*)exePath, (DWORD)strlen(exePath) + 1);
+        RegSetValueExA(key, APP_NAME, 0, REG_SZ, reinterpret_cast<const BYTE*>(exePath),
+                       (DWORD)strlen(exePath) + 1);
     } else {
         RegDeleteValueA(key, APP_NAME);
     }
@@ -530,7 +540,10 @@ static void receiverThread() {
         // ── Plug in virtual controller ──
         ULONG serialNo = 0;
         for (ULONG s = 1; s <= 16; ++s) {
-            if (pluginTarget(busDevice, s)) { serialNo = s; break; }
+            if (pluginTarget(busDevice, s)) {
+                serialNo = s;
+                break;
+            }
         }
         if (serialNo == 0) {
             CloseHandle(busDevice);
@@ -540,7 +553,7 @@ static void receiverThread() {
 
         // ── Winsock ──
         WSADATA wsa;
-        if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
             unplugTarget(busDevice, serialNo);
             CloseHandle(busDevice);
             g_wantListen = false;
@@ -558,9 +571,9 @@ static void receiverThread() {
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
-        addr.sin_port   = htons((u_short)port);
+        addr.sin_port = htons((u_short)port);
         addr.sin_addr.s_addr = INADDR_ANY;
-        if (bind(sock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
             closesocket(sock);
             unplugTarget(busDevice, serialNo);
             CloseHandle(busDevice);
@@ -574,7 +587,10 @@ static void receiverThread() {
 
         g_listening = true;
         g_packetCount = 0;
-        { std::lock_guard<std::mutex> lk(g_senderMtx); g_senderIP = "none"; }
+        {
+            std::lock_guard<std::mutex> lk(g_senderMtx);
+            g_senderIP = "none";
+        }
 
         XUSB_REPORT report;
         XUSB_REPORT_INIT(&report);
@@ -584,7 +600,8 @@ static void receiverThread() {
             sockaddr_in sender{};
             int slen = sizeof(sender);
             char buf[64];
-            int n = recvfrom(sock, buf, sizeof(buf), 0, (sockaddr*)&sender, &slen);
+            int n =
+                recvfrom(sock, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&sender), &slen);
 
             if (n == sizeof(XUSB_REPORT)) {
                 memcpy(&report, buf, sizeof(XUSB_REPORT));
@@ -627,7 +644,7 @@ static std::string g_webDir;
 
 // ── Auth middleware helper ───────────────────────────────────────────────────
 static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
-    if (!isConfigured(g_config)) return true;  // no credentials set yet
+    if (!isConfigured(g_config)) return true; // no credentials set yet
     auto token = getSessionFromCookie(req);
     if (validateSession(token)) return true;
     res.status = 401;
@@ -653,8 +670,7 @@ static void httpThread() {
         }
         char json[128];
         snprintf(json, sizeof(json), R"({"configured":%s,"authenticated":%s})",
-            configured ? "true" : "false",
-            authenticated ? "true" : "false");
+                 configured ? "true" : "false", authenticated ? "true" : "false");
         res.set_content(json, "application/json");
     });
 
@@ -668,7 +684,8 @@ static void httpThread() {
         auto password = jsonGetString(req.body, "password");
         if (username.empty() || password.size() < 4) {
             res.status = 400;
-            res.set_content(R"({"error":"username required, password min 4 chars"})", "application/json");
+            res.set_content(R"({"error":"username required, password min 4 chars"})",
+                            "application/json");
             return;
         }
         std::lock_guard<std::mutex> lk(g_configMtx);
@@ -715,15 +732,16 @@ static void httpThread() {
     g_httpServer.Get("/api/status", [](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
         std::string senderIP;
-        { std::lock_guard<std::mutex> lk(g_senderMtx); senderIP = g_senderIP; }
+        {
+            std::lock_guard<std::mutex> lk(g_senderMtx);
+            senderIP = g_senderIP;
+        }
         char json[512];
-        snprintf(json, sizeof(json),
+        snprintf(
+            json, sizeof(json),
             R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s})",
-            g_listening.load() ? "true" : "false",
-            (unsigned long long)g_packetCount.load(),
-            senderIP.c_str(),
-            g_config.udpPort,
-            g_config.webPort,
+            g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
+            senderIP.c_str(), g_config.udpPort, g_config.webPort,
             g_config.autoStart ? "true" : "false");
         res.set_content(json, "application/json");
     });
@@ -752,8 +770,8 @@ static void httpThread() {
                 if (port >= 1024 && port <= 65535) g_config.udpPort = port;
             }
         }
-        g_config.autoStart = body.find("\"autoStart\":true") != std::string::npos
-                          || body.find("\"autoStart\": true") != std::string::npos;
+        g_config.autoStart = body.find("\"autoStart\":true") != std::string::npos ||
+                             body.find("\"autoStart\": true") != std::string::npos;
         setAutoStart(g_config.autoStart);
         saveConfig(g_config);
         res.set_content(R"({"ok":true})", "application/json");
@@ -771,27 +789,28 @@ static void httpThread() {
         std::string json = "[";
         std::lock_guard<std::mutex> lk(g_configMtx);
         for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
-            auto& d = g_config.pairedDevices[i];
-            json += "{\"id\":\"" + jsonEscape(d.id)
-                 + "\",\"name\":\"" + jsonEscape(d.name)
-                 + "\",\"lastIP\":\"" + jsonEscape(d.lastIP)
-                 + "\",\"pairedAt\":\"" + jsonEscape(d.pairedAt) + "\"}";
+            const auto& d = g_config.pairedDevices[i];
+            json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
+                    "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
+                    jsonEscape(d.pairedAt) + "\"}";
             if (i + 1 < g_config.pairedDevices.size()) json += ",";
         }
         json += "]";
         res.set_content(json, "application/json");
     });
 
-    g_httpServer.Post("/api/devices/remove", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-        auto deviceId = jsonGetString(req.body, "id");
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        auto& devs = g_config.pairedDevices;
-        devs.erase(std::remove_if(devs.begin(), devs.end(),
-            [&](const PairedDevice& d) { return d.id == deviceId; }), devs.end());
-        saveConfig(g_config);
-        res.set_content(R"({"ok":true})", "application/json");
-    });
+    g_httpServer.Post(
+        "/api/devices/remove", [](const httplib::Request& req, httplib::Response& res) {
+            if (!requireAuth(req, res)) return;
+            auto deviceId = jsonGetString(req.body, "id");
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            auto& devs = g_config.pairedDevices;
+            devs.erase(std::remove_if(devs.begin(), devs.end(),
+                                      [&](const PairedDevice& d) { return d.id == deviceId; }),
+                       devs.end());
+            saveConfig(g_config);
+            res.set_content(R"({"ok":true})", "application/json");
+        });
 
     g_httpServer.listen("127.0.0.1", g_config.webPort);
 }
@@ -804,7 +823,7 @@ static std::string getCurrentDate() {
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
     char buf[32];
-    struct tm tm;
+    struct tm tm{};
     localtime_s(&tm, &t);
     strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
     return buf;
@@ -815,13 +834,14 @@ static void pairingThread() {
     if (g_pairSock == INVALID_SOCKET) return;
 
     int opt = 1;
-    setsockopt(g_pairSock, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+    setsockopt(g_pairSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt),
+               sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons((u_short)g_config.pairPort);
     addr.sin_addr.s_addr = INADDR_ANY;
-    if (bind(g_pairSock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+    if (bind(g_pairSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
         closesocket(g_pairSock);
         g_pairSock = INVALID_SOCKET;
         return;
@@ -835,7 +855,7 @@ static void pairingThread() {
     while (g_appRunning) {
         sockaddr_in client{};
         int clen = sizeof(client);
-        SOCKET cs = accept(g_pairSock, (sockaddr*)&client, &clen);
+        SOCKET cs = accept(g_pairSock, reinterpret_cast<sockaddr*>(&client), &clen);
         if (cs == INVALID_SOCKET) {
             Sleep(100);
             continue;
@@ -845,7 +865,8 @@ static void pairingThread() {
         u_long blocking = 0;
         ioctlsocket(cs, FIONBIO, &blocking);
         DWORD timeout = 5000;
-        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
+                   sizeof(timeout));
 
         char buf[1024] = {};
         int n = recv(cs, buf, sizeof(buf) - 1, 0);
@@ -864,8 +885,11 @@ static void pairingThread() {
             bool alreadyPaired = false;
             {
                 std::lock_guard<std::mutex> lk(g_configMtx);
-                for (auto& d : g_config.pairedDevices) {
-                    if (d.id == deviceId) { alreadyPaired = true; d.lastIP = clientIP; break; }
+                auto it = std::find_if(g_config.pairedDevices.begin(), g_config.pairedDevices.end(),
+                                       [&](const PairedDevice& d) { return d.id == deviceId; });
+                if (it != g_config.pairedDevices.end()) {
+                    alreadyPaired = true;
+                    it->lastIP = clientIP;
                 }
             }
 
@@ -902,22 +926,20 @@ static NOTIFYICONDATAA g_nid{};
 
 static void addTrayIcon(HWND hwnd) {
     g_nid.cbSize = sizeof(g_nid);
-    g_nid.hWnd   = hwnd;
-    g_nid.uID    = 1;
+    g_nid.hWnd = hwnd;
+    g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
     // Load custom icon from icon.ico next to the exe, fall back to default
     std::string icoPath = getExeDir() + "\\icon.ico";
-    HICON hCustom = (HICON)LoadImageA(nullptr, icoPath.c_str(),
-        IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
-    g_nid.hIcon  = hCustom ? hCustom : LoadIcon(nullptr, IDI_APPLICATION);
+    HICON hCustom = (HICON)LoadImageA(nullptr, icoPath.c_str(), IMAGE_ICON, 0, 0,
+                                      LR_LOADFROMFILE | LR_DEFAULTSIZE);
+    g_nid.hIcon = hCustom ? hCustom : LoadIcon(nullptr, IDI_APPLICATION);
     strncpy(g_nid.szTip, APP_TITLE, sizeof(g_nid.szTip) - 1);
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 }
 
-static void removeTrayIcon() {
-    Shell_NotifyIconA(NIM_DELETE, &g_nid);
-}
+static void removeTrayIcon() { Shell_NotifyIconA(NIM_DELETE, &g_nid); }
 
 static void showTrayMenu(HWND hwnd) {
     POINT pt;
@@ -939,9 +961,7 @@ static void showTrayMenu(HWND hwnd) {
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_TRAYICON:
-        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) {
-            showTrayMenu(hwnd);
-        }
+        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) { showTrayMenu(hwnd); }
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
@@ -952,8 +972,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case IDM_TOGGLE:
-            if (g_listening.load()) g_wantListen = false;
-            else                    g_wantListen = true;
+            if (g_listening.load())
+                g_wantListen = false;
+            else
+                g_wantListen = true;
             break;
         case IDM_EXIT:
             PostQuitMessage(0);
@@ -972,7 +994,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Initialize Winsock globally (needed by httplib)
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2,2), &wsa);
+    WSAStartup(MAKEWORD(2, 2), &wsa);
 
     // Load config
     g_config = loadConfig();
@@ -983,13 +1005,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // Register hidden window class
     WNDCLASSA wc{};
-    wc.lpfnWndProc   = WndProc;
-    wc.hInstance      = hInst;
-    wc.lpszClassName  = "ControllerForwardTray";
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = "ControllerForwardTray";
     RegisterClassA(&wc);
 
-    g_hwnd = CreateWindowExA(0, wc.lpszClassName, APP_TITLE,
-        0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInst, nullptr);
+    g_hwnd = CreateWindowExA(0, wc.lpszClassName, APP_TITLE, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                             hInst, nullptr);
 
     addTrayIcon(g_hwnd);
 

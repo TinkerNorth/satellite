@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <algorithm>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -31,12 +32,12 @@
 #pragma pack(push, 1)
 struct XUSB_REPORT {
     USHORT wButtons;
-    BYTE   bLeftTrigger;
-    BYTE   bRightTrigger;
-    SHORT  sThumbLX;
-    SHORT  sThumbLY;
-    SHORT  sThumbRX;
-    SHORT  sThumbRY;
+    BYTE bLeftTrigger;
+    BYTE bRightTrigger;
+    SHORT sThumbLX;
+    SHORT sThumbLY;
+    SHORT sThumbRX;
+    SHORT sThumbRY;
 };
 #pragma pack(pop)
 static_assert(sizeof(XUSB_REPORT) == 12, "XUSB_REPORT must be 12 bytes");
@@ -60,8 +61,7 @@ static std::string getConfigDir() {
 static std::string generateDeviceId() {
     char id[33];
     srand((unsigned)GetTickCount() ^ (unsigned)(uintptr_t)&id);
-    for (int i = 0; i < 32; i++)
-        id[i] = "0123456789abcdef"[rand() % 16];
+    for (int i = 0; i < 32; i++) id[i] = "0123456789abcdef"[rand() % 16];
     id[32] = 0;
     return id;
 }
@@ -89,9 +89,8 @@ static std::string getDeviceName() {
 
 // ── TCP Pairing Handshake ───────────────────────────────────────────────────
 
-static bool doPairingHandshake(const char* host, int pairPort,
-                                const std::string& deviceId,
-                                const std::string& deviceName) {
+static bool doPairingHandshake(const char* host, int pairPort, const std::string& deviceId,
+                               const std::string& deviceName) {
     auto attempt = [&](const std::string& pin) -> int {
         // 0 = success, 1 = invalid pin, -1 = connection error
         SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -102,17 +101,17 @@ static bool doPairingHandshake(const char* host, int pairPort,
         addr.sin_port = htons((u_short)pairPort);
         inet_pton(AF_INET, host, &addr.sin_addr);
 
-        if (connect(s, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        if (connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
             closesocket(s);
             return -1;
         }
 
         DWORD timeout = 5000;
-        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
+                   sizeof(timeout));
 
-        std::string msg = "{\"deviceId\":\"" + deviceId
-                        + "\",\"deviceName\":\"" + deviceName
-                        + "\",\"pin\":\"" + pin + "\"}";
+        std::string msg = "{\"deviceId\":\"" + deviceId + "\",\"deviceName\":\"" + deviceName +
+                          "\",\"pin\":\"" + pin + "\"}";
         send(s, msg.c_str(), (int)msg.size(), 0);
 
         char buf[512] = {};
@@ -135,7 +134,7 @@ static bool doPairingHandshake(const char* host, int pairPort,
     if (result == -1) {
         printf("[!] Could not connect to pairing server\n");
         printf("[?] Proceed without pairing? (y/n): ");
-        char c;
+        char c = 0;
         if (scanf(" %c", &c) != 1) return false;
         return (c == 'y' || c == 'Y');
     }
@@ -155,8 +154,10 @@ static bool doPairingHandshake(const char* host, int pairPort,
             return false;
         } else {
             printf("[!] Invalid or expired PIN. ");
-            if (tries < 2) printf("Try again.\n");
-            else printf("Max attempts reached.\n");
+            if (tries < 2)
+                printf("Try again.\n");
+            else
+                printf("Max attempts reached.\n");
         }
     }
     return false;
@@ -199,7 +200,8 @@ static std::vector<DiscoveredReceiver> discoverReceivers(int timeoutSec = 3) {
 
     // Allow address reuse
     BOOL reuse = TRUE;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
+               sizeof(reuse));
 
     // Bind to discovery port
     sockaddr_in bindAddr{};
@@ -207,14 +209,15 @@ static std::vector<DiscoveredReceiver> discoverReceivers(int timeoutSec = 3) {
     bindAddr.sin_port = htons(9879);
     bindAddr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(sock, (sockaddr*)&bindAddr, sizeof(bindAddr)) == SOCKET_ERROR) {
+    if (bind(sock, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) == SOCKET_ERROR) {
         closesocket(sock);
         return found;
     }
 
     // Set receive timeout
     DWORD timeout = timeoutSec * 1000;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
+               sizeof(timeout));
 
     printf("[*] Scanning for receivers on LAN (%d seconds)...\n", timeoutSec);
 
@@ -224,7 +227,8 @@ static std::vector<DiscoveredReceiver> discoverReceivers(int timeoutSec = 3) {
         sockaddr_in from{};
         int fromLen = sizeof(from);
 
-        int n = recvfrom(sock, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &fromLen);
+        int n =
+            recvfrom(sock, buf, sizeof(buf) - 1, 0, reinterpret_cast<sockaddr*>(&from), &fromLen);
         if (n <= 0) break;
         buf[n] = 0;
 
@@ -240,12 +244,10 @@ static std::vector<DiscoveredReceiver> discoverReceivers(int timeoutSec = 3) {
         int pairP = atoi(jsonGet(json, "pairPort").c_str());
 
         // Deduplicate by IP
-        bool exists = false;
-        for (auto& r : found) {
-            if (r.ip == ipStr) { exists = true; break; }
-        }
+        bool exists = std::any_of(found.begin(), found.end(),
+                                  [&](const DiscoveredReceiver& r) { return r.ip == ipStr; });
         if (!exists) {
-            found.push_back({ name, ipStr, udpP, pairP });
+            found.push_back({name, ipStr, udpP, pairP});
             printf("  [+] Found: %s (%s) — UDP:%d Pair:%d\n", name.c_str(), ipStr, udpP, pairP);
         }
     }
@@ -256,9 +258,9 @@ static std::vector<DiscoveredReceiver> discoverReceivers(int timeoutSec = 3) {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
-int main(int argc, char* argv[]) {
-    const int rate = (argc > 2) ? atoi(argv[2]) : 250;  // Hz
-    const int user = (argc > 3) ? atoi(argv[3]) : 0;    // XInput user index
+int main(int argc, const char* argv[]) {
+    const int rate = (argc > 2) ? atoi(argv[2]) : 250; // Hz
+    const int user = (argc > 3) ? atoi(argv[3]) : 0;   // XInput user index
 
     printf("=== Satellite Sender (XInput -> UDP) ===\n");
 
@@ -267,8 +269,9 @@ int main(int argc, char* argv[]) {
 
     // ── Winsock ──
     WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
-        fprintf(stderr, "[!] WSAStartup failed\n"); return 1;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        fprintf(stderr, "[!] WSAStartup failed\n");
+        return 1;
     }
 
     std::string host;
@@ -280,8 +283,8 @@ int main(int argc, char* argv[]) {
         host = argv[1];
         port = (argc > 2) ? atoi(argv[2]) : 9876;
         pairPort = 9878;
-        printf("[*] Target (manual): %s:%d  Rate: %d Hz  Controller: %d\n",
-               host.c_str(), port, rate, user);
+        printf("[*] Target (manual): %s:%d  Rate: %d Hz  Controller: %d\n", host.c_str(), port,
+               rate, user);
     } else {
         // Discovery mode: scan LAN for receivers
         auto receivers = discoverReceivers(4);
@@ -290,35 +293,37 @@ int main(int argc, char* argv[]) {
             printf("[!] No receivers found on LAN.\n");
             printf("[?] Enter receiver IP manually: ");
             char ipBuf[64] = {};
-            if (scanf("%63s", ipBuf) != 1) { WSACleanup(); return 1; }
+            if (scanf("%63s", ipBuf) != 1) {
+                WSACleanup();
+                return 1;
+            }
             host = ipBuf;
         } else if (receivers.size() == 1) {
-            printf("[*] Auto-selecting: %s (%s)\n",
-                   receivers[0].name.c_str(), receivers[0].ip.c_str());
+            printf("[*] Auto-selecting: %s (%s)\n", receivers[0].name.c_str(),
+                   receivers[0].ip.c_str());
             host = receivers[0].ip;
             port = receivers[0].udpPort;
             pairPort = receivers[0].pairPort;
         } else {
             printf("\n[*] Found %zu receivers:\n", receivers.size());
             for (size_t i = 0; i < receivers.size(); i++) {
-                printf("  [%zu] %s (%s) — UDP:%d\n",
-                       i + 1, receivers[i].name.c_str(),
+                printf("  [%zu] %s (%s) — UDP:%d\n", i + 1, receivers[i].name.c_str(),
                        receivers[i].ip.c_str(), receivers[i].udpPort);
             }
             printf("[?] Select receiver (1-%zu): ", receivers.size());
             int choice = 0;
             if (scanf("%d", &choice) != 1 || choice < 1 || choice > (int)receivers.size()) {
                 printf("[!] Invalid selection\n");
-                WSACleanup(); return 1;
+                WSACleanup();
+                return 1;
             }
-            auto& sel = receivers[choice - 1];
+            const auto& sel = receivers[choice - 1];
             host = sel.ip;
             port = sel.udpPort;
             pairPort = sel.pairPort;
         }
 
-        printf("[*] Target: %s:%d  Rate: %d Hz  Controller: %d\n",
-               host.c_str(), port, rate, user);
+        printf("[*] Target: %s:%d  Rate: %d Hz  Controller: %d\n", host.c_str(), port, rate, user);
     }
 
     // ── Pairing handshake ──
@@ -335,12 +340,13 @@ int main(int argc, char* argv[]) {
     // ── UDP socket ──
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) {
-        fprintf(stderr, "[!] socket() failed: %d\n", WSAGetLastError()); return 1;
+        fprintf(stderr, "[!] socket() failed: %d\n", WSAGetLastError());
+        return 1;
     }
 
     sockaddr_in dest{};
     dest.sin_family = AF_INET;
-    dest.sin_port   = htons((u_short)port);
+    dest.sin_port = htons((u_short)port);
     inet_pton(AF_INET, host.c_str(), &dest.sin_addr);
 
     const DWORD sleepMs = (rate > 0) ? (1000 / rate) : 4;
@@ -363,14 +369,13 @@ int main(int argc, char* argv[]) {
             // Only send if state changed (reduces unnecessary traffic)
             if (state.dwPacketNumber != prevState.dwPacketNumber) {
                 // XINPUT_GAMEPAD is layout-compatible with XUSB_REPORT
-                sendto(sock, (const char*)&state.Gamepad, sizeof(XINPUT_GAMEPAD),
-                       0, (sockaddr*)&dest, sizeof(dest));
+                sendto(sock, reinterpret_cast<const char*>(&state.Gamepad), sizeof(XINPUT_GAMEPAD),
+                       0, reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
                 pktCount++;
 
                 if ((pktCount & 0x3F) == 0)
-                    printf("\r[*] Sent: %llu  Btns: 0x%04X  LX:%6d LY:%6d  ",
-                           pktCount, state.Gamepad.wButtons,
-                           state.Gamepad.sThumbLX, state.Gamepad.sThumbLY);
+                    printf("\r[*] Sent: %llu  Btns: 0x%04X  LX:%6d LY:%6d  ", pktCount,
+                           state.Gamepad.wButtons, state.Gamepad.sThumbLX, state.Gamepad.sThumbLY);
 
                 prevState = state;
             }
@@ -389,4 +394,3 @@ int main(int argc, char* argv[]) {
     WSACleanup();
     return 0;
 }
-

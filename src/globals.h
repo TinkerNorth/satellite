@@ -31,16 +31,16 @@
 #include "httplib.h"
 
 // ── Constants ───────────────────────────────────────────────────────────────
-inline const char* APP_NAME          = "satellite";
-inline const char* APP_TITLE         = "Satellite";
-inline const int   DEFAULT_UDP_PORT  = 9876;
-inline const int   DEFAULT_WEB_PORT  = 9877;
-inline const int   DEFAULT_PAIR_PORT = 9878;
-inline const int   DEFAULT_DISC_PORT = 9879;
-inline const UINT  WM_TRAYICON      = WM_APP + 1;
-inline const UINT  IDM_OPEN_UI      = 1001;
-inline const UINT  IDM_TOGGLE       = 1002;
-inline const UINT  IDM_EXIT         = 1003;
+inline const char* APP_NAME = "satellite";
+inline const char* APP_TITLE = "Satellite";
+inline const int DEFAULT_UDP_PORT = 9876;
+inline const int DEFAULT_WEB_PORT = 9877;
+inline const int DEFAULT_PAIR_PORT = 9878;
+inline const int DEFAULT_DISC_PORT = 9879;
+inline const UINT WM_TRAYICON = WM_APP + 1;
+inline const UINT IDM_OPEN_UI = 1001;
+inline const UINT IDM_TOGGLE = 1002;
+inline const UINT IDM_EXIT = 1003;
 
 // ── Paired device info ──────────────────────────────────────────────────────
 struct PairedDevice {
@@ -52,26 +52,25 @@ struct PairedDevice {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 struct Config {
-    int  udpPort   = DEFAULT_UDP_PORT;
-    int  webPort   = DEFAULT_WEB_PORT;
-    int  pairPort  = DEFAULT_PAIR_PORT;
-    int  discPort  = DEFAULT_DISC_PORT;
+    int udpPort = DEFAULT_UDP_PORT;
+    int webPort = DEFAULT_WEB_PORT;
+    int pairPort = DEFAULT_PAIR_PORT;
+    int discPort = DEFAULT_DISC_PORT;
     bool autoStart = false;
-    std::string credentials;  // DPAPI-encrypted "username:salt:sha256hash"
+    std::string credentials; // DPAPI-encrypted "username:salt:sha256hash"
     std::vector<PairedDevice> pairedDevices;
 };
 
 // ── Shared global state ─────────────────────────────────────────────────────
-extern Config              g_config;
-extern std::mutex          g_configMtx;
-extern std::atomic<bool>   g_appRunning;
-extern std::atomic<bool>   g_listening;
-extern std::atomic<bool>   g_wantListen;
+extern Config g_config;
+extern std::mutex g_configMtx;
+extern std::atomic<bool> g_appRunning;
+extern std::atomic<bool> g_listening;
+extern std::atomic<bool> g_wantListen;
 extern std::atomic<uint64_t> g_packetCount;
-extern std::mutex          g_senderMtx;
-extern std::string         g_senderIP;
-extern HWND                g_hwnd;
-extern httplib::Server     g_httpServer;
-extern SOCKET              g_pairSock;
-extern std::string         g_webDir;
-
+extern std::mutex g_senderMtx;
+extern std::string g_senderIP;
+extern HWND g_hwnd;
+extern httplib::Server g_httpServer;
+extern SOCKET g_pairSock;
+extern std::string g_webDir;

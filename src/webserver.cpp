@@ -20,8 +20,7 @@ static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
 static std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)),
-                        std::istreambuf_iterator<char>());
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
 void httpThread() {
@@ -36,11 +35,14 @@ void httpThread() {
     // ── SPA routing: serve index.html for /setup, /login, /dashboard ────
     auto serveIndex = [](const httplib::Request&, httplib::Response& res) {
         std::string html = readFile(g_webDir + "/index.html");
-        if (html.empty()) { res.status = 404; return; }
+        if (html.empty()) {
+            res.status = 404;
+            return;
+        }
         res.set_content(html, "text/html");
     };
-    g_httpServer.Get("/setup",     serveIndex);
-    g_httpServer.Get("/login",     serveIndex);
+    g_httpServer.Get("/setup", serveIndex);
+    g_httpServer.Get("/login", serveIndex);
     g_httpServer.Get("/dashboard", serveIndex);
 
     // ── Auth routes (no auth required) ──────────────────────────────────
@@ -53,8 +55,7 @@ void httpThread() {
         }
         char json[128];
         snprintf(json, sizeof(json), R"({"configured":%s,"authenticated":%s})",
-            configured ? "true" : "false",
-            authenticated ? "true" : "false");
+                 configured ? "true" : "false", authenticated ? "true" : "false");
         res.set_content(json, "application/json");
     });
 
@@ -68,7 +69,8 @@ void httpThread() {
         auto password = jsonGetString(req.body, "password");
         if (username.empty() || password.size() < 4) {
             res.status = 400;
-            res.set_content(R"({"error":"username required, password min 4 chars"})", "application/json");
+            res.set_content(R"({"error":"username required, password min 4 chars"})",
+                            "application/json");
             return;
         }
         std::lock_guard<std::mutex> lk(g_configMtx);
@@ -115,15 +117,16 @@ void httpThread() {
     g_httpServer.Get("/api/status", [](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
         std::string senderIP;
-        { std::lock_guard<std::mutex> lk(g_senderMtx); senderIP = g_senderIP; }
+        {
+            std::lock_guard<std::mutex> lk(g_senderMtx);
+            senderIP = g_senderIP;
+        }
         char json[512];
-        snprintf(json, sizeof(json),
+        snprintf(
+            json, sizeof(json),
             R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s})",
-            g_listening.load() ? "true" : "false",
-            (unsigned long long)g_packetCount.load(),
-            senderIP.c_str(),
-            g_config.udpPort,
-            g_config.webPort,
+            g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
+            senderIP.c_str(), g_config.udpPort, g_config.webPort,
             g_config.autoStart ? "true" : "false");
         res.set_content(json, "application/json");
     });
@@ -152,8 +155,8 @@ void httpThread() {
                 if (port >= 1024 && port <= 65535) g_config.udpPort = port;
             }
         }
-        g_config.autoStart = body.find("\"autoStart\":true") != std::string::npos
-                          || body.find("\"autoStart\": true") != std::string::npos;
+        g_config.autoStart = body.find("\"autoStart\":true") != std::string::npos ||
+                             body.find("\"autoStart\": true") != std::string::npos;
         setAutoStart(g_config.autoStart);
         saveConfig(g_config);
         res.set_content(R"({"ok":true})", "application/json");
@@ -171,27 +174,28 @@ void httpThread() {
         std::string json = "[";
         std::lock_guard<std::mutex> lk(g_configMtx);
         for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
-            auto& d = g_config.pairedDevices[i];
-            json += "{\"id\":\"" + jsonEscape(d.id)
-                 + "\",\"name\":\"" + jsonEscape(d.name)
-                 + "\",\"lastIP\":\"" + jsonEscape(d.lastIP)
-                 + "\",\"pairedAt\":\"" + jsonEscape(d.pairedAt) + "\"}";
+            const auto& d = g_config.pairedDevices[i];
+            json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
+                    "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
+                    jsonEscape(d.pairedAt) + "\"}";
             if (i + 1 < g_config.pairedDevices.size()) json += ",";
         }
         json += "]";
         res.set_content(json, "application/json");
     });
 
-    g_httpServer.Post("/api/devices/remove", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-        auto deviceId = jsonGetString(req.body, "id");
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        auto& devs = g_config.pairedDevices;
-        devs.erase(std::remove_if(devs.begin(), devs.end(),
-            [&](const PairedDevice& d) { return d.id == deviceId; }), devs.end());
-        saveConfig(g_config);
-        res.set_content(R"({"ok":true})", "application/json");
-    });
+    g_httpServer.Post(
+        "/api/devices/remove", [](const httplib::Request& req, httplib::Response& res) {
+            if (!requireAuth(req, res)) return;
+            auto deviceId = jsonGetString(req.body, "id");
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            auto& devs = g_config.pairedDevices;
+            devs.erase(std::remove_if(devs.begin(), devs.end(),
+                                      [&](const PairedDevice& d) { return d.id == deviceId; }),
+                       devs.end());
+            saveConfig(g_config);
+            res.set_content(R"({"ok":true})", "application/json");
+        });
 
     g_httpServer.listen("127.0.0.1", g_config.webPort);
 }

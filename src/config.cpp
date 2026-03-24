@@ -7,10 +7,14 @@
 std::string jsonEscape(const std::string& s) {
     std::string out;
     for (char c : s) {
-        if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c == '\n') out += "\\n";
-        else out += c;
+        if (c == '"')
+            out += "\\\"";
+        else if (c == '\\')
+            out += "\\\\";
+        else if (c == '\n')
+            out += "\\n";
+        else
+            out += c;
     }
     return out;
 }
@@ -44,8 +48,7 @@ Config loadConfig() {
     Config cfg;
     std::ifstream f(configPath());
     if (!f.is_open()) return cfg;
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
     auto getInt = [&](const char* key) -> int {
         auto pos = content.find(std::string("\"") + key + "\"");
@@ -63,11 +66,15 @@ Config loadConfig() {
         return rest.find("true") != std::string::npos;
     };
 
-    int v;
-    v = getInt("udpPort");  if (v > 0) cfg.udpPort = v;
-    v = getInt("webPort");  if (v > 0) cfg.webPort = v;
-    v = getInt("pairPort"); if (v > 0) cfg.pairPort = v;
-    v = getInt("discPort"); if (v > 0) cfg.discPort = v;
+    int v = 0;
+    v = getInt("udpPort");
+    if (v > 0) cfg.udpPort = v;
+    v = getInt("webPort");
+    if (v > 0) cfg.webPort = v;
+    v = getInt("pairPort");
+    if (v > 0) cfg.pairPort = v;
+    v = getInt("discPort");
+    if (v > 0) cfg.discPort = v;
     cfg.autoStart = getBool("autoStart");
     cfg.credentials = jsonGetString(content, "credentials");
 
@@ -102,19 +109,18 @@ Config loadConfig() {
 void saveConfig(const Config& cfg) {
     std::ofstream f(configPath());
     f << "{\n"
-      << "  \"udpPort\": "   << cfg.udpPort   << ",\n"
-      << "  \"webPort\": "   << cfg.webPort   << ",\n"
-      << "  \"pairPort\": "  << cfg.pairPort  << ",\n"
-      << "  \"discPort\": "  << cfg.discPort  << ",\n"
+      << "  \"udpPort\": " << cfg.udpPort << ",\n"
+      << "  \"webPort\": " << cfg.webPort << ",\n"
+      << "  \"pairPort\": " << cfg.pairPort << ",\n"
+      << "  \"discPort\": " << cfg.discPort << ",\n"
       << "  \"autoStart\": " << (cfg.autoStart ? "true" : "false") << ",\n"
       << "  \"credentials\": \"" << jsonEscape(cfg.credentials) << "\",\n"
       << "  \"pairedDevices\": [\n";
     for (size_t i = 0; i < cfg.pairedDevices.size(); i++) {
-        auto& d = cfg.pairedDevices[i];
-        f << "    {\"id\":\"" << jsonEscape(d.id)
-          << "\",\"name\":\"" << jsonEscape(d.name)
-          << "\",\"lastIP\":\"" << jsonEscape(d.lastIP)
-          << "\",\"pairedAt\":\"" << jsonEscape(d.pairedAt) << "\"}";
+        const auto& d = cfg.pairedDevices[i];
+        f << "    {\"id\":\"" << jsonEscape(d.id) << "\",\"name\":\"" << jsonEscape(d.name)
+          << "\",\"lastIP\":\"" << jsonEscape(d.lastIP) << "\",\"pairedAt\":\""
+          << jsonEscape(d.pairedAt) << "\"}";
         if (i + 1 < cfg.pairedDevices.size()) f << ",";
         f << "\n";
     }
@@ -125,12 +131,12 @@ void saveConfig(const Config& cfg) {
 void setAutoStart(bool enable) {
     HKEY key;
     const char* run = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
-        return;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return;
     if (enable) {
         char exePath[MAX_PATH];
         GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-        RegSetValueExA(key, APP_NAME, 0, REG_SZ, (BYTE*)exePath, (DWORD)strlen(exePath) + 1);
+        RegSetValueExA(key, APP_NAME, 0, REG_SZ, reinterpret_cast<const BYTE*>(exePath),
+                       (DWORD)strlen(exePath) + 1);
     } else {
         RegDeleteValueA(key, APP_NAME);
     }
@@ -161,9 +167,8 @@ std::string getCurrentDate() {
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
     char buf[32];
-    struct tm tm;
+    struct tm tm{};
     localtime_s(&tm, &t);
     strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
     return buf;
 }
-
