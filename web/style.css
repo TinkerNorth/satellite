@@ -485,3 +485,166 @@ h2.section-title { font-size: 14px; }
 @keyframes loading-spin {
   to { transform: rotate(360deg); }
 }
+
+/* ── ViGEm Status ─────────────────────────────────────────────── */
+.vigem-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.vigem-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vigem-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.vigem-dot.vigem-ok {
+  background: #22C55E;
+  box-shadow: 0 0 8px #22C55E, 0 0 16px rgba(34, 197, 94, 0.4);
+}
+
+.vigem-dot.vigem-err {
+  background: #E74C3C;
+  box-shadow: 0 0 8px #E74C3C, 0 0 16px rgba(231, 76, 60, 0.4);
+}
+
+.vigem-label {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6B7280;
+}
+
+.vigem-ok-text { color: #22C55E; }
+.vigem-err-text { color: #E74C3C; }
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #FFC107;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: 0.15s;
+  padding: 0;
+}
+
+.btn-link:hover {
+  color: #FFDA3A;
+  text-shadow: 0 0 6px rgba(255, 193, 7, 0.4);
+}
+
+/* ── Flow diagram ─────────────────────────────────────────────── */
+.vigem-flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 0;
+  margin-bottom: 4px;
+}
+
+.flow-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 14px;
+  background: #0D0F12;
+  border: 1px solid #222831;
+  border-radius: 6px;
+  min-width: 72px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.flow-step.done {
+  border-color: rgba(34, 197, 94, 0.4);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.1);
+}
+
+.flow-step.fail {
+  border-color: rgba(231, 76, 60, 0.4);
+  box-shadow: 0 0 8px rgba(231, 76, 60, 0.1);
+}
+
+.flow-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.flow-text {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6B7280;
+}
+
+.flow-step.done .flow-text { color: #22C55E; }
+.flow-step.fail .flow-text { color: #E74C3C; }
+
+.flow-arrow {
+  color: #333;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+/* ── Setup guide ──────────────────────────────────────────────── */
+.vigem-guide {
+  background: #0D0F12;
+  border: 1px solid #222831;
+  border-radius: 6px;
+  padding: 16px 20px;
+  margin-top: 12px;
+}
+
+.guide-title {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #FFC107;
+  margin-bottom: 12px;
+}
+
+.guide-steps {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  color: #B0B3B8;
+  line-height: 1.5;
+}
+
+.guide-steps a {
+  color: #FFC107;
+  text-decoration: none;
+}
+.guide-steps a:hover {
+  text-decoration: underline;
+}
+
+.guide-steps code {
+  background: #161A1F;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #EAEAEA;
+}

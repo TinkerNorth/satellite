@@ -81,6 +81,56 @@
       </div>
     </div>
 
+    <!-- ── ViGEm Driver Status ── -->
+    <div class="section">
+      <h2 class="section-title">ViGEmBus Driver</h2>
+      <div class="vigem-status-row">
+        <div class="vigem-indicator" id="vigem-indicator">
+          <span class="vigem-dot" id="vigem-dot"></span>
+          <span class="vigem-label" id="vigem-label">Checking…</span>
+        </div>
+        <button class="btn-link" id="vigem-guide-toggle" onclick="toggleVigemGuide()" style="display:none">Setup Guide ▸</button>
+      </div>
+
+      <!-- Flow diagram -->
+      <div class="vigem-flow" id="vigem-flow">
+        <div class="flow-step done">
+          <span class="flow-icon">📡</span>
+          <span class="flow-text">Sender</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step done">
+          <span class="flow-icon">🛰️</span>
+          <span class="flow-text">Satellite</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step" id="flow-vigem">
+          <span class="flow-icon">🎮</span>
+          <span class="flow-text">ViGEmBus</span>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step" id="flow-system">
+          <span class="flow-icon">🖥️</span>
+          <span class="flow-text">System</span>
+        </div>
+      </div>
+
+      <!-- Setup guide (hidden by default) -->
+      <div class="vigem-guide" id="vigem-guide" style="display:none">
+        <h3 class="guide-title">How to install ViGEmBus</h3>
+        <ol class="guide-steps">
+          <li>
+            <strong>Download</strong> the latest ViGEmBus release from
+            <a href="https://github.com/nefarius/ViGEmBus/releases" target="_blank" rel="noopener">github.com/nefarius/ViGEmBus</a>
+          </li>
+          <li><strong>Run</strong> the installer (<code>ViGEmBus_Setup_x64.msi</code>)</li>
+          <li><strong>Restart</strong> may be required — check Device Manager under <em>System devices</em> for "Nefarius Virtual Gamepad Emulation Bus"</li>
+          <li>Come back here and the status should show <strong>Detected</strong></li>
+        </ol>
+        <p class="hint">ViGEmBus is a kernel driver that lets Satellite create a virtual Xbox 360 controller on your system. Without it, controller input cannot be forwarded.</p>
+      </div>
+    </div>
+
     <!-- ── PIN Pairing ── -->
     <div class="section">
       <h2 class="section-title">Device Pairing</h2>

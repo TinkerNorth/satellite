@@ -22,6 +22,7 @@ function undoConfig() {
 function initDashboard() {
   startPolling();
   loadDevices();
+  checkVigemStatus();
 
   const udp = document.getElementById('udpPort');
   const auto_ = document.getElementById('autoStart');
@@ -65,6 +66,7 @@ async function poll() {
       document.getElementById('autoStart').checked = d.autoStart;
     }
   } catch (e) { /* ignore */ }
+  checkVigemStatus();
 }
 
 // ── Actions ─────────────────────────────────────────────────────────────────
@@ -118,6 +120,49 @@ async function loadDevices() {
 async function removeDevice(id) {
   await apiPost('/api/devices/remove', { id });
   loadDevices();
+}
+
+// ── ViGEm Status ────────────────────────────────────────────────────────────
+let vigemGuideOpen = false;
+
+async function checkVigemStatus() {
+  try {
+    const r = await fetch('/api/vigem/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    const dot = document.getElementById('vigem-dot');
+    const label = document.getElementById('vigem-label');
+    const toggle = document.getElementById('vigem-guide-toggle');
+    const flowVigem = document.getElementById('flow-vigem');
+    const flowSystem = document.getElementById('flow-system');
+
+    if (d.installed) {
+      dot.className = 'vigem-dot vigem-ok';
+      label.textContent = 'Detected';
+      label.className = 'vigem-label vigem-ok-text';
+      toggle.style.display = 'none';
+      flowVigem.className = 'flow-step done';
+      flowSystem.className = 'flow-step done';
+      // Auto-close guide if it was open
+      document.getElementById('vigem-guide').style.display = 'none';
+      vigemGuideOpen = false;
+    } else {
+      dot.className = 'vigem-dot vigem-err';
+      label.textContent = 'Not Detected';
+      label.className = 'vigem-label vigem-err-text';
+      toggle.style.display = '';
+      flowVigem.className = 'flow-step fail';
+      flowSystem.className = 'flow-step fail';
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function toggleVigemGuide() {
+  vigemGuideOpen = !vigemGuideOpen;
+  const guide = document.getElementById('vigem-guide');
+  const btn = document.getElementById('vigem-guide-toggle');
+  guide.style.display = vigemGuideOpen ? 'block' : 'none';
+  btn.textContent = vigemGuideOpen ? 'Setup Guide ▾' : 'Setup Guide ▸';
 }
 
 // ── Logout ──────────────────────────────────────────────────────────────────

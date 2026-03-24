@@ -428,6 +428,13 @@ static HANDLE openVigemBus() {
     return INVALID_HANDLE_VALUE;
 }
 
+static bool isVigemInstalled() {
+    HANDLE h = openVigemBus();
+    if (h == INVALID_HANDLE_VALUE) return false;
+    CloseHandle(h);
+    return true;
+}
+
 static bool pluginTarget(HANDLE bus, ULONG serial) {
     OVERLAPPED ov{}; ov.hEvent = CreateEvent(nullptr,FALSE,FALSE,nullptr);
     DWORD xfr = 0;
@@ -697,6 +704,14 @@ static void httpThread() {
     });
 
     // ── Protected routes ────────────────────────────────────────────────
+    g_httpServer.Get("/api/vigem/status", [](const httplib::Request& req, httplib::Response& res) {
+        if (!requireAuth(req, res)) return;
+        bool installed = isVigemInstalled();
+        char json[64];
+        snprintf(json, sizeof(json), R"({"installed":%s})", installed ? "true" : "false");
+        res.set_content(json, "application/json");
+    });
+
     g_httpServer.Get("/api/status", [](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
         std::string senderIP;

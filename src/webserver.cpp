@@ -4,6 +4,7 @@
 #include "webserver.h"
 #include "crypto.h"
 #include "config.h"
+#include "vigem.h"
 
 // ── Auth middleware helper ───────────────────────────────────────────────────
 static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
@@ -103,6 +104,14 @@ void httpThread() {
     });
 
     // ── Protected routes ────────────────────────────────────────────────
+    g_httpServer.Get("/api/vigem/status", [](const httplib::Request& req, httplib::Response& res) {
+        if (!requireAuth(req, res)) return;
+        bool installed = isVigemInstalled();
+        char json[64];
+        snprintf(json, sizeof(json), R"({"installed":%s})", installed ? "true" : "false");
+        res.set_content(json, "application/json");
+    });
+
     g_httpServer.Get("/api/status", [](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
         std::string senderIP;
