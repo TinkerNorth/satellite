@@ -4,9 +4,17 @@
 #include "receiver.h"
 #include "vigem.h"
 
+// SIO_UDP_CONNRESET is missing from some MinGW headers
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+
 void receiverThread() {
     // Highest thread priority — this is the hot input path
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    // Pin to a single CPU core to avoid L1/L2 cache thrash from core migration
+    SetThreadAffinityMask(GetCurrentThread(), 1ULL);
 
     while (g_appRunning) {
         while (g_appRunning && !g_wantListen) { Sleep(50); }
@@ -33,22 +41,20 @@ void receiverThread() {
             continue;
         }
 
-        WSADATA wsa;
-        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock == INVALID_SOCKET) {
             unplugTarget(busDevice, serialNo);
             CloseHandle(busDevice);
             g_wantListen = false;
             continue;
         }
 
-        SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock == INVALID_SOCKET) {
-            unplugTarget(busDevice, serialNo);
-            CloseHandle(busDevice);
-            WSACleanup();
-            g_wantListen = false;
-            continue;
-        }
+        // Disable SIO_UDP_CONNRESET — prevents recvfrom failing with WSAECONNRESET
+        // when the sender disappears and an ICMP port-unreachable is received
+        BOOL bNewBehavior = FALSE;
+        DWORD dwBytesReturned = 0;
+        WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior),
+                 nullptr, 0, &dwBytesReturned, nullptr, nullptr);
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -58,7 +64,6 @@ void receiverThread() {
             closesocket(sock);
             unplugTarget(busDevice, serialNo);
             CloseHandle(busDevice);
-            WSACleanup();
             g_wantListen = false;
             continue;
         }
@@ -74,15 +79,12 @@ void receiverThread() {
                    reinterpret_cast<const char*>(&rcvBuf), sizeof(rcvBuf));
 
         g_listening = true;
-        g_packetCount = 0;
-        g_submitOk = 0;
-        g_submitFail = 0;
-        g_lastLoopUs = 0;
-        g_maxLoopUs = 0;
-        {
-            std::lock_guard<std::mutex> lk(g_senderMtx);
-            g_senderIP = "none";
-        }
+        g_packetCount.store(0, std::memory_order_relaxed);
+        g_submitOk.store(0, std::memory_order_relaxed);
+        g_submitFail.store(0, std::memory_order_relaxed);
+        g_lastLoopUs.store(0, std::memory_order_relaxed);
+        g_maxLoopUs.store(0, std::memory_order_relaxed);
+        g_senderIP.store(0);  // 0.0.0.0 = no sender yet
 
         XUSB_REPORT report;
         XUSB_REPORT_INIT(&report);
@@ -118,13 +120,11 @@ void receiverThread() {
                 else
                     g_submitFail.fetch_add(1, std::memory_order_relaxed);
 
-                g_packetCount++;
+                g_packetCount.fetch_add(1, std::memory_order_relaxed);
 
-                if ((g_packetCount & 0xFF) == 0) {
-                    char ip[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &sender.sin_addr, ip, sizeof(ip));
-                    std::lock_guard<std::mutex> lk(g_senderMtx);
-                    g_senderIP = ip;
+                // Lock-free sender IP update every 256 packets
+                if ((g_packetCount.load(std::memory_order_relaxed) & 0xFF) == 0) {
+                    g_senderIP.store(sender.sin_addr.s_addr);
                 }
             }
             // On timeout (WSAETIMEDOUT) or WSAEWOULDBLOCK: just loop back — no Sleep needed
@@ -136,6 +136,5 @@ void receiverThread() {
         closesocket(sock);
         unplugTarget(busDevice, serialNo);
         CloseHandle(busDevice);
-        WSACleanup();
     }
 }

@@ -117,17 +117,18 @@ void httpThread() {
 
     g_httpServer.Get("/api/status", [](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
-        std::string senderIP;
-        {
-            std::lock_guard<std::mutex> lk(g_senderMtx);
-            senderIP = g_senderIP;
+        char senderIP[INET_ADDRSTRLEN] = "none";
+        uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
+        if (ipRaw != 0) {
+            in_addr ia; ia.s_addr = ipRaw;
+            inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
         char json[512];
         snprintf(
             json, sizeof(json),
             R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s})",
             g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
-            senderIP.c_str(), g_config.udpPort, g_config.webPort,
+            senderIP, g_config.udpPort, g_config.webPort,
             g_config.autoStart ? "true" : "false");
         res.set_content(json, "application/json");
     });
@@ -201,10 +202,11 @@ void httpThread() {
     // ── Debug telemetry endpoint ────────────────────────────────────
     g_httpServer.Get("/api/debug", [](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
-        std::string senderIP;
-        {
-            std::lock_guard<std::mutex> lk(g_senderMtx);
-            senderIP = g_senderIP;
+        char senderIP[INET_ADDRSTRLEN] = "none";
+        uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
+        if (ipRaw != 0) {
+            in_addr ia; ia.s_addr = ipRaw;
+            inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
         uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed); // reset on read
         char json[512];
@@ -216,7 +218,7 @@ void httpThread() {
                  (unsigned long long)g_submitOk.load(),
                  (unsigned long long)g_submitFail.load(),
                  (unsigned long long)g_lastLoopUs.load(),
-                 (unsigned long long)maxUs, senderIP.c_str(), g_config.udpPort);
+                 (unsigned long long)maxUs, senderIP, g_config.udpPort);
         res.set_content(json, "application/json");
     });
 

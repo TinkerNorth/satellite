@@ -72,8 +72,7 @@ extern std::atomic<uint64_t> g_submitOk;
 extern std::atomic<uint64_t> g_submitFail;
 extern std::atomic<uint64_t> g_lastLoopUs;   // last recv→submit time (microseconds)
 extern std::atomic<uint64_t> g_maxLoopUs;    // max since last debug poll
-extern std::mutex g_senderMtx;
-extern std::string g_senderIP;
+extern std::atomic<uint32_t> g_senderIP;  // IPv4 addr in network byte order (lock-free)
 extern HWND g_hwnd;
 extern httplib::Server g_httpServer;
 extern SOCKET g_pairSock;
