@@ -78,6 +78,12 @@ void receiverThread() {
         setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
                    reinterpret_cast<const char*>(&rcvBuf), sizeof(rcvBuf));
 
+        // DSCP EF — marks outbound packets (rumble/feedback) as voice-priority
+        // Wi-Fi WMM maps this to AC_VO, skipping ahead of bulk traffic
+        int tos = 0xB8;  // DSCP EF (46) << 2
+        setsockopt(sock, IPPROTO_IP, IP_TOS,
+                   reinterpret_cast<const char*>(&tos), sizeof(tos));
+
         g_listening = true;
         g_packetCount.store(0, std::memory_order_relaxed);
         g_submitOk.store(0, std::memory_order_relaxed);
