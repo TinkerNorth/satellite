@@ -14,8 +14,16 @@ set SRC_FILES=src/main.cpp src/globals.cpp src/config.cpp src/crypto.cpp src/vig
 echo === Building Satellite ===
 echo.
 
-echo [1/1] satellite.exe
-%CXX% %CXXFLAGS% %INCLUDES% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -mwindows
+echo [1/2] Compiling resources
+windres satellite.rc -o satellite_res.o
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] resources
+    exit /b 1
+)
+echo [OK]  resources
+
+echo [2/2] satellite.exe
+%CXX% %CXXFLAGS% %INCLUDES% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] satellite.exe
     exit /b 1

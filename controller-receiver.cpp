@@ -39,6 +39,7 @@
 
 #include "ViGEm/BusShared.h"
 #include "httplib.h"
+#include "src/resource.h"
 
 // ── Forward declarations ────────────────────────────────────────────────────
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -930,10 +931,8 @@ static void addTrayIcon(HWND hwnd) {
     g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    // Load custom icon from icon.ico next to the exe, fall back to default
-    std::string icoPath = getExeDir() + "\\icon.ico";
-    HICON hCustom = (HICON)LoadImageA(nullptr, icoPath.c_str(), IMAGE_ICON, 0, 0,
-                                      LR_LOADFROMFILE | LR_DEFAULTSIZE);
+    // Load icon from embedded resource, fall back to default
+    HICON hCustom = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
     g_nid.hIcon = hCustom ? hCustom : LoadIcon(nullptr, IDI_APPLICATION);
     strncpy(g_nid.szTip, APP_TITLE, sizeof(g_nid.szTip) - 1);
     Shell_NotifyIconA(NIM_ADD, &g_nid);

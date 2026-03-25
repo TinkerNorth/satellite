@@ -1,0 +1,39 @@
+#include "src/resource.h"
+#include <winver.h>
+
+/* ── Application icon ──────────────────────────────────────────────────── */
+IDI_APP_ICON ICON "icon.ico"
+
+/* ── Embedded manifest (UAC + compatibility) ───────────────────────────── */
+1 24 "satellite.manifest"
+
+/* ── Version information ───────────────────────────────────────────────── */
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "TinkerNorth"
+            VALUE "FileDescription",  "Satellite — Xbox controller forwarding"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "satellite"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 TinkerNorth"
+            VALUE "OriginalFilename", "satellite.exe"
+            VALUE "ProductName",      "Satellite"
+            VALUE "ProductVersion",   "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END
+
