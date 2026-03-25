@@ -23,7 +23,7 @@ if %ERRORLEVEL% neq 0 (
 echo [OK]  resources
 
 echo [2/2] satellite.exe
-%CXX% %CXXFLAGS% %INCLUDES% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -mwindows
+%CXX% %CXXFLAGS% %INCLUDES% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] satellite.exe
     exit /b 1

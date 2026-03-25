@@ -44,6 +44,7 @@ void httpThread() {
     g_httpServer.Get("/setup", serveIndex);
     g_httpServer.Get("/login", serveIndex);
     g_httpServer.Get("/dashboard", serveIndex);
+    g_httpServer.Get("/debug", serveIndex);
 
     // ── Auth routes (no auth required) ──────────────────────────────────
     g_httpServer.Get("/api/auth/status", [](const httplib::Request& req, httplib::Response& res) {
@@ -196,6 +197,28 @@ void httpThread() {
             saveConfig(g_config);
             res.set_content(R"({"ok":true})", "application/json");
         });
+
+    // ── Debug telemetry endpoint ────────────────────────────────────
+    g_httpServer.Get("/api/debug", [](const httplib::Request& req, httplib::Response& res) {
+        if (!requireAuth(req, res)) return;
+        std::string senderIP;
+        {
+            std::lock_guard<std::mutex> lk(g_senderMtx);
+            senderIP = g_senderIP;
+        }
+        uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed); // reset on read
+        char json[512];
+        snprintf(json, sizeof(json),
+                 R"({"listening":%s,"packets":%llu,"submitOk":%llu,"submitFail":%llu,)"
+                 R"("lastLoopUs":%llu,"maxLoopUs":%llu,"senderIP":"%s","udpPort":%d})",
+                 g_listening.load() ? "true" : "false",
+                 (unsigned long long)g_packetCount.load(),
+                 (unsigned long long)g_submitOk.load(),
+                 (unsigned long long)g_submitFail.load(),
+                 (unsigned long long)g_lastLoopUs.load(),
+                 (unsigned long long)maxUs, senderIP.c_str(), g_config.udpPort);
+        res.set_content(json, "application/json");
+    });
 
     g_httpServer.listen("127.0.0.1", g_config.webPort);
 }

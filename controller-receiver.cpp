@@ -390,6 +390,10 @@ static std::atomic<bool> g_appRunning{true};  // overall app lifecycle
 static std::atomic<bool> g_listening{false};  // UDP receiver active?
 static std::atomic<bool> g_wantListen{false}; // request to start/stop
 static std::atomic<uint64_t> g_packetCount{0};
+static std::atomic<uint64_t> g_submitOk{0};
+static std::atomic<uint64_t> g_submitFail{0};
+static std::atomic<uint64_t> g_lastLoopUs{0};
+static std::atomic<uint64_t> g_maxLoopUs{0};
 static std::mutex g_senderMtx;
 static std::string g_senderIP = "none";
 static HWND g_hwnd = nullptr;
@@ -482,6 +486,18 @@ static bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt) {
     return ok;
 }
 
+static bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event) {
+    OVERLAPPED ov{};
+    ov.hEvent = event;
+    DWORD xfr = 0;
+    XUSB_SUBMIT_REPORT sr;
+    XUSB_SUBMIT_REPORT_INIT(&sr, serial);
+    sr.Report = rpt;
+    DeviceIoControl(bus, IOCTL_XUSB_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
+    bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
+    return ok;
+}
+
 static void unplugTarget(HANDLE bus, ULONG serial) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -524,6 +540,9 @@ static bool getAutoStart() {
 // ── UDP Receiver Thread ─────────────────────────────────────────────────────
 
 static void receiverThread() {
+    // Highest thread priority — this is the hot input path
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
     while (g_appRunning) {
         // Wait until we're told to start listening
         while (g_appRunning && !g_wantListen) { Sleep(50); }
@@ -583,11 +602,22 @@ static void receiverThread() {
             continue;
         }
 
-        u_long nonBlock = 1;
-        ioctlsocket(sock, FIONBIO, &nonBlock);
+        // Blocking socket with short timeout so we can check g_wantListen
+        DWORD rcvTimeout = 10; // 10 ms
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&rcvTimeout), sizeof(rcvTimeout));
+
+        // Enlarge receive buffer to absorb bursts (64 KB)
+        int rcvBuf = 65536;
+        setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                   reinterpret_cast<const char*>(&rcvBuf), sizeof(rcvBuf));
 
         g_listening = true;
         g_packetCount = 0;
+        g_submitOk = 0;
+        g_submitFail = 0;
+        g_lastLoopUs = 0;
+        g_maxLoopUs = 0;
         {
             std::lock_guard<std::mutex> lk(g_senderMtx);
             g_senderIP = "none";
@@ -595,6 +625,9 @@ static void receiverThread() {
 
         XUSB_REPORT report;
         XUSB_REPORT_INIT(&report);
+
+        // Pre-allocate overlapped event for submit
+        HANDLE submitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
         // ── Hot loop ──
         while (g_appRunning && g_wantListen) {
@@ -605,8 +638,26 @@ static void receiverThread() {
                 recvfrom(sock, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&sender), &slen);
 
             if (n == sizeof(XUSB_REPORT)) {
+                auto t0 = std::chrono::steady_clock::now();
+
                 memcpy(&report, buf, sizeof(XUSB_REPORT));
-                submitReport(busDevice, serialNo, report);
+                bool ok = submitReportFast(busDevice, serialNo, report, submitEvent);
+
+                auto t1 = std::chrono::steady_clock::now();
+                uint64_t us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                                  t1 - t0)
+                                  .count();
+                g_lastLoopUs.store(us, std::memory_order_relaxed);
+                uint64_t prev = g_maxLoopUs.load(std::memory_order_relaxed);
+                while (us > prev &&
+                       !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed))
+                    ;
+
+                if (ok)
+                    g_submitOk.fetch_add(1, std::memory_order_relaxed);
+                else
+                    g_submitFail.fetch_add(1, std::memory_order_relaxed);
+
                 g_packetCount++;
 
                 if ((g_packetCount & 0xFF) == 0) {
@@ -615,12 +666,11 @@ static void receiverThread() {
                     std::lock_guard<std::mutex> lk(g_senderMtx);
                     g_senderIP = ip;
                 }
-            } else if (n == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
-                // real error — keep going
-            } else if (n == SOCKET_ERROR) {
-                Sleep(1);
             }
+            // On timeout or WSAEWOULDBLOCK: just loop back — no Sleep needed
         }
+
+        CloseHandle(submitEvent);
 
         // ── Tear down ──
         g_listening = false;
@@ -813,6 +863,28 @@ static void httpThread() {
             res.set_content(R"({"ok":true})", "application/json");
         });
 
+    // ── Debug telemetry endpoint ────────────────────────────────────────
+    g_httpServer.Get("/api/debug", [](const httplib::Request& req, httplib::Response& res) {
+        if (!requireAuth(req, res)) return;
+        std::string senderIP;
+        {
+            std::lock_guard<std::mutex> lk(g_senderMtx);
+            senderIP = g_senderIP;
+        }
+        uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed);
+        char json[512];
+        snprintf(json, sizeof(json),
+                 R"({"listening":%s,"packets":%llu,"submitOk":%llu,"submitFail":%llu,)"
+                 R"("lastLoopUs":%llu,"maxLoopUs":%llu,"senderIP":"%s","udpPort":%d})",
+                 g_listening.load() ? "true" : "false",
+                 (unsigned long long)g_packetCount.load(),
+                 (unsigned long long)g_submitOk.load(),
+                 (unsigned long long)g_submitFail.load(),
+                 (unsigned long long)g_lastLoopUs.load(),
+                 (unsigned long long)maxUs, senderIP.c_str(), g_config.udpPort);
+        res.set_content(json, "application/json");
+    });
+
     g_httpServer.listen("127.0.0.1", g_config.webPort);
 }
 
@@ -991,6 +1063,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // ── WinMain ─────────────────────────────────────────────────────────────────
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
+    // Elevate process priority — critical for low-latency input forwarding
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
+    // Force 1ms timer resolution (default is 15.6ms which affects scheduling)
+    timeBeginPeriod(1);
+
     // Initialize Winsock globally (needed by httplib)
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -1041,5 +1119,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     removeTrayIcon();
     saveConfig(g_config);
+    timeEndPeriod(1);
     return 0;
 }

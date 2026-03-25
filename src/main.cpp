@@ -10,6 +10,12 @@
 #include "tray.h"
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
+    // Elevate process priority — critical for low-latency input forwarding
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
+    // Force 1ms timer resolution (default is 15.6ms which affects scheduling)
+    timeBeginPeriod(1);
+
     // Initialize Winsock globally (needed by httplib)
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -62,6 +68,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     removeTrayIcon();
     saveConfig(g_config);
+    timeEndPeriod(1);
     WSACleanup();
     return 0;
 }

@@ -68,6 +68,10 @@ extern std::atomic<bool> g_appRunning;
 extern std::atomic<bool> g_listening;
 extern std::atomic<bool> g_wantListen;
 extern std::atomic<uint64_t> g_packetCount;
+extern std::atomic<uint64_t> g_submitOk;
+extern std::atomic<uint64_t> g_submitFail;
+extern std::atomic<uint64_t> g_lastLoopUs;   // last recv→submit time (microseconds)
+extern std::atomic<uint64_t> g_maxLoopUs;    // max since last debug poll
 extern std::mutex g_senderMtx;
 extern std::string g_senderIP;
 extern HWND g_hwnd;

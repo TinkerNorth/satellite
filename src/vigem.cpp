@@ -89,6 +89,18 @@ bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt) {
     return ok;
 }
 
+bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event) {
+    OVERLAPPED ov{};
+    ov.hEvent = event;
+    DWORD xfr = 0;
+    XUSB_SUBMIT_REPORT sr;
+    XUSB_SUBMIT_REPORT_INIT(&sr, serial);
+    sr.Report = rpt;
+    DeviceIoControl(bus, IOCTL_XUSB_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
+    bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
+    return ok;
+}
+
 void unplugTarget(HANDLE bus, ULONG serial) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);

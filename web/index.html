@@ -55,7 +55,10 @@
   <div class="card" id="view-dashboard" style="display:none">
     <div class="header-row">
       <h1><span class="dot off" id="dot"></span> Satellite</h1>
-      <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="navigate('/debug')" title="Debug">🔬</button>
+        <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+      </div>
     </div>
 
     <div id="stats">
@@ -150,10 +153,86 @@
     </div>
   </div>
 
+  <!-- ── Debug ── -->
+  <div class="card card-wide" id="view-debug" style="display:none">
+    <div class="header-row">
+      <h1>🔬 Debug Telemetry</h1>
+      <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back">←</button>
+        <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+      </div>
+    </div>
+
+    <!-- Live pipeline flow -->
+    <div class="debug-pipeline">
+      <div class="pipe-stage" id="pipe-udp">
+        <div class="pipe-icon">📡</div>
+        <div class="pipe-label">UDP Recv</div>
+        <div class="pipe-value" id="d-pps">0 pps</div>
+      </div>
+      <div class="pipe-arrow" id="pipe-arrow-1">→</div>
+      <div class="pipe-stage" id="pipe-vigem">
+        <div class="pipe-icon">🎮</div>
+        <div class="pipe-label">ViGEm Submit</div>
+        <div class="pipe-value" id="d-submit-rate">0 pps</div>
+      </div>
+      <div class="pipe-arrow" id="pipe-arrow-2">→</div>
+      <div class="pipe-stage" id="pipe-system">
+        <div class="pipe-icon">🖥️</div>
+        <div class="pipe-label">System</div>
+        <div class="pipe-value" id="d-status">Stopped</div>
+      </div>
+    </div>
+
+    <!-- Stats grid -->
+    <div class="debug-grid">
+      <div class="debug-stat">
+        <span class="debug-stat-label">Packets Received</span>
+        <span class="debug-stat-value" id="d-packets">0</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">Submitted OK</span>
+        <span class="debug-stat-value debug-ok" id="d-submit-ok">0</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">Submit Errors</span>
+        <span class="debug-stat-value debug-err" id="d-submit-fail">0</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">Drop Rate</span>
+        <span class="debug-stat-value" id="d-drop-rate">0%</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">Last Loop</span>
+        <span class="debug-stat-value" id="d-last-loop">0 µs</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">Max Loop (peak)</span>
+        <span class="debug-stat-value" id="d-max-loop">0 µs</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">Sender IP</span>
+        <span class="debug-stat-value" id="d-sender">none</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">UDP Port</span>
+        <span class="debug-stat-value" id="d-port">—</span>
+      </div>
+    </div>
+
+    <!-- Rate history sparkline (text-based) -->
+    <div class="section">
+      <h2 class="section-title">Packet Rate History</h2>
+      <div class="debug-chart" id="d-chart"></div>
+      <p class="hint">Updates every 500ms · showing last 60 samples (30 seconds)</p>
+    </div>
+  </div>
+
   <script src="common.js"></script>
   <script src="setup.js"></script>
   <script src="login.js"></script>
   <script src="dashboard.js"></script>
+  <script src="debug.js"></script>
 </body>
 </html>
 

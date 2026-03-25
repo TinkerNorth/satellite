@@ -38,8 +38,10 @@ function navigate(path) {
 }
 
 function showView(id) {
-  ['view-setup', 'view-login', 'view-dashboard'].forEach(v =>
-    document.getElementById(v).style.display = v === id ? 'block' : 'none');
+  ['view-setup', 'view-login', 'view-dashboard', 'view-debug'].forEach(v => {
+    const el = document.getElementById(v);
+    if (el) el.style.display = v === id ? 'block' : 'none';
+  });
 }
 
 async function route() {
@@ -57,6 +59,9 @@ async function route() {
     if (path !== '/login') { navigate('/login'); return; }
     showView('view-login');
     if (typeof initLogin === 'function') initLogin();
+  } else if (path === '/debug') {
+    showView('view-debug');
+    if (typeof initDebug === 'function') initDebug();
   } else {
     if (path !== '/dashboard') { navigate('/dashboard'); return; }
     showView('view-dashboard');

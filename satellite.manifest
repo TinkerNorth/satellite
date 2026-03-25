@@ -6,7 +6,7 @@
     name="TinkerNorth.Satellite"
     type="win32"
   />
-  <description>Satellite — Xbox controller forwarding over the network</description>
+  <description>Satellite</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

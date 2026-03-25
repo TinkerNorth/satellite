@@ -43,25 +43,35 @@ The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()
 
 ### Build toolchain (either machine)
 - **[MinGW-w64](https://winlibs.com/)** (g++) — or any C++17 compiler targeting Windows
+- **[Inno Setup 6](https://jrsoftware.org/isinfo.php)** — only needed to build the installer
+
+## Installation
+
+Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth/satellite/releases) page and run it. The installer will:
+
+- Install Satellite to `Program Files\Satellite`
+- Create a Start Menu shortcut
+- Optionally create a Desktop shortcut
+- Optionally set Satellite to start with Windows
+- Register in **Settings → Apps → Installed Apps** with a proper uninstaller
+
+To uninstall, use **Settings → Apps → Installed Apps → Satellite → Uninstall**, or run the uninstaller from the Start Menu.
 
 ## Building
 
 ```batch
-build.bat
+build-satellite.bat
 ```
 
-Or manually:
+### Building the installer
 
-```bash
-# Receiver (tray app + web UI)
-g++ -O2 -Wall -std=c++17 -D_WIN32_WINNT=0x0A00 -static -DCPPHTTPLIB_NO_EXCEPTIONS \
-    -Ivigem/include -Ilib -o controller-receiver.exe controller-receiver.cpp \
-    -lsetupapi -lws2_32 -lshell32 -lole32 -mwindows
+After building `satellite.exe`, compile the installer with [Inno Setup](https://jrsoftware.org/isinfo.php):
 
-# Sender
-g++ -O2 -Wall -std=c++17 -D_WIN32_WINNT=0x0A00 -static \
-    -o controller-sender.exe controller-sender.cpp -lxinput1_4 -lws2_32
+```powershell
+iscc installer.iss
 ```
+
+This produces `dist\SatelliteSetup.exe` — a single installer that packages the app, web UI, and uninstaller.
 
 ## Usage
 
@@ -158,15 +168,20 @@ cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem -Ivigem/includ
 ```
 ├── controller-receiver.cpp     # Receiver: tray app + web UI + UDP → ViGEmBus
 ├── controller-sender.cpp       # Sender: XInput → UDP
+├── src/                        # Modular source files
 ├── lib/
 │   └── httplib.h               # cpp-httplib (header-only HTTP server, vendored)
 ├── vigem/
 │   └── include/ViGEm/
 │       ├── Common.h            # XUSB_REPORT, button definitions
 │       └── BusShared.h         # IOCTL codes, driver structures
+├── web/                        # Web UI static files
+├── satellite.rc                # Windows resource script (icon, version, manifest)
+├── satellite.manifest          # UAC manifest (requireAdministrator)
+├── installer.iss               # Inno Setup installer script
+├── build-satellite.bat         # Build script
 ├── .clang-format               # Code formatting rules (clang-format)
 ├── .clang-tidy                 # Linting & modernization checks (clang-tidy)
-├── build.bat                   # Build script
 ├── LICENSE                     # MIT
 └── README.md
 ```
