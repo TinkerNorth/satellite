@@ -97,6 +97,7 @@ Config loadConfig() {
                 dev.name = jsonGetString(obj, "name");
                 dev.lastIP = jsonGetString(obj, "lastIP");
                 dev.pairedAt = jsonGetString(obj, "pairedAt");
+                dev.sharedKeyHex = jsonGetString(obj, "sharedKey");
                 if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
                 pos = objEnd + 1;
             }
@@ -120,7 +121,7 @@ void saveConfig(const Config& cfg) {
         const auto& d = cfg.pairedDevices[i];
         f << "    {\"id\":\"" << jsonEscape(d.id) << "\",\"name\":\"" << jsonEscape(d.name)
           << "\",\"lastIP\":\"" << jsonEscape(d.lastIP) << "\",\"pairedAt\":\""
-          << jsonEscape(d.pairedAt) << "\"}";
+          << jsonEscape(d.pairedAt) << "\",\"sharedKey\":\"" << jsonEscape(d.sharedKeyHex) << "\"}";
         if (i + 1 < cfg.pairedDevices.size()) f << ",";
         f << "\n";
     }

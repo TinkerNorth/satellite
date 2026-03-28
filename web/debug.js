@@ -91,6 +91,16 @@ async function pollDebug() {
     document.getElementById('d-sender').textContent = d.senderIP;
     document.getElementById('d-port').textContent = d.udpPort;
 
+    // ── Crypto stats ──
+    const dfEl = document.getElementById('d-decrypt-fail');
+    if (dfEl) dfEl.textContent = (d.decryptFail || 0).toLocaleString();
+    const rdEl = document.getElementById('d-replay-drop');
+    if (rdEl) rdEl.textContent = (d.replayDrop || 0).toLocaleString();
+
+    // Color decrypt failures
+    if (dfEl) dfEl.className = 'debug-stat-value' + ((d.decryptFail || 0) > 0 ? ' debug-err' : ' debug-ok');
+    if (rdEl) rdEl.className = 'debug-stat-value' + ((d.replayDrop || 0) > 0 ? ' debug-warn' : ' debug-ok');
+
     // Color the loop time
     const loopEl = document.getElementById('d-last-loop');
     if (d.lastLoopUs > 1000) loopEl.className = 'debug-stat-value debug-err';

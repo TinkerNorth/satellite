@@ -3,6 +3,7 @@
  */
 #include "globals.h"
 #include "config.h"
+#include "crypto.h"
 #include "receiver.h"
 #include "webserver.h"
 #include "pairing.h"
@@ -19,6 +20,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Initialize Winsock globally (needed by httplib)
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    // Initialize libsodium
+    if (!sodiumInit()) {
+        MessageBoxA(nullptr, "Failed to initialize libsodium", APP_TITLE, MB_ICONERROR);
+        return 1;
+    }
 
     // Load config
     g_config = loadConfig();

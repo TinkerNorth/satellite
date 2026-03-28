@@ -1,7 +1,8 @@
 /*
- * crypto.cpp — DPAPI, SHA-256, sessions, PIN, credentials
+ * crypto.cpp — DPAPI, SHA-256, sessions, PIN, credentials, libsodium wrappers
  */
 #include "crypto.h"
+#include <sodium.h>
 
 // ── Base64 helpers ──────────────────────────────────────────────────────────
 static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -184,4 +185,110 @@ bool verifyPin(const std::string& pin) {
     bool ok = (pin == g_currentPin);
     if (ok) g_currentPin.clear();
     return ok;
+}
+
+// ── Hex encode/decode ───────────────────────────────────────────────────────
+std::string hexEncode(const uint8_t* data, size_t len) {
+    std::string out;
+    out.reserve(len * 2);
+    char buf[3];
+    for (size_t i = 0; i < len; i++) {
+        sprintf(buf, "%02x", data[i]);
+        out += buf;
+    }
+    return out;
+}
+
+bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen) {
+    if (hex.size() != outLen * 2) return false;
+    for (size_t i = 0; i < outLen; i++) {
+        unsigned int b;
+        if (sscanf(hex.c_str() + i * 2, "%02x", &b) != 1) return false;
+        out[i] = (uint8_t)b;
+    }
+    return true;
+}
+
+// ── libsodium initialization ────────────────────────────────────────────────
+bool sodiumInit() {
+    return sodium_init() >= 0; // returns 0 on first init, 1 if already initialized
+}
+
+// ── X25519 key pair generation ──────────────────────────────────────────────
+void generateKeyPair(uint8_t pk[32], uint8_t sk[32]) {
+    crypto_kx_keypair(pk, sk);
+}
+
+// ── Compute shared key from X25519 key exchange (server side) ───────────────
+bool computeSharedKey(uint8_t sharedKey[32],
+                      const uint8_t clientPk[32], const uint8_t serverSk[32],
+                      const uint8_t serverPk[32]) {
+    // Server uses rx key (what client sends is what server receives)
+    uint8_t rx[32], tx[32];
+    if (crypto_kx_server_session_keys(rx, tx, serverPk, serverSk, clientPk) != 0)
+        return false;
+    // Use rx as the shared key (client encrypts with tx, server decrypts with rx)
+    // For simplicity, we use rx for both directions (symmetric)
+    memcpy(sharedKey, rx, 32);
+    return true;
+}
+
+// ── Generate a random 4-byte token ──────────────────────────────────────────
+uint32_t generateToken() {
+    uint32_t token;
+    randombytes_buf(&token, sizeof(token));
+    // Avoid token 0 (reserved for "no token")
+    while (token == 0) randombytes_buf(&token, sizeof(token));
+    return token;
+}
+
+// ── Encrypt a packet (ChaCha20-Poly1305 IETF) ──────────────────────────────
+bool encryptPacket(const uint8_t key[32], uint32_t counter,
+                   uint32_t token,
+                   const uint8_t* plaintext, size_t ptLen,
+                   uint8_t* ciphertext, unsigned long long* ctLen) {
+    // Build 12-byte nonce: zero-pad the 4-byte counter (big-endian, right-aligned)
+    uint8_t nonce[12] = {};
+    nonce[8]  = (uint8_t)(counter >> 24);
+    nonce[9]  = (uint8_t)(counter >> 16);
+    nonce[10] = (uint8_t)(counter >> 8);
+    nonce[11] = (uint8_t)(counter);
+
+    // AAD is the 4-byte token (big-endian)
+    uint8_t aad[4];
+    aad[0] = (uint8_t)(token >> 24);
+    aad[1] = (uint8_t)(token >> 16);
+    aad[2] = (uint8_t)(token >> 8);
+    aad[3] = (uint8_t)(token);
+
+    return crypto_aead_chacha20poly1305_ietf_encrypt(
+        ciphertext, ctLen,
+        plaintext, ptLen,
+        aad, sizeof(aad),
+        nullptr, nonce, key) == 0;
+}
+
+// ── Decrypt a packet (ChaCha20-Poly1305 IETF) ──────────────────────────────
+bool decryptPacket(const uint8_t key[32], uint32_t counter,
+                   uint32_t token,
+                   const uint8_t* ciphertext, size_t ctLen,
+                   uint8_t* plaintext, unsigned long long* ptLen) {
+    uint8_t nonce[12] = {};
+    nonce[8]  = (uint8_t)(counter >> 24);
+    nonce[9]  = (uint8_t)(counter >> 16);
+    nonce[10] = (uint8_t)(counter >> 8);
+    nonce[11] = (uint8_t)(counter);
+
+    uint8_t aad[4];
+    aad[0] = (uint8_t)(token >> 24);
+    aad[1] = (uint8_t)(token >> 16);
+    aad[2] = (uint8_t)(token >> 8);
+    aad[3] = (uint8_t)(token);
+
+    return crypto_aead_chacha20poly1305_ietf_decrypt(
+        plaintext, ptLen,
+        nullptr,
+        ciphertext, ctLen,
+        aad, sizeof(aad),
+        nonce, key) == 0;
 }
