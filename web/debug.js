@@ -48,28 +48,29 @@ async function pollDebug() {
     document.getElementById('d-submit-rate').textContent = submitRate + ' pps';
     document.getElementById('d-status').textContent = d.listening ? 'Active' : 'Stopped';
 
-    // Pipeline coloring
+    // Pipeline coloring (reflects ViGEm availability)
     const udp = document.getElementById('pipe-udp');
     const vigem = document.getElementById('pipe-vigem');
     const sys = document.getElementById('pipe-system');
     const a1 = document.getElementById('pipe-arrow-1');
     const a2 = document.getElementById('pipe-arrow-2');
+    const vigemUp = d.vigemAvailable;
 
     if (d.listening && pps > 0) {
       udp.className = 'pipe-stage pipe-active';
-      vigem.className = 'pipe-stage pipe-active';
-      sys.className = 'pipe-stage pipe-active';
+      vigem.className = 'pipe-stage ' + (vigemUp ? 'pipe-active' : 'pipe-error');
+      sys.className = 'pipe-stage ' + (vigemUp ? 'pipe-active' : 'pipe-error');
       a1.className = 'pipe-arrow pipe-flow';
-      a2.className = 'pipe-arrow pipe-flow';
+      a2.className = 'pipe-arrow ' + (vigemUp ? 'pipe-flow' : '');
     } else if (d.listening) {
       udp.className = 'pipe-stage pipe-idle';
-      vigem.className = 'pipe-stage pipe-idle';
-      sys.className = 'pipe-stage pipe-idle';
+      vigem.className = 'pipe-stage ' + (vigemUp ? 'pipe-idle' : 'pipe-error');
+      sys.className = 'pipe-stage ' + (vigemUp ? 'pipe-idle' : 'pipe-error');
       a1.className = 'pipe-arrow';
       a2.className = 'pipe-arrow';
     } else {
       udp.className = 'pipe-stage';
-      vigem.className = 'pipe-stage';
+      vigem.className = 'pipe-stage' + (vigemUp === false ? ' pipe-error' : '');
       sys.className = 'pipe-stage';
       a1.className = 'pipe-arrow';
       a2.className = 'pipe-arrow';
@@ -100,6 +101,20 @@ async function pollDebug() {
     // Color decrypt failures
     if (dfEl) dfEl.className = 'debug-stat-value' + ((d.decryptFail || 0) > 0 ? ' debug-err' : ' debug-ok');
     if (rdEl) rdEl.className = 'debug-stat-value' + ((d.replayDrop || 0) > 0 ? ' debug-warn' : ' debug-ok');
+
+    // ── ViGEm status ──
+    const viEl = document.getElementById('d-vigem-installed');
+    if (viEl) {
+      const inst = d.vigemInstalled;
+      viEl.textContent = inst ? 'Yes' : 'No';
+      viEl.className = 'debug-stat-value' + (inst ? ' debug-ok' : ' debug-err');
+    }
+    const vaEl = document.getElementById('d-vigem-available');
+    if (vaEl) {
+      const avail = d.vigemAvailable;
+      vaEl.textContent = avail ? 'Active' : (d.vigemInstalled ? 'Idle' : 'Unavailable');
+      vaEl.className = 'debug-stat-value' + (avail ? ' debug-ok' : (d.vigemInstalled ? '' : ' debug-err'));
+    }
 
     // Color the loop time
     const loopEl = document.getElementById('d-last-loop');

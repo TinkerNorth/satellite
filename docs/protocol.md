@@ -98,13 +98,15 @@ and use it for all subsequent UDP encryption.
 Types 0x0000–0x00FF are reserved for protocol-level messages.
 Application/extension types should use 0x0100+.
 
-| Type   | Name              | Payload                          | Inner size | Total on wire | Direction       |
-|--------|-------------------|----------------------------------|------------|---------------|-----------------|
-| 0x0001 | Gamepad Data      | controller_index(1B) + XUSB_REPORT(12B) | 4+13 = 17 B | 45 B          | client → server |
-| 0x0002 | Heartbeat Ping    | (none)                           | 4 B        | 32 B          | client → server |
-| 0x0003 | Heartbeat ACK     | (none)                           | 4 B        | 32 B          | server → client |
-| 0x0004 | Controller Add    | controller_index(1B) + caps(2B)  | 4+3 = 7 B  | 35 B          | client → server |
-| 0x0005 | Controller Remove | controller_index(1B)             | 4+1 = 5 B  | 33 B          | client → server |
+| Type   | Name              | Payload                                    | Inner size | Total on wire | Direction       |
+|--------|-------------------|--------------------------------------------|------------|---------------|-----------------|
+| 0x0001 | Gamepad Data      | controller_index(1B) + XUSB_REPORT(12B)    | 4+13 = 17 B | 45 B          | client → server |
+| 0x0002 | Heartbeat Ping    | (none)                                     | 4 B        | 32 B          | client → server |
+| 0x0003 | Heartbeat ACK     | (none)                                     | 4 B        | 32 B          | server → client |
+| 0x0004 | Controller Add    | controller_index(1B) + caps(2B)            | 4+3 = 7 B  | 35 B          | client → server |
+| 0x0005 | Controller Remove | controller_index(1B)                       | 4+1 = 5 B  | 33 B          | client → server |
+| 0x0006 | Controller ACK    | requestType(2B) + ctrlIdx(1B) + result(1B) | 4+4 = 8 B  | 36 B          | server → client |
+| 0x0007 | Server Status     | vigemAvailable(1B) + activeControllers(1B)  | 4+2 = 6 B  | 34 B          | server → client |
 
 ### 0x0001 — Gamepad Data
 
@@ -137,10 +139,12 @@ No payload. Sent by the server in response to a 0x0002 ping.
 ```
 
 Requests the server to create a new ViGEm controller for this index. The
-server responds by plugging in a new virtual Xbox 360 controller and mapping
-it to `(token, controller_index)`. If the index is already in use or no
-slots are available, the packet is dropped (the client can detect this via
-the connection list API).
+server replies with a **0x0006 Controller ACK** indicating success or
+failure. On success, the server plugs in a new virtual Xbox 360 controller
+and maps it to `(token, controller_index)`.
+
+If the ViGEm bus is not yet open, the server will attempt to open it lazily.
+If ViGEm is still unavailable, the ACK reports `ACK_ERR_VIGEM_UNAVAIL`.
 
 Capability flags (reserved for future use):
 
@@ -155,8 +159,70 @@ Capability flags (reserved for future use):
 [controller_index (1B)]
 ```
 
-Requests the server to unplug the ViGEm controller at this index. If no
-controller exists at this index, the packet is dropped.
+Requests the server to unplug the ViGEm controller at this index. The
+server replies with a **0x0006 Controller ACK** indicating success or
+failure.
+
+### 0x0006 — Controller ACK
+
+```
+[requestType (2B, big-endian)] [controller_index (1B)] [result (1B)]
+```
+
+Sent by the server in response to a 0x0004 (Controller Add) or 0x0005
+(Controller Remove) request.
+
+| Field              | Size | Description                                    |
+|--------------------|------|------------------------------------------------|
+| `requestType`      | 2 B  | The message type being acknowledged (0x0004 or 0x0005) |
+| `controller_index` | 1 B  | The controller index from the original request |
+| `result`           | 1 B  | Result code (see below)                        |
+
+**Result codes:**
+
+| Code | Name                   | Description                              |
+|------|------------------------|------------------------------------------|
+| 0x00 | `ACK_OK`               | Success                                  |
+| 0x01 | `ACK_ERR_VIGEM_UNAVAIL`| ViGEm bus driver not available           |
+| 0x02 | `ACK_ERR_NO_SLOTS`     | All 16 controller slots are in use       |
+| 0x03 | `ACK_ERR_ALREADY_EXISTS`| Controller already active at this index |
+| 0x04 | `ACK_ERR_NOT_FOUND`    | No active controller at this index       |
+| 0x05 | `ACK_ERR_PLUGIN_FAIL`  | ViGEm plugin call failed                 |
+
+### 0x0007 — Server Status
+
+```
+[vigemAvailable (1B)] [activeControllerCount (1B)]
+```
+
+Sent by the server to inform the client of real-time server state. The
+server sends this message:
+
+1. **On every heartbeat response** — alongside the 0x0003 ACK, the server
+   sends a 0x0007 with the current ViGEm/controller state.
+2. **On every controller add/remove** — after a successful 0x0004 or 0x0005,
+   the server broadcasts 0x0007 to **all** connected clients so every client
+   sees the updated controller count in real time.
+3. **On ViGEm state change** — when the ViGEm bus is lazily opened or
+   closed, the server broadcasts 0x0007 to all connected clients.
+
+| Field                    | Size | Description                                    |
+|--------------------------|------|------------------------------------------------|
+| `vigemAvailable`         | 1 B  | `0x01` = ViGEm bus is open and ready, `0x00` = idle/unavailable |
+| `activeControllerCount`  | 1 B  | Total number of active virtual controllers across all connections |
+
+**ViGEm lifecycle is client-driven.** The ViGEm bus is **not** opened at
+receiver start. It opens lazily on the first `0x0004 Controller Add` and
+closes automatically when the last controller is removed (via `0x0005`,
+connection timeout, or explicit disconnect). When `activeControllerCount`
+is 0, `vigemAvailable` will be `0x00` because the bus is closed.
+
+The client should use this to update the **global** ViGEm bus status in
+its UI (e.g., "VIGEM BUS: OPEN · 3 active"). For **per-device** state
+(whether a specific controller was successfully plugged in), the client
+should use the **0x0006 Controller ACK** result code. The web dashboard
+uses the `GET /api/connections` response which includes `vigemPluggedIn`
+per controller.
 
 ## Heartbeat / Keepalive
 

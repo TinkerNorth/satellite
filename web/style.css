@@ -423,6 +423,49 @@ h2.section-title { font-size: 14px; }
   font-family: 'Courier New', monospace;
 }
 
+/* ── Controller list items ───────────────────────────────────────── */
+.ctrl-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #0D0F12;
+  border: 1px solid #222831;
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.ctrl-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ctrl-name {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  color: #EAEAEA;
+}
+.ctrl-meta {
+  font-size: 11px;
+  color: #6B7280;
+  font-family: 'Courier New', monospace;
+}
+.ctrl-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.ctrl-dot.ok  { background: #22C55E; }
+.ctrl-dot.err { background: #EF4444; }
+.conn-meta-label {
+  font-size: 10px;
+  color: #6B7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* ── Loading overlay ─────────────────────────────────────────────── */
 .loading-overlay {
   position: fixed;
@@ -526,7 +569,13 @@ h2.section-title { font-size: 14px; }
   color: #6B7280;
 }
 
+.vigem-dot.vigem-warn {
+  background: #FFC107;
+  box-shadow: 0 0 8px #FFC107, 0 0 16px rgba(255, 193, 7, 0.4);
+}
+
 .vigem-ok-text { color: #22C55E; }
+.vigem-warn-text { color: #FFC107; }
 .vigem-err-text { color: #E74C3C; }
 
 .btn-link {
@@ -596,7 +645,13 @@ h2.section-title { font-size: 14px; }
 }
 
 .flow-step.done .flow-text { color: #22C55E; }
+.flow-step.warn .flow-text { color: #FFC107; }
 .flow-step.fail .flow-text { color: #E74C3C; }
+
+.flow-step.warn {
+  border-color: rgba(255, 193, 7, 0.4);
+  box-shadow: 0 0 8px rgba(255, 193, 7, 0.1);
+}
 
 .flow-arrow {
   color: #333;
@@ -684,6 +739,13 @@ h2.section-title { font-size: 14px; }
   border-color: rgba(255, 193, 7, 0.3);
   box-shadow: 0 0 8px rgba(255, 193, 7, 0.08);
 }
+
+.pipe-stage.pipe-error {
+  border-color: rgba(231, 76, 60, 0.5);
+  box-shadow: 0 0 12px rgba(231, 76, 60, 0.15);
+}
+
+.pipe-stage.pipe-error .pipe-label { color: #E74C3C; }
 
 .pipe-icon { font-size: 22px; line-height: 1; }
 

@@ -32,59 +32,89 @@ etc.) without hardcoding or guessing.
 | 9878 | TCP pairing   | `pairPort` |
 | 9879 | UDP discovery | `discPort` |
 
+## Architecture — Hexagonal (Ports & Adapters)
+
+The server follows **Hexagonal Architecture**. All business logic lives
+in `SessionService` (the domain core). External infrastructure (ViGEm
+driver, UDP sockets, config files) is accessed through port interfaces,
+implemented by concrete adapters.
+
+```
+Inbound Adapters          Core Domain           Outbound Adapters
+─────────────────     ──────────────────     ──────────────────────
+receiver.cpp  ─────►                    ────► ViGEmAdapter (IViGemPort)
+  (UDP recv)         SessionService          pluginDevice, submitReport
+                     openSession()
+webserver.cpp ─────►  closeSession()    ────► ClientAdapter (IClientPort)
+  (HTTP API)         handleGamepadData()     sendHeartbeatAck, sendControllerAck
+                     handleHeartbeat()
+                     handleControllerAdd()  ──► LogAdapter (ILogPort)
+                     getConnectionsSnapshot()   logMsg → ring buffer
+```
+
+### Key Design Principles
+
+- **`core/`** contains no Win32, Winsock, or ViGEm `#include`s
+- **SessionService** is the sole owner of connection state, serial pool,
+  and controller lifecycle — no duplicated teardown logic
+- **Adapters** are injected via constructor (dependency injection)
+- **`main.cpp`** is the Composition Root — instantiates adapters and
+  wires them to the service
+
 ## Data Model
 
-### Connection
+### Connection vs. Controller (Device)
 
-One connection per paired device. Owns zero or more controllers.
+**Connections** and **controllers** are separate concepts:
+
+- A **connection** is a network session between a paired client and the
+  server. It has a token, encryption key, and IP address. One connection
+  can own zero or more controllers.
+- A **controller** (device) is an individual virtual gamepad plugged into
+  ViGEm. Each controller has its own state (`active`, `serialNo`).
+  Controllers are created/removed independently via UDP messages
+  (0x0004 / 0x0005) and each receives its own ACK with a per-device
+  result code.
 
 ```cpp
+// core/types.h — pure data, no platform dependencies
 struct Controller {
-    uint8_t     index = 0;       // 0-based index within the connection
-    ULONG       serialNo = 0;    // ViGEm serial number (1–16)
-    bool        active = false;
-    XUSB_REPORT lastReport{};
-    HANDLE      submitEvent = nullptr; // pre-allocated overlapped event
+    uint8_t  index    = 0;       // 0-based within connection
+    uint32_t serialNo = 0;       // ViGEm serial (1–16), 0 = not plugged
+    bool     active   = false;
+    GamepadReport lastReport{};
 };
 
 struct Connection {
-    uint32_t    token = 0;           // 4-byte token for UDP routing
-    std::string deviceId;            // paired device that owns this
+    uint32_t    token       = 0;
+    std::string deviceId;
     std::string deviceName;
     std::string clientIP;
-    uint8_t     sharedKey[32] = {};   // ChaCha20-Poly1305 key (from pairing)
-    uint32_t    lastCounter = 0;      // highest counter seen (replay protection)
+    uint8_t     sharedKey[32] = {};
+    uint32_t    lastCounter = 0;      // replay protection
     std::chrono::steady_clock::time_point lastPacketTime;
     std::chrono::steady_clock::time_point connectedAt;
-    std::array<Controller, 16> controllers; // fixed-size array
-    int         activeControllerCount = 0;
-    sockaddr_in clientAddr{};         // for sending replies (heartbeat ACK)
+    std::array<Controller, 16> controllers;
+    int activeControllerCount = 0;
 };
 ```
 
-### Global State
+### State Ownership
 
-```cpp
-// Token → Connection (for UDP packet routing and HTTP API lookups)
-std::mutex g_connMtx;
-std::unordered_map<uint32_t, Connection> g_connections;
+All connection and controller state is owned by `SessionService` behind
+a single `std::mutex`. There are no global connection maps or serial
+arrays. The remaining globals are:
 
-// ViGEm bus handle — opened once at receiver start
-HANDLE g_busDevice;  // INVALID_HANDLE_VALUE until opened
+- `g_config` / `g_configMtx` — application configuration
+- Atomic telemetry counters (`g_packetCount`, `g_submitOk`, etc.)
+- Log ring buffer (`g_logRing`, `g_logMtx`)
+- Win32 plumbing (`g_hwnd`, `g_httpServer`, `g_appRunning`)
 
-// Tracks which ViGEm serial numbers are in use (index 0 = serial 1)
-std::mutex g_serialMtx;
-bool g_serialInUse[16];
+## Receiver Thread (Inbound UDP Adapter)
 
-// Crypto/stats counters
-std::atomic<uint64_t> g_decryptFail;  // failed decryptions
-std::atomic<uint64_t> g_replayDrop;   // replay drops
-SOCKET g_udpSock;                     // shared UDP socket for replies
-```
-
-## Receiver Thread
-
-The receiver thread owns the UDP socket and runs a single `recvfrom` loop.
+`receiver.cpp` is a thin infrastructure layer that owns the UDP socket
+and runs a `recvfrom` loop. It delegates all business logic to
+`SessionService`.
 
 ### Packet Processing Pipeline
 
@@ -93,115 +123,66 @@ recvfrom()
   │
   ├─ n < 8 → drop (too small for header)
   │
-  ├─ Extract token (bytes 0–3)
-  │  └─ Lookup in g_connections → not found → drop
-  │
-  ├─ Extract counter (bytes 4–7)
+  ├─ Extract token (bytes 0–3), counter (bytes 4–7)
+  │  └─ svc.getDecryptInfo(token) → not found → drop
   │  └─ counter <= lastCounter → drop (replay)
   │
   ├─ Decrypt (ChaCha20-Poly1305)
-  │  ├─ Key:   connection.sharedKey
-  │  ├─ Nonce: counter zero-padded to 12 bytes
-  │  ├─ AAD:   token (4 bytes)
-  │  └─ Fail → drop (tampered or wrong key)
+  │  └─ Fail → drop
+  │
+  ├─ svc.updatePostDecrypt(token, counter, ip, port)
   │
   ├─ Parse inner message: type (2B) + length (2B) + payload
   │
-  ├─ type 0x0001 (Gamepad Data):
-  │  ├─ Extract controllerIndex (payload byte 0)
-  │  ├─ Lookup controller in connection.controllers
-  │  │  └─ Not found → drop
-  │  ├─ Submit XUSB_REPORT (payload bytes 1–12) to ViGEm
-  │  └─ Update lastPacketTime
-  │
-  ├─ type 0x0002 (Heartbeat Ping):
-  │  ├─ Encrypt 0x0003 ACK with connection key
-  │  ├─ Send to clientAddr
-  │  └─ Update lastPacketTime
-  │
-  ├─ type 0x0004 (Controller Add):
-  │  ├─ Extract controllerIndex + capabilities
-  │  ├─ Check: index not already in connection.controllers
-  │  ├─ Check: g_serialInUse has a free slot
-  │  ├─ Allocate ViGEm serial, call pluginTarget
-  │  └─ Insert into connection.controllers
-  │
-  ├─ type 0x0005 (Controller Remove):
-  │  ├─ Extract controllerIndex
-  │  ├─ Lookup in connection.controllers
-  │  ├─ Call unplugTarget, free ViGEm serial
-  │  └─ Remove from connection.controllers
-  │
-  └─ unknown type → drop
+  ├─ 0x0001 → svc.handleGamepadData(token, ctrlIdx, report)
+  ├─ 0x0002 → svc.handleHeartbeat(token)
+  ├─ 0x0004 → svc.handleControllerAdd(token, ctrlIdx)
+  ├─ 0x0005 → svc.handleControllerRemove(token, ctrlIdx)
+  └─ unknown → drop
 ```
 
-### Reaper Check
+### Reaper
 
-Runs once per second (or every N loop iterations via a timer):
+Runs once per second via `svc.reapTimedOut()` — teardown logic is
+inside SessionService, not in the receiver.
 
-1. Lock `g_connMtx`
-2. For each connection: if `now - lastPacketTime > HEARTBEAT_INTERVAL * HEARTBEAT_MISS_MAX`:
-   - Unplug all controllers (call `unplugTarget` for each)
-   - Free all ViGEm serials
-   - Remove from `g_connections`
-3. Unlock
+## HTTP Thread (Inbound HTTP Adapter)
 
-## HTTP Thread
-
-The HTTP thread handles `POST/DELETE/GET /api/connections`.
+`webserver.cpp` handles `POST/DELETE/GET /api/connections` by calling
+SessionService. No connection or controller state is managed here.
 
 ### POST /api/connections
 
-1. Validate `deviceId` against paired devices
-2. Check ViGEmBus is available (`g_busDevice`)
-3. Lock `g_connMtx`
-4. Check `deviceId` not already connected (scan `g_connections`)
-5. Check `g_serialInUse` is not full (at least one slot available)
-6. Generate random 4-byte token (ensure unique in `g_connections`)
-7. Hex-decode the paired device's `sharedKeyHex` into the connection's `sharedKey`
-8. Create `Connection` object (no controllers yet)
-9. Insert into `g_connections`
-10. Unlock
-11. Return `connectionId`, `token`, `maxControllers`
+1. Validate `deviceId` against paired devices (from `g_config`)
+2. Auto-start receiver if needed (`g_wantListen = true`)
+3. Hex-decode shared key
+4. `svc.openSession(deviceId, name, ip, key)` — handles stale cleanup,
+   token generation, slot counting internally
+5. Return `connectionId`, `token`, `maxControllers`
 
-> **Note:** The encryption key is **not** returned. The client already has
-> the shared key from the pairing handshake.
+> **Note:** Connection succeeds independently of ViGEm. The ViGEm bus
+> is only needed at controller-add time (0x0004).
 
 ### DELETE /api/connections/:id
 
-1. Lock `g_connMtx`
-2. Find connection in `g_connections` (parse token from `conn_XXXXXXXX`)
-3. Unplug all controllers, free serials
-4. Remove from `g_connections`
-5. Unlock
-6. Return `controllersRemoved` count
+1. Parse token from `conn_XXXXXXXX`
+2. `svc.closeSession(token)` — handles all teardown internally
+3. Return `controllersRemoved` count (or 404 if not found)
 
 ### GET /api/connections
 
-1. Lock `g_connMtx`
-2. Iterate `g_connections`, build JSON response
-3. Unlock
+`svc.getConnectionsSnapshot()` returns a thread-safe copy of all
+connections, controllers, and ViGEm status — no locking needed by the
+caller.
 
 ## Thread Safety
 
-Two threads access shared state:
+Both the receiver and HTTP threads call into `SessionService`, which
+protects all connection/controller state with a single `std::mutex`.
+Lock contention is negligible with ≤ 16 connections and ≤ 16 controllers.
 
-| Thread   | Reads                          | Writes                              |
-|----------|--------------------------------|-------------------------------------|
-| Receiver | token lookup, controller lookup, key, counter | lastPacketTime, lastCounter, packets, controllers (add/remove via 0x0004/0x0005), reaper cleanup |
-| HTTP     | connection list                | create/destroy connections          |
-
-A single `std::mutex g_connMtx` protects all mutations. The receiver thread
-holds the lock briefly per packet for the token lookup (read key, serial,
-update timestamp). Controller add/remove (0x0004/0x0005) also lock.
-The HTTP thread locks for create/destroy/list. With n ≤ 16 connections and
-≤ 16 total controllers, lock contention is negligible.
-
-### ViGEm Thread Safety
-
-`pluginTarget` and `unplugTarget` calls are serialized by `g_connMtx`.
-The ViGEm bus handle is opened once and never closed until shutdown.
-`DeviceIoControl` (gamepad report submission) is thread-safe per target.
+The ViGEm bus handle is owned by `ViGEmAdapter` (with its own mutex).
+Report submission (`DeviceIoControl`) is thread-safe per target.
 
 ## Logging Infrastructure
 

@@ -19,17 +19,9 @@ httplib::Server g_httpServer;
 SOCKET g_pairSock = INVALID_SOCKET;
 std::string g_webDir;
 
-// ── Connection management globals ───────────────────────────────────────────
-std::mutex g_connMtx;
-std::unordered_map<uint32_t, Connection> g_connections;
-HANDLE g_busDevice = INVALID_HANDLE_VALUE;
+// ── Telemetry counters ───────────────────────────────────────────────────────
 std::atomic<uint64_t> g_decryptFail{0};
 std::atomic<uint64_t> g_replayDrop{0};
-SOCKET g_udpSock = INVALID_SOCKET;
-
-// ── Serial allocator ────────────────────────────────────────────────────────
-std::mutex g_serialMtx;
-bool g_serialInUse[MAX_VIGEM_CONTROLLERS] = {};
 
 // ── Logging ─────────────────────────────────────────────────────────────────
 std::mutex g_logMtx;

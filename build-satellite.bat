@@ -10,7 +10,7 @@ set CXX=g++
 set CXXFLAGS=-O2 -Wall -Wextra -std=c++17 -D_WIN32_WINNT=0x0A00 -static
 set INCLUDES=-Ivigem/include -Ilib -Ilib/libsodium/libsodium-win64/include
 set LIBDIRS=-Llib/libsodium/libsodium-win64/lib
-set SRC_FILES=src/main.cpp src/globals.cpp src/config.cpp src/crypto.cpp src/vigem.cpp src/receiver.cpp src/webserver.cpp src/pairing.cpp src/discovery.cpp src/tray.cpp
+set SRC_FILES=src/main.cpp src/globals.cpp src/config.cpp src/crypto.cpp src/vigem.cpp src/receiver.cpp src/webserver.cpp src/pairing.cpp src/discovery.cpp src/tray.cpp src/core/session_service.cpp src/adapters/vigem_adapter.cpp src/adapters/client_adapter.cpp src/adapters/log_adapter.cpp
 
 echo === Building Satellite ===
 echo.

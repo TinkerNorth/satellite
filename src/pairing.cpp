@@ -77,9 +77,18 @@ void pairingThread() {
 
             if (alreadyPaired) {
                 logMsg(LogLevel::INFO, "pairing", "Device " + deviceName + " (" + std::string(clientIP) + ") already paired, updating IP");
-                send(cs, R"({"ok":true,"message":"already paired"})", 38, 0);
-                std::lock_guard<std::mutex> lk(g_configMtx);
-                saveConfig(g_config);
+                // Include the shared key so the client can recover from lost key state
+                std::string storedKey;
+                {
+                    std::lock_guard<std::mutex> lk(g_configMtx);
+                    for (const auto& d : g_config.pairedDevices) {
+                        if (d.id == deviceId) { storedKey = d.sharedKeyHex; break; }
+                    }
+                    saveConfig(g_config);
+                }
+                std::string response = R"({"ok":true,"message":"already paired","sharedKey":")" +
+                                       storedKey + R"("})";
+                send(cs, response.c_str(), (int)response.size(), 0);
             } else if (verifyPin(pin)) {
                 // Generate server key pair for X25519 key exchange
                 uint8_t serverPk[32], serverSk[32];
@@ -115,7 +124,11 @@ void pairingThread() {
                 dev.sharedKeyHex = sharedKeyHex;
                 {
                     std::lock_guard<std::mutex> lk(g_configMtx);
-                    g_config.pairedDevices.push_back(dev);
+                    // Remove any existing entry for this device to prevent duplicates
+                    auto& devs = g_config.pairedDevices;
+                    devs.erase(std::remove_if(devs.begin(), devs.end(),
+                        [&](const PairedDevice& d) { return d.id == deviceId; }), devs.end());
+                    devs.push_back(dev);
                     saveConfig(g_config);
                 }
 

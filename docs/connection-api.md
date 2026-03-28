@@ -18,18 +18,39 @@ the connection closes.
 2. Pair device (if needed)        (TCP PIN handshake on pairPort — includes
                                     X25519 key exchange; client stores shared key)
 3. POST http://<ip>:<httpPort>/api/connections → get connectionId, token
-4. Send 0x0004 Controller Add     → server creates ViGEm controller
-5. Send 0x0001 Gamepad Data       → controller input (encrypted UDP on udpPort)
-6. Send 0x0005 Controller Remove  → server unplugs one controller
-7. DELETE /api/connections/:id     → all controllers removed, connection closed
+4. Send 0x0002 Heartbeat Ping     → server responds with 0x0003 ACK + 0x0007 Status
+5. Send 0x0004 Controller Add     → server responds with 0x0006 ACK
+6. Send 0x0001 Gamepad Data       → controller input (encrypted UDP on udpPort)
+7. Send 0x0005 Controller Remove  → server responds with 0x0006 ACK
+8. DELETE /api/connections/:id     → all controllers removed, connection closed
 ```
 
 The encryption key is established during pairing (step 2) and stored by both
 sides. It is **not** returned in the connection response — the client must
 persist it from the pairing handshake.
 
-Steps 4–6 happen over the encrypted UDP channel using the token from step 3.
-A client can repeat steps 4–6 as controllers are connected/disconnected.
+**Connection is decoupled from ViGEm.** Step 3 always succeeds if the device
+is paired and not already connected — regardless of whether the ViGEm bus
+driver is available. The POST response contains **only** connection metadata
+(connectionId, token, maxControllers). It does **not** include any real-time
+state like ViGEm availability.
+
+**Real-time state comes from the UDP layer.** After connecting, the client
+receives **0x0007 Server Status** messages over the encrypted UDP channel.
+These are sent with every heartbeat response (step 4), after every
+controller add/remove, and whenever the server's ViGEm state changes.
+The payload includes `vigemAvailable` (1B) and `activeControllerCount`
+(1B), so the client can show real-time controller state in its UI.
+
+**ViGEm lifecycle is client-driven.** The ViGEm bus is **not** opened at
+server start. It opens lazily when the first controller is added (0x0004)
+and closes automatically when the last controller is removed. When no
+controllers are active, `vigemAvailable` will be `0x00`.
+
+Steps 5–7 happen over the encrypted UDP channel using the token from step 3.
+A client can repeat steps 5–7 as controllers are connected/disconnected.
+Each controller add/remove gets a **0x0006 Controller ACK** from the server
+with a result code indicating success or failure (see [protocol.md](protocol.md)).
 
 ## Authentication
 
@@ -75,6 +96,14 @@ Opens a new connection for a paired device.
 The `maxControllers` value accounts for the global 16-slot limit minus
 controllers already in use by other connections.
 
+**Connection succeeds independently of ViGEm.** The server does not require
+the ViGEm bus to be available to create a connection. ViGEm opens lazily on
+the first controller add (0x0004) and closes when the last controller is
+removed. Real-time ViGEm/controller state is delivered over the UDP layer
+via **0x0007 Server Status** messages — not in this HTTP response. The
+client should handle the case where controller add ACKs return
+`ACK_ERR_VIGEM_UNAVAIL`.
+
 The encryption key is **not** included in this response. The client must
 use the shared key established during the pairing handshake (X25519 key
 exchange or trusted-network fallback). See [protocol.md](protocol.md) for
@@ -88,8 +117,6 @@ key exchange details.
 | 403    | `{"error": "device not paired"}`             | Unknown `deviceId`             |
 | 409    | `{"error": "device already connected"}`      | `deviceId` already has conn    |
 | 500    | `{"error": "invalid shared key"}`            | Stored key is corrupt/missing  |
-| 503    | `{"error": "no controller slots available"}` | All 16 ViGEm slots in use      |
-| 503    | `{"error": "ViGEmBus not available"}`        | Driver not installed           |
 
 ---
 
@@ -140,26 +167,41 @@ Lists all active connections and their controllers. Requires session cookie.
       "deviceName": "Living Room Phone",
       "connectedAtEpoch": 1711547400,
       "senderIP": "192.168.1.42",
+      "activeControllerCount": 2,
       "controllers": [
         {
           "controllerIndex": 0,
-          "vigemSerialNo": 1
+          "vigemSerialNo": 1,
+          "vigemPluggedIn": true
         },
         {
           "controllerIndex": 1,
-          "vigemSerialNo": 4
+          "vigemSerialNo": 4,
+          "vigemPluggedIn": true
         }
       ]
     }
   ],
   "totalControllers": 5,
-  "maxControllers": 16
+  "maxControllers": 16,
+  "vigemAvailable": true
 }
 ```
 
-Each connection lists its active controllers. `connectedAtEpoch` is seconds
-since Unix epoch (steady clock). `totalControllers` is the sum across all
-connections. `maxControllers` is the global ViGEm limit (16).
+Each connection lists its active controllers with **per-device ViGEm state**.
+`connectedAtEpoch` is seconds since Unix epoch (steady clock).
+`activeControllerCount` is the number of active controllers for that connection.
+`totalControllers` is the sum across all connections. `maxControllers` is the
+global ViGEm limit (16). `vigemAvailable` indicates whether the ViGEm bus
+handle is currently open.
+
+| Field                          | Type   | Description                                             |
+|--------------------------------|--------|---------------------------------------------------------|
+| `connections[].activeControllerCount` | int | Number of active controllers for this connection |
+| `controllers[].controllerIndex`| int    | 0-based controller index within the connection          |
+| `controllers[].vigemSerialNo`  | int    | ViGEm serial number (1–16), 0 if not plugged in        |
+| `controllers[].vigemPluggedIn` | bool   | Whether this controller is plugged into ViGEm           |
+| `vigemAvailable`               | bool   | Whether the ViGEm bus handle is currently open          |
 
 ---
 
@@ -224,6 +266,8 @@ Real-time event stream. Emits two event types every ~1 second:
   "senderIP": "192.168.1.42",
   "udpPort": 9876,
   "autoStart": false,
+  "vigemInstalled": true,
+  "vigemAvailable": true,
   "submitOk": 12300,
   "submitFail": 0,
   "lastLoopUs": 45,
@@ -233,9 +277,35 @@ Real-time event stream. Emits two event types every ~1 second:
 }
 ```
 
+| Field            | Type | Description                                          |
+|------------------|------|------------------------------------------------------|
+| `vigemInstalled` | bool | Whether the ViGEm bus driver is installed on the system |
+| `vigemAvailable` | bool | Whether the ViGEm bus handle is currently open (controllers active) |
+
 > **Note:** The SSE `status` event does **not** include `webPort`. Use
 > `GET /api/status` to retrieve `webPort` (the full status endpoint also
 > returns `webPort`).
-```
 
-**`connections` event:** Same format as `GET /api/connections` response.
+**`connections` event:** Same format as `GET /api/connections` response,
+including per-controller `vigemPluggedIn` status and per-connection
+`activeControllerCount`.
+
+## UI Concepts
+
+The web dashboard and client UI separate two distinct concepts:
+
+1. **Connections** — network sessions between a paired client device and
+   the server. Each connection has a device name, IP address, and may own
+   zero or more controllers. Connections are managed via the HTTP API.
+
+2. **Virtual Controllers** — individual ViGEm gamepads plugged into the
+   system. Each controller belongs to exactly one connection and has its
+   own ViGEm state (`vigemPluggedIn`, `vigemSerialNo`). Controllers are
+   created/removed via UDP messages (0x0004 / 0x0005) and each gets an
+   independent ACK with a per-device result code.
+
+The server dashboard shows these in two separate sections: "Connections"
+(showing device name, IP, and controller count) and "Virtual Controllers"
+(showing each controller with its per-device ViGEm status dot). The
+client (Dish) shows "VIGEM BUS" for the global bus state and "DEVICE #N"
+for each controller's individual ACK result.

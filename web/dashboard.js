@@ -83,34 +83,61 @@ function updateStatus(d) {
     document.getElementById('udpPort').value = d.udpPort;
     document.getElementById('autoStart').checked = d.autoStart;
   }
+
+  // Update ViGEm status from SSE data if available
+  if (d.vigemInstalled !== undefined) {
+    updateVigemIndicator(d.vigemInstalled, d.vigemAvailable);
+  }
 }
 
 function updateConnections(d) {
-  const el = document.getElementById('connection-list');
-  if (!el) return;
+  const connEl = document.getElementById('connection-list');
+  const ctrlEl = document.getElementById('controller-list');
+  const countEl = document.getElementById('controller-count');
 
   if (!d.connections || d.connections.length === 0) {
-    el.innerHTML = '<p class="hint">No active connections</p>';
-    const countEl = document.getElementById('controller-count');
+    if (connEl) connEl.innerHTML = '<p class="hint">No active connections</p>';
+    if (ctrlEl) ctrlEl.innerHTML = '<p class="hint">No active controllers</p>';
     if (countEl) countEl.textContent = '0 / ' + (d.maxControllers || 16);
     return;
   }
 
-  el.innerHTML = d.connections.map(c => {
-    const ctrls = c.controllers.map(ctrl =>
-      `<span class="ctrl-badge" title="Serial #${ctrl.vigemSerialNo}">🎮 #${ctrl.controllerIndex}</span>`
-    ).join('');
-    return `
-      <div class="connection-item">
-        <div class="connection-info">
-          <span class="connection-name">${esc(c.deviceName)}</span>
-          <span class="connection-meta">${esc(c.senderIP)} · ${ctrls || 'No controllers'}</span>
+  // ── Connections list (network sessions) ──
+  if (connEl) {
+    connEl.innerHTML = d.connections.map(c => `
+      <div class="device-item">
+        <div class="device-info">
+          <span class="device-name">${esc(c.deviceName)}</span>
+          <span class="device-meta">${esc(c.senderIP)} · ${c.activeControllerCount || 0} controller${(c.activeControllerCount||0) === 1 ? '' : 's'}</span>
         </div>
         <button class="btn-icon btn-danger" onclick="disconnectConn('${esc(c.connectionId)}')" title="Disconnect">✕</button>
-      </div>`;
-  }).join('');
+      </div>`).join('');
+  }
 
-  const countEl = document.getElementById('controller-count');
+  // ── Virtual controllers list (per-device ViGEm state) ──
+  if (ctrlEl) {
+    const allCtrls = [];
+    d.connections.forEach(c => {
+      c.controllers.forEach(ctrl => {
+        allCtrls.push({ ...ctrl, deviceName: c.deviceName, connectionId: c.connectionId });
+      });
+    });
+    if (allCtrls.length === 0) {
+      ctrlEl.innerHTML = '<p class="hint">No active controllers</p>';
+    } else {
+      ctrlEl.innerHTML = allCtrls.map(ctrl => {
+        const ok = ctrl.vigemPluggedIn;
+        return `
+        <div class="ctrl-item">
+          <div class="ctrl-info">
+            <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>Controller #${ctrl.controllerIndex}</span>
+            <span class="ctrl-meta">${esc(ctrl.deviceName)} · ViGEm Serial ${ctrl.vigemSerialNo} · ${ok ? 'Plugged In' : 'Error'}</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+  }
+
   if (countEl) countEl.textContent = d.totalControllers + ' / ' + d.maxControllers;
 }
 
@@ -185,34 +212,48 @@ async function removeDevice(id) {
 // ── ViGEm Status ────────────────────────────────────────────────────────────
 let vigemGuideOpen = false;
 
+function updateVigemIndicator(installed, available) {
+  const dot = document.getElementById('vigem-dot');
+  const label = document.getElementById('vigem-label');
+  const toggle = document.getElementById('vigem-guide-toggle');
+  const flowVigem = document.getElementById('flow-vigem');
+  const flowSystem = document.getElementById('flow-system');
+  if (!dot || !label) return;
+
+  if (installed && available) {
+    dot.className = 'vigem-dot vigem-ok';
+    label.textContent = 'Active (controllers plugged in)';
+    label.className = 'vigem-label vigem-ok-text';
+    toggle.style.display = 'none';
+    flowVigem.className = 'flow-step done';
+    flowSystem.className = 'flow-step done';
+    document.getElementById('vigem-guide').style.display = 'none';
+    vigemGuideOpen = false;
+  } else if (installed) {
+    dot.className = 'vigem-dot vigem-ok';
+    label.textContent = 'Ready (idle — no controllers)';
+    label.className = 'vigem-label vigem-ok-text';
+    toggle.style.display = 'none';
+    flowVigem.className = 'flow-step done';
+    flowSystem.className = 'flow-step';
+    document.getElementById('vigem-guide').style.display = 'none';
+    vigemGuideOpen = false;
+  } else {
+    dot.className = 'vigem-dot vigem-err';
+    label.textContent = 'Not Detected';
+    label.className = 'vigem-label vigem-err-text';
+    toggle.style.display = '';
+    flowVigem.className = 'flow-step fail';
+    flowSystem.className = 'flow-step fail';
+  }
+}
+
 async function checkVigemStatus() {
   try {
     const r = await fetch('/api/vigem/status');
     if (!r.ok) return;
     const d = await r.json();
-    const dot = document.getElementById('vigem-dot');
-    const label = document.getElementById('vigem-label');
-    const toggle = document.getElementById('vigem-guide-toggle');
-    const flowVigem = document.getElementById('flow-vigem');
-    const flowSystem = document.getElementById('flow-system');
-
-    if (d.installed) {
-      dot.className = 'vigem-dot vigem-ok';
-      label.textContent = 'Detected';
-      label.className = 'vigem-label vigem-ok-text';
-      toggle.style.display = 'none';
-      flowVigem.className = 'flow-step done';
-      flowSystem.className = 'flow-step done';
-      document.getElementById('vigem-guide').style.display = 'none';
-      vigemGuideOpen = false;
-    } else {
-      dot.className = 'vigem-dot vigem-err';
-      label.textContent = 'Not Detected';
-      label.className = 'vigem-label vigem-err-text';
-      toggle.style.display = '';
-      flowVigem.className = 'flow-step fail';
-      flowSystem.className = 'flow-step fail';
-    }
+    updateVigemIndicator(d.installed, d.available);
   } catch (e) { /* ignore */ }
 }
 

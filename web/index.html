@@ -146,11 +146,19 @@
       <p class="hint">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
     </div>
 
-    <!-- ── Active Connections ── -->
+    <!-- ── Connections ── -->
     <div class="section">
-      <h2 class="section-title">Active Connections <span class="badge" id="controller-count">0 / 16</span></h2>
+      <h2 class="section-title">Connections</h2>
       <div id="connection-list" class="device-list">
         <p class="hint">No active connections</p>
+      </div>
+    </div>
+
+    <!-- ── Virtual Controllers ── -->
+    <div class="section">
+      <h2 class="section-title">Virtual Controllers <span class="badge" id="controller-count">0 / 16</span></h2>
+      <div id="controller-list" class="device-list">
+        <p class="hint">No active controllers</p>
       </div>
     </div>
 
@@ -236,6 +244,14 @@
       <div class="debug-stat">
         <span class="debug-stat-label">Replay Drops</span>
         <span class="debug-stat-value debug-ok" id="d-replay-drop">0</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">ViGEm Installed</span>
+        <span class="debug-stat-value" id="d-vigem-installed">—</span>
+      </div>
+      <div class="debug-stat">
+        <span class="debug-stat-label">ViGEm Bus</span>
+        <span class="debug-stat-value" id="d-vigem-available">—</span>
       </div>
     </div>
 
