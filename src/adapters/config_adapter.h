@@ -8,10 +8,9 @@
 #include "../core/ports.h"
 
 class ConfigAdapter : public IConfigPort {
-public:
+  public:
     Config loadConfig() override;
-    void   saveConfig(const Config& cfg) override;
-    void   setAutoStart(bool enable) override;
-    bool   getAutoStart() override;
+    void saveConfig(const Config& cfg) override;
+    void setAutoStart(bool enable) override;
+    bool getAutoStart() override;
 };
-

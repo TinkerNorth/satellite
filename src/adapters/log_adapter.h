@@ -8,8 +8,6 @@
 #include "../core/ports.h"
 
 class LogAdapter : public ILogPort {
-public:
-    void logMsg(LogLevel level, const std::string& source,
-                const std::string& message) override;
+  public:
+    void logMsg(LogLevel level, const std::string& source, const std::string& message) override;
 };
-

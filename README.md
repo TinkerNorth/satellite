@@ -143,19 +143,19 @@ After installing, restart your terminal so the tools are on your `PATH`.
 **Format all source files:**
 
 ```powershell
-clang-format -i src/*.cpp src/*.h controller-sender.cpp controller-receiver.cpp
+clang-format -i src/*.cpp src/*.h src/adapters/*.cpp src/adapters/*.h src/core/*.cpp src/core/*.h
 ```
 
 **Lint with clang-tidy:**
 
 ```powershell
-clang-tidy src/*.cpp controller-sender.cpp controller-receiver.cpp -- -std=c++17 -Ivigem/include -Isrc -Ilib -D_WIN32_WINNT=0x0A00 -DCPPHTTPLIB_NO_EXCEPTIONS
+clang-tidy src/*.cpp src/adapters/*.cpp src/core/*.cpp -- -std=c++17 -Ivigem/include -Isrc -Ilib -Ilib/libsodium/libsodium-win64/include -D_WIN32_WINNT=0x0A00 -DCPPHTTPLIB_NO_EXCEPTIONS
 ```
 
 **Run cppcheck:**
 
 ```powershell
-cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem -Ivigem/include -Isrc -Ilib src/ controller-sender.cpp controller-receiver.cpp
+cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem -Ivigem/include -Isrc -Ilib -Ilib/libsodium/libsodium-win64/include src/
 ```
 
 ### Editor Integration
@@ -163,25 +163,57 @@ cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem -Ivigem/includ
 - **VS Code:** Install the [clang-format](https://marketplace.visualstudio.com/items?itemName=xaver.clang-format) extension and set it as your default C++ formatter. Format-on-save will use the `.clang-format` config automatically.
 - **clang-tidy** warnings appear inline if you use [clangd](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) as your language server.
 
+## Testing
+
+Unit tests cover the core domain service (`SessionService`) using mock implementations of all port interfaces. No external test framework is required.
+
+### Running tests
+
+```powershell
+build-tests.bat
+```
+
+This compiles `tests/test_session_service.cpp` alongside `src/core/session_service.cpp`, then runs the test binary. Output shows pass/fail counts and individual failure details.
+
+### What's tested
+
+- **Connection lifecycle** — open, close, close-all, stale replacement, multiple devices
+- **Controller lifecycle** — add, remove, serial allocation/recycling, bus open/close
+- **Error handling** — invalid tokens, out-of-bounds indices, ViGEm unavailable, no slots, plugin failures
+- **Gamepad data** — report submission, inactive controller rejection
+- **Heartbeat** — ACK + server status responses
+- **Decrypt helpers** — key retrieval, counter updates
+- **Query/stats** — snapshot, device connected check, slot counts
+- **Broadcast** — status broadcasts on controller changes
+
 ## Project structure
 
 ```
-├── controller-receiver.cpp     # Receiver: tray app + web UI + UDP → ViGEmBus
-├── controller-sender.cpp       # Sender: XInput → UDP
-├── src/                        # Modular source files
+├── src/
+│   ├── core/                   # Pure domain logic (no platform deps)
+│   │   ├── types.h             # Data structs, constants, enums
+│   │   ├── ports.h             # Outbound port interfaces
+│   │   ├── session_service.h   # SessionService declaration
+│   │   └── session_service.cpp # SessionService implementation
+│   ├── adapters/               # Infrastructure adapters
+│   │   ├── vigem_adapter.*     # IViGemPort — ViGEm bus driver
+│   │   ├── client_adapter.*    # IClientPort — encrypted UDP
+│   │   ├── log_adapter.*       # ILogPort — ring buffer logger
+│   │   └── config_adapter.*    # IConfigPort — JSON config
+│   ├── main.cpp                # Composition root (wires adapters)
+│   ├── receiver.cpp            # UDP recv/decrypt loop
+│   ├── webserver.cpp           # HTTP API + SSE + web UI
+│   └── ...                     # config, crypto, pairing, discovery, tray
+├── tests/
+│   └── test_session_service.cpp # Unit tests (self-contained, no framework)
 ├── lib/
-│   └── httplib.h               # cpp-httplib (header-only HTTP server, vendored)
-├── vigem/
-│   └── include/ViGEm/
-│       ├── Common.h            # XUSB_REPORT, button definitions
-│       └── BusShared.h         # IOCTL codes, driver structures
+│   └── httplib.h               # cpp-httplib (vendored)
+├── vigem/include/ViGEm/        # ViGEm driver headers
 ├── web/                        # Web UI static files
-├── satellite.rc                # Windows resource script (icon, version, manifest)
-├── satellite.manifest          # UAC manifest (requireAdministrator)
-├── installer.iss               # Inno Setup installer script
 ├── build-satellite.bat         # Build script
-├── .clang-format               # Code formatting rules (clang-format)
-├── .clang-tidy                 # Linting & modernization checks (clang-tidy)
+├── build-tests.bat             # Test build & run script
+├── .clang-format               # Code formatting rules
+├── .clang-tidy                 # Linting checks
 ├── LICENSE                     # MIT
 └── README.md
 ```

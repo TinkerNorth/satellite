@@ -2,6 +2,7 @@
  * core/session_service.cpp — Domain service implementation.
  */
 #include "session_service.h"
+#include <algorithm>
 #include <cstring>
 
 // We need generateToken — but it uses libsodium.
@@ -34,10 +35,10 @@ void SessionService::teardownConnection(Connection& conn) {
 }
 
 uint32_t SessionService::allocateSerial() {
-    for (int i = 0; i < MAX_VIGEM_CONTROLLERS; i++) {
+    for (size_t i = 0; i < MAX_VIGEM_CONTROLLERS; i++) {
         if (!serialInUse_[i]) {
             serialInUse_[i] = true;
-            return (uint32_t)(i + 1);  // serials are 1-based
+            return static_cast<uint32_t>(i + 1); // serials are 1-based
         }
     }
     return 0;
@@ -50,9 +51,7 @@ void SessionService::releaseSerial(uint32_t serial) {
 
 int SessionService::countGlobalActiveControllers() const {
     int total = 0;
-    for (auto& [tok, c] : connections_) {
-        total += c.activeControllerCount;
-    }
+    for (auto& [tok, c] : connections_) { total += c.activeControllerCount; }
     return total;
 }
 
@@ -66,9 +65,7 @@ void SessionService::closeVigemBusIfIdle() {
 
 void SessionService::broadcastStatus() {
     std::vector<std::pair<uint32_t, const Connection*>> conns;
-    for (auto& [tok, c] : connections_) {
-        conns.push_back({tok, &c});
-    }
+    for (auto& [tok, c] : connections_) { conns.push_back({tok, &c}); }
     client_.broadcastServerStatus(conns, vigem_.isBusOpen(),
                                   (uint8_t)countGlobalActiveControllers());
 }
@@ -82,16 +79,15 @@ uint32_t SessionService::generateUniqueToken() {
 // ── Connection lifecycle ────────────────────────────────────────────────────
 
 OpenSessionResult SessionService::openSession(const std::string& deviceId,
-                                               const std::string& deviceName,
-                                               const std::string& clientIP,
-                                               const uint8_t sharedKey[CRYPTO_KEY_SIZE]) {
+                                              const std::string& deviceName,
+                                              const std::string& clientIP,
+                                              const uint8_t sharedKey[CRYPTO_KEY_SIZE]) {
     std::lock_guard<std::mutex> lk(mtx_);
 
     // Tear down any stale connection for this device
-    for (auto it = connections_.begin(); it != connections_.end(); ) {
+    for (auto it = connections_.begin(); it != connections_.end();) {
         if (it->second.deviceId == deviceId) {
-            log_.logMsg(LogLevel::INFO, "service",
-                        "Replacing stale connection for " + deviceName);
+            log_.logMsg(LogLevel::INFO, "service", "Replacing stale connection for " + deviceName);
             teardownConnection(it->second);
             it = connections_.erase(it);
         } else {
@@ -116,14 +112,11 @@ OpenSessionResult SessionService::openSession(const std::string& deviceId,
     connections_[token] = conn;
 
     // Count available slots
-    int slots = 0;
-    for (int i = 0; i < MAX_VIGEM_CONTROLLERS; i++) {
-        if (!serialInUse_[i]) slots++;
-    }
+    int slots = static_cast<int>(
+        std::count(std::begin(serialInUse_), std::end(serialInUse_), false));
 
     log_.logMsg(LogLevel::INFO, "service",
-                "Connection opened for " + deviceName + " (token " +
-                std::to_string(token) + ")");
+                "Connection opened for " + deviceName + " (token " + std::to_string(token) + ")");
 
     return {true, token, slots, ""};
 }
@@ -140,16 +133,14 @@ int SessionService::closeSession(uint32_t token) {
     closeVigemBusIfIdle();
 
     log_.logMsg(LogLevel::INFO, "service",
-                "Connection closed for " + devName + " (" +
-                std::to_string(removed) + " controllers removed)");
+                "Connection closed for " + devName + " (" + std::to_string(removed) +
+                    " controllers removed)");
     return removed;
 }
 
 void SessionService::closeAllSessions() {
     std::lock_guard<std::mutex> lk(mtx_);
-    for (auto& [tok, conn] : connections_) {
-        teardownConnection(conn);
-    }
+    for (auto& [tok, conn] : connections_) { teardownConnection(conn); }
     connections_.clear();
     std::memset(serialInUse_, 0, sizeof(serialInUse_));
 }
@@ -157,7 +148,7 @@ void SessionService::closeAllSessions() {
 // ── Packet handling ─────────────────────────────────────────────────────────
 
 bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
-                                        const GamepadReport& report) {
+                                       const GamepadReport& report) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return false;
@@ -175,10 +166,9 @@ void SessionService::handleHeartbeat(uint32_t token) {
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
 
-    Connection& conn = it->second;
+    const Connection& conn = it->second;
     client_.sendHeartbeatAck(conn);
-    client_.sendServerStatus(conn, vigem_.isBusOpen(),
-                             (uint8_t)countGlobalActiveControllers());
+    client_.sendServerStatus(conn, vigem_.isBusOpen(), (uint8_t)countGlobalActiveControllers());
 }
 
 void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
@@ -191,8 +181,7 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
 
     Controller& ctrl = conn.controllers[ctrlIdx];
     if (ctrl.active) {
-        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx,
-                                  ACK_ERR_ALREADY_EXISTS);
+        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_ALREADY_EXISTS);
         return;
     }
 
@@ -204,24 +193,20 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
         }
     }
     if (!vigem_.isBusOpen()) {
-        log_.logMsg(LogLevel::ERR, "service",
-                    "Controller add failed: ViGEm bus unavailable");
-        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx,
-                                  ACK_ERR_VIGEM_UNAVAIL);
+        log_.logMsg(LogLevel::ERR, "service", "Controller add failed: ViGEm bus unavailable");
+        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_VIGEM_UNAVAIL);
         return;
     }
 
     uint32_t serial = allocateSerial();
     if (serial == 0) {
-        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx,
-                                  ACK_ERR_NO_SLOTS);
+        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_NO_SLOTS);
         return;
     }
 
     if (!vigem_.pluginDevice(serial)) {
         releaseSerial(serial);
-        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx,
-                                  ACK_ERR_PLUGIN_FAIL);
+        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_PLUGIN_FAIL);
         return;
     }
 
@@ -233,7 +218,7 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
 
     log_.logMsg(LogLevel::INFO, "service",
                 "Controller #" + std::to_string(ctrlIdx) + " added (serial " +
-                std::to_string(serial) + ") for " + conn.deviceName);
+                    std::to_string(serial) + ") for " + conn.deviceName);
 
     client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_OK);
     broadcastStatus();
@@ -249,14 +234,12 @@ void SessionService::handleControllerRemove(uint32_t token, uint8_t ctrlIdx) {
 
     Controller& ctrl = conn.controllers[ctrlIdx];
     if (!ctrl.active) {
-        client_.sendControllerAck(conn, MSG_CONTROLLER_REMOVE, ctrlIdx,
-                                  ACK_ERR_NOT_FOUND);
+        client_.sendControllerAck(conn, MSG_CONTROLLER_REMOVE, ctrlIdx, ACK_ERR_NOT_FOUND);
         return;
     }
 
     log_.logMsg(LogLevel::INFO, "service",
-                "Controller #" + std::to_string(ctrlIdx) +
-                " removed from " + conn.deviceName);
+                "Controller #" + std::to_string(ctrlIdx) + " removed from " + conn.deviceName);
 
     vigem_.unplugDevice(ctrl.serialNo);
     releaseSerial(ctrl.serialNo);
@@ -271,9 +254,8 @@ void SessionService::handleControllerRemove(uint32_t token, uint8_t ctrlIdx) {
 
 // ── Pre-decrypt helpers ─────────────────────────────────────────────────────
 
-bool SessionService::getDecryptInfo(uint32_t token,
-                                     uint8_t outKey[CRYPTO_KEY_SIZE],
-                                     uint32_t& outLastCounter) const {
+bool SessionService::getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
+                                    uint32_t& outLastCounter) const {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return false;
@@ -283,8 +265,7 @@ bool SessionService::getDecryptInfo(uint32_t token,
 }
 
 void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
-                                        const std::string& clientIP,
-                                        uint16_t clientPort) {
+                                       const std::string& clientIP, uint16_t clientPort) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
@@ -309,8 +290,9 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
         cs.deviceId = conn.deviceId;
         cs.deviceName = conn.deviceName;
         cs.clientIP = conn.clientIP;
-        cs.connectedAtEpoch = std::chrono::duration_cast<std::chrono::seconds>(
-            conn.connectedAt.time_since_epoch()).count();
+        cs.connectedAtEpoch =
+            std::chrono::duration_cast<std::chrono::seconds>(conn.connectedAt.time_since_epoch())
+                .count();
         cs.activeControllerCount = conn.activeControllerCount;
 
         for (auto& ctrl : conn.controllers) {
@@ -340,11 +322,10 @@ int SessionService::reapTimedOut() {
     auto timeout = std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_MAX);
 
     int reaped = 0;
-    for (auto it = connections_.begin(); it != connections_.end(); ) {
+    for (auto it = connections_.begin(); it != connections_.end();) {
         if (now - it->second.lastPacketTime > timeout) {
             log_.logMsg(LogLevel::INFO, "service",
-                        "Reaper: timed out connection for " +
-                        it->second.deviceName);
+                        "Reaper: timed out connection for " + it->second.deviceName);
             teardownConnection(it->second);
             it = connections_.erase(it);
             reaped++;
@@ -358,9 +339,7 @@ int SessionService::reapTimedOut() {
 
 // ── Stats ───────────────────────────────────────────────────────────────────
 
-bool SessionService::isViGEmAvailable() const {
-    return vigem_.isBusOpen();
-}
+bool SessionService::isViGEmAvailable() const { return vigem_.isBusOpen(); }
 
 int SessionService::totalActiveControllers() const {
     std::lock_guard<std::mutex> lk(mtx_);
@@ -369,10 +348,7 @@ int SessionService::totalActiveControllers() const {
 
 int SessionService::availableSlots() const {
     std::lock_guard<std::mutex> lk(mtx_);
-    int slots = 0;
-    for (int i = 0; i < MAX_VIGEM_CONTROLLERS; i++) {
-        if (!serialInUse_[i]) slots++;
-    }
+    int slots = static_cast<int>(
+        std::count(std::begin(serialInUse_), std::end(serialInUse_), false));
     return slots;
 }
-

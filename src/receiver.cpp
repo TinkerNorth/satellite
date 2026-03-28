@@ -42,8 +42,8 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
 
         BOOL bNewBehavior = FALSE;
         DWORD dwBytesReturned = 0;
-        WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior),
-                 nullptr, 0, &dwBytesReturned, nullptr, nullptr);
+        WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior), nullptr, 0,
+                 &dwBytesReturned, nullptr, nullptr);
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -56,17 +56,16 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             continue;
         }
 
-        client.setSocket(sock);  // Give the client adapter the socket for sending
+        client.setSocket(sock); // Give the client adapter the socket for sending
 
         DWORD rcvTimeout = 10;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
-                   reinterpret_cast<const char*>(&rcvTimeout), sizeof(rcvTimeout));
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcvTimeout),
+                   sizeof(rcvTimeout));
         int rcvBuf = 65536;
-        setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-                   reinterpret_cast<const char*>(&rcvBuf), sizeof(rcvBuf));
+        setsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvBuf),
+                   sizeof(rcvBuf));
         int tos = 0xB8;
-        setsockopt(sock, IPPROTO_IP, IP_TOS,
-                   reinterpret_cast<const char*>(&tos), sizeof(tos));
+        setsockopt(sock, IPPROTO_IP, IP_TOS, reinterpret_cast<const char*>(&tos), sizeof(tos));
 
         logMsg(LogLevel::INFO, "receiver", "Listening on UDP port " + std::to_string(port));
         g_listening = true;
@@ -113,7 +112,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
 
             // Decrypt
             uint8_t* ciphertext = buf + HEADER_SIZE;
-            size_t ctLen = (size_t)(n - HEADER_SIZE);
+            auto ctLen = static_cast<size_t>(n - HEADER_SIZE);
             uint8_t plaintext[256];
             unsigned long long ptLen = 0;
             if (!decryptPacket(key, counter, token, ciphertext, ctLen, plaintext, &ptLen)) {
@@ -130,7 +129,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             // Parse inner message
             if (ptLen < (unsigned long long)INNER_HEADER_SIZE) continue;
             uint16_t msgType = ((uint16_t)plaintext[0] << 8) | (uint16_t)plaintext[1];
-            uint16_t msgLen  = ((uint16_t)plaintext[2] << 8) | (uint16_t)plaintext[3];
+            uint16_t msgLen = ((uint16_t)plaintext[2] << 8) | (uint16_t)plaintext[3];
             if ((size_t)(INNER_HEADER_SIZE + msgLen) > ptLen) continue;
             uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
@@ -144,13 +143,20 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 bool ok = svc.handleGamepadData(token, ctrlIdx, report);
 
                 auto t1 = std::chrono::steady_clock::now();
-                uint64_t us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                uint64_t us =
+                    (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
+                        .count();
                 g_lastLoopUs.store(us, std::memory_order_relaxed);
                 uint64_t prev = g_maxLoopUs.load(std::memory_order_relaxed);
-                while (us > prev && !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed));
+                while (us > prev &&
+                       !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed)) {
+                }
 
-                if (ok) g_submitOk.fetch_add(1, std::memory_order_relaxed);
-                else    g_submitFail.fetch_add(1, std::memory_order_relaxed);
+                if (ok) {
+                    g_submitOk.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    g_submitFail.fetch_add(1, std::memory_order_relaxed);
+                }
                 break;
             }
             case MSG_HEARTBEAT_PING:

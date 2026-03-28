@@ -13,15 +13,14 @@
 #include <functional>
 
 class SessionService {
-public:
+  public:
     SessionService(IViGemPort& vigem, IClientPort& client, ILogPort& log);
 
     // ── Connection lifecycle ────────────────────────────────────────────
 
     // Open a new connection for a paired device.
     // Tears down any stale connection for the same deviceId first.
-    OpenSessionResult openSession(const std::string& deviceId,
-                                  const std::string& deviceName,
+    OpenSessionResult openSession(const std::string& deviceId, const std::string& deviceName,
                                   const std::string& clientIP,
                                   const uint8_t sharedKey[CRYPTO_KEY_SIZE]);
 
@@ -35,8 +34,7 @@ public:
 
     // Handle a decrypted gamepad data packet.
     // Returns true if the report was submitted successfully.
-    bool handleGamepadData(uint32_t token, uint8_t ctrlIdx,
-                           const GamepadReport& report);
+    bool handleGamepadData(uint32_t token, uint8_t ctrlIdx, const GamepadReport& report);
 
     // Handle a heartbeat ping — sends ACK + server status.
     void handleHeartbeat(uint32_t token);
@@ -51,31 +49,34 @@ public:
 
     // Look up a connection's key and last counter for decryption.
     // Returns false if token not found.
-    bool getDecryptInfo(uint32_t token,
-                        uint8_t outKey[CRYPTO_KEY_SIZE],
+    bool getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
                         uint32_t& outLastCounter) const;
 
     // Update connection state after successful decrypt (counter, timestamp, addr).
-    void updatePostDecrypt(uint32_t token, uint32_t counter,
-                           const std::string& clientIP, uint16_t clientPort);
+    void updatePostDecrypt(uint32_t token, uint32_t counter, const std::string& clientIP,
+                           uint16_t clientPort);
 
     // ── Query ───────────────────────────────────────────────────────────
 
     // Build a snapshot of all connections for JSON serialization (thread-safe).
     struct ConnectionSnapshot {
-        uint32_t    token;
+        uint32_t token;
         std::string deviceId;
         std::string deviceName;
         std::string clientIP;
-        int64_t     connectedAtEpoch;
-        int         activeControllerCount;
-        struct CtrlInfo { uint8_t index; uint32_t serial; bool active; };
+        int64_t connectedAtEpoch;
+        int activeControllerCount;
+        struct CtrlInfo {
+            uint8_t index;
+            uint32_t serial;
+            bool active;
+        };
         std::vector<CtrlInfo> controllers;
     };
     struct ConnectionsSnapshot {
         std::vector<ConnectionSnapshot> connections;
-        int  totalControllers;
-        int  maxControllers;
+        int totalControllers;
+        int maxControllers;
         bool vigemAvailable;
     };
     ConnectionsSnapshot getConnectionsSnapshot() const;
@@ -90,15 +91,15 @@ public:
 
     // ── Stats ───────────────────────────────────────────────────────────
     bool isViGEmAvailable() const;
-    int  totalActiveControllers() const;
-    int  availableSlots() const;
+    int totalActiveControllers() const;
+    int availableSlots() const;
 
-private:
-    IViGemPort&  vigem_;
+  private:
+    IViGemPort& vigem_;
     IClientPort& client_;
-    ILogPort&    log_;
+    ILogPort& log_;
 
-    mutable std::mutex mtx_;     // protects connections_ and serialInUse_
+    mutable std::mutex mtx_; // protects connections_ and serialInUse_
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_VIGEM_CONTROLLERS] = {};
 
@@ -111,4 +112,3 @@ private:
     void broadcastStatus();
     uint32_t generateUniqueToken();
 };
-

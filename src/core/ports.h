@@ -10,7 +10,7 @@
 
 // ── Outbound: ViGEm driver operations ───────────────────────────────────────
 class IViGemPort {
-public:
+  public:
     virtual ~IViGemPort() = default;
 
     // Open the bus (lazy). Returns true if bus is usable.
@@ -37,12 +37,11 @@ public:
 
 // ── Outbound: Send encrypted UDP packets to clients ─────────────────────────
 class IClientPort {
-public:
+  public:
     virtual ~IClientPort() = default;
 
     // Update the network address for a token (called on every packet recv).
-    virtual void updateClientAddr(uint32_t token,
-                                  const std::string& ip, uint16_t port) = 0;
+    virtual void updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) = 0;
 
     // Remove address mapping for a token.
     virtual void removeClientAddr(uint32_t token) = 0;
@@ -51,38 +50,34 @@ public:
     virtual void sendHeartbeatAck(const Connection& conn) = 0;
 
     // Send controller ACK (0x0006) to a specific client.
-    virtual void sendControllerAck(const Connection& conn,
-                                   uint16_t requestType,
-                                   uint8_t ctrlIdx, uint8_t result) = 0;
+    virtual void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
+                                   uint8_t result) = 0;
 
     // Send server status (0x0007) to a specific client.
-    virtual void sendServerStatus(const Connection& conn,
-                                  bool vigemAvailable,
+    virtual void sendServerStatus(const Connection& conn, bool vigemAvailable,
                                   uint8_t totalActiveControllers) = 0;
 
     // Broadcast server status to all provided connections.
-    virtual void broadcastServerStatus(
-        const std::vector<std::pair<uint32_t, const Connection*>>& connections,
-        bool vigemAvailable, uint8_t totalActiveControllers) = 0;
+    virtual void
+    broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
+                          bool vigemAvailable, uint8_t totalActiveControllers) = 0;
 };
 
 // ── Outbound: Configuration persistence ─────────────────────────────────────
 class IConfigPort {
-public:
+  public:
     virtual ~IConfigPort() = default;
 
     virtual Config loadConfig() = 0;
-    virtual void   saveConfig(const Config& cfg) = 0;
-    virtual void   setAutoStart(bool enable) = 0;
-    virtual bool   getAutoStart() = 0;
+    virtual void saveConfig(const Config& cfg) = 0;
+    virtual void setAutoStart(bool enable) = 0;
+    virtual bool getAutoStart() = 0;
 };
 
 // ── Outbound: Logging ───────────────────────────────────────────────────────
 class ILogPort {
-public:
+  public:
     virtual ~ILogPort() = default;
 
-    virtual void logMsg(LogLevel level, const std::string& source,
-                        const std::string& message) = 0;
+    virtual void logMsg(LogLevel level, const std::string& source, const std::string& message) = 0;
 };
-

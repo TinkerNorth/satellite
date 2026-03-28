@@ -15,7 +15,7 @@ void addTrayIcon(HWND hwnd) {
     g_nid.uCallbackMessage = WM_TRAYICON;
     // Load icon from embedded resource, fall back to default
     HICON hCustom = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
-    g_nid.hIcon = hCustom ? hCustom : LoadIcon(nullptr, IDI_APPLICATION);
+    g_nid.hIcon = (hCustom != nullptr) ? hCustom : LoadIcon(nullptr, IDI_APPLICATION);
     strncpy(g_nid.szTip, APP_TITLE, sizeof(g_nid.szTip) - 1);
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 }
@@ -44,6 +44,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        default: break;
         case IDM_OPEN_UI: {
             char url[64];
             snprintf(url, sizeof(url), "http://localhost:%d", g_config.webPort);
@@ -51,10 +52,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case IDM_TOGGLE:
-            if (g_listening.load())
+            if (g_listening.load()) {
                 g_wantListen = false;
-            else
+            } else {
                 g_wantListen = true;
+            }
             break;
         case IDM_EXIT:
             PostQuitMessage(0);

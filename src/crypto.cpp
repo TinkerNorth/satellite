@@ -52,7 +52,8 @@ std::string sha256hex(const std::string& input) {
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
     char hex[65];
-    for (int i = 0; i < 32; i++) sprintf(hex + static_cast<ptrdiff_t>(i) * 2, "%02x", hash[i]);
+    for (int i = 0; i < 32; i++)
+        (void)sprintf(hex + static_cast<ptrdiff_t>(i) * 2, "%02x", hash[i]);
     hex[64] = 0;
     return std::string(hex);
 }
@@ -62,7 +63,7 @@ std::string dpapiEncrypt(const std::string& plaintext) {
     DATA_BLOB in, out;
     in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plaintext.data()));
     in.cbData = (DWORD)plaintext.size();
-    if (!CryptProtectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) return "";
+    if (CryptProtectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out) == FALSE) return "";
     std::vector<BYTE> blob(out.pbData, out.pbData + out.cbData);
     LocalFree(out.pbData);
     return base64Encode(blob);
@@ -73,7 +74,7 @@ std::string dpapiDecrypt(const std::string& encoded) {
     DATA_BLOB in, out;
     in.pbData = blob.data();
     in.cbData = (DWORD)blob.size();
-    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) return "";
+    if (CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out) == FALSE) return "";
     std::string result(reinterpret_cast<char*>(out.pbData), out.cbData);
     LocalFree(out.pbData);
     return result;
@@ -193,7 +194,7 @@ std::string hexEncode(const uint8_t* data, size_t len) {
     out.reserve(len * 2);
     char buf[3];
     for (size_t i = 0; i < len; i++) {
-        sprintf(buf, "%02x", data[i]);
+        (void)sprintf(buf, "%02x", data[i]);
         out += buf;
     }
     return out;
@@ -202,7 +203,7 @@ std::string hexEncode(const uint8_t* data, size_t len) {
 bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen) {
     if (hex.size() != outLen * 2) return false;
     for (size_t i = 0; i < outLen; i++) {
-        unsigned int b;
+        unsigned int b = 0;
         if (sscanf(hex.c_str() + i * 2, "%02x", &b) != 1) return false;
         out[i] = (uint8_t)b;
     }
@@ -215,18 +216,14 @@ bool sodiumInit() {
 }
 
 // ── X25519 key pair generation ──────────────────────────────────────────────
-void generateKeyPair(uint8_t pk[32], uint8_t sk[32]) {
-    crypto_kx_keypair(pk, sk);
-}
+void generateKeyPair(uint8_t pk[32], uint8_t sk[32]) { crypto_kx_keypair(pk, sk); }
 
 // ── Compute shared key from X25519 key exchange (server side) ───────────────
-bool computeSharedKey(uint8_t sharedKey[32],
-                      const uint8_t clientPk[32], const uint8_t serverSk[32],
+bool computeSharedKey(uint8_t sharedKey[32], const uint8_t clientPk[32], const uint8_t serverSk[32],
                       const uint8_t serverPk[32]) {
     // Server uses rx key (what client sends is what server receives)
     uint8_t rx[32], tx[32];
-    if (crypto_kx_server_session_keys(rx, tx, serverPk, serverSk, clientPk) != 0)
-        return false;
+    if (crypto_kx_server_session_keys(rx, tx, serverPk, serverSk, clientPk) != 0) return false;
     // Use rx as the shared key (client encrypts with tx, server decrypts with rx)
     // For simplicity, we use rx for both directions (symmetric)
     memcpy(sharedKey, rx, 32);
@@ -235,7 +232,7 @@ bool computeSharedKey(uint8_t sharedKey[32],
 
 // ── Generate a random 4-byte token ──────────────────────────────────────────
 uint32_t generateToken() {
-    uint32_t token;
+    uint32_t token = 0;
     randombytes_buf(&token, sizeof(token));
     // Avoid token 0 (reserved for "no token")
     while (token == 0) randombytes_buf(&token, sizeof(token));
@@ -243,14 +240,13 @@ uint32_t generateToken() {
 }
 
 // ── Encrypt a packet (ChaCha20-Poly1305 IETF) ──────────────────────────────
-bool encryptPacket(const uint8_t key[32], uint32_t counter,
-                   uint32_t token,
-                   const uint8_t* plaintext, size_t ptLen,
-                   uint8_t* ciphertext, unsigned long long* ctLen) {
+bool encryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
+                   const uint8_t* plaintext, size_t ptLen, uint8_t* ciphertext,
+                   unsigned long long* ctLen) {
     // Build 12-byte nonce: zero-pad the 4-byte counter (big-endian, right-aligned)
     uint8_t nonce[12] = {};
-    nonce[8]  = (uint8_t)(counter >> 24);
-    nonce[9]  = (uint8_t)(counter >> 16);
+    nonce[8] = (uint8_t)(counter >> 24);
+    nonce[9] = (uint8_t)(counter >> 16);
     nonce[10] = (uint8_t)(counter >> 8);
     nonce[11] = (uint8_t)(counter);
 
@@ -261,21 +257,17 @@ bool encryptPacket(const uint8_t key[32], uint32_t counter,
     aad[2] = (uint8_t)(token >> 8);
     aad[3] = (uint8_t)(token);
 
-    return crypto_aead_chacha20poly1305_ietf_encrypt(
-        ciphertext, ctLen,
-        plaintext, ptLen,
-        aad, sizeof(aad),
-        nullptr, nonce, key) == 0;
+    return crypto_aead_chacha20poly1305_ietf_encrypt(ciphertext, ctLen, plaintext, ptLen, aad,
+                                                     sizeof(aad), nullptr, nonce, key) == 0;
 }
 
 // ── Decrypt a packet (ChaCha20-Poly1305 IETF) ──────────────────────────────
-bool decryptPacket(const uint8_t key[32], uint32_t counter,
-                   uint32_t token,
-                   const uint8_t* ciphertext, size_t ctLen,
-                   uint8_t* plaintext, unsigned long long* ptLen) {
+bool decryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
+                   const uint8_t* ciphertext, size_t ctLen, uint8_t* plaintext,
+                   unsigned long long* ptLen) {
     uint8_t nonce[12] = {};
-    nonce[8]  = (uint8_t)(counter >> 24);
-    nonce[9]  = (uint8_t)(counter >> 16);
+    nonce[8] = (uint8_t)(counter >> 24);
+    nonce[9] = (uint8_t)(counter >> 16);
     nonce[10] = (uint8_t)(counter >> 8);
     nonce[11] = (uint8_t)(counter);
 
@@ -285,10 +277,6 @@ bool decryptPacket(const uint8_t key[32], uint32_t counter,
     aad[2] = (uint8_t)(token >> 8);
     aad[3] = (uint8_t)(token);
 
-    return crypto_aead_chacha20poly1305_ietf_decrypt(
-        plaintext, ptLen,
-        nullptr,
-        ciphertext, ctLen,
-        aad, sizeof(aad),
-        nonce, key) == 0;
+    return crypto_aead_chacha20poly1305_ietf_decrypt(plaintext, ptLen, nullptr, ciphertext, ctLen,
+                                                     aad, sizeof(aad), nonce, key) == 0;
 }

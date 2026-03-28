@@ -61,13 +61,13 @@ extern SOCKET g_pairSock;
 extern std::string g_webDir;
 
 // ── Telemetry counters (still global — read by webserver SSE) ────────────────
-extern std::atomic<uint64_t> g_decryptFail;                      // failed decryptions
-extern std::atomic<uint64_t> g_replayDrop;                       // replay drops
+extern std::atomic<uint64_t> g_decryptFail; // failed decryptions
+extern std::atomic<uint64_t> g_replayDrop;  // replay drops
 
 // ── Logging (types defined in core/types.h) ─────────────────────────────────
 extern std::mutex g_logMtx;
 extern std::vector<LogEntry> g_logRing;
-extern int g_logHead;           // next write position
-extern uint64_t g_logSeq;      // monotonic sequence number (total logs ever written)
+extern int g_logHead;     // next write position
+extern uint64_t g_logSeq; // monotonic sequence number (total logs ever written)
 
 void logMsg(LogLevel level, const std::string& source, const std::string& message);

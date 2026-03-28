@@ -46,9 +46,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     if (g_config.autoStart) g_wantListen = true;
 
     // ── Composition Root: wire adapters → service ────────────────────
-    ViGEmAdapter  vigemAdapter;
+    ViGEmAdapter vigemAdapter;
     ClientAdapter clientAdapter;
-    LogAdapter    logAdapter;
+    LogAdapter logAdapter;
     SessionService svc(vigemAdapter, clientAdapter, logAdapter);
 
     // Register hidden window class

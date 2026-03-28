@@ -14,19 +14,10 @@ extern void saveConfig(const Config& cfg);
 extern void setAutoStart(bool enable);
 extern bool getAutoStart();
 
-Config ConfigAdapter::loadConfig() {
-    return ::loadConfig();
-}
+Config ConfigAdapter::loadConfig() { return ::loadConfig(); }
 
-void ConfigAdapter::saveConfig(const Config& cfg) {
-    ::saveConfig(cfg);
-}
+void ConfigAdapter::saveConfig(const Config& cfg) { ::saveConfig(cfg); }
 
-void ConfigAdapter::setAutoStart(bool enable) {
-    ::setAutoStart(enable);
-}
+void ConfigAdapter::setAutoStart(bool enable) { ::setAutoStart(enable); }
 
-bool ConfigAdapter::getAutoStart() {
-    return ::getAutoStart();
-}
-
+bool ConfigAdapter::getAutoStart() { return ::getAutoStart(); }

@@ -22,13 +22,15 @@ void pairingThread() {
     addr.sin_port = htons((u_short)g_config.pairPort);
     addr.sin_addr.s_addr = INADDR_ANY;
     if (bind(g_pairSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-        logMsg(LogLevel::ERR, "pairing", "Failed to bind pairing socket on port " + std::to_string(g_config.pairPort));
+        logMsg(LogLevel::ERR, "pairing",
+               "Failed to bind pairing socket on port " + std::to_string(g_config.pairPort));
         closesocket(g_pairSock);
         g_pairSock = INVALID_SOCKET;
         return;
     }
     listen(g_pairSock, 5);
-    logMsg(LogLevel::INFO, "pairing", "Pairing server listening on port " + std::to_string(g_config.pairPort));
+    logMsg(LogLevel::INFO, "pairing",
+           "Pairing server listening on port " + std::to_string(g_config.pairPort));
 
     // Non-blocking so we can check g_appRunning
     u_long nonBlock = 1;
@@ -76,18 +78,23 @@ void pairingThread() {
             }
 
             if (alreadyPaired) {
-                logMsg(LogLevel::INFO, "pairing", "Device " + deviceName + " (" + std::string(clientIP) + ") already paired, updating IP");
+                logMsg(LogLevel::INFO, "pairing",
+                       "Device " + deviceName + " (" + std::string(clientIP) +
+                           ") already paired, updating IP");
                 // Include the shared key so the client can recover from lost key state
                 std::string storedKey;
                 {
                     std::lock_guard<std::mutex> lk(g_configMtx);
                     for (const auto& d : g_config.pairedDevices) {
-                        if (d.id == deviceId) { storedKey = d.sharedKeyHex; break; }
+                        if (d.id == deviceId) {
+                            storedKey = d.sharedKeyHex;
+                            break;
+                        }
                     }
                     saveConfig(g_config);
                 }
-                std::string response = R"({"ok":true,"message":"already paired","sharedKey":")" +
-                                       storedKey + R"("})";
+                std::string response =
+                    R"({"ok":true,"message":"already paired","sharedKey":")" + storedKey + R"("})";
                 send(cs, response.c_str(), (int)response.size(), 0);
             } else if (verifyPin(pin)) {
                 // Generate server key pair for X25519 key exchange
@@ -96,7 +103,8 @@ void pairingThread() {
 
                 // Decode client's public key
                 uint8_t clientPk[32];
-                bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
+                bool hasClientKey =
+                    !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
 
                 std::string sharedKeyHex;
                 if (hasClientKey) {
@@ -126,13 +134,16 @@ void pairingThread() {
                     std::lock_guard<std::mutex> lk(g_configMtx);
                     // Remove any existing entry for this device to prevent duplicates
                     auto& devs = g_config.pairedDevices;
-                    devs.erase(std::remove_if(devs.begin(), devs.end(),
-                        [&](const PairedDevice& d) { return d.id == deviceId; }), devs.end());
+                    devs.erase(
+                        std::remove_if(devs.begin(), devs.end(),
+                                       [&](const PairedDevice& d) { return d.id == deviceId; }),
+                        devs.end());
                     devs.push_back(dev);
                     saveConfig(g_config);
                 }
 
-                // Build response with server public key (for X25519) or shared key (for simple mode)
+                // Build response with server public key (for X25519) or shared key (for simple
+                // mode)
                 std::string serverPkHex = hexEncode(serverPk, 32);
                 std::string response;
                 if (hasClientKey) {
@@ -145,9 +156,12 @@ void pairingThread() {
                 }
                 send(cs, response.c_str(), (int)response.size(), 0);
                 sodium_memzero(serverSk, 32);
-                logMsg(LogLevel::INFO, "pairing", "Successfully paired device: " + dev.name + " (" + std::string(clientIP) + ")");
+                logMsg(LogLevel::INFO, "pairing",
+                       "Successfully paired device: " + dev.name + " (" + std::string(clientIP) +
+                           ")");
             } else {
-                logMsg(LogLevel::WARN, "pairing", "Invalid PIN attempt from " + std::string(clientIP));
+                logMsg(LogLevel::WARN, "pairing",
+                       "Invalid PIN attempt from " + std::string(clientIP));
                 send(cs, R"({"ok":false,"error":"invalid or expired PIN"})", 46, 0);
             }
         }

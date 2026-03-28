@@ -19,12 +19,8 @@ static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
     //    Check X-Device-Id header first, then fall back to body JSON
     std::string deviceId;
     auto hdr = req.headers.find("X-Device-Id");
-    if (hdr != req.headers.end()) {
-        deviceId = hdr->second;
-    }
-    if (deviceId.empty() && !req.body.empty()) {
-        deviceId = jsonGetString(req.body, "deviceId");
-    }
+    if (hdr != req.headers.end()) { deviceId = hdr->second; }
+    if (deviceId.empty() && !req.body.empty()) { deviceId = jsonGetString(req.body, "deviceId"); }
     if (!deviceId.empty()) {
         std::lock_guard<std::mutex> lk(g_configMtx);
         for (const auto& d : g_config.pairedDevices) {
@@ -58,9 +54,8 @@ static std::string buildConnectionsJson(SessionService& svc) {
 
         json += "{\"connectionId\":\"conn_";
         json += tokenHex;
-        json += "\",\"deviceId\":\"" + jsonEscape(cs.deviceId) +
-                "\",\"deviceName\":\"" + jsonEscape(cs.deviceName) +
-                "\",\"senderIP\":\"" + jsonEscape(cs.clientIP) + "\"";
+        json += "\",\"deviceId\":\"" + jsonEscape(cs.deviceId) + "\",\"deviceName\":\"" +
+                jsonEscape(cs.deviceName) + "\",\"senderIP\":\"" + jsonEscape(cs.clientIP) + "\"";
 
         json += ",\"connectedAtEpoch\":" + std::to_string(cs.connectedAtEpoch);
 
@@ -169,22 +164,24 @@ void httpThread(SessionService& svc) {
     });
 
     // ── Protected routes ────────────────────────────────────────────────
-    g_httpServer.Get("/api/vigem/status", [&svc](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-        bool installed = isVigemInstalled();
-        bool available = svc.isViGEmAvailable();
-        char json[128];
-        snprintf(json, sizeof(json), R"({"installed":%s,"available":%s})",
-                 installed ? "true" : "false", available ? "true" : "false");
-        res.set_content(json, "application/json");
-    });
+    g_httpServer.Get("/api/vigem/status",
+                     [&svc](const httplib::Request& req, httplib::Response& res) {
+                         if (!requireAuth(req, res)) return;
+                         bool installed = isVigemInstalled();
+                         bool available = svc.isViGEmAvailable();
+                         char json[128];
+                         snprintf(json, sizeof(json), R"({"installed":%s,"available":%s})",
+                                  installed ? "true" : "false", available ? "true" : "false");
+                         res.set_content(json, "application/json");
+                     });
 
     g_httpServer.Get("/api/status", [&svc](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
         char senderIP[INET_ADDRSTRLEN] = "none";
         uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
         if (ipRaw != 0) {
-            in_addr ia; ia.s_addr = ipRaw;
+            in_addr ia;
+            ia.s_addr = ipRaw;
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
         bool vigemUp = svc.isViGEmAvailable();
@@ -194,10 +191,8 @@ void httpThread(SessionService& svc) {
             json, sizeof(json),
             R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s,"vigemInstalled":%s,"vigemAvailable":%s})",
             g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
-            senderIP, g_config.udpPort, g_config.webPort,
-            g_config.autoStart ? "true" : "false",
-            vigemInstalled ? "true" : "false",
-            vigemUp ? "true" : "false");
+            senderIP, g_config.udpPort, g_config.webPort, g_config.autoStart ? "true" : "false",
+            vigemInstalled ? "true" : "false", vigemUp ? "true" : "false");
         res.set_content(json, "application/json");
     });
 
@@ -229,7 +224,9 @@ void httpThread(SessionService& svc) {
                              body.find("\"autoStart\": true") != std::string::npos;
         setAutoStart(g_config.autoStart);
         saveConfig(g_config);
-        logMsg(LogLevel::INFO, "web", "Config updated: udpPort=" + std::to_string(g_config.udpPort) + " autoStart=" + std::string(g_config.autoStart ? "true" : "false"));
+        logMsg(LogLevel::INFO, "web",
+               "Config updated: udpPort=" + std::to_string(g_config.udpPort) +
+                   " autoStart=" + std::string(g_config.autoStart ? "true" : "false"));
         res.set_content(R"({"ok":true})", "application/json");
     });
 
@@ -274,7 +271,8 @@ void httpThread(SessionService& svc) {
         char senderIP[INET_ADDRSTRLEN] = "none";
         uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
         if (ipRaw != 0) {
-            in_addr ia; ia.s_addr = ipRaw;
+            in_addr ia;
+            ia.s_addr = ipRaw;
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
         uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed);
@@ -286,15 +284,11 @@ void httpThread(SessionService& svc) {
                  R"("lastLoopUs":%llu,"maxLoopUs":%llu,"senderIP":"%s","udpPort":%d,)"
                  R"("decryptFail":%llu,"replayDrop":%llu,)"
                  R"("vigemInstalled":%s,"vigemAvailable":%s})",
-                 g_listening.load() ? "true" : "false",
-                 (unsigned long long)g_packetCount.load(),
-                 (unsigned long long)g_submitOk.load(),
-                 (unsigned long long)g_submitFail.load(),
-                 (unsigned long long)g_lastLoopUs.load(),
-                 (unsigned long long)maxUs, senderIP, g_config.udpPort,
-                 (unsigned long long)g_decryptFail.load(),
-                 (unsigned long long)g_replayDrop.load(),
-                 vigemInst ? "true" : "false",
+                 g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
+                 (unsigned long long)g_submitOk.load(), (unsigned long long)g_submitFail.load(),
+                 (unsigned long long)g_lastLoopUs.load(), (unsigned long long)maxUs, senderIP,
+                 g_config.udpPort, (unsigned long long)g_decryptFail.load(),
+                 (unsigned long long)g_replayDrop.load(), vigemInst ? "true" : "false",
                  vigemUp ? "true" : "false");
         res.set_content(json, "application/json");
     });
@@ -302,7 +296,8 @@ void httpThread(SessionService& svc) {
     // ── Connection management endpoints ──────────────────────────────
 
     // POST /api/connections — open a new connection for a paired device
-    g_httpServer.Post("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
+    g_httpServer.Post("/api/connections", [&svc](const httplib::Request& req,
+                                                 httplib::Response& res) {
         if (!requireAuth(req, res)) return;
 
         auto deviceId = jsonGetString(req.body, "deviceId");
@@ -318,11 +313,15 @@ void httpThread(SessionService& svc) {
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
             for (auto& d : g_config.pairedDevices) {
-                if (d.id == deviceId) { found = &d; break; }
+                if (d.id == deviceId) {
+                    found = &d;
+                    break;
+                }
             }
         }
         if (!found) {
-            logMsg(LogLevel::WARN, "web", "POST /api/connections: device not paired (id=" + deviceId + ")");
+            logMsg(LogLevel::WARN, "web",
+                   "POST /api/connections: device not paired (id=" + deviceId + ")");
             res.status = 403;
             res.set_content(R"({"error":"device not paired"})", "application/json");
             return;
@@ -337,7 +336,8 @@ void httpThread(SessionService& svc) {
         // Decode shared key
         uint8_t sharedKey[CRYPTO_KEY_SIZE];
         if (!hexDecode(found->sharedKeyHex, sharedKey, CRYPTO_KEY_SIZE)) {
-            logMsg(LogLevel::ERR, "web", "POST /api/connections: invalid shared key for " + found->name);
+            logMsg(LogLevel::ERR, "web",
+                   "POST /api/connections: invalid shared key for " + found->name);
             res.status = 500;
             res.set_content(R"({"error":"invalid shared key"})", "application/json");
             return;
@@ -366,39 +366,40 @@ void httpThread(SessionService& svc) {
     });
 
     // GET /api/connections — list active connections
-    g_httpServer.Get("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-        res.set_content(buildConnectionsJson(svc), "application/json");
-    });
+    g_httpServer.Get("/api/connections",
+                     [&svc](const httplib::Request& req, httplib::Response& res) {
+                         if (!requireAuth(req, res)) return;
+                         res.set_content(buildConnectionsJson(svc), "application/json");
+                     });
 
     // DELETE /api/connections/:id — close a connection
-    g_httpServer.Delete(R"(/api/connections/(\w+))",
-        [&svc](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-        auto connId = req.matches[1].str();
+    g_httpServer.Delete(
+        R"(/api/connections/(\w+))", [&svc](const httplib::Request& req, httplib::Response& res) {
+            if (!requireAuth(req, res)) return;
+            auto connId = req.matches[1].str();
 
-        // Parse token from connId (format: conn_XXXXXXXX)
-        std::string tokenStr = connId;
-        if (tokenStr.substr(0, 5) == "conn_") tokenStr = tokenStr.substr(5);
+            // Parse token from connId (format: conn_XXXXXXXX)
+            std::string tokenStr = connId;
+            if (tokenStr.substr(0, 5) == "conn_") tokenStr = tokenStr.substr(5);
 
-        uint32_t token = 0;
-        if (sscanf(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
-            res.status = 404;
-            res.set_content(R"({"error":"connection not found"})", "application/json");
-            return;
-        }
+            uint32_t token = 0;
+            if (sscanf(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
+                res.status = 404;
+                res.set_content(R"({"error":"connection not found"})", "application/json");
+                return;
+            }
 
-        // Delegate teardown entirely to SessionService
-        int removed = svc.closeSession(token);
-        if (removed < 0) {
-            res.status = 404;
-            res.set_content(R"({"error":"connection not found"})", "application/json");
-            return;
-        }
+            // Delegate teardown entirely to SessionService
+            int removed = svc.closeSession(token);
+            if (removed < 0) {
+                res.status = 404;
+                res.set_content(R"({"error":"connection not found"})", "application/json");
+                return;
+            }
 
-        res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
-                        "application/json");
-    });
+            res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
+                            "application/json");
+        });
 
     // ── Log endpoint ────────────────────────────────────────────────
     g_httpServer.Get("/api/logs", [](const httplib::Request& req, httplib::Response& res) {
@@ -413,7 +414,7 @@ void httpThread(SessionService& svc) {
         std::lock_guard<std::mutex> lk(g_logMtx);
 
         // How many entries exist in the ring
-        int count = (int)std::min(g_logSeq, (uint64_t)LOG_RING_SIZE);
+        int count = static_cast<int>(std::min(g_logSeq, static_cast<uint64_t>(LOG_RING_SIZE)));
         uint64_t oldestSeq = g_logSeq - count; // seq of the oldest entry in ring
 
         std::string json = "{\"seq\":" + std::to_string(g_logSeq) + ",\"entries\":[";
@@ -430,14 +431,14 @@ void httpThread(SessionService& svc) {
             first = false;
 
             auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                e.timestamp.time_since_epoch()).count();
-            const char* lvl = (e.level == LogLevel::ERR) ? "error"
-                            : (e.level == LogLevel::WARN) ? "warn" : "info";
+                                e.timestamp.time_since_epoch())
+                                .count();
+            const char* lvl = (e.level == LogLevel::ERR)    ? "error"
+                              : (e.level == LogLevel::WARN) ? "warn"
+                                                            : "info";
 
-            json += "{\"seq\":" + std::to_string(entrySeq) +
-                    ",\"ts\":" + std::to_string(epoch_ms) +
-                    ",\"level\":\"" + lvl +
-                    "\",\"source\":\"" + jsonEscape(e.source) +
+            json += "{\"seq\":" + std::to_string(entrySeq) + ",\"ts\":" + std::to_string(epoch_ms) +
+                    ",\"level\":\"" + lvl + "\",\"source\":\"" + jsonEscape(e.source) +
                     "\",\"message\":\"" + jsonEscape(e.message) + "\"}";
         }
         json += "]}";
@@ -455,63 +456,61 @@ void httpThread(SessionService& svc) {
 
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
-        res.set_chunked_content_provider("text/event-stream",
-            [&svc](size_t /*offset*/, httplib::DataSink& sink) {
-                while (g_appRunning) {
-                    // Build status snapshot
-                    char senderIP[INET_ADDRSTRLEN] = "none";
-                    uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
-                    if (ipRaw != 0) {
-                        in_addr ia; ia.s_addr = ipRaw;
-                        inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
-                    }
-
-                    std::string connJson = buildConnectionsJson(svc);
-
-                    uint64_t logSeqNow;
-                    {
-                        std::lock_guard<std::mutex> lk2(g_logMtx);
-                        logSeqNow = g_logSeq;
-                    }
-
-                    bool vigemUp = svc.isViGEmAvailable();
-                    bool vigemInst = isVigemInstalled();
-                    char statusBuf[1024];
-                    snprintf(statusBuf, sizeof(statusBuf),
-                        R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,)"
-                        R"("autoStart":%s,"vigemInstalled":%s,"vigemAvailable":%s,)"
-                        R"("submitOk":%llu,"submitFail":%llu,)"
-                        R"("lastLoopUs":%llu,"decryptFail":%llu,"replayDrop":%llu,)"
-                        R"("logSeq":%llu})",
-                        g_listening.load() ? "true" : "false",
-                        (unsigned long long)g_packetCount.load(),
-                        senderIP, g_config.udpPort,
-                        g_config.autoStart ? "true" : "false",
-                        vigemInst ? "true" : "false",
-                        vigemUp ? "true" : "false",
-                        (unsigned long long)g_submitOk.load(),
-                        (unsigned long long)g_submitFail.load(),
-                        (unsigned long long)g_lastLoopUs.load(),
-                        (unsigned long long)g_decryptFail.load(),
-                        (unsigned long long)g_replayDrop.load(),
-                        (unsigned long long)logSeqNow);
-
-                    std::string event = "event: status\ndata: ";
-                    event += statusBuf;
-                    event += "\n\n";
-
-                    event += "event: connections\ndata: ";
-                    event += connJson;
-                    event += "\n\n";
-
-                    if (!sink.write(event.c_str(), event.size())) return false;
-                    // Sleep 1 second between updates
-                    for (int i = 0; i < 10 && g_appRunning; i++) Sleep(100);
+        res.set_chunked_content_provider("text/event-stream", [&svc](size_t /*offset*/,
+                                                                     httplib::DataSink& sink) {
+            while (g_appRunning) {
+                // Build status snapshot
+                char senderIP[INET_ADDRSTRLEN] = "none";
+                uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
+                if (ipRaw != 0) {
+                    in_addr ia;
+                    ia.s_addr = ipRaw;
+                    inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
                 }
-                return false;
-            });
+
+                std::string connJson = buildConnectionsJson(svc);
+
+                uint64_t logSeqNow;
+                {
+                    std::lock_guard<std::mutex> lk2(g_logMtx);
+                    logSeqNow = g_logSeq;
+                }
+
+                bool vigemUp = svc.isViGEmAvailable();
+                bool vigemInst = isVigemInstalled();
+                char statusBuf[1024];
+                snprintf(statusBuf, sizeof(statusBuf),
+                         R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,)"
+                         R"("autoStart":%s,"vigemInstalled":%s,"vigemAvailable":%s,)"
+                         R"("submitOk":%llu,"submitFail":%llu,)"
+                         R"("lastLoopUs":%llu,"decryptFail":%llu,"replayDrop":%llu,)"
+                         R"("logSeq":%llu})",
+                         g_listening.load() ? "true" : "false",
+                         (unsigned long long)g_packetCount.load(), senderIP, g_config.udpPort,
+                         g_config.autoStart ? "true" : "false", vigemInst ? "true" : "false",
+                         vigemUp ? "true" : "false", (unsigned long long)g_submitOk.load(),
+                         (unsigned long long)g_submitFail.load(),
+                         (unsigned long long)g_lastLoopUs.load(),
+                         (unsigned long long)g_decryptFail.load(),
+                         (unsigned long long)g_replayDrop.load(), (unsigned long long)logSeqNow);
+
+                std::string event = "event: status\ndata: ";
+                event += statusBuf;
+                event += "\n\n";
+
+                event += "event: connections\ndata: ";
+                event += connJson;
+                event += "\n\n";
+
+                if (!sink.write(event.c_str(), event.size())) return false;
+                // Sleep 1 second between updates
+                for (int i = 0; i < 10 && g_appRunning; i++) Sleep(100);
+            }
+            return false;
+        });
     });
 
-    logMsg(LogLevel::INFO, "web", "Web server starting on 0.0.0.0:" + std::to_string(g_config.webPort));
+    logMsg(LogLevel::INFO, "web",
+           "Web server starting on 0.0.0.0:" + std::to_string(g_config.webPort));
     g_httpServer.listen("0.0.0.0", g_config.webPort);
 }

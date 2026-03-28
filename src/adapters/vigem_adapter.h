@@ -16,7 +16,7 @@
 #include <mutex>
 
 class ViGEmAdapter : public IViGemPort {
-public:
+  public:
     ViGEmAdapter();
     ~ViGEmAdapter() override;
 
@@ -28,11 +28,10 @@ public:
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     bool isDriverInstalled() override;
 
-private:
+  private:
     HANDLE busHandle_ = INVALID_HANDLE_VALUE;
     mutable std::mutex busMtx_;
 
     // Per-serial pre-allocated overlapped events for fast submission
     std::unordered_map<uint32_t, HANDLE> submitEvents_;
 };
-

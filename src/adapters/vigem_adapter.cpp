@@ -6,16 +6,14 @@
 // ── Raw ViGEm driver functions (defined in vigem.cpp / infra) ───────────────
 extern HANDLE openVigemBus();
 extern bool pluginTarget(HANDLE bus, unsigned long serial);
-extern bool submitReportFast(HANDLE bus, unsigned long serial,
-                             const XUSB_REPORT& rpt, HANDLE event);
+extern bool submitReportFast(HANDLE bus, unsigned long serial, const XUSB_REPORT& rpt,
+                             HANDLE event);
 extern void unplugTarget(HANDLE bus, unsigned long serial);
 extern bool isVigemInstalled();
 
 ViGEmAdapter::ViGEmAdapter() = default;
 
-ViGEmAdapter::~ViGEmAdapter() {
-    closeBus();
-}
+ViGEmAdapter::~ViGEmAdapter() { closeBus(); }
 
 bool ViGEmAdapter::ensureBusOpen() {
     std::lock_guard<std::mutex> lk(busMtx_);
@@ -82,14 +80,9 @@ bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     auto it = submitEvents_.find(serial);
     if (it != submitEvents_.end()) evt = it->second;
 
-    if (evt) {
-        return submitReportFast(busHandle_, (unsigned long)serial, rpt, evt);
-    }
+    if (evt != nullptr) { return submitReportFast(busHandle_, (unsigned long)serial, rpt, evt); }
     // Fallback (should not happen)
     return false;
 }
 
-bool ViGEmAdapter::isDriverInstalled() {
-    return isVigemInstalled();
-}
-
+bool ViGEmAdapter::isDriverInstalled() { return isVigemInstalled(); }
