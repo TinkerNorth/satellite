@@ -4,4 +4,7 @@
 #pragma once
 #include "globals.h"
 
-void receiverThread();
+class SessionService;
+class ClientAdapter;
+
+void receiverThread(SessionService& svc, ClientAdapter& client);

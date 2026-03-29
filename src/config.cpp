@@ -97,6 +97,7 @@ Config loadConfig() {
                 dev.name = jsonGetString(obj, "name");
                 dev.lastIP = jsonGetString(obj, "lastIP");
                 dev.pairedAt = jsonGetString(obj, "pairedAt");
+                dev.sharedKeyHex = jsonGetString(obj, "sharedKey");
                 if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
                 pos = objEnd + 1;
             }
@@ -120,7 +121,7 @@ void saveConfig(const Config& cfg) {
         const auto& d = cfg.pairedDevices[i];
         f << "    {\"id\":\"" << jsonEscape(d.id) << "\",\"name\":\"" << jsonEscape(d.name)
           << "\",\"lastIP\":\"" << jsonEscape(d.lastIP) << "\",\"pairedAt\":\""
-          << jsonEscape(d.pairedAt) << "\"}";
+          << jsonEscape(d.pairedAt) << "\",\"sharedKey\":\"" << jsonEscape(d.sharedKeyHex) << "\"}";
         if (i + 1 < cfg.pairedDevices.size()) f << ",";
         f << "\n";
     }
@@ -129,7 +130,7 @@ void saveConfig(const Config& cfg) {
 
 // ── Auto-start (registry) ───────────────────────────────────────────────────
 void setAutoStart(bool enable) {
-    HKEY key;
+    HKEY key = nullptr;
     const char* run = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
     if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return;
     if (enable) {
@@ -144,11 +145,12 @@ void setAutoStart(bool enable) {
 }
 
 bool getAutoStart() {
-    HKEY key;
+    HKEY key = nullptr;
     const char* run = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
         return false;
-    DWORD type, size = 0;
+    }
+    DWORD type = 0, size = 0;
     bool exists = RegQueryValueExA(key, APP_NAME, nullptr, &type, nullptr, &size) == ERROR_SUCCESS;
     RegCloseKey(key);
     return exists;

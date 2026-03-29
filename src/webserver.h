@@ -4,4 +4,6 @@
 #pragma once
 #include "globals.h"
 
-void httpThread();
+class SessionService;
+
+void httpThread(SessionService& svc);

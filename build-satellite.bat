@@ -8,8 +8,9 @@ setlocal
 
 set CXX=g++
 set CXXFLAGS=-O2 -Wall -Wextra -std=c++17 -D_WIN32_WINNT=0x0A00 -static
-set INCLUDES=-Ivigem/include -Ilib
-set SRC_FILES=src/main.cpp src/globals.cpp src/config.cpp src/crypto.cpp src/vigem.cpp src/receiver.cpp src/webserver.cpp src/pairing.cpp src/discovery.cpp src/tray.cpp
+set INCLUDES=-Ivigem/include -Ilib -Ilib/libsodium/libsodium-win64/include
+set LIBDIRS=-Llib/libsodium/libsodium-win64/lib
+set SRC_FILES=src/main.cpp src/globals.cpp src/config.cpp src/crypto.cpp src/vigem.cpp src/receiver.cpp src/webserver.cpp src/pairing.cpp src/discovery.cpp src/tray.cpp src/core/session_service.cpp src/adapters/vigem_adapter.cpp src/adapters/client_adapter.cpp src/adapters/log_adapter.cpp
 
 echo === Building Satellite ===
 echo.
@@ -23,7 +24,7 @@ if %ERRORLEVEL% neq 0 (
 echo [OK]  resources
 
 echo [2/2] satellite.exe
-%CXX% %CXXFLAGS% %INCLUDES% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -mwindows
+%CXX% %CXXFLAGS% %INCLUDES% %LIBDIRS% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsodium -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] satellite.exe
     exit /b 1

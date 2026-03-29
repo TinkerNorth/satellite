@@ -1,13 +1,25 @@
 /*
- * main.cpp — WinMain entry point, thread launching
+ * main.cpp — WinMain entry point / Composition Root.
+ *
+ * Instantiates all adapters and the SessionService, then passes references
+ * to the threads that need them.  No business logic lives here.
  */
 #include "globals.h"
 #include "config.h"
+#include "crypto.h"
 #include "receiver.h"
 #include "webserver.h"
 #include "pairing.h"
 #include "discovery.h"
 #include "tray.h"
+
+// Adapters (outbound ports)
+#include "adapters/vigem_adapter.h"
+#include "adapters/client_adapter.h"
+#include "adapters/log_adapter.h"
+
+// Domain service
+#include "core/session_service.h"
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Elevate process priority — critical for low-latency input forwarding
@@ -20,12 +32,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
+    // Initialize libsodium
+    if (!sodiumInit()) {
+        MessageBoxA(nullptr, "Failed to initialize libsodium", APP_TITLE, MB_ICONERROR);
+        return 1;
+    }
+
     // Load config
     g_config = loadConfig();
     g_config.autoStart = getAutoStart();
 
     // Auto-start listener if configured
     if (g_config.autoStart) g_wantListen = true;
+
+    // ── Composition Root: wire adapters → service ────────────────────
+    ViGEmAdapter vigemAdapter;
+    ClientAdapter clientAdapter;
+    LogAdapter logAdapter;
+    SessionService svc(vigemAdapter, clientAdapter, logAdapter);
 
     // Register hidden window class
     WNDCLASSA wc{};
@@ -42,9 +66,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Resolve web/ directory relative to the exe
     g_webDir = getExeDir() + "\\web";
 
-    // Launch worker threads
-    std::thread recvTh(receiverThread);
-    std::thread httpTh(httpThread);
+    // Launch worker threads (pass service & adapters by reference)
+    std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
+    std::thread httpTh(httpThread, std::ref(svc));
     std::thread pairTh(pairingThread);
     std::thread discTh(discoveryThread);
 
@@ -65,6 +89,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     httpTh.join();
     pairTh.join();
     discTh.join();
+
+    // Clean up all remaining sessions before exit
+    svc.closeAllSessions();
 
     removeTrayIcon();
     saveConfig(g_config);

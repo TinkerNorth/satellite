@@ -38,7 +38,7 @@ function navigate(path) {
 }
 
 function showView(id) {
-  ['view-setup', 'view-login', 'view-dashboard', 'view-debug'].forEach(v => {
+  ['view-setup', 'view-login', 'view-dashboard', 'view-debug', 'view-logs'].forEach(v => {
     const el = document.getElementById(v);
     if (el) el.style.display = v === id ? 'block' : 'none';
   });
@@ -62,6 +62,9 @@ async function route() {
   } else if (path === '/debug') {
     showView('view-debug');
     if (typeof initDebug === 'function') initDebug();
+  } else if (path === '/logs') {
+    showView('view-logs');
+    if (typeof initLogs === 'function') initLogs();
   } else {
     if (path !== '/dashboard') { navigate('/dashboard'); return; }
     showView('view-dashboard');

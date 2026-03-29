@@ -55,8 +55,17 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
+; Add Windows Firewall rules for LAN access
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite HTTP"" dir=in action=allow protocol=TCP localport=9877 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (HTTP)..."
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite UDP"" dir=in action=allow protocol=UDP localport=9876 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (UDP)..."
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite Pairing"" dir=in action=allow protocol=TCP localport=9878 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (Pairing)..."
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite Discovery"" dir=in action=allow protocol=UDP localport=9879 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (Discovery)..."
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: shellexec nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "taskkill"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillSatellite"
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite HTTP"""; Flags: runhidden; RunOnceId: "FwHTTP"
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite UDP"""; Flags: runhidden; RunOnceId: "FwUDP"
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite Pairing"""; Flags: runhidden; RunOnceId: "FwPair"
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; RunOnceId: "FwDisc"
 

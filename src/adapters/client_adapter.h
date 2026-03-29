@@ -1,0 +1,45 @@
+/*
+ * adapters/client_adapter.h — IClientPort implementation.
+ *
+ * Wraps encrypted UDP packet sending via Winsock.
+ * Owns: socket reference, token→sockaddr_in mapping.
+ */
+#pragma once
+
+#include "../core/ports.h"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
+#include <unordered_map>
+#include <mutex>
+
+class ClientAdapter : public IClientPort {
+  public:
+    // The adapter borrows the receiver's UDP socket (set after bind).
+    void setSocket(SOCKET sock);
+
+    void updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) override;
+    void removeClientAddr(uint32_t token) override;
+
+    void sendHeartbeatAck(const Connection& conn) override;
+    void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
+                           uint8_t result) override;
+    void sendServerStatus(const Connection& conn, bool vigemAvailable,
+                          uint8_t totalActiveControllers) override;
+    void
+    broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
+                          bool vigemAvailable, uint8_t totalActiveControllers) override;
+
+  private:
+    SOCKET sock_ = INVALID_SOCKET;
+    std::mutex addrMtx_;
+    std::unordered_map<uint32_t, sockaddr_in> addrs_;
+
+    // Build a full encrypted packet and send it.
+    void sendEncryptedPacket(const Connection& conn, const uint8_t* inner, size_t innerLen);
+
+    // Resolve the sockaddr_in for a token.
+    bool getAddr(uint32_t token, sockaddr_in& out);
+};
