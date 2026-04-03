@@ -16,6 +16,19 @@
     </div>
   </div>
 
+  <!-- ── Server offline ── -->
+  <div class="card" id="view-offline" style="display:none">
+    <div class="offline-content">
+      <div class="offline-icon">🛰️</div>
+      <h1 class="offline-title">Server Unreachable</h1>
+      <p class="offline-message">Cannot connect to the Satellite server. It may be stopped or restarting.</p>
+      <div class="offline-progress">
+        <div class="offline-progress-bar"></div>
+      </div>
+      <p class="offline-hint">Waiting for server… will reconnect automatically.</p>
+    </div>
+  </div>
+
   <!-- ── First-launch setup ── -->
   <div class="card" id="view-setup" style="display:none">
     <h1>⚡ Initial Setup</h1>
@@ -56,6 +69,7 @@
     <div class="header-row">
       <h1><span class="dot off" id="dot"></span> Satellite</h1>
       <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="navigate('/settings')" title="Settings">⚙</button>
         <button class="btn-icon" onclick="navigate('/logs')" title="Logs">📋</button>
         <button class="btn-icon" onclick="navigate('/debug')" title="Debug">🔬</button>
         <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
@@ -71,18 +85,8 @@
     </div>
 
     <div class="controls">
-      <div class="row">
-        <label>UDP Port</label>
-        <input type="number" id="udpPort" min="1024" max="65535" value="9876">
-      </div>
-      <div class="toggle-row">
-        <span>Start with Windows</span>
-        <label class="switch"><input type="checkbox" id="autoStart"><span class="slider"></span></label>
-      </div>
       <div class="btn-row">
         <button class="btn btn-start" id="btnToggle" onclick="toggle()">Start</button>
-        <button class="btn btn-save" id="btnSave" onclick="saveConfig()" disabled>Save Config</button>
-        <button class="btn btn-undo" id="btnUndo" onclick="undoConfig()" disabled>Undo</button>
       </div>
     </div>
 
@@ -171,11 +175,38 @@
     </div>
   </div>
 
+  <!-- ── Settings ── -->
+  <div class="card" id="view-settings" style="display:none">
+    <div class="header-row">
+      <h1>⚙ Settings</h1>
+      <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back">←</button>
+        <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="row">
+        <label>UDP Port</label>
+        <input type="number" id="settings-udpPort" min="1024" max="65535" value="9876">
+      </div>
+      <div class="toggle-row">
+        <span>Start with Windows</span>
+        <label class="switch"><input type="checkbox" id="settings-autoStart"><span class="slider"></span></label>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" disabled>Save Config</button>
+        <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" disabled>Undo</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Debug ── -->
   <div class="card card-wide" id="view-debug" style="display:none">
     <div class="header-row">
       <h1>🔬 Debug Telemetry</h1>
       <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="navigate('/settings')" title="Settings">⚙</button>
         <button class="btn-icon" onclick="navigate('/logs')" title="Logs">📋</button>
         <button class="btn-icon" onclick="navigate('/dashboard')" title="Back">←</button>
         <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
@@ -268,6 +299,7 @@
     <div class="header-row">
       <h1>📋 System Logs</h1>
       <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="navigate('/settings')" title="Settings">⚙</button>
         <button class="btn-icon" onclick="navigate('/dashboard')" title="Back">←</button>
         <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
       </div>
@@ -306,6 +338,7 @@
   <script src="setup.js"></script>
   <script src="login.js"></script>
   <script src="dashboard.js"></script>
+  <script src="settings.js"></script>
   <script src="debug.js"></script>
   <script src="logs.js"></script>
 </body>

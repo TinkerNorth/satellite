@@ -45,6 +45,9 @@ class SessionService {
     // Handle controller remove request.
     void handleControllerRemove(uint32_t token, uint8_t ctrlIdx);
 
+    // Handle controller type change request.
+    void handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8_t controllerType);
+
     // ── Pre-decrypt helpers (called under lock briefly) ─────────────────
 
     // Look up a connection's key and last counter for decryption.
@@ -70,6 +73,7 @@ class SessionService {
             uint8_t index;
             uint32_t serial;
             bool active;
+            uint8_t controllerType;
         };
         std::vector<CtrlInfo> controllers;
     };

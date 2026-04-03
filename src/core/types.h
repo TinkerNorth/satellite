@@ -27,6 +27,7 @@ inline const uint16_t MSG_CONTROLLER_ADD = 0x0004;
 inline const uint16_t MSG_CONTROLLER_REMOVE = 0x0005;
 inline const uint16_t MSG_CONTROLLER_ACK = 0x0006;
 inline const uint16_t MSG_SERVER_STATUS = 0x0007;
+inline const uint16_t MSG_CONTROLLER_TYPE = 0x0008;
 
 // Controller ACK result codes
 inline const uint8_t ACK_OK = 0x00;
@@ -49,6 +50,36 @@ inline const int HEARTBEAT_MISS_MAX = 3;
 inline const int MAX_CONTROLLERS_PER_CONN = 16;
 inline const int MAX_VIGEM_CONTROLLERS = 16;
 
+// ── Controller types ─────────────────────────────────────────────────────────
+inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
+inline const uint8_t CONTROLLER_TYPE_PLAYSTATION = 1;
+inline const uint8_t CONTROLLER_TYPE_COUNT = 2;
+
+inline const char* controllerTypeName(uint8_t type) {
+    switch (type) {
+    case CONTROLLER_TYPE_XBOX:
+        return "xbox";
+    case CONTROLLER_TYPE_PLAYSTATION:
+        return "playstation";
+    default:
+        return "xbox";
+    }
+}
+
+inline const char* controllerTypeLabel(uint8_t type) {
+    switch (type) {
+    case CONTROLLER_TYPE_XBOX:
+        return "Xbox";
+    case CONTROLLER_TYPE_PLAYSTATION:
+        return "PlayStation";
+    default:
+        return "Xbox";
+    }
+}
+
+// Returns true if this controller type should use a DualShock 4 virtual device.
+inline bool controllerTypeUsesDS4(uint8_t type) { return type == CONTROLLER_TYPE_PLAYSTATION; }
+
 // ── Gamepad report (binary-compatible with XUSB_REPORT / XINPUT_GAMEPAD) ───
 struct GamepadReport {
     uint16_t wButtons = 0;
@@ -66,6 +97,7 @@ struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // ViGEm serial (1–16), 0 = not plugged
     bool active = false;
+    uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
     GamepadReport lastReport{};
 };
 

@@ -459,6 +459,18 @@ h2.section-title { font-size: 14px; }
 }
 .ctrl-dot.ok  { background: #22C55E; }
 .ctrl-dot.err { background: #EF4444; }
+.ctrl-type-icon {
+  width: 32px;
+  height: 32px;
+  margin-right: 10px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: contain;
+}
+.ctrl-row {
+  display: flex;
+  align-items: center;
+}
 .conn-meta-label {
   font-size: 10px;
   color: #6B7280;
@@ -905,3 +917,54 @@ h2.section-title { font-size: 14px; }
 .log-msg { color: #D1D5DB; overflow: hidden; text-overflow: ellipsis; }
 .log-line.log-error .log-msg { color: #F87171; }
 .log-line.log-warn .log-msg  { color: #FBBF24; }
+
+/* ── Server offline view ───────────────────────────────────────── */
+.offline-content {
+  text-align: center;
+  padding: 32px 16px;
+}
+.offline-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.6;
+  animation: offline-pulse 2s ease-in-out infinite;
+}
+@keyframes offline-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50%      { opacity: 0.8; transform: scale(1.05); }
+}
+.offline-title {
+  color: #F1F5F9;
+  font-size: 1.4rem;
+  margin: 0 0 8px;
+}
+.offline-message {
+  color: #94A3B8;
+  font-size: 0.95rem;
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+.offline-progress {
+  width: 100%;
+  height: 4px;
+  background: #1E293B;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.offline-progress-bar {
+  width: 30%;
+  height: 100%;
+  background: linear-gradient(90deg, #FFC107, #FF9800);
+  border-radius: 2px;
+  animation: offline-slide 1.5s ease-in-out infinite;
+}
+@keyframes offline-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(433%); }
+}
+.offline-hint {
+  color: #64748B;
+  font-size: 0.85rem;
+  margin: 0;
+}

@@ -112,8 +112,8 @@ OpenSessionResult SessionService::openSession(const std::string& deviceId,
     connections_[token] = conn;
 
     // Count available slots
-    int slots = static_cast<int>(
-        std::count(std::begin(serialInUse_), std::end(serialInUse_), false));
+    int slots =
+        static_cast<int>(std::count(std::begin(serialInUse_), std::end(serialInUse_), false));
 
     log_.logMsg(LogLevel::INFO, "service",
                 "Connection opened for " + deviceName + " (token " + std::to_string(token) + ")");
@@ -158,6 +158,9 @@ bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
     if (!ctrl.active) return false;
 
     ctrl.lastReport = report;
+    if (controllerTypeUsesDS4(ctrl.controllerType)) {
+        return vigem_.submitDS4Report(ctrl.serialNo, report);
+    }
     return vigem_.submitReport(ctrl.serialNo, report);
 }
 
@@ -204,7 +207,9 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
         return;
     }
 
-    if (!vigem_.pluginDevice(serial)) {
+    bool plugOk = controllerTypeUsesDS4(ctrl.controllerType) ? vigem_.pluginDeviceDS4(serial)
+                                                             : vigem_.pluginDevice(serial);
+    if (!plugOk) {
         releaseSerial(serial);
         client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_PLUGIN_FAIL);
         return;
@@ -249,6 +254,50 @@ void SessionService::handleControllerRemove(uint32_t token, uint8_t ctrlIdx) {
 
     closeVigemBusIfIdle();
     client_.sendControllerAck(conn, MSG_CONTROLLER_REMOVE, ctrlIdx, ACK_OK);
+    broadcastStatus();
+}
+
+void SessionService::handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8_t controllerType) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return;
+
+    Connection& conn = it->second;
+    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+
+    Controller& ctrl = conn.controllers[ctrlIdx];
+    if (!ctrl.active) return;
+
+    uint8_t safeType =
+        (controllerType < CONTROLLER_TYPE_COUNT) ? controllerType : CONTROLLER_TYPE_XBOX;
+    uint8_t oldType = ctrl.controllerType;
+    ctrl.controllerType = safeType;
+
+    // If switching between DS4 and non-DS4, replug the virtual device
+    bool wasDS4 = controllerTypeUsesDS4(oldType);
+    bool isDS4 = controllerTypeUsesDS4(safeType);
+    if (wasDS4 != isDS4 && ctrl.serialNo != 0) {
+        uint32_t serial = ctrl.serialNo;
+        vigem_.unplugDevice(serial);
+
+        bool ok = isDS4 ? vigem_.pluginDeviceDS4(serial) : vigem_.pluginDevice(serial);
+        if (!ok) {
+            log_.logMsg(LogLevel::ERR, "service",
+                        "Failed to replug controller #" + std::to_string(ctrlIdx) + " as " +
+                            controllerTypeLabel(safeType));
+        } else {
+            log_.logMsg(LogLevel::INFO, "service",
+                        "Replugged controller #" + std::to_string(ctrlIdx) + " as " +
+                            controllerTypeLabel(safeType) + " (serial " + std::to_string(serial) +
+                            ")");
+        }
+    } else {
+        log_.logMsg(LogLevel::INFO, "service",
+                    "Controller #" + std::to_string(ctrlIdx) + " type set to " +
+                        controllerTypeLabel(safeType) + " (" + conn.deviceName + ")");
+    }
+
+    // Broadcast updated state so web UI refreshes
     broadcastStatus();
 }
 
@@ -297,7 +346,7 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
 
         for (auto& ctrl : conn.controllers) {
             if (ctrl.active) {
-                cs.controllers.push_back({ctrl.index, ctrl.serialNo, true});
+                cs.controllers.push_back({ctrl.index, ctrl.serialNo, true, ctrl.controllerType});
                 snap.totalControllers++;
             }
         }
@@ -348,7 +397,7 @@ int SessionService::totalActiveControllers() const {
 
 int SessionService::availableSlots() const {
     std::lock_guard<std::mutex> lk(mtx_);
-    int slots = static_cast<int>(
-        std::count(std::begin(serialInUse_), std::end(serialInUse_), false));
+    int slots =
+        static_cast<int>(std::count(std::begin(serialInUse_), std::end(serialInUse_), false));
     return slots;
 }

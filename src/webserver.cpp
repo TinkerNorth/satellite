@@ -41,7 +41,7 @@ static std::string readFile(const std::string& path) {
 }
 
 // ── Build connections JSON from SessionService snapshot ──────────────────────
-static std::string buildConnectionsJson(SessionService& svc) {
+static std::string buildConnectionsJson(const SessionService& svc) {
     auto snap = svc.getConnectionsSnapshot();
     std::string json = "{\"connections\":[";
     bool first = true;
@@ -66,7 +66,10 @@ static std::string buildConnectionsJson(SessionService& svc) {
             cfirst = false;
             json += "{\"controllerIndex\":" + std::to_string(ctrl.index) +
                     ",\"vigemSerialNo\":" + std::to_string(ctrl.serial) +
-                    ",\"vigemPluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") + "}";
+                    ",\"vigemPluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") +
+                    ",\"controllerType\":\"" + controllerTypeName(ctrl.controllerType) +
+                    "\",\"controllerTypeLabel\":\"" + controllerTypeLabel(ctrl.controllerType) +
+                    "\"}";
         }
         json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) + "}";
     }
@@ -97,6 +100,7 @@ void httpThread(SessionService& svc) {
     g_httpServer.Get("/setup", serveIndex);
     g_httpServer.Get("/login", serveIndex);
     g_httpServer.Get("/dashboard", serveIndex);
+    g_httpServer.Get("/settings", serveIndex);
     g_httpServer.Get("/debug", serveIndex);
     g_httpServer.Get("/logs", serveIndex);
 

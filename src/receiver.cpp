@@ -149,8 +149,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 g_lastLoopUs.store(us, std::memory_order_relaxed);
                 uint64_t prev = g_maxLoopUs.load(std::memory_order_relaxed);
                 while (us > prev &&
-                       !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed)) {
-                }
+                       !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed)) {}
 
                 if (ok) {
                     g_submitOk.fetch_add(1, std::memory_order_relaxed);
@@ -173,6 +172,13 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 if (msgLen < 1) break;
                 uint8_t ctrlIdx = payload[0];
                 svc.handleControllerRemove(token, ctrlIdx);
+                break;
+            }
+            case MSG_CONTROLLER_TYPE: {
+                if (msgLen < 2) break;
+                uint8_t ctrlIdx = payload[0];
+                uint8_t ctrlType = payload[1];
+                svc.handleControllerType(token, ctrlIdx, ctrlType);
                 break;
             }
             default:

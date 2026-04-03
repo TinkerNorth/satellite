@@ -40,11 +40,18 @@ void showTrayMenu(HWND hwnd) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_TRAYICON:
-        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) { showTrayMenu(hwnd); }
+        if (lp == WM_LBUTTONDBLCLK) {
+            char url[64];
+            snprintf(url, sizeof(url), "http://localhost:%d", g_config.webPort);
+            ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (lp == WM_RBUTTONUP) {
+            showTrayMenu(hwnd);
+        }
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
-        default: break;
+        default:
+            break;
         case IDM_OPEN_UI: {
             char url[64];
             snprintf(url, sizeof(url), "http://localhost:%d", g_config.webPort);

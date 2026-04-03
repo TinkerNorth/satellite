@@ -31,14 +31,61 @@ async function apiPost(url, body = {}) {
   });
 }
 
+// ── Offline detection & reconnection ────────────────────────────────────────
+let offlinePollingTimer = null;
+let isOffline = false;
+// Remember the last path the user was on before going offline
+let lastPathBeforeOffline = null;
+
+function showOffline() {
+  if (isOffline) return;
+  isOffline = true;
+  // Stop any active SSE connections
+  if (typeof stopSSE === 'function') stopSSE();
+  lastPathBeforeOffline = window.location.pathname;
+  showView('view-offline');
+  startOfflinePolling();
+}
+
+function startOfflinePolling() {
+  stopOfflinePolling();
+  offlinePollingTimer = setInterval(async () => {
+    try {
+      const r = await fetch('/api/auth/status', { signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        // Server is back — stop polling and re-route
+        stopOfflinePolling();
+        isOffline = false;
+        // Re-route which will check auth status and either
+        // go to login (if expired) or restore the previous view
+        const restorePath = lastPathBeforeOffline || '/dashboard';
+        lastPathBeforeOffline = null;
+        window.history.replaceState({}, '', restorePath);
+        route();
+      }
+    } catch (e) {
+      // Still offline — keep polling
+    }
+  }, 3000);
+}
+
+function stopOfflinePolling() {
+  if (offlinePollingTimer) {
+    clearInterval(offlinePollingTimer);
+    offlinePollingTimer = null;
+  }
+}
+
 // ── Routing ─────────────────────────────────────────────────────────────────
 function navigate(path) {
   window.history.pushState({}, '', path);
   route();
 }
 
+const ALL_VIEWS = ['view-offline', 'view-setup', 'view-login', 'view-dashboard', 'view-debug', 'view-logs', 'view-settings'];
+
 function showView(id) {
-  ['view-setup', 'view-login', 'view-dashboard', 'view-debug', 'view-logs'].forEach(v => {
+  ALL_VIEWS.forEach(v => {
     const el = document.getElementById(v);
     if (el) el.style.display = v === id ? 'block' : 'none';
   });
@@ -48,7 +95,15 @@ async function route() {
   const path = window.location.pathname;
 
   // Check auth status first
-  const { ok, data } = await api('/api/auth/status');
+  const { ok, status, data } = await api('/api/auth/status');
+
+  // Network error (status 0) = server unreachable
+  if (!ok && status === 0) {
+    showOffline();
+    return;
+  }
+
+  // Server responded but something else went wrong
   if (!ok) { showView('view-login'); return; }
 
   if (!data.configured) {
@@ -59,6 +114,9 @@ async function route() {
     if (path !== '/login') { navigate('/login'); return; }
     showView('view-login');
     if (typeof initLogin === 'function') initLogin();
+  } else if (path === '/settings') {
+    showView('view-settings');
+    if (typeof initSettings === 'function') initSettings();
   } else if (path === '/debug') {
     showView('view-debug');
     if (typeof initDebug === 'function') initDebug();

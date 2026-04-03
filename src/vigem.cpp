@@ -76,6 +76,29 @@ bool pluginTarget(HANDLE bus, ULONG serial) {
     return ok;
 }
 
+bool pluginTargetDS4(HANDLE bus, ULONG serial) {
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    DWORD xfr = 0;
+    VIGEM_PLUGIN_TARGET plug;
+    VIGEM_PLUGIN_TARGET_INIT(&plug, serial, DualShock4Wired);
+    plug.VendorId = 0x054C;
+    plug.ProductId = 0x05C4;
+    DeviceIoControl(bus, IOCTL_VIGEM_PLUGIN_TARGET, &plug, plug.Size, nullptr, 0, &xfr, &ov);
+    bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
+    if (ok) {
+        VIGEM_WAIT_DEVICE_READY wr;
+        VIGEM_WAIT_DEVICE_READY_INIT(&wr, serial);
+        OVERLAPPED ov2{};
+        ov2.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        DeviceIoControl(bus, IOCTL_VIGEM_WAIT_DEVICE_READY, &wr, wr.Size, nullptr, 0, &xfr, &ov2);
+        GetOverlappedResult(bus, &ov2, &xfr, TRUE);
+        CloseHandle(ov2.hEvent);
+    }
+    CloseHandle(ov.hEvent);
+    return ok;
+}
+
 bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -97,6 +120,18 @@ bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE e
     XUSB_SUBMIT_REPORT_INIT(&sr, serial);
     sr.Report = rpt;
     DeviceIoControl(bus, IOCTL_XUSB_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
+    bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
+    return ok;
+}
+
+bool submitReportDS4Fast(HANDLE bus, ULONG serial, const DS4_REPORT& rpt, HANDLE event) {
+    OVERLAPPED ov{};
+    ov.hEvent = event;
+    DWORD xfr = 0;
+    DS4_SUBMIT_REPORT sr;
+    DS4_SUBMIT_REPORT_INIT(&sr, serial);
+    sr.Report = rpt;
+    DeviceIoControl(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
     bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
     return ok;
 }
