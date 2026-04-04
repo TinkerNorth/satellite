@@ -19,7 +19,7 @@
   <!-- ── Server offline ── -->
   <div class="card" id="view-offline" style="display:none">
     <div class="offline-content">
-      <div class="offline-icon">🛰️</div>
+      <div class="offline-icon"><img src="img/satellite-icon.png" alt="Satellite" class="brand-icon brand-icon-lg"></div>
       <h1 class="offline-title">Server Unreachable</h1>
       <p class="offline-message">Cannot connect to the Satellite server. It may be stopped or restarting.</p>
       <div class="offline-progress">
@@ -104,12 +104,12 @@
       <!-- Flow diagram -->
       <div class="vigem-flow" id="vigem-flow">
         <div class="flow-step done">
-          <span class="flow-icon">📡</span>
+          <span class="flow-icon"><img src="img/dish-icon.png" alt="Dish" class="brand-icon"></span>
           <span class="flow-text">Sender</span>
         </div>
         <div class="flow-arrow">→</div>
         <div class="flow-step done">
-          <span class="flow-icon">🛰️</span>
+          <span class="flow-icon"><img src="img/satellite-icon.png" alt="Satellite" class="brand-icon"></span>
           <span class="flow-text">Satellite</span>
         </div>
         <div class="flow-arrow">→</div>
@@ -216,7 +216,7 @@
     <!-- Live pipeline flow -->
     <div class="debug-pipeline">
       <div class="pipe-stage" id="pipe-udp">
-        <div class="pipe-icon">📡</div>
+        <div class="pipe-icon"><img src="img/dish-icon.png" alt="Dish" class="brand-icon"></div>
         <div class="pipe-label">UDP Recv</div>
         <div class="pipe-value" id="d-pps">0 pps</div>
       </div>
