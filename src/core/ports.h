@@ -22,14 +22,20 @@ class IViGemPort {
     // Is the bus currently open?
     virtual bool isBusOpen() const = 0;
 
-    // Plug in a virtual Xbox controller. Returns true on success.
+    // Plug in a virtual Xbox 360 controller. Returns true on success.
     virtual bool pluginDevice(uint32_t serial) = 0;
 
-    // Unplug a virtual Xbox controller.
+    // Plug in a virtual DualShock 4 controller. Returns true on success.
+    virtual bool pluginDeviceDS4(uint32_t serial) = 0;
+
+    // Unplug a virtual controller (any type).
     virtual void unplugDevice(uint32_t serial) = 0;
 
-    // Submit a gamepad report. Returns true on success.
+    // Submit an Xbox 360 gamepad report. Returns true on success.
     virtual bool submitReport(uint32_t serial, const GamepadReport& report) = 0;
+
+    // Submit a DS4 gamepad report (converted from GamepadReport). Returns true on success.
+    virtual bool submitDS4Report(uint32_t serial, const GamepadReport& report) = 0;
 
     // Check if the ViGEm driver is installed on this system.
     virtual bool isDriverInstalled() = 0;

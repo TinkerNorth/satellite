@@ -26,6 +26,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_BUSENUM_VIGEM,
 #define IOCTL_VIGEM_CHECK_VERSION       BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x002)
 #define IOCTL_VIGEM_WAIT_DEVICE_READY   BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x003)
 #define IOCTL_XUSB_SUBMIT_REPORT        BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x201)
+#define IOCTL_DS4_SUBMIT_REPORT         BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x202)
 
 // Plugin target request
 typedef struct _VIGEM_PLUGIN_TARGET {
@@ -91,5 +92,19 @@ VOID FORCEINLINE XUSB_SUBMIT_REPORT_INIT(PXUSB_SUBMIT_REPORT Report, ULONG Seria
     RtlZeroMemory(Report, sizeof(XUSB_SUBMIT_REPORT));
     Report->Size = sizeof(XUSB_SUBMIT_REPORT);
     Report->SerialNo = SerialNo;
+}
+
+// Submit DualShock 4 report
+typedef struct _DS4_SUBMIT_REPORT {
+    ULONG Size;
+    ULONG SerialNo;
+    DS4_REPORT Report;
+} DS4_SUBMIT_REPORT, *PDS4_SUBMIT_REPORT;
+
+VOID FORCEINLINE DS4_SUBMIT_REPORT_INIT(PDS4_SUBMIT_REPORT Report, ULONG SerialNo) {
+    RtlZeroMemory(Report, sizeof(DS4_SUBMIT_REPORT));
+    Report->Size = sizeof(DS4_SUBMIT_REPORT);
+    Report->SerialNo = SerialNo;
+    DS4_REPORT_INIT(&Report->Report);
 }
 

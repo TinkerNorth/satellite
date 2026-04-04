@@ -1,33 +1,11 @@
 // ── dashboard.js — Main dashboard with SSE real-time updates ─────────────────
 
-let configDirty = false;
-let savedConfig = { udpPort: 9876, autoStart: false };
 let eventSource = null;
-
-function checkConfigDirty() {
-  const curPort = parseInt(document.getElementById('udpPort').value);
-  const curAuto = document.getElementById('autoStart').checked;
-  const dirty = curPort !== savedConfig.udpPort || curAuto !== savedConfig.autoStart;
-  configDirty = dirty;
-  document.getElementById('btnSave').disabled = !dirty;
-  document.getElementById('btnUndo').disabled = !dirty;
-}
-
-function undoConfig() {
-  document.getElementById('udpPort').value = savedConfig.udpPort;
-  document.getElementById('autoStart').checked = savedConfig.autoStart;
-  checkConfigDirty();
-}
 
 function initDashboard() {
   startSSE();
   loadDevices();
   checkVigemStatus();
-
-  const udp = document.getElementById('udpPort');
-  const auto_ = document.getElementById('autoStart');
-  if (udp) udp.addEventListener('input', checkConfigDirty);
-  if (auto_) auto_.addEventListener('change', checkConfigDirty);
 }
 
 // ── SSE (replaces polling) ──────────────────────────────────────────────────
@@ -50,9 +28,24 @@ function startSSE() {
   });
 
   eventSource.onerror = () => {
-    // Reconnect after a short delay
     stopSSE();
-    setTimeout(startSSE, 3000);
+    // Check if server is truly unreachable vs just a transient SSE glitch
+    fetch('/api/auth/status', { signal: AbortSignal.timeout(3000) })
+      .then(r => {
+        if (r.ok) {
+          // Server is still up, just SSE dropped — reconnect
+          setTimeout(startSSE, 2000);
+        } else if (r.status === 401) {
+          // Session expired
+          navigate('/login');
+        } else {
+          showOffline();
+        }
+      })
+      .catch(() => {
+        // Server unreachable
+        showOffline();
+      });
   };
 
   // Also do an initial fetch
@@ -76,13 +69,6 @@ function updateStatus(d) {
   const btn = document.getElementById('btnToggle');
   btn.textContent = d.listening ? 'Stop' : 'Start';
   btn.className = 'btn ' + (d.listening ? 'btn-stop' : 'btn-start');
-
-  if (!configDirty) {
-    savedConfig.udpPort = d.udpPort;
-    savedConfig.autoStart = d.autoStart;
-    document.getElementById('udpPort').value = d.udpPort;
-    document.getElementById('autoStart').checked = d.autoStart;
-  }
 
   // Update ViGEm status from SSE data if available
   if (d.vigemInstalled !== undefined) {
@@ -127,11 +113,16 @@ function updateConnections(d) {
     } else {
       ctrlEl.innerHTML = allCtrls.map(ctrl => {
         const ok = ctrl.vigemPluggedIn;
+        const ctrlType = ctrl.controllerType || 'xbox';
+        const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
         return `
         <div class="ctrl-item">
-          <div class="ctrl-info">
-            <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>Controller #${ctrl.controllerIndex}</span>
-            <span class="ctrl-meta">${esc(ctrl.deviceName)} · ViGEm Serial ${ctrl.vigemSerialNo} · ${ok ? 'Plugged In' : 'Error'}</span>
+          <div class="ctrl-row">
+            <img class="ctrl-type-icon" src="img/ctrl-${esc(ctrlType)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}">
+            <div class="ctrl-info">
+              <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>Controller #${ctrl.controllerIndex} · ${esc(ctrlLabel)}</span>
+              <span class="ctrl-meta">${esc(ctrl.deviceName)} · ViGEm Serial ${ctrl.vigemSerialNo} · ${ok ? 'Plugged In' : 'Error'}</span>
+            </div>
           </div>
         </div>`;
       }).join('');
@@ -147,7 +138,11 @@ async function poll() {
     if (r.status === 401) { stopSSE(); navigate('/login'); return; }
     const d = await r.json();
     updateStatus(d);
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    // Server unreachable during poll
+    showOffline();
+    return;
+  }
   checkVigemStatus();
 }
 
@@ -157,17 +152,6 @@ async function toggle() {
   const d = await r.json();
   await apiPost(d.listening ? '/api/stop' : '/api/start');
   setTimeout(poll, 300);
-}
-
-async function saveConfig() {
-  await apiPost('/api/config', {
-    udpPort: parseInt(document.getElementById('udpPort').value),
-    autoStart: document.getElementById('autoStart').checked
-  });
-  savedConfig.udpPort = parseInt(document.getElementById('udpPort').value);
-  savedConfig.autoStart = document.getElementById('autoStart').checked;
-  checkConfigDirty();
-  poll();
 }
 
 // ── Connections ─────────────────────────────────────────────────────────────

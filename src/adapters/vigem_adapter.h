@@ -24,8 +24,10 @@ class ViGEmAdapter : public IViGemPort {
     void closeBus() override;
     bool isBusOpen() const override;
     bool pluginDevice(uint32_t serial) override;
+    bool pluginDeviceDS4(uint32_t serial) override;
     void unplugDevice(uint32_t serial) override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
+    bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     bool isDriverInstalled() override;
 
   private:

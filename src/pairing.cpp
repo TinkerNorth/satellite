@@ -103,8 +103,7 @@ void pairingThread() {
 
                 // Decode client's public key
                 uint8_t clientPk[32];
-                bool hasClientKey =
-                    !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
+                bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
 
                 std::string sharedKeyHex;
                 if (hasClientKey) {
