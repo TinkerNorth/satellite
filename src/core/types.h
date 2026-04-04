@@ -46,7 +46,7 @@ inline const int CRYPTO_NONCE_SIZE = 12;
 
 // Timeouts & limits
 inline const int HEARTBEAT_INTERVAL_SEC = 2;
-inline const int HEARTBEAT_MISS_MAX = 3;
+inline const int HEARTBEAT_MISS_MAX = 5;
 inline const int MAX_CONTROLLERS_PER_CONN = 16;
 inline const int MAX_VIGEM_CONTROLLERS = 16;
 

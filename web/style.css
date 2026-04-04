@@ -24,6 +24,7 @@ body {
   border-radius: 6px;
   padding: 32px;
   width: 440px;
+  margin: 0 auto;
   border: 1px solid rgba(255, 193, 7, 0.12);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.6),
@@ -923,8 +924,17 @@ h2.section-title { font-size: 14px; }
   text-align: center;
   padding: 32px 16px;
 }
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  vertical-align: middle;
+}
+.brand-icon-lg {
+  width: 64px;
+  height: 64px;
+}
 .offline-icon {
-  font-size: 48px;
   margin-bottom: 16px;
   opacity: 0.6;
   animation: offline-pulse 2s ease-in-out infinite;
