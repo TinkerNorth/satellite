@@ -18,27 +18,35 @@ static int g_pass = 0;
 static int g_fail = 0;
 static std::string g_currentTest;
 
-#define TEST(name) \
-    do { g_currentTest = (name); } while(0)
+#define TEST(name)                                                                                 \
+    do { g_currentTest = (name); } while (0)
 
-#define EXPECT(cond) \
-    do { \
-        if (cond) { g_pass++; } \
-        else { g_fail++; std::cerr << "  FAIL [" << g_currentTest << "] " \
-            << __FILE__ << ":" << __LINE__ << "  " << #cond << "\n"; } \
-    } while(0)
+#define EXPECT(cond)                                                                               \
+    do {                                                                                           \
+        if (cond) {                                                                                \
+            g_pass++;                                                                              \
+        } else {                                                                                   \
+            g_fail++;                                                                              \
+            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
+                      << "  " << #cond << "\n";                                                    \
+        }                                                                                          \
+    } while (0)
 
-#define EXPECT_EQ(a, b) \
-    do { \
-        auto _a = (a); auto _b = (b); \
-        if (_a == _b) { g_pass++; } \
-        else { g_fail++; std::cerr << "  FAIL [" << g_currentTest << "] " \
-            << __FILE__ << ":" << __LINE__ << "  " << #a << " == " << #b \
-            << "  (got " << _a << " vs " << _b << ")\n"; } \
-    } while(0)
+#define EXPECT_EQ(a, b)                                                                            \
+    do {                                                                                           \
+        auto _a = (a);                                                                             \
+        auto _b = (b);                                                                             \
+        if (_a == _b) {                                                                            \
+            g_pass++;                                                                              \
+        } else {                                                                                   \
+            g_fail++;                                                                              \
+            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
+                      << "  " << #a << " == " << #b << "  (got " << _a << " vs " << _b << ")\n";   \
+        }                                                                                          \
+    } while (0)
 
-// ── Mock IViGemPort ─────────────────────────────────────────────────────────
-struct MockViGem : IViGemPort {
+// ── Mock IGamepadPort ───────────────────────────────────────────────────────
+struct MockViGem : IGamepadPort {
     bool busOpen = false;
     bool ensureBusReturnVal = true;
     bool pluginReturnVal = true;
@@ -57,14 +65,40 @@ struct MockViGem : IViGemPort {
     std::vector<uint32_t> unpluggedSerials;
     GamepadReport lastSubmittedReport{};
 
-    bool ensureBusOpen() override { ensureBusCalls++; if (ensureBusReturnVal) busOpen = true; return ensureBusReturnVal; }
-    void closeBus() override { closeBusCalls++; busOpen = false; }
+    bool ensureBusOpen() override {
+        ensureBusCalls++;
+        if (ensureBusReturnVal) busOpen = true;
+        return ensureBusReturnVal;
+    }
+    void closeBus() override {
+        closeBusCalls++;
+        busOpen = false;
+    }
     bool isBusOpen() const override { return busOpen; }
-    bool pluginDevice(uint32_t serial) override { pluginCalls++; pluggedSerials.push_back(serial); return pluginReturnVal; }
-    bool pluginDeviceDS4(uint32_t serial) override { pluginDS4Calls++; pluggedSerials.push_back(serial); return pluginReturnVal; }
-    void unplugDevice(uint32_t serial) override { unplugCalls++; unpluggedSerials.push_back(serial); }
-    bool submitReport(uint32_t, const GamepadReport& r) override { submitCalls++; lastSubmittedReport = r; return submitReturnVal; }
-    bool submitDS4Report(uint32_t, const GamepadReport& r) override { submitDS4Calls++; lastSubmittedReport = r; return submitReturnVal; }
+    bool pluginDevice(uint32_t serial) override {
+        pluginCalls++;
+        pluggedSerials.push_back(serial);
+        return pluginReturnVal;
+    }
+    bool pluginDeviceDS4(uint32_t serial) override {
+        pluginDS4Calls++;
+        pluggedSerials.push_back(serial);
+        return pluginReturnVal;
+    }
+    void unplugDevice(uint32_t serial) override {
+        unplugCalls++;
+        unpluggedSerials.push_back(serial);
+    }
+    bool submitReport(uint32_t, const GamepadReport& r) override {
+        submitCalls++;
+        lastSubmittedReport = r;
+        return submitReturnVal;
+    }
+    bool submitDS4Report(uint32_t, const GamepadReport& r) override {
+        submitDS4Calls++;
+        lastSubmittedReport = r;
+        return submitReturnVal;
+    }
     bool isDriverInstalled() override { return driverInstalled; }
 
     void reset() { *this = MockViGem{}; }
@@ -89,11 +123,15 @@ struct MockClient : IClientPort {
     void sendHeartbeatAck(const Connection&) override { heartbeatAckCalls++; }
     void sendControllerAck(const Connection&, uint16_t t, uint8_t c, uint8_t r) override {
         controllerAckCalls++;
-        lastAckType = t; lastAckCtrl = c; lastAckResult = r;
+        lastAckType = t;
+        lastAckCtrl = c;
+        lastAckResult = r;
     }
     void sendServerStatus(const Connection&, bool, uint8_t) override { serverStatusCalls++; }
-    void broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>&,
-                               bool, uint8_t) override { broadcastCalls++; }
+    void broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>&, bool,
+                               uint8_t) override {
+        broadcastCalls++;
+    }
 
     void reset() { *this = MockClient{}; }
 };
@@ -111,14 +149,12 @@ struct MockLog : ILogPort {
 };
 
 // ── Helper ──────────────────────────────────────────────────────────────────
-static const uint8_t TEST_KEY[CRYPTO_KEY_SIZE] = {
-    1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,
-    17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32
-};
+static const uint8_t TEST_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
+                                                  12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                                                  23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
 
-static OpenSessionResult openTestSession(SessionService& svc,
-    const std::string& devId = "dev1",
-    const std::string& devName = "TestDevice") {
+static OpenSessionResult openTestSession(SessionService& svc, const std::string& devId = "dev1",
+                                         const std::string& devName = "TestDevice") {
     return svc.openSession(devId, devName, "192.168.1.100", TEST_KEY);
 }
 
@@ -126,7 +162,9 @@ static OpenSessionResult openTestSession(SessionService& svc,
 
 static void test_openSession_basic() {
     TEST("openSession — basic");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -139,7 +177,9 @@ static void test_openSession_basic() {
 
 static void test_openSession_replacesStale() {
     TEST("openSession — replaces stale connection for same deviceId");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r1 = openTestSession(svc);
@@ -153,7 +193,9 @@ static void test_openSession_replacesStale() {
 
 static void test_openSession_multipleDevices() {
     TEST("openSession — multiple different devices");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r1 = svc.openSession("dev1", "D1", "1.2.3.4", TEST_KEY);
@@ -166,7 +208,9 @@ static void test_openSession_multipleDevices() {
 
 static void test_closeSession_basic() {
     TEST("closeSession — removes connection");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -177,7 +221,9 @@ static void test_closeSession_basic() {
 
 static void test_closeSession_withControllers() {
     TEST("closeSession — unplugs active controllers");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -193,7 +239,9 @@ static void test_closeSession_withControllers() {
 
 static void test_closeSession_invalidToken() {
     TEST("closeSession — invalid token returns -1");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     EXPECT_EQ(svc.closeSession(99999), -1);
@@ -201,7 +249,9 @@ static void test_closeSession_invalidToken() {
 
 static void test_closeAllSessions() {
     TEST("closeAllSessions — clears everything");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     svc.openSession("d1", "D1", "1.1.1.1", TEST_KEY);
@@ -214,7 +264,9 @@ static void test_closeAllSessions() {
 
 static void test_handleControllerAdd_success() {
     TEST("handleControllerAdd — success path");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -228,7 +280,9 @@ static void test_handleControllerAdd_success() {
 
 static void test_handleControllerAdd_alreadyExists() {
     TEST("handleControllerAdd — already exists");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -241,7 +295,9 @@ static void test_handleControllerAdd_alreadyExists() {
 
 static void test_handleControllerAdd_vigemUnavailable() {
     TEST("handleControllerAdd — ViGEm bus unavailable");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     vigem.ensureBusReturnVal = false;
     SessionService svc(vigem, client, log);
 
@@ -253,12 +309,15 @@ static void test_handleControllerAdd_vigemUnavailable() {
 
 static void test_handleControllerAdd_noSlots() {
     TEST("handleControllerAdd — no serial slots left");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     // Fill all 16 slots across multiple sessions
     for (int i = 0; i < 16; i++) {
-        auto r = svc.openSession("dev" + std::to_string(i), "D" + std::to_string(i), "1.1.1.1", TEST_KEY);
+        auto r = svc.openSession("dev" + std::to_string(i), "D" + std::to_string(i), "1.1.1.1",
+                                 TEST_KEY);
         svc.handleControllerAdd(r.token, 0);
     }
     EXPECT_EQ(svc.availableSlots(), 0);
@@ -271,7 +330,9 @@ static void test_handleControllerAdd_noSlots() {
 
 static void test_handleControllerAdd_pluginFail() {
     TEST("handleControllerAdd — plugin fails");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     vigem.pluginReturnVal = false;
     SessionService svc(vigem, client, log);
 
@@ -283,7 +344,9 @@ static void test_handleControllerAdd_pluginFail() {
 
 static void test_handleControllerAdd_invalidToken() {
     TEST("handleControllerAdd — invalid token");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     svc.handleControllerAdd(99999, 0);
@@ -292,7 +355,9 @@ static void test_handleControllerAdd_invalidToken() {
 
 static void test_handleControllerAdd_outOfBounds() {
     TEST("handleControllerAdd — ctrlIdx out of bounds");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -303,7 +368,9 @@ static void test_handleControllerAdd_outOfBounds() {
 
 static void test_handleControllerRemove_success() {
     TEST("handleControllerRemove — success");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -319,7 +386,9 @@ static void test_handleControllerRemove_success() {
 
 static void test_handleControllerRemove_notActive() {
     TEST("handleControllerRemove — controller not active");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -329,7 +398,9 @@ static void test_handleControllerRemove_notActive() {
 
 static void test_handleControllerRemove_closesBusWhenIdle() {
     TEST("handleControllerRemove — closes bus when no controllers left");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -343,7 +414,9 @@ static void test_handleControllerRemove_closesBusWhenIdle() {
 
 static void test_handleGamepadData_success() {
     TEST("handleGamepadData — submits report");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -359,7 +432,9 @@ static void test_handleGamepadData_success() {
 
 static void test_handleGamepadData_invalidToken() {
     TEST("handleGamepadData — invalid token");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     GamepadReport rpt{};
@@ -368,7 +443,9 @@ static void test_handleGamepadData_invalidToken() {
 
 static void test_handleGamepadData_inactiveController() {
     TEST("handleGamepadData — inactive controller");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -379,7 +456,9 @@ static void test_handleGamepadData_inactiveController() {
 
 static void test_handleGamepadData_outOfBounds() {
     TEST("handleGamepadData — ctrlIdx out of bounds");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -389,7 +468,9 @@ static void test_handleGamepadData_outOfBounds() {
 
 static void test_handleHeartbeat() {
     TEST("handleHeartbeat — sends ACK and status");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -400,7 +481,9 @@ static void test_handleHeartbeat() {
 
 static void test_handleHeartbeat_invalidToken() {
     TEST("handleHeartbeat — invalid token is no-op");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     svc.handleHeartbeat(99999);
@@ -409,7 +492,9 @@ static void test_handleHeartbeat_invalidToken() {
 
 static void test_getDecryptInfo() {
     TEST("getDecryptInfo — returns key and counter");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -422,7 +507,9 @@ static void test_getDecryptInfo() {
 
 static void test_getDecryptInfo_invalidToken() {
     TEST("getDecryptInfo — invalid token returns false");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     uint8_t outKey[CRYPTO_KEY_SIZE] = {};
@@ -432,21 +519,26 @@ static void test_getDecryptInfo_invalidToken() {
 
 static void test_updatePostDecrypt() {
     TEST("updatePostDecrypt — updates counter and address");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
     svc.updatePostDecrypt(r.token, 42, "10.0.0.1", 5555);
     EXPECT_EQ(client.updateAddrCalls, 1);
 
-    uint8_t k[CRYPTO_KEY_SIZE]; uint32_t c = 0;
+    uint8_t k[CRYPTO_KEY_SIZE];
+    uint32_t c = 0;
     svc.getDecryptInfo(r.token, k, c);
     EXPECT_EQ(c, (uint32_t)42);
 }
 
 static void test_isDeviceConnected() {
     TEST("isDeviceConnected");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     EXPECT(!svc.isDeviceConnected("dev1"));
@@ -458,7 +550,9 @@ static void test_isDeviceConnected() {
 
 static void test_getConnectionsSnapshot() {
     TEST("getConnectionsSnapshot");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto snap0 = svc.getConnectionsSnapshot();
@@ -477,7 +571,9 @@ static void test_getConnectionsSnapshot() {
 
 static void test_stats() {
     TEST("isViGEmAvailable / totalActiveControllers / availableSlots");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     EXPECT(!svc.isViGEmAvailable());
@@ -493,7 +589,9 @@ static void test_stats() {
 
 static void test_serialRecycling() {
     TEST("serial recycling after controller remove");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -509,7 +607,9 @@ static void test_serialRecycling() {
 
 static void test_broadcastOnControllerChange() {
     TEST("broadcast status on controller add/remove");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -522,7 +622,9 @@ static void test_broadcastOnControllerChange() {
 
 static void test_staleReplacementCleansUpControllers() {
     TEST("openSession stale replacement unplugs old controllers");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r1 = openTestSession(svc);
@@ -563,7 +665,8 @@ static void test_controllerTypeName_xbox() {
 
 static void test_controllerTypeName_playstation() {
     TEST("controllerTypeName — PLAYSTATION returns 'playstation'");
-    EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_PLAYSTATION)), std::string("playstation"));
+    EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_PLAYSTATION)),
+              std::string("playstation"));
 }
 
 static void test_controllerTypeName_outOfRange() {
@@ -580,7 +683,8 @@ static void test_controllerTypeLabel_xbox() {
 
 static void test_controllerTypeLabel_playstation() {
     TEST("controllerTypeLabel — PLAYSTATION returns 'PlayStation'");
-    EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_PLAYSTATION)), std::string("PlayStation"));
+    EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_PLAYSTATION)),
+              std::string("PlayStation"));
 }
 
 static void test_controllerTypeLabel_outOfRange() {
@@ -616,7 +720,9 @@ static void test_controllerType_constants() {
 
 static void test_handleControllerType_setsTypeAndBroadcasts() {
     TEST("handleControllerType — sets type in state and broadcasts to clients");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -633,18 +739,22 @@ static void test_handleControllerType_setsTypeAndBroadcasts() {
 
 static void test_handleControllerType_invalidToken() {
     TEST("handleControllerType — invalid token is silently ignored");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     int prevBroadcasts = client.broadcastCalls;
     svc.handleControllerType(99999, 0, CONTROLLER_TYPE_PLAYSTATION);
     EXPECT_EQ(client.broadcastCalls, prevBroadcasts); // no broadcast
-    EXPECT_EQ(vigem.unplugCalls, 0); // no unplug
+    EXPECT_EQ(vigem.unplugCalls, 0);                  // no unplug
 }
 
 static void test_handleControllerType_outOfBoundsCtrlIdx() {
     TEST("handleControllerType — ctrlIdx >= MAX_CONTROLLERS_PER_CONN is ignored");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -658,7 +768,9 @@ static void test_handleControllerType_outOfBoundsCtrlIdx() {
 
 static void test_handleControllerType_inactiveControllerIgnored() {
     TEST("handleControllerType — inactive (not added) controller is ignored");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -671,7 +783,9 @@ static void test_handleControllerType_inactiveControllerIgnored() {
 
 static void test_handleControllerType_invalidValueClampsToXbox() {
     TEST("handleControllerType — out-of-range type value clamps to XBOX");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -684,7 +798,9 @@ static void test_handleControllerType_invalidValueClampsToXbox() {
 
 static void test_handleControllerType_boundaryValueClampsToXbox() {
     TEST("handleControllerType — CONTROLLER_TYPE_COUNT (2) clamps to XBOX");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -699,23 +815,27 @@ static void test_handleControllerType_boundaryValueClampsToXbox() {
 
 static void test_handleControllerType_xboxToPlaystationReplugsAsDS4() {
     TEST("handleControllerType — Xbox→PlayStation unplugs Xbox, replugs as DS4");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
     svc.handleControllerAdd(r.token, 0);
-    EXPECT_EQ(vigem.pluginCalls, 1);   // initial Xbox plugin
+    EXPECT_EQ(vigem.pluginCalls, 1); // initial Xbox plugin
     EXPECT_EQ(vigem.pluginDS4Calls, 0);
 
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
-    EXPECT_EQ(vigem.unplugCalls, 1);   // unplugged Xbox
+    EXPECT_EQ(vigem.unplugCalls, 1);    // unplugged Xbox
     EXPECT_EQ(vigem.pluginDS4Calls, 1); // replugged as DS4
-    EXPECT_EQ(vigem.pluginCalls, 1);   // Xbox plugin count unchanged
+    EXPECT_EQ(vigem.pluginCalls, 1);    // Xbox plugin count unchanged
 }
 
 static void test_handleControllerType_playstationToXboxReplugsAsXbox() {
     TEST("handleControllerType — PlayStation→Xbox unplugs DS4, replugs as Xbox");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -725,13 +845,15 @@ static void test_handleControllerType_playstationToXboxReplugsAsXbox() {
     int prevPluginXbox = vigem.pluginCalls;
 
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);
-    EXPECT_EQ(vigem.unplugCalls, prevUnplugs + 1);     // unplugged DS4
-    EXPECT_EQ(vigem.pluginCalls, prevPluginXbox + 1);   // replugged as Xbox
+    EXPECT_EQ(vigem.unplugCalls, prevUnplugs + 1);    // unplugged DS4
+    EXPECT_EQ(vigem.pluginCalls, prevPluginXbox + 1); // replugged as Xbox
 }
 
 static void test_handleControllerType_xboxToXboxNoReplug() {
     TEST("handleControllerType — Xbox→Xbox does NOT replug");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -744,7 +866,9 @@ static void test_handleControllerType_xboxToXboxNoReplug() {
 
 static void test_handleControllerType_playstationToPlaystationNoReplug() {
     TEST("handleControllerType — PlayStation→PlayStation does NOT replug");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -760,7 +884,9 @@ static void test_handleControllerType_playstationToPlaystationNoReplug() {
 
 static void test_handleControllerType_replugPreservesSerial() {
     TEST("handleControllerType — replug reuses the same ViGEm serial number");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -781,7 +907,9 @@ static void test_handleControllerType_replugPreservesSerial() {
 
 static void test_handleControllerType_replugFailureLogsError() {
     TEST("handleControllerType — replug failure is logged as error");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -804,7 +932,9 @@ static void test_handleControllerType_replugFailureLogsError() {
 
 static void test_handleControllerType_multipleRapidSwitches() {
     TEST("handleControllerType — rapid Xbox↔PS↔Xbox↔PS is stable");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -815,9 +945,9 @@ static void test_handleControllerType_multipleRapidSwitches() {
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION); // replug
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);        // replug
 
-    EXPECT_EQ(vigem.unplugCalls, 4); // 4 replugs
+    EXPECT_EQ(vigem.unplugCalls, 4);    // 4 replugs
     EXPECT_EQ(vigem.pluginDS4Calls, 2); // 2 DS4 plugins
-    EXPECT_EQ(vigem.pluginCalls, 3); // 1 initial + 2 Xbox replugs
+    EXPECT_EQ(vigem.pluginCalls, 3);    // 1 initial + 2 Xbox replugs
 
     auto snap = svc.getConnectionsSnapshot();
     EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
@@ -827,7 +957,9 @@ static void test_handleControllerType_multipleRapidSwitches() {
 
 static void test_handleControllerAdd_defaultTypeIsXbox() {
     TEST("handleControllerAdd — default type is XBOX, uses pluginDevice (not DS4)");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -846,7 +978,9 @@ static void test_handleControllerAdd_presetPlaystationType() {
     // separate MSG_CONTROLLER_TYPE message. But if the Controller struct's type
     // were somehow pre-set, add should respect it. This tests that code path.
     // Currently controllers always start as XBOX, so add always uses Xbox plugin.
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -858,7 +992,9 @@ static void test_handleControllerAdd_presetPlaystationType() {
 
 static void test_handleControllerAdd_thenSetPlaystation_fullFlow() {
     TEST("Full flow: add controller → set PlayStation type → DS4 replug");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     // 1. Open session
@@ -873,7 +1009,7 @@ static void test_handleControllerAdd_thenSetPlaystation_fullFlow() {
 
     // 3. Change type to PlayStation
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
-    EXPECT_EQ(vigem.unplugCalls, 1);   // unplug Xbox
+    EXPECT_EQ(vigem.unplugCalls, 1);    // unplug Xbox
     EXPECT_EQ(vigem.pluginDS4Calls, 1); // plugin DS4
 
     // 4. Submit gamepad data — should route to DS4
@@ -892,7 +1028,9 @@ static void test_handleControllerAdd_thenSetPlaystation_fullFlow() {
 
 static void test_gamepadData_xboxTypeUsesSubmitReport() {
     TEST("handleGamepadData — Xbox type uses submitReport (not DS4)");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -910,7 +1048,9 @@ static void test_gamepadData_xboxTypeUsesSubmitReport() {
 
 static void test_gamepadData_playstationTypeUsesSubmitDS4Report() {
     TEST("handleGamepadData — PlayStation type uses submitDS4Report");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -930,7 +1070,9 @@ static void test_gamepadData_playstationTypeUsesSubmitDS4Report() {
 
 static void test_gamepadData_routingSwitchesWithType() {
     TEST("handleGamepadData — routing changes when controller type changes");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -960,7 +1102,9 @@ static void test_gamepadData_routingSwitchesWithType() {
 
 static void test_snapshot_defaultControllerType() {
     TEST("getConnectionsSnapshot — new controller has XBOX type in snapshot");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -973,7 +1117,9 @@ static void test_snapshot_defaultControllerType() {
 
 static void test_snapshot_reflectsTypeChange() {
     TEST("getConnectionsSnapshot — reflects type change to PlayStation");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -986,7 +1132,9 @@ static void test_snapshot_reflectsTypeChange() {
 
 static void test_snapshot_multipleControllersWithDifferentTypes() {
     TEST("getConnectionsSnapshot — multiple controllers can have different types");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -1004,7 +1152,9 @@ static void test_snapshot_multipleControllersWithDifferentTypes() {
 
 static void test_closeSession_unplugsDS4Controllers() {
     TEST("closeSession — correctly unplugs DS4 (PlayStation) controllers");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -1020,7 +1170,9 @@ static void test_closeSession_unplugsDS4Controllers() {
 
 static void test_closeAllSessions_withMixedTypes() {
     TEST("closeAllSessions — unplugs both Xbox and DS4 controllers");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r1 = svc.openSession("dev1", "D1", "1.1.1.1", TEST_KEY);
@@ -1037,7 +1189,9 @@ static void test_closeAllSessions_withMixedTypes() {
 
 static void test_staleReplacement_unplugsDS4Controller() {
     TEST("openSession stale replacement — unplugs DS4 controller from old session");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r1 = openTestSession(svc);
@@ -1055,7 +1209,9 @@ static void test_staleReplacement_unplugsDS4Controller() {
 
 static void test_controllerRemove_thenReaddRetainsTypeFromSameSlot() {
     TEST("Controller remove + re-add — retains type from previous slot state");
-    MockViGem vigem; MockClient client; MockLog log;
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
@@ -1177,4 +1333,3 @@ int main() {
     std::cout << "  STATUS: ALL PASSED\n";
     return 0;
 }
-

@@ -8,31 +8,29 @@
 #include "config.h"
 
 void discoveryThread() {
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+    if (!netInit()) return;
 
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) {
-        WSACleanup();
+        netShutdown();
         return;
     }
 
     // Enable broadcast
-    BOOL bcast = TRUE;
+    int bcast = 1;
     setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&bcast),
                sizeof(bcast));
 
-    // Get computer name for beacon
+    // Get host name for beacon
     char hostname[256] = {};
-    DWORD hsize = sizeof(hostname);
-    GetComputerNameA(hostname, &hsize);
+    netGetHostname(hostname, sizeof(hostname));
 
     sockaddr_in dest{};
     dest.sin_family = AF_INET;
     dest.sin_addr.s_addr = INADDR_BROADCAST;
 
     while (g_appRunning) {
-        dest.sin_port = htons((u_short)g_config.discPort);
+        dest.sin_port = htons((uint16_t)g_config.discPort);
 
         // Build beacon JSON
         char beacon[512];
@@ -44,9 +42,9 @@ void discoveryThread() {
                sizeof(dest));
 
         // Sleep 2 seconds in 100ms increments to allow quick shutdown
-        for (int i = 0; i < 20 && g_appRunning; i++) Sleep(100);
+        for (int i = 0; i < 20 && g_appRunning; i++) netSleepMs(100);
     }
 
     closesocket(sock);
-    WSACleanup();
+    netShutdown();
 }

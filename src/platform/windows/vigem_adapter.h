@@ -1,11 +1,11 @@
 /*
- * adapters/vigem_adapter.h — IViGemPort implementation wrapping ViGEm driver IOCTLs.
+ * adapters/vigem_adapter.h — IGamepadPort implementation wrapping ViGEm driver IOCTLs.
  *
  * Owns: bus handle, per-serial submitEvent handles.
  */
 #pragma once
 
-#include "../core/ports.h"
+#include "core/ports.h"
 
 #include <winsock2.h>
 #include <windows.h>
@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <mutex>
 
-class ViGEmAdapter : public IViGemPort {
+class ViGEmAdapter : public IGamepadPort {
   public:
     ViGEmAdapter();
     ~ViGEmAdapter() override;

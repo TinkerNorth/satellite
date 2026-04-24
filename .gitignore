@@ -7,18 +7,44 @@
 *.ilk
 *.exp
 *.lib
+*.dylib
+*.dSYM/
+
+# CMake
+build/
+build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+# macOS build outputs (staged into workspace by CMake, not source)
+/satellite.app/
+/test_session_service
 
 # IDE / Editor
 .vs/
 .vscode/
+.idea/
 *.suo
 *.user
 *.sln.docstates
+*.swp
 
 # OS
 Thumbs.db
 Desktop.ini
 .DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+
+# Scratch / throwaway logs
+.tmp-*
+/tmp-*
 
 # Vendored libraries (tracked — do NOT ignore lib/)
 # lib/httplib.h is intentionally committed

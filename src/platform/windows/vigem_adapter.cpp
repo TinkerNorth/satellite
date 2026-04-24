@@ -1,5 +1,5 @@
 /*
- * adapters/vigem_adapter.cpp — IViGemPort implementation.
+ * adapters/vigem_adapter.cpp — IGamepadPort implementation (Windows/ViGEm).
  */
 #include "vigem_adapter.h"
 

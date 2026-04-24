@@ -16,7 +16,7 @@ static uint32_t makeRandomToken() {
     return dist(gen);
 }
 
-SessionService::SessionService(IViGemPort& vigem, IClientPort& client, ILogPort& log)
+SessionService::SessionService(IGamepadPort& vigem, IClientPort& client, ILogPort& log)
     : vigem_(vigem), client_(client), log_(log) {}
 
 // ── Internal helpers (caller must hold mtx_) ────────────────────────────────

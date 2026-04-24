@@ -59,9 +59,37 @@ To uninstall, use **Settings → Apps → Installed Apps → Satellite → Unins
 
 ## Building
 
+### Windows
+
 ```batch
 build-satellite.bat
 ```
+
+### macOS
+
+Virtual-gamepad injection is not available on macOS — there is no signed
+DriverKit equivalent of ViGEmBus — so the macOS build produces a server that
+still pairs, authenticates, serves the web UI, and reports status to clients,
+but refuses controller-add requests with `ACK_ERR_VIGEM_UNAVAIL`. This is
+useful for development, protocol testing, and running the web dashboard from
+a Mac; it is **not** a drop-in receiver for game input.
+
+Prerequisites:
+
+- Xcode Command Line Tools (`xcode-select --install`)
+- Homebrew packages: `brew install cmake pkg-config libsodium`
+
+Build:
+
+```bash
+./build-satellite.sh
+```
+
+The script runs `cmake -S . -B build` and `cmake --build build`, producing a
+`satellite.app` bundle at the repo root. Config lives at
+`~/Library/Application Support/satellite/config.json`; the DPAPI-equivalent
+keyfile lives at `~/.config/satellite/keyfile` (mode `0600`). "Run at login"
+is implemented via a `LaunchAgents` plist.
 
 ### Building the installer
 
@@ -143,13 +171,13 @@ After installing, restart your terminal so the tools are on your `PATH`.
 **Format all source files:**
 
 ```powershell
-clang-format -i src/*.cpp src/*.h src/adapters/*.cpp src/adapters/*.h src/core/*.cpp src/core/*.h
+clang-format -i src/core/*.cpp src/core/*.h src/net/*.cpp src/net/*.h src/adapters/*.cpp src/adapters/*.h src/platform/windows/*.cpp src/platform/windows/*.h
 ```
 
 **Lint with clang-tidy:**
 
 ```powershell
-clang-tidy src/*.cpp src/adapters/*.cpp src/core/*.cpp -- -std=c++17 -Ivigem/include -Isrc -Ilib -Ilib/libsodium/libsodium-win64/include -D_WIN32_WINNT=0x0A00 -DCPPHTTPLIB_NO_EXCEPTIONS
+clang-tidy src/core/*.cpp src/net/*.cpp src/adapters/*.cpp src/platform/windows/*.cpp -- -std=c++17 -Ivigem/include -Isrc -Ilib -Ilib/libsodium/libsodium-win64/include -D_WIN32_WINNT=0x0A00 -DCPPHTTPLIB_NO_EXCEPTIONS
 ```
 
 **Run cppcheck:**
@@ -196,7 +224,7 @@ This compiles `tests/test_session_service.cpp` alongside `src/core/session_servi
 │   │   ├── session_service.h   # SessionService declaration
 │   │   └── session_service.cpp # SessionService implementation
 │   ├── adapters/               # Infrastructure adapters
-│   │   ├── vigem_adapter.*     # IViGemPort — ViGEm bus driver
+│   │   ├── vigem_adapter.*     # IGamepadPort — ViGEm bus driver
 │   │   ├── client_adapter.*    # IClientPort — encrypted UDP
 │   │   ├── log_adapter.*       # ILogPort — ring buffer logger
 │   │   └── config_adapter.*    # IConfigPort — JSON config

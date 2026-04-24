@@ -1,16 +1,13 @@
 /*
  * adapters/client_adapter.h — IClientPort implementation.
  *
- * Wraps encrypted UDP packet sending via Winsock.
+ * Wraps encrypted UDP packet sending via the net_compat socket shim.
  * Owns: socket reference, token→sockaddr_in mapping.
  */
 #pragma once
 
-#include "../core/ports.h"
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
+#include "core/ports.h"
+#include "net/net_compat.h"
 
 #include <unordered_map>
 #include <mutex>

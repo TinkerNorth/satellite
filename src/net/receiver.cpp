@@ -9,26 +9,23 @@
 #include "core/session_service.h"
 #include "adapters/client_adapter.h"
 
-// SIO_UDP_CONNRESET is missing from some MinGW headers
-#ifndef SIO_UDP_CONNRESET
-#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
-#endif
-
 // ── Reaper: delegates timeout cleanup to SessionService ──────────────────────
 static void reaperLoop(SessionService& svc) {
     while (g_appRunning && g_wantListen.load()) {
-        Sleep(1000);
+        netSleepMs(1000);
         svc.reapTimedOut();
     }
 }
 
 // ── Main receiver loop ──────────────────────────────────────────────────────
 void receiverThread(SessionService& svc, ClientAdapter& client) {
+#ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     SetThreadAffinityMask(GetCurrentThread(), 1ULL);
+#endif
 
     while (g_appRunning) {
-        while (g_appRunning && !g_wantListen) { Sleep(50); }
+        while (g_appRunning && !g_wantListen) { netSleepMs(50); }
         if (!g_appRunning) break;
 
         int port = g_config.udpPort;
@@ -40,14 +37,11 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             continue;
         }
 
-        BOOL bNewBehavior = FALSE;
-        DWORD dwBytesReturned = 0;
-        WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior), nullptr, 0,
-                 &dwBytesReturned, nullptr, nullptr);
+        netDisableUdpConnReset(sock);
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
-        addr.sin_port = htons((u_short)port);
+        addr.sin_port = htons((uint16_t)port);
         addr.sin_addr.s_addr = INADDR_ANY;
         if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
             logMsg(LogLevel::ERR, "receiver", "Failed to bind UDP port " + std::to_string(port));
@@ -58,9 +52,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
 
         client.setSocket(sock); // Give the client adapter the socket for sending
 
-        DWORD rcvTimeout = 10;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcvTimeout),
-                   sizeof(rcvTimeout));
+        netSetRecvTimeoutMs(sock, 10);
         int rcvBuf = 65536;
         setsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvBuf),
                    sizeof(rcvBuf));
@@ -83,10 +75,10 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
 
         while (g_appRunning && g_wantListen) {
             sockaddr_in sender{};
-            int slen = sizeof(sender);
+            socklen_t slen = sizeof(sender);
             uint8_t buf[256];
-            int n = recvfrom(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
-                             reinterpret_cast<sockaddr*>(&sender), &slen);
+            int n = (int)recvfrom(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
+                                  reinterpret_cast<sockaddr*>(&sender), &slen);
 
             // Minimum packet: header(8) + inner_header(4) + tag(16) = 28 bytes
             if (n < HEADER_SIZE + INNER_HEADER_SIZE + AUTH_TAG_SIZE) continue;

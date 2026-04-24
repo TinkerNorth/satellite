@@ -2,7 +2,8 @@
  * webserver.h — HTTP server thread with all API routes
  */
 #pragma once
-#include "globals.h"
+#include "core/app_state.h"
+#include "net/net_compat.h"
 
 class SessionService;
 
