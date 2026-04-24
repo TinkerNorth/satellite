@@ -1,0 +1,59 @@
+name: macOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build, test, lint, format
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install cmake pkg-config libsodium clang-format
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          clang++ --version
+          clang-format --version
+          pkg-config --modversion libsodium
+
+      - name: clang-format (check only)
+        run: |
+          FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
+          echo "$FILES" | xargs clang-format --dry-run --Werror
+
+      - name: Configure (Release)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: Verify .app bundle layout
+        run: |
+          test -x satellite.app/Contents/MacOS/satellite
+          test -f satellite.app/Contents/Resources/web/index.html
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: satellite.app
+          path: satellite.app
+          retention-days: 14

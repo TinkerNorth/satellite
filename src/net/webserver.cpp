@@ -508,7 +508,7 @@ void httpThread(SessionService& svc) {
 
                 if (!sink.write(event.c_str(), event.size())) return false;
                 // Sleep 1 second between updates
-                for (int i = 0; i < 10 && g_appRunning; i++) Sleep(100);
+                for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);
             }
             return false;
         });

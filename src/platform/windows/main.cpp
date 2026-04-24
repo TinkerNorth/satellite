@@ -7,14 +7,14 @@
 #include "globals.h"
 #include "config.h"
 #include "crypto.h"
-#include "receiver.h"
-#include "webserver.h"
-#include "pairing.h"
-#include "discovery.h"
+#include "net/receiver.h"
+#include "net/webserver.h"
+#include "net/pairing.h"
+#include "net/discovery.h"
 #include "tray.h"
 
 // Adapters (outbound ports)
-#include "adapters/vigem_adapter.h"
+#include "vigem_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 

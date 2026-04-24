@@ -19,7 +19,7 @@ void pairingThread() {
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons((u_short)g_config.pairPort);
+    addr.sin_port = htons((uint16_t)g_config.pairPort);
     addr.sin_addr.s_addr = INADDR_ANY;
     if (bind(g_pairSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
         logMsg(LogLevel::ERR, "pairing",
@@ -33,24 +33,20 @@ void pairingThread() {
            "Pairing server listening on port " + std::to_string(g_config.pairPort));
 
     // Non-blocking so we can check g_appRunning
-    u_long nonBlock = 1;
-    ioctlsocket(g_pairSock, FIONBIO, &nonBlock);
+    netSetNonBlocking(g_pairSock, true);
 
     while (g_appRunning) {
         sockaddr_in client{};
-        int clen = sizeof(client);
+        socklen_t clen = sizeof(client);
         SOCKET cs = accept(g_pairSock, reinterpret_cast<sockaddr*>(&client), &clen);
         if (cs == INVALID_SOCKET) {
-            Sleep(100);
+            netSleepMs(100);
             continue;
         }
 
         // Set client socket to blocking with timeout
-        u_long blocking = 0;
-        ioctlsocket(cs, FIONBIO, &blocking);
-        DWORD timeout = 5000;
-        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
-                   sizeof(timeout));
+        netSetNonBlocking(cs, false);
+        netSetRecvTimeoutMs(cs, 5000);
 
         char buf[2048] = {};
         int n = recv(cs, buf, sizeof(buf) - 1, 0);

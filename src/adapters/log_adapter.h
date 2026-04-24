@@ -5,7 +5,7 @@
  */
 #pragma once
 
-#include "../core/ports.h"
+#include "core/ports.h"
 
 class LogAdapter : public ILogPort {
   public:

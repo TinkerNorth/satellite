@@ -14,7 +14,7 @@
 
 class SessionService {
   public:
-    SessionService(IViGemPort& vigem, IClientPort& client, ILogPort& log);
+    SessionService(IGamepadPort& vigem, IClientPort& client, ILogPort& log);
 
     // ── Connection lifecycle ────────────────────────────────────────────
 
@@ -99,7 +99,7 @@ class SessionService {
     int availableSlots() const;
 
   private:
-    IViGemPort& vigem_;
+    IGamepadPort& vigem_;
     IClientPort& client_;
     ILogPort& log_;
 

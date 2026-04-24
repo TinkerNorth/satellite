@@ -42,7 +42,7 @@ implemented by concrete adapters.
 ```
 Inbound Adapters          Core Domain           Outbound Adapters
 ─────────────────     ──────────────────     ──────────────────────
-receiver.cpp  ─────►                    ────► ViGEmAdapter (IViGemPort)
+receiver.cpp  ─────►                    ────► ViGEmAdapter (IGamepadPort)
   (UDP recv)         SessionService          pluginDevice, submitReport
                      openSession()
 webserver.cpp ─────►  closeSession()    ────► ClientAdapter (IClientPort)

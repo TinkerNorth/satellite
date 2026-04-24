@@ -8,10 +8,12 @@
 
 #include "types.h"
 
-// ── Outbound: ViGEm driver operations ───────────────────────────────────────
-class IViGemPort {
+// ── Outbound: Virtual gamepad synthesis ─────────────────────────────────────
+// Windows: backed by ViGEmAdapter (ViGEm bus driver).
+// macOS:   backed by IOHIDUserDeviceAdapter (planned).
+class IGamepadPort {
   public:
-    virtual ~IViGemPort() = default;
+    virtual ~IGamepadPort() = default;
 
     // Open the bus (lazy). Returns true if bus is usable.
     virtual bool ensureBusOpen() = 0;

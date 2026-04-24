@@ -2,7 +2,8 @@
  * receiver.h — UDP receiver thread
  */
 #pragma once
-#include "globals.h"
+#include "core/app_state.h"
+#include "net/net_compat.h"
 
 class SessionService;
 class ClientAdapter;
