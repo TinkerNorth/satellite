@@ -1,0 +1,93 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build, test, lint, format
+    runs-on: windows-latest
+
+    # Default to git-bash so the find / xargs / test pipelines match the
+    # Linux and macOS workflows verbatim. Build / test steps explicitly
+    # opt into the MSYS2 shell below.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pin clang-format to 22.1.4 (PyPI wheel) so the Windows runner agrees
+      # with macos-ci.yml (Homebrew LLVM 22.x) and linux-ci.yml (pipx-installed
+      # 22.1.4) on braced-init lists and other style rules. The wheel ships a
+      # pre-built clang-format.exe — no compilation required.
+      - name: Install clang-format (pinned)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'clang-format==22.1.4'
+
+      - name: clang-format (check only)
+        run: |
+          FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
+          echo "$FILES" | xargs clang-format --dry-run --Werror
+
+      # MinGW-w64 toolchain (matches the local build documented in
+      # docs/architecture.md and the -mwindows / -static link flags in
+      # CMakeLists.txt). MSVC is not used here because the ViGEmClient and
+      # libsodium static libs are vendored as MinGW-built archives.
+      - name: Set up MSYS2 / MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-pkgconf
+
+      - name: Tool versions
+        shell: msys2 {0}
+        run: |
+          cmake --version
+          g++ --version | head -1
+
+      - name: Configure (Release, MinGW Makefiles)
+        shell: msys2 {0}
+        run: cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build --config Release -j
+
+      - name: Run tests
+        shell: msys2 {0}
+        working-directory: build
+        run: ctest --output-on-failure -C Release
+
+      - name: Verify satellite.exe was produced
+        run: |
+          test -f satellite.exe
+          file satellite.exe
+
+      - name: Upload satellite.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: satellite-windows-x64
+          path: satellite.exe
+          retention-days: 14
