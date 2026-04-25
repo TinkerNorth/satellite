@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Satellite contributors.
+
 /*
  * crypto.cpp — DPAPI, SHA-256, sessions, PIN, credentials, libsodium wrappers
  */

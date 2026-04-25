@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Satellite contributors.
+
 /*
  * webserver.cpp — HTTP server thread with all API routes
  */

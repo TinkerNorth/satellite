@@ -1,7 +1,9 @@
-# Satellite — clang-tidy configuration
-# Run:  clang-tidy src/*.cpp controller-*.cpp -- -std=c++17 -I vigem/include -I src
+# TinkerNorth — canonical clang-tidy configuration.
+# This exact file is shared by satellite, dish-android (JNI), dish-linux,
+# and dish-mac (any C/C++ source).
 #
-# Start conservative — enable more checks as the codebase matures.
+# HeaderFilterRegex matches headers under src/, app/src/main/cpp/, or tests/
+# so the same config covers every repo without per-repo overrides.
 
 Checks: >
   -*,
@@ -38,7 +40,7 @@ Checks: >
 
 WarningsAsErrors: ''
 
-HeaderFilterRegex: 'src/.*\.h$'
+HeaderFilterRegex: '.*/(src|app/src/main/cpp|tests)/.*\.h$'
 
 CheckOptions:
   - key: modernize-use-auto.MinTypeNameLength
@@ -47,4 +49,3 @@ CheckOptions:
     value: 1
   - key: performance-move-const-arg.CheckTriviallyCopyableMove
     value: false
-
