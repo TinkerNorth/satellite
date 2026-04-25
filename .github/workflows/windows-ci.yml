@@ -15,13 +15,35 @@ jobs:
     name: Build, test, lint, format
     runs-on: windows-latest
 
+    # Default to git-bash so the find / xargs / test pipelines match the
+    # Linux and macOS workflows verbatim. Build / test steps explicitly
+    # opt into the MSYS2 shell below.
     defaults:
       run:
-        shell: msys2 {0}
+        shell: bash
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pin clang-format to 22.1.4 (PyPI wheel) so the Windows runner agrees
+      # with macos-ci.yml (Homebrew LLVM 22.x) and linux-ci.yml (pipx-installed
+      # 22.1.4) on braced-init lists and other style rules. The wheel ships a
+      # pre-built clang-format.exe — no compilation required.
+      - name: Install clang-format (pinned)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'clang-format==22.1.4'
+
+      - name: clang-format (check only)
+        run: |
+          FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
+          echo "$FILES" | xargs clang-format --dry-run --Werror
 
       # MinGW-w64 toolchain (matches the local build documented in
       # docs/architecture.md and the -mwindows / -static link flags in
@@ -38,36 +60,23 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-make
             mingw-w64-x86_64-pkgconf
-            python3
-            python-pip
-            git
-
-      # Pin clang-format to 22.1.4 (PyPI wheel) so the Windows runner agrees
-      # with macos-ci.yml (Homebrew LLVM 22.x) and linux-ci.yml (pipx-installed
-      # 22.1.4) on braced-init lists and other style rules.
-      - name: Install clang-format (pinned)
-        run: |
-          python3 -m pip install --user --break-system-packages 'clang-format==22.1.4'
-          echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
 
       - name: Tool versions
+        shell: msys2 {0}
         run: |
           cmake --version
           g++ --version | head -1
-          clang-format --version
-
-      - name: clang-format (check only)
-        run: |
-          FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
-          echo "$FILES" | xargs clang-format --dry-run --Werror
 
       - name: Configure (Release, MinGW Makefiles)
+        shell: msys2 {0}
         run: cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
+        shell: msys2 {0}
         run: cmake --build build --config Release -j
 
       - name: Run tests
+        shell: msys2 {0}
         working-directory: build
         run: ctest --output-on-failure -C Release
 
