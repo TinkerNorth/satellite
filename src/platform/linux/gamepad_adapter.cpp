@@ -19,12 +19,12 @@ constexpr uint16_t DS4_VID = 0x054c;
 constexpr uint16_t DS4_PID = 0x05c4;
 
 // Buttons exposed on both profiles. Code values follow evdev conventions.
-constexpr int BUTTONS[] = {BTN_A,      BTN_B,      BTN_X,      BTN_Y,     BTN_TL,    BTN_TR,
-                           BTN_SELECT, BTN_START,  BTN_MODE,   BTN_THUMBL, BTN_THUMBR};
+constexpr int BUTTONS[] = {BTN_A,      BTN_B,     BTN_X,    BTN_Y,      BTN_TL,    BTN_TR,
+                           BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR};
 
 // Emit a single input_event to the uinput fd.
 bool emit(int fd, uint16_t type, uint16_t code, int32_t value) {
-    struct input_event ev {};
+    struct input_event ev{};
     ev.type = type;
     ev.code = code;
     ev.value = value;
@@ -33,7 +33,7 @@ bool emit(int fd, uint16_t type, uint16_t code, int32_t value) {
 
 // Configure one absolute axis via UI_ABS_SETUP (kernel ≥ 4.5).
 bool setupAbs(int fd, uint16_t code, int32_t min, int32_t max, int32_t flat, int32_t fuzz) {
-    struct uinput_abs_setup abs {};
+    struct uinput_abs_setup abs{};
     abs.code = code;
     abs.absinfo.minimum = min;
     abs.absinfo.maximum = max;
@@ -101,7 +101,7 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
     if (!setupAbs(fd, ABS_HAT0Y, -1, 1, 0, 0)) goto fail;
 
     {
-        struct uinput_setup usetup {};
+        struct uinput_setup usetup{};
         usetup.id.bustype = BUS_USB;
         usetup.id.vendor = ds4 ? DS4_VID : XBOX_VID;
         usetup.id.product = ds4 ? DS4_PID : XBOX_PID;
@@ -198,10 +198,14 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
 
     // D-pad via ABS_HAT0X/Y.
     int32_t hatX = 0, hatY = 0;
-    if (report.wButtons & XUSB_DPAD_LEFT) hatX = -1;
-    else if (report.wButtons & XUSB_DPAD_RIGHT) hatX = 1;
-    if (report.wButtons & XUSB_DPAD_UP) hatY = -1;
-    else if (report.wButtons & XUSB_DPAD_DOWN) hatY = 1;
+    if (report.wButtons & XUSB_DPAD_LEFT)
+        hatX = -1;
+    else if (report.wButtons & XUSB_DPAD_RIGHT)
+        hatX = 1;
+    if (report.wButtons & XUSB_DPAD_UP)
+        hatY = -1;
+    else if (report.wButtons & XUSB_DPAD_DOWN)
+        hatY = 1;
     ok &= emit(fd, EV_ABS, ABS_HAT0X, hatX);
     ok &= emit(fd, EV_ABS, ABS_HAT0Y, hatY);
 

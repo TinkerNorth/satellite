@@ -38,9 +38,7 @@ static void onOpenUI(GtkMenuItem*, gpointer) {
     (void)std::system(cmd);
 }
 
-static void onToggleListener(GtkMenuItem*, gpointer) {
-    g_wantListen = !g_listening.load();
-}
+static void onToggleListener(GtkMenuItem*, gpointer) { g_wantListen = !g_listening.load(); }
 
 static void onQuit(GtkMenuItem*, gpointer) {
     g_appRunning = false;
@@ -81,15 +79,13 @@ static void applyIcon(AppIndicator* ind) {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 bool addTrayIcon() {
-    if (getenv("DISPLAY") == nullptr && getenv("WAYLAND_DISPLAY") == nullptr) {
-        return false;
-    }
+    if (getenv("DISPLAY") == nullptr && getenv("WAYLAND_DISPLAY") == nullptr) { return false; }
     int argc = 0;
     char** argv = nullptr;
     if (!gtk_init_check(&argc, &argv)) return false;
 
-    g_indicator = app_indicator_new("satellite", "input-gaming",
-                                    APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    g_indicator =
+        app_indicator_new("satellite", "input-gaming", APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
     if (g_indicator == nullptr) return false;
     app_indicator_set_status(g_indicator, APP_INDICATOR_STATUS_ACTIVE);
     app_indicator_set_title(g_indicator, APP_TITLE);
@@ -104,8 +100,8 @@ bool addTrayIcon() {
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
     g_lastListening = g_listening.load();
-    g_toggleItem = gtk_menu_item_new_with_label(g_lastListening ? "Stop Listener"
-                                                                : "Start Listener");
+    g_toggleItem =
+        gtk_menu_item_new_with_label(g_lastListening ? "Stop Listener" : "Start Listener");
     g_signal_connect(g_toggleItem, "activate", G_CALLBACK(onToggleListener), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), g_toggleItem);
 
@@ -135,7 +131,7 @@ void removeTrayIcon() {
     g_toggleItem = nullptr;
 }
 
-#else  // SATELLITE_HAS_TRAY
+#else // SATELLITE_HAS_TRAY
 
 bool addTrayIcon() { return false; }
 void removeTrayIcon() {}

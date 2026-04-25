@@ -321,3 +321,29 @@ set_target_properties(test_session_service PROPERTIES
 )
 
 add_test(NAME session_service COMMAND test_session_service)
+
+# ── Linux platform tests ────────────────────────────────────────────────────
+# Exercises the Linux-only adapters that don't need root/uinput/D-Bus:
+# JSON helpers, config persistence, XDG autostart .desktop file handling,
+# and path utilities.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(test_linux_platform
+        tests/test_linux_platform.cpp
+        src/platform/linux/config.cpp
+        src/platform/linux/globals.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    target_include_directories(test_linux_platform PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+    target_compile_definitions(test_linux_platform PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+    target_compile_options(test_linux_platform PRIVATE -O2 -Wall -Wextra)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_linux_platform PRIVATE Threads::Threads)
+    set_target_properties(test_linux_platform PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME linux_platform COMMAND test_linux_platform)
+endif()

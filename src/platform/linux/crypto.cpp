@@ -329,4 +329,3 @@ bool decryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
     return crypto_aead_chacha20poly1305_ietf_decrypt(plaintext, ptLen, nullptr, ciphertext, ctLen,
                                                      aad, sizeof(aad), nonce, key) == 0;
 }
-

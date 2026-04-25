@@ -204,4 +204,3 @@ std::string getCurrentDate() {
     strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
     return buf;
 }
-

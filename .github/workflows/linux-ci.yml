@@ -1,0 +1,94 @@
+name: Linux CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build, test, lint, format
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libsodium-dev \
+            libayatana-appindicator3-dev libgtk-3-dev \
+            clang-format
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          g++ --version | head -1
+          clang-format --version
+          pkg-config --modversion libsodium
+          pkg-config --modversion ayatana-appindicator3-0.1
+          pkg-config --modversion gtk+-3.0
+
+      - name: clang-format (check only)
+        run: |
+          FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
+          echo "$FILES" | xargs clang-format --dry-run --Werror
+
+      - name: Configure (Release, tray enabled)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (tray enabled)
+        run: cmake --build build --config Release -j
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: Verify binary links against AppIndicator
+        run: |
+          test -x satellite
+          ldd satellite | grep -E 'ayatana-appindicator|gtk-3' \
+            || (echo "tray-enabled build missing AppIndicator/GTK link" && exit 1)
+
+      - name: Upload satellite binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: satellite-linux-x64
+          path: satellite
+          retention-days: 14
+
+  headless:
+    name: Verify headless fallback build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (no tray)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libsodium-dev
+
+      - name: Configure (Release, no tray)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Confirm tray is disabled
+        run: |
+          grep -q 'libayatana-appindicator not found' <(cmake -S . -B build 2>&1) \
+            || (echo "expected headless fallback message in cmake output" && exit 1)
+
+      - name: Build (headless)
+        run: cmake --build build --config Release -j
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure

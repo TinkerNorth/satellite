@@ -13,4 +13,5 @@ echo "✓ core.hooksPath → .githooks"
 echo
 echo "Recommended tooling (install once):"
 echo "  macOS:    brew install clang-format"
+echo "  Linux:    sudo apt install clang-format    # or dnf install clang-tools-extra"
 echo "  Windows:  choco install llvm   (or install via LLVM/MSYS2)"

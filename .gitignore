@@ -23,8 +23,9 @@ compile_commands.json
 # macOS build outputs (staged into workspace by CMake, not source)
 /satellite.app/
 /test_session_service
-# Linux build output (CMake RUNTIME_OUTPUT_DIRECTORY)
+# Linux build outputs (CMake RUNTIME_OUTPUT_DIRECTORY)
 /satellite
+/test_linux_platform
 
 # IDE / Editor
 .vs/
