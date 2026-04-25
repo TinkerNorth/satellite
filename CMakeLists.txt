@@ -347,3 +347,47 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     add_test(NAME linux_platform COMMAND test_linux_platform)
 endif()
+
+# ── Windows platform tests ──────────────────────────────────────────────────
+# Exercises the Windows-only adapters that don't need a desktop session,
+# ViGEm bus driver, or paired client: JSON helpers, config persistence,
+# HKCU\...\Run autostart, and path utilities. Both APPDATA config and
+# the Run-key value are snapshotted/restored by the test harness so the
+# suite is safe to run on a developer machine as well as in CI.
+if(WIN32)
+    add_executable(test_windows_platform
+        tests/test_windows_platform.cpp
+        src/platform/windows/config.cpp
+        src/platform/windows/globals.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    target_include_directories(test_windows_platform PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
+    )
+    target_compile_definitions(test_windows_platform PRIVATE
+        _WIN32_WINNT=0x0A00
+        CPPHTTPLIB_NO_EXCEPTIONS
+    )
+    target_link_libraries(test_windows_platform PRIVATE
+        ws2_32
+        shell32
+        ole32
+        advapi32
+        bcrypt
+        crypt32
+        winmm
+    )
+    if(MINGW)
+        target_compile_options(test_windows_platform PRIVATE -O2 -Wall -Wextra)
+        target_link_options(test_windows_platform PRIVATE -static)
+    elseif(MSVC)
+        target_compile_options(test_windows_platform PRIVATE /O2 /W4)
+    endif()
+    set_target_properties(test_windows_platform PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME windows_platform COMMAND test_windows_platform)
+endif()

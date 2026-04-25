@@ -11,7 +11,7 @@
 ## How Has This Been Tested?
 <!-- Describe the tests you ran to verify your changes -->
 
-- [ ] Unit tests (`ctest` / `test_session_service` / `test_linux_platform`)
+- [ ] Unit tests (`ctest` / `test_session_service` / `test_linux_platform` / `test_windows_platform`)
 - [ ] Manual testing on Windows
 - [ ] Manual testing on macOS
 - [ ] Manual testing on Linux
