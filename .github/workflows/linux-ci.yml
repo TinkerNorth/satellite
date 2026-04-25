@@ -25,8 +25,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config \
             libsodium-dev \
-            libayatana-appindicator3-dev libgtk-3-dev \
-            clang-format
+            libayatana-appindicator3-dev libgtk-3-dev
+
+      # Ubuntu 24.04 ships clang-format 18 by default, which disagrees with
+      # brew's current LLVM (used by macos-ci.yml) on braced-init lists and
+      # other subtle rules. Pin to a recent clang-format from PyPI so the
+      # Linux and macOS workflows agree on style.
+      - name: Install clang-format (pinned)
+        run: |
+          pipx install clang-format==22.1.4
+          pipx ensurepath
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Tool versions
         run: |
@@ -78,12 +87,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config libsodium-dev
 
-      - name: Configure (Release, no tray)
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Confirm tray is disabled
+      - name: Configure (Release, no tray) and confirm tray is disabled
         run: |
-          grep -q 'libayatana-appindicator not found' <(cmake -S . -B build 2>&1) \
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release 2>&1 | tee cmake-configure.log
+          grep -q 'libayatana-appindicator not found' cmake-configure.log \
             || (echo "expected headless fallback message in cmake output" && exit 1)
 
       - name: Build (headless)
