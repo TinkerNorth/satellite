@@ -50,6 +50,17 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/vigem_stub.cpp
 )
 
+# Linux-only infrastructure.
+set(SATELLITE_LINUX_SOURCES
+    src/platform/linux/main.cpp
+    src/platform/linux/globals.cpp
+    src/platform/linux/config.cpp
+    src/platform/linux/crypto.cpp
+    src/platform/linux/vigem.cpp
+    src/platform/linux/gamepad_adapter.cpp
+    src/platform/linux/tray.cpp
+)
+
 # ── Platform-specific target ─────────────────────────────────────────────────
 if(WIN32)
     # Resource file (icon + manifest + version info).
@@ -195,9 +206,97 @@ elseif(APPLE)
         COMMENT "Staging web/ into the .app bundle"
     )
 
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(satellite
+        ${SATELLITE_CORE_SOURCES}
+        ${SATELLITE_NET_SOURCES}
+        ${SATELLITE_ADAPTER_SOURCES}
+        ${SATELLITE_LINUX_SOURCES}
+    )
+
+    target_include_directories(satellite PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+
+    target_compile_definitions(satellite PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+    )
+
+    # libsodium: resolved via pkg-config (every distro ships libsodium-dev /
+    # libsodium-devel with a .pc file). Fall back to a find_library search if
+    # pkg-config is absent (e.g. bespoke build with -DSODIUM_ROOT=<prefix>).
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SODIUM QUIET libsodium)
+    endif()
+    if(SODIUM_FOUND)
+        target_include_directories(satellite PRIVATE ${SODIUM_INCLUDE_DIRS})
+        target_link_directories(satellite PRIVATE ${SODIUM_LIBRARY_DIRS})
+        target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARIES})
+    else()
+        find_path(SODIUM_INCLUDE_DIR sodium.h
+            HINTS ${SODIUM_ROOT} ENV SODIUM_ROOT
+            PATH_SUFFIXES include
+            PATHS /usr/local /usr
+        )
+        find_library(SODIUM_LIBRARY NAMES sodium
+            HINTS ${SODIUM_ROOT} ENV SODIUM_ROOT
+            PATH_SUFFIXES lib lib64
+            PATHS /usr/local /usr
+        )
+        if(NOT SODIUM_INCLUDE_DIR OR NOT SODIUM_LIBRARY)
+            message(FATAL_ERROR
+                "libsodium not found. Install libsodium-dev (Debian/Ubuntu), "
+                "libsodium-devel (Fedora/RHEL), libsodium (Arch), or build "
+                "from source and set -DSODIUM_ROOT=<prefix>.")
+        endif()
+        target_include_directories(satellite PRIVATE ${SODIUM_INCLUDE_DIR})
+        target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARY})
+    endif()
+
+    find_package(Threads REQUIRED)
+    target_link_libraries(satellite PRIVATE Threads::Threads)
+
+    # Status-tray icon via libayatana-appindicator (StatusNotifierItem over
+    # D-Bus, plus GTK3 for the menu widgets). Optional: when the dev headers
+    # are absent the binary is built headless and just runs a sigwait loop.
+    # Debian/Ubuntu: libayatana-appindicator3-dev
+    # Fedora/RHEL:   libayatana-appindicator-gtk3-devel
+    # Arch:          libayatana-appindicator
+    if(PkgConfig_FOUND)
+        pkg_check_modules(APPINDICATOR QUIET ayatana-appindicator3-0.1)
+        if(NOT APPINDICATOR_FOUND)
+            # Fall back to the older Canonical name still shipped on some boxes.
+            pkg_check_modules(APPINDICATOR QUIET appindicator3-0.1)
+        endif()
+        if(APPINDICATOR_FOUND)
+            pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+            target_compile_definitions(satellite PRIVATE SATELLITE_HAS_TRAY=1)
+            target_include_directories(satellite PRIVATE
+                ${APPINDICATOR_INCLUDE_DIRS} ${GTK3_INCLUDE_DIRS})
+            target_link_directories(satellite PRIVATE
+                ${APPINDICATOR_LIBRARY_DIRS} ${GTK3_LIBRARY_DIRS})
+            target_link_libraries(satellite PRIVATE
+                ${APPINDICATOR_LIBRARIES} ${GTK3_LIBRARIES})
+            message(STATUS "satellite: tray icon enabled (libayatana-appindicator + GTK3).")
+        else()
+            message(STATUS "satellite: libayatana-appindicator not found; "
+                           "building headless (no tray icon).")
+        endif()
+    else()
+        message(STATUS "satellite: pkg-config missing; building headless (no tray icon).")
+    endif()
+
+    target_compile_options(satellite PRIVATE -O2 -Wall -Wextra)
+
+    set_target_properties(satellite PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
 else()
-    message(STATUS "satellite: only Windows and macOS are supported; "
-                   "configuring tests only on this platform.")
+    message(STATUS "satellite: unsupported platform; configuring tests only.")
 endif()
 
 # ── Tests (portable — core-only) ─────────────────────────────────────────────
