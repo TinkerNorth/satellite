@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Satellite contributors.
+
 /*
  * main.mm — macOS entry point / Composition Root.
  *
@@ -48,6 +51,14 @@ int main(int argc, const char* argv[]) {
     (void)argv;
 
     @autoreleasepool {
+        // ── Stub-build banner ───────────────────────────────────────
+        // macOS lacks a signed DriverKit equivalent of ViGEmBus, so this
+        // build runs the protocol stack but cannot synthesize virtual
+        // gamepads. Surface that immediately so log scraping makes the
+        // limitation obvious.
+        fprintf(stderr, "[satellite] macOS stub build — virtual gamepads disabled "
+                        "(controller-add requests will return ACK_ERR_VIGEM_UNAVAIL).\n");
+
         if (!netInit()) {
             fprintf(stderr, "Failed to initialize network subsystem\n");
             return 1;

@@ -248,8 +248,15 @@ This compiles `tests/test_session_service.cpp` alongside `src/core/session_servi
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Distributed under the terms of the **GNU Lesser General Public License v3.0
+or later**. See [`LICENSE`](LICENSE) (LGPL) and [`COPYING.GPL3`](COPYING.GPL3)
+(the GPL v3 the LGPL incorporates by reference).
 
-- [cpp-httplib](https://github.com/yhirose/cpp-httplib) by Yuji Hirose (MIT License)
-- ViGEm header definitions derived from [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus) (MIT License)
+### Vendored third-party components
+
+The following components retain their original (MIT-compatible) licenses
+and are redistributed unchanged under their own terms:
+
+- [cpp-httplib](https://github.com/yhirose/cpp-httplib) by Yuji Hirose — MIT
+- ViGEm header definitions derived from [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus) — MIT
 

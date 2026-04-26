@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Satellite contributors.
+
 /*
  * tests/test_linux_platform.cpp — Unit tests for the Linux platform port.
  *

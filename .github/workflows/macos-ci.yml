@@ -51,9 +51,14 @@ jobs:
           test -x satellite.app/Contents/MacOS/satellite
           test -f satellite.app/Contents/Resources/web/index.html
 
-      - name: Upload .app artifact
+      # The macOS build is a *stub*: it serves the web UI, pairs, and
+      # authenticates but cannot synthesize virtual gamepads (no signed
+      # DriverKit equivalent of ViGEmBus). The artifact name reflects that
+      # so a user downloading it from a CI run isn't surprised by
+      # ACK_ERR_VIGEM_UNAVAIL responses to controller-add requests.
+      - name: Upload .app artifact (stub — no virtual gamepad)
         uses: actions/upload-artifact@v4
         with:
-          name: satellite.app
+          name: satellite-macos-stub.app
           path: satellite.app
           retention-days: 14

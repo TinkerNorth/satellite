@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Satellite contributors.
+
 /*
  * core/types.h — Pure domain types. No Windows, no Winsock, no ViGEm headers.
  */

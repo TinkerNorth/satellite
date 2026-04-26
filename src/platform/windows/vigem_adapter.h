@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Satellite contributors.
+
 /*
  * adapters/vigem_adapter.h — IGamepadPort implementation wrapping ViGEm driver IOCTLs.
  *
