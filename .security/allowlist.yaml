@@ -1,0 +1,17 @@
+# Vulnerability allowlist for satellite.
+#
+# Each entry MUST have all four fields. Any entry past `expires` fails CI
+# (see .github/workflows/_security.yml -> allowlist-expiry).
+#
+# Schema:
+#   exceptions:
+#     - cve:     CVE-YYYY-NNNNN | GHSA-xxxx-xxxx-xxxx
+#       reason:  human-readable, specific (cite the unreached codepath /
+#                mitigating control / upstream PR; no "low risk" stubs)
+#       owner:   "@github-handle" of the engineer accountable for re-evaluation
+#       expires: YYYY-MM-DD (max 90 days out; renew via PR if still applicable)
+#
+# Adding an entry requires the security-team review label and a linked
+# tracking issue. See CONTRIBUTING.md.
+
+exceptions: []

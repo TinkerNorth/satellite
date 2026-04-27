@@ -246,6 +246,24 @@ This compiles `tests/test_session_service.cpp` alongside `src/core/session_servi
 └── README.md
 ```
 
+## Security
+
+PR-time security gates ([`.github/workflows/security.yml`](.github/workflows/security.yml)
+and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml)) run on
+every PR: action-pin lint, OSV-Scanner against vendored components,
+gitleaks, GitHub `dependency-review-action`, allowlist-expiry check, and
+CodeQL `cpp` analysis. See [`CONTRIBUTING.md`](CONTRIBUTING.md#security)
+for the local-equivalent commands and the per-release verification recipe
+(`cosign verify-blob` + `slsa-verifier verify-artifact`). Vulnerability
+disclosure: [`SECURITY.md`](SECURITY.md).
+
+> **Note on branch protection.** GitHub's branch-protection and repository-
+> ruleset features are not available for private repositories on the free
+> org plan this repo lives under, so direct pushes to `main` are not
+> blocked at the platform level. Treat the PR-based flow as a convention
+> and rely on the CI workflows (`linux-ci.yml`, `macos-ci.yml`,
+> `windows-ci.yml`, `security.yml`, `codeql.yml`) as the quality gate.
+
 ## License
 
 Distributed under the terms of the **GNU Lesser General Public License v3.0
