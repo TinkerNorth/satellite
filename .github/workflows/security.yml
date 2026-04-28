@@ -73,8 +73,8 @@ jobs:
               echo "::error::lib/VENDORED.md: entry dated $d is ${age_days} days old (>90). Refresh upstream and update the timestamp."
               fail=1
             fi
-          done < <(grep -E '^Last-vendored:' lib/VENDORED.md || true)
-          if ! grep -qE '^Last-vendored:' lib/VENDORED.md; then
+          done < <(grep -E '^[[:space:]]*-?[[:space:]]*Last-vendored:' lib/VENDORED.md || true)
+          if ! grep -qE '^[[:space:]]*-?[[:space:]]*Last-vendored:' lib/VENDORED.md; then
             echo "::error::lib/VENDORED.md must contain at least one 'Last-vendored: YYYY-MM-DD' line."
             exit 1
           fi

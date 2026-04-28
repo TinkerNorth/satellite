@@ -1,36 +1,19 @@
-# OSV-Scanner synthetic lockfile for satellite's vendored components.
+# OSV-Scanner configuration for satellite.
 #
-# OSV-Scanner does not natively understand the C++ vendored-header layout
-# we use under `lib/` and `vigem/include/`. This file declares each
-# component as a Generic ecosystem package keyed by its upstream commit
-# or release tag so OSV can match advisories against it.
-#
-# Keep this file in sync with `lib/VENDORED.md`. The CI step
-# `vendored-freshness` checks the timestamps on the markdown side.
+# Scope: at present this file only carries [[IgnoredVulns]] entries
+# (mirrored from `.security/allowlist.yaml`). Custom package matching
+# for vendored C/C++ headers under `lib/` and `vigem/include/` is not
+# expressible via OSV-Scanner config alone — it requires a CycloneDX
+# or SPDX SBOM. That work is tracked as a HANDOFF follow-up; until
+# then we maintain the inventory in `lib/VENDORED.md` and rely on the
+# `vendored-freshness` job to enforce the 90-day refresh window.
 #
 # Schema reference:
 #   https://google.github.io/osv-scanner/configuration/
-
-[[PackageOverride]]
-name = "cpp-httplib"
-version = "0.15.3"
-ecosystem = "Generic"
-
-[[PackageOverride]]
-name = "libsodium"
-version = "1.0.20"
-ecosystem = "Generic"
-
-[[PackageOverride]]
-name = "vigembus"
-version = "1.22.0"
-ecosystem = "Generic"
-
-# Ignore rules for vulnerabilities triaged via .security/allowlist.yaml.
-# Mirror entries here when you allowlist a specific OSV ID, otherwise
-# OSV-Scanner will keep failing the run even if the YAML allowlist
-# accepts it.
-# [[IgnoredVulns]]
-# id = "GHSA-xxxx-xxxx-xxxx"
-# ignoreUntil = 2026-07-01
-# reason = "Not exploitable: see .security/allowlist.yaml"
+#
+# Example:
+#
+#   [[IgnoredVulns]]
+#   id = "GHSA-xxxx-xxxx-xxxx"
+#   ignoreUntil = 2026-07-01
+#   reason = "Not exploitable: see .security/allowlist.yaml"
