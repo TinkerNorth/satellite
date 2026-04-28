@@ -35,15 +35,16 @@ The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()
 ## Prerequisites
 
 ### Receiver machine
-- **Windows 10/11**
-- **[ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases)** — install the latest release
+- **Windows 10/11** with the **[ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases)** installed, **or**
+- **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup), **or**
+- **macOS** for development / web-UI testing only — controller injection is unavailable, so the receiver returns `ACK_ERR_VIGEM_UNAVAIL` for `add controller` requests
 
 ### Sender machine
-- **Windows 10/11** with an Xbox controller connected
+- **Windows 10/11** with an Xbox controller connected (XInput is the only sender backend at present)
 
-### Build toolchain (either machine)
-- **[MinGW-w64](https://winlibs.com/)** (g++) — or any C++17 compiler targeting Windows
-- **[Inno Setup 6](https://jrsoftware.org/isinfo.php)** — only needed to build the installer
+### Build toolchain
+- **Windows:** **[MinGW-w64](https://winlibs.com/)** (g++) — or any C++17 compiler targeting Windows. **[Inno Setup 6](https://jrsoftware.org/isinfo.php)** is only needed to build the installer.
+- **Linux / macOS:** `cmake`, `pkg-config`, a C++17 compiler, and the libsodium development headers. See the per-platform sections in [Building](#building) for distro-specific package names.
 
 ## Installation
 
@@ -90,6 +91,102 @@ The script runs `cmake -S . -B build` and `cmake --build build`, producing a
 `~/Library/Application Support/satellite/config.json`; the DPAPI-equivalent
 keyfile lives at `~/.config/satellite/keyfile` (mode `0600`). "Run at login"
 is implemented via a `LaunchAgents` plist.
+
+### Linux
+
+Linux is a fully-featured receiver: virtual gamepads are synthesized via
+`/dev/uinput` (the in-tree `uinput` kernel module — no out-of-tree driver
+needed). Pairing, encryption, the web UI, and config persistence all match
+the Windows behavior.
+
+Prerequisites:
+
+- `cmake`, `g++` (or `clang++`), `pkg-config`
+- libsodium development headers
+    - Debian/Ubuntu: `sudo apt install libsodium-dev`
+    - Fedora/RHEL:   `sudo dnf install libsodium-devel`
+    - Arch:          `sudo pacman -S libsodium`
+- *(Optional, for the system tray icon)* libayatana-appindicator + GTK3 dev
+  headers. Without these, the binary builds **headless** and just runs a
+  `sigwait` loop — the web UI at `http://localhost:9877` is still the primary
+  control surface either way.
+    - Debian/Ubuntu: `sudo apt install libayatana-appindicator3-dev libgtk-3-dev`
+    - Fedora/RHEL:   `sudo dnf install libayatana-appindicator-gtk3-devel gtk3-devel`
+    - Arch:          `sudo pacman -S libayatana-appindicator gtk3`
+
+> **Vanilla GNOME users:** GNOME has no built-in tray. Install the
+> [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/)
+> extension to see the icon. KDE, XFCE, Cinnamon, MATE, Budgie, and Pantheon
+> work out of the box.
+
+There are two install paths: a **`.deb` package** (recommended on
+Debian/Ubuntu — handles the udev rule, `uinput` module, and group setup
+automatically) and a **portable build** (works anywhere, but you do the
+permission setup once by hand).
+
+#### Option A — `.deb` package (Debian / Ubuntu)
+
+Build the package:
+
+```bash
+sudo apt install build-essential cmake pkg-config dpkg-dev \
+                 libsodium-dev \
+                 libayatana-appindicator3-dev libgtk-3-dev   # optional tray
+./build-deb.sh
+```
+
+Output: `dist/satellite_<version>_<arch>.deb`. Install it:
+
+```bash
+sudo apt install ./dist/satellite_*.deb
+```
+
+The postinstall script reloads udev, loads the `uinput` kernel module, adds
+`$SUDO_USER` to the `input` group, and registers the autostart-friendly
+`.desktop` file. Log out and back in once for the group change to take
+effect, then launch **Satellite** from your application menu (or run
+`satellite` from a terminal). Uninstall with `sudo apt remove satellite`.
+
+The CPack DEB generator is wired into the top-level `CMakeLists.txt`; the
+control files and post-{install,remove} scripts live in
+[`packaging/debian/`](packaging/debian/).
+
+#### Option B — Portable build (any distro)
+
+Build:
+
+```bash
+./build-satellite.sh
+```
+
+The same script handles macOS and Linux (it dispatches on `uname -s`). On
+Linux it produces a `satellite` binary at the repo root.
+
+Grant `/dev/uinput` access (one-time setup — the `.deb` postinstall does
+this for you):
+
+```bash
+sudo modprobe uinput                                              # load the kernel module
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' \
+    | sudo tee /etc/udev/rules.d/99-uinput.rules                  # persistent udev rule
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG input "$USER"                                    # then log out / back in
+```
+
+Run:
+
+```bash
+./satellite
+```
+
+#### After install (either path)
+
+Open `http://localhost:9877` in your browser to pair a sender and start the
+receiver. Config lives at `$XDG_CONFIG_HOME/satellite/config.json` (falls
+back to `~/.config/satellite/config.json`); the keyfile is named `keyfile`
+in the same directory (mode `0600`). "Start with login" is wired up via the
+XDG autostart spec — a `.desktop` file under `$XDG_CONFIG_HOME/autostart/`
+toggled from the web UI.
 
 ### Building the installer
 

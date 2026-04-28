@@ -1,0 +1,63 @@
+#!/bin/sh
+# postinst — runs after files are unpacked into the filesystem.
+#
+# Wires up the kernel-side bits the dpkg files alone can't activate:
+#   - reloads udev so the rule applied to /dev/uinput takes effect now
+#   - loads the uinput module so the device node exists this session
+#   - adds the installing user to the `input` group when SUDO_USER is set
+#     (typical for `sudo apt install ./satellite_*.deb`)
+#
+# All steps are idempotent and tolerate failure: re-running the install,
+# or running on a system where modprobe / udevadm aren't available, must
+# not break the package install.
+set -e
+
+case "$1" in
+    configure)
+        # Apply the new udev rule to the running system.
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules || true
+            udevadm trigger --subsystem-match=misc --action=change || true
+        fi
+
+        # Load uinput now so the user doesn't have to reboot for first use.
+        # The /usr/lib/modules-load.d/satellite.conf entry covers boot.
+        if command -v modprobe >/dev/null 2>&1; then
+            modprobe uinput || true
+        fi
+
+        # Best-effort: add the installing user to the `input` group so they
+        # inherit the new /dev/uinput access without needing to do it by
+        # hand. SUDO_USER is set when this script runs under `sudo apt`.
+        if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+            if getent group input >/dev/null 2>&1; then
+                if ! id -nG "${SUDO_USER}" | tr ' ' '\n' | grep -qx input; then
+                    usermod -aG input "${SUDO_USER}" || true
+                    echo ""
+                    echo "Satellite: added ${SUDO_USER} to the 'input' group."
+                    echo "           Log out and back in for the change to take effect."
+                    echo ""
+                fi
+            fi
+        else
+            cat <<'EOF'
+
+Satellite installed. To grant your user access to /dev/uinput:
+
+    sudo usermod -aG input "$USER"
+    # then log out and back in, or run `newgrp input` for the current shell.
+
+EOF
+        fi
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+exit 0

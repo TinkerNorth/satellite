@@ -31,7 +31,6 @@ class ViGEmAdapter : public IGamepadPort {
     void unplugDevice(uint32_t serial) override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
-    bool isDriverInstalled() override;
 
   private:
     HANDLE busHandle_ = INVALID_HANDLE_VALUE;

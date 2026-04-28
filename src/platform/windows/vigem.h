@@ -8,7 +8,6 @@
 #include "globals.h"
 
 HANDLE openVigemBus();
-bool isVigemInstalled();
 bool pluginTarget(HANDLE bus, ULONG serial);
 bool pluginTargetDS4(HANDLE bus, ULONG serial);
 bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt);

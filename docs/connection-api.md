@@ -33,19 +33,23 @@ persist it from the pairing handshake.
 is paired and not already connected — regardless of whether the ViGEm bus
 driver is available. The POST response contains **only** connection metadata
 (connectionId, token, maxControllers). It does **not** include any real-time
-state like ViGEm availability.
+state like backend availability.
 
 **Real-time state comes from the UDP layer.** After connecting, the client
 receives **0x0007 Server Status** messages over the encrypted UDP channel.
 These are sent with every heartbeat response (step 4), after every
-controller add/remove, and whenever the server's ViGEm state changes.
-The payload includes `vigemAvailable` (1B) and `activeControllerCount`
+controller add/remove, and whenever the server's backend state changes.
+The payload includes `backendAvailable` (1B) and `activeControllerCount`
 (1B), so the client can show real-time controller state in its UI.
 
-**ViGEm lifecycle is client-driven.** The ViGEm bus is **not** opened at
+**Backend lifecycle is client-driven.** The backend bus is **not** opened at
 server start. It opens lazily when the first controller is added (0x0004)
 and closes automatically when the last controller is removed. When no
-controllers are active, `vigemAvailable` will be `0x00`.
+controllers are active, `backendAvailable` will be `0x00`.
+
+> The backend is ViGEmBus on Windows and `/dev/uinput` on Linux. macOS has
+> no backend, so all `0x0004` requests are answered with `ACK_ERR_BACKEND_UNAVAIL`
+> and `backendAvailable` is always `0x00`.
 
 Steps 5–7 happen over the encrypted UDP channel using the token from step 3.
 A client can repeat steps 5–7 as controllers are connected/disconnected.
@@ -171,37 +175,37 @@ Lists all active connections and their controllers. Requires session cookie.
       "controllers": [
         {
           "controllerIndex": 0,
-          "vigemSerialNo": 1,
-          "vigemPluggedIn": true
+          "serialNo": 1,
+          "pluggedIn": true
         },
         {
           "controllerIndex": 1,
-          "vigemSerialNo": 4,
-          "vigemPluggedIn": true
+          "serialNo": 4,
+          "pluggedIn": true
         }
       ]
     }
   ],
   "totalControllers": 5,
   "maxControllers": 16,
-  "vigemAvailable": true
+  "backendAvailable": true
 }
 ```
 
-Each connection lists its active controllers with **per-device ViGEm state**.
+Each connection lists its active controllers with **per-device backend state**.
 `connectedAtEpoch` is seconds since Unix epoch (steady clock).
 `activeControllerCount` is the number of active controllers for that connection.
 `totalControllers` is the sum across all connections. `maxControllers` is the
-global ViGEm limit (16). `vigemAvailable` indicates whether the ViGEm bus
-handle is currently open.
+global backend limit (16). `backendAvailable` indicates whether the backend
+bus handle is currently open.
 
 | Field                          | Type   | Description                                             |
 |--------------------------------|--------|---------------------------------------------------------|
 | `connections[].activeControllerCount` | int | Number of active controllers for this connection |
 | `controllers[].controllerIndex`| int    | 0-based controller index within the connection          |
-| `controllers[].vigemSerialNo`  | int    | ViGEm serial number (1–16), 0 if not plugged in        |
-| `controllers[].vigemPluggedIn` | bool   | Whether this controller is plugged into ViGEm           |
-| `vigemAvailable`               | bool   | Whether the ViGEm bus handle is currently open          |
+| `controllers[].serialNo`       | int    | Backend serial number (1–16), 0 if not plugged in       |
+| `controllers[].pluggedIn`      | bool   | Whether this controller is plugged into the backend     |
+| `backendAvailable`             | bool   | Whether the backend bus handle is currently open        |
 
 ---
 
@@ -266,8 +270,13 @@ Real-time event stream. Emits two event types every ~1 second:
   "senderIP": "192.168.1.42",
   "udpPort": 9876,
   "autoStart": false,
-  "vigemInstalled": true,
-  "vigemAvailable": true,
+  "backendAvailable": true,
+  "backend": {
+    "id": "uinput",
+    "supported": true,
+    "available": true,
+    "errorCode": null
+  },
   "submitOk": 12300,
   "submitFail": 0,
   "lastLoopUs": 45,
@@ -277,18 +286,58 @@ Real-time event stream. Emits two event types every ~1 second:
 }
 ```
 
-| Field            | Type | Description                                          |
-|------------------|------|------------------------------------------------------|
-| `vigemInstalled` | bool | Whether the ViGEm bus driver is installed on the system |
-| `vigemAvailable` | bool | Whether the ViGEm bus handle is currently open (controllers active) |
+| Field               | Type   | Description                                                              |
+|---------------------|--------|--------------------------------------------------------------------------|
+| `backendAvailable`  | bool   | Whether the backend bus handle is currently open (controllers active)    |
+| `backend.id`        | string | Stable backend identifier: `"vigem"`, `"uinput"`, or `"none"` (macOS)    |
+| `backend.supported` | bool   | `false` on macOS — clients should hide backend-specific UI when false    |
+| `backend.available` | bool   | Whether the backend is *probeable* right now (can a controller be added) |
+| `backend.errorCode` | string\|null | Per-backend remediation tag when not available — see [`/api/backend/status`](#get-apibackendstatus) |
 
 > **Note:** The SSE `status` event does **not** include `webPort`. Use
 > `GET /api/status` to retrieve `webPort` (the full status endpoint also
 > returns `webPort`).
 
 **`connections` event:** Same format as `GET /api/connections` response,
-including per-controller `vigemPluggedIn` status and per-connection
+including per-controller `pluggedIn` status and per-connection
 `activeControllerCount`.
+
+---
+
+### `GET /api/backend/status`
+
+Returns the structured backend probe — the server-side data that the web UI
+keys its remediation copy off. The web UI maintains a copy table indexed by
+`(backend.id, errorCode)` so all user-facing strings live in JS, not in C++.
+
+**Success response (200):**
+```json
+{
+  "id": "uinput",
+  "supported": true,
+  "available": false,
+  "errorCode": "PERMISSION_DENIED"
+}
+```
+
+| Field       | Type   | Description |
+|-------------|--------|-------------|
+| `id`        | string | Backend identifier — `"vigem"` (Windows), `"uinput"` (Linux), `"none"` (macOS) |
+| `supported` | bool   | `false` when there's no backend at all (macOS) — UI should hide the panel    |
+| `available` | bool   | Whether the backend is currently usable                                      |
+| `errorCode` | string\|null | When `available` is `false`, names the specific failure mode           |
+
+**Per-backend error codes:**
+
+| Backend  | Code                | Meaning                                                          |
+|----------|---------------------|------------------------------------------------------------------|
+| `vigem`  | `DRIVER_MISSING`    | ViGEmBus device interface not registered                         |
+| `vigem`  | `BUS_OPEN_FAILED`   | Device interface present, but `CreateFile` / version check failed |
+| `uinput` | `DEVICE_MISSING`    | `/dev/uinput` does not exist (uinput module likely not loaded)   |
+| `uinput` | `PERMISSION_DENIED` | `/dev/uinput` exists but the running user can't write to it      |
+
+Adding a new code on the server is non-breaking — clients render a generic
+fallback message until a matching entry is added to the web copy table.
 
 ## UI Concepts
 
@@ -298,14 +347,14 @@ The web dashboard and client UI separate two distinct concepts:
    the server. Each connection has a device name, IP address, and may own
    zero or more controllers. Connections are managed via the HTTP API.
 
-2. **Virtual Controllers** — individual ViGEm gamepads plugged into the
+2. **Virtual Controllers** — individual backend gamepads plugged into the
    system. Each controller belongs to exactly one connection and has its
-   own ViGEm state (`vigemPluggedIn`, `vigemSerialNo`). Controllers are
-   created/removed via UDP messages (0x0004 / 0x0005) and each gets an
-   independent ACK with a per-device result code.
+   own backend state (`pluggedIn`, `serialNo`). Controllers are created/
+   removed via UDP messages (0x0004 / 0x0005) and each gets an independent
+   ACK with a per-device result code.
 
 The server dashboard shows these in two separate sections: "Connections"
 (showing device name, IP, and controller count) and "Virtual Controllers"
-(showing each controller with its per-device ViGEm status dot). The
+(showing each controller with its per-device status dot). The
 client (Dish) shows "VIGEM BUS" for the global bus state and "DEVICE #N"
 for each controller's individual ACK result.

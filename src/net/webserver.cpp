@@ -7,8 +7,31 @@
 #include "webserver.h"
 #include "crypto.h"
 #include "config.h"
-#include "vigem.h"
+#include "core/gamepad_backend.h"
 #include "core/session_service.h"
+
+// ── Helper: emit the {backend: { id, supported, available, errorCode }} JSON
+// fragment used by /api/backend/status, /api/status, /api/debug, and the SSE
+// stream. The web UI keys all user-facing copy off (id, errorCode).
+static std::string buildBackendJson() {
+    BackendStatus s = probeBackend();
+    std::string json = "{\"id\":\"";
+    json += s.id;
+    json += "\",\"supported\":";
+    json += s.supported ? "true" : "false";
+    json += ",\"available\":";
+    json += s.available ? "true" : "false";
+    json += ",\"errorCode\":";
+    if (s.errorCode == nullptr) {
+        json += "null";
+    } else {
+        json += "\"";
+        json += s.errorCode;
+        json += "\"";
+    }
+    json += "}";
+    return json;
+}
 
 // ── Auth middleware helper ───────────────────────────────────────────────────
 static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
@@ -68,8 +91,8 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             if (!cfirst) json += ",";
             cfirst = false;
             json += "{\"controllerIndex\":" + std::to_string(ctrl.index) +
-                    ",\"vigemSerialNo\":" + std::to_string(ctrl.serial) +
-                    ",\"vigemPluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") +
+                    ",\"serialNo\":" + std::to_string(ctrl.serial) +
+                    ",\"pluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") +
                     ",\"controllerType\":\"" + controllerTypeName(ctrl.controllerType) +
                     "\",\"controllerTypeLabel\":\"" + controllerTypeLabel(ctrl.controllerType) +
                     "\"}";
@@ -78,7 +101,7 @@ static std::string buildConnectionsJson(const SessionService& svc) {
     }
     json += "],\"totalControllers\":" + std::to_string(snap.totalControllers) +
             ",\"maxControllers\":" + std::to_string(snap.maxControllers) +
-            ",\"vigemAvailable\":" + (snap.vigemAvailable ? "true" : "false") + "}";
+            ",\"backendAvailable\":" + (snap.backendAvailable ? "true" : "false") + "}";
     return json;
 }
 
@@ -171,15 +194,11 @@ void httpThread(SessionService& svc) {
     });
 
     // ── Protected routes ────────────────────────────────────────────────
-    g_httpServer.Get("/api/vigem/status",
-                     [&svc](const httplib::Request& req, httplib::Response& res) {
+    // Backend probe — web UI keys its copy/remediation table off (id, errorCode).
+    g_httpServer.Get("/api/backend/status",
+                     [](const httplib::Request& req, httplib::Response& res) {
                          if (!requireAuth(req, res)) return;
-                         bool installed = isVigemInstalled();
-                         bool available = svc.isViGEmAvailable();
-                         char json[128];
-                         snprintf(json, sizeof(json), R"({"installed":%s,"available":%s})",
-                                  installed ? "true" : "false", available ? "true" : "false");
-                         res.set_content(json, "application/json");
+                         res.set_content(buildBackendJson(), "application/json");
                      });
 
     g_httpServer.Get("/api/status", [&svc](const httplib::Request& req, httplib::Response& res) {
@@ -191,15 +210,15 @@ void httpThread(SessionService& svc) {
             ia.s_addr = ipRaw;
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
-        bool vigemUp = svc.isViGEmAvailable();
-        bool vigemInstalled = isVigemInstalled();
-        char json[512];
+        std::string backendJson = buildBackendJson();
+        bool backendUp = svc.isBackendAvailable();
+        char json[1024];
         snprintf(
             json, sizeof(json),
-            R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s,"vigemInstalled":%s,"vigemAvailable":%s})",
+            R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s,"backendAvailable":%s,"backend":%s})",
             g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
             senderIP, g_config.udpPort, g_config.webPort, g_config.autoStart ? "true" : "false",
-            vigemInstalled ? "true" : "false", vigemUp ? "true" : "false");
+            backendUp ? "true" : "false", backendJson.c_str());
         res.set_content(json, "application/json");
     });
 
@@ -283,20 +302,20 @@ void httpThread(SessionService& svc) {
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
         uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed);
-        char json[1024];
-        bool vigemUp = svc.isViGEmAvailable();
-        bool vigemInst = isVigemInstalled();
+        char json[1536];
+        std::string backendJson = buildBackendJson();
+        bool backendUp = svc.isBackendAvailable();
         snprintf(json, sizeof(json),
                  R"({"listening":%s,"packets":%llu,"submitOk":%llu,"submitFail":%llu,)"
                  R"("lastLoopUs":%llu,"maxLoopUs":%llu,"senderIP":"%s","udpPort":%d,)"
                  R"("decryptFail":%llu,"replayDrop":%llu,)"
-                 R"("vigemInstalled":%s,"vigemAvailable":%s})",
+                 R"("backendAvailable":%s,"backend":%s})",
                  g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
                  (unsigned long long)g_submitOk.load(), (unsigned long long)g_submitFail.load(),
                  (unsigned long long)g_lastLoopUs.load(), (unsigned long long)maxUs, senderIP,
                  g_config.udpPort, (unsigned long long)g_decryptFail.load(),
-                 (unsigned long long)g_replayDrop.load(), vigemInst ? "true" : "false",
-                 vigemUp ? "true" : "false");
+                 (unsigned long long)g_replayDrop.load(), backendUp ? "true" : "false",
+                 backendJson.c_str());
         res.set_content(json, "application/json");
     });
 
@@ -483,19 +502,19 @@ void httpThread(SessionService& svc) {
                     logSeqNow = g_logSeq;
                 }
 
-                bool vigemUp = svc.isViGEmAvailable();
-                bool vigemInst = isVigemInstalled();
-                char statusBuf[1024];
+                bool backendUp = svc.isBackendAvailable();
+                std::string backendJson = buildBackendJson();
+                char statusBuf[1536];
                 snprintf(statusBuf, sizeof(statusBuf),
                          R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,)"
-                         R"("autoStart":%s,"vigemInstalled":%s,"vigemAvailable":%s,)"
+                         R"("autoStart":%s,"backendAvailable":%s,"backend":%s,)"
                          R"("submitOk":%llu,"submitFail":%llu,)"
                          R"("lastLoopUs":%llu,"decryptFail":%llu,"replayDrop":%llu,)"
                          R"("logSeq":%llu})",
                          g_listening.load() ? "true" : "false",
                          (unsigned long long)g_packetCount.load(), senderIP, g_config.udpPort,
-                         g_config.autoStart ? "true" : "false", vigemInst ? "true" : "false",
-                         vigemUp ? "true" : "false", (unsigned long long)g_submitOk.load(),
+                         g_config.autoStart ? "true" : "false", backendUp ? "true" : "false",
+                         backendJson.c_str(), (unsigned long long)g_submitOk.load(),
                          (unsigned long long)g_submitFail.load(),
                          (unsigned long long)g_lastLoopUs.load(),
                          (unsigned long long)g_decryptFail.load(),

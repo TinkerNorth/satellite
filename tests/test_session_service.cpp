@@ -102,7 +102,6 @@ struct MockViGem : IGamepadPort {
         lastSubmittedReport = r;
         return submitReturnVal;
     }
-    bool isDriverInstalled() override { return driverInstalled; }
 
     void reset() { *this = MockViGem{}; }
 };
@@ -296,8 +295,8 @@ static void test_handleControllerAdd_alreadyExists() {
     EXPECT_EQ(svc.totalActiveControllers(), 1); // still 1
 }
 
-static void test_handleControllerAdd_vigemUnavailable() {
-    TEST("handleControllerAdd — ViGEm bus unavailable");
+static void test_handleControllerAdd_backendUnavailable() {
+    TEST("handleControllerAdd — backend bus unavailable");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -306,7 +305,7 @@ static void test_handleControllerAdd_vigemUnavailable() {
 
     auto r = openTestSession(svc);
     svc.handleControllerAdd(r.token, 0);
-    EXPECT_EQ(client.lastAckResult, ACK_ERR_VIGEM_UNAVAIL);
+    EXPECT_EQ(client.lastAckResult, ACK_ERR_BACKEND_UNAVAIL);
     EXPECT_EQ(svc.totalActiveControllers(), 0);
 }
 
@@ -560,7 +559,7 @@ static void test_getConnectionsSnapshot() {
 
     auto snap0 = svc.getConnectionsSnapshot();
     EXPECT_EQ((int)snap0.connections.size(), 0);
-    EXPECT_EQ(snap0.maxControllers, MAX_VIGEM_CONTROLLERS);
+    EXPECT_EQ(snap0.maxControllers, MAX_BACKEND_CONTROLLERS);
 
     auto r = openTestSession(svc);
     svc.handleControllerAdd(r.token, 0);
@@ -573,19 +572,19 @@ static void test_getConnectionsSnapshot() {
 }
 
 static void test_stats() {
-    TEST("isViGEmAvailable / totalActiveControllers / availableSlots");
+    TEST("isBackendAvailable / totalActiveControllers / availableSlots");
     MockViGem vigem;
     MockClient client;
     MockLog log;
     SessionService svc(vigem, client, log);
 
-    EXPECT(!svc.isViGEmAvailable());
+    EXPECT(!svc.isBackendAvailable());
     EXPECT_EQ(svc.totalActiveControllers(), 0);
     EXPECT_EQ(svc.availableSlots(), 16);
 
     auto r = openTestSession(svc);
     svc.handleControllerAdd(r.token, 0);
-    EXPECT(svc.isViGEmAvailable());
+    EXPECT(svc.isBackendAvailable());
     EXPECT_EQ(svc.totalActiveControllers(), 1);
     EXPECT_EQ(svc.availableSlots(), 15);
 }
@@ -1250,7 +1249,7 @@ int main() {
     test_closeAllSessions();
     test_handleControllerAdd_success();
     test_handleControllerAdd_alreadyExists();
-    test_handleControllerAdd_vigemUnavailable();
+    test_handleControllerAdd_backendUnavailable();
     test_handleControllerAdd_noSlots();
     test_handleControllerAdd_pluginFail();
     test_handleControllerAdd_invalidToken();

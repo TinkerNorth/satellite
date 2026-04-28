@@ -49,13 +49,6 @@ HANDLE openVigemBus() {
     return INVALID_HANDLE_VALUE;
 }
 
-bool isVigemInstalled() {
-    HANDLE h = openVigemBus();
-    if (h == INVALID_HANDLE_VALUE) return false;
-    CloseHandle(h);
-    return true;
-}
-
 bool pluginTarget(HANDLE bus, ULONG serial) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
