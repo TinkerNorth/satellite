@@ -5,11 +5,11 @@
 .DESCRIPTION
     The Inno Setup installer (installer.iss) ships a copy of the ViGEmBus
     driver installer as a prerequisite. We do not commit that ~6 MB binary
-    to git — instead, this script fetches it on demand and verifies its
+    to git -- instead, this script fetches it on demand and verifies its
     SHA-256 against the pinned hash in redist/SHA256SUMS before letting
     iscc consume it.
 
-    Idempotent — safe to re-run. If the file already exists with the
+    Idempotent -- safe to re-run. If the file already exists with the
     expected hash, nothing is downloaded.
 
 .PARAMETER Force
@@ -73,10 +73,10 @@ foreach ($Item in $Redistributables) {
     if ((Test-Path $Path) -and -not $Force) {
         $Actual = (Get-FileHash $Path -Algorithm SHA256).Hash.ToLower()
         if ($Actual -eq $Expected) {
-            Write-Host "[OK]   $($Item.Name) — already current ($($Item.Filename))"
+            Write-Host "[OK]   $($Item.Name) -- already current ($($Item.Filename))"
             continue
         }
-        Write-Host "[WARN] $($Item.Filename) hash mismatch — will re-download"
+        Write-Host "[WARN] $($Item.Filename) hash mismatch -- will re-download"
         Remove-Item $Path
     }
 
