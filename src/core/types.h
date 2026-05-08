@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Satellite contributors.
 
 /*
- * core/types.h — Pure domain types. No Windows, no Winsock, no ViGEm headers.
+ * core/types.h — Pure domain types. No Windows, no Winsock, no platform-
+ * specific virtual-gamepad headers.
  */
 #pragma once
 
@@ -32,9 +33,10 @@ inline const uint16_t MSG_CONTROLLER_ACK = 0x0006;
 inline const uint16_t MSG_SERVER_STATUS = 0x0007;
 inline const uint16_t MSG_CONTROLLER_TYPE = 0x0008;
 
-// Controller ACK result codes
+// Controller ACK result codes (wire values are stable across platforms; only
+// the C++ identifier changed from ACK_ERR_VIGEM_UNAVAIL → ACK_ERR_BACKEND_UNAVAIL).
 inline const uint8_t ACK_OK = 0x00;
-inline const uint8_t ACK_ERR_VIGEM_UNAVAIL = 0x01;
+inline const uint8_t ACK_ERR_BACKEND_UNAVAIL = 0x01;
 inline const uint8_t ACK_ERR_NO_SLOTS = 0x02;
 inline const uint8_t ACK_ERR_ALREADY_EXISTS = 0x03;
 inline const uint8_t ACK_ERR_NOT_FOUND = 0x04;
@@ -51,7 +53,7 @@ inline const int CRYPTO_NONCE_SIZE = 12;
 inline const int HEARTBEAT_INTERVAL_SEC = 2;
 inline const int HEARTBEAT_MISS_MAX = 5;
 inline const int MAX_CONTROLLERS_PER_CONN = 16;
-inline const int MAX_VIGEM_CONTROLLERS = 16;
+inline const int MAX_BACKEND_CONTROLLERS = 16;
 
 // ── Controller types ─────────────────────────────────────────────────────────
 inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
@@ -98,7 +100,7 @@ static_assert(sizeof(GamepadReport) == 12, "GamepadReport must be 12 bytes");
 // ── Controller (per virtual gamepad) ────────────────────────────────────────
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
-    uint32_t serialNo = 0; // ViGEm serial (1–16), 0 = not plugged
+    uint32_t serialNo = 0; // backend serial (1–16), 0 = not plugged
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
     GamepadReport lastReport{};

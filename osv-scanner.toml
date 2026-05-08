@@ -1,0 +1,19 @@
+# OSV-Scanner configuration for satellite.
+#
+# Scope: at present this file only carries [[IgnoredVulns]] entries
+# (mirrored from `.security/allowlist.yaml`). Custom package matching
+# for vendored C/C++ headers under `lib/` and `vigem/include/` is not
+# expressible via OSV-Scanner config alone — it requires a CycloneDX
+# or SPDX SBOM. That work is tracked as a HANDOFF follow-up; until
+# then we maintain the inventory in `lib/VENDORED.md` and rely on the
+# `vendored-freshness` job to enforce the 90-day refresh window.
+#
+# Schema reference:
+#   https://google.github.io/osv-scanner/configuration/
+#
+# Example:
+#
+#   [[IgnoredVulns]]
+#   id = "GHSA-xxxx-xxxx-xxxx"
+#   ignoreUntil = 2026-07-01
+#   reason = "Not exploitable: see .security/allowlist.yaml"

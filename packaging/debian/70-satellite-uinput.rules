@@ -1,0 +1,6 @@
+# Grant members of the `input` group read/write access to /dev/uinput.
+# Satellite synthesizes virtual Xbox 360 controllers via this device.
+#
+# Filename prefix `70-` keeps this rule after early-stage hotplug rules
+# (60-) and before user-customization rules (90-/99-).
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660"

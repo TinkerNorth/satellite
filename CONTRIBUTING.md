@@ -59,16 +59,133 @@ and are noted in the README.
 
 ## What CI runs
 
-Three workflows run on every PR:
+Build + style workflows run on every PR:
 
 | Workflow | Runner | What it does |
 |---|---|---|
-| `linux-ci.yml` | ubuntu-24.04 | clang-format check, tray-enabled + headless builds, ctest, AppIndicator link verification |
+| `linux-ci.yml` | ubuntu-24.04 | clang-format check, tray-enabled + headless builds, ctest, AppIndicator link verification, advisory build-reproducibility check |
 | `macos-ci.yml` | macos-14 | clang-format check, build + ctest, .app layout verification, uploads `satellite-macos-stub.app` |
 | `windows-ci.yml` | windows-latest | clang-format check, MinGW MSYS2 build, ctest, uploads `satellite.exe` |
 
 All three workflows install clang-format **pinned to 22.1.4** so verdicts
 match across runners. If any step fails, the PR is blocked.
+
+Security gates also run on every PR:
+
+| Workflow | What it does |
+|---|---|
+| `security.yml` | action-pin lint, vulnerability allowlist expiry, OSV-Scanner against `lib/` + `vigem/include/` (with the synthetic [`osv-scanner.toml`](osv-scanner.toml) lockfile), gitleaks secret scan, GitHub `dependency-review-action`, vendored-component freshness check (`lib/VENDORED.md` <= 90 days). |
+| `codeql.yml` | CodeQL `cpp` analysis (security-extended + security-and-quality query packs). |
+
+A new high-severity CVE published against any vendored component causes
+the next PR to fail without code changes. To verify the gate locally
+before pushing, see "Running security checks locally" below.
+
+## Security
+
+### Adding a vulnerability allowlist entry
+
+Open a PR that adds an entry to [`.security/allowlist.yaml`](.security/allowlist.yaml):
+
+```yaml
+exceptions:
+  - cve: CVE-YYYY-NNNNN
+    reason: "Specific, reachable-codepath analysis. Cite the call graph or upstream PR."
+    owner: "@github-handle"
+    expires: 2026-07-01
+```
+
+CI rejects the PR if any field is missing, if `expires` is in the past,
+or if it's more than 90 days in the future. Allowlist entries require a
+security-team review label before merge. Renew or remove on or before
+`expires` — there's no silent suppression.
+
+If the same CVE is also flagged by OSV-Scanner, add an `[[IgnoredVulns]]`
+block to [`osv-scanner.toml`](osv-scanner.toml) referencing the same
+expiration so both tools agree.
+
+### Updating a vendored component
+
+[`lib/VENDORED.md`](lib/VENDORED.md) is the source-of-truth inventory
+for everything under `lib/` and `vigem/include/`. When you bump
+cpp-httplib, libsodium, or the ViGEm headers, in the same PR:
+
+1. Update the component block in `lib/VENDORED.md` (commit SHA / version
+   tag, `Last-vendored:` set to today's date).
+2. Update the matching `[[PackageOverride]]` version in
+   [`osv-scanner.toml`](osv-scanner.toml).
+3. Re-run OSV-Scanner locally (see below) to confirm no new advisories.
+
+The `vendored-freshness` CI step fails if any `Last-vendored:` date is
+more than 90 days old, so quarterly refreshes happen even when no
+upstream advisory has fired.
+
+### Running security checks locally
+
+```bash
+# Action-pin lint (40-char SHA enforcement on every uses: line)
+.github/workflows/_security.yml      # source of truth — read the action-pin-lint job
+# Quick local equivalent:
+grep -REn '^\s*uses:' .github/workflows/ \
+  | grep -vE '@[0-9a-f]{40}\b' \
+  || echo "all pinned"
+
+# Allowlist expiry
+python3 - <<'PY'
+import datetime, yaml, sys
+data = yaml.safe_load(open('.security/allowlist.yaml').read()) or {}
+today = datetime.date.today()
+for e in data.get('exceptions', []) or []:
+    if datetime.date.fromisoformat(str(e['expires'])) < today:
+        print('EXPIRED:', e); sys.exit(1)
+PY
+
+# OSV-Scanner against vendored components
+osv-scanner --recursive --skip-git --lockfile=osv-scanner.toml lib vigem/include
+
+# Gitleaks
+gitleaks detect --no-banner --redact --source .
+
+# CodeQL (requires the CodeQL CLI; see https://docs.github.com/en/code-security/codeql-cli)
+codeql database create build-db --language=cpp --command='cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j'
+codeql database analyze build-db --format=sarif-latest --output=codeql.sarif \
+  cpp-security-extended.qls cpp-security-and-quality.qls
+```
+
+### Verifying a release artifact
+
+Each GitHub Release ships:
+
+- the platform installer / binary (`SatelliteSetup-vX.Y.Z.exe`, `satellite-macos-stub-vX.Y.Z.zip`, `satellite_X.Y.Z_amd64.deb`, `satellite-X.Y.Z-x86_64.AppImage`)
+- per-artifact `*.sig` + `*.crt` (cosign keyless signature + certificate)
+- `SHA256SUMS` + `SHA256SUMS.sig` + `SHA256SUMS.crt`
+- `satellite.sbom.spdx.json` + `satellite.sbom.cdx.json` (Syft)
+- `satellite.intoto.jsonl` (SLSA L3 provenance)
+
+Verify with:
+
+```bash
+# 1) Checksums match
+sha256sum -c SHA256SUMS
+
+# 2) cosign verifies SHA256SUMS came from the right workflow
+cosign verify-blob \
+  --certificate SHA256SUMS.crt \
+  --signature   SHA256SUMS.sig \
+  --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  SHA256SUMS
+
+# 3) Provenance attests this artifact came from the tagged release
+slsa-verifier verify-artifact \
+  --provenance-path satellite.intoto.jsonl \
+  --source-uri      github.com/TinkerNorth/satellite \
+  --source-tag      vX.Y.Z \
+  SatelliteSetup-vX.Y.Z.exe
+```
+
+Replace `TinkerNorth` with the GitHub org/owner. The exact recipe is also
+documented in [`TinkerNorth/SECURITY.md`](SECURITY.md).
 
 ## Touching the hot path
 

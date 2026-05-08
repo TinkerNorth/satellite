@@ -57,7 +57,7 @@ int main(int argc, const char* argv[]) {
         // gamepads. Surface that immediately so log scraping makes the
         // limitation obvious.
         fprintf(stderr, "[satellite] macOS stub build — virtual gamepads disabled "
-                        "(controller-add requests will return ACK_ERR_VIGEM_UNAVAIL).\n");
+                        "(controller-add requests will return ACK_ERR_BACKEND_UNAVAIL).\n");
 
         if (!netInit()) {
             fprintf(stderr, "Failed to initialize network subsystem\n");

@@ -2,10 +2,74 @@
 
 let eventSource = null;
 
+// ── Backend copy table ──────────────────────────────────────────────────────
+// Keyed by (backend.id, errorCode). The C++ server emits structured status;
+// this table owns every user-facing string. Adding a new error code on the
+// server falls back to a generic message until a matching entry is added here.
+const BACKEND_COPY = {
+  vigem: {
+    title: 'ViGEmBus Driver',
+    pipelineLabel: 'ViGEm Submit',
+    flowLabel: 'ViGEmBus',
+    statusActive: 'Active (controllers plugged in)',
+    statusIdle: 'Ready (idle — no controllers)',
+    statusUnknown: 'Detected',
+    errors: {
+      DRIVER_MISSING: {
+        title: 'ViGEmBus driver not detected',
+        body: 'ViGEmBus is a kernel driver that lets Satellite create a virtual Xbox 360 controller on Windows. Without it, controller input cannot be forwarded.',
+        steps: [
+          { text: 'Download the latest ViGEmBus release', url: 'https://github.com/nefarius/ViGEmBus/releases' },
+          { text: 'Run the installer (ViGEmBus_Setup_x64.msi)' },
+          { text: 'Restart may be required — check Device Manager under "System devices" for "Nefarius Virtual Gamepad Emulation Bus"' },
+          { text: 'Refresh this page; status should show "Detected"' },
+        ],
+      },
+      BUS_OPEN_FAILED: {
+        title: 'ViGEmBus driver detected but unresponsive',
+        body: 'The driver is installed but Satellite could not open the bus. This usually means a version mismatch between the driver and the satellite build, or the driver service is stopped.',
+        steps: [
+          { text: 'Reinstall the latest ViGEmBus release', url: 'https://github.com/nefarius/ViGEmBus/releases' },
+          { text: 'Or restart your machine and try again' },
+        ],
+      },
+    },
+  },
+  uinput: {
+    title: 'uinput Backend',
+    pipelineLabel: 'uinput Inject',
+    flowLabel: 'uinput',
+    statusActive: 'Active (controllers plugged in)',
+    statusIdle: 'Ready (idle — no controllers)',
+    statusUnknown: '/dev/uinput accessible',
+    errors: {
+      DEVICE_MISSING: {
+        title: '/dev/uinput not found',
+        body: 'The uinput kernel module ships with every mainline Linux kernel but may not be loaded right now. Without it, Satellite cannot create virtual gamepads.',
+        steps: [
+          { text: 'Load the module now', command: 'sudo modprobe uinput' },
+          { text: 'Make it persistent across reboots', command: "echo uinput | sudo tee /etc/modules-load.d/satellite.conf" },
+          { text: 'Refresh this page once /dev/uinput exists' },
+        ],
+      },
+      PERMISSION_DENIED: {
+        title: 'No write access to /dev/uinput',
+        body: '/dev/uinput exists but the user running Satellite cannot write to it. Add a udev rule and join the input group.',
+        steps: [
+          { text: 'Install a udev rule', command: "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"' | sudo tee /etc/udev/rules.d/70-satellite-uinput.rules" },
+          { text: 'Reload udev', command: 'sudo udevadm control --reload-rules && sudo udevadm trigger' },
+          { text: 'Add yourself to the input group', command: 'sudo usermod -aG input "$USER"' },
+          { text: 'Log out and back in for the group change to apply, then refresh this page' },
+        ],
+      },
+    },
+  },
+};
+
 function initDashboard() {
   startSSE();
   loadDevices();
-  checkVigemStatus();
+  checkBackendStatus();
 }
 
 // ── SSE (replaces polling) ──────────────────────────────────────────────────
@@ -70,9 +134,9 @@ function updateStatus(d) {
   btn.textContent = d.listening ? 'Stop' : 'Start';
   btn.className = 'btn ' + (d.listening ? 'btn-stop' : 'btn-start');
 
-  // Update ViGEm status from SSE data if available
-  if (d.vigemInstalled !== undefined) {
-    updateVigemIndicator(d.vigemInstalled, d.vigemAvailable);
+  // Update backend status from SSE data if available
+  if (d.backend) {
+    updateBackendPanel(d.backend, d.backendAvailable);
   }
 }
 
@@ -112,7 +176,7 @@ function updateConnections(d) {
       ctrlEl.innerHTML = '<p class="hint">No active controllers</p>';
     } else {
       ctrlEl.innerHTML = allCtrls.map(ctrl => {
-        const ok = ctrl.vigemPluggedIn;
+        const ok = ctrl.pluggedIn;
         const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
         return `
@@ -121,7 +185,7 @@ function updateConnections(d) {
             <img class="ctrl-type-icon" src="img/ctrl-${esc(ctrlType)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}">
             <div class="ctrl-info">
               <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>Controller #${ctrl.controllerIndex} · ${esc(ctrlLabel)}</span>
-              <span class="ctrl-meta">${esc(ctrl.deviceName)} · ViGEm Serial ${ctrl.vigemSerialNo} · ${ok ? 'Plugged In' : 'Error'}</span>
+              <span class="ctrl-meta">${esc(ctrl.deviceName)} · Serial ${ctrl.serialNo} · ${ok ? 'Plugged In' : 'Error'}</span>
             </div>
           </div>
         </div>`;
@@ -143,7 +207,7 @@ async function poll() {
     showOffline();
     return;
   }
-  checkVigemStatus();
+  checkBackendStatus();
 }
 
 // ── Actions ─────────────────────────────────────────────────────────────────
@@ -193,60 +257,95 @@ async function removeDevice(id) {
   loadDevices();
 }
 
-// ── ViGEm Status ────────────────────────────────────────────────────────────
-let vigemGuideOpen = false;
+// ── Backend status ──────────────────────────────────────────────────────────
+// `backend` is { id, supported, available, errorCode } from /api/backend/status
+// or the SSE status stream. `backendActive` (optional) is the runtime "bus is
+// open with controllers plugged in" flag from the SessionService.
+let backendGuideOpen = false;
 
-function updateVigemIndicator(installed, available) {
-  const dot = document.getElementById('vigem-dot');
-  const label = document.getElementById('vigem-label');
-  const toggle = document.getElementById('vigem-guide-toggle');
-  const flowVigem = document.getElementById('flow-vigem');
-  const flowSystem = document.getElementById('flow-system');
-  if (!dot || !label) return;
+function updateBackendPanel(backend, backendActive) {
+  const section = document.getElementById('backend-section');
+  if (!section) return;
 
-  if (installed && available) {
-    dot.className = 'vigem-dot vigem-ok';
-    label.textContent = 'Active (controllers plugged in)';
-    label.className = 'vigem-label vigem-ok-text';
+  // macOS / unsupported: hide the panel entirely.
+  if (!backend || !backend.supported) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+
+  const copy = BACKEND_COPY[backend.id] || {};
+  const titleEl  = document.getElementById('backend-title');
+  const flowText = document.getElementById('flow-backend-text');
+  if (titleEl)  titleEl.textContent  = copy.title || 'Backend';
+  if (flowText) flowText.textContent = copy.flowLabel || backend.id;
+
+  const dot     = document.getElementById('backend-dot');
+  const label   = document.getElementById('backend-label');
+  const toggle  = document.getElementById('backend-guide-toggle');
+  const flowBe  = document.getElementById('flow-backend');
+  const flowSys = document.getElementById('flow-system');
+  const guide   = document.getElementById('backend-guide');
+
+  if (backend.available) {
+    dot.className   = 'backend-dot backend-ok';
+    label.textContent = backendActive ? (copy.statusActive || 'Active')
+                                      : (copy.statusIdle   || 'Ready');
+    label.className = 'backend-label backend-ok-text';
     toggle.style.display = 'none';
-    flowVigem.className = 'flow-step done';
-    flowSystem.className = 'flow-step done';
-    document.getElementById('vigem-guide').style.display = 'none';
-    vigemGuideOpen = false;
-  } else if (installed) {
-    dot.className = 'vigem-dot vigem-ok';
-    label.textContent = 'Ready (idle — no controllers)';
-    label.className = 'vigem-label vigem-ok-text';
-    toggle.style.display = 'none';
-    flowVigem.className = 'flow-step done';
-    flowSystem.className = 'flow-step';
-    document.getElementById('vigem-guide').style.display = 'none';
-    vigemGuideOpen = false;
+    flowBe.className  = 'flow-step done';
+    flowSys.className = 'flow-step ' + (backendActive ? 'done' : '');
+    guide.style.display = 'none';
+    backendGuideOpen = false;
   } else {
-    dot.className = 'vigem-dot vigem-err';
-    label.textContent = 'Not Detected';
-    label.className = 'vigem-label vigem-err-text';
+    dot.className   = 'backend-dot backend-err';
+    const err = (copy.errors && copy.errors[backend.errorCode]) || null;
+    label.textContent = err ? err.title : 'Backend unavailable';
+    label.className = 'backend-label backend-err-text';
     toggle.style.display = '';
-    flowVigem.className = 'flow-step fail';
-    flowSystem.className = 'flow-step fail';
+    flowBe.className  = 'flow-step fail';
+    flowSys.className = 'flow-step fail';
+    populateBackendGuide(err);
   }
 }
 
-async function checkVigemStatus() {
+function populateBackendGuide(err) {
+  const titleEl = document.getElementById('backend-guide-title');
+  const bodyEl  = document.getElementById('backend-guide-body');
+  const stepsEl = document.getElementById('backend-guide-steps');
+  if (!titleEl || !bodyEl || !stepsEl) return;
+
+  if (!err) {
+    titleEl.textContent = 'No remediation available';
+    bodyEl.textContent  = 'The server reported a state we don’t have copy for yet.';
+    stepsEl.innerHTML   = '';
+    return;
+  }
+  titleEl.textContent = err.title;
+  bodyEl.textContent  = err.body;
+  stepsEl.innerHTML = (err.steps || []).map(s => {
+    let inner = esc(s.text);
+    if (s.command) inner += `<pre class="guide-cmd">${esc(s.command)}</pre>`;
+    if (s.url)     inner += ` <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url)}</a>`;
+    return `<li>${inner}</li>`;
+  }).join('');
+}
+
+async function checkBackendStatus() {
   try {
-    const r = await fetch('/api/vigem/status');
+    const r = await fetch('/api/backend/status');
     if (!r.ok) return;
     const d = await r.json();
-    updateVigemIndicator(d.installed, d.available);
+    updateBackendPanel(d, d.available);
   } catch (e) { /* ignore */ }
 }
 
-function toggleVigemGuide() {
-  vigemGuideOpen = !vigemGuideOpen;
-  const guide = document.getElementById('vigem-guide');
-  const btn = document.getElementById('vigem-guide-toggle');
-  guide.style.display = vigemGuideOpen ? 'block' : 'none';
-  btn.textContent = vigemGuideOpen ? 'Setup Guide ▾' : 'Setup Guide ▸';
+function toggleBackendGuide() {
+  backendGuideOpen = !backendGuideOpen;
+  const guide = document.getElementById('backend-guide');
+  const btn   = document.getElementById('backend-guide-toggle');
+  guide.style.display = backendGuideOpen ? 'block' : 'none';
+  btn.textContent = backendGuideOpen ? 'Setup Guide ▾' : 'Setup Guide ▸';
 }
 
 // ── Logout ──────────────────────────────────────────────────────────────────

@@ -19,31 +19,110 @@ on:
 #     are set.
 #   * Linux:   builds satellite, packages as .deb and AppImage.
 #
-# All artifacts get uploaded to the GitHub Release for the tag in the final
-# `publish` job.
+# Before any artifact is uploaded, the `gates` job re-runs every PR-time
+# check (action-pin lint, allowlist expiry, OSV-Scanner, gitleaks, CodeQL
+# wait) against the tagged commit. The `harden` job then scans, signs,
+# generates SBOMs, attests, and produces SHA256SUMS.
+#
+# Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
+#   actions/checkout                @ v4.2.2  → 11bd71901bbe5b1630ceea73d27597364c9af683
+#   actions/upload-artifact         @ v4.4.3  → b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+#   actions/download-artifact       @ v4.1.8  → fa0a91b85d4f404e444e00e005971372dc801d16
+#   msys2/setup-msys2               @ v2.31.1 → e9898307ac31d1a803454791be09ab9973336e1c
+#   anchore/sbom-action             @ v0.17.4 → 8d0a6505bf28ced3e85154d13dc6af83299e13f1
+#   anchore/scan-action             @ v3.6.4  → 3343887d815d7b07465f6fdcd395bd66508d486a
+#   softprops/action-gh-release     @ v2.0.8  → c062e08bd532815e2082a85e87e3ef29c3e6d191
+#   slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml
+#                                   @ v2.0.0  → 5a775b367a56d5bd118a224a811bba288150a563
+#
+# cosign is installed directly from the upstream sigstore/cosign release
+# (see the harden job's env block) rather than via cosign-installer
+# action — keeps the supply-chain surface minimal.
 
 permissions:
   contents: write
+  id-token: write   # required for cosign keyless + SLSA OIDC
+  attestations: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Re-run all PR-time gates against the tagged commit. If any of these
+  # fail, none of the build / sign / publish jobs run.
+  # ─────────────────────────────────────────────────────────────────────
+  gates:
+    name: PR-time gates against tag
+    uses: ./.github/workflows/_security.yml
+    with:
+      osv_scan_paths: |
+        lib
+        vigem/include
+      osv_config: osv-scanner.toml
+      gitleaks_enabled: true
+      dependency_review_enabled: false # PR-only by definition
+      action_pin_lint_enabled: true
+      allowlist_expiry_enabled: true
+
+  required-secrets:
+    name: Required release secrets gate
+    needs: [gates]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify required signing secrets are present for tagged releases
+        env:
+          WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
+          WIN_SIGN_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
+          DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Strict gate only fires for tagged releases. workflow_dispatch
+          # runs against feature branches still produce -unsigned artifacts
+          # so the pipeline itself is testable without rotating real keys.
+          if [ "${{ github.ref_type }}" != "tag" ] || [ "${{ startsWith(github.ref, 'refs/tags/v') }}" != "true" ]; then
+            echo "::notice::Non-tag release run — unsigned fallback permitted."
+            exit 0
+          fi
+          missing=()
+          [ -z "${WIN_SIGN_CERT_BASE64:-}" ] && missing+=("WIN_SIGN_CERT_BASE64")
+          [ -z "${WIN_SIGN_PASSWORD:-}" ] && missing+=("WIN_SIGN_PASSWORD")
+          [ -z "${DEVELOPER_ID_APPLICATION_CERT_BASE64:-}" ] && missing+=("DEVELOPER_ID_APPLICATION_CERT_BASE64")
+          [ -z "${DEVELOPER_ID_PASSWORD:-}" ] && missing+=("DEVELOPER_ID_PASSWORD")
+          [ -z "${APPLE_ID:-}" ] && missing+=("APPLE_ID")
+          [ -z "${APPLE_TEAM_ID:-}" ] && missing+=("APPLE_TEAM_ID")
+          [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && missing+=("APPLE_APP_SPECIFIC_PASSWORD")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Tagged release on $GITHUB_REF requires platform signing secrets, but the following are missing: ${missing[*]}"
+            echo "::error::Add the missing repository secrets and retry the release. Unsigned -unsigned artifacts are NOT permitted for tags."
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Per-platform build jobs. Same as the previous release.yml shape but
+  # with pinned action SHAs.
+  # ─────────────────────────────────────────────────────────────────────
   windows:
     name: Build Windows
+    needs: [gates, required-secrets]
     runs-on: windows-latest
     defaults:
       run:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up MSYS2 / MinGW-w64
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
         with:
           msystem: MINGW64
           update: false
@@ -87,22 +166,29 @@ jobs:
 
       - name: Stage
         shell: bash
+        env:
+          WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
         run: |
           tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          suffix=""
+          if [ -z "${WIN_SIGN_CERT_BASE64:-}" ]; then
+            suffix="-unsigned"
+          fi
           mkdir -p stage
-          cp dist/SatelliteSetup.exe "stage/SatelliteSetup-${tag}.exe"
+          cp dist/SatelliteSetup.exe "stage/SatelliteSetup-${tag}${suffix}.exe"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: windows
           path: stage/
 
   macos:
     name: Build macOS (stub)
+    needs: [gates, required-secrets]
     runs-on: macos-14
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -161,17 +247,18 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent satellite.app \
             "stage/satellite-macos-stub-${tag}${suffix}.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: macos
           path: stage/
 
   linux:
     name: Build Linux
+    needs: [gates, required-secrets]
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -222,7 +309,6 @@ jobs:
           chmod +x linuxdeploy
           appdir="${RUNNER_TEMP}/Satellite.AppDir"
           mkdir -p "${appdir}"
-          # Synthesize a minimal .desktop + icon (the repo doesn't ship one).
           mkdir -p "${appdir}/usr/share/applications" "${appdir}/usr/share/icons/hicolor/256x256/apps"
           cat > "${appdir}/usr/share/applications/satellite.desktop" <<EOF
           [Desktop Entry]
@@ -233,7 +319,6 @@ jobs:
           Categories=Game;Utility;
           Terminal=false
           EOF
-          # Re-use the Windows .ico as a stand-in if no .png exists.
           ./linuxdeploy --appdir "${appdir}" \
             --executable satellite \
             --desktop-file "${appdir}/usr/share/applications/satellite.desktop" \
@@ -241,26 +326,191 @@ jobs:
             --output appimage || true
           mv Satellite*.AppImage "stage/satellite-${{ steps.ver.outputs.version }}-x86_64.AppImage" || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: linux
           path: stage/
 
-  publish:
-    name: Publish to GitHub Releases
+  # ─────────────────────────────────────────────────────────────────────
+  # harden: artifact-level vuln scan, SBOMs, checksums, cosign keyless
+  # signing. Runs after every per-platform build job.
+  # ─────────────────────────────────────────────────────────────────────
+  harden:
+    name: Harden artifacts (scan, SBOM, sign)
     needs: [windows, macos, linux]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    outputs:
+      hashes: ${{ steps.hashes.outputs.hashes }}
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: artifacts
 
-      - name: Show what we got
-        run: find artifacts -type f -printf '%p\n'
+      - name: Flatten layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -print0 \
+            | xargs -0 -I{} cp -v "{}" release/
+          ls -l release/
+
+      # Anchore Grype: scan every binary in release/ for CVEs.
+      - name: Vulnerability scan (Grype)
+        uses: anchore/scan-action@3343887d815d7b07465f6fdcd395bd66508d486a # v3.6.4
+        id: grype
+        with:
+          path: release/
+          severity-cutoff: high
+          fail-build: true
+          only-fixed: false
+          add-cpes-if-none: true
+          output-format: sarif
+
+      - name: Upload Grype SARIF to code scanning
+        if: ${{ always() && steps.grype.outputs.sarif != '' }}
+        uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd # v3.27.0
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: release-grype
+
+      # Syft: produce SPDX + CycloneDX SBOMs for each artifact.
+      - name: Generate SBOMs (Syft)
+        uses: anchore/sbom-action@8d0a6505bf28ced3e85154d13dc6af83299e13f1 # v0.17.4
+        with:
+          path: release/
+          format: spdx-json
+          output-file: release/satellite.sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate CycloneDX SBOM (Syft)
+        uses: anchore/sbom-action@8d0a6505bf28ced3e85154d13dc6af83299e13f1 # v0.17.4
+        with:
+          path: release/
+          format: cyclonedx-json
+          output-file: release/satellite.sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Install cosign (upstream binary)
+        shell: bash
+        env:
+          COSIGN_VERSION: "2.4.1"
+          # Pin upstream SHA-256 of cosign-linux-amd64. Verify with:
+          #   gh release view v${COSIGN_VERSION} -R sigstore/cosign --json assets
+          COSIGN_SHA256: "8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b" # cosign-linux-amd64 v2.4.1
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/cosign \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          if [ "${COSIGN_SHA256}" != "TODO_REPLACE_WITH_UPSTREAM_SHA256" ]; then
+            echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
+          else
+            echo "::warning::COSIGN_SHA256 is unset — replace with the upstream SHA-256 to enforce binary integrity."
+          fi
+          chmod +x /tmp/cosign
+          sudo mv /tmp/cosign /usr/local/bin/cosign
+          cosign version
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          # `sha256sum --binary` produces deterministic, byte-mode digests.
+          # Sort so the file order is stable regardless of how artifacts
+          # arrived.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs -d '\n' sha256sum --binary > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Cosign-sign each artifact + SHA256SUMS (keyless)
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          cd release
+          for f in *; do
+            case "$f" in
+              *.sig|*.crt|SHA256SUMS.sig|SHA256SUMS.crt) continue ;;
+            esac
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.crt" \
+              "$f"
+          done
+          ls -l
+
+      - name: Compute base64 SHA256 hashes for SLSA provenance
+        id: hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          # SLSA generic generator wants `<base64>  <name>` lines, base64-encoded.
+          h=$(find . -maxdepth 1 -type f ! -name '*.sig' ! -name '*.crt' \
+                  -printf '%f\n' \
+                | LC_ALL=C sort \
+                | xargs -d '\n' sha256sum \
+                | base64 -w0)
+          echo "hashes=${h}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload hardened bundle
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: release-bundle
+          path: release/
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SLSA L3 provenance generation. The reusable workflow runs in its own
+  # privileged context (id-token: write) and emits an .intoto.jsonl
+  # attestation pinned to the harden job's output hashes.
+  # ─────────────────────────────────────────────────────────────────────
+  provenance:
+    name: SLSA L3 provenance
+    needs: [harden]
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@5a775b367a56d5bd118a224a811bba288150a563 # v2.0.0
+    with:
+      base64-subjects: ${{ needs.harden.outputs.hashes }}
+      provenance-name: satellite.intoto.jsonl
+      upload-assets: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # publish: attach hardened bundle + SLSA provenance to the GitHub
+  # Release. This is the only job that touches the release page.
+  # ─────────────────────────────────────────────────────────────────────
+  publish:
+    name: Publish to GitHub Releases
+    needs: [harden, provenance]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download hardened bundle
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: release-bundle
+          path: release
+
+      - name: Download SLSA provenance
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: release
+
+      - name: Show what we're about to publish
+        run: find release -type f -printf '%p\n'
 
       - name: Upload to GitHub Releases
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
-          files: artifacts/**/*
+          files: release/**/*

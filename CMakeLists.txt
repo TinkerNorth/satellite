@@ -38,6 +38,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/tray.cpp
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
+    src/platform/windows/gamepad_backend.cpp
 )
 
 # macOS-only infrastructure.
@@ -47,7 +48,7 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/config.cpp
     src/platform/macos/crypto.cpp
     src/platform/macos/tray.mm
-    src/platform/macos/vigem_stub.cpp
+    src/platform/macos/gamepad_backend.cpp
 )
 
 # Linux-only infrastructure.
@@ -56,7 +57,7 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/globals.cpp
     src/platform/linux/config.cpp
     src/platform/linux/crypto.cpp
-    src/platform/linux/vigem.cpp
+    src/platform/linux/gamepad_backend.cpp
     src/platform/linux/gamepad_adapter.cpp
     src/platform/linux/tray.cpp
 )
@@ -294,6 +295,50 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_target_properties(satellite PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
+
+    # ── Install rules (drives `make install` and CPack DEB staging) ─────────
+    include(GNUInstallDirs)
+    set(SATELLITE_PKG_DIR  "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian")
+
+    install(TARGETS satellite RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(DIRECTORY web/  DESTINATION ${CMAKE_INSTALL_DATADIR}/satellite/web)
+    install(FILES   ${SATELLITE_PKG_DIR}/satellite.desktop
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES   web/icon.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps RENAME satellite.png)
+    install(FILES   ${SATELLITE_PKG_DIR}/70-satellite-uinput.rules
+            DESTINATION lib/udev/rules.d)
+    install(FILES   ${SATELLITE_PKG_DIR}/satellite-modules.conf
+            DESTINATION lib/modules-load.d RENAME satellite.conf)
+    install(FILES   ${SATELLITE_PKG_DIR}/copyright
+            DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+    # ── CPack: build a .deb with `cpack -G DEB` after `cmake --build`. ──────
+    # Only meaningful on Debian/Ubuntu hosts (needs dpkg-dev for shlibdeps).
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_PACKAGE_NAME                  "satellite")
+    set(CPACK_PACKAGE_VERSION               "1.0.0")
+    set(CPACK_PACKAGE_VENDOR                "TinkerNorth")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY   "Low-latency Xbox controller forwarding over the network")
+    set(CPACK_PACKAGE_HOMEPAGE_URL          "https://github.com/TinkerNorth/satellite")
+    set(CPACK_PACKAGE_CONTACT               "TinkerNorth <https://github.com/TinkerNorth/satellite>")
+    set(CPACK_RESOURCE_FILE_LICENSE         "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+    set(CPACK_PACKAGE_DESCRIPTION
+        "Captures physical Xbox controller input on one machine and injects\n it as a virtual Xbox 360 controller on another via /dev/uinput.\n Includes a system-tray icon and a web UI at http://localhost:9877\n for pairing, configuration, and status.")
+
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER     "TinkerNorth <https://github.com/TinkerNorth/satellite>")
+    set(CPACK_DEBIAN_PACKAGE_SECTION        "games")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY       "optional")
+    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE       "${CPACK_PACKAGE_HOMEPAGE_URL}")
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS      ON)
+
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+        "${SATELLITE_PKG_DIR}/postinst;${SATELLITE_PKG_DIR}/postrm")
+
+    # File-name in the form `satellite_1.0.0_amd64.deb`.
+    set(CPACK_DEBIAN_FILE_NAME              DEB-DEFAULT)
+
+    include(CPack)
 
 else()
     message(STATUS "satellite: unsupported platform; configuring tests only.")
