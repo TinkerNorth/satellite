@@ -12,8 +12,12 @@
 #include "types.h"
 
 // ── Outbound: Virtual gamepad synthesis ─────────────────────────────────────
-// Windows: backed by ViGEmAdapter (ViGEm bus driver).
-// macOS:   backed by IOHIDUserDeviceAdapter (planned).
+// Windows: backed by ViGEmAdapter (ViGEmBus driver).
+// Linux:   backed by GamepadAdapter (/dev/uinput).
+// macOS:   no backend — IGamepadPort impl reports isBusOpen() == false always.
+//
+// For backend-availability checks (e.g. for the web UI's diagnostic panel),
+// callers use ::probeBackend() from core/gamepad_backend.h directly.
 class IGamepadPort {
   public:
     virtual ~IGamepadPort() = default;
@@ -41,9 +45,6 @@ class IGamepadPort {
 
     // Submit a DS4 gamepad report (converted from GamepadReport). Returns true on success.
     virtual bool submitDS4Report(uint32_t serial, const GamepadReport& report) = 0;
-
-    // Check if the ViGEm driver is installed on this system.
-    virtual bool isDriverInstalled() = 0;
 };
 
 // ── Outbound: Send encrypted UDP packets to clients ─────────────────────────
@@ -64,14 +65,16 @@ class IClientPort {
     virtual void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
                                    uint8_t result) = 0;
 
-    // Send server status (0x0007) to a specific client.
-    virtual void sendServerStatus(const Connection& conn, bool vigemAvailable,
+    // Send server status (0x0007) to a specific client. The backendAvailable
+    // bool maps to the wire byte at offset 4 of the encrypted payload; the
+    // value is unchanged from the previous protocol revision.
+    virtual void sendServerStatus(const Connection& conn, bool backendAvailable,
                                   uint8_t totalActiveControllers) = 0;
 
     // Broadcast server status to all provided connections.
     virtual void
     broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
-                          bool vigemAvailable, uint8_t totalActiveControllers) = 0;
+                          bool backendAvailable, uint8_t totalActiveControllers) = 0;
 };
 
 // ── Outbound: Configuration persistence ─────────────────────────────────────

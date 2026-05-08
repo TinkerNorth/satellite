@@ -26,11 +26,11 @@ class ClientAdapter : public IClientPort {
     void sendHeartbeatAck(const Connection& conn) override;
     void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
                            uint8_t result) override;
-    void sendServerStatus(const Connection& conn, bool vigemAvailable,
+    void sendServerStatus(const Connection& conn, bool backendAvailable,
                           uint8_t totalActiveControllers) override;
     void
     broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
-                          bool vigemAvailable, uint8_t totalActiveControllers) override;
+                          bool backendAvailable, uint8_t totalActiveControllers) override;
 
   private:
     SOCKET sock_ = INVALID_SOCKET;

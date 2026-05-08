@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Satellite
+GenericName=Controller Forwarder
+Comment=Low-latency Xbox controller forwarding over the network
+Exec=satellite
+Icon=satellite
+Terminal=false
+Categories=Game;Network;Utility;
+Keywords=controller;gamepad;xbox;remote;streaming;
+StartupNotify=false

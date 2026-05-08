@@ -89,22 +89,22 @@ void ClientAdapter::sendControllerAck(const Connection& conn, uint16_t requestTy
     sendEncryptedPacket(conn, inner, 8);
 }
 
-void ClientAdapter::sendServerStatus(const Connection& conn, bool vigemAvailable,
+void ClientAdapter::sendServerStatus(const Connection& conn, bool backendAvailable,
                                      uint8_t totalActiveControllers) {
     uint8_t inner[6];
     inner[0] = (uint8_t)(MSG_SERVER_STATUS >> 8);
     inner[1] = (uint8_t)(MSG_SERVER_STATUS);
     inner[2] = 0;
     inner[3] = 2;
-    inner[4] = vigemAvailable ? 1 : 0;
+    inner[4] = backendAvailable ? 1 : 0;
     inner[5] = totalActiveControllers;
     sendEncryptedPacket(conn, inner, 6);
 }
 
 void ClientAdapter::broadcastServerStatus(
-    const std::vector<std::pair<uint32_t, const Connection*>>& connections, bool vigemAvailable,
+    const std::vector<std::pair<uint32_t, const Connection*>>& connections, bool backendAvailable,
     uint8_t totalActiveControllers) {
     for (auto& [tok, conn] : connections) {
-        sendServerStatus(*conn, vigemAvailable, totalActiveControllers);
+        sendServerStatus(*conn, backendAvailable, totalActiveControllers);
     }
 }

@@ -15,7 +15,6 @@ extern bool submitReportFast(HANDLE bus, unsigned long serial, const XUSB_REPORT
 extern bool submitReportDS4Fast(HANDLE bus, unsigned long serial, const DS4_REPORT& rpt,
                                 HANDLE event);
 extern void unplugTarget(HANDLE bus, unsigned long serial);
-extern bool isVigemInstalled();
 
 ViGEmAdapter::ViGEmAdapter() = default;
 
@@ -171,5 +170,3 @@ bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report)
     if (evt != nullptr) { return submitReportDS4Fast(busHandle_, (unsigned long)serial, ds4, evt); }
     return false;
 }
-
-bool ViGEmAdapter::isDriverInstalled() { return isVigemInstalled(); }

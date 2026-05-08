@@ -48,32 +48,39 @@ async function pollDebug() {
     document.getElementById('d-submit-rate').textContent = submitRate + ' pps';
     document.getElementById('d-status').textContent = d.listening ? 'Active' : 'Stopped';
 
-    // Pipeline coloring (reflects ViGEm availability)
-    const udp = document.getElementById('pipe-udp');
-    const vigem = document.getElementById('pipe-vigem');
-    const sys = document.getElementById('pipe-system');
-    const a1 = document.getElementById('pipe-arrow-1');
-    const a2 = document.getElementById('pipe-arrow-2');
-    const vigemUp = d.vigemAvailable;
+    // Pipeline coloring (reflects backend availability)
+    const udp     = document.getElementById('pipe-udp');
+    const backend = document.getElementById('pipe-backend');
+    const sys     = document.getElementById('pipe-system');
+    const a1      = document.getElementById('pipe-arrow-1');
+    const a2      = document.getElementById('pipe-arrow-2');
+    const backendUp = d.backendAvailable;
+
+    // Driver-neutral pipeline label sourced from BACKEND_COPY when present.
+    const beLabelEl = document.getElementById('pipe-backend-label');
+    if (beLabelEl && d.backend && typeof BACKEND_COPY === 'object') {
+      const copy = BACKEND_COPY[d.backend.id];
+      if (copy && copy.pipelineLabel) beLabelEl.textContent = copy.pipelineLabel;
+    }
 
     if (d.listening && pps > 0) {
-      udp.className = 'pipe-stage pipe-active';
-      vigem.className = 'pipe-stage ' + (vigemUp ? 'pipe-active' : 'pipe-error');
-      sys.className = 'pipe-stage ' + (vigemUp ? 'pipe-active' : 'pipe-error');
-      a1.className = 'pipe-arrow pipe-flow';
-      a2.className = 'pipe-arrow ' + (vigemUp ? 'pipe-flow' : '');
+      udp.className     = 'pipe-stage pipe-active';
+      backend.className = 'pipe-stage ' + (backendUp ? 'pipe-active' : 'pipe-error');
+      sys.className     = 'pipe-stage ' + (backendUp ? 'pipe-active' : 'pipe-error');
+      a1.className      = 'pipe-arrow pipe-flow';
+      a2.className      = 'pipe-arrow ' + (backendUp ? 'pipe-flow' : '');
     } else if (d.listening) {
-      udp.className = 'pipe-stage pipe-idle';
-      vigem.className = 'pipe-stage ' + (vigemUp ? 'pipe-idle' : 'pipe-error');
-      sys.className = 'pipe-stage ' + (vigemUp ? 'pipe-idle' : 'pipe-error');
-      a1.className = 'pipe-arrow';
-      a2.className = 'pipe-arrow';
+      udp.className     = 'pipe-stage pipe-idle';
+      backend.className = 'pipe-stage ' + (backendUp ? 'pipe-idle' : 'pipe-error');
+      sys.className     = 'pipe-stage ' + (backendUp ? 'pipe-idle' : 'pipe-error');
+      a1.className      = 'pipe-arrow';
+      a2.className      = 'pipe-arrow';
     } else {
-      udp.className = 'pipe-stage';
-      vigem.className = 'pipe-stage' + (vigemUp === false ? ' pipe-error' : '');
-      sys.className = 'pipe-stage';
-      a1.className = 'pipe-arrow';
-      a2.className = 'pipe-arrow';
+      udp.className     = 'pipe-stage';
+      backend.className = 'pipe-stage' + (backendUp === false ? ' pipe-error' : '');
+      sys.className     = 'pipe-stage';
+      a1.className      = 'pipe-arrow';
+      a2.className      = 'pipe-arrow';
     }
 
     // ── Update stats ──
@@ -102,18 +109,27 @@ async function pollDebug() {
     if (dfEl) dfEl.className = 'debug-stat-value' + ((d.decryptFail || 0) > 0 ? ' debug-err' : ' debug-ok');
     if (rdEl) rdEl.className = 'debug-stat-value' + ((d.replayDrop || 0) > 0 ? ' debug-warn' : ' debug-ok');
 
-    // ── ViGEm status ──
-    const viEl = document.getElementById('d-vigem-installed');
-    if (viEl) {
-      const inst = d.vigemInstalled;
-      viEl.textContent = inst ? 'Yes' : 'No';
-      viEl.className = 'debug-stat-value' + (inst ? ' debug-ok' : ' debug-err');
-    }
-    const vaEl = document.getElementById('d-vigem-available');
-    if (vaEl) {
-      const avail = d.vigemAvailable;
-      vaEl.textContent = avail ? 'Active' : (d.vigemInstalled ? 'Idle' : 'Unavailable');
-      vaEl.className = 'debug-stat-value' + (avail ? ' debug-ok' : (d.vigemInstalled ? '' : ' debug-err'));
+    // ── Backend status (single row, hidden on macOS / unsupported) ──
+    const beRow   = document.getElementById('d-backend-row');
+    const beLabel = document.getElementById('d-backend-label');
+    const beVal   = document.getElementById('d-backend-value');
+    if (beRow && beLabel && beVal && d.backend) {
+      if (!d.backend.supported) {
+        beRow.style.display = 'none';
+      } else {
+        beRow.style.display = '';
+        const copy  = (typeof BACKEND_COPY === 'object' && BACKEND_COPY[d.backend.id]) || null;
+        const title = (copy && copy.title) || 'Backend';
+        beLabel.textContent = title;
+        if (d.backend.available) {
+          beVal.textContent = d.backendAvailable ? 'Active' : 'Idle';
+          beVal.className   = 'debug-stat-value debug-ok';
+        } else {
+          const errCopy = copy && copy.errors && copy.errors[d.backend.errorCode];
+          beVal.textContent = errCopy ? errCopy.title : (d.backend.errorCode || 'Unavailable');
+          beVal.className   = 'debug-stat-value debug-err';
+        }
+      }
     }
 
     // Color the loop time

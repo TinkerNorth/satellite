@@ -90,22 +90,24 @@
       </div>
     </div>
 
-    <!-- ── ViGEm Driver Status ── -->
-    <div class="section">
-      <h2 class="section-title">ViGEmBus Driver</h2>
-      <div class="vigem-status-row">
-        <div class="vigem-indicator" id="vigem-indicator">
-          <span class="vigem-dot" id="vigem-dot"></span>
-          <span class="vigem-label" id="vigem-label">Checking…</span>
+    <!-- ── Backend Status (per-OS: ViGEmBus on Windows, uinput on Linux,
+         hidden entirely on macOS where supported=false). All copy is driven
+         by the BACKEND_COPY table in dashboard.js, keyed by (id, errorCode). -->
+    <div class="section" id="backend-section" style="display:none">
+      <h2 class="section-title" id="backend-title">Backend</h2>
+      <div class="backend-status-row">
+        <div class="backend-indicator">
+          <span class="backend-dot" id="backend-dot"></span>
+          <span class="backend-label" id="backend-label">Checking…</span>
         </div>
-        <button class="btn-link" id="vigem-guide-toggle" onclick="toggleVigemGuide()" style="display:none">Setup Guide ▸</button>
+        <button class="btn-link" id="backend-guide-toggle" onclick="toggleBackendGuide()" style="display:none">Setup Guide ▸</button>
       </div>
 
       <!-- Flow diagram -->
-      <div class="vigem-flow" id="vigem-flow">
-        <div class="flow-step" id="flow-vigem">
+      <div class="backend-flow">
+        <div class="flow-step" id="flow-backend">
           <span class="flow-icon">🎮</span>
-          <span class="flow-text">ViGEmBus</span>
+          <span class="flow-text" id="flow-backend-text">Backend</span>
         </div>
         <div class="flow-arrow">→</div>
         <div class="flow-step" id="flow-system">
@@ -114,19 +116,12 @@
         </div>
       </div>
 
-      <!-- Setup guide (hidden by default) -->
-      <div class="vigem-guide" id="vigem-guide" style="display:none">
-        <h3 class="guide-title">How to install ViGEmBus</h3>
-        <ol class="guide-steps">
-          <li>
-            <strong>Download</strong> the latest ViGEmBus release from
-            <a href="https://github.com/nefarius/ViGEmBus/releases" target="_blank" rel="noopener">github.com/nefarius/ViGEmBus</a>
-          </li>
-          <li><strong>Run</strong> the installer (<code>ViGEmBus_Setup_x64.msi</code>)</li>
-          <li><strong>Restart</strong> may be required — check Device Manager under <em>System devices</em> for "Nefarius Virtual Gamepad Emulation Bus"</li>
-          <li>Come back here and the status should show <strong>Detected</strong></li>
-        </ol>
-        <p class="hint">ViGEmBus is a kernel driver that lets Satellite create a virtual Xbox 360 controller on your system. Without it, controller input cannot be forwarded.</p>
+      <!-- Setup guide (hidden by default; populated dynamically from
+           BACKEND_COPY[id].errors[errorCode] in dashboard.js). -->
+      <div class="backend-guide" id="backend-guide" style="display:none">
+        <h3 class="guide-title" id="backend-guide-title"></h3>
+        <p class="backend-guide-body" id="backend-guide-body"></p>
+        <ol class="guide-steps" id="backend-guide-steps"></ol>
       </div>
     </div>
 
@@ -211,9 +206,9 @@
         <div class="pipe-value" id="d-pps">0 pps</div>
       </div>
       <div class="pipe-arrow" id="pipe-arrow-1">→</div>
-      <div class="pipe-stage" id="pipe-vigem">
+      <div class="pipe-stage" id="pipe-backend">
         <div class="pipe-icon">🎮</div>
-        <div class="pipe-label">ViGEm Submit</div>
+        <div class="pipe-label" id="pipe-backend-label">Inject</div>
         <div class="pipe-value" id="d-submit-rate">0 pps</div>
       </div>
       <div class="pipe-arrow" id="pipe-arrow-2">→</div>
@@ -266,13 +261,9 @@
         <span class="debug-stat-label">Replay Drops</span>
         <span class="debug-stat-value debug-ok" id="d-replay-drop">0</span>
       </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label">ViGEm Installed</span>
-        <span class="debug-stat-value" id="d-vigem-installed">—</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label">ViGEm Bus</span>
-        <span class="debug-stat-value" id="d-vigem-available">—</span>
+      <div class="debug-stat" id="d-backend-row" style="display:none">
+        <span class="debug-stat-label" id="d-backend-label">Backend</span>
+        <span class="debug-stat-value" id="d-backend-value">—</span>
       </div>
     </div>
 

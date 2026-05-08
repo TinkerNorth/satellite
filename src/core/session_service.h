@@ -17,7 +17,7 @@
 
 class SessionService {
   public:
-    SessionService(IGamepadPort& vigem, IClientPort& client, ILogPort& log);
+    SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log);
 
     // ── Connection lifecycle ────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ class SessionService {
         std::vector<ConnectionSnapshot> connections;
         int totalControllers;
         int maxControllers;
-        bool vigemAvailable;
+        bool backendAvailable;
     };
     ConnectionsSnapshot getConnectionsSnapshot() const;
 
@@ -97,25 +97,25 @@ class SessionService {
     int reapTimedOut();
 
     // ── Stats ───────────────────────────────────────────────────────────
-    bool isViGEmAvailable() const;
+    bool isBackendAvailable() const;
     int totalActiveControllers() const;
     int availableSlots() const;
 
   private:
-    IGamepadPort& vigem_;
+    IGamepadPort& backend_;
     IClientPort& client_;
     ILogPort& log_;
 
     mutable std::mutex mtx_; // protects connections_ and serialInUse_
     std::unordered_map<uint32_t, Connection> connections_;
-    bool serialInUse_[MAX_VIGEM_CONTROLLERS] = {};
+    bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
 
     // ── Internal helpers (caller must hold mtx_) ────────────────────────
     void teardownConnection(Connection& conn);
     uint32_t allocateSerial();
     void releaseSerial(uint32_t serial);
     int countGlobalActiveControllers() const;
-    void closeVigemBusIfIdle();
+    void closeBackendBusIfIdle();
     void broadcastStatus();
     uint32_t generateUniqueToken();
 };

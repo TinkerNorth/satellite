@@ -1,0 +1,37 @@
+# gitleaks configuration for satellite.
+#
+# Default rule set is inherited from gitleaks 8.x. The allowlists below
+# suppress known false-positives so a real finding stands out.
+#
+# Reference: https://github.com/gitleaks/gitleaks#configuration
+
+title = "satellite gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for known non-secret strings in satellite."
+paths = [
+    # The LGPL header preamble in COPYING.GPL3 / LICENSE matches some
+    # generic credential-like patterns.
+    '''COPYING\.GPL3''',
+    '''LICENSE''',
+    # ViGEm vendored headers contain GUIDs that look like keys.
+    '''vigem/include/.*''',
+    # Vendored libsodium / cpp-httplib carry constant tables that scanners
+    # sometimes flag as base64-encoded secrets.
+    '''lib/libsodium/.*''',
+    '''lib/httplib\.h''',
+]
+
+regexes = [
+    # Wire-protocol constants documented in CONTRIBUTING.md and the README:
+    # discovery/pairing/HTTP/streaming port numbers and the static AAD
+    # token width are not secrets.
+    '''9876|9877|9878|9879''',
+]
+
+# Suppress entries by commit SHA when a finding has been reviewed and
+# cleared. Use `gitleaks log` to obtain the commit fingerprint.
+# commits = []

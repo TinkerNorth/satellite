@@ -1,0 +1,81 @@
+name: Security
+
+# PR-time security gates for the satellite repo.
+#
+# Pulls the shared jobs from satellite/.github/workflows/_security.yml
+# (action-pin lint, allowlist-expiry, OSV-Scanner, dependency-review,
+# gitleaks). CodeQL lives in codeql.yml because it has its own matrix.
+#
+# Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
+#   actions/checkout @ v4.2.2 → 11bd71901bbe5b1630ceea73d27597364c9af683
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # weekly Monday 06:00 UTC
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+
+jobs:
+  shared:
+    # The reusable workflow lives in this repo, so call by local relative path.
+    uses: ./.github/workflows/_security.yml
+    with:
+      osv_scan_paths: |
+        lib
+        vigem/include
+      osv_config: osv-scanner.toml
+      gitleaks_enabled: true
+      dependency_review_enabled: true
+      action_pin_lint_enabled: true
+      allowlist_expiry_enabled: true
+
+  vendored-freshness:
+    name: Vendored components <= 90 days old
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check lib/VENDORED.md last-vendored timestamps
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f lib/VENDORED.md ]; then
+            echo "::error::lib/VENDORED.md is missing — vendored components must be inventoried."
+            exit 1
+          fi
+          # Each component block must contain a `Last-vendored: YYYY-MM-DD` line.
+          today_epoch=$(date -u +%s)
+          fail=0
+          while IFS= read -r line; do
+            d="${line#*: }"
+            d="${d## }"
+            d="${d%% *}"
+            ts=$(date -u -d "$d" +%s 2>/dev/null || true)
+            if [ -z "$ts" ]; then
+              echo "::error::lib/VENDORED.md: unparseable date '$d' in line: $line"
+              fail=1
+              continue
+            fi
+            age_days=$(( (today_epoch - ts) / 86400 ))
+            if [ "$age_days" -gt 90 ]; then
+              echo "::error::lib/VENDORED.md: entry dated $d is ${age_days} days old (>90). Refresh upstream and update the timestamp."
+              fail=1
+            fi
+          done < <(grep -E '^[[:space:]]*-?[[:space:]]*Last-vendored:' lib/VENDORED.md || true)
+          if ! grep -qE '^[[:space:]]*-?[[:space:]]*Last-vendored:' lib/VENDORED.md; then
+            echo "::error::lib/VENDORED.md must contain at least one 'Last-vendored: YYYY-MM-DD' line."
+            exit 1
+          fi
+          exit "$fail"

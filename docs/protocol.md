@@ -106,7 +106,7 @@ Application/extension types should use 0x0100+.
 | 0x0004 | Controller Add    | controller_index(1B) + caps(2B)            | 4+3 = 7 B  | 35 B          | client → server |
 | 0x0005 | Controller Remove | controller_index(1B)                       | 4+1 = 5 B  | 33 B          | client → server |
 | 0x0006 | Controller ACK    | requestType(2B) + ctrlIdx(1B) + result(1B) | 4+4 = 8 B  | 36 B          | server → client |
-| 0x0007 | Server Status     | vigemAvailable(1B) + activeControllers(1B)  | 4+2 = 6 B  | 34 B          | server → client |
+| 0x0007 | Server Status     | backendAvailable(1B) + activeControllers(1B)| 4+2 = 6 B  | 34 B          | server → client |
 
 ### 0x0001 — Gamepad Data
 
@@ -119,9 +119,10 @@ Application/extension types should use 0x0100+.
 | `controller_index` | 1 B  | 0-based index of the controller on this client |
 | `XUSB_REPORT`      | 12 B | Standard Xbox 360 gamepad report               |
 
-The server maps `(token, controller_index)` → ViGEm controller. A client can
-control up to 16 gamepads per connection (indices 0–15), limited by the global
-16-controller ViGEm cap shared across all connections.
+The server maps `(token, controller_index)` → backend virtual controller
+(ViGEmBus on Windows, /dev/uinput on Linux). A client can control up to 16
+gamepads per connection (indices 0–15), limited by the global 16-controller
+backend cap shared across all connections.
 
 ### 0x0002 — Heartbeat Ping
 
@@ -182,47 +183,51 @@ Sent by the server in response to a 0x0004 (Controller Add) or 0x0005
 
 | Code | Name                   | Description                              |
 |------|------------------------|------------------------------------------|
-| 0x00 | `ACK_OK`               | Success                                  |
-| 0x01 | `ACK_ERR_VIGEM_UNAVAIL`| ViGEm bus driver not available           |
-| 0x02 | `ACK_ERR_NO_SLOTS`     | All 16 controller slots are in use       |
-| 0x03 | `ACK_ERR_ALREADY_EXISTS`| Controller already active at this index |
-| 0x04 | `ACK_ERR_NOT_FOUND`    | No active controller at this index       |
-| 0x05 | `ACK_ERR_PLUGIN_FAIL`  | ViGEm plugin call failed                 |
+| 0x00 | `ACK_OK`                  | Success                                  |
+| 0x01 | `ACK_ERR_BACKEND_UNAVAIL` | Virtual-gamepad backend not available    |
+| 0x02 | `ACK_ERR_NO_SLOTS`        | All 16 controller slots are in use       |
+| 0x03 | `ACK_ERR_ALREADY_EXISTS`  | Controller already active at this index  |
+| 0x04 | `ACK_ERR_NOT_FOUND`       | No active controller at this index       |
+| 0x05 | `ACK_ERR_PLUGIN_FAIL`     | Backend plugin call failed               |
+
+> Wire values are stable across platforms. Only the C++ identifier changed
+> (`ACK_ERR_VIGEM_UNAVAIL` → `ACK_ERR_BACKEND_UNAVAIL`); existing clients that
+> match on the byte value `0x01` continue to work unchanged.
 
 ### 0x0007 — Server Status
 
 ```
-[vigemAvailable (1B)] [activeControllerCount (1B)]
+[backendAvailable (1B)] [activeControllerCount (1B)]
 ```
 
 Sent by the server to inform the client of real-time server state. The
 server sends this message:
 
 1. **On every heartbeat response** — alongside the 0x0003 ACK, the server
-   sends a 0x0007 with the current ViGEm/controller state.
+   sends a 0x0007 with the current backend/controller state.
 2. **On every controller add/remove** — after a successful 0x0004 or 0x0005,
    the server broadcasts 0x0007 to **all** connected clients so every client
    sees the updated controller count in real time.
-3. **On ViGEm state change** — when the ViGEm bus is lazily opened or
+3. **On backend state change** — when the backend bus is lazily opened or
    closed, the server broadcasts 0x0007 to all connected clients.
 
 | Field                    | Size | Description                                    |
 |--------------------------|------|------------------------------------------------|
-| `vigemAvailable`         | 1 B  | `0x01` = ViGEm bus is open and ready, `0x00` = idle/unavailable |
+| `backendAvailable`       | 1 B  | `0x01` = backend bus is open and ready, `0x00` = idle/unavailable |
 | `activeControllerCount`  | 1 B  | Total number of active virtual controllers across all connections |
 
-**ViGEm lifecycle is client-driven.** The ViGEm bus is **not** opened at
+**Backend lifecycle is client-driven.** The backend bus is **not** opened at
 receiver start. It opens lazily on the first `0x0004 Controller Add` and
 closes automatically when the last controller is removed (via `0x0005`,
 connection timeout, or explicit disconnect). When `activeControllerCount`
-is 0, `vigemAvailable` will be `0x00` because the bus is closed.
+is 0, `backendAvailable` will be `0x00` because the bus is closed.
 
-The client should use this to update the **global** ViGEm bus status in
-its UI (e.g., "VIGEM BUS: OPEN · 3 active"). For **per-device** state
+The client should use this to update the **global** backend status in
+its UI (e.g., "BACKEND: OPEN · 3 active"). For **per-device** state
 (whether a specific controller was successfully plugged in), the client
 should use the **0x0006 Controller ACK** result code. The web dashboard
-uses the `GET /api/connections` response which includes `vigemPluggedIn`
-per controller.
+uses the `GET /api/connections` response which includes `pluggedIn` per
+controller.
 
 ## Heartbeat / Keepalive
 

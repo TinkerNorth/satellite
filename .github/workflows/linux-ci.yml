@@ -1,5 +1,9 @@
 name: Linux CI
 
+# Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
+#   actions/checkout         @ v4.2.2 → 11bd71901bbe5b1630ceea73d27597364c9af683
+#   actions/upload-artifact  @ v4.4.3 → b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+
 on:
   push:
     branches: [main]
@@ -17,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install dependencies
         run: |
@@ -68,7 +72,7 @@ jobs:
             || (echo "tray-enabled build missing AppIndicator/GTK link" && exit 1)
 
       - name: Upload satellite binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: satellite-linux-x64
           path: satellite
@@ -79,7 +83,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install dependencies (no tray)
         run: |
@@ -99,3 +103,42 @@ jobs:
       - name: Run tests
         working-directory: build
         run: ctest --output-on-failure
+
+  reproducibility:
+    name: Build reproducibility (advisory)
+    runs-on: ubuntu-24.04
+    # Advisory only — the upstream goal is bit-identical Release builds
+    # but the toolchain doesn't guarantee that yet. Surface drift in the
+    # job summary; do not block the PR. See SECURITY_HARDENING_PROMPT.md
+    # section A.5.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libsodium-dev \
+            libayatana-appindicator3-dev libgtk-3-dev diffoscope
+
+      - name: Build twice and diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-A -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-A -j
+          mv satellite satellite-A
+          rm -rf build-A
+          cmake -S . -B build-B -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-B -j
+          mv satellite satellite-B
+          {
+            if cmp -s satellite-A satellite-B; then
+              echo "::notice::satellite Linux Release build is bit-identical across two runs."
+            else
+              echo "::warning::satellite Linux Release build is NOT bit-identical across two runs."
+              diffoscope --no-progress satellite-A satellite-B | head -200 || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

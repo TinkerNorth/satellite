@@ -236,5 +236,3 @@ bool GamepadAdapter::submitDS4Report(uint32_t serial, const GamepadReport& repor
     // via the USB IDs and remap face buttons accordingly.
     return submitReport(serial, report);
 }
-
-bool GamepadAdapter::isDriverInstalled() { return ::access("/dev/uinput", W_OK) == 0; }

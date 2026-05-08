@@ -19,15 +19,15 @@ static uint32_t makeRandomToken() {
     return dist(gen);
 }
 
-SessionService::SessionService(IGamepadPort& vigem, IClientPort& client, ILogPort& log)
-    : vigem_(vigem), client_(client), log_(log) {}
+SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log)
+    : backend_(backend), client_(client), log_(log) {}
 
 // ── Internal helpers (caller must hold mtx_) ────────────────────────────────
 
 void SessionService::teardownConnection(Connection& conn) {
     for (auto& ctrl : conn.controllers) {
         if (ctrl.active && ctrl.serialNo != 0) {
-            vigem_.unplugDevice(ctrl.serialNo);
+            backend_.unplugDevice(ctrl.serialNo);
             releaseSerial(ctrl.serialNo);
             ctrl.active = false;
             ctrl.serialNo = 0;
@@ -38,7 +38,7 @@ void SessionService::teardownConnection(Connection& conn) {
 }
 
 uint32_t SessionService::allocateSerial() {
-    for (size_t i = 0; i < MAX_VIGEM_CONTROLLERS; i++) {
+    for (size_t i = 0; i < MAX_BACKEND_CONTROLLERS; i++) {
         if (!serialInUse_[i]) {
             serialInUse_[i] = true;
             return static_cast<uint32_t>(i + 1); // serials are 1-based
@@ -48,7 +48,7 @@ uint32_t SessionService::allocateSerial() {
 }
 
 void SessionService::releaseSerial(uint32_t serial) {
-    if (serial == 0 || serial > (uint32_t)MAX_VIGEM_CONTROLLERS) return;
+    if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
     serialInUse_[serial - 1] = false;
 }
 
@@ -58,18 +58,18 @@ int SessionService::countGlobalActiveControllers() const {
     return total;
 }
 
-void SessionService::closeVigemBusIfIdle() {
-    if (!vigem_.isBusOpen()) return;
+void SessionService::closeBackendBusIfIdle() {
+    if (!backend_.isBusOpen()) return;
     if (countGlobalActiveControllers() == 0) {
-        vigem_.closeBus();
-        log_.logMsg(LogLevel::INFO, "service", "ViGEm bus closed (no active controllers)");
+        backend_.closeBus();
+        log_.logMsg(LogLevel::INFO, "service", "Backend bus closed (no active controllers)");
     }
 }
 
 void SessionService::broadcastStatus() {
     std::vector<std::pair<uint32_t, const Connection*>> conns;
     for (auto& [tok, c] : connections_) { conns.push_back({tok, &c}); }
-    client_.broadcastServerStatus(conns, vigem_.isBusOpen(),
+    client_.broadcastServerStatus(conns, backend_.isBusOpen(),
                                   (uint8_t)countGlobalActiveControllers());
 }
 
@@ -97,7 +97,7 @@ OpenSessionResult SessionService::openSession(const std::string& deviceId,
             ++it;
         }
     }
-    closeVigemBusIfIdle();
+    closeBackendBusIfIdle();
 
     uint32_t token = generateUniqueToken();
 
@@ -133,7 +133,7 @@ int SessionService::closeSession(uint32_t token) {
     std::string devName = it->second.deviceName;
     teardownConnection(it->second);
     connections_.erase(it);
-    closeVigemBusIfIdle();
+    closeBackendBusIfIdle();
 
     log_.logMsg(LogLevel::INFO, "service",
                 "Connection closed for " + devName + " (" + std::to_string(removed) +
@@ -162,9 +162,9 @@ bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
 
     ctrl.lastReport = report;
     if (controllerTypeUsesDS4(ctrl.controllerType)) {
-        return vigem_.submitDS4Report(ctrl.serialNo, report);
+        return backend_.submitDS4Report(ctrl.serialNo, report);
     }
-    return vigem_.submitReport(ctrl.serialNo, report);
+    return backend_.submitReport(ctrl.serialNo, report);
 }
 
 void SessionService::handleHeartbeat(uint32_t token) {
@@ -174,7 +174,7 @@ void SessionService::handleHeartbeat(uint32_t token) {
 
     const Connection& conn = it->second;
     client_.sendHeartbeatAck(conn);
-    client_.sendServerStatus(conn, vigem_.isBusOpen(), (uint8_t)countGlobalActiveControllers());
+    client_.sendServerStatus(conn, backend_.isBusOpen(), (uint8_t)countGlobalActiveControllers());
 }
 
 void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
@@ -191,16 +191,16 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
         return;
     }
 
-    // Lazy-open ViGEm bus
-    if (!vigem_.isBusOpen()) {
-        if (vigem_.ensureBusOpen()) {
-            log_.logMsg(LogLevel::INFO, "service", "ViGEm bus opened on demand");
+    // Lazy-open the platform backend bus
+    if (!backend_.isBusOpen()) {
+        if (backend_.ensureBusOpen()) {
+            log_.logMsg(LogLevel::INFO, "service", "Backend bus opened on demand");
             broadcastStatus();
         }
     }
-    if (!vigem_.isBusOpen()) {
-        log_.logMsg(LogLevel::ERR, "service", "Controller add failed: ViGEm bus unavailable");
-        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_VIGEM_UNAVAIL);
+    if (!backend_.isBusOpen()) {
+        log_.logMsg(LogLevel::ERR, "service", "Controller add failed: backend bus unavailable");
+        client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_BACKEND_UNAVAIL);
         return;
     }
 
@@ -210,8 +210,8 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
         return;
     }
 
-    bool plugOk = controllerTypeUsesDS4(ctrl.controllerType) ? vigem_.pluginDeviceDS4(serial)
-                                                             : vigem_.pluginDevice(serial);
+    bool plugOk = controllerTypeUsesDS4(ctrl.controllerType) ? backend_.pluginDeviceDS4(serial)
+                                                             : backend_.pluginDevice(serial);
     if (!plugOk) {
         releaseSerial(serial);
         client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_ERR_PLUGIN_FAIL);
@@ -249,13 +249,13 @@ void SessionService::handleControllerRemove(uint32_t token, uint8_t ctrlIdx) {
     log_.logMsg(LogLevel::INFO, "service",
                 "Controller #" + std::to_string(ctrlIdx) + " removed from " + conn.deviceName);
 
-    vigem_.unplugDevice(ctrl.serialNo);
+    backend_.unplugDevice(ctrl.serialNo);
     releaseSerial(ctrl.serialNo);
     ctrl.active = false;
     ctrl.serialNo = 0;
     conn.activeControllerCount--;
 
-    closeVigemBusIfIdle();
+    closeBackendBusIfIdle();
     client_.sendControllerAck(conn, MSG_CONTROLLER_REMOVE, ctrlIdx, ACK_OK);
     broadcastStatus();
 }
@@ -281,9 +281,9 @@ void SessionService::handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8
     bool isDS4 = controllerTypeUsesDS4(safeType);
     if (wasDS4 != isDS4 && ctrl.serialNo != 0) {
         uint32_t serial = ctrl.serialNo;
-        vigem_.unplugDevice(serial);
+        backend_.unplugDevice(serial);
 
-        bool ok = isDS4 ? vigem_.pluginDeviceDS4(serial) : vigem_.pluginDevice(serial);
+        bool ok = isDS4 ? backend_.pluginDeviceDS4(serial) : backend_.pluginDevice(serial);
         if (!ok) {
             log_.logMsg(LogLevel::ERR, "service",
                         "Failed to replug controller #" + std::to_string(ctrlIdx) + " as " +
@@ -333,8 +333,8 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
     std::lock_guard<std::mutex> lk(mtx_);
     ConnectionsSnapshot snap;
     snap.totalControllers = 0;
-    snap.maxControllers = MAX_VIGEM_CONTROLLERS;
-    snap.vigemAvailable = vigem_.isBusOpen();
+    snap.maxControllers = MAX_BACKEND_CONTROLLERS;
+    snap.backendAvailable = backend_.isBusOpen();
 
     for (auto& [tok, conn] : connections_) {
         ConnectionSnapshot cs;
@@ -385,13 +385,13 @@ int SessionService::reapTimedOut() {
             ++it;
         }
     }
-    if (reaped > 0) closeVigemBusIfIdle();
+    if (reaped > 0) closeBackendBusIfIdle();
     return reaped;
 }
 
 // ── Stats ───────────────────────────────────────────────────────────────────
 
-bool SessionService::isViGEmAvailable() const { return vigem_.isBusOpen(); }
+bool SessionService::isBackendAvailable() const { return backend_.isBusOpen(); }
 
 int SessionService::totalActiveControllers() const {
     std::lock_guard<std::mutex> lk(mtx_);
