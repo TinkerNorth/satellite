@@ -28,7 +28,7 @@ on:
 #   actions/checkout                @ v4.2.2  → 11bd71901bbe5b1630ceea73d27597364c9af683
 #   actions/upload-artifact         @ v4.4.3  → b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
 #   actions/download-artifact       @ v4.1.8  → fa0a91b85d4f404e444e00e005971372dc801d16
-#   msys2/setup-msys2               @ v2.24.1 → ddf331adaebd714795f1042345e6ca57bd66cea8
+#   msys2/setup-msys2               @ v2.31.1 → e9898307ac31d1a803454791be09ab9973336e1c
 #   anchore/sbom-action             @ v0.17.4 → 8d0a6505bf28ced3e85154d13dc6af83299e13f1
 #   anchore/scan-action             @ v3.6.4  → 3343887d815d7b07465f6fdcd395bd66508d486a
 #   softprops/action-gh-release     @ v2.0.8  → c062e08bd532815e2082a85e87e3ef29c3e6d191
@@ -122,7 +122,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up MSYS2 / MinGW-w64
-        uses: msys2/setup-msys2@ddf331adaebd714795f1042345e6ca57bd66cea8 # v2.24.1
+        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
         with:
           msystem: MINGW64
           update: false
