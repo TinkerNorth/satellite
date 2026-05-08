@@ -56,6 +56,12 @@ VersionInfoProductVersion={#MyAppVersion}
 ; to close it gracefully instead of leaving locked files behind.
 CloseApplications=yes
 RestartApplications=no
+; PrivilegesRequired=admin combined with the HKCU autostart entry triggers
+; an Inno Setup warning by default. Acknowledge it: under UAC elevation,
+; Inno Setup correctly resolves HKCU/{userappdata} to the calling user's
+; hive (not the admin user's), so the autostart Run entry lands in the
+; right place. We need admin for ViGEmBus + Program Files anyway.
+UsedUserAreasWarning=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -180,7 +186,7 @@ var
 begin
     Result := False;
     if VigemMode = 'skip' then Exit;
-    if not IsComponentSelected('vigem') then Exit;
+    if not WizardIsComponentSelected('vigem') then Exit;
     if VigemMode = 'bundled' then begin
         Result := True;
         Exit;
