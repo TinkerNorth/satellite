@@ -6,8 +6,8 @@
  *
  * Portable app state (Config, atomics, log ring, httplib, g_pairSock) now
  * lives in core/app_state.h; this header just layers the Win32-only
- * extras on top and pulls in the Windows system headers that the rest
- * of platform/windows/*.cpp transitively relies on.
+ * extras on top and pulls in the Windows system headers that all
+ * platform/windows translation units transitively rely on.
  */
 #pragma once
 
