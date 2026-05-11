@@ -35,7 +35,7 @@ The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()
 ## Prerequisites
 
 ### Receiver machine
-- **Windows 10/11** with the **[ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases)** installed, **or**
+- **Windows 10/11** with the **[ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases)** installed (the `SatelliteSetup.exe` installer bundles ViGEmBus 1.22.0 and installs it for you if it's missing — see [Installation](#installation)), **or**
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup), **or**
 - **macOS** for development / web-UI testing only — controller injection is unavailable, so the receiver returns `ACK_ERR_VIGEM_UNAVAIL` for `add controller` requests
 
@@ -55,8 +55,52 @@ Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth
 - Optionally create a Desktop shortcut
 - Optionally set Satellite to start with Windows
 - Register in **Settings → Apps → Installed Apps** with a proper uninstaller
+- Detect the **ViGEmBus** driver and (by default) install the bundled
+  v1.22.0 if it's missing or older. ViGEmBus 1.22.0 is the final upstream
+  release — newer installations are left untouched. The Components page
+  shows the detected status before you continue.
 
-To uninstall, use **Settings → Apps → Installed Apps → Satellite → Uninstall**, or run the uninstaller from the Start Menu.
+### ViGEmBus options for unattended installs
+
+The installer accepts a `/VIGEM=` switch alongside Inno Setup's standard
+`/SILENT` / `/VERYSILENT`:
+
+| Switch | Behavior |
+|---|---|
+| *(none)* / `/VIGEM=auto` | **Default.** Install the bundled ViGEmBus only if missing or older than 1.22.0. |
+| `/VIGEM=bundled` | Force-run the bundled installer regardless of what's already there. |
+| `/VIGEM=skip` | Don't touch the driver. Use this on locked-down machines or when ViGEmBus is managed externally. |
+
+A reboot is sometimes required on first ViGEmBus install (MSI exit code 3010).
+The Satellite installer surfaces this as a normal "Restart now / later" prompt
+on the final wizard page; until you reboot, virtual-gamepad output may not
+work even though the driver is installed.
+
+### Uninstalling
+
+Use **Settings → Apps → Installed Apps → Satellite → Uninstall**, or run
+the uninstaller from the Start Menu. The uninstaller will:
+
+- Stop `satellite.exe` if it's running.
+- Remove the four Windows Firewall rules (HTTP/UDP/Pairing/Discovery).
+- Delete the program files, Start Menu and Desktop shortcuts, and the
+  HKCU "Run at login" registry entry.
+- **Ask** whether to also uninstall the ViGEmBus driver. The default is
+  **No** — other apps (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.)
+  commonly share it, and removing it would break them silently.
+
+User configuration (`%APPDATA%\satellite\config.json` and the pairing
+keyfile) is **left in place** so a reinstall preserves your paired
+clients. Delete that folder by hand if you want a fully clean wipe.
+
+The uninstaller accepts a `/REMOVEVIGEM=` switch alongside Inno Setup's
+standard `/SILENT`:
+
+| Switch | Behavior |
+|---|---|
+| *(none)* / `/REMOVEVIGEM=auto` | **Default.** Prompt the user; on `/SILENT` uninstall, do not touch the driver. |
+| `/REMOVEVIGEM=yes` | Always uninstall the ViGEmBus driver as part of removing Satellite. |
+| `/REMOVEVIGEM=no` | Never uninstall the ViGEmBus driver. Suppresses the prompt. |
 
 ## Building
 
@@ -190,13 +234,24 @@ toggled from the web UI.
 
 ### Building the installer
 
-After building `satellite.exe`, compile the installer with [Inno Setup](https://jrsoftware.org/isinfo.php):
+After `build-satellite.bat` produces `satellite.exe`, run:
 
-```powershell
-iscc installer.iss
+```batch
+build-installer.bat
 ```
 
-This produces `dist\SatelliteSetup.exe` — a single installer that packages the app, web UI, and uninstaller.
+This fetches the bundled ViGEmBus prerequisite (verifies SHA-256 against
+the pin in `redist/SHA256SUMS`) and compiles the installer with
+[Inno Setup](https://jrsoftware.org/isinfo.php), producing
+`dist\SatelliteSetup.exe` — a single installer that packages the app, web
+UI, ViGEmBus 1.22.0 prerequisite, and uninstaller. `redist/` is
+`.gitignore`d; see [`redist/README.md`](redist/README.md) for the
+vendoring policy and how to bump the pin.
+
+`build-installer.bat` is just a thin wrapper around
+`scripts/fetch-redist.ps1` + `iscc installer.iss` — invoke either piece
+directly if you're scripting around it (the PowerShell script accepts
+`-Force` to re-download even when the existing copy matches the pin).
 
 ## Usage
 

@@ -120,6 +120,22 @@ The `vendored-freshness` CI step fails if any `Last-vendored:` date is
 more than 90 days old, so quarterly refreshes happen even when no
 upstream advisory has fired.
 
+### Updating a runtime redistributable (`redist/`)
+
+`redist/` holds third-party installers that the Windows Inno Setup
+installer chains in at install time (currently just the ViGEmBus driver).
+These are **not** vendored under `lib/` — they're not source we compile
+against, they're prebuilt binaries from upstream that we re-distribute
+unchanged. The pin lives in [`redist/SHA256SUMS`](redist/SHA256SUMS) and
+the inventory is in [`redist/README.md`](redist/README.md).
+
+The `vendored-freshness` 90-day check intentionally does **not** cover
+`redist/`. ViGEmBus is end-of-life upstream (repo archived 2023-11) and
+will not get a newer release, so a freshness alarm would be noise. If a
+successor (NVGE) supersedes it, the bump procedure is documented in
+`redist/README.md` and lives in the same PR as the `installer.iss`
+`#define` change.
+
 ### Running security checks locally
 
 ```bash
@@ -217,6 +233,17 @@ and `dish-mac` in the same PR / release cycle.
 ## Platform notes
 
 - **Windows** is the canonical target — virtual gamepads via ViGEmBus.
+  The Inno Setup installer (`installer.iss`) bundles ViGEmBus 1.22.0 as
+  a prerequisite; building the installer requires running
+  `pwsh scripts/fetch-redist.ps1` first (verifies SHA-256 against
+  `redist/SHA256SUMS`), then `iscc installer.iss` — `build-installer.bat`
+  chains both. The installer accepts two unattended-install switches,
+  documented in the README and in the comment blocks at the top of
+  `installer.iss`:
+    - `/VIGEM=auto|bundled|skip` (install path) — override the bundled-driver auto-detect.
+    - `/REMOVEVIGEM=auto|yes|no` (uninstall path) — control whether the
+      driver is removed alongside Satellite. Default `auto` prompts in
+      attended uninstalls and leaves the driver alone in silent uninstalls.
 - **Linux** synthesizes virtual gamepads through `/dev/uinput`. Optional
   tray icon via libayatana-appindicator (CMake auto-detects; falls back
   to a headless `sigwait` loop).
