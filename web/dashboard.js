@@ -160,7 +160,7 @@ function updateConnections(d) {
           <span class="device-name">${esc(c.deviceName)}</span>
           <span class="device-meta">${esc(c.senderIP)} · ${c.activeControllerCount || 0} controller${(c.activeControllerCount||0) === 1 ? '' : 's'}</span>
         </div>
-        <button class="btn-icon btn-danger" onclick="disconnectConn('${esc(c.connectionId)}')" title="Disconnect">✕</button>
+        <button class="btn-icon btn-danger" onclick="disconnectConn('${esc(c.connectionId)}')" title="Disconnect"><img src="img/icons/close_x.svg" alt="Disconnect" class="emoji-icon"></button>
       </div>`).join('');
   }
 
@@ -246,7 +246,7 @@ async function loadDevices() {
           <span class="device-name">${esc(d.name)}</span>
           <span class="device-meta">${esc(d.lastIP)} · ${esc(d.pairedAt)}</span>
         </div>
-        <button class="btn-icon btn-danger" onclick="removeDevice('${esc(d.id)}')" title="Remove">✕</button>
+        <button class="btn-icon btn-danger" onclick="removeDevice('${esc(d.id)}')" title="Remove"><img src="img/icons/close_x.svg" alt="Remove" class="emoji-icon"></button>
       </div>
     `).join('');
   } catch (e) { /* ignore */ }
@@ -345,7 +345,9 @@ function toggleBackendGuide() {
   const guide = document.getElementById('backend-guide');
   const btn   = document.getElementById('backend-guide-toggle');
   guide.style.display = backendGuideOpen ? 'block' : 'none';
-  btn.textContent = backendGuideOpen ? 'Setup Guide ▾' : 'Setup Guide ▸';
+  btn.innerHTML = backendGuideOpen
+    ? 'Setup Guide <img src="img/icons/chevron_down.svg" alt="" class="emoji-icon">'
+    : 'Setup Guide <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon">';
 }
 
 // ── Logout ──────────────────────────────────────────────────────────────────

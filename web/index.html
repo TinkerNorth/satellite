@@ -31,7 +31,7 @@
 
   <!-- ── First-launch setup ── -->
   <div class="card" id="view-setup" style="display:none">
-    <h1>⚡ Initial Setup</h1>
+    <h1><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"> Initial Setup</h1>
     <p class="subtitle">Create your admin credentials</p>
     <div class="form-group">
       <label class="form-label">Username</label>
@@ -51,7 +51,7 @@
 
   <!-- ── Login ── -->
   <div class="card" id="view-login" style="display:none">
-    <h1>🔒 Satellite</h1>
+    <h1><img src="img/icons/shield_lock.svg" alt="" class="emoji-icon"> Satellite</h1>
     <div class="form-group">
       <label class="form-label">Username</label>
       <input type="text" id="login-user" class="form-input" autocomplete="off">
@@ -69,10 +69,10 @@
     <div class="header-row">
       <h1><span class="dot off" id="dot"></span> Satellite</h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" title="Settings">⚙</button>
-        <button class="btn-icon" onclick="navigate('/logs')" title="Logs">📋</button>
-        <button class="btn-icon" onclick="navigate('/debug')" title="Debug">🔬</button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+        <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/logs')" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/debug')" title="Debug"><img src="img/icons/microscope.svg" alt="Debug" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -100,18 +100,18 @@
           <span class="backend-dot" id="backend-dot"></span>
           <span class="backend-label" id="backend-label">Checking…</span>
         </div>
-        <button class="btn-link" id="backend-guide-toggle" onclick="toggleBackendGuide()" style="display:none">Setup Guide ▸</button>
+        <button class="btn-link" id="backend-guide-toggle" onclick="toggleBackendGuide()" style="display:none">Setup Guide <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon"></button>
       </div>
 
       <!-- Flow diagram -->
       <div class="backend-flow">
         <div class="flow-step" id="flow-backend">
-          <span class="flow-icon">🎮</span>
+          <span class="flow-icon"><img src="img/icons/gamepad.svg" alt="" class="emoji-icon"></span>
           <span class="flow-text" id="flow-backend-text">Backend</span>
         </div>
-        <div class="flow-arrow">→</div>
+        <div class="flow-arrow"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
         <div class="flow-step" id="flow-system">
-          <span class="flow-icon">🖥️</span>
+          <span class="flow-icon"><img src="img/icons/monitor.svg" alt="" class="emoji-icon"></span>
           <span class="flow-text">System</span>
         </div>
       </div>
@@ -163,10 +163,10 @@
   <!-- ── Settings ── -->
   <div class="card" id="view-settings" style="display:none">
     <div class="header-row">
-      <h1>⚙ Settings</h1>
+      <h1><img src="img/icons/gear.svg" alt="" class="emoji-icon"> Settings</h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back">←</button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -189,12 +189,12 @@
   <!-- ── Debug ── -->
   <div class="card card-wide" id="view-debug" style="display:none">
     <div class="header-row">
-      <h1>🔬 Debug Telemetry</h1>
+      <h1><img src="img/icons/microscope.svg" alt="" class="emoji-icon"> Debug Telemetry</h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" title="Settings">⚙</button>
-        <button class="btn-icon" onclick="navigate('/logs')" title="Logs">📋</button>
-        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back">←</button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+        <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/logs')" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -205,15 +205,15 @@
         <div class="pipe-label">UDP Recv</div>
         <div class="pipe-value" id="d-pps">0 pps</div>
       </div>
-      <div class="pipe-arrow" id="pipe-arrow-1">→</div>
+      <div class="pipe-arrow" id="pipe-arrow-1"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
       <div class="pipe-stage" id="pipe-backend">
-        <div class="pipe-icon">🎮</div>
+        <div class="pipe-icon"><img src="img/icons/gamepad.svg" alt="" class="emoji-icon"></div>
         <div class="pipe-label" id="pipe-backend-label">Inject</div>
         <div class="pipe-value" id="d-submit-rate">0 pps</div>
       </div>
-      <div class="pipe-arrow" id="pipe-arrow-2">→</div>
+      <div class="pipe-arrow" id="pipe-arrow-2"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
       <div class="pipe-stage" id="pipe-system">
-        <div class="pipe-icon">🖥️</div>
+        <div class="pipe-icon"><img src="img/icons/monitor.svg" alt="" class="emoji-icon"></div>
         <div class="pipe-label">System</div>
         <div class="pipe-value" id="d-status">Stopped</div>
       </div>
@@ -278,11 +278,11 @@
   <!-- ── Logs ── -->
   <div class="card card-wide" id="view-logs" style="display:none">
     <div class="header-row">
-      <h1>📋 System Logs</h1>
+      <h1><img src="img/icons/clipboard_lines.svg" alt="" class="emoji-icon"> System Logs</h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" title="Settings">⚙</button>
-        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back">←</button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout">⏻</button>
+        <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
