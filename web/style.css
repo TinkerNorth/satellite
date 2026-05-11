@@ -3,52 +3,29 @@
 /* ── Design tokens ─────────────────────────────────────────────────── */
 /* Token names follow the TinkerNorth cross-repo schema. Same names appear in
    dish-android/colors.xml, dish-mac/Theme.swift, dish-linux/Theme.h.
-   See DESIGN.md for the full catalog and the cyan-vs-amber decision.
-
-   No value changes vs. prior inline literals — this block just gives every
-   color a name. Outliers (multiple muteds, save-btn blues, log palette) are
-   preserved as Satellite-only extensions; see DESIGN.md. */
+   See DESIGN.md for the full catalog and the cyan-vs-amber decision. */
 :root {
   /* ── Core (matches cross-repo amber-family schema) ── */
   --bg: #0D0F12;
   --surface: #161A1F;
+  --surface-dim: #111417;
   --outline: #222831;
 
   --primary: #FFC107;
   --primary-mid: #C27A2C;
-  --primary-dark: #A65F1E;
+  --primary-dim: #A65F1E;
   --on-primary: #0D0F12;
 
   --text: #EAEAEA;
   --text-muted: #6B7280;
 
   --success: #22C55E;
-  --warning: #FFC107;
+  --warning: #F59E0B;
   --error: #E74C3C;
 
-  /* ── Satellite extensions (no cross-repo equivalent) ── */
-  /* Brighter / darker primary variants used by buttons + the offline progress
-     bar gradient end. */
-  --primary-bright: #FFDA3A;
-  --primary-gradient-end: #FF9800;
-
-  /* Extra muted greys — drift; see DESIGN.md "outliers". */
-  --text-muted-soft: #B0B3B8;   /* used on form labels */
-  --text-muted-cool: #9CA3AF;   /* used on log filter labels */
-
-  /* Offline / empty-state cooler greys — drift; see DESIGN.md. */
-  --text-bright: #F1F5F9;
-  --text-cool-bright: #94A3B8;
-  --text-cool-dim: #64748B;
-
-  /* Error variants — drift; see DESIGN.md. */
-  --error-bright: #EF4444;       /* ctrl-dot.err */
-  --error-light: #F87171;        /* log error text */
-
-  /* Log viewer palette (semantic; satellite-only UI). */
-  --bg-log: #0A0C0F;
-  --outline-log: #1E293B;
-  --log-row-hover: #1a1f2b;
+  /* ── Log-viewer extension (scoped to .log-* selectors only) ──
+     This is a separate semantic surface — info/warn/error badges with
+     paired bg+text. Not part of the cross-repo schema. */
   --log-info-bg: #1E3A5F;
   --log-info-text: #60A5FA;
   --log-warn-bg: #4A3728;
@@ -57,13 +34,6 @@
   --log-error-text: #F87171;
   --log-msg: #D1D5DB;
   --log-source: #A78BFA;
-
-  /* Save-button palette (deep blue; nowhere else in the cross-repo schema). */
-  --save-btn-bg: #1E3A5F;
-  --save-btn-hover: #2F5D8C;
-
-  /* Flow / pipeline arrow tone — neutral grey used only as a divider. */
-  --flow-arrow: #333;
 }
 
 /* ── Reset ─────────────────────────────────────────────────────────── */
@@ -125,7 +95,7 @@ h1 .dot {
 }
 
 .dot.off {
-  background: var(--primary-dark);
+  background: var(--primary-dim);
   box-shadow: 0 0 6px rgba(166, 95, 30, 0.5);
 }
 
@@ -172,7 +142,7 @@ h1 .dot {
   font-weight: 500;
   font-size: 13px;
   letter-spacing: 0.04em;
-  color: var(--text-muted-soft);
+  color: var(--text-muted);
   min-width: 80px;
   text-transform: uppercase;
 }
@@ -208,7 +178,7 @@ h1 .dot {
   font-weight: 500;
   font-size: 13px;
   letter-spacing: 0.04em;
-  color: var(--text-muted-soft);
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
@@ -278,12 +248,12 @@ h1 .dot {
   box-shadow: 0 0 12px rgba(255, 193, 7, 0.3);
 }
 .btn-start:hover {
-  background: var(--primary-bright);
+  background: var(--primary);
   box-shadow: 0 0 16px rgba(255, 193, 7, 0.6);
 }
 
 .btn-stop {
-  background: var(--primary-dark);
+  background: var(--primary-dim);
   color: var(--text);
   box-shadow: 0 0 8px rgba(166, 95, 30, 0.3);
 }
@@ -293,12 +263,12 @@ h1 .dot {
 }
 
 .btn-save {
-  background: var(--save-btn-bg);
+  background: var(--primary-dim);
   color: var(--text);
   border: 1px solid rgba(255, 193, 7, 0.15);
 }
 .btn-save:hover:not(:disabled) {
-  background: var(--save-btn-hover);
+  background: var(--primary-mid);
   border-color: rgba(255, 193, 7, 0.3);
   box-shadow: 0 0 8px rgba(47, 93, 140, 0.4);
 }
@@ -342,7 +312,7 @@ h1 .dot {
   font-weight: 500;
   font-size: 12px;
   letter-spacing: 0.04em;
-  color: var(--text-muted-soft);
+  color: var(--text-muted);
   text-transform: uppercase;
   margin-bottom: 4px;
 }
@@ -525,7 +495,7 @@ h2.section-title { font-size: 14px; }
   vertical-align: middle;
 }
 .ctrl-dot.ok  { background: var(--success); }
-.ctrl-dot.err { background: var(--error-bright); }
+.ctrl-dot.err { background: var(--error); }
 .ctrl-type-icon {
   width: 32px;
   height: 32px;
@@ -649,12 +619,12 @@ h2.section-title { font-size: 14px; }
 }
 
 .backend-dot.backend-warn {
-  background: var(--primary);
-  box-shadow: 0 0 8px var(--primary), 0 0 16px rgba(255, 193, 7, 0.4);
+  background: var(--warning);
+  box-shadow: 0 0 8px var(--warning), 0 0 16px rgba(255, 193, 7, 0.4);
 }
 
 .backend-ok-text { color: var(--success); }
-.backend-warn-text { color: var(--primary); }
+.backend-warn-text { color: var(--warning); }
 .backend-err-text { color: var(--error); }
 
 .btn-link {
@@ -672,7 +642,7 @@ h2.section-title { font-size: 14px; }
 }
 
 .btn-link:hover {
-  color: var(--primary-bright);
+  color: var(--primary);
   text-shadow: 0 0 6px rgba(255, 193, 7, 0.4);
 }
 
@@ -724,7 +694,7 @@ h2.section-title { font-size: 14px; }
 }
 
 .flow-step.done .flow-text { color: var(--success); }
-.flow-step.warn .flow-text { color: var(--primary); }
+.flow-step.warn .flow-text { color: var(--warning); }
 .flow-step.fail .flow-text { color: var(--error); }
 
 .flow-step.warn {
@@ -733,7 +703,7 @@ h2.section-title { font-size: 14px; }
 }
 
 .flow-arrow {
-  color: var(--flow-arrow);
+  color: var(--outline);
   font-size: 16px;
   font-weight: bold;
 }
@@ -763,7 +733,7 @@ h2.section-title { font-size: 14px; }
   flex-direction: column;
   gap: 10px;
   font-size: 13px;
-  color: var(--text-muted-soft);
+  color: var(--text-muted);
   line-height: 1.5;
 }
 
@@ -785,7 +755,7 @@ h2.section-title { font-size: 14px; }
 
 .backend-guide-body {
   font-size: 13px;
-  color: var(--text-muted-soft);
+  color: var(--text-muted);
   line-height: 1.5;
   margin-bottom: 12px;
 }
@@ -862,7 +832,7 @@ h2.section-title { font-size: 14px; }
 }
 
 .pipe-stage.pipe-active .pipe-label { color: var(--success); }
-.pipe-stage.pipe-idle .pipe-label { color: var(--primary); }
+.pipe-stage.pipe-idle .pipe-label { color: var(--warning); }
 
 .pipe-value {
   font-family: 'Courier New', monospace;
@@ -871,7 +841,7 @@ h2.section-title { font-size: 14px; }
 }
 
 .pipe-arrow {
-  color: var(--flow-arrow);
+  color: var(--outline);
   font-size: 18px;
   font-weight: bold;
   transition: color 0.3s;
@@ -915,7 +885,7 @@ h2.section-title { font-size: 14px; }
 }
 
 .debug-ok { color: var(--success); }
-.debug-warn { color: var(--primary); }
+.debug-warn { color: var(--warning); }
 .debug-err { color: var(--error); }
 
 /* Sparkline chart */
@@ -964,7 +934,7 @@ h2.section-title { font-size: 14px; }
 }
 .log-filter-label {
   font-size: 13px;
-  color: var(--text-muted-cool);
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -976,8 +946,8 @@ h2.section-title { font-size: 14px; }
   font-size: 13px;
 }
 .log-container {
-  background: var(--bg-log);
-  border: 1px solid var(--outline-log);
+  background: var(--bg);
+  border: 1px solid var(--outline);
   border-radius: 6px;
   height: 420px;
   overflow-y: auto;
@@ -991,7 +961,7 @@ h2.section-title { font-size: 14px; }
   padding: 2px 10px;
   white-space: nowrap;
 }
-.log-line:hover { background: var(--log-row-hover); }
+.log-line:hover { background: var(--surface); }
 .log-ts { color: var(--text-muted); flex-shrink: 0; }
 .log-badge {
   flex-shrink: 0;
@@ -1003,10 +973,10 @@ h2.section-title { font-size: 14px; }
 }
 .log-badge.log-info  { background: var(--log-info-bg); color: var(--log-info-text); }
 .log-badge.log-warn  { background: var(--log-warn-bg); color: var(--log-warn-text); }
-.log-badge.log-error { background: var(--log-error-bg); color: var(--error-light); }
+.log-badge.log-error { background: var(--log-error-bg); color: var(--log-error-text); }
 .log-source { color: var(--log-source); flex-shrink: 0; min-width: 80px; }
 .log-msg { color: var(--log-msg); overflow: hidden; text-overflow: ellipsis; }
-.log-line.log-error .log-msg { color: var(--error-light); }
+.log-line.log-error .log-msg { color: var(--log-error-text); }
 .log-line.log-warn .log-msg  { color: var(--log-warn-text); }
 
 /* ── Server offline view ───────────────────────────────────────── */
@@ -1034,12 +1004,12 @@ h2.section-title { font-size: 14px; }
   50%      { opacity: 0.8; transform: scale(1.05); }
 }
 .offline-title {
-  color: var(--text-bright);
+  color: var(--text);
   font-size: 1.4rem;
   margin: 0 0 8px;
 }
 .offline-message {
-  color: var(--text-cool-bright);
+  color: var(--text-muted);
   font-size: 0.95rem;
   margin: 0 0 24px;
   line-height: 1.5;
@@ -1047,7 +1017,7 @@ h2.section-title { font-size: 14px; }
 .offline-progress {
   width: 100%;
   height: 4px;
-  background: var(--outline-log);
+  background: var(--outline);
   border-radius: 2px;
   overflow: hidden;
   margin-bottom: 16px;
@@ -1055,7 +1025,7 @@ h2.section-title { font-size: 14px; }
 .offline-progress-bar {
   width: 30%;
   height: 100%;
-  background: linear-gradient(90deg, var(--primary), var(--primary-gradient-end));
+  background: linear-gradient(90deg, var(--primary), var(--primary-dim));
   border-radius: 2px;
   animation: offline-slide 1.5s ease-in-out infinite;
 }
@@ -1064,7 +1034,7 @@ h2.section-title { font-size: 14px; }
   100% { transform: translateX(433%); }
 }
 .offline-hint {
-  color: var(--text-cool-dim);
+  color: var(--text-muted);
   font-size: 0.85rem;
   margin: 0;
 }
