@@ -6,6 +6,12 @@ let prevTime = null;
 const rateHistory = [];
 const MAX_HISTORY = 60;
 
+// Pull theme tokens from CSS custom properties so chart-bar colors stay in
+// sync with style.css. See web/style.css :root and DESIGN.md.
+function themeColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 function initDebug() {
   prevSnap = null;
   prevTime = null;
@@ -153,7 +159,9 @@ function renderChart() {
   const bars = rateHistory.map(v => {
     const h = Math.max(1, Math.round((v / max) * barH));
     const pct = v / max;
-    const color = pct > 0.7 ? '#22C55E' : pct > 0.3 ? '#FFC107' : '#E74C3C';
+    const color = pct > 0.7 ? themeColor('--success')
+                : pct > 0.3 ? themeColor('--primary')
+                            : themeColor('--error');
     return `<div class="chart-bar" style="height:${h}px;background:${color}" title="${v} pps"></div>`;
   }).join('');
   chart.innerHTML = `<div class="chart-bars">${bars}</div><div class="chart-max">${max} pps</div>`;
