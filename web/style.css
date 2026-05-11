@@ -5,19 +5,19 @@
    dish-android/colors.xml, dish-mac/Theme.swift, dish-linux/Theme.h.
    See DESIGN.md for the full catalog and the cyan-vs-amber decision. */
 :root {
-  /* ── Core (matches cross-repo amber-family schema) ── */
-  --bg: #0D0F12;
-  --surface: #161A1F;
-  --surface-dim: #111417;
-  --outline: #222831;
+  /* ── Core (cyan / deep-space palette, mirrors dish-website) ── */
+  --bg: #060818;          /* --tn-ink */
+  --surface: #0C1027;     /* --tn-night */
+  --surface-dim: #131A3A; /* --tn-deep */
+  --outline: rgba(79, 227, 255, 0.18);
 
-  --primary: #FFC107;
-  --primary-mid: #C27A2C;
-  --primary-dim: #A65F1E;
-  --on-primary: #0D0F12;
+  --primary: #4FE3FF;     /* --tn-signal (cyan) */
+  --primary-mid: #2C93AD; /* aliased to primary-dim — web has no mid */
+  --primary-dim: #2C93AD; /* --tn-signal-dim */
+  --on-primary: #060818;
 
-  --text: #EAEAEA;
-  --text-muted: #6B7280;
+  --text: #E6ECFF;        /* --body-color */
+  --text-muted: #93A0C8;  /* --muted */
 
   --success: #22C55E;
   --warning: #F59E0B;
@@ -61,10 +61,10 @@ body {
   padding: 32px;
   width: 440px;
   margin: 0 auto;
-  border: 1px solid rgba(255, 193, 7, 0.12);
+  border: 1px solid rgba(79, 227, 255, 0.12);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.6),
-    0 0 40px rgba(255, 193, 7, 0.04);
+    0 0 40px rgba(79, 227, 255, 0.04);
 }
 
 /* ── Header ────────────────────────────────────────────────────────── */
@@ -76,7 +76,7 @@ h1 {
   text-transform: uppercase;
   margin-bottom: 24px;
   color: var(--primary);
-  text-shadow: 0 0 6px rgba(255, 193, 7, 0.4);
+  text-shadow: 0 0 6px rgba(79, 227, 255, 0.4);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -91,12 +91,12 @@ h1 .dot {
 
 .dot.on {
   background: var(--primary);
-  box-shadow: 0 0 8px var(--primary), 0 0 16px rgba(255, 193, 7, 0.4);
+  box-shadow: 0 0 8px var(--primary), 0 0 16px rgba(79, 227, 255, 0.4);
 }
 
 .dot.off {
   background: var(--primary-dim);
-  box-shadow: 0 0 6px rgba(166, 95, 30, 0.5);
+  box-shadow: 0 0 6px rgba(44, 147, 173, 0.5);
 }
 
 /* ── Stats ─────────────────────────────────────────────────────────── */
@@ -162,7 +162,7 @@ h1 .dot {
 .row input[type=number]:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 8px rgba(255, 193, 7, 0.2);
+  box-shadow: 0 0 8px rgba(79, 227, 255, 0.2);
 }
 
 /* ── Toggle ─────────────────────────────────────────────────────────── */
@@ -217,7 +217,7 @@ h1 .dot {
 
 .switch input:checked + .slider {
   background: var(--primary-mid);
-  box-shadow: 0 0 8px rgba(194, 122, 44, 0.4);
+  box-shadow: 0 0 8px rgba(44, 147, 173, 0.4);
 }
 
 .switch input:checked + .slider:before {
@@ -245,32 +245,32 @@ h1 .dot {
 .btn-start {
   background: var(--primary);
   color: var(--bg);
-  box-shadow: 0 0 12px rgba(255, 193, 7, 0.3);
+  box-shadow: 0 0 12px rgba(79, 227, 255, 0.3);
 }
 .btn-start:hover {
   background: var(--primary);
-  box-shadow: 0 0 16px rgba(255, 193, 7, 0.6);
+  box-shadow: 0 0 16px rgba(79, 227, 255, 0.6);
 }
 
 .btn-stop {
   background: var(--primary-dim);
   color: var(--text);
-  box-shadow: 0 0 8px rgba(166, 95, 30, 0.3);
+  box-shadow: 0 0 8px rgba(44, 147, 173, 0.3);
 }
 .btn-stop:hover {
   background: var(--primary-mid);
-  box-shadow: 0 0 12px rgba(194, 122, 44, 0.5);
+  box-shadow: 0 0 12px rgba(44, 147, 173, 0.5);
 }
 
 .btn-save {
   background: var(--primary-dim);
   color: var(--text);
-  border: 1px solid rgba(255, 193, 7, 0.15);
+  border: 1px solid rgba(79, 227, 255, 0.15);
 }
 .btn-save:hover:not(:disabled) {
   background: var(--primary-mid);
-  border-color: rgba(255, 193, 7, 0.3);
-  box-shadow: 0 0 8px rgba(47, 93, 140, 0.4);
+  border-color: rgba(79, 227, 255, 0.3);
+  box-shadow: 0 0 8px rgba(44, 147, 173, 0.4);
 }
 .btn-save:disabled,
 .btn-undo:disabled {
@@ -285,7 +285,7 @@ h1 .dot {
 }
 .btn-undo:hover:not(:disabled) {
   color: var(--text);
-  border-color: rgba(255, 193, 7, 0.3);
+  border-color: rgba(79, 227, 255, 0.3);
 }
 
 .btn-row {
@@ -332,7 +332,7 @@ h1 .dot {
 .form-input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 8px rgba(255, 193, 7, 0.2);
+  box-shadow: 0 0 8px rgba(79, 227, 255, 0.2);
 }
 
 .error-msg {
@@ -375,7 +375,7 @@ h1 .dot {
 
 .btn-icon:hover {
   color: var(--primary);
-  border-color: rgba(255, 193, 7, 0.3);
+  border-color: rgba(79, 227, 255, 0.3);
 }
 
 .btn-icon.btn-danger:hover {
@@ -398,7 +398,7 @@ h1 .dot {
   text-transform: uppercase;
   color: var(--primary);
   margin-bottom: 12px;
-  text-shadow: 0 0 4px rgba(255, 193, 7, 0.3);
+  text-shadow: 0 0 4px rgba(79, 227, 255, 0.3);
 }
 
 h2.section-title { font-size: 14px; }
@@ -415,7 +415,7 @@ h2.section-title { font-size: 14px; }
   font-weight: bold;
   color: var(--primary);
   letter-spacing: 0.2em;
-  text-shadow: 0 0 8px rgba(255, 193, 7, 0.4);
+  text-shadow: 0 0 8px rgba(79, 227, 255, 0.4);
 }
 
 .hint {
@@ -520,7 +520,7 @@ h2.section-title { font-size: 14px; }
   position: fixed;
   inset: 0;
   z-index: 9999;
-  background: rgba(13, 15, 18, 0.85);
+  background: rgba(6, 8, 24, 0.85);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -548,17 +548,17 @@ h2.section-title { font-size: 14px; }
   width: 40px;
   height: 40px;
   animation: loading-pulse 1.4s ease-in-out infinite;
-  filter: drop-shadow(0 0 12px var(--primary)) drop-shadow(0 0 24px rgba(255, 193, 7, 0.5));
+  filter: drop-shadow(0 0 12px var(--primary)) drop-shadow(0 0 24px rgba(79, 227, 255, 0.5));
 }
 
 @keyframes loading-pulse {
   0%, 100% {
     transform: scale(1);
-    filter: drop-shadow(0 0 8px var(--primary)) drop-shadow(0 0 16px rgba(255, 193, 7, 0.4));
+    filter: drop-shadow(0 0 8px var(--primary)) drop-shadow(0 0 16px rgba(79, 227, 255, 0.4));
   }
   50% {
     transform: scale(1.15);
-    filter: drop-shadow(0 0 20px var(--primary)) drop-shadow(0 0 40px rgba(255, 193, 7, 0.7));
+    filter: drop-shadow(0 0 20px var(--primary)) drop-shadow(0 0 40px rgba(79, 227, 255, 0.7));
   }
 }
 
@@ -570,7 +570,7 @@ h2.section-title { font-size: 14px; }
   border-radius: 50%;
   border: 2px solid transparent;
   border-top-color: var(--primary);
-  border-right-color: rgba(255, 193, 7, 0.3);
+  border-right-color: rgba(79, 227, 255, 0.3);
   animation: loading-spin 1s linear infinite;
 }
 
@@ -620,7 +620,7 @@ h2.section-title { font-size: 14px; }
 
 .backend-dot.backend-warn {
   background: var(--warning);
-  box-shadow: 0 0 8px var(--warning), 0 0 16px rgba(255, 193, 7, 0.4);
+  box-shadow: 0 0 8px var(--warning), 0 0 16px rgba(245, 158, 11, 0.4);
 }
 
 .backend-ok-text { color: var(--success); }
@@ -643,7 +643,7 @@ h2.section-title { font-size: 14px; }
 
 .btn-link:hover {
   color: var(--primary);
-  text-shadow: 0 0 6px rgba(255, 193, 7, 0.4);
+  text-shadow: 0 0 6px rgba(79, 227, 255, 0.4);
 }
 
 /* ── Flow diagram ─────────────────────────────────────────────── */
@@ -698,8 +698,8 @@ h2.section-title { font-size: 14px; }
 .flow-step.fail .flow-text { color: var(--error); }
 
 .flow-step.warn {
-  border-color: rgba(255, 193, 7, 0.4);
-  box-shadow: 0 0 8px rgba(255, 193, 7, 0.1);
+  border-color: rgba(245, 158, 11, 0.4);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.1);
 }
 
 .flow-arrow {
@@ -809,8 +809,8 @@ h2.section-title { font-size: 14px; }
 }
 
 .pipe-stage.pipe-idle {
-  border-color: rgba(255, 193, 7, 0.3);
-  box-shadow: 0 0 8px rgba(255, 193, 7, 0.08);
+  border-color: rgba(245, 158, 11, 0.3);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.08);
 }
 
 .pipe-stage.pipe-error {
