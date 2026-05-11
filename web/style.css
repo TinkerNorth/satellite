@@ -373,6 +373,19 @@ h1 .dot {
   transition: 0.15s;
 }
 
+/* Inline icon swap for emoji-as-icon. Sizes itself to the parent text so it
+   slots into the same boxes that originally held the emoji glyph. */
+.emoji-icon {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+  vertical-align: -0.15em;
+  flex-shrink: 0;
+}
+.btn-icon .emoji-icon { width: 18px; height: 18px; vertical-align: 0; }
+.flow-arrow .emoji-icon,
+.pipe-arrow .emoji-icon { width: 1em; height: 1em; vertical-align: -0.15em; }
+
 .btn-icon:hover {
   color: var(--primary);
   border-color: rgba(79, 227, 255, 0.3);
