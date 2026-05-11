@@ -510,7 +510,7 @@ h2.section-title { font-size: 14px; }
 .ctrl-dot.ok  { background: var(--success); }
 .ctrl-dot.err { background: var(--error); }
 .ctrl-type-icon {
-  width: 32px;
+  width: 48px;
   height: 32px;
   margin-right: 10px;
   flex-shrink: 0;
