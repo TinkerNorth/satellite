@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Satellite — Linux Packages</title>
+  <style>
+    :root {
+      --bg: #060818;
+      --surface: #0C1027;
+      --surface-dim: #131A3A;
+      --outline: rgba(79, 227, 255, 0.18);
+      --primary: #4FE3FF;
+      --text: #E6ECFF;
+      --text-muted: #93A0C8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      padding: 48px 24px;
+    }
+    main { max-width: 760px; margin: 0 auto; }
+    h1 {
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700;
+      font-size: 32px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--primary);
+      text-shadow: 0 0 12px rgba(79, 227, 255, 0.3);
+      margin-bottom: 8px;
+    }
+    h2 {
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 600;
+      font-size: 18px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--primary);
+      margin: 32px 0 12px;
+    }
+    .subtitle { color: var(--text-muted); font-size: 15px; margin-bottom: 24px; }
+    p { margin-bottom: 12px; color: var(--text-muted); }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--outline);
+      border-radius: 6px;
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-family: 'Source Code Pro', 'Consolas', monospace;
+      font-size: 13px;
+      color: var(--text);
+      margin: 12px 0;
+    }
+    code {
+      background: var(--surface);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-family: 'Source Code Pro', 'Consolas', monospace;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .meta {
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid var(--outline);
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    ul { padding-left: 24px; margin-bottom: 12px; color: var(--text-muted); }
+    li { margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Satellite — Linux Packages</h1>
+  <p class="subtitle">Official APT and DNF/YUM repositories for the
+  <a href="https://github.com/TinkerNorth/satellite">Satellite</a> receiver.</p>
+
+  <p>Once you've added the repository, the package manager you already use
+  will pull updates automatically. No in-app prompts, no manual installer
+  downloads — <code>apt upgrade</code> and <code>dnf upgrade</code> just work.</p>
+
+  <h2>Debian / Ubuntu / Pop_OS / Mint</h2>
+  <pre><code>curl -fsSL https://tinkernorth.github.io/satellite/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/satellite-archive-keyring.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/satellite-archive-keyring.gpg] \
+  https://tinkernorth.github.io/satellite/debian stable main" \
+  | sudo tee /etc/apt/sources.list.d/satellite.list
+
+sudo apt update
+sudo apt install satellite</code></pre>
+
+  <h2>Fedora / RHEL / Rocky / Alma / openSUSE</h2>
+  <pre><code>sudo curl -fsSL -o /etc/yum.repos.d/satellite.repo \
+  https://tinkernorth.github.io/satellite/rpm/satellite.repo
+
+sudo dnf install satellite</code></pre>
+
+  <h2>Arch Linux</h2>
+  <p>Satellite is published to the AUR as <a href="https://aur.archlinux.org/packages/satellite-bin">satellite-bin</a>.
+  Install it with your preferred AUR helper:</p>
+  <pre><code>yay -S satellite-bin
+# or
+paru -S satellite-bin</code></pre>
+
+  <h2>Other distros / no package manager</h2>
+  <p>Every <a href="https://github.com/TinkerNorth/satellite/releases/latest">release</a> ships a
+  portable AppImage and a standalone .deb / .rpm if you'd rather install by hand:</p>
+  <pre><code>chmod +x satellite-X.Y.Z-x86_64.AppImage
+./satellite-X.Y.Z-x86_64.AppImage</code></pre>
+
+  <h2>Verifying the signing key</h2>
+  <p>The repository signing key fingerprint is published here:
+  <a href="gpg.key">gpg.key</a>. Diff against the fingerprint pinned in the
+  <a href="https://github.com/TinkerNorth/satellite/blob/main/packaging/repo/README.md">repo README</a>
+  if you want to audit the chain of trust before adding the repo.</p>
+
+  <p>Every published <code>.deb</code> and <code>.rpm</code> is also covered
+  by the SLSA L3 provenance attestation and cosign signature attached
+  to the matching GitHub Release. See
+  <a href="https://github.com/TinkerNorth/satellite/blob/main/SECURITY.md">SECURITY.md</a>
+  for the verification recipe.</p>
+
+  <div class="meta">
+    <p>Source for this site: <a href="https://github.com/TinkerNorth/satellite/tree/main/packaging/repo">packaging/repo/</a>.
+    Generated from <code>release.yml</code> on every tag push.</p>
+  </div>
+</main>
+</body>
+</html>

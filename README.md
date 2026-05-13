@@ -168,26 +168,53 @@ Prerequisites:
 > extension to see the icon. KDE, XFCE, Cinnamon, MATE, Budgie, and Pantheon
 > work out of the box.
 
-There are two install paths: a **`.deb` package** (recommended on
-Debian/Ubuntu — handles the udev rule, `uinput` module, and group setup
-automatically) and a **portable build** (works anywhere, but you do the
-permission setup once by hand).
+There are six install paths, in order of preference for desktop users:
 
-#### Option A — `.deb` package (Debian / Ubuntu)
+1. **APT repository** (Debian / Ubuntu) — `apt install satellite`, with
+   automatic future upgrades. **Recommended.**
+2. **Standalone `.deb`** — one-shot install from the Releases page.
+3. **DNF/YUM repository** (Fedora / RHEL / openSUSE) — `dnf install
+   satellite`, with automatic future upgrades.
+4. **Standalone `.rpm`** — one-shot install from the Releases page.
+5. **Arch Linux AUR** — `yay -S satellite-bin`.
+6. **Portable build** — works anywhere, you handle udev/group setup by
+   hand (one-time).
 
-Build the package:
+#### Option A — APT repository (Debian / Ubuntu — recommended)
+
+If you just want satellite the same way you'd want any other system
+package — updated automatically by `apt upgrade` alongside your kernel
+and browser — add our hosted APT repository:
 
 ```bash
-sudo apt install build-essential cmake pkg-config dpkg-dev \
-                 libsodium-dev \
-                 libayatana-appindicator3-dev libgtk-3-dev   # optional tray
-./build-deb.sh
+curl -fsSL https://tinkernorth.github.io/satellite/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/satellite-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/satellite-archive-keyring.gpg] \
+  https://tinkernorth.github.io/satellite/debian stable main" \
+  | sudo tee /etc/apt/sources.list.d/satellite.list
+sudo apt update && sudo apt install satellite
 ```
 
-Output: `dist/satellite_<version>_<arch>.deb`. Install it:
+Setup details (signing key fingerprint, how publishing works) are at
+[`packaging/repo/README.md`](packaging/repo/README.md).
+
+#### Option B — Standalone `.deb` (Debian / Ubuntu)
+
+Download `satellite_<version>_amd64.deb` from the
+[Releases](https://github.com/TinkerNorth/satellite/releases) page and
+install it directly:
 
 ```bash
-sudo apt install ./dist/satellite_*.deb
+sudo apt install ./satellite_*.deb
+```
+
+…or build it yourself with the same CPack flow CI uses:
+
+```bash
+sudo apt install build-essential cmake pkg-config dpkg-dev rpm \
+                 libsodium-dev libcurl4-openssl-dev \
+                 libayatana-appindicator3-dev libgtk-3-dev   # optional tray
+./build-deb.sh
 ```
 
 The postinstall script reloads udev, loads the `uinput` kernel module, adds
@@ -200,7 +227,44 @@ The CPack DEB generator is wired into the top-level `CMakeLists.txt`; the
 control files and post-{install,remove} scripts live in
 [`packaging/debian/`](packaging/debian/).
 
-#### Option B — Portable build (any distro)
+#### Option C — DNF/YUM repository (Fedora / RHEL / Rocky / Alma / openSUSE)
+
+```bash
+sudo curl -fsSL -o /etc/yum.repos.d/satellite.repo \
+  https://tinkernorth.github.io/satellite/rpm/satellite.repo
+sudo dnf install satellite
+```
+
+The `.repo` file references the same signing key as the APT repo, so
+`dnf upgrade` picks up new versions automatically.
+
+#### Option D — Standalone `.rpm`
+
+Download `satellite-<version>-1.x86_64.rpm` from the
+[Releases](https://github.com/TinkerNorth/satellite/releases) page:
+
+```bash
+sudo dnf install ./satellite-*.x86_64.rpm
+```
+
+CPack RPM generator config lives next to the DEB config in
+`CMakeLists.txt`; post-{install,uninstall} scriptlets are in
+[`packaging/rpm/`](packaging/rpm/).
+
+#### Option E — Arch Linux (AUR)
+
+The [`satellite-bin`](https://aur.archlinux.org/packages/satellite-bin)
+package wraps the official AppImage:
+
+```bash
+yay -S satellite-bin
+# or
+paru -S satellite-bin
+```
+
+PKGBUILD source: [`packaging/aur/`](packaging/aur/).
+
+#### Option F — Portable build (any distro)
 
 Build:
 
@@ -302,7 +366,9 @@ The full state machine — `idle → checking → update-available → downloadi
 | Windows | WinHTTP | `SatelliteSetup-vX.Y.Z.exe`         | Inno Setup `/VERYSILENT /OTA` then auto-relaunch |
 | macOS   | NSURLSession | `satellite-macos-stub-vX.Y.Z.zip` | `ditto -xk` unpack + atomic bundle swap via helper, `open` relaunch |
 | Linux (AppImage) | libcurl | `satellite-X.Y.Z-x86_64.AppImage` | `chmod +x` + atomic mv over `$APPIMAGE`, `setsid` relaunch |
-| Linux (`.deb`) | libcurl | n/a — surfaces command | `sudo apt install --only-upgrade satellite` (copy-button in UI) |
+| Linux (`.deb`) | libcurl | n/a — surfaces command | `sudo apt upgrade satellite` (auto-pulled from our APT repo if added) |
+| Linux (`.rpm`) | libcurl | n/a — surfaces command | `sudo dnf upgrade --refresh satellite` (auto-pulled from our DNF repo) |
+| Linux (AUR)    | libcurl | n/a — surfaces command | `yay -Syu satellite-bin` |
 | Linux (portable) | libcurl | n/a — surfaces command | Manual: `chmod +x` and replace the binary |
 
 Verification is SHA-256 against the `SHA256SUMS` asset published in every
