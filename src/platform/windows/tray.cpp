@@ -7,6 +7,7 @@
 #include "tray.h"
 #include "config.h"
 #include "resource.h"
+#include "core/update_service.h"
 
 static NOTIFYICONDATAA g_nid{};
 
@@ -33,6 +34,32 @@ void showTrayMenu(HWND hwnd) {
     AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuA(menu, MF_STRING, IDM_TOGGLE,
                 g_listening.load() ? "Stop Listener" : "Start Listener");
+    AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
+
+    // Updater entry — rebuilt each open so the label reflects current
+    // state ("Install Update v1.2.3" vs "Check for Updates…"). When the
+    // updater isn't wired (g_updateService==nullptr), fall back to a
+    // disabled "Check for Updates…" item so the menu shape stays stable.
+    if (g_updateService) {
+        UpdateStatusSnapshot snap = g_updateService->snapshot();
+        if (snap.state == UpdateState::Downloaded && snap.info.available) {
+            std::string label = "Install Update v" + snap.info.version;
+            AppendMenuA(menu, MF_STRING, IDM_INSTALL_UPDATE, label.c_str());
+        } else if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
+            std::string label = "Download Update v" + snap.info.version + "..."; // ellipsis
+            AppendMenuA(menu, MF_STRING, IDM_INSTALL_UPDATE, label.c_str());
+        } else if (snap.state == UpdateState::Downloading ||
+                   snap.state == UpdateState::Verifying) {
+            AppendMenuA(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, "Downloading update...");
+        } else if (snap.state == UpdateState::Checking) {
+            AppendMenuA(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, "Checking for updates...");
+        } else {
+            AppendMenuA(menu, MF_STRING, IDM_CHECK_UPDATES, "Check for Updates...");
+        }
+    } else {
+        AppendMenuA(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, "Check for Updates...");
+    }
+
     AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuA(menu, MF_STRING, IDM_EXIT, "Exit");
     SetForegroundWindow(hwnd);
@@ -66,6 +93,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_wantListen = false;
             } else {
                 g_wantListen = true;
+            }
+            break;
+        case IDM_CHECK_UPDATES:
+            if (g_updateService) g_updateService->requestCheck(/*userInitiated=*/true);
+            // Open the web UI so the user sees the result — same affordance
+            // a Mac/Linux user gets from the in-app banner.
+            {
+                char url[80];
+                snprintf(url, sizeof(url), "http://localhost:%d/settings", g_config.webPort);
+                ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            break;
+        case IDM_INSTALL_UPDATE:
+            if (g_updateService) {
+                UpdateStatusSnapshot s = g_updateService->snapshot();
+                if (s.state == UpdateState::Downloaded) {
+                    g_updateService->requestInstall();
+                } else {
+                    g_updateService->requestDownload();
+                }
+                char url[80];
+                snprintf(url, sizeof(url), "http://localhost:%d/settings", g_config.webPort);
+                ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
             }
             break;
         case IDM_EXIT:

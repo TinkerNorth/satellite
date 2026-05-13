@@ -18,6 +18,7 @@
 #include "crypto.h"
 #include "gamepad_adapter.h"
 #include "tray.h"
+#include "updater_adapter.h"
 
 #include "net/receiver.h"
 #include "net/webserver.h"
@@ -28,6 +29,7 @@
 #include "adapters/log_adapter.h"
 
 #include "core/session_service.h"
+#include "core/update_service.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -91,6 +93,14 @@ int main(int argc, const char* argv[]) {
     LogAdapter logAdapter;
     SessionService svc(gamepadAdapter, clientAdapter, logAdapter);
 
+    LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
+    UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
+    updateService.setPersistCallback([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        saveConfig(g_config);
+    });
+    g_updateService = &updateService;
+
     // Resolve web/ directory:
     //   1. <exeDir>/web            — dev / side-by-side layout
     //   2. <exeDir>/../share/satellite/web — FHS install from prefix
@@ -113,6 +123,8 @@ int main(int argc, const char* argv[]) {
         }
         if (g_webDir.empty()) g_webDir = exeDir + "/web";
     }
+
+    updateService.start();
 
     std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
     std::thread httpTh(httpThread, std::ref(svc));
@@ -152,6 +164,9 @@ int main(int argc, const char* argv[]) {
         g_httpServer.stop();
         if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
     }
+
+    updateService.stop();
+    g_updateService = nullptr;
 
     recvTh.join();
     httpTh.join();

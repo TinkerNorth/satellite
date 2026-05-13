@@ -17,6 +17,7 @@
 #ifdef SATELLITE_HAS_TRAY
 
 #include "config.h"
+#include "core/update_service.h"
 
 #include <libayatana-appindicator/app-indicator.h>
 #include <glib-unix.h>
@@ -30,8 +31,11 @@
 
 static AppIndicator* g_indicator = nullptr;
 static GtkWidget* g_toggleItem = nullptr;
+static GtkWidget* g_updateItem = nullptr;
 static guint g_pollSourceId = 0;
 static bool g_lastListening = false;
+static UpdateState g_lastUpdateState = UpdateState::Idle;
+static std::string g_lastUpdateVersion;
 
 // ── Menu callbacks ──────────────────────────────────────────────────────────
 static void onOpenUI(GtkMenuItem*, gpointer) {
@@ -43,6 +47,27 @@ static void onOpenUI(GtkMenuItem*, gpointer) {
 
 static void onToggleListener(GtkMenuItem*, gpointer) { g_wantListen = !g_listening.load(); }
 
+static void onUpdateClick(GtkMenuItem*, gpointer) {
+    if (!g_updateService) return;
+    UpdateStatusSnapshot s = g_updateService->snapshot();
+    if (s.state == UpdateState::Downloaded) {
+        g_updateService->requestInstall();
+    } else if (s.state == UpdateState::UpdateAvailable) {
+        // Manual installs (Deb/Portable) can't be triggered in-app —
+        // open the settings page so the user sees the copy-button.
+        if (s.info.installMethod == InstallMethod::SelfInstall) {
+            g_updateService->requestDownload();
+        }
+    } else {
+        g_updateService->requestCheck(/*userInitiated=*/true);
+    }
+    char cmd[112];
+    std::snprintf(cmd, sizeof(cmd),
+                  "xdg-open http://localhost:%d/settings >/dev/null 2>&1 &",
+                  g_config.webPort);
+    (void)std::system(cmd);
+}
+
 static void onQuit(GtkMenuItem*, gpointer) {
     g_appRunning = false;
     g_wantListen = false;
@@ -51,13 +76,38 @@ static void onQuit(GtkMenuItem*, gpointer) {
     gtk_main_quit();
 }
 
-// Keep the toggle item's label in sync with the receiver thread's actual state.
+// Keep the toggle + updater items' labels in sync with the actual state.
 static gboolean pollListenerState(gpointer) {
     bool listening = g_listening.load();
     if (listening != g_lastListening && g_toggleItem != nullptr) {
         gtk_menu_item_set_label(GTK_MENU_ITEM(g_toggleItem),
                                 listening ? "Stop Listener" : "Start Listener");
         g_lastListening = listening;
+    }
+    if (g_updateService && g_updateItem) {
+        UpdateStatusSnapshot s = g_updateService->snapshot();
+        if (s.state != g_lastUpdateState || s.info.version != g_lastUpdateVersion) {
+            std::string label;
+            bool enabled = true;
+            if (s.state == UpdateState::Downloaded && s.info.available) {
+                label = "Install Update v" + s.info.version;
+            } else if (s.state == UpdateState::UpdateAvailable && s.info.available) {
+                label = "Download Update v" + s.info.version + "\xE2\x80\xA6";
+            } else if (s.state == UpdateState::Downloading ||
+                       s.state == UpdateState::Verifying) {
+                label = "Downloading update\xE2\x80\xA6";
+                enabled = false;
+            } else if (s.state == UpdateState::Checking) {
+                label = "Checking for updates\xE2\x80\xA6";
+                enabled = false;
+            } else {
+                label = "Check for Updates\xE2\x80\xA6";
+            }
+            gtk_menu_item_set_label(GTK_MENU_ITEM(g_updateItem), label.c_str());
+            gtk_widget_set_sensitive(g_updateItem, enabled);
+            g_lastUpdateState = s.state;
+            g_lastUpdateVersion = s.info.version;
+        }
     }
     return G_SOURCE_CONTINUE;
 }
@@ -110,6 +160,13 @@ bool addTrayIcon() {
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
+    // Updater item — label kept current by pollListenerState().
+    g_updateItem = gtk_menu_item_new_with_label("Check for Updates\xE2\x80\xA6");
+    g_signal_connect(g_updateItem, "activate", G_CALLBACK(onUpdateClick), nullptr);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), g_updateItem);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
     GtkWidget* quitItem = gtk_menu_item_new_with_label("Quit");
     g_signal_connect(quitItem, "activate", G_CALLBACK(onQuit), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), quitItem);
@@ -132,6 +189,7 @@ void removeTrayIcon() {
         g_indicator = nullptr;
     }
     g_toggleItem = nullptr;
+    g_updateItem = nullptr;
 }
 
 #else // SATELLITE_HAS_TRAY

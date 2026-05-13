@@ -83,6 +83,18 @@ Config loadConfig() {
         auto rest = content.substr(colon + 1, 10);
         return rest.find("true") != std::string::npos;
     };
+    auto getBoolOpt = [&](const char* key, bool* out) {
+        auto pos = content.find(std::string("\"") + key + "\"");
+        if (pos == std::string::npos) return;
+        *out = getBool(key);
+    };
+    auto getInt64 = [&](const char* key) -> int64_t {
+        auto pos = content.find(std::string("\"") + key + "\"");
+        if (pos == std::string::npos) return -1;
+        auto colon = content.find(':', pos);
+        if (colon == std::string::npos) return -1;
+        return strtoll(content.c_str() + colon + 1, nullptr, 10);
+    };
 
     int v = 0;
     v = getInt("udpPort");
@@ -95,6 +107,19 @@ Config loadConfig() {
     if (v > 0) cfg.discPort = v;
     cfg.autoStart = getBool("autoStart");
     cfg.credentials = jsonGetString(content, "credentials");
+
+    // OTA update preferences (see core/update_service.h).
+    std::string ch = jsonGetString(content, "updateChannel");
+    if (!ch.empty()) cfg.updateChannel = ch;
+    getBoolOpt("autoCheck", &cfg.autoCheck);
+    getBoolOpt("autoDownload", &cfg.autoDownload);
+    getBoolOpt("autoInstall", &cfg.autoInstall);
+    int iv = getInt("updateCheckIntervalHours");
+    if (iv > 0) cfg.updateCheckIntervalHours = iv;
+    int64_t le = getInt64("lastCheckEpoch");
+    if (le >= 0) cfg.lastCheckEpoch = le;
+    cfg.lastSeenVersion = jsonGetString(content, "lastSeenVersion");
+    cfg.skipVersion = jsonGetString(content, "skipVersion");
 
     // Parse paired devices array
     auto arrStart = content.find("\"pairedDevices\"");
@@ -133,6 +158,14 @@ void saveConfig(const Config& cfg) {
       << "  \"pairPort\": " << cfg.pairPort << ",\n"
       << "  \"discPort\": " << cfg.discPort << ",\n"
       << "  \"autoStart\": " << (cfg.autoStart ? "true" : "false") << ",\n"
+      << "  \"updateChannel\": \"" << jsonEscape(cfg.updateChannel) << "\",\n"
+      << "  \"autoCheck\": " << (cfg.autoCheck ? "true" : "false") << ",\n"
+      << "  \"autoDownload\": " << (cfg.autoDownload ? "true" : "false") << ",\n"
+      << "  \"autoInstall\": " << (cfg.autoInstall ? "true" : "false") << ",\n"
+      << "  \"updateCheckIntervalHours\": " << cfg.updateCheckIntervalHours << ",\n"
+      << "  \"lastCheckEpoch\": " << cfg.lastCheckEpoch << ",\n"
+      << "  \"lastSeenVersion\": \"" << jsonEscape(cfg.lastSeenVersion) << "\",\n"
+      << "  \"skipVersion\": \"" << jsonEscape(cfg.skipVersion) << "\",\n"
       << "  \"credentials\": \"" << jsonEscape(cfg.credentials) << "\",\n"
       << "  \"pairedDevices\": [\n";
     for (size_t i = 0; i < cfg.pairedDevices.size(); i++) {

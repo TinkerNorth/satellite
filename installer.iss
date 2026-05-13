@@ -13,7 +13,12 @@
 ; ============================================================================
 
 #define MyAppName "Satellite"
-#define MyAppVersion "1.0.0"
+; Read the authoritative version from the /VERSION file at preprocess time.
+; Single source of truth shared with CMake + src/core/version.h.
+#define VersionFile FileOpen(SourcePath + "VERSION")
+#define MyAppVersion Trim(FileRead(VersionFile))
+#expr FileClose(VersionFile)
+#undef VersionFile
 #define MyAppPublisher "TinkerNorth"
 #define MyAppURL "https://github.com/TinkerNorth/satellite"
 #define MyAppExeName "satellite.exe"
@@ -98,7 +103,12 @@ Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite H
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite UDP"" dir=in action=allow protocol=UDP localport=9876 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (UDP)..."
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite Pairing"" dir=in action=allow protocol=TCP localport=9878 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (Pairing)..."
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite Discovery"" dir=in action=allow protocol=UDP localport=9879 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (Discovery)..."
+; Interactive install: normal "Launch Satellite?" tickbox on the finish page.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: shellexec nowait postinstall skipifsilent
+; OTA-driven silent install (the running app launched us with /OTA):
+; relaunch the new binary unconditionally, no UI. WantsOTARelaunch is
+; defined in the [Code] section below.
+Filename: "{app}\{#MyAppExeName}"; Flags: shellexec nowait; Check: WantsOTARelaunch
 
 [UninstallRun]
 Filename: "taskkill"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillSatellite"
@@ -112,6 +122,31 @@ Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellit
 ; Settings > Apps.
 
 [Code]
+// ============================================================================
+//  OTA relaunch flag
+//
+//  When the running satellite.exe applies an in-app update, it spawns this
+//  installer with `/VERYSILENT /OTA /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS`.
+//  The /OTA switch tells us "the user is mid-session; relaunch the binary
+//  for them even though this is a silent install". WantsOTARelaunch is
+//  referenced by the second [Run] entry above.
+// ============================================================================
+
+function WantsOTARelaunch: Boolean;
+var
+    i: Integer;
+    Up: String;
+begin
+    Result := False;
+    for i := 1 to ParamCount do begin
+        Up := Uppercase(ParamStr(i));
+        if (Up = '/OTA') or (Up = '-OTA') then begin
+            Result := True;
+            Exit;
+        end;
+    end;
+end;
+
 // ============================================================================
 //  ViGEmBus prerequisite handling
 //

@@ -24,11 +24,16 @@ The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()
 
 ## Features
 
-- **System tray icon** — right-click for Start/Stop, Open Web UI, Exit
+- **System tray icon** — right-click for Start/Stop, Check for Updates, Open Web UI, Exit
 - **Web-based configuration** — local dashboard at `http://localhost:9877`
 - **Live status** — packet count, sender IP, listening state
 - **Configurable UDP port** — change via the web UI
 - **Start with Windows** — optional auto-start via registry
+- **In-app OTA updates** — check / download / install / restart loop hits the
+  GitHub Releases API, verifies SHA-256 against `SHA256SUMS`, then hands off
+  to the platform-native installer (Inno Setup on Windows, `.app` bundle swap
+  on macOS, AppImage in-place replace on Linux; `.deb` users see a copyable
+  `apt upgrade` command instead). See [OTA Updates](#ota-updates) below.
 - **Zero dependencies** — statically linked, single exe, no DLLs needed
 - **Config persistence** — settings saved to `%APPDATA%\satellite\config.json`
 
@@ -277,6 +282,71 @@ controller-sender.exe 192.168.1.50 9876 250 0
 | `port`             | `9876`      | UDP port                             |
 | `poll-rate-hz`     | `250`       | How often to poll the controller (Hz)|
 | `controller-index` | `0`         | XInput user index (0-3)              |
+
+## OTA Updates
+
+Satellite ships with a built-in update checker that hits the GitHub Releases
+API on a 24-hour cadence (configurable in **Settings → Updates**). When a
+newer release is published, the dashboard shows a banner with **Download**,
+**Remind Me Later**, and **Skip This Version** actions. The tray menu's
+*Check for Updates…* item reflects the same state and toggles to *Install
+Update vX.Y.Z* once the artifact has been fetched and verified.
+
+The full state machine — `idle → checking → update-available → downloading
+→ verifying → downloaded → installing` — is described in
+[`src/core/update_service.h`](src/core/update_service.h). Platform IO
+(HTTPS, SHA-256, install hand-off) lives behind `IUpdaterPort`:
+
+| Platform | HTTPS    | Artifact                       | Install method |
+|---|---|---|---|
+| Windows | WinHTTP | `SatelliteSetup-vX.Y.Z.exe`         | Inno Setup `/VERYSILENT /OTA` then auto-relaunch |
+| macOS   | NSURLSession | `satellite-macos-stub-vX.Y.Z.zip` | `ditto -xk` unpack + atomic bundle swap via helper, `open` relaunch |
+| Linux (AppImage) | libcurl | `satellite-X.Y.Z-x86_64.AppImage` | `chmod +x` + atomic mv over `$APPIMAGE`, `setsid` relaunch |
+| Linux (`.deb`) | libcurl | n/a — surfaces command | `sudo apt install --only-upgrade satellite` (copy-button in UI) |
+| Linux (portable) | libcurl | n/a — surfaces command | Manual: `chmod +x` and replace the binary |
+
+Verification is SHA-256 against the `SHA256SUMS` asset published in every
+release (signed by cosign at release time — verifying the cosign signature
+in-app is tracked as a follow-up; transit is HTTPS-pinned to `github.com`).
+
+### Settings (web UI: `/settings` → Updates section)
+
+- **Channel** — *Stable* (only `vX.Y.Z` releases) or *Pre-release*
+  (includes `vX.Y.Z-rc.1`, `-beta.2`, etc.).
+- **Check automatically** — runs the 24-hour timer thread (skip if disabled).
+- **Download in background** — auto-download an available update so it's
+  ready to install on the next visit.
+- **Install & restart automatically** — only effective with the above two
+  enabled; turns the dashboard banner into a direct restart prompt.
+
+### API
+
+| Method | Path                       | Purpose                                        |
+|---|---|---|
+| GET    | `/api/version`             | `{version, platformId}`, unauthenticated       |
+| GET    | `/api/updates/status`      | Full `UpdateStatusSnapshot` JSON               |
+| POST   | `/api/updates/check`       | Trigger a check now                            |
+| POST   | `/api/updates/download`    | Fetch the artifact                             |
+| POST   | `/api/updates/install`     | Apply the downloaded artifact (will restart)   |
+| POST   | `/api/updates/cancel`      | Cancel an in-flight download                   |
+| POST   | `/api/updates/dismiss`     | "Remind me later" — hides the banner           |
+| POST   | `/api/updates/skip`        | `{version}` — never notify about this version again |
+| POST   | `/api/updates/preferences` | `{channel, autoCheck, autoDownload, autoInstall}` |
+
+The existing `/api/events` SSE stream gained an `update` event channel that
+pushes the same snapshot every tick, so the web UI stays current without
+polling.
+
+### Bumping the version
+
+Edit two files in lockstep:
+
+1. [`/VERSION`](VERSION) — consumed by CMake (`MACOSX_BUNDLE_*`, `CPACK_PACKAGE_VERSION`)
+   and by `installer.iss` at preprocess time.
+2. [`src/core/version.h`](src/core/version.h) — consumed by C++ and by
+   `satellite.rc` (through `windres`'s preprocessor).
+
+The `version-consistency` CI gate fails if the two diverge.
 
 ## Architecture
 
