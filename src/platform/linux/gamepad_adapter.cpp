@@ -295,9 +295,8 @@ void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
     int devFd = dev.fd;
     int wakeFd = dev.wakePipeRead;
     bool isDS4 = dev.ds4;
-    dev.readerThread = std::thread([this, serial, devFd, wakeFd, isDS4] {
-        readerLoop(serial, devFd, wakeFd, isDS4);
-    });
+    dev.readerThread = std::thread(
+        [this, serial, devFd, wakeFd, isDS4] { readerLoop(serial, devFd, wakeFd, isDS4); });
 }
 
 // Caller holds mtx_. Mirrors the Windows ViGEm pattern: extract under the

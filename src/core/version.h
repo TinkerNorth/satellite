@@ -24,9 +24,9 @@
 #ifndef SATELLITE_CORE_VERSION_H
 #define SATELLITE_CORE_VERSION_H
 
-#define SATELLITE_VERSION_MAJOR  1
-#define SATELLITE_VERSION_MINOR  0
-#define SATELLITE_VERSION_PATCH  0
+#define SATELLITE_VERSION_MAJOR 1
+#define SATELLITE_VERSION_MINOR 0
+#define SATELLITE_VERSION_PATCH 0
 
 // Wire string (matches /VERSION). Used by /api/version, the User-Agent
 // header sent to GitHub's release API, and the parsed-version comparison.
@@ -34,7 +34,7 @@
 
 // Comma form for Win32 VS_VERSION_INFO.FILEVERSION / .PRODUCTVERSION.
 // The trailing zero is a Win32 "build" slot we don't currently use.
-#define SATELLITE_VERSION_COMMA  1,0,0,0
+#define SATELLITE_VERSION_COMMA 1, 0, 0, 0
 
 // Dotted-quad form for the VS_VERSION_INFO "FileVersion" / "ProductVersion"
 // string properties (the ones shown in Explorer → Properties → Details).

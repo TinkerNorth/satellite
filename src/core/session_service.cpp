@@ -318,7 +318,7 @@ void SessionService::handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8
 }
 
 void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
-                                              uint16_t wireDurationMs) {
+                                             uint16_t wireDurationMs) {
     // Find the (connection, ctrlIdx) that owns `serial`. Connections is small
     // (one per paired client, currently O(1) in practice) and each connection
     // has at most MAX_CONTROLLERS_PER_CONN slots — fine to scan linearly. The

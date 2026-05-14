@@ -157,8 +157,7 @@ struct MockClient : IClientPort {
                                uint8_t) override {
         broadcastCalls++;
     }
-    void sendRumble(const Connection& conn, uint8_t ctrlIdx,
-                    const RumbleReport& report) override {
+    void sendRumble(const Connection& conn, uint8_t ctrlIdx, const RumbleReport& report) override {
         rumbleCalls++;
         lastRumbleConnToken = conn.token;
         lastRumbleCtrlIdx = ctrlIdx;
@@ -1463,7 +1462,8 @@ static void test_handleRumbleFromBackend_lightbarChangeDefeatsCoalesce() {
 }
 
 static void test_handleRumbleFromBackend_routesAcrossMultipleConnections() {
-    TEST("handleRumbleFromBackend — correctly routes when multiple connections own different serials");
+    TEST("handleRumbleFromBackend — correctly routes when multiple connections own different "
+         "serials");
     MockViGem vigem;
     MockClient client;
     MockLog log;

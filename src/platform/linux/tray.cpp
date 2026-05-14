@@ -62,8 +62,7 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
         g_updateService->requestCheck(/*userInitiated=*/true);
     }
     char cmd[112];
-    std::snprintf(cmd, sizeof(cmd),
-                  "xdg-open http://localhost:%d/settings >/dev/null 2>&1 &",
+    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d/settings >/dev/null 2>&1 &",
                   g_config.webPort);
     (void)std::system(cmd);
 }
@@ -93,8 +92,7 @@ static gboolean pollListenerState(gpointer) {
                 label = "Install Update v" + s.info.version;
             } else if (s.state == UpdateState::UpdateAvailable && s.info.available) {
                 label = "Download Update v" + s.info.version + "\xE2\x80\xA6";
-            } else if (s.state == UpdateState::Downloading ||
-                       s.state == UpdateState::Verifying) {
+            } else if (s.state == UpdateState::Downloading || s.state == UpdateState::Verifying) {
                 label = "Downloading update\xE2\x80\xA6";
                 enabled = false;
             } else if (s.state == UpdateState::Checking) {

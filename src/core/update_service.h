@@ -86,8 +86,8 @@ class UpdateService {
     // Apply settings changes (channel + autoCheck/autoDownload/autoInstall).
     // Mutates Config and triggers persist + an immediate timer-eval so a
     // freshly-enabled autoCheck fires within the minute.
-    void updatePreferences(const std::string& channel, bool autoCheck,
-                           bool autoDownload, bool autoInstall);
+    void updatePreferences(const std::string& channel, bool autoCheck, bool autoDownload,
+                           bool autoInstall);
 
   private:
     void workerLoop();
@@ -109,14 +109,14 @@ class UpdateService {
 
     IUpdaterPort& updater_;
     ILogPort& log_;
-    Config& config_;            // shared with the rest of the app
-    std::mutex& configMtx_;     // protects config_ (held by webserver too)
+    Config& config_;        // shared with the rest of the app
+    std::mutex& configMtx_; // protects config_ (held by webserver too)
 
     // Service-owned state. cv_ wakes the worker for any pending job.
     mutable std::mutex mtx_;
     std::condition_variable cv_;
     UpdateState state_ = UpdateState::Idle;
-    UpdateInfo info_{};          // valid only when state_ >= UpdateAvailable
+    UpdateInfo info_{}; // valid only when state_ >= UpdateAvailable
     std::string lastError_;
     uint64_t bytesDownloaded_ = 0;
     uint64_t bytesTotal_ = 0;

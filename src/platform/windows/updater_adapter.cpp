@@ -41,11 +41,11 @@ std::wstring toWide(const std::string& s) {
 
 std::string fromWide(const std::wstring& w) {
     if (w.empty()) return std::string{};
-    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
-                                nullptr, 0, nullptr, nullptr);
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
+                                nullptr, nullptr);
     std::string s(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
-                        s.data(), n, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
+                        nullptr);
     return s;
 }
 
@@ -54,7 +54,9 @@ struct WinHttpHandle {
     HINTERNET h = nullptr;
     WinHttpHandle() = default;
     explicit WinHttpHandle(HINTERNET p) : h(p) {}
-    ~WinHttpHandle() { if (h) WinHttpCloseHandle(h); }
+    ~WinHttpHandle() {
+        if (h) WinHttpCloseHandle(h);
+    }
     WinHttpHandle(const WinHttpHandle&) = delete;
     WinHttpHandle& operator=(const WinHttpHandle&) = delete;
     WinHttpHandle(WinHttpHandle&& o) noexcept : h(o.h) { o.h = nullptr; }
@@ -115,8 +117,8 @@ bool httpGetToString(const std::wstring& url, std::string& out, std::string& err
     }
 
     DWORD flags = u.https ? WINHTTP_FLAG_SECURE : 0;
-    WinHttpHandle req(WinHttpOpenRequest(conn, L"GET", u.path.c_str(), nullptr,
-                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
+    WinHttpHandle req(WinHttpOpenRequest(conn, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                         WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
     if (!req) {
         err = "WinHttpOpenRequest failed";
         return false;
@@ -125,9 +127,8 @@ bool httpGetToString(const std::wstring& url, std::string& out, std::string& err
     // Accept GitHub's JSON content type, and identify ourselves so the
     // request hits the per-UA rate-limit bucket rather than the shared
     // anonymous one (still anonymous — no token).
-    std::wstring headers =
-        L"Accept: application/vnd.github+json\r\n"
-        L"X-GitHub-Api-Version: 2022-11-28\r\n";
+    std::wstring headers = L"Accept: application/vnd.github+json\r\n"
+                           L"X-GitHub-Api-Version: 2022-11-28\r\n";
 
     if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(headers.size()),
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
@@ -196,14 +197,14 @@ bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
         return false;
     }
     DWORD flags = u.https ? WINHTTP_FLAG_SECURE : 0;
-    WinHttpHandle req(WinHttpOpenRequest(conn, L"GET", u.path.c_str(), nullptr,
-                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
+    WinHttpHandle req(WinHttpOpenRequest(conn, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                         WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
     if (!req) {
         err = "WinHttpOpenRequest failed";
         return false;
     }
-    if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA,
-                            0, 0, 0)) {
+    if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0,
+                            0)) {
         err = "WinHttpSendRequest failed";
         return false;
     }
@@ -232,9 +233,8 @@ bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
     {
         wchar_t lenBuf[64] = {};
         DWORD lenSize = sizeof(lenBuf);
-        if (WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH,
-                                WINHTTP_HEADER_NAME_BY_INDEX, lenBuf, &lenSize,
-                                WINHTTP_NO_HEADER_INDEX)) {
+        if (WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX,
+                                lenBuf, &lenSize, WINHTTP_NO_HEADER_INDEX)) {
             total = static_cast<uint64_t>(_wtoi64(lenBuf));
         }
     }
@@ -290,13 +290,13 @@ bool sha256OfFile(const std::wstring& path, std::string& hexOut, std::string& er
         err = "BCryptOpenAlgorithmProvider failed";
         return false;
     }
-    auto closeAlg = std::unique_ptr<void, void(*)(void*)>(alg, [](void* p) {
+    auto closeAlg = std::unique_ptr<void, void (*)(void*)>(alg, [](void* p) {
         if (p) BCryptCloseAlgorithmProvider(p, 0);
     });
 
     DWORD hashLen = 0, cb = 0;
-    BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hashLen),
-                      sizeof(hashLen), &cb, 0);
+    BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hashLen), sizeof(hashLen),
+                      &cb, 0);
     if (hashLen == 0) {
         err = "SHA-256 length probe failed";
         return false;
@@ -308,7 +308,7 @@ bool sha256OfFile(const std::wstring& path, std::string& hexOut, std::string& er
         err = "BCryptCreateHash failed";
         return false;
     }
-    auto destroyHash = std::unique_ptr<void, void(*)(void*)>(hash, [](void* p) {
+    auto destroyHash = std::unique_ptr<void, void (*)(void*)>(hash, [](void* p) {
         if (p) BCryptDestroyHash(p);
     });
 
@@ -321,8 +321,7 @@ bool sha256OfFile(const std::wstring& path, std::string& hexOut, std::string& er
     while (f.read(buf.data(), buf.size()) || f.gcount() > 0) {
         std::streamsize n = f.gcount();
         if (n <= 0) break;
-        st = BCryptHashData(hash, reinterpret_cast<PUCHAR>(buf.data()),
-                            static_cast<ULONG>(n), 0);
+        st = BCryptHashData(hash, reinterpret_cast<PUCHAR>(buf.data()), static_cast<ULONG>(n), 0);
         if (st < 0) {
             err = "BCryptHashData failed";
             return false;
@@ -379,8 +378,8 @@ WindowsUpdaterAdapter::WindowsUpdaterAdapter(std::string owner, std::string repo
     : owner_(std::move(owner)), repo_(std::move(repo)) {}
 
 bool WindowsUpdaterAdapter::fetchLatestRelease(const std::string& channel,
-                                                const std::string& currentVersion,
-                                                UpdateInfo& out, std::string& outError) {
+                                               const std::string& currentVersion, UpdateInfo& out,
+                                               std::string& outError) {
     out = {};
     const bool wantPrerelease = (channel == "prerelease");
 
@@ -467,15 +466,13 @@ bool WindowsUpdaterAdapter::downloadArtifact(
     SHCreateDirectoryExW(nullptr, stagingDir.c_str(), nullptr);
     std::wstring dst = stagingDir + L"\\" + toWide(info.assetName);
 
-    if (!httpGetToFile(toWide(info.assetUrl), dst, onProgress, cancel, outError)) {
-        return false;
-    }
+    if (!httpGetToFile(toWide(info.assetUrl), dst, onProgress, cancel, outError)) { return false; }
     outLocalPath = fromWide(dst);
     return true;
 }
 
 bool WindowsUpdaterAdapter::verifyArtifact(const std::string& localPath, const UpdateInfo& info,
-                                            std::string& outError) {
+                                           std::string& outError) {
     if (info.assetSha256.empty()) {
         // No SHA256SUMS present in the release. Don't fail-closed — the
         // transport was HTTPS-pinned to GitHub. Log a warning via the

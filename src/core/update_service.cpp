@@ -36,9 +36,7 @@ int compareSemver(const std::string& a, const std::string& b) {
         while (i < 3 && std::getline(ss, tok, '.')) {
             try {
                 out[i++] = std::stoi(tok);
-            } catch (...) {
-                out[i++] = 0;
-            }
+            } catch (...) { out[i++] = 0; }
         }
     };
     std::string aCore, aPre, bCore, bPre;
@@ -189,8 +187,8 @@ void UpdateService::dismiss() {
     fireBroadcast();
 }
 
-void UpdateService::updatePreferences(const std::string& channel, bool autoCheck,
-                                      bool autoDownload, bool autoInstall) {
+void UpdateService::updatePreferences(const std::string& channel, bool autoCheck, bool autoDownload,
+                                      bool autoInstall) {
     bool channelChanged = false;
     {
         std::lock_guard<std::mutex> ck(configMtx_);
@@ -219,9 +217,16 @@ void UpdateService::workerLoop() {
                 return stopping_ || pendingCheck_ || pendingDownload_ || pendingInstall_;
             });
             if (stopping_) return;
-            if (pendingInstall_) { pendingInstall_ = false; doInstallNow = true; }
-            else if (pendingDownload_) { pendingDownload_ = false; doDownloadNow = true; }
-            else if (pendingCheck_) { pendingCheck_ = false; doCheckNow = true; }
+            if (pendingInstall_) {
+                pendingInstall_ = false;
+                doInstallNow = true;
+            } else if (pendingDownload_) {
+                pendingDownload_ = false;
+                doDownloadNow = true;
+            } else if (pendingCheck_) {
+                pendingCheck_ = false;
+                doCheckNow = true;
+            }
         }
         cancelFlag_ = false;
         if (doInstallNow) {
@@ -267,8 +272,7 @@ void UpdateService::timerLoop() {
             std::lock_guard<std::mutex> ck(configMtx_);
             if (config_.autoCheck) {
                 int64_t age = nowEpoch() - config_.lastCheckEpoch;
-                int64_t intervalSec =
-                    static_cast<int64_t>(config_.updateCheckIntervalHours) * 3600;
+                int64_t intervalSec = static_cast<int64_t>(config_.updateCheckIntervalHours) * 3600;
                 if (intervalSec < 3600) intervalSec = 3600;
                 if (age >= intervalSec) shouldCheck = true;
             }
