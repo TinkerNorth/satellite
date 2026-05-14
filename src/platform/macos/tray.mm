@@ -87,8 +87,8 @@ static SatelliteTrayTarget* g_target = nil;
         if (s.state == UpdateState::Downloaded && s.info.available) {
             updateTitle = [NSString stringWithFormat:@"Install Update v%s", s.info.version.c_str()];
         } else if (s.state == UpdateState::UpdateAvailable && s.info.available) {
-            updateTitle = [NSString stringWithFormat:@"Download Update v%s…",
-                                                     s.info.version.c_str()];
+            updateTitle =
+                [NSString stringWithFormat:@"Download Update v%s…", s.info.version.c_str()];
         } else if (s.state == UpdateState::Downloading || s.state == UpdateState::Verifying) {
             updateTitle = @"Downloading update…";
             updateEnabled = NO;

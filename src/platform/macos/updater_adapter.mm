@@ -29,8 +29,8 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
         }
         NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:nsurl];
         req.timeoutInterval = 15.0;
-        NSString* ua = [NSString stringWithFormat:@"Satellite/%s (+updater)",
-                                                  SATELLITE_VERSION_STRING];
+        NSString* ua =
+            [NSString stringWithFormat:@"Satellite/%s (+updater)", SATELLITE_VERSION_STRING];
         [req setValue:ua forHTTPHeaderField:@"User-Agent"];
         [req setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
         [req setValue:@"2022-11-28" forHTTPHeaderField:@"X-GitHub-Api-Version"];
@@ -44,10 +44,10 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
         NSURLSessionDataTask* task = [[NSURLSession sharedSession]
             dataTaskWithRequest:req
               completionHandler:^(NSData* d, NSURLResponse* r, NSError* e) {
-                  body = d;
-                  resp = r;
-                  nserr = e;
-                  dispatch_semaphore_signal(sem);
+                body = d;
+                resp = r;
+                nserr = e;
+                dispatch_semaphore_signal(sem);
               }];
         [task resume];
         dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
@@ -94,11 +94,11 @@ class ProgressDelegate {
 // cancellation. The PIMPL is a raw pointer because ARC can't manage C++
 // callable types.
 @interface SatelliteDownloadDelegate : NSObject <NSURLSessionDownloadDelegate>
-@property (assign) ProgressDelegate* impl;
-@property (strong) NSURL* destination;
-@property (assign) BOOL ok;
-@property (strong) NSString* errorString;
-@property (strong) dispatch_semaphore_t doneSem;
+@property(assign) ProgressDelegate* impl;
+@property(strong) NSURL* destination;
+@property(assign) BOOL ok;
+@property(strong) NSString* errorString;
+@property(strong) dispatch_semaphore_t doneSem;
 @end
 
 @implementation SatelliteDownloadDelegate
@@ -108,13 +108,13 @@ class ProgressDelegate {
                  didWriteData:(int64_t)bytesWritten
             totalBytesWritten:(int64_t)totalBytesWritten
     totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
-    (void)session; (void)bytesWritten;
+    (void)session;
+    (void)bytesWritten;
     if (self.impl) {
-        self.impl->onProgress((uint64_t)totalBytesWritten,
-                              (uint64_t)(totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0));
-        if (self.impl->isCancelled()) {
-            [task cancel];
-        }
+        self.impl->onProgress(
+            (uint64_t)totalBytesWritten,
+            (uint64_t)(totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0));
+        if (self.impl->isCancelled()) { [task cancel]; }
     }
 }
 
@@ -124,7 +124,9 @@ class ProgressDelegate {
     (void)session;
     NSError* err = nil;
     [[NSFileManager defaultManager] removeItemAtURL:self.destination error:nil];
-    if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:self.destination error:&err]) {
+    if (![[NSFileManager defaultManager] moveItemAtURL:location
+                                                 toURL:self.destination
+                                                 error:&err]) {
         self.ok = NO;
         self.errorString = err.localizedDescription ?: @"move failed";
     } else {
@@ -142,7 +144,8 @@ class ProgressDelegate {
 - (void)URLSession:(NSURLSession*)session
                     task:(NSURLSessionTask*)task
     didCompleteWithError:(NSError*)error {
-    (void)session; (void)task;
+    (void)session;
+    (void)task;
     if (error) {
         if (error.code == NSURLErrorCancelled) {
             self.ok = NO;
@@ -169,21 +172,22 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
         }
         NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:nsurl];
         req.timeoutInterval = 60.0;
-        NSString* ua = [NSString stringWithFormat:@"Satellite/%s (+updater)",
-                                                  SATELLITE_VERSION_STRING];
+        NSString* ua =
+            [NSString stringWithFormat:@"Satellite/%s (+updater)", SATELLITE_VERSION_STRING];
         [req setValue:ua forHTTPHeaderField:@"User-Agent"];
 
         ProgressDelegate impl(onProgress, cancel);
         SatelliteDownloadDelegate* delegate = [[SatelliteDownloadDelegate alloc] init];
         delegate.impl = &impl;
-        delegate.destination = [NSURL fileURLWithPath:[NSString stringWithUTF8String:dstPath.c_str()]];
+        delegate.destination =
+            [NSURL fileURLWithPath:[NSString stringWithUTF8String:dstPath.c_str()]];
         delegate.doneSem = dispatch_semaphore_create(0);
         delegate.ok = NO;
 
-        NSURLSession* session = [NSURLSession sessionWithConfiguration:
-                                                   [NSURLSessionConfiguration ephemeralSessionConfiguration]
-                                                              delegate:delegate
-                                                         delegateQueue:nil];
+        NSURLSession* session = [NSURLSession
+            sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration]
+                            delegate:delegate
+                       delegateQueue:nil];
         NSURLSessionDownloadTask* task = [session downloadTaskWithRequest:req];
         [task resume];
         dispatch_semaphore_wait(delegate.doneSem, DISPATCH_TIME_FOREVER);
@@ -268,8 +272,8 @@ MacOSUpdaterAdapter::MacOSUpdaterAdapter(std::string owner, std::string repo)
     : owner_(std::move(owner)), repo_(std::move(repo)) {}
 
 bool MacOSUpdaterAdapter::fetchLatestRelease(const std::string& channel,
-                                              const std::string& currentVersion,
-                                              UpdateInfo& out, std::string& outError) {
+                                             const std::string& currentVersion, UpdateInfo& out,
+                                             std::string& outError) {
     out = {};
     const bool wantPrerelease = (channel == "prerelease");
     std::string url = "https://api.github.com/repos/" + owner_ + "/" + repo_;
@@ -326,8 +330,8 @@ bool MacOSUpdaterAdapter::fetchLatestRelease(const std::string& channel,
     out.releaseNotes = pick.body.size() > 8192 ? pick.body.substr(0, 8192) + "..." : pick.body;
     out.htmlUrl = pick.htmlUrl;
     out.publishedAtEpoch = isoToEpoch(pick.publishedAt);
-    out.installMethod = currentAppBundle().empty() ? InstallMethod::Manual
-                                                   : InstallMethod::SelfInstall;
+    out.installMethod =
+        currentAppBundle().empty() ? InstallMethod::Manual : InstallMethod::SelfInstall;
     if (out.installMethod == InstallMethod::Manual) {
         out.manualInstruction = "Download " + asset.name + " from " + out.htmlUrl +
                                 " and replace your existing satellite.app.";
@@ -340,13 +344,11 @@ bool MacOSUpdaterAdapter::downloadArtifact(
     const UpdateInfo& info, const std::function<void(uint64_t, uint64_t)>& onProgress,
     const std::atomic<bool>* cancel, std::string& outLocalPath, std::string& outError) {
     @autoreleasepool {
-        NSString* dir =
-            [NSString stringWithFormat:@"%@/satellite/updates",
-                                       NSTemporaryDirectory()];
+        NSString* dir = [NSString stringWithFormat:@"%@/satellite/updates", NSTemporaryDirectory()];
         [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                                   withIntermediateDirectories:YES
-                                                    attributes:nil
-                                                         error:nil];
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
         std::string dst = std::string(dir.UTF8String) + "/" + info.assetName;
         if (!httpGetToFile(info.assetUrl, dst, onProgress, cancel, outError)) return false;
         outLocalPath = dst;
@@ -370,7 +372,7 @@ bool MacOSUpdaterAdapter::verifyArtifact(const std::string& localPath, const Upd
 }
 
 bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
-                                       std::string& outError) {
+                                      std::string& outError) {
     (void)info;
     @autoreleasepool {
         std::string bundle = currentAppBundle();
@@ -381,19 +383,18 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
 
         // Stage the new .app under .../updates/staging-XXXX/Satellite.app.
         NSString* zipPath = [NSString stringWithUTF8String:localPath.c_str()];
-        NSString* stagingDir =
-            [NSString stringWithFormat:@"%@/satellite/staging-%d",
-                                       NSTemporaryDirectory(), (int)getpid()];
+        NSString* stagingDir = [NSString
+            stringWithFormat:@"%@/satellite/staging-%d", NSTemporaryDirectory(), (int)getpid()];
         [[NSFileManager defaultManager] removeItemAtPath:stagingDir error:nil];
         [[NSFileManager defaultManager] createDirectoryAtPath:stagingDir
-                                   withIntermediateDirectories:YES
-                                                    attributes:nil
-                                                         error:nil];
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
         // Use ditto to unzip — it preserves extended attributes and resource
         // forks, important for codesigned bundles.
         NSTask* task = [[NSTask alloc] init];
         task.launchPath = @"/usr/bin/ditto";
-        task.arguments = @[@"-xk", zipPath, stagingDir];
+        task.arguments = @[ @"-xk", zipPath, stagingDir ];
         [task launch];
         [task waitUntilExit];
         if (task.terminationStatus != 0) {
@@ -420,43 +421,37 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         // Single self-contained shell script — no quoting tricks needed
         // because both paths come from a controlled (NSTemporaryDirectory)
         // tree and are quoted in the heredoc below.
-        NSString* helper =
-            [NSString stringWithFormat:@"%@/satellite/swap-%d.sh",
-                                       NSTemporaryDirectory(), (int)getpid()];
-        NSString* script = [NSString stringWithFormat:
-            @"#!/bin/bash\n"
-             "set -e\n"
-             "PID=%d\n"
-             "SRC=\"%@\"\n"
-             "DST=\"%s\"\n"
-             "# Wait up to 30s for the current process to release the bundle.\n"
-             "for i in $(seq 1 60); do\n"
-             "  if ! kill -0 \"$PID\" 2>/dev/null; then break; fi\n"
-             "  sleep 0.5\n"
-             "done\n"
-             "# Move-aside-then-move-in keeps the swap atomic per directory.\n"
-             "rm -rf \"$DST.old\" || true\n"
-             "if [ -d \"$DST\" ]; then mv \"$DST\" \"$DST.old\"; fi\n"
-             "mv \"$SRC\" \"$DST\"\n"
-             "rm -rf \"$DST.old\" || true\n"
-             "open \"$DST\"\n",
-            (int)getpid(), newApp, bundle.c_str()];
-        [script writeToFile:helper
-                 atomically:YES
-                   encoding:NSUTF8StringEncoding
-                      error:nil];
+        NSString* helper = [NSString
+            stringWithFormat:@"%@/satellite/swap-%d.sh", NSTemporaryDirectory(), (int)getpid()];
+        NSString* script = [NSString
+            stringWithFormat:@"#!/bin/bash\n"
+                              "set -e\n"
+                              "PID=%d\n"
+                              "SRC=\"%@\"\n"
+                              "DST=\"%s\"\n"
+                              "# Wait up to 30s for the current process to release the bundle.\n"
+                              "for i in $(seq 1 60); do\n"
+                              "  if ! kill -0 \"$PID\" 2>/dev/null; then break; fi\n"
+                              "  sleep 0.5\n"
+                              "done\n"
+                              "# Move-aside-then-move-in keeps the swap atomic per directory.\n"
+                              "rm -rf \"$DST.old\" || true\n"
+                              "if [ -d \"$DST\" ]; then mv \"$DST\" \"$DST.old\"; fi\n"
+                              "mv \"$SRC\" \"$DST\"\n"
+                              "rm -rf \"$DST.old\" || true\n"
+                              "open \"$DST\"\n",
+                             (int)getpid(), newApp, bundle.c_str()];
+        [script writeToFile:helper atomically:YES encoding:NSUTF8StringEncoding error:nil];
         chmod(helper.UTF8String, 0755);
 
         // Detach the helper so it survives our termination.
         NSTask* run = [[NSTask alloc] init];
         run.launchPath = @"/bin/bash";
-        run.arguments = @[helper];
+        run.arguments = @[ helper ];
         [run launch];
 
         // Trigger our own clean shutdown.
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [NSApp terminate:nil];
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
         return true;
     }
 }

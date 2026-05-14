@@ -48,8 +48,7 @@ void showTrayMenu(HWND hwnd) {
         } else if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
             std::string label = "Download Update v" + snap.info.version + "..."; // ellipsis
             AppendMenuA(menu, MF_STRING, IDM_INSTALL_UPDATE, label.c_str());
-        } else if (snap.state == UpdateState::Downloading ||
-                   snap.state == UpdateState::Verifying) {
+        } else if (snap.state == UpdateState::Downloading || snap.state == UpdateState::Verifying) {
             AppendMenuA(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, "Downloading update...");
         } else if (snap.state == UpdateState::Checking) {
             AppendMenuA(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, "Checking for updates...");
