@@ -64,14 +64,30 @@ class JsonScanner {
             if (c == '\\' && p_ < s_.size()) {
                 char esc = s_[p_++];
                 switch (esc) {
-                case '"': out += '"'; break;
-                case '\\': out += '\\'; break;
-                case '/': out += '/'; break;
-                case 'b': out += '\b'; break;
-                case 'f': out += '\f'; break;
-                case 'n': out += '\n'; break;
-                case 'r': out += '\r'; break;
-                case 't': out += '\t'; break;
+                case '"':
+                    out += '"';
+                    break;
+                case '\\':
+                    out += '\\';
+                    break;
+                case '/':
+                    out += '/';
+                    break;
+                case 'b':
+                    out += '\b';
+                    break;
+                case 'f':
+                    out += '\f';
+                    break;
+                case 'n':
+                    out += '\n';
+                    break;
+                case 'r':
+                    out += '\r';
+                    break;
+                case 't':
+                    out += '\t';
+                    break;
                 case 'u': {
                     // Decode the 4-hex codepoint into UTF-8. We don't
                     // handle surrogate pairs — they degrade to U+FFFD.
@@ -80,10 +96,14 @@ class JsonScanner {
                     for (int i = 0; i < 4; i++) {
                         char h = s_[p_++];
                         cp <<= 4;
-                        if (h >= '0' && h <= '9') cp |= h - '0';
-                        else if (h >= 'a' && h <= 'f') cp |= 10 + h - 'a';
-                        else if (h >= 'A' && h <= 'F') cp |= 10 + h - 'A';
-                        else throw JsonError{};
+                        if (h >= '0' && h <= '9')
+                            cp |= h - '0';
+                        else if (h >= 'a' && h <= 'f')
+                            cp |= 10 + h - 'a';
+                        else if (h >= 'A' && h <= 'F')
+                            cp |= 10 + h - 'A';
+                        else
+                            throw JsonError{};
                     }
                     if (cp < 0x80) {
                         out += static_cast<char>(cp);
@@ -100,7 +120,8 @@ class JsonScanner {
                     }
                     break;
                 }
-                default: throw JsonError{};
+                default:
+                    throw JsonError{};
                 }
             } else {
                 out += c;
@@ -117,9 +138,8 @@ class JsonScanner {
         size_t start = p_;
         if (p_ < s_.size() && (s_[p_] == '-' || s_[p_] == '+')) ++p_;
         while (p_ < s_.size() &&
-               (std::isdigit(static_cast<unsigned char>(s_[p_])) ||
-                s_[p_] == '.' || s_[p_] == 'e' || s_[p_] == 'E' ||
-                s_[p_] == '+' || s_[p_] == '-')) {
+               (std::isdigit(static_cast<unsigned char>(s_[p_])) || s_[p_] == '.' ||
+                s_[p_] == 'e' || s_[p_] == 'E' || s_[p_] == '+' || s_[p_] == '-')) {
             ++p_;
         }
         if (start == p_) throw JsonError{};
@@ -172,9 +192,7 @@ class JsonScanner {
         } else if (c == '[') {
             expect('[');
             if (!maybe(']')) {
-                do {
-                    skipValue();
-                } while (maybe(','));
+                do { skipValue(); } while (maybe(','));
                 expect(']');
             }
         } else {
@@ -228,18 +246,24 @@ GitHubRelease readRelease(JsonScanner& js) {
         } else if (key == "name") {
             // The "name" field of a release can legitimately be null
             // (when not set in the GitHub UI).
-            if (js.peek() == '"') r.name = js.readString();
-            else js.readNull();
+            if (js.peek() == '"')
+                r.name = js.readString();
+            else
+                js.readNull();
         } else if (key == "prerelease") {
             r.prerelease = js.readBool();
         } else if (key == "draft") {
             r.draft = js.readBool();
         } else if (key == "published_at") {
-            if (js.peek() == '"') r.publishedAt = js.readString();
-            else js.readNull();
+            if (js.peek() == '"')
+                r.publishedAt = js.readString();
+            else
+                js.readNull();
         } else if (key == "body") {
-            if (js.peek() == '"') r.body = js.readString();
-            else js.readNull();
+            if (js.peek() == '"')
+                r.body = js.readString();
+            else
+                js.readNull();
         } else if (key == "html_url") {
             r.htmlUrl = js.readString();
         } else if (key == "assets") {
@@ -267,9 +291,7 @@ bool parseGitHubRelease(const std::string& json, GitHubRelease& out) {
         JsonScanner js(json);
         out = readRelease(js);
         return true;
-    } catch (...) {
-        return false;
-    }
+    } catch (...) { return false; }
 }
 
 bool parseGitHubReleaseList(const std::string& json, std::vector<GitHubRelease>& out) {
@@ -277,14 +299,10 @@ bool parseGitHubReleaseList(const std::string& json, std::vector<GitHubRelease>&
         JsonScanner js(json);
         js.expect('[');
         if (js.maybe(']')) return true;
-        do {
-            out.push_back(readRelease(js));
-        } while (js.maybe(','));
+        do { out.push_back(readRelease(js)); } while (js.maybe(','));
         js.expect(']');
         return true;
-    } catch (...) {
-        return false;
-    }
+    } catch (...) { return false; }
 }
 
 std::string stripTagPrefix(const std::string& tag) {

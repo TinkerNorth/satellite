@@ -24,20 +24,20 @@
 #include <vector>
 
 struct GitHubAsset {
-    std::string name;          // e.g. "SatelliteSetup-v1.2.3.exe"
-    std::string browserUrl;    // direct .exe / .zip / .deb / .AppImage URL
-    uint64_t    size = 0;
+    std::string name;       // e.g. "SatelliteSetup-v1.2.3.exe"
+    std::string browserUrl; // direct .exe / .zip / .deb / .AppImage URL
+    uint64_t size = 0;
     std::string contentType;
 };
 
 struct GitHubRelease {
-    std::string tagName;       // "v1.2.3" (with the leading v)
-    std::string name;          // release title (often same as tag)
-    bool        prerelease = false;
-    bool        draft = false;
-    std::string publishedAt;   // ISO-8601 timestamp string
-    std::string body;          // markdown release notes
-    std::string htmlUrl;       // browser link to the release page
+    std::string tagName; // "v1.2.3" (with the leading v)
+    std::string name;    // release title (often same as tag)
+    bool prerelease = false;
+    bool draft = false;
+    std::string publishedAt; // ISO-8601 timestamp string
+    std::string body;        // markdown release notes
+    std::string htmlUrl;     // browser link to the release page
     std::vector<GitHubAsset> assets;
 };
 

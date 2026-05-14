@@ -307,63 +307,58 @@ void httpThread(SessionService& svc) {
     });
 
     // GET /api/updates/status — full snapshot, auth required.
-    g_httpServer.Get("/api/updates/status",
-                     [](const httplib::Request& req, httplib::Response& res) {
-                         if (!requireAuth(req, res)) return;
-                         if (!g_updateService) {
-                             res.status = 503;
-                             res.set_content(R"({"error":"updater not initialized"})",
-                                             "application/json");
-                             return;
-                         }
-                         res.set_content(buildUpdateJson(g_updateService->snapshot()),
-                                         "application/json");
-                     });
+    g_httpServer.Get(
+        "/api/updates/status", [](const httplib::Request& req, httplib::Response& res) {
+            if (!requireAuth(req, res)) return;
+            if (!g_updateService) {
+                res.status = 503;
+                res.set_content(R"({"error":"updater not initialized"})", "application/json");
+                return;
+            }
+            res.set_content(buildUpdateJson(g_updateService->snapshot()), "application/json");
+        });
 
     // POST /api/updates/check — kick off a check now.
-    g_httpServer.Post("/api/updates/check",
-                      [](const httplib::Request& req, httplib::Response& res) {
-                          if (!requireAuth(req, res)) return;
-                          if (!g_updateService) {
-                              res.status = 503;
-                              res.set_content(R"({"error":"updater not initialized"})",
-                                              "application/json");
-                              return;
-                          }
-                          g_updateService->requestCheck(/*userInitiated=*/true);
-                          res.set_content(R"({"ok":true})", "application/json");
-                      });
+    g_httpServer.Post(
+        "/api/updates/check", [](const httplib::Request& req, httplib::Response& res) {
+            if (!requireAuth(req, res)) return;
+            if (!g_updateService) {
+                res.status = 503;
+                res.set_content(R"({"error":"updater not initialized"})", "application/json");
+                return;
+            }
+            g_updateService->requestCheck(/*userInitiated=*/true);
+            res.set_content(R"({"ok":true})", "application/json");
+        });
 
     // POST /api/updates/download — fetch the artifact (UpdateAvailable → Downloaded).
-    g_httpServer.Post("/api/updates/download",
-                      [](const httplib::Request& req, httplib::Response& res) {
-                          if (!requireAuth(req, res)) return;
-                          if (!g_updateService) {
-                              res.status = 503;
-                              res.set_content(R"({"error":"updater not initialized"})",
-                                              "application/json");
-                              return;
-                          }
-                          g_updateService->requestDownload();
-                          res.set_content(R"({"ok":true})", "application/json");
-                      });
+    g_httpServer.Post(
+        "/api/updates/download", [](const httplib::Request& req, httplib::Response& res) {
+            if (!requireAuth(req, res)) return;
+            if (!g_updateService) {
+                res.status = 503;
+                res.set_content(R"({"error":"updater not initialized"})", "application/json");
+                return;
+            }
+            g_updateService->requestDownload();
+            res.set_content(R"({"ok":true})", "application/json");
+        });
 
     // POST /api/updates/install — fire the platform installer. The
     // process will exit shortly after this returns (Win) or after the
     // bundle swap helper runs (mac/AppImage). The 200 response gives
     // the web UI a chance to display "Restarting…" before SSE closes.
-    g_httpServer.Post("/api/updates/install",
-                      [](const httplib::Request& req, httplib::Response& res) {
-                          if (!requireAuth(req, res)) return;
-                          if (!g_updateService) {
-                              res.status = 503;
-                              res.set_content(R"({"error":"updater not initialized"})",
-                                              "application/json");
-                              return;
-                          }
-                          g_updateService->requestInstall();
-                          res.set_content(R"({"ok":true})", "application/json");
-                      });
+    g_httpServer.Post(
+        "/api/updates/install", [](const httplib::Request& req, httplib::Response& res) {
+            if (!requireAuth(req, res)) return;
+            if (!g_updateService) {
+                res.status = 503;
+                res.set_content(R"({"error":"updater not initialized"})", "application/json");
+                return;
+            }
+            g_updateService->requestInstall();
+            res.set_content(R"({"ok":true})", "application/json");
+        });
 
     // POST /api/updates/cancel — cancel an in-flight download.
     g_httpServer.Post("/api/updates/cancel",
@@ -374,18 +369,17 @@ void httpThread(SessionService& svc) {
                       });
 
     // POST /api/updates/skip {version} — never notify about this version again.
-    g_httpServer.Post(
-        "/api/updates/skip", [](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
-            std::string v = jsonGetString(req.body, "version");
-            if (v.empty() || !g_updateService) {
-                res.status = 400;
-                res.set_content(R"({"error":"missing version"})", "application/json");
-                return;
-            }
-            g_updateService->skipVersion(v);
-            res.set_content(R"({"ok":true})", "application/json");
-        });
+    g_httpServer.Post("/api/updates/skip", [](const httplib::Request& req, httplib::Response& res) {
+        if (!requireAuth(req, res)) return;
+        std::string v = jsonGetString(req.body, "version");
+        if (v.empty() || !g_updateService) {
+            res.status = 400;
+            res.set_content(R"({"error":"missing version"})", "application/json");
+            return;
+        }
+        g_updateService->skipVersion(v);
+        res.set_content(R"({"ok":true})", "application/json");
+    });
 
     // POST /api/updates/dismiss — "remind me later" for the current version.
     g_httpServer.Post("/api/updates/dismiss",
@@ -397,41 +391,38 @@ void httpThread(SessionService& svc) {
 
     // POST /api/updates/preferences {channel, autoCheck, autoDownload, autoInstall}
     // Saves the prefs in config + triggers an immediate re-check if channel changed.
-    g_httpServer.Post(
-        "/api/updates/preferences",
-        [](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
-            if (!g_updateService) {
-                res.status = 503;
-                res.set_content(R"({"error":"updater not initialized"})",
-                                "application/json");
-                return;
-            }
-            std::string channel = jsonGetString(req.body, "channel");
-            if (channel.empty()) channel = UPDATE_CHANNEL_STABLE;
-            // For booleans, look for "key":true / "key":false. Order matters
-            // because "autoCheck":true also contains "autoCheck" within
-            // "autoDownload" matching: scope each lookup to its own key
-            // boundary.
-            auto findBool = [&](const std::string& key) -> bool {
-                auto p = req.body.find("\"" + key + "\"");
-                if (p == std::string::npos) return false;
-                auto colon = req.body.find(':', p);
-                if (colon == std::string::npos) return false;
-                auto rest = req.body.substr(colon + 1, 10);
-                return rest.find("true") != std::string::npos;
-            };
-            bool autoCheck = findBool("autoCheck");
-            bool autoDownload = findBool("autoDownload");
-            bool autoInstall = findBool("autoInstall");
-            g_updateService->updatePreferences(channel, autoCheck, autoDownload, autoInstall);
-            logMsg(LogLevel::INFO, "web",
-                   "Update prefs: channel=" + channel +
-                       " autoCheck=" + (autoCheck ? "true" : "false") +
-                       " autoDownload=" + (autoDownload ? "true" : "false") +
-                       " autoInstall=" + (autoInstall ? "true" : "false"));
-            res.set_content(R"({"ok":true})", "application/json");
-        });
+    g_httpServer.Post("/api/updates/preferences", [](const httplib::Request& req,
+                                                     httplib::Response& res) {
+        if (!requireAuth(req, res)) return;
+        if (!g_updateService) {
+            res.status = 503;
+            res.set_content(R"({"error":"updater not initialized"})", "application/json");
+            return;
+        }
+        std::string channel = jsonGetString(req.body, "channel");
+        if (channel.empty()) channel = UPDATE_CHANNEL_STABLE;
+        // For booleans, look for "key":true / "key":false. Order matters
+        // because "autoCheck":true also contains "autoCheck" within
+        // "autoDownload" matching: scope each lookup to its own key
+        // boundary.
+        auto findBool = [&](const std::string& key) -> bool {
+            auto p = req.body.find("\"" + key + "\"");
+            if (p == std::string::npos) return false;
+            auto colon = req.body.find(':', p);
+            if (colon == std::string::npos) return false;
+            auto rest = req.body.substr(colon + 1, 10);
+            return rest.find("true") != std::string::npos;
+        };
+        bool autoCheck = findBool("autoCheck");
+        bool autoDownload = findBool("autoDownload");
+        bool autoInstall = findBool("autoInstall");
+        g_updateService->updatePreferences(channel, autoCheck, autoDownload, autoInstall);
+        logMsg(LogLevel::INFO, "web",
+               "Update prefs: channel=" + channel + " autoCheck=" + (autoCheck ? "true" : "false") +
+                   " autoDownload=" + (autoDownload ? "true" : "false") +
+                   " autoInstall=" + (autoInstall ? "true" : "false"));
+        res.set_content(R"({"ok":true})", "application/json");
+    });
 
     // ── PIN & device pairing routes ─────────────────────────────────────
     g_httpServer.Post("/api/pin/generate", [](const httplib::Request& req, httplib::Response& res) {

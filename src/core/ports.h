@@ -148,10 +148,8 @@ class IUpdaterPort {
     // "prerelease"). On success fills `out` and returns true. Sets
     // out.available=true iff strictly newer than currentVersion.
     // outError carries a user-displayable message on failure.
-    virtual bool fetchLatestRelease(const std::string& channel,
-                                    const std::string& currentVersion,
-                                    UpdateInfo& out,
-                                    std::string& outError) = 0;
+    virtual bool fetchLatestRelease(const std::string& channel, const std::string& currentVersion,
+                                    UpdateInfo& out, std::string& outError) = 0;
 
     // Download the per-platform artifact described by `info` to a
     // platform-appropriate temp location. Reports progress through the
@@ -164,16 +162,13 @@ class IUpdaterPort {
     virtual bool downloadArtifact(
         const UpdateInfo& info,
         const std::function<void(uint64_t bytesSoFar, uint64_t totalBytes)>& onProgress,
-        const std::atomic<bool>* cancel,
-        std::string& outLocalPath,
-        std::string& outError) = 0;
+        const std::atomic<bool>* cancel, std::string& outLocalPath, std::string& outError) = 0;
 
     // Verify SHA-256 of localPath matches info.assetSha256. If the
     // release didn't ship a digest (assetSha256 empty), the adapter
     // may still perform basic sanity checks (file size, magic bytes)
     // and return true — but should never return true on a *mismatch*.
-    virtual bool verifyArtifact(const std::string& localPath,
-                                const UpdateInfo& info,
+    virtual bool verifyArtifact(const std::string& localPath, const UpdateInfo& info,
                                 std::string& outError) = 0;
 
     // Apply the downloaded artifact and (typically) initiate process
@@ -183,8 +178,7 @@ class IUpdaterPort {
     // /CLOSEAPPLICATIONS handles waiting on us.
     //
     // For info.installMethod == Manual this is a no-op returning true.
-    virtual bool applyUpdate(const std::string& localPath,
-                             const UpdateInfo& info,
+    virtual bool applyUpdate(const std::string& localPath, const UpdateInfo& info,
                              std::string& outError) = 0;
 
     // Stable identifier for the binary's install lineage. One of:

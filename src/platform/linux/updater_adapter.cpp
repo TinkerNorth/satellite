@@ -8,7 +8,7 @@
 #include "core/version.h"
 
 #include <curl/curl.h>
-#include <sodium.h>   // crypto_hash_sha256 — already linked
+#include <sodium.h> // crypto_hash_sha256 — already linked
 
 #include <algorithm>
 #include <cerrno>
@@ -134,7 +134,7 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_USERAGENT, ua.c_str());
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 0L);            // no overall timeout (large file)
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 0L); // no overall timeout (large file)
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeFileCb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &wctx);
@@ -226,9 +226,7 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     crypto_hash_sha256_init(&st);
     unsigned char buf[64 * 1024];
     size_t n;
-    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
-        crypto_hash_sha256_update(&st, buf, n);
-    }
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) { crypto_hash_sha256_update(&st, buf, n); }
     std::fclose(f);
     unsigned char digest[crypto_hash_sha256_BYTES];
     crypto_hash_sha256_final(&st, digest);
@@ -303,11 +301,21 @@ LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)
     : owner_(std::move(owner)), repo_(std::move(repo)) {
     installType_ = detectInstallType();
     switch (installType_) {
-    case InstallType::AppImage: platformId_ = "linux-appimage"; break;
-    case InstallType::Deb:      platformId_ = "linux-deb"; break;
-    case InstallType::Rpm:      platformId_ = "linux-rpm"; break;
-    case InstallType::Aur:      platformId_ = "linux-aur"; break;
-    case InstallType::Portable: platformId_ = "linux-portable"; break;
+    case InstallType::AppImage:
+        platformId_ = "linux-appimage";
+        break;
+    case InstallType::Deb:
+        platformId_ = "linux-deb";
+        break;
+    case InstallType::Rpm:
+        platformId_ = "linux-rpm";
+        break;
+    case InstallType::Aur:
+        platformId_ = "linux-aur";
+        break;
+    case InstallType::Portable:
+        platformId_ = "linux-portable";
+        break;
     }
     // Initialize libcurl once. Safe to call multiple times — the second
     // call is a no-op when already initialized.
@@ -315,8 +323,8 @@ LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)
 }
 
 bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
-                                              const std::string& currentVersion,
-                                              UpdateInfo& out, std::string& outError) {
+                                             const std::string& currentVersion, UpdateInfo& out,
+                                             std::string& outError) {
     out = {};
     const bool wantPrerelease = (channel == "prerelease");
     std::string url = "https://api.github.com/repos/" + owner_ + "/" + repo_;
@@ -459,9 +467,7 @@ bool LinuxUpdaterAdapter::downloadArtifact(
     ::mkdir(dir.c_str(), 0700);
     std::string dst = dir + "/" + info.assetName;
 
-    if (!httpGetToFile(info.assetUrl, dst, onProgress, cancel, outError)) {
-        return false;
-    }
+    if (!httpGetToFile(info.assetUrl, dst, onProgress, cancel, outError)) { return false; }
     outLocalPath = dst;
     return true;
 }
@@ -482,7 +488,7 @@ bool LinuxUpdaterAdapter::verifyArtifact(const std::string& localPath, const Upd
 }
 
 bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
-                                       std::string& outError) {
+                                      std::string& outError) {
     if (info.installMethod == InstallMethod::Manual) {
         // Nothing to do — the manualInstruction has already been surfaced
         // in the UI. The web "Install" button is hidden in the Manual case.
@@ -516,9 +522,7 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         return false;
     }
     // Use printf-piped writes so we don't need a separate fdopen.
-    auto append = [&](const std::string& line) {
-        ::write(fd, line.c_str(), line.size());
-    };
+    auto append = [&](const std::string& line) { ::write(fd, line.c_str(), line.size()); };
     append("#!/bin/bash\n");
     append("set -e\n");
     append("PID=" + std::to_string(pid) + "\n");

@@ -214,9 +214,8 @@ void ViGEmAdapter::startNotificationWorker(uint32_t serial, bool isDS4) {
     w.isDS4 = isDS4;
     HANDLE cancelHandle = w.cancel;
     // Capture by value — the worker only ever reads serial/isDS4/cancelHandle.
-    w.th = std::thread([this, serial, isDS4, cancelHandle] {
-        notificationLoop(serial, isDS4, cancelHandle);
-    });
+    w.th = std::thread(
+        [this, serial, isDS4, cancelHandle] { notificationLoop(serial, isDS4, cancelHandle); });
 }
 
 // Caller holds busMtx_. Extracts the worker out of the map under lock, then
