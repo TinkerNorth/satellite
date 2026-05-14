@@ -25,8 +25,10 @@ DEFINE_GUID(GUID_DEVINTERFACE_BUSENUM_VIGEM,
 #define IOCTL_VIGEM_UNPLUG_TARGET       BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x001)
 #define IOCTL_VIGEM_CHECK_VERSION       BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x002)
 #define IOCTL_VIGEM_WAIT_DEVICE_READY   BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x003)
+#define IOCTL_XUSB_REQUEST_NOTIFICATION BUSENUM_RW_IOCTL(IOCTL_VIGEM_BASE + 0x200)
 #define IOCTL_XUSB_SUBMIT_REPORT        BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x201)
 #define IOCTL_DS4_SUBMIT_REPORT         BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x202)
+#define IOCTL_DS4_REQUEST_NOTIFICATION  BUSENUM_RW_IOCTL(IOCTL_VIGEM_BASE + 0x203)
 
 // Plugin target request
 typedef struct _VIGEM_PLUGIN_TARGET {
@@ -106,5 +108,46 @@ VOID FORCEINLINE DS4_SUBMIT_REPORT_INIT(PDS4_SUBMIT_REPORT Report, ULONG SerialN
     Report->Size = sizeof(DS4_SUBMIT_REPORT);
     Report->SerialNo = SerialNo;
     DS4_REPORT_INIT(&Report->Report);
+}
+
+// Xbox 360 rumble / LED notification — long-running async request. The driver
+// completes the IOCTL whenever a process calls XInputSetState (rumble) or the
+// LED slot number changes for the target. The Size/SerialNo are filled by the
+// caller; LedNumber/LargeMotor/SmallMotor come back from the driver.
+typedef struct _XUSB_REQUEST_NOTIFICATION {
+    ULONG Size;
+    ULONG SerialNo;
+    UCHAR LedNumber;
+    UCHAR LargeMotor;
+    UCHAR SmallMotor;
+} XUSB_REQUEST_NOTIFICATION, *PXUSB_REQUEST_NOTIFICATION;
+
+VOID FORCEINLINE XUSB_REQUEST_NOTIFICATION_INIT(PXUSB_REQUEST_NOTIFICATION Notify, ULONG SerialNo) {
+    RtlZeroMemory(Notify, sizeof(XUSB_REQUEST_NOTIFICATION));
+    Notify->Size = sizeof(XUSB_REQUEST_NOTIFICATION);
+    Notify->SerialNo = SerialNo;
+}
+
+// DualShock 4 rumble / lightbar notification — same async pattern. The driver
+// fills LargeMotor / SmallMotor / LightbarColor on every output report from
+// the host stack.
+typedef struct _DS4_LIGHTBAR_COLOR {
+    UCHAR Red;
+    UCHAR Green;
+    UCHAR Blue;
+} DS4_LIGHTBAR_COLOR, *PDS4_LIGHTBAR_COLOR;
+
+typedef struct _DS4_REQUEST_NOTIFICATION {
+    ULONG Size;
+    ULONG SerialNo;
+    UCHAR LargeMotor;
+    UCHAR SmallMotor;
+    DS4_LIGHTBAR_COLOR LightbarColor;
+} DS4_REQUEST_NOTIFICATION, *PDS4_REQUEST_NOTIFICATION;
+
+VOID FORCEINLINE DS4_REQUEST_NOTIFICATION_INIT(PDS4_REQUEST_NOTIFICATION Notify, ULONG SerialNo) {
+    RtlZeroMemory(Notify, sizeof(DS4_REQUEST_NOTIFICATION));
+    Notify->Size = sizeof(DS4_REQUEST_NOTIFICATION);
+    Notify->SerialNo = SerialNo;
 }
 

@@ -6,6 +6,8 @@
  */
 #include "vigem.h"
 
+#include <type_traits>
+
 HANDLE openVigemBus() {
     SP_DEVICE_INTERFACE_DATA did{};
     did.cbSize = sizeof(did);
@@ -141,4 +143,67 @@ void unplugTarget(HANDLE bus, ULONG serial) {
     DeviceIoControl(bus, IOCTL_VIGEM_UNPLUG_TARGET, &up, up.Size, nullptr, 0, &xfr, &ov);
     GetOverlappedResult(bus, &ov, &xfr, TRUE);
     CloseHandle(ov.hEvent);
+}
+
+// ── Notification waits ─────────────────────────────────────────────────────
+// The IOCTL is "post one buffer, wait until the driver has data". We wait on
+// either the IO completion event or the caller-provided cancel event; if the
+// cancel event wins we issue CancelIoEx so the OVERLAPPED structure can be
+// safely reclaimed.
+
+namespace {
+
+template <typename Notification, ULONG IoctlCode>
+bool waitNotificationImpl(HANDLE bus, ULONG serial, HANDLE cancel, Notification& out) {
+    Notification req;
+    if constexpr (std::is_same_v<Notification, XUSB_REQUEST_NOTIFICATION>) {
+        XUSB_REQUEST_NOTIFICATION_INIT(&req, serial);
+    } else {
+        DS4_REQUEST_NOTIFICATION_INIT(&req, serial);
+    }
+
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEvent(nullptr, TRUE /* manual reset */, FALSE, nullptr);
+    if (ov.hEvent == nullptr) return false;
+
+    DWORD xfr = 0;
+    BOOL ok = DeviceIoControl(bus, IoctlCode, &req, req.Size, &req, req.Size, &xfr, &ov);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) {
+        CloseHandle(ov.hEvent);
+        return false;
+    }
+
+    HANDLE waits[2] = {ov.hEvent, cancel};
+    DWORD waitCount = (cancel != nullptr) ? 2 : 1;
+    DWORD which = WaitForMultipleObjects(waitCount, waits, FALSE, INFINITE);
+    if (which != WAIT_OBJECT_0) {
+        // Cancel signalled (or a wait failure) — unwind the pending IOCTL.
+        CancelIoEx(bus, &ov);
+        // Drain the OVERLAPPED so we can free its event safely.
+        GetOverlappedResult(bus, &ov, &xfr, TRUE);
+        CloseHandle(ov.hEvent);
+        return false;
+    }
+
+    if (!GetOverlappedResult(bus, &ov, &xfr, TRUE)) {
+        CloseHandle(ov.hEvent);
+        return false;
+    }
+    CloseHandle(ov.hEvent);
+    out = req;
+    return true;
+}
+
+} // namespace
+
+bool waitNextXusbNotification(HANDLE bus, ULONG serial, HANDLE cancel,
+                              XUSB_REQUEST_NOTIFICATION& out) {
+    return waitNotificationImpl<XUSB_REQUEST_NOTIFICATION, IOCTL_XUSB_REQUEST_NOTIFICATION>(
+        bus, serial, cancel, out);
+}
+
+bool waitNextDS4Notification(HANDLE bus, ULONG serial, HANDLE cancel,
+                             DS4_REQUEST_NOTIFICATION& out) {
+    return waitNotificationImpl<DS4_REQUEST_NOTIFICATION, IOCTL_DS4_REQUEST_NOTIFICATION>(
+        bus, serial, cancel, out);
 }
