@@ -112,6 +112,13 @@ struct UpdateStatusSnapshot {
     // ("Restarting in 3 seconds…"). Never carries a stack trace.
     std::string message;
 
+    // The phase the service was running when it transitioned to Error.
+    // Lets the UI distinguish "couldn't reach the update server" from
+    // "download/verify/install failed" — the four error sites in
+    // UpdateService all surface as state=Error with different semantics.
+    // Idle when state != Error.
+    UpdateState failedPhase = UpdateState::Idle;
+
     // Most-recent successful check, unix seconds. Mirrors Config.lastCheckEpoch
     // but reflects the *running* service value (which may be ahead of the
     // persisted config until the next saveConfig()).
