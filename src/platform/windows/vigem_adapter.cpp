@@ -15,6 +15,10 @@ extern bool submitReportFast(HANDLE bus, unsigned long serial, const XUSB_REPORT
 extern bool submitReportDS4Fast(HANDLE bus, unsigned long serial, const DS4_REPORT& rpt,
                                 HANDLE event);
 extern void unplugTarget(HANDLE bus, unsigned long serial);
+extern bool waitNextXusbNotification(HANDLE bus, unsigned long serial, HANDLE cancel,
+                                     XUSB_REQUEST_NOTIFICATION& out);
+extern bool waitNextDS4Notification(HANDLE bus, unsigned long serial, HANDLE cancel,
+                                    DS4_REQUEST_NOTIFICATION& out);
 
 ViGEmAdapter::ViGEmAdapter() = default;
 
@@ -28,6 +32,19 @@ bool ViGEmAdapter::ensureBusOpen() {
 }
 
 void ViGEmAdapter::closeBus() {
+    // Stop all notification workers first — they hold pending IOCTLs against
+    // busHandle_, so we must let them unwind before closing the handle.
+    std::vector<uint32_t> serials;
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        serials.reserve(notifWorkers_.size());
+        for (auto& [serial, _] : notifWorkers_) serials.push_back(serial);
+    }
+    for (uint32_t serial : serials) {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        stopNotificationWorker(serial);
+    }
+
     std::lock_guard<std::mutex> lk(busMtx_);
     // Clean up all submit events
     for (auto& [serial, evt] : submitEvents_) {
@@ -55,10 +72,20 @@ bool ViGEmAdapter::pluginDevice(uint32_t serial) {
     // Pre-allocate overlapped event for fast report submission
     HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     submitEvents_[serial] = evt;
+
+    startNotificationWorker(serial, /*isDS4=*/false);
     return true;
 }
 
 void ViGEmAdapter::unplugDevice(uint32_t serial) {
+    // Stop the notification worker first; it holds a pending IOCTL keyed on
+    // serial which the driver completes-with-error on unplug, but explicitly
+    // cancelling here keeps the unplug path deterministic.
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        stopNotificationWorker(serial);
+    }
+
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return;
 
@@ -98,6 +125,8 @@ bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
 
     HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     submitEvents_[serial] = evt;
+
+    startNotificationWorker(serial, /*isDS4=*/true);
     return true;
 }
 
@@ -169,4 +198,90 @@ bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report)
 
     if (evt != nullptr) { return submitReportDS4Fast(busHandle_, (unsigned long)serial, ds4, evt); }
     return false;
+}
+
+// ── Rumble callback registration ────────────────────────────────────────────
+
+void ViGEmAdapter::setRumbleCallback(RumbleCallback cb) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    rumbleCb_ = std::move(cb);
+}
+
+// Caller holds busMtx_.
+void ViGEmAdapter::startNotificationWorker(uint32_t serial, bool isDS4) {
+    auto& w = notifWorkers_[serial];
+    w.cancel = CreateEvent(nullptr, TRUE /* manual reset */, FALSE, nullptr);
+    w.isDS4 = isDS4;
+    HANDLE cancelHandle = w.cancel;
+    // Capture by value — the worker only ever reads serial/isDS4/cancelHandle.
+    w.th = std::thread([this, serial, isDS4, cancelHandle] {
+        notificationLoop(serial, isDS4, cancelHandle);
+    });
+}
+
+// Caller holds busMtx_. Extracts the worker out of the map under lock, then
+// the caller is expected to join + close-handle outside the lock (joining
+// inside would deadlock against the worker's own lock acquisition for the
+// rumble callback copy).
+void ViGEmAdapter::stopNotificationWorker(uint32_t serial) {
+    auto it = notifWorkers_.find(serial);
+    if (it == notifWorkers_.end()) return;
+    NotificationWorker w = std::move(it->second);
+    notifWorkers_.erase(it);
+    if (w.cancel) SetEvent(w.cancel);
+    // We need to release busMtx_ for the join; the caller's lock_guard owns
+    // the lock, so drop and reacquire at the underlying-mutex level. This is
+    // safe because the caller's lock_guard will re-unlock the (now re-locked)
+    // mutex on scope exit.
+    busMtx_.unlock();
+    if (w.th.joinable()) w.th.join();
+    if (w.cancel) CloseHandle(w.cancel);
+    busMtx_.lock();
+}
+
+void ViGEmAdapter::notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel) {
+    HANDLE bus;
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        bus = busHandle_;
+    }
+    if (bus == INVALID_HANDLE_VALUE) return;
+
+    while (true) {
+        // Block until the driver has data (game called XInputSetState etc.)
+        // or until cancel is signalled by stopNotificationWorker.
+        if (isDS4) {
+            DS4_REQUEST_NOTIFICATION n{};
+            if (!waitNextDS4Notification(bus, (unsigned long)serial, cancel, n)) return;
+            RumbleReport rr{};
+            // Scale the DS4 motor bytes (0..255) up into the XInput-style
+            // 16-bit space the wire format uses, so the dish can handle one
+            // unified scale regardless of source.
+            rr.strongMagnitude = static_cast<uint16_t>(n.LargeMotor) * 257;
+            rr.weakMagnitude = static_cast<uint16_t>(n.SmallMotor) * 257;
+            rr.lightbarR = n.LightbarColor.Red;
+            rr.lightbarG = n.LightbarColor.Green;
+            rr.lightbarB = n.LightbarColor.Blue;
+            rr.hasLightbar = true;
+            RumbleCallback cb;
+            {
+                std::lock_guard<std::mutex> lk(busMtx_);
+                cb = rumbleCb_;
+            }
+            if (cb) cb(serial, rr);
+        } else {
+            XUSB_REQUEST_NOTIFICATION n{};
+            if (!waitNextXusbNotification(bus, (unsigned long)serial, cancel, n)) return;
+            RumbleReport rr{};
+            rr.strongMagnitude = static_cast<uint16_t>(n.LargeMotor) * 257;
+            rr.weakMagnitude = static_cast<uint16_t>(n.SmallMotor) * 257;
+            // Xbox 360 has no lightbar — leave hasLightbar=false.
+            RumbleCallback cb;
+            {
+                std::lock_guard<std::mutex> lk(busMtx_);
+                cb = rumbleCb_;
+            }
+            if (cb) cb(serial, rr);
+        }
+    }
 }

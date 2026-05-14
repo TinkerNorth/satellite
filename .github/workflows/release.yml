@@ -235,7 +235,36 @@ jobs:
           xcrun stapler validate satellite.app
           echo "present=true" >> "$GITHUB_OUTPUT"
 
-      - name: Stage
+      - name: Build .dmg (create-dmg)
+        id: dmg
+        env:
+          SIGN_PRESENT: ${{ steps.sign.outputs.present }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          suffix=""
+          if [ "${SIGN_PRESENT}" != "true" ]; then
+            suffix="-unsigned"
+          fi
+          brew install --quiet create-dmg
+          mkdir -p stage
+          # `create-dmg` produces a single mountable disk image with the
+          # bundle pre-placed and a /Applications symlink — the standard
+          # drag-to-Applications experience. The .app inside is already
+          # codesigned + notarized + stapled (see the `sign` step above),
+          # so the DMG itself only needs to wrap it; Gatekeeper checks
+          # the .app at first launch.
+          create-dmg \
+            --volname "Satellite ${tag}" \
+            --window-size 540 360 \
+            --icon-size 128 \
+            --icon "satellite.app" 130 180 \
+            --app-drop-link 410 180 \
+            --no-internet-enable \
+            "stage/satellite-macos-stub-${tag}${suffix}.dmg" \
+            satellite.app
+
+      - name: Stage (legacy .zip alongside the .dmg)
         run: |
           tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
           suffix=""
@@ -243,7 +272,8 @@ jobs:
             suffix="-unsigned"
           fi
           mkdir -p stage
-          # The macOS build is the stub; reflect that in the filename.
+          # Keep the .zip around for downloaders that don't deal with
+          # .dmg (CI smoke tests, scripts that just want the .app).
           ditto -c -k --sequesterRsrc --keepParent satellite.app \
             "stage/satellite-macos-stub-${tag}${suffix}.zip"
 
@@ -266,9 +296,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libsodium-dev \
+            build-essential cmake pkg-config libsodium-dev libcurl4-openssl-dev \
             libayatana-appindicator3-dev libgtk-3-dev \
-            file fakeroot rsync wget
+            file fakeroot rpm rsync wget
 
       - name: Build satellite
         run: |
@@ -282,26 +312,19 @@ jobs:
           echo "tag=${tag}"        >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}"  >> "$GITHUB_OUTPUT"
 
-      - name: Build .deb
+      # Build .deb and .rpm together via CPack. CMakeLists.txt sets
+      # CPACK_GENERATOR="DEB;RPM"; the resulting filenames match the
+      # historical SatelliteSetup-vX.Y.Z layout: satellite_X.Y.Z_amd64.deb
+      # and satellite-X.Y.Z-1.x86_64.rpm. The old ad-hoc dpkg-deb path is
+      # gone — CPack drives the udev rule + modules-load.d entry + post-
+      # install scriptlet, keeping both formats in lockstep.
+      - name: Build .deb + .rpm (CPack)
         run: |
-          pkg="${RUNNER_TEMP}/satellite-deb"
-          mkdir -p "${pkg}/DEBIAN" "${pkg}/usr/bin"
-          cp satellite "${pkg}/usr/bin/satellite"
-          chmod 755 "${pkg}/usr/bin/satellite"
-          cat > "${pkg}/DEBIAN/control" <<EOF
-          Package: satellite
-          Version: ${{ steps.ver.outputs.version }}
-          Section: games
-          Priority: optional
-          Architecture: amd64
-          Depends: libsodium23, libgtk-3-0, libayatana-appindicator3-1
-          Maintainer: TinkerNorth <noreply@tinkernorth.invalid>
-          Description: Low-latency Xbox controller forwarding over LAN.
-           Receives encrypted XUSB reports and synthesizes a virtual gamepad
-           through /dev/uinput.
-          EOF
           mkdir -p stage
-          fakeroot dpkg-deb --build "${pkg}" "stage/satellite_${{ steps.ver.outputs.version }}_amd64.deb"
+          cpack -G "DEB;RPM" -B "${RUNNER_TEMP}/cpack" --config build/CPackConfig.cmake
+          cp "${RUNNER_TEMP}/cpack"/satellite_*_amd64.deb stage/ || true
+          cp "${RUNNER_TEMP}/cpack"/satellite-*.x86_64.rpm stage/ || true
+          ls -l stage/
 
       - name: Build AppImage
         run: |
@@ -514,3 +537,201 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: release/**/*
+
+  # ─────────────────────────────────────────────────────────────────────
+  # apt-publish: regenerate the APT repository at
+  # https://tinkernorth.github.io/satellite/debian and commit to
+  # gh-pages. Skipped entirely if the GPG signing secret isn't set
+  # (e.g. workflow_dispatch from a fork) — repo metadata that isn't
+  # signed is worse than no repo at all.
+  # ─────────────────────────────────────────────────────────────────────
+  apt-publish:
+    name: Publish APT repository (gh-pages)
+    needs: [publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    if: ${{ github.ref_type == 'tag' }}
+    steps:
+      - name: Checkout main (for build scripts)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          path: main
+
+      - name: Gate on GPG signing secret
+        id: gate
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        shell: bash
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
+            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set — skipping APT repo publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install apt-utils + GPG
+        if: steps.gate.outputs.skip != 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils gnupg
+
+      - name: Import signing key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format=long
+
+      - name: Download release bundle
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: release
+
+      - name: Check out gh-pages branch
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git -C main ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git clone --branch gh-pages --depth 1 \
+              "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" pages
+          else
+            # First publish — initialize the orphan gh-pages branch with
+            # the landing page and gpg.key already in place.
+            git clone --depth 1 \
+              "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" pages
+            git -C pages checkout --orphan gh-pages
+            git -C pages rm -rf . || true
+            cp main/packaging/repo/index.html pages/index.html
+          fi
+          # Always refresh the landing page from main so README edits propagate.
+          cp main/packaging/repo/index.html pages/index.html
+
+      - name: Export public key as gpg.key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          gpg --batch --yes --armor --export "$GPG_KEY_ID" > pages/gpg.key
+
+      - name: Build APT repo
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          chmod +x main/packaging/repo/build-apt-repo.sh
+          main/packaging/repo/build-apt-repo.sh "$(pwd)/pages" "$(pwd)/release"
+
+      - name: Commit + push
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd pages
+          git config user.name  'satellite-release-bot'
+          git config user.email 'releases@tinkernorth.invalid'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No APT-repo changes to commit"
+          else
+            git commit -m "Publish APT repo: ${TAG}"
+            git push origin gh-pages
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────
+  # rpm-publish: same idea as apt-publish, but for the DNF/YUM tree
+  # under https://tinkernorth.github.io/satellite/rpm.
+  # ─────────────────────────────────────────────────────────────────────
+  rpm-publish:
+    name: Publish DNF repository (gh-pages)
+    needs: [publish, apt-publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    if: ${{ github.ref_type == 'tag' }}
+    steps:
+      - name: Checkout main (for build scripts)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          path: main
+
+      - name: Gate on GPG signing secret
+        id: gate
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        shell: bash
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
+            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set — skipping DNF repo publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install createrepo_c + GPG
+        if: steps.gate.outputs.skip != 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends createrepo-c gnupg
+
+      - name: Import signing key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Download release bundle
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: release
+
+      - name: Check out gh-pages branch (apt-publish has already touched it)
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --branch gh-pages --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" pages
+
+      - name: Build DNF repo
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          REPO_BASE_URL: "https://${{ github.repository_owner }}.github.io/satellite"
+        run: |
+          chmod +x main/packaging/repo/build-dnf-repo.sh
+          main/packaging/repo/build-dnf-repo.sh "$(pwd)/pages" "$(pwd)/release"
+
+      - name: Commit + push
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd pages
+          git config user.name  'satellite-release-bot'
+          git config user.email 'releases@tinkernorth.invalid'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No DNF-repo changes to commit"
+          else
+            git commit -m "Publish DNF repo: ${TAG}"
+            git push origin gh-pages
+          fi

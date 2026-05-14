@@ -11,8 +11,8 @@ Runs as a **system tray application** with a built-in **web UI** for configurati
 │    Sender     │ ─────────────────────────►  │     Receiver     │
 │  (XInput)     │    XUSB_REPORT packet       │  (ViGEmBus)      │
 │               │                             │                  │
-│ Physical Xbox │                             │ Virtual Xbox 360 │
-│  controller   │                             │   controller     │
+│ Physical Xbox │ ◄─────────────────────────  │ Virtual Xbox 360 │
+│  controller   │   MSG_RUMBLE (8–11 bytes)   │   controller     │
 └──────────────┘                              └──────────────────┘
 ```
 
@@ -21,6 +21,8 @@ Runs as a **system tray application** with a built-in **web UI** for configurati
 **Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual Xbox 360 controller through the ViGEmBus kernel driver — no DLLs required, communicates directly via `DeviceIoControl`.
 
 The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()`.
+
+The **return path** carries rumble events the other direction: when a game on the receiver host calls `XInputSetState` (or the equivalent on Linux's evdev FF subsystem), the platform backend fires a notification, the receiver maps it to the originating dish session, and forwards a `MSG_RUMBLE` packet back over the encrypted UDP channel. See [Rumble (return path)](#rumble-return-path) below.
 
 ## Features
 
@@ -168,26 +170,53 @@ Prerequisites:
 > extension to see the icon. KDE, XFCE, Cinnamon, MATE, Budgie, and Pantheon
 > work out of the box.
 
-There are two install paths: a **`.deb` package** (recommended on
-Debian/Ubuntu — handles the udev rule, `uinput` module, and group setup
-automatically) and a **portable build** (works anywhere, but you do the
-permission setup once by hand).
+There are six install paths, in order of preference for desktop users:
 
-#### Option A — `.deb` package (Debian / Ubuntu)
+1. **APT repository** (Debian / Ubuntu) — `apt install satellite`, with
+   automatic future upgrades. **Recommended.**
+2. **Standalone `.deb`** — one-shot install from the Releases page.
+3. **DNF/YUM repository** (Fedora / RHEL / openSUSE) — `dnf install
+   satellite`, with automatic future upgrades.
+4. **Standalone `.rpm`** — one-shot install from the Releases page.
+5. **Arch Linux AUR** — `yay -S satellite-bin`.
+6. **Portable build** — works anywhere, you handle udev/group setup by
+   hand (one-time).
 
-Build the package:
+#### Option A — APT repository (Debian / Ubuntu — recommended)
+
+If you just want satellite the same way you'd want any other system
+package — updated automatically by `apt upgrade` alongside your kernel
+and browser — add our hosted APT repository:
 
 ```bash
-sudo apt install build-essential cmake pkg-config dpkg-dev \
-                 libsodium-dev \
-                 libayatana-appindicator3-dev libgtk-3-dev   # optional tray
-./build-deb.sh
+curl -fsSL https://tinkernorth.github.io/satellite/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/satellite-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/satellite-archive-keyring.gpg] \
+  https://tinkernorth.github.io/satellite/debian stable main" \
+  | sudo tee /etc/apt/sources.list.d/satellite.list
+sudo apt update && sudo apt install satellite
 ```
 
-Output: `dist/satellite_<version>_<arch>.deb`. Install it:
+Setup details (signing key fingerprint, how publishing works) are at
+[`packaging/repo/README.md`](packaging/repo/README.md).
+
+#### Option B — Standalone `.deb` (Debian / Ubuntu)
+
+Download `satellite_<version>_amd64.deb` from the
+[Releases](https://github.com/TinkerNorth/satellite/releases) page and
+install it directly:
 
 ```bash
-sudo apt install ./dist/satellite_*.deb
+sudo apt install ./satellite_*.deb
+```
+
+…or build it yourself with the same CPack flow CI uses:
+
+```bash
+sudo apt install build-essential cmake pkg-config dpkg-dev rpm \
+                 libsodium-dev libcurl4-openssl-dev \
+                 libayatana-appindicator3-dev libgtk-3-dev   # optional tray
+./build-deb.sh
 ```
 
 The postinstall script reloads udev, loads the `uinput` kernel module, adds
@@ -200,7 +229,44 @@ The CPack DEB generator is wired into the top-level `CMakeLists.txt`; the
 control files and post-{install,remove} scripts live in
 [`packaging/debian/`](packaging/debian/).
 
-#### Option B — Portable build (any distro)
+#### Option C — DNF/YUM repository (Fedora / RHEL / Rocky / Alma / openSUSE)
+
+```bash
+sudo curl -fsSL -o /etc/yum.repos.d/satellite.repo \
+  https://tinkernorth.github.io/satellite/rpm/satellite.repo
+sudo dnf install satellite
+```
+
+The `.repo` file references the same signing key as the APT repo, so
+`dnf upgrade` picks up new versions automatically.
+
+#### Option D — Standalone `.rpm`
+
+Download `satellite-<version>-1.x86_64.rpm` from the
+[Releases](https://github.com/TinkerNorth/satellite/releases) page:
+
+```bash
+sudo dnf install ./satellite-*.x86_64.rpm
+```
+
+CPack RPM generator config lives next to the DEB config in
+`CMakeLists.txt`; post-{install,uninstall} scriptlets are in
+[`packaging/rpm/`](packaging/rpm/).
+
+#### Option E — Arch Linux (AUR)
+
+The [`satellite-bin`](https://aur.archlinux.org/packages/satellite-bin)
+package wraps the official AppImage:
+
+```bash
+yay -S satellite-bin
+# or
+paru -S satellite-bin
+```
+
+PKGBUILD source: [`packaging/aur/`](packaging/aur/).
+
+#### Option F — Portable build (any distro)
 
 Build:
 
@@ -302,7 +368,9 @@ The full state machine — `idle → checking → update-available → downloadi
 | Windows | WinHTTP | `SatelliteSetup-vX.Y.Z.exe`         | Inno Setup `/VERYSILENT /OTA` then auto-relaunch |
 | macOS   | NSURLSession | `satellite-macos-stub-vX.Y.Z.zip` | `ditto -xk` unpack + atomic bundle swap via helper, `open` relaunch |
 | Linux (AppImage) | libcurl | `satellite-X.Y.Z-x86_64.AppImage` | `chmod +x` + atomic mv over `$APPIMAGE`, `setsid` relaunch |
-| Linux (`.deb`) | libcurl | n/a — surfaces command | `sudo apt install --only-upgrade satellite` (copy-button in UI) |
+| Linux (`.deb`) | libcurl | n/a — surfaces command | `sudo apt upgrade satellite` (auto-pulled from our APT repo if added) |
+| Linux (`.rpm`) | libcurl | n/a — surfaces command | `sudo dnf upgrade --refresh satellite` (auto-pulled from our DNF repo) |
+| Linux (AUR)    | libcurl | n/a — surfaces command | `yay -Syu satellite-bin` |
 | Linux (portable) | libcurl | n/a — surfaces command | Manual: `chmod +x` and replace the binary |
 
 Verification is SHA-256 against the `SHA256SUMS` asset published in every
@@ -361,6 +429,63 @@ The receiver runs three threads:
 ## Why UDP?
 
 TCP's reliability guarantees cause **head-of-line blocking** — if one packet is lost, all subsequent packets are held until retransmission completes. For controller input, only the latest state matters. A lost packet is better than a delayed one. This is the same approach used by Moonlight, Parsec, and Steam Remote Play.
+
+## Rumble (return path)
+
+Games drive controller vibration by writing to the virtual gamepad device's
+output channel. Satellite snapshots those writes from the platform backend
+and forwards them to the dish that owns the session, which then actuates
+the matching physical controller (or, on dish-android, the phone itself).
+
+### How each backend listens
+
+| Platform | Source | Mechanism |
+|---|---|---|
+| Windows | ViGEmBus | `IOCTL_XUSB_REQUEST_NOTIFICATION` (X360) / `IOCTL_DS4_REQUEST_NOTIFICATION` (DS4) — long-running async I/O. One worker thread per plugged virtual device blocks on the IOCTL until the driver completes it with the new motor/lightbar values. |
+| Linux | uinput | `EV_FF` events on the device fd. Game uploads an `FF_RUMBLE` effect via `UI_FF_UPLOAD`, kernel hands us the descriptor, then sends an `EV_FF` event when the game presses play/stop. One reader thread per plugged device. |
+| macOS | (none) | No virtual gamepad backend → no rumble events to forward. The macOS `IGamepadPort` accepts the callback registration so the SessionService composes uniformly, but it's never invoked. |
+
+### Wire format
+
+`MSG_RUMBLE = 0x0009`, satellite → dish, encrypted in the same ChaCha20-Poly1305 envelope as every other message:
+
+```
+inner header                           inner payload (8 or 11 bytes)
+┌──────────┬──────────┐  ┌──────────┬─────────────┬─────────────┬──────────┬───────┬──────────────────────┐
+│ msgType  │ payload  │  │ ctrlIdx  │  strongMag  │   weakMag   │  durMs   │ flags │   [R, G, B] (DS4)    │
+│  0x0009  │  length  │  │   u8     │   u16 BE    │   u16 BE    │  u16 BE  │  u8   │   u8 × 3 if flags&1  │
+└──────────┴──────────┘  └──────────┴─────────────┴─────────────┴──────────┴───────┴──────────────────────┘
+   2 bytes    2 bytes        1            2             2            2         1            3
+```
+
+| Field | Meaning |
+|---|---|
+| `ctrlIdx` | Controller index within the dish session that owns this rumble. |
+| `strongMag` | Low-frequency / large-motor magnitude. 0..65535, XInput scale. |
+| `weakMag` | High-frequency / small-motor magnitude. 0..65535. |
+| `durMs` | Wire-side refresh deadline. Stamped by the satellite (default 500 ms); the dish clamps before driving its actuator. `0` is a stop sentinel. |
+| `flags` | Bit 0 set ⇒ trailing R/G/B bytes follow. Higher bits reserved. |
+| `R/G/B` | DualShock 4 lightbar colour. Present only for DS4 virtual devices; Xbox 360 has no lightbar. |
+
+The producer side lives in [`src/adapters/client_adapter.cpp`](src/adapters/client_adapter.cpp); the dish-side parsers (`SatelliteClient::parseRumbleMessage` in dish-linux/windows, `SatelliteClient.parseRumblePayload` in dish-mac, the JNI dispatch in `RumbleBridge.dispatchRumble` on dish-android) all consume this layout verbatim.
+
+### Coalescing
+
+Games can spam the same magnitudes 60+ Hz across many frames. The
+`SessionService::handleRumbleFromBackend` path keeps the most recent
+`(strong, weak, lightbar)` per controller and suppresses re-emits when
+nothing actuator-relevant has changed. Duration-only changes do *not*
+defeat the suppression — the wire-side refresh deadline is a knob the
+satellite owns, not a player-perceptible value.
+
+### Per-dish actuator behaviour
+
+| Dish | Actuator | Notes |
+|---|---|---|
+| dish-windows | `SDL_GameControllerRumble` + `SDL_GameControllerSetLED` | Magnitudes pass through verbatim (XInput scale matches). LED set is a no-op on pads without a lightbar. |
+| dish-linux | Same SDL2 entry points | Underlying call is evdev `EVIOCSFF`. Works for any pad SDL recognises. |
+| dish-mac | `GCController.haptics` + `CHHapticEngine` per locator | Magnitudes mapped to `CHHapticIntensity` 0..1. Lightbar via `controller.light?.color`. Engines kept started; per-call `CHHapticPattern` for sustained drive. Falls back to no-op on legacy MFi pads with no haptics surface. |
+| dish-android | `VibratorManager` (API 31+) / `Vibrator` (legacy) — phone body | All rumble routed to the device's own actuator(s). On dual-actuator phones the strong motor goes to vibrator id 0 and weak to id 1; on single-actuator phones the peak of the two is used. **No fallback to physical-controller actuators by design** — see `RumbleBridge.kt`. |
 
 ## Code Quality
 
@@ -435,6 +560,7 @@ This compiles `tests/test_session_service.cpp` alongside `src/core/session_servi
 - **Decrypt helpers** — key retrieval, counter updates
 - **Query/stats** — snapshot, device connected check, slot counts
 - **Broadcast** — status broadcasts on controller changes
+- **Rumble (return path)** — backend callback wiring, serial → connection lookup, coalescing of identical magnitudes, lightbar pass-through, multi-connection routing, serial-recycle cache reset, custom wire durations, per-controller cache isolation
 
 ## Project structure
 

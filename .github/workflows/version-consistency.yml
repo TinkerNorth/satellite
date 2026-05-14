@@ -1,0 +1,98 @@
+name: version-consistency
+
+# Fail the build if the three version sources of truth drift apart.
+#
+# /VERSION                — read by CMake (MACOSX_BUNDLE_*, CPACK_PACKAGE_*)
+#                            and by installer.iss at preprocess time.
+# src/core/version.h      — read by C++ and by satellite.rc (via the windres
+#                            preprocessor). Defines SATELLITE_VERSION_STRING /
+#                            SATELLITE_VERSION_MAJOR / _MINOR / _PATCH.
+# installer.iss           — auto-derives MyAppVersion from /VERSION via Inno
+#                            Setup's #FileOpen / #FileRead, so it's already
+#                            covered transitively — we just sanity-check the
+#                            Inno preprocessor line stayed in place.
+#
+# This is a tiny PR-time gate, not a full re-build. We're checking text
+# consistency, not behavior.
+
+on:
+  pull_request:
+    paths:
+      - "VERSION"
+      - "src/core/version.h"
+      - "installer.iss"
+      - ".github/workflows/version-consistency.yml"
+  push:
+    branches: [main]
+    paths:
+      - "VERSION"
+      - "src/core/version.h"
+      - "installer.iss"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: VERSION ↔ src/core/version.h ↔ installer.iss
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Compare version sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f VERSION ]; then
+            echo "::error::/VERSION is missing — it's the authoritative version string."
+            exit 1
+          fi
+          ver=$(tr -d '[:space:]' < VERSION)
+          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION content '$ver' is not in MAJOR.MINOR.PATCH form."
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<<"$ver"
+          echo "VERSION = $ver (major=$major minor=$minor patch=$patch)"
+
+          # ── src/core/version.h ─────────────────────────────────────────
+          h_major=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_MAJOR' src/core/version.h | awk '{print $3}')
+          h_minor=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_MINOR' src/core/version.h | awk '{print $3}')
+          h_patch=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_PATCH' src/core/version.h | awk '{print $3}')
+          h_string=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_STRING' src/core/version.h | sed -E 's/.*"([^"]+)".*/\1/')
+          h_comma=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_COMMA' src/core/version.h | sed -E 's/[^0-9,]//g')
+          h_dotted=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_DOTTED' src/core/version.h | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version.h MAJOR=$h_major MINOR=$h_minor PATCH=$h_patch STRING=$h_string COMMA=$h_comma DOTTED=$h_dotted"
+
+          expected_comma="$major,$minor,$patch,0"
+          expected_dotted="$major.$minor.$patch.0"
+
+          fail=0
+          [ "$h_major"  = "$major"           ] || { echo "::error::SATELLITE_VERSION_MAJOR=$h_major, expected $major";   fail=1; }
+          [ "$h_minor"  = "$minor"           ] || { echo "::error::SATELLITE_VERSION_MINOR=$h_minor, expected $minor";   fail=1; }
+          [ "$h_patch"  = "$patch"           ] || { echo "::error::SATELLITE_VERSION_PATCH=$h_patch, expected $patch";   fail=1; }
+          [ "$h_string" = "$ver"             ] || { echo "::error::SATELLITE_VERSION_STRING=$h_string, expected $ver";   fail=1; }
+          [ "$h_comma"  = "$expected_comma"  ] || { echo "::error::SATELLITE_VERSION_COMMA=$h_comma, expected $expected_comma"; fail=1; }
+          [ "$h_dotted" = "$expected_dotted" ] || { echo "::error::SATELLITE_VERSION_DOTTED=$h_dotted, expected $expected_dotted"; fail=1; }
+
+          # ── installer.iss ─────────────────────────────────────────────
+          # Confirm installer.iss still derives MyAppVersion from /VERSION
+          # via the Inno preprocessor (rather than a hard-coded literal that
+          # would silently outrun the rest of the world).
+          if ! grep -q 'FileOpen(SourcePath + "VERSION")' installer.iss; then
+            echo "::error::installer.iss is not reading /VERSION at preprocess time — see the #define MyAppVersion block."
+            fail=1
+          fi
+          if grep -E '^#define[[:space:]]+MyAppVersion[[:space:]]+"[0-9]' installer.iss >/dev/null; then
+            echo "::error::installer.iss has a hard-coded MyAppVersion literal — should derive from /VERSION."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo
+            echo "::error::Version sources drifted. Bump /VERSION and src/core/version.h together; installer.iss derives automatically."
+            exit 1
+          fi
+          echo "All version sources agree on $ver."

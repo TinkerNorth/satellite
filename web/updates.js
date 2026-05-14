@@ -361,6 +361,8 @@ function formatPlatformId(id) {
     case 'macos':           return 'macOS app bundle';
     case 'linux-appimage':  return 'Linux AppImage';
     case 'linux-deb':       return 'Linux .deb (apt)';
+    case 'linux-rpm':       return 'Linux .rpm (dnf)';
+    case 'linux-aur':       return 'Arch (AUR)';
     case 'linux-portable':  return 'Linux portable';
     default:                return id || 'unknown';
   }

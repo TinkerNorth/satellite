@@ -51,6 +51,20 @@ class SessionService {
     // Handle controller type change request.
     void handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8_t controllerType);
 
+    // Handle a rumble notification fired by the platform gamepad backend.
+    // Called from the backend's notification thread (ViGEm worker on Windows,
+    // uinput reader on Linux). Resolves `serial` → (connection, ctrlIdx),
+    // coalesces against the controller's last forwarded rumble state, and
+    // invokes IClientPort::sendRumble for unique updates only.
+    //
+    // The `wireDurationMs` knob lets the SessionService stamp a duration onto
+    // every outgoing packet — without it the dish would have to invent one,
+    // and Linux uinput "play" events have no native duration. The default
+    // (500 ms) matches the rumble heartbeat the dish-side uses to refresh
+    // its actuator while the backend keeps reporting non-zero magnitudes.
+    void handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
+                                 uint16_t wireDurationMs = 500);
+
     // ── Pre-decrypt helpers (called under lock briefly) ─────────────────
 
     // Look up a connection's key and last counter for decryption.
