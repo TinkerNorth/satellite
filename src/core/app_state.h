@@ -58,6 +58,13 @@ extern httplib::Server g_httpServer;
 extern SOCKET g_pairSock;
 extern std::string g_webDir;
 
+// ── OTA updater (composition-root assigned, nullable) ───────────────────────
+// Owned by main.cpp on each platform. Webserver and tray code use this
+// pointer when present; null on platforms where the updater isn't wired
+// (e.g. portable Linux builds that still link the .cpp may opt out).
+class UpdateService;
+extern UpdateService* g_updateService;
+
 // ── Log ring ────────────────────────────────────────────────────────────────
 extern std::mutex g_logMtx;
 extern std::vector<LogEntry> g_logRing;

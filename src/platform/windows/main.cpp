@@ -18,11 +18,13 @@
 
 // Adapters (outbound ports)
 #include "vigem_adapter.h"
+#include "updater_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 
-// Domain service
+// Domain services
 #include "core/session_service.h"
+#include "core/update_service.h"
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Elevate process priority — critical for low-latency input forwarding
@@ -54,6 +56,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     LogAdapter logAdapter;
     SessionService svc(vigemAdapter, clientAdapter, logAdapter);
 
+    // OTA updater. Owner/repo are baked in here — switching forks means
+    // changing this line. The persist callback runs under g_configMtx so
+    // saveConfig() sees a consistent struct.
+    WindowsUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
+    UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
+    updateService.setPersistCallback([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        saveConfig(g_config);
+    });
+    g_updateService = &updateService;
+
     // Register hidden window class
     WNDCLASSA wc{};
     wc.lpfnWndProc = WndProc;
@@ -68,6 +81,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // Resolve web/ directory relative to the exe
     g_webDir = getExeDir() + "\\web";
+
+    // Start the updater (spawns worker + timer threads internally).
+    updateService.start();
 
     // Launch worker threads (pass service & adapters by reference)
     std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
@@ -87,6 +103,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     g_wantListen = false;
     g_httpServer.stop();
     if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
+
+    // Stop the updater worker BEFORE joining the http thread so its
+    // SSE-broadcast callback doesn't fire into a torn-down server.
+    updateService.stop();
+    g_updateService = nullptr;
 
     recvTh.join();
     httpTh.join();

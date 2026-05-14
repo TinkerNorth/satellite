@@ -10,7 +10,11 @@ set CXX=g++
 set CXXFLAGS=-O2 -Wall -Wextra -std=c++17 -D_WIN32_WINNT=0x0A00 -static
 set INCLUDES=-Isrc/platform/windows -Ivigem/include -Ilib -Ilib/libsodium/libsodium-win64/include
 set LIBDIRS=-Llib/libsodium/libsodium-win64/lib
-set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/webserver.cpp src/net/pairing.cpp src/net/discovery.cpp src/core/session_service.cpp src/adapters/log_adapter.cpp
+REM Source files: platform layer + portable core (session_service / update_service / github_release)
+REM + net layer + adapters + the per-OS updater adapter. `windres` consumes satellite.rc
+REM separately below (which now #includes src/core/version.h — resolved relative to the .rc
+REM file's own directory, so no -I flag needed for the resource step).
+set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/platform/windows/updater_adapter.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/webserver.cpp src/net/pairing.cpp src/net/discovery.cpp src/core/session_service.cpp src/core/update_service.cpp src/core/github_release.cpp src/adapters/log_adapter.cpp
 
 echo === Building Satellite ===
 echo.
@@ -24,7 +28,7 @@ if %ERRORLEVEL% neq 0 (
 echo [OK]  resources
 
 echo [2/2] satellite.exe
-%CXX% %CXXFLAGS% %INCLUDES% %LIBDIRS% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsodium -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -mwindows
+%CXX% %CXXFLAGS% %INCLUDES% %LIBDIRS% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsodium -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -lwinhttp -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] satellite.exe
     exit /b 1

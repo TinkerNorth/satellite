@@ -16,6 +16,7 @@
 #include "crypto.h"
 #include "tray.h"
 #include "gamepad_adapter.h"
+#include "updater_adapter.h"
 
 #include "net/receiver.h"
 #include "net/webserver.h"
@@ -26,6 +27,7 @@
 #include "adapters/log_adapter.h"
 
 #include "core/session_service.h"
+#include "core/update_service.h"
 
 #include <sys/stat.h>
 
@@ -80,6 +82,14 @@ int main(int argc, const char* argv[]) {
         LogAdapter logAdapter;
         SessionService svc(gamepadAdapter, clientAdapter, logAdapter);
 
+        MacOSUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
+        UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
+        updateService.setPersistCallback([] {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            saveConfig(g_config);
+        });
+        g_updateService = &updateService;
+
         // Inside an .app bundle the binary lives at Contents/MacOS/; the web
         // UI is staged into Contents/Resources/web by CMake. Fall back to a
         // sibling web/ directory for non-bundle / dev builds.
@@ -93,6 +103,8 @@ int main(int argc, const char* argv[]) {
                 g_webDir = exeDir + "/web";
             }
         }
+
+        updateService.start();
 
         std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
         std::thread httpTh(httpThread, std::ref(svc));
@@ -110,6 +122,9 @@ int main(int argc, const char* argv[]) {
         removeTrayIcon();
 
         // Cleanup — applicationShouldTerminate: has already flipped the flags.
+        updateService.stop();
+        g_updateService = nullptr;
+
         recvTh.join();
         httpTh.join();
         pairTh.join();

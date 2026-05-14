@@ -1051,3 +1051,165 @@ h2.section-title { font-size: 14px; }
   font-size: 0.85rem;
   margin: 0;
 }
+
+/* ── Update banner ─────────────────────────────────────────────────── */
+/* Used at the top of the dashboard and inside the settings updates section.
+   Layout: icon | body (title + detail + progress) | actions. Actions wrap
+   so the banner stays single-row on wide screens and stacks on the narrow
+   440px card. */
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: linear-gradient(180deg, rgba(79,227,255,0.06), rgba(79,227,255,0.02));
+  border: 1px solid rgba(79,227,255,0.35);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  box-shadow: 0 0 16px rgba(79,227,255,0.08);
+}
+.update-banner-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+}
+.update-banner-icon .emoji-icon { width: 20px; height: 20px; }
+.update-banner-body {
+  flex: 1;
+  min-width: 0;
+}
+.update-banner-title {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--primary);
+  text-shadow: 0 0 4px rgba(79,227,255,0.3);
+  margin-bottom: 2px;
+}
+.update-banner-detail {
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.update-banner-progress {
+  margin-top: 8px;
+  position: relative;
+  height: 14px;
+}
+.update-banner-progress::before {
+  content: '';
+  position: absolute;
+  inset: 4px 0;
+  background: var(--outline);
+  border-radius: 2px;
+}
+.update-banner-progress-fill {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  height: 6px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--primary), var(--primary-dim));
+  width: 0%;
+  transition: width 0.2s ease-out;
+  box-shadow: 0 0 8px rgba(79,227,255,0.4);
+}
+.update-banner-progress-text {
+  position: absolute;
+  right: 0;
+  top: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--text);
+  line-height: 14px;
+}
+.update-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.update-banner-actions .btn {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.update-banner.update-banner-error {
+  background: linear-gradient(180deg, rgba(231,76,60,0.08), rgba(231,76,60,0.02));
+  border-color: rgba(231,76,60,0.45);
+  box-shadow: 0 0 16px rgba(231,76,60,0.12);
+}
+.update-banner.update-banner-error .update-banner-title {
+  color: var(--error);
+  text-shadow: 0 0 4px rgba(231,76,60,0.3);
+}
+.update-manual-cmd {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--outline);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin: 8px 0 0;
+  font-family: 'Source Code Pro', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+
+.settings-update-slot {
+  margin-top: 12px;
+}
+
+/* ── Restart-to-install modal ────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(6,8,24,0.78);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal-card {
+  background: var(--surface);
+  border: 1px solid rgba(79,227,255,0.2);
+  border-radius: 6px;
+  padding: 24px;
+  max-width: 440px;
+  width: 100%;
+  box-shadow:
+    0 8px 32px rgba(0,0,0,0.6),
+    0 0 40px rgba(79,227,255,0.08);
+}
+.modal-card .section-title {
+  margin-bottom: 12px;
+}
+.modal-body {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+.modal-version {
+  font-family: 'Courier New', monospace;
+  color: var(--primary);
+}
+.modal-warning {
+  color: var(--warning);
+  font-size: 12px;
+  background: rgba(245,158,11,0.08);
+  border: 1px solid rgba(245,158,11,0.25);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
