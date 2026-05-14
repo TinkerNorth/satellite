@@ -88,6 +88,15 @@ function startSSE() {
     try {
       const d = JSON.parse(e.data);
       updateConnections(d);
+      // Capture active-connection count for the restart-confirmation modal.
+      window.__activeConnectionCount = (d.connections || []).length;
+    } catch (err) { /* ignore */ }
+  });
+
+  eventSource.addEventListener('update', (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if (typeof updatesHandleSSE === 'function') updatesHandleSSE(d);
     } catch (err) { /* ignore */ }
   });
 

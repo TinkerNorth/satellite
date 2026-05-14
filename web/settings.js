@@ -26,6 +26,10 @@ async function settingsSave() {
 }
 
 async function initSettings() {
+  // Force the updates form to re-seed from the next snapshot — handles the
+  // case where prefs were changed in another tab while we were on /dashboard.
+  if (typeof updatesResetForm === 'function') updatesResetForm();
+
   // Load current config from server
   try {
     const r = await fetch('/api/status');
@@ -43,4 +47,25 @@ async function initSettings() {
   const auto = document.getElementById('settings-autoStart');
   if (udp) udp.addEventListener('input', settingsCheckDirty);
   if (auto) auto.addEventListener('change', settingsCheckDirty);
+
+  // Adapt the autostart label per OS — "Start with Windows" reads odd on Mac/Linux.
+  try {
+    const vr = await fetch('/api/version');
+    if (vr.ok) {
+      const v = await vr.json();
+      const lbl = document.getElementById('settings-autoStart-label');
+      if (lbl) {
+        switch (v.platformId) {
+          case 'macos':           lbl.textContent = 'Start at login'; break;
+          case 'linux-appimage':
+          case 'linux-deb':
+          case 'linux-portable':  lbl.textContent = 'Start at login'; break;
+          default:                lbl.textContent = 'Start with Windows';
+        }
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  // Pull update state and prefs. updates.js renders both the banner + form.
+  if (typeof updatesFetch === 'function') updatesFetch();
 }

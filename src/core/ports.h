@@ -10,6 +10,10 @@
 #pragma once
 
 #include "types.h"
+#include "update_types.h"
+
+#include <atomic>
+#include <functional>
 
 // ── Outbound: Virtual gamepad synthesis ─────────────────────────────────────
 // Windows: backed by ViGEmAdapter (ViGEmBus driver).
@@ -94,4 +98,70 @@ class ILogPort {
     virtual ~ILogPort() = default;
 
     virtual void logMsg(LogLevel level, const std::string& source, const std::string& message) = 0;
+};
+
+// ── Outbound: OTA update IO ─────────────────────────────────────────────────
+// Windows: WinHTTP → api.github.com → SatelliteSetup-vX.Y.Z.exe → Inno
+//          /VERYSILENT, then ShellExecute relaunch.
+// macOS:   NSURLSession → satellite-macos-stub-vX.Y.Z.zip → unzip into a
+//          staging dir → swap satellite.app atomically → relaunch.
+// Linux:   libcurl → satellite-X.Y.Z-x86_64.AppImage (AppImage path), or
+//          surface `apt upgrade satellite` (Manual path for .deb installs).
+//
+// All long-running methods are synchronous; UpdateService runs them on a
+// dedicated worker thread so the tray + http threads stay responsive.
+class IUpdaterPort {
+  public:
+    virtual ~IUpdaterPort() = default;
+
+    // Resolve the latest release for the given channel ("stable" or
+    // "prerelease"). On success fills `out` and returns true. Sets
+    // out.available=true iff strictly newer than currentVersion.
+    // outError carries a user-displayable message on failure.
+    virtual bool fetchLatestRelease(const std::string& channel,
+                                    const std::string& currentVersion,
+                                    UpdateInfo& out,
+                                    std::string& outError) = 0;
+
+    // Download the per-platform artifact described by `info` to a
+    // platform-appropriate temp location. Reports progress through the
+    // callback (bytesSoFar, totalBytes). Returns the local file path
+    // through outLocalPath on success.
+    //
+    // The cancel pointer (when non-null) is polled periodically by the
+    // adapter; if it flips to true mid-stream the download is aborted
+    // and the method returns false with outError="cancelled".
+    virtual bool downloadArtifact(
+        const UpdateInfo& info,
+        const std::function<void(uint64_t bytesSoFar, uint64_t totalBytes)>& onProgress,
+        const std::atomic<bool>* cancel,
+        std::string& outLocalPath,
+        std::string& outError) = 0;
+
+    // Verify SHA-256 of localPath matches info.assetSha256. If the
+    // release didn't ship a digest (assetSha256 empty), the adapter
+    // may still perform basic sanity checks (file size, magic bytes)
+    // and return true — but should never return true on a *mismatch*.
+    virtual bool verifyArtifact(const std::string& localPath,
+                                const UpdateInfo& info,
+                                std::string& outError) = 0;
+
+    // Apply the downloaded artifact and (typically) initiate process
+    // exit so the installer can replace satellite.exe / satellite.app.
+    // The caller is responsible for the graceful-shutdown sequence
+    // *after* this returns true; on Windows the Inno installer's
+    // /CLOSEAPPLICATIONS handles waiting on us.
+    //
+    // For info.installMethod == Manual this is a no-op returning true.
+    virtual bool applyUpdate(const std::string& localPath,
+                             const UpdateInfo& info,
+                             std::string& outError) = 0;
+
+    // Stable identifier for the binary's install lineage. One of:
+    //   "windows"          — Inno installer build
+    //   "macos"            — .app bundle (stub)
+    //   "linux-appimage"   — AppImage self-update
+    //   "linux-deb"        — Debian package, manual `apt upgrade`
+    //   "linux-portable"   — `make install` / portable, manual upgrade
+    virtual std::string platformId() const = 0;
 };

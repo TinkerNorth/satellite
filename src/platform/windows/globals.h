@@ -47,6 +47,8 @@ inline const UINT WM_TRAYICON = WM_APP + 1;
 inline const UINT IDM_OPEN_UI = 1001;
 inline const UINT IDM_TOGGLE = 1002;
 inline const UINT IDM_EXIT = 1003;
+inline const UINT IDM_CHECK_UPDATES = 1004; // tray "Check for Updates…"
+inline const UINT IDM_INSTALL_UPDATE = 1005; // tray "Install Update vX.Y.Z" (dynamic)
 
 // ── Win32-only shared state ─────────────────────────────────────────────────
 extern HWND g_hwnd;

@@ -64,6 +64,40 @@
     <button class="btn btn-start btn-full" onclick="doLogin()">Sign In</button>
   </div>
 
+  <!-- ── Update banner (shared across dashboard + settings) ── -->
+  <!-- Single source of truth for the "update available / downloading / ready"
+       prompt. Inserted at the top of dashboard + settings via JS so a freshly-
+       opened tab doesn't have to wait for SSE. -->
+  <template id="tpl-update-banner">
+    <div class="update-banner" id="update-banner" style="display:none">
+      <div class="update-banner-icon"><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"></div>
+      <div class="update-banner-body">
+        <div class="update-banner-title" id="update-banner-title">Update available</div>
+        <div class="update-banner-detail" id="update-banner-detail"></div>
+        <div class="update-banner-progress" id="update-banner-progress" style="display:none">
+          <div class="update-banner-progress-fill" id="update-banner-progress-fill"></div>
+          <div class="update-banner-progress-text" id="update-banner-progress-text">0%</div>
+        </div>
+      </div>
+      <div class="update-banner-actions" id="update-banner-actions">
+        <!-- Buttons re-rendered by updates.js per state. -->
+      </div>
+    </div>
+  </template>
+
+  <!-- ── Restart-to-install confirmation modal ── -->
+  <div class="modal-overlay" id="restart-modal" style="display:none">
+    <div class="modal-card">
+      <h2 class="section-title"><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"> Restart to Install</h2>
+      <p class="modal-body">Satellite will close and the new version <span id="restart-modal-version" class="modal-version">—</span> will be installed in the background. The receiver will reconnect automatically when the new version launches.</p>
+      <p class="modal-warning" id="restart-modal-warning" style="display:none">Active connections will be dropped during the restart.</p>
+      <div class="btn-row">
+        <button class="btn btn-start" id="restart-modal-confirm">Restart &amp; Install</button>
+        <button class="btn btn-undo" id="restart-modal-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Dashboard ── -->
   <div class="card" id="view-dashboard" style="display:none">
     <div class="header-row">
@@ -75,6 +109,9 @@
         <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
+
+    <!-- Update banner mount point. updates.js clones #tpl-update-banner here. -->
+    <div id="dashboard-update-slot"></div>
 
     <div id="stats">
       <div class="stat"><span class="label">Status</span><span class="value" id="s-status">Stopped</span></div>
@@ -176,13 +213,59 @@
         <input type="number" id="settings-udpPort" min="1024" max="65535" value="9876">
       </div>
       <div class="toggle-row">
-        <span>Start with Windows</span>
+        <span id="settings-autoStart-label">Start with Windows</span>
         <label class="switch"><input type="checkbox" id="settings-autoStart"><span class="slider"></span></label>
       </div>
       <div class="btn-row">
         <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" disabled>Save Config</button>
         <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" disabled>Undo</button>
       </div>
+    </div>
+
+    <!-- ── Updates ── -->
+    <div class="section">
+      <h2 class="section-title">Updates</h2>
+      <div class="stat">
+        <span class="label">Current Version</span>
+        <span class="value" id="settings-version">—</span>
+      </div>
+      <div class="stat">
+        <span class="label">Install Method</span>
+        <span class="value" id="settings-platform">—</span>
+      </div>
+      <div class="stat">
+        <span class="label">Last Checked</span>
+        <span class="value" id="settings-last-check">never</span>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <label>Channel</label>
+        <select id="settings-channel" class="form-input" style="flex:1">
+          <option value="stable">Stable</option>
+          <option value="prerelease">Pre-release (rc / beta)</option>
+        </select>
+      </div>
+
+      <div class="toggle-row">
+        <span>Check automatically</span>
+        <label class="switch"><input type="checkbox" id="settings-autoCheck"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <span>Download in background</span>
+        <label class="switch"><input type="checkbox" id="settings-autoDownload"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <span>Install &amp; restart automatically</span>
+        <label class="switch"><input type="checkbox" id="settings-autoInstall"><span class="slider"></span></label>
+      </div>
+
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn btn-save" id="settings-btnCheck" onclick="updatesCheck()">Check for Updates</button>
+        <button class="btn btn-save" id="settings-btnUpdatePrefs" onclick="updatesSavePrefs()" disabled>Save Prefs</button>
+      </div>
+
+      <!-- Settings-page mirror of the update banner (re-uses the template). -->
+      <div id="settings-update-slot" class="settings-update-slot"></div>
     </div>
   </div>
 
@@ -318,6 +401,7 @@
   <script src="common.js"></script>
   <script src="setup.js"></script>
   <script src="login.js"></script>
+  <script src="updates.js"></script>
   <script src="dashboard.js"></script>
   <script src="settings.js"></script>
   <script src="debug.js"></script>

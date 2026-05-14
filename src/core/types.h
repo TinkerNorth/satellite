@@ -7,6 +7,8 @@
  */
 #pragma once
 
+#include "core/version.h"
+
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -17,6 +19,11 @@
 // ── Constants ───────────────────────────────────────────────────────────────
 inline const char* APP_NAME = "satellite";
 inline const char* APP_TITLE = "Satellite";
+
+// Build-time version, threaded into the binary from src/core/version.h
+// and mirrored in /VERSION (which CMake + installer.iss read). Surfaced
+// at runtime via /api/version and the update checker.
+inline const char* SATELLITE_VERSION = SATELLITE_VERSION_STRING;
 
 inline const int DEFAULT_UDP_PORT = 9876;
 inline const int DEFAULT_WEB_PORT = 9877;
@@ -129,6 +136,16 @@ struct PairedDevice {
     std::string sharedKeyHex; // 64-char hex (32 bytes)
 };
 
+// ── Update channels ─────────────────────────────────────────────────────────
+// "stable" — only published GitHub Releases tagged vMAJOR.MINOR.PATCH.
+// "prerelease" — include pre-release tags (vX.Y.Z-rc.1, -beta.2, etc.).
+// Anything else is treated as "stable".
+inline const char* UPDATE_CHANNEL_STABLE = "stable";
+inline const char* UPDATE_CHANNEL_PRERELEASE = "prerelease";
+
+// Default cadence for the background "auto-check" timer.
+inline const int UPDATE_DEFAULT_CHECK_INTERVAL_HOURS = 24;
+
 // ── Config ──────────────────────────────────────────────────────────────────
 struct Config {
     int udpPort = DEFAULT_UDP_PORT;
@@ -138,6 +155,34 @@ struct Config {
     bool autoStart = false;
     std::string credentials; // DPAPI-encrypted "user:salt:hash"
     std::vector<PairedDevice> pairedDevices;
+
+    // ── OTA update preferences (see core/update_service.h) ─────────────
+    // updateChannel:   "stable" or "prerelease".
+    // autoCheck:       if true, the background timer hits the GitHub
+    //                  releases API every updateCheckIntervalHours.
+    // autoDownload:    if true, an available update is fetched in the
+    //                  background once discovered (still requires the
+    //                  user to confirm the restart-and-install step).
+    // autoInstall:     if true, after a successful auto-download the
+    //                  updater triggers the platform install flow
+    //                  immediately. Off by default — most users want
+    //                  the "ready to install" prompt.
+    // lastCheckEpoch:  unix seconds of the most recent check attempt
+    //                  (0 = never). Surfaced in the settings UI.
+    // lastSeenVersion: highest version we've seen since the last user
+    //                  acknowledgement. Used so we don't re-pop the
+    //                  banner after a user has clicked "remind me later".
+    // skipVersion:     a version the user explicitly told us to skip.
+    //                  We won't notify again until something newer
+    //                  than this appears.
+    std::string updateChannel = UPDATE_CHANNEL_STABLE;
+    bool autoCheck = true;
+    bool autoDownload = false;
+    bool autoInstall = false;
+    int updateCheckIntervalHours = UPDATE_DEFAULT_CHECK_INTERVAL_HOURS;
+    int64_t lastCheckEpoch = 0;
+    std::string lastSeenVersion;
+    std::string skipVersion;
 };
 
 // ── Logging ─────────────────────────────────────────────────────────────────

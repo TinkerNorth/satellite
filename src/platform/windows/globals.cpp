@@ -21,6 +21,7 @@ HWND g_hwnd = nullptr;
 httplib::Server g_httpServer;
 SOCKET g_pairSock = INVALID_SOCKET;
 std::string g_webDir;
+UpdateService* g_updateService = nullptr;
 
 // ── Telemetry counters ───────────────────────────────────────────────────────
 std::atomic<uint64_t> g_decryptFail{0};

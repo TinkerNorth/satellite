@@ -1,5 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
-project(satellite CXX)
+
+# ── Single-source-of-truth version ───────────────────────────────────────────
+# /VERSION is the authoritative version string. src/core/version.h mirrors
+# the same value as preprocessor macros (so satellite.rc and C++ both see
+# it without a generated header). The version-consistency CI gate fails
+# if these drift.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SATELLITE_VERSION LIMIT_COUNT 1)
+string(STRIP "${SATELLITE_VERSION}" SATELLITE_VERSION)
+if(NOT SATELLITE_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+    message(FATAL_ERROR "VERSION file content '${SATELLITE_VERSION}' is not in MAJOR.MINOR.PATCH form.")
+endif()
+set(SATELLITE_VERSION_MAJOR "${CMAKE_MATCH_1}")
+set(SATELLITE_VERSION_MINOR "${CMAKE_MATCH_2}")
+set(SATELLITE_VERSION_PATCH "${CMAKE_MATCH_3}")
+message(STATUS "satellite: building version ${SATELLITE_VERSION}")
+
+project(satellite VERSION ${SATELLITE_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +29,8 @@ endif()
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
+    src/core/update_service.cpp
+    src/core/github_release.cpp
 )
 
 # Currently-shared infrastructure (will be ported to POSIX in Stage 3).
@@ -39,6 +57,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
     src/platform/windows/gamepad_backend.cpp
+    src/platform/windows/updater_adapter.cpp
 )
 
 # macOS-only infrastructure.
@@ -49,6 +68,7 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/crypto.cpp
     src/platform/macos/tray.mm
     src/platform/macos/gamepad_backend.cpp
+    src/platform/macos/updater_adapter.mm
 )
 
 # Linux-only infrastructure.
@@ -60,6 +80,7 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/gamepad_backend.cpp
     src/platform/linux/gamepad_adapter.cpp
     src/platform/linux/tray.cpp
+    src/platform/linux/updater_adapter.cpp
 )
 
 # ── Platform-specific target ─────────────────────────────────────────────────
@@ -108,6 +129,8 @@ if(WIN32)
         bcrypt
         crypt32
         winmm
+        # OTA updater: WinHTTP (HTTPS to api.github.com).
+        winhttp
     )
 
     if(MINGW)
@@ -192,8 +215,8 @@ elseif(APPLE)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         MACOSX_BUNDLE_BUNDLE_NAME "Satellite"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.tinkernorth.satellite"
-        MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${SATELLITE_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${SATELLITE_VERSION}"
     )
 
     # Copy the web UI into the .app bundle's Resources directory after build,
@@ -260,6 +283,22 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(Threads REQUIRED)
     target_link_libraries(satellite PRIVATE Threads::Threads)
 
+    # libcurl for the OTA updater (HTTPS to api.github.com + asset CDN).
+    # Universally present on desktop distros; we link it directly rather
+    # than dlopen'ing because the updater is now a first-class feature.
+    #   Debian/Ubuntu: libcurl4-openssl-dev
+    #   Fedora/RHEL:   libcurl-devel
+    #   Arch:          curl
+    if(PkgConfig_FOUND)
+        pkg_check_modules(CURL REQUIRED libcurl)
+        target_include_directories(satellite PRIVATE ${CURL_INCLUDE_DIRS})
+        target_link_directories(satellite PRIVATE ${CURL_LIBRARY_DIRS})
+        target_link_libraries(satellite PRIVATE ${CURL_LIBRARIES})
+    else()
+        find_package(CURL REQUIRED)
+        target_link_libraries(satellite PRIVATE CURL::libcurl)
+    endif()
+
     # Status-tray icon via libayatana-appindicator (StatusNotifierItem over
     # D-Bus, plus GTK3 for the menu widgets). Optional: when the dev headers
     # are absent the binary is built headless and just runs a sigwait loop.
@@ -317,7 +356,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Only meaningful on Debian/Ubuntu hosts (needs dpkg-dev for shlibdeps).
     set(CPACK_GENERATOR "DEB")
     set(CPACK_PACKAGE_NAME                  "satellite")
-    set(CPACK_PACKAGE_VERSION               "1.0.0")
+    set(CPACK_PACKAGE_VERSION               "${SATELLITE_VERSION}")
     set(CPACK_PACKAGE_VENDOR                "TinkerNorth")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY   "Low-latency Xbox controller forwarding over the network")
     set(CPACK_PACKAGE_HOMEPAGE_URL          "https://github.com/TinkerNorth/satellite")

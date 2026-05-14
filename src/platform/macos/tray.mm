@@ -6,6 +6,7 @@
  */
 #include "tray.h"
 #include "config.h"
+#include "core/update_service.h"
 
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
@@ -14,6 +15,7 @@
 @interface SatelliteTrayTarget : NSObject
 - (void)openUI:(id)sender;
 - (void)toggleListener:(id)sender;
+- (void)updateAction:(id)sender;
 - (void)quit:(id)sender;
 - (void)rebuildMenu;
 @end
@@ -32,6 +34,23 @@ static SatelliteTrayTarget* g_target = nil;
 - (void)toggleListener:(id)sender {
     (void)sender;
     g_wantListen = !g_listening.load();
+    [self rebuildMenu];
+}
+
+- (void)updateAction:(id)sender {
+    (void)sender;
+    if (!g_updateService) return;
+    UpdateStatusSnapshot s = g_updateService->snapshot();
+    if (s.state == UpdateState::Downloaded) {
+        g_updateService->requestInstall();
+    } else if (s.state == UpdateState::UpdateAvailable &&
+               s.info.installMethod == InstallMethod::SelfInstall) {
+        g_updateService->requestDownload();
+    } else {
+        g_updateService->requestCheck(/*userInitiated=*/true);
+    }
+    NSString* url = [NSString stringWithFormat:@"http://localhost:%d/settings", g_config.webPort];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
     [self rebuildMenu];
 }
 
@@ -57,6 +76,33 @@ static SatelliteTrayTarget* g_target = nil;
                                                  keyEquivalent:@""];
     [toggleItem setTarget:self];
     [menu addItem:toggleItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    // Updater — label tracks state. Disabled while in flight.
+    NSString* updateTitle = @"Check for Updates…";
+    BOOL updateEnabled = (g_updateService != nullptr);
+    if (g_updateService) {
+        UpdateStatusSnapshot s = g_updateService->snapshot();
+        if (s.state == UpdateState::Downloaded && s.info.available) {
+            updateTitle = [NSString stringWithFormat:@"Install Update v%s", s.info.version.c_str()];
+        } else if (s.state == UpdateState::UpdateAvailable && s.info.available) {
+            updateTitle = [NSString stringWithFormat:@"Download Update v%s…",
+                                                     s.info.version.c_str()];
+        } else if (s.state == UpdateState::Downloading || s.state == UpdateState::Verifying) {
+            updateTitle = @"Downloading update…";
+            updateEnabled = NO;
+        } else if (s.state == UpdateState::Checking) {
+            updateTitle = @"Checking for updates…";
+            updateEnabled = NO;
+        }
+    }
+    NSMenuItem* updateItem = [[NSMenuItem alloc] initWithTitle:updateTitle
+                                                        action:@selector(updateAction:)
+                                                 keyEquivalent:@""];
+    [updateItem setTarget:self];
+    [updateItem setEnabled:updateEnabled];
+    [menu addItem:updateItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
