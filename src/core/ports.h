@@ -22,6 +22,13 @@
 //
 // For backend-availability checks (e.g. for the web UI's diagnostic panel),
 // callers use ::probeBackend() from core/gamepad_backend.h directly.
+//
+// Rumble flow: the *game* on the receiver host writes to the virtual device's
+// rumble channel (XInputSetState on Windows, evdev EVIOCSFF on Linux). The
+// platform adapter delivers those events to a single sink registered via
+// `setRumbleCallback`, which the SessionService installs at construction so
+// they can be encrypted and forwarded back to the dish. macOS has no backend,
+// so its impl ignores the registration silently.
 class IGamepadPort {
   public:
     virtual ~IGamepadPort() = default;
@@ -49,6 +56,14 @@ class IGamepadPort {
 
     // Submit a DS4 gamepad report (converted from GamepadReport). Returns true on success.
     virtual bool submitDS4Report(uint32_t serial, const GamepadReport& report) = 0;
+
+    // Install a rumble sink. Backends invoke `cb(serial, report)` from a
+    // platform-specific worker thread whenever a game updates the virtual
+    // device's vibration channel. The callback is owned by the adapter for
+    // the rest of its lifetime; it must remain callable until the adapter is
+    // destroyed (the SessionService outlives both adapter and callback).
+    using RumbleCallback = std::function<void(uint32_t serial, const RumbleReport& report)>;
+    virtual void setRumbleCallback(RumbleCallback cb) = 0;
 };
 
 // ── Outbound: Send encrypted UDP packets to clients ─────────────────────────
@@ -79,6 +94,21 @@ class IClientPort {
     virtual void
     broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
                           bool backendAvailable, uint8_t totalActiveControllers) = 0;
+
+    // Send a rumble (0x0009) update to the dish that owns `ctrlIdx` on `conn`.
+    // Wire format (encrypted inner payload):
+    //
+    //   ctrlIdx   : u8
+    //   strongMag : u16 BE
+    //   weakMag   : u16 BE
+    //   durMs     : u16 BE
+    //   flags     : u8   (bit 0 = lightbar present)
+    //   [lightbarR, lightbarG, lightbarB : u8 × 3 — only when flag bit 0 set]
+    //
+    // Senders that don't recognise the trailing lightbar bytes simply ignore
+    // them; the leading 8 bytes are the mandatory subset every dish parses.
+    virtual void sendRumble(const Connection& conn, uint8_t ctrlIdx,
+                            const RumbleReport& report) = 0;
 };
 
 // ── Outbound: Configuration persistence ─────────────────────────────────────

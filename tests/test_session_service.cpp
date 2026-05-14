@@ -63,10 +63,14 @@ struct MockViGem : IGamepadPort {
     int unplugCalls = 0;
     int submitCalls = 0;
     int submitDS4Calls = 0;
+    int setRumbleCallbackCalls = 0;
 
     std::vector<uint32_t> pluggedSerials;
     std::vector<uint32_t> unpluggedSerials;
     GamepadReport lastSubmittedReport{};
+    // Captured rumble callback. Tests synthesize "the platform fired a
+    // notification" by invoking this directly via `fireRumble(serial, r)`.
+    RumbleCallback capturedRumbleCb;
 
     bool ensureBusOpen() override {
         ensureBusCalls++;
@@ -102,7 +106,20 @@ struct MockViGem : IGamepadPort {
         lastSubmittedReport = r;
         return submitReturnVal;
     }
+    void setRumbleCallback(RumbleCallback cb) override {
+        setRumbleCallbackCalls++;
+        capturedRumbleCb = std::move(cb);
+    }
+    // Helper for tests: simulate the platform firing a rumble notification.
+    void fireRumble(uint32_t serial, const RumbleReport& r) {
+        if (capturedRumbleCb) capturedRumbleCb(serial, r);
+    }
 
+    // Custom reset that preserves no state — copy/move-assigning the mock
+    // would clobber the std::function which is fine since tests reset
+    // between cases. Note: we don't use `*this = MockViGem{}` because that
+    // would also wipe `setRumbleCallbackCalls` which tests sometimes care
+    // about across phases of a single case.
     void reset() { *this = MockViGem{}; }
 };
 
@@ -114,11 +131,17 @@ struct MockClient : IClientPort {
     int controllerAckCalls = 0;
     int serverStatusCalls = 0;
     int broadcastCalls = 0;
+    int rumbleCalls = 0;
 
     // Last controller ACK params
     uint16_t lastAckType = 0;
     uint8_t lastAckCtrl = 0;
     uint8_t lastAckResult = 0;
+
+    // Last rumble dispatch params (from sendRumble).
+    uint32_t lastRumbleConnToken = 0;
+    uint8_t lastRumbleCtrlIdx = 0;
+    RumbleReport lastRumble{};
 
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override { updateAddrCalls++; }
     void removeClientAddr(uint32_t) override { removeAddrCalls++; }
@@ -133,6 +156,13 @@ struct MockClient : IClientPort {
     void broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>&, bool,
                                uint8_t) override {
         broadcastCalls++;
+    }
+    void sendRumble(const Connection& conn, uint8_t ctrlIdx,
+                    const RumbleReport& report) override {
+        rumbleCalls++;
+        lastRumbleConnToken = conn.token;
+        lastRumbleCtrlIdx = ctrlIdx;
+        lastRumble = report;
     }
 
     void reset() { *this = MockClient{}; }
@@ -1237,6 +1267,359 @@ static void test_msgControllerType_constant() {
     EXPECT_EQ(MSG_CONTROLLER_TYPE, (uint16_t)0x0008);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RUMBLE TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Rumble is the reverse-direction message (satellite → dish): the platform
+// gamepad backend (ViGEm/uinput) fires a notification when a game sets
+// vibration on the virtual device, the SessionService maps the backend
+// `serial` back to a (Connection, ctrlIdx), coalesces against the prior
+// value, and dispatches via IClientPort::sendRumble.
+//
+// Tests below cover:
+//   • Protocol constant value
+//   • Callback installation by the constructor
+//   • Routing serial → connection/controller
+//   • Coalescing (don't re-emit identical reports)
+//   • Wire duration stamping
+//   • Stray/orphan notifications drop silently
+//   • Full add → rumble → remove lifecycle
+//   • Lightbar-bearing (DS4) reports preserve flag + RGB through the service
+// ═══════════════════════════════════════════════════════════════════════════
+
+static void test_msgRumble_constant() {
+    TEST("MSG_RUMBLE — has expected wire value 0x0009");
+    EXPECT_EQ(MSG_RUMBLE, (uint16_t)0x0009);
+}
+
+static void test_constructor_installsRumbleCallback() {
+    TEST("SessionService constructor — installs IGamepadPort rumble callback");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    EXPECT_EQ(vigem.setRumbleCallbackCalls, 1);
+    EXPECT(static_cast<bool>(vigem.capturedRumbleCb));
+}
+
+static void test_handleRumbleFromBackend_routesToOwningConnection() {
+    TEST("handleRumbleFromBackend — dispatches to the connection owning the serial");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 3); // ctrlIdx 3
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 32768;
+    rr.weakMagnitude = 16384;
+    vigem.fireRumble(serial, rr);
+
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ(client.lastRumbleConnToken, r.token);
+    EXPECT_EQ(client.lastRumbleCtrlIdx, (uint8_t)3);
+    EXPECT_EQ(client.lastRumble.strongMagnitude, (uint16_t)32768);
+    EXPECT_EQ(client.lastRumble.weakMagnitude, (uint16_t)16384);
+    EXPECT_EQ(client.lastRumble.durationMs, (uint16_t)500); // default wire duration
+}
+
+static void test_handleRumbleFromBackend_unknownSerialDropped() {
+    TEST("handleRumbleFromBackend — unknown serial drops silently");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 1234;
+    // Use a serial that doesn't match any active controller.
+    vigem.fireRumble(999, rr);
+
+    EXPECT_EQ(client.rumbleCalls, 0);
+}
+
+static void test_handleRumbleFromBackend_inactiveControllerDropped() {
+    TEST("handleRumbleFromBackend — inactive controller drops silently");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+    svc.handleControllerRemove(r.token, 0); // controller no longer owns the serial
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 1234;
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 0);
+}
+
+static void test_handleRumbleFromBackend_coalescesIdenticalReports() {
+    TEST("handleRumbleFromBackend — coalesces back-to-back identical magnitudes");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 1000;
+    rr.weakMagnitude = 500;
+
+    vigem.fireRumble(serial, rr); // 1st: emits
+    vigem.fireRumble(serial, rr); // 2nd: same magnitudes, suppress
+    vigem.fireRumble(serial, rr); // 3rd: still same, suppress
+    EXPECT_EQ(client.rumbleCalls, 1);
+
+    rr.strongMagnitude = 1001; // change → emit
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 2);
+}
+
+static void test_handleRumbleFromBackend_stopReportEmitted() {
+    TEST("handleRumbleFromBackend — non-zero followed by all-zero emits both");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport on{};
+    on.strongMagnitude = 50000;
+    vigem.fireRumble(serial, on);
+    EXPECT_EQ(client.rumbleCalls, 1);
+
+    RumbleReport off{}; // zero magnitudes — game asked for stop
+    vigem.fireRumble(serial, off);
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ(client.lastRumble.strongMagnitude, (uint16_t)0);
+    EXPECT_EQ(client.lastRumble.weakMagnitude, (uint16_t)0);
+}
+
+static void test_handleRumbleFromBackend_lightbarPreserved() {
+    TEST("handleRumbleFromBackend — DS4 lightbar bytes pass through to the client");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 200;
+    rr.weakMagnitude = 100;
+    rr.hasLightbar = true;
+    rr.lightbarR = 0x10;
+    rr.lightbarG = 0x80;
+    rr.lightbarB = 0xFF;
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT(client.lastRumble.hasLightbar);
+    EXPECT_EQ((int)client.lastRumble.lightbarR, 0x10);
+    EXPECT_EQ((int)client.lastRumble.lightbarG, 0x80);
+    EXPECT_EQ((int)client.lastRumble.lightbarB, 0xFF);
+}
+
+static void test_handleRumbleFromBackend_lightbarChangeDefeatsCoalesce() {
+    TEST("handleRumbleFromBackend — lightbar colour change re-emits even at same magnitude");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 100;
+    rr.weakMagnitude = 50;
+    rr.hasLightbar = true;
+    rr.lightbarR = 0x10;
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 1);
+
+    rr.lightbarR = 0x20; // colour change, magnitudes identical
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 2);
+}
+
+static void test_handleRumbleFromBackend_routesAcrossMultipleConnections() {
+    TEST("handleRumbleFromBackend — correctly routes when multiple connections own different serials");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r1 = svc.openSession("d1", "D1", "1.1.1.1", TEST_KEY);
+    svc.handleControllerAdd(r1.token, 0);
+    auto r2 = svc.openSession("d2", "D2", "1.1.1.2", TEST_KEY);
+    svc.handleControllerAdd(r2.token, 0);
+
+    auto snap = svc.getConnectionsSnapshot();
+    // Snapshot ordering across an unordered_map is unspecified, so build a
+    // {token → serial} map from the snapshot rather than indexing positionally.
+    uint32_t serialFor1 = 0;
+    uint32_t serialFor2 = 0;
+    for (auto& c : snap.connections) {
+        if (c.token == r1.token) serialFor1 = c.controllers[0].serial;
+        if (c.token == r2.token) serialFor2 = c.controllers[0].serial;
+    }
+    EXPECT(serialFor1 != 0);
+    EXPECT(serialFor2 != 0);
+    EXPECT(serialFor1 != serialFor2);
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 0xAAAA;
+    vigem.fireRumble(serialFor2, rr);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ(client.lastRumbleConnToken, r2.token);
+
+    vigem.fireRumble(serialFor1, rr);
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ(client.lastRumbleConnToken, r1.token);
+}
+
+static void test_handleRumbleFromBackend_serialReuseClearsState() {
+    TEST("handleRumbleFromBackend — remove + re-add resets coalesce state for the slot");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial1 = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 1000;
+    vigem.fireRumble(serial1, rr);
+    EXPECT_EQ(client.rumbleCalls, 1);
+
+    // Remove + re-add: the same serial gets recycled (allocateSerial picks
+    // the first free slot, which is the one we just released). The coalesce
+    // cache lives on the Controller struct, which is reset by handleControllerAdd.
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0);
+    snap = svc.getConnectionsSnapshot();
+    uint32_t serial2 = snap.connections[0].controllers[0].serial;
+    EXPECT_EQ(serial1, serial2); // serial recycled
+
+    // Same magnitudes as before — but the cache should have been cleared by
+    // re-add, so the report should re-emit instead of being coalesced.
+    vigem.fireRumble(serial2, rr);
+    EXPECT_EQ(client.rumbleCalls, 2);
+}
+
+static void test_handleRumbleFromBackend_customDuration() {
+    TEST("handleRumbleFromBackend — explicit wireDurationMs is stamped on the outgoing report");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 100;
+    svc.handleRumbleFromBackend(serial, rr, /*wireDurationMs=*/1234);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ(client.lastRumble.durationMs, (uint16_t)1234);
+}
+
+static void test_handleRumbleFromBackend_durationChangeAloneDoesNotEmit() {
+    TEST("handleRumbleFromBackend — duration-only changes are NOT a re-emit trigger");
+    // Rationale: durationMs is a wire-side refresh deadline knob, not part of
+    // the actuator-state comparison. Bumping it without changing magnitudes
+    // should not flood the wire.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 100;
+    svc.handleRumbleFromBackend(serial, rr, 500);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    svc.handleRumbleFromBackend(serial, rr, 700);
+    EXPECT_EQ(client.rumbleCalls, 1); // suppressed
+}
+
+static void test_handleRumbleFromBackend_separateControllersIndependentlyCoalesced() {
+    TEST("handleRumbleFromBackend — coalesce state is per-controller, not global");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerAdd(r.token, 1);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t s0 = 0;
+    uint32_t s1 = 0;
+    for (auto& c : snap.connections[0].controllers) {
+        if (c.index == 0) s0 = c.serial;
+        if (c.index == 1) s1 = c.serial;
+    }
+    EXPECT(s0 != 0);
+    EXPECT(s1 != 0);
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 5000;
+
+    vigem.fireRumble(s0, rr);
+    vigem.fireRumble(s0, rr); // coalesced
+    vigem.fireRumble(s1, rr); // distinct controller — emits
+    vigem.fireRumble(s1, rr); // coalesced
+    EXPECT_EQ(client.rumbleCalls, 2);
+}
+
+static void test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial() {
+    TEST("handleRumbleFromBackend — initial all-zero report still emits the first time");
+    // Rationale: the cache marker `lastRumbleValid=false` means we always
+    // emit the first packet, even if it's all zeros, so a stop request that
+    // arrives before any non-zero update is still forwarded to the dish.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    uint32_t serial = snap.connections[0].controllers[0].serial;
+
+    RumbleReport rr{}; // all zeros
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    // Same all-zero again is now coalesced.
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 1);
+}
+
 int main() {
     std::cout << "Running SessionService tests...\n\n";
 
@@ -1324,6 +1707,23 @@ int main() {
 
     // ── Protocol constants ──
     test_msgControllerType_constant();
+
+    // ── Rumble (return-path) ──
+    test_msgRumble_constant();
+    test_constructor_installsRumbleCallback();
+    test_handleRumbleFromBackend_routesToOwningConnection();
+    test_handleRumbleFromBackend_unknownSerialDropped();
+    test_handleRumbleFromBackend_inactiveControllerDropped();
+    test_handleRumbleFromBackend_coalescesIdenticalReports();
+    test_handleRumbleFromBackend_stopReportEmitted();
+    test_handleRumbleFromBackend_lightbarPreserved();
+    test_handleRumbleFromBackend_lightbarChangeDefeatsCoalesce();
+    test_handleRumbleFromBackend_routesAcrossMultipleConnections();
+    test_handleRumbleFromBackend_serialReuseClearsState();
+    test_handleRumbleFromBackend_customDuration();
+    test_handleRumbleFromBackend_durationChangeAloneDoesNotEmit();
+    test_handleRumbleFromBackend_separateControllersIndependentlyCoalesced();
+    test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

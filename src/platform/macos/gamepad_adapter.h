@@ -26,4 +26,9 @@ class GamepadAdapter : public IGamepadPort {
     void unplugDevice(uint32_t) override {}
     bool submitReport(uint32_t, const GamepadReport&) override { return false; }
     bool submitDS4Report(uint32_t, const GamepadReport&) override { return false; }
+
+    // No virtual gamepads on macOS → no game ever produces rumble events. The
+    // callback is accepted (so SessionService composition is uniform across
+    // platforms) but never invoked.
+    void setRumbleCallback(RumbleCallback) override {}
 };

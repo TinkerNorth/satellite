@@ -352,9 +352,13 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES   ${SATELLITE_PKG_DIR}/copyright
             DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
-    # ── CPack: build a .deb with `cpack -G DEB` after `cmake --build`. ──────
-    # Only meaningful on Debian/Ubuntu hosts (needs dpkg-dev for shlibdeps).
-    set(CPACK_GENERATOR "DEB")
+    # ── CPack: build .deb (DEB generator) and/or .rpm (RPM generator).
+    # On a Debian/Ubuntu host: `cpack -G DEB` (needs dpkg-dev for shlibdeps).
+    # On any Linux host:       `cpack -G RPM` (needs rpmbuild). Ubuntu's
+    #                          rpm package ships rpmbuild too, so the release
+    #                          workflow builds both from one job.
+    set(CPACK_GENERATOR "DEB;RPM")
+    set(SATELLITE_RPM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm")
     set(CPACK_PACKAGE_NAME                  "satellite")
     set(CPACK_PACKAGE_VERSION               "${SATELLITE_VERSION}")
     set(CPACK_PACKAGE_VENDOR                "TinkerNorth")
@@ -376,6 +380,38 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
     # File-name in the form `satellite_1.0.0_amd64.deb`.
     set(CPACK_DEBIAN_FILE_NAME              DEB-DEFAULT)
+
+    # ── RPM-specific settings ───────────────────────────────────────────────
+    # CPack/RPM autoreq picks up shared-library dependencies from the binary
+    # automatically, so we don't enumerate them. Sectioning mirrors Fedora's
+    # standard "Games" group ordering. Architecture is auto-derived from
+    # CPACK_RPM_PACKAGE_ARCHITECTURE / uname -m.
+    set(CPACK_RPM_PACKAGE_NAME              "satellite")
+    set(CPACK_RPM_PACKAGE_LICENSE           "LGPLv3+")
+    set(CPACK_RPM_PACKAGE_GROUP             "Amusements/Games")
+    set(CPACK_RPM_PACKAGE_URL               "${CPACK_PACKAGE_HOMEPAGE_URL}")
+    set(CPACK_RPM_PACKAGE_VENDOR            "TinkerNorth")
+    set(CPACK_RPM_PACKAGE_SUMMARY           "${CPACK_PACKAGE_DESCRIPTION_SUMMARY}")
+    set(CPACK_RPM_PACKAGE_DESCRIPTION       "${CPACK_PACKAGE_DESCRIPTION}")
+    set(CPACK_RPM_PACKAGE_AUTOREQ           ON)
+    # Wire the post-install / post-uninstall scriptlets that match the
+    # behavior of the Debian postinst / postrm (udev reload, modprobe
+    # uinput, best-effort input-group membership).
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE
+        "${SATELLITE_RPM_DIR}/postinst.sh")
+    set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE
+        "${SATELLITE_RPM_DIR}/postuninst.sh")
+    # Files our package owns that overlap with system-managed dirs need to
+    # be carved out, otherwise rpmbuild refuses to claim ownership.
+    set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION
+        "/lib/udev"
+        "/lib/udev/rules.d"
+        "/lib/modules-load.d"
+        "/usr/share/applications"
+        "/usr/share/pixmaps"
+        "/usr/share/satellite")
+    # File-name in the form `satellite-1.0.0-1.x86_64.rpm`.
+    set(CPACK_RPM_FILE_NAME                 RPM-DEFAULT)
 
     include(CPack)
 

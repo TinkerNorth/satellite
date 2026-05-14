@@ -16,7 +16,9 @@
 
 #include "core/ports.h"
 
+#include <atomic>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 class GamepadAdapter : public IGamepadPort {
@@ -32,13 +34,48 @@ class GamepadAdapter : public IGamepadPort {
     void unplugDevice(uint32_t serial) override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
+    void setRumbleCallback(RumbleCallback cb) override;
 
   private:
+    // Per-virtual-device record. Owns the uinput fd, the FF effect table the
+    // kernel hands us via UI_FF_UPLOAD, and a reader thread that drains the
+    // device's input_event stream looking for FF events.
+    struct Device {
+        int fd = -1;
+        bool ds4 = false;
+        std::thread readerThread;
+        std::atomic<bool> readerRunning{false};
+        // pipe used to wake the reader's poll() at unplug time. Writes a
+        // single byte; the reader treats any traffic on this fd as "exit now".
+        int wakePipeRead = -1;
+        int wakePipeWrite = -1;
+
+        // Map kernel effect-id → cached strong/weak magnitudes from the most
+        // recent UI_FF_UPLOAD for that effect. EV_FF events with `value > 0`
+        // turn the corresponding effect on at these magnitudes; `value == 0`
+        // turns it off (we then re-emit zeros to the dish).
+        struct EffectMags {
+            uint16_t strong = 0;
+            uint16_t weak = 0;
+        };
+        std::unordered_map<int, EffectMags> effects;
+    };
+
     // Create a uinput device configured as either an Xbox 360 pad (ds4=false)
     // or a DualShock 4 (ds4=true). Returns the fd, or -1 on failure.
+    // FF_RUMBLE is enabled on the device unconditionally so games see the
+    // virtual pad as having force-feedback support.
     int openUinputDevice(uint32_t serial, bool ds4);
+
+    void startReader(uint32_t serial, Device& dev); // caller holds mtx_
+    void stopReader(uint32_t serial);               // caller holds mtx_
+    void readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4);
 
     mutable std::mutex mtx_;
     bool busOpen_ = false;
-    std::unordered_map<uint32_t, int> fds_; // serial → uinput fd
+    std::unordered_map<uint32_t, Device> devices_;
+
+    // Installed by the SessionService; copied under mtx_ before each call so
+    // the reader doesn't hold the lock across the user-supplied callback.
+    RumbleCallback rumbleCb_;
 };

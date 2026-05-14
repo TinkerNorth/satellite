@@ -20,7 +20,14 @@ static uint32_t makeRandomToken() {
 }
 
 SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log)
-    : backend_(backend), client_(client), log_(log) {}
+    : backend_(backend), client_(client), log_(log) {
+    // Wire the rumble return-path the moment we own the backend. The lambda
+    // captures `this` — safe because the SessionService outlives the adapter
+    // (composition root tears down adapters last) and the adapter joins all
+    // notification workers in its destructor before the callback could fire.
+    backend_.setRumbleCallback(
+        [this](uint32_t serial, const RumbleReport& r) { handleRumbleFromBackend(serial, r); });
+}
 
 // ── Internal helpers (caller must hold mtx_) ────────────────────────────────
 
@@ -222,6 +229,12 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
     ctrl.serialNo = serial;
     ctrl.active = true;
     ctrl.lastReport = GamepadReport{};
+    // Clear rumble coalesce state — even though the serial may be recycled,
+    // the (re)added controller is a fresh actuator from the dish's point of
+    // view, so the next non-zero rumble must reach it without being suppressed
+    // as "same as the last one we already sent".
+    ctrl.lastRumble = RumbleReport{};
+    ctrl.lastRumbleValid = false;
     conn.activeControllerCount++;
 
     log_.logMsg(LogLevel::INFO, "service",
@@ -302,6 +315,57 @@ void SessionService::handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8
 
     // Broadcast updated state so web UI refreshes
     broadcastStatus();
+}
+
+void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
+                                              uint16_t wireDurationMs) {
+    // Find the (connection, ctrlIdx) that owns `serial`. Connections is small
+    // (one per paired client, currently O(1) in practice) and each connection
+    // has at most MAX_CONTROLLERS_PER_CONN slots — fine to scan linearly. The
+    // alternative (a serial→(token,idx) reverse index) would have to stay
+    // consistent with allocateSerial / releaseSerial; not worth the bug
+    // surface for this hot-but-not-critical-path callback.
+    std::lock_guard<std::mutex> lk(mtx_);
+
+    Connection* foundConn = nullptr;
+    Controller* foundCtrl = nullptr;
+    for (auto& [tok, conn] : connections_) {
+        for (auto& ctrl : conn.controllers) {
+            if (ctrl.active && ctrl.serialNo == serial) {
+                foundConn = &conn;
+                foundCtrl = &ctrl;
+                break;
+            }
+        }
+        if (foundConn) break;
+    }
+    if (!foundConn || !foundCtrl) {
+        // Stray notification — most commonly because the controller was just
+        // unplugged but the worker thread fired one last queued event before
+        // the backend cancelled its pending IOCTL. Drop silently.
+        return;
+    }
+
+    // Coalesce identical back-to-back updates. Games often hold both motors
+    // at the same magnitude across many frames; sending the same packet 250×
+    // a second wastes bandwidth and starves the dish-side actuator queue.
+    // We compare the magnitudes + lightbar; we deliberately ignore
+    // wireDurationMs in the comparison so the caller can still bump the
+    // refresh deadline without forcing a packet.
+    auto sameAs = [](const RumbleReport& a, const RumbleReport& b) {
+        return a.strongMagnitude == b.strongMagnitude && a.weakMagnitude == b.weakMagnitude &&
+               a.hasLightbar == b.hasLightbar && a.lightbarR == b.lightbarR &&
+               a.lightbarG == b.lightbarG && a.lightbarB == b.lightbarB;
+    };
+    if (foundCtrl->lastRumbleValid && sameAs(foundCtrl->lastRumble, report)) { return; }
+
+    RumbleReport stamped = report;
+    stamped.durationMs = wireDurationMs;
+
+    foundCtrl->lastRumble = stamped;
+    foundCtrl->lastRumbleValid = true;
+
+    client_.sendRumble(*foundConn, foundCtrl->index, stamped);
 }
 
 // ── Pre-decrypt helpers ─────────────────────────────────────────────────────

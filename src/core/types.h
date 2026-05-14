@@ -39,6 +39,7 @@ inline const uint16_t MSG_CONTROLLER_REMOVE = 0x0005;
 inline const uint16_t MSG_CONTROLLER_ACK = 0x0006;
 inline const uint16_t MSG_SERVER_STATUS = 0x0007;
 inline const uint16_t MSG_CONTROLLER_TYPE = 0x0008;
+inline const uint16_t MSG_RUMBLE = 0x0009;
 
 // Controller ACK result codes (wire values are stable across platforms; only
 // the C++ identifier changed from ACK_ERR_VIGEM_UNAVAIL → ACK_ERR_BACKEND_UNAVAIL).
@@ -104,6 +105,30 @@ struct GamepadReport {
 };
 static_assert(sizeof(GamepadReport) == 12, "GamepadReport must be 12 bytes");
 
+// ── Rumble report (game → physical controller, return path) ─────────────────
+// Magnitudes are 16-bit unsigned to match XInput's `XINPUT_VIBRATION` scale
+// (0..65535). Backends report low-frequency / high-frequency intensities; on
+// Linux uinput these map to the FF_RUMBLE strong/weak magnitudes verbatim.
+//
+// `lightbarR/G/B` are populated only when the controller type is DualShock 4
+// (CONTROLLER_TYPE_PLAYSTATION) — Xbox 360 has no lightbar so the bytes are 0
+// for that profile. `hasLightbar` lets the wire encoder skip the trailing
+// three bytes when a sender doesn't care about them.
+//
+// `durationMs == 0` is the "until-overridden" mode: the actuator should keep
+// the magnitudes applied until the next rumble packet for the same controller.
+// Non-zero durations are clamped on the dish side to match what each platform's
+// rumble API accepts (XInput / SDL: u32 ms; Android Vibrator: u32 ms).
+struct RumbleReport {
+    uint16_t strongMagnitude = 0; // low-frequency / large motor
+    uint16_t weakMagnitude = 0;   // high-frequency / small motor
+    uint16_t durationMs = 0;      // 0 = continuous (until next packet)
+    uint8_t lightbarR = 0;
+    uint8_t lightbarG = 0;
+    uint8_t lightbarB = 0;
+    bool hasLightbar = false;
+};
+
 // ── Controller (per virtual gamepad) ────────────────────────────────────────
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
@@ -111,6 +136,11 @@ struct Controller {
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
     GamepadReport lastReport{};
+    // Most recent rumble state forwarded to the dish. Used to coalesce identical
+    // back-to-back game updates so we don't blast the wire when a game holds
+    // both motors at the same magnitude across many frames.
+    RumbleReport lastRumble{};
+    bool lastRumbleValid = false;
 };
 
 // ── Connection (per paired client session) ──────────────────────────────────

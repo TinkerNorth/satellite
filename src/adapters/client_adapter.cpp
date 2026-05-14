@@ -44,7 +44,7 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     sockaddr_in addr{};
     if (!getAddr(conn.token, addr)) return;
 
-    uint8_t ct[64 + AUTH_TAG_SIZE]; // max inner we send is ~8 bytes
+    uint8_t ct[64 + AUTH_TAG_SIZE]; // max inner we send is 15 bytes (rumble + lightbar)
     unsigned long long ctLen = 0;
     if (!encryptPacket(conn.sharedKey, 0, conn.token, inner, innerLen, ct, &ctLen)) return;
 
@@ -107,4 +107,33 @@ void ClientAdapter::broadcastServerStatus(
     for (auto& [tok, conn] : connections) {
         sendServerStatus(*conn, backendAvailable, totalActiveControllers);
     }
+}
+
+void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,
+                               const RumbleReport& report) {
+    // Mandatory leading bytes: ctrlIdx + strong + weak + duration + flags = 8.
+    // Optional trailing 3 bytes (R/G/B) when the lightbar flag is set; senders
+    // that don't recognise them simply parse the leading 8 and stop there.
+    const bool lightbar = report.hasLightbar;
+    const uint16_t payloadLen = lightbar ? 11 : 8;
+
+    uint8_t inner[4 + 11];
+    inner[0] = (uint8_t)(MSG_RUMBLE >> 8);
+    inner[1] = (uint8_t)(MSG_RUMBLE);
+    inner[2] = (uint8_t)(payloadLen >> 8);
+    inner[3] = (uint8_t)(payloadLen);
+    inner[4] = ctrlIdx;
+    inner[5] = (uint8_t)(report.strongMagnitude >> 8);
+    inner[6] = (uint8_t)(report.strongMagnitude);
+    inner[7] = (uint8_t)(report.weakMagnitude >> 8);
+    inner[8] = (uint8_t)(report.weakMagnitude);
+    inner[9] = (uint8_t)(report.durationMs >> 8);
+    inner[10] = (uint8_t)(report.durationMs);
+    inner[11] = lightbar ? 0x01 : 0x00; // flags
+    if (lightbar) {
+        inner[12] = report.lightbarR;
+        inner[13] = report.lightbarG;
+        inner[14] = report.lightbarB;
+    }
+    sendEncryptedPacket(conn, inner, 4 + payloadLen);
 }

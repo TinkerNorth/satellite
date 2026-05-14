@@ -193,6 +193,17 @@ bool pickDebAsset(const GitHubRelease& rel, GitHubAsset& out) {
     return false;
 }
 
+bool pickRpmAsset(const GitHubRelease& rel, GitHubAsset& out) {
+    for (const auto& a : rel.assets) {
+        if (a.name.size() >= 4 && a.name.compare(a.name.size() - 4, 4, ".rpm") == 0 &&
+            a.name.rfind("satellite-", 0) == 0) {
+            out = a;
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetName) {
     for (const auto& a : rel.assets) {
         if (a.name == "SHA256SUMS") {
@@ -235,22 +246,53 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
 
 // ── LinuxUpdaterAdapter ──────────────────────────────────────────────────
 LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const {
-    // 1. AppImage: $APPIMAGE env var is set by appimage-tool wrapper.
+    // 1. AppImage: $APPIMAGE env var is set by the AppImage runtime.
+    //    Most reliable — the runtime guarantees it.
     if (const char* env = std::getenv("APPIMAGE"); env != nullptr && env[0] != '\0') {
         struct stat st;
         if (stat(env, &st) == 0) return InstallType::AppImage;
     }
-    // 2. Debian package: /usr/bin/satellite is owned by the `satellite`
-    //    dpkg package. Cheapest reliable check is "does the binary live
-    //    in a system bin AND does dpkg -S report it?". We avoid spawning
-    //    dpkg here (slow, and not always present); the location heuristic
-    //    is sufficient.
+
+    // 2. Path-based detection for everything that lives under a system
+    //    bin/. We avoid spawning dpkg/rpm/pacman (slow, not always
+    //    available) and key off filesystem artefacts:
+    //
+    //      /opt/satellite/satellite.AppImage     → AUR satellite-bin
+    //        (the shim at /usr/bin/satellite execs it)
+    //      /usr/bin/satellite + /var/lib/dpkg    → Deb
+    //      /usr/bin/satellite + /var/lib/rpm     → Rpm
+    //      /usr/local/bin/satellite              → Deb (manual `dpkg -i`)
+    //                                              or generic local install
     char buf[PATH_MAX];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n > 0) {
         buf[n] = '\0';
         std::string p(buf);
+        struct stat st;
+
+        // AUR satellite-bin keeps the real binary in /opt/satellite/ and
+        // the shim in /usr/bin. Either path resolves here.
+        if (p == "/opt/satellite/satellite.AppImage" ||
+            stat("/opt/satellite/satellite.AppImage", &st) == 0) {
+            return InstallType::Aur;
+        }
+
         if (p == "/usr/bin/satellite" || p == "/usr/local/bin/satellite") {
+            // Discriminate dpkg vs rpm by which package database exists.
+            // Both can coexist (e.g. Fedora with alien-installed .debs)
+            // but a satellite binary in /usr/bin will only have been put
+            // there by one of them.
+            const bool hasDpkg = (stat("/var/lib/dpkg/status", &st) == 0);
+            const bool hasRpm = (stat("/var/lib/rpm", &st) == 0);
+            if (hasRpm && !hasDpkg) return InstallType::Rpm;
+            if (hasDpkg && !hasRpm) return InstallType::Deb;
+            // Tie-break: prefer the family whose package actually owns
+            // the file. A query to dpkg's own info-list is cheap.
+            if (hasDpkg) {
+                std::string dpkgInfo = "/var/lib/dpkg/info/satellite.list";
+                if (stat(dpkgInfo.c_str(), &st) == 0) return InstallType::Deb;
+            }
+            if (hasRpm) return InstallType::Rpm;
             return InstallType::Deb;
         }
     }
@@ -263,6 +305,8 @@ LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)
     switch (installType_) {
     case InstallType::AppImage: platformId_ = "linux-appimage"; break;
     case InstallType::Deb:      platformId_ = "linux-deb"; break;
+    case InstallType::Rpm:      platformId_ = "linux-rpm"; break;
+    case InstallType::Aur:      platformId_ = "linux-aur"; break;
     case InstallType::Portable: platformId_ = "linux-portable"; break;
     }
     // Initialize libcurl once. Safe to call multiple times — the second
@@ -329,12 +373,36 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         break;
     case InstallType::Deb:
         if (!pickDebAsset(pick, asset)) {
-            // Still surface a manual instruction even if no .deb is published.
             outError = "No .deb asset in release " + pick.tagName;
             return false;
         }
         method = InstallMethod::Manual;
+        // Users on our APT repo get this for free from `apt upgrade`; the
+        // instruction is also correct for users who installed via a local
+        // `dpkg -i ./satellite_*.deb`, since apt will offer the matching
+        // upgrade once they've added the repo from the install instructions
+        // at https://tinkernorth.github.io/satellite/.
         manual = "sudo apt update && sudo apt install --only-upgrade satellite";
+        break;
+    case InstallType::Rpm:
+        if (!pickRpmAsset(pick, asset)) {
+            outError = "No .rpm asset in release " + pick.tagName;
+            return false;
+        }
+        method = InstallMethod::Manual;
+        manual = "sudo dnf upgrade --refresh satellite";
+        break;
+    case InstallType::Aur:
+        // The AUR -bin package wraps the AppImage, so the artifact metadata
+        // we surface is the AppImage (used purely for "show release notes"
+        // — we don't try to download it ourselves). The manual instruction
+        // tells the user to upgrade via their AUR helper of choice.
+        if (!pickAppImageAsset(pick, asset)) {
+            outError = "No AppImage asset in release " + pick.tagName;
+            return false;
+        }
+        method = InstallMethod::Manual;
+        manual = "yay -Syu satellite-bin   # or: paru -Syu satellite-bin";
         break;
     case InstallType::Portable:
         // Default to AppImage if present, otherwise .deb, otherwise fail.

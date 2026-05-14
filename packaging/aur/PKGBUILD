@@ -1,0 +1,81 @@
+# Maintainer: TinkerNorth <https://github.com/TinkerNorth/satellite>
+#
+# satellite-bin — Arch User Repository package that re-bundles the
+# upstream signed AppImage. Build it locally with `makepkg -si`, or
+# install via an AUR helper:
+#
+#   yay -S satellite-bin
+#   paru -S satellite-bin
+#
+# Updating: bump pkgver, refresh `b2sums` / `sha256sums` from the
+# release's SHA256SUMS file, then regenerate .SRCINFO with
+# `makepkg --printsrcinfo > .SRCINFO`.
+#
+# Why -bin? An "from-source" Arch package would have to drag in
+# libcurl-dev / libsodium-dev / GTK3 / appindicator headers at build
+# time, and the AppImage is already a bundled, signed artifact. Arch
+# users who want from-source builds can use the upstream cmake flow.
+
+pkgname=satellite-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Low-latency Xbox controller forwarding over the network (receiver)"
+arch=('x86_64')
+url="https://github.com/TinkerNorth/satellite"
+license=('LGPL-3.0-or-later')
+# Runtime dependencies the AppImage wrapper unwraps to. Most of these are
+# present in any GTK-using desktop install but we list them so makepkg
+# fails fast on minimal systems.
+depends=(
+    'libsodium'
+    'gtk3'
+    'libayatana-appindicator'
+    'curl'
+)
+optdepends=(
+    'xdg-utils: required to open the web UI from the tray menu'
+)
+provides=('satellite')
+conflicts=('satellite')
+
+# Single x86_64 AppImage. Bump the URL and checksums in lockstep with pkgver.
+# The SHA256 comes from the SHA256SUMS asset attached to every release.
+source_x86_64=(
+    "satellite-${pkgver}-x86_64.AppImage::https://github.com/TinkerNorth/satellite/releases/download/v${pkgver}/satellite-${pkgver}-x86_64.AppImage"
+    "satellite.desktop::https://raw.githubusercontent.com/TinkerNorth/satellite/v${pkgver}/packaging/debian/satellite.desktop"
+    "70-satellite-uinput.rules::https://raw.githubusercontent.com/TinkerNorth/satellite/v${pkgver}/packaging/debian/70-satellite-uinput.rules"
+)
+# SHA-256 placeholders (REPLACE_BEFORE_PUBLISH). Bump these in lockstep
+# with pkgver — the value for the AppImage comes from the release's
+# SHA256SUMS asset; the .desktop and udev rule are inlined here for the
+# packaging/aur/sync.sh helper to regenerate.
+sha256sums_x86_64=(
+    'SKIP'
+    'SKIP'
+    'SKIP'
+)
+
+package() {
+    # Drop the AppImage in /opt and shim a launcher into /usr/bin so users
+    # type `satellite` like they would for any other package.
+    install -Dm755 "${srcdir}/satellite-${pkgver}-x86_64.AppImage" \
+        "${pkgdir}/opt/satellite/satellite.AppImage"
+
+    install -dm755 "${pkgdir}/usr/bin"
+    cat > "${pkgdir}/usr/bin/satellite" <<'SHIM'
+#!/bin/sh
+# Shim added by the satellite-bin AUR package — forwards to the AppImage
+# bundled under /opt/satellite. The AppImage's own .desktop / icon /
+# updater detection all key off $APPIMAGE which appimage-run-from-bin
+# sets correctly.
+exec /opt/satellite/satellite.AppImage "$@"
+SHIM
+    chmod 755 "${pkgdir}/usr/bin/satellite"
+
+    install -Dm644 "${srcdir}/satellite.desktop" \
+        "${pkgdir}/usr/share/applications/satellite.desktop"
+    install -Dm644 "${srcdir}/70-satellite-uinput.rules" \
+        "${pkgdir}/usr/lib/udev/rules.d/70-satellite-uinput.rules"
+}
+
+# vim:set ts=4 sw=4 et:
