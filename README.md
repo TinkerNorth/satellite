@@ -11,8 +11,8 @@ Runs as a **system tray application** with a built-in **web UI** for configurati
 │    Sender     │ ─────────────────────────►  │     Receiver     │
 │  (XInput)     │    XUSB_REPORT packet       │  (ViGEmBus)      │
 │               │                             │                  │
-│ Physical Xbox │                             │ Virtual Xbox 360 │
-│  controller   │                             │   controller     │
+│ Physical Xbox │ ◄─────────────────────────  │ Virtual Xbox 360 │
+│  controller   │   MSG_RUMBLE (8–11 bytes)   │   controller     │
 └──────────────┘                              └──────────────────┘
 ```
 
@@ -21,6 +21,8 @@ Runs as a **system tray application** with a built-in **web UI** for configurati
 **Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual Xbox 360 controller through the ViGEmBus kernel driver — no DLLs required, communicates directly via `DeviceIoControl`.
 
 The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()`.
+
+The **return path** carries rumble events the other direction: when a game on the receiver host calls `XInputSetState` (or the equivalent on Linux's evdev FF subsystem), the platform backend fires a notification, the receiver maps it to the originating dish session, and forwards a `MSG_RUMBLE` packet back over the encrypted UDP channel. See [Rumble (return path)](#rumble-return-path) below.
 
 ## Features
 
@@ -428,6 +430,63 @@ The receiver runs three threads:
 
 TCP's reliability guarantees cause **head-of-line blocking** — if one packet is lost, all subsequent packets are held until retransmission completes. For controller input, only the latest state matters. A lost packet is better than a delayed one. This is the same approach used by Moonlight, Parsec, and Steam Remote Play.
 
+## Rumble (return path)
+
+Games drive controller vibration by writing to the virtual gamepad device's
+output channel. Satellite snapshots those writes from the platform backend
+and forwards them to the dish that owns the session, which then actuates
+the matching physical controller (or, on dish-android, the phone itself).
+
+### How each backend listens
+
+| Platform | Source | Mechanism |
+|---|---|---|
+| Windows | ViGEmBus | `IOCTL_XUSB_REQUEST_NOTIFICATION` (X360) / `IOCTL_DS4_REQUEST_NOTIFICATION` (DS4) — long-running async I/O. One worker thread per plugged virtual device blocks on the IOCTL until the driver completes it with the new motor/lightbar values. |
+| Linux | uinput | `EV_FF` events on the device fd. Game uploads an `FF_RUMBLE` effect via `UI_FF_UPLOAD`, kernel hands us the descriptor, then sends an `EV_FF` event when the game presses play/stop. One reader thread per plugged device. |
+| macOS | (none) | No virtual gamepad backend → no rumble events to forward. The macOS `IGamepadPort` accepts the callback registration so the SessionService composes uniformly, but it's never invoked. |
+
+### Wire format
+
+`MSG_RUMBLE = 0x0009`, satellite → dish, encrypted in the same ChaCha20-Poly1305 envelope as every other message:
+
+```
+inner header                           inner payload (8 or 11 bytes)
+┌──────────┬──────────┐  ┌──────────┬─────────────┬─────────────┬──────────┬───────┬──────────────────────┐
+│ msgType  │ payload  │  │ ctrlIdx  │  strongMag  │   weakMag   │  durMs   │ flags │   [R, G, B] (DS4)    │
+│  0x0009  │  length  │  │   u8     │   u16 BE    │   u16 BE    │  u16 BE  │  u8   │   u8 × 3 if flags&1  │
+└──────────┴──────────┘  └──────────┴─────────────┴─────────────┴──────────┴───────┴──────────────────────┘
+   2 bytes    2 bytes        1            2             2            2         1            3
+```
+
+| Field | Meaning |
+|---|---|
+| `ctrlIdx` | Controller index within the dish session that owns this rumble. |
+| `strongMag` | Low-frequency / large-motor magnitude. 0..65535, XInput scale. |
+| `weakMag` | High-frequency / small-motor magnitude. 0..65535. |
+| `durMs` | Wire-side refresh deadline. Stamped by the satellite (default 500 ms); the dish clamps before driving its actuator. `0` is a stop sentinel. |
+| `flags` | Bit 0 set ⇒ trailing R/G/B bytes follow. Higher bits reserved. |
+| `R/G/B` | DualShock 4 lightbar colour. Present only for DS4 virtual devices; Xbox 360 has no lightbar. |
+
+The producer side lives in [`src/adapters/client_adapter.cpp`](src/adapters/client_adapter.cpp); the dish-side parsers (`SatelliteClient::parseRumbleMessage` in dish-linux/windows, `SatelliteClient.parseRumblePayload` in dish-mac, the JNI dispatch in `RumbleBridge.dispatchRumble` on dish-android) all consume this layout verbatim.
+
+### Coalescing
+
+Games can spam the same magnitudes 60+ Hz across many frames. The
+`SessionService::handleRumbleFromBackend` path keeps the most recent
+`(strong, weak, lightbar)` per controller and suppresses re-emits when
+nothing actuator-relevant has changed. Duration-only changes do *not*
+defeat the suppression — the wire-side refresh deadline is a knob the
+satellite owns, not a player-perceptible value.
+
+### Per-dish actuator behaviour
+
+| Dish | Actuator | Notes |
+|---|---|---|
+| dish-windows | `SDL_GameControllerRumble` + `SDL_GameControllerSetLED` | Magnitudes pass through verbatim (XInput scale matches). LED set is a no-op on pads without a lightbar. |
+| dish-linux | Same SDL2 entry points | Underlying call is evdev `EVIOCSFF`. Works for any pad SDL recognises. |
+| dish-mac | `GCController.haptics` + `CHHapticEngine` per locator | Magnitudes mapped to `CHHapticIntensity` 0..1. Lightbar via `controller.light?.color`. Engines kept started; per-call `CHHapticPattern` for sustained drive. Falls back to no-op on legacy MFi pads with no haptics surface. |
+| dish-android | `VibratorManager` (API 31+) / `Vibrator` (legacy) — phone body | All rumble routed to the device's own actuator(s). On dual-actuator phones the strong motor goes to vibrator id 0 and weak to id 1; on single-actuator phones the peak of the two is used. **No fallback to physical-controller actuators by design** — see `RumbleBridge.kt`. |
+
 ## Code Quality
 
 The project uses industry-standard C++ tooling for formatting, linting, and static analysis.
@@ -501,6 +560,7 @@ This compiles `tests/test_session_service.cpp` alongside `src/core/session_servi
 - **Decrypt helpers** — key retrieval, counter updates
 - **Query/stats** — snapshot, device connected check, slot counts
 - **Broadcast** — status broadcasts on controller changes
+- **Rumble (return path)** — backend callback wiring, serial → connection lookup, coalescing of identical magnitudes, lightbar pass-through, multi-connection routing, serial-recycle cache reset, custom wire durations, per-controller cache isolation
 
 ## Project structure
 

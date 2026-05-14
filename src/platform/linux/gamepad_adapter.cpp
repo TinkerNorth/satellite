@@ -9,10 +9,13 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -59,14 +62,29 @@ bool GamepadAdapter::ensureBusOpen() {
 }
 
 void GamepadAdapter::closeBus() {
+    // Stop all reader threads first while holding the lock long enough to take
+    // a snapshot of the serials, then drop the lock to join (joining inside
+    // the lock would deadlock against the reader trying to take it for the
+    // RumbleCallback copy).
+    std::vector<uint32_t> serials;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        serials.reserve(devices_.size());
+        for (auto& [serial, _] : devices_) serials.push_back(serial);
+    }
+    for (uint32_t serial : serials) {
+        std::lock_guard<std::mutex> lk(mtx_);
+        stopReader(serial);
+    }
+
     std::lock_guard<std::mutex> lk(mtx_);
-    for (auto& [serial, fd] : fds_) {
-        if (fd >= 0) {
-            (void)::ioctl(fd, UI_DEV_DESTROY);
-            ::close(fd);
+    for (auto& [serial, dev] : devices_) {
+        if (dev.fd >= 0) {
+            (void)::ioctl(dev.fd, UI_DEV_DESTROY);
+            ::close(dev.fd);
         }
     }
-    fds_.clear();
+    devices_.clear();
     busOpen_ = false;
 }
 
@@ -76,13 +94,21 @@ bool GamepadAdapter::isBusOpen() const {
 }
 
 int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
-    int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    // O_RDWR (not O_WRONLY): we read FF_UPLOAD/FF_ERASE/EV_FF events back from
+    // the same fd in the reader thread.
+    int fd = ::open("/dev/uinput", O_RDWR | O_NONBLOCK);
     if (fd < 0) return -1;
 
     // Enable event classes.
     if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
+    // Force-feedback: enable the EV_FF event class plus the FF_RUMBLE
+    // capability so games see the virtual pad as having dual-motor rumble.
+    // Without these the kernel rejects every UI_FF_UPLOAD with -EOPNOTSUPP and
+    // SDL/Steam Input report the pad as "no haptics".
+    if (::ioctl(fd, UI_SET_EVBIT, EV_FF) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_FFBIT, FF_RUMBLE) < 0) goto fail;
 
     for (int btn : BUTTONS) {
         if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
@@ -109,6 +135,9 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
         usetup.id.vendor = ds4 ? DS4_VID : XBOX_VID;
         usetup.id.product = ds4 ? DS4_PID : XBOX_PID;
         usetup.id.version = ds4 ? 0x0100 : 0x0110;
+        // Number of effects the kernel will let games upload before recycling
+        // slots. 16 matches what the in-tree xpad driver advertises.
+        usetup.ff_effects_max = 16;
         const char* name = ds4 ? "Satellite Virtual DualShock 4" : "Satellite Virtual Xbox 360 Pad";
         std::snprintf(usetup.name, sizeof(usetup.name), "%s #%u", name, serial);
         if (::ioctl(fd, UI_DEV_SETUP, &usetup) < 0) goto fail;
@@ -125,33 +154,41 @@ fail:
 bool GamepadAdapter::pluginDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (!busOpen_) return false;
-    if (fds_.count(serial)) return false;
+    if (devices_.count(serial)) return false;
     int fd = openUinputDevice(serial, /*ds4=*/false);
     if (fd < 0) return false;
-    fds_[serial] = fd;
+    auto& dev = devices_[serial];
+    dev.fd = fd;
+    dev.ds4 = false;
+    startReader(serial, dev);
     return true;
 }
 
 bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (!busOpen_) return false;
-    if (fds_.count(serial)) return false;
+    if (devices_.count(serial)) return false;
     int fd = openUinputDevice(serial, /*ds4=*/true);
     if (fd < 0) return false;
-    fds_[serial] = fd;
+    auto& dev = devices_[serial];
+    dev.fd = fd;
+    dev.ds4 = true;
+    startReader(serial, dev);
     return true;
 }
 
 void GamepadAdapter::unplugDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(mtx_);
-    auto it = fds_.find(serial);
-    if (it == fds_.end()) return;
-    int fd = it->second;
-    if (fd >= 0) {
-        (void)::ioctl(fd, UI_DEV_DESTROY);
-        ::close(fd);
+    auto it = devices_.find(serial);
+    if (it == devices_.end()) return;
+    stopReader(serial); // joins reader thread; safe to take the fd after
+    it = devices_.find(serial);
+    if (it == devices_.end()) return; // stopReader didn't erase, but be defensive
+    if (it->second.fd >= 0) {
+        (void)::ioctl(it->second.fd, UI_DEV_DESTROY);
+        ::close(it->second.fd);
     }
-    fds_.erase(it);
+    devices_.erase(it);
 }
 
 // ── Report submission ───────────────────────────────────────────────────────
@@ -184,9 +221,9 @@ int32_t clampS16(int32_t v) {
 
 bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     std::lock_guard<std::mutex> lk(mtx_);
-    auto it = fds_.find(serial);
-    if (it == fds_.end() || it->second < 0) return false;
-    int fd = it->second;
+    auto it = devices_.find(serial);
+    if (it == devices_.end() || it->second.fd < 0) return false;
+    int fd = it->second.fd;
 
     bool ok = true;
     // Sticks. XUSB Y is positive-up; evdev Y is positive-down — invert.
@@ -235,4 +272,139 @@ bool GamepadAdapter::submitDS4Report(uint32_t serial, const GamepadReport& repor
     // evdev button/axis codes — SDL2 / Steam Input identify it as a DualShock 4
     // via the USB IDs and remap face buttons accordingly.
     return submitReport(serial, report);
+}
+
+// ── Rumble callback registration ────────────────────────────────────────────
+
+void GamepadAdapter::setRumbleCallback(RumbleCallback cb) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    rumbleCb_ = std::move(cb);
+}
+
+// Caller holds mtx_.
+void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
+    int fds[2] = {-1, -1};
+    if (::pipe(fds) != 0) return;
+    // Non-blocking on the read side so a spurious wake doesn't stall the
+    // reader if the write side closes without a byte.
+    int flags = ::fcntl(fds[0], F_GETFL, 0);
+    if (flags >= 0) ::fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+    dev.wakePipeRead = fds[0];
+    dev.wakePipeWrite = fds[1];
+    dev.readerRunning.store(true, std::memory_order_release);
+    int devFd = dev.fd;
+    int wakeFd = dev.wakePipeRead;
+    bool isDS4 = dev.ds4;
+    dev.readerThread = std::thread([this, serial, devFd, wakeFd, isDS4] {
+        readerLoop(serial, devFd, wakeFd, isDS4);
+    });
+}
+
+// Caller holds mtx_. Mirrors the Windows ViGEm pattern: extract under the
+// lock, drop it for the join, retake it. Joining inline would deadlock with
+// the reader's lock acquisition for the rumble callback copy.
+void GamepadAdapter::stopReader(uint32_t serial) {
+    auto it = devices_.find(serial);
+    if (it == devices_.end()) return;
+    auto& dev = it->second;
+    if (!dev.readerRunning.exchange(false, std::memory_order_acq_rel)) return;
+    int wakeWrite = dev.wakePipeWrite;
+    int wakeRead = dev.wakePipeRead;
+    dev.wakePipeWrite = -1;
+    dev.wakePipeRead = -1;
+    std::thread th = std::move(dev.readerThread);
+    if (wakeWrite >= 0) {
+        // One byte is enough — the reader's poll wakes immediately and exits.
+        const char b = 0;
+        (void)::write(wakeWrite, &b, 1);
+    }
+    mtx_.unlock();
+    if (th.joinable()) th.join();
+    if (wakeWrite >= 0) ::close(wakeWrite);
+    if (wakeRead >= 0) ::close(wakeRead);
+    mtx_.lock();
+}
+
+void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4) {
+    (void)isDS4; // FF_RUMBLE shape is identical for Xbox and DS4 profiles.
+
+    while (true) {
+        struct pollfd pfds[2]{};
+        pfds[0].fd = fd;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = wakeFd;
+        pfds[1].events = POLLIN;
+        int rc = ::poll(pfds, 2, -1);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        if (pfds[1].revents & POLLIN) return; // unplug / closeBus
+
+        if (!(pfds[0].revents & POLLIN)) continue;
+
+        struct input_event ev{};
+        ssize_t n = ::read(fd, &ev, sizeof(ev));
+        if (n != (ssize_t)sizeof(ev)) {
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) continue;
+            return;
+        }
+
+        // Three event types matter to us:
+        //   EV_UINPUT.UI_FF_UPLOAD — game registered a new effect; reply with
+        //     the assigned effect-id and cache its strong/weak magnitudes.
+        //   EV_UINPUT.UI_FF_ERASE  — game freed an effect-id; drop the cached
+        //     entry. Must be acknowledged or the kernel rejects future uploads.
+        //   EV_FF                  — game pressed play/stop on an effect-id.
+        //     value > 0 plays, value == 0 stops; magnitudes come from the
+        //     cached effect descriptor.
+        if (ev.type == EV_UINPUT && ev.code == UI_FF_UPLOAD) {
+            struct uinput_ff_upload upload{};
+            upload.request_id = ev.value;
+            if (::ioctl(fd, UI_BEGIN_FF_UPLOAD, &upload) == 0) {
+                upload.retval = 0;
+                int effectId = upload.effect.id;
+                if (upload.effect.type == FF_RUMBLE) {
+                    Device::EffectMags m{
+                        upload.effect.u.rumble.strong_magnitude,
+                        upload.effect.u.rumble.weak_magnitude,
+                    };
+                    std::lock_guard<std::mutex> lk(mtx_);
+                    auto it = devices_.find(serial);
+                    if (it != devices_.end()) it->second.effects[effectId] = m;
+                }
+                (void)::ioctl(fd, UI_END_FF_UPLOAD, &upload);
+            }
+        } else if (ev.type == EV_UINPUT && ev.code == UI_FF_ERASE) {
+            struct uinput_ff_erase erase{};
+            erase.request_id = ev.value;
+            if (::ioctl(fd, UI_BEGIN_FF_ERASE, &erase) == 0) {
+                erase.retval = 0;
+                {
+                    std::lock_guard<std::mutex> lk(mtx_);
+                    auto it = devices_.find(serial);
+                    if (it != devices_.end()) it->second.effects.erase(erase.effect_id);
+                }
+                (void)::ioctl(fd, UI_END_FF_ERASE, &erase);
+            }
+        } else if (ev.type == EV_FF) {
+            int effectId = ev.code;
+            int playValue = ev.value; // 0 = stop, >0 = play
+            RumbleReport rr{};
+            RumbleCallback cb;
+            {
+                std::lock_guard<std::mutex> lk(mtx_);
+                auto dit = devices_.find(serial);
+                if (dit == devices_.end()) continue;
+                auto eit = dit->second.effects.find(effectId);
+                if (playValue > 0 && eit != dit->second.effects.end()) {
+                    rr.strongMagnitude = eit->second.strong;
+                    rr.weakMagnitude = eit->second.weak;
+                }
+                // playValue == 0 → keep magnitudes at 0 (stop)
+                cb = rumbleCb_;
+            }
+            if (cb) cb(serial, rr);
+        }
+    }
 }
