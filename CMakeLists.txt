@@ -464,6 +464,24 @@ set_target_properties(test_dsu_protocol PROPERTIES
 )
 add_test(NAME dsu_protocol COMMAND test_dsu_protocol)
 
+# ── mDNS protocol tests (portable — no networking) ───────────────────────────
+add_executable(test_mdns_protocol
+    tests/test_mdns_protocol.cpp
+    src/net/mdns_protocol.cpp
+)
+target_include_directories(test_mdns_protocol PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+if(WIN32 AND MINGW)
+    target_compile_options(test_mdns_protocol PRIVATE -O2 -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(test_mdns_protocol PRIVATE /O2 /W4)
+endif()
+set_target_properties(test_mdns_protocol PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME mdns_protocol COMMAND test_mdns_protocol)
+
 # ── Linux platform tests ────────────────────────────────────────────────────
 # Exercises the Linux-only adapters that don't need root/uinput/D-Bus:
 # JSON helpers, config persistence, XDG autostart .desktop file handling,

@@ -25,12 +25,38 @@ etc.) without hardcoding or guessing.
 
 ### Default Ports
 
-| Port | Purpose       | Config key |
-|------|---------------|------------|
-| 9876 | UDP gamepad   | `udpPort`  |
-| 9877 | HTTP API/UI   | `webPort`  |
-| 9878 | TCP pairing   | `pairPort` |
-| 9879 | UDP discovery | `discPort` |
+| Port  | Purpose                        | Config key      |
+|-------|--------------------------------|-----------------|
+| 9876  | UDP gamepad                    | `udpPort`       |
+| 9877  | HTTP API/UI                    | `webPort`       |
+| 9878  | TCP pairing                    | `pairPort`      |
+| 9879  | UDP discovery (legacy beacon)  | `discPort`      |
+| 5353  | mDNS (`_satellite._udp.local.`) | (RFC 6762 fixed) |
+| 26760 | Cemuhook DSU server            | `dsuPort`       |
+
+## mDNS / Bonjour Service Discovery
+
+In parallel with the legacy UDP broadcast beacon (above), the server
+advertises a Bonjour service so senders on subnets that block broadcast
+(corporate VLANs, many IoT segments) and Apple devices using the native
+Bonjour stack can still find it.
+
+* **Service type:** `_satellite._udp.local.`
+* **Multicast group / port:** 224.0.0.251:5353 (per RFC 6762)
+* **TXT records:** `udp=<udpPort>`, `pair=<pairPort>`, `http=<webPort>`
+* **SRV target:** `<host-label>.local.` on `<udpPort>`
+
+Senders SHOULD prefer the mDNS path when available. The legacy UDP
+broadcast stays in place for one release as a fallback (gated behind
+`Config::discoveryBroadcastEnabled`) and is removed in the next
+release after that.
+
+The encoder / parser surface for the mDNS protocol records lives in
+`src/net/mdns_protocol.{h,cpp}` and is exercised by
+`tests/test_mdns_protocol.cpp` (39 cases covering DNS name encoding,
+compression-pointer decoding, packet parsing, and response building).
+The platform-specific multicast group join / socket bind lives in
+`src/net/mdns_responder.{h,cpp}` (per-platform follow-up).
 
 ## Architecture — Hexagonal (Ports & Adapters)
 
