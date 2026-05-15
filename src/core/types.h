@@ -325,6 +325,14 @@ struct Config {
     // skipVersion:     a version the user explicitly told us to skip.
     //                  We won't notify again until something newer
     //                  than this appears.
+    // Cemuhook DSU server config (Task 2.1). The server lets emulators on
+    // the satellite host (or the LAN, when dsuBindAddr is opened up)
+    // subscribe to forwarded motion data. Default-on but loopback-only —
+    // opening 0.0.0.0 is a deliberate operator opt-in.
+    bool dsuEnabled = true;
+    int dsuPort = 26760;
+    std::string dsuBindAddr = "127.0.0.1";
+
     std::string updateChannel = UPDATE_CHANNEL_STABLE;
     bool autoCheck = true;
     bool autoDownload = false;

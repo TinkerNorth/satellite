@@ -22,6 +22,7 @@
 #include "net/webserver.h"
 #include "net/pairing.h"
 #include "net/discovery.h"
+#include "net/dsu_server.h"
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
@@ -111,6 +112,13 @@ int main(int argc, const char* argv[]) {
         std::thread pairTh(pairingThread);
         std::thread discTh(discoveryThread);
 
+        std::unique_ptr<DsuServer> dsu;
+        if (g_config.dsuEnabled) {
+            dsu = std::make_unique<DsuServer>(svc, g_appRunning, g_wantListen,
+                                              g_config.dsuBindAddr, g_config.dsuPort);
+            dsu->start();
+        }
+
         NSApplication* app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
@@ -125,6 +133,7 @@ int main(int argc, const char* argv[]) {
         updateService.stop();
         g_updateService = nullptr;
 
+        if (dsu) { dsu->stop(); }
         recvTh.join();
         httpTh.join();
         pairTh.join();

@@ -140,6 +140,18 @@ class SessionService {
     };
     ConnectionsSnapshot getConnectionsSnapshot() const;
 
+    // Per-slot motion snapshot for the DSU server. Returns at most
+    // `dsu::MAX_SLOTS` (4) entries — the first N active controllers in
+    // (token, ctrlIdx) iteration order. Each entry includes whether the
+    // controller currently has a cached MotionReport (false during the
+    // window between ControllerAdd and the first MotionData packet).
+    struct MotionSlot {
+        bool occupied = false;
+        MotionReport motion{};
+        bool hasMotion = false;
+    };
+    std::array<MotionSlot, 4> getMotionSlotsForDsu() const;
+
     // Check if a deviceId is already connected.
     bool isDeviceConnected(const std::string& deviceId) const;
 

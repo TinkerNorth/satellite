@@ -39,6 +39,8 @@ set(SATELLITE_NET_SOURCES
     src/net/webserver.cpp
     src/net/pairing.cpp
     src/net/discovery.cpp
+    src/net/dsu_protocol.cpp
+    src/net/dsu_server.cpp
 )
 
 # Portable adapters (thin shims over platform-specific free functions).
@@ -441,6 +443,26 @@ set_target_properties(test_session_service PROPERTIES
 )
 
 add_test(NAME session_service COMMAND test_session_service)
+
+# ── DSU protocol tests (portable — no networking) ────────────────────────────
+# Cemuhook DSU server protocol encoders / parsers. Lives in src/net but has
+# no socket dependencies, so it builds cleanly on every platform.
+add_executable(test_dsu_protocol
+    tests/test_dsu_protocol.cpp
+    src/net/dsu_protocol.cpp
+)
+target_include_directories(test_dsu_protocol PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+if(WIN32 AND MINGW)
+    target_compile_options(test_dsu_protocol PRIVATE -O2 -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(test_dsu_protocol PRIVATE /O2 /W4)
+endif()
+set_target_properties(test_dsu_protocol PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME dsu_protocol COMMAND test_dsu_protocol)
 
 # ── Linux platform tests ────────────────────────────────────────────────────
 # Exercises the Linux-only adapters that don't need root/uinput/D-Bus:

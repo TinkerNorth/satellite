@@ -531,6 +531,24 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
     return snap;
 }
 
+std::array<SessionService::MotionSlot, 4> SessionService::getMotionSlotsForDsu() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::array<MotionSlot, 4> out{};
+    int slot = 0;
+    for (auto& [tok, conn] : connections_) {
+        if (slot >= 4) break;
+        for (auto& ctrl : conn.controllers) {
+            if (slot >= 4) break;
+            if (!ctrl.active) continue;
+            out[slot].occupied = true;
+            out[slot].motion = ctrl.lastMotion;
+            out[slot].hasMotion = ctrl.lastMotionValid;
+            ++slot;
+        }
+    }
+    return out;
+}
+
 bool SessionService::isDeviceConnected(const std::string& deviceId) const {
     std::lock_guard<std::mutex> lk(mtx_);
     for (auto& [tok, c] : connections_) {
