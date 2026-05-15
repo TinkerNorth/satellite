@@ -27,6 +27,11 @@ SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogP
     // notification workers in its destructor before the callback could fire.
     backend_.setRumbleCallback(
         [this](uint32_t serial, const RumbleReport& r) { handleRumbleFromBackend(serial, r); });
+    // Independent lightbar callback (Task 1.4) — decouples colour changes
+    // from rumble so a game that only writes lightbar still drives the LED.
+    backend_.setLightbarCallback([this](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
+        handleLightbarFromBackend(serial, r, g, b);
+    });
 }
 
 // ── Internal helpers (caller must hold mtx_) ────────────────────────────────
@@ -385,6 +390,59 @@ bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const Mot
     // impl returns false. We deliberately don't treat that as an error — motion
     // is best-effort, and the cache still serves the web UI.
     return backend_.submitMotion(ctrl.serialNo, report);
+}
+
+bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
+                                        const TouchpadReport& report) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return false;
+    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
+
+    Controller& ctrl = it->second.controllers[ctrlIdx];
+    if (!ctrl.active) return false;
+
+    // Cache for the web-UI debug pane regardless of backend support.
+    ctrl.lastTouchpad = report;
+    ctrl.lastTouchpadValid = true;
+
+    return backend_.submitTouchpad(ctrl.serialNo, report);
+}
+
+void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
+    std::lock_guard<std::mutex> lk(mtx_);
+
+    // Resolve serial → (connection, ctrlIdx) via the same scan the rumble
+    // callback uses. O(connections × MAX_CONTROLLERS_PER_CONN) but bounded
+    // by the global 16-controller cap; the cost is dominated by the
+    // notification-thread context switch, not the scan.
+    Connection* foundConn = nullptr;
+    Controller* foundCtrl = nullptr;
+    for (auto& [tok, conn] : connections_) {
+        for (auto& ctrl : conn.controllers) {
+            if (ctrl.active && ctrl.serialNo == serial) {
+                foundConn = &conn;
+                foundCtrl = &ctrl;
+                break;
+            }
+        }
+        if (foundCtrl != nullptr) break;
+    }
+    if (foundCtrl == nullptr || foundConn == nullptr) return;
+
+    // Coalesce: don't re-send if the colour is unchanged. Same shape as the
+    // rumble coalesce — saves wire when a game holds a constant colour
+    // across frames.
+    if (foundCtrl->lastLightbarValid && foundCtrl->lightbarR == r && foundCtrl->lightbarG == g &&
+        foundCtrl->lightbarB == b) {
+        return;
+    }
+    foundCtrl->lightbarR = r;
+    foundCtrl->lightbarG = g;
+    foundCtrl->lightbarB = b;
+    foundCtrl->lastLightbarValid = true;
+
+    client_.sendLightbar(*foundConn, foundCtrl->index, r, g, b);
 }
 
 bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,

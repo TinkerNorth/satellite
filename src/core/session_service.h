@@ -82,6 +82,21 @@ class SessionService {
     // resolved to an active controller).
     bool handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx, const BatteryReport& report);
 
+    // Handle a touchpad sample from the dish (MSG_TOUCHPAD). Caches on the
+    // Controller for the web UI debug pane and forwards to the backend's
+    // touchpad channel via IGamepadPort::submitTouchpad. The default port
+    // impl returns false; ViGEm DS4 / uhid DualSense overrides will wire
+    // it into DS4_REPORT_EX touchpad fields. False does NOT indicate an
+    // error — senders keep streaming touchpad regardless.
+    bool handleTouchpadData(uint32_t token, uint8_t ctrlIdx, const TouchpadReport& report);
+
+    // Handle a lightbar change fired by the platform gamepad backend's
+    // dedicated lightbar callback (independent of rumble). Resolves
+    // `serial` → (connection, ctrlIdx), coalesces against the controller's
+    // last forwarded colour, and invokes IClientPort::sendLightbar only on
+    // unique updates. Called from the backend's notification thread.
+    void handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b);
+
     // ── Pre-decrypt helpers (called under lock briefly) ─────────────────
 
     // Look up a connection's key and last counter for decryption.

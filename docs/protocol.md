@@ -111,6 +111,8 @@ Application/extension types should use 0x0100+.
 | 0x0009 | Rumble            | controller_index(1B) + rumble fields (7..10B) | 4+8..11 B   | 40..43 B      | server → client |
 | 0x000A | Motion (IMU)      | controller_index(1B) + MotionReport(16B)      | 4+17 = 21 B | 49 B          | client → server |
 | 0x000B | Battery           | controller_index(1B) + level(1B) + status(1B) | 4+3 = 7 B   | 35 B          | client → server |
+| 0x000C | Touchpad          | controller_index(1B) + flags(1B) + finger0(5B) + finger1(5B) | 4+12 = 16 B | 44 B    | client → server |
+| 0x000D | Lightbar          | controller_index(1B) + r(1B) + g(1B) + b(1B)  | 4+4 = 8 B   | 36 B          | server → client |
 
 ### 0x0001 — Gamepad Data
 
@@ -348,6 +350,59 @@ Receivers reject `level` values in `101..254` and `status` values outside
 the documented set. Senders that can only read the charging state but not
 the percentage SHOULD send `level = 0xFF` plus the known status; senders
 that have no battery information at all SHOULD NOT send 0x000B at all.
+
+### 0x000C — Touchpad
+
+```
+[controller_index (1B)]
+[flags (1B)]
+[finger0_trackingId (1B)] [finger0_x (2B, host LE)] [finger0_y (2B, host LE)]
+[finger1_trackingId (1B)] [finger1_x (2B, host LE)] [finger1_y (2B, host LE)]
+```
+
+Two-finger touchpad report for DS4 / DualSense trackpads. The receiver
+caches the most recent sample per `(token, controller_index)` for the web
+UI's debug pane and forwards it to backends that have a touchpad surface
+(future Windows DS4 / Linux `uhid` DualSense — the default `IGamepadPort`
+impl drops silently).
+
+| Field                  | Size | Description                                                |
+|------------------------|------|------------------------------------------------------------|
+| `controller_index`     | 1 B  | Controller index on this client (0..15)                    |
+| `flags`                | 1 B  | bit 0 = finger0 active; bit 1 = finger1 active; bit 2 = clicky button pressed |
+| `fingerN_trackingId`   | 1 B  | Monotonic per-finger id; wraps freely                      |
+| `fingerN_x` / `_y`     | 2 B  | Signed int16, full int16 range mapped to the touchpad face |
+
+**Coordinates** are normalised int16 (`-32768..32767`) on both axes so the
+wire is resolution-independent — the receiver maps to whichever virtual
+device's coordinate space it owns (DS4: 1920×943; mouse: monitor pixels).
+
+**Byte order.** `host LE` mirrors `MotionReport`; senders write LE
+explicitly because the receiver decodes via byte-shift, not `memcpy`.
+
+### 0x000D — Lightbar
+
+```
+[controller_index (1B)] [r (1B)] [g (1B)] [b (1B)]
+```
+
+Emitted by the server when the host game writes a new lightbar colour to
+the virtual DS4 / DualSense's lightbar channel. **Decoupled from
+0x0009 Rumble** so a game that only sets a colour (no vibration) still
+drives the LED on the connected pad.
+
+The receiver coalesces identical back-to-back colours — sending the same
+RGB every frame at 60 Hz is wasteful when the controller already shows it.
+
+| Field              | Size | Description                                       |
+|--------------------|------|---------------------------------------------------|
+| `controller_index` | 1 B  | Controller index on the target client             |
+| `r` / `g` / `b`    | 3 B  | Lightbar colour, 0..255 per channel               |
+
+**Backwards compatibility.** Senders SHOULD prefer 0x000D over the
+deprecated trailing R/G/B bytes in 0x0009 Rumble when both arrive for the
+same controller. Pre-2026 satellites that lack 0x000D will continue to
+emit the trailing R/G/B in 0x0009 as a fallback.
 
 ## Heartbeat / Keepalive
 

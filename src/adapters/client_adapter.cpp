@@ -137,3 +137,18 @@ void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,
     }
     sendEncryptedPacket(conn, inner, 4 + payloadLen);
 }
+
+void ClientAdapter::sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
+                                 uint8_t b) {
+    // Wire payload: ctrlIdx(1) + r(1) + g(1) + b(1) = 4 bytes.
+    uint8_t inner[4 + 4];
+    inner[0] = (uint8_t)(MSG_LIGHTBAR >> 8);
+    inner[1] = (uint8_t)(MSG_LIGHTBAR);
+    inner[2] = 0; // payload length high
+    inner[3] = 4; // payload length low
+    inner[4] = ctrlIdx;
+    inner[5] = r;
+    inner[6] = g;
+    inner[7] = b;
+    sendEncryptedPacket(conn, inner, sizeof(inner));
+}

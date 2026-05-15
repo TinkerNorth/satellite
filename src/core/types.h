@@ -42,6 +42,8 @@ inline const uint16_t MSG_CONTROLLER_TYPE = 0x0008;
 inline const uint16_t MSG_RUMBLE = 0x0009;
 inline const uint16_t MSG_MOTION = 0x000A;
 inline const uint16_t MSG_BATTERY = 0x000B;
+inline const uint16_t MSG_TOUCHPAD = 0x000C;
+inline const uint16_t MSG_LIGHTBAR = 0x000D;
 
 // Controller ACK result codes (wire values are stable across platforms; only
 // the C++ identifier changed from ACK_ERR_VIGEM_UNAVAIL → ACK_ERR_BACKEND_UNAVAIL).
@@ -177,6 +179,38 @@ struct BatteryReport {
     uint8_t status = BATTERY_STATUS_UNKNOWN;
 };
 
+// ── Touchpad report (sender → satellite, DS4 / DualSense trackpad) ──────────
+// Two simultaneous finger contacts max (matching the DS4 / DualSense hardware
+// surface). Coordinates are normalized int16 (-32768..32767) on both axes so
+// the wire is resolution-independent — the receiver maps to whichever virtual
+// device's coordinate space it owns (DS4: 1920×943, mouse: monitor pixels).
+//
+// Each finger carries a "tracking ID" so the receiver can correlate a finger
+// across frames even when finger 0 lifts and finger 1 keeps contact. IDs are
+// monotonically increasing per controller; the sender wraps freely.
+//
+// `buttonPressed` is the dedicated clicky-trackpad button (DS4 + DualSense
+// both have one). It is logically independent from any touch.
+struct TouchpadFinger {
+    bool active = false;
+    uint8_t trackingId = 0;
+    int16_t x = 0;
+    int16_t y = 0;
+};
+
+struct TouchpadReport {
+    TouchpadFinger finger0{};
+    TouchpadFinger finger1{};
+    bool buttonPressed = false;
+};
+
+// Wire layout for MSG_TOUCHPAD payload (after the 1-byte ctrlIdx):
+//   flags(1): bit0=finger0_active, bit1=finger1_active, bit2=button_pressed
+//   finger0_trackingId(1) + finger0_x(2 LE) + finger0_y(2 LE)
+//   finger1_trackingId(1) + finger1_x(2 LE) + finger1_y(2 LE)
+// = 1 + 5 + 5 = 11 bytes after ctrlIdx → 12 bytes total inner payload.
+inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES = 11;
+
 inline const char* batteryStatusName(uint8_t status) {
     switch (status) {
     case BATTERY_STATUS_DISCHARGING:
@@ -213,6 +247,20 @@ struct Controller {
     // device's battery channel where the backend supports it.
     BatteryReport lastBattery{};
     bool lastBatteryValid = false;
+    // Most recent touchpad sample (sender → satellite, DS4 / DualSense
+    // trackpad). Backends with a touchpad surface (ViGEm DS4) forward
+    // these into DS4_REPORT_EX touchpad fields; the rest cache for the
+    // web UI debug pane.
+    TouchpadReport lastTouchpad{};
+    bool lastTouchpadValid = false;
+    // Most recent lightbar color emitted by the game on the receiver host.
+    // The satellite-side `vigem_adapter` lightbar callback writes this and
+    // the session-service queues a MSG_LIGHTBAR (decoupled from MSG_RUMBLE
+    // so a colour-only update doesn't have to ride on a rumble event).
+    uint8_t lightbarR = 0;
+    uint8_t lightbarG = 0;
+    uint8_t lightbarB = 0;
+    bool lastLightbarValid = false;
 };
 
 // ── Connection (per paired client session) ──────────────────────────────────

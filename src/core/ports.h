@@ -83,6 +83,27 @@ class IGamepadPort {
     virtual bool submitBattery(uint32_t /*serial*/, const BatteryReport& /*report*/) {
         return false;
     }
+
+    // Submit a touchpad sample to the virtual device. Defaults to no-op so
+    // existing adapters compile unchanged. ViGEm DS4 (Windows) and uhid
+    // DualSense (Linux, future) override this to write the finger
+    // coordinates + click button into DS4_REPORT_EX's touchpad fields.
+    // The SessionService still caches the latest sample on the Controller
+    // for the web UI debug pane regardless of backend support.
+    virtual bool submitTouchpad(uint32_t /*serial*/, const TouchpadReport& /*report*/) {
+        return false;
+    }
+
+    // Install a lightbar sink. The Windows ViGEm DS4 callback fires for every
+    // lightbar colour change written by the host game (independent of rumble,
+    // which we coalesce on its own callback). The SessionService installs
+    // this at construction so colour changes can be queued onto MSG_LIGHTBAR
+    // without piggy-backing on rumble.
+    //
+    // Backends without an independent lightbar channel (Xbox 360 ViGEm,
+    // uinput) install a no-op stub.
+    using LightbarCallback = std::function<void(uint32_t serial, uint8_t r, uint8_t g, uint8_t b)>;
+    virtual void setLightbarCallback(LightbarCallback /*cb*/) {}
 };
 
 // ── Outbound: Send encrypted UDP packets to clients ─────────────────────────
@@ -126,8 +147,24 @@ class IClientPort {
     //
     // Senders that don't recognise the trailing lightbar bytes simply ignore
     // them; the leading 8 bytes are the mandatory subset every dish parses.
+    //
+    // NOTE: as of Task 1.4 (MSG_LIGHTBAR / 0x000D) the lightbar tail is
+    // *deprecated for new senders*. The receiver still emits it for
+    // pre-1.4 dish builds that haven't been updated to subscribe to the
+    // dedicated MSG_LIGHTBAR stream; new builds should treat the colour
+    // bytes in MSG_RUMBLE as a fallback and prefer MSG_LIGHTBAR when both
+    // arrive for the same controller.
     virtual void sendRumble(const Connection& conn, uint8_t ctrlIdx,
                             const RumbleReport& report) = 0;
+
+    // Send a lightbar (0x000D) update to the dish. Decouples colour changes
+    // from rumble — games that only set lightbar (no vibration) now drive
+    // the LED through this dedicated stream. Wire payload:
+    //
+    //   ctrlIdx : u8
+    //   r, g, b : u8 × 3
+    virtual void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
+                              uint8_t b) = 0;
 };
 
 // ── Outbound: Configuration persistence ─────────────────────────────────────

@@ -32,6 +32,8 @@ class ClientAdapter : public IClientPort {
     broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
                           bool backendAvailable, uint8_t totalActiveControllers) override;
     void sendRumble(const Connection& conn, uint8_t ctrlIdx, const RumbleReport& report) override;
+    void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
+                      uint8_t b) override;
 
   private:
     SOCKET sock_ = INVALID_SOCKET;

@@ -197,6 +197,33 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 svc.handleBatteryUpdate(token, ctrlIdx, report);
                 break;
             }
+            case MSG_TOUCHPAD: {
+                // Wire payload: ctrlIdx(1) + flags(1) + finger0(1+2+2) +
+                // finger1(1+2+2) = 12 bytes.
+                if (msgLen < 12) break;
+                uint8_t ctrlIdx = payload[0];
+                uint8_t flags = payload[1];
+                TouchpadReport report;
+                report.finger0.active = (flags & 0x01) != 0;
+                report.finger1.active = (flags & 0x02) != 0;
+                report.buttonPressed = (flags & 0x04) != 0;
+                report.finger0.trackingId = payload[2];
+                report.finger0.x =
+                    static_cast<int16_t>(static_cast<uint16_t>(payload[3]) |
+                                         (static_cast<uint16_t>(payload[4]) << 8));
+                report.finger0.y =
+                    static_cast<int16_t>(static_cast<uint16_t>(payload[5]) |
+                                         (static_cast<uint16_t>(payload[6]) << 8));
+                report.finger1.trackingId = payload[7];
+                report.finger1.x =
+                    static_cast<int16_t>(static_cast<uint16_t>(payload[8]) |
+                                         (static_cast<uint16_t>(payload[9]) << 8));
+                report.finger1.y =
+                    static_cast<int16_t>(static_cast<uint16_t>(payload[10]) |
+                                         (static_cast<uint16_t>(payload[11]) << 8));
+                svc.handleTouchpadData(token, ctrlIdx, report);
+                break;
+            }
             default:
                 break;
             }
