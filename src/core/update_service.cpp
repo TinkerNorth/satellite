@@ -134,6 +134,7 @@ UpdateStatusSnapshot UpdateService::snapshot() const {
     s.bytesDownloaded = bytesDownloaded_;
     s.totalBytes = bytesTotal_;
     s.message = lastError_;
+    s.failedPhase = failedPhase_;
     s.platformId = updater_.platformId();
     {
         std::lock_guard<std::mutex> ck(configMtx_);
@@ -168,6 +169,7 @@ void UpdateService::skipVersion(const std::string& version) {
             info_ = {};
             state_ = UpdateState::Idle;
             lastError_.clear();
+            failedPhase_ = UpdateState::Idle;
         }
     }
     if (persistCb_) persistCb_();
@@ -326,6 +328,7 @@ void UpdateService::doCheck(bool userInitiated) {
         std::lock_guard<std::mutex> lk(mtx_);
         state_ = UpdateState::Checking;
         lastError_.clear();
+        failedPhase_ = UpdateState::Idle;
     }
     fireBroadcast();
     log_.logMsg(LogLevel::INFO, "updater",
@@ -353,6 +356,7 @@ void UpdateService::doCheck(bool userInitiated) {
             std::lock_guard<std::mutex> lk(mtx_);
             state_ = UpdateState::Error;
             lastError_ = err.empty() ? "Update check failed (network or API error)" : err;
+            failedPhase_ = UpdateState::Checking;
         }
         log_.logMsg(LogLevel::WARN, "updater", "Check failed: " + err);
         fireBroadcast();
@@ -415,6 +419,7 @@ void UpdateService::doDownload() {
         }
         state_ = UpdateState::Downloading;
         lastError_.clear();
+        failedPhase_ = UpdateState::Idle;
         bytesDownloaded_ = 0;
         bytesTotal_ = info.assetSize;
         cancelFlag_ = false;
@@ -446,6 +451,7 @@ void UpdateService::doDownload() {
             std::lock_guard<std::mutex> lk(mtx_);
             state_ = UpdateState::Error;
             lastError_ = err.empty() ? "Download failed" : err;
+            failedPhase_ = UpdateState::Downloading;
         }
         log_.logMsg(LogLevel::WARN, "updater", "Download failed: " + err);
         fireBroadcast();
@@ -477,6 +483,7 @@ void UpdateService::doVerify() {
             std::lock_guard<std::mutex> lk(mtx_);
             state_ = UpdateState::Error;
             lastError_ = err.empty() ? "Signature/checksum verification failed" : err;
+            failedPhase_ = UpdateState::Verifying;
         }
         log_.logMsg(LogLevel::ERR, "updater", "Verify failed: " + err);
         fireBroadcast();
@@ -510,6 +517,7 @@ void UpdateService::doInstall() {
             std::lock_guard<std::mutex> lk(mtx_);
             state_ = UpdateState::Error;
             lastError_ = err.empty() ? "Failed to launch installer" : err;
+            failedPhase_ = UpdateState::Installing;
         }
         log_.logMsg(LogLevel::ERR, "updater", "Install failed: " + err);
         fireBroadcast();

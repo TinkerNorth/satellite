@@ -164,7 +164,7 @@ function updatesRender(slotId) {
       break;
     case UPDATE_STATE_ERROR:
       banner.classList.add('update-banner-error');
-      title.textContent = 'Update failed';
+      title.textContent = updateErrorTitle(s.failedPhase);
       detail.textContent = s.message || 'Unknown error';
       acts.appendChild(makeBtn('btn-undo', 'Try Again', () => updatesCheck()));
       break;
@@ -354,6 +354,19 @@ function formatRelativeEpoch(epoch) {
   if (ageSec < 3600) return Math.floor(ageSec / 60) + ' min ago';
   if (ageSec < 86400) return Math.floor(ageSec / 3600) + ' h ago';
   return Math.floor(ageSec / 86400) + ' d ago';
+}
+// Title for the Error banner. The server sets `failedPhase` to the phase
+// the updater was running when it tripped — distinguishing "couldn't even
+// reach the update server" from "download/verify/install failed" so the
+// banner doesn't imply an install was attempted when only the check ran.
+function updateErrorTitle(failedPhase) {
+  switch (failedPhase) {
+    case UPDATE_STATE_CHECKING:    return 'Couldn’t check for updates';
+    case UPDATE_STATE_DOWNLOADING: return 'Update download failed';
+    case UPDATE_STATE_VERIFYING:   return 'Update verification failed';
+    case UPDATE_STATE_INSTALLING:  return 'Update install failed';
+    default:                       return 'Update failed';
+  }
 }
 function formatPlatformId(id) {
   switch (id) {
