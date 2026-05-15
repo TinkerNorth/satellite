@@ -40,6 +40,8 @@ inline const uint16_t MSG_CONTROLLER_ACK = 0x0006;
 inline const uint16_t MSG_SERVER_STATUS = 0x0007;
 inline const uint16_t MSG_CONTROLLER_TYPE = 0x0008;
 inline const uint16_t MSG_RUMBLE = 0x0009;
+inline const uint16_t MSG_MOTION = 0x000A;
+inline const uint16_t MSG_BATTERY = 0x000B;
 
 // Controller ACK result codes (wire values are stable across platforms; only
 // the C++ identifier changed from ACK_ERR_VIGEM_UNAVAIL → ACK_ERR_BACKEND_UNAVAIL).
@@ -129,6 +131,67 @@ struct RumbleReport {
     bool hasLightbar = false;
 };
 
+// ── Motion report (sender → satellite, gyro + accel from a real IMU) ────────
+// Wire scale matches the Cemuhook DSU convention so we can re-emit on
+// 127.0.0.1:26760 in a follow-up PR without per-axis renormalisation:
+//
+//   gyro  axes: deg/s, ±2000 deg/s full scale → int16 LSB = 2000 / 32767 deg/s
+//   accel axes: g,     ±4 g     full scale → int16 LSB = 4    / 32767 g
+//
+// Axis frame is right-handed, +X = right, +Y = up, +Z = toward the player
+// (same as DSU; same as Sony's DualSense IMU after applying the manufacturer
+// rotation matrix). Senders MUST apply that matrix; receivers do not rotate.
+//
+// `timestampDeltaUs` is microseconds elapsed since the previous MOTION packet
+// for the same controller on the same connection. The first packet uses 0.
+// 32 bits is enough for ~71 minutes of gap, well past any realistic stall.
+inline const float MOTION_GYRO_SCALE_DEG_S = 2000.0f / 32767.0f;
+inline const float MOTION_ACCEL_SCALE_G = 4.0f / 32767.0f;
+
+struct MotionReport {
+    int16_t gyroX = 0;
+    int16_t gyroY = 0;
+    int16_t gyroZ = 0;
+    int16_t accelX = 0;
+    int16_t accelY = 0;
+    int16_t accelZ = 0;
+    uint32_t timestampDeltaUs = 0;
+};
+static_assert(sizeof(MotionReport) == 16, "MotionReport must be 16 bytes on the wire");
+
+// ── Battery report (sender → satellite, periodic) ───────────────────────────
+// Sent once per BATTERY_REPORT_INTERVAL_SEC and again whenever the controller
+// transitions between charging states. `level` is 0..100 inclusive; 0xFF means
+// the sender can't read the level (some Bluetooth pads only report state).
+inline const uint8_t BATTERY_LEVEL_UNKNOWN = 0xFF;
+inline const uint8_t BATTERY_STATUS_UNKNOWN = 0;
+inline const uint8_t BATTERY_STATUS_DISCHARGING = 1;
+inline const uint8_t BATTERY_STATUS_CHARGING = 2;
+inline const uint8_t BATTERY_STATUS_FULL = 3;
+inline const uint8_t BATTERY_STATUS_WIRED = 4; // No battery, AC powered
+inline const uint8_t BATTERY_STATUS_COUNT = 5;
+inline const int BATTERY_REPORT_INTERVAL_SEC = 30;
+
+struct BatteryReport {
+    uint8_t level = BATTERY_LEVEL_UNKNOWN;
+    uint8_t status = BATTERY_STATUS_UNKNOWN;
+};
+
+inline const char* batteryStatusName(uint8_t status) {
+    switch (status) {
+    case BATTERY_STATUS_DISCHARGING:
+        return "discharging";
+    case BATTERY_STATUS_CHARGING:
+        return "charging";
+    case BATTERY_STATUS_FULL:
+        return "full";
+    case BATTERY_STATUS_WIRED:
+        return "wired";
+    default:
+        return "unknown";
+    }
+}
+
 // ── Controller (per virtual gamepad) ────────────────────────────────────────
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
@@ -141,6 +204,15 @@ struct Controller {
     // both motors at the same magnitude across many frames.
     RumbleReport lastRumble{};
     bool lastRumbleValid = false;
+    // Most recent motion sample (sender → satellite). Stored so the web UI's
+    // debug pane can show live IMU values without keeping a parallel cache.
+    MotionReport lastMotion{};
+    bool lastMotionValid = false;
+    // Most recent battery sample (sender → satellite). Surfaced in the
+    // web UI's connection list and (eventually) forwarded to the virtual
+    // device's battery channel where the backend supports it.
+    BatteryReport lastBattery{};
+    bool lastBatteryValid = false;
 };
 
 // ── Connection (per paired client session) ──────────────────────────────────

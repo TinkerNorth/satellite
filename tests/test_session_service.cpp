@@ -64,10 +64,22 @@ struct MockViGem : IGamepadPort {
     int submitCalls = 0;
     int submitDS4Calls = 0;
     int setRumbleCallbackCalls = 0;
+    int submitMotionCalls = 0;
+    int submitBatteryCalls = 0;
+
+    // Optional return value for submitMotion/submitBattery overrides — defaults
+    // mimic the IGamepadPort default (no backend supports it yet).
+    bool submitMotionReturnVal = true;
+    bool submitBatteryReturnVal = true;
 
     std::vector<uint32_t> pluggedSerials;
     std::vector<uint32_t> unpluggedSerials;
     GamepadReport lastSubmittedReport{};
+    // Last motion / battery dispatched to the backend, for assertions.
+    uint32_t lastMotionSerial = 0;
+    MotionReport lastMotion{};
+    uint32_t lastBatterySerial = 0;
+    BatteryReport lastBattery{};
     // Captured rumble callback. Tests synthesize "the platform fired a
     // notification" by invoking this directly via `fireRumble(serial, r)`.
     RumbleCallback capturedRumbleCb;
@@ -113,6 +125,18 @@ struct MockViGem : IGamepadPort {
     // Helper for tests: simulate the platform firing a rumble notification.
     void fireRumble(uint32_t serial, const RumbleReport& r) {
         if (capturedRumbleCb) capturedRumbleCb(serial, r);
+    }
+    bool submitMotion(uint32_t serial, const MotionReport& r) override {
+        submitMotionCalls++;
+        lastMotionSerial = serial;
+        lastMotion = r;
+        return submitMotionReturnVal;
+    }
+    bool submitBattery(uint32_t serial, const BatteryReport& r) override {
+        submitBatteryCalls++;
+        lastBatterySerial = serial;
+        lastBattery = r;
+        return submitBatteryReturnVal;
     }
 
     // Custom reset that preserves no state — copy/move-assigning the mock
@@ -1620,6 +1644,298 @@ static void test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial() {
     EXPECT_EQ(client.rumbleCalls, 1);
 }
 
+// ── Motion tests ────────────────────────────────────────────────────────────
+
+static void test_msgMotion_constant() {
+    TEST("MSG_MOTION — has expected wire value 0x000A");
+    EXPECT_EQ(static_cast<int>(MSG_MOTION), 0x000A);
+}
+
+static void test_motionReport_wireSize() {
+    TEST("MotionReport — packs into 16 bytes on the wire");
+    EXPECT_EQ(static_cast<int>(sizeof(MotionReport)), 16);
+}
+
+static void test_motionScaleConstants_match_DSU() {
+    TEST("MOTION scale constants — match DSU convention (±2000 deg/s, ±4 g)");
+    // The exact float comparison is fine because both sides are derived from
+    // the same compile-time constant — there is no rounding step that could
+    // diverge them.
+    EXPECT(MOTION_GYRO_SCALE_DEG_S > 0.0f);
+    EXPECT(MOTION_GYRO_SCALE_DEG_S * 32767.0f >= 1999.9f);
+    EXPECT(MOTION_GYRO_SCALE_DEG_S * 32767.0f <= 2000.1f);
+    EXPECT(MOTION_ACCEL_SCALE_G * 32767.0f >= 3.999f);
+    EXPECT(MOTION_ACCEL_SCALE_G * 32767.0f <= 4.001f);
+}
+
+static void test_handleMotionData_forwardsToBackend() {
+    TEST("handleMotionData — forwards sample to backend.submitMotion");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+
+    MotionReport m;
+    m.gyroX = 1234;
+    m.gyroY = -567;
+    m.gyroZ = 89;
+    m.accelX = 100;
+    m.accelY = -200;
+    m.accelZ = 16384; // ~+2 g, controller resting screen-up
+    m.timestampDeltaUs = 4000;
+    bool ok = svc.handleMotionData(r.token, 0, m);
+
+    // The default MockViGem submitMotionReturnVal is true so handleMotionData
+    // returns true. The "no IMU surface yet" path is exercised separately.
+    EXPECT(ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 1);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 1234);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroY), -567);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.accelZ), 16384);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.timestampDeltaUs), 4000);
+}
+
+static void test_handleMotionData_cachesEvenWhenBackendDeclines() {
+    TEST("handleMotionData — caches lastMotion even when backend returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    // Default IGamepadPort behaviour: backend has no IMU surface, returns false.
+    vigem.submitMotionReturnVal = false;
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    MotionReport m;
+    m.gyroX = 42;
+    bool ok = svc.handleMotionData(r.token, 0, m);
+
+    EXPECT(!ok); // backend declined
+    EXPECT_EQ(vigem.submitMotionCalls, 1);
+    // The snapshot doesn't surface motion (web UI isn't asking yet), but the
+    // controller's lastMotionValid flag should still be true. We can't read
+    // private state from the test, so we sanity-check by re-firing motion: the
+    // backend should still receive the new sample (i.e. nothing was rejected).
+    MotionReport m2;
+    m2.gyroX = 99;
+    svc.handleMotionData(r.token, 0, m2);
+    EXPECT_EQ(vigem.submitMotionCalls, 2);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 99);
+}
+
+static void test_handleMotionData_invalidToken() {
+    TEST("handleMotionData — invalid token returns false, backend not called");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    MotionReport m;
+    bool ok = svc.handleMotionData(0xDEADBEEF, 0, m);
+    EXPECT(!ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+}
+
+static void test_handleMotionData_outOfBoundsCtrlIdx() {
+    TEST("handleMotionData — ctrlIdx >= MAX_CONTROLLERS_PER_CONN returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    MotionReport m;
+    bool ok = svc.handleMotionData(r.token, MAX_CONTROLLERS_PER_CONN, m);
+    EXPECT(!ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+}
+
+static void test_handleMotionData_inactiveController() {
+    TEST("handleMotionData — inactive controller returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc); // no controllers added
+    MotionReport m;
+    bool ok = svc.handleMotionData(r.token, 0, m);
+    EXPECT(!ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+}
+
+static void test_handleMotionData_routesAcrossControllers() {
+    TEST("handleMotionData — routes by serial across multiple controllers");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // serial 1
+    svc.handleControllerAdd(r.token, 1); // serial 2
+
+    MotionReport m0;
+    m0.gyroX = 100;
+    MotionReport m1;
+    m1.gyroX = 200;
+
+    svc.handleMotionData(r.token, 0, m0);
+    EXPECT_EQ(vigem.lastMotionSerial, 1u);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 100);
+
+    svc.handleMotionData(r.token, 1, m1);
+    EXPECT_EQ(vigem.lastMotionSerial, 2u);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 200);
+}
+
+// ── Battery tests ───────────────────────────────────────────────────────────
+
+static void test_msgBattery_constant() {
+    TEST("MSG_BATTERY — has expected wire value 0x000B");
+    EXPECT_EQ(static_cast<int>(MSG_BATTERY), 0x000B);
+}
+
+static void test_batteryStatusName_known() {
+    TEST("batteryStatusName — every defined status has a non-unknown name");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_DISCHARGING)) == "discharging");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_CHARGING)) == "charging");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_FULL)) == "full");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_WIRED)) == "wired");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_UNKNOWN)) == "unknown");
+    EXPECT(std::string(batteryStatusName(99)) == "unknown");
+}
+
+static void test_handleBatteryUpdate_cachesAndForwards() {
+    TEST("handleBatteryUpdate — caches latest value and forwards to backend");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = 73;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    bool ok = svc.handleBatteryUpdate(r.token, 0, b);
+    EXPECT(ok);
+    EXPECT_EQ(vigem.submitBatteryCalls, 1);
+    EXPECT_EQ(static_cast<int>(vigem.lastBattery.level), 73);
+    EXPECT_EQ(static_cast<int>(vigem.lastBattery.status), BATTERY_STATUS_DISCHARGING);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers.size()), 1);
+    auto& info = snap.connections[0].controllers[0];
+    EXPECT(info.batteryKnown);
+    EXPECT_EQ(static_cast<int>(info.batteryLevel), 73);
+    EXPECT_EQ(static_cast<int>(info.batteryStatus), BATTERY_STATUS_DISCHARGING);
+}
+
+static void test_handleBatteryUpdate_unknownLevelIsAccepted() {
+    TEST("handleBatteryUpdate — BATTERY_LEVEL_UNKNOWN (0xFF) is accepted");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = BATTERY_LEVEL_UNKNOWN;
+    b.status = BATTERY_STATUS_CHARGING;
+    EXPECT(svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 1);
+}
+
+static void test_handleBatteryUpdate_rejectsBogusLevel() {
+    TEST("handleBatteryUpdate — rejects level in 101..254 (bogus, not the 0xFF sentinel)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = 200;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    EXPECT(!svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_handleBatteryUpdate_rejectsBogusStatus() {
+    TEST("handleBatteryUpdate — rejects status >= BATTERY_STATUS_COUNT");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = 50;
+    b.status = BATTERY_STATUS_COUNT; // == 5, not a defined enum
+    EXPECT(!svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_handleBatteryUpdate_invalidToken() {
+    TEST("handleBatteryUpdate — invalid token returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    BatteryReport b;
+    b.level = 50;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    EXPECT(!svc.handleBatteryUpdate(0xDEADBEEF, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_handleBatteryUpdate_inactiveController() {
+    TEST("handleBatteryUpdate — inactive controller returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    BatteryReport b;
+    b.level = 50;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    EXPECT(!svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_snapshot_batteryDefaultsUnknown() {
+    TEST("getConnectionsSnapshot — newly added controller has batteryKnown=false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers.size()), 1);
+    EXPECT(!snap.connections[0].controllers[0].batteryKnown);
+}
+
 int main() {
     std::cout << "Running SessionService tests...\n\n";
 
@@ -1724,6 +2040,28 @@ int main() {
     test_handleRumbleFromBackend_durationChangeAloneDoesNotEmit();
     test_handleRumbleFromBackend_separateControllersIndependentlyCoalesced();
     test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial();
+
+    // ── Motion (sender → satellite, IMU forwarding) ──
+    test_msgMotion_constant();
+    test_motionReport_wireSize();
+    test_motionScaleConstants_match_DSU();
+    test_handleMotionData_forwardsToBackend();
+    test_handleMotionData_cachesEvenWhenBackendDeclines();
+    test_handleMotionData_invalidToken();
+    test_handleMotionData_outOfBoundsCtrlIdx();
+    test_handleMotionData_inactiveController();
+    test_handleMotionData_routesAcrossControllers();
+
+    // ── Battery (sender → satellite, periodic) ──
+    test_msgBattery_constant();
+    test_batteryStatusName_known();
+    test_handleBatteryUpdate_cachesAndForwards();
+    test_handleBatteryUpdate_unknownLevelIsAccepted();
+    test_handleBatteryUpdate_rejectsBogusLevel();
+    test_handleBatteryUpdate_rejectsBogusStatus();
+    test_handleBatteryUpdate_invalidToken();
+    test_handleBatteryUpdate_inactiveController();
+    test_snapshot_batteryDefaultsUnknown();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

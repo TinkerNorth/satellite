@@ -65,6 +65,23 @@ class SessionService {
     void handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
                                  uint16_t wireDurationMs = 500);
 
+    // Handle an IMU sample from the dish (MSG_MOTION). Forwards to the
+    // backend's motion channel via IGamepadPort::submitMotion when the
+    // controller is active; caches as Controller.lastMotion for the web UI
+    // either way. Returns true if the backend accepted the sample (which
+    // for Xbox 360 / uinput backends is always false today since they
+    // have no motion surface). False does NOT indicate an error — senders
+    // should keep streaming motion regardless.
+    bool handleMotionData(uint32_t token, uint8_t ctrlIdx, const MotionReport& report);
+
+    // Handle a battery update from the dish (MSG_BATTERY). Caches the
+    // most recent value on the Controller so the web UI can surface it,
+    // and forwards to the backend via IGamepadPort::submitBattery for
+    // platforms that expose a battery channel (Windows DS4 today).
+    // Returns true if the cache was updated (i.e. the (token, ctrlIdx)
+    // resolved to an active controller).
+    bool handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx, const BatteryReport& report);
+
     // ── Pre-decrypt helpers (called under lock briefly) ─────────────────
 
     // Look up a connection's key and last counter for decryption.
@@ -91,6 +108,12 @@ class SessionService {
             uint32_t serial;
             bool active;
             uint8_t controllerType;
+            // Battery snapshot (most recent MSG_BATTERY received). When the
+            // controller has not reported battery yet, `batteryKnown` is false
+            // and the level/status fields are unspecified.
+            bool batteryKnown;
+            uint8_t batteryLevel;  // 0..100, or BATTERY_LEVEL_UNKNOWN
+            uint8_t batteryStatus; // BATTERY_STATUS_*
         };
         std::vector<CtrlInfo> controllers;
     };

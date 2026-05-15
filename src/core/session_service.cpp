@@ -368,6 +368,49 @@ void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport
     client_.sendRumble(*foundConn, foundCtrl->index, stamped);
 }
 
+bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const MotionReport& report) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return false;
+    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
+
+    Controller& ctrl = it->second.controllers[ctrlIdx];
+    if (!ctrl.active) return false;
+
+    // Cache for web-UI debug pane regardless of whether the backend takes it.
+    ctrl.lastMotion = report;
+    ctrl.lastMotionValid = true;
+
+    // The backend may or may not have an IMU surface; the default IGamepadPort
+    // impl returns false. We deliberately don't treat that as an error — motion
+    // is best-effort, and the cache still serves the web UI.
+    return backend_.submitMotion(ctrl.serialNo, report);
+}
+
+bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,
+                                         const BatteryReport& report) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return false;
+    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
+
+    Controller& ctrl = it->second.controllers[ctrlIdx];
+    if (!ctrl.active) return false;
+
+    // Reject obviously bogus values defensively. A 0xFF level is the documented
+    // "unknown" sentinel and is allowed; anything 101..254 is malformed.
+    if (report.level != BATTERY_LEVEL_UNKNOWN && report.level > 100) return false;
+    if (report.status >= BATTERY_STATUS_COUNT) return false;
+
+    ctrl.lastBattery = report;
+    ctrl.lastBatteryValid = true;
+
+    // Forward to the backend (Windows DS4 wires this to DS4_REPORT_EX battery
+    // byte). Other backends drop silently via the default no-op.
+    backend_.submitBattery(ctrl.serialNo, report);
+    return true;
+}
+
 // ── Pre-decrypt helpers ─────────────────────────────────────────────────────
 
 bool SessionService::getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
@@ -413,7 +456,15 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
 
         for (auto& ctrl : conn.controllers) {
             if (ctrl.active) {
-                cs.controllers.push_back({ctrl.index, ctrl.serialNo, true, ctrl.controllerType});
+                ConnectionSnapshot::CtrlInfo info{};
+                info.index = ctrl.index;
+                info.serial = ctrl.serialNo;
+                info.active = true;
+                info.controllerType = ctrl.controllerType;
+                info.batteryKnown = ctrl.lastBatteryValid;
+                info.batteryLevel = ctrl.lastBattery.level;
+                info.batteryStatus = ctrl.lastBattery.status;
+                cs.controllers.push_back(info);
                 snap.totalControllers++;
             }
         }

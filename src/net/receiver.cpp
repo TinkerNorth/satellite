@@ -176,6 +176,27 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 svc.handleControllerType(token, ctrlIdx, ctrlType);
                 break;
             }
+            case MSG_MOTION: {
+                // Wire payload: ctrlIdx(1) + 6×i16(12) + u32(4) = 17 bytes
+                if (msgLen < 17) break;
+                uint8_t ctrlIdx = payload[0];
+                MotionReport report;
+                // The wire is little-endian fixed-point — same convention as
+                // GamepadReport. memcpy mirrors handleGamepadData.
+                memcpy(&report, payload + 1, sizeof(MotionReport));
+                svc.handleMotionData(token, ctrlIdx, report);
+                break;
+            }
+            case MSG_BATTERY: {
+                // Wire payload: ctrlIdx(1) + level(1) + status(1) = 3 bytes
+                if (msgLen < 3) break;
+                uint8_t ctrlIdx = payload[0];
+                BatteryReport report;
+                report.level = payload[1];
+                report.status = payload[2];
+                svc.handleBatteryUpdate(token, ctrlIdx, report);
+                break;
+            }
             default:
                 break;
             }

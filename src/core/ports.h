@@ -64,6 +64,25 @@ class IGamepadPort {
     // destroyed (the SessionService outlives both adapter and callback).
     using RumbleCallback = std::function<void(uint32_t serial, const RumbleReport& report)>;
     virtual void setRumbleCallback(RumbleCallback cb) = 0;
+
+    // Submit an IMU sample (gyro + accel) to the virtual device. Defaults to a
+    // no-op so existing adapters compile unchanged: ViGEm DS4 (Windows) and
+    // uhid DualSense (Linux, future) override this to forward the sample to
+    // the backend's motion fields. The Xbox 360 emulation has no IMU surface
+    // and silently drops; senders shouldn't notice the difference because
+    // motion is only useful when the virtual device advertises a motion cap.
+    virtual bool submitMotion(uint32_t /*serial*/, const MotionReport& /*report*/) {
+        return false;
+    }
+
+    // Submit a battery update. Defaults to no-op. Windows DS4 backend wires
+    // this to the battery byte in DS4_REPORT_EX so games (and Steam Big
+    // Picture) can show charge level. Backends without a battery surface
+    // (Xbox 360, uinput) drop silently; the SessionService still caches
+    // the latest value for the web UI.
+    virtual bool submitBattery(uint32_t /*serial*/, const BatteryReport& /*report*/) {
+        return false;
+    }
 };
 
 // ── Outbound: Send encrypted UDP packets to clients ─────────────────────────

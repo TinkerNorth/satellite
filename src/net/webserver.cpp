@@ -134,7 +134,20 @@ static std::string buildConnectionsJson(const SessionService& svc) {
                     ",\"pluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") +
                     ",\"controllerType\":\"" + controllerTypeName(ctrl.controllerType) +
                     "\",\"controllerTypeLabel\":\"" + controllerTypeLabel(ctrl.controllerType) +
-                    "\"}";
+                    "\"";
+            if (ctrl.batteryKnown) {
+                json += ",\"battery\":{";
+                if (ctrl.batteryLevel == BATTERY_LEVEL_UNKNOWN) {
+                    json += "\"level\":null";
+                } else {
+                    json += "\"level\":" + std::to_string(ctrl.batteryLevel);
+                }
+                json += ",\"status\":\"" + std::string(batteryStatusName(ctrl.batteryStatus)) +
+                        "\"}";
+            } else {
+                json += ",\"battery\":null";
+            }
+            json += "}";
         }
         json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) + "}";
     }
