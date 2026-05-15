@@ -69,8 +69,10 @@ size_t readDnsName(const uint8_t* packet, size_t packetLen, size_t offset, std::
             // to the first jump count. The trailing '.' is already in
             // outName from the previous label's append (or empty for a
             // zero-label name).
-            if (!jumped) consumedBeforeJump = pos - offset + 1;
-            else if (consumedBeforeJump == 0) return 0;
+            if (!jumped)
+                consumedBeforeJump = pos - offset + 1;
+            else if (consumedBeforeJump == 0)
+                return 0;
             return consumedBeforeJump;
         }
         if ((b & 0xC0) == 0xC0) {
@@ -222,8 +224,8 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
     }
     // SRV record: instanceFqdn → priority/weight/port/hostFqdn.
     {
-        auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_SRV,
-                               CLASS_IN | CACHE_FLUSH_BIT, TTL_HOST);
+        auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_SRV, CLASS_IN | CACHE_FLUSH_BIT,
+                               TTL_HOST);
         if (!c.ok) return 0;
         if (pos + 6 > outCap) return 0;
         putBE16(out + pos, inputs.priority);
@@ -238,8 +240,8 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
     // TXT record: one length-prefixed "key=value" per entry. Empty TXT is
     // encoded as a single zero-length string per DNS-SD §6.1.
     {
-        auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_TXT,
-                               CLASS_IN | CACHE_FLUSH_BIT, TTL_HOST);
+        auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_TXT, CLASS_IN | CACHE_FLUSH_BIT,
+                               TTL_HOST);
         if (!c.ok) return 0;
         if (inputs.txtPairs.empty()) {
             if (pos + 1 > outCap) return 0;
@@ -258,8 +260,8 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
     }
     // Optional A record for the host.
     if (inputs.ipv4 != nullptr) {
-        auto c = writeRrHeader(out, outCap, pos, hostFqdn, TYPE_A,
-                               CLASS_IN | CACHE_FLUSH_BIT, TTL_HOST);
+        auto c =
+            writeRrHeader(out, outCap, pos, hostFqdn, TYPE_A, CLASS_IN | CACHE_FLUSH_BIT, TTL_HOST);
         if (!c.ok) return 0;
         if (pos + 4 > outCap) return 0;
         std::memcpy(out + pos, inputs.ipv4, 4);

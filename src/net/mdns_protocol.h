@@ -82,8 +82,7 @@ struct Question {
 // on success. We deliberately ignore answer / authority / additional records
 // in the request — the spec lets responders use them for known-answer
 // suppression, but for our tiny service that's premature optimisation.
-bool parsePacket(const uint8_t* data, size_t len, Header& header,
-                 std::vector<Question>& questions);
+bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Question>& questions);
 
 // True iff `question` targets the satellite service: a PTR or ANY record
 // whose name matches `_satellite._udp.local.`. DNS names are case-insensitive

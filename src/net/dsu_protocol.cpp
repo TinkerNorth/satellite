@@ -106,9 +106,8 @@ size_t encodeVersionResponse(uint8_t* out, size_t outCap, uint32_t serverId) {
 
 // ── Information response ────────────────────────────────────────────────────
 
-size_t encodeInformationResponse(uint8_t* out, size_t outCap, uint32_t serverId,
-                                 uint8_t slotIndex, bool connected,
-                                 const std::array<uint8_t, 6>& mac) {
+size_t encodeInformationResponse(uint8_t* out, size_t outCap, uint32_t serverId, uint8_t slotIndex,
+                                 bool connected, const std::array<uint8_t, 6>& mac) {
     constexpr size_t total = HEADER_SIZE + 4 + 12;
     if (outCap < total) return 0;
     encodeServerHeader(out, total, serverId);

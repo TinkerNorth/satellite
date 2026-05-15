@@ -153,13 +153,13 @@ static void test_encodeInformationResponse_connected() {
                                                     /*connected=*/true, mac);
     EXPECT_EQ(n, 32u);
     EXPECT_EQ(readLE32(buf + 16), dsu::EVENT_INFORMATION);
-    EXPECT_EQ(buf[20], 2);                                  // slot index
+    EXPECT_EQ(buf[20], 2); // slot index
     EXPECT_EQ(buf[21], dsu::SLOT_STATE_CONNECTED);
     EXPECT_EQ(buf[22], dsu::SLOT_MODEL_FULL);
     EXPECT_EQ(buf[23], dsu::SLOT_CONNECTION_BLUETOOTH);
     EXPECT(std::memcmp(buf + 24, mac.data(), 6) == 0);
     EXPECT_EQ(buf[30], dsu::SLOT_BATTERY_FULL);
-    EXPECT_EQ(buf[31], 0);                                  // terminator
+    EXPECT_EQ(buf[31], 0); // terminator
 }
 
 static void test_encodeInformationResponse_disconnected() {
@@ -197,11 +197,11 @@ static void test_encodePadDataResponse_event_and_slot() {
     inputs.battery = dsu::SLOT_BATTERY_HIGH;
     dsu::encodePadDataResponse(buf, sizeof(buf), 0, inputs);
     EXPECT_EQ(readLE32(buf + 16), dsu::EVENT_PAD_DATA);
-    EXPECT_EQ(buf[20], 1);                                  // slot
+    EXPECT_EQ(buf[20], 1); // slot
     EXPECT_EQ(buf[21], dsu::SLOT_STATE_CONNECTED);
     EXPECT_EQ(buf[30], dsu::SLOT_BATTERY_HIGH);
-    EXPECT_EQ(buf[31], 1);                                  // connected
-    EXPECT_EQ(readLE32(buf + 32), 42u);                     // packet number
+    EXPECT_EQ(buf[31], 1);              // connected
+    EXPECT_EQ(readLE32(buf + 32), 42u); // packet number
 }
 
 static void test_encodePadDataResponse_motion_passes_through() {
@@ -252,7 +252,7 @@ static void test_applyMotionReport_converts_scale() {
 
 // Build a minimal client packet for parseClientHeader testing.
 static size_t buildClientPacket(uint8_t* out, uint32_t eventType, uint32_t clientId,
-                                 const uint8_t* tail, size_t tailLen) {
+                                const uint8_t* tail, size_t tailLen) {
     const size_t total = dsu::HEADER_SIZE + 4 + tailLen;
     std::memcpy(out, "DSUC", 4);
     out[4] = static_cast<uint8_t>(dsu::PROTOCOL_VERSION);

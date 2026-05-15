@@ -71,9 +71,7 @@ class IGamepadPort {
     // the backend's motion fields. The Xbox 360 emulation has no IMU surface
     // and silently drops; senders shouldn't notice the difference because
     // motion is only useful when the virtual device advertises a motion cap.
-    virtual bool submitMotion(uint32_t /*serial*/, const MotionReport& /*report*/) {
-        return false;
-    }
+    virtual bool submitMotion(uint32_t /*serial*/, const MotionReport& /*report*/) { return false; }
 
     // Submit a battery update. Defaults to no-op. Windows DS4 backend wires
     // this to the battery byte in DS4_REPORT_EX so games (and Steam Big

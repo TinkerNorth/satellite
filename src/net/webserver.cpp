@@ -142,8 +142,8 @@ static std::string buildConnectionsJson(const SessionService& svc) {
                 } else {
                     json += "\"level\":" + std::to_string(ctrl.batteryLevel);
                 }
-                json += ",\"status\":\"" + std::string(batteryStatusName(ctrl.batteryStatus)) +
-                        "\"}";
+                json +=
+                    ",\"status\":\"" + std::string(batteryStatusName(ctrl.batteryStatus)) + "\"}";
             } else {
                 json += ",\"battery\":null";
             }

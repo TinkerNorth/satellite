@@ -46,9 +46,7 @@ bool getLocalIPv4(uint8_t out[4]) {
 // label so the SRV target / instance name don't end up doubly-suffixed.
 std::string shortHostLabel() {
     char hostname[256] = {};
-    if (!netGetHostname(hostname, sizeof(hostname)) || hostname[0] == '\0') {
-        return "satellite";
-    }
+    if (!netGetHostname(hostname, sizeof(hostname)) || hostname[0] == '\0') { return "satellite"; }
     std::string h(hostname);
     // Some platforms return an FQDN; keep only the first label.
     auto dot = h.find('.');

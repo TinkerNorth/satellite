@@ -160,9 +160,8 @@ size_t encodeVersionResponse(uint8_t* out, size_t outCap, uint32_t serverId);
 //     [4..9] mac (6B)
 //     [10]  battery
 //     [11]  0 (terminator)
-size_t encodeInformationResponse(uint8_t* out, size_t outCap, uint32_t serverId,
-                                 uint8_t slotIndex, bool connected,
-                                 const std::array<uint8_t, 6>& mac);
+size_t encodeInformationResponse(uint8_t* out, size_t outCap, uint32_t serverId, uint8_t slotIndex,
+                                 bool connected, const std::array<uint8_t, 6>& mac);
 
 // Build a Pad Data response (event 0x100002) for `slotIndex` from a
 // MotionReport. The non-motion fields (buttons, sticks, touchpad, battery,
@@ -207,7 +206,7 @@ uint32_t parseClientHeader(const uint8_t* data, size_t len);
 // flags. Returns the slot index the client wants, or 0xFF if it wants all.
 struct SubscriptionRequest {
     bool wantAllSlots = false;
-    uint8_t slotIndex = 0; // valid only when !wantAllSlots
+    uint8_t slotIndex = 0;              // valid only when !wantAllSlots
     std::array<uint8_t, 6> macFilter{}; // 00:00:00:00:00:00 = no MAC filter
 };
 

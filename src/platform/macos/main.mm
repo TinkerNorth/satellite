@@ -116,8 +116,8 @@ int main(int argc, const char* argv[]) {
 
         std::unique_ptr<DsuServer> dsu;
         if (g_config.dsuEnabled) {
-            dsu = std::make_unique<DsuServer>(svc, g_appRunning, g_wantListen,
-                                              g_config.dsuBindAddr, g_config.dsuPort);
+            dsu = std::make_unique<DsuServer>(svc, g_appRunning, g_wantListen, g_config.dsuBindAddr,
+                                              g_config.dsuPort);
             dsu->start();
         }
 

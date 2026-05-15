@@ -2091,7 +2091,8 @@ static void test_constructor_installsLightbarCallback() {
 }
 
 static void test_handleLightbarFromBackend_routesToOwningConnection() {
-    TEST("handleLightbarFromBackend — forwards to the right (connection, ctrlIdx) via sendLightbar");
+    TEST(
+        "handleLightbarFromBackend — forwards to the right (connection, ctrlIdx) via sendLightbar");
     MockViGem vigem;
     MockClient client;
     MockLog log;

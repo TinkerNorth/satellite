@@ -30,8 +30,8 @@ struct Subscriber {
 
 struct AddrHash {
     size_t operator()(const sockaddr_in& a) const noexcept {
-        return std::hash<uint64_t>{}(
-            (static_cast<uint64_t>(a.sin_addr.s_addr) << 16) ^ static_cast<uint64_t>(a.sin_port));
+        return std::hash<uint64_t>{}((static_cast<uint64_t>(a.sin_addr.s_addr) << 16) ^
+                                     static_cast<uint64_t>(a.sin_port));
     }
 };
 struct AddrEq {
@@ -67,8 +67,8 @@ SlotMap buildSlotMap(const SessionService::ConnectionsSnapshot& snap) {
 
 } // namespace
 
-DsuServer::DsuServer(SessionService& svc, std::atomic<bool>& running,
-                     std::atomic<bool>& wantListen, const std::string& bindAddr, int port)
+DsuServer::DsuServer(SessionService& svc, std::atomic<bool>& running, std::atomic<bool>& wantListen,
+                     const std::string& bindAddr, int port)
     : svc_(svc), appRunning_(running), wantListen_(wantListen), bindAddr_(bindAddr), port_(port),
       serverId_(randomServerId()) {}
 
@@ -129,16 +129,14 @@ void DsuServer::run() {
                                             reinterpret_cast<sockaddr*>(&clientAddr), &clen));
 
         if (n > 0) {
-            const uint32_t event =
-                dsu::parseClientHeader(buf, static_cast<size_t>(n));
+            const uint32_t event = dsu::parseClientHeader(buf, static_cast<size_t>(n));
             switch (event) {
             case dsu::EVENT_VERSION: {
                 uint8_t reply[32];
                 size_t replyLen = dsu::encodeVersionResponse(reply, sizeof(reply), serverId_);
                 if (replyLen > 0) {
-                    ::sendto(sock, reinterpret_cast<const char*>(reply),
-                             static_cast<int>(replyLen), 0,
-                             reinterpret_cast<sockaddr*>(&clientAddr), clen);
+                    ::sendto(sock, reinterpret_cast<const char*>(reply), static_cast<int>(replyLen),
+                             0, reinterpret_cast<sockaddr*>(&clientAddr), clen);
                 }
                 break;
             }
@@ -233,17 +231,17 @@ void DsuServer::run() {
                     inputs.battery =
                         slots[s].occupied ? dsu::SLOT_BATTERY_FULL : dsu::SLOT_BATTERY_NONE;
                     inputs.packetNumber = ++it->second.packetCounter;
-                    inputs.timestampMicros = static_cast<uint64_t>(
-                        std::chrono::duration_cast<std::chrono::microseconds>(
-                            now.time_since_epoch())
-                            .count());
+                    inputs.timestampMicros =
+                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                  now.time_since_epoch())
+                                                  .count());
                     if (slots[s].hasMotion) { dsu::applyMotionReport(inputs, slots[s].motion); }
                     uint8_t pkt[dsu::PAD_DATA_PACKET_SIZE];
                     size_t plen = dsu::encodePadDataResponse(pkt, sizeof(pkt), serverId_, inputs);
                     if (plen > 0) {
-                        ::sendto(sock, reinterpret_cast<const char*>(pkt),
-                                 static_cast<int>(plen), 0,
-                                 reinterpret_cast<sockaddr*>(&it->second.addr), sizeof(sockaddr_in));
+                        ::sendto(sock, reinterpret_cast<const char*>(pkt), static_cast<int>(plen),
+                                 0, reinterpret_cast<sockaddr*>(&it->second.addr),
+                                 sizeof(sockaddr_in));
                     }
                 }
                 ++it;

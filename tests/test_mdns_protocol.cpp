@@ -22,7 +22,9 @@ static std::string g_currentTest;
 
 #define EXPECT(cond)                                                                               \
     do {                                                                                           \
-        if (cond) { g_pass++; } else {                                                             \
+        if (cond) {                                                                                \
+            g_pass++;                                                                              \
+        } else {                                                                                   \
             g_fail++;                                                                              \
             std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
                       << "  " << #cond << "\n";                                                    \
@@ -33,7 +35,9 @@ static std::string g_currentTest;
     do {                                                                                           \
         auto _a = (a);                                                                             \
         auto _b = (b);                                                                             \
-        if (_a == _b) { g_pass++; } else {                                                         \
+        if (_a == _b) {                                                                            \
+            g_pass++;                                                                              \
+        } else {                                                                                   \
             g_fail++;                                                                              \
             std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
                       << "  " << #a << " == " << #b << "  (got " << _a << " vs " << _b << ")\n";   \
@@ -101,11 +105,7 @@ static void test_readDnsName_followsCompressionPointer() {
     //   0: 0x03 'f' 'o' 'o' 0x03 'b' 'a' 'r' 0x00      (9 bytes, "foo.bar.")
     //   9: 0x03 'b' 'a' 'z' 0xC0 0x04                  (6 bytes, "baz." + ptr to byte 4)
     uint8_t packet[] = {
-        3, 'f', 'o', 'o',
-        3, 'b', 'a', 'r',
-        0,
-        3, 'b', 'a', 'z',
-        0xC0, 0x04,
+        3, 'f', 'o', 'o', 3, 'b', 'a', 'r', 0, 3, 'b', 'a', 'z', 0xC0, 0x04,
     };
     std::string out;
     const size_t consumed = mdns::readDnsName(packet, sizeof(packet), 9, out);
@@ -129,16 +129,24 @@ static void test_parsePacket_singleQuestion() {
     uint8_t buf[64];
     size_t pos = 0;
     // Header
-    buf[pos++] = 0x12; buf[pos++] = 0x34;        // id
-    buf[pos++] = 0x00; buf[pos++] = 0x00;        // flags (query)
-    buf[pos++] = 0x00; buf[pos++] = 0x01;        // QDCOUNT
-    buf[pos++] = 0x00; buf[pos++] = 0x00;        // ANCOUNT
-    buf[pos++] = 0x00; buf[pos++] = 0x00;        // NSCOUNT
-    buf[pos++] = 0x00; buf[pos++] = 0x00;        // ARCOUNT
+    buf[pos++] = 0x12;
+    buf[pos++] = 0x34; // id
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x00; // flags (query)
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x01; // QDCOUNT
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x00; // ANCOUNT
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x00; // NSCOUNT
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x00; // ARCOUNT
     pos += mdns::writeDnsName(buf + pos, sizeof(buf) - pos, "_satellite._udp.local.");
     // QTYPE = PTR, QCLASS = IN | QU
-    buf[pos++] = 0x00; buf[pos++] = 0x0C;
-    buf[pos++] = 0x80; buf[pos++] = 0x01;
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x0C;
+    buf[pos++] = 0x80;
+    buf[pos++] = 0x01;
 
     mdns::Header h{};
     std::vector<mdns::Question> qs;
@@ -174,9 +182,9 @@ static void test_encodeResponse_minimumPacketShape() {
     // Header: id, flags (QR=1), QD=0, AN=3.
     EXPECT_EQ(buf[0], 0xBE);
     EXPECT_EQ(buf[1], 0xEF);
-    EXPECT_EQ((buf[2] & 0x80) >> 7, 1);     // QR
-    EXPECT_EQ(buf[5], 0u);                  // QDCOUNT low
-    EXPECT_EQ(buf[7], 3u);                  // ANCOUNT low (no A record)
+    EXPECT_EQ((buf[2] & 0x80) >> 7, 1); // QR
+    EXPECT_EQ(buf[5], 0u);              // QDCOUNT low
+    EXPECT_EQ(buf[7], 3u);              // ANCOUNT low (no A record)
 }
 
 static void test_encodeResponse_includesARecordWhenIpv4Provided() {
@@ -234,48 +242,39 @@ static mdns::Question makeQuestion(const std::string& name, uint16_t type) {
 
 static void test_questionMatchesService_ptr() {
     TEST("questionMatchesService accepts a PTR query for the service domain");
-    EXPECT(mdns::questionMatchesService(
-        makeQuestion("_satellite._udp.local.", mdns::TYPE_PTR)));
+    EXPECT(mdns::questionMatchesService(makeQuestion("_satellite._udp.local.", mdns::TYPE_PTR)));
 }
 
 static void test_questionMatchesService_any() {
     TEST("questionMatchesService accepts an ANY query for the service domain");
-    EXPECT(mdns::questionMatchesService(
-        makeQuestion("_satellite._udp.local.", mdns::TYPE_ANY)));
+    EXPECT(mdns::questionMatchesService(makeQuestion("_satellite._udp.local.", mdns::TYPE_ANY)));
 }
 
 static void test_questionMatchesService_caseInsensitive() {
     TEST("questionMatchesService folds case (DNS names are case-insensitive)");
-    EXPECT(mdns::questionMatchesService(
-        makeQuestion("_Satellite._UDP.Local.", mdns::TYPE_PTR)));
+    EXPECT(mdns::questionMatchesService(makeQuestion("_Satellite._UDP.Local.", mdns::TYPE_PTR)));
 }
 
 static void test_questionMatchesService_rejectsWrongType() {
     TEST("questionMatchesService rejects a non-PTR/ANY record type");
-    EXPECT(!mdns::questionMatchesService(
-        makeQuestion("_satellite._udp.local.", mdns::TYPE_SRV)));
-    EXPECT(!mdns::questionMatchesService(
-        makeQuestion("_satellite._udp.local.", mdns::TYPE_A)));
-    EXPECT(!mdns::questionMatchesService(
-        makeQuestion("_satellite._udp.local.", mdns::TYPE_TXT)));
+    EXPECT(!mdns::questionMatchesService(makeQuestion("_satellite._udp.local.", mdns::TYPE_SRV)));
+    EXPECT(!mdns::questionMatchesService(makeQuestion("_satellite._udp.local.", mdns::TYPE_A)));
+    EXPECT(!mdns::questionMatchesService(makeQuestion("_satellite._udp.local.", mdns::TYPE_TXT)));
 }
 
 static void test_questionMatchesService_rejectsWrongName() {
     TEST("questionMatchesService rejects a different service domain");
-    EXPECT(!mdns::questionMatchesService(
-        makeQuestion("_airplay._tcp.local.", mdns::TYPE_PTR)));
-    EXPECT(!mdns::questionMatchesService(
-        makeQuestion("_satellite._tcp.local.", mdns::TYPE_PTR)));
+    EXPECT(!mdns::questionMatchesService(makeQuestion("_airplay._tcp.local.", mdns::TYPE_PTR)));
+    EXPECT(!mdns::questionMatchesService(makeQuestion("_satellite._tcp.local.", mdns::TYPE_PTR)));
 }
 
 static void test_questionMatchesService_rejectsPrefixAndSuffix() {
     TEST("questionMatchesService requires an exact name match (no prefix/suffix)");
     // Missing trailing dot.
-    EXPECT(!mdns::questionMatchesService(
-        makeQuestion("_satellite._udp.local", mdns::TYPE_PTR)));
+    EXPECT(!mdns::questionMatchesService(makeQuestion("_satellite._udp.local", mdns::TYPE_PTR)));
     // An instance name *under* the service type is not the service type.
-    EXPECT(!mdns::questionMatchesService(
-        makeQuestion("box._satellite._udp.local.", mdns::TYPE_PTR)));
+    EXPECT(
+        !mdns::questionMatchesService(makeQuestion("box._satellite._udp.local.", mdns::TYPE_PTR)));
     // Trailing junk.
     EXPECT(!mdns::questionMatchesService(
         makeQuestion("_satellite._udp.local.extra.", mdns::TYPE_PTR)));
