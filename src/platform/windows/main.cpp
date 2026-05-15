@@ -15,6 +15,7 @@
 #include "net/pairing.h"
 #include "net/discovery.h"
 #include "net/dsu_server.h"
+#include "net/mdns_responder.h"
 #include "tray.h"
 
 // Adapters (outbound ports)
@@ -91,6 +92,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     std::thread httpTh(httpThread, std::ref(svc));
     std::thread pairTh(pairingThread);
     std::thread discTh(discoveryThread);
+    std::thread mdnsTh(mdnsResponderThread);
 
     std::unique_ptr<DsuServer> dsu;
     if (g_config.dsuEnabled) {
@@ -122,6 +124,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     httpTh.join();
     pairTh.join();
     discTh.join();
+    mdnsTh.join();
 
     // Clean up all remaining sessions before exit
     svc.closeAllSessions();

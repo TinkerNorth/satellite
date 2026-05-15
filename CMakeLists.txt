@@ -41,6 +41,8 @@ set(SATELLITE_NET_SOURCES
     src/net/discovery.cpp
     src/net/dsu_protocol.cpp
     src/net/dsu_server.cpp
+    src/net/mdns_protocol.cpp
+    src/net/mdns_responder.cpp
 )
 
 # Portable adapters (thin shims over platform-specific free functions).

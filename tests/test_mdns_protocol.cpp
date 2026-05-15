@@ -222,6 +222,67 @@ static void test_encodeResponse_emptyBufferReturnsZero() {
 
 // ── Driver ──────────────────────────────────────────────────────────────────
 
+// ── questionMatchesService ──────────────────────────────────────────────────
+
+static mdns::Question makeQuestion(const std::string& name, uint16_t type) {
+    mdns::Question q;
+    q.name = name;
+    q.type = type;
+    q.cls = mdns::CLASS_IN;
+    return q;
+}
+
+static void test_questionMatchesService_ptr() {
+    TEST("questionMatchesService accepts a PTR query for the service domain");
+    EXPECT(mdns::questionMatchesService(
+        makeQuestion("_satellite._udp.local.", mdns::TYPE_PTR)));
+}
+
+static void test_questionMatchesService_any() {
+    TEST("questionMatchesService accepts an ANY query for the service domain");
+    EXPECT(mdns::questionMatchesService(
+        makeQuestion("_satellite._udp.local.", mdns::TYPE_ANY)));
+}
+
+static void test_questionMatchesService_caseInsensitive() {
+    TEST("questionMatchesService folds case (DNS names are case-insensitive)");
+    EXPECT(mdns::questionMatchesService(
+        makeQuestion("_Satellite._UDP.Local.", mdns::TYPE_PTR)));
+}
+
+static void test_questionMatchesService_rejectsWrongType() {
+    TEST("questionMatchesService rejects a non-PTR/ANY record type");
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("_satellite._udp.local.", mdns::TYPE_SRV)));
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("_satellite._udp.local.", mdns::TYPE_A)));
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("_satellite._udp.local.", mdns::TYPE_TXT)));
+}
+
+static void test_questionMatchesService_rejectsWrongName() {
+    TEST("questionMatchesService rejects a different service domain");
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("_airplay._tcp.local.", mdns::TYPE_PTR)));
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("_satellite._tcp.local.", mdns::TYPE_PTR)));
+}
+
+static void test_questionMatchesService_rejectsPrefixAndSuffix() {
+    TEST("questionMatchesService requires an exact name match (no prefix/suffix)");
+    // Missing trailing dot.
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("_satellite._udp.local", mdns::TYPE_PTR)));
+    // An instance name *under* the service type is not the service type.
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("box._satellite._udp.local.", mdns::TYPE_PTR)));
+    // Trailing junk.
+    EXPECT(!mdns::questionMatchesService(
+        makeQuestion("_satellite._udp.local.extra.", mdns::TYPE_PTR)));
+    // Empty.
+    EXPECT(!mdns::questionMatchesService(makeQuestion("", mdns::TYPE_PTR)));
+}
+
 int main() {
     std::cout << "Running mDNS protocol tests...\n\n";
 
@@ -241,6 +302,13 @@ int main() {
     test_encodeResponse_includesARecordWhenIpv4Provided();
     test_encodeResponse_writesTxtPairs();
     test_encodeResponse_emptyBufferReturnsZero();
+
+    test_questionMatchesService_ptr();
+    test_questionMatchesService_any();
+    test_questionMatchesService_caseInsensitive();
+    test_questionMatchesService_rejectsWrongType();
+    test_questionMatchesService_rejectsWrongName();
+    test_questionMatchesService_rejectsPrefixAndSuffix();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

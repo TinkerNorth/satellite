@@ -4,6 +4,7 @@
 #include "mdns_protocol.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace mdns {
 
@@ -122,6 +123,21 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
         questions.push_back(std::move(q));
     }
     return true;
+}
+
+bool questionMatchesService(const Question& question) {
+    if (question.type != TYPE_PTR && question.type != TYPE_ANY) return false;
+    // Case-insensitive compare against SERVICE_TYPE_DOMAIN — DNS labels are
+    // case-insensitive, and Bonjour/Avahi sometimes capitalise differently.
+    const std::string& a = question.name;
+    const char* b = SERVICE_TYPE_DOMAIN;
+    size_t i = 0;
+    for (; i < a.size() && b[i] != '\0'; ++i) {
+        const auto la = static_cast<unsigned char>(a[i]);
+        const auto lb = static_cast<unsigned char>(b[i]);
+        if (std::tolower(la) != std::tolower(lb)) return false;
+    }
+    return i == a.size() && b[i] == '\0';
 }
 
 // ── Response encoding ───────────────────────────────────────────────────────

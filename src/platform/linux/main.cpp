@@ -25,6 +25,7 @@
 #include "net/pairing.h"
 #include "net/discovery.h"
 #include "net/dsu_server.h"
+#include "net/mdns_responder.h"
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
@@ -131,6 +132,7 @@ int main(int argc, const char* argv[]) {
     std::thread httpTh(httpThread, std::ref(svc));
     std::thread pairTh(pairingThread);
     std::thread discTh(discoveryThread);
+    std::thread mdnsTh(mdnsResponderThread);
 
     // Cemuhook DSU server — re-emits forwarded IMU to local emulators.
     std::unique_ptr<DsuServer> dsu;
@@ -182,6 +184,7 @@ int main(int argc, const char* argv[]) {
     httpTh.join();
     pairTh.join();
     discTh.join();
+    mdnsTh.join();
 
     svc.closeAllSessions();
     saveConfig(g_config);

@@ -85,6 +85,12 @@ struct Question {
 bool parsePacket(const uint8_t* data, size_t len, Header& header,
                  std::vector<Question>& questions);
 
+// True iff `question` targets the satellite service: a PTR or ANY record
+// whose name matches `_satellite._udp.local.`. DNS names are case-insensitive
+// (RFC 1035 §2.3.3), so the comparison folds case. Pure — exercised directly
+// by the protocol unit tests; the responder calls it to decide what to answer.
+bool questionMatchesService(const Question& question);
+
 // ── Response encoding ───────────────────────────────────────────────────────
 
 // Build a response packet containing PTR + SRV + TXT records for our
