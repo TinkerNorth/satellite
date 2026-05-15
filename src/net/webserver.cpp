@@ -86,6 +86,7 @@ static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
     json += ",\"bytesDownloaded\":" + std::to_string(s.bytesDownloaded);
     json += ",\"totalBytes\":" + std::to_string(s.totalBytes);
     json += ",\"message\":\"" + jsonEscape(s.message) + "\"";
+    json += ",\"failedPhase\":\"" + std::string(updateStateName(s.failedPhase)) + "\"";
     json += ",\"info\":{";
     json += "\"available\":" + std::string(s.info.available ? "true" : "false");
     json += ",\"version\":\"" + jsonEscape(s.info.version) + "\"";

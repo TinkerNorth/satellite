@@ -118,6 +118,7 @@ class UpdateService {
     UpdateState state_ = UpdateState::Idle;
     UpdateInfo info_{}; // valid only when state_ >= UpdateAvailable
     std::string lastError_;
+    UpdateState failedPhase_ = UpdateState::Idle; // valid when state_ == Error
     uint64_t bytesDownloaded_ = 0;
     uint64_t bytesTotal_ = 0;
     std::string downloadedPath_;
