@@ -148,24 +148,15 @@ class IClientPort {
                           bool backendAvailable, uint8_t totalActiveControllers) = 0;
 
     // Send a rumble (0x0009) update to the dish that owns `ctrlIdx` on `conn`.
-    // Wire format (encrypted inner payload):
+    // Wire format (encrypted inner payload, 7 bytes):
     //
     //   ctrlIdx   : u8
     //   strongMag : u16 BE
     //   weakMag   : u16 BE
     //   durMs     : u16 BE
-    //   flags     : u8   (bit 0 = lightbar present)
-    //   [lightbarR, lightbarG, lightbarB : u8 × 3 — only when flag bit 0 set]
     //
-    // Senders that don't recognise the trailing lightbar bytes simply ignore
-    // them; the leading 8 bytes are the mandatory subset every dish parses.
-    //
-    // NOTE: as of Task 1.4 (MSG_LIGHTBAR / 0x000D) the lightbar tail is
-    // *deprecated for new senders*. The receiver still emits it for
-    // pre-1.4 dish builds that haven't been updated to subscribe to the
-    // dedicated MSG_LIGHTBAR stream; new builds should treat the colour
-    // bytes in MSG_RUMBLE as a fallback and prefer MSG_LIGHTBAR when both
-    // arrive for the same controller.
+    // Rumble carries motor vibration only; lightbar colour has its own
+    // message (MSG_LIGHTBAR / 0x000D — see sendLightbar).
     virtual void sendRumble(const Connection& conn, uint8_t ctrlIdx,
                             const RumbleReport& report) = 0;
 

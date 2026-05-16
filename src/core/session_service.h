@@ -164,6 +164,16 @@ class SessionService {
             // this controller. Where that sample is routed is the
             // connection-level touchpadMode above.
             bool touchpadActive;
+            // Lightbar (DS4 / DualSense LED). `lightbarCapable` is the
+            // CAP_LIGHTBAR bit the dish advertised at controller-add — and the
+            // gate the receiver uses to decide whether to emit MSG_LIGHTBAR.
+            // `lightbarKnown` is true once the host game has set a colour;
+            // r/g/b carry the most recent colour (0,0,0 until known).
+            bool lightbarCapable;
+            bool lightbarKnown;
+            uint8_t lightbarR;
+            uint8_t lightbarG;
+            uint8_t lightbarB;
         };
         std::vector<CtrlInfo> controllers;
     };

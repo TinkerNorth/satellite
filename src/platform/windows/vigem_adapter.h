@@ -35,6 +35,7 @@ class ViGEmAdapter : public IGamepadPort {
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
+    void setLightbarCallback(LightbarCallback cb) override;
 
     // Forward an IMU sample to the virtual DualShock 4 device's gyro/accel
     // fields (DS4_REPORT_EX). Xbox 360 virtual pads have no IMU surface and
@@ -113,6 +114,12 @@ class ViGEmAdapter : public IGamepadPort {
     // because the lifetime invariant ("adapter outlives callback") makes a
     // copy under lock + invoke unlocked safe.
     RumbleCallback rumbleCb_;
+    // Installed alongside rumbleCb_ (Task 1.4). The DS4 notification worker
+    // fires it with the lightbar colour on every notification — the same
+    // driver event that carries rumble. Identical-colour coalescing lives
+    // downstream in SessionService::handleLightbarFromBackend. Same lifetime
+    // invariant and locking discipline as rumbleCb_.
+    LightbarCallback lightbarCb_;
 
     // TOUCHPAD_MODE_MOUSE button-level cache for submitRelativeMouse — so a
     // held click doesn't re-emit MOUSEEVENTF_LEFTDOWN every frame. Touched only

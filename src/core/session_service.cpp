@@ -237,12 +237,16 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16
     ctrl.active = true;
     ctrl.caps = caps;
     ctrl.lastReport = GamepadReport{};
-    // Clear rumble coalesce state — even though the serial may be recycled,
-    // the (re)added controller is a fresh actuator from the dish's point of
-    // view, so the next non-zero rumble must reach it without being suppressed
-    // as "same as the last one we already sent".
+    // Clear rumble + lightbar coalesce state — even though the serial may be
+    // recycled, the (re)added controller is a fresh actuator from the dish's
+    // point of view, so the next non-zero rumble / next colour must reach it
+    // without being suppressed as "same as the last one we already sent".
     ctrl.lastRumble = RumbleReport{};
     ctrl.lastRumbleValid = false;
+    ctrl.lightbarR = 0;
+    ctrl.lightbarG = 0;
+    ctrl.lightbarB = 0;
+    ctrl.lastLightbarValid = false;
     conn.activeControllerCount++;
 
     log_.logMsg(LogLevel::INFO, "service",
@@ -354,16 +358,13 @@ void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport
         return;
     }
 
-    // Coalesce identical back-to-back updates. Games often hold both motors
-    // at the same magnitude across many frames; sending the same packet 250×
-    // a second wastes bandwidth and starves the dish-side actuator queue.
-    // We compare the magnitudes + lightbar; we deliberately ignore
-    // wireDurationMs in the comparison so the caller can still bump the
+    // Coalesce identical back-to-back updates. Games often hold both motors at
+    // the same magnitude across many frames; sending the same packet 250×/s
+    // wastes bandwidth and starves the dish-side actuator queue. wireDurationMs
+    // is deliberately excluded from the comparison so the caller can bump the
     // refresh deadline without forcing a packet.
     auto sameAs = [](const RumbleReport& a, const RumbleReport& b) {
-        return a.strongMagnitude == b.strongMagnitude && a.weakMagnitude == b.weakMagnitude &&
-               a.hasLightbar == b.hasLightbar && a.lightbarR == b.lightbarR &&
-               a.lightbarG == b.lightbarG && a.lightbarB == b.lightbarB;
+        return a.strongMagnitude == b.strongMagnitude && a.weakMagnitude == b.weakMagnitude;
     };
     if (foundCtrl->lastRumbleValid && sameAs(foundCtrl->lastRumble, report)) { return; }
 
@@ -501,9 +502,8 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
     }
     if (foundCtrl == nullptr || foundConn == nullptr) return;
 
-    // Coalesce: don't re-send if the colour is unchanged. Same shape as the
-    // rumble coalesce — saves wire when a game holds a constant colour
-    // across frames.
+    // Coalesce: don't re-process an unchanged colour. Same shape as the rumble
+    // coalesce — saves wire when a game holds a constant colour across frames.
     if (foundCtrl->lastLightbarValid && foundCtrl->lightbarR == r && foundCtrl->lightbarG == g &&
         foundCtrl->lightbarB == b) {
         return;
@@ -513,7 +513,14 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
     foundCtrl->lightbarB = b;
     foundCtrl->lastLightbarValid = true;
 
-    client_.sendLightbar(*foundConn, foundCtrl->index, r, g, b);
+    // Emit MSG_LIGHTBAR only to senders that advertised CAP_LIGHTBAR — a sender
+    // with an addressable RGB LED. A sender without one (an Xbox pad, or
+    // dish-android, which has no controller-LED API) would only drop the packet.
+    // The colour is cached above regardless, so the web UI swatch stays live for
+    // every controller type.
+    if (foundCtrl->lightbarCapable()) {
+        client_.sendLightbar(*foundConn, foundCtrl->index, r, g, b);
+    }
 }
 
 bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,
@@ -598,6 +605,11 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
                 info.motionActive = ctrl.lastMotionValid;
                 info.motionSink = ctrl.motionSinkActive;
                 info.touchpadActive = ctrl.lastTouchpadValid;
+                info.lightbarCapable = ctrl.lightbarCapable();
+                info.lightbarKnown = ctrl.lastLightbarValid;
+                info.lightbarR = ctrl.lightbarR;
+                info.lightbarG = ctrl.lightbarG;
+                info.lightbarB = ctrl.lightbarB;
                 cs.controllers.push_back(info);
                 snap.totalControllers++;
             }

@@ -151,6 +151,15 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             json += ",\"motionActive\":" + std::string(ctrl.motionActive ? "true" : "false");
             json += ",\"motionSink\":" + std::string(ctrl.motionSink ? "true" : "false");
             json += ",\"touchpadActive\":" + std::string(ctrl.touchpadActive ? "true" : "false");
+            json += ",\"lightbarCapable\":" + std::string(ctrl.lightbarCapable ? "true" : "false");
+            if (ctrl.lightbarKnown) {
+                char rgb[8];
+                snprintf(rgb, sizeof(rgb), "#%02x%02x%02x", ctrl.lightbarR, ctrl.lightbarG,
+                         ctrl.lightbarB);
+                json += ",\"lightbar\":\"" + std::string(rgb) + "\"";
+            } else {
+                json += ",\"lightbar\":null";
+            }
             json += "}";
         }
         json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) +

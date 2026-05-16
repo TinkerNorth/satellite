@@ -434,6 +434,11 @@ void ViGEmAdapter::setRumbleCallback(RumbleCallback cb) {
     rumbleCb_ = std::move(cb);
 }
 
+void ViGEmAdapter::setLightbarCallback(LightbarCallback cb) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    lightbarCb_ = std::move(cb);
+}
+
 // Caller holds busMtx_.
 void ViGEmAdapter::startNotificationWorker(uint32_t serial, bool isDS4) {
     auto& w = notifWorkers_[serial];
@@ -485,23 +490,26 @@ void ViGEmAdapter::notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel) 
             // unified scale regardless of source.
             rr.strongMagnitude = static_cast<uint16_t>(n.LargeMotor) * 257;
             rr.weakMagnitude = static_cast<uint16_t>(n.SmallMotor) * 257;
-            rr.lightbarR = n.LightbarColor.Red;
-            rr.lightbarG = n.LightbarColor.Green;
-            rr.lightbarB = n.LightbarColor.Blue;
-            rr.hasLightbar = true;
-            RumbleCallback cb;
+            // The DS4 driver delivers rumble and lightbar in the *same*
+            // notification. Fan it out to the two independent return paths:
+            // motor vibration via the rumble callback, LED colour via the
+            // lightbar callback. Identical-colour coalescing for the latter is
+            // handled by SessionService::handleLightbarFromBackend.
+            RumbleCallback rcb;
+            LightbarCallback lcb;
             {
                 std::lock_guard<std::mutex> lk(busMtx_);
-                cb = rumbleCb_;
+                rcb = rumbleCb_;
+                lcb = lightbarCb_;
             }
-            if (cb) cb(serial, rr);
+            if (rcb) rcb(serial, rr);
+            if (lcb) lcb(serial, n.LightbarColor.Red, n.LightbarColor.Green, n.LightbarColor.Blue);
         } else {
             XUSB_REQUEST_NOTIFICATION n{};
             if (!waitNextXusbNotification(bus, (unsigned long)serial, cancel, n)) return;
             RumbleReport rr{};
             rr.strongMagnitude = static_cast<uint16_t>(n.LargeMotor) * 257;
             rr.weakMagnitude = static_cast<uint16_t>(n.SmallMotor) * 257;
-            // Xbox 360 has no lightbar — leave hasLightbar=false.
             RumbleCallback cb;
             {
                 std::lock_guard<std::mutex> lk(busMtx_);

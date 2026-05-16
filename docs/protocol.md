@@ -108,7 +108,7 @@ Application/extension types should use 0x0100+.
 | 0x0006 | Controller ACK    | requestType(2B) + ctrlIdx(1B) + result(1B)    | 4+4 = 8 B   | 32 B          | server → client |
 | 0x0007 | Server Status     | backendAvailable(1B) + activeControllers(1B)  | 4+2 = 6 B   | 30 B          | server → client |
 | 0x0008 | Controller Type   | controller_index(1B) + type(1B)               | 4+2 = 6 B   | 30 B          | client → server |
-| 0x0009 | Rumble            | controller_index(1B) + rumble fields (7..10B) | 4+8..11 B   | 36..39 B      | server → client |
+| 0x0009 | Rumble            | controller_index(1B) + strongMag(2B) + weakMag(2B) + durMs(2B) | 4+7 = 11 B  | 35 B          | server → client |
 | 0x000A | Motion (IMU)      | controller_index(1B) + MotionReport(16B)      | 4+17 = 21 B | 45 B          | client → server |
 | 0x000B | Battery           | controller_index(1B) + level(1B) + status(1B) | 4+3 = 7 B   | 31 B          | client → server |
 | 0x000C | Touchpad          | controller_index(1B) + flags(1B) + finger0(5B) + finger1(5B) | 4+12 = 16 B | 40 B    | client → server |
@@ -165,11 +165,17 @@ capability as "unknown / best-effort"). Unknown bits are reserved.
 | 0x0001 | Has analog triggers                                        |
 | 0x0002 | Supports the `MSG_RUMBLE` return path                      |
 | 0x0004 | Streams `MSG_MOTION` (0x000A) IMU data (`CAP_MOTION`)      |
+| 0x0008 | Accepts the `MSG_LIGHTBAR` (0x000D) return path (`CAP_LIGHTBAR`) |
 
 The receiver stores the capability word on the controller and surfaces
-`motionCapable` in `GET /api/connections`. `CAP_MOTION` is informational —
-motion is best-effort, so the receiver still accepts `MSG_MOTION` from a dish
-that did not advertise the bit.
+`motionCapable` / `lightbarCapable` in `GET /api/connections`. `CAP_MOTION` is
+informational — motion is best-effort, so the receiver still accepts
+`MSG_MOTION` from a dish that did not advertise the bit. `CAP_LIGHTBAR`, by
+contrast, **gates** the 0x000D stream: the receiver emits `MSG_LIGHTBAR` only
+to a controller whose sender advertised the bit (a sender with an addressable
+RGB LED — DualSense / DS4). A sender that advertised no such capability — an
+Xbox pad, or dish-android, which has no controller-LED API — receives no
+lightbar traffic.
 
 ### 0x0005 — Controller Remove
 
@@ -274,8 +280,6 @@ extend the byte; clients should treat anything outside the documented set as
 [strongMagnitude (2B, big-endian)]
 [weakMagnitude (2B, big-endian)]
 [durationMs (2B, big-endian)]
-[flags (1B)]
-[lightbarR (1B)] [lightbarG (1B)] [lightbarB (1B)]   // present only when flags bit 0 is set
 ```
 
 Emitted by the **server** when the host game writes to the virtual device's
@@ -289,11 +293,9 @@ when a game holds both motors at constant magnitudes across frames.
 | `strongMagnitude`  | 2 B  | Low-frequency / large motor (0..65535)            |
 | `weakMagnitude`    | 2 B  | High-frequency / small motor (0..65535)           |
 | `durationMs`       | 2 B  | Wire-stamped duration; 0 = continuous             |
-| `flags`            | 1 B  | Bit 0 = lightbar present                          |
-| `lightbarR/G/B`    | 3 B  | DS4 / DualSense lightbar color (when flag is set) |
 
-Senders that don't recognise the trailing lightbar bytes simply parse the
-leading 8 bytes and stop there — the wire is forward-compatible.
+Rumble carries motor vibration only. The controller's RGB lightbar has its own
+message — see `0x000D — Lightbar`.
 
 ### 0x000A — Motion (IMU)
 
@@ -444,10 +446,10 @@ RGB every frame at 60 Hz is wasteful when the controller already shows it.
 | `controller_index` | 1 B  | Controller index on the target client             |
 | `r` / `g` / `b`    | 3 B  | Lightbar colour, 0..255 per channel               |
 
-**Backwards compatibility.** Senders SHOULD prefer 0x000D over the
-deprecated trailing R/G/B bytes in 0x0009 Rumble when both arrive for the
-same controller. Pre-2026 satellites that lack 0x000D will continue to
-emit the trailing R/G/B in 0x0009 as a fallback.
+**Capability-gated.** The receiver emits 0x000D only to a controller whose
+sender advertised `CAP_LIGHTBAR` (0x0008) in its 0x0004 Controller Add — a
+sender with an addressable RGB LED (DualSense / DS4). A sender that advertised
+no such capability receives no lightbar traffic.
 
 ## Heartbeat / Keepalive
 

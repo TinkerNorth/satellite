@@ -190,6 +190,33 @@ function touchpadChip(ctrl) {
            title: 'Touchpad input is streaming to ' + destLabel + '.' };
 }
 
+// ── Per-controller lightbar chip (Task 1.4) ─────────────────────────────────
+// The host game's lightbar colour, returned to a DualSense / DS4. Derived from
+// `ctrl.lightbarCapable` (the CAP_LIGHTBAR bit the sender advertised — also the
+// gate the receiver uses to decide whether to emit MSG_LIGHTBAR) and
+// `ctrl.lightbar` (the most recent "#rrggbb" colour, or null until the game
+// sets one). Mirrors MOTION_COPY's { cls, text, title } shape, plus `swatch`:
+// a validated CSS colour shown as a small square, or null when there is none.
+function lightbarChip(ctrl) {
+  if (!ctrl.lightbarCapable) {
+    return { cls: 'lightbar-na', text: 'No lightbar', swatch: null,
+             title: 'This controller has no addressable RGB lightbar — an Xbox pad, '
+                  + 'or a sender that did not advertise lightbar support. The host '
+                  + 'game’s colour is not forwarded to it.' };
+  }
+  // Only ever trust a strict #rrggbb string into the swatch's style attribute.
+  const raw = (typeof ctrl.lightbar === 'string') ? ctrl.lightbar : null;
+  const colour = (raw && /^#[0-9a-f]{6}$/i.test(raw)) ? raw : null;
+  if (!colour) {
+    return { cls: 'lightbar-ready', text: 'Lightbar ready', swatch: null,
+             title: 'The controller has an RGB lightbar and the sender accepts the '
+                  + 'lightbar return path — waiting for the host game to set a colour.' };
+  }
+  return { cls: 'lightbar-on', text: 'Lightbar', swatch: colour,
+           title: 'The host game is driving this controller’s lightbar — current colour '
+                + colour.toUpperCase() + '.' };
+}
+
 function initDashboard() {
   startSSE();
   loadDevices();
@@ -316,6 +343,7 @@ function updateConnections(d) {
         const m = MOTION_COPY[motionStateId(ctrl)] || MOTION_COPY.na;
         const bat = batteryChip(ctrl);
         const tp = touchpadChip(ctrl);
+        const lb = lightbarChip(ctrl);
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
@@ -329,6 +357,7 @@ function updateConnections(d) {
             <span class="ctrl-battery ${bat.cls}" title="${esc(bat.title)}">${esc(bat.text)}</span>
             <span class="ctrl-motion ${m.cls}" title="${esc(m.title)}">${esc(m.text)}</span>
             <span class="ctrl-touchpad ${tp.cls}" title="${esc(tp.title)}">${esc(tp.text)}</span>
+            <span class="ctrl-lightbar ${lb.cls}" title="${esc(lb.title)}">${lb.swatch ? `<span class="lightbar-swatch" style="background:${esc(lb.swatch)}"></span>` : ''}${esc(lb.text)}</span>
           </div>
         </div>`;
       }).join('');

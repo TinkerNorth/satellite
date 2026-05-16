@@ -63,6 +63,7 @@ inline const uint8_t ACK_ERR_PLUGIN_FAIL = 0x05;
 inline const uint16_t CAP_ANALOG_TRIGGERS = 0x0001; // analog L/R triggers
 inline const uint16_t CAP_RUMBLE = 0x0002;          // accepts the MSG_RUMBLE return path
 inline const uint16_t CAP_MOTION = 0x0004;          // streams MSG_MOTION (0x000A) IMU data
+inline const uint16_t CAP_LIGHTBAR = 0x0008;        // accepts the MSG_LIGHTBAR (0x000D) return path
 
 // Wire format sizes
 inline const int HEADER_SIZE = 8;       // token(4) + counter(4)
@@ -124,10 +125,8 @@ static_assert(sizeof(GamepadReport) == 12, "GamepadReport must be 12 bytes");
 // (0..65535). Backends report low-frequency / high-frequency intensities; on
 // Linux uinput these map to the FF_RUMBLE strong/weak magnitudes verbatim.
 //
-// `lightbarR/G/B` are populated only when the controller type is DualShock 4
-// (CONTROLLER_TYPE_PLAYSTATION) — Xbox 360 has no lightbar so the bytes are 0
-// for that profile. `hasLightbar` lets the wire encoder skip the trailing
-// three bytes when a sender doesn't care about them.
+// Rumble carries motor vibration only. The controller's RGB lightbar is a
+// separate return path — see MSG_LIGHTBAR (0x000D) / IClientPort::sendLightbar.
 //
 // `durationMs == 0` is the "until-overridden" mode: the actuator should keep
 // the magnitudes applied until the next rumble packet for the same controller.
@@ -137,10 +136,6 @@ struct RumbleReport {
     uint16_t strongMagnitude = 0; // low-frequency / large motor
     uint16_t weakMagnitude = 0;   // high-frequency / small motor
     uint16_t durationMs = 0;      // 0 = continuous (until next packet)
-    uint8_t lightbarR = 0;
-    uint8_t lightbarG = 0;
-    uint8_t lightbarB = 0;
-    bool hasLightbar = false;
 };
 
 // ── Motion report (sender → satellite, gyro + accel from a real IMU) ────────
@@ -337,10 +332,11 @@ struct Controller {
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
     // Capability word from MSG_CONTROLLER_ADD (CAP_* bits). 0 when the dish is
-    // pre-cap-aware. `motionCapable()` is the convenience accessor the DSU
-    // server / web UI use to know whether to expect an IMU stream.
+    // pre-cap-aware. `motionCapable()` / `lightbarCapable()` are the convenience
+    // accessors the DSU server / web UI / return-path routing use.
     uint16_t caps = 0;
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }
+    bool lightbarCapable() const { return (caps & CAP_LIGHTBAR) != 0; }
     GamepadReport lastReport{};
     // Most recent rumble state forwarded to the dish. Used to coalesce identical
     // back-to-back game updates so we don't blast the wire when a game holds
@@ -374,10 +370,9 @@ struct Controller {
     // on a fresh contact and whenever the touchpad mode changes.
     float touchpadMouseRemX = 0.0f;
     float touchpadMouseRemY = 0.0f;
-    // Most recent lightbar color emitted by the game on the receiver host.
-    // The satellite-side `vigem_adapter` lightbar callback writes this and
-    // the session-service queues a MSG_LIGHTBAR (decoupled from MSG_RUMBLE
-    // so a colour-only update doesn't have to ride on a rumble event).
+    // Most recent lightbar colour the host game set on this controller.
+    // Written by handleLightbarFromBackend; forwarded to the dish via
+    // MSG_LIGHTBAR (for CAP_LIGHTBAR senders) and surfaced in the web UI.
     uint8_t lightbarR = 0;
     uint8_t lightbarG = 0;
     uint8_t lightbarB = 0;

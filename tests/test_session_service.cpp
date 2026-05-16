@@ -1487,57 +1487,6 @@ static void test_handleRumbleFromBackend_stopReportEmitted() {
     EXPECT_EQ(client.lastRumble.weakMagnitude, (uint16_t)0);
 }
 
-static void test_handleRumbleFromBackend_lightbarPreserved() {
-    TEST("handleRumbleFromBackend — DS4 lightbar bytes pass through to the client");
-    MockViGem vigem;
-    MockClient client;
-    MockLog log;
-    SessionService svc(vigem, client, log);
-    auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
-    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
-    auto snap = svc.getConnectionsSnapshot();
-    uint32_t serial = snap.connections[0].controllers[0].serial;
-
-    RumbleReport rr{};
-    rr.strongMagnitude = 200;
-    rr.weakMagnitude = 100;
-    rr.hasLightbar = true;
-    rr.lightbarR = 0x10;
-    rr.lightbarG = 0x80;
-    rr.lightbarB = 0xFF;
-    vigem.fireRumble(serial, rr);
-    EXPECT_EQ(client.rumbleCalls, 1);
-    EXPECT(client.lastRumble.hasLightbar);
-    EXPECT_EQ((int)client.lastRumble.lightbarR, 0x10);
-    EXPECT_EQ((int)client.lastRumble.lightbarG, 0x80);
-    EXPECT_EQ((int)client.lastRumble.lightbarB, 0xFF);
-}
-
-static void test_handleRumbleFromBackend_lightbarChangeDefeatsCoalesce() {
-    TEST("handleRumbleFromBackend — lightbar colour change re-emits even at same magnitude");
-    MockViGem vigem;
-    MockClient client;
-    MockLog log;
-    SessionService svc(vigem, client, log);
-    auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
-    auto snap = svc.getConnectionsSnapshot();
-    uint32_t serial = snap.connections[0].controllers[0].serial;
-
-    RumbleReport rr{};
-    rr.strongMagnitude = 100;
-    rr.weakMagnitude = 50;
-    rr.hasLightbar = true;
-    rr.lightbarR = 0x10;
-    vigem.fireRumble(serial, rr);
-    EXPECT_EQ(client.rumbleCalls, 1);
-
-    rr.lightbarR = 0x20; // colour change, magnitudes identical
-    vigem.fireRumble(serial, rr);
-    EXPECT_EQ(client.rumbleCalls, 2);
-}
-
 static void test_handleRumbleFromBackend_routesAcrossMultipleConnections() {
     TEST("handleRumbleFromBackend — correctly routes when multiple connections own different "
          "serials");
@@ -2386,7 +2335,7 @@ static void test_handleLightbarFromBackend_routesToOwningConnection() {
     MockLog log;
     SessionService svc(vigem, client, log);
     auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 3);
+    svc.handleControllerAdd(r.token, 3, CAP_LIGHTBAR);
     const uint32_t serial = vigem.pluggedSerials.back();
     client.reset();
 
@@ -2407,7 +2356,7 @@ static void test_handleLightbarFromBackend_unknownSerialDropped() {
     MockLog log;
     SessionService svc(vigem, client, log);
     auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
     client.reset();
 
     vigem.fireLightbar(/*serial=*/0xDEAD'BEEFu, 1, 2, 3);
@@ -2421,7 +2370,7 @@ static void test_handleLightbarFromBackend_coalescesIdenticalColours() {
     MockLog log;
     SessionService svc(vigem, client, log);
     auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
     const uint32_t serial = vigem.pluggedSerials.back();
     client.reset();
 
@@ -2438,7 +2387,7 @@ static void test_handleLightbarFromBackend_anyChannelChangeEmits() {
     MockLog log;
     SessionService svc(vigem, client, log);
     auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
     const uint32_t serial = vigem.pluggedSerials.back();
     client.reset();
 
@@ -2457,8 +2406,8 @@ static void test_handleLightbarFromBackend_separateControllersIndependentlyCoale
     MockLog log;
     SessionService svc(vigem, client, log);
     auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
-    svc.handleControllerAdd(r.token, 1);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    svc.handleControllerAdd(r.token, 1, CAP_LIGHTBAR);
     const uint32_t s0 = vigem.pluggedSerials[0];
     const uint32_t s1 = vigem.pluggedSerials[1];
     client.reset();
@@ -2466,6 +2415,101 @@ static void test_handleLightbarFromBackend_separateControllersIndependentlyCoale
     vigem.fireLightbar(s0, 0xFF, 0, 0);
     vigem.fireLightbar(s1, 0xFF, 0, 0); // same RGB, different controller
     EXPECT_EQ(client.lightbarCalls, 2);
+}
+
+static void test_capLightbar_constant() {
+    TEST("CAP_LIGHTBAR — has expected capability bit 0x0008");
+    EXPECT_EQ(static_cast<int>(CAP_LIGHTBAR), 0x0008);
+}
+
+// A pre-1.4 sender (caps = 0) must not receive MSG_LIGHTBAR — it cannot decode
+// 0x000D. The colour is still cached for the web UI; that sender gets colour
+// only via the deprecated MSG_RUMBLE tail (see the rumble tests above).
+static void test_handleLightbarFromBackend_notSentWithoutCapLightbar() {
+    TEST("handleLightbarFromBackend — colour is NOT sent to a sender lacking CAP_LIGHTBAR");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // caps = 0 — no CAP_LIGHTBAR
+    const uint32_t serial = vigem.pluggedSerials.back();
+    client.reset();
+
+    vigem.fireLightbar(serial, 0x11, 0x22, 0x33);
+    EXPECT_EQ(client.lightbarCalls, 0);
+
+    // ...but the colour is still cached, so the web UI swatch stays live for
+    // every controller regardless of the dedicated-stream gate.
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].controllers[0].lightbarKnown);
+    EXPECT(!snap.connections[0].controllers[0].lightbarCapable);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers[0].lightbarR), 0x11);
+}
+
+static void test_handleLightbarFromBackend_capLightbarSenderGetsDedicatedStream() {
+    TEST("handleLightbarFromBackend — a CAP_LIGHTBAR sender receives colour via MSG_LIGHTBAR");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 2, CAP_LIGHTBAR);
+    const uint32_t serial = vigem.pluggedSerials.back();
+    client.reset();
+
+    vigem.fireLightbar(serial, 0xDE, 0xAD, 0xBE);
+    EXPECT_EQ(client.lightbarCalls, 1);
+    EXPECT_EQ(client.lastLightbarConnToken, r.token);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarCtrlIdx), 2);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarR), 0xDE);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarG), 0xAD);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarB), 0xBE);
+}
+
+static void test_handleLightbarFromBackend_coalesceStateResetOnReAdd() {
+    TEST("handleLightbarFromBackend — re-adding a controller clears stale colour coalesce state");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    uint32_t serial = vigem.pluggedSerials.back();
+    vigem.fireLightbar(serial, 0x7F, 0x7F, 0x7F);
+    client.reset();
+
+    // Remove + re-add. The re-added controller is a fresh actuator, so the same
+    // colour must reach it again rather than being suppressed as a duplicate.
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    serial = vigem.pluggedSerials.back();
+    vigem.fireLightbar(serial, 0x7F, 0x7F, 0x7F);
+    EXPECT_EQ(client.lightbarCalls, 1);
+}
+
+static void test_lightbar_surfacedInConnectionsSnapshot() {
+    TEST("getConnectionsSnapshot — lightbar capability + live colour are surfaced");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    const uint32_t serial = vigem.pluggedSerials.back();
+
+    // Capable, but no colour set yet.
+    auto before = svc.getConnectionsSnapshot();
+    EXPECT(before.connections[0].controllers[0].lightbarCapable);
+    EXPECT(!before.connections[0].controllers[0].lightbarKnown);
+
+    vigem.fireLightbar(serial, 0x01, 0x99, 0xFE);
+    auto after = svc.getConnectionsSnapshot();
+    const auto& ci = after.connections[0].controllers[0];
+    EXPECT(ci.lightbarKnown);
+    EXPECT_EQ(static_cast<int>(ci.lightbarR), 0x01);
+    EXPECT_EQ(static_cast<int>(ci.lightbarG), 0x99);
+    EXPECT_EQ(static_cast<int>(ci.lightbarB), 0xFE);
 }
 
 int main() {
@@ -2564,8 +2608,6 @@ int main() {
     test_handleRumbleFromBackend_inactiveControllerDropped();
     test_handleRumbleFromBackend_coalescesIdenticalReports();
     test_handleRumbleFromBackend_stopReportEmitted();
-    test_handleRumbleFromBackend_lightbarPreserved();
-    test_handleRumbleFromBackend_lightbarChangeDefeatsCoalesce();
     test_handleRumbleFromBackend_routesAcrossMultipleConnections();
     test_handleRumbleFromBackend_serialReuseClearsState();
     test_handleRumbleFromBackend_customDuration();
@@ -2628,6 +2670,12 @@ int main() {
     test_handleLightbarFromBackend_coalescesIdenticalColours();
     test_handleLightbarFromBackend_anyChannelChangeEmits();
     test_handleLightbarFromBackend_separateControllersIndependentlyCoalesced();
+    // Task 1.4 — CAP_LIGHTBAR capability gating.
+    test_capLightbar_constant();
+    test_handleLightbarFromBackend_notSentWithoutCapLightbar();
+    test_handleLightbarFromBackend_capLightbarSenderGetsDedicatedStream();
+    test_handleLightbarFromBackend_coalesceStateResetOnReAdd();
+    test_lightbar_surfacedInConnectionsSnapshot();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
