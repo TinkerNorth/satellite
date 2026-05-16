@@ -82,15 +82,29 @@ class IGamepadPort {
         return false;
     }
 
-    // Submit a touchpad sample to the virtual device. Defaults to no-op so
-    // existing adapters compile unchanged. ViGEm DS4 (Windows) and uhid
-    // DualSense (Linux, future) override this to write the finger
-    // coordinates + click button into DS4_REPORT_EX's touchpad fields.
-    // The SessionService still caches the latest sample on the Controller
-    // for the web UI debug pane regardless of backend support.
+    // Submit a touchpad sample to the virtual device (TOUCHPAD_MODE_DS4).
+    // ViGEm DS4 (Windows) writes the finger coordinates + clicky button into
+    // DS4_REPORT_EX's touchpad fields; the Linux adapter emits them on a
+    // dedicated multitouch uinput node. Xbox-typed virtual pads have no
+    // touchpad surface and the default no-op drops the sample. The
+    // SessionService still caches the latest sample on the Controller for the
+    // web UI debug pane regardless of backend support.
     virtual bool submitTouchpad(uint32_t /*serial*/, const TouchpadReport& /*report*/) {
         return false;
     }
+
+    // Inject a relative mouse movement onto the receiver host's desktop — the
+    // TOUCHPAD_MODE_MOUSE routing path. The SessionService converts finger-0
+    // motion into a signed host-pixel delta and maps the clicky-pad button to
+    // mouse button 1. `dx`/`dy` are pixels; `leftButton` is the current button
+    // *level* (not an edge) — the adapter tracks transitions and emits
+    // press/release only on change.
+    //
+    // Deliberately not keyed on a virtual-device serial: this is a host-global
+    // desktop action, distinct from the per-controller virtual-pad ports
+    // above. Windows backs it with SendInput, Linux with a lazily-created
+    // uinput pointer device; the inert macOS backend keeps the default no-op.
+    virtual bool submitRelativeMouse(int /*dx*/, int /*dy*/, bool /*leftButton*/) { return false; }
 
     // Install a lightbar sink. The Windows ViGEm DS4 callback fires for every
     // lightbar colour change written by the host game (independent of rumble,

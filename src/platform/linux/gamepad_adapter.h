@@ -42,6 +42,18 @@ class GamepadAdapter : public IGamepadPort {
     // false; the SessionService still caches the sample for the DSU server.
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
 
+    // Forward a touchpad sample to the DualShock 4's dedicated multitouch
+    // uinput node (created alongside the gamepad node). Emits the MT-B
+    // protocol — ABS_MT_SLOT / ABS_MT_TRACKING_ID / ABS_MT_POSITION_X/Y plus
+    // BTN_TOUCH / BTN_TOOL_* / BTN_LEFT. Xbox pads (no touchpad node) and any
+    // DS4 whose touch node failed to open return false.
+    bool submitTouchpad(uint32_t serial, const TouchpadReport& report) override;
+
+    // Inject a relative mouse movement (TOUCHPAD_MODE_MOUSE) via a host-global
+    // uinput pointer device, created lazily on first use. EV_REL REL_X/REL_Y
+    // plus BTN_LEFT; the button level is tracked so a held click fires once.
+    bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
+
   private:
     // Per-virtual-device record. Owns the uinput fd, the FF effect table the
     // kernel hands us via UI_FF_UPLOAD, and a reader thread that drains the
@@ -69,6 +81,16 @@ class GamepadAdapter : public IGamepadPort {
             uint16_t weak = 0;
         };
         std::unordered_map<int, EffectMags> effects;
+
+        // DualShock 4 touchpad multitouch node (Task 1.3) — created next to
+        // the gamepad node. -1 for Xbox pads or on open failure (best-effort;
+        // a failure here is non-fatal — the sample is still cached). The MT
+        // tracking ids are drawn from `touchTrackingId` on each finger
+        // touch-down so evdev / libinput consumers see discrete contacts;
+        // `touchSlotId` holds the live id per MT slot (-1 = lifted).
+        int touchFd = -1;
+        int32_t touchTrackingId = 0;
+        int32_t touchSlotId[2] = {-1, -1};
     };
 
     // Create a uinput device configured as either an Xbox 360 pad (ds4=false)
@@ -82,6 +104,14 @@ class GamepadAdapter : public IGamepadPort {
     // ABS_RX/RY/RZ for gyro). Returns the fd, or -1 on failure.
     int openMotionUinputDevice(uint32_t serial);
 
+    // Create the DualShock 4 touchpad multitouch uinput node — a pointer-class
+    // clickpad exposing the MT-B protocol axes + BTN_LEFT. Returns fd, or -1.
+    int openTouchpadUinputDevice(uint32_t serial);
+
+    // Create (once) the host-global relative-mouse uinput pointer device used
+    // by TOUCHPAD_MODE_MOUSE. Returns the fd, or -1 on failure.
+    int openRelMouseUinputDevice();
+
     void startReader(uint32_t serial, Device& dev); // caller holds mtx_
     void stopReader(uint32_t serial);               // caller holds mtx_
     void readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4);
@@ -93,4 +123,10 @@ class GamepadAdapter : public IGamepadPort {
     // Installed by the SessionService; copied under mtx_ before each call so
     // the reader doesn't hold the lock across the user-supplied callback.
     RumbleCallback rumbleCb_;
+
+    // TOUCHPAD_MODE_MOUSE host-global pointer device — lazily created on the
+    // first submitRelativeMouse, destroyed in closeBus. `relMouseBtnDown_`
+    // caches the button level so a held click emits one press / one release.
+    int relMouseFd_ = -1;
+    bool relMouseBtnDown_ = false;
 };

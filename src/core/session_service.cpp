@@ -96,7 +96,8 @@ uint32_t SessionService::generateUniqueToken() {
 OpenSessionResult SessionService::openSession(const std::string& deviceId,
                                               const std::string& deviceName,
                                               const std::string& clientIP,
-                                              const uint8_t sharedKey[CRYPTO_KEY_SIZE]) {
+                                              const uint8_t sharedKey[CRYPTO_KEY_SIZE],
+                                              uint8_t touchpadMode) {
     std::lock_guard<std::mutex> lk(mtx_);
 
     // Tear down any stale connection for this device
@@ -123,6 +124,7 @@ OpenSessionResult SessionService::openSession(const std::string& deviceId,
     conn.lastPacketTime = std::chrono::steady_clock::now();
     conn.connectedAt = std::chrono::steady_clock::now();
     conn.activeControllerCount = 0;
+    conn.touchpadMode = (touchpadMode < TOUCHPAD_MODE_COUNT) ? touchpadMode : TOUCHPAD_MODE_DS4;
 
     connections_[token] = conn;
 
@@ -405,14 +407,77 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
     if (it == connections_.end()) return false;
     if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
 
-    Controller& ctrl = it->second.controllers[ctrlIdx];
+    Connection& conn = it->second;
+    Controller& ctrl = conn.controllers[ctrlIdx];
     if (!ctrl.active) return false;
 
-    // Cache for the web-UI debug pane regardless of backend support.
+    // Capture the previous sample BEFORE overwriting the cache — relative-mouse
+    // mode needs the finger-0 delta between consecutive frames.
+    const TouchpadReport prev = ctrl.lastTouchpad;
+    const bool prevValid = ctrl.lastTouchpadValid;
+
+    // Cache for the web-UI debug pane regardless of routing mode / backend.
     ctrl.lastTouchpad = report;
     ctrl.lastTouchpadValid = true;
 
-    return backend_.submitTouchpad(ctrl.serialNo, report);
+    switch (conn.touchpadMode) {
+    case TOUCHPAD_MODE_OFF:
+        // Routing disabled for this device — sample is cached, nothing else.
+        return false;
+
+    case TOUCHPAD_MODE_MOUSE: {
+        // Finger 0 drives the cursor. A delta is emitted only while finger 0
+        // is *continuously* down across both frames: a fresh touch-down
+        // re-anchors the origin (so the cursor doesn't jump) and a lift emits
+        // no motion. The clicky-pad button always maps to mouse button 1.
+        int dx = 0;
+        int dy = 0;
+        const bool continuous = prevValid && prev.finger0.active && report.finger0.active;
+        if (continuous) {
+            const float fx =
+                static_cast<float>(report.finger0.x - prev.finger0.x) * TOUCHPAD_MOUSE_SENSITIVITY +
+                ctrl.touchpadMouseRemX;
+            const float fy =
+                static_cast<float>(report.finger0.y - prev.finger0.y) * TOUCHPAD_MOUSE_SENSITIVITY +
+                ctrl.touchpadMouseRemY;
+            dx = static_cast<int>(fx);
+            dy = static_cast<int>(fy);
+            // Keep the sub-pixel remainder so a slow drag still moves.
+            ctrl.touchpadMouseRemX = fx - static_cast<float>(dx);
+            ctrl.touchpadMouseRemY = fy - static_cast<float>(dy);
+        } else {
+            // No continuous contact — drop any accumulated sub-pixel motion.
+            ctrl.touchpadMouseRemX = 0.0f;
+            ctrl.touchpadMouseRemY = 0.0f;
+        }
+        return backend_.submitRelativeMouse(dx, dy, report.buttonPressed);
+    }
+
+    case TOUCHPAD_MODE_DS4:
+    default:
+        // Pass through to the virtual DualShock 4 touchpad surface. The
+        // default IGamepadPort impl returns false (Xbox pad / inert backend);
+        // that is not an error — the sample is still cached above.
+        return backend_.submitTouchpad(ctrl.serialNo, report);
+    }
+}
+
+bool SessionService::setTouchpadMode(const std::string& deviceId, uint8_t mode) {
+    if (mode >= TOUCHPAD_MODE_COUNT) return false;
+    std::lock_guard<std::mutex> lk(mtx_);
+    bool updated = false;
+    for (auto& [tok, conn] : connections_) {
+        if (conn.deviceId != deviceId) continue;
+        conn.touchpadMode = mode;
+        // Reset every controller's relative-mouse accumulator so a mode switch
+        // doesn't carry a stale sub-pixel remainder into the new mode.
+        for (auto& ctrl : conn.controllers) {
+            ctrl.touchpadMouseRemX = 0.0f;
+            ctrl.touchpadMouseRemY = 0.0f;
+        }
+        updated = true;
+    }
+    return updated;
 }
 
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
@@ -517,6 +582,7 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
             std::chrono::duration_cast<std::chrono::seconds>(conn.connectedAt.time_since_epoch())
                 .count();
         cs.activeControllerCount = conn.activeControllerCount;
+        cs.touchpadMode = conn.touchpadMode;
 
         for (auto& ctrl : conn.controllers) {
             if (ctrl.active) {
@@ -531,6 +597,7 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
                 info.motionCapable = ctrl.motionCapable();
                 info.motionActive = ctrl.lastMotionValid;
                 info.motionSink = ctrl.motionSinkActive;
+                info.touchpadActive = ctrl.lastTouchpadValid;
                 cs.controllers.push_back(info);
                 snap.totalControllers++;
             }

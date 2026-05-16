@@ -6,6 +6,8 @@
  */
 #include "vigem_adapter.h"
 
+#include "core/touchpad_codec.h"
+
 // ── Raw ViGEm driver functions (defined in vigem.cpp / infra) ───────────────
 extern HANDLE openVigemBus();
 extern bool pluginTarget(HANDLE bus, unsigned long serial);
@@ -223,7 +225,12 @@ bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report)
     er.bThumbRX = ds4.bThumbRX;
     er.bThumbRY = ds4.bThumbRY;
     er.wButtons = ds4.wButtons;
-    er.bSpecial = ds4.bSpecial;
+    // Preserve the touchpad clicky-button bit (bSpecial bit 1), which the
+    // touchpad path owns — the gamepad frame only contributes the PS button
+    // (bit 0), so a plain assignment would wipe a held trackpad click between
+    // touch samples.
+    er.bSpecial =
+        static_cast<UCHAR>((ds4.bSpecial & ~0x02) | (sit->second.touchpadButton ? 0x02 : 0x00));
     er.bTriggerL = ds4.bTriggerL;
     er.bTriggerR = ds4.bTriggerR;
     return submitDS4Locked(serial);
@@ -298,6 +305,81 @@ bool ViGEmAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
     // The battery byte only actually reaches the host on the extended-report
     // path — the basic DS4_REPORT has no battery field.
     return sit->second.exSupported;
+}
+
+bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+
+    // Only DualShock 4 virtual devices have a touchpad surface. An Xbox 360
+    // pad (no ds4State_ entry) silently drops it — the SessionService still
+    // caches the sample for the web UI.
+    auto sit = ds4State_.find(serial);
+    if (sit == ds4State_.end()) return false;
+    DS4State& st = sit->second;
+    auto& er = st.report.Report;
+
+    // Bump a finger's tracking id whenever it transitions up→down so a
+    // consumer reads a brand-new contact rather than a teleporting drag.
+    if (report.finger0.active && !st.fingerDown0)
+        st.trackingId0 = static_cast<uint8_t>((st.trackingId0 + 1) & 0x7F);
+    if (report.finger1.active && !st.fingerDown1)
+        st.trackingId1 = static_cast<uint8_t>((st.trackingId1 + 1) & 0x7F);
+    st.fingerDown0 = report.finger0.active;
+    st.fingerDown1 = report.finger1.active;
+
+    // One current touch frame rides along on this report. ds4PackTouchFinger
+    // (core/touchpad_codec.h) owns the wire→DS4 12-bit coordinate packing.
+    DS4_TOUCH& touch = er.sCurrentTouch;
+    touch.bPacketCounter = st.touchPacket++;
+    const auto f0 = ds4PackTouchFinger(report.finger0, st.trackingId0);
+    const auto f1 = ds4PackTouchFinger(report.finger1, st.trackingId1);
+    touch.bIsUpTrackingNum1 = f0[0];
+    touch.bTouchData1[0] = f0[1];
+    touch.bTouchData1[1] = f0[2];
+    touch.bTouchData1[2] = f0[3];
+    touch.bIsUpTrackingNum2 = f1[0];
+    touch.bTouchData2[0] = f1[1];
+    touch.bTouchData2[1] = f1[2];
+    touch.bTouchData2[2] = f1[3];
+    er.bTouchPacketsN = 1;
+
+    // The clicky-trackpad button is bSpecial bit 1 (bit 0 = PS button, owned
+    // by the gamepad-report path). Cache it so submitDS4Report can re-apply it
+    // on plain gamepad frames without clobbering it.
+    st.touchpadButton = report.buttonPressed;
+    if (report.buttonPressed)
+        er.bSpecial |= 0x02;
+    else
+        er.bSpecial = static_cast<UCHAR>(er.bSpecial & ~0x02);
+
+    submitDS4Locked(serial);
+    // Touchpad fields only actually reach the host on the extended-report path.
+    return st.exSupported;
+}
+
+bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
+    // Host-global desktop injection — independent of the ViGEm bus, so this
+    // works even with no virtual controllers plugged in.
+    INPUT inputs[2] = {};
+    int n = 0;
+    if (dx != 0 || dy != 0) {
+        inputs[n].type = INPUT_MOUSE;
+        inputs[n].mi.dx = dx;
+        inputs[n].mi.dy = dy;
+        inputs[n].mi.dwFlags = MOUSEEVENTF_MOVE;
+        ++n;
+    }
+    // Emit a button event only on a level change — a held click must not
+    // re-press every frame.
+    const bool was = relMouseBtnDown_.exchange(leftButton);
+    if (leftButton != was) {
+        inputs[n].type = INPUT_MOUSE;
+        inputs[n].mi.dwFlags = leftButton ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        ++n;
+    }
+    if (n == 0) return true; // idle frame — nothing to inject, still "handled"
+    return SendInput(static_cast<UINT>(n), inputs, sizeof(INPUT)) == static_cast<UINT>(n);
 }
 
 // Caller holds busMtx_; `serial` must exist in ds4State_.

@@ -23,9 +23,13 @@ class SessionService {
 
     // Open a new connection for a paired device.
     // Tears down any stale connection for the same deviceId first.
+    // `touchpadMode` (TOUCHPAD_MODE_*) seeds the connection's touchpad routing
+    // from the paired device's persisted setting; it can be changed later
+    // without re-pairing via setTouchpadMode.
     OpenSessionResult openSession(const std::string& deviceId, const std::string& deviceName,
                                   const std::string& clientIP,
-                                  const uint8_t sharedKey[CRYPTO_KEY_SIZE]);
+                                  const uint8_t sharedKey[CRYPTO_KEY_SIZE],
+                                  uint8_t touchpadMode = TOUCHPAD_MODE_DS4);
 
     // Close (disconnect) a connection by token.  Returns controllers removed.
     int closeSession(uint32_t token);
@@ -85,13 +89,23 @@ class SessionService {
     // resolved to an active controller).
     bool handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx, const BatteryReport& report);
 
-    // Handle a touchpad sample from the dish (MSG_TOUCHPAD). Caches on the
-    // Controller for the web UI debug pane and forwards to the backend's
-    // touchpad channel via IGamepadPort::submitTouchpad. The default port
-    // impl returns false; ViGEm DS4 / uhid DualSense overrides will wire
-    // it into DS4_REPORT_EX touchpad fields. False does NOT indicate an
-    // error — senders keep streaming touchpad regardless.
+    // Handle a touchpad sample from the dish (MSG_TOUCHPAD). Always caches on
+    // the Controller for the web UI, then routes per the owning connection's
+    // touchpadMode:
+    //   DS4   — forwards to IGamepadPort::submitTouchpad (virtual DS4 pad).
+    //   MOUSE — converts the finger-0 delta into a relative-mouse movement and
+    //           forwards to IGamepadPort::submitRelativeMouse.
+    //   OFF   — caches only; nothing is forwarded.
+    // Returns whether the routed sink accepted the sample. False does NOT
+    // indicate an error — senders keep streaming touchpad regardless.
     bool handleTouchpadData(uint32_t token, uint8_t ctrlIdx, const TouchpadReport& report);
+
+    // Hot-apply a touchpad routing mode (TOUCHPAD_MODE_*) to every live
+    // connection for `deviceId` — the web UI's per-device toggle, applied
+    // without re-pairing or reconnecting. The persisted PairedDevice remains
+    // the source of truth across restarts; this only updates in-memory
+    // Connection state. Returns true if at least one live connection matched.
+    bool setTouchpadMode(const std::string& deviceId, uint8_t mode);
 
     // Handle a lightbar change fired by the platform gamepad backend's
     // dedicated lightbar callback (independent of rumble). Resolves
@@ -121,6 +135,9 @@ class SessionService {
         std::string clientIP;
         int64_t connectedAtEpoch;
         int activeControllerCount;
+        // Touchpad routing for this connection (TOUCHPAD_MODE_*). The web UI
+        // renders it as the per-device selector's current value.
+        uint8_t touchpadMode;
         struct CtrlInfo {
             uint8_t index;
             uint32_t serial;
@@ -143,6 +160,10 @@ class SessionService {
             bool motionCapable;
             bool motionActive;
             bool motionSink;
+            // True once at least one MSG_TOUCHPAD sample has been decoded for
+            // this controller. Where that sample is routed is the
+            // connection-level touchpadMode above.
+            bool touchpadActive;
         };
         std::vector<CtrlInfo> controllers;
     };

@@ -382,9 +382,7 @@ that have no battery information at all SHOULD NOT send 0x000B at all.
 
 Two-finger touchpad report for DS4 / DualSense trackpads. The receiver
 caches the most recent sample per `(token, controller_index)` for the web
-UI's debug pane and forwards it to backends that have a touchpad surface
-(future Windows DS4 / Linux `uhid` DualSense — the default `IGamepadPort`
-impl drops silently).
+UI and then routes it per the paired device's **touchpad mode** (below).
 
 | Field                  | Size | Description                                                |
 |------------------------|------|------------------------------------------------------------|
@@ -393,12 +391,39 @@ impl drops silently).
 | `fingerN_trackingId`   | 1 B  | Monotonic per-finger id; wraps freely                      |
 | `fingerN_x` / `_y`     | 2 B  | Signed int16, full int16 range mapped to the touchpad face |
 
-**Coordinates** are normalised int16 (`-32768..32767`) on both axes so the
-wire is resolution-independent — the receiver maps to whichever virtual
-device's coordinate space it owns (DS4: 1920×943; mouse: monitor pixels).
+**Coordinate space.** Coordinates are a normalised int16 (`-32768..32767`)
+on both axes so the wire is resolution-independent. The convention is
+**centre-origin**: `0,0` is the middle of the pad, `+x` runs to the right,
+`+y` runs *down* (screen / DS4-native convention). `-32768` is the left /
+top edge, `+32767` the right / bottom edge. Senders normalise their native
+units into this frame:
+
+- SDL2 senders (`dish-windows`, `dish-linux`) map SDL's `0.0..1.0`
+  top-left-origin floats via `v * 65535 - 32768`.
+- The macOS sender maps GameController's `-1.0..1.0` centre-origin axes via
+  `axis * 32767`, **negating the y-axis** (GameController's `+y` is up).
+
+The receiver scales centre-origin wire units into whichever space its sink
+owns: DS4 emulation uses the DS4-native `1920×943`; the relative-mouse path
+treats finger deltas as host pixels. `touchpadWireToRange()` in
+`core/touchpad_codec.h` is the single shared implementation.
+
+**Touchpad mode (per paired device).** The receiver routes each device's
+touchpad samples by a persisted, hot-swappable mode (web UI → Paired
+Devices; see `TOUCHPAD_MODE_*` in `core/types.h`):
+
+| Mode    | Routing                                                            |
+|---------|--------------------------------------------------------------------|
+| `ds4`   | Into the virtual DualShock 4 touchpad surface (`DS4_REPORT_EX` on Windows, an MT-B `uinput` node on Linux). Default. Xbox-typed virtual pads have no touchpad and drop it. |
+| `mouse` | Relative mouse on the receiver host — finger 0 motion drives the cursor, the clicky button is mouse button 1. |
+| `off`   | Ignored (still cached for the web UI).                             |
+
+A mode change applies to live connections immediately — no re-pairing.
 
 **Byte order.** `host LE` mirrors `MotionReport`; senders write LE
-explicitly because the receiver decodes via byte-shift, not `memcpy`.
+explicitly because the receiver decodes via byte-shift, not `memcpy`. The
+inner payload is `controller_index(1) + 11` = 12 bytes
+(`TOUCHPAD_WIRE_PAYLOAD_BYTES` counts the 11 bytes after the index).
 
 ### 0x000D — Lightbar
 

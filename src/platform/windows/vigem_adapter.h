@@ -50,6 +50,19 @@ class ViGEmAdapter : public IGamepadPort {
     // ViGEmBus too old for IOCTL_DS4_SUBMIT_REPORT_EX).
     bool submitBattery(uint32_t serial, const BatteryReport& report) override;
 
+    // Forward a touchpad sample to the virtual DualShock 4 device's touchpad
+    // fields (DS4_REPORT_EX sCurrentTouch + the clicky-button bit of bSpecial).
+    // Xbox 360 virtual pads have no touchpad surface and return false. Returns
+    // true only when the sample reached the device via the extended-report
+    // path.
+    bool submitTouchpad(uint32_t serial, const TouchpadReport& report) override;
+
+    // Inject a relative mouse movement onto the Windows desktop via SendInput
+    // (the TOUCHPAD_MODE_MOUSE routing path). Host-global — independent of the
+    // ViGEm bus, so it works with no virtual controllers plugged in. Tracks the
+    // mouse-button level so a held click fires press/release only once.
+    bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
+
   private:
     // Per-controller notification worker. Each plugged virtual device gets a
     // thread that loops on `wait*Notification` and forwards each fired event
@@ -79,6 +92,19 @@ class ViGEmAdapter : public IGamepadPort {
         DS4_REPORT_EX report{};  // running report; leading fields = buttons/sticks
         bool exSupported = true; // false once IOCTL_DS4_SUBMIT_REPORT_EX is rejected
         std::chrono::steady_clock::time_point lastSubmit{}; // for wTimestamp advance
+        // Touchpad passthrough state (Task 1.3). `touchPacket` free-runs as the
+        // DS4 touch-frame counter. `trackingId{0,1}` bump on each finger
+        // touch-down so a consumer distinguishes a fresh contact from a drag;
+        // `fingerDown{0,1}` is the previous active state used to detect that
+        // up→down transition. `touchpadButton` is cached separately because the
+        // gamepad-report path rewrites bSpecial every frame and would otherwise
+        // clobber the clicky-button bit between touch samples.
+        uint8_t touchPacket = 0;
+        uint8_t trackingId0 = 0;
+        uint8_t trackingId1 = 0;
+        bool fingerDown0 = false;
+        bool fingerDown1 = false;
+        bool touchpadButton = false;
     };
     std::unordered_map<uint32_t, DS4State> ds4State_;
 
@@ -87,6 +113,11 @@ class ViGEmAdapter : public IGamepadPort {
     // because the lifetime invariant ("adapter outlives callback") makes a
     // copy under lock + invoke unlocked safe.
     RumbleCallback rumbleCb_;
+
+    // TOUCHPAD_MODE_MOUSE button-level cache for submitRelativeMouse — so a
+    // held click doesn't re-emit MOUSEEVENTF_LEFTDOWN every frame. Touched only
+    // from the single UDP receiver thread; std::atomic keeps it lock-free.
+    std::atomic<bool> relMouseBtnDown_{false};
 
     void startNotificationWorker(uint32_t serial, bool isDS4); // caller holds busMtx_
     void stopNotificationWorker(uint32_t serial);              // caller holds busMtx_

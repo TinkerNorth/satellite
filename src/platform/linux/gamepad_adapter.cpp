@@ -6,6 +6,8 @@
  */
 #include "gamepad_adapter.h"
 
+#include "core/touchpad_codec.h"
+
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
@@ -100,7 +102,18 @@ void GamepadAdapter::closeBus() {
             (void)::ioctl(dev.motionFd, UI_DEV_DESTROY);
             ::close(dev.motionFd);
         }
+        if (dev.touchFd >= 0) {
+            (void)::ioctl(dev.touchFd, UI_DEV_DESTROY);
+            ::close(dev.touchFd);
+        }
     }
+    // The relative-mouse pointer node is host-global, not per-controller.
+    if (relMouseFd_ >= 0) {
+        (void)::ioctl(relMouseFd_, UI_DEV_DESTROY);
+        ::close(relMouseFd_);
+        relMouseFd_ = -1;
+    }
+    relMouseBtnDown_ = false;
     devices_.clear();
     busOpen_ = false;
 }
@@ -214,6 +227,86 @@ fail:
     return -1;
 }
 
+int GamepadAdapter::openTouchpadUinputDevice(uint32_t serial) {
+    // Output-only node — no FF readback — so O_WRONLY is sufficient.
+    int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    if (fd < 0) return -1;
+
+    if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
+    // INPUT_PROP_POINTER marks this as an indirect pointing device; the DS4 /
+    // DualSense trackpad is a clickpad, so INPUT_PROP_BUTTONPAD too — libinput
+    // then treats the whole surface as one big button.
+    if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_POINTER) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_BUTTONPAD) < 0) goto fail;
+
+    for (int btn : {BTN_TOUCH, BTN_TOOL_FINGER, BTN_TOOL_DOUBLETAP, BTN_LEFT}) {
+        if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
+    }
+    // ABS_X/Y carry a single-touch mirror of finger 0; the ABS_MT_* axes carry
+    // the full two-finger multitouch (MT-B) stream.
+    for (int ax :
+         {ABS_X, ABS_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y}) {
+        if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
+    }
+
+    // DS4 native touchpad resolution. ABS_MT_SLOT caps at the two-contact pad.
+    if (!setupAbs(fd, ABS_X, 0, DS4_TOUCHPAD_RES_X - 1, 0, 0)) goto fail;
+    if (!setupAbs(fd, ABS_Y, 0, DS4_TOUCHPAD_RES_Y - 1, 0, 0)) goto fail;
+    if (!setupAbs(fd, ABS_MT_SLOT, 0, 1, 0, 0)) goto fail;
+    if (!setupAbs(fd, ABS_MT_TRACKING_ID, 0, 65535, 0, 0)) goto fail;
+    if (!setupAbs(fd, ABS_MT_POSITION_X, 0, DS4_TOUCHPAD_RES_X - 1, 0, 0)) goto fail;
+    if (!setupAbs(fd, ABS_MT_POSITION_Y, 0, DS4_TOUCHPAD_RES_Y - 1, 0, 0)) goto fail;
+
+    {
+        struct uinput_setup usetup{};
+        usetup.id.bustype = BUS_USB;
+        usetup.id.vendor = DS4_VID;
+        usetup.id.product = DS4_PID;
+        usetup.id.version = 0x0100;
+        std::snprintf(usetup.name, sizeof(usetup.name),
+                      "Satellite Virtual DualShock 4 Touchpad #%u", serial);
+        if (::ioctl(fd, UI_DEV_SETUP, &usetup) < 0) goto fail;
+    }
+
+    if (::ioctl(fd, UI_DEV_CREATE) < 0) goto fail;
+    return fd;
+
+fail:
+    ::close(fd);
+    return -1;
+}
+
+int GamepadAdapter::openRelMouseUinputDevice() {
+    int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    if (fd < 0) return -1;
+
+    if (::ioctl(fd, UI_SET_EVBIT, EV_REL) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_RELBIT, REL_X) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_RELBIT, REL_Y) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0) goto fail;
+
+    {
+        struct uinput_setup usetup{};
+        usetup.id.bustype = BUS_VIRTUAL;
+        usetup.id.vendor = DS4_VID;
+        usetup.id.product = DS4_PID;
+        usetup.id.version = 0x0100;
+        std::snprintf(usetup.name, sizeof(usetup.name), "Satellite Virtual Pointer");
+        if (::ioctl(fd, UI_DEV_SETUP, &usetup) < 0) goto fail;
+    }
+
+    if (::ioctl(fd, UI_DEV_CREATE) < 0) goto fail;
+    return fd;
+
+fail:
+    ::close(fd);
+    return -1;
+}
+
 bool GamepadAdapter::pluginDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (!busOpen_) return false;
@@ -240,6 +333,10 @@ bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
     // the gamepad still works and motion is still cached + DSU-re-emitted by
     // the SessionService — only the local evdev motion node is missing.
     dev.motionFd = openMotionUinputDevice(serial);
+    // Third uinput node for the DualShock 4 touchpad (Task 1.3). Also
+    // best-effort — a failure just means TOUCHPAD_MODE_DS4 has nowhere to
+    // land for this controller; the sample is still cached for the web UI.
+    dev.touchFd = openTouchpadUinputDevice(serial);
     startReader(serial, dev);
     return true;
 }
@@ -258,6 +355,10 @@ void GamepadAdapter::unplugDevice(uint32_t serial) {
     if (it->second.motionFd >= 0) {
         (void)::ioctl(it->second.motionFd, UI_DEV_DESTROY);
         ::close(it->second.motionFd);
+    }
+    if (it->second.touchFd >= 0) {
+        (void)::ioctl(it->second.touchFd, UI_DEV_DESTROY);
+        ::close(it->second.touchFd);
     }
     devices_.erase(it);
 }
@@ -362,6 +463,74 @@ bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     ok &= emit(fd, EV_ABS, ABS_X, report.accelX);
     ok &= emit(fd, EV_ABS, ABS_Y, report.accelY);
     ok &= emit(fd, EV_ABS, ABS_Z, report.accelZ);
+    ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
+    return ok;
+}
+
+bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = devices_.find(serial);
+    if (it == devices_.end() || it->second.touchFd < 0) return false;
+    Device& dev = it->second;
+    const int fd = dev.touchFd;
+
+    bool ok = true;
+    const TouchpadFinger* fingers[2] = {&report.finger0, &report.finger1};
+    int activeCount = 0;
+    for (int slot = 0; slot < 2; ++slot) {
+        const TouchpadFinger& f = *fingers[slot];
+        ok &= emit(fd, EV_ABS, ABS_MT_SLOT, slot);
+        if (f.active) {
+            ++activeCount;
+            // Allocate a fresh tracking id on a touch-down and reuse it for the
+            // life of the contact so MT-B consumers see one continuous finger.
+            if (dev.touchSlotId[slot] < 0) {
+                dev.touchSlotId[slot] = (dev.touchTrackingId++) & 0xFFFF;
+            }
+            ok &= emit(fd, EV_ABS, ABS_MT_TRACKING_ID, dev.touchSlotId[slot]);
+            ok &= emit(fd, EV_ABS, ABS_MT_POSITION_X, touchpadWireToRange(f.x, DS4_TOUCHPAD_RES_X));
+            ok &= emit(fd, EV_ABS, ABS_MT_POSITION_Y, touchpadWireToRange(f.y, DS4_TOUCHPAD_RES_Y));
+        } else if (dev.touchSlotId[slot] >= 0) {
+            // Finger lifted — release the MT slot (tracking id -1).
+            dev.touchSlotId[slot] = -1;
+            ok &= emit(fd, EV_ABS, ABS_MT_TRACKING_ID, -1);
+        }
+    }
+
+    ok &= emit(fd, EV_KEY, BTN_TOUCH, activeCount > 0 ? 1 : 0);
+    ok &= emit(fd, EV_KEY, BTN_TOOL_FINGER, activeCount == 1 ? 1 : 0);
+    ok &= emit(fd, EV_KEY, BTN_TOOL_DOUBLETAP, activeCount == 2 ? 1 : 0);
+    ok &= emit(fd, EV_KEY, BTN_LEFT, report.buttonPressed ? 1 : 0);
+
+    // Single-touch (ST) compatibility: mirror finger 0 onto ABS_X/Y so non-MT
+    // consumers still track the primary contact.
+    if (report.finger0.active) {
+        ok &= emit(fd, EV_ABS, ABS_X, touchpadWireToRange(report.finger0.x, DS4_TOUCHPAD_RES_X));
+        ok &= emit(fd, EV_ABS, ABS_Y, touchpadWireToRange(report.finger0.y, DS4_TOUCHPAD_RES_Y));
+    }
+
+    ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
+    return ok;
+}
+
+bool GamepadAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    // The pointer node is host-global and lazily created — the first
+    // TOUCHPAD_MODE_MOUSE sample is what brings it into existence.
+    if (relMouseFd_ < 0) {
+        relMouseFd_ = openRelMouseUinputDevice();
+        if (relMouseFd_ < 0) return false;
+    }
+    const int fd = relMouseFd_;
+
+    bool ok = true;
+    if (dx != 0) ok &= emit(fd, EV_REL, REL_X, dx);
+    if (dy != 0) ok &= emit(fd, EV_REL, REL_Y, dy);
+    // Emit BTN_LEFT only on a level change so a held click presses once.
+    if (leftButton != relMouseBtnDown_) {
+        relMouseBtnDown_ = leftButton;
+        ok &= emit(fd, EV_KEY, BTN_LEFT, leftButton ? 1 : 0);
+    }
     ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
     return ok;
 }

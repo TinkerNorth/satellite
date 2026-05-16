@@ -151,6 +151,9 @@ Config loadConfig() {
                 dev.lastIP = jsonGetString(obj, "lastIP");
                 dev.pairedAt = jsonGetString(obj, "pairedAt");
                 dev.sharedKeyHex = jsonGetString(obj, "sharedKey");
+                // touchpadMode (Task 1.3) — absent on pre-1.3 configs, where
+                // touchpadModeFromName("") yields TOUCHPAD_MODE_DS4.
+                dev.touchpadMode = touchpadModeFromName(jsonGetString(obj, "touchpadMode"));
                 if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
                 pos = objEnd + 1;
             }
@@ -182,7 +185,8 @@ void saveConfig(const Config& cfg) {
         const auto& d = cfg.pairedDevices[i];
         f << "    {\"id\":\"" << jsonEscape(d.id) << "\",\"name\":\"" << jsonEscape(d.name)
           << "\",\"lastIP\":\"" << jsonEscape(d.lastIP) << "\",\"pairedAt\":\""
-          << jsonEscape(d.pairedAt) << "\",\"sharedKey\":\"" << jsonEscape(d.sharedKeyHex) << "\"}";
+          << jsonEscape(d.pairedAt) << "\",\"sharedKey\":\"" << jsonEscape(d.sharedKeyHex)
+          << "\",\"touchpadMode\":\"" << touchpadModeName(d.touchpadMode) << "\"}";
         if (i + 1 < cfg.pairedDevices.size()) f << ",";
         f << "\n";
     }

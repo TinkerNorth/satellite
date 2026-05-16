@@ -157,6 +157,39 @@ function batteryChip(ctrl) {
   return { cls, text, title };
 }
 
+// ── Per-device touchpad routing (Task 1.3) ──────────────────────────────────
+// The paired-device touchpad-mode selector. Mirrors TOUCHPAD_MODE_* on the
+// server; the chosen mode is persisted in config and hot-applied to any live
+// connection (no re-pairing). Pad → virtual DualShock 4 touchpad surface;
+// Mouse → relative mouse pointer on this host; Off → ignore.
+const TOUCHPAD_MODES = [
+  { id: 'ds4',   label: 'Pad',
+    title: 'Forward the touchpad into the virtual DualShock 4 controller. PlayStation-type controllers only — an Xbox virtual pad has no touchpad surface.' },
+  { id: 'mouse', label: 'Mouse',
+    title: 'Use the touchpad as a relative mouse on this machine — finger 0 moves the cursor, the clicky pad is the left mouse button.' },
+  { id: 'off',   label: 'Off',
+    title: 'Ignore touchpad input from this device.' },
+];
+
+// Per-controller touchpad chip — derived from the controller's `touchpadActive`
+// flag and the owning connection's `touchpadMode`. Mirrors MOTION_COPY's
+// { cls, text, title } shape.
+function touchpadChip(ctrl) {
+  const mode = ctrl.touchpadMode || 'ds4';
+  if (mode === 'off') {
+    return { cls: 'touchpad-off', text: 'Touchpad off',
+             title: 'Touchpad routing is turned off for this device — change it under Paired Devices.' };
+  }
+  const dest = (mode === 'mouse') ? 'mouse' : 'pad';
+  const destLabel = (mode === 'mouse') ? 'the host mouse pointer' : 'the virtual DualShock 4 touchpad';
+  if (!ctrl.touchpadActive) {
+    return { cls: 'touchpad-ready', text: 'Touchpad → ' + dest,
+             title: 'Touchpad samples will route to ' + destLabel + ' — none received yet.' };
+  }
+  return { cls: 'touchpad-on', text: 'Touchpad → ' + dest,
+           title: 'Touchpad input is streaming to ' + destLabel + '.' };
+}
+
 function initDashboard() {
   startSSE();
   loadDevices();
@@ -269,7 +302,8 @@ function updateConnections(d) {
     const allCtrls = [];
     d.connections.forEach(c => {
       c.controllers.forEach(ctrl => {
-        allCtrls.push({ ...ctrl, deviceName: c.deviceName, connectionId: c.connectionId });
+        allCtrls.push({ ...ctrl, deviceName: c.deviceName, connectionId: c.connectionId,
+                        touchpadMode: c.touchpadMode });
       });
     });
     if (allCtrls.length === 0) {
@@ -281,6 +315,7 @@ function updateConnections(d) {
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
         const m = MOTION_COPY[motionStateId(ctrl)] || MOTION_COPY.na;
         const bat = batteryChip(ctrl);
+        const tp = touchpadChip(ctrl);
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
@@ -293,6 +328,7 @@ function updateConnections(d) {
           <div class="ctrl-chips">
             <span class="ctrl-battery ${bat.cls}" title="${esc(bat.title)}">${esc(bat.text)}</span>
             <span class="ctrl-motion ${m.cls}" title="${esc(m.title)}">${esc(m.text)}</span>
+            <span class="ctrl-touchpad ${tp.cls}" title="${esc(tp.title)}">${esc(tp.text)}</span>
           </div>
         </div>`;
       }).join('');
@@ -346,21 +382,38 @@ async function loadDevices() {
       el.innerHTML = '<p class="hint">No paired devices</p>';
       return;
     }
-    el.innerHTML = devs.map(d => `
+    el.innerHTML = devs.map(d => {
+      const tm = d.touchpadMode || 'ds4';
+      const seg = TOUCHPAD_MODES.map(mode =>
+        `<button class="seg-btn${tm === mode.id ? ' seg-on' : ''}" title="${esc(mode.title)}" `
+        + `onclick="setTouchpadMode('${esc(d.id)}','${mode.id}')">${esc(mode.label)}</button>`
+      ).join('');
+      return `
       <div class="device-item">
         <div class="device-info">
           <span class="device-name">${esc(d.name)}</span>
           <span class="device-meta">${esc(d.lastIP)} · ${esc(d.pairedAt)}</span>
         </div>
-        <button class="btn-icon btn-danger" onclick="removeDevice('${esc(d.id)}')" title="Remove"><img src="img/icons/close_x.svg" alt="Remove" class="emoji-icon"></button>
-      </div>
-    `).join('');
+        <div class="device-actions">
+          <span class="seg-label" title="Where this device's DualSense / DS4 touchpad is routed on this host. Applies live — no re-pairing needed.">Touchpad</span>
+          <div class="seg" role="group" aria-label="Touchpad routing">${seg}</div>
+          <button class="btn-icon btn-danger" onclick="removeDevice('${esc(d.id)}')" title="Remove"><img src="img/icons/close_x.svg" alt="Remove" class="emoji-icon"></button>
+        </div>
+      </div>`;
+    }).join('');
   } catch (e) { /* ignore */ }
 }
 
 async function removeDevice(id) {
   await apiPost('/api/devices/remove', { id });
   loadDevices();
+}
+
+// Set a paired device's touchpad routing mode. The server persists it and
+// hot-applies it to any live connection, so the change needs no re-pairing.
+async function setTouchpadMode(id, mode) {
+  const { ok } = await apiPost('/api/devices/touchpad-mode', { id, mode });
+  if (ok) loadDevices();
 }
 
 // ── Backend status ──────────────────────────────────────────────────────────

@@ -150,9 +150,11 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             json += ",\"motionCapable\":" + std::string(ctrl.motionCapable ? "true" : "false");
             json += ",\"motionActive\":" + std::string(ctrl.motionActive ? "true" : "false");
             json += ",\"motionSink\":" + std::string(ctrl.motionSink ? "true" : "false");
+            json += ",\"touchpadActive\":" + std::string(ctrl.touchpadActive ? "true" : "false");
             json += "}";
         }
-        json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) + "}";
+        json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) +
+                ",\"touchpadMode\":\"" + touchpadModeName(cs.touchpadMode) + "\"}";
     }
     json += "],\"totalControllers\":" + std::to_string(snap.totalControllers) +
             ",\"maxControllers\":" + std::to_string(snap.maxControllers) +
@@ -456,7 +458,8 @@ void httpThread(SessionService& svc) {
             const auto& d = g_config.pairedDevices[i];
             json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
                     "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
-                    jsonEscape(d.pairedAt) + "\"}";
+                    jsonEscape(d.pairedAt) + "\",\"touchpadMode\":\"" +
+                    touchpadModeName(d.touchpadMode) + "\"}";
             if (i + 1 < g_config.pairedDevices.size()) json += ",";
         }
         json += "]";
@@ -475,6 +478,53 @@ void httpThread(SessionService& svc) {
             saveConfig(g_config);
             res.set_content(R"({"ok":true})", "application/json");
         });
+
+    // POST /api/devices/touchpad-mode {id, mode} — set a paired device's
+    // touchpad routing mode (Task 1.3). `mode` is "ds4" | "mouse" | "off". The
+    // change is persisted to config AND hot-applied to any live connection for
+    // the device, so it takes effect without re-pairing or reconnecting.
+    g_httpServer.Post("/api/devices/touchpad-mode", [&svc](const httplib::Request& req,
+                                                           httplib::Response& res) {
+        if (!requireAuth(req, res)) return;
+        auto deviceId = jsonGetString(req.body, "id");
+        auto modeStr = jsonGetString(req.body, "mode");
+        if (deviceId.empty() || modeStr.empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"missing id or mode"})", "application/json");
+            return;
+        }
+        if (modeStr != "ds4" && modeStr != "mouse" && modeStr != "off") {
+            res.status = 400;
+            res.set_content(R"({"error":"mode must be ds4, mouse, or off"})", "application/json");
+            return;
+        }
+        uint8_t mode = touchpadModeFromName(modeStr);
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            for (auto& d : g_config.pairedDevices) {
+                if (d.id == deviceId) {
+                    d.touchpadMode = mode;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) saveConfig(g_config);
+        }
+        if (!found) {
+            res.status = 404;
+            res.set_content(R"({"error":"device not paired"})", "application/json");
+            return;
+        }
+        // Hot-apply to any live session for this device (no re-pair needed).
+        bool hotApplied = svc.setTouchpadMode(deviceId, mode);
+        logMsg(LogLevel::INFO, "web",
+               "Touchpad mode for device " + deviceId + " set to " + modeStr +
+                   (hotApplied ? " (applied to live connection)" : ""));
+        res.set_content(std::string("{\"ok\":true,\"hotApplied\":") +
+                            (hotApplied ? "true" : "false") + "}",
+                        "application/json");
+    });
 
     // ── Debug telemetry endpoint ────────────────────────────────────
     g_httpServer.Get("/api/debug", [&svc](const httplib::Request& req, httplib::Response& res) {
@@ -555,7 +605,8 @@ void httpThread(SessionService& svc) {
         }
 
         // Delegate to SessionService (handles stale cleanup, token gen, slot counting)
-        auto result = svc.openSession(found->id, found->name, found->lastIP, sharedKey);
+        auto result =
+            svc.openSession(found->id, found->name, found->lastIP, sharedKey, found->touchpadMode);
         if (!result.ok) {
             res.status = 500;
             res.set_content("{\"error\":\"" + jsonEscape(result.error) + "\"}", "application/json");

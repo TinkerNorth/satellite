@@ -9,6 +9,7 @@
  * Run:    test_session_service.exe
  */
 #include "../src/core/session_service.h"
+#include "../src/core/touchpad_codec.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -67,6 +68,7 @@ struct MockViGem : IGamepadPort {
     int submitMotionCalls = 0;
     int submitBatteryCalls = 0;
     int submitTouchpadCalls = 0;
+    int submitRelativeMouseCalls = 0;
     int setLightbarCallbackCalls = 0;
 
     // Optional return value for submitMotion/submitBattery overrides — defaults
@@ -74,6 +76,7 @@ struct MockViGem : IGamepadPort {
     bool submitMotionReturnVal = true;
     bool submitBatteryReturnVal = true;
     bool submitTouchpadReturnVal = true;
+    bool submitRelativeMouseReturnVal = true;
 
     std::vector<uint32_t> pluggedSerials;
     std::vector<uint32_t> unpluggedSerials;
@@ -85,6 +88,10 @@ struct MockViGem : IGamepadPort {
     BatteryReport lastBattery{};
     uint32_t lastTouchpadSerial = 0;
     TouchpadReport lastTouchpad{};
+    // Last relative-mouse injection (from submitRelativeMouse).
+    int lastMouseDx = 0;
+    int lastMouseDy = 0;
+    bool lastMouseButton = false;
     // Captured rumble + lightbar callbacks. Tests synthesize "the platform
     // fired a notification" by invoking these directly via fireRumble /
     // fireLightbar.
@@ -150,6 +157,13 @@ struct MockViGem : IGamepadPort {
         lastTouchpadSerial = serial;
         lastTouchpad = r;
         return submitTouchpadReturnVal;
+    }
+    bool submitRelativeMouse(int dx, int dy, bool leftButton) override {
+        submitRelativeMouseCalls++;
+        lastMouseDx = dx;
+        lastMouseDy = dy;
+        lastMouseButton = leftButton;
+        return submitRelativeMouseReturnVal;
     }
     void setLightbarCallback(LightbarCallback cb) override {
         setLightbarCallbackCalls++;
@@ -247,8 +261,9 @@ static const uint8_t TEST_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,
                                                   23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
 
 static OpenSessionResult openTestSession(SessionService& svc, const std::string& devId = "dev1",
-                                         const std::string& devName = "TestDevice") {
-    return svc.openSession(devId, devName, "192.168.1.100", TEST_KEY);
+                                         const std::string& devName = "TestDevice",
+                                         uint8_t touchpadMode = TOUCHPAD_MODE_DS4) {
+    return svc.openSession(devId, devName, "192.168.1.100", TEST_KEY, touchpadMode);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -2073,6 +2088,279 @@ static void test_handleTouchpadData_inactiveController() {
     EXPECT_EQ(vigem.submitTouchpadCalls, 0);
 }
 
+// ── Touchpad codec (core/touchpad_codec.h — pure wire/coordinate helpers) ──
+
+static void test_touchpadWireToRange_endpoints() {
+    TEST("touchpadWireToRange — wire endpoints map to device-range edges");
+    EXPECT_EQ(touchpadWireToRange(-32768, 1920), 0);
+    EXPECT_EQ(touchpadWireToRange(32767, 1920), 1919);
+    EXPECT_EQ(touchpadWireToRange(-32768, 943), 0);
+    EXPECT_EQ(touchpadWireToRange(32767, 943), 942);
+    // Centre of the wire range lands near the centre of the device range.
+    const int mid = touchpadWireToRange(0, 1920);
+    EXPECT(mid >= 955 && mid <= 965);
+}
+
+static void test_touchpadWireToRange_clampsAndDegenerate() {
+    TEST("touchpadWireToRange — saturates monotonically; res<=1 yields 0");
+    EXPECT_EQ(touchpadWireToRange(-32768, 1), 0);
+    EXPECT_EQ(touchpadWireToRange(32767, 1), 0);
+    EXPECT(touchpadWireToRange(-10000, 1920) <= touchpadWireToRange(10000, 1920));
+}
+
+static void test_ds4PackTouchFinger_activeFlagAndId() {
+    TEST("ds4PackTouchFinger — bit7 = lifted, low 7 bits = tracking id");
+    TouchpadFinger active;
+    active.active = true;
+    auto a = ds4PackTouchFinger(active, 5);
+    EXPECT_EQ(static_cast<int>(a[0] & 0x80), 0); // active → bit7 clear
+    EXPECT_EQ(static_cast<int>(a[0] & 0x7F), 5); // tracking id in low 7 bits
+
+    TouchpadFinger lifted;
+    lifted.active = false;
+    auto l = ds4PackTouchFinger(lifted, 9);
+    EXPECT_EQ(static_cast<int>(l[0] & 0x80), 0x80); // lifted → bit7 set
+    EXPECT_EQ(static_cast<int>(l[0] & 0x7F), 9);
+}
+
+static void test_ds4PackTouchFinger_coordPacking() {
+    TEST("ds4PackTouchFinger — 12-bit x/y survive the DS4 packing round-trip");
+    TouchpadFinger f;
+    f.active = true;
+    f.x = 32767;  // right edge → x12 = DS4_TOUCHPAD_RES_X - 1
+    f.y = -32768; // top edge   → y12 = 0
+    auto p = ds4PackTouchFinger(f, 0);
+    const int x12 = p[1] | ((p[2] & 0x0F) << 8);
+    const int y12 = (p[2] >> 4) | (p[3] << 4);
+    EXPECT_EQ(x12, DS4_TOUCHPAD_RES_X - 1);
+    EXPECT_EQ(y12, 0);
+}
+
+// ── Touchpad wire decode (core/types.h::decodeTouchpadReport) ──────────────
+
+static void test_decodeTouchpadReport_wireLayout() {
+    TEST("decodeTouchpadReport — flags + finger fields decode from the 11-byte tail");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {};
+    p[0] = 0x07; // flags: finger0 + finger1 active + button
+    p[1] = 0x2A; // finger0 trackingId
+    p[2] = 0xD2;
+    p[3] = 0x04; // finger0 x = 0x04D2 = 1234 (LE)
+    p[4] = 0x2E;
+    p[5] = 0xFB; // finger0 y = 0xFB2E = -1234 (LE)
+    p[6] = 0x55; // finger1 trackingId
+    p[7] = 0x00;
+    p[8] = 0x80; // finger1 x = 0x8000 = -32768
+    p[9] = 0xFF;
+    p[10] = 0x7F; // finger1 y = 0x7FFF = 32767
+    TouchpadReport r = decodeTouchpadReport(p);
+    EXPECT(r.finger0.active);
+    EXPECT(r.finger1.active);
+    EXPECT(r.buttonPressed);
+    EXPECT_EQ(static_cast<int>(r.finger0.trackingId), 0x2A);
+    EXPECT_EQ(static_cast<int>(r.finger0.x), 1234);
+    EXPECT_EQ(static_cast<int>(r.finger0.y), -1234);
+    EXPECT_EQ(static_cast<int>(r.finger1.trackingId), 0x55);
+    EXPECT_EQ(static_cast<int>(r.finger1.x), -32768);
+    EXPECT_EQ(static_cast<int>(r.finger1.y), 32767);
+}
+
+static void test_decodeTouchpadReport_inactiveFlags() {
+    TEST("decodeTouchpadReport — clear flags yield inactive fingers / no button");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {};
+    TouchpadReport r = decodeTouchpadReport(p);
+    EXPECT(!r.finger0.active);
+    EXPECT(!r.finger1.active);
+    EXPECT(!r.buttonPressed);
+}
+
+// ── Touchpad routing modes (Task 1.3 — per-device DS4 / mouse / off) ───────
+
+static void test_touchpadMode_constants() {
+    TEST("TOUCHPAD_MODE_* constants + name round-trip");
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_DS4), 0);
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_MOUSE), 1);
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_OFF), 2);
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_COUNT), 3);
+    EXPECT_EQ(std::string(touchpadModeName(TOUCHPAD_MODE_DS4)), std::string("ds4"));
+    EXPECT_EQ(std::string(touchpadModeName(TOUCHPAD_MODE_MOUSE)), std::string("mouse"));
+    EXPECT_EQ(std::string(touchpadModeName(TOUCHPAD_MODE_OFF)), std::string("off"));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("ds4")), static_cast<int>(TOUCHPAD_MODE_DS4));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("mouse")),
+              static_cast<int>(TOUCHPAD_MODE_MOUSE));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("off")), static_cast<int>(TOUCHPAD_MODE_OFF));
+    // Unknown / empty (a pre-1.3 config) migrates to DS4 pass-through.
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("")), static_cast<int>(TOUCHPAD_MODE_DS4));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("bogus")), static_cast<int>(TOUCHPAD_MODE_DS4));
+}
+
+static void test_openSession_carriesTouchpadMode() {
+    TEST("openSession — touchpadMode seeds the connection + snapshot");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].touchpadMode),
+              static_cast<int>(TOUCHPAD_MODE_MOUSE));
+}
+
+static void test_handleTouchpadData_ds4ModeForwardsToTouchpad() {
+    TEST("handleTouchpadData — DS4 mode routes to submitTouchpad, not the mouse");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_DS4);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
+}
+
+static void test_handleTouchpadData_offModeCachesOnly() {
+    TEST("handleTouchpadData — OFF mode caches for the web UI but forwards nowhere");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_OFF);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, tp)); // OFF → returns false
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
+    // ...but the sample is still cached — the snapshot shows it as active.
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers.size()), 1);
+    EXPECT(snap.connections[0].controllers[0].touchpadActive);
+}
+
+static void test_handleTouchpadData_mouseModeTouchDownNoJump() {
+    TEST("handleTouchpadData — MOUSE mode: a fresh touch-down emits no cursor jump");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport down;
+    down.finger0.active = true;
+    down.finger0.x = 12000;
+    down.finger0.y = -8000;
+    down.buttonPressed = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, down));
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
+    EXPECT_EQ(vigem.lastMouseDx, 0); // first contact re-anchors — no jump
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+    EXPECT(vigem.lastMouseButton); // clicky button still forwarded
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+}
+
+static void test_handleTouchpadData_mouseModeContinuousDelta() {
+    TEST("handleTouchpadData — MOUSE mode: a continuous drag emits a signed delta");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport a;
+    a.finger0.active = true;
+    a.finger0.x = 0;
+    a.finger0.y = 0;
+    svc.handleTouchpadData(r.token, 0, a); // touch-down anchor
+    TouchpadReport b;
+    b.finger0.active = true;
+    b.finger0.x = 10000;  // +10000 wire units
+    b.finger0.y = -10000; // -10000 wire units
+    svc.handleTouchpadData(r.token, 0, b);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 2);
+    // 10000 * TOUCHPAD_MOUSE_SENSITIVITY ≈ 420 px — assert sign + ballpark.
+    EXPECT(vigem.lastMouseDx > 380 && vigem.lastMouseDx < 460);
+    EXPECT(vigem.lastMouseDy < -380 && vigem.lastMouseDy > -460);
+}
+
+static void test_handleTouchpadData_mouseModeSubPixelRemainder() {
+    TEST("handleTouchpadData — MOUSE mode: sub-pixel motion accumulates, not lost");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    // Three samples 15 wire units apart. 15 × ~0.042 ≈ 0.63 px each — under a
+    // whole pixel alone, but two continuous steps cross 1 px.
+    TouchpadReport s;
+    s.finger0.active = true;
+    s.finger0.x = 0;
+    svc.handleTouchpadData(r.token, 0, s); // anchor → dx 0
+    s.finger0.x = 15;
+    svc.handleTouchpadData(r.token, 0, s); // +0.63 px → dx 0, remainder kept
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    s.finger0.x = 30;
+    svc.handleTouchpadData(r.token, 0, s); // +0.63 px → 1.26 px total → dx 1
+    EXPECT_EQ(vigem.lastMouseDx, 1);
+}
+
+static void test_handleTouchpadData_mouseModeLiftResetsAnchor() {
+    TEST("handleTouchpadData — MOUSE mode: a lift between contacts emits no jump");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport s;
+    s.finger0.active = true;
+    s.finger0.x = 0;
+    svc.handleTouchpadData(r.token, 0, s); // contact A
+    TouchpadReport lift;                   // finger up
+    svc.handleTouchpadData(r.token, 0, lift);
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    s.finger0.x = 20000; // contact B, far from A
+    svc.handleTouchpadData(r.token, 0, s);
+    EXPECT_EQ(vigem.lastMouseDx, 0); // discontinuous — no teleport
+}
+
+static void test_setTouchpadMode_hotApplies() {
+    TEST("setTouchpadMode — hot-swaps routing on a live connection (no re-pair)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc); // default DS4
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    svc.handleTouchpadData(r.token, 0, tp);
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
+
+    EXPECT(svc.setTouchpadMode("dev1", TOUCHPAD_MODE_MOUSE));
+    svc.handleTouchpadData(r.token, 0, tp);
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);      // no further DS4 forwards
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1); // now routed to the mouse
+}
+
+static void test_setTouchpadMode_unknownDeviceAndBadMode() {
+    TEST("setTouchpadMode — unknown device returns false; out-of-range mode rejected");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    openTestSession(svc, "dev1");
+    EXPECT(!svc.setTouchpadMode("no-such-device", TOUCHPAD_MODE_MOUSE));
+    EXPECT(!svc.setTouchpadMode("dev1", TOUCHPAD_MODE_COUNT)); // out of range
+    EXPECT(svc.setTouchpadMode("dev1", TOUCHPAD_MODE_OFF));    // valid → true
+}
+
 // ── Lightbar (host game → satellite → dish, Task 1.4 dedicated stream) ────
 
 static void test_msgLightbar_constant() {
@@ -2314,6 +2602,23 @@ int main() {
     test_handleTouchpadData_invalidToken();
     test_handleTouchpadData_outOfBoundsCtrlIdx();
     test_handleTouchpadData_inactiveController();
+    // Task 1.3 — codec, wire decode, routing modes, hot-apply.
+    test_touchpadWireToRange_endpoints();
+    test_touchpadWireToRange_clampsAndDegenerate();
+    test_ds4PackTouchFinger_activeFlagAndId();
+    test_ds4PackTouchFinger_coordPacking();
+    test_decodeTouchpadReport_wireLayout();
+    test_decodeTouchpadReport_inactiveFlags();
+    test_touchpadMode_constants();
+    test_openSession_carriesTouchpadMode();
+    test_handleTouchpadData_ds4ModeForwardsToTouchpad();
+    test_handleTouchpadData_offModeCachesOnly();
+    test_handleTouchpadData_mouseModeTouchDownNoJump();
+    test_handleTouchpadData_mouseModeContinuousDelta();
+    test_handleTouchpadData_mouseModeSubPixelRemainder();
+    test_handleTouchpadData_mouseModeLiftResetsAnchor();
+    test_setTouchpadMode_hotApplies();
+    test_setTouchpadMode_unknownDeviceAndBadMode();
 
     // ── Lightbar (host game → satellite → dish, Task 1.4) ──
     test_msgLightbar_constant();

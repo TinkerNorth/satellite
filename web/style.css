@@ -592,6 +592,80 @@ h2.section-title { font-size: 14px; }
   color: var(--text-muted);
   background: transparent;
 }
+/* Per-controller touchpad chip — Task 1.3. Shares the .ctrl-motion chip shape;
+   reflects the owning connection's touchpad mode + whether samples are
+   flowing. See touchpadChip() in dashboard.js. */
+.ctrl-touchpad {
+  flex-shrink: 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  cursor: help;
+}
+.ctrl-touchpad.touchpad-on {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.14);
+  border-color: rgba(79, 227, 255, 0.35);
+}
+.ctrl-touchpad.touchpad-ready {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.07);
+}
+.ctrl-touchpad.touchpad-off {
+  color: var(--text-muted);
+  background: transparent;
+}
+
+/* Paired-device right-side actions — the touchpad-routing segmented control
+   plus the remove button. Task 1.3. */
+.device-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.seg-label {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: help;
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--outline);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.seg-btn {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  background: var(--bg);
+  color: var(--text-muted);
+  border: none;
+  border-right: 1px solid var(--outline);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.seg-btn:last-child { border-right: none; }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.seg-on {
+  background: var(--primary);
+  color: var(--bg);
+  cursor: default;
+}
 .ctrl-type-icon {
   width: 48px;
   height: 32px;

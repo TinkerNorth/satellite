@@ -249,6 +249,72 @@ struct TouchpadReport {
 // = 1 + 5 + 5 = 11 bytes after ctrlIdx → 12 bytes total inner payload.
 inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES = 11;
 
+// Decode a TouchpadReport from `p` (TOUCHPAD_WIRE_PAYLOAD_BYTES bytes — the
+// portion after the 1-byte ctrlIdx). Explicit little-endian shifts, no struct
+// memcpy, so the wire stays byte-order-independent. Mirrors decodeMotionReport;
+// senders encode the matching layout (see docs/protocol.md).
+inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
+    auto le16 = [](const uint8_t* q) -> int16_t {
+        return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
+                                    (static_cast<uint16_t>(q[1]) << 8));
+    };
+    TouchpadReport r;
+    const uint8_t flags = p[0];
+    r.finger0.active = (flags & 0x01) != 0;
+    r.finger1.active = (flags & 0x02) != 0;
+    r.buttonPressed = (flags & 0x04) != 0;
+    r.finger0.trackingId = p[1];
+    r.finger0.x = le16(p + 2);
+    r.finger0.y = le16(p + 4);
+    r.finger1.trackingId = p[6];
+    r.finger1.x = le16(p + 7);
+    r.finger1.y = le16(p + 9);
+    return r;
+}
+
+// ── Touchpad routing modes (per-paired-device, Task 1.3) ────────────────────
+// How the receiver routes a paired device's MSG_TOUCHPAD samples. Persisted in
+// PairedDevice, mirrored onto every live Connection, and hot-applied from the
+// web UI without re-pairing.
+//   DS4   — feed the finger coordinates + clicky button into the virtual
+//           DualShock 4 touchpad surface (DS4_REPORT_EX on Windows, a
+//           multitouch uinput node on Linux). Xbox-typed virtual pads have no
+//           touchpad surface and drop it.
+//   MOUSE — synthesize a relative-mouse pointer on the receiver host: finger 0
+//           movement drives the cursor, the clicky button is mouse button 1.
+//   OFF   — ignore touchpad entirely (still cached for the web UI debug pane).
+inline const uint8_t TOUCHPAD_MODE_DS4 = 0;
+inline const uint8_t TOUCHPAD_MODE_MOUSE = 1;
+inline const uint8_t TOUCHPAD_MODE_OFF = 2;
+inline const uint8_t TOUCHPAD_MODE_COUNT = 3;
+
+// Relative-mouse sensitivity for TOUCHPAD_MODE_MOUSE: host pixels travelled per
+// unit of wire-coordinate finger movement. The pad spans 65535 wire units per
+// axis, so a full-width swipe travels ~2750 px — close to a laptop trackpad.
+// The SessionService carries a sub-pixel remainder so slow drags don't
+// truncate to zero motion.
+inline const float TOUCHPAD_MOUSE_SENSITIVITY = 0.042f;
+
+inline const char* touchpadModeName(uint8_t mode) {
+    switch (mode) {
+    case TOUCHPAD_MODE_MOUSE:
+        return "mouse";
+    case TOUCHPAD_MODE_OFF:
+        return "off";
+    case TOUCHPAD_MODE_DS4:
+    default:
+        return "ds4";
+    }
+}
+
+// Parse a touchpad-mode name (web UI / config JSON). Unknown or empty → DS4, so
+// a config written before Task 1.3 migrates to the historical pass-through.
+inline uint8_t touchpadModeFromName(const std::string& s) {
+    if (s == "mouse") return TOUCHPAD_MODE_MOUSE;
+    if (s == "off") return TOUCHPAD_MODE_OFF;
+    return TOUCHPAD_MODE_DS4;
+}
+
 inline const char* batteryStatusName(uint8_t status) {
     switch (status) {
     case BATTERY_STATUS_DISCHARGING:
@@ -303,6 +369,11 @@ struct Controller {
     // web UI debug pane.
     TouchpadReport lastTouchpad{};
     bool lastTouchpadValid = false;
+    // TOUCHPAD_MODE_MOUSE sub-pixel remainder — the fraction of a pixel a slow
+    // finger drag hasn't yet accumulated into a whole-pixel mouse delta. Reset
+    // on a fresh contact and whenever the touchpad mode changes.
+    float touchpadMouseRemX = 0.0f;
+    float touchpadMouseRemY = 0.0f;
     // Most recent lightbar color emitted by the game on the receiver host.
     // The satellite-side `vigem_adapter` lightbar callback writes this and
     // the session-service queues a MSG_LIGHTBAR (decoupled from MSG_RUMBLE
@@ -325,6 +396,10 @@ struct Connection {
     std::chrono::steady_clock::time_point connectedAt;
     std::array<Controller, MAX_CONTROLLERS_PER_CONN> controllers;
     int activeControllerCount = 0;
+    // Touchpad routing for this session (TOUCHPAD_MODE_*). Seeded from the
+    // paired device's persisted setting at openSession; hot-swappable from the
+    // web UI via SessionService::setTouchpadMode without re-pairing.
+    uint8_t touchpadMode = TOUCHPAD_MODE_DS4;
 };
 
 // ── Paired device info (persisted) ──────────────────────────────────────────
@@ -334,6 +409,9 @@ struct PairedDevice {
     std::string lastIP;
     std::string pairedAt;
     std::string sharedKeyHex; // 64-char hex (32 bytes)
+    // Touchpad routing mode (TOUCHPAD_MODE_*). Devices paired before Task 1.3
+    // load as TOUCHPAD_MODE_DS4 — the historical pass-through behaviour.
+    uint8_t touchpadMode = TOUCHPAD_MODE_DS4;
 };
 
 // ── Update channels ─────────────────────────────────────────────────────────
