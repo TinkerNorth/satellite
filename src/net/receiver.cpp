@@ -160,7 +160,14 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             case MSG_CONTROLLER_ADD: {
                 if (msgLen < 1) break;
                 uint8_t ctrlIdx = payload[0];
-                svc.handleControllerAdd(token, ctrlIdx);
+                // Capability word: 2 bytes big-endian, optional. A pre-cap
+                // dish sends only ctrlIdx (msgLen 1) — caps default to 0.
+                uint16_t caps = 0;
+                if (msgLen >= 3) {
+                    caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
+                                                 static_cast<uint16_t>(payload[2]));
+                }
+                svc.handleControllerAdd(token, ctrlIdx, caps);
                 break;
             }
             case MSG_CONTROLLER_REMOVE: {
@@ -177,13 +184,14 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 break;
             }
             case MSG_MOTION: {
-                // Wire payload: ctrlIdx(1) + 6×i16(12) + u32(4) = 17 bytes
+                // Wire payload: ctrlIdx(1) + 6×i16(12) + u32(4) = 17 bytes.
+                // Decoded with explicit little-endian shifts — NOT a struct
+                // memcpy — so the wire stays byte-order-independent and a
+                // future change to MotionReport's layout/padding can't
+                // silently corrupt it. Mirrors the MSG_TOUCHPAD decode.
                 if (msgLen < 17) break;
                 uint8_t ctrlIdx = payload[0];
-                MotionReport report;
-                // The wire is little-endian fixed-point — same convention as
-                // GamepadReport. memcpy mirrors handleGamepadData.
-                memcpy(&report, payload + 1, sizeof(MotionReport));
+                MotionReport report = decodeMotionReport(payload + 1);
                 svc.handleMotionData(token, ctrlIdx, report);
                 break;
             }

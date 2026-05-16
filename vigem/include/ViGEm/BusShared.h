@@ -29,6 +29,21 @@ DEFINE_GUID(GUID_DEVINTERFACE_BUSENUM_VIGEM,
 #define IOCTL_XUSB_SUBMIT_REPORT        BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x201)
 #define IOCTL_DS4_SUBMIT_REPORT         BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x202)
 #define IOCTL_DS4_REQUEST_NOTIFICATION  BUSENUM_RW_IOCTL(IOCTL_VIGEM_BASE + 0x203)
+// Extended-report submit IOCTLs. The original four submit/notify codes occupy
+// 0x200..0x203; the _EX variants were appended after, XUSB first then DS4 —
+// hence XUSB_SUBMIT_REPORT_EX = 0x204, DS4_SUBMIT_REPORT_EX = 0x205. The DS4 EX
+// path carries the full 63-byte report (gyro/accel/touchpad/battery); it is
+// the only ViGEm submit path with IMU fields.
+//
+// !! UNVERIFIED CONSTANT !! This index could not be confirmed against upstream
+// offline — it is the single value in the EX path not cross-checked. The
+// bundled driver (ViGEmBus 1.22.0, see installer.iss) DOES implement the EX
+// IOCTL, so motion depends on this number being right. If it is wrong the
+// driver rejects the IOCTL and ViGEmAdapter falls back to the basic DS4 report
+// (buttons/sticks keep working, no IMU, no crash). VERIFY against the real
+// nefarius/ViGEmBus 1.22.0 BusShared.h before relying on Windows virtual-pad IMU.
+#define IOCTL_XUSB_SUBMIT_REPORT_EX     BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x204)
+#define IOCTL_DS4_SUBMIT_REPORT_EX      BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x205)
 
 // Plugin target request
 typedef struct _VIGEM_PLUGIN_TARGET {
@@ -149,5 +164,76 @@ VOID FORCEINLINE DS4_REQUEST_NOTIFICATION_INIT(PDS4_REQUEST_NOTIFICATION Notify,
     RtlZeroMemory(Notify, sizeof(DS4_REQUEST_NOTIFICATION));
     Notify->Size = sizeof(DS4_REQUEST_NOTIFICATION);
     Notify->SerialNo = SerialNo;
+}
+
+// ── Extended DualShock 4 input report (ViGEmBus >= 1.17) ────────────────────
+//
+// Backported from nefarius/ViGEmBus's BusShared.h (MIT). The basic DS4_REPORT
+// (declared in Common.h) carries only buttons / sticks / triggers. DS4_REPORT_EX
+// is the full 63-byte DS4 USB input report (HID report 0x01 with the report-id
+// byte stripped) — the *only* ViGEm submit path that carries the gyroscope,
+// accelerometer, touchpad and battery fields. The first 9 bytes are layout-
+// identical to DS4_REPORT, so an EX report degrades cleanly to a basic report.
+//
+// VERIFY-ON-BUMP: this struct + IOCTL_DS4_SUBMIT_REPORT_EX are hand-backported.
+// When the bundled ViGEmBus driver/headers are refreshed, diff both against
+// upstream. A mismatch is safe-by-construction — the driver rejects the IOCTL
+// and ViGEmAdapter falls back to the basic DS4_REPORT path — but it silently
+// disables Windows virtual-pad IMU until corrected.
+#pragma pack(push, 1)
+typedef struct _DS4_TOUCH {
+    UCHAR bPacketCounter;    // timestamp / packet counter for this touch frame
+    UCHAR bIsUpTrackingNum1; // bit7 = finger 1 lifted; bits0..6 = tracking id
+    UCHAR bTouchData1[3];    // finger 1: two packed 12-bit coords (x then y)
+    UCHAR bIsUpTrackingNum2; // finger 2
+    UCHAR bTouchData2[3];
+} DS4_TOUCH, *PDS4_TOUCH;
+
+typedef struct _DS4_REPORT_EX {
+    union {
+        struct {
+            UCHAR bThumbLX;
+            UCHAR bThumbLY;
+            UCHAR bThumbRX;
+            UCHAR bThumbRY;
+            USHORT wButtons;
+            UCHAR bSpecial;
+            UCHAR bTriggerL;
+            UCHAR bTriggerR;
+            USHORT wTimestamp; // free-running, 5.33 µs units
+            UCHAR bBatteryLvl;
+            SHORT wGyroX; // gyroscope, signed little-endian
+            SHORT wGyroY;
+            SHORT wGyroZ;
+            SHORT wAccelX; // accelerometer, signed little-endian
+            SHORT wAccelY;
+            SHORT wAccelZ;
+            UCHAR _bUnknown1[5];
+            UCHAR bBatteryLvlSpecial;
+            UCHAR _bUnknown2[2];
+            UCHAR bTouchPacketsN; // count of touch frames that follow (0..3)
+            DS4_TOUCH sCurrentTouch;
+            DS4_TOUCH sPreviousTouch[2];
+        } Report;
+        UCHAR ReportBuffer[63];
+    };
+} DS4_REPORT_EX, *PDS4_REPORT_EX;
+#pragma pack(pop)
+
+#ifdef __cplusplus
+static_assert(sizeof(DS4_REPORT_EX) == 63, "DS4_REPORT_EX must be the 63-byte DS4 report");
+#endif
+
+// Submit extended DualShock 4 report
+typedef struct _DS4_SUBMIT_REPORT_EX {
+    ULONG Size;
+    ULONG SerialNo;
+    DS4_REPORT_EX Report;
+} DS4_SUBMIT_REPORT_EX, *PDS4_SUBMIT_REPORT_EX;
+
+VOID FORCEINLINE DS4_SUBMIT_REPORT_EX_INIT(PDS4_SUBMIT_REPORT_EX Report, ULONG SerialNo) {
+    RtlZeroMemory(Report, sizeof(DS4_SUBMIT_REPORT_EX));
+    Report->Size = sizeof(DS4_SUBMIT_REPORT_EX);
+    Report->SerialNo = SerialNo;
 }
 

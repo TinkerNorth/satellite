@@ -147,6 +147,9 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             } else {
                 json += ",\"battery\":null";
             }
+            json += ",\"motionCapable\":" + std::string(ctrl.motionCapable ? "true" : "false");
+            json += ",\"motionActive\":" + std::string(ctrl.motionActive ? "true" : "false");
+            json += ",\"motionSink\":" + std::string(ctrl.motionSink ? "true" : "false");
             json += "}";
         }
         json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) + "}";

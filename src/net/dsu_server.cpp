@@ -147,8 +147,16 @@ void DsuServer::run() {
                 // it's a one-off per subscription. The mac field is
                 // synthesized from serverId so each "controller" has a
                 // stable, unique mac for the session.
+                //
+                // Slot occupancy MUST come from the same per-slot mapping the
+                // Pad Data path uses (getMotionSlotsForDsu) — not a global
+                // count. A global count assumes controllers densely fill slots
+                // 0..N-1, which getMotionSlotsForDsu does not guarantee, and
+                // would make Information disagree with Pad Data about which
+                // slots are live.
+                auto infoSlots = svc_.getMotionSlotsForDsu();
                 for (uint8_t s = 0; s < dsu::MAX_SLOTS; ++s) {
-                    const bool connected = svc_.totalActiveControllers() > s;
+                    const bool connected = infoSlots[s].occupied;
                     std::array<uint8_t, 6> mac{};
                     mac[0] = 0x02; // locally-administered prefix
                     mac[1] = static_cast<uint8_t>(serverId_);

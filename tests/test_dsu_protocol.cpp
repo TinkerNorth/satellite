@@ -248,6 +248,50 @@ static void test_applyMotionReport_converts_scale() {
     EXPECT(inputs.accelGZ < -3.99f && inputs.accelGZ >= -4.01f);
 }
 
+static void test_decodeMotionReport_littleEndian() {
+    TEST("decodeMotionReport decodes little-endian int16/uint32 incl. sign");
+    // The 16 wire bytes of a MotionReport (the portion after the 1-byte
+    // ctrlIdx). decodeMotionReport must read these little-endian, sign-correct.
+    const uint8_t w[16] = {
+        0x10, 0x00,             // gyroX  = +16
+        0xF0, 0xFF,             // gyroY  = -16
+        0xFF, 0x7F,             // gyroZ  = +32767
+        0x00, 0x80,             // accelX = -32768
+        0x01, 0x00,             // accelY = +1
+        0xFF, 0xFF,             // accelZ = -1
+        0x40, 0xE2, 0x01, 0x00, // timestampDeltaUs = 123456
+    };
+    MotionReport r = decodeMotionReport(w);
+    EXPECT_EQ(static_cast<int>(r.gyroX), 16);
+    EXPECT_EQ(static_cast<int>(r.gyroY), -16);
+    EXPECT_EQ(static_cast<int>(r.gyroZ), 32767);
+    EXPECT_EQ(static_cast<int>(r.accelX), -32768);
+    EXPECT_EQ(static_cast<int>(r.accelY), 1);
+    EXPECT_EQ(static_cast<int>(r.accelZ), -1);
+    EXPECT_EQ(r.timestampDeltaUs, 123456u);
+}
+
+static void test_applyMotionReport_axis_identity() {
+    TEST("applyMotionReport maps X->pitch Y->yaw Z->roll with no swap/flip");
+    // Distinct magnitudes per axis so an accidental swap is observable, and
+    // mixed signs so a stray negation is caught.
+    MotionReport r{};
+    r.gyroX = 1000;
+    r.gyroY = 2000;
+    r.gyroZ = 3000;
+    r.accelX = -1000;
+    r.accelY = -2000;
+    r.accelZ = -3000;
+    dsu::PadDataInputs out{};
+    dsu::applyMotionReport(out, r);
+    // Sign preserved on every axis (no flip).
+    EXPECT(out.gyroPitch > 0.0f && out.gyroYaw > 0.0f && out.gyroRoll > 0.0f);
+    EXPECT(out.accelGX < 0.0f && out.accelGY < 0.0f && out.accelGZ < 0.0f);
+    // Magnitude order preserved → X->pitch, Y->yaw, Z->roll with no swap.
+    EXPECT(out.gyroPitch < out.gyroYaw && out.gyroYaw < out.gyroRoll);
+    EXPECT(out.accelGX > out.accelGY && out.accelGY > out.accelGZ);
+}
+
 // ── Client request parsing ──────────────────────────────────────────────────
 
 // Build a minimal client packet for parseClientHeader testing.
@@ -352,6 +396,8 @@ int main() {
     test_encodePadDataResponse_event_and_slot();
     test_encodePadDataResponse_motion_passes_through();
     test_applyMotionReport_converts_scale();
+    test_decodeMotionReport_littleEndian();
+    test_applyMotionReport_axis_identity();
 
     test_parseClientHeader_returnsEventType();
     test_parseClientHeader_rejectsBadMagic();

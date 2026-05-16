@@ -6,7 +6,12 @@
 ;  Output: dist\SatelliteSetup.exe
 ;
 ;  ViGEmBus 1.22.0 (final upstream release, repo archived 2023-11) is
-;  bundled as a prerequisite. The /VIGEM= switch overrides the auto-detect:
+;  bundled as a prerequisite. It creates the virtual gamepads and — from
+;  v1.17 on, so v1.22.0 included — carries controller motion (gyro /
+;  accelerometer) to games via the DualShock 4 extended report. An older
+;  ViGEmBus is therefore upgraded, not kept.
+;
+;  The /VIGEM= switch overrides the auto-detect:
 ;    /VIGEM=auto      (default)  install only if missing or older
 ;    /VIGEM=bundled              force install even over a newer version
 ;    /VIGEM=skip                 leave the driver alone entirely
@@ -77,7 +82,7 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 
 [Components]
 Name: "main";  Description: "Satellite (required)"; Types: full custom; Flags: fixed
-Name: "vigem"; Description: "ViGEmBus driver -- required for virtual gamepad output"; Types: full
+Name: "vigem"; Description: "ViGEmBus driver -- virtual gamepads, rumble and controller motion (gyro/accelerometer)"; Types: full
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -238,25 +243,37 @@ end;
 function StatusText: String;
 var
     Cmp: Integer;
+    Detail: String;
 begin
+    // Line 1 -- what the driver is for, including controller motion. The
+    // bundled ViGEmBus carries gyro/accelerometer through to games via the
+    // DualShock 4 extended report; a driver older than 1.17 cannot, so an
+    // out-of-date ViGEmBus is upgraded rather than kept.
+    Result := 'ViGEmBus is the kernel driver Satellite uses to create virtual'
+            + ' gamepads on this PC. It also delivers rumble and controller'
+            + ' motion (gyro / accelerometer) to your games.' + #13#10;
+
+    // Line 2 -- the auto-detect decision for this machine.
     if DetectedVigemVersion = '' then
-        Result := 'ViGEmBus not detected -- will install ' + '{#ViGEmBusVersion}'
+        Detail := 'Not detected here -- the bundled v' + '{#ViGEmBusVersion}' + ' will be installed.'
     else begin
         Cmp := CompareVigemVersion(DetectedVigemVersion, '{#ViGEmBusVersion}');
         if Cmp < 0 then
-            Result := 'ViGEmBus ' + DetectedVigemVersion + ' detected -- will upgrade to ' + '{#ViGEmBusVersion}'
+            Detail := 'v' + DetectedVigemVersion + ' detected -- will upgrade to v' + '{#ViGEmBusVersion}' + ' (older builds cannot pass controller motion).'
         else if Cmp = 0 then
-            Result := 'ViGEmBus ' + DetectedVigemVersion + ' already installed -- will skip'
+            Detail := 'v' + DetectedVigemVersion + ' already installed -- will skip.'
         else
-            Result := 'ViGEmBus ' + DetectedVigemVersion + ' detected (newer than bundled ' + '{#ViGEmBusVersion}' + ') -- keeping yours';
+            Detail := 'v' + DetectedVigemVersion + ' detected, newer than the bundled v' + '{#ViGEmBusVersion}' + ' -- keeping yours.';
     end;
+    Result := Result + Detail;
 
+    // Line 3 -- the default vs the available overrides, each explained.
     if VigemMode = 'skip' then
-        Result := Result + #13#10 + '(/VIGEM=skip -- driver will not be touched)'
+        Result := Result + #13#10 + 'Override active: /VIGEM=skip -- the driver will not be touched.'
     else if VigemMode = 'bundled' then
-        Result := Result + #13#10 + '(/VIGEM=bundled -- bundled installer will run regardless)'
+        Result := Result + #13#10 + 'Override active: /VIGEM=bundled -- the bundled installer runs regardless of version.'
     else
-        Result := Result + #13#10 + 'Uncheck the component above to skip.';
+        Result := Result + #13#10 + 'Default: install or upgrade as above. To skip, uncheck the component above or pass /VIGEM=skip.';
 end;
 
 procedure InitializeWizard;
@@ -272,7 +289,7 @@ begin
     StatusLabel.Left := WizardForm.ComponentsList.Left;
     StatusLabel.Width := WizardForm.ComponentsList.Width;
     StatusLabel.Top := WizardForm.ComponentsList.Top + WizardForm.ComponentsList.Height + ScaleY(8);
-    StatusLabel.Height := ScaleY(40);
+    StatusLabel.Height := ScaleY(72);
     StatusLabel.Caption := StatusText;
 end;
 

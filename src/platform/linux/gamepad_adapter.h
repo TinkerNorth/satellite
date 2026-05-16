@@ -36,12 +36,22 @@ class GamepadAdapter : public IGamepadPort {
     bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
 
+    // Forward an IMU sample to the DualShock 4's motion uinput node (the
+    // INPUT_PROP_ACCELEROMETER device created alongside the gamepad node).
+    // Xbox 360 pads and any device whose motion node failed to open return
+    // false; the SessionService still caches the sample for the DSU server.
+    bool submitMotion(uint32_t serial, const MotionReport& report) override;
+
   private:
     // Per-virtual-device record. Owns the uinput fd, the FF effect table the
     // kernel hands us via UI_FF_UPLOAD, and a reader thread that drains the
     // device's input_event stream looking for FF events.
     struct Device {
         int fd = -1;
+        // Second uinput node for a DS4's gyro/accel (INPUT_PROP_ACCELEROMETER).
+        // -1 when the device is an Xbox pad or the motion node failed to open;
+        // motion is best-effort so a failure here is non-fatal.
+        int motionFd = -1;
         bool ds4 = false;
         std::thread readerThread;
         std::atomic<bool> readerRunning{false};
@@ -66,6 +76,11 @@ class GamepadAdapter : public IGamepadPort {
     // FF_RUMBLE is enabled on the device unconditionally so games see the
     // virtual pad as having force-feedback support.
     int openUinputDevice(uint32_t serial, bool ds4);
+
+    // Create the DualShock 4 motion sensor uinput device (a separate evdev
+    // node flagged INPUT_PROP_ACCELEROMETER, exposing ABS_X/Y/Z for accel and
+    // ABS_RX/RY/RZ for gyro). Returns the fd, or -1 on failure.
+    int openMotionUinputDevice(uint32_t serial);
 
     void startReader(uint32_t serial, Device& dev); // caller holds mtx_
     void stopReader(uint32_t serial);               // caller holds mtx_

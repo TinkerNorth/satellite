@@ -66,6 +66,44 @@ const BACKEND_COPY = {
   },
 };
 
+// ── Per-controller motion (IMU) copy ────────────────────────────────────────
+// Task 1.1 — gyro/accelerometer. Four states, derived from the controller's
+// motionCapable / motionActive / motionSink flags in /api/connections. Like
+// BACKEND_COPY above, this table owns every user-facing motion string.
+//   na    — controller has no IMU (e.g. an Xbox pad): motion not available
+//   ready — IMU present + advertised, but no motion packet received yet
+//   on    — motion streaming AND reaching the OS-level virtual gamepad
+//   dsu   — motion streaming, reaching DSU emulators only (not the virtual pad)
+const MOTION_COPY = {
+  na: {
+    cls: 'motion-na',
+    text: 'No motion',
+    title: 'This controller has no gyroscope / accelerometer (IMU). Motion is not available for it — this is expected for Xbox-style pads.',
+  },
+  ready: {
+    cls: 'motion-ready',
+    text: 'Motion ready',
+    title: 'The controller reports an IMU and the sender advertised motion support — waiting for the first motion packet.',
+  },
+  on: {
+    cls: 'motion-on',
+    text: 'Motion on',
+    title: 'Gyro / accelerometer is streaming to the virtual gamepad AND to any Cemuhook DSU emulator (udp 26760).',
+  },
+  dsu: {
+    cls: 'motion-dsu',
+    text: 'Motion · DSU only',
+    title: 'Gyro / accelerometer is streaming and reaching DSU emulators (udp 26760), but NOT the OS-level virtual gamepad. The virtual device has no IMU surface — an Xbox-typed device, a ViGEmBus older than 1.22, or the macOS backend.',
+  },
+};
+
+// Resolve a controller's motion state id from the /api/connections flags.
+function motionStateId(ctrl) {
+  if (!ctrl.motionCapable) return 'na';
+  if (!ctrl.motionActive) return 'ready';
+  return ctrl.motionSink ? 'on' : 'dsu';
+}
+
 function initDashboard() {
   startSSE();
   loadDevices();
@@ -188,6 +226,7 @@ function updateConnections(d) {
         const ok = ctrl.pluggedIn;
         const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
+        const m = MOTION_COPY[motionStateId(ctrl)] || MOTION_COPY.na;
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
@@ -197,6 +236,7 @@ function updateConnections(d) {
               <span class="ctrl-meta">${esc(ctrl.deviceName)} · Serial ${ctrl.serialNo} · ${ok ? 'Plugged In' : 'Error'}</span>
             </div>
           </div>
+          <span class="ctrl-motion ${m.cls}" title="${esc(m.title)}">${esc(m.text)}</span>
         </div>`;
       }).join('');
     }

@@ -14,6 +14,8 @@ extern bool submitReportFast(HANDLE bus, unsigned long serial, const XUSB_REPORT
                              HANDLE event);
 extern bool submitReportDS4Fast(HANDLE bus, unsigned long serial, const DS4_REPORT& rpt,
                                 HANDLE event);
+extern bool submitReportDS4ExFast(HANDLE bus, unsigned long serial, const DS4_REPORT_EX& rpt,
+                                  HANDLE event);
 extern void unplugTarget(HANDLE bus, unsigned long serial);
 extern bool waitNextXusbNotification(HANDLE bus, unsigned long serial, HANDLE cancel,
                                      XUSB_REQUEST_NOTIFICATION& out);
@@ -51,6 +53,7 @@ void ViGEmAdapter::closeBus() {
         if (evt) CloseHandle(evt);
     }
     submitEvents_.clear();
+    ds4State_.clear();
 
     if (busHandle_ != INVALID_HANDLE_VALUE) {
         CloseHandle(busHandle_);
@@ -96,6 +99,7 @@ void ViGEmAdapter::unplugDevice(uint32_t serial) {
         if (it->second) CloseHandle(it->second);
         submitEvents_.erase(it);
     }
+    ds4State_.erase(serial);
 }
 
 bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
@@ -125,6 +129,18 @@ bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
 
     HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     submitEvents_[serial] = evt;
+
+    // Seed the extended-report cache. Centre the sticks (0x80) so the pad does
+    // not read as a stuck corner before the first gamepad frame, and seed a
+    // benign battery level (real battery wiring is Task 1.2). Touch packet
+    // count stays 0 = no touch activity.
+    DS4State st{};
+    st.report.Report.bThumbLX = 0x80;
+    st.report.Report.bThumbLY = 0x80;
+    st.report.Report.bThumbRX = 0x80;
+    st.report.Report.bThumbRY = 0x80;
+    st.report.Report.bBatteryLvl = 0x0B; // "full" placeholder until Task 1.2
+    ds4State_[serial] = st;
 
     startNotificationWorker(serial, /*isDS4=*/true);
     return true;
@@ -192,12 +208,96 @@ bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report)
     // Guide → PS button (special byte bit 0)
     if (report.wButtons & 0x0400) ds4.bSpecial |= 0x01;
 
-    HANDLE evt = nullptr;
-    auto it = submitEvents_.find(serial);
-    if (it != submitEvents_.end()) evt = it->second;
+    // Fold the freshly-converted gamepad frame into the controller's running
+    // extended report — the leading 9 fields are layout-identical to
+    // DS4_REPORT — then submit the whole DS4_REPORT_EX so any cached gyro /
+    // accel sample rides along on the same frame.
+    auto sit = ds4State_.find(serial);
+    if (sit == ds4State_.end()) return false; // serial is not a DS4 virtual device
+    auto& er = sit->second.report.Report;
+    er.bThumbLX = ds4.bThumbLX;
+    er.bThumbLY = ds4.bThumbLY;
+    er.bThumbRX = ds4.bThumbRX;
+    er.bThumbRY = ds4.bThumbRY;
+    er.wButtons = ds4.wButtons;
+    er.bSpecial = ds4.bSpecial;
+    er.bTriggerL = ds4.bTriggerL;
+    er.bTriggerR = ds4.bTriggerR;
+    return submitDS4Locked(serial);
+}
 
-    if (evt != nullptr) { return submitReportDS4Fast(busHandle_, (unsigned long)serial, ds4, evt); }
-    return false;
+bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+
+    // Only DualShock 4 virtual devices have an IMU surface. An Xbox 360 pad
+    // (no ds4State_ entry) silently drops motion — the SessionService still
+    // caches it for the web UI / DSU server.
+    auto sit = ds4State_.find(serial);
+    if (sit == ds4State_.end()) return false;
+
+    // The wire MotionReport is signed-int16 fixed point (±32767 ≈ ±2000 deg/s
+    // for gyro, ±4 g for accel). A real DS4's gyro/accel are also int16 with a
+    // near-identical full scale, so the values pass straight into the
+    // DS4_REPORT_EX IMU fields — proportional and close to DS4-native. A
+    // consumer applying exact DS4 calibration sees a small scale offset; the
+    // DSU server path remains the precisely-calibrated motion route.
+    auto& er = sit->second.report.Report;
+    er.wGyroX = report.gyroX;
+    er.wGyroY = report.gyroY;
+    er.wGyroZ = report.gyroZ;
+    er.wAccelX = report.accelX;
+    er.wAccelY = report.accelY;
+    er.wAccelZ = report.accelZ;
+
+    submitDS4Locked(serial);
+    // The IMU fields only actually reach the host on the extended-report path.
+    return sit->second.exSupported;
+}
+
+// Caller holds busMtx_; `serial` must exist in ds4State_.
+bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
+    auto sit = ds4State_.find(serial);
+    if (sit == ds4State_.end()) return false;
+    DS4State& st = sit->second;
+
+    HANDLE evt = nullptr;
+    if (auto eit = submitEvents_.find(serial); eit != submitEvents_.end()) evt = eit->second;
+    if (evt == nullptr) return false;
+
+    if (st.exSupported) {
+        // Advance the free-running DS4 report timestamp (~5.33 µs per unit;
+        // 16/3 ≈ 5.33). Skipped on the very first submit (no prior `lastSubmit`).
+        const auto now = std::chrono::steady_clock::now();
+        if (st.lastSubmit.time_since_epoch().count() != 0) {
+            const auto us =
+                std::chrono::duration_cast<std::chrono::microseconds>(now - st.lastSubmit).count();
+            st.report.Report.wTimestamp =
+                static_cast<USHORT>(st.report.Report.wTimestamp + (us * 3) / 16);
+        }
+        st.lastSubmit = now;
+
+        if (submitReportDS4ExFast(busHandle_, (unsigned long)serial, st.report, evt)) {
+            return true;
+        }
+        // The driver rejected IOCTL_DS4_SUBMIT_REPORT_EX — almost certainly a
+        // ViGEmBus older than 1.17. Latch the EX path off for this serial and
+        // fall through to the basic report so buttons / sticks keep working
+        // (the basic report has no IMU fields, so motion is dropped).
+        st.exSupported = false;
+    }
+
+    DS4_REPORT basic;
+    DS4_REPORT_INIT(&basic);
+    basic.bThumbLX = st.report.Report.bThumbLX;
+    basic.bThumbLY = st.report.Report.bThumbLY;
+    basic.bThumbRX = st.report.Report.bThumbRX;
+    basic.bThumbRY = st.report.Report.bThumbRY;
+    basic.wButtons = st.report.Report.wButtons;
+    basic.bSpecial = st.report.Report.bSpecial;
+    basic.bTriggerL = st.report.Report.bTriggerL;
+    basic.bTriggerR = st.report.Report.bTriggerR;
+    return submitReportDS4Fast(busHandle_, (unsigned long)serial, basic, evt);
 }
 
 // ── Rumble callback registration ────────────────────────────────────────────

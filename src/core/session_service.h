@@ -42,8 +42,11 @@ class SessionService {
     // Handle a heartbeat ping — sends ACK + server status.
     void handleHeartbeat(uint32_t token);
 
-    // Handle controller add request.
-    void handleControllerAdd(uint32_t token, uint8_t ctrlIdx);
+    // Handle controller add request. `caps` is the CAP_* capability word from
+    // the MSG_CONTROLLER_ADD payload (0 when the dish is pre-cap-aware); it is
+    // stored on the Controller so the DSU server / web UI know whether to
+    // expect an IMU stream.
+    void handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16_t caps = 0);
 
     // Handle controller remove request.
     void handleControllerRemove(uint32_t token, uint8_t ctrlIdx);
@@ -129,6 +132,17 @@ class SessionService {
             bool batteryKnown;
             uint8_t batteryLevel;  // 0..100, or BATTERY_LEVEL_UNKNOWN
             uint8_t batteryStatus; // BATTERY_STATUS_*
+            // Motion (IMU). `motionCapable` is the CAP_MOTION bit the dish
+            // advertised at controller-add; `motionActive` is true once at
+            // least one MSG_MOTION packet has actually been decoded for this
+            // controller (the two differ during the add → first-sample window
+            // and for a dish that streams motion without advertising the cap).
+            // `motionSink` is true when motion is also reaching the virtual
+            // gamepad's IMU surface (vs. DSU-emulator-only — Xbox device, old
+            // ViGEmBus, or macOS).
+            bool motionCapable;
+            bool motionActive;
+            bool motionSink;
         };
         std::vector<CtrlInfo> controllers;
     };

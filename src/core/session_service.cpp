@@ -189,7 +189,7 @@ void SessionService::handleHeartbeat(uint32_t token) {
     client_.sendServerStatus(conn, backend_.isBusOpen(), (uint8_t)countGlobalActiveControllers());
 }
 
-void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
+void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16_t caps) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
@@ -233,6 +233,7 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx) {
     ctrl.index = ctrlIdx;
     ctrl.serialNo = serial;
     ctrl.active = true;
+    ctrl.caps = caps;
     ctrl.lastReport = GamepadReport{};
     // Clear rumble coalesce state — even though the serial may be recycled,
     // the (re)added controller is a fresh actuator from the dish's point of
@@ -388,8 +389,13 @@ bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const Mot
 
     // The backend may or may not have an IMU surface; the default IGamepadPort
     // impl returns false. We deliberately don't treat that as an error — motion
-    // is best-effort, and the cache still serves the web UI.
-    return backend_.submitMotion(ctrl.serialNo, report);
+    // is best-effort, and the cache still serves the web UI + DSU server.
+    // The return value records whether the sample reached the virtual device's
+    // IMU surface, surfaced as `motionSink` in the web UI so operators can see
+    // "reaching the virtual pad" vs "DSU-only".
+    const bool delivered = backend_.submitMotion(ctrl.serialNo, report);
+    ctrl.motionSinkActive = delivered;
+    return delivered;
 }
 
 bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
@@ -522,6 +528,9 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
                 info.batteryKnown = ctrl.lastBatteryValid;
                 info.batteryLevel = ctrl.lastBattery.level;
                 info.batteryStatus = ctrl.lastBattery.status;
+                info.motionCapable = ctrl.motionCapable();
+                info.motionActive = ctrl.lastMotionValid;
+                info.motionSink = ctrl.motionSinkActive;
                 cs.controllers.push_back(info);
                 snap.totalControllers++;
             }
@@ -534,10 +543,25 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
 std::array<SessionService::MotionSlot, 4> SessionService::getMotionSlotsForDsu() const {
     std::lock_guard<std::mutex> lk(mtx_);
     std::array<MotionSlot, 4> out{};
+
+    // Deterministic slot assignment: iterate connections in ascending-token
+    // order. connections_ is an unordered_map whose iteration order is not
+    // stable across runs (or across rehashes within a run) — without this
+    // sort a DSU client's slot↔controller mapping could shuffle whenever a
+    // controller is added or the satellite restarts.
+    std::vector<uint32_t> tokens;
+    tokens.reserve(connections_.size());
+    for (const auto& [tok, conn] : connections_) {
+        (void)conn;
+        tokens.push_back(tok);
+    }
+    std::sort(tokens.begin(), tokens.end());
+
     int slot = 0;
-    for (auto& [tok, conn] : connections_) {
+    for (uint32_t tok : tokens) {
         if (slot >= 4) break;
-        for (auto& ctrl : conn.controllers) {
+        const Connection& conn = connections_.at(tok);
+        for (const auto& ctrl : conn.controllers) {
             if (slot >= 4) break;
             if (!ctrl.active) continue;
             out[slot].occupied = true;

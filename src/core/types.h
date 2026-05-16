@@ -54,6 +54,16 @@ inline const uint8_t ACK_ERR_ALREADY_EXISTS = 0x03;
 inline const uint8_t ACK_ERR_NOT_FOUND = 0x04;
 inline const uint8_t ACK_ERR_PLUGIN_FAIL = 0x05;
 
+// ── Controller capability bits ──────────────────────────────────────────────
+// Carried in the 2-byte big-endian capability word of the MSG_CONTROLLER_ADD
+// (0x0004) payload. The dish advertises these at controller-add time so the
+// receiver knows which optional streams to expect from that client. Unknown /
+// unset bits are forward-compatible: a pre-cap-aware dish sends 0 and the
+// receiver treats every capability as "unknown / best-effort".
+inline const uint16_t CAP_ANALOG_TRIGGERS = 0x0001; // analog L/R triggers
+inline const uint16_t CAP_RUMBLE = 0x0002;          // accepts the MSG_RUMBLE return path
+inline const uint16_t CAP_MOTION = 0x0004;          // streams MSG_MOTION (0x000A) IMU data
+
 // Wire format sizes
 inline const int HEADER_SIZE = 8;       // token(4) + counter(4)
 inline const int INNER_HEADER_SIZE = 4; // type(2) + length(2)
@@ -161,6 +171,34 @@ struct MotionReport {
 };
 static_assert(sizeof(MotionReport) == 16, "MotionReport must be 16 bytes on the wire");
 
+// Wire payload length of MSG_MOTION's MotionReport portion (after the 1-byte
+// ctrlIdx) — 6×int16 + uint32. The receiver guards on ctrlIdx(1) + this.
+inline const int MOTION_WIRE_PAYLOAD_BYTES = 16;
+
+// Decode a MotionReport from `p` (16 wire bytes, little-endian, the portion
+// after the 1-byte ctrlIdx). Explicit shifts — no struct memcpy — so decoding
+// is byte-order-independent and immune to MotionReport layout/padding changes.
+// Senders encode the matching little-endian layout; see docs/protocol.md.
+inline MotionReport decodeMotionReport(const uint8_t* p) {
+    auto le16 = [](const uint8_t* q) -> int16_t {
+        return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
+                                    (static_cast<uint16_t>(q[1]) << 8));
+    };
+    auto le32 = [](const uint8_t* q) -> uint32_t {
+        return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
+               (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
+    };
+    MotionReport r;
+    r.gyroX = le16(p + 0);
+    r.gyroY = le16(p + 2);
+    r.gyroZ = le16(p + 4);
+    r.accelX = le16(p + 6);
+    r.accelY = le16(p + 8);
+    r.accelZ = le16(p + 10);
+    r.timestampDeltaUs = le32(p + 12);
+    return r;
+}
+
 // ── Battery report (sender → satellite, periodic) ───────────────────────────
 // Sent once per BATTERY_REPORT_INTERVAL_SEC and again whenever the controller
 // transitions between charging states. `level` is 0..100 inclusive; 0xFF means
@@ -232,6 +270,11 @@ struct Controller {
     uint32_t serialNo = 0; // backend serial (1–16), 0 = not plugged
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
+    // Capability word from MSG_CONTROLLER_ADD (CAP_* bits). 0 when the dish is
+    // pre-cap-aware. `motionCapable()` is the convenience accessor the DSU
+    // server / web UI use to know whether to expect an IMU stream.
+    uint16_t caps = 0;
+    bool motionCapable() const { return (caps & CAP_MOTION) != 0; }
     GamepadReport lastReport{};
     // Most recent rumble state forwarded to the dish. Used to coalesce identical
     // back-to-back game updates so we don't blast the wire when a game holds
@@ -242,6 +285,13 @@ struct Controller {
     // debug pane can show live IMU values without keeping a parallel cache.
     MotionReport lastMotion{};
     bool lastMotionValid = false;
+    // True when the most recent motion sample was actually delivered to the
+    // virtual-gamepad backend's IMU surface (ViGEm DS4 extended report /
+    // Linux uinput motion node). False means motion is still reaching
+    // emulators via the DSU server but not the OS-level virtual pad —
+    // e.g. an Xbox-typed device, a ViGEmBus too old for the extended
+    // report, or the inert macOS backend. Drives the web UI's motion state.
+    bool motionSinkActive = false;
     // Most recent battery sample (sender → satellite). Surfaced in the
     // web UI's connection list and (eventually) forwarded to the virtual
     // device's battery channel where the backend supports it.

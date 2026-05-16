@@ -100,19 +100,21 @@ Application/extension types should use 0x0100+.
 
 | Type   | Name              | Payload                                       | Inner size  | Total on wire | Direction       |
 |--------|-------------------|-----------------------------------------------|-------------|---------------|-----------------|
-| 0x0001 | Gamepad Data      | controller_index(1B) + XUSB_REPORT(12B)       | 4+13 = 17 B | 45 B          | client → server |
-| 0x0002 | Heartbeat Ping    | (none)                                        | 4 B         | 32 B          | client → server |
-| 0x0003 | Heartbeat ACK     | (none)                                        | 4 B         | 32 B          | server → client |
-| 0x0004 | Controller Add    | controller_index(1B) + caps(2B)               | 4+3 = 7 B   | 35 B          | client → server |
-| 0x0005 | Controller Remove | controller_index(1B)                          | 4+1 = 5 B   | 33 B          | client → server |
-| 0x0006 | Controller ACK    | requestType(2B) + ctrlIdx(1B) + result(1B)    | 4+4 = 8 B   | 36 B          | server → client |
-| 0x0007 | Server Status     | backendAvailable(1B) + activeControllers(1B)  | 4+2 = 6 B   | 34 B          | server → client |
-| 0x0008 | Controller Type   | controller_index(1B) + type(1B)               | 4+2 = 6 B   | 34 B          | client → server |
-| 0x0009 | Rumble            | controller_index(1B) + rumble fields (7..10B) | 4+8..11 B   | 40..43 B      | server → client |
-| 0x000A | Motion (IMU)      | controller_index(1B) + MotionReport(16B)      | 4+17 = 21 B | 49 B          | client → server |
-| 0x000B | Battery           | controller_index(1B) + level(1B) + status(1B) | 4+3 = 7 B   | 35 B          | client → server |
-| 0x000C | Touchpad          | controller_index(1B) + flags(1B) + finger0(5B) + finger1(5B) | 4+12 = 16 B | 44 B    | client → server |
-| 0x000D | Lightbar          | controller_index(1B) + r(1B) + g(1B) + b(1B)  | 4+4 = 8 B   | 36 B          | server → client |
+| 0x0001 | Gamepad Data      | controller_index(1B) + XUSB_REPORT(12B)       | 4+13 = 17 B | 41 B          | client → server |
+| 0x0002 | Heartbeat Ping    | (none)                                        | 4 B         | 28 B          | client → server |
+| 0x0003 | Heartbeat ACK     | (none)                                        | 4 B         | 28 B          | server → client |
+| 0x0004 | Controller Add    | controller_index(1B) + caps(2B)               | 4+3 = 7 B   | 31 B          | client → server |
+| 0x0005 | Controller Remove | controller_index(1B)                          | 4+1 = 5 B   | 29 B          | client → server |
+| 0x0006 | Controller ACK    | requestType(2B) + ctrlIdx(1B) + result(1B)    | 4+4 = 8 B   | 32 B          | server → client |
+| 0x0007 | Server Status     | backendAvailable(1B) + activeControllers(1B)  | 4+2 = 6 B   | 30 B          | server → client |
+| 0x0008 | Controller Type   | controller_index(1B) + type(1B)               | 4+2 = 6 B   | 30 B          | client → server |
+| 0x0009 | Rumble            | controller_index(1B) + rumble fields (7..10B) | 4+8..11 B   | 36..39 B      | server → client |
+| 0x000A | Motion (IMU)      | controller_index(1B) + MotionReport(16B)      | 4+17 = 21 B | 45 B          | client → server |
+| 0x000B | Battery           | controller_index(1B) + level(1B) + status(1B) | 4+3 = 7 B   | 31 B          | client → server |
+| 0x000C | Touchpad          | controller_index(1B) + flags(1B) + finger0(5B) + finger1(5B) | 4+12 = 16 B | 40 B    | client → server |
+| 0x000D | Lightbar          | controller_index(1B) + r(1B) + g(1B) + b(1B)  | 4+4 = 8 B   | 32 B          | server → client |
+
+> **Total on wire** = 28 + payload bytes (8 header + 4 type/length + payload + 16 tag).
 
 ### 0x0001 — Gamepad Data
 
@@ -150,15 +152,24 @@ server replies with a **0x0006 Controller ACK** indicating success or
 failure. On success, the server plugs in a new virtual Xbox 360 controller
 and maps it to `(token, controller_index)`.
 
-If the ViGEm bus is not yet open, the server will attempt to open it lazily.
-If ViGEm is still unavailable, the ACK reports `ACK_ERR_VIGEM_UNAVAIL`.
+If the virtual-gamepad backend bus is not yet open, the server will attempt to
+open it lazily. If it is still unavailable, the ACK reports
+`ACK_ERR_BACKEND_UNAVAIL`.
 
-Capability flags (reserved for future use):
+Capability flags — a 2-byte big-endian word. The dish advertises which optional
+streams it supports; a pre-cap dish sends `0` (the receiver then treats every
+capability as "unknown / best-effort"). Unknown bits are reserved.
 
-| Bit  | Meaning              |
-|------|----------------------|
-| 0x01 | Has analog triggers  |
-| 0x02 | Supports rumble      |
+| Bit    | Meaning                                                    |
+|--------|------------------------------------------------------------|
+| 0x0001 | Has analog triggers                                        |
+| 0x0002 | Supports the `MSG_RUMBLE` return path                      |
+| 0x0004 | Streams `MSG_MOTION` (0x000A) IMU data (`CAP_MOTION`)      |
+
+The receiver stores the capability word on the controller and surfaces
+`motionCapable` in `GET /api/connections`. `CAP_MOTION` is informational —
+motion is best-effort, so the receiver still accepts `MSG_MOTION` from a dish
+that did not advertise the bit.
 
 ### 0x0005 — Controller Remove
 
@@ -295,11 +306,19 @@ leading 8 bytes and stop there — the wire is forward-compatible.
 
 Sent by the client whenever a motion-capable controller emits an IMU sample.
 The receiver caches the most recent sample per `(token, controller_index)`
-for the web UI's debug pane and forwards it to the virtual device's motion
-channel via `IGamepadPort::submitMotion`. The default `IGamepadPort` impl
-ignores motion; Windows DS4 / Linux DualSense backends override it to wire
-samples into `DS4_REPORT_EX` / `uhid` motion fields (future work — senders
-should keep streaming motion regardless).
+(surfaced as the controller's `motionActive` flag in `GET /api/connections`)
+and forwards it to the virtual device's motion channel via
+`IGamepadPort::submitMotion`:
+
+- **Windows** — the ViGEm DualShock 4 backend writes gyro/accel into the
+  `DS4_REPORT_EX` IMU fields (needs ViGEmBus ≥ 1.17; older drivers fall back
+  to the basic report and drop motion).
+- **Linux** — the uinput backend emits the sample on a dedicated
+  `INPUT_PROP_ACCELEROMETER` evdev node created alongside the DS4 gamepad node.
+- An Xbox 360 virtual device has no IMU surface and drops motion silently;
+  the cache + the Cemuhook DSU re-emit still carry it.
+
+Senders stream motion regardless of which backend the receiver runs.
 
 | Field               | Size | Description                                    |
 |---------------------|------|------------------------------------------------|
@@ -319,9 +338,10 @@ rotate.**
 `0x7FFF` ≈ `+4 g`. Receivers convert back to deg/s and g by multiplying by
 `MOTION_GYRO_SCALE_DEG_S` and `MOTION_ACCEL_SCALE_G` from `core/types.h`.
 
-**Byte order.** Multi-byte fields are written in **host native order** (the
-struct is `memcpy`'d onto the wire by the receiver). All current sender and
-receiver platforms are little-endian; senders SHOULD write little-endian.
+**Byte order.** Multi-byte fields are **little-endian**. The sender writes LE
+explicitly; the receiver decodes via explicit byte-shifts (`decodeMotionReport`
+in `core/types.h`), not a struct `memcpy` — so the wire is byte-order- and
+struct-layout-independent. Mirrors the `MSG_TOUCHPAD` decode.
 
 **Rate limiting.** Senders MUST rate-limit motion packets to ≤ 250 Hz per
 controller by default; configurable up to the gamepad poll rate. Receivers
@@ -427,8 +447,8 @@ controllers for that connection are unplugged and the connection is removed.
 | 1 gamepad @ 250 Hz                | 11.25 KB/s | 18.25 KB/s            |
 | 1 gamepad @ 1000 Hz               | 45 KB/s    | 73 KB/s               |
 | 4 gamepads @ 250 Hz               | 45 KB/s    | 73 KB/s               |
-| 1 motion (IMU) @ 250 Hz           | 12.25 KB/s | 19.25 KB/s            |
-| 1 motion (IMU) @ 1000 Hz          | 49 KB/s    | 77 KB/s               |
+| 1 motion (IMU) @ 250 Hz           | 11.25 KB/s | 18.25 KB/s            |
+| 1 motion (IMU) @ 1000 Hz          | 45 KB/s    | 73 KB/s               |
 | Battery (1 ctrl, default 0.033 Hz)| ~1.2 B/s   | ~2.5 B/s              |
 | Heartbeat (0.5 pps)               | ~16 B/s    | ~44 B/s               |
 

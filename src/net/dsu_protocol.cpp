@@ -169,8 +169,30 @@ size_t encodePadDataResponse(uint8_t* out, size_t outCap, uint32_t serverId,
 }
 
 void applyMotionReport(PadDataInputs& out, const MotionReport& report) {
-    // MOTION_*_SCALE constants live in core/types.h. The cast to float
-    // honours the saturation guarantees the comment there describes.
+    // ── Axis / sign mapping: dish wire frame → DSU pad-data frame ────────────
+    //
+    // The MSG_MOTION wire frame (docs/protocol.md §0x000A) is right-handed,
+    // +X = right, +Y = up, +Z = toward the player. A gyro component is the
+    // angular velocity *about* that axis, so by the right-hand rule:
+    //
+    //   report.gyroX  = rotation about +X  → "pitch" rate  → out.gyroPitch
+    //   report.gyroY  = rotation about +Y  → "yaw"   rate  → out.gyroYaw
+    //   report.gyroZ  = rotation about +Z  → "roll"  rate  → out.gyroRoll
+    //
+    // The Cemuhook DSU pad-data frame is defined to match this same
+    // right-handed convention (that is *why* docs/protocol.md tells senders to
+    // encode the DSU frame directly — see the "Axis convention" note there),
+    // so the mapping is the identity with NO axis swap and NO sign flip.
+    // Accelerometer components map X→X, Y→Y, Z→Z, in g, gravity included.
+    //
+    // Units: int16 fixed point → physical units via the MOTION_*_SCALE
+    // constants in core/types.h (gyro deg/s, accel g). The float cast honours
+    // the saturation guarantees documented there.
+    //
+    // VERIFY-ON-HARDWARE: "non-zero gyro in Cemu" is not the same as
+    // "correctly-signed gyro in Cemu" — Cemu's gyro handling is sign- and
+    // axis-sensitive. test_dsu_protocol.cpp pins the sign for a known input;
+    // a final per-axis confirmation still needs a physical pad + Cemu.
     out.gyroPitch = static_cast<float>(report.gyroX) * MOTION_GYRO_SCALE_DEG_S;
     out.gyroYaw = static_cast<float>(report.gyroY) * MOTION_GYRO_SCALE_DEG_S;
     out.gyroRoll = static_cast<float>(report.gyroZ) * MOTION_GYRO_SCALE_DEG_S;
