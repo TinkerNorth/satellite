@@ -43,6 +43,13 @@ class ViGEmAdapter : public IGamepadPort {
     // ViGEmBus too old for IOCTL_DS4_SUBMIT_REPORT_EX).
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
 
+    // Forward a battery update to the virtual DualShock 4 device's battery
+    // byte (DS4_REPORT_EX). Xbox 360 virtual pads have no battery surface and
+    // return false. Returns true only when the value reached the device via
+    // the extended-report path (false on an Xbox pad, an unknown serial, or a
+    // ViGEmBus too old for IOCTL_DS4_SUBMIT_REPORT_EX).
+    bool submitBattery(uint32_t serial, const BatteryReport& report) override;
+
   private:
     // Per-controller notification worker. Each plugged virtual device gets a
     // thread that loops on `wait*Notification` and forwards each fired event

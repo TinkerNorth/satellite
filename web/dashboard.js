@@ -104,6 +104,59 @@ function motionStateId(ctrl) {
   return ctrl.motionSink ? 'on' : 'dsu';
 }
 
+// ── Per-controller battery chip ─────────────────────────────────────────────
+// Task 1.2 — battery level reporting. Derived from `ctrl.battery` in
+// /api/connections: either { level: 0..100 | null, status: "..." } or null.
+// The sender forwards the controller's own battery, or — when the controller
+// is wired/USB — the host machine's battery (laptop %, or 100% on a desktop).
+// Returns { cls, text, title }, mirroring MOTION_COPY's shape.
+function batteryChip(ctrl) {
+  const b = ctrl.battery;
+  if (!b) {
+    return {
+      cls: 'battery-na',
+      text: 'No battery',
+      title: 'This sender has not reported a battery level for this controller.',
+    };
+  }
+  const lvl = (typeof b.level === 'number') ? b.level : null;
+  const pct = (lvl === null) ? '—' : lvl + '%';
+
+  let cls = 'battery-ok';
+  if (b.status === 'charging') {
+    cls = 'battery-charging';
+  } else if (lvl !== null && lvl < 10) {
+    cls = 'battery-crit';
+  } else if (lvl !== null && lvl < 20) {
+    cls = 'battery-low';
+  }
+
+  let text, title;
+  switch (b.status) {
+    case 'charging':
+      text = 'Battery ' + pct;
+      title = 'Battery ' + pct + ' — charging.';
+      break;
+    case 'full':
+      text = 'Battery ' + (lvl === null ? 'full' : pct);
+      title = 'Battery full.';
+      break;
+    case 'wired':
+      text = (lvl === null) ? 'AC power' : 'Battery ' + pct;
+      title = 'AC powered — a wired controller falls back to the host machine’s '
+            + 'battery (100% on a desktop).';
+      break;
+    case 'discharging':
+      text = 'Battery ' + pct;
+      title = 'Battery ' + pct + ' — discharging.';
+      break;
+    default:
+      text = 'Battery ' + pct;
+      title = 'Battery level ' + pct + ' (charging state unknown).';
+  }
+  return { cls, text, title };
+}
+
 function initDashboard() {
   startSSE();
   loadDevices();
@@ -227,6 +280,7 @@ function updateConnections(d) {
         const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
         const m = MOTION_COPY[motionStateId(ctrl)] || MOTION_COPY.na;
+        const bat = batteryChip(ctrl);
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
@@ -236,7 +290,10 @@ function updateConnections(d) {
               <span class="ctrl-meta">${esc(ctrl.deviceName)} · Serial ${ctrl.serialNo} · ${ok ? 'Plugged In' : 'Error'}</span>
             </div>
           </div>
-          <span class="ctrl-motion ${m.cls}" title="${esc(m.title)}">${esc(m.text)}</span>
+          <div class="ctrl-chips">
+            <span class="ctrl-battery ${bat.cls}" title="${esc(bat.title)}">${esc(bat.text)}</span>
+            <span class="ctrl-motion ${m.cls}" title="${esc(m.title)}">${esc(m.text)}</span>
+          </div>
         </div>`;
       }).join('');
     }

@@ -131,15 +131,18 @@ bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
     submitEvents_[serial] = evt;
 
     // Seed the extended-report cache. Centre the sticks (0x80) so the pad does
-    // not read as a stuck corner before the first gamepad frame, and seed a
-    // benign battery level (real battery wiring is Task 1.2). Touch packet
+    // not read as a stuck corner before the first gamepad frame. Touch packet
     // count stays 0 = no touch activity.
     DS4State st{};
     st.report.Report.bThumbLX = 0x80;
     st.report.Report.bThumbLY = 0x80;
     st.report.Report.bThumbRX = 0x80;
     st.report.Report.bThumbRY = 0x80;
-    st.report.Report.bBatteryLvl = 0x0B; // "full" placeholder until Task 1.2
+    // Seed the battery byte as charged until the first MSG_BATTERY arrives
+    // (Task 1.2). The sender forwards battery on connect, so the real value
+    // lands within ~1 s; seeding "charged" avoids a spurious low-battery
+    // toast on the host in that window.
+    st.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
     ds4State_[serial] = st;
 
     startNotificationWorker(serial, /*isDS4=*/true);
@@ -252,6 +255,48 @@ bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
 
     submitDS4Locked(serial);
     // The IMU fields only actually reach the host on the extended-report path.
+    return sit->second.exSupported;
+}
+
+// Map a wire BatteryReport (level 0..100 or 0xFF-unknown, status enum) onto the
+// DS4 HID battery byte: bit 4 (0x10) = cable connected, low nibble = level. The
+// host derives capacity ≈ nibble × 10 (clamped to 100%); nibble 11 with the
+// cable bit set is the DualShock 4's "fully charged" sentinel.
+static uint8_t ds4BatteryByte(const BatteryReport& report) {
+    int nibble = (report.level == BATTERY_LEVEL_UNKNOWN)
+                     ? 5 // unknown → mid-scale, so the host still shows something
+                     : static_cast<int>(report.level) / 10;
+    if (nibble > 10) nibble = 10;
+
+    switch (report.status) {
+    case BATTERY_STATUS_CHARGING:
+        return static_cast<uint8_t>(0x10 | nibble); // cable connected + charging
+    case BATTERY_STATUS_FULL:
+    case BATTERY_STATUS_WIRED:
+        // FULL = sitting on the charger at 100%. WIRED = the controller is
+        // cabled and the sender fell back to host (desktop / AC) power — both
+        // present to the host as a fully-charged pad.
+        return static_cast<uint8_t>(0x10 | 11);
+    default: // discharging / unknown — running on battery, no cable bit
+        return static_cast<uint8_t>(nibble);
+    }
+}
+
+bool ViGEmAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+
+    // Only DualShock 4 virtual devices expose a battery byte. An Xbox 360 pad
+    // (no ds4State_ entry) silently drops it — the SessionService still caches
+    // the value for the web UI.
+    auto sit = ds4State_.find(serial);
+    if (sit == ds4State_.end()) return false;
+
+    sit->second.report.Report.bBatteryLvl = ds4BatteryByte(report);
+
+    submitDS4Locked(serial);
+    // The battery byte only actually reaches the host on the extended-report
+    // path — the basic DS4_REPORT has no battery field.
     return sit->second.exSupported;
 }
 
