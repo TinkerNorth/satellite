@@ -39,7 +39,7 @@ class GamepadAdapter : public IGamepadPort {
     // Forward an IMU sample to the DualShock 4's motion uinput node (the
     // INPUT_PROP_ACCELEROMETER device created alongside the gamepad node).
     // Xbox 360 pads and any device whose motion node failed to open return
-    // false; the SessionService still caches the sample for the DSU server.
+    // false; the SessionService still caches the sample for the web UI.
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
 
     // Forward a touchpad sample to the DualShock 4's dedicated multitouch

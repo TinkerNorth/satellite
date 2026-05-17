@@ -8,9 +8,14 @@
  * All business logic (connections, controllers, teardown) lives in SessionService.
  */
 #include "receiver.h"
+#include "inner_dispatch.h"
 #include "crypto.h"
 #include "core/session_service.h"
 #include "adapters/client_adapter.h"
+
+// dispatchInnerMessage (the decrypted inner-message parser + length guards)
+// lives in net/inner_dispatch.cpp — a portable, socket-free TU so the guards
+// can be unit tested with raw byte buffers (tests/test_receiver.cpp).
 
 // ── Reaper: delegates timeout cleanup to SessionService ──────────────────────
 static void reaperLoop(SessionService& svc) {
@@ -128,15 +133,11 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             if ((size_t)(INNER_HEADER_SIZE + msgLen) > ptLen) continue;
             uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
-            switch (msgType) {
-            case MSG_GAMEPAD_DATA: {
-                if (msgLen < 13) break;
-                uint8_t ctrlIdx = payload[0];
-                GamepadReport report;
-                memcpy(&report, payload + 1, sizeof(GamepadReport));
+            DispatchResult dr = dispatchInnerMessage(svc, token, msgType, payload, msgLen);
 
-                bool ok = svc.handleGamepadData(token, ctrlIdx, report);
-
+            // Gamepad data is the hot path — record loop latency + submit
+            // outcome telemetry. Other message types skip this block.
+            if (dr.wasGamepadData) {
                 auto t1 = std::chrono::steady_clock::now();
                 uint64_t us =
                     (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
@@ -146,77 +147,11 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 while (us > prev &&
                        !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed)) {}
 
-                if (ok) {
+                if (dr.gamepadOk) {
                     g_submitOk.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     g_submitFail.fetch_add(1, std::memory_order_relaxed);
                 }
-                break;
-            }
-            case MSG_HEARTBEAT_PING:
-                svc.handleHeartbeat(token);
-                break;
-
-            case MSG_CONTROLLER_ADD: {
-                if (msgLen < 1) break;
-                uint8_t ctrlIdx = payload[0];
-                // Capability word: 2 bytes big-endian, optional. A pre-cap
-                // dish sends only ctrlIdx (msgLen 1) — caps default to 0.
-                uint16_t caps = 0;
-                if (msgLen >= 3) {
-                    caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
-                                                 static_cast<uint16_t>(payload[2]));
-                }
-                svc.handleControllerAdd(token, ctrlIdx, caps);
-                break;
-            }
-            case MSG_CONTROLLER_REMOVE: {
-                if (msgLen < 1) break;
-                uint8_t ctrlIdx = payload[0];
-                svc.handleControllerRemove(token, ctrlIdx);
-                break;
-            }
-            case MSG_CONTROLLER_TYPE: {
-                if (msgLen < 2) break;
-                uint8_t ctrlIdx = payload[0];
-                uint8_t ctrlType = payload[1];
-                svc.handleControllerType(token, ctrlIdx, ctrlType);
-                break;
-            }
-            case MSG_MOTION: {
-                // Wire payload: ctrlIdx(1) + 6×i16(12) + u32(4) = 17 bytes.
-                // Decoded with explicit little-endian shifts — NOT a struct
-                // memcpy — so the wire stays byte-order-independent and a
-                // future change to MotionReport's layout/padding can't
-                // silently corrupt it. Mirrors the MSG_TOUCHPAD decode.
-                if (msgLen < 17) break;
-                uint8_t ctrlIdx = payload[0];
-                MotionReport report = decodeMotionReport(payload + 1);
-                svc.handleMotionData(token, ctrlIdx, report);
-                break;
-            }
-            case MSG_BATTERY: {
-                // Wire payload: ctrlIdx(1) + level(1) + status(1) = 3 bytes
-                if (msgLen < 3) break;
-                uint8_t ctrlIdx = payload[0];
-                BatteryReport report;
-                report.level = payload[1];
-                report.status = payload[2];
-                svc.handleBatteryUpdate(token, ctrlIdx, report);
-                break;
-            }
-            case MSG_TOUCHPAD: {
-                // Wire payload: ctrlIdx(1) + TOUCHPAD_WIRE_PAYLOAD_BYTES(11) =
-                // 12 bytes. decodeTouchpadReport does the explicit little-
-                // endian decode (see core/types.h) — same pattern as MOTION.
-                if (msgLen < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES) break;
-                uint8_t ctrlIdx = payload[0];
-                TouchpadReport report = decodeTouchpadReport(payload + 1);
-                svc.handleTouchpadData(token, ctrlIdx, report);
-                break;
-            }
-            default:
-                break;
             }
 
             g_packetCount.fetch_add(1, std::memory_order_relaxed);

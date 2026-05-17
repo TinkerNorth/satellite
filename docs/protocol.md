@@ -8,8 +8,11 @@ ChaCha20-Poly1305 (libsodium). The token remains plaintext for routing; the
 rest is opaque without the session key.
 
 The client discovers the server's `udpPort` (and `httpPort`, `pairPort`)
-via the LAN discovery beacon broadcast on `discPort` (default 9879).
-See [architecture.md](architecture.md) for the beacon format.
+via LAN discovery. The modern path is mDNS / Bonjour — the server advertises
+the `_satellite._udp.local.` service — and the legacy UDP broadcast beacon on
+`discPort` (default 9879) stays on as a fallback for senders that predate the
+mDNS responder. See [architecture.md](architecture.md) for both the beacon
+format and the mDNS records.
 
 ## Packet Format
 
@@ -318,7 +321,7 @@ and forwards it to the virtual device's motion channel via
 - **Linux** — the uinput backend emits the sample on a dedicated
   `INPUT_PROP_ACCELEROMETER` evdev node created alongside the DS4 gamepad node.
 - An Xbox 360 virtual device has no IMU surface and drops motion silently;
-  the cache + the Cemuhook DSU re-emit still carry it.
+  the receiver still caches the most recent sample for the web UI.
 
 Senders stream motion regardless of which backend the receiver runs.
 
@@ -330,9 +333,7 @@ Senders stream motion regardless of which backend the receiver runs.
 | `timestampDeltaUs`  | 4 B  | Microseconds since the previous MOTION for the same `(token, ctrlIdx)`; 0 on the first packet |
 
 **Axis convention.** Right-handed coordinates: `+X` = right, `+Y` = up,
-`+Z` = toward the player. This matches the Cemuhook DSU convention so the
-receiver can re-emit on `udp://127.0.0.1:26760` (a future task) without
-per-axis renormalisation. **Senders** apply any manufacturer rotation
+`+Z` = toward the player. **Senders** apply any manufacturer rotation
 matrix (DualSense, Joy-Con, etc.) before encoding; **the receiver does not
 rotate.**
 
@@ -456,7 +457,7 @@ no such capability receives no lightbar traffic.
 | Parameter            | Value | Description                                    |
 |----------------------|-------|------------------------------------------------|
 | `HEARTBEAT_INTERVAL` | 2 s   | Client sends a ping every N seconds            |
-| `HEARTBEAT_MISS_MAX` | 3     | Missed heartbeats before connection is dead     |
+| `HEARTBEAT_MISS_MAX` | 5     | Missed heartbeats before connection is dead     |
 
 **Client:** Send a 0x0002 ping every `HEARTBEAT_INTERVAL` seconds. Gamepad
 data also counts as liveness. If no ACK is received for `HEARTBEAT_MISS_MAX`

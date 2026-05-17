@@ -113,6 +113,14 @@
     <!-- Update banner mount point. updates.js clones #tpl-update-banner here. -->
     <div id="dashboard-update-slot"></div>
 
+    <!-- Inline failure feedback for dashboard mutating actions (disconnect,
+         remove device, touchpad-mode change). Shown via showDashError() in
+         dashboard.js; hidden by default. -->
+    <div class="dash-notice" id="dash-notice" role="alert">
+      <span class="dash-notice-text" id="dash-notice-text"></span>
+      <button class="dash-notice-close" id="dash-notice-close" type="button" aria-label="Dismiss">&times;</button>
+    </div>
+
     <div id="stats">
       <div class="stat"><span class="label">Status</span><span class="value" id="s-status">Stopped</span></div>
       <div class="stat"><span class="label">Packets</span><span class="value" id="s-packets">0</span></div>
@@ -212,13 +220,16 @@
         <label>UDP Port</label>
         <input type="number" id="settings-udpPort" min="1024" max="65535" value="9876">
       </div>
+      <!-- Range-validation feedback for the UDP port field. Empty/hidden
+           unless settingsSave() rejects an out-of-range value. -->
+      <p class="error-msg" id="settings-udpPort-error"></p>
       <div class="toggle-row">
         <span id="settings-autoStart-label">Start with Windows</span>
         <label class="switch"><input type="checkbox" id="settings-autoStart"><span class="slider"></span></label>
       </div>
 
       <!-- ── Discovery (Task 1.6 — mDNS / Bonjour + legacy beacon) ── -->
-      <h2 class="section-title" style="margin-top:18px">Discovery</h2>
+      <h2 class="section-title section-title-spaced">Discovery</h2>
       <div class="stat">
         <span class="label">mDNS / Bonjour responder</span>
         <span class="value" id="settings-mdns-status">—</span>
@@ -236,6 +247,9 @@
         <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" disabled>Save Config</button>
         <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" disabled>Undo</button>
       </div>
+      <!-- Save result line — error in red, transient confirmation otherwise.
+           Set by settingsSave(); empty until a save is attempted. -->
+      <p class="settings-save-status" id="settings-save-status" role="status"></p>
     </div>
 
     <!-- ── Updates ── -->

@@ -14,7 +14,6 @@
 #include "net/webserver.h"
 #include "net/pairing.h"
 #include "net/discovery.h"
-#include "net/dsu_server.h"
 #include "net/mdns_responder.h"
 #include "tray.h"
 
@@ -94,13 +93,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     std::thread discTh(discoveryThread);
     std::thread mdnsTh(mdnsResponderThread);
 
-    std::unique_ptr<DsuServer> dsu;
-    if (g_config.dsuEnabled) {
-        dsu = std::make_unique<DsuServer>(svc, g_appRunning, g_wantListen, g_config.dsuBindAddr,
-                                          g_config.dsuPort);
-        dsu->start();
-    }
-
     // Win32 message loop
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
@@ -119,7 +111,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     updateService.stop();
     g_updateService = nullptr;
 
-    if (dsu) { dsu->stop(); }
     recvTh.join();
     httpTh.join();
     pairTh.join();

@@ -242,7 +242,7 @@ bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
 
     // Only DualShock 4 virtual devices have an IMU surface. An Xbox 360 pad
     // (no ds4State_ entry) silently drops motion — the SessionService still
-    // caches it for the web UI / DSU server.
+    // caches it for the web UI.
     auto sit = ds4State_.find(serial);
     if (sit == ds4State_.end()) return false;
 
@@ -250,8 +250,7 @@ bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     // for gyro, ±4 g for accel). A real DS4's gyro/accel are also int16 with a
     // near-identical full scale, so the values pass straight into the
     // DS4_REPORT_EX IMU fields — proportional and close to DS4-native. A
-    // consumer applying exact DS4 calibration sees a small scale offset; the
-    // DSU server path remains the precisely-calibrated motion route.
+    // consumer applying exact DS4 calibration sees a small scale offset.
     auto& er = sit->second.report.Report;
     er.wGyroX = report.gyroX;
     er.wGyroY = report.gyroY;

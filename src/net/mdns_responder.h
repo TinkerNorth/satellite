@@ -9,6 +9,18 @@
  * senders using a native Bonjour / Avahi stack — and clients on subnets that
  * drop the legacy UDP broadcast beacon — can discover this receiver.
  *
+ * RFC 6762 behaviours implemented:
+ *   - §8.1  lightweight probing — a single ANY probe for the instance name
+ *           before announcing; on a name clash the instance label is
+ *           disambiguated and a WARNING logged (minimal, see the .cpp).
+ *   - §8.3  startup announcement — the full unsolicited answer set is
+ *           multicast three times ~1 s apart so senders already running
+ *           discover us without waiting to re-query.
+ *   - §7.1  Known-Answer suppression — records a querier already holds with
+ *           a fresh-enough TTL are dropped from the reply; if every record
+ *           is known, no response is sent at all.
+ *   - §10.1 goodbye — a TTL-0 record set is multicast on shutdown.
+ *
  * Runs for the process lifetime alongside `discoveryThread()`. The legacy
  * broadcast beacon stays on as a fallback for one release; this responder is
  * additive, never a replacement-in-place.

@@ -48,8 +48,8 @@ class SessionService {
 
     // Handle controller add request. `caps` is the CAP_* capability word from
     // the MSG_CONTROLLER_ADD payload (0 when the dish is pre-cap-aware); it is
-    // stored on the Controller so the DSU server / web UI know whether to
-    // expect an IMU stream.
+    // stored on the Controller so the web UI knows whether to expect an IMU
+    // stream.
     void handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16_t caps = 0);
 
     // Handle controller remove request.
@@ -155,8 +155,8 @@ class SessionService {
             // controller (the two differ during the add → first-sample window
             // and for a dish that streams motion without advertising the cap).
             // `motionSink` is true when motion is also reaching the virtual
-            // gamepad's IMU surface (vs. DSU-emulator-only — Xbox device, old
-            // ViGEmBus, or macOS).
+            // gamepad's IMU surface; false means it is cached only (Xbox
+            // device, ViGEmBus too old for the extended report, or macOS).
             bool motionCapable;
             bool motionActive;
             bool motionSink;
@@ -184,18 +184,6 @@ class SessionService {
         bool backendAvailable;
     };
     ConnectionsSnapshot getConnectionsSnapshot() const;
-
-    // Per-slot motion snapshot for the DSU server. Returns at most
-    // `dsu::MAX_SLOTS` (4) entries — the first N active controllers in
-    // (token, ctrlIdx) iteration order. Each entry includes whether the
-    // controller currently has a cached MotionReport (false during the
-    // window between ControllerAdd and the first MotionData packet).
-    struct MotionSlot {
-        bool occupied = false;
-        MotionReport motion{};
-        bool hasMotion = false;
-    };
-    std::array<MotionSlot, 4> getMotionSlotsForDsu() const;
 
     // Check if a deviceId is already connected.
     bool isDeviceConnected(const std::string& deviceId) const;

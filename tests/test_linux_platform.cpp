@@ -112,6 +112,23 @@ static void testJsonEscape() {
 
     TEST("jsonEscape — combined special chars");
     EXPECT_EQ(jsonEscape("\"\\\n"), std::string("\\\"\\\\\\n"));
+
+    // C0 control bytes other than \n must become \uXXXX escapes — a raw \r or
+    // \t in a device name would otherwise produce invalid JSON.
+    TEST("jsonEscape — escapes carriage return as \\u000d");
+    EXPECT_EQ(jsonEscape("a\rb"), std::string("a\\u000db"));
+
+    TEST("jsonEscape — escapes tab as \\u0009");
+    EXPECT_EQ(jsonEscape("a\tb"), std::string("a\\u0009b"));
+
+    TEST("jsonEscape — escapes NUL as \\u0000");
+    EXPECT_EQ(jsonEscape(std::string("a\0b", 3)), std::string("a\\u0000b"));
+
+    TEST("jsonEscape — escapes a high C0 control byte (0x1f)");
+    EXPECT_EQ(jsonEscape(std::string("\x1f")), std::string("\\u001f"));
+
+    TEST("jsonEscape — 0x20 (space) is not escaped");
+    EXPECT_EQ(jsonEscape(" "), std::string(" "));
 }
 
 static void testJsonGetString() {
@@ -196,6 +213,41 @@ static void testConfigRoundTrip() {
     }
 }
 
+// discoveryBroadcastEnabled (Task 1.6) — round-trips both ways, and an absent
+// key defaults to true so a pre-1.6 config doesn't silently disable the
+// legacy beacon. Each branch uses a fresh TempXdg so the config files don't
+// alias.
+static void testDiscoveryBroadcastConfig() {
+    {
+        TempXdg tmp;
+        Config out;
+        out.discoveryBroadcastEnabled = true;
+        saveConfig(out);
+        Config in = loadConfig();
+        TEST("loadConfig — discoveryBroadcastEnabled round-trips true");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, true);
+    }
+    {
+        TempXdg tmp;
+        Config out;
+        out.discoveryBroadcastEnabled = false;
+        saveConfig(out);
+        Config in = loadConfig();
+        TEST("loadConfig — discoveryBroadcastEnabled round-trips false");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, false);
+    }
+    {
+        TempXdg tmp;
+        // A config JSON with no discoveryBroadcastEnabled key (pre-1.6 shape).
+        std::ofstream f(configPath());
+        f << "{\n  \"udpPort\": 9876,\n  \"pairedDevices\": []\n}\n";
+        f.close();
+        Config in = loadConfig();
+        TEST("loadConfig — absent discoveryBroadcastEnabled key defaults to true");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, true);
+    }
+}
+
 static void testLoadConfigMissingFile() {
     TempXdg tmp;
     TEST("loadConfig — returns defaults when file missing");
@@ -204,6 +256,8 @@ static void testLoadConfigMissingFile() {
     EXPECT(c.webPort > 0);
     EXPECT_EQ(c.autoStart, false);
     EXPECT_EQ(c.pairedDevices.size(), size_t{0});
+    // A missing file yields struct defaults — the legacy beacon stays on.
+    EXPECT_EQ(c.discoveryBroadcastEnabled, true);
 }
 
 // ── XDG autostart .desktop file ─────────────────────────────────────────────
@@ -299,6 +353,7 @@ int main() {
     testJsonGetString();
     testConfigPath();
     testConfigRoundTrip();
+    testDiscoveryBroadcastConfig();
     testLoadConfigMissingFile();
     testAutoStartEnable();
     testAutoStartDisable();

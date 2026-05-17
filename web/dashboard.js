@@ -70,10 +70,11 @@ const BACKEND_COPY = {
 // Task 1.1 — gyro/accelerometer. Four states, derived from the controller's
 // motionCapable / motionActive / motionSink flags in /api/connections. Like
 // BACKEND_COPY above, this table owns every user-facing motion string.
-//   na    — controller has no IMU (e.g. an Xbox pad): motion not available
-//   ready — IMU present + advertised, but no motion packet received yet
-//   on    — motion streaming AND reaching the OS-level virtual gamepad
-//   dsu   — motion streaming, reaching DSU emulators only (not the virtual pad)
+//   na     — controller has no IMU (e.g. an Xbox pad): motion not available
+//   ready  — IMU present + advertised, but no motion packet received yet
+//   on     — motion streaming AND reaching the OS-level virtual gamepad
+//   nosink — motion streaming, but the virtual device exposes no IMU surface
+//            to deliver it to (Xbox-typed device, old ViGEmBus, or macOS)
 const MOTION_COPY = {
   na: {
     cls: 'motion-na',
@@ -88,12 +89,15 @@ const MOTION_COPY = {
   on: {
     cls: 'motion-on',
     text: 'Motion on',
-    title: 'Gyro / accelerometer is streaming to the virtual gamepad AND to any Cemuhook DSU emulator (udp 26760).',
+    title: 'Gyro / accelerometer is streaming to the OS-level virtual gamepad.',
   },
-  dsu: {
-    cls: 'motion-dsu',
-    text: 'Motion · DSU only',
-    title: 'Gyro / accelerometer is streaming and reaching DSU emulators (udp 26760), but NOT the OS-level virtual gamepad. The virtual device has no IMU surface — an Xbox-typed device, a ViGEmBus older than 1.22, or the macOS backend.',
+  nosink: {
+    cls: 'motion-nosink',
+    text: 'Motion not delivered',
+    title: 'Gyro / accelerometer is being captured from the controller, but it is '
+         + 'not delivered anywhere — this controller’s virtual device has no IMU '
+         + 'surface to receive it (an Xbox-typed device, a ViGEmBus older than '
+         + '1.22, or the macOS backend).',
   },
 };
 
@@ -101,7 +105,7 @@ const MOTION_COPY = {
 function motionStateId(ctrl) {
   if (!ctrl.motionCapable) return 'na';
   if (!ctrl.motionActive) return 'ready';
-  return ctrl.motionSink ? 'on' : 'dsu';
+  return ctrl.motionSink ? 'on' : 'nosink';
 }
 
 // ── Per-controller battery chip ─────────────────────────────────────────────
@@ -172,13 +176,24 @@ const TOUCHPAD_MODES = [
 ];
 
 // Per-controller touchpad chip — derived from the controller's `touchpadActive`
-// flag and the owning connection's `touchpadMode`. Mirrors MOTION_COPY's
-// { cls, text, title } shape.
+// flag, its `controllerType`, and the owning connection's `touchpadMode`.
+// Mirrors MOTION_COPY's { cls, text, title } shape.
 function touchpadChip(ctrl) {
   const mode = ctrl.touchpadMode || 'ds4';
   if (mode === 'off') {
     return { cls: 'touchpad-off', text: 'Touchpad off',
              title: 'Touchpad routing is turned off for this device — change it under Paired Devices.' };
+  }
+  // "Pad" mode forwards into the virtual DualShock 4 touchpad surface — but
+  // that surface only exists on a PlayStation-typed virtual controller. For
+  // any other controller type the samples have nowhere to land, so flag the
+  // mismatch instead of pretending the touchpad routes.
+  if (mode === 'ds4' && (ctrl.controllerType || 'xbox') !== 'playstation') {
+    return { cls: 'touchpad-nosurface', text: 'Touchpad: no surface',
+             title: 'Touchpad routing is set to "Pad", but this controller’s virtual '
+                  + 'device is not a DualShock 4 and has no touchpad surface — the '
+                  + 'samples are dropped. Switch this device to "Mouse" or "Off" '
+                  + 'under Paired Devices, or pair it as a PlayStation controller.' };
   }
   const dest = (mode === 'mouse') ? 'mouse' : 'pad';
   const destLabel = (mode === 'mouse') ? 'the host mouse pointer' : 'the virtual DualShock 4 touchpad';
@@ -217,7 +232,50 @@ function lightbarChip(ctrl) {
                 + colour.toUpperCase() + '.' };
 }
 
+// ── Inline failure feedback ─────────────────────────────────────────────────
+// Surface a dashboard action failure (disconnect, remove device, touchpad-mode
+// change) in the shared #dash-notice strip. Consistent with how the Updates
+// section flags errors — a visible inline message rather than a silent no-op.
+let dashNoticeTimer = null;
+function showDashError(msg) {
+  const el = document.getElementById('dash-notice');
+  const txt = document.getElementById('dash-notice-text');
+  if (!el || !txt) return;
+  txt.textContent = msg;          // textContent — caller strings are not trusted
+  el.classList.add('show');
+  if (dashNoticeTimer) clearTimeout(dashNoticeTimer);
+  // Auto-dismiss after 8s; the close button clears it sooner.
+  dashNoticeTimer = setTimeout(hideDashError, 8000);
+}
+function hideDashError() {
+  const el = document.getElementById('dash-notice');
+  if (el) el.classList.remove('show');
+  if (dashNoticeTimer) { clearTimeout(dashNoticeTimer); dashNoticeTimer = null; }
+}
+
+// Pull a human-readable reason out of an apiPost() result for showDashError().
+function apiErrorText(res, fallback) {
+  if (res && res.status === 0) return fallback + ' — server unreachable.';
+  const detail = (res && res.data && res.data.error) ? res.data.error : null;
+  return detail ? fallback + ' — ' + detail + '.' : fallback + '.';
+}
+
+// Guards one-time listener wiring — initDashboard() runs on every nav back to
+// /dashboard, but the elements it binds (#dash-notice-close, #device-list,
+// #connection-list) are static, so their listeners must attach exactly once.
+let dashboardListenersWired = false;
+
 function initDashboard() {
+  hideDashError();
+  if (!dashboardListenersWired) {
+    const closeBtn = document.getElementById('dash-notice-close');
+    if (closeBtn) closeBtn.addEventListener('click', hideDashError);
+    const devList = document.getElementById('device-list');
+    if (devList) devList.addEventListener('click', handleDeviceListClick);
+    const connList = document.getElementById('connection-list');
+    if (connList) connList.addEventListener('click', handleConnectionListClick);
+    dashboardListenersWired = true;
+  }
   startSSE();
   loadDevices();
   checkBackendStatus();
@@ -241,6 +299,12 @@ function startSSE() {
       updateConnections(d);
       // Capture active-connection count for the restart-confirmation modal.
       window.__activeConnectionCount = (d.connections || []).length;
+      // Keep the paired-device touchpad segmented control in sync. The SSE
+      // stream only pushes `connections`, so a touchpad-mode change made in
+      // another tab would otherwise leave the segmented control stale while
+      // the per-controller chip (SSE-fed) updates — the two would visibly
+      // disagree. Re-render the device list from /api/devices on each tick.
+      loadDevices();
     } catch (err) { /* ignore */ }
   });
 
@@ -313,6 +377,9 @@ function updateConnections(d) {
   }
 
   // ── Connections list (network sessions) ──
+  // Disconnect rides in a data-* attribute + delegated handler rather than an
+  // inline onclick — the connectionId is never spliced into a JS-string
+  // context (esc() only escapes for the HTML-attribute context).
   if (connEl) {
     connEl.innerHTML = d.connections.map(c => `
       <div class="device-item">
@@ -320,7 +387,7 @@ function updateConnections(d) {
           <span class="device-name">${esc(c.deviceName)}</span>
           <span class="device-meta">${esc(c.senderIP)} · ${c.activeControllerCount || 0} controller${(c.activeControllerCount||0) === 1 ? '' : 's'}</span>
         </div>
-        <button class="btn-icon btn-danger" onclick="disconnectConn('${esc(c.connectionId)}')" title="Disconnect"><img src="img/icons/close_x.svg" alt="Disconnect" class="emoji-icon"></button>
+        <button class="btn-icon btn-danger" type="button" data-act="disconnect" data-conn-id="${esc(c.connectionId)}" title="Disconnect"><img src="img/icons/close_x.svg" alt="Disconnect" class="emoji-icon"></button>
       </div>`).join('');
   }
 
@@ -391,7 +458,22 @@ async function toggle() {
 
 // ── Connections ─────────────────────────────────────────────────────────────
 async function disconnectConn(connId) {
-  await fetch('/api/connections/' + connId, { method: 'DELETE' });
+  const res = await api('/api/connections/' + encodeURIComponent(connId),
+                        { method: 'DELETE' });
+  if (!res.ok) {
+    showDashError(apiErrorText(res, 'Could not disconnect that connection'));
+    return;
+  }
+  hideDashError();
+  // The SSE `connections` tick repaints the list; nothing else to do.
+}
+
+// Delegated click handler for the connections list — keeps connectionIds out
+// of inline onclick= JS-string contexts.
+function handleConnectionListClick(e) {
+  const btn = e.target.closest('[data-act="disconnect"]');
+  if (!btn) return;
+  disconnectConn(btn.getAttribute('data-conn-id') || '');
 }
 
 // ── PIN ─────────────────────────────────────────────────────────────────────
@@ -411,12 +493,20 @@ async function loadDevices() {
       el.innerHTML = '<p class="hint">No paired devices</p>';
       return;
     }
+    // Build markup with no inline handlers — device ids ride in data-*
+    // attributes (HTML-escaped) and the click logic is wired via
+    // addEventListener below, so an id is never interpolated into a JS
+    // string context. Selection on the segmented control is also exposed
+    // to assistive tech via role="radio" + aria-checked (L-2).
     el.innerHTML = devs.map(d => {
       const tm = d.touchpadMode || 'ds4';
-      const seg = TOUCHPAD_MODES.map(mode =>
-        `<button class="seg-btn${tm === mode.id ? ' seg-on' : ''}" title="${esc(mode.title)}" `
-        + `onclick="setTouchpadMode('${esc(d.id)}','${mode.id}')">${esc(mode.label)}</button>`
-      ).join('');
+      const seg = TOUCHPAD_MODES.map(mode => {
+        const on = tm === mode.id;
+        return `<button class="seg-btn${on ? ' seg-on' : ''}" type="button" `
+          + `role="radio" aria-checked="${on ? 'true' : 'false'}" `
+          + `title="${esc(mode.title)}" data-act="touchpad-mode" `
+          + `data-id="${esc(d.id)}" data-mode="${esc(mode.id)}">${esc(mode.label)}</button>`;
+      }).join('');
       return `
       <div class="device-item">
         <div class="device-info">
@@ -426,23 +516,52 @@ async function loadDevices() {
         <div class="device-actions">
           <span class="seg-label" title="Where this device's DualSense / DS4 touchpad is routed on this host. Applies live — no re-pairing needed.">Touchpad</span>
           <div class="seg" role="group" aria-label="Touchpad routing">${seg}</div>
-          <button class="btn-icon btn-danger" onclick="removeDevice('${esc(d.id)}')" title="Remove"><img src="img/icons/close_x.svg" alt="Remove" class="emoji-icon"></button>
+          <button class="btn-icon btn-danger" type="button" data-act="remove-device" data-id="${esc(d.id)}" title="Remove"><img src="img/icons/close_x.svg" alt="Remove" class="emoji-icon"></button>
         </div>
       </div>`;
     }).join('');
   } catch (e) { /* ignore */ }
 }
 
+// Single delegated click handler for the paired-device list — keeps device
+// ids out of inline onclick= JS-string contexts (see esc() note: it is an
+// HTML escaper, not a JS-string escaper).
+function handleDeviceListClick(e) {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-id') || '';
+  if (btn.dataset.act === 'remove-device') {
+    removeDevice(id);
+  } else if (btn.dataset.act === 'touchpad-mode') {
+    if (btn.classList.contains('seg-on')) return;  // already selected
+    setTouchpadMode(id, btn.getAttribute('data-mode') || '');
+  }
+}
+
 async function removeDevice(id) {
-  await apiPost('/api/devices/remove', { id });
+  const res = await apiPost('/api/devices/remove', { id });
+  if (!res.ok) {
+    showDashError(apiErrorText(res, 'Could not remove that paired device'));
+    return;
+  }
+  hideDashError();
   loadDevices();
 }
 
 // Set a paired device's touchpad routing mode. The server persists it and
 // hot-applies it to any live connection, so the change needs no re-pairing.
 async function setTouchpadMode(id, mode) {
-  const { ok } = await apiPost('/api/devices/touchpad-mode', { id, mode });
-  if (ok) loadDevices();
+  const res = await apiPost('/api/devices/touchpad-mode', { id, mode });
+  if (!res.ok) {
+    // A failed POST leaves the clicked segment un-highlighted — surface why,
+    // then re-render so the segmented control snaps back to the server's
+    // actual (unchanged) mode rather than sitting in a half-applied look.
+    showDashError(apiErrorText(res, 'Could not change touchpad routing'));
+    loadDevices();
+    return;
+  }
+  hideDashError();
+  loadDevices();
 }
 
 // ── Backend status ──────────────────────────────────────────────────────────

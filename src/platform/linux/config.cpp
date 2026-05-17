@@ -18,17 +18,28 @@
 #include <climits>
 
 // ── JSON string escaping ────────────────────────────────────────────────────
+// Escapes the JSON structural characters plus every C0 control byte (< 0x20).
+// A raw control byte — a \r or \t buried in a device name, say — is invalid
+// inside a JSON string and would corrupt the config file, so anything below
+// 0x20 that isn't \n is emitted as a \uXXXX escape.
 std::string jsonEscape(const std::string& s) {
+    static const char* kHex = "0123456789abcdef";
     std::string out;
-    for (char c : s) {
-        if (c == '"')
+    for (char ch : s) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        if (c == '"') {
             out += "\\\"";
-        else if (c == '\\')
+        } else if (c == '\\') {
             out += "\\\\";
-        else if (c == '\n')
+        } else if (c == '\n') {
             out += "\\n";
-        else
-            out += c;
+        } else if (c < 0x20) {
+            out += "\\u00";
+            out += kHex[(c >> 4) & 0xF];
+            out += kHex[c & 0xF];
+        } else {
+            out += ch;
+        }
     }
     return out;
 }

@@ -330,8 +330,8 @@ bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
     dev.fd = fd;
     dev.ds4 = true;
     // Second uinput node for the DualShock 4 IMU. Best-effort: if it fails
-    // the gamepad still works and motion is still cached + DSU-re-emitted by
-    // the SessionService — only the local evdev motion node is missing.
+    // the gamepad still works and motion is still cached by the
+    // SessionService — only the local evdev motion node is missing.
     dev.motionFd = openMotionUinputDevice(serial);
     // Third uinput node for the DualShock 4 touchpad (Task 1.3). Also
     // best-effort — a failure just means TOUCHPAD_MODE_DS4 has nowhere to

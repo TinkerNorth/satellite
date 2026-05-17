@@ -44,7 +44,20 @@ void discoveryThread() {
     // logged state so each transition is logged exactly once.
     bool announced = false;
     while (g_appRunning) {
-        const bool enabled = g_config.discoveryBroadcastEnabled;
+        // Read discoveryBroadcastEnabled under g_configMtx — the webserver
+        // mutates it from POST /api/config under the same lock. Snapshot it
+        // (plus the ports, which the same handler can change) into locals so
+        // the rest of the loop iteration works off a consistent view.
+        bool enabled = false;
+        int discPort = 0, udpPort = 0, pairPort = 0, webPort = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            enabled = g_config.discoveryBroadcastEnabled;
+            discPort = g_config.discPort;
+            udpPort = g_config.udpPort;
+            pairPort = g_config.pairPort;
+            webPort = g_config.webPort;
+        }
         if (enabled != announced) {
             logMsg(LogLevel::INFO, "discovery",
                    enabled ? "Legacy UDP broadcast beacon enabled"
@@ -53,14 +66,14 @@ void discoveryThread() {
         }
 
         if (enabled) {
-            dest.sin_port = htons((uint16_t)g_config.discPort);
+            dest.sin_port = htons((uint16_t)discPort);
 
             // Build beacon JSON
             char beacon[512];
             snprintf(
                 beacon, sizeof(beacon),
                 R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d})",
-                hostname, g_config.udpPort, g_config.pairPort, g_config.webPort);
+                hostname, udpPort, pairPort, webPort);
 
             sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
                    sizeof(dest));

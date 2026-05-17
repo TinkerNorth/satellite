@@ -32,7 +32,6 @@ etc.) without hardcoding or guessing.
 | 9878  | TCP pairing                    | `pairPort`      |
 | 9879  | UDP discovery (legacy beacon)  | `discPort`      |
 | 5353  | mDNS (`_satellite._udp.local.`) | (RFC 6762 fixed) |
-| 26760 | Cemuhook DSU server            | `dsuPort`       |
 
 ## mDNS / Bonjour Service Discovery
 

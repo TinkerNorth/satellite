@@ -247,6 +247,22 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16
     ctrl.lightbarG = 0;
     ctrl.lightbarB = 0;
     ctrl.lastLightbarValid = false;
+    // Clear the cached sender→satellite streams too. The Controller struct
+    // persists in the connection's array across a remove/re-add of the same
+    // slot, so a stale lastMotion/lastBattery/lastTouchpad would otherwise
+    // show phantom "active" state in /api/connections and — for
+    // TOUCHPAD_MODE_MOUSE — make the first post-readd sample compute a delta
+    // against a pre-readd finger position, jumping the cursor. The touchpad
+    // sub-pixel remainder is reset for the same reason.
+    ctrl.lastMotion = MotionReport{};
+    ctrl.lastMotionValid = false;
+    ctrl.motionSinkActive = false;
+    ctrl.lastBattery = BatteryReport{};
+    ctrl.lastBatteryValid = false;
+    ctrl.lastTouchpad = TouchpadReport{};
+    ctrl.lastTouchpadValid = false;
+    ctrl.touchpadMouseRemX = 0.0f;
+    ctrl.touchpadMouseRemY = 0.0f;
     conn.activeControllerCount++;
 
     log_.logMsg(LogLevel::INFO, "service",
@@ -392,10 +408,17 @@ bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const Mot
 
     // The backend may or may not have an IMU surface; the default IGamepadPort
     // impl returns false. We deliberately don't treat that as an error — motion
-    // is best-effort, and the cache still serves the web UI + DSU server.
-    // The return value records whether the sample reached the virtual device's
-    // IMU surface, surfaced as `motionSink` in the web UI so operators can see
-    // "reaching the virtual pad" vs "DSU-only".
+    // is best-effort, and the cache still serves the web UI.
+    //
+    // We intentionally do NOT consult ctrl.motionCapable() (the CAP_MOTION
+    // bit) here: the protocol says motion is best-effort and the receiver
+    // MUST still accept MSG_MOTION from a dish that never advertised the
+    // capability. CAP_MOTION is informational only — surfaced as
+    // `motionCapable` in the web UI — and is not a gate on this path.
+    //
+    // The return value records whether the sample reached the virtual
+    // device's IMU surface, surfaced as `motionSink` in the web UI so
+    // operators can see "reaching the virtual pad" vs "cached only".
     const bool delivered = backend_.submitMotion(ctrl.serialNo, report);
     ctrl.motionSinkActive = delivered;
     return delivered;
@@ -431,9 +454,16 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         // is *continuously* down across both frames: a fresh touch-down
         // re-anchors the origin (so the cursor doesn't jump) and a lift emits
         // no motion. The clicky-pad button always maps to mouse button 1.
+        //
+        // The trackingId must also match: when one finger lifts the hardware
+        // compacts the remaining contact down into slot 0 with a *new*
+        // trackingId, so "finger0 active in both frames" can still be two
+        // different physical fingers. Without the id check that compaction
+        // teleports the cursor.
         int dx = 0;
         int dy = 0;
-        const bool continuous = prevValid && prev.finger0.active && report.finger0.active;
+        const bool continuous = prevValid && prev.finger0.active && report.finger0.active &&
+                                prev.finger0.trackingId == report.finger0.trackingId;
         if (continuous) {
             const float fx =
                 static_cast<float>(report.finger0.x - prev.finger0.x) * TOUCHPAD_MOUSE_SENSITIVITY +
@@ -617,39 +647,6 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
         snap.connections.push_back(std::move(cs));
     }
     return snap;
-}
-
-std::array<SessionService::MotionSlot, 4> SessionService::getMotionSlotsForDsu() const {
-    std::lock_guard<std::mutex> lk(mtx_);
-    std::array<MotionSlot, 4> out{};
-
-    // Deterministic slot assignment: iterate connections in ascending-token
-    // order. connections_ is an unordered_map whose iteration order is not
-    // stable across runs (or across rehashes within a run) — without this
-    // sort a DSU client's slot↔controller mapping could shuffle whenever a
-    // controller is added or the satellite restarts.
-    std::vector<uint32_t> tokens;
-    tokens.reserve(connections_.size());
-    for (const auto& [tok, conn] : connections_) {
-        (void)conn;
-        tokens.push_back(tok);
-    }
-    std::sort(tokens.begin(), tokens.end());
-
-    int slot = 0;
-    for (uint32_t tok : tokens) {
-        if (slot >= 4) break;
-        const Connection& conn = connections_.at(tok);
-        for (const auto& ctrl : conn.controllers) {
-            if (slot >= 4) break;
-            if (!ctrl.active) continue;
-            out[slot].occupied = true;
-            out[slot].motion = ctrl.lastMotion;
-            out[slot].hasMotion = ctrl.lastMotionValid;
-            ++slot;
-        }
-    }
-    return out;
 }
 
 bool SessionService::isDeviceConnected(const std::string& deviceId) const {

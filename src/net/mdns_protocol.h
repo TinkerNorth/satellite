@@ -78,11 +78,44 @@ struct Question {
     bool unicastResponse = false; // QU bit (high bit of class)
 };
 
-// Parse a complete mDNS packet. Returns true and fills `header` / `questions`
-// on success. We deliberately ignore answer / authority / additional records
-// in the request — the spec lets responders use them for known-answer
-// suppression, but for our tiny service that's premature optimisation.
+// One resource record lifted out of a packet's answer section. mDNS queries
+// may carry answers the querier already holds — the "Known-Answer" list of
+// RFC 6762 §7.1. We only need the identity (name + type) plus the remaining
+// TTL the querier reported, so a responder can decide whether to suppress a
+// record from its reply. rdata is intentionally not surfaced — Known-Answer
+// suppression keys on name+type+TTL only.
+struct Answer {
+    std::string name; // dot-separated, trailing dot included
+    uint16_t type = 0;
+    uint16_t cls = 0;   // cache-flush bit masked off, mirroring Question::cls
+    uint32_t ttl = 0;   // remaining TTL the querier reports for this record
+};
+
+// Parse an mDNS packet's header + question section. Returns true and fills
+// `header` / `questions` on success. The answer / authority / additional
+// sections are NOT walked: `header.anCount` is reported verbatim but the
+// records themselves are ignored, so a packet whose ANCOUNT overstates the
+// records actually present still parses. Use this overload when Known-Answer
+// suppression (RFC 6762 §7.1) is not needed; otherwise use the five-argument
+// overload below, which validates and surfaces the answer section.
 bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Question>& questions);
+
+// As above, but also surfaces the answer-section resource records into
+// `knownAnswers` so the responder can perform Known-Answer suppression
+// (RFC 6762 §7.1). Authority / additional records are still skipped — only
+// the answer section carries a querier's Known-Answer list. RDATA bytes are
+// walked over (using the record's RDLENGTH) but not retained. Returns true
+// and fills all three out-params on success; false on a malformed packet.
+bool parsePacket(const uint8_t* data, size_t len, Header& header,
+                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers);
+
+// Decide, for a single record we would emit, whether RFC 6762 §7.1
+// Known-Answer suppression applies: true iff `knownAnswers` contains a record
+// with the same `recordName` (case-insensitive) and `recordType` whose
+// reported TTL is at least half of `ourTtl`. A querier that already holds a
+// sufficiently-fresh copy does not need us to repeat it.
+bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std::string& recordName,
+                             uint16_t recordType, uint32_t ourTtl);
 
 // True iff `question` targets the satellite service: a PTR or ANY record
 // whose name matches `_satellite._udp.local.`. DNS names are case-insensitive
@@ -116,7 +149,14 @@ bool questionMatchesService(const Question& question);
 // down, so caches on the segment flush promptly instead of holding a dead
 // entry until the normal TTL expires.
 //
-// Returns the number of bytes written, or 0 if `outCap` is too small.
+// Set the `suppress*` flags to omit individual records from the response.
+// This is how the responder applies RFC 6762 §7.1 Known-Answer suppression:
+// a record the querier already holds (with a fresh-enough TTL) is dropped
+// from the reply. ANCOUNT is adjusted to match. If every record is
+// suppressed, encodeResponse returns 0 and the caller sends nothing.
+//
+// Returns the number of bytes written, or 0 if `outCap` is too small (or
+// every record was suppressed).
 struct ResponseInputs {
     std::string instanceName; // e.g. "satellite-laptop"
     std::string hostName;     // e.g. "laptop" (the .local. suffix is appended internally)
@@ -126,9 +166,40 @@ struct ResponseInputs {
     std::vector<std::pair<std::string, std::string>> txtPairs;
     const uint8_t* ipv4 = nullptr; // 4 bytes, network order; or nullptr
     bool goodbye = false;          // true → every RR carries TTL 0 (service retraction)
+    // RFC 6762 §7.1 Known-Answer suppression — drop a record the querier
+    // already knows. The A record is also implicitly suppressed when `ipv4`
+    // is null; `suppressA` lets the responder drop it even when an address
+    // is available.
+    bool suppressPtr = false;
+    bool suppressSrv = false;
+    bool suppressTxt = false;
+    bool suppressA = false;
 };
 
 size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const ResponseInputs& inputs);
+
+// Encode an unsolicited announcement (RFC 6762 §8.3): the full PTR + SRV +
+// TXT (+ A) answer set the responder multicasts when it first comes up, so
+// that senders already running learn about the service without having to
+// re-query. The wire form is identical to a query response — QR=1, AA=1,
+// cache-flush set on the unique SRV/TXT/A records and clear on the shared
+// PTR — the only conceptual difference is that it answers no specific query,
+// so the transaction ID is fixed at 0. `inputs.goodbye` and the `suppress*`
+// flags must not be set for an announcement; they are ignored here.
+//
+// Returns the number of bytes written, or 0 if `outCap` is too small.
+size_t encodeAnnouncement(uint8_t* out, size_t outCap, const ResponseInputs& inputs);
+
+// Encode a probe query (RFC 6762 §8.1): a single question of type ANY for
+// our instance FQDN `<instanceName>._satellite._udp.local.`, asked before
+// announcing so a name clash on the segment can be detected. The question is
+// sent with the QU (unicast-response) bit clear — probes are multicast — and
+// QDCOUNT is 1 with all other counts 0. (We send a minimal probe: the §8.1
+// "proposed records in the authority section" tie-break is intentionally not
+// implemented; see mdns_responder.cpp.)
+//
+// Returns the number of bytes written, or 0 if `outCap` is too small.
+size_t encodeProbeQuery(uint8_t* out, size_t outCap, const std::string& instanceName);
 
 // ── Helpers exposed for unit tests ──────────────────────────────────────────
 

@@ -99,9 +99,14 @@ size_t readDnsName(const uint8_t* packet, size_t packetLen, size_t offset, std::
 
 // ── Packet parsing ──────────────────────────────────────────────────────────
 
-bool parsePacket(const uint8_t* data, size_t len, Header& header,
-                 std::vector<Question>& questions) {
-    if (len < 12) return false;
+namespace {
+
+// Parse the 12-byte header into `header` and the QDCOUNT questions into
+// `questions`, advancing `pos` to the first byte after the question section.
+// Returns true on success. Shared by both parsePacket overloads.
+bool parseHeaderAndQuestions(const uint8_t* data, size_t len, Header& header,
+                             std::vector<Question>& questions, size_t& pos) {
+    if (data == nullptr || len < 12) return false;
     header.id = readBE16(data + 0);
     header.flags = readBE16(data + 2);
     header.qdCount = readBE16(data + 4);
@@ -109,7 +114,7 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
     header.nsCount = readBE16(data + 8);
     header.arCount = readBE16(data + 10);
 
-    size_t pos = 12;
+    pos = 12;
     questions.clear();
     for (uint16_t i = 0; i < header.qdCount; ++i) {
         Question q;
@@ -125,6 +130,74 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
         questions.push_back(std::move(q));
     }
     return true;
+}
+
+} // namespace
+
+bool parsePacket(const uint8_t* data, size_t len, Header& header,
+                 std::vector<Question>& questions) {
+    // 4-arg overload: header + questions only. The answer / authority /
+    // additional sections are deliberately not walked — callers that need
+    // the querier's Known-Answer list use the 5-arg overload. A non-zero
+    // ANCOUNT with no records actually present is therefore tolerated here.
+    size_t pos = 0;
+    return parseHeaderAndQuestions(data, len, header, questions, pos);
+}
+
+bool parsePacket(const uint8_t* data, size_t len, Header& header,
+                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers) {
+    size_t pos = 0;
+    knownAnswers.clear();
+    if (!parseHeaderAndQuestions(data, len, header, questions, pos)) return false;
+
+    // Answer section — the querier's Known-Answer list (RFC 6762 §7.1). Each
+    // record is name + type(2) + class(2) + ttl(4) + rdlength(2) + rdata.
+    // We retain name/type/class/ttl and skip the rdata bytes wholesale. A
+    // malformed record (name decode failure, or an rdlength that overruns
+    // the packet) fails the parse so a bad packet can't be acted on.
+    for (uint16_t i = 0; i < header.anCount; ++i) {
+        Answer a;
+        const size_t consumed = readDnsName(data, len, pos, a.name);
+        if (consumed == 0) return false;
+        pos += consumed;
+        if (pos + 10 > len) return false;
+        a.type = readBE16(data + pos);
+        a.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
+        a.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
+                (static_cast<uint32_t>(data[pos + 5]) << 16) |
+                (static_cast<uint32_t>(data[pos + 6]) << 8) |
+                static_cast<uint32_t>(data[pos + 7]);
+        const uint16_t rdlen = readBE16(data + pos + 8);
+        pos += 10;
+        if (pos + rdlen > len) return false; // rdata overruns the packet
+        pos += rdlen;                        // skip rdata — identity is name+type
+        knownAnswers.push_back(std::move(a));
+    }
+    return true;
+}
+
+bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std::string& recordName,
+                             uint16_t recordType, uint32_t ourTtl) {
+    // Case-insensitive name compare — DNS labels are case-insensitive
+    // (RFC 1035 §2.3.3); Bonjour/Avahi may capitalise differently.
+    auto nameEqual = [](const std::string& x, const std::string& y) {
+        if (x.size() != y.size()) return false;
+        for (size_t i = 0; i < x.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(x[i])) !=
+                std::tolower(static_cast<unsigned char>(y[i])))
+                return false;
+        }
+        return true;
+    };
+    for (const auto& a : knownAnswers) {
+        if (a.type != recordType) continue;
+        if (!nameEqual(a.name, recordName)) continue;
+        // RFC 6762 §7.1: suppress only if the querier's copy is at least
+        // half as fresh as ours. A querier reporting a near-expired TTL
+        // still wants the record refreshed. Compare without overflow.
+        if (a.ttl >= ourTtl / 2) return true;
+    }
+    return false;
 }
 
 bool questionMatchesService(const Question& question) {
@@ -196,9 +269,18 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
     const uint32_t ttlService = inputs.goodbye ? 0u : TTL_SERVICE;
     const uint32_t ttlHost = inputs.goodbye ? 0u : TTL_HOST;
 
-    // We always emit at minimum PTR + SRV + TXT (3 records). A record is
-    // optional and only included when caller supplied an IPv4.
-    const uint16_t answerCount = inputs.ipv4 ? 4 : 3;
+    // Which records actually go on the wire. The PTR/SRV/TXT are normally
+    // all present; any may be dropped by RFC 6762 §7.1 Known-Answer
+    // suppression. The A record additionally requires an IPv4 address.
+    const bool emitPtr = !inputs.suppressPtr;
+    const bool emitSrv = !inputs.suppressSrv;
+    const bool emitTxt = !inputs.suppressTxt;
+    const bool emitA = (inputs.ipv4 != nullptr) && !inputs.suppressA;
+    const uint16_t answerCount = static_cast<uint16_t>((emitPtr ? 1 : 0) + (emitSrv ? 1 : 0) +
+                                                       (emitTxt ? 1 : 0) + (emitA ? 1 : 0));
+    // Every record suppressed → there is nothing to say; signal "send
+    // nothing" so the responder stays silent (RFC 6762 §7.1).
+    if (answerCount == 0) return 0;
 
     // Header.
     size_t pos = 0;
@@ -220,7 +302,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
     pos += 2;
 
     // PTR record: serviceType → instanceFqdn.
-    {
+    if (emitPtr) {
         auto c = writeRrHeader(out, outCap, pos, serviceType, TYPE_PTR, CLASS_IN, ttlService);
         if (!c.ok) return 0;
         const size_t n = writeDnsName(out + pos, outCap - pos, instanceFqdn);
@@ -229,7 +311,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
         finalizeRr(out, c, pos);
     }
     // SRV record: instanceFqdn → priority/weight/port/hostFqdn.
-    {
+    if (emitSrv) {
         auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_SRV, CLASS_IN | CACHE_FLUSH_BIT,
                                ttlHost);
         if (!c.ok) return 0;
@@ -245,7 +327,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
     }
     // TXT record: one length-prefixed "key=value" per entry. Empty TXT is
     // encoded as a single zero-length string per DNS-SD §6.1.
-    {
+    if (emitTxt) {
         auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_TXT, CLASS_IN | CACHE_FLUSH_BIT,
                                ttlHost);
         if (!c.ok) return 0;
@@ -265,7 +347,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
         finalizeRr(out, c, pos);
     }
     // Optional A record for the host.
-    if (inputs.ipv4 != nullptr) {
+    if (emitA) {
         auto c =
             writeRrHeader(out, outCap, pos, hostFqdn, TYPE_A, CLASS_IN | CACHE_FLUSH_BIT, ttlHost);
         if (!c.ok) return 0;
@@ -274,6 +356,54 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
         pos += 4;
         finalizeRr(out, c, pos);
     }
+    return pos;
+}
+
+size_t encodeAnnouncement(uint8_t* out, size_t outCap, const ResponseInputs& inputs) {
+    // RFC 6762 §8.3 — an announcement is wire-identical to a query response:
+    // QR=1, AA=1, the full PTR+SRV+TXT(+A) answer set with the cache-flush
+    // bit set on the unique SRV/TXT/A and clear on the shared PTR. It simply
+    // answers no specific query, so the transaction ID is 0 and no record is
+    // suppressed. Reuse encodeResponse so the two paths can never diverge.
+    ResponseInputs ann = inputs;
+    ann.goodbye = false;
+    ann.suppressPtr = false;
+    ann.suppressSrv = false;
+    ann.suppressTxt = false;
+    ann.suppressA = false;
+    return encodeResponse(out, outCap, /*txId=*/0, ann);
+}
+
+size_t encodeProbeQuery(uint8_t* out, size_t outCap, const std::string& instanceName) {
+    // RFC 6762 §8.1 — a probe is an ordinary query carrying a single ANY
+    // question for the name we intend to claim. It is multicast, so the QU
+    // (unicast-response) bit stays clear. We send the minimal form: no
+    // proposed records in the authority section (the §8.1 simultaneous-probe
+    // tie-break is deliberately out of scope — see mdns_responder.cpp).
+    if (out == nullptr || outCap < 12) return 0;
+    const std::string instanceFqdn = instanceName + "." + std::string(SERVICE_TYPE_DOMAIN);
+
+    size_t pos = 0;
+    putBE16(out + pos, 0); // transaction ID — 0 for mDNS
+    pos += 2;
+    putBE16(out + pos, 0); // flags — a plain query (QR=0)
+    pos += 2;
+    putBE16(out + pos, 1); // QDCOUNT
+    pos += 2;
+    putBE16(out + pos, 0); // ANCOUNT
+    pos += 2;
+    putBE16(out + pos, 0); // NSCOUNT
+    pos += 2;
+    putBE16(out + pos, 0); // ARCOUNT
+    pos += 2;
+
+    const size_t n = writeDnsName(out + pos, outCap - pos, instanceFqdn);
+    if (n == 0) return 0;
+    pos += n;
+    if (pos + 4 > outCap) return 0;
+    putBE16(out + pos, TYPE_ANY);     // ask for everything held under this name
+    putBE16(out + pos + 2, CLASS_IN); // QU bit clear → multicast response
+    pos += 4;
     return pos;
 }
 

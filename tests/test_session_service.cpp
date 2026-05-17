@@ -1336,6 +1336,84 @@ static void test_controllerRemove_thenReaddRetainsTypeFromSameSlot() {
     EXPECT_EQ(vigem.pluginDS4Calls, 2); // 1 from replug + 1 from re-add
 }
 
+static void test_controllerReAdd_clearsCachedSenderStreams() {
+    TEST("Controller re-add — clears stale motion / battery / touchpad cache");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    // Populate every cached sender→satellite stream on controller 0.
+    MotionReport m;
+    m.gyroX = 4242;
+    svc.handleMotionData(r.token, 0, m);
+    BatteryReport b;
+    b.level = 80;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    svc.handleBatteryUpdate(r.token, 0, b);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    tp.finger0.x = 9000;
+    svc.handleTouchpadData(r.token, 0, tp);
+
+    // Sanity: the snapshot reflects the populated caches before the re-add.
+    {
+        auto pre = svc.getConnectionsSnapshot();
+        EXPECT(pre.connections[0].controllers[0].motionActive);
+        EXPECT(pre.connections[0].controllers[0].batteryKnown);
+        EXPECT(pre.connections[0].controllers[0].touchpadActive);
+    }
+
+    // Remove + re-add the same slot. The Controller struct persists in the
+    // connection's array, so without an explicit clear the stale caches would
+    // leak into the fresh controller.
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0);
+
+    auto post = svc.getConnectionsSnapshot();
+    const auto& ci = post.connections[0].controllers[0];
+    EXPECT(!ci.motionActive);   // lastMotionValid cleared
+    EXPECT(!ci.batteryKnown);   // lastBatteryValid cleared
+    EXPECT(!ci.touchpadActive); // lastTouchpadValid cleared
+    EXPECT(!ci.motionSink);     // motionSinkActive cleared
+}
+
+static void test_controllerReAdd_touchpadMouseNoJumpAfterReconnect() {
+    TEST("Controller re-add — TOUCHPAD_MODE_MOUSE does not jump the cursor on reconnect");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // A finger contact far from the origin establishes a stale lastTouchpad.
+    TouchpadReport far;
+    far.finger0.active = true;
+    far.finger0.x = 25000;
+    far.finger0.y = 25000;
+    svc.handleTouchpadData(r.token, 0, far);
+
+    // Reconnect the controller, then send a fresh contact. If the stale
+    // lastTouchpad survived, the first post-readd sample would compute a huge
+    // delta against the pre-readd finger position and teleport the cursor.
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0);
+
+    TouchpadReport fresh;
+    fresh.finger0.active = true;
+    fresh.finger0.x = -25000;
+    fresh.finger0.y = -25000;
+    svc.handleTouchpadData(r.token, 0, fresh);
+    // First contact after re-add re-anchors — no movement emitted.
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+}
+
 // ── MSG_CONTROLLER_TYPE protocol constant ───────────────────────────────────
 
 static void test_msgControllerType_constant() {
@@ -1658,8 +1736,8 @@ static void test_motionReport_wireSize() {
     EXPECT_EQ(static_cast<int>(sizeof(MotionReport)), 16);
 }
 
-static void test_motionScaleConstants_match_DSU() {
-    TEST("MOTION scale constants — match DSU convention (±2000 deg/s, ±4 g)");
+static void test_motionScaleConstants_fullScale() {
+    TEST("MOTION scale constants — match the wire full-scale (±2000 deg/s, ±4 g)");
     // The exact float comparison is fine because both sides are derived from
     // the same compile-time constant — there is no rounding step that could
     // diverge them.
@@ -2278,6 +2356,41 @@ static void test_handleTouchpadData_mouseModeLiftResetsAnchor() {
     EXPECT_EQ(vigem.lastMouseDx, 0); // discontinuous — no teleport
 }
 
+static void test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity() {
+    TEST("handleTouchpadData — MOUSE mode: a finger-0 trackingId change emits no jump");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // Finger 0 is "active" in both frames, but with different tracking IDs:
+    // this is what slot compaction looks like when the original finger 0
+    // lifts and finger 1 is compacted down into slot 0. The two samples are
+    // two *different* physical fingers, so no cursor delta must be emitted.
+    TouchpadReport a;
+    a.finger0.active = true;
+    a.finger0.trackingId = 5;
+    a.finger0.x = 0;
+    svc.handleTouchpadData(r.token, 0, a);
+
+    TouchpadReport b;
+    b.finger0.active = true;
+    b.finger0.trackingId = 6; // compacted: a different finger now in slot 0
+    b.finger0.x = 20000;      // far from sample a
+    svc.handleTouchpadData(r.token, 0, b);
+    EXPECT_EQ(vigem.lastMouseDx, 0); // trackingId differs → not continuous
+
+    // A third sample with the same trackingId as b *is* continuous with it.
+    TouchpadReport c;
+    c.finger0.active = true;
+    c.finger0.trackingId = 6;
+    c.finger0.x = 30000;
+    svc.handleTouchpadData(r.token, 0, c);
+    EXPECT(vigem.lastMouseDx > 0); // same finger → delta emitted
+}
+
 static void test_setTouchpadMode_hotApplies() {
     TEST("setTouchpadMode — hot-swaps routing on a live connection (no re-pair)");
     MockViGem vigem;
@@ -2596,6 +2709,8 @@ int main() {
     test_closeAllSessions_withMixedTypes();
     test_staleReplacement_unplugsDS4Controller();
     test_controllerRemove_thenReaddRetainsTypeFromSameSlot();
+    test_controllerReAdd_clearsCachedSenderStreams();
+    test_controllerReAdd_touchpadMouseNoJumpAfterReconnect();
 
     // ── Protocol constants ──
     test_msgControllerType_constant();
@@ -2618,7 +2733,7 @@ int main() {
     // ── Motion (sender → satellite, IMU forwarding) ──
     test_msgMotion_constant();
     test_motionReport_wireSize();
-    test_motionScaleConstants_match_DSU();
+    test_motionScaleConstants_fullScale();
     test_handleMotionData_forwardsToBackend();
     test_handleMotionData_cachesEvenWhenBackendDeclines();
     test_handleMotionData_invalidToken();
@@ -2659,6 +2774,7 @@ int main() {
     test_handleTouchpadData_mouseModeContinuousDelta();
     test_handleTouchpadData_mouseModeSubPixelRemainder();
     test_handleTouchpadData_mouseModeLiftResetsAnchor();
+    test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity();
     test_setTouchpadMode_hotApplies();
     test_setTouchpadMode_unknownDeviceAndBadMode();
 

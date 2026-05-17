@@ -139,15 +139,16 @@ struct RumbleReport {
 };
 
 // ── Motion report (sender → satellite, gyro + accel from a real IMU) ────────
-// Wire scale matches the Cemuhook DSU convention so we can re-emit on
-// 127.0.0.1:26760 in a follow-up PR without per-axis renormalisation:
+// Wire scale uses a fixed full-scale convention so no per-axis
+// renormalisation is needed downstream:
 //
 //   gyro  axes: deg/s, ±2000 deg/s full scale → int16 LSB = 2000 / 32767 deg/s
 //   accel axes: g,     ±4 g     full scale → int16 LSB = 4    / 32767 g
 //
 // Axis frame is right-handed, +X = right, +Y = up, +Z = toward the player
-// (same as DSU; same as Sony's DualSense IMU after applying the manufacturer
-// rotation matrix). Senders MUST apply that matrix; receivers do not rotate.
+// (the same convention as Sony's DualSense IMU after applying the
+// manufacturer rotation matrix). Senders MUST apply that matrix; receivers
+// do not rotate.
 //
 // `timestampDeltaUs` is microseconds elapsed since the previous MOTION packet
 // for the same controller on the same connection. The first packet uses 0.
@@ -333,7 +334,7 @@ struct Controller {
     uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
     // Capability word from MSG_CONTROLLER_ADD (CAP_* bits). 0 when the dish is
     // pre-cap-aware. `motionCapable()` / `lightbarCapable()` are the convenience
-    // accessors the DSU server / web UI / return-path routing use.
+    // accessors the web UI / return-path routing use.
     uint16_t caps = 0;
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }
     bool lightbarCapable() const { return (caps & CAP_LIGHTBAR) != 0; }
@@ -349,10 +350,10 @@ struct Controller {
     bool lastMotionValid = false;
     // True when the most recent motion sample was actually delivered to the
     // virtual-gamepad backend's IMU surface (ViGEm DS4 extended report /
-    // Linux uinput motion node). False means motion is still reaching
-    // emulators via the DSU server but not the OS-level virtual pad —
-    // e.g. an Xbox-typed device, a ViGEmBus too old for the extended
-    // report, or the inert macOS backend. Drives the web UI's motion state.
+    // Linux uinput motion node). False means motion is captured & cached
+    // but NOT delivered to any IMU surface — e.g. an Xbox-typed virtual
+    // device, a ViGEmBus too old for the extended report, or the inert
+    // macOS backend. Drives the web UI's motion state.
     bool motionSinkActive = false;
     // Most recent battery sample (sender → satellite). Surfaced in the
     // web UI's connection list and (eventually) forwarded to the virtual
@@ -454,14 +455,6 @@ struct Config {
     // skipVersion:     a version the user explicitly told us to skip.
     //                  We won't notify again until something newer
     //                  than this appears.
-    // Cemuhook DSU server config (Task 2.1). The server lets emulators on
-    // the satellite host (or the LAN, when dsuBindAddr is opened up)
-    // subscribe to forwarded motion data. Default-on but loopback-only —
-    // opening 0.0.0.0 is a deliberate operator opt-in.
-    bool dsuEnabled = true;
-    int dsuPort = 26760;
-    std::string dsuBindAddr = "127.0.0.1";
-
     std::string updateChannel = UPDATE_CHANNEL_STABLE;
     bool autoCheck = true;
     bool autoDownload = false;

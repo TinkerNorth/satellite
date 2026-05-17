@@ -36,6 +36,64 @@ static std::string buildBackendJson() {
     return json;
 }
 
+// ── JSON value helpers (key-scoped, body-substring-safe) ─────────────────────
+// The codebase's shared JSON helper (config.h) only exposes jsonGetString.
+// These two add bounded boolean / integer reads for request bodies. Unlike a
+// naive body.find("\"key\":true"), they locate the *quoted* key, step past the
+// colon, and inspect only the value token that immediately follows — so a
+// value cannot false-positive on a substring elsewhere in the body (e.g. a
+// device name, or one key's literal appearing inside another's value).
+//
+// Returns false when the key is absent or malformed; *out is left untouched.
+
+// Find the start of a top-level-ish key's value: index just past the ':'.
+static bool jsonValueStart(const std::string& json, const std::string& key, size_t& out) {
+    std::string needle = "\"" + key + "\"";
+    size_t pos = 0;
+    for (;;) {
+        pos = json.find(needle, pos);
+        if (pos == std::string::npos) return false;
+        // Reject a match that is itself the tail of a longer key, e.g. key
+        // "autoCheck" must not match inside "\"xautoCheck\"". The opening
+        // quote of `needle` already pins the left edge; nothing more needed
+        // because the leading '"' cannot be part of an identifier.
+        size_t colon = json.find_first_not_of(" \t\r\n", pos + needle.size());
+        if (colon == std::string::npos || json[colon] != ':') {
+            pos += needle.size();
+            continue;  // "key" not followed by ':' — keep searching
+        }
+        out = colon + 1;
+        return true;
+    }
+}
+
+static bool jsonGetBoolKeyed(const std::string& json, const std::string& key, bool* out) {
+    size_t vs;
+    if (!jsonValueStart(json, key, vs)) return false;
+    size_t t = json.find_first_not_of(" \t\r\n", vs);
+    if (t == std::string::npos) return false;
+    if (json.compare(t, 4, "true") == 0) { *out = true; return true; }
+    if (json.compare(t, 5, "false") == 0) { *out = false; return true; }
+    return false;  // not a boolean literal — treat as absent
+}
+
+static bool jsonGetIntKeyed(const std::string& json, const std::string& key, long* out) {
+    size_t vs;
+    if (!jsonValueStart(json, key, vs)) return false;
+    size_t t = json.find_first_not_of(" \t\r\n", vs);
+    if (t == std::string::npos) return false;
+    // Require a numeric value token — reject strings/objects/garbage so a
+    // non-numeric value can't be silently coerced to 0 by atoi.
+    if (json[t] != '-' && (json[t] < '0' || json[t] > '9')) return false;
+    char* end = nullptr;
+    long v = strtol(json.c_str() + t, &end, 10);
+    if (end == json.c_str() + t) return false;  // no digits consumed
+    // Overflow (strtol → LONG_MIN/MAX) is harmless here: the caller range-
+    // checks the result, so an out-of-range value is simply rejected.
+    *out = v;
+    return true;
+}
+
 // ── Auth middleware helper ───────────────────────────────────────────────────
 static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
     if (!isConfigured(g_config)) return true;
@@ -304,32 +362,48 @@ void httpThread(SessionService& svc) {
 
     g_httpServer.Post("/api/config", [](const httplib::Request& req, httplib::Response& res) {
         if (!requireAuth(req, res)) return;
-        auto body = req.body;
+        const std::string& body = req.body;
+        bool portRejected = false;
         std::lock_guard<std::mutex> lk(g_configMtx);
-        auto pPort = body.find("\"udpPort\"");
-        if (pPort != std::string::npos) {
-            auto colon = body.find(':', pPort);
-            if (colon != std::string::npos) {
-                int port = atoi(body.c_str() + colon + 1);
-                if (port >= 1024 && port <= 65535) g_config.udpPort = port;
+
+        // udpPort — key-scoped numeric parse. Out-of-range values are
+        // rejected (not clamped); the response echoes the effective port so
+        // the web UI can show what actually took effect.
+        long port = 0;
+        if (jsonGetIntKeyed(body, "udpPort", &port)) {
+            if (port >= 1024 && port <= 65535) {
+                g_config.udpPort = static_cast<int>(port);
+            } else {
+                portRejected = true;
             }
         }
-        g_config.autoStart = body.find("\"autoStart\":true") != std::string::npos ||
-                             body.find("\"autoStart\": true") != std::string::npos;
-        setAutoStart(g_config.autoStart);
-        // Legacy UDP broadcast beacon toggle (Task 1.6). Applied only when the
-        // key is present so a partial POST can't silently flip discovery off.
-        if (body.find("\"discoveryBroadcastEnabled\"") != std::string::npos) {
-            g_config.discoveryBroadcastEnabled =
-                body.find("\"discoveryBroadcastEnabled\":true") != std::string::npos ||
-                body.find("\"discoveryBroadcastEnabled\": true") != std::string::npos;
+
+        // autoStart — key-scoped boolean. Only applied when the key is
+        // present, so a partial POST leaves the stored value untouched.
+        bool autoStartVal = false;
+        if (jsonGetBoolKeyed(body, "autoStart", &autoStartVal)) {
+            g_config.autoStart = autoStartVal;
+            setAutoStart(g_config.autoStart);
         }
+
+        // Legacy UDP broadcast beacon toggle (Task 1.6). Key-scoped so a
+        // device name or any unrelated body text can't false-positive it,
+        // and applied only when present so a partial POST can't silently
+        // flip discovery off.
+        bool broadcastVal = false;
+        if (jsonGetBoolKeyed(body, "discoveryBroadcastEnabled", &broadcastVal)) {
+            g_config.discoveryBroadcastEnabled = broadcastVal;
+        }
+
         saveConfig(g_config);
         logMsg(LogLevel::INFO, "web",
                "Config updated: udpPort=" + std::to_string(g_config.udpPort) + " autoStart=" +
                    std::string(g_config.autoStart ? "true" : "false") + " broadcast=" +
-                   std::string(g_config.discoveryBroadcastEnabled ? "true" : "false"));
-        res.set_content(R"({"ok":true})", "application/json");
+                   std::string(g_config.discoveryBroadcastEnabled ? "true" : "false") +
+                   (portRejected ? " (udpPort out of range — ignored)" : ""));
+        std::string resp = "{\"ok\":true,\"udpPort\":" + std::to_string(g_config.udpPort) +
+                           ",\"udpPortRejected\":" + (portRejected ? "true" : "false") + "}";
+        res.set_content(resp, "application/json");
     });
 
     // ── Version + update endpoints ──────────────────────────────────────
@@ -439,17 +513,13 @@ void httpThread(SessionService& svc) {
         }
         std::string channel = jsonGetString(req.body, "channel");
         if (channel.empty()) channel = UPDATE_CHANNEL_STABLE;
-        // For booleans, look for "key":true / "key":false. Order matters
-        // because "autoCheck":true also contains "autoCheck" within
-        // "autoDownload" matching: scope each lookup to its own key
-        // boundary.
+        // Key-scoped boolean reads — jsonGetBoolKeyed locates each quoted key
+        // and inspects only its own value token, so one key's value can't
+        // bleed into another's match. An absent key defaults to false.
         auto findBool = [&](const std::string& key) -> bool {
-            auto p = req.body.find("\"" + key + "\"");
-            if (p == std::string::npos) return false;
-            auto colon = req.body.find(':', p);
-            if (colon == std::string::npos) return false;
-            auto rest = req.body.substr(colon + 1, 10);
-            return rest.find("true") != std::string::npos;
+            bool v = false;
+            jsonGetBoolKeyed(req.body, key, &v);
+            return v;
         };
         bool autoCheck = findBool("autoCheck");
         bool autoDownload = findBool("autoDownload");

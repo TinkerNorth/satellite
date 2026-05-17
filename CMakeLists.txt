@@ -36,11 +36,10 @@ set(SATELLITE_CORE_SOURCES
 # Currently-shared infrastructure (will be ported to POSIX in Stage 3).
 set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
+    src/net/inner_dispatch.cpp
     src/net/webserver.cpp
     src/net/pairing.cpp
     src/net/discovery.cpp
-    src/net/dsu_protocol.cpp
-    src/net/dsu_server.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
 )
@@ -446,25 +445,27 @@ set_target_properties(test_session_service PROPERTIES
 
 add_test(NAME session_service COMMAND test_session_service)
 
-# ── DSU protocol tests (portable — no networking) ────────────────────────────
-# Cemuhook DSU server protocol encoders / parsers. Lives in src/net but has
-# no socket dependencies, so it builds cleanly on every platform.
-add_executable(test_dsu_protocol
-    tests/test_dsu_protocol.cpp
-    src/net/dsu_protocol.cpp
+# ── Receiver inner-message dispatch tests (portable — no networking) ─────────
+# Exercises net/inner_dispatch.cpp: the per-message length guards that reject
+# truncated / oversized wire payloads before a decoder reads out of bounds.
+# inner_dispatch.cpp is socket-free, so this builds cleanly on every platform.
+add_executable(test_receiver
+    tests/test_receiver.cpp
+    src/net/inner_dispatch.cpp
+    ${SATELLITE_CORE_SOURCES}
 )
-target_include_directories(test_dsu_protocol PRIVATE
+target_include_directories(test_receiver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 if(WIN32 AND MINGW)
-    target_compile_options(test_dsu_protocol PRIVATE -O2 -Wall -Wextra)
+    target_compile_options(test_receiver PRIVATE -O2 -Wall -Wextra)
 elseif(MSVC)
-    target_compile_options(test_dsu_protocol PRIVATE /O2 /W4)
+    target_compile_options(test_receiver PRIVATE /O2 /W4)
 endif()
-set_target_properties(test_dsu_protocol PROPERTIES
+set_target_properties(test_receiver PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
-add_test(NAME dsu_protocol COMMAND test_dsu_protocol)
+add_test(NAME receiver COMMAND test_receiver)
 
 # ── mDNS protocol tests (portable — no networking) ───────────────────────────
 add_executable(test_mdns_protocol

@@ -437,6 +437,48 @@ h2.section-title { font-size: 14px; }
   margin-top: 8px;
 }
 
+/* ── Dashboard inline error notice ────────────────────────────────── */
+/* Failure feedback for the dashboard's mutating actions (disconnect,
+   remove device, touchpad-mode change). Mirrors the update banner's
+   error styling — see showDashError() in dashboard.js. Auto-hidden
+   (display:none) until an action fails. */
+.dash-notice {
+  display: none;
+  align-items: flex-start;
+  gap: 8px;
+  background: linear-gradient(180deg, rgba(231,76,60,0.08), rgba(231,76,60,0.02));
+  border: 1px solid rgba(231,76,60,0.45);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--error);
+}
+.dash-notice.show { display: flex; }
+.dash-notice-text {
+  flex: 1;
+  min-width: 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+}
+.dash-notice-close {
+  background: none;
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.dash-notice-close:hover { color: var(--text); }
+
+/* Section title with extra top spacing — used where a section heading
+   follows other controls inside the same card block (e.g. Discovery). */
+.section-title-spaced { margin-top: 18px; }
+
 /* ── Device list ──────────────────────────────────────────────────── */
 .device-list {
   display: flex;
@@ -539,7 +581,7 @@ h2.section-title { font-size: 14px; }
   background: rgba(34, 197, 94, 0.14);
   border-color: rgba(34, 197, 94, 0.35);
 }
-.ctrl-motion.motion-dsu {
+.ctrl-motion.motion-nosink {
   color: var(--warning);
   background: rgba(245, 158, 11, 0.14);
   border-color: rgba(245, 158, 11, 0.35);
@@ -620,6 +662,13 @@ h2.section-title { font-size: 14px; }
 .ctrl-touchpad.touchpad-off {
   color: var(--text-muted);
   background: transparent;
+}
+/* Pad mode chosen, but this controller's virtual device has no touchpad
+   surface (a non-PlayStation controller can't expose a DS4 touchpad). */
+.ctrl-touchpad.touchpad-nosurface {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
 }
 /* Per-controller lightbar chip — Task 1.4. Shares the .ctrl-motion chip shape;
    reflects whether the controller has an addressable RGB LED and the live
@@ -702,6 +751,11 @@ h2.section-title { font-size: 14px; }
 }
 .seg-btn:last-child { border-right: none; }
 .seg-btn:hover { color: var(--text); }
+.seg-btn:focus-visible {
+  outline: none;
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--primary), 0 0 6px rgba(79, 227, 255, 0.35);
+}
 .seg-btn.seg-on {
   background: var(--primary);
   color: var(--bg);
@@ -1365,6 +1419,20 @@ h2.section-title { font-size: 14px; }
 .settings-update-slot {
   margin-top: 12px;
 }
+
+/* Save-result line under the Save Config button. Default colour is the
+   error red; the .ok modifier switches it to the success token for a
+   transient "saved" confirmation. See settingsSave() in settings.js. */
+.settings-save-status {
+  font-size: 12px;
+  min-height: 16px;
+  margin-top: 8px;
+  color: var(--error);
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.settings-save-status.ok { color: var(--success); }
 
 /* ── Restart-to-install modal ────────────────────────────────────── */
 .modal-overlay {
