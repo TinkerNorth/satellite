@@ -10,9 +10,20 @@
  * drop the legacy UDP broadcast beacon — can discover this receiver.
  *
  * RFC 6762 behaviours implemented:
- *   - §8.1  lightweight probing — a single ANY probe for the instance name
- *           before announcing; on a name clash the instance label is
- *           disambiguated and a WARNING logged (minimal, see the .cpp).
+ *   - §8.1  probing — before announcing, the instance name is claimed via
+ *           the full probe sequence: a random 0-250 ms startup delay, then
+ *           three ANY probe queries 250 ms apart, each carrying the proposed
+ *           unique records (SRV/TXT/A) in the authority section. A
+ *           conflicting response triggers a §9 rename and a fresh probe
+ *           sequence; conflict rate-limiting (15 conflicts / 10 s → 5 s
+ *           backoff) is applied.
+ *   - §8.2  simultaneous-probe tiebreaking — a peer probe for a name we are
+ *           also probing is resolved by the §8.2.1 lexicographic record-set
+ *           comparison rather than treated as an outright conflict; on a
+ *           loss we defer one second and re-probe.
+ *   - §9    conflict resolution — a name clash disambiguates the instance
+ *           label ("<host>", "<host> (2)", "<host> (3)", …), capped at ten
+ *           rename attempts.
  *   - §8.3  startup announcement — the full unsolicited answer set is
  *           multicast three times ~1 s apart so senders already running
  *           discover us without waiting to re-query.

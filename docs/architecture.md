@@ -45,13 +45,30 @@ Bonjour stack can still find it.
 * **TXT records:** `udp=<udpPort>`, `pair=<pairPort>`, `http=<webPort>`
 * **SRV target:** `<host-label>.local.` on `<udpPort>`
 
-The responder is passive — it answers PTR / ANY queries for the service
-type with PTR + SRV + TXT (+ A) records and does not send unsolicited
-announcements. On shutdown it multicasts a goodbye announcement (every
-record at TTL 0, RFC 6762 §10.1) so resolver caches on the segment drop
-the entry immediately. Its live state is published read-only as
-`mdnsResponderActive` in `GET /api/status` and shown in the web UI
-(Settings → Discovery).
+On startup the responder first **probes** for its instance name per
+RFC 6762 §8.1: after a random 0-250 ms delay it multicasts three ANY
+probe queries 250 ms apart, each carrying its proposed unique records
+(SRV/TXT/A) in the authority section. A conflicting response means
+another host already owns the name, so the instance label is
+disambiguated (`<host>`, `<host> (2)`, `<host> (3)`, …, RFC 6762 §9)
+and the probe sequence restarts; conflict rate-limiting (15 conflicts
+within 10 s → a 5 s backoff before each probe) is applied, and renaming
+is capped at ten attempts. A *simultaneous* probe from a peer for the
+same name is not treated as an outright conflict — it is resolved by
+the RFC 6762 §8.2 / §8.2.1 lexicographic record-set tiebreak; the loser
+defers one second and re-probes. Once three probes complete cleanly the
+name is claimed and the §8.3 announcement (below) uses that final name.
+
+After probing, the responder answers PTR / ANY queries for the service
+type with PTR + SRV + TXT (+ A) records, and also answers ANY/SRV/TXT/A
+queries for its own instance and host names — the latter is how it
+*defends* its name against a later peer probe (RFC 6762 §8.1). It
+multicasts the full answer set three times ~1 s apart at startup
+(RFC 6762 §8.3 unsolicited announcement). On shutdown it multicasts a
+goodbye announcement (every record at TTL 0, RFC 6762 §10.1) so resolver
+caches on the segment drop the entry immediately. Its live state is
+published read-only as `mdnsResponderActive` in `GET /api/status` and
+shown in the web UI (Settings → Discovery).
 
 Senders SHOULD prefer the mDNS path when available. The legacy UDP
 broadcast beacon stays in place as a fallback for senders that predate
@@ -65,9 +82,12 @@ the beacon without a restart.
 The encoder / parser surface for the mDNS protocol records lives in
 `src/net/mdns_protocol.{h,cpp}` and is exercised by
 `tests/test_mdns_protocol.cpp` (DNS name encoding, compression-pointer
-decoding, query-packet parsing, response building, cache-flush bits, and
-the TTL-0 goodbye path). The multicast group join / socket bind + recv
-loop lives in `src/net/mdns_responder.{h,cpp}`.
+decoding, query-packet parsing, response building, cache-flush bits, the
+TTL-0 goodbye path, §8.1 probe-query shape with the authority-section
+proposed records, inbound-probe authority parsing, the §8.2.1
+lexicographic tiebreak comparator, and the §9 rename-suffix increment).
+The probing state machine, multicast group join / socket bind + recv
+loop live in `src/net/mdns_responder.{h,cpp}`.
 
 ## Architecture — Hexagonal (Ports & Adapters)
 

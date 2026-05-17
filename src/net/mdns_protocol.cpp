@@ -144,18 +144,15 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
     return parseHeaderAndQuestions(data, len, header, questions, pos);
 }
 
-bool parsePacket(const uint8_t* data, size_t len, Header& header,
-                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers) {
-    size_t pos = 0;
-    knownAnswers.clear();
-    if (!parseHeaderAndQuestions(data, len, header, questions, pos)) return false;
+namespace {
 
-    // Answer section — the querier's Known-Answer list (RFC 6762 §7.1). Each
-    // record is name + type(2) + class(2) + ttl(4) + rdlength(2) + rdata.
-    // We retain name/type/class/ttl and skip the rdata bytes wholesale. A
-    // malformed record (name decode failure, or an rdlength that overruns
-    // the packet) fails the parse so a bad packet can't be acted on.
-    for (uint16_t i = 0; i < header.anCount; ++i) {
+// Parse the answer section (RFC 6762 §7.1 Known-Answer list) starting at
+// `pos`, appending each record's identity (name/type/class/ttl) to
+// `knownAnswers` and skipping the rdata. Advances `pos` past the section.
+// Returns false on a malformed record. Shared by the 5- and 6-arg overloads.
+bool parseAnswerSection(const uint8_t* data, size_t len, uint16_t count,
+                        std::vector<Answer>& knownAnswers, size_t& pos) {
+    for (uint16_t i = 0; i < count; ++i) {
         Answer a;
         const size_t consumed = readDnsName(data, len, pos, a.name);
         if (consumed == 0) return false;
@@ -172,6 +169,96 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
         if (pos + rdlen > len) return false; // rdata overruns the packet
         pos += rdlen;                        // skip rdata — identity is name+type
         knownAnswers.push_back(std::move(a));
+    }
+    return true;
+}
+
+// Rewrite a record's raw on-the-wire rdata into the canonical form RFC 6762
+// §8.2 requires for the tiebreak: every DNS name embedded in the rdata is
+// decompressed. For the record types the satellite probes — SRV (a name at
+// rdata offset 6, after priority/weight/port) and PTR (a bare name) — the
+// embedded name is expanded against the whole packet. A / TXT carry no
+// embedded names, so their rdata is canonical already. Any other type is
+// copied verbatim (the satellite never probes other types, and a peer
+// proposing one simply compares byte-for-byte). `rdataStart` is the offset
+// of the rdata within `data`; `rdlen` its on-wire length. Returns false if
+// the embedded name fails to decode.
+bool canonicalizeAuthorityRdata(const uint8_t* data, size_t len, uint16_t type, size_t rdataStart,
+                                uint16_t rdlen, std::vector<uint8_t>& out) {
+    out.clear();
+    if (type == TYPE_SRV) {
+        // priority(2) + weight(2) + port(2) then a domain name.
+        if (rdlen < 6) return false;
+        out.insert(out.end(), data + rdataStart, data + rdataStart + 6);
+        std::string target;
+        const size_t consumed = readDnsName(data, len, rdataStart + 6, target);
+        if (consumed == 0) return false;
+        uint8_t nameBuf[256];
+        const size_t n = writeDnsName(nameBuf, sizeof(nameBuf), target);
+        if (n == 0) return false;
+        out.insert(out.end(), nameBuf, nameBuf + n);
+        return true;
+    }
+    if (type == TYPE_PTR) {
+        std::string target;
+        const size_t consumed = readDnsName(data, len, rdataStart, target);
+        if (consumed == 0) return false;
+        uint8_t nameBuf[256];
+        const size_t n = writeDnsName(nameBuf, sizeof(nameBuf), target);
+        if (n == 0) return false;
+        out.insert(out.end(), nameBuf, nameBuf + n);
+        return true;
+    }
+    // A, TXT, and anything else: rdata is already name-free → copy verbatim.
+    out.insert(out.end(), data + rdataStart, data + rdataStart + rdlen);
+    return true;
+}
+
+} // namespace
+
+bool parsePacket(const uint8_t* data, size_t len, Header& header,
+                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers) {
+    size_t pos = 0;
+    knownAnswers.clear();
+    if (!parseHeaderAndQuestions(data, len, header, questions, pos)) return false;
+    // Answer section — the querier's Known-Answer list (RFC 6762 §7.1). The
+    // authority / additional sections are not walked by this overload.
+    return parseAnswerSection(data, len, header.anCount, knownAnswers, pos);
+}
+
+bool parsePacket(const uint8_t* data, size_t len, Header& header,
+                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers,
+                 std::vector<ProbeRecord>& authority) {
+    size_t pos = 0;
+    knownAnswers.clear();
+    authority.clear();
+    if (!parseHeaderAndQuestions(data, len, header, questions, pos)) return false;
+    // Answer section first (RFC 6762 §7.1) — it precedes the authority
+    // section on the wire, and we must walk it to reach the authority bytes.
+    if (!parseAnswerSection(data, len, header.anCount, knownAnswers, pos)) return false;
+
+    // Authority section — an mDNS probe's proposed unique records (RFC 6762
+    // §8.1). Each record is name + type(2) + class(2) + ttl(4) + rdlength(2)
+    // + rdata. Unlike the answer section the rdata IS retained, canonicalised
+    // (embedded names uncompressed) for the §8.2 tiebreak comparison.
+    for (uint16_t i = 0; i < header.nsCount; ++i) {
+        ProbeRecord r;
+        const size_t consumed = readDnsName(data, len, pos, r.name);
+        if (consumed == 0) return false;
+        pos += consumed;
+        if (pos + 10 > len) return false;
+        r.type = readBE16(data + pos);
+        r.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
+        r.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
+                (static_cast<uint32_t>(data[pos + 5]) << 16) |
+                (static_cast<uint32_t>(data[pos + 6]) << 8) |
+                static_cast<uint32_t>(data[pos + 7]);
+        const uint16_t rdlen = readBE16(data + pos + 8);
+        pos += 10;
+        if (pos + rdlen > len) return false; // rdata overruns the packet
+        if (!canonicalizeAuthorityRdata(data, len, r.type, pos, rdlen, r.rdata)) return false;
+        pos += rdlen;
+        authority.push_back(std::move(r));
     }
     return true;
 }
@@ -374,37 +461,198 @@ size_t encodeAnnouncement(uint8_t* out, size_t outCap, const ResponseInputs& inp
     return encodeResponse(out, outCap, /*txId=*/0, ann);
 }
 
-size_t encodeProbeQuery(uint8_t* out, size_t outCap, const std::string& instanceName) {
-    // RFC 6762 §8.1 — a probe is an ordinary query carrying a single ANY
-    // question for the name we intend to claim. It is multicast, so the QU
-    // (unicast-response) bit stays clear. We send the minimal form: no
-    // proposed records in the authority section (the §8.1 simultaneous-probe
-    // tie-break is deliberately out of scope — see mdns_responder.cpp).
+// Write one authority-section resource record (RFC 6762 §8.1 probe): the
+// record header via writeRrHeader, then `rdata`, then finalise the rdlength.
+// Returns false if the buffer is too small. The class is written verbatim by
+// the caller — a probe carries class IN with the cache-flush bit clear.
+namespace {
+bool writeAuthorityRecord(uint8_t* out, size_t outCap, size_t& pos, const std::string& name,
+                          uint16_t type, uint16_t cls, uint32_t ttl, const uint8_t* rdata,
+                          size_t rdlen) {
+    auto c = writeRrHeader(out, outCap, pos, name, type, cls, ttl);
+    if (!c.ok) return false;
+    if (pos + rdlen > outCap) return false;
+    if (rdlen > 0) std::memcpy(out + pos, rdata, rdlen);
+    pos += rdlen;
+    finalizeRr(out, c, pos);
+    return true;
+}
+} // namespace
+
+size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& inputs) {
+    // RFC 6762 §8.1 — a probe is a query carrying (a) one ANY question for
+    // the name being claimed and (b) the proposed unique records for that
+    // name in the *authority* section, so a peer probing simultaneously can
+    // run the §8.2 tiebreak. The proposed set is SRV + TXT for the instance
+    // FQDN, plus an A record when an IPv4 address is known.
     if (out == nullptr || outCap < 12) return 0;
-    const std::string instanceFqdn = instanceName + "." + std::string(SERVICE_TYPE_DOMAIN);
+    const std::string serviceType = SERVICE_TYPE_DOMAIN;
+    const std::string instanceFqdn = inputs.instanceName + "." + serviceType;
+    const std::string hostFqdn = inputs.hostName + ".local.";
+
+    const std::vector<ProbeRecord> proposed = buildProposedRecords(inputs);
+    if (proposed.empty()) return 0; // SRV + TXT are always present — defensive
 
     size_t pos = 0;
     putBE16(out + pos, 0); // transaction ID — 0 for mDNS
     pos += 2;
     putBE16(out + pos, 0); // flags — a plain query (QR=0)
     pos += 2;
-    putBE16(out + pos, 1); // QDCOUNT
+    putBE16(out + pos, 1); // QDCOUNT — the single ANY question
     pos += 2;
     putBE16(out + pos, 0); // ANCOUNT
     pos += 2;
-    putBE16(out + pos, 0); // NSCOUNT
+    putBE16(out + pos, static_cast<uint16_t>(proposed.size())); // NSCOUNT — proposed records
     pos += 2;
     putBE16(out + pos, 0); // ARCOUNT
     pos += 2;
 
-    const size_t n = writeDnsName(out + pos, outCap - pos, instanceFqdn);
-    if (n == 0) return 0;
-    pos += n;
+    // Question: the instance FQDN, type ANY. RFC 6762 §8.1: probe questions
+    // SHOULD be sent as "QU" questions with the unicast-response bit set
+    // (CACHE_FLUSH_BIT is that bit in a question's class field), so a peer
+    // can answer us directly without waiting out the multicast rate limit.
+    const size_t qn = writeDnsName(out + pos, outCap - pos, instanceFqdn);
+    if (qn == 0) return 0;
+    pos += qn;
     if (pos + 4 > outCap) return 0;
-    putBE16(out + pos, TYPE_ANY);     // ask for everything held under this name
-    putBE16(out + pos + 2, CLASS_IN); // QU bit clear → multicast response
+    putBE16(out + pos, TYPE_ANY);                      // everything held under this name
+    putBE16(out + pos + 2, CLASS_IN | CACHE_FLUSH_BIT); // QU bit set → unicast response
     pos += 4;
+
+    // Authority section: the proposed records. They carry class IN with the
+    // cache-flush bit CLEAR — that bit is a response-side cache directive and
+    // has no meaning in a query's authority section (it doubles as the QU bit
+    // only in the *question*).
+    for (const auto& r : proposed) {
+        if (!writeAuthorityRecord(out, outCap, pos, r.name, r.type, CLASS_IN, r.ttl,
+                                  r.rdata.data(), r.rdata.size()))
+            return 0;
+    }
     return pos;
+}
+
+std::vector<ProbeRecord> buildProposedRecords(const ResponseInputs& inputs) {
+    // The unique records the satellite claims for an instance name: SRV + TXT
+    // for the instance FQDN, and the A record for the host when an IPv4 is
+    // known. The shared PTR is intentionally excluded — §8.1 probes only
+    // records the host "desires to be unique". rdata is built canonically
+    // (names uncompressed) so the set feeds straight into compareRecordSets.
+    const std::string serviceType = SERVICE_TYPE_DOMAIN;
+    const std::string instanceFqdn = inputs.instanceName + "." + serviceType;
+    const std::string hostFqdn = inputs.hostName + ".local.";
+
+    std::vector<ProbeRecord> recs;
+
+    // SRV: priority(2) weight(2) port(2) + uncompressed target name.
+    {
+        ProbeRecord srv;
+        srv.name = instanceFqdn;
+        srv.type = TYPE_SRV;
+        srv.cls = CLASS_IN;
+        srv.ttl = TTL_HOST;
+        uint8_t fixed[6];
+        putBE16(fixed + 0, inputs.priority);
+        putBE16(fixed + 2, inputs.weight);
+        putBE16(fixed + 4, inputs.udpPort);
+        srv.rdata.insert(srv.rdata.end(), fixed, fixed + 6);
+        uint8_t nameBuf[256];
+        const size_t n = writeDnsName(nameBuf, sizeof(nameBuf), hostFqdn);
+        if (n > 0) srv.rdata.insert(srv.rdata.end(), nameBuf, nameBuf + n);
+        recs.push_back(std::move(srv));
+    }
+    // TXT: one length-prefixed "key=value" per pair (empty TXT → one 0 byte),
+    // identical to the encodeResponse TXT rdata so the probe and the eventual
+    // announcement propose the same bytes.
+    {
+        ProbeRecord txt;
+        txt.name = instanceFqdn;
+        txt.type = TYPE_TXT;
+        txt.cls = CLASS_IN;
+        txt.ttl = TTL_HOST;
+        if (inputs.txtPairs.empty()) {
+            txt.rdata.push_back(0);
+        } else {
+            for (const auto& [k, v] : inputs.txtPairs) {
+                std::string entry = k + "=" + v;
+                if (entry.size() > 255) continue;
+                txt.rdata.push_back(static_cast<uint8_t>(entry.size()));
+                txt.rdata.insert(txt.rdata.end(), entry.begin(), entry.end());
+            }
+        }
+        recs.push_back(std::move(txt));
+    }
+    // A: 4 raw address bytes — only when the host owns a usable IPv4.
+    if (inputs.ipv4 != nullptr) {
+        ProbeRecord a;
+        a.name = hostFqdn;
+        a.type = TYPE_A;
+        a.cls = CLASS_IN;
+        a.ttl = TTL_HOST;
+        a.rdata.insert(a.rdata.end(), inputs.ipv4, inputs.ipv4 + 4);
+        recs.push_back(std::move(a));
+    }
+    return recs;
+}
+
+namespace {
+
+// RFC 6762 §8.2 / §8.2.1 single-record lexicographic comparison. Returns
+// <0 / 0 / >0 for a sorting earlier than / equal to / later than b. Class is
+// compared first (cache-flush bit is assumed already masked off), then type,
+// then the raw rdata bytes as unsigned values; on a length-mismatched rdata
+// prefix the record "which still has remaining data first is deemed
+// lexicographically later".
+int compareOneRecord(const ProbeRecord& a, const ProbeRecord& b) {
+    if (a.cls != b.cls) return a.cls < b.cls ? -1 : 1;
+    if (a.type != b.type) return a.type < b.type ? -1 : 1;
+    const size_t common = std::min(a.rdata.size(), b.rdata.size());
+    for (size_t i = 0; i < common; ++i) {
+        if (a.rdata[i] != b.rdata[i]) return a.rdata[i] < b.rdata[i] ? -1 : 1;
+    }
+    if (a.rdata.size() != b.rdata.size()) return a.rdata.size() < b.rdata.size() ? -1 : 1;
+    return 0;
+}
+
+} // namespace
+
+int compareRecordSets(std::vector<ProbeRecord> ours, std::vector<ProbeRecord> theirs) {
+    // RFC 6762 §8.2.1: "the host's records and the tiebreaker records from
+    // the message are each sorted into order, and then compared pairwise …
+    // until a difference is found." Sort both with the same single-record
+    // order, then walk in lockstep.
+    auto less = [](const ProbeRecord& x, const ProbeRecord& y) {
+        return compareOneRecord(x, y) < 0;
+    };
+    std::sort(ours.begin(), ours.end(), less);
+    std::sort(theirs.begin(), theirs.end(), less);
+
+    const size_t n = std::min(ours.size(), theirs.size());
+    for (size_t i = 0; i < n; ++i) {
+        const int c = compareOneRecord(ours[i], theirs[i]);
+        if (c != 0) return c;
+    }
+    // §8.2.1: "If either list of records runs out of records before any
+    // difference is found, then the list with records remaining is deemed to
+    // have won the tiebreak. If both lists run out … there is, in fact, no
+    // conflict." A longer list → that side wins.
+    if (ours.size() != theirs.size()) return ours.size() < theirs.size() ? -1 : 1;
+    return 0;
+}
+
+bool authorityHasRecordFor(const std::vector<ProbeRecord>& authority, const std::string& name) {
+    auto nameEqual = [](const std::string& x, const std::string& y) {
+        if (x.size() != y.size()) return false;
+        for (size_t i = 0; i < x.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(x[i])) !=
+                std::tolower(static_cast<unsigned char>(y[i])))
+                return false;
+        }
+        return true;
+    };
+    for (const auto& r : authority) {
+        if (nameEqual(r.name, name)) return true;
+    }
+    return false;
 }
 
 } // namespace mdns

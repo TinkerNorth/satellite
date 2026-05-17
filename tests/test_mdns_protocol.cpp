@@ -7,12 +7,18 @@
  *
  * Coverage: DNS name encode/decode (incl. compression pointers + malformed
  * input), query packet parsing, response encoding (record shapes, cache-flush
- * bits, SRV port, TXT pairs, A record, RFC 6762 §10.1 goodbye / TTL-0), and
- * the questionMatchesService predicate.
+ * bits, SRV port, TXT pairs, A record, RFC 6762 §10.1 goodbye / TTL-0), the
+ * questionMatchesService predicate, and the full RFC 6762 §8.1 + §8.2 probing
+ * surface — probe-query shape (ANY question, QU bit, authority-section
+ * proposed records, NSCOUNT), authority-section parsing of an inbound probe,
+ * the §8.2.1 lexicographic record-set tiebreak comparator, buildProposedRecords,
+ * and the §9 conflict-rename suffix increment.
  */
 #include "../src/net/mdns_protocol.h"
 
+#include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -772,34 +778,448 @@ static void test_encodeAnnouncement_normalTtlsNeverZero() {
     EXPECT(allNonZero);
 }
 
-// ── Probe query (RFC 6762 §8.1) ─────────────────────────────────────────────
+// ── Probe query (RFC 6762 §8.1 + §8.2) ──────────────────────────────────────
 
 static void test_encodeProbeQuery_shape() {
-    TEST("encodeProbeQuery emits one ANY question for the instance FQDN, QU bit clear");
-    uint8_t buf[256];
-    const size_t n = mdns::encodeProbeQuery(buf, sizeof(buf), "satellite-host");
+    TEST("encodeProbeQuery emits one ANY question for the instance FQDN with the QU bit set");
+    uint8_t buf[768];
+    mdns::ResponseInputs in = sampleInputs(); // no A — SRV + TXT in the authority section
+    const size_t n = mdns::encodeProbeQuery(buf, sizeof(buf), in);
     EXPECT(n > 12u);
     mdns::Header h{};
     std::vector<mdns::Question> qs;
     std::vector<mdns::Answer> ans;
-    EXPECT(mdns::parsePacket(buf, n, h, qs, ans));
-    EXPECT_EQ(h.id, 0u);                  // mDNS query → txn id 0
-    EXPECT_EQ((h.flags >> 15) & 1, 0);    // QR clear → it is a query
+    std::vector<mdns::ProbeRecord> authority;
+    EXPECT(mdns::parsePacket(buf, n, h, qs, ans, authority));
+    EXPECT_EQ(h.id, 0u);               // mDNS query → txn id 0
+    EXPECT_EQ((h.flags >> 15) & 1, 0); // QR clear → it is a query
     EXPECT_EQ(h.qdCount, 1u);
     EXPECT_EQ(h.anCount, 0u);
     EXPECT_EQ(qs.size(), 1u);
     if (!qs.empty()) {
         EXPECT_EQ(qs[0].name, std::string("satellite-host._satellite._udp.local."));
         EXPECT_EQ(qs[0].type, mdns::TYPE_ANY);
-        EXPECT(!qs[0].unicastResponse); // probes are multicast
+        // RFC 6762 §8.1: probe questions SHOULD set the QU bit.
+        EXPECT(qs[0].unicastResponse);
         EXPECT_EQ(qs[0].cls, mdns::CLASS_IN);
     }
 }
 
+static void test_encodeProbeQuery_authoritySectionHoldsProposedRecords() {
+    TEST("encodeProbeQuery puts the proposed SRV+TXT(+A) in the authority section, NSCOUNT set");
+    uint8_t buf[768];
+    const uint8_t ip[4] = {192, 168, 1, 77};
+    mdns::ResponseInputs in = sampleInputs();
+    in.ipv4 = ip; // → A record joins SRV + TXT
+    const size_t n = mdns::encodeProbeQuery(buf, sizeof(buf), in);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    std::vector<mdns::Answer> ans;
+    std::vector<mdns::ProbeRecord> authority;
+    EXPECT(mdns::parsePacket(buf, n, h, qs, ans, authority));
+    // NSCOUNT must equal the number of proposed records actually present.
+    EXPECT_EQ(h.nsCount, 3u);
+    EXPECT_EQ(authority.size(), 3u);
+    // The shared PTR is NOT a unique record → never in a probe's authority.
+    bool sawSrv = false, sawTxt = false, sawA = false, sawPtr = false;
+    for (const auto& r : authority) {
+        if (r.type == mdns::TYPE_SRV) sawSrv = true;
+        if (r.type == mdns::TYPE_TXT) sawTxt = true;
+        if (r.type == mdns::TYPE_A) sawA = true;
+        if (r.type == mdns::TYPE_PTR) sawPtr = true;
+        // Authority records carry class IN with the cache-flush bit clear —
+        // the parser masks the bit off, so we just confirm the class is IN.
+        EXPECT_EQ(r.cls, mdns::CLASS_IN);
+    }
+    EXPECT(sawSrv && sawTxt && sawA);
+    EXPECT(!sawPtr);
+}
+
+static void test_encodeProbeQuery_authorityNamesAndSrvRdata() {
+    TEST("encodeProbeQuery authority records name the instance/host FQDN and carry SRV rdata");
+    uint8_t buf[768];
+    mdns::ResponseInputs in = sampleInputs();
+    in.udpPort = 50505;
+    const size_t n = mdns::encodeProbeQuery(buf, sizeof(buf), in);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    std::vector<mdns::Answer> ans;
+    std::vector<mdns::ProbeRecord> authority;
+    EXPECT(mdns::parsePacket(buf, n, h, qs, ans, authority));
+    for (const auto& r : authority) {
+        if (r.type == mdns::TYPE_SRV) {
+            EXPECT_EQ(r.name, std::string("satellite-host._satellite._udp.local."));
+            // SRV rdata: priority(2) weight(2) port(2) + uncompressed target.
+            EXPECT(r.rdata.size() > 6);
+            const uint16_t port = static_cast<uint16_t>((r.rdata[4] << 8) | r.rdata[5]);
+            EXPECT_EQ(port, 50505u);
+        }
+        if (r.type == mdns::TYPE_TXT) {
+            EXPECT_EQ(r.name, std::string("satellite-host._satellite._udp.local."));
+            // First TXT entry is the length-prefixed "udp=9876".
+            EXPECT(!r.rdata.empty());
+            if (!r.rdata.empty()) EXPECT_EQ(static_cast<int>(r.rdata[0]), 8); // strlen("udp=9876")
+        }
+    }
+}
+
 static void test_encodeProbeQuery_rejectsUndersizedBuffer() {
-    TEST("encodeProbeQuery returns 0 on a buffer too small for the question");
-    uint8_t buf[14]; // header fits, the name does not
-    EXPECT_EQ(mdns::encodeProbeQuery(buf, sizeof(buf), "satellite-host"), 0u);
+    TEST("encodeProbeQuery returns 0 on a buffer too small for the question + authority records");
+    uint8_t buf[20]; // header fits, the question + authority section do not
+    mdns::ResponseInputs in = sampleInputs();
+    EXPECT_EQ(mdns::encodeProbeQuery(buf, sizeof(buf), in), 0u);
+}
+
+// ── Authority-section parsing of an inbound probe (RFC 6762 §8.1) ───────────
+
+// Append an authority-section resource record (name + type + class + ttl +
+// rdlen + rdata) to `buf` at `pos`; returns the new pos. Mirrors appendAnswer
+// — the on-wire record layout is identical, only the section differs.
+static size_t appendAuthority(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
+                              uint16_t rtype, uint16_t rclass, uint32_t ttl, const uint8_t* rdata,
+                              uint16_t rdlen) {
+    return appendAnswer(buf, cap, pos, name, rtype, rclass, ttl, rdata, rdlen);
+}
+
+static void test_parsePacket_surfacesAuthorityRecords() {
+    TEST("parsePacket(6-arg) surfaces an inbound probe's authority-section records");
+    uint8_t buf[512];
+    writeQueryHeader(buf, 0, /*qd=*/1, /*an=*/0);
+    // NSCOUNT lives at bytes 8-9 — writeQueryHeader zeroes it; set it to 1.
+    buf[8] = 0x00;
+    buf[9] = 0x01;
+    size_t pos = appendQuestion(buf, sizeof(buf), 12, "satellite-host._satellite._udp.local.",
+                                mdns::TYPE_ANY, mdns::CLASS_IN | mdns::CACHE_FLUSH_BIT);
+    const uint8_t a4[4] = {10, 1, 2, 3};
+    pos = appendAuthority(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A,
+                          mdns::CLASS_IN, /*ttl=*/4500, a4, 4);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    std::vector<mdns::Answer> ans;
+    std::vector<mdns::ProbeRecord> authority;
+    EXPECT(mdns::parsePacket(buf, pos, h, qs, ans, authority));
+    EXPECT_EQ(qs.size(), 1u);
+    EXPECT_EQ(ans.size(), 0u);
+    EXPECT_EQ(authority.size(), 1u);
+    if (!authority.empty()) {
+        EXPECT_EQ(authority[0].name, std::string("satellite-host.local."));
+        EXPECT_EQ(authority[0].type, mdns::TYPE_A);
+        EXPECT_EQ(authority[0].cls, mdns::CLASS_IN);
+        EXPECT_EQ(authority[0].rdata.size(), 4u);
+        EXPECT(authority[0].rdata.size() == 4 &&
+               std::memcmp(authority[0].rdata.data(), a4, 4) == 0);
+    }
+}
+
+static void test_parsePacket_authorityAfterKnownAnswers() {
+    TEST("parsePacket(6-arg) walks the answer section, THEN surfaces authority records");
+    uint8_t buf[512];
+    writeQueryHeader(buf, 0, /*qd=*/1, /*an=*/1);
+    buf[8] = 0x00;
+    buf[9] = 0x01; // NSCOUNT 1
+    size_t pos = appendQuestion(buf, sizeof(buf), 12, "satellite-host._satellite._udp.local.",
+                                mdns::TYPE_ANY, mdns::CLASS_IN);
+    // One answer (Known-Answer list) precedes the authority section on-wire.
+    const uint8_t ka[4] = {1, 2, 3, 4};
+    pos = appendAnswer(buf, sizeof(buf), pos, "_satellite._udp.local.", mdns::TYPE_PTR,
+                       mdns::CLASS_IN, 4000, ka, 4);
+    // Then the authority record — must still be reached and surfaced.
+    const uint8_t a4[4] = {172, 16, 9, 9};
+    pos = appendAuthority(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A,
+                          mdns::CLASS_IN, 4500, a4, 4);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    std::vector<mdns::Answer> ans;
+    std::vector<mdns::ProbeRecord> authority;
+    EXPECT(mdns::parsePacket(buf, pos, h, qs, ans, authority));
+    EXPECT_EQ(ans.size(), 1u);
+    EXPECT_EQ(authority.size(), 1u);
+    if (!authority.empty()) EXPECT_EQ(authority[0].type, mdns::TYPE_A);
+}
+
+static void test_parsePacket_authorityRejectsRdlenOverrun() {
+    TEST("parsePacket(6-arg) rejects an authority record whose RDLENGTH overruns the packet");
+    uint8_t buf[256];
+    writeQueryHeader(buf, 0, /*qd=*/1, /*an=*/0);
+    buf[8] = 0x00;
+    buf[9] = 0x01; // NSCOUNT 1
+    size_t pos = appendQuestion(buf, sizeof(buf), 12, "satellite-host._satellite._udp.local.",
+                                mdns::TYPE_ANY, mdns::CLASS_IN);
+    pos += mdns::writeDnsName(buf + pos, sizeof(buf) - pos, "satellite-host.local.");
+    buf[pos++] = 0x00; buf[pos++] = 0x01; // type A
+    buf[pos++] = 0x00; buf[pos++] = 0x01; // class IN
+    buf[pos++] = 0x00; buf[pos++] = 0x00;
+    buf[pos++] = 0x11; buf[pos++] = 0x94; // ttl 4500
+    buf[pos++] = 0xFF; buf[pos++] = 0xFF; // rdlen 65535 — wildly past the packet
+    buf[pos++] = 0x0A; buf[pos++] = 0x00; // only 2 rdata bytes present
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    std::vector<mdns::Answer> ans;
+    std::vector<mdns::ProbeRecord> authority;
+    EXPECT(!mdns::parsePacket(buf, pos, h, qs, ans, authority));
+}
+
+static void test_authorityHasRecordFor_matchesCaseInsensitively() {
+    TEST("authorityHasRecordFor finds a record by FQDN, folding case");
+    std::vector<mdns::ProbeRecord> auth;
+    mdns::ProbeRecord r;
+    r.name = "Satellite-Host.Local.";
+    r.type = mdns::TYPE_A;
+    r.cls = mdns::CLASS_IN;
+    auth.push_back(r);
+    EXPECT(mdns::authorityHasRecordFor(auth, "satellite-host.local."));
+    EXPECT(!mdns::authorityHasRecordFor(auth, "other.local."));
+    EXPECT(!mdns::authorityHasRecordFor({}, "satellite-host.local."));
+}
+
+// ── §8.2.1 simultaneous-probe tiebreak comparator ───────────────────────────
+
+// Build a ProbeRecord directly from raw rdata bytes for the comparator tests.
+static mdns::ProbeRecord makeProbeRec(const std::string& name, uint16_t type, uint16_t cls,
+                                      std::vector<uint8_t> rdata) {
+    mdns::ProbeRecord r;
+    r.name = name;
+    r.type = type;
+    r.cls = cls;
+    r.rdata = std::move(rdata);
+    return r;
+}
+
+static void test_compareRecordSets_identicalSetsAreEqual() {
+    TEST("compareRecordSets returns 0 for byte-identical record sets (no conflict)");
+    std::vector<mdns::ProbeRecord> a = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
+        makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {0}),
+    };
+    std::vector<mdns::ProbeRecord> b = a; // identical
+    EXPECT_EQ(mdns::compareRecordSets(a, b), 0);
+}
+
+static void test_compareRecordSets_weWinOnGreaterRdataByte() {
+    TEST("compareRecordSets: a numerically greater rdata byte makes our set lexicographically later");
+    std::vector<mdns::ProbeRecord> ours = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 9}),
+    };
+    std::vector<mdns::ProbeRecord> theirs = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
+    };
+    EXPECT(mdns::compareRecordSets(ours, theirs) > 0); // we win
+}
+
+static void test_compareRecordSets_weLoseOnSmallerRdataByte() {
+    TEST("compareRecordSets: a numerically smaller rdata byte makes our set lexicographically earlier");
+    std::vector<mdns::ProbeRecord> ours = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
+    };
+    std::vector<mdns::ProbeRecord> theirs = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 9}),
+    };
+    EXPECT(mdns::compareRecordSets(ours, theirs) < 0); // we lose
+}
+
+static void test_compareRecordSets_rdataBytesAreUnsigned() {
+    TEST("compareRecordSets compares rdata bytes as UNSIGNED (0xFF > 0x01)");
+    // 0xFF interpreted signed would be negative; §8.2 mandates unsigned.
+    std::vector<mdns::ProbeRecord> ours = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {0xFF, 0, 0, 0}),
+    };
+    std::vector<mdns::ProbeRecord> theirs = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {0x01, 0, 0, 0}),
+    };
+    EXPECT(mdns::compareRecordSets(ours, theirs) > 0); // 0xFF wins
+}
+
+static void test_compareRecordSets_classComparedBeforeType() {
+    TEST("compareRecordSets compares record class before record type (§8.2)");
+    // Ours: lower class (1) but higher type (SRV=33). Theirs: higher class
+    // (2) but lower type (A=1). Class is decisive → the class-2 set wins, so
+    // ours (class 1) must lose despite its higher type.
+    std::vector<mdns::ProbeRecord> ours = {
+        makeProbeRec("h.local.", mdns::TYPE_SRV, /*cls=*/1, {0}),
+    };
+    std::vector<mdns::ProbeRecord> theirs = {
+        makeProbeRec("h.local.", mdns::TYPE_A, /*cls=*/2, {0}),
+    };
+    EXPECT(mdns::compareRecordSets(ours, theirs) < 0); // class 1 < class 2 → we lose
+}
+
+static void test_compareRecordSets_typeBreaksTieWhenClassEqual() {
+    TEST("compareRecordSets falls back to record type when the class is equal");
+    std::vector<mdns::ProbeRecord> ours = {
+        makeProbeRec("h.local.", mdns::TYPE_SRV, mdns::CLASS_IN, {0}), // type 33
+    };
+    std::vector<mdns::ProbeRecord> theirs = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {0}), // type 1
+    };
+    EXPECT(mdns::compareRecordSets(ours, theirs) > 0); // 33 > 1 → we win
+}
+
+static void test_compareRecordSets_shorterRdataPrefixSortsEarlier() {
+    TEST("compareRecordSets: when one rdata is a prefix of the other, the shorter sorts earlier");
+    // §8.2: on running out of rdata, "the resource record which still has
+    // remaining data first is deemed lexicographically later" → shorter loses.
+    std::vector<mdns::ProbeRecord> shorter = {
+        makeProbeRec("h.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {1, 2, 3}),
+    };
+    std::vector<mdns::ProbeRecord> longer = {
+        makeProbeRec("h.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {1, 2, 3, 0}),
+    };
+    EXPECT(mdns::compareRecordSets(shorter, longer) < 0); // shorter is earlier → loses
+    EXPECT(mdns::compareRecordSets(longer, shorter) > 0); // and symmetrically
+}
+
+static void test_compareRecordSets_longerSetWinsWhenPrefixMatches() {
+    TEST("compareRecordSets: if one record list runs out first, the list with records left wins");
+    // §8.2.1: "the list with records remaining is deemed to have won."
+    std::vector<mdns::ProbeRecord> shortSet = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
+    };
+    std::vector<mdns::ProbeRecord> longSet = {
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
+        makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {0}),
+    };
+    EXPECT(mdns::compareRecordSets(longSet, shortSet) > 0);  // extra record → win
+    EXPECT(mdns::compareRecordSets(shortSet, longSet) < 0);  // missing record → lose
+}
+
+static void test_compareRecordSets_sortsBeforeComparing() {
+    TEST("compareRecordSets sorts both sets first, so input order does not affect the verdict");
+    // Same two records, supplied in opposite orders on each side. After the
+    // §8.2.1 sort the sets are identical → verdict must be 0 (no conflict).
+    mdns::ProbeRecord a = makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1});
+    mdns::ProbeRecord t =
+        makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {5, 'h', 'e', 'l', 'l', 'o'});
+    std::vector<mdns::ProbeRecord> ours = {a, t};
+    std::vector<mdns::ProbeRecord> theirs = {t, a}; // reversed
+    EXPECT_EQ(mdns::compareRecordSets(ours, theirs), 0);
+}
+
+static void test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs() {
+    TEST("compareRecordSets stops at the first differing record in sorted order");
+    // Both sets share an identical A record (sorts first — type 1) and differ
+    // only in the TXT (type 16, sorts second). The TXT difference decides.
+    mdns::ProbeRecord aRec =
+        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 5});
+    std::vector<mdns::ProbeRecord> ours = {
+        aRec,
+        makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {2, 'z', 'z'}),
+    };
+    std::vector<mdns::ProbeRecord> theirs = {
+        aRec,
+        makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {2, 'a', 'a'}),
+    };
+    EXPECT(mdns::compareRecordSets(ours, theirs) > 0); // 'z' > 'a' → we win
+}
+
+// ── buildProposedRecords (RFC 6762 §8.1 proposed unique set) ────────────────
+
+static void test_buildProposedRecords_srvTxtOnlyWithoutIpv4() {
+    TEST("buildProposedRecords yields SRV + TXT (no A, no PTR) when no IPv4 is supplied");
+    mdns::ResponseInputs in = sampleInputs();
+    std::vector<mdns::ProbeRecord> recs = mdns::buildProposedRecords(in);
+    EXPECT_EQ(recs.size(), 2u);
+    bool srv = false, txt = false;
+    for (const auto& r : recs) {
+        if (r.type == mdns::TYPE_SRV) srv = true;
+        if (r.type == mdns::TYPE_TXT) txt = true;
+        EXPECT(r.type != mdns::TYPE_PTR); // PTR is shared, never proposed
+        EXPECT(r.type != mdns::TYPE_A);   // no IPv4 → no A
+    }
+    EXPECT(srv && txt);
+}
+
+static void test_buildProposedRecords_includesAWhenIpv4Supplied() {
+    TEST("buildProposedRecords adds the A record for the host FQDN when an IPv4 is supplied");
+    const uint8_t ip[4] = {192, 168, 0, 33};
+    mdns::ResponseInputs in = sampleInputs();
+    in.ipv4 = ip;
+    std::vector<mdns::ProbeRecord> recs = mdns::buildProposedRecords(in);
+    EXPECT_EQ(recs.size(), 3u);
+    const mdns::ProbeRecord* a = nullptr;
+    for (const auto& r : recs)
+        if (r.type == mdns::TYPE_A) a = &r;
+    EXPECT(a != nullptr);
+    if (a != nullptr) {
+        EXPECT_EQ(a->name, std::string("satellite-host.local."));
+        EXPECT_EQ(a->rdata.size(), 4u);
+        EXPECT(a->rdata.size() == 4 && std::memcmp(a->rdata.data(), ip, 4) == 0);
+    }
+}
+
+static void test_buildProposedRecords_matchesEncodedProbeAuthority() {
+    TEST("buildProposedRecords produces the same record set encodeProbeQuery puts on the wire");
+    const uint8_t ip[4] = {10, 11, 12, 13};
+    mdns::ResponseInputs in = sampleInputs();
+    in.ipv4 = ip;
+    std::vector<mdns::ProbeRecord> built = mdns::buildProposedRecords(in);
+    // Encode a probe, parse its authority section back out, and confirm the
+    // two sets compare equal under the §8.2.1 comparator.
+    uint8_t buf[768];
+    const size_t n = mdns::encodeProbeQuery(buf, sizeof(buf), in);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    std::vector<mdns::Answer> ans;
+    std::vector<mdns::ProbeRecord> authority;
+    EXPECT(mdns::parsePacket(buf, n, h, qs, ans, authority));
+    EXPECT_EQ(built.size(), authority.size());
+    EXPECT_EQ(mdns::compareRecordSets(built, authority), 0); // identical → no conflict
+}
+
+// ── §9 conflict → rename suffix increment ───────────────────────────────────
+// nextInstanceLabel (the §9 suffix logic) lives in mdns_responder.cpp's
+// anonymous namespace and is not exported. To keep the §9 increment under
+// test without widening the production surface, this mirror is kept
+// byte-for-byte identical to that function; the comment on the production
+// copy points here so the two cannot silently drift.
+static std::string testNextInstanceLabel(const std::string& label) {
+    if (!label.empty() && label.back() == ')') {
+        const size_t open = label.rfind(" (");
+        if (open != std::string::npos && open + 2 < label.size() - 1) {
+            const size_t digitsStart = open + 2;
+            const size_t digitsEnd = label.size() - 1;
+            bool allDigits = true;
+            for (size_t i = digitsStart; i < digitsEnd; ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(label[i]))) {
+                    allDigits = false;
+                    break;
+                }
+            }
+            if (allDigits && digitsEnd > digitsStart) {
+                long n = std::strtol(label.substr(digitsStart, digitsEnd - digitsStart).c_str(),
+                                     nullptr, 10);
+                return label.substr(0, open) + " (" + std::to_string(n + 1) + ")";
+            }
+        }
+    }
+    return label + " (2)";
+}
+
+static void test_conflictRename_firstConflictAppendsTwo() {
+    TEST("§9 rename: a bare instance label gains a ' (2)' suffix on the first conflict");
+    EXPECT_EQ(testNextInstanceLabel("kitchen"), std::string("kitchen (2)"));
+    EXPECT_EQ(testNextInstanceLabel("satellite-host"), std::string("satellite-host (2)"));
+}
+
+static void test_conflictRename_subsequentConflictsIncrement() {
+    TEST("§9 rename: an existing ' (N)' suffix increments across successive conflicts");
+    std::string label = "lab";
+    label = testNextInstanceLabel(label);
+    EXPECT_EQ(label, std::string("lab (2)"));
+    label = testNextInstanceLabel(label);
+    EXPECT_EQ(label, std::string("lab (3)"));
+    label = testNextInstanceLabel(label);
+    EXPECT_EQ(label, std::string("lab (4)"));
+    // A two-digit suffix increments correctly too.
+    EXPECT_EQ(testNextInstanceLabel("lab (9)"), std::string("lab (10)"));
+    EXPECT_EQ(testNextInstanceLabel("lab (41)"), std::string("lab (42)"));
+}
+
+static void test_conflictRename_nonSuffixParensAreNotMistakenForCounter() {
+    TEST("§9 rename: a name that merely contains parens is not treated as a counter");
+    // "(beta)" is not a numeric counter → append " (2)", do not increment.
+    EXPECT_EQ(testNextInstanceLabel("box (beta)"), std::string("box (beta) (2)"));
+    // Empty parens are not digits either.
+    EXPECT_EQ(testNextInstanceLabel("box ()"), std::string("box () (2)"));
 }
 
 // ── Known-Answer parsing (RFC 6762 §7.1) ────────────────────────────────────
@@ -1214,7 +1634,33 @@ int main() {
     test_encodeAnnouncement_normalTtlsNeverZero();
 
     test_encodeProbeQuery_shape();
+    test_encodeProbeQuery_authoritySectionHoldsProposedRecords();
+    test_encodeProbeQuery_authorityNamesAndSrvRdata();
     test_encodeProbeQuery_rejectsUndersizedBuffer();
+
+    test_parsePacket_surfacesAuthorityRecords();
+    test_parsePacket_authorityAfterKnownAnswers();
+    test_parsePacket_authorityRejectsRdlenOverrun();
+    test_authorityHasRecordFor_matchesCaseInsensitively();
+
+    test_compareRecordSets_identicalSetsAreEqual();
+    test_compareRecordSets_weWinOnGreaterRdataByte();
+    test_compareRecordSets_weLoseOnSmallerRdataByte();
+    test_compareRecordSets_rdataBytesAreUnsigned();
+    test_compareRecordSets_classComparedBeforeType();
+    test_compareRecordSets_typeBreaksTieWhenClassEqual();
+    test_compareRecordSets_shorterRdataPrefixSortsEarlier();
+    test_compareRecordSets_longerSetWinsWhenPrefixMatches();
+    test_compareRecordSets_sortsBeforeComparing();
+    test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs();
+
+    test_buildProposedRecords_srvTxtOnlyWithoutIpv4();
+    test_buildProposedRecords_includesAWhenIpv4Supplied();
+    test_buildProposedRecords_matchesEncodedProbeAuthority();
+
+    test_conflictRename_firstConflictAppendsTwo();
+    test_conflictRename_subsequentConflictsIncrement();
+    test_conflictRename_nonSuffixParensAreNotMistakenForCounter();
 
     test_isKnownAnswerSuppressed_freshAnswerSuppresses();
     test_isKnownAnswerSuppressed_lowTtlDoesNotSuppress();
