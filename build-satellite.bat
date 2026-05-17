@@ -14,7 +14,7 @@ REM Source files: platform layer + portable core (session_service / update_servi
 REM + net layer + adapters + the per-OS updater adapter. `windres` consumes satellite.rc
 REM separately below (which now #includes src/core/version.h — resolved relative to the .rc
 REM file's own directory, so no -I flag needed for the resource step).
-set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/platform/windows/updater_adapter.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/webserver.cpp src/net/pairing.cpp src/net/discovery.cpp src/core/session_service.cpp src/core/update_service.cpp src/core/github_release.cpp src/adapters/log_adapter.cpp
+set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/platform/windows/updater_adapter.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/inner_dispatch.cpp src/net/webserver.cpp src/net/pairing.cpp src/net/discovery.cpp src/net/mdns_protocol.cpp src/net/mdns_responder.cpp src/core/session_service.cpp src/core/update_service.cpp src/core/github_release.cpp src/adapters/log_adapter.cpp
 
 echo === Building Satellite ===
 echo.
