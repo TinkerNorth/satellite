@@ -51,9 +51,7 @@ static std::string g_currentTest;
 
 // ── Test helpers ────────────────────────────────────────────────────────────
 
-static uint16_t readBE16(const uint8_t* p) {
-    return static_cast<uint16_t>((p[0] << 8) | p[1]);
-}
+static uint16_t readBE16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
 
 static uint32_t readBE32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
@@ -524,7 +522,7 @@ static void test_encodeResponse_cacheFlushBits() {
     const Rr* a = findRr(rrs, mdns::TYPE_A);
     EXPECT(ptr != nullptr && srv != nullptr && txt != nullptr && a != nullptr);
     if (ptr != nullptr) EXPECT_EQ(ptr->cls & mdns::CACHE_FLUSH_BIT, 0); // shared → no flush
-    if (srv != nullptr) EXPECT(srv->cls & mdns::CACHE_FLUSH_BIT);        // unique → flush
+    if (srv != nullptr) EXPECT(srv->cls & mdns::CACHE_FLUSH_BIT);       // unique → flush
     if (txt != nullptr) EXPECT(txt->cls & mdns::CACHE_FLUSH_BIT);
     if (a != nullptr) EXPECT(a->cls & mdns::CACHE_FLUSH_BIT);
 }

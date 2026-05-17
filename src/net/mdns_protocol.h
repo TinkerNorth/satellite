@@ -128,8 +128,7 @@ struct ResponseInputs {
     bool goodbye = false;          // true → every RR carries TTL 0 (service retraction)
 };
 
-size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId,
-                      const ResponseInputs& inputs);
+size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const ResponseInputs& inputs);
 
 // ── Helpers exposed for unit tests ──────────────────────────────────────────
 

@@ -326,9 +326,8 @@ void httpThread(SessionService& svc) {
         }
         saveConfig(g_config);
         logMsg(LogLevel::INFO, "web",
-               "Config updated: udpPort=" + std::to_string(g_config.udpPort) +
-                   " autoStart=" + std::string(g_config.autoStart ? "true" : "false") +
-                   " broadcast=" +
+               "Config updated: udpPort=" + std::to_string(g_config.udpPort) + " autoStart=" +
+                   std::string(g_config.autoStart ? "true" : "false") + " broadcast=" +
                    std::string(g_config.discoveryBroadcastEnabled ? "true" : "false"));
         res.set_content(R"({"ok":true})", "application/json");
     });

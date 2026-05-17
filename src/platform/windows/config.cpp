@@ -151,8 +151,8 @@ void saveConfig(const Config& cfg) {
       << "  \"webPort\": " << cfg.webPort << ",\n"
       << "  \"pairPort\": " << cfg.pairPort << ",\n"
       << "  \"discPort\": " << cfg.discPort << ",\n"
-      << "  \"discoveryBroadcastEnabled\": "
-      << (cfg.discoveryBroadcastEnabled ? "true" : "false") << ",\n"
+      << "  \"discoveryBroadcastEnabled\": " << (cfg.discoveryBroadcastEnabled ? "true" : "false")
+      << ",\n"
       << "  \"autoStart\": " << (cfg.autoStart ? "true" : "false") << ",\n"
       << "  \"updateChannel\": \"" << jsonEscape(cfg.updateChannel) << "\",\n"
       << "  \"autoCheck\": " << (cfg.autoCheck ? "true" : "false") << ",\n"

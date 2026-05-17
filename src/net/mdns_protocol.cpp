@@ -184,8 +184,7 @@ void finalizeRr(uint8_t* out, RrCursor& c, size_t pos) {
 
 } // namespace
 
-size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId,
-                      const ResponseInputs& inputs) {
+size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const ResponseInputs& inputs) {
     if (out == nullptr || outCap < 12) return 0;
 
     const std::string serviceType = SERVICE_TYPE_DOMAIN;
