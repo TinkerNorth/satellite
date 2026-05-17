@@ -106,9 +106,15 @@ bool questionMatchesService(const Question& question);
 // A record (useful in tests where we only care about the service-level
 // fields).
 //
-// `txId` should mirror the request's transaction ID. `unicast` controls
-// the `AA` (authoritative-answer) bit — set when responding via unicast
-// per the QU question hint.
+// `txId` should mirror the request's transaction ID. mDNS responses always
+// carry QR=1 + AA=1 regardless of the query's QU hint, so the response *bytes*
+// never depend on unicast vs multicast — only the destination does, and that
+// is the responder's concern (mdns_responder.cpp), not this encoder.
+//
+// Set `inputs.goodbye` to emit every record with TTL 0 — the RFC 6762 §10.1
+// "goodbye" announcement that retracts the service when the responder shuts
+// down, so caches on the segment flush promptly instead of holding a dead
+// entry until the normal TTL expires.
 //
 // Returns the number of bytes written, or 0 if `outCap` is too small.
 struct ResponseInputs {
@@ -119,9 +125,10 @@ struct ResponseInputs {
     uint16_t priority = 0;    // SRV priority (we always use 0)
     std::vector<std::pair<std::string, std::string>> txtPairs;
     const uint8_t* ipv4 = nullptr; // 4 bytes, network order; or nullptr
+    bool goodbye = false;          // true → every RR carries TTL 0 (service retraction)
 };
 
-size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
+size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId,
                       const ResponseInputs& inputs);
 
 // ── Helpers exposed for unit tests ──────────────────────────────────────────

@@ -1,11 +1,15 @@
 // ── settings.js — Server configuration page ─────────────────────────────────
 
-let settingsSavedConfig = { udpPort: 9876, autoStart: false };
+let settingsSavedConfig = { udpPort: 9876, autoStart: false, discoveryBroadcast: true };
 
 function settingsCheckDirty() {
   const curPort = parseInt(document.getElementById('settings-udpPort').value);
   const curAuto = document.getElementById('settings-autoStart').checked;
-  const dirty = curPort !== settingsSavedConfig.udpPort || curAuto !== settingsSavedConfig.autoStart;
+  const curBroadcast = document.getElementById('settings-discoveryBroadcast').checked;
+  const dirty =
+    curPort !== settingsSavedConfig.udpPort ||
+    curAuto !== settingsSavedConfig.autoStart ||
+    curBroadcast !== settingsSavedConfig.discoveryBroadcast;
   document.getElementById('settings-btnSave').disabled = !dirty;
   document.getElementById('settings-btnUndo').disabled = !dirty;
 }
@@ -13,16 +17,34 @@ function settingsCheckDirty() {
 function settingsUndo() {
   document.getElementById('settings-udpPort').value = settingsSavedConfig.udpPort;
   document.getElementById('settings-autoStart').checked = settingsSavedConfig.autoStart;
+  document.getElementById('settings-discoveryBroadcast').checked =
+    settingsSavedConfig.discoveryBroadcast;
   settingsCheckDirty();
 }
 
 async function settingsSave() {
   const port = parseInt(document.getElementById('settings-udpPort').value);
   const auto = document.getElementById('settings-autoStart').checked;
-  await apiPost('/api/config', { udpPort: port, autoStart: auto });
+  const broadcast = document.getElementById('settings-discoveryBroadcast').checked;
+  await apiPost('/api/config', {
+    udpPort: port,
+    autoStart: auto,
+    discoveryBroadcastEnabled: broadcast,
+  });
   settingsSavedConfig.udpPort = port;
   settingsSavedConfig.autoStart = auto;
+  settingsSavedConfig.discoveryBroadcast = broadcast;
   settingsCheckDirty();
+}
+
+// Render the read-only mDNS responder state. Active is the healthy path;
+// Inactive means the responder couldn't bind 5353 — discovery then relies on
+// the legacy broadcast beacon, so it's flagged with the warning colour.
+function settingsRenderMdnsStatus(active) {
+  const el = document.getElementById('settings-mdns-status');
+  if (!el) return;
+  el.textContent = active ? 'Active' : 'Inactive';
+  el.style.color = active ? 'var(--success)' : 'var(--warning)';
 }
 
 async function initSettings() {
@@ -37,16 +59,23 @@ async function initSettings() {
     const d = await r.json();
     settingsSavedConfig.udpPort = d.udpPort;
     settingsSavedConfig.autoStart = d.autoStart;
+    // Absent key (pre-1.6 server) → treat as on, matching the config default.
+    settingsSavedConfig.discoveryBroadcast = d.discoveryBroadcastEnabled !== false;
     document.getElementById('settings-udpPort').value = d.udpPort;
     document.getElementById('settings-autoStart').checked = d.autoStart;
+    document.getElementById('settings-discoveryBroadcast').checked =
+      settingsSavedConfig.discoveryBroadcast;
+    settingsRenderMdnsStatus(d.mdnsResponderActive === true);
   } catch (e) { /* ignore */ }
 
   settingsCheckDirty();
 
   const udp = document.getElementById('settings-udpPort');
   const auto = document.getElementById('settings-autoStart');
+  const broadcast = document.getElementById('settings-discoveryBroadcast');
   if (udp) udp.addEventListener('input', settingsCheckDirty);
   if (auto) auto.addEventListener('change', settingsCheckDirty);
+  if (broadcast) broadcast.addEventListener('change', settingsCheckDirty);
 
   // Adapt the autostart label per OS — "Start with Windows" reads odd on Mac/Linux.
   try {

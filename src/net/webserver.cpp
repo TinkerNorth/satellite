@@ -281,10 +281,12 @@ void httpThread(SessionService& svc) {
         char json[1024];
         snprintf(
             json, sizeof(json),
-            R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s,"backendAvailable":%s,"backend":%s})",
+            R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s,"discoveryBroadcastEnabled":%s,"mdnsResponderActive":%s,"backendAvailable":%s,"backend":%s})",
             g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
             senderIP, g_config.udpPort, g_config.webPort, g_config.autoStart ? "true" : "false",
-            backendUp ? "true" : "false", backendJson.c_str());
+            g_config.discoveryBroadcastEnabled ? "true" : "false",
+            g_mdnsResponderActive.load() ? "true" : "false", backendUp ? "true" : "false",
+            backendJson.c_str());
         res.set_content(json, "application/json");
     });
 
@@ -315,10 +317,19 @@ void httpThread(SessionService& svc) {
         g_config.autoStart = body.find("\"autoStart\":true") != std::string::npos ||
                              body.find("\"autoStart\": true") != std::string::npos;
         setAutoStart(g_config.autoStart);
+        // Legacy UDP broadcast beacon toggle (Task 1.6). Applied only when the
+        // key is present so a partial POST can't silently flip discovery off.
+        if (body.find("\"discoveryBroadcastEnabled\"") != std::string::npos) {
+            g_config.discoveryBroadcastEnabled =
+                body.find("\"discoveryBroadcastEnabled\":true") != std::string::npos ||
+                body.find("\"discoveryBroadcastEnabled\": true") != std::string::npos;
+        }
         saveConfig(g_config);
         logMsg(LogLevel::INFO, "web",
                "Config updated: udpPort=" + std::to_string(g_config.udpPort) +
-                   " autoStart=" + std::string(g_config.autoStart ? "true" : "false"));
+                   " autoStart=" + std::string(g_config.autoStart ? "true" : "false") +
+                   " broadcast=" +
+                   std::string(g_config.discoveryBroadcastEnabled ? "true" : "false"));
         res.set_content(R"({"ok":true})", "application/json");
     });
 

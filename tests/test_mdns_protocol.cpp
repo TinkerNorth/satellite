@@ -4,11 +4,16 @@
 /*
  * tests/test_mdns_protocol.cpp — unit tests for the pure mDNS encoders /
  * parsers in src/net/mdns_protocol.cpp.
+ *
+ * Coverage: DNS name encode/decode (incl. compression pointers + malformed
+ * input), query packet parsing, response encoding (record shapes, cache-flush
+ * bits, SRV port, TXT pairs, A record, RFC 6762 §10.1 goodbye / TTL-0), and
+ * the questionMatchesService predicate.
  */
 #include "../src/net/mdns_protocol.h"
 
-#include <cstring>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -44,6 +49,88 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
+// ── Test helpers ────────────────────────────────────────────────────────────
+
+static uint16_t readBE16(const uint8_t* p) {
+    return static_cast<uint16_t>((p[0] << 8) | p[1]);
+}
+
+static uint32_t readBE32(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+}
+
+// One decoded resource record from an encodeResponse() packet. `cls` keeps the
+// cache-flush bit as-is so tests can assert on it directly.
+struct Rr {
+    std::string name;
+    uint16_t type = 0;
+    uint16_t cls = 0;
+    uint32_t ttl = 0;
+    size_t rdataOffset = 0;
+    uint16_t rdlen = 0;
+};
+
+// Walk an encodeResponse() packet into its header + answer records. Skips the
+// (always empty in our responses) question section. Returns false on a
+// malformed / truncated packet. Uses the production readDnsName so the helper
+// itself exercises the decoder.
+static bool parseResponseRecords(const uint8_t* buf, size_t len, mdns::Header& hdr,
+                                 std::vector<Rr>& out) {
+    out.clear();
+    if (len < 12) return false;
+    hdr.id = readBE16(buf + 0);
+    hdr.flags = readBE16(buf + 2);
+    hdr.qdCount = readBE16(buf + 4);
+    hdr.anCount = readBE16(buf + 6);
+    hdr.nsCount = readBE16(buf + 8);
+    hdr.arCount = readBE16(buf + 10);
+
+    size_t pos = 12;
+    for (uint16_t i = 0; i < hdr.qdCount; ++i) {
+        std::string n;
+        const size_t c = mdns::readDnsName(buf, len, pos, n);
+        if (c == 0) return false;
+        pos += c + 4; // type + class
+        if (pos > len) return false;
+    }
+    for (uint16_t i = 0; i < hdr.anCount; ++i) {
+        Rr rr;
+        const size_t c = mdns::readDnsName(buf, len, pos, rr.name);
+        if (c == 0) return false;
+        pos += c;
+        if (pos + 10 > len) return false;
+        rr.type = readBE16(buf + pos);
+        rr.cls = readBE16(buf + pos + 2);
+        rr.ttl = readBE32(buf + pos + 4);
+        rr.rdlen = readBE16(buf + pos + 8);
+        rr.rdataOffset = pos + 10;
+        pos += 10;
+        if (pos + rr.rdlen > len) return false;
+        pos += rr.rdlen;
+        out.push_back(rr);
+    }
+    return true;
+}
+
+// Find the first record of `type`, or nullptr.
+static const Rr* findRr(const std::vector<Rr>& rrs, uint16_t type) {
+    for (const auto& rr : rrs) {
+        if (rr.type == type) return &rr;
+    }
+    return nullptr;
+}
+
+// Build the canonical set of response inputs used across the encode tests.
+static mdns::ResponseInputs sampleInputs() {
+    mdns::ResponseInputs in;
+    in.instanceName = "satellite-host";
+    in.hostName = "satellite-host";
+    in.udpPort = 9876;
+    in.txtPairs = {{"udp", "9876"}, {"pair", "9878"}, {"http", "9877"}};
+    return in;
+}
+
 // ── DNS name encoding ───────────────────────────────────────────────────────
 
 static void test_writeDnsName_basic() {
@@ -52,13 +139,22 @@ static void test_writeDnsName_basic() {
     const size_t n = mdns::writeDnsName(buf, sizeof(buf), "foo.bar.local.");
     // 1B len + 3B "foo" + 1B len + 3B "bar" + 1B len + 5B "local" + 1B 0 = 15
     EXPECT_EQ(n, 15u);
-    EXPECT_EQ(buf[0], 3);
-    EXPECT_EQ(buf[4], 3);
-    EXPECT_EQ(buf[8], 5);
-    EXPECT_EQ(buf[14], 0); // terminator
+    EXPECT_EQ(static_cast<int>(buf[0]), 3);
+    EXPECT_EQ(static_cast<int>(buf[4]), 3);
+    EXPECT_EQ(static_cast<int>(buf[8]), 5);
+    EXPECT_EQ(static_cast<int>(buf[14]), 0); // terminator
     EXPECT(std::memcmp(buf + 1, "foo", 3) == 0);
     EXPECT(std::memcmp(buf + 5, "bar", 3) == 0);
     EXPECT(std::memcmp(buf + 9, "local", 5) == 0);
+}
+
+static void test_writeDnsName_singleLabel() {
+    TEST("writeDnsName encodes a single label 'local.'");
+    uint8_t buf[16] = {};
+    const size_t n = mdns::writeDnsName(buf, sizeof(buf), "local.");
+    EXPECT_EQ(n, 7u); // 1 + 5 + 1
+    EXPECT_EQ(static_cast<int>(buf[0]), 5);
+    EXPECT_EQ(static_cast<int>(buf[6]), 0);
 }
 
 static void test_writeDnsName_emptyTerminatorOnly() {
@@ -66,7 +162,7 @@ static void test_writeDnsName_emptyTerminatorOnly() {
     uint8_t buf[8] = {0xFF};
     const size_t n = mdns::writeDnsName(buf, sizeof(buf), "");
     EXPECT_EQ(n, 1u);
-    EXPECT_EQ(buf[0], 0);
+    EXPECT_EQ(static_cast<int>(buf[0]), 0);
 }
 
 static void test_writeDnsName_rejectsOversizedLabel() {
@@ -76,10 +172,23 @@ static void test_writeDnsName_rejectsOversizedLabel() {
     EXPECT_EQ(mdns::writeDnsName(buf, sizeof(buf), longLabel + ".local."), 0u);
 }
 
+static void test_writeDnsName_acceptsMaxLabel() {
+    TEST("writeDnsName accepts a label of exactly 63 bytes");
+    uint8_t buf[128];
+    std::string maxLabel(63, 'a');
+    EXPECT_EQ(mdns::writeDnsName(buf, sizeof(buf), maxLabel + "."), 65u); // 1 + 63 + 1
+}
+
 static void test_writeDnsName_rejectsUndersizedBuffer() {
     TEST("writeDnsName rejects buffers too small for the encoded output");
     uint8_t buf[4];
     EXPECT_EQ(mdns::writeDnsName(buf, sizeof(buf), "foo.bar.local."), 0u);
+}
+
+static void test_writeDnsName_rejectsBufferTooSmallForTerminator() {
+    TEST("writeDnsName rejects a buffer with no room for the terminator");
+    uint8_t buf[3]; // exactly fits "ab" label header+data, no room for the 0
+    EXPECT_EQ(mdns::writeDnsName(buf, sizeof(buf), "ab."), 0u);
 }
 
 // ── DNS name decoding ───────────────────────────────────────────────────────
@@ -95,12 +204,30 @@ static void test_readDnsName_roundTrip() {
     EXPECT_EQ(out, std::string("_satellite._udp.local."));
 }
 
+static void test_readDnsName_appendsTrailingDot() {
+    TEST("readDnsName always yields a trailing dot even when input had none");
+    uint8_t buf[32];
+    const size_t written = mdns::writeDnsName(buf, sizeof(buf), "a.b");
+    EXPECT(written > 0);
+    std::string out;
+    const size_t consumed = mdns::readDnsName(buf, written, 0, out);
+    EXPECT_EQ(consumed, written);
+    EXPECT_EQ(out, std::string("a.b."));
+}
+
+static void test_readDnsName_atNonZeroOffset() {
+    TEST("readDnsName decodes a name that starts partway into the buffer");
+    uint8_t buf[64] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    const size_t written = mdns::writeDnsName(buf + 5, sizeof(buf) - 5, "host.local.");
+    EXPECT(written > 0);
+    std::string out;
+    const size_t consumed = mdns::readDnsName(buf, 5 + written, 5, out);
+    EXPECT_EQ(consumed, written);
+    EXPECT_EQ(out, std::string("host.local."));
+}
+
 static void test_readDnsName_followsCompressionPointer() {
     TEST("readDnsName follows a backwards compression pointer");
-    // Build a small packet: at offset 0 we have "foo.bar.", and at offset 9
-    // we have a name "baz." followed by a compression pointer back to "bar."
-    // which is at offset 4 (the second label in "foo.bar.").
-    //
     // Layout:
     //   0: 0x03 'f' 'o' 'o' 0x03 'b' 'a' 'r' 0x00      (9 bytes, "foo.bar.")
     //   9: 0x03 'b' 'a' 'z' 0xC0 0x04                  (6 bytes, "baz." + ptr to byte 4)
@@ -120,37 +247,55 @@ static void test_readDnsName_rejectsForwardJump() {
     EXPECT_EQ(mdns::readDnsName(packet, sizeof(packet), 0, out), 0u);
 }
 
+static void test_readDnsName_rejectsTruncatedLabel() {
+    TEST("readDnsName rejects a label that runs past the packet end");
+    uint8_t packet[] = {0x0A, 'a', 'b', 'c'}; // claims 10 bytes, only 3 present
+    std::string out;
+    EXPECT_EQ(mdns::readDnsName(packet, sizeof(packet), 0, out), 0u);
+}
+
+static void test_readDnsName_rejectsPointerPastEnd() {
+    TEST("readDnsName rejects a compression pointer targeting past the packet");
+    // 5: 0xC0 0x40 → pointer to offset 64, well past this 7-byte packet.
+    uint8_t packet[] = {3, 'f', 'o', 'o', 0, 0xC0, 0x40};
+    std::string out;
+    EXPECT_EQ(mdns::readDnsName(packet, sizeof(packet), 5, out), 0u);
+}
+
 // ── Packet parsing ──────────────────────────────────────────────────────────
 
-static void test_parsePacket_singleQuestion() {
-    TEST("parsePacket decodes a single PTR question for the service domain");
-    // Hand-build a minimal mDNS query for _satellite._udp.local. PTR IN
-    // (with QU = unicast-response bit).
-    uint8_t buf[64];
-    size_t pos = 0;
-    // Header
-    buf[pos++] = 0x12;
-    buf[pos++] = 0x34; // id
-    buf[pos++] = 0x00;
-    buf[pos++] = 0x00; // flags (query)
-    buf[pos++] = 0x00;
-    buf[pos++] = 0x01; // QDCOUNT
-    buf[pos++] = 0x00;
-    buf[pos++] = 0x00; // ANCOUNT
-    buf[pos++] = 0x00;
-    buf[pos++] = 0x00; // NSCOUNT
-    buf[pos++] = 0x00;
-    buf[pos++] = 0x00; // ARCOUNT
-    pos += mdns::writeDnsName(buf + pos, sizeof(buf) - pos, "_satellite._udp.local.");
-    // QTYPE = PTR, QCLASS = IN | QU
-    buf[pos++] = 0x00;
-    buf[pos++] = 0x0C;
-    buf[pos++] = 0x80;
-    buf[pos++] = 0x01;
+// Append a DNS question (name + qtype + qclass) to `buf` at `pos`, return new pos.
+static size_t appendQuestion(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
+                             uint16_t qtype, uint16_t qclass) {
+    pos += mdns::writeDnsName(buf + pos, cap - pos, name);
+    buf[pos++] = static_cast<uint8_t>(qtype >> 8);
+    buf[pos++] = static_cast<uint8_t>(qtype & 0xFF);
+    buf[pos++] = static_cast<uint8_t>(qclass >> 8);
+    buf[pos++] = static_cast<uint8_t>(qclass & 0xFF);
+    return pos;
+}
 
+static void writeQueryHeader(uint8_t* buf, uint16_t id, uint16_t qd, uint16_t an) {
+    buf[0] = static_cast<uint8_t>(id >> 8);
+    buf[1] = static_cast<uint8_t>(id & 0xFF);
+    buf[2] = 0x00;
+    buf[3] = 0x00; // flags: query
+    buf[4] = static_cast<uint8_t>(qd >> 8);
+    buf[5] = static_cast<uint8_t>(qd & 0xFF);
+    buf[6] = static_cast<uint8_t>(an >> 8);
+    buf[7] = static_cast<uint8_t>(an & 0xFF);
+    buf[8] = buf[9] = buf[10] = buf[11] = 0x00; // NS / AR counts
+}
+
+static void test_parsePacket_singleQuestion() {
+    TEST("parsePacket decodes a single PTR question for the service domain (QU set)");
+    uint8_t buf[128];
+    writeQueryHeader(buf, 0x1234, 1, 0);
+    const size_t end =
+        appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_PTR, 0x8001);
     mdns::Header h{};
     std::vector<mdns::Question> qs;
-    EXPECT(mdns::parsePacket(buf, pos, h, qs));
+    EXPECT(mdns::parsePacket(buf, end, h, qs));
     EXPECT_EQ(h.id, 0x1234);
     EXPECT_EQ(qs.size(), 1u);
     EXPECT_EQ(qs[0].name, std::string("_satellite._udp.local."));
@@ -159,76 +304,78 @@ static void test_parsePacket_singleQuestion() {
     EXPECT(qs[0].unicastResponse);
 }
 
-static void test_parsePacket_rejectsTruncated() {
-    TEST("parsePacket rejects packets shorter than 12-byte header");
+static void test_parsePacket_nonQuClass() {
+    TEST("parsePacket clears unicastResponse when the QU bit is not set");
+    uint8_t buf[128];
+    writeQueryHeader(buf, 1, 1, 0);
+    const size_t end = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.",
+                                      mdns::TYPE_PTR, mdns::CLASS_IN);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    EXPECT(mdns::parsePacket(buf, end, h, qs));
+    EXPECT_EQ(qs.size(), 1u);
+    EXPECT(!qs[0].unicastResponse);
+    EXPECT_EQ(qs[0].cls, mdns::CLASS_IN);
+}
+
+static void test_parsePacket_multipleQuestions() {
+    TEST("parsePacket decodes every question when QDCOUNT > 1");
+    uint8_t buf[256];
+    writeQueryHeader(buf, 7, 2, 0);
+    size_t pos = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_PTR,
+                                mdns::CLASS_IN);
+    pos = appendQuestion(buf, sizeof(buf), pos, "_airplay._tcp.local.", mdns::TYPE_PTR,
+                         mdns::CLASS_IN);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    EXPECT(mdns::parsePacket(buf, pos, h, qs));
+    EXPECT_EQ(qs.size(), 2u);
+    EXPECT_EQ(qs[0].name, std::string("_satellite._udp.local."));
+    EXPECT_EQ(qs[1].name, std::string("_airplay._tcp.local."));
+}
+
+static void test_parsePacket_emptyQuestionSection() {
+    TEST("parsePacket accepts a header-only packet with QDCOUNT 0");
+    uint8_t buf[12];
+    writeQueryHeader(buf, 0x55, 0, 0);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    EXPECT(mdns::parsePacket(buf, 12, h, qs));
+    EXPECT_EQ(qs.size(), 0u);
+}
+
+static void test_parsePacket_toleratesStaleAnswerCount() {
+    TEST("parsePacket reads QDCOUNT questions and ignores a non-zero ANCOUNT");
+    // Known-answer suppression packets carry answers we deliberately skip.
+    uint8_t buf[128];
+    writeQueryHeader(buf, 1, 1, /*an=*/3);
+    const size_t end = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.",
+                                      mdns::TYPE_PTR, mdns::CLASS_IN);
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    EXPECT(mdns::parsePacket(buf, end, h, qs));
+    EXPECT_EQ(qs.size(), 1u);
+    EXPECT_EQ(h.anCount, 3u);
+}
+
+static void test_parsePacket_rejectsTruncatedHeader() {
+    TEST("parsePacket rejects packets shorter than the 12-byte header");
     uint8_t buf[8] = {};
     mdns::Header h{};
     std::vector<mdns::Question> qs;
     EXPECT(!mdns::parsePacket(buf, sizeof(buf), h, qs));
 }
 
-// ── Response encoding ───────────────────────────────────────────────────────
-
-static void test_encodeResponse_minimumPacketShape() {
-    TEST("encodeResponse writes header + 3 answers for a TXT-less service");
-    uint8_t buf[512];
-    mdns::ResponseInputs in;
-    in.instanceName = "host";
-    in.hostName = "host";
-    in.udpPort = 9876;
-    const size_t n = mdns::encodeResponse(buf, sizeof(buf), /*txId=*/0xBEEF,
-                                          /*unicast=*/false, in);
-    EXPECT(n > 12u);
-    // Header: id, flags (QR=1), QD=0, AN=3.
-    EXPECT_EQ(buf[0], 0xBE);
-    EXPECT_EQ(buf[1], 0xEF);
-    EXPECT_EQ((buf[2] & 0x80) >> 7, 1); // QR
-    EXPECT_EQ(buf[5], 0u);              // QDCOUNT low
-    EXPECT_EQ(buf[7], 3u);              // ANCOUNT low (no A record)
+static void test_parsePacket_rejectsTruncatedQuestion() {
+    TEST("parsePacket rejects a QDCOUNT that exceeds the bytes present");
+    uint8_t buf[20];
+    writeQueryHeader(buf, 1, /*qd=*/2, 0);
+    // Only one (short) malformed question's worth of bytes follow.
+    buf[12] = 0x09; // label length 9 with nothing after it
+    mdns::Header h{};
+    std::vector<mdns::Question> qs;
+    EXPECT(!mdns::parsePacket(buf, 13, h, qs));
 }
-
-static void test_encodeResponse_includesARecordWhenIpv4Provided() {
-    TEST("encodeResponse emits 4 answers when ipv4 supplied");
-    uint8_t buf[512];
-    const uint8_t ip[4] = {192, 168, 1, 2};
-    mdns::ResponseInputs in;
-    in.instanceName = "host";
-    in.hostName = "host";
-    in.udpPort = 9876;
-    in.ipv4 = ip;
-    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, false, in);
-    EXPECT(n > 0u);
-    EXPECT_EQ(buf[7], 4u); // ANCOUNT low
-}
-
-static void test_encodeResponse_writesTxtPairs() {
-    TEST("encodeResponse TXT rdata encodes each key=value as length-prefixed");
-    uint8_t buf[512];
-    mdns::ResponseInputs in;
-    in.instanceName = "host";
-    in.hostName = "host";
-    in.udpPort = 9876;
-    in.txtPairs = {{"udp", "9876"}, {"pair", "9878"}, {"http", "9877"}};
-    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, false, in);
-    EXPECT(n > 0u);
-    // Walk the buffer for "udp=9876" / "pair=9878" / "http=9877" — easiest
-    // sanity check without re-implementing the parser here.
-    auto bufStr = std::string(reinterpret_cast<const char*>(buf), n);
-    EXPECT(bufStr.find("udp=9876") != std::string::npos);
-    EXPECT(bufStr.find("pair=9878") != std::string::npos);
-    EXPECT(bufStr.find("http=9877") != std::string::npos);
-}
-
-static void test_encodeResponse_emptyBufferReturnsZero() {
-    TEST("encodeResponse returns 0 on undersized buffer");
-    uint8_t buf[4];
-    mdns::ResponseInputs in;
-    in.instanceName = "host";
-    in.hostName = "host";
-    EXPECT_EQ(mdns::encodeResponse(buf, sizeof(buf), 1, false, in), 0u);
-}
-
-// ── Driver ──────────────────────────────────────────────────────────────────
 
 // ── questionMatchesService ──────────────────────────────────────────────────
 
@@ -270,37 +417,241 @@ static void test_questionMatchesService_rejectsWrongName() {
 
 static void test_questionMatchesService_rejectsPrefixAndSuffix() {
     TEST("questionMatchesService requires an exact name match (no prefix/suffix)");
-    // Missing trailing dot.
     EXPECT(!mdns::questionMatchesService(makeQuestion("_satellite._udp.local", mdns::TYPE_PTR)));
-    // An instance name *under* the service type is not the service type.
     EXPECT(
         !mdns::questionMatchesService(makeQuestion("box._satellite._udp.local.", mdns::TYPE_PTR)));
-    // Trailing junk.
     EXPECT(!mdns::questionMatchesService(
         makeQuestion("_satellite._udp.local.extra.", mdns::TYPE_PTR)));
-    // Empty.
     EXPECT(!mdns::questionMatchesService(makeQuestion("", mdns::TYPE_PTR)));
 }
+
+// ── Response encoding ───────────────────────────────────────────────────────
+
+static void test_encodeResponse_minimumPacketShape() {
+    TEST("encodeResponse writes header + 3 answers (PTR/SRV/TXT) without an A record");
+    uint8_t buf[512];
+    mdns::ResponseInputs in = sampleInputs();
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), /*txId=*/0xBEEF, in);
+    EXPECT(n > 12u);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    EXPECT_EQ(h.id, 0xBEEFu);
+    EXPECT_EQ((h.flags >> 15) & 1, 1); // QR
+    EXPECT_EQ((h.flags >> 10) & 1, 1); // AA
+    EXPECT_EQ(h.qdCount, 0u);
+    EXPECT_EQ(h.anCount, 3u);
+    EXPECT_EQ(rrs.size(), 3u);
+    EXPECT(findRr(rrs, mdns::TYPE_PTR) != nullptr);
+    EXPECT(findRr(rrs, mdns::TYPE_SRV) != nullptr);
+    EXPECT(findRr(rrs, mdns::TYPE_TXT) != nullptr);
+    EXPECT(findRr(rrs, mdns::TYPE_A) == nullptr);
+}
+
+static void test_encodeResponse_includesARecordWhenIpv4Provided() {
+    TEST("encodeResponse emits 4 answers and a valid A record when ipv4 supplied");
+    uint8_t buf[512];
+    const uint8_t ip[4] = {192, 168, 1, 2};
+    mdns::ResponseInputs in = sampleInputs();
+    in.ipv4 = ip;
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    EXPECT_EQ(h.anCount, 4u);
+    const Rr* a = findRr(rrs, mdns::TYPE_A);
+    EXPECT(a != nullptr);
+    if (a != nullptr) {
+        EXPECT_EQ(a->rdlen, 4u);
+        EXPECT(std::memcmp(buf + a->rdataOffset, ip, 4) == 0);
+        EXPECT_EQ(a->name, std::string("satellite-host.local."));
+    }
+}
+
+static void test_encodeResponse_ptrTargetsInstanceFqdn() {
+    TEST("encodeResponse PTR record points the service type at the instance FQDN");
+    uint8_t buf[512];
+    mdns::ResponseInputs in = sampleInputs();
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    const Rr* ptr = findRr(rrs, mdns::TYPE_PTR);
+    EXPECT(ptr != nullptr);
+    if (ptr != nullptr) {
+        EXPECT_EQ(ptr->name, std::string("_satellite._udp.local."));
+        std::string target;
+        EXPECT(mdns::readDnsName(buf, n, ptr->rdataOffset, target) > 0);
+        EXPECT_EQ(target, std::string("satellite-host._satellite._udp.local."));
+    }
+}
+
+static void test_encodeResponse_srvCarriesPortAndTarget() {
+    TEST("encodeResponse SRV record carries the UDP port and host target");
+    uint8_t buf[512];
+    mdns::ResponseInputs in = sampleInputs();
+    in.udpPort = 40001;
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    const Rr* srv = findRr(rrs, mdns::TYPE_SRV);
+    EXPECT(srv != nullptr);
+    if (srv != nullptr) {
+        // rdata: priority(2) weight(2) port(2) target(name)
+        EXPECT_EQ(readBE16(buf + srv->rdataOffset + 0), 0u); // priority
+        EXPECT_EQ(readBE16(buf + srv->rdataOffset + 2), 0u); // weight
+        EXPECT_EQ(readBE16(buf + srv->rdataOffset + 4), 40001u);
+        std::string target;
+        EXPECT(mdns::readDnsName(buf, n, srv->rdataOffset + 6, target) > 0);
+        EXPECT_EQ(target, std::string("satellite-host.local."));
+    }
+}
+
+static void test_encodeResponse_cacheFlushBits() {
+    TEST("encodeResponse sets the cache-flush bit on unique RRs but not the shared PTR");
+    uint8_t buf[512];
+    const uint8_t ip[4] = {10, 0, 0, 9};
+    mdns::ResponseInputs in = sampleInputs();
+    in.ipv4 = ip;
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    const Rr* ptr = findRr(rrs, mdns::TYPE_PTR);
+    const Rr* srv = findRr(rrs, mdns::TYPE_SRV);
+    const Rr* txt = findRr(rrs, mdns::TYPE_TXT);
+    const Rr* a = findRr(rrs, mdns::TYPE_A);
+    EXPECT(ptr != nullptr && srv != nullptr && txt != nullptr && a != nullptr);
+    if (ptr != nullptr) EXPECT_EQ(ptr->cls & mdns::CACHE_FLUSH_BIT, 0); // shared → no flush
+    if (srv != nullptr) EXPECT(srv->cls & mdns::CACHE_FLUSH_BIT);        // unique → flush
+    if (txt != nullptr) EXPECT(txt->cls & mdns::CACHE_FLUSH_BIT);
+    if (a != nullptr) EXPECT(a->cls & mdns::CACHE_FLUSH_BIT);
+}
+
+static void test_encodeResponse_writesTxtPairs() {
+    TEST("encodeResponse TXT rdata encodes each key=value as a length-prefixed string");
+    uint8_t buf[512];
+    mdns::ResponseInputs in = sampleInputs();
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    const Rr* txt = findRr(rrs, mdns::TYPE_TXT);
+    EXPECT(txt != nullptr);
+    if (txt != nullptr) {
+        // Walk the length-prefixed strings inside the TXT rdata.
+        std::vector<std::string> entries;
+        size_t t = txt->rdataOffset;
+        const size_t end = txt->rdataOffset + txt->rdlen;
+        while (t < end) {
+            const uint8_t slen = buf[t];
+            if (t + 1 + slen > end) break;
+            entries.emplace_back(reinterpret_cast<const char*>(buf + t + 1), slen);
+            t += 1 + slen;
+        }
+        EXPECT_EQ(entries.size(), 3u);
+        EXPECT(!entries.empty() && entries[0] == "udp=9876");
+        EXPECT(entries.size() > 1 && entries[1] == "pair=9878");
+        EXPECT(entries.size() > 2 && entries[2] == "http=9877");
+    }
+}
+
+static void test_encodeResponse_emptyTxtIsZeroLengthString() {
+    TEST("encodeResponse with no TXT pairs emits a single zero-length string (DNS-SD §6.1)");
+    uint8_t buf[512];
+    mdns::ResponseInputs in = sampleInputs();
+    in.txtPairs.clear();
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    const Rr* txt = findRr(rrs, mdns::TYPE_TXT);
+    EXPECT(txt != nullptr);
+    if (txt != nullptr) {
+        EXPECT_EQ(txt->rdlen, 1u);
+        EXPECT_EQ(static_cast<int>(buf[txt->rdataOffset]), 0);
+    }
+}
+
+static void test_encodeResponse_normalTtls() {
+    TEST("encodeResponse uses the service / host TTLs for a non-goodbye response");
+    uint8_t buf[512];
+    const uint8_t ip[4] = {10, 0, 0, 1};
+    mdns::ResponseInputs in = sampleInputs();
+    in.ipv4 = ip;
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 1, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    const Rr* ptr = findRr(rrs, mdns::TYPE_PTR);
+    const Rr* srv = findRr(rrs, mdns::TYPE_SRV);
+    EXPECT(ptr != nullptr && srv != nullptr);
+    if (ptr != nullptr) EXPECT_EQ(ptr->ttl, mdns::TTL_SERVICE);
+    if (srv != nullptr) EXPECT_EQ(srv->ttl, mdns::TTL_HOST);
+}
+
+static void test_encodeResponse_goodbyeUsesTtlZero() {
+    TEST("encodeResponse goodbye announcement sets TTL 0 on every record");
+    uint8_t buf[512];
+    const uint8_t ip[4] = {10, 0, 0, 1};
+    mdns::ResponseInputs in = sampleInputs();
+    in.ipv4 = ip;
+    in.goodbye = true;
+    const size_t n = mdns::encodeResponse(buf, sizeof(buf), 0, in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    EXPECT_EQ(rrs.size(), 4u); // goodbye still emits the full record set
+    bool allZero = !rrs.empty();
+    for (const auto& rr : rrs) {
+        if (rr.ttl != 0) allZero = false;
+    }
+    EXPECT(allZero);
+}
+
+static void test_encodeResponse_rejectsUndersizedBuffer() {
+    TEST("encodeResponse returns 0 on an undersized buffer");
+    uint8_t buf[4];
+    mdns::ResponseInputs in = sampleInputs();
+    EXPECT_EQ(mdns::encodeResponse(buf, sizeof(buf), 1, in), 0u);
+}
+
+static void test_encodeResponse_rejectsBufferBetweenHeaderAndBody() {
+    TEST("encodeResponse returns 0 when the buffer holds the header but not the records");
+    uint8_t buf[20]; // > 12 (header) but far too small for PTR+SRV+TXT
+    mdns::ResponseInputs in = sampleInputs();
+    EXPECT_EQ(mdns::encodeResponse(buf, sizeof(buf), 1, in), 0u);
+}
+
+// ── Driver ──────────────────────────────────────────────────────────────────
 
 int main() {
     std::cout << "Running mDNS protocol tests...\n\n";
 
     test_writeDnsName_basic();
+    test_writeDnsName_singleLabel();
     test_writeDnsName_emptyTerminatorOnly();
     test_writeDnsName_rejectsOversizedLabel();
+    test_writeDnsName_acceptsMaxLabel();
     test_writeDnsName_rejectsUndersizedBuffer();
+    test_writeDnsName_rejectsBufferTooSmallForTerminator();
 
     test_readDnsName_roundTrip();
+    test_readDnsName_appendsTrailingDot();
+    test_readDnsName_atNonZeroOffset();
     test_readDnsName_followsCompressionPointer();
     test_readDnsName_rejectsForwardJump();
+    test_readDnsName_rejectsTruncatedLabel();
+    test_readDnsName_rejectsPointerPastEnd();
 
     test_parsePacket_singleQuestion();
-    test_parsePacket_rejectsTruncated();
-
-    test_encodeResponse_minimumPacketShape();
-    test_encodeResponse_includesARecordWhenIpv4Provided();
-    test_encodeResponse_writesTxtPairs();
-    test_encodeResponse_emptyBufferReturnsZero();
+    test_parsePacket_nonQuClass();
+    test_parsePacket_multipleQuestions();
+    test_parsePacket_emptyQuestionSection();
+    test_parsePacket_toleratesStaleAnswerCount();
+    test_parsePacket_rejectsTruncatedHeader();
+    test_parsePacket_rejectsTruncatedQuestion();
 
     test_questionMatchesService_ptr();
     test_questionMatchesService_any();
@@ -308,6 +659,18 @@ int main() {
     test_questionMatchesService_rejectsWrongType();
     test_questionMatchesService_rejectsWrongName();
     test_questionMatchesService_rejectsPrefixAndSuffix();
+
+    test_encodeResponse_minimumPacketShape();
+    test_encodeResponse_includesARecordWhenIpv4Provided();
+    test_encodeResponse_ptrTargetsInstanceFqdn();
+    test_encodeResponse_srvCarriesPortAndTarget();
+    test_encodeResponse_cacheFlushBits();
+    test_encodeResponse_writesTxtPairs();
+    test_encodeResponse_emptyTxtIsZeroLengthString();
+    test_encodeResponse_normalTtls();
+    test_encodeResponse_goodbyeUsesTtlZero();
+    test_encodeResponse_rejectsUndersizedBuffer();
+    test_encodeResponse_rejectsBufferBetweenHeaderAndBody();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

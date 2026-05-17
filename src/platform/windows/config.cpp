@@ -92,6 +92,9 @@ Config loadConfig() {
     if (v > 0) cfg.pairPort = v;
     v = getInt("discPort");
     if (v > 0) cfg.discPort = v;
+    // Task 1.6 — absent on pre-1.6 configs, where the default (true) keeps the
+    // legacy broadcast beacon on so discovery doesn't silently regress.
+    getBoolOpt("discoveryBroadcastEnabled", &cfg.discoveryBroadcastEnabled);
     cfg.autoStart = getBool("autoStart");
     cfg.credentials = jsonGetString(content, "credentials");
 
@@ -148,6 +151,8 @@ void saveConfig(const Config& cfg) {
       << "  \"webPort\": " << cfg.webPort << ",\n"
       << "  \"pairPort\": " << cfg.pairPort << ",\n"
       << "  \"discPort\": " << cfg.discPort << ",\n"
+      << "  \"discoveryBroadcastEnabled\": "
+      << (cfg.discoveryBroadcastEnabled ? "true" : "false") << ",\n"
       << "  \"autoStart\": " << (cfg.autoStart ? "true" : "false") << ",\n"
       << "  \"updateChannel\": \"" << jsonEscape(cfg.updateChannel) << "\",\n"
       << "  \"autoCheck\": " << (cfg.autoCheck ? "true" : "false") << ",\n"

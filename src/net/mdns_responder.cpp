@@ -124,6 +124,7 @@ void mdnsResponderThread() {
     const std::string host = shortHostLabel();
     logMsg(LogLevel::INFO, "mdns",
            "mDNS responder up — advertising _satellite._udp.local. as '" + host + "'");
+    g_mdnsResponderActive.store(true, std::memory_order_relaxed);
 
     while (g_appRunning) {
         sockaddr_in from{};
@@ -167,7 +168,7 @@ void mdnsResponderThread() {
         if (getLocalIPv4(ipv4)) in.ipv4 = ipv4;
 
         uint8_t out[1024];
-        size_t outLen = mdns::encodeResponse(out, sizeof(out), header.id, wantUnicast, in);
+        size_t outLen = mdns::encodeResponse(out, sizeof(out), header.id, in);
         if (outLen == 0) continue;
 
         // Unicast back to the querier when it set the QU bit; otherwise
@@ -175,6 +176,31 @@ void mdnsResponderThread() {
         const sockaddr_in& dest = wantUnicast ? from : groupAddr;
         sendto(sock, reinterpret_cast<const char*>(out), static_cast<int>(outLen), 0,
                reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+    }
+
+    // RFC 6762 §10.1 — announce departure with a TTL-0 record set so caches
+    // on the segment drop the service immediately instead of holding a dead
+    // entry until the 120 s service TTL expires. Best-effort, single shot.
+    g_mdnsResponderActive.store(false, std::memory_order_relaxed);
+    {
+        mdns::ResponseInputs bye;
+        bye.instanceName = host;
+        bye.hostName = host;
+        bye.udpPort = static_cast<uint16_t>(g_config.udpPort);
+        bye.txtPairs = {
+            {"udp", std::to_string(g_config.udpPort)},
+            {"pair", std::to_string(g_config.pairPort)},
+            {"http", std::to_string(g_config.webPort)},
+        };
+        uint8_t byeIp[4];
+        if (getLocalIPv4(byeIp)) bye.ipv4 = byeIp;
+        bye.goodbye = true;
+        uint8_t byeBuf[1024];
+        const size_t byeLen = mdns::encodeResponse(byeBuf, sizeof(byeBuf), 0, bye);
+        if (byeLen > 0) {
+            sendto(sock, reinterpret_cast<const char*>(byeBuf), static_cast<int>(byeLen), 0,
+                   reinterpret_cast<const sockaddr*>(&groupAddr), sizeof(groupAddr));
+        }
     }
 
     setsockopt(sock, IPPROTO_IP, IP_DROP_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),

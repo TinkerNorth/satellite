@@ -6,6 +6,12 @@
  *
  * Every 2 seconds, broadcasts a JSON packet on UDP port 9879 (configurable)
  * so that senders on the same LAN can auto-detect this receiver.
+ *
+ * This is the legacy discovery path. mDNS / Bonjour (net/mdns_responder.cpp,
+ * Task 1.6) is the modern path; the broadcast beacon stays on as a fallback
+ * for senders that predate the mDNS responder. The beacon can be toggled at
+ * runtime via Config::discoveryBroadcastEnabled (web UI Settings → Discovery)
+ * and is slated for removal in 2027.
  */
 #include "discovery.h"
 #include "config.h"
@@ -32,17 +38,33 @@ void discoveryThread() {
     dest.sin_family = AF_INET;
     dest.sin_addr.s_addr = INADDR_BROADCAST;
 
+    // The thread runs for the process lifetime even when the beacon is
+    // disabled, so flipping Config::discoveryBroadcastEnabled back on
+    // hot-resumes broadcasting without a restart. `announced` tracks the last
+    // logged state so each transition is logged exactly once.
+    bool announced = false;
     while (g_appRunning) {
-        dest.sin_port = htons((uint16_t)g_config.discPort);
+        const bool enabled = g_config.discoveryBroadcastEnabled;
+        if (enabled != announced) {
+            logMsg(LogLevel::INFO, "discovery",
+                   enabled ? "Legacy UDP broadcast beacon enabled"
+                           : "Legacy UDP broadcast beacon disabled — mDNS responder still active");
+            announced = enabled;
+        }
 
-        // Build beacon JSON
-        char beacon[512];
-        snprintf(beacon, sizeof(beacon),
-                 R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d})",
-                 hostname, g_config.udpPort, g_config.pairPort, g_config.webPort);
+        if (enabled) {
+            dest.sin_port = htons((uint16_t)g_config.discPort);
 
-        sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
-               sizeof(dest));
+            // Build beacon JSON
+            char beacon[512];
+            snprintf(
+                beacon, sizeof(beacon),
+                R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d})",
+                hostname, g_config.udpPort, g_config.pairPort, g_config.webPort);
+
+            sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
+                   sizeof(dest));
+        }
 
         // Sleep 2 seconds in 100ms increments to allow quick shutdown
         for (int i = 0; i < 20 && g_appRunning; i++) netSleepMs(100);

@@ -43,6 +43,12 @@ extern std::atomic<bool> g_appRunning;
 extern std::atomic<bool> g_listening;
 extern std::atomic<bool> g_wantListen;
 
+// True while the mDNS / Bonjour responder thread holds its multicast socket
+// (Task 1.6). False when the bind/join failed or the thread has exited.
+// Surfaced read-only in the web UI so operators can see the modern discovery
+// path is live without grepping the log ring.
+extern std::atomic<bool> g_mdnsResponderActive;
+
 // ── Telemetry counters (read by webserver SSE) ──────────────────────────────
 extern std::atomic<uint64_t> g_packetCount;
 extern std::atomic<uint64_t> g_submitOk;

@@ -46,17 +46,29 @@ Bonjour stack can still find it.
 * **TXT records:** `udp=<udpPort>`, `pair=<pairPort>`, `http=<webPort>`
 * **SRV target:** `<host-label>.local.` on `<udpPort>`
 
+The responder is passive — it answers PTR / ANY queries for the service
+type with PTR + SRV + TXT (+ A) records and does not send unsolicited
+announcements. On shutdown it multicasts a goodbye announcement (every
+record at TTL 0, RFC 6762 §10.1) so resolver caches on the segment drop
+the entry immediately. Its live state is published read-only as
+`mdnsResponderActive` in `GET /api/status` and shown in the web UI
+(Settings → Discovery).
+
 Senders SHOULD prefer the mDNS path when available. The legacy UDP
-broadcast stays in place for one release as a fallback (gated behind
-`Config::discoveryBroadcastEnabled`) and is removed in the next
-release after that.
+broadcast beacon stays in place as a fallback for senders that predate
+the mDNS responder; it is gated behind `Config::discoveryBroadcastEnabled`
+(default `true`, toggleable at runtime from the web UI Settings →
+Discovery panel — `POST /api/config`) and is slated for removal in 2027.
+Disabling it does not stop the `discoveryThread` worker; the thread keeps
+running and simply skips the broadcast send, so re-enabling hot-resumes
+the beacon without a restart.
 
 The encoder / parser surface for the mDNS protocol records lives in
 `src/net/mdns_protocol.{h,cpp}` and is exercised by
-`tests/test_mdns_protocol.cpp` (39 cases covering DNS name encoding,
-compression-pointer decoding, packet parsing, and response building).
-The platform-specific multicast group join / socket bind lives in
-`src/net/mdns_responder.{h,cpp}` (per-platform follow-up).
+`tests/test_mdns_protocol.cpp` (DNS name encoding, compression-pointer
+decoding, query-packet parsing, response building, cache-flush bits, and
+the TTL-0 goodbye path). The multicast group join / socket bind + recv
+loop lives in `src/net/mdns_responder.{h,cpp}`.
 
 ## Architecture — Hexagonal (Ports & Adapters)
 

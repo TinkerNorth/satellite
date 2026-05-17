@@ -216,6 +216,22 @@
         <span id="settings-autoStart-label">Start with Windows</span>
         <label class="switch"><input type="checkbox" id="settings-autoStart"><span class="slider"></span></label>
       </div>
+
+      <!-- ── Discovery (Task 1.6 — mDNS / Bonjour + legacy beacon) ── -->
+      <h2 class="section-title" style="margin-top:18px">Discovery</h2>
+      <div class="stat">
+        <span class="label">mDNS / Bonjour responder</span>
+        <span class="value" id="settings-mdns-status">—</span>
+      </div>
+      <div class="toggle-row">
+        <span>Legacy UDP broadcast beacon</span>
+        <label class="switch"><input type="checkbox" id="settings-discoveryBroadcast"><span class="slider"></span></label>
+      </div>
+      <p class="hint">mDNS / Bonjour is the modern discovery path and works on
+        subnets that drop broadcast. The legacy UDP broadcast beacon stays on as
+        a fallback for senders that predate the mDNS responder — turn it off
+        only on a network where every sender supports mDNS.</p>
+
       <div class="btn-row">
         <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" disabled>Save Config</button>
         <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" disabled>Undo</button>

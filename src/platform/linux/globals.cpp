@@ -11,6 +11,7 @@ std::mutex g_configMtx;
 std::atomic<bool> g_appRunning{true};
 std::atomic<bool> g_listening{false};
 std::atomic<bool> g_wantListen{false};
+std::atomic<bool> g_mdnsResponderActive{false};
 std::atomic<uint64_t> g_packetCount{0};
 std::atomic<uint64_t> g_submitOk{0};
 std::atomic<uint64_t> g_submitFail{0};

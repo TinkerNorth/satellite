@@ -184,13 +184,18 @@ void finalizeRr(uint8_t* out, RrCursor& c, size_t pos) {
 
 } // namespace
 
-size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
+size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId,
                       const ResponseInputs& inputs) {
     if (out == nullptr || outCap < 12) return 0;
 
     const std::string serviceType = SERVICE_TYPE_DOMAIN;
     const std::string instanceFqdn = inputs.instanceName + "." + serviceType;
     const std::string hostFqdn = inputs.hostName + ".local.";
+
+    // Goodbye announcements (RFC 6762 §10.1) re-send the records with TTL 0
+    // so resolver caches drop the service immediately on shutdown.
+    const uint32_t ttlService = inputs.goodbye ? 0u : TTL_SERVICE;
+    const uint32_t ttlHost = inputs.goodbye ? 0u : TTL_HOST;
 
     // We always emit at minimum PTR + SRV + TXT (3 records). A record is
     // optional and only included when caller supplied an IPv4.
@@ -200,8 +205,10 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
     size_t pos = 0;
     putBE16(out + pos, txId);
     pos += 2;
-    // QR=1 (response), AA=1 when unicast. Other bits zero (no recursion).
-    const uint16_t flags = 0x8400 | (unicast ? 0x0000 : 0x0000);
+    // mDNS responses always carry QR=1 + AA=1 (RFC 6762 §18.2 / §18.4); no
+    // recursion bits. Unicast vs multicast changes only the destination —
+    // the responder's concern — never these bytes.
+    const uint16_t flags = 0x8400;
     putBE16(out + pos, flags);
     pos += 2;
     putBE16(out + pos, 0); // QDCOUNT
@@ -215,7 +222,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
 
     // PTR record: serviceType → instanceFqdn.
     {
-        auto c = writeRrHeader(out, outCap, pos, serviceType, TYPE_PTR, CLASS_IN, TTL_SERVICE);
+        auto c = writeRrHeader(out, outCap, pos, serviceType, TYPE_PTR, CLASS_IN, ttlService);
         if (!c.ok) return 0;
         const size_t n = writeDnsName(out + pos, outCap - pos, instanceFqdn);
         if (n == 0) return 0;
@@ -225,7 +232,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
     // SRV record: instanceFqdn → priority/weight/port/hostFqdn.
     {
         auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_SRV, CLASS_IN | CACHE_FLUSH_BIT,
-                               TTL_HOST);
+                               ttlHost);
         if (!c.ok) return 0;
         if (pos + 6 > outCap) return 0;
         putBE16(out + pos, inputs.priority);
@@ -241,7 +248,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
     // encoded as a single zero-length string per DNS-SD §6.1.
     {
         auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_TXT, CLASS_IN | CACHE_FLUSH_BIT,
-                               TTL_HOST);
+                               ttlHost);
         if (!c.ok) return 0;
         if (inputs.txtPairs.empty()) {
             if (pos + 1 > outCap) return 0;
@@ -261,14 +268,13 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, bool unicast,
     // Optional A record for the host.
     if (inputs.ipv4 != nullptr) {
         auto c =
-            writeRrHeader(out, outCap, pos, hostFqdn, TYPE_A, CLASS_IN | CACHE_FLUSH_BIT, TTL_HOST);
+            writeRrHeader(out, outCap, pos, hostFqdn, TYPE_A, CLASS_IN | CACHE_FLUSH_BIT, ttlHost);
         if (!c.ok) return 0;
         if (pos + 4 > outCap) return 0;
         std::memcpy(out + pos, inputs.ipv4, 4);
         pos += 4;
         finalizeRr(out, c, pos);
     }
-    (void)unicast; // currently only affects flags; reserved for future use
     return pos;
 }
 

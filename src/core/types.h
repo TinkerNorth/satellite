@@ -425,6 +425,12 @@ struct Config {
     int webPort = DEFAULT_WEB_PORT;
     int pairPort = DEFAULT_PAIR_PORT;
     int discPort = DEFAULT_DISC_PORT;
+    // Legacy UDP broadcast beacon on discPort. mDNS/Bonjour (Task 1.6) is the
+    // modern discovery path; the broadcast beacon stays on as a fallback for
+    // senders that predate the mDNS responder. Operators on an all-mDNS LAN
+    // can disable it to cut broadcast noise. Slated for removal in 2027 once
+    // the install base has migrated. Absent in pre-1.6 configs → defaults on.
+    bool discoveryBroadcastEnabled = true;
     bool autoStart = false;
     std::string credentials; // DPAPI-encrypted "user:salt:hash"
     std::vector<PairedDevice> pairedDevices;
