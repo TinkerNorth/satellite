@@ -161,9 +161,9 @@ ProbeEvent classifyProbePacket(const uint8_t* buf, size_t n, const std::string& 
         // probe loops back via IP_MULTICAST_LOOP, but a probe is a query with
         // no answers, so any answer here came from a peer.
         for (const auto& a : ans) {
-            const bool hitInstance = nameEqCi(a.name, instanceFqdn) &&
-                                     (a.type == mdns::TYPE_SRV || a.type == mdns::TYPE_TXT ||
-                                      a.type == mdns::TYPE_ANY);
+            const bool hitInstance =
+                nameEqCi(a.name, instanceFqdn) &&
+                (a.type == mdns::TYPE_SRV || a.type == mdns::TYPE_TXT || a.type == mdns::TYPE_ANY);
             const bool hitHost = nameEqCi(a.name, hostFqdn) && a.type == mdns::TYPE_A;
             if (hitInstance || hitHost) return ProbeEvent::Conflict;
         }
@@ -214,7 +214,7 @@ ProbeEvent classifyProbePacket(const uint8_t* buf, size_t n, const std::string& 
 
 // Result of the RFC 6762 §8.1 probe sequence.
 struct ProbeResult {
-    std::string instance; // final (possibly renamed) instance label to advertise
+    std::string instance;  // final (possibly renamed) instance label to advertise
     bool shutdown = false; // g_appRunning cleared mid-probe — caller must not announce
     bool gaveUp = false;   // §9 rename cap hit — advertising unprobed, conflicts possible
 };
@@ -308,12 +308,12 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
                 sockaddr_in pfrom{};
                 socklen_t pfromLen = sizeof(pfrom);
                 uint8_t pbuf[2048];
-                const int pn = static_cast<int>(
-                    recvfrom(sock, reinterpret_cast<char*>(pbuf), sizeof(pbuf), 0,
-                             reinterpret_cast<sockaddr*>(&pfrom), &pfromLen));
+                const int pn =
+                    static_cast<int>(recvfrom(sock, reinterpret_cast<char*>(pbuf), sizeof(pbuf), 0,
+                                              reinterpret_cast<sockaddr*>(&pfrom), &pfromLen));
                 if (pn <= 0) continue; // timeout slice — re-check the deadline
                 const ProbeEvent ev = classifyProbePacket(pbuf, static_cast<size_t>(pn),
-                                                           instanceFqdn, hostFqdn, ours);
+                                                          instanceFqdn, hostFqdn, ours);
                 if (ev == ProbeEvent::Conflict) {
                     conflict = true;
                     break;
@@ -477,8 +477,8 @@ void mdnsResponderThread() {
     if (probe.gaveUp) {
         logMsg(LogLevel::ERR, "mdns",
                "mDNS probing gave up after 10 rename attempts — the segment is saturated "
-               "with '_satellite._udp.local.' names; advertising anyway as '" + instance +
-                   "' (cache conflicts possible)");
+               "with '_satellite._udp.local.' names; advertising anyway as '" +
+                   instance + "' (cache conflicts possible)");
     }
 
     logMsg(LogLevel::INFO, "mdns",
@@ -548,8 +548,8 @@ void mdnsResponderThread() {
             const bool forInstance =
                 nameEqCi(q.name, instanceFqdn) &&
                 (q.type == mdns::TYPE_ANY || q.type == mdns::TYPE_SRV || q.type == mdns::TYPE_TXT);
-            const bool forHost = nameEqCi(q.name, hostFqdn) &&
-                                 (q.type == mdns::TYPE_ANY || q.type == mdns::TYPE_A);
+            const bool forHost =
+                nameEqCi(q.name, hostFqdn) && (q.type == mdns::TYPE_ANY || q.type == mdns::TYPE_A);
             if (mdns::questionMatchesService(q) || forInstance || forHost) {
                 matched = true;
                 wantUnicast = wantUnicast || q.unicastResponse;

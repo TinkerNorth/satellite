@@ -162,8 +162,7 @@ bool parseAnswerSection(const uint8_t* data, size_t len, uint16_t count,
         a.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
         a.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
                 (static_cast<uint32_t>(data[pos + 5]) << 16) |
-                (static_cast<uint32_t>(data[pos + 6]) << 8) |
-                static_cast<uint32_t>(data[pos + 7]);
+                (static_cast<uint32_t>(data[pos + 6]) << 8) | static_cast<uint32_t>(data[pos + 7]);
         const uint16_t rdlen = readBE16(data + pos + 8);
         pos += 10;
         if (pos + rdlen > len) return false; // rdata overruns the packet
@@ -216,8 +215,8 @@ bool canonicalizeAuthorityRdata(const uint8_t* data, size_t len, uint16_t type, 
 
 } // namespace
 
-bool parsePacket(const uint8_t* data, size_t len, Header& header,
-                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers) {
+bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Question>& questions,
+                 std::vector<Answer>& knownAnswers) {
     size_t pos = 0;
     knownAnswers.clear();
     if (!parseHeaderAndQuestions(data, len, header, questions, pos)) return false;
@@ -226,9 +225,8 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
     return parseAnswerSection(data, len, header.anCount, knownAnswers, pos);
 }
 
-bool parsePacket(const uint8_t* data, size_t len, Header& header,
-                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers,
-                 std::vector<ProbeRecord>& authority) {
+bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Question>& questions,
+                 std::vector<Answer>& knownAnswers, std::vector<ProbeRecord>& authority) {
     size_t pos = 0;
     knownAnswers.clear();
     authority.clear();
@@ -251,8 +249,7 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
         r.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
         r.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
                 (static_cast<uint32_t>(data[pos + 5]) << 16) |
-                (static_cast<uint32_t>(data[pos + 6]) << 8) |
-                static_cast<uint32_t>(data[pos + 7]);
+                (static_cast<uint32_t>(data[pos + 6]) << 8) | static_cast<uint32_t>(data[pos + 7]);
         const uint16_t rdlen = readBE16(data + pos + 8);
         pos += 10;
         if (pos + rdlen > len) return false; // rdata overruns the packet
@@ -515,7 +512,7 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     if (qn == 0) return 0;
     pos += qn;
     if (pos + 4 > outCap) return 0;
-    putBE16(out + pos, TYPE_ANY);                      // everything held under this name
+    putBE16(out + pos, TYPE_ANY);                       // everything held under this name
     putBE16(out + pos + 2, CLASS_IN | CACHE_FLUSH_BIT); // QU bit set → unicast response
     pos += 4;
 
@@ -524,8 +521,8 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     // has no meaning in a query's authority section (it doubles as the QU bit
     // only in the *question*).
     for (const auto& r : proposed) {
-        if (!writeAuthorityRecord(out, outCap, pos, r.name, r.type, CLASS_IN, r.ttl,
-                                  r.rdata.data(), r.rdata.size()))
+        if (!writeAuthorityRecord(out, outCap, pos, r.name, r.type, CLASS_IN, r.ttl, r.rdata.data(),
+                                  r.rdata.size()))
             return 0;
     }
     return pos;

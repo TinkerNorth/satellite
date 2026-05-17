@@ -136,8 +136,7 @@ static uint32_t openWithController(SessionService& svc) {
 static DispatchResult dispatchTight(SessionService& svc, uint32_t token, uint16_t msgType,
                                     const std::vector<uint8_t>& msg) {
     std::vector<uint8_t> buf(msg); // exact-size allocation, no trailing slack
-    return dispatchInnerMessage(svc, token, msgType,
-                                buf.empty() ? nullptr : buf.data(),
+    return dispatchInnerMessage(svc, token, msgType, buf.empty() ? nullptr : buf.data(),
                                 static_cast<uint16_t>(buf.size()));
 }
 
@@ -146,12 +145,12 @@ static void test_decodeMotionReport_littleEndian() {
     TEST("decodeMotionReport — decodes little-endian fields");
     // 16 wire bytes: gyroX..gyroZ, accelX..accelZ (6×i16 LE), then u32 LE.
     uint8_t p[MOTION_WIRE_PAYLOAD_BYTES] = {
-        0x10, 0x20, // gyroX  = 0x2010
-        0xFF, 0xFF, // gyroY  = -1
-        0x00, 0x80, // gyroZ  = -32768
-        0x01, 0x00, // accelX = 1
-        0x00, 0x40, // accelY = 0x4000
-        0xFF, 0x7F, // accelZ = 32767
+        0x10, 0x20,            // gyroX  = 0x2010
+        0xFF, 0xFF,            // gyroY  = -1
+        0x00, 0x80,            // gyroZ  = -32768
+        0x01, 0x00,            // accelX = 1
+        0x00, 0x40,            // accelY = 0x4000
+        0xFF, 0x7F,            // accelZ = 32767
         0x40, 0xE2, 0x01, 0x00 // timestampDeltaUs = 123456
     };
     MotionReport r = decodeMotionReport(p);
@@ -234,8 +233,9 @@ static void test_dispatch_motion_exactLengthAccepted() {
     uint32_t token = openWithController(svc);
 
     std::vector<uint8_t> msg(1 + MOTION_WIRE_PAYLOAD_BYTES, 0x00);
-    msg[0] = 0;                       // ctrlIdx
-    msg[1] = 0x39; msg[2] = 0x30;     // gyroX = 0x3039 = 12345
+    msg[0] = 0; // ctrlIdx
+    msg[1] = 0x39;
+    msg[2] = 0x30; // gyroX = 0x3039 = 12345
     dispatchTight(svc, token, MSG_MOTION, msg);
     EXPECT_EQ(gp.motionCalls, 1);
     EXPECT_EQ(static_cast<int>(gp.lastMotion.gyroX), 12345);

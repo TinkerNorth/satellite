@@ -946,12 +946,18 @@ static void test_parsePacket_authorityRejectsRdlenOverrun() {
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "satellite-host._satellite._udp.local.",
                                 mdns::TYPE_ANY, mdns::CLASS_IN);
     pos += mdns::writeDnsName(buf + pos, sizeof(buf) - pos, "satellite-host.local.");
-    buf[pos++] = 0x00; buf[pos++] = 0x01; // type A
-    buf[pos++] = 0x00; buf[pos++] = 0x01; // class IN
-    buf[pos++] = 0x00; buf[pos++] = 0x00;
-    buf[pos++] = 0x11; buf[pos++] = 0x94; // ttl 4500
-    buf[pos++] = 0xFF; buf[pos++] = 0xFF; // rdlen 65535 — wildly past the packet
-    buf[pos++] = 0x0A; buf[pos++] = 0x00; // only 2 rdata bytes present
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x01; // type A
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x01; // class IN
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x11;
+    buf[pos++] = 0x94; // ttl 4500
+    buf[pos++] = 0xFF;
+    buf[pos++] = 0xFF; // rdlen 65535 — wildly past the packet
+    buf[pos++] = 0x0A;
+    buf[pos++] = 0x00; // only 2 rdata bytes present
     mdns::Header h{};
     std::vector<mdns::Question> qs;
     std::vector<mdns::Answer> ans;
@@ -996,7 +1002,8 @@ static void test_compareRecordSets_identicalSetsAreEqual() {
 }
 
 static void test_compareRecordSets_weWinOnGreaterRdataByte() {
-    TEST("compareRecordSets: a numerically greater rdata byte makes our set lexicographically later");
+    TEST("compareRecordSets: a numerically greater rdata byte makes our set lexicographically "
+         "later");
     std::vector<mdns::ProbeRecord> ours = {
         makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 9}),
     };
@@ -1007,7 +1014,8 @@ static void test_compareRecordSets_weWinOnGreaterRdataByte() {
 }
 
 static void test_compareRecordSets_weLoseOnSmallerRdataByte() {
-    TEST("compareRecordSets: a numerically smaller rdata byte makes our set lexicographically earlier");
+    TEST("compareRecordSets: a numerically smaller rdata byte makes our set lexicographically "
+         "earlier");
     std::vector<mdns::ProbeRecord> ours = {
         makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
     };
@@ -1078,8 +1086,8 @@ static void test_compareRecordSets_longerSetWinsWhenPrefixMatches() {
         makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
         makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {0}),
     };
-    EXPECT(mdns::compareRecordSets(longSet, shortSet) > 0);  // extra record → win
-    EXPECT(mdns::compareRecordSets(shortSet, longSet) < 0);  // missing record → lose
+    EXPECT(mdns::compareRecordSets(longSet, shortSet) > 0); // extra record → win
+    EXPECT(mdns::compareRecordSets(shortSet, longSet) < 0); // missing record → lose
 }
 
 static void test_compareRecordSets_sortsBeforeComparing() {
@@ -1087,8 +1095,8 @@ static void test_compareRecordSets_sortsBeforeComparing() {
     // Same two records, supplied in opposite orders on each side. After the
     // §8.2.1 sort the sets are identical → verdict must be 0 (no conflict).
     mdns::ProbeRecord a = makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1});
-    mdns::ProbeRecord t =
-        makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {5, 'h', 'e', 'l', 'l', 'o'});
+    mdns::ProbeRecord t = makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN,
+                                       {5, 'h', 'e', 'l', 'l', 'o'});
     std::vector<mdns::ProbeRecord> ours = {a, t};
     std::vector<mdns::ProbeRecord> theirs = {t, a}; // reversed
     EXPECT_EQ(mdns::compareRecordSets(ours, theirs), 0);
@@ -1098,8 +1106,7 @@ static void test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs() {
     TEST("compareRecordSets stops at the first differing record in sorted order");
     // Both sets share an identical A record (sorts first — type 1) and differ
     // only in the TXT (type 16, sorts second). The TXT difference decides.
-    mdns::ProbeRecord aRec =
-        makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 5});
+    mdns::ProbeRecord aRec = makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 5});
     std::vector<mdns::ProbeRecord> ours = {
         aRec,
         makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {2, 'z', 'z'}),
@@ -1232,8 +1239,7 @@ static void test_parsePacket_surfacesKnownAnswer() {
                                 mdns::CLASS_IN);
     // Known answer: a PTR for the service type pointing at an instance.
     uint8_t rdata[64];
-    const size_t rdlen =
-        mdns::writeDnsName(rdata, sizeof(rdata), "other._satellite._udp.local.");
+    const size_t rdlen = mdns::writeDnsName(rdata, sizeof(rdata), "other._satellite._udp.local.");
     pos = appendAnswer(buf, sizeof(buf), pos, "_satellite._udp.local.", mdns::TYPE_PTR,
                        mdns::CLASS_IN, /*ttl=*/4000, rdata, static_cast<uint16_t>(rdlen));
     mdns::Header h{};
@@ -1257,17 +1263,20 @@ static void test_parsePacket_surfacesMultipleKnownAnswers() {
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_ANY,
                                 mdns::CLASS_IN);
     const uint8_t a4[4] = {192, 168, 1, 50};
-    pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A,
-                       mdns::CLASS_IN, /*ttl=*/4500, a4, 4);
+    pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A, mdns::CLASS_IN,
+                       /*ttl=*/4500, a4, 4);
     uint8_t srvrd[32];
     size_t s = 0;
-    srvrd[s++] = 0; srvrd[s++] = 0;             // priority
-    srvrd[s++] = 0; srvrd[s++] = 0;             // weight
-    srvrd[s++] = 0x26; srvrd[s++] = 0x94;       // port 9876
+    srvrd[s++] = 0;
+    srvrd[s++] = 0; // priority
+    srvrd[s++] = 0;
+    srvrd[s++] = 0; // weight
+    srvrd[s++] = 0x26;
+    srvrd[s++] = 0x94; // port 9876
     s += mdns::writeDnsName(srvrd + s, sizeof(srvrd) - s, "satellite-host.local.");
-    pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host._satellite._udp.local.",
-                       mdns::TYPE_SRV, mdns::CLASS_IN, /*ttl=*/4500, srvrd,
-                       static_cast<uint16_t>(s));
+    pos =
+        appendAnswer(buf, sizeof(buf), pos, "satellite-host._satellite._udp.local.", mdns::TYPE_SRV,
+                     mdns::CLASS_IN, /*ttl=*/4500, srvrd, static_cast<uint16_t>(s));
     mdns::Header h{};
     std::vector<mdns::Question> qs;
     std::vector<mdns::Answer> ans;
@@ -1305,8 +1314,8 @@ static void test_parsePacket_fourArgStillSkipsAnswers() {
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_PTR,
                                 mdns::CLASS_IN);
     const uint8_t a4[4] = {10, 0, 0, 1};
-    pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A,
-                       mdns::CLASS_IN, 4500, a4, 4);
+    pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A, mdns::CLASS_IN,
+                       4500, a4, 4);
     mdns::Header h{};
     std::vector<mdns::Question> qs;
     EXPECT(mdns::parsePacket(buf, pos, h, qs)); // 4-arg overload
@@ -1337,12 +1346,18 @@ static void test_parsePacket_rejectsAnswerRdlenOverrun() {
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_PTR,
                                 mdns::CLASS_IN);
     pos += mdns::writeDnsName(buf + pos, sizeof(buf) - pos, "satellite-host.local.");
-    buf[pos++] = 0x00; buf[pos++] = 0x01;       // type A
-    buf[pos++] = 0x00; buf[pos++] = 0x01;       // class IN
-    buf[pos++] = 0x00; buf[pos++] = 0x00;
-    buf[pos++] = 0x11; buf[pos++] = 0x94;       // ttl 4500
-    buf[pos++] = 0xFF; buf[pos++] = 0xFF;       // rdlen 65535 — wildly past the packet
-    buf[pos++] = 0x0A; buf[pos++] = 0x00;       // only 2 rdata bytes actually present
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x01; // type A
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x01; // class IN
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x00;
+    buf[pos++] = 0x11;
+    buf[pos++] = 0x94; // ttl 4500
+    buf[pos++] = 0xFF;
+    buf[pos++] = 0xFF; // rdlen 65535 — wildly past the packet
+    buf[pos++] = 0x0A;
+    buf[pos++] = 0x00; // only 2 rdata bytes actually present
     mdns::Header h{};
     std::vector<mdns::Question> qs;
     std::vector<mdns::Answer> ans;
@@ -1356,8 +1371,8 @@ static void test_parsePacket_rejectsAnswerCountOverrun() {
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_PTR,
                                 mdns::CLASS_IN);
     const uint8_t a4[4] = {10, 0, 0, 1};
-    pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A,
-                       mdns::CLASS_IN, 4500, a4, 4); // only one supplied
+    pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A, mdns::CLASS_IN,
+                       4500, a4, 4); // only one supplied
     mdns::Header h{};
     std::vector<mdns::Question> qs;
     std::vector<mdns::Answer> ans;

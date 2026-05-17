@@ -60,7 +60,7 @@ static bool jsonValueStart(const std::string& json, const std::string& key, size
         size_t colon = json.find_first_not_of(" \t\r\n", pos + needle.size());
         if (colon == std::string::npos || json[colon] != ':') {
             pos += needle.size();
-            continue;  // "key" not followed by ':' — keep searching
+            continue; // "key" not followed by ':' — keep searching
         }
         out = colon + 1;
         return true;
@@ -72,9 +72,15 @@ static bool jsonGetBoolKeyed(const std::string& json, const std::string& key, bo
     if (!jsonValueStart(json, key, vs)) return false;
     size_t t = json.find_first_not_of(" \t\r\n", vs);
     if (t == std::string::npos) return false;
-    if (json.compare(t, 4, "true") == 0) { *out = true; return true; }
-    if (json.compare(t, 5, "false") == 0) { *out = false; return true; }
-    return false;  // not a boolean literal — treat as absent
+    if (json.compare(t, 4, "true") == 0) {
+        *out = true;
+        return true;
+    }
+    if (json.compare(t, 5, "false") == 0) {
+        *out = false;
+        return true;
+    }
+    return false; // not a boolean literal — treat as absent
 }
 
 static bool jsonGetIntKeyed(const std::string& json, const std::string& key, long* out) {
@@ -87,7 +93,7 @@ static bool jsonGetIntKeyed(const std::string& json, const std::string& key, lon
     if (json[t] != '-' && (json[t] < '0' || json[t] > '9')) return false;
     char* end = nullptr;
     long v = strtol(json.c_str() + t, &end, 10);
-    if (end == json.c_str() + t) return false;  // no digits consumed
+    if (end == json.c_str() + t) return false; // no digits consumed
     // Overflow (strtol → LONG_MIN/MAX) is harmless here: the caller range-
     // checks the result, so an out-of-range value is simply rejected.
     *out = v;

@@ -90,8 +90,8 @@ struct Question {
 struct Answer {
     std::string name; // dot-separated, trailing dot included
     uint16_t type = 0;
-    uint16_t cls = 0;   // cache-flush bit masked off, mirroring Question::cls
-    uint32_t ttl = 0;   // remaining TTL the querier reports for this record
+    uint16_t cls = 0; // cache-flush bit masked off, mirroring Question::cls
+    uint32_t ttl = 0; // remaining TTL the querier reports for this record
 };
 
 // One resource record lifted out of a packet's *authority* section, used by
@@ -103,11 +103,11 @@ struct Answer {
 // cache-flush bit masked off, matching `Answer`; the comparator (§8.2)
 // compares class "excluding the cache-flush bit".
 struct ProbeRecord {
-    std::string name;             // dot-separated, trailing dot included
+    std::string name; // dot-separated, trailing dot included
     uint16_t type = 0;
-    uint16_t cls = 0;             // cache-flush bit masked off
-    uint32_t ttl = 0;             // informational; not used by the tiebreak
-    std::vector<uint8_t> rdata;   // canonical (names uncompressed) raw rdata
+    uint16_t cls = 0;           // cache-flush bit masked off
+    uint32_t ttl = 0;           // informational; not used by the tiebreak
+    std::vector<uint8_t> rdata; // canonical (names uncompressed) raw rdata
 };
 
 // Parse an mDNS packet's header + question section. Returns true and fills
@@ -125,8 +125,8 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Qu
 // the answer section carries a querier's Known-Answer list. RDATA bytes are
 // walked over (using the record's RDLENGTH) but not retained. Returns true
 // and fills all three out-params on success; false on a malformed packet.
-bool parsePacket(const uint8_t* data, size_t len, Header& header,
-                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers);
+bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Question>& questions,
+                 std::vector<Answer>& knownAnswers);
 
 // As the five-argument overload, but ALSO surfaces the authority-section
 // resource records into `authority`. An mDNS probe query (RFC 6762 §8.1)
@@ -138,9 +138,8 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header,
 // decompressed, per §8.2). Additional-section records are still skipped.
 // Returns true and fills all four out-params on success; false on a
 // malformed packet (a bad name, or an rdlength that overruns the buffer).
-bool parsePacket(const uint8_t* data, size_t len, Header& header,
-                 std::vector<Question>& questions, std::vector<Answer>& knownAnswers,
-                 std::vector<ProbeRecord>& authority);
+bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Question>& questions,
+                 std::vector<Answer>& knownAnswers, std::vector<ProbeRecord>& authority);
 
 // Decide, for a single record we would emit, whether RFC 6762 §7.1
 // Known-Answer suppression applies: true iff `knownAnswers` contains a record
