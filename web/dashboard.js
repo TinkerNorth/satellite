@@ -108,12 +108,28 @@ function motionStateId(ctrl) {
   return ctrl.motionSink ? 'on' : 'nosink';
 }
 
+// Map a battery (status, level) to its glyph in img/icons/. Status drives the
+// charging icons; otherwise the level picks a rung of the charge ladder. This
+// mirrors the percent → file table in the battery asset USAGE.md.
+function batteryIconFile(b, lvl) {
+  if (b.status === 'charging') return 'battery-charging-animated.svg';
+  if (b.status === 'wired')    return 'battery-charging.svg';
+  if (b.status === 'full')     return 'battery-full.svg';
+  if (lvl === null)            return 'battery.svg';
+  if (lvl <= 0)                return 'battery-empty.svg';
+  if (lvl >= 90)               return 'battery-full.svg';
+  if (lvl >= 60)               return 'battery-high.svg';
+  if (lvl >= 35)               return 'battery-mid.svg';
+  if (lvl >= 15)               return 'battery-low.svg';
+  return 'battery-critical.svg';
+}
+
 // ── Per-controller battery chip ─────────────────────────────────────────────
 // Task 1.2 — battery level reporting. Derived from `ctrl.battery` in
 // /api/connections: either { level: 0..100 | null, status: "..." } or null.
 // The sender forwards the controller's own battery, or — when the controller
 // is wired/USB — the host machine's battery (laptop %, or 100% on a desktop).
-// Returns { cls, text, title }, mirroring MOTION_COPY's shape.
+// Returns { cls, text, title, icon }, mirroring MOTION_COPY's shape.
 function batteryChip(ctrl) {
   const b = ctrl.battery;
   if (!b) {
@@ -121,6 +137,7 @@ function batteryChip(ctrl) {
       cls: 'battery-na',
       text: 'No battery',
       title: 'This sender has not reported a battery level for this controller.',
+      icon: 'battery.svg',
     };
   }
   const lvl = (typeof b.level === 'number') ? b.level : null;
@@ -158,7 +175,7 @@ function batteryChip(ctrl) {
       text = 'Battery ' + pct;
       title = 'Battery level ' + pct + ' (charging state unknown).';
   }
-  return { cls, text, title };
+  return { cls, text, title, icon: batteryIconFile(b, lvl) };
 }
 
 // ── Per-device touchpad routing (Task 1.3) ──────────────────────────────────
@@ -364,6 +381,16 @@ function updateStatus(d) {
   }
 }
 
+// Replace an element's markup only when it changed. The controller list
+// re-renders on every SSE `connections` tick, but its contents change far
+// less often — skipping no-op writes keeps the SMIL-animated charging-battery
+// icon from restarting its loop on each tick.
+function setHTML(el, html) {
+  if (el.__html === html) return;
+  el.__html = html;
+  el.innerHTML = html;
+}
+
 function updateConnections(d) {
   const connEl = document.getElementById('connection-list');
   const ctrlEl = document.getElementById('controller-list');
@@ -371,7 +398,7 @@ function updateConnections(d) {
 
   if (!d.connections || d.connections.length === 0) {
     if (connEl) connEl.innerHTML = '<p class="hint">No active connections</p>';
-    if (ctrlEl) ctrlEl.innerHTML = '<p class="hint">No active controllers</p>';
+    if (ctrlEl) setHTML(ctrlEl, '<p class="hint">No active controllers</p>');
     if (countEl) countEl.textContent = '0 / ' + (d.maxControllers || 16);
     return;
   }
@@ -401,9 +428,9 @@ function updateConnections(d) {
       });
     });
     if (allCtrls.length === 0) {
-      ctrlEl.innerHTML = '<p class="hint">No active controllers</p>';
+      setHTML(ctrlEl, '<p class="hint">No active controllers</p>');
     } else {
-      ctrlEl.innerHTML = allCtrls.map(ctrl => {
+      setHTML(ctrlEl, allCtrls.map(ctrl => {
         const ok = ctrl.pluggedIn;
         const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
@@ -421,13 +448,13 @@ function updateConnections(d) {
             </div>
           </div>
           <div class="ctrl-chips">
-            <span class="ctrl-battery ${bat.cls}" title="${esc(bat.title)}">${esc(bat.text)}</span>
+            <span class="ctrl-battery ${bat.cls}" title="${esc(bat.title)}"><img class="ctrl-battery-icon" src="img/icons/${esc(bat.icon)}" alt="">${esc(bat.text)}</span>
             <span class="ctrl-motion ${m.cls}" title="${esc(m.title)}">${esc(m.text)}</span>
             <span class="ctrl-touchpad ${tp.cls}" title="${esc(tp.title)}">${esc(tp.text)}</span>
             <span class="ctrl-lightbar ${lb.cls}" title="${esc(lb.title)}">${lb.swatch ? `<span class="lightbar-swatch" style="background:${esc(lb.swatch)}"></span>` : ''}${esc(lb.text)}</span>
           </div>
         </div>`;
-      }).join('');
+      }).join(''));
     }
   }
 

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Battery — charging">
+  <title>Battery — charging</title>
+  <desc>Battery at 100% with a bolt overlay. Static; for an animated variant, use battery-charging-animated.svg.</desc>
+  <rect x="8" y="22" width="42" height="20" rx="3" fill="#8FCFE3"></rect>
+  <rect x="50" y="28" width="4" height="8" rx="1" fill="#8FCFE3"></rect>
+  <rect x="11" y="25" width="36" height="14" rx="1" fill="#ffffff" opacity="0.55"></rect>
+  <rect x="11" y="25" width="36" height="14" rx="1" fill="#8FCFE3"></rect>
+  <rect x="13" y="27" width="32" height="3" rx="1" fill="#ffffff" opacity="0.55"></rect>
+  <g>
+    <path fill="#0F1620" d="M 32 24 L 22 34 L 28 34 L 26 42 L 38 30 L 32 30 L 34 24 Z"></path>
+    <path fill="#ffffff" opacity="0.55" d="M 32 25.5 L 24 33.5 L 28.5 33.5 L 27 40 L 36 30.5 L 32.5 30.5 L 33.5 25.5 Z"></path>
+  </g>
+</svg>
