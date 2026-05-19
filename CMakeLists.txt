@@ -38,7 +38,7 @@ set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
     src/net/inner_dispatch.cpp
     src/net/webserver.cpp
-    src/net/pairing.cpp
+    src/net/tls.cpp
     src/net/discovery.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
@@ -112,6 +112,7 @@ if(WIN32)
     target_compile_definitions(satellite PRIVATE
         _WIN32_WINNT=0x0A00
         CPPHTTPLIB_NO_EXCEPTIONS
+        CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
     # libsodium: pre-built static lib vendored under lib/libsodium/libsodium-win64/
@@ -135,6 +136,11 @@ if(WIN32)
         # OTA updater: WinHTTP (HTTPS to api.github.com).
         winhttp
     )
+
+    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    # Provide via vcpkg, or set -DOPENSSL_ROOT_DIR=<prefix>.
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     if(MINGW)
         target_compile_options(satellite PRIVATE -O2 -Wall -Wextra)
@@ -169,6 +175,7 @@ elseif(APPLE)
 
     target_compile_definitions(satellite PRIVATE
         CPPHTTPLIB_NO_EXCEPTIONS
+        CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
     # libsodium: prefer pkg-config (Homebrew / MacPorts), fall back to a plain
@@ -203,6 +210,18 @@ elseif(APPLE)
         target_include_directories(satellite PRIVATE ${SODIUM_INCLUDE_DIR})
         target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARY})
     endif()
+
+    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    # Apple ships no OpenSSL development headers; use the Homebrew keg.
+    if(NOT OPENSSL_ROOT_DIR)
+        execute_process(COMMAND brew --prefix openssl@3
+            OUTPUT_VARIABLE BREW_OPENSSL OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(BREW_OPENSSL)
+            set(OPENSSL_ROOT_DIR "${BREW_OPENSSL}")
+        endif()
+    endif()
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     # Cocoa frameworks for menu-bar tray + app lifecycle.
     target_link_libraries(satellite PRIVATE
@@ -249,6 +268,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
     target_compile_definitions(satellite PRIVATE
         CPPHTTPLIB_NO_EXCEPTIONS
+        CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
     # libsodium: resolved via pkg-config (every distro ships libsodium-dev /
@@ -282,6 +302,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_include_directories(satellite PRIVATE ${SODIUM_INCLUDE_DIR})
         target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARY})
     endif()
+
+    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     find_package(Threads REQUIRED)
     target_link_libraries(satellite PRIVATE Threads::Threads)

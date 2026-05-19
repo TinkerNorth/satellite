@@ -171,7 +171,6 @@ static void testConfigRoundTrip() {
     out.pairPort = 34567;
     out.discPort = 45678;
     out.autoStart = true;
-    out.credentials = "admin:hash$abc";
     PairedDevice d;
     d.id = "device-1";
     d.name = "Pixel 7";
@@ -195,9 +194,6 @@ static void testConfigRoundTrip() {
 
     TEST("loadConfig — round-trips autoStart");
     EXPECT_EQ(in.autoStart, true);
-
-    TEST("loadConfig — round-trips credentials with special chars");
-    EXPECT_EQ(in.credentials, std::string("admin:hash$abc"));
 
     TEST("loadConfig — round-trips paired devices");
     EXPECT_EQ(in.pairedDevices.size(), size_t{1});

@@ -22,7 +22,6 @@
 
 #include "net/receiver.h"
 #include "net/webserver.h"
-#include "net/pairing.h"
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
 
@@ -61,9 +60,8 @@ static void installHeadlessSignalHandling(sigset_t& set) {
 // the actual callback fires on the main loop.
 static gboolean onTraySignal(gpointer) {
     g_appRunning = false;
-    g_wantListen = false;
     g_httpServer.stop();
-    if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
+    if (g_clientServer) g_clientServer->stop();
     gtk_main_quit();
     return G_SOURCE_REMOVE;
 }
@@ -85,8 +83,6 @@ int main(int argc, const char* argv[]) {
 
     g_config = loadConfig();
     g_config.autoStart = getAutoStart();
-
-    if (g_config.autoStart) g_wantListen = true;
 
     // ── Composition Root ────────────────────────────────────────
     GamepadAdapter gamepadAdapter;
@@ -128,8 +124,8 @@ int main(int argc, const char* argv[]) {
     updateService.start();
 
     std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
-    std::thread httpTh(httpThread, std::ref(svc));
-    std::thread pairTh(pairingThread);
+    std::thread adminTh(adminHttpThread, std::ref(svc));
+    std::thread clientTh(clientApiThread, std::ref(svc));
     std::thread discTh(discoveryThread);
     std::thread mdnsTh(mdnsResponderThread);
 
@@ -162,17 +158,16 @@ int main(int argc, const char* argv[]) {
             break;
         }
         g_appRunning = false;
-        g_wantListen = false;
         g_httpServer.stop();
-        if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
+        if (g_clientServer) g_clientServer->stop();
     }
 
     updateService.stop();
     g_updateService = nullptr;
 
     recvTh.join();
-    httpTh.join();
-    pairTh.join();
+    adminTh.join();
+    clientTh.join();
     discTh.join();
     mdnsTh.join();
 

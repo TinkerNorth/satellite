@@ -12,7 +12,6 @@
 #include "crypto.h"
 #include "net/receiver.h"
 #include "net/webserver.h"
-#include "net/pairing.h"
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
 #include "tray.h"
@@ -47,9 +46,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Load config
     g_config = loadConfig();
     g_config.autoStart = getAutoStart();
-
-    // Auto-start listener if configured
-    if (g_config.autoStart) g_wantListen = true;
 
     // ── Composition Root: wire adapters → service ────────────────────
     ViGEmAdapter vigemAdapter;
@@ -88,8 +84,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // Launch worker threads (pass service & adapters by reference)
     std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
-    std::thread httpTh(httpThread, std::ref(svc));
-    std::thread pairTh(pairingThread);
+    std::thread adminTh(adminHttpThread, std::ref(svc));
+    std::thread clientTh(clientApiThread, std::ref(svc));
     std::thread discTh(discoveryThread);
     std::thread mdnsTh(mdnsResponderThread);
 
@@ -102,9 +98,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // Shutdown
     g_appRunning = false;
-    g_wantListen = false;
     g_httpServer.stop();
-    if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
+    if (g_clientServer) g_clientServer->stop();
 
     // Stop the updater worker BEFORE joining the http thread so its
     // SSE-broadcast callback doesn't fire into a torn-down server.
@@ -112,8 +107,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     g_updateService = nullptr;
 
     recvTh.join();
-    httpTh.join();
-    pairTh.join();
+    adminTh.join();
+    clientTh.join();
     discTh.join();
     mdnsTh.join();
 

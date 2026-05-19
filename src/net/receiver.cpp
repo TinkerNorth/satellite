@@ -19,7 +19,7 @@
 
 // ── Reaper: delegates timeout cleanup to SessionService ──────────────────────
 static void reaperLoop(SessionService& svc) {
-    while (g_appRunning && g_wantListen.load()) {
+    while (g_appRunning) {
         netSleepMs(1000);
         svc.reapTimedOut();
     }
@@ -32,16 +32,21 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
     SetThreadAffinityMask(GetCurrentThread(), 1ULL);
 #endif
 
-    while (g_appRunning) {
-        while (g_appRunning && !g_wantListen) { netSleepMs(50); }
-        if (!g_appRunning) break;
+    // The receiver runs for the whole app lifetime — there is no start/stop.
+    // The outer loop exists only to re-bind: on a socket/bind failure it logs
+    // once, waits, and retries until the UDP port becomes available.
+    bool bindErrorLogged = false;
 
+    while (g_appRunning) {
         int port = g_config.udpPort;
 
         SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET) {
-            logMsg(LogLevel::ERR, "receiver", "Failed to create UDP socket");
-            g_wantListen = false;
+            if (!bindErrorLogged) {
+                logMsg(LogLevel::ERR, "receiver", "Failed to create UDP socket — retrying");
+                bindErrorLogged = true;
+            }
+            netSleepMs(1000);
             continue;
         }
 
@@ -52,11 +57,16 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         addr.sin_port = htons((uint16_t)port);
         addr.sin_addr.s_addr = INADDR_ANY;
         if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-            logMsg(LogLevel::ERR, "receiver", "Failed to bind UDP port " + std::to_string(port));
+            if (!bindErrorLogged) {
+                logMsg(LogLevel::ERR, "receiver",
+                       "Failed to bind UDP port " + std::to_string(port) + " — retrying");
+                bindErrorLogged = true;
+            }
             closesocket(sock);
-            g_wantListen = false;
+            netSleepMs(1000);
             continue;
         }
+        bindErrorLogged = false;
 
         client.setSocket(sock); // Give the client adapter the socket for sending
 
@@ -81,7 +91,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         // Start reaper thread
         std::thread reaper(reaperLoop, std::ref(svc));
 
-        while (g_appRunning && g_wantListen) {
+        while (g_appRunning) {
             sockaddr_in sender{};
             socklen_t slen = sizeof(sender);
             uint8_t buf[256];

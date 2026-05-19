@@ -20,17 +20,6 @@ std::string dpapiDecrypt(const std::string& encoded);
 std::string randomHex(int bytes);
 std::string randomDigits(int n);
 
-// ── Session management ──────────────────────────────────────────────────────
-std::string createSession();
-bool validateSession(const std::string& token);
-void removeSession(const std::string& token);
-std::string getSessionFromCookie(const httplib::Request& req);
-
-// ── Credential helpers ──────────────────────────────────────────────────────
-bool isConfigured(const Config& cfg);
-bool setupCredentials(Config& cfg, const std::string& username, const std::string& password);
-bool verifyCredentials(const Config& cfg, const std::string& username, const std::string& password);
-
 // ── PIN ─────────────────────────────────────────────────────────────────────
 std::string generatePin();
 bool verifyPin(const std::string& pin);

@@ -29,41 +29,6 @@
     </div>
   </div>
 
-  <!-- ── First-launch setup ── -->
-  <div class="card" id="view-setup" style="display:none">
-    <h1><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"> Initial Setup</h1>
-    <p class="subtitle">Create your admin credentials</p>
-    <div class="form-group">
-      <label class="form-label">Username</label>
-      <input type="text" id="setup-user" class="form-input" autocomplete="off">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Password</label>
-      <input type="password" id="setup-pass" class="form-input">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Confirm Password</label>
-      <input type="password" id="setup-pass2" class="form-input">
-    </div>
-    <div id="setup-error" class="error-msg"></div>
-    <button class="btn btn-start btn-full" onclick="doSetup()">Create Account</button>
-  </div>
-
-  <!-- ── Login ── -->
-  <div class="card" id="view-login" style="display:none">
-    <h1><img src="img/icons/shield_lock.svg" alt="" class="emoji-icon"> Satellite</h1>
-    <div class="form-group">
-      <label class="form-label">Username</label>
-      <input type="text" id="login-user" class="form-input" autocomplete="off">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Password</label>
-      <input type="password" id="login-pass" class="form-input">
-    </div>
-    <div id="login-error" class="error-msg"></div>
-    <button class="btn btn-start btn-full" onclick="doLogin()">Sign In</button>
-  </div>
-
   <!-- ── Update banner (shared across dashboard + settings) ── -->
   <!-- Single source of truth for the "update available / downloading / ready"
        prompt. Inserted at the top of dashboard + settings via JS so a freshly-
@@ -106,7 +71,6 @@
         <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/logs')" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/debug')" title="Debug"><img src="img/icons/microscope.svg" alt="Debug" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -127,12 +91,6 @@
       <div class="stat"><span class="label">Sender</span><span class="value" id="s-sender">—</span></div>
       <div class="stat"><span class="label">UDP Port</span><span class="value" id="s-port">—</span></div>
       <div class="stat"><span class="label">HTTP Port</span><span class="value" id="s-http-port">—</span></div>
-    </div>
-
-    <div class="controls">
-      <div class="btn-row">
-        <button class="btn btn-start" id="btnToggle" onclick="toggle()">Start</button>
-      </div>
     </div>
 
     <!-- ── Backend Status (per-OS: ViGEmBus on Windows, uinput on Linux,
@@ -211,7 +169,6 @@
       <h1><img src="img/icons/gear.svg" alt="" class="emoji-icon"> Settings</h1>
       <div style="display:flex;gap:8px">
         <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -307,7 +264,6 @@
         <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/logs')" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -395,7 +351,6 @@
       <div style="display:flex;gap:8px">
         <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="doLogout()" title="Logout"><img src="img/icons/power.svg" alt="Logout" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -429,8 +384,6 @@
   </div>
 
   <script src="common.js"></script>
-  <script src="setup.js"></script>
-  <script src="login.js"></script>
   <script src="updates.js"></script>
   <script src="dashboard.js"></script>
   <script src="settings.js"></script>

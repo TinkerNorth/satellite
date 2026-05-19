@@ -107,7 +107,6 @@ Config loadConfig() {
     // legacy broadcast beacon on so discovery doesn't silently regress.
     getBoolOpt("discoveryBroadcastEnabled", &cfg.discoveryBroadcastEnabled);
     cfg.autoStart = getBool("autoStart");
-    cfg.credentials = jsonGetString(content, "credentials");
 
     // OTA update preferences. Absent keys keep struct defaults — important
     // on first run after upgrade, so we don't clobber autoCheck=true.
@@ -173,7 +172,6 @@ void saveConfig(const Config& cfg) {
       << "  \"lastCheckEpoch\": " << cfg.lastCheckEpoch << ",\n"
       << "  \"lastSeenVersion\": \"" << jsonEscape(cfg.lastSeenVersion) << "\",\n"
       << "  \"skipVersion\": \"" << jsonEscape(cfg.skipVersion) << "\",\n"
-      << "  \"credentials\": \"" << jsonEscape(cfg.credentials) << "\",\n"
       << "  \"pairedDevices\": [\n";
     for (size_t i = 0; i < cfg.pairedDevices.size(); i++) {
         const auto& d = cfg.pairedDevices[i];

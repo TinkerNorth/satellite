@@ -2,9 +2,16 @@
 // Copyright (C) 2026 Satellite contributors.
 
 /*
- * webserver.cpp — HTTP server thread with all API routes
+ * webserver.cpp — the two server threads.
+ *
+ *   adminHttpThread  — web UI + admin API. Plain HTTP, bound to 127.0.0.1.
+ *                      No authentication: localhost is the trust boundary.
+ *   clientApiThread  — sender-facing API (pairing + connections). HTTPS with
+ *                      a self-signed cert (see tls.cpp), bound to 0.0.0.0.
+ *                      The connection routes require a paired deviceId.
  */
 #include "webserver.h"
+#include "tls.h"
 #include "crypto.h"
 #include "config.h"
 #include "core/gamepad_backend.h"
@@ -12,6 +19,8 @@
 #include "core/update_service.h"
 #include "core/update_types.h"
 #include "core/version.h"
+
+#include <sodium.h>
 
 // ── Helper: emit the {backend: { id, supported, available, errorCode }} JSON
 // fragment used by /api/backend/status, /api/status, /api/debug, and the SSE
@@ -100,16 +109,12 @@ static bool jsonGetIntKeyed(const std::string& json, const std::string& key, lon
     return true;
 }
 
-// ── Auth middleware helper ───────────────────────────────────────────────────
-static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
-    if (!isConfigured(g_config)) return true;
-
-    // 1) Session cookie (web UI)
-    auto token = getSessionFromCookie(req);
-    if (validateSession(token)) return true;
-
-    // 2) deviceId-based auth (paired sender devices)
-    //    Check X-Device-Id header first, then fall back to body JSON
+// ── Client API authorization ─────────────────────────────────────────────────
+// The client API (HTTPS, 0.0.0.0) is reachable from the LAN, so its connection
+// routes require a paired deviceId. The id is read from the X-Device-Id header,
+// falling back to the request body. The admin API needs no equivalent — it is
+// bound to 127.0.0.1.
+static bool clientAuthorized(const httplib::Request& req, httplib::Response& res) {
     std::string deviceId;
     auto hdr = req.headers.find("X-Device-Id");
     if (hdr != req.headers.end()) { deviceId = hdr->second; }
@@ -120,7 +125,6 @@ static bool requireAuth(const httplib::Request& req, httplib::Response& res) {
             if (d.id == deviceId) return true;
         }
     }
-
     res.status = 401;
     res.set_content(R"({"error":"unauthorized"})", "application/json");
     return false;
@@ -235,7 +239,201 @@ static std::string buildConnectionsJson(const SessionService& svc) {
     return json;
 }
 
-void httpThread(SessionService& svc) {
+// ── DELETE /api/connections/:id — shared by the admin and client servers ─────
+// Admin uses it for the dashboard's disconnect button; a sender uses it to
+// tear down its own session. The teardown is delegated to SessionService.
+static void closeConnectionRoute(SessionService& svc, const httplib::Request& req,
+                                 httplib::Response& res) {
+    auto connId = req.matches[1].str();
+
+    // Parse token from connId (format: conn_XXXXXXXX)
+    std::string tokenStr = connId;
+    if (tokenStr.substr(0, 5) == "conn_") tokenStr = tokenStr.substr(5);
+
+    uint32_t token = 0;
+    if (sscanf(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
+        res.status = 404;
+        res.set_content(R"({"error":"connection not found"})", "application/json");
+        return;
+    }
+
+    int removed = svc.closeSession(token);
+    if (removed < 0) {
+        res.status = 404;
+        res.set_content(R"({"error":"connection not found"})", "application/json");
+        return;
+    }
+
+    res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
+                    "application/json");
+}
+
+// ── POST /api/connections — open a connection for a paired device ────────────
+static void openConnectionRoute(SessionService& svc, const httplib::Request& req,
+                                httplib::Response& res) {
+    auto deviceId = jsonGetString(req.body, "deviceId");
+    if (deviceId.empty()) {
+        logMsg(LogLevel::WARN, "client", "POST /api/connections: missing deviceId");
+        res.status = 400;
+        res.set_content(R"({"error":"missing deviceId"})", "application/json");
+        return;
+    }
+
+    // Find paired device
+    PairedDevice* found = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        for (auto& d : g_config.pairedDevices) {
+            if (d.id == deviceId) {
+                found = &d;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        logMsg(LogLevel::WARN, "client",
+               "POST /api/connections: device not paired (id=" + deviceId + ")");
+        res.status = 403;
+        res.set_content(R"({"error":"device not paired"})", "application/json");
+        return;
+    }
+
+    // Decode shared key
+    uint8_t sharedKey[CRYPTO_KEY_SIZE];
+    if (!hexDecode(found->sharedKeyHex, sharedKey, CRYPTO_KEY_SIZE)) {
+        logMsg(LogLevel::ERR, "client",
+               "POST /api/connections: invalid shared key for " + found->name);
+        res.status = 500;
+        res.set_content(R"({"error":"invalid shared key"})", "application/json");
+        return;
+    }
+
+    // Delegate to SessionService (handles stale cleanup, token gen, slot counting)
+    auto result =
+        svc.openSession(found->id, found->name, found->lastIP, sharedKey, found->touchpadMode);
+    if (!result.ok) {
+        res.status = 500;
+        res.set_content("{\"error\":\"" + jsonEscape(result.error) + "\"}", "application/json");
+        return;
+    }
+
+    char tokenHex[9];
+    snprintf(tokenHex, sizeof(tokenHex), "%08x", result.token);
+
+    std::string response = "{\"connectionId\":\"conn_";
+    response += tokenHex;
+    response += "\",\"token\":\"";
+    response += tokenHex;
+    response += "\",\"maxControllers\":" + std::to_string(result.availableSlots);
+    response += "}";
+
+    res.status = 201;
+    res.set_content(response, "application/json");
+}
+
+// ── POST /api/pair — PIN-gated device pairing ────────────────────────────────
+// Folds in the former TCP pairing server. Runs over HTTPS, so the PIN and the
+// resulting shared key are encrypted in transit. Body: {deviceId, deviceName,
+// pin, publicKey?}. Always replies 200 with a JSON body the sender classifies
+// on its `ok` field.
+static void pairRoute(const httplib::Request& req, httplib::Response& res) {
+    auto deviceId = jsonGetString(req.body, "deviceId");
+    auto deviceName = jsonGetString(req.body, "deviceName");
+    auto pin = jsonGetString(req.body, "pin");
+    auto clientPkHex = jsonGetString(req.body, "publicKey"); // client's X25519 public key
+    const std::string clientIP = req.remote_addr;
+
+    // Check if already paired
+    bool alreadyPaired = false;
+    std::string storedKey;
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        for (auto& d : g_config.pairedDevices) {
+            if (d.id == deviceId) {
+                alreadyPaired = true;
+                d.lastIP = clientIP;
+                storedKey = d.sharedKeyHex;
+                break;
+            }
+        }
+        if (alreadyPaired) saveConfig(g_config);
+    }
+
+    if (alreadyPaired) {
+        logMsg(LogLevel::INFO, "pairing",
+               "Device " + deviceName + " (" + clientIP + ") already paired, updating IP");
+        res.set_content(
+            R"({"ok":true,"message":"already paired","sharedKey":")" + storedKey + R"("})",
+            "application/json");
+        return;
+    }
+
+    if (!verifyPin(pin)) {
+        logMsg(LogLevel::WARN, "pairing", "Invalid PIN attempt from " + clientIP);
+        res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
+        return;
+    }
+
+    // Generate server key pair for X25519 key exchange
+    uint8_t serverPk[32], serverSk[32];
+    generateKeyPair(serverPk, serverSk);
+
+    // Decode client's public key (optional — absent for the trusted-network mode)
+    uint8_t clientPk[32];
+    bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
+
+    std::string sharedKeyHex;
+    if (hasClientKey) {
+        uint8_t sharedKey[32];
+        if (computeSharedKey(sharedKey, clientPk, serverSk, serverPk)) {
+            sharedKeyHex = hexEncode(sharedKey, 32);
+            sodium_memzero(sharedKey, 32);
+        }
+    }
+    if (sharedKeyHex.empty()) {
+        // No client key exchange — mint a random shared key. Sent back over
+        // the TLS channel, so it is not exposed on the wire.
+        uint8_t randomKey[32];
+        randombytes_buf(randomKey, 32);
+        sharedKeyHex = hexEncode(randomKey, 32);
+        sodium_memzero(randomKey, 32);
+    }
+
+    PairedDevice dev;
+    dev.id = deviceId;
+    dev.name = deviceName.empty() ? ("Device-" + deviceId.substr(0, 8)) : deviceName;
+    dev.lastIP = clientIP;
+    dev.pairedAt = getCurrentDate();
+    dev.sharedKeyHex = sharedKeyHex;
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        auto& devs = g_config.pairedDevices;
+        devs.erase(std::remove_if(devs.begin(), devs.end(),
+                                  [&](const PairedDevice& d) { return d.id == deviceId; }),
+                   devs.end());
+        devs.push_back(dev);
+        saveConfig(g_config);
+    }
+
+    std::string serverPkHex = hexEncode(serverPk, 32);
+    sodium_memzero(serverSk, 32);
+    if (hasClientKey) {
+        res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
+                            serverPkHex + R"("})",
+                        "application/json");
+    } else {
+        res.set_content(R"({"ok":true,"message":"paired successfully","sharedKey":")" +
+                            sharedKeyHex + R"("})",
+                        "application/json");
+    }
+    logMsg(LogLevel::INFO, "pairing",
+           "Successfully paired device: " + dev.name + " (" + clientIP + ")");
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Admin server — web UI + admin API. Plain HTTP, 127.0.0.1, no authentication.
+// ════════════════════════════════════════════════════════════════════════════
+void adminHttpThread(SessionService& svc) {
     // Serve static files from web/
     g_httpServer.set_mount_point("/", g_webDir);
 
@@ -244,7 +442,7 @@ void httpThread(SessionService& svc) {
         res.set_redirect("/dashboard");
     });
 
-    // ── SPA routing: serve index.html for /setup, /login, /dashboard ────
+    // ── SPA routing: serve index.html for the client-side routes ────────
     auto serveIndex = [](const httplib::Request&, httplib::Response& res) {
         std::string html = readFile(g_webDir + "/index.html");
         if (html.empty()) {
@@ -253,86 +451,18 @@ void httpThread(SessionService& svc) {
         }
         res.set_content(html, "text/html");
     };
-    g_httpServer.Get("/setup", serveIndex);
-    g_httpServer.Get("/login", serveIndex);
     g_httpServer.Get("/dashboard", serveIndex);
     g_httpServer.Get("/settings", serveIndex);
     g_httpServer.Get("/debug", serveIndex);
     g_httpServer.Get("/logs", serveIndex);
 
-    // ── Auth routes (no auth required) ──────────────────────────────────
-    g_httpServer.Get("/api/auth/status", [](const httplib::Request& req, httplib::Response& res) {
-        bool configured = isConfigured(g_config);
-        bool authenticated = false;
-        if (configured) {
-            auto token = getSessionFromCookie(req);
-            authenticated = validateSession(token);
-        }
-        char json[128];
-        snprintf(json, sizeof(json), R"({"configured":%s,"authenticated":%s})",
-                 configured ? "true" : "false", authenticated ? "true" : "false");
-        res.set_content(json, "application/json");
-    });
-
-    g_httpServer.Post("/api/auth/setup", [](const httplib::Request& req, httplib::Response& res) {
-        if (isConfigured(g_config)) {
-            res.status = 400;
-            res.set_content(R"({"error":"already configured"})", "application/json");
-            return;
-        }
-        auto username = jsonGetString(req.body, "username");
-        auto password = jsonGetString(req.body, "password");
-        if (username.empty() || password.size() < 4) {
-            res.status = 400;
-            res.set_content(R"({"error":"username required, password min 4 chars"})",
-                            "application/json");
-            return;
-        }
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        if (!setupCredentials(g_config, username, password)) {
-            res.status = 500;
-            res.set_content(R"({"error":"encryption failed"})", "application/json");
-            return;
-        }
-        saveConfig(g_config);
-        auto token = createSession();
-        res.set_header("Set-Cookie", "session=" + token + "; HttpOnly; Path=/; SameSite=Strict");
-        res.set_content(R"({"ok":true})", "application/json");
-        logMsg(LogLevel::INFO, "web", "Initial setup completed for user: " + username);
-    });
-
-    g_httpServer.Post("/api/auth/login", [](const httplib::Request& req, httplib::Response& res) {
-        auto username = jsonGetString(req.body, "username");
-        auto password = jsonGetString(req.body, "password");
-        if (!verifyCredentials(g_config, username, password)) {
-            logMsg(LogLevel::WARN, "web", "Failed login attempt for user: " + username);
-            res.status = 401;
-            res.set_content(R"({"error":"invalid credentials"})", "application/json");
-            return;
-        }
-        auto token = createSession();
-        res.set_header("Set-Cookie", "session=" + token + "; HttpOnly; Path=/; SameSite=Strict");
-        res.set_content(R"({"ok":true})", "application/json");
-        logMsg(LogLevel::INFO, "web", "User logged in: " + username);
-    });
-
-    g_httpServer.Post("/api/auth/logout", [](const httplib::Request& req, httplib::Response& res) {
-        auto token = getSessionFromCookie(req);
-        if (!token.empty()) removeSession(token);
-        res.set_header("Set-Cookie", "session=; HttpOnly; Path=/; Max-Age=0");
-        res.set_content(R"({"ok":true})", "application/json");
-    });
-
-    // ── Protected routes ────────────────────────────────────────────────
-    // Backend probe — web UI keys its copy/remediation table off (id, errorCode).
+    // ── Backend probe — web UI keys its copy/remediation table off (id, errorCode).
     g_httpServer.Get("/api/backend/status",
-                     [](const httplib::Request& req, httplib::Response& res) {
-                         if (!requireAuth(req, res)) return;
+                     [](const httplib::Request&, httplib::Response& res) {
                          res.set_content(buildBackendJson(), "application/json");
                      });
 
-    g_httpServer.Get("/api/status", [&svc](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
+    g_httpServer.Get("/api/status", [&svc](const httplib::Request&, httplib::Response& res) {
         char senderIP[INET_ADDRSTRLEN] = "none";
         uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
         if (ipRaw != 0) {
@@ -354,20 +484,7 @@ void httpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
-    g_httpServer.Post("/api/start", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-        g_wantListen = true;
-        res.set_content(R"({"ok":true})", "application/json");
-    });
-
-    g_httpServer.Post("/api/stop", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-        g_wantListen = false;
-        res.set_content(R"({"ok":true})", "application/json");
-    });
-
     g_httpServer.Post("/api/config", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
         const std::string& body = req.body;
         bool portRejected = false;
         std::lock_guard<std::mutex> lk(g_configMtx);
@@ -413,8 +530,6 @@ void httpThread(SessionService& svc) {
     });
 
     // ── Version + update endpoints ──────────────────────────────────────
-    // GET /api/version — minimal, unauthenticated. Used by the web UI's
-    // dashboard footer + the updater's "show me what's running" probe.
     g_httpServer.Get("/api/version", [](const httplib::Request&, httplib::Response& res) {
         std::string json = "{\"version\":\"";
         json += SATELLITE_VERSION;
@@ -424,10 +539,8 @@ void httpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
-    // GET /api/updates/status — full snapshot, auth required.
     g_httpServer.Get(
-        "/api/updates/status", [](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
+        "/api/updates/status", [](const httplib::Request&, httplib::Response& res) {
             if (!g_updateService) {
                 res.status = 503;
                 res.set_content(R"({"error":"updater not initialized"})", "application/json");
@@ -436,10 +549,8 @@ void httpThread(SessionService& svc) {
             res.set_content(buildUpdateJson(g_updateService->snapshot()), "application/json");
         });
 
-    // POST /api/updates/check — kick off a check now.
     g_httpServer.Post(
-        "/api/updates/check", [](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
+        "/api/updates/check", [](const httplib::Request&, httplib::Response& res) {
             if (!g_updateService) {
                 res.status = 503;
                 res.set_content(R"({"error":"updater not initialized"})", "application/json");
@@ -449,10 +560,8 @@ void httpThread(SessionService& svc) {
             res.set_content(R"({"ok":true})", "application/json");
         });
 
-    // POST /api/updates/download — fetch the artifact (UpdateAvailable → Downloaded).
     g_httpServer.Post(
-        "/api/updates/download", [](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
+        "/api/updates/download", [](const httplib::Request&, httplib::Response& res) {
             if (!g_updateService) {
                 res.status = 503;
                 res.set_content(R"({"error":"updater not initialized"})", "application/json");
@@ -462,13 +571,8 @@ void httpThread(SessionService& svc) {
             res.set_content(R"({"ok":true})", "application/json");
         });
 
-    // POST /api/updates/install — fire the platform installer. The
-    // process will exit shortly after this returns (Win) or after the
-    // bundle swap helper runs (mac/AppImage). The 200 response gives
-    // the web UI a chance to display "Restarting…" before SSE closes.
     g_httpServer.Post(
-        "/api/updates/install", [](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
+        "/api/updates/install", [](const httplib::Request&, httplib::Response& res) {
             if (!g_updateService) {
                 res.status = 503;
                 res.set_content(R"({"error":"updater not initialized"})", "application/json");
@@ -478,17 +582,13 @@ void httpThread(SessionService& svc) {
             res.set_content(R"({"ok":true})", "application/json");
         });
 
-    // POST /api/updates/cancel — cancel an in-flight download.
     g_httpServer.Post("/api/updates/cancel",
-                      [](const httplib::Request& req, httplib::Response& res) {
-                          if (!requireAuth(req, res)) return;
+                      [](const httplib::Request&, httplib::Response& res) {
                           if (g_updateService) g_updateService->cancelInFlight();
                           res.set_content(R"({"ok":true})", "application/json");
                       });
 
-    // POST /api/updates/skip {version} — never notify about this version again.
     g_httpServer.Post("/api/updates/skip", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
         std::string v = jsonGetString(req.body, "version");
         if (v.empty() || !g_updateService) {
             res.status = 400;
@@ -499,19 +599,14 @@ void httpThread(SessionService& svc) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
-    // POST /api/updates/dismiss — "remind me later" for the current version.
     g_httpServer.Post("/api/updates/dismiss",
-                      [](const httplib::Request& req, httplib::Response& res) {
-                          if (!requireAuth(req, res)) return;
+                      [](const httplib::Request&, httplib::Response& res) {
                           if (g_updateService) g_updateService->dismiss();
                           res.set_content(R"({"ok":true})", "application/json");
                       });
 
-    // POST /api/updates/preferences {channel, autoCheck, autoDownload, autoInstall}
-    // Saves the prefs in config + triggers an immediate re-check if channel changed.
     g_httpServer.Post("/api/updates/preferences", [](const httplib::Request& req,
                                                      httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
         if (!g_updateService) {
             res.status = 503;
             res.set_content(R"({"error":"updater not initialized"})", "application/json");
@@ -519,9 +614,6 @@ void httpThread(SessionService& svc) {
         }
         std::string channel = jsonGetString(req.body, "channel");
         if (channel.empty()) channel = UPDATE_CHANNEL_STABLE;
-        // Key-scoped boolean reads — jsonGetBoolKeyed locates each quoted key
-        // and inspects only its own value token, so one key's value can't
-        // bleed into another's match. An absent key defaults to false.
         auto findBool = [&](const std::string& key) -> bool {
             bool v = false;
             jsonGetBoolKeyed(req.body, key, &v);
@@ -538,15 +630,14 @@ void httpThread(SessionService& svc) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
-    // ── PIN & device pairing routes ─────────────────────────────────────
-    g_httpServer.Post("/api/pin/generate", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
+    // ── PIN generation (the operator generates a PIN here, then types it
+    // into the sender, which pairs against the client API). ────────────
+    g_httpServer.Post("/api/pin/generate", [](const httplib::Request&, httplib::Response& res) {
         auto pin = generatePin();
         res.set_content("{\"pin\":\"" + pin + "\"}", "application/json");
     });
 
-    g_httpServer.Get("/api/devices", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
+    g_httpServer.Get("/api/devices", [](const httplib::Request&, httplib::Response& res) {
         std::string json = "[";
         std::lock_guard<std::mutex> lk(g_configMtx);
         for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
@@ -563,7 +654,6 @@ void httpThread(SessionService& svc) {
 
     g_httpServer.Post(
         "/api/devices/remove", [](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
             auto deviceId = jsonGetString(req.body, "id");
             std::lock_guard<std::mutex> lk(g_configMtx);
             auto& devs = g_config.pairedDevices;
@@ -575,12 +665,10 @@ void httpThread(SessionService& svc) {
         });
 
     // POST /api/devices/touchpad-mode {id, mode} — set a paired device's
-    // touchpad routing mode (Task 1.3). `mode` is "ds4" | "mouse" | "off". The
-    // change is persisted to config AND hot-applied to any live connection for
-    // the device, so it takes effect without re-pairing or reconnecting.
+    // touchpad routing mode. `mode` is "ds4" | "mouse" | "off". Persisted to
+    // config AND hot-applied to any live connection for the device.
     g_httpServer.Post("/api/devices/touchpad-mode", [&svc](const httplib::Request& req,
                                                            httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
         auto deviceId = jsonGetString(req.body, "id");
         auto modeStr = jsonGetString(req.body, "mode");
         if (deviceId.empty() || modeStr.empty()) {
@@ -611,7 +699,6 @@ void httpThread(SessionService& svc) {
             res.set_content(R"({"error":"device not paired"})", "application/json");
             return;
         }
-        // Hot-apply to any live session for this device (no re-pair needed).
         bool hotApplied = svc.setTouchpadMode(deviceId, mode);
         logMsg(LogLevel::INFO, "web",
                "Touchpad mode for device " + deviceId + " set to " + modeStr +
@@ -622,8 +709,7 @@ void httpThread(SessionService& svc) {
     });
 
     // ── Debug telemetry endpoint ────────────────────────────────────
-    g_httpServer.Get("/api/debug", [&svc](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
+    g_httpServer.Get("/api/debug", [&svc](const httplib::Request&, httplib::Response& res) {
         char senderIP[INET_ADDRSTRLEN] = "none";
         uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
         if (ipRaw != 0) {
@@ -649,120 +735,19 @@ void httpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
-    // ── Connection management endpoints ──────────────────────────────
-
-    // POST /api/connections — open a new connection for a paired device
-    g_httpServer.Post("/api/connections", [&svc](const httplib::Request& req,
-                                                 httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-
-        auto deviceId = jsonGetString(req.body, "deviceId");
-        if (deviceId.empty()) {
-            logMsg(LogLevel::WARN, "web", "POST /api/connections: missing deviceId");
-            res.status = 400;
-            res.set_content(R"({"error":"missing deviceId"})", "application/json");
-            return;
-        }
-
-        // Find paired device
-        PairedDevice* found = nullptr;
-        {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            for (auto& d : g_config.pairedDevices) {
-                if (d.id == deviceId) {
-                    found = &d;
-                    break;
-                }
-            }
-        }
-        if (!found) {
-            logMsg(LogLevel::WARN, "web",
-                   "POST /api/connections: device not paired (id=" + deviceId + ")");
-            res.status = 403;
-            res.set_content(R"({"error":"device not paired"})", "application/json");
-            return;
-        }
-
-        // Auto-start the receiver if not already listening
-        if (!g_wantListen) {
-            g_wantListen = true;
-            logMsg(LogLevel::INFO, "web", "Auto-starting receiver for incoming connection");
-        }
-
-        // Decode shared key
-        uint8_t sharedKey[CRYPTO_KEY_SIZE];
-        if (!hexDecode(found->sharedKeyHex, sharedKey, CRYPTO_KEY_SIZE)) {
-            logMsg(LogLevel::ERR, "web",
-                   "POST /api/connections: invalid shared key for " + found->name);
-            res.status = 500;
-            res.set_content(R"({"error":"invalid shared key"})", "application/json");
-            return;
-        }
-
-        // Delegate to SessionService (handles stale cleanup, token gen, slot counting)
-        auto result =
-            svc.openSession(found->id, found->name, found->lastIP, sharedKey, found->touchpadMode);
-        if (!result.ok) {
-            res.status = 500;
-            res.set_content("{\"error\":\"" + jsonEscape(result.error) + "\"}", "application/json");
-            return;
-        }
-
-        char tokenHex[9];
-        snprintf(tokenHex, sizeof(tokenHex), "%08x", result.token);
-
-        std::string response = "{\"connectionId\":\"conn_";
-        response += tokenHex;
-        response += "\",\"token\":\"";
-        response += tokenHex;
-        response += "\",\"maxControllers\":" + std::to_string(result.availableSlots);
-        response += "}";
-
-        res.status = 201;
-        res.set_content(response, "application/json");
-    });
-
-    // GET /api/connections — list active connections
+    // ── Connection management (read + teardown) for the dashboard ────
     g_httpServer.Get("/api/connections",
-                     [&svc](const httplib::Request& req, httplib::Response& res) {
-                         if (!requireAuth(req, res)) return;
+                     [&svc](const httplib::Request&, httplib::Response& res) {
                          res.set_content(buildConnectionsJson(svc), "application/json");
                      });
 
-    // DELETE /api/connections/:id — close a connection
-    g_httpServer.Delete(
-        R"(/api/connections/(\w+))", [&svc](const httplib::Request& req, httplib::Response& res) {
-            if (!requireAuth(req, res)) return;
-            auto connId = req.matches[1].str();
-
-            // Parse token from connId (format: conn_XXXXXXXX)
-            std::string tokenStr = connId;
-            if (tokenStr.substr(0, 5) == "conn_") tokenStr = tokenStr.substr(5);
-
-            uint32_t token = 0;
-            if (sscanf(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
-                res.status = 404;
-                res.set_content(R"({"error":"connection not found"})", "application/json");
-                return;
-            }
-
-            // Delegate teardown entirely to SessionService
-            int removed = svc.closeSession(token);
-            if (removed < 0) {
-                res.status = 404;
-                res.set_content(R"({"error":"connection not found"})", "application/json");
-                return;
-            }
-
-            res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
-                            "application/json");
-        });
+    g_httpServer.Delete(R"(/api/connections/(\w+))",
+                        [&svc](const httplib::Request& req, httplib::Response& res) {
+                            closeConnectionRoute(svc, req, res);
+                        });
 
     // ── Log endpoint ────────────────────────────────────────────────
     g_httpServer.Get("/api/logs", [](const httplib::Request& req, httplib::Response& res) {
-        if (!requireAuth(req, res)) return;
-
-        // Optional ?since=<seq> parameter — return only entries after that sequence
         uint64_t since = 0;
         if (req.has_param("since")) {
             since = strtoull(req.get_param_value("since").c_str(), nullptr, 10);
@@ -770,16 +755,15 @@ void httpThread(SessionService& svc) {
 
         std::lock_guard<std::mutex> lk(g_logMtx);
 
-        // How many entries exist in the ring
         int count = static_cast<int>(std::min(g_logSeq, static_cast<uint64_t>(LOG_RING_SIZE)));
-        uint64_t oldestSeq = g_logSeq - count; // seq of the oldest entry in ring
+        uint64_t oldestSeq = g_logSeq - count;
 
         std::string json = "{\"seq\":" + std::to_string(g_logSeq) + ",\"entries\":[";
         bool first = true;
 
         for (int i = 0; i < count; i++) {
             uint64_t entrySeq = oldestSeq + i;
-            if (entrySeq <= since) continue; // client already has this
+            if (entrySeq <= since) continue;
 
             int idx = (g_logHead - count + i + LOG_RING_SIZE) % LOG_RING_SIZE;
             const auto& e = g_logRing[idx];
@@ -803,20 +787,12 @@ void httpThread(SessionService& svc) {
     });
 
     // ── SSE: Server-Sent Events for real-time updates ────────────────
-    g_httpServer.Get("/api/events", [&svc](const httplib::Request& req, httplib::Response& res) {
-        if (!isConfigured(g_config)) return;
-        auto token = getSessionFromCookie(req);
-        if (!validateSession(token)) {
-            res.status = 401;
-            return;
-        }
-
+    g_httpServer.Get("/api/events", [&svc](const httplib::Request&, httplib::Response& res) {
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
         res.set_chunked_content_provider("text/event-stream", [&svc](size_t /*offset*/,
                                                                      httplib::DataSink& sink) {
             while (g_appRunning) {
-                // Build status snapshot
                 char senderIP[INET_ADDRSTRLEN] = "none";
                 uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
                 if (ipRaw != 0) {
@@ -859,9 +835,6 @@ void httpThread(SessionService& svc) {
                 event += connJson;
                 event += "\n\n";
 
-                // OTA update channel. Always sent so a freshly-opened SSE
-                // tab gets the current state immediately; the UI compares
-                // against its last-rendered state and no-ops when unchanged.
                 if (g_updateService) {
                     event += "event: update\ndata: ";
                     event += buildUpdateJson(g_updateService->snapshot());
@@ -869,7 +842,6 @@ void httpThread(SessionService& svc) {
                 }
 
                 if (!sink.write(event.c_str(), event.size())) return false;
-                // Sleep 1 second between updates
                 for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);
             }
             return false;
@@ -877,6 +849,49 @@ void httpThread(SessionService& svc) {
     });
 
     logMsg(LogLevel::INFO, "web",
-           "Web server starting on 0.0.0.0:" + std::to_string(g_config.webPort));
-    g_httpServer.listen("0.0.0.0", g_config.webPort);
+           "Admin web UI on 127.0.0.1:" + std::to_string(g_config.webPort));
+    g_httpServer.listen("127.0.0.1", g_config.webPort);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Client API server — pairing + connections. HTTPS (self-signed), 0.0.0.0.
+// ════════════════════════════════════════════════════════════════════════════
+void clientApiThread(SessionService& svc) {
+    std::string certPath, keyPath;
+    if (!ensureServerCert(certPath, keyPath)) {
+        logMsg(LogLevel::ERR, "client",
+               "Failed to generate TLS certificate — client API disabled");
+        return;
+    }
+
+    httplib::SSLServer server(certPath.c_str(), keyPath.c_str());
+    if (!server.is_valid()) {
+        logMsg(LogLevel::ERR, "client",
+               "TLS server context invalid — client API disabled");
+        return;
+    }
+
+    // POST /api/pair — PIN-gated; no device auth (the device is not paired yet).
+    server.Post("/api/pair", [](const httplib::Request& req, httplib::Response& res) {
+        pairRoute(req, res);
+    });
+
+    // POST /api/connections — open a session. Requires a paired deviceId.
+    server.Post("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
+        if (!clientAuthorized(req, res)) return;
+        openConnectionRoute(svc, req, res);
+    });
+
+    // DELETE /api/connections/:id — a sender tears down its own session.
+    server.Delete(R"(/api/connections/(\w+))",
+                  [&svc](const httplib::Request& req, httplib::Response& res) {
+                      if (!clientAuthorized(req, res)) return;
+                      closeConnectionRoute(svc, req, res);
+                  });
+
+    g_clientServer = &server;
+    logMsg(LogLevel::INFO, "client",
+           "Client API (HTTPS) on 0.0.0.0:" + std::to_string(DEFAULT_CLIENT_PORT));
+    server.listen("0.0.0.0", DEFAULT_CLIENT_PORT);
+    g_clientServer = nullptr;
 }

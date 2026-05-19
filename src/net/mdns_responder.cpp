@@ -68,10 +68,12 @@ void fillServiceInputs(mdns::ResponseInputs& out, const std::string& instanceLab
     out.instanceName = instanceLabel;
     out.hostName = hostLabel;
     out.udpPort = static_cast<uint16_t>(g_config.udpPort);
+    // `pair` and `http` both carry the single HTTPS client API port; the
+    // admin web port is localhost-only and never advertised.
     out.txtPairs = {
         {"udp", std::to_string(g_config.udpPort)},
-        {"pair", std::to_string(g_config.pairPort)},
-        {"http", std::to_string(g_config.webPort)},
+        {"pair", std::to_string(DEFAULT_CLIENT_PORT)},
+        {"http", std::to_string(DEFAULT_CLIENT_PORT)},
     };
     if (ipv4 != nullptr) out.ipv4 = ipv4;
 }

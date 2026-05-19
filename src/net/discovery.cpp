@@ -49,14 +49,12 @@ void discoveryThread() {
         // (plus the ports, which the same handler can change) into locals so
         // the rest of the loop iteration works off a consistent view.
         bool enabled = false;
-        int discPort = 0, udpPort = 0, pairPort = 0, webPort = 0;
+        int discPort = 0, udpPort = 0;
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
             enabled = g_config.discoveryBroadcastEnabled;
             discPort = g_config.discPort;
             udpPort = g_config.udpPort;
-            pairPort = g_config.pairPort;
-            webPort = g_config.webPort;
         }
         if (enabled != announced) {
             logMsg(LogLevel::INFO, "discovery",
@@ -70,10 +68,13 @@ void discoveryThread() {
 
             // Build beacon JSON
             char beacon[512];
+            // pairPort / httpPort both carry the single HTTPS client API
+            // port — the admin web port is bound to localhost and is never
+            // reachable from a sender.
             snprintf(
                 beacon, sizeof(beacon),
                 R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d})",
-                hostname, udpPort, pairPort, webPort);
+                hostname, udpPort, DEFAULT_CLIENT_PORT, DEFAULT_CLIENT_PORT);
 
             sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
                    sizeof(dest));

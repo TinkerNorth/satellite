@@ -33,7 +33,6 @@ function stopDebugPolling() {
 async function pollDebug() {
   try {
     const r = await fetch('/api/debug');
-    if (r.status === 401) { stopDebugPolling(); navigate('/login'); return; }
     const d = await r.json();
     const now = performance.now();
 

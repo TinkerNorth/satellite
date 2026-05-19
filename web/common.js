@@ -51,13 +51,11 @@ function startOfflinePolling() {
   stopOfflinePolling();
   offlinePollingTimer = setInterval(async () => {
     try {
-      const r = await fetch('/api/auth/status', { signal: AbortSignal.timeout(3000) });
+      const r = await fetch('/api/status', { signal: AbortSignal.timeout(3000) });
       if (r.ok) {
-        // Server is back — stop polling and re-route
+        // Server is back — stop polling and restore the previous view
         stopOfflinePolling();
         isOffline = false;
-        // Re-route which will check auth status and either
-        // go to login (if expired) or restore the previous view
         const restorePath = lastPathBeforeOffline || '/dashboard';
         lastPathBeforeOffline = null;
         window.history.replaceState({}, '', restorePath);
@@ -82,7 +80,7 @@ function navigate(path) {
   route();
 }
 
-const ALL_VIEWS = ['view-offline', 'view-setup', 'view-login', 'view-dashboard', 'view-debug', 'view-logs', 'view-settings'];
+const ALL_VIEWS = ['view-offline', 'view-dashboard', 'view-debug', 'view-logs', 'view-settings'];
 
 function showView(id) {
   ALL_VIEWS.forEach(v => {
@@ -91,30 +89,12 @@ function showView(id) {
   });
 }
 
-async function route() {
+// The admin UI is bound to localhost and has no authentication — routing is a
+// straight path → view switch.
+function route() {
   const path = window.location.pathname;
 
-  // Check auth status first
-  const { ok, status, data } = await api('/api/auth/status');
-
-  // Network error (status 0) = server unreachable
-  if (!ok && status === 0) {
-    showOffline();
-    return;
-  }
-
-  // Server responded but something else went wrong
-  if (!ok) { showView('view-login'); return; }
-
-  if (!data.configured) {
-    if (path !== '/setup') { navigate('/setup'); return; }
-    showView('view-setup');
-    if (typeof initSetup === 'function') initSetup();
-  } else if (!data.authenticated) {
-    if (path !== '/login') { navigate('/login'); return; }
-    showView('view-login');
-    if (typeof initLogin === 'function') initLogin();
-  } else if (path === '/settings') {
+  if (path === '/settings') {
     showView('view-settings');
     if (typeof initSettings === 'function') initSettings();
   } else if (path === '/debug') {

@@ -32,9 +32,6 @@ void showTrayMenu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
     AppendMenuA(menu, MF_STRING, IDM_OPEN_UI, "Open Web UI");
     AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuA(menu, MF_STRING, IDM_TOGGLE,
-                g_listening.load() ? "Stop Listener" : "Start Listener");
-    AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
 
     // Updater entry — rebuilt each open so the label reflects current
     // state ("Install Update v1.2.3" vs "Check for Updates…"). When the
@@ -87,13 +84,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
             break;
         }
-        case IDM_TOGGLE:
-            if (g_listening.load()) {
-                g_wantListen = false;
-            } else {
-                g_wantListen = true;
-            }
-            break;
         case IDM_CHECK_UPDATES:
             if (g_updateService) g_updateService->requestCheck(/*userInitiated=*/true);
             // Open the web UI so the user sees the result — same affordance

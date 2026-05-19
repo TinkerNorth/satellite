@@ -335,14 +335,11 @@ function startSSE() {
   eventSource.onerror = () => {
     stopSSE();
     // Check if server is truly unreachable vs just a transient SSE glitch
-    fetch('/api/auth/status', { signal: AbortSignal.timeout(3000) })
+    fetch('/api/status', { signal: AbortSignal.timeout(3000) })
       .then(r => {
         if (r.ok) {
           // Server is still up, just SSE dropped — reconnect
           setTimeout(startSSE, 2000);
-        } else if (r.status === 401) {
-          // Session expired
-          navigate('/login');
         } else {
           showOffline();
         }
@@ -370,10 +367,6 @@ function updateStatus(d) {
 
   const dot = document.getElementById('dot');
   dot.className = 'dot ' + (d.listening ? 'on' : 'off');
-
-  const btn = document.getElementById('btnToggle');
-  btn.textContent = d.listening ? 'Stop' : 'Start';
-  btn.className = 'btn ' + (d.listening ? 'btn-stop' : 'btn-start');
 
   // Update backend status from SSE data if available
   if (d.backend) {
@@ -464,7 +457,6 @@ function updateConnections(d) {
 async function poll() {
   try {
     const r = await fetch('/api/status');
-    if (r.status === 401) { stopSSE(); navigate('/login'); return; }
     const d = await r.json();
     updateStatus(d);
   } catch (e) {
@@ -473,14 +465,6 @@ async function poll() {
     return;
   }
   checkBackendStatus();
-}
-
-// ── Actions ─────────────────────────────────────────────────────────────────
-async function toggle() {
-  const r = await fetch('/api/status');
-  const d = await r.json();
-  await apiPost(d.listening ? '/api/stop' : '/api/start');
-  setTimeout(poll, 300);
 }
 
 // ── Connections ─────────────────────────────────────────────────────────────
@@ -684,10 +668,4 @@ function toggleBackendGuide() {
     : 'Setup Guide <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon">';
 }
 
-// ── Logout ──────────────────────────────────────────────────────────────────
-async function doLogout() {
-  await apiPost('/api/auth/logout');
-  stopSSE();
-  navigate('/login');
-}
 

@@ -114,7 +114,6 @@ async function initSettings() {
   // Load current config from server
   try {
     const r = await fetch('/api/status');
-    if (r.status === 401) { navigate('/login'); return; }
     const d = await r.json();
     settingsSavedConfig.udpPort = d.udpPort;
     settingsSavedConfig.autoStart = d.autoStart;

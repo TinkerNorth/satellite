@@ -29,6 +29,10 @@ inline const int DEFAULT_UDP_PORT = 9876;
 inline const int DEFAULT_WEB_PORT = 9877;
 inline const int DEFAULT_PAIR_PORT = 9878;
 inline const int DEFAULT_DISC_PORT = 9879;
+// Sender-facing API (pairing + connections), served over HTTPS on 0.0.0.0.
+// The admin web UI on DEFAULT_WEB_PORT is bound to 127.0.0.1; this is the
+// only TCP port a sender on the LAN connects to.
+inline const int DEFAULT_CLIENT_PORT = 9443;
 
 // ── Protocol constants ──────────────────────────────────────────────────────
 inline const uint16_t MSG_GAMEPAD_DATA = 0x0001;
@@ -433,7 +437,6 @@ struct Config {
     // the install base has migrated. Absent in pre-1.6 configs → defaults on.
     bool discoveryBroadcastEnabled = true;
     bool autoStart = false;
-    std::string credentials; // DPAPI-encrypted "user:salt:hash"
     std::vector<PairedDevice> pairedDevices;
 
     // ── OTA update preferences (see core/update_service.h) ─────────────
