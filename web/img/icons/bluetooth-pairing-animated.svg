@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Bluetooth — pairing (animated)">
+  <title>Bluetooth — pairing (animated)</title>
+  <desc>Bluetooth rune with three signal arcs radiating outward on a 1.8s loop, staggered every 0.6s. SMIL, no JS.</desc>
+  <path d="M 18 18 L 46 46 L 32 58 L 32 6 L 46 18 L 18 46" fill="none" stroke="#8FCFE3" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" opacity="1"></path>
+  <path d="M 50 26 a 8 8 0 0 1 0 12" fill="none" stroke="#8FCFE3" stroke-width="4" stroke-linecap="round" opacity="0">
+      
+      
+    </path>
+  <path d="M 50 26 a 8 8 0 0 1 0 12" fill="none" stroke="#8FCFE3" stroke-width="4" stroke-linecap="round" opacity="0">
+      
+      
+    </path>
+  <path d="M 50 26 a 8 8 0 0 1 0 12" fill="none" stroke="#8FCFE3" stroke-width="4" stroke-linecap="round" opacity="0">
+      
+      
+    </path>
+</svg>

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite dish">
-  <title>Satellite dish</title>
-  <desc>Default satellite dish — parabolic reflector on a pole, tilted to a typical aim angle.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Dish — receiving">
+  <title>Dish — receiving</title>
+  <desc>Dish with two static signal arcs above suggesting incoming wave fronts.</desc>
   <g opacity="1">
       <rect x="14" y="56" width="36" height="4" rx="1" fill="#8FCFE3"></rect>
       <rect x="30" y="42" width="4" height="14" fill="#8FCFE3"></rect>
@@ -11,5 +11,9 @@
         <circle cx="32" cy="28" r="3" fill="#8FCFE3"></circle>
         <rect x="30" y="14" width="4" height="14" fill="#8FCFE3"></rect>
       </g>
+    </g>
+    <g fill="none" stroke="#8FCFE3" stroke-width="3" stroke-linecap="round" opacity="1">
+      <path d="M 40 8 a 8 8 0 0 1 8 8"></path>
+      <path d="M 44 4 a 14 14 0 0 1 14 14"></path>
     </g>
 </svg>

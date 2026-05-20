@@ -399,6 +399,27 @@ button:disabled,
 .flow-arrow .emoji-icon,
 .pipe-arrow .emoji-icon { width: 1em; height: 1em; vertical-align: -0.15em; }
 
+/* Brand-icon glyph slotted in front of a section title — sized to read
+   alongside the Rajdhani caps without crowding the text. */
+.section-title .section-glyph {
+  width: 18px;
+  height: 18px;
+  vertical-align: -0.25em;
+  margin-right: 4px;
+}
+
+/* Per-row state glyph rendered on device-list rows (active connections +
+   paired devices). Uses the v6 dish family from img/icons/ — the icon
+   choice is keyed on the wire state by DEVICE_LINK_STATE_ICON in
+   dashboard.js so the row's silhouette mirrors the chip text. */
+.device-glyph {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  margin-right: 10px;
+  align-self: center;
+}
+
 .btn-icon:hover {
   color: var(--primary);
   border-color: rgba(79, 227, 255, 0.3);
@@ -501,7 +522,6 @@ h2.section-title { font-size: 14px; }
 
 .device-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   background: var(--bg);
   border: 1px solid var(--outline);
@@ -513,6 +533,8 @@ h2.section-title { font-size: 14px; }
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .device-name {

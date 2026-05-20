@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Bluetooth — off">
+  <title>Bluetooth — off</title>
+  <desc>Bluetooth glyph (dimmed) with a diagonal slash. The slash has a dark cutout backdrop for contrast on any background.</desc>
+  <path d="M 18 18 L 46 46 L 32 58 L 32 6 L 46 18 L 18 46" fill="none" stroke="#8FCFE3" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" opacity="0.45"></path>
+  <line x1="10" y1="54" x2="54" y2="10" stroke="#0F1620" stroke-width="8" stroke-linecap="round"></line>
+  <line x1="10" y1="54" x2="54" y2="10" stroke="#8FCFE3" stroke-width="4" stroke-linecap="round"></line>
+</svg>

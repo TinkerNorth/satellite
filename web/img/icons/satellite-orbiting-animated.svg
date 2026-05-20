@@ -1,8 +1,12 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite">
-  <title>Satellite</title>
-  <desc>Default orbital satellite — body with solar panels and a deployed antenna.</desc>
-  <g opacity="1">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite — orbiting (animated)">
+  <title>Satellite — orbiting (animated)</title>
+  <desc>The whole satellite drifts gently — small vertical bob plus tiny rotation — on a 4s loop. Suggests in-orbit, station-keeping.</desc>
+  
+    <g>
+      
+      
+      <g opacity="1">
       
       <rect x="2" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
       <rect x="42" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
@@ -25,5 +29,6 @@
       
       <rect x="31" y="10" width="2" height="12" fill="#8FCFE3"></rect>
       <path d="M27 8 Q32 2 37 8 L34 10 Q32 5 30 10 Z" fill="#8FCFE3"></path>
+    </g>
     </g>
 </svg>

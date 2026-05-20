@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Dish — receiving (animated)">
+  <title>Dish — receiving (animated)</title>
+  <desc>Three signal arcs converge toward the feed horn on a 1.8s loop, staggered by 0.6s. Direction reads as incoming.</desc>
+  <g opacity="1">
+      <rect x="14" y="56" width="36" height="4" rx="1" fill="#8FCFE3"></rect>
+      <rect x="30" y="42" width="4" height="14" fill="#8FCFE3"></rect>
+      <g transform="rotate(-28 32 28)">
+        <ellipse cx="32" cy="28" rx="24" ry="8" fill="#8FCFE3"></ellipse>
+        <ellipse cx="32" cy="28" rx="18" ry="4" fill="#ffffff" opacity="0.55"></ellipse>
+        <circle cx="32" cy="28" r="3" fill="#8FCFE3"></circle>
+        <rect x="30" y="14" width="4" height="14" fill="#8FCFE3"></rect>
+      </g>
+    </g>
+    
+    <path d="M 44 6 a 14 14 0 0 1 14 14" fill="none" stroke="#8FCFE3" stroke-width="3" stroke-linecap="round" opacity="0">
+      
+      
+    </path>
+    <path d="M 44 6 a 14 14 0 0 1 14 14" fill="none" stroke="#8FCFE3" stroke-width="3" stroke-linecap="round" opacity="0">
+      
+      
+    </path>
+    <path d="M 44 6 a 14 14 0 0 1 14 14" fill="none" stroke="#8FCFE3" stroke-width="3" stroke-linecap="round" opacity="0">
+      
+      
+    </path>
+</svg>

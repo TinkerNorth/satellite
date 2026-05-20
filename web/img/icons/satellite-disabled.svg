@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite">
-  <title>Satellite</title>
-  <desc>Default orbital satellite — body with solar panels and a deployed antenna.</desc>
-  <g opacity="1">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite — disabled">
+  <title>Satellite — disabled</title>
+  <desc>Greyed-out satellite for non-interactive states.</desc>
+  <g opacity="0.3">
       
       <rect x="2" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
       <rect x="42" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>

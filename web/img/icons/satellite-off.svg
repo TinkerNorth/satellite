@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite">
-  <title>Satellite</title>
-  <desc>Default orbital satellite — body with solar panels and a deployed antenna.</desc>
-  <g opacity="1">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite — off">
+  <title>Satellite — off</title>
+  <desc>Satellite (dimmed) with a diagonal slash. Use when the link is intentionally disabled.</desc>
+  <g opacity="0.4">
       
       <rect x="2" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
       <rect x="42" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
@@ -26,4 +26,6 @@
       <rect x="31" y="10" width="2" height="12" fill="#8FCFE3"></rect>
       <path d="M27 8 Q32 2 37 8 L34 10 Q32 5 30 10 Z" fill="#8FCFE3"></path>
     </g>
+    <line x1="10" y1="54" x2="54" y2="10" stroke="#0F1620" stroke-width="8" stroke-linecap="round"></line>
+    <line x1="10" y1="54" x2="54" y2="10" stroke="#8FCFE3" stroke-width="4" stroke-linecap="round"></line>
 </svg>

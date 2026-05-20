@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite">
-  <title>Satellite</title>
-  <desc>Default orbital satellite — body with solar panels and a deployed antenna.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite — broadcasting">
+  <title>Satellite — broadcasting</title>
+  <desc>Satellite with two static signal arcs flanking the body suggesting outbound transmission.</desc>
   <g opacity="1">
       
       <rect x="2" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
@@ -25,5 +25,9 @@
       
       <rect x="31" y="10" width="2" height="12" fill="#8FCFE3"></rect>
       <path d="M27 8 Q32 2 37 8 L34 10 Q32 5 30 10 Z" fill="#8FCFE3"></path>
+    </g>
+    <g fill="none" stroke="#8FCFE3" stroke-width="3" stroke-linecap="round">
+      <path d="M 20 18 a 12 12 0 0 0 -8 12"></path>
+      <path d="M 44 18 a 12 12 0 0 1 8 12"></path>
     </g>
 </svg>

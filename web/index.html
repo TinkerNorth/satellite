@@ -19,7 +19,7 @@
   <!-- ── Server offline ── -->
   <div class="card" id="view-offline" style="display:none">
     <div class="offline-content">
-      <div class="offline-icon"><img src="img/satellite-icon.png" alt="Satellite" class="brand-icon brand-icon-lg"></div>
+      <div class="offline-icon"><img src="img/icons/satellite-master.svg" alt="Satellite" class="brand-icon brand-icon-lg"></div>
       <h1 class="offline-title">Server Unreachable</h1>
       <p class="offline-message">Cannot connect to the Satellite server. It may be stopped or restarting.</p>
       <div class="offline-progress">
@@ -138,7 +138,7 @@
 
     <!-- ── PIN Pairing ── -->
     <div class="section">
-      <h2 class="section-title">Device Pairing</h2>
+      <h2 class="section-title"><img src="img/icons/bluetooth-pairing-animated.svg" alt="" class="emoji-icon section-glyph"> Device Pairing</h2>
       <div class="pin-row">
         <button class="btn btn-save" onclick="genPin(event)">Generate PIN</button>
         <span class="pin-display" id="pin-display">—</span>
@@ -153,7 +153,7 @@
 
     <!-- ── Connections ── -->
     <div class="section">
-      <h2 class="section-title">Connections</h2>
+      <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> Connections</h2>
       <div id="connection-list" class="device-list">
         <p class="hint">No active connections</p>
       </div>
@@ -169,7 +169,7 @@
 
     <!-- ── Paired Devices ── -->
     <div class="section">
-      <h2 class="section-title">Paired Devices</h2>
+      <h2 class="section-title"><img src="img/icons/dish.svg" alt="" class="emoji-icon section-glyph"> Paired Devices</h2>
       <div id="device-list" class="device-list">
         <p class="hint">No paired devices</p>
       </div>
@@ -283,7 +283,7 @@
     <!-- Live pipeline flow -->
     <div class="debug-pipeline">
       <div class="pipe-stage" id="pipe-udp">
-        <div class="pipe-icon"><img src="img/dish-icon.png" alt="Dish" class="brand-icon"></div>
+        <div class="pipe-icon"><img src="img/icons/dish.svg" alt="Dish" class="brand-icon"></div>
         <div class="pipe-label">UDP Recv</div>
         <div class="pipe-value" id="d-pps">0 pps</div>
       </div>

@@ -54,6 +54,19 @@ const DEVICE_LINK_STATE_LABEL = {
   notResponding: 'Not responding',
 };
 
+// DeviceLinkState → v6 brand dish glyph next to the chip. Mirrors the
+// "dish" iconography family in img/icons/ (dish.svg, dish-connected.svg,
+// dish-receiving-animated.svg, dish-disabled.svg, dish-off.svg). The dish
+// reads as "the sender" — i.e. the remote Dish client — so the receiving
+// state animates the inbound-signal arcs and the not-responding state uses
+// the slash variant.
+const DEVICE_LINK_STATE_ICON = {
+  paired:        'dish.svg',
+  linking:       'dish-scanning-animated.svg',
+  active:        'dish-receiving-animated.svg',
+  notResponding: 'dish-off.svg',
+};
+
 // ControllerState → per-controller tag (virtual-controllers section).
 // Today the server only ever stamps "live" or "detached"; the transient
 // states (registering, allocating) and the "failed" case are enumerated for
@@ -518,8 +531,10 @@ function updateConnections(d) {
     connEl.innerHTML = d.connections.map(c => {
       const stateKey = c.state || 'active';
       const stateText = DEVICE_LINK_STATE_LABEL[stateKey] || DEVICE_LINK_STATE_LABEL.active;
+      const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.active;
       return `
       <div class="device-item">
+        <img class="device-glyph" src="img/icons/${esc(stateIcon)}" alt="">
         <div class="device-info">
           <span class="device-name">${esc(c.deviceName)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
           <span class="device-meta">${esc(c.senderIP)} · ${c.activeControllerCount || 0} controller${(c.activeControllerCount||0) === 1 ? '' : 's'}</span>
@@ -708,8 +723,10 @@ async function loadDevices() {
       // DEVICE_LINK_STATE_LABEL table the Connections section uses.
       const stateKey = d.state || 'paired';
       const stateText = DEVICE_LINK_STATE_LABEL[stateKey] || DEVICE_LINK_STATE_LABEL.paired;
+      const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.paired;
       return `
       <div class="device-item">
+        <img class="device-glyph" src="img/icons/${esc(stateIcon)}" alt="">
         <div class="device-info">
           <span class="device-name">${esc(d.name)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
           <span class="device-meta">${esc(d.lastIP)} · ${esc(d.pairedAt)}</span>
