@@ -218,8 +218,7 @@ PinSnapshot pinSnapshot() {
     }
     // No outstanding PIN. Flash PinPaired for a few seconds after a successful
     // verifyPin(), so the dashboard's PIN panel can show "Paired!" briefly.
-    if (g_pinPairedValid &&
-        now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
+    if (g_pinPairedValid && now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
         s.state = PinState::PinPaired;
         s.secondsRemaining = 0;
         return s;

@@ -217,11 +217,10 @@ static std::string buildConnectionsJson(const SessionService& svc) {
                                                 : controllerStateName(ControllerState::Detached);
             json += "{\"controllerIndex\":" + std::to_string(ctrl.index) +
                     ",\"serialNo\":" + std::to_string(ctrl.serial) +
-                    ",\"pluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") +
-                    ",\"state\":\"" + std::string(ctrlState) + "\"" +
-                    ",\"controllerType\":\"" + controllerTypeName(ctrl.controllerType) +
-                    "\",\"controllerTypeLabel\":\"" + controllerTypeLabel(ctrl.controllerType) +
-                    "\"";
+                    ",\"pluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") + ",\"state\":\"" +
+                    std::string(ctrlState) + "\"" + ",\"controllerType\":\"" +
+                    controllerTypeName(ctrl.controllerType) + "\",\"controllerTypeLabel\":\"" +
+                    controllerTypeLabel(ctrl.controllerType) + "\"";
             if (ctrl.batteryKnown) {
                 json += ",\"battery\":{";
                 if (ctrl.batteryLevel == BATTERY_LEVEL_UNKNOWN) {
@@ -381,9 +380,9 @@ static void pairRoute(const httplib::Request& req, httplib::Response& res) {
     if (alreadyPaired) {
         logMsg(LogLevel::INFO, "pairing",
                "Device " + deviceName + " (" + clientIP + ") already paired, updating IP");
-        res.set_content(
-            R"({"ok":true,"message":"already paired","sharedKey":")" + storedKey + R"("})",
-            "application/json");
+        res.set_content(R"({"ok":true,"message":"already paired","sharedKey":")" + storedKey +
+                            R"("})",
+                        "application/json");
         return;
     }
 
@@ -476,10 +475,9 @@ void adminHttpThread(SessionService& svc) {
     g_httpServer.Get("/logs", serveIndex);
 
     // ── Backend probe — web UI keys its copy/remediation table off (id, errorCode).
-    g_httpServer.Get("/api/backend/status",
-                     [](const httplib::Request&, httplib::Response& res) {
-                         res.set_content(buildBackendJson(), "application/json");
-                     });
+    g_httpServer.Get("/api/backend/status", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(buildBackendJson(), "application/json");
+    });
 
     g_httpServer.Get("/api/status", [&svc](const httplib::Request&, httplib::Response& res) {
         char senderIP[INET_ADDRSTRLEN] = "none";
@@ -558,54 +556,49 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
-    g_httpServer.Get(
-        "/api/updates/status", [](const httplib::Request&, httplib::Response& res) {
-            if (!g_updateService) {
-                res.status = 503;
-                res.set_content(R"({"error":"updater not initialized"})", "application/json");
-                return;
-            }
-            res.set_content(buildUpdateJson(g_updateService->snapshot()), "application/json");
-        });
+    g_httpServer.Get("/api/updates/status", [](const httplib::Request&, httplib::Response& res) {
+        if (!g_updateService) {
+            res.status = 503;
+            res.set_content(R"({"error":"updater not initialized"})", "application/json");
+            return;
+        }
+        res.set_content(buildUpdateJson(g_updateService->snapshot()), "application/json");
+    });
 
-    g_httpServer.Post(
-        "/api/updates/check", [](const httplib::Request&, httplib::Response& res) {
-            if (!g_updateService) {
-                res.status = 503;
-                res.set_content(R"({"error":"updater not initialized"})", "application/json");
-                return;
-            }
-            g_updateService->requestCheck(/*userInitiated=*/true);
-            res.set_content(R"({"ok":true})", "application/json");
-        });
+    g_httpServer.Post("/api/updates/check", [](const httplib::Request&, httplib::Response& res) {
+        if (!g_updateService) {
+            res.status = 503;
+            res.set_content(R"({"error":"updater not initialized"})", "application/json");
+            return;
+        }
+        g_updateService->requestCheck(/*userInitiated=*/true);
+        res.set_content(R"({"ok":true})", "application/json");
+    });
 
-    g_httpServer.Post(
-        "/api/updates/download", [](const httplib::Request&, httplib::Response& res) {
-            if (!g_updateService) {
-                res.status = 503;
-                res.set_content(R"({"error":"updater not initialized"})", "application/json");
-                return;
-            }
-            g_updateService->requestDownload();
-            res.set_content(R"({"ok":true})", "application/json");
-        });
+    g_httpServer.Post("/api/updates/download", [](const httplib::Request&, httplib::Response& res) {
+        if (!g_updateService) {
+            res.status = 503;
+            res.set_content(R"({"error":"updater not initialized"})", "application/json");
+            return;
+        }
+        g_updateService->requestDownload();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
 
-    g_httpServer.Post(
-        "/api/updates/install", [](const httplib::Request&, httplib::Response& res) {
-            if (!g_updateService) {
-                res.status = 503;
-                res.set_content(R"({"error":"updater not initialized"})", "application/json");
-                return;
-            }
-            g_updateService->requestInstall();
-            res.set_content(R"({"ok":true})", "application/json");
-        });
+    g_httpServer.Post("/api/updates/install", [](const httplib::Request&, httplib::Response& res) {
+        if (!g_updateService) {
+            res.status = 503;
+            res.set_content(R"({"error":"updater not initialized"})", "application/json");
+            return;
+        }
+        g_updateService->requestInstall();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
 
-    g_httpServer.Post("/api/updates/cancel",
-                      [](const httplib::Request&, httplib::Response& res) {
-                          if (g_updateService) g_updateService->cancelInFlight();
-                          res.set_content(R"({"ok":true})", "application/json");
-                      });
+    g_httpServer.Post("/api/updates/cancel", [](const httplib::Request&, httplib::Response& res) {
+        if (g_updateService) g_updateService->cancelInFlight();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
 
     g_httpServer.Post("/api/updates/skip", [](const httplib::Request& req, httplib::Response& res) {
         std::string v = jsonGetString(req.body, "version");
@@ -618,11 +611,10 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
-    g_httpServer.Post("/api/updates/dismiss",
-                      [](const httplib::Request&, httplib::Response& res) {
-                          if (g_updateService) g_updateService->dismiss();
-                          res.set_content(R"({"ok":true})", "application/json");
-                      });
+    g_httpServer.Post("/api/updates/dismiss", [](const httplib::Request&, httplib::Response& res) {
+        if (g_updateService) g_updateService->dismiss();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
 
     g_httpServer.Post("/api/updates/preferences", [](const httplib::Request& req,
                                                      httplib::Response& res) {
@@ -684,8 +676,8 @@ void adminHttpThread(SessionService& svc) {
             json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
                     "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
                     jsonEscape(d.pairedAt) + "\",\"touchpadMode\":\"" +
-                    touchpadModeName(d.touchpadMode) + "\",\"state\":\"" +
-                    deviceLinkStateName(s) + "\"}";
+                    touchpadModeName(d.touchpadMode) + "\",\"state\":\"" + deviceLinkStateName(s) +
+                    "\"}";
             if (i + 1 < g_config.pairedDevices.size()) json += ",";
         }
         json += "]";
@@ -776,10 +768,9 @@ void adminHttpThread(SessionService& svc) {
     });
 
     // ── Connection management (read + teardown) for the dashboard ────
-    g_httpServer.Get("/api/connections",
-                     [&svc](const httplib::Request&, httplib::Response& res) {
-                         res.set_content(buildConnectionsJson(svc), "application/json");
-                     });
+    g_httpServer.Get("/api/connections", [&svc](const httplib::Request&, httplib::Response& res) {
+        res.set_content(buildConnectionsJson(svc), "application/json");
+    });
 
     g_httpServer.Delete(R"(/api/connections/(\w+))",
                         [&svc](const httplib::Request& req, httplib::Response& res) {
@@ -902,8 +893,7 @@ void adminHttpThread(SessionService& svc) {
         });
     });
 
-    logMsg(LogLevel::INFO, "web",
-           "Admin web UI on 127.0.0.1:" + std::to_string(g_config.webPort));
+    logMsg(LogLevel::INFO, "web", "Admin web UI on 127.0.0.1:" + std::to_string(g_config.webPort));
     g_httpServer.listen("127.0.0.1", g_config.webPort);
 }
 
@@ -913,22 +903,19 @@ void adminHttpThread(SessionService& svc) {
 void clientApiThread(SessionService& svc) {
     std::string certPath, keyPath;
     if (!ensureServerCert(certPath, keyPath)) {
-        logMsg(LogLevel::ERR, "client",
-               "Failed to generate TLS certificate — client API disabled");
+        logMsg(LogLevel::ERR, "client", "Failed to generate TLS certificate — client API disabled");
         return;
     }
 
     httplib::SSLServer server(certPath.c_str(), keyPath.c_str());
     if (!server.is_valid()) {
-        logMsg(LogLevel::ERR, "client",
-               "TLS server context invalid — client API disabled");
+        logMsg(LogLevel::ERR, "client", "TLS server context invalid — client API disabled");
         return;
     }
 
     // POST /api/pair — PIN-gated; no device auth (the device is not paired yet).
-    server.Post("/api/pair", [](const httplib::Request& req, httplib::Response& res) {
-        pairRoute(req, res);
-    });
+    server.Post("/api/pair",
+                [](const httplib::Request& req, httplib::Response& res) { pairRoute(req, res); });
 
     // POST /api/connections — open a session. Requires a paired deviceId.
     server.Post("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {

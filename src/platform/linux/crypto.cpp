@@ -212,8 +212,7 @@ PinSnapshot pinSnapshot() {
         }
         return s;
     }
-    if (g_pinPairedValid &&
-        now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
+    if (g_pinPairedValid && now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
         s.state = PinState::PinPaired;
         s.secondsRemaining = 0;
         return s;

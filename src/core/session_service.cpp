@@ -627,9 +627,8 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
         cs.touchpadMode = conn.touchpadMode;
         // A connection that exists at all is at least Active; escalate to
         // NotResponding once the stalling window has lapsed without packets.
-        cs.linkState = (now - conn.lastPacketTime > stallThreshold)
-                           ? DeviceLinkState::NotResponding
-                           : DeviceLinkState::Active;
+        cs.linkState = (now - conn.lastPacketTime > stallThreshold) ? DeviceLinkState::NotResponding
+                                                                    : DeviceLinkState::Active;
 
         for (auto& ctrl : conn.controllers) {
             if (ctrl.active) {

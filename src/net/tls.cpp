@@ -71,8 +71,7 @@ bool generateSelfSigned(const std::string& certPath, const std::string& keyPath)
 
         FILE* kf = std::fopen(keyPath.c_str(), "wb");
         if (kf == nullptr) break;
-        const int kwrote =
-            PEM_write_PrivateKey(kf, pkey, nullptr, nullptr, 0, nullptr, nullptr);
+        const int kwrote = PEM_write_PrivateKey(kf, pkey, nullptr, nullptr, 0, nullptr, nullptr);
         std::fclose(kf);
         if (kwrote != 1) break;
 
