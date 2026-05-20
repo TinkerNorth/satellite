@@ -164,14 +164,28 @@ std::string randomDigits(int n) {
 }
 
 // ── PIN state ───────────────────────────────────────────────────────────────
+// Formalises the implicit (g_currentPin, g_pinExpiry, g_pinPairedAt) state
+// machine that webserver.cpp / the dashboard already read. See PinState in
+// core/types.h:
+//   PinIdle    — no PIN outstanding (empty + no recent pair).
+//   PinActive  — PIN generated, still within the 5-min window.
+//   PinExpired — PIN was generated but the window lapsed without a pair.
+//   PinPaired  — momentary state set on a successful verifyPin(); cleared
+//                after PIN_PAIRED_HOLD_SEC so the dashboard can flash a
+//                "Paired!" confirmation without sticking on it.
 static std::mutex g_pinMtx;
 static std::string g_currentPin;
 static std::chrono::steady_clock::time_point g_pinExpiry;
+static std::chrono::steady_clock::time_point g_pinPairedAt; // default-constructed = "never"
+static bool g_pinPairedValid = false;
+static constexpr int PIN_PAIRED_HOLD_SEC = 5;
 
 std::string generatePin() {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     g_currentPin = randomDigits(4);
     g_pinExpiry = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+    // Generating a fresh PIN clears any "just paired" flash.
+    g_pinPairedValid = false;
     return g_currentPin;
 }
 
@@ -179,8 +193,40 @@ bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     if (g_currentPin.empty() || std::chrono::steady_clock::now() > g_pinExpiry) return false;
     bool ok = (pin == g_currentPin);
-    if (ok) g_currentPin.clear();
+    if (ok) {
+        g_currentPin.clear();
+        g_pinPairedAt = std::chrono::steady_clock::now();
+        g_pinPairedValid = true;
+    }
     return ok;
+}
+
+PinSnapshot pinSnapshot() {
+    std::lock_guard<std::mutex> lk(g_pinMtx);
+    const auto now = std::chrono::steady_clock::now();
+    PinSnapshot s;
+    if (!g_currentPin.empty()) {
+        if (now > g_pinExpiry) {
+            s.state = PinState::PinExpired;
+            s.secondsRemaining = 0;
+        } else {
+            s.state = PinState::PinActive;
+            s.secondsRemaining = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::seconds>(g_pinExpiry - now).count());
+        }
+        return s;
+    }
+    // No outstanding PIN. Flash PinPaired for a few seconds after a successful
+    // verifyPin(), so the dashboard's PIN panel can show "Paired!" briefly.
+    if (g_pinPairedValid &&
+        now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
+        s.state = PinState::PinPaired;
+        s.secondsRemaining = 0;
+        return s;
+    }
+    s.state = PinState::PinIdle;
+    s.secondsRemaining = 0;
+    return s;
 }
 
 // ── Hex encode/decode ───────────────────────────────────────────────────────

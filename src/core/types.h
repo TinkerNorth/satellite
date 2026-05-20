@@ -34,6 +34,108 @@ inline const int DEFAULT_DISC_PORT = 9879;
 // only TCP port a sender on the LAN connects to.
 inline const int DEFAULT_CLIENT_PORT = 9443;
 
+// ── Connection-state nomenclature (server-side view) ────────────────────────
+// Internal + JSON-surface formalisation of state that already existed implicitly
+// in `pairedDevices` / `connections_` / the controller `active` flag / the
+// `g_currentPin` + `g_pinExpiry` pair. NOT a protocol-wire change: the MSG_* /
+// ACK_* wire codes below are untouched. These enums drive the `state` strings
+// that /api/connections, /api/devices, and /api/pin/status surface; the web
+// dashboard maps those onto user-facing chip text.
+//
+// Mirrors the client-side LinkState (see dish-android) but trimmed: the server
+// only ever sees its own paired list, so there is no "Found" (unpaired-seen) or
+// "Stale" (broken-pairing) row — a device the server has forgotten simply isn't
+// in the list.
+
+/// Per-paired-device link state, server's view.
+enum class DeviceLinkState {
+    Paired,        // in pairedDevices, no live connection (offline)
+    Linking,       // POST /api/connections handshake in flight (transient)
+    Active,        // live connection, packets arriving recently
+    NotResponding, // was Active, lastPacketTime > stalling threshold,
+                   // not yet reaped (>=2 missed heartbeats, < HEARTBEAT_MISS_MAX)
+};
+
+/// Pairing PIN lifecycle on the server.
+enum class PinState {
+    PinIdle,    // no PIN outstanding
+    PinActive,  // PIN generated, within 5-min window
+    PinExpired, // window lapsed unused
+    PinPaired,  // a device just consumed it — momentary success state
+};
+
+/// Per-controller pipeline state (physical-on-client → bridge → virtual on
+/// server). The wire ACK codes already enumerate the failure side; this
+/// formalises the success/transient side too.
+enum class ControllerState {
+    Source,      // physical pad detected on client, not yet forwarded
+    Registering, // MSG_CONTROLLER_ADD sent, awaiting MSG_CONTROLLER_ACK
+    Allocating,  // ACK_OK received, backend creating the virtual device
+    Live,        // virtual device exists, reports flowing
+    Quiet,       // Live, but no input recently (optional UI distinction)
+    Detached,    // MSG_CONTROLLER_REMOVE sent, virtual being torn down
+    Failed,      // ACK arrived with an ACK_ERR_* code
+                 // TODO: retain the last failure reason per controller index so
+                 // the dashboard can show "Failed (BACKEND_UNAVAIL)" etc.
+};
+
+// ── Stalling threshold for DeviceLinkState::NotResponding ───────────────────
+// A connection enters NotResponding when no decrypted packet has arrived for
+// roughly two heartbeat intervals (HEARTBEAT_INTERVAL_SEC * 2 = 4s) but the
+// reaper hasn't yet evicted it (HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_MAX
+// = 10s). The window between is what surfaces as "Not responding" in the UI.
+inline const int HEARTBEAT_STALL_FACTOR = 2;
+
+// Serialise as lowercase strings on the wire. Web dashboard maps these onto
+// the user-facing chip text (paired→"Paired", active→"Online", etc.).
+inline const char* deviceLinkStateName(DeviceLinkState s) {
+    switch (s) {
+    case DeviceLinkState::Paired:
+        return "paired";
+    case DeviceLinkState::Linking:
+        return "linking";
+    case DeviceLinkState::Active:
+        return "active";
+    case DeviceLinkState::NotResponding:
+        return "notResponding";
+    }
+    return "paired";
+}
+
+inline const char* pinStateName(PinState s) {
+    switch (s) {
+    case PinState::PinIdle:
+        return "idle";
+    case PinState::PinActive:
+        return "active";
+    case PinState::PinExpired:
+        return "expired";
+    case PinState::PinPaired:
+        return "paired";
+    }
+    return "idle";
+}
+
+inline const char* controllerStateName(ControllerState s) {
+    switch (s) {
+    case ControllerState::Source:
+        return "source";
+    case ControllerState::Registering:
+        return "registering";
+    case ControllerState::Allocating:
+        return "allocating";
+    case ControllerState::Live:
+        return "live";
+    case ControllerState::Quiet:
+        return "quiet";
+    case ControllerState::Detached:
+        return "detached";
+    case ControllerState::Failed:
+        return "failed";
+    }
+    return "live";
+}
+
 // ── Protocol constants ──────────────────────────────────────────────────────
 inline const uint16_t MSG_GAMEPAD_DATA = 0x0001;
 inline const uint16_t MSG_HEARTBEAT_PING = 0x0002;

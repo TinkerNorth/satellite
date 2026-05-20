@@ -138,6 +138,12 @@ class SessionService {
         // Touchpad routing for this connection (TOUCHPAD_MODE_*). The web UI
         // renders it as the per-device selector's current value.
         uint8_t touchpadMode;
+        // Per-connection link state (DeviceLinkState). Always Active or
+        // NotResponding here — a connection that exists at all is at least
+        // Active; the stalling threshold escalates it to NotResponding. The
+        // /api/devices endpoint surfaces the full enum (Paired vs Active vs
+        // NotResponding vs Linking).
+        DeviceLinkState linkState;
         struct CtrlInfo {
             uint8_t index;
             uint32_t serial;
@@ -187,6 +193,20 @@ class SessionService {
 
     // Check if a deviceId is already connected.
     bool isDeviceConnected(const std::string& deviceId) const;
+
+    // Compute the per-paired-device link state (server's view). Returns
+    // DeviceLinkState::Paired when no live connection exists for `deviceId`;
+    // DeviceLinkState::NotResponding when the live connection's last packet is
+    // older than the stalling threshold (but not yet reaped); otherwise
+    // DeviceLinkState::Active.
+    //
+    // DeviceLinkState::Linking is brief and currently not derivable on the
+    // server side — the POST /api/connections handshake is synchronous, so
+    // the connection is either absent (Paired) or already present (Active).
+    // TODO: thread an in-flight "Linking" state through openSession if we
+    // start surfacing per-request progress; for now Linking is enumerated
+    // but never returned here.
+    DeviceLinkState linkStateForDevice(const std::string& deviceId) const;
 
     // ── Reaper ──────────────────────────────────────────────────────────
 

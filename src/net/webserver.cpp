@@ -174,6 +174,10 @@ static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
 }
 
 // ── Build connections JSON from SessionService snapshot ──────────────────────
+// JSON shape includes a per-connection `state` (DeviceLinkState) and a
+// per-controller `state` (ControllerState). Both serialise as lowercase enum
+// names (see deviceLinkStateName / controllerStateName in core/types.h). The
+// strings are the canonical wire form; the dashboard maps them onto chip text.
 static std::string buildConnectionsJson(const SessionService& svc) {
     auto snap = svc.getConnectionsSnapshot();
     std::string json = "{\"connections\":[";
@@ -191,15 +195,30 @@ static std::string buildConnectionsJson(const SessionService& svc) {
                 jsonEscape(cs.deviceName) + "\",\"senderIP\":\"" + jsonEscape(cs.clientIP) + "\"";
 
         json += ",\"connectedAtEpoch\":" + std::to_string(cs.connectedAtEpoch);
+        // Per-connection link state — Active or NotResponding here. The
+        // /api/devices feed covers the Paired (offline) case.
+        json += ",\"state\":\"" + std::string(deviceLinkStateName(cs.linkState)) + "\"";
 
         json += ",\"controllers\":[";
         bool cfirst = true;
         for (const auto& ctrl : cs.controllers) {
             if (!cfirst) json += ",";
             cfirst = false;
+            // Per-controller pipeline state. Today we surface only Live (a
+            // virtual device exists and reports are flowing); the snapshot
+            // does not yet thread the in-flight transitions
+            // (Registering/Allocating/Detached) or per-controller failure
+            // reasons. See ControllerState in core/types.h.
+            // TODO: thread transient ControllerState through SessionService
+            // so MSG_CONTROLLER_ADD's in-flight window can surface as
+            // "registering" / "allocating", and the ACK_ERR_* failure code
+            // can be retained per controller index to surface "failed".
+            const char* ctrlState = ctrl.active ? controllerStateName(ControllerState::Live)
+                                                : controllerStateName(ControllerState::Detached);
             json += "{\"controllerIndex\":" + std::to_string(ctrl.index) +
                     ",\"serialNo\":" + std::to_string(ctrl.serial) +
                     ",\"pluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") +
+                    ",\"state\":\"" + std::string(ctrlState) + "\"" +
                     ",\"controllerType\":\"" + controllerTypeName(ctrl.controllerType) +
                     "\",\"controllerTypeLabel\":\"" + controllerTypeLabel(ctrl.controllerType) +
                     "\"";
@@ -637,15 +656,36 @@ void adminHttpThread(SessionService& svc) {
         res.set_content("{\"pin\":\"" + pin + "\"}", "application/json");
     });
 
-    g_httpServer.Get("/api/devices", [](const httplib::Request&, httplib::Response& res) {
+    // GET /api/pin/status — surface the PinState enum + remaining-time hint.
+    // Used by the dashboard's PIN panel to render an "Expires in m:ss"
+    // countdown and to flash a brief "Paired!" confirmation. Does NOT echo
+    // the PIN itself — the PIN is returned only to the original POST so a
+    // refresh of /dashboard doesn't leak it to a parallel admin tab.
+    g_httpServer.Get("/api/pin/status", [](const httplib::Request&, httplib::Response& res) {
+        PinSnapshot s = pinSnapshot();
+        std::string json = "{\"state\":\"";
+        json += pinStateName(s.state);
+        json += "\",\"secondsRemaining\":";
+        json += std::to_string(s.secondsRemaining);
+        json += "}";
+        res.set_content(json, "application/json");
+    });
+
+    g_httpServer.Get("/api/devices", [&svc](const httplib::Request&, httplib::Response& res) {
+        // Per-device `state` is the DeviceLinkState (lowercase enum name) —
+        // either "paired" (no live connection), "active" (live, recent
+        // packets), or "notResponding" (live but stalled). Dashboard maps
+        // these onto chip text.
         std::string json = "[";
         std::lock_guard<std::mutex> lk(g_configMtx);
         for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
             const auto& d = g_config.pairedDevices[i];
+            DeviceLinkState s = svc.linkStateForDevice(d.id);
             json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
                     "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
                     jsonEscape(d.pairedAt) + "\",\"touchpadMode\":\"" +
-                    touchpadModeName(d.touchpadMode) + "\"}";
+                    touchpadModeName(d.touchpadMode) + "\",\"state\":\"" +
+                    deviceLinkStateName(s) + "\"}";
             if (i + 1 < g_config.pairedDevices.size()) json += ",";
         }
         json += "]";
@@ -839,6 +879,20 @@ void adminHttpThread(SessionService& svc) {
                     event += "event: update\ndata: ";
                     event += buildUpdateJson(g_updateService->snapshot());
                     event += "\n\n";
+                }
+
+                // PIN state — pushed every tick so the dashboard's
+                // "Expires in m:ss" countdown updates without a parallel
+                // poller, and so a freshly opened tab sees the current
+                // state immediately rather than waiting for the next
+                // /api/pin/status fetch.
+                {
+                    PinSnapshot pinSnap = pinSnapshot();
+                    event += "event: pin\ndata: {\"state\":\"";
+                    event += pinStateName(pinSnap.state);
+                    event += "\",\"secondsRemaining\":";
+                    event += std::to_string(pinSnap.secondsRemaining);
+                    event += "}\n\n";
                 }
 
                 if (!sink.write(event.c_str(), event.size())) return false;

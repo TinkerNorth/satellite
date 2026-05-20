@@ -272,10 +272,23 @@ h1 .dot {
   border-color: rgba(79, 227, 255, 0.3);
   box-shadow: 0 0 8px rgba(44, 147, 173, 0.4);
 }
+/* Global disabled-button rule — mirrors the design spec's ds-components.jsx
+   Button: opacity 0.4, cursor not-allowed, no further click events. The two
+   .btn-save / .btn-undo overrides above used to drop to 0.35; tightening to
+   0.4 brings the dashboard into line with the design system (dish-mac,
+   dish-android, dish-linux all use the same 0.4 alpha for "this control is
+   not tappable right now"). Combined with an in-button loader, the disabled
+   state and the "working" state read as one thing — a dimmed button with a
+   spinner — and a stray click can't reach the handler. */
+button:disabled,
+.btn:disabled,
 .btn-save:disabled,
-.btn-undo:disabled {
-  opacity: 0.35;
+.btn-undo:disabled,
+.btn-icon:disabled,
+.seg-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
+  pointer-events: none;
 }
 
 .btn-undo {
@@ -1493,3 +1506,109 @@ h2.section-title { font-size: 14px; }
   padding: 8px 12px;
   margin-bottom: 12px;
 }
+
+/* ── Connection-state chips ──────────────────────────────────────────────────
+   Per-row chip rendered by dashboard.js (DEVICE_LINK_STATE_LABEL /
+   CONTROLLER_STATE_LABEL). The base shape matches the existing per-controller
+   chips (.ctrl-motion / .ctrl-battery) so a row and the chip cluster below it
+   look like they belong together; the variants below colour each state. */
+.device-state, .ctrl-state {
+  display: inline-block;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.state-active {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.state-paired {
+  color: var(--text-muted);
+  background: transparent;
+}
+.state-linking {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.10);
+  border-color: rgba(79, 227, 255, 0.30);
+}
+.state-notResponding {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+/* Per-controller pipeline states. "live" / "quiet" → mounted (success);
+   "registering" / "allocating" / "detached" → transient (info);
+   "source" → before forwarding (muted); "failed" → blocked (error). */
+.state-live, .state-quiet {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.state-registering, .state-allocating, .state-detached {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.10);
+  border-color: rgba(79, 227, 255, 0.30);
+}
+.state-source {
+  color: var(--text-muted);
+  background: transparent;
+}
+.state-failed {
+  color: var(--error);
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+/* ── Indeterminate loaders ──────────────────────────────────────────
+   The loader SVGs (spinnerSVG / dotsSVG / barSVG in loaders.js) draw with
+   `fill="currentColor"` / `stroke="currentColor"`, so the surrounding
+   element's `color` is the colour the loader inherits. Default to
+   --primary so a bare loader without further styling reads as brand cyan.
+*/
+.ldr-spinner, .ldr-dots, .ldr-bar { color: var(--primary); }
+
+/* In-button loader layout — swaps a button's content for "loader + label"
+   while a request is in flight. Pairs with the disabled-button rule above
+   so the user reads one composite state ("working, not tappable") rather
+   than two overlapping ones. Used by genPin() / disconnectConn() /
+   removeDevice() in dashboard.js. */
+.btn-with-loader {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-with-loader .ldr-spinner,
+.btn-with-loader .ldr-dots {
+  /* SVG should not pick up the button's text colour cascade -- it draws
+     in --primary regardless of whether the host is btn-save (dark text)
+     or btn-icon (muted). */
+  color: var(--primary);
+  flex-shrink: 0;
+}
+/* When the in-flight loader sits inside a danger-tinted icon button (the
+   per-row disconnect / remove buttons), let it inherit the error red so
+   the affordance ("this action is destructive, currently working") is
+   preserved through the disabled-alpha dim. */
+.btn-icon.btn-danger .ldr-spinner { color: var(--error); }
+
+/* ── SSE-reconnect bar ──────────────────────────────────────────────
+   Sits at the very top of the dashboard, just below the header, while the
+   EventSource is mid-reconnect (server still reachable per /api/status,
+   but the live stream dropped). Mirrors the design spec's bar = whole-pane
+   loading rule; the offline view takes over only when the server itself
+   becomes unreachable. */
+.sse-reconnect-bar {
+  margin-bottom: 12px;
+  color: var(--primary);
+}
+.sse-reconnect-bar[hidden] { display: none; }
+.sse-reconnect-bar .ldr-bar { width: 100%; }

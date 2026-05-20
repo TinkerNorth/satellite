@@ -74,6 +74,14 @@
       </div>
     </div>
 
+    <!-- SSE-reconnect bar — shown only while the EventSource is mid-reconnect.
+         Mirrors the design spec's "bar = whole-pane loading" rule: a brief
+         indeterminate bar at the top of the dashboard while we re-establish
+         the live stream, rather than the entire view dropping to the offline
+         placeholder. Filled by barSVG() in loaders.js; toggled by
+         dashboard.js. -->
+    <div id="dashboard-sse-reconnect" class="sse-reconnect-bar" hidden></div>
+
     <!-- Update banner mount point. updates.js clones #tpl-update-banner here. -->
     <div id="dashboard-update-slot"></div>
 
@@ -132,10 +140,15 @@
     <div class="section">
       <h2 class="section-title">Device Pairing</h2>
       <div class="pin-row">
-        <button class="btn btn-save" onclick="genPin()">Generate PIN</button>
+        <button class="btn btn-save" onclick="genPin(event)">Generate PIN</button>
         <span class="pin-display" id="pin-display">—</span>
       </div>
-      <p class="hint">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
+      <!-- updatePinPanel() rewrites this line on every SSE `pin` tick:
+           - idle:    "Enter this PIN on the sender to pair. Expires in 5 minutes."
+           - active:  "Enter this PIN on the sender to pair. Expires in m:ss."
+           - expired: "PIN expired — generate a new one…"
+           - paired:  "Paired successfully — that PIN is now spent." -->
+      <p class="hint" id="pin-hint">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
     </div>
 
     <!-- ── Connections ── -->
@@ -384,6 +397,7 @@
   </div>
 
   <script src="common.js"></script>
+  <script src="loaders.js"></script>
   <script src="updates.js"></script>
   <script src="dashboard.js"></script>
   <script src="settings.js"></script>

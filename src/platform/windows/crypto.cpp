@@ -107,14 +107,24 @@ std::string randomDigits(int n) {
 }
 
 // ── PIN state ───────────────────────────────────────────────────────────────
+// Formalises the (g_currentPin, g_pinExpiry, g_pinPairedAt) state machine the
+// dashboard reads. See PinState in core/types.h:
+//   PinIdle    — empty + no recent pair.
+//   PinActive  — PIN generated, within the 5-min window.
+//   PinExpired — window lapsed without a successful pair.
+//   PinPaired  — momentary, cleared after PIN_PAIRED_HOLD_SEC.
 static std::mutex g_pinMtx;
 static std::string g_currentPin;
 static std::chrono::steady_clock::time_point g_pinExpiry;
+static std::chrono::steady_clock::time_point g_pinPairedAt;
+static bool g_pinPairedValid = false;
+static constexpr int PIN_PAIRED_HOLD_SEC = 5;
 
 std::string generatePin() {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     g_currentPin = randomDigits(4);
     g_pinExpiry = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+    g_pinPairedValid = false;
     return g_currentPin;
 }
 
@@ -122,8 +132,38 @@ bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     if (g_currentPin.empty() || std::chrono::steady_clock::now() > g_pinExpiry) return false;
     bool ok = (pin == g_currentPin);
-    if (ok) g_currentPin.clear();
+    if (ok) {
+        g_currentPin.clear();
+        g_pinPairedAt = std::chrono::steady_clock::now();
+        g_pinPairedValid = true;
+    }
     return ok;
+}
+
+PinSnapshot pinSnapshot() {
+    std::lock_guard<std::mutex> lk(g_pinMtx);
+    const auto now = std::chrono::steady_clock::now();
+    PinSnapshot s;
+    if (!g_currentPin.empty()) {
+        if (now > g_pinExpiry) {
+            s.state = PinState::PinExpired;
+            s.secondsRemaining = 0;
+        } else {
+            s.state = PinState::PinActive;
+            s.secondsRemaining = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::seconds>(g_pinExpiry - now).count());
+        }
+        return s;
+    }
+    if (g_pinPairedValid &&
+        now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
+        s.state = PinState::PinPaired;
+        s.secondsRemaining = 0;
+        return s;
+    }
+    s.state = PinState::PinIdle;
+    s.secondsRemaining = 0;
+    return s;
 }
 
 // ── Hex encode/decode ───────────────────────────────────────────────────────

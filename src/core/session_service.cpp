@@ -609,6 +609,11 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
     snap.maxControllers = MAX_BACKEND_CONTROLLERS;
     snap.backendAvailable = backend_.isBusOpen();
 
+    // Threshold for DeviceLinkState::NotResponding — see HEARTBEAT_STALL_FACTOR.
+    const auto now = std::chrono::steady_clock::now();
+    const auto stallThreshold =
+        std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
+
     for (auto& [tok, conn] : connections_) {
         ConnectionSnapshot cs;
         cs.token = tok;
@@ -620,6 +625,11 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
                 .count();
         cs.activeControllerCount = conn.activeControllerCount;
         cs.touchpadMode = conn.touchpadMode;
+        // A connection that exists at all is at least Active; escalate to
+        // NotResponding once the stalling window has lapsed without packets.
+        cs.linkState = (now - conn.lastPacketTime > stallThreshold)
+                           ? DeviceLinkState::NotResponding
+                           : DeviceLinkState::Active;
 
         for (auto& ctrl : conn.controllers) {
             if (ctrl.active) {
@@ -655,6 +665,22 @@ bool SessionService::isDeviceConnected(const std::string& deviceId) const {
         if (c.deviceId == deviceId) return true;
     }
     return false;
+}
+
+DeviceLinkState SessionService::linkStateForDevice(const std::string& deviceId) const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto now = std::chrono::steady_clock::now();
+    const auto stallThreshold =
+        std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
+    for (auto& [tok, c] : connections_) {
+        if (c.deviceId != deviceId) continue;
+        // Live connection — Active unless we've crossed the stalling window.
+        return (now - c.lastPacketTime > stallThreshold) ? DeviceLinkState::NotResponding
+                                                         : DeviceLinkState::Active;
+    }
+    // No live connection for this device. The caller has already established
+    // the device IS paired (it came from `pairedDevices`); fall back to Paired.
+    return DeviceLinkState::Paired;
 }
 
 // ── Reaper ──────────────────────────────────────────────────────────────────
