@@ -6,6 +6,9 @@
   <title>Satellite</title>
   <link rel="icon" type="image/png" href="icon.png">
   <link rel="stylesheet" href="style.css">
+  <!-- i18n shim must load before any other script so t() is defined globally
+       before dashboard / settings / updates / debug / logs code runs. -->
+  <script src="i18n.js"></script>
 </head>
 <body>
 
@@ -20,12 +23,12 @@
   <div class="card" id="view-offline" style="display:none">
     <div class="offline-content">
       <div class="offline-icon"><img src="img/icons/satellite-master.svg" alt="Satellite" class="brand-icon brand-icon-lg"></div>
-      <h1 class="offline-title">Server Unreachable</h1>
-      <p class="offline-message">Cannot connect to the Satellite server. It may be stopped or restarting.</p>
+      <h1 class="offline-title" data-i18n="offline.title">Server Unreachable</h1>
+      <p class="offline-message" data-i18n="offline.message">Cannot connect to the Satellite server. It may be stopped or restarting.</p>
       <div class="offline-progress">
         <div class="offline-progress-bar"></div>
       </div>
-      <p class="offline-hint">Waiting for server… will reconnect automatically.</p>
+      <p class="offline-hint" data-i18n="offline.hint">Waiting for server… will reconnect automatically.</p>
     </div>
   </div>
 
@@ -53,12 +56,12 @@
   <!-- ── Restart-to-install confirmation modal ── -->
   <div class="modal-overlay" id="restart-modal" style="display:none">
     <div class="modal-card">
-      <h2 class="section-title"><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"> Restart to Install</h2>
-      <p class="modal-body">Satellite will close and the new version <span id="restart-modal-version" class="modal-version">—</span> will be installed in the background. The receiver will reconnect automatically when the new version launches.</p>
-      <p class="modal-warning" id="restart-modal-warning" style="display:none">Active connections will be dropped during the restart.</p>
+      <h2 class="section-title"><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"> <span data-i18n="modal.restart.title">Restart to Install</span></h2>
+      <p class="modal-body" id="restart-modal-body">Satellite will close and the new version <span id="restart-modal-version" class="modal-version">—</span> will be installed in the background. The receiver will reconnect automatically when the new version launches.</p>
+      <p class="modal-warning" id="restart-modal-warning" data-i18n="modal.restart.warning" style="display:none">Active connections will be dropped during the restart.</p>
       <div class="btn-row">
-        <button class="btn btn-start" id="restart-modal-confirm">Restart &amp; Install</button>
-        <button class="btn btn-undo" id="restart-modal-cancel">Cancel</button>
+        <button class="btn btn-start" id="restart-modal-confirm" data-i18n="modal.restart.confirm">Restart &amp; Install</button>
+        <button class="btn btn-undo" id="restart-modal-cancel" data-i18n="modal.restart.cancel">Cancel</button>
       </div>
     </div>
   </div>
@@ -66,11 +69,11 @@
   <!-- ── Dashboard ── -->
   <div class="card" id="view-dashboard" style="display:none">
     <div class="header-row">
-      <h1><span class="dot off" id="dot"></span> Satellite</h1>
+      <h1><span class="dot off" id="dot"></span> <span data-i18n="header.satellite">Satellite</span></h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="navigate('/logs')" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="navigate('/debug')" title="Debug"><img src="img/icons/microscope.svg" alt="Debug" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/logs')" data-i18n-attr="title:header.logs" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/debug')" data-i18n-attr="title:header.debug" title="Debug"><img src="img/icons/microscope.svg" alt="Debug" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -90,40 +93,40 @@
          dashboard.js; hidden by default. -->
     <div class="dash-notice" id="dash-notice" role="alert">
       <span class="dash-notice-text" id="dash-notice-text"></span>
-      <button class="dash-notice-close" id="dash-notice-close" type="button" aria-label="Dismiss">&times;</button>
+      <button class="dash-notice-close" id="dash-notice-close" type="button" data-i18n-attr="aria-label:connections.notice.dismiss" aria-label="Dismiss">&times;</button>
     </div>
 
     <div id="stats">
-      <div class="stat"><span class="label">Status</span><span class="value" id="s-status">Stopped</span></div>
-      <div class="stat"><span class="label">Packets</span><span class="value" id="s-packets">0</span></div>
-      <div class="stat"><span class="label">Sender</span><span class="value" id="s-sender">—</span></div>
-      <div class="stat"><span class="label">UDP Port</span><span class="value" id="s-port">—</span></div>
-      <div class="stat"><span class="label">HTTP Port</span><span class="value" id="s-http-port">—</span></div>
+      <div class="stat"><span class="label" data-i18n="dashboard.stats.status">Status</span><span class="value" id="s-status" data-i18n="dashboard.status.stopped">Stopped</span></div>
+      <div class="stat"><span class="label" data-i18n="dashboard.stats.packets">Packets</span><span class="value" id="s-packets">0</span></div>
+      <div class="stat"><span class="label" data-i18n="dashboard.stats.sender">Sender</span><span class="value" id="s-sender">—</span></div>
+      <div class="stat"><span class="label" data-i18n="dashboard.stats.udp-port">UDP Port</span><span class="value" id="s-port">—</span></div>
+      <div class="stat"><span class="label" data-i18n="dashboard.stats.http-port">HTTP Port</span><span class="value" id="s-http-port">—</span></div>
     </div>
 
     <!-- ── Backend Status (per-OS: ViGEmBus on Windows, uinput on Linux,
          hidden entirely on macOS where supported=false). All copy is driven
          by the BACKEND_COPY table in dashboard.js, keyed by (id, errorCode). -->
     <div class="section" id="backend-section" style="display:none">
-      <h2 class="section-title" id="backend-title">Backend</h2>
+      <h2 class="section-title" id="backend-title" data-i18n="backend.section.title">Backend</h2>
       <div class="backend-status-row">
         <div class="backend-indicator">
           <span class="backend-dot" id="backend-dot"></span>
-          <span class="backend-label" id="backend-label">Checking…</span>
+          <span class="backend-label" id="backend-label" data-i18n="backend.label.checking">Checking…</span>
         </div>
-        <button class="btn-link" id="backend-guide-toggle" onclick="toggleBackendGuide()" style="display:none">Setup Guide <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon"></button>
+        <button class="btn-link" id="backend-guide-toggle" onclick="toggleBackendGuide()" style="display:none"><span data-i18n="backend.guide.toggle">Setup Guide</span> <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon"></button>
       </div>
 
       <!-- Flow diagram -->
       <div class="backend-flow">
         <div class="flow-step" id="flow-backend">
           <span class="flow-icon"><img src="img/icons/gamepad.svg" alt="" class="emoji-icon"></span>
-          <span class="flow-text" id="flow-backend-text">Backend</span>
+          <span class="flow-text" id="flow-backend-text" data-i18n="backend.flow.backend">Backend</span>
         </div>
         <div class="flow-arrow"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
         <div class="flow-step" id="flow-system">
           <span class="flow-icon"><img src="img/icons/monitor.svg" alt="" class="emoji-icon"></span>
-          <span class="flow-text">System</span>
+          <span class="flow-text" data-i18n="backend.flow.system">System</span>
         </div>
       </div>
 
@@ -138,9 +141,9 @@
 
     <!-- ── PIN Pairing ── -->
     <div class="section">
-      <h2 class="section-title"><img src="img/icons/bluetooth-pairing-animated.svg" alt="" class="emoji-icon section-glyph"> Device Pairing</h2>
+      <h2 class="section-title"><img src="img/icons/bluetooth-pairing-animated.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="pin.section.title">Device Pairing</span></h2>
       <div class="pin-row">
-        <button class="btn btn-save" onclick="genPin(event)">Generate PIN</button>
+        <button class="btn btn-save" onclick="genPin(event)" data-i18n="pin.generate">Generate PIN</button>
         <span class="pin-display" id="pin-display">—</span>
       </div>
       <!-- updatePinPanel() rewrites this line on every SSE `pin` tick:
@@ -148,30 +151,30 @@
            - active:  "Enter this PIN on the sender to pair. Expires in m:ss."
            - expired: "PIN expired — generate a new one…"
            - paired:  "Paired successfully — that PIN is now spent." -->
-      <p class="hint" id="pin-hint">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
+      <p class="hint" id="pin-hint" data-i18n="pin.hint.idle">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
     </div>
 
     <!-- ── Connections ── -->
     <div class="section">
-      <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> Connections</h2>
+      <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="connections.section.title">Connections</span></h2>
       <div id="connection-list" class="device-list">
-        <p class="hint">No active connections</p>
+        <p class="hint" data-i18n="connections.empty">No active connections</p>
       </div>
     </div>
 
     <!-- ── Virtual Controllers ── -->
     <div class="section">
-      <h2 class="section-title">Virtual Controllers <span class="badge" id="controller-count">0 / 16</span></h2>
+      <h2 class="section-title"><span data-i18n="controllers.section.title">Virtual Controllers</span> <span class="badge" id="controller-count">0 / 16</span></h2>
       <div id="controller-list" class="device-list">
-        <p class="hint">No active controllers</p>
+        <p class="hint" data-i18n="controllers.empty">No active controllers</p>
       </div>
     </div>
 
     <!-- ── Paired Devices ── -->
     <div class="section">
-      <h2 class="section-title"><img src="img/icons/dish.svg" alt="" class="emoji-icon section-glyph"> Paired Devices</h2>
+      <h2 class="section-title"><img src="img/icons/dish.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="devices.section.title">Paired Devices</span></h2>
       <div id="device-list" class="device-list">
-        <p class="hint">No paired devices</p>
+        <p class="hint" data-i18n="devices.empty">No paired devices</p>
       </div>
     </div>
   </div>
@@ -179,43 +182,43 @@
   <!-- ── Settings ── -->
   <div class="card" id="view-settings" style="display:none">
     <div class="header-row">
-      <h1><img src="img/icons/gear.svg" alt="" class="emoji-icon"> Settings</h1>
+      <h1><img src="img/icons/gear.svg" alt="" class="emoji-icon"> <span data-i18n="header.settings">Settings</span></h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
       </div>
     </div>
 
     <div class="controls">
       <div class="row">
-        <label>UDP Port</label>
+        <label data-i18n="settings.udp-port.label">UDP Port</label>
         <input type="number" id="settings-udpPort" min="1024" max="65535" value="9876">
       </div>
       <!-- Range-validation feedback for the UDP port field. Empty/hidden
            unless settingsSave() rejects an out-of-range value. -->
       <p class="error-msg" id="settings-udpPort-error"></p>
       <div class="toggle-row">
-        <span id="settings-autoStart-label">Start with Windows</span>
+        <span id="settings-autoStart-label" data-i18n="settings.autostart.windows">Start with Windows</span>
         <label class="switch"><input type="checkbox" id="settings-autoStart"><span class="slider"></span></label>
       </div>
 
       <!-- ── Discovery (Task 1.6 — mDNS / Bonjour + legacy beacon) ── -->
-      <h2 class="section-title section-title-spaced">Discovery</h2>
+      <h2 class="section-title section-title-spaced" data-i18n="settings.discovery.title">Discovery</h2>
       <div class="stat">
-        <span class="label">mDNS / Bonjour responder</span>
+        <span class="label" data-i18n="settings.discovery.mdns-label">mDNS / Bonjour responder</span>
         <span class="value" id="settings-mdns-status">—</span>
       </div>
       <div class="toggle-row">
-        <span>Legacy UDP broadcast beacon</span>
+        <span data-i18n="settings.discovery.broadcast-label">Legacy UDP broadcast beacon</span>
         <label class="switch"><input type="checkbox" id="settings-discoveryBroadcast"><span class="slider"></span></label>
       </div>
-      <p class="hint">mDNS / Bonjour is the modern discovery path and works on
+      <p class="hint" data-i18n="settings.discovery.hint">mDNS / Bonjour is the modern discovery path and works on
         subnets that drop broadcast. The legacy UDP broadcast beacon stays on as
         a fallback for senders that predate the mDNS responder — turn it off
         only on a network where every sender supports mDNS.</p>
 
       <div class="btn-row">
-        <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" disabled>Save Config</button>
-        <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" disabled>Undo</button>
+        <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" data-i18n="settings.save" disabled>Save Config</button>
+        <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" data-i18n="settings.undo" disabled>Undo</button>
       </div>
       <!-- Save result line — error in red, transient confirmation otherwise.
            Set by settingsSave(); empty until a save is attempted. -->
@@ -224,44 +227,44 @@
 
     <!-- ── Updates ── -->
     <div class="section">
-      <h2 class="section-title">Updates</h2>
+      <h2 class="section-title" data-i18n="settings.updates.title">Updates</h2>
       <div class="stat">
-        <span class="label">Current Version</span>
+        <span class="label" data-i18n="settings.updates.current-version">Current Version</span>
         <span class="value" id="settings-version">—</span>
       </div>
       <div class="stat">
-        <span class="label">Install Method</span>
+        <span class="label" data-i18n="settings.updates.install-method">Install Method</span>
         <span class="value" id="settings-platform">—</span>
       </div>
       <div class="stat">
-        <span class="label">Last Checked</span>
-        <span class="value" id="settings-last-check">never</span>
+        <span class="label" data-i18n="settings.updates.last-checked">Last Checked</span>
+        <span class="value" id="settings-last-check" data-i18n="settings.updates.never">never</span>
       </div>
 
       <div class="row" style="margin-top:12px">
-        <label>Channel</label>
+        <label data-i18n="settings.updates.channel">Channel</label>
         <select id="settings-channel" class="form-input" style="flex:1">
-          <option value="stable">Stable</option>
-          <option value="prerelease">Pre-release (rc / beta)</option>
+          <option value="stable" data-i18n="settings.updates.channel.stable">Stable</option>
+          <option value="prerelease" data-i18n="settings.updates.channel.prerelease">Pre-release (rc / beta)</option>
         </select>
       </div>
 
       <div class="toggle-row">
-        <span>Check automatically</span>
+        <span data-i18n="settings.updates.auto-check">Check automatically</span>
         <label class="switch"><input type="checkbox" id="settings-autoCheck"><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
-        <span>Download in background</span>
+        <span data-i18n="settings.updates.auto-download">Download in background</span>
         <label class="switch"><input type="checkbox" id="settings-autoDownload"><span class="slider"></span></label>
       </div>
       <div class="toggle-row">
-        <span>Install &amp; restart automatically</span>
+        <span data-i18n="settings.updates.auto-install">Install &amp; restart automatically</span>
         <label class="switch"><input type="checkbox" id="settings-autoInstall"><span class="slider"></span></label>
       </div>
 
       <div class="btn-row" style="margin-top:12px">
-        <button class="btn btn-save" id="settings-btnCheck" onclick="updatesCheck()">Check for Updates</button>
-        <button class="btn btn-save" id="settings-btnUpdatePrefs" onclick="updatesSavePrefs()" disabled>Save Prefs</button>
+        <button class="btn btn-save" id="settings-btnCheck" onclick="updatesCheck()" data-i18n="settings.updates.check">Check for Updates</button>
+        <button class="btn btn-save" id="settings-btnUpdatePrefs" onclick="updatesSavePrefs()" data-i18n="settings.updates.save-prefs" disabled>Save Prefs</button>
       </div>
 
       <!-- Settings-page mirror of the update banner (re-uses the template). -->
@@ -272,11 +275,11 @@
   <!-- ── Debug ── -->
   <div class="card card-wide" id="view-debug" style="display:none">
     <div class="header-row">
-      <h1><img src="img/icons/microscope.svg" alt="" class="emoji-icon"> Debug Telemetry</h1>
+      <h1><img src="img/icons/microscope.svg" alt="" class="emoji-icon"> <span data-i18n="header.debug-title">Debug Telemetry</span></h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="navigate('/logs')" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/logs')" data-i18n-attr="title:header.logs" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -284,116 +287,116 @@
     <div class="debug-pipeline">
       <div class="pipe-stage" id="pipe-udp">
         <div class="pipe-icon"><img src="img/icons/dish.svg" alt="Dish" class="brand-icon"></div>
-        <div class="pipe-label">UDP Recv</div>
+        <div class="pipe-label" data-i18n="debug.pipeline.udp-recv">UDP Recv</div>
         <div class="pipe-value" id="d-pps">0 pps</div>
       </div>
       <div class="pipe-arrow" id="pipe-arrow-1"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
       <div class="pipe-stage" id="pipe-backend">
         <div class="pipe-icon"><img src="img/icons/gamepad.svg" alt="" class="emoji-icon"></div>
-        <div class="pipe-label" id="pipe-backend-label">Inject</div>
+        <div class="pipe-label" id="pipe-backend-label" data-i18n="debug.pipeline.inject">Inject</div>
         <div class="pipe-value" id="d-submit-rate">0 pps</div>
       </div>
       <div class="pipe-arrow" id="pipe-arrow-2"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
       <div class="pipe-stage" id="pipe-system">
         <div class="pipe-icon"><img src="img/icons/monitor.svg" alt="" class="emoji-icon"></div>
-        <div class="pipe-label">System</div>
-        <div class="pipe-value" id="d-status">Stopped</div>
+        <div class="pipe-label" data-i18n="debug.pipeline.system">System</div>
+        <div class="pipe-value" id="d-status" data-i18n="dashboard.status.stopped">Stopped</div>
       </div>
     </div>
 
     <!-- Stats grid -->
     <div class="debug-grid">
       <div class="debug-stat">
-        <span class="debug-stat-label">Packets Received</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.packets-received">Packets Received</span>
         <span class="debug-stat-value" id="d-packets">0</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Submitted OK</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.submitted-ok">Submitted OK</span>
         <span class="debug-stat-value debug-ok" id="d-submit-ok">0</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Submit Errors</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.submit-errors">Submit Errors</span>
         <span class="debug-stat-value debug-err" id="d-submit-fail">0</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Drop Rate</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.drop-rate">Drop Rate</span>
         <span class="debug-stat-value" id="d-drop-rate">0%</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Last Loop</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.last-loop">Last Loop</span>
         <span class="debug-stat-value" id="d-last-loop">0 µs</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Max Loop (peak)</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.max-loop">Max Loop (peak)</span>
         <span class="debug-stat-value" id="d-max-loop">0 µs</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Sender IP</span>
-        <span class="debug-stat-value" id="d-sender">none</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.sender-ip">Sender IP</span>
+        <span class="debug-stat-value" id="d-sender" data-i18n="debug.sender.none">none</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">UDP Port</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.udp-port">UDP Port</span>
         <span class="debug-stat-value" id="d-port">—</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Decrypt Failures</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.decrypt-failures">Decrypt Failures</span>
         <span class="debug-stat-value debug-ok" id="d-decrypt-fail">0</span>
       </div>
       <div class="debug-stat">
-        <span class="debug-stat-label">Replay Drops</span>
+        <span class="debug-stat-label" data-i18n="debug.stats.replay-drops">Replay Drops</span>
         <span class="debug-stat-value debug-ok" id="d-replay-drop">0</span>
       </div>
       <div class="debug-stat" id="d-backend-row" style="display:none">
-        <span class="debug-stat-label" id="d-backend-label">Backend</span>
+        <span class="debug-stat-label" id="d-backend-label" data-i18n="debug.stats.backend">Backend</span>
         <span class="debug-stat-value" id="d-backend-value">—</span>
       </div>
     </div>
 
     <!-- Rate history sparkline (text-based) -->
     <div class="section">
-      <h2 class="section-title">Packet Rate History</h2>
+      <h2 class="section-title" data-i18n="debug.chart.title">Packet Rate History</h2>
       <div class="debug-chart" id="d-chart"></div>
-      <p class="hint">Updates every 500ms · showing last 60 samples (30 seconds)</p>
+      <p class="hint" data-i18n="debug.chart.hint">Updates every 500ms · showing last 60 samples (30 seconds)</p>
     </div>
   </div>
 
   <!-- ── Logs ── -->
   <div class="card card-wide" id="view-logs" style="display:none">
     <div class="header-row">
-      <h1><img src="img/icons/clipboard_lines.svg" alt="" class="emoji-icon"> System Logs</h1>
+      <h1><img src="img/icons/clipboard_lines.svg" alt="" class="emoji-icon"> <span data-i18n="header.logs-title">System Logs</span></h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="navigate('/dashboard')" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
+        <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
       </div>
     </div>
 
     <div class="log-controls">
       <div class="log-filters">
         <label class="log-filter-label">
-          <input type="checkbox" id="log-show-info" checked> Info
+          <input type="checkbox" id="log-show-info" checked> <span data-i18n="logs.filter.info">Info</span>
         </label>
         <label class="log-filter-label">
-          <input type="checkbox" id="log-show-warn" checked> Warn
+          <input type="checkbox" id="log-show-warn" checked> <span data-i18n="logs.filter.warn">Warn</span>
         </label>
         <label class="log-filter-label">
-          <input type="checkbox" id="log-show-error" checked> Error
+          <input type="checkbox" id="log-show-error" checked> <span data-i18n="logs.filter.error">Error</span>
         </label>
       </div>
       <div class="log-actions">
-        <input type="text" id="log-search" class="form-input log-search-input" placeholder="Filter logs…">
+        <input type="text" id="log-search" class="form-input log-search-input" data-i18n-attr="placeholder:logs.search.placeholder" placeholder="Filter logs…">
         <label class="log-filter-label">
-          <input type="checkbox" id="log-auto-scroll" checked> Auto-scroll
+          <input type="checkbox" id="log-auto-scroll" checked> <span data-i18n="logs.autoscroll">Auto-scroll</span>
         </label>
       </div>
     </div>
 
     <div class="log-container" id="log-container">
       <div class="log-entries" id="log-entries">
-        <p class="hint">Loading logs…</p>
+        <p class="hint" data-i18n="logs.loading">Loading logs…</p>
       </div>
     </div>
 
-    <p class="hint">Showing last 500 log entries · auto-refreshes every 2 seconds</p>
+    <p class="hint" data-i18n="logs.hint">Showing last 500 log entries · auto-refreshes every 2 seconds</p>
   </div>
 
   <script src="common.js"></script>
@@ -405,4 +408,3 @@
   <script src="logs.js"></script>
 </body>
 </html>
-

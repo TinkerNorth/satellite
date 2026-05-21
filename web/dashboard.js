@@ -47,12 +47,17 @@ function setButtonLoading(btn, label) {
 // "linking" is enumerated server-side but is currently never surfaced —
 // /api/connections handshake is synchronous, so a device is either Paired
 // (no live conn) or Active (live). The label is here for forward-compat.
-const DEVICE_LINK_STATE_LABEL = {
-  paired:        'Paired',
-  linking:       'Connecting…',
-  active:        'Online',
-  notResponding: 'Not responding',
-};
+// Resolved lazily through t() so the active-locale catalog is used. The chip
+// vocabulary mirrors dish-android's chip_status_* keys for cross-app consistency.
+function deviceLinkStateLabel(key) {
+  switch (key) {
+    case 'linking':       return t('device.state.connecting');
+    case 'active':        return t('device.state.online');
+    case 'notResponding': return t('device.state.notresponding');
+    case 'paired':
+    default:              return t('device.state.paired');
+  }
+}
 
 // DeviceLinkState → v6 brand dish glyph next to the chip. Mirrors the
 // "dish" iconography family in img/icons/ (dish.svg, dish-connected.svg,
@@ -70,80 +75,102 @@ const DEVICE_LINK_STATE_ICON = {
 // ControllerState → per-controller tag (virtual-controllers section).
 // Today the server only ever stamps "live" or "detached"; the transient
 // states (registering, allocating) and the "failed" case are enumerated for
-// when the SessionService starts threading them through.
-const CONTROLLER_STATE_LABEL = {
-  source:       'Detected',
-  registering:  'Mounting…',
-  allocating:   'Mounting…',
-  live:         'Mounted',
-  quiet:        'Mounted',
-  detached:     'Unmounting…',
-  failed:       'Blocked',
-};
+// when the SessionService starts threading them through. Lookup goes through
+// t() so the active locale catalog wins.
+function controllerStateLabel(key) {
+  switch (key) {
+    case 'source':       return t('controller.state.detected');
+    case 'registering':
+    case 'allocating':   return t('controller.state.mounting');
+    case 'detached':     return t('controller.state.unmounting');
+    case 'failed':       return t('controller.state.blocked');
+    case 'live':
+    case 'quiet':
+    default:             return t('controller.state.mounted');
+  }
+}
 
 // ── Backend copy table ──────────────────────────────────────────────────────
 // Keyed by (backend.id, errorCode). The C++ server emits structured status;
 // this table owns every user-facing string. Adding a new error code on the
 // server falls back to a generic message until a matching entry is added here.
-const BACKEND_COPY = {
-  vigem: {
-    title: 'ViGEmBus Driver',
-    pipelineLabel: 'ViGEm Submit',
-    flowLabel: 'ViGEmBus',
-    statusActive: 'Active (controllers plugged in)',
-    statusIdle: 'Ready (idle — no controllers)',
-    statusUnknown: 'Detected',
-    errors: {
-      DRIVER_MISSING: {
-        title: 'ViGEmBus driver not detected',
-        body: 'ViGEmBus is a kernel driver that lets Satellite create a virtual Xbox 360 controller on Windows. Without it, controller input cannot be forwarded.',
-        steps: [
-          { text: 'Download the latest ViGEmBus release', url: 'https://github.com/nefarius/ViGEmBus/releases' },
-          { text: 'Run the installer (ViGEmBus_Setup_x64.msi)' },
-          { text: 'Restart may be required — check Device Manager under "System devices" for "Nefarius Virtual Gamepad Emulation Bus"' },
-          { text: 'Refresh this page; status should show "Detected"' },
-        ],
+//
+// Resolved via t() so each backend lookup uses the active locale catalog. The
+// commands + URLs stay verbatim (they're literal shell snippets, not copy).
+function backendCopy(backendId) {
+  if (backendId === 'vigem') {
+    return {
+      title: t('backend.vigem.title'),
+      pipelineLabel: t('backend.vigem.pipeline-label'),
+      flowLabel: t('backend.vigem.flow-label'),
+      statusActive: t('backend.vigem.status.active'),
+      statusIdle: t('backend.vigem.status.idle'),
+      statusUnknown: t('backend.vigem.status.unknown'),
+      errors: {
+        DRIVER_MISSING: {
+          title: t('backend.vigem.err.driver-missing.title'),
+          body: t('backend.vigem.err.driver-missing.body'),
+          steps: [
+            { text: t('backend.vigem.err.driver-missing.step1'), url: 'https://github.com/nefarius/ViGEmBus/releases' },
+            { text: t('backend.vigem.err.driver-missing.step2') },
+            { text: t('backend.vigem.err.driver-missing.step3') },
+            { text: t('backend.vigem.err.driver-missing.step4') },
+          ],
+        },
+        BUS_OPEN_FAILED: {
+          title: t('backend.vigem.err.bus-open-failed.title'),
+          body: t('backend.vigem.err.bus-open-failed.body'),
+          steps: [
+            { text: t('backend.vigem.err.bus-open-failed.step1'), url: 'https://github.com/nefarius/ViGEmBus/releases' },
+            { text: t('backend.vigem.err.bus-open-failed.step2') },
+          ],
+        },
       },
-      BUS_OPEN_FAILED: {
-        title: 'ViGEmBus driver detected but unresponsive',
-        body: 'The driver is installed but Satellite could not open the bus. This usually means a version mismatch between the driver and the satellite build, or the driver service is stopped.',
-        steps: [
-          { text: 'Reinstall the latest ViGEmBus release', url: 'https://github.com/nefarius/ViGEmBus/releases' },
-          { text: 'Or restart your machine and try again' },
-        ],
+    };
+  }
+  if (backendId === 'uinput') {
+    return {
+      title: t('backend.uinput.title'),
+      pipelineLabel: t('backend.uinput.pipeline-label'),
+      flowLabel: t('backend.uinput.flow-label'),
+      statusActive: t('backend.uinput.status.active'),
+      statusIdle: t('backend.uinput.status.idle'),
+      statusUnknown: t('backend.uinput.status.unknown'),
+      errors: {
+        DEVICE_MISSING: {
+          title: t('backend.uinput.err.device-missing.title'),
+          body: t('backend.uinput.err.device-missing.body'),
+          steps: [
+            { text: t('backend.uinput.err.device-missing.step1'), command: 'sudo modprobe uinput' },
+            { text: t('backend.uinput.err.device-missing.step2'), command: "echo uinput | sudo tee /etc/modules-load.d/satellite.conf" },
+            { text: t('backend.uinput.err.device-missing.step3') },
+          ],
+        },
+        PERMISSION_DENIED: {
+          title: t('backend.uinput.err.permission-denied.title'),
+          body: t('backend.uinput.err.permission-denied.body'),
+          steps: [
+            { text: t('backend.uinput.err.permission-denied.step1'), command: "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"' | sudo tee /etc/udev/rules.d/70-satellite-uinput.rules" },
+            { text: t('backend.uinput.err.permission-denied.step2'), command: 'sudo udevadm control --reload-rules && sudo udevadm trigger' },
+            { text: t('backend.uinput.err.permission-denied.step3'), command: 'sudo usermod -aG input "$USER"' },
+            { text: t('backend.uinput.err.permission-denied.step4') },
+          ],
+        },
       },
-    },
+    };
+  }
+  return {};
+}
+
+// Compat shim — debug.js dips into BACKEND_COPY[id] for pipeline labels +
+// error titles. Keep a Proxy-like accessor that yields the live, localised
+// copy on demand, so the debug page doesn't have to learn about backendCopy().
+const BACKEND_COPY = new Proxy({}, {
+  get(_, backendId) {
+    if (typeof backendId !== 'string') return undefined;
+    return backendCopy(backendId);
   },
-  uinput: {
-    title: 'uinput Backend',
-    pipelineLabel: 'uinput Inject',
-    flowLabel: 'uinput',
-    statusActive: 'Active (controllers plugged in)',
-    statusIdle: 'Ready (idle — no controllers)',
-    statusUnknown: '/dev/uinput accessible',
-    errors: {
-      DEVICE_MISSING: {
-        title: '/dev/uinput not found',
-        body: 'The uinput kernel module ships with every mainline Linux kernel but may not be loaded right now. Without it, Satellite cannot create virtual gamepads.',
-        steps: [
-          { text: 'Load the module now', command: 'sudo modprobe uinput' },
-          { text: 'Make it persistent across reboots', command: "echo uinput | sudo tee /etc/modules-load.d/satellite.conf" },
-          { text: 'Refresh this page once /dev/uinput exists' },
-        ],
-      },
-      PERMISSION_DENIED: {
-        title: 'No write access to /dev/uinput',
-        body: '/dev/uinput exists but the user running Satellite cannot write to it. Add a udev rule and join the input group.',
-        steps: [
-          { text: 'Install a udev rule', command: "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"' | sudo tee /etc/udev/rules.d/70-satellite-uinput.rules" },
-          { text: 'Reload udev', command: 'sudo udevadm control --reload-rules && sudo udevadm trigger' },
-          { text: 'Add yourself to the input group', command: 'sudo usermod -aG input "$USER"' },
-          { text: 'Log out and back in for the group change to apply, then refresh this page' },
-        ],
-      },
-    },
-  },
-};
+});
 
 // ── Per-controller motion (IMU) copy ────────────────────────────────────────
 // Task 1.1 — gyro/accelerometer. Four states, derived from the controller's
@@ -154,31 +181,19 @@ const BACKEND_COPY = {
 //   on     — motion streaming AND reaching the OS-level virtual gamepad
 //   nosink — motion streaming, but the virtual device exposes no IMU surface
 //            to deliver it to (Xbox-typed device, old ViGEmBus, or macOS)
-const MOTION_COPY = {
-  na: {
-    cls: 'motion-na',
-    text: 'No motion',
-    title: 'This controller has no gyroscope / accelerometer (IMU). Motion is not available for it — this is expected for Xbox-style pads.',
-  },
-  ready: {
-    cls: 'motion-ready',
-    text: 'Motion ready',
-    title: 'The controller reports an IMU and the sender advertised motion support — waiting for the first motion packet.',
-  },
-  on: {
-    cls: 'motion-on',
-    text: 'Motion on',
-    title: 'Gyro / accelerometer is streaming to the OS-level virtual gamepad.',
-  },
-  nosink: {
-    cls: 'motion-nosink',
-    text: 'Motion not delivered',
-    title: 'Gyro / accelerometer is being captured from the controller, but it is '
-         + 'not delivered anywhere — this controller’s virtual device has no IMU '
-         + 'surface to receive it (an Xbox-typed device, a ViGEmBus older than '
-         + '1.22, or the macOS backend).',
-  },
-};
+function motionCopy(id) {
+  switch (id) {
+    case 'ready':
+      return { cls: 'motion-ready', text: t('motion.ready.text'),  title: t('motion.ready.title') };
+    case 'on':
+      return { cls: 'motion-on',    text: t('motion.on.text'),     title: t('motion.on.title') };
+    case 'nosink':
+      return { cls: 'motion-nosink', text: t('motion.nosink.text'), title: t('motion.nosink.title') };
+    case 'na':
+    default:
+      return { cls: 'motion-na',    text: t('motion.na.text'),     title: t('motion.na.title') };
+  }
+}
 
 // Resolve a controller's motion state id from the /api/connections flags.
 function motionStateId(ctrl) {
@@ -214,8 +229,8 @@ function batteryChip(ctrl) {
   if (!b) {
     return {
       cls: 'battery-na',
-      text: 'No battery',
-      title: 'This sender has not reported a battery level for this controller.',
+      text: t('battery.na.text'),
+      title: t('battery.na.title'),
       icon: 'battery.svg',
     };
   }
@@ -234,25 +249,24 @@ function batteryChip(ctrl) {
   let text, title;
   switch (b.status) {
     case 'charging':
-      text = 'Battery ' + pct;
-      title = 'Battery ' + pct + ' — charging.';
+      text  = t('battery.charging.text',  [pct]);
+      title = t('battery.charging.title', [pct]);
       break;
     case 'full':
-      text = 'Battery ' + (lvl === null ? 'full' : pct);
-      title = 'Battery full.';
+      text  = t('battery.full.text', [lvl === null ? t('battery.full.label') : pct]);
+      title = t('battery.full.title');
       break;
     case 'wired':
-      text = (lvl === null) ? 'AC power' : 'Battery ' + pct;
-      title = 'AC powered — a wired controller falls back to the host machine’s '
-            + 'battery (100% on a desktop).';
+      text  = (lvl === null) ? t('battery.wired.ac.text') : t('battery.wired.text', [pct]);
+      title = t('battery.wired.title');
       break;
     case 'discharging':
-      text = 'Battery ' + pct;
-      title = 'Battery ' + pct + ' — discharging.';
+      text  = t('battery.discharging.text',  [pct]);
+      title = t('battery.discharging.title', [pct]);
       break;
     default:
-      text = 'Battery ' + pct;
-      title = 'Battery level ' + pct + ' (charging state unknown).';
+      text  = t('battery.unknown.text',  [pct]);
+      title = t('battery.unknown.title', [pct]);
   }
   return { cls, text, title, icon: batteryIconFile(b, lvl) };
 }
@@ -262,14 +276,13 @@ function batteryChip(ctrl) {
 // server; the chosen mode is persisted in config and hot-applied to any live
 // connection (no re-pairing). Pad → virtual DualShock 4 touchpad surface;
 // Mouse → relative mouse pointer on this host; Off → ignore.
-const TOUCHPAD_MODES = [
-  { id: 'ds4',   label: 'Pad',
-    title: 'Forward the touchpad into the virtual DualShock 4 controller. PlayStation-type controllers only — an Xbox virtual pad has no touchpad surface.' },
-  { id: 'mouse', label: 'Mouse',
-    title: 'Use the touchpad as a relative mouse on this machine — finger 0 moves the cursor, the clicky pad is the left mouse button.' },
-  { id: 'off',   label: 'Off',
-    title: 'Ignore touchpad input from this device.' },
-];
+function touchpadModes() {
+  return [
+    { id: 'ds4',   label: t('devices.touchpad.pad'),   title: t('devices.touchpad.pad.tip') },
+    { id: 'mouse', label: t('devices.touchpad.mouse'), title: t('devices.touchpad.mouse.tip') },
+    { id: 'off',   label: t('devices.touchpad.off'),   title: t('devices.touchpad.off.tip') },
+  ];
+}
 
 // Per-controller touchpad chip — derived from the controller's `touchpadActive`
 // flag, its `controllerType`, and the owning connection's `touchpadMode`.
@@ -277,28 +290,23 @@ const TOUCHPAD_MODES = [
 function touchpadChip(ctrl) {
   const mode = ctrl.touchpadMode || 'ds4';
   if (mode === 'off') {
-    return { cls: 'touchpad-off', text: 'Touchpad off',
-             title: 'Touchpad routing is turned off for this device — change it under Paired Devices.' };
+    return { cls: 'touchpad-off', text: t('touchpad.off.text'), title: t('touchpad.off.title') };
   }
   // "Pad" mode forwards into the virtual DualShock 4 touchpad surface — but
   // that surface only exists on a PlayStation-typed virtual controller. For
   // any other controller type the samples have nowhere to land, so flag the
   // mismatch instead of pretending the touchpad routes.
   if (mode === 'ds4' && (ctrl.controllerType || 'xbox') !== 'playstation') {
-    return { cls: 'touchpad-nosurface', text: 'Touchpad: no surface',
-             title: 'Touchpad routing is set to "Pad", but this controller’s virtual '
-                  + 'device is not a DualShock 4 and has no touchpad surface — the '
-                  + 'samples are dropped. Switch this device to "Mouse" or "Off" '
-                  + 'under Paired Devices, or pair it as a PlayStation controller.' };
+    return { cls: 'touchpad-nosurface', text: t('touchpad.nosurface.text'), title: t('touchpad.nosurface.title') };
   }
-  const dest = (mode === 'mouse') ? 'mouse' : 'pad';
-  const destLabel = (mode === 'mouse') ? 'the host mouse pointer' : 'the virtual DualShock 4 touchpad';
+  const dest = (mode === 'mouse') ? t('touchpad.dest.mouse') : t('touchpad.dest.pad');
+  const destLabel = (mode === 'mouse') ? t('touchpad.dest.mouse-long') : t('touchpad.dest.pad-long');
   if (!ctrl.touchpadActive) {
-    return { cls: 'touchpad-ready', text: 'Touchpad → ' + dest,
-             title: 'Touchpad samples will route to ' + destLabel + ' — none received yet.' };
+    return { cls: 'touchpad-ready', text: t('touchpad.ready.text', [dest]),
+             title: t('touchpad.ready.title', [destLabel]) };
   }
-  return { cls: 'touchpad-on', text: 'Touchpad → ' + dest,
-           title: 'Touchpad input is streaming to ' + destLabel + '.' };
+  return { cls: 'touchpad-on', text: t('touchpad.on.text', [dest]),
+           title: t('touchpad.on.title', [destLabel]) };
 }
 
 // ── Per-controller lightbar chip (Task 1.4) ─────────────────────────────────
@@ -310,22 +318,18 @@ function touchpadChip(ctrl) {
 // a validated CSS colour shown as a small square, or null when there is none.
 function lightbarChip(ctrl) {
   if (!ctrl.lightbarCapable) {
-    return { cls: 'lightbar-na', text: 'No lightbar', swatch: null,
-             title: 'This controller has no addressable RGB lightbar — an Xbox pad, '
-                  + 'or a sender that did not advertise lightbar support. The host '
-                  + 'game’s colour is not forwarded to it.' };
+    return { cls: 'lightbar-na', text: t('lightbar.na.text'), swatch: null,
+             title: t('lightbar.na.title') };
   }
   // Only ever trust a strict #rrggbb string into the swatch's style attribute.
   const raw = (typeof ctrl.lightbar === 'string') ? ctrl.lightbar : null;
   const colour = (raw && /^#[0-9a-f]{6}$/i.test(raw)) ? raw : null;
   if (!colour) {
-    return { cls: 'lightbar-ready', text: 'Lightbar ready', swatch: null,
-             title: 'The controller has an RGB lightbar and the sender accepts the '
-                  + 'lightbar return path — waiting for the host game to set a colour.' };
+    return { cls: 'lightbar-ready', text: t('lightbar.ready.text'), swatch: null,
+             title: t('lightbar.ready.title') };
   }
-  return { cls: 'lightbar-on', text: 'Lightbar', swatch: colour,
-           title: 'The host game is driving this controller’s lightbar — current colour '
-                + colour.toUpperCase() + '.' };
+  return { cls: 'lightbar-on', text: t('lightbar.on.text'), swatch: colour,
+           title: t('lightbar.on.title', [colour.toUpperCase()]) };
 }
 
 // ── Inline failure feedback ─────────────────────────────────────────────────
@@ -351,7 +355,7 @@ function hideDashError() {
 
 // Pull a human-readable reason out of an apiPost() result for showDashError().
 function apiErrorText(res, fallback) {
-  if (res && res.status === 0) return fallback + ' — server unreachable.';
+  if (res && res.status === 0) return fallback + ' — ' + t('connections.err.server-unreachable') + '.';
   const detail = (res && res.data && res.data.error) ? res.data.error : null;
   return detail ? fallback + ' — ' + detail + '.' : fallback + '.';
 }
@@ -483,7 +487,8 @@ function stopSSE() {
 }
 
 function updateStatus(d) {
-  document.getElementById('s-status').textContent = d.listening ? 'Listening' : 'Stopped';
+  document.getElementById('s-status').textContent =
+    d.listening ? t('dashboard.status.listening') : t('dashboard.status.stopped');
   document.getElementById('s-packets').textContent = d.packets.toLocaleString();
   document.getElementById('s-sender').textContent = d.senderIP;
   document.getElementById('s-port').textContent = d.udpPort;
@@ -514,8 +519,8 @@ function updateConnections(d) {
   const countEl = document.getElementById('controller-count');
 
   if (!d.connections || d.connections.length === 0) {
-    if (connEl) connEl.innerHTML = '<p class="hint">No active connections</p>';
-    if (ctrlEl) setHTML(ctrlEl, '<p class="hint">No active controllers</p>');
+    if (connEl) connEl.innerHTML = '<p class="hint">' + esc(t('connections.empty')) + '</p>';
+    if (ctrlEl) setHTML(ctrlEl, '<p class="hint">' + esc(t('controllers.empty')) + '</p>');
     if (countEl) countEl.textContent = '0 / ' + (d.maxControllers || 16);
     return;
   }
@@ -530,16 +535,20 @@ function updateConnections(d) {
   if (connEl) {
     connEl.innerHTML = d.connections.map(c => {
       const stateKey = c.state || 'active';
-      const stateText = DEVICE_LINK_STATE_LABEL[stateKey] || DEVICE_LINK_STATE_LABEL.active;
+      const stateText = deviceLinkStateLabel(stateKey);
       const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.active;
+      const ctrlCount = c.activeControllerCount || 0;
+      const ctrlNoun  = ctrlCount === 1 ? t('connections.controller.singular')
+                                        : t('connections.controller.plural');
+      const disconnectLabel = t('connections.disconnect');
       return `
       <div class="device-item">
         <img class="device-glyph" src="img/icons/${esc(stateIcon)}" alt="">
         <div class="device-info">
           <span class="device-name">${esc(c.deviceName)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
-          <span class="device-meta">${esc(c.senderIP)} · ${c.activeControllerCount || 0} controller${(c.activeControllerCount||0) === 1 ? '' : 's'}</span>
+          <span class="device-meta">${esc(c.senderIP)} · ${ctrlCount} ${esc(ctrlNoun)}</span>
         </div>
-        <button class="btn-icon btn-danger" type="button" data-act="disconnect" data-conn-id="${esc(c.connectionId)}" title="Disconnect"><img src="img/icons/close_x.svg" alt="Disconnect" class="emoji-icon"></button>
+        <button class="btn-icon btn-danger" type="button" data-act="disconnect" data-conn-id="${esc(c.connectionId)}" title="${esc(disconnectLabel)}"><img src="img/icons/close_x.svg" alt="${esc(disconnectLabel)}" class="emoji-icon"></button>
       </div>`;
     }).join('');
   }
@@ -554,13 +563,13 @@ function updateConnections(d) {
       });
     });
     if (allCtrls.length === 0) {
-      setHTML(ctrlEl, '<p class="hint">No active controllers</p>');
+      setHTML(ctrlEl, '<p class="hint">' + esc(t('controllers.empty')) + '</p>');
     } else {
       setHTML(ctrlEl, allCtrls.map(ctrl => {
         const ok = ctrl.pluggedIn;
         const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
-        const m = MOTION_COPY[motionStateId(ctrl)] || MOTION_COPY.na;
+        const m = motionCopy(motionStateId(ctrl));
         const bat = batteryChip(ctrl);
         const tp = touchpadChip(ctrl);
         const lb = lightbarChip(ctrl);
@@ -568,15 +577,16 @@ function updateConnections(d) {
         // active controller and "Blocked" for an inactive one (the server
         // only stamps live/detached today; see ControllerState in types.h).
         const stateKey = ctrl.state || (ok ? 'live' : 'failed');
-        const stateText = CONTROLLER_STATE_LABEL[stateKey]
-                        || (ok ? CONTROLLER_STATE_LABEL.live : CONTROLLER_STATE_LABEL.failed);
+        const stateText = controllerStateLabel(stateKey);
+        const ctrlHeading = t('controllers.controller-num', [ctrl.controllerIndex]);
+        const serialLabel = t('controllers.serial');
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
             <img class="ctrl-type-icon" src="img/ctrl-${esc(ctrlType)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}">
             <div class="ctrl-info">
-              <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>Controller #${ctrl.controllerIndex} · ${esc(ctrlLabel)}</span>
-              <span class="ctrl-meta">${esc(ctrl.deviceName)} · Serial ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
+              <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}</span>
+              <span class="ctrl-meta">${esc(ctrl.deviceName)} · ${esc(serialLabel)} ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
             </div>
           </div>
           <div class="ctrl-chips">
@@ -617,7 +627,7 @@ async function disconnectConn(connId, btn) {
     const res = await api('/api/connections/' + encodeURIComponent(connId),
                           { method: 'DELETE' });
     if (!res.ok) {
-      showDashError(apiErrorText(res, 'Could not disconnect that connection'));
+      showDashError(apiErrorText(res, t('connections.err.disconnect')));
       restore();
       return;
     }
@@ -649,7 +659,7 @@ async function genPin(ev) {
   // also accept an explicit argument in case the call site is reworked.
   const btn = (ev && ev.currentTarget) ||
               (typeof event !== 'undefined' && event ? event.currentTarget : null);
-  const restore = setButtonLoading(btn, 'Generating…');
+  const restore = setButtonLoading(btn, t('pin.generating'));
   try {
     const { ok, data } = await apiPost('/api/pin/generate');
     document.getElementById('pin-display').textContent = (ok && data.pin) ? data.pin : '—';
@@ -674,21 +684,20 @@ function updatePinPanel(s) {
       const secs = Math.max(0, parseInt(s.secondsRemaining, 10) || 0);
       const mm = Math.floor(secs / 60);
       const ss = (secs % 60).toString().padStart(2, '0');
-      hint.textContent = 'Enter this PIN on the sender to pair. Expires in '
-                       + mm + ':' + ss + '.';
+      hint.textContent = t('pin.hint.active', [mm + ':' + ss]);
       break;
     }
     case 'expired':
-      hint.textContent = 'PIN expired — generate a new one to pair another device.';
+      hint.textContent = t('pin.hint.expired');
       if (disp) disp.textContent = '—';
       break;
     case 'paired':
-      hint.textContent = 'Paired successfully — that PIN is now spent.';
+      hint.textContent = t('pin.hint.paired');
       if (disp) disp.textContent = '—';
       break;
     case 'idle':
     default:
-      hint.textContent = 'Enter this PIN on the sender to pair. Expires in 5 minutes.';
+      hint.textContent = t('pin.hint.idle');
       break;
   }
 }
@@ -701,7 +710,7 @@ async function loadDevices() {
     const devs = await r.json();
     const el = document.getElementById('device-list');
     if (devs.length === 0) {
-      el.innerHTML = '<p class="hint">No paired devices</p>';
+      el.innerHTML = '<p class="hint">' + esc(t('devices.empty')) + '</p>';
       return;
     }
     // Build markup with no inline handlers — device ids ride in data-*
@@ -709,9 +718,14 @@ async function loadDevices() {
     // addEventListener below, so an id is never interpolated into a JS
     // string context. Selection on the segmented control is also exposed
     // to assistive tech via role="radio" + aria-checked (L-2).
+    const modes = touchpadModes();
+    const tpLabel  = t('devices.touchpad.label');
+    const tpTip    = t('devices.touchpad.tip');
+    const tpAria   = t('devices.touchpad.routing');
+    const removeLb = t('devices.remove');
     el.innerHTML = devs.map(d => {
       const tm = d.touchpadMode || 'ds4';
-      const seg = TOUCHPAD_MODES.map(mode => {
+      const seg = modes.map(mode => {
         const on = tm === mode.id;
         return `<button class="seg-btn${on ? ' seg-on' : ''}" type="button" `
           + `role="radio" aria-checked="${on ? 'true' : 'false'}" `
@@ -719,10 +733,10 @@ async function loadDevices() {
           + `data-id="${esc(d.id)}" data-mode="${esc(mode.id)}">${esc(mode.label)}</button>`;
       }).join('');
       // Per-device link-state chip — defaults to "Paired" (offline) for a
-      // device with no live connection. The chip text comes from the same
-      // DEVICE_LINK_STATE_LABEL table the Connections section uses.
+      // device with no live connection. Reuses the same vocabulary the
+      // Connections section uses (dish-android chip_status_* family).
       const stateKey = d.state || 'paired';
-      const stateText = DEVICE_LINK_STATE_LABEL[stateKey] || DEVICE_LINK_STATE_LABEL.paired;
+      const stateText = deviceLinkStateLabel(stateKey);
       const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.paired;
       return `
       <div class="device-item">
@@ -732,9 +746,9 @@ async function loadDevices() {
           <span class="device-meta">${esc(d.lastIP)} · ${esc(d.pairedAt)}</span>
         </div>
         <div class="device-actions">
-          <span class="seg-label" title="Where this device's DualSense / DS4 touchpad is routed on this host. Applies live — no re-pairing needed.">Touchpad</span>
-          <div class="seg" role="group" aria-label="Touchpad routing">${seg}</div>
-          <button class="btn-icon btn-danger" type="button" data-act="remove-device" data-id="${esc(d.id)}" title="Remove"><img src="img/icons/close_x.svg" alt="Remove" class="emoji-icon"></button>
+          <span class="seg-label" title="${esc(tpTip)}">${esc(tpLabel)}</span>
+          <div class="seg" role="group" aria-label="${esc(tpAria)}">${seg}</div>
+          <button class="btn-icon btn-danger" type="button" data-act="remove-device" data-id="${esc(d.id)}" title="${esc(removeLb)}"><img src="img/icons/close_x.svg" alt="${esc(removeLb)}" class="emoji-icon"></button>
         </div>
       </div>`;
     }).join('');
@@ -764,7 +778,7 @@ async function removeDevice(id, btn) {
   try {
     const res = await apiPost('/api/devices/remove', { id });
     if (!res.ok) {
-      showDashError(apiErrorText(res, 'Could not remove that paired device'));
+      showDashError(apiErrorText(res, t('devices.err.remove')));
       restore();
       return;
     }
@@ -795,7 +809,7 @@ async function setTouchpadMode(id, mode, btn) {
       // A failed POST leaves the clicked segment un-highlighted — surface why,
       // then re-render so the segmented control snaps back to the server's
       // actual (unchanged) mode rather than sitting in a half-applied look.
-      showDashError(apiErrorText(res, 'Could not change touchpad routing'));
+      showDashError(apiErrorText(res, t('devices.err.touchpad-mode')));
       loadDevices();
       return;
     }
@@ -827,10 +841,10 @@ function updateBackendPanel(backend, backendActive) {
   }
   section.style.display = '';
 
-  const copy = BACKEND_COPY[backend.id] || {};
+  const copy = backendCopy(backend.id);
   const titleEl  = document.getElementById('backend-title');
   const flowText = document.getElementById('flow-backend-text');
-  if (titleEl)  titleEl.textContent  = copy.title || 'Backend';
+  if (titleEl)  titleEl.textContent  = copy.title || t('backend.section.title');
   if (flowText) flowText.textContent = copy.flowLabel || backend.id;
 
   const dot     = document.getElementById('backend-dot');
@@ -842,8 +856,8 @@ function updateBackendPanel(backend, backendActive) {
 
   if (backend.available) {
     dot.className   = 'backend-dot backend-ok';
-    label.textContent = backendActive ? (copy.statusActive || 'Active')
-                                      : (copy.statusIdle   || 'Ready');
+    label.textContent = backendActive ? (copy.statusActive || t('debug.status.active'))
+                                      : (copy.statusIdle   || t('debug.status.idle'));
     label.className = 'backend-label backend-ok-text';
     toggle.style.display = 'none';
     flowBe.className  = 'flow-step done';
@@ -853,7 +867,7 @@ function updateBackendPanel(backend, backendActive) {
   } else {
     dot.className   = 'backend-dot backend-err';
     const err = (copy.errors && copy.errors[backend.errorCode]) || null;
-    label.textContent = err ? err.title : 'Backend unavailable';
+    label.textContent = err ? err.title : t('backend.unavailable');
     label.className = 'backend-label backend-err-text';
     toggle.style.display = '';
     flowBe.className  = 'flow-step fail';
@@ -869,8 +883,8 @@ function populateBackendGuide(err) {
   if (!titleEl || !bodyEl || !stepsEl) return;
 
   if (!err) {
-    titleEl.textContent = 'No remediation available';
-    bodyEl.textContent  = 'The server reported a state we don’t have copy for yet.';
+    titleEl.textContent = t('backend.guide.none.title');
+    bodyEl.textContent  = t('backend.guide.none.body');
     stepsEl.innerHTML   = '';
     return;
   }
@@ -898,9 +912,10 @@ function toggleBackendGuide() {
   const guide = document.getElementById('backend-guide');
   const btn   = document.getElementById('backend-guide-toggle');
   guide.style.display = backendGuideOpen ? 'block' : 'none';
+  const label = esc(t('backend.guide.toggle'));
   btn.innerHTML = backendGuideOpen
-    ? 'Setup Guide <img src="img/icons/chevron_down.svg" alt="" class="emoji-icon">'
-    : 'Setup Guide <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon">';
+    ? '<span>' + label + '</span> <img src="img/icons/chevron_down.svg" alt="" class="emoji-icon">'
+    : '<span>' + label + '</span> <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon">';
 }
 
 

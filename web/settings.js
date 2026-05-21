@@ -53,7 +53,7 @@ async function settingsSave() {
   // <input min/max> and the server's own accepted range.
   settingsSetSaveStatus('', false);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-    settingsSetPortError('UDP port must be a whole number between 1024 and 65535.');
+    settingsSetPortError(t('settings.udp-port.error'));
     return;
   }
   settingsSetPortError('');
@@ -69,8 +69,9 @@ async function settingsSave() {
   // like a success.
   if (!res.ok) {
     settingsSetSaveStatus(
-      res.status === 0 ? 'Could not save — server unreachable.'
-                       : 'Save failed — ' + ((res.data && res.data.error) || 'server error') + '.',
+      res.status === 0
+        ? t('settings.save.unreachable')
+        : t('settings.save.failed', [(res.data && res.data.error) || t('settings.save.server-error')]),
       false);
     return;
   }
@@ -90,10 +91,10 @@ async function settingsSave() {
   // web UI — but if the server reports it rejected the port, say so rather
   // than claiming success with a value that didn't take.
   if (res.data && res.data.udpPortRejected) {
-    settingsSetPortError('Server rejected the UDP port — keeping ' + effectivePort + '.');
+    settingsSetPortError(t('settings.udp-port.rejected', [effectivePort]));
     return;
   }
-  settingsSetSaveStatus('Configuration saved.', true);
+  settingsSetSaveStatus(t('settings.save.ok'), true);
 }
 
 // Render the read-only mDNS responder state. Active is the healthy path;
@@ -102,7 +103,7 @@ async function settingsSave() {
 function settingsRenderMdnsStatus(active) {
   const el = document.getElementById('settings-mdns-status');
   if (!el) return;
-  el.textContent = active ? 'Active' : 'Inactive';
+  el.textContent = active ? t('settings.mdns.active') : t('settings.mdns.inactive');
   el.style.color = active ? 'var(--success)' : 'var(--warning)';
 }
 
@@ -143,11 +144,11 @@ async function initSettings() {
       const lbl = document.getElementById('settings-autoStart-label');
       if (lbl) {
         switch (v.platformId) {
-          case 'macos':           lbl.textContent = 'Start at login'; break;
+          case 'macos':           lbl.textContent = t('settings.autostart.login'); break;
           case 'linux-appimage':
           case 'linux-deb':
-          case 'linux-portable':  lbl.textContent = 'Start at login'; break;
-          default:                lbl.textContent = 'Start with Windows';
+          case 'linux-portable':  lbl.textContent = t('settings.autostart.login'); break;
+          default:                lbl.textContent = t('settings.autostart.windows');
         }
       }
     }

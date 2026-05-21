@@ -118,6 +118,18 @@ function esc(s) {
 }
 
 // ── Init ────────────────────────────────────────────────────────────────────
+// Defer route() until the i18n catalog is in hand so the init functions
+// (initDashboard / initSettings / initDebug / initLogs) see translated
+// strings on first paint rather than raw keys. If the i18n shim isn't on
+// the page (defensive — it always is via index.html), fall through to the
+// plain DOMContentLoaded path so we don't deadlock on boot.
+function bootRoute() {
+  if (window.i18n && typeof window.i18n.ready === 'function') {
+    window.i18n.ready().then(route);
+  } else {
+    route();
+  }
+}
 window.addEventListener('popstate', route);
-document.addEventListener('DOMContentLoaded', route);
+document.addEventListener('DOMContentLoaded', bootRoute);
 
