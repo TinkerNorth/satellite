@@ -92,8 +92,7 @@ class GamepadAdapter : public IGamepadPort {
     // race a real running daemon's /tmp tree. Exposed for direct exercise
     // by unit tests.
     static std::string sysfsProxyDir();
-    static bool writeSysfsProxyFile(uint32_t serial, const char* leaf,
-                                    const std::string& contents);
+    static bool writeSysfsProxyFile(uint32_t serial, const char* leaf, const std::string& contents);
 
   private:
     // Per-virtual-device record. Owns the uinput fd, the FF effect table the

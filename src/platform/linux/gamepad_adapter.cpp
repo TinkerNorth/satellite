@@ -597,15 +597,14 @@ bool GamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report)
     // The values mirror the wire encoding exactly (level 0..100 or 255 for
     // unknown; status 0..4 per BATTERY_STATUS_*).
     char buf[64];
-    int n = std::snprintf(buf, sizeof(buf), "level=%u\nstatus=%u\n",
-                          static_cast<unsigned>(report.level),
-                          static_cast<unsigned>(report.status));
+    int n =
+        std::snprintf(buf, sizeof(buf), "level=%u\nstatus=%u\n",
+                      static_cast<unsigned>(report.level), static_cast<unsigned>(report.status));
     if (n <= 0) return false;
     bool ok = writeSysfsProxyFile(serial, "battery", std::string(buf, static_cast<size_t>(n)));
 
     char logbuf[96];
-    std::snprintf(logbuf, sizeof(logbuf),
-                  "controller %u battery level=%u status=%u (%s)", serial,
+    std::snprintf(logbuf, sizeof(logbuf), "controller %u battery level=%u status=%u (%s)", serial,
                   static_cast<unsigned>(report.level), static_cast<unsigned>(report.status),
                   ok ? "proxy ok" : "proxy write failed");
     logMsg(ok ? LogLevel::INFO : LogLevel::WARN, "uinput", logbuf);
@@ -643,9 +642,8 @@ void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
         bool ok = writeSysfsProxyFile(serial, "lightbar", std::string(buf));
 
         char logbuf[96];
-        std::snprintf(logbuf, sizeof(logbuf),
-                      "controller %u lightbar #%02X%02X%02X (%s)", serial, r, g, b,
-                      ok ? "proxy ok" : "proxy write failed");
+        std::snprintf(logbuf, sizeof(logbuf), "controller %u lightbar #%02X%02X%02X (%s)", serial,
+                      r, g, b, ok ? "proxy ok" : "proxy write failed");
         logMsg(ok ? LogLevel::INFO : LogLevel::WARN, "uinput", logbuf);
 
         if (inner) inner(serial, r, g, b);
