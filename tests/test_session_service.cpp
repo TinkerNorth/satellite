@@ -9,6 +9,7 @@
  * Run:    test_session_service.exe
  */
 #include "../src/core/session_service.h"
+#include "../src/core/touchpad_codec.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -64,13 +65,38 @@ struct MockViGem : IGamepadPort {
     int submitCalls = 0;
     int submitDS4Calls = 0;
     int setRumbleCallbackCalls = 0;
+    int submitMotionCalls = 0;
+    int submitBatteryCalls = 0;
+    int submitTouchpadCalls = 0;
+    int submitRelativeMouseCalls = 0;
+    int setLightbarCallbackCalls = 0;
+
+    // Optional return value for submitMotion/submitBattery overrides — defaults
+    // mimic the IGamepadPort default (no backend supports it yet).
+    bool submitMotionReturnVal = true;
+    bool submitBatteryReturnVal = true;
+    bool submitTouchpadReturnVal = true;
+    bool submitRelativeMouseReturnVal = true;
 
     std::vector<uint32_t> pluggedSerials;
     std::vector<uint32_t> unpluggedSerials;
     GamepadReport lastSubmittedReport{};
-    // Captured rumble callback. Tests synthesize "the platform fired a
-    // notification" by invoking this directly via `fireRumble(serial, r)`.
+    // Last motion / battery dispatched to the backend, for assertions.
+    uint32_t lastMotionSerial = 0;
+    MotionReport lastMotion{};
+    uint32_t lastBatterySerial = 0;
+    BatteryReport lastBattery{};
+    uint32_t lastTouchpadSerial = 0;
+    TouchpadReport lastTouchpad{};
+    // Last relative-mouse injection (from submitRelativeMouse).
+    int lastMouseDx = 0;
+    int lastMouseDy = 0;
+    bool lastMouseButton = false;
+    // Captured rumble + lightbar callbacks. Tests synthesize "the platform
+    // fired a notification" by invoking these directly via fireRumble /
+    // fireLightbar.
     RumbleCallback capturedRumbleCb;
+    LightbarCallback capturedLightbarCb;
 
     bool ensureBusOpen() override {
         ensureBusCalls++;
@@ -114,6 +140,39 @@ struct MockViGem : IGamepadPort {
     void fireRumble(uint32_t serial, const RumbleReport& r) {
         if (capturedRumbleCb) capturedRumbleCb(serial, r);
     }
+    bool submitMotion(uint32_t serial, const MotionReport& r) override {
+        submitMotionCalls++;
+        lastMotionSerial = serial;
+        lastMotion = r;
+        return submitMotionReturnVal;
+    }
+    bool submitBattery(uint32_t serial, const BatteryReport& r) override {
+        submitBatteryCalls++;
+        lastBatterySerial = serial;
+        lastBattery = r;
+        return submitBatteryReturnVal;
+    }
+    bool submitTouchpad(uint32_t serial, const TouchpadReport& r) override {
+        submitTouchpadCalls++;
+        lastTouchpadSerial = serial;
+        lastTouchpad = r;
+        return submitTouchpadReturnVal;
+    }
+    bool submitRelativeMouse(int dx, int dy, bool leftButton) override {
+        submitRelativeMouseCalls++;
+        lastMouseDx = dx;
+        lastMouseDy = dy;
+        lastMouseButton = leftButton;
+        return submitRelativeMouseReturnVal;
+    }
+    void setLightbarCallback(LightbarCallback cb) override {
+        setLightbarCallbackCalls++;
+        capturedLightbarCb = std::move(cb);
+    }
+    // Helper for tests: simulate the platform firing a lightbar colour change.
+    void fireLightbar(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
+        if (capturedLightbarCb) capturedLightbarCb(serial, r, g, b);
+    }
 
     // Custom reset that preserves no state — copy/move-assigning the mock
     // would clobber the std::function which is fine since tests reset
@@ -132,6 +191,7 @@ struct MockClient : IClientPort {
     int serverStatusCalls = 0;
     int broadcastCalls = 0;
     int rumbleCalls = 0;
+    int lightbarCalls = 0;
 
     // Last controller ACK params
     uint16_t lastAckType = 0;
@@ -142,6 +202,13 @@ struct MockClient : IClientPort {
     uint32_t lastRumbleConnToken = 0;
     uint8_t lastRumbleCtrlIdx = 0;
     RumbleReport lastRumble{};
+
+    // Last lightbar dispatch params (from sendLightbar).
+    uint32_t lastLightbarConnToken = 0;
+    uint8_t lastLightbarCtrlIdx = 0;
+    uint8_t lastLightbarR = 0;
+    uint8_t lastLightbarG = 0;
+    uint8_t lastLightbarB = 0;
 
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override { updateAddrCalls++; }
     void removeClientAddr(uint32_t) override { removeAddrCalls++; }
@@ -162,6 +229,15 @@ struct MockClient : IClientPort {
         lastRumbleConnToken = conn.token;
         lastRumbleCtrlIdx = ctrlIdx;
         lastRumble = report;
+    }
+    void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
+                      uint8_t b) override {
+        lightbarCalls++;
+        lastLightbarConnToken = conn.token;
+        lastLightbarCtrlIdx = ctrlIdx;
+        lastLightbarR = r;
+        lastLightbarG = g;
+        lastLightbarB = b;
     }
 
     void reset() { *this = MockClient{}; }
@@ -185,8 +261,9 @@ static const uint8_t TEST_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,
                                                   23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
 
 static OpenSessionResult openTestSession(SessionService& svc, const std::string& devId = "dev1",
-                                         const std::string& devName = "TestDevice") {
-    return svc.openSession(devId, devName, "192.168.1.100", TEST_KEY);
+                                         const std::string& devName = "TestDevice",
+                                         uint8_t touchpadMode = TOUCHPAD_MODE_DS4) {
+    return svc.openSession(devId, devName, "192.168.1.100", TEST_KEY, touchpadMode);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1259,6 +1336,84 @@ static void test_controllerRemove_thenReaddRetainsTypeFromSameSlot() {
     EXPECT_EQ(vigem.pluginDS4Calls, 2); // 1 from replug + 1 from re-add
 }
 
+static void test_controllerReAdd_clearsCachedSenderStreams() {
+    TEST("Controller re-add — clears stale motion / battery / touchpad cache");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    // Populate every cached sender→satellite stream on controller 0.
+    MotionReport m;
+    m.gyroX = 4242;
+    svc.handleMotionData(r.token, 0, m);
+    BatteryReport b;
+    b.level = 80;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    svc.handleBatteryUpdate(r.token, 0, b);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    tp.finger0.x = 9000;
+    svc.handleTouchpadData(r.token, 0, tp);
+
+    // Sanity: the snapshot reflects the populated caches before the re-add.
+    {
+        auto pre = svc.getConnectionsSnapshot();
+        EXPECT(pre.connections[0].controllers[0].motionActive);
+        EXPECT(pre.connections[0].controllers[0].batteryKnown);
+        EXPECT(pre.connections[0].controllers[0].touchpadActive);
+    }
+
+    // Remove + re-add the same slot. The Controller struct persists in the
+    // connection's array, so without an explicit clear the stale caches would
+    // leak into the fresh controller.
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0);
+
+    auto post = svc.getConnectionsSnapshot();
+    const auto& ci = post.connections[0].controllers[0];
+    EXPECT(!ci.motionActive);   // lastMotionValid cleared
+    EXPECT(!ci.batteryKnown);   // lastBatteryValid cleared
+    EXPECT(!ci.touchpadActive); // lastTouchpadValid cleared
+    EXPECT(!ci.motionSink);     // motionSinkActive cleared
+}
+
+static void test_controllerReAdd_touchpadMouseNoJumpAfterReconnect() {
+    TEST("Controller re-add — TOUCHPAD_MODE_MOUSE does not jump the cursor on reconnect");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // A finger contact far from the origin establishes a stale lastTouchpad.
+    TouchpadReport far;
+    far.finger0.active = true;
+    far.finger0.x = 25000;
+    far.finger0.y = 25000;
+    svc.handleTouchpadData(r.token, 0, far);
+
+    // Reconnect the controller, then send a fresh contact. If the stale
+    // lastTouchpad survived, the first post-readd sample would compute a huge
+    // delta against the pre-readd finger position and teleport the cursor.
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0);
+
+    TouchpadReport fresh;
+    fresh.finger0.active = true;
+    fresh.finger0.x = -25000;
+    fresh.finger0.y = -25000;
+    svc.handleTouchpadData(r.token, 0, fresh);
+    // First contact after re-add re-anchors — no movement emitted.
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+}
+
 // ── MSG_CONTROLLER_TYPE protocol constant ───────────────────────────────────
 
 static void test_msgControllerType_constant() {
@@ -1408,57 +1563,6 @@ static void test_handleRumbleFromBackend_stopReportEmitted() {
     EXPECT_EQ(client.rumbleCalls, 2);
     EXPECT_EQ(client.lastRumble.strongMagnitude, (uint16_t)0);
     EXPECT_EQ(client.lastRumble.weakMagnitude, (uint16_t)0);
-}
-
-static void test_handleRumbleFromBackend_lightbarPreserved() {
-    TEST("handleRumbleFromBackend — DS4 lightbar bytes pass through to the client");
-    MockViGem vigem;
-    MockClient client;
-    MockLog log;
-    SessionService svc(vigem, client, log);
-    auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
-    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
-    auto snap = svc.getConnectionsSnapshot();
-    uint32_t serial = snap.connections[0].controllers[0].serial;
-
-    RumbleReport rr{};
-    rr.strongMagnitude = 200;
-    rr.weakMagnitude = 100;
-    rr.hasLightbar = true;
-    rr.lightbarR = 0x10;
-    rr.lightbarG = 0x80;
-    rr.lightbarB = 0xFF;
-    vigem.fireRumble(serial, rr);
-    EXPECT_EQ(client.rumbleCalls, 1);
-    EXPECT(client.lastRumble.hasLightbar);
-    EXPECT_EQ((int)client.lastRumble.lightbarR, 0x10);
-    EXPECT_EQ((int)client.lastRumble.lightbarG, 0x80);
-    EXPECT_EQ((int)client.lastRumble.lightbarB, 0xFF);
-}
-
-static void test_handleRumbleFromBackend_lightbarChangeDefeatsCoalesce() {
-    TEST("handleRumbleFromBackend — lightbar colour change re-emits even at same magnitude");
-    MockViGem vigem;
-    MockClient client;
-    MockLog log;
-    SessionService svc(vigem, client, log);
-    auto r = openTestSession(svc);
-    svc.handleControllerAdd(r.token, 0);
-    auto snap = svc.getConnectionsSnapshot();
-    uint32_t serial = snap.connections[0].controllers[0].serial;
-
-    RumbleReport rr{};
-    rr.strongMagnitude = 100;
-    rr.weakMagnitude = 50;
-    rr.hasLightbar = true;
-    rr.lightbarR = 0x10;
-    vigem.fireRumble(serial, rr);
-    EXPECT_EQ(client.rumbleCalls, 1);
-
-    rr.lightbarR = 0x20; // colour change, magnitudes identical
-    vigem.fireRumble(serial, rr);
-    EXPECT_EQ(client.rumbleCalls, 2);
 }
 
 static void test_handleRumbleFromBackend_routesAcrossMultipleConnections() {
@@ -1620,6 +1724,907 @@ static void test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial() {
     EXPECT_EQ(client.rumbleCalls, 1);
 }
 
+// ── Motion tests ────────────────────────────────────────────────────────────
+
+static void test_msgMotion_constant() {
+    TEST("MSG_MOTION — has expected wire value 0x000A");
+    EXPECT_EQ(static_cast<int>(MSG_MOTION), 0x000A);
+}
+
+static void test_motionReport_wireSize() {
+    TEST("MotionReport — packs into 16 bytes on the wire");
+    EXPECT_EQ(static_cast<int>(sizeof(MotionReport)), 16);
+}
+
+static void test_motionScaleConstants_fullScale() {
+    TEST("MOTION scale constants — match the wire full-scale (±2000 deg/s, ±4 g)");
+    // The exact float comparison is fine because both sides are derived from
+    // the same compile-time constant — there is no rounding step that could
+    // diverge them.
+    EXPECT(MOTION_GYRO_SCALE_DEG_S > 0.0f);
+    EXPECT(MOTION_GYRO_SCALE_DEG_S * 32767.0f >= 1999.9f);
+    EXPECT(MOTION_GYRO_SCALE_DEG_S * 32767.0f <= 2000.1f);
+    EXPECT(MOTION_ACCEL_SCALE_G * 32767.0f >= 3.999f);
+    EXPECT(MOTION_ACCEL_SCALE_G * 32767.0f <= 4.001f);
+}
+
+static void test_handleMotionData_forwardsToBackend() {
+    TEST("handleMotionData — forwards sample to backend.submitMotion");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+
+    MotionReport m;
+    m.gyroX = 1234;
+    m.gyroY = -567;
+    m.gyroZ = 89;
+    m.accelX = 100;
+    m.accelY = -200;
+    m.accelZ = 16384; // ~+2 g, controller resting screen-up
+    m.timestampDeltaUs = 4000;
+    bool ok = svc.handleMotionData(r.token, 0, m);
+
+    // The default MockViGem submitMotionReturnVal is true so handleMotionData
+    // returns true. The "no IMU surface yet" path is exercised separately.
+    EXPECT(ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 1);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 1234);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroY), -567);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.accelZ), 16384);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.timestampDeltaUs), 4000);
+}
+
+static void test_handleMotionData_cachesEvenWhenBackendDeclines() {
+    TEST("handleMotionData — caches lastMotion even when backend returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    // Default IGamepadPort behaviour: backend has no IMU surface, returns false.
+    vigem.submitMotionReturnVal = false;
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    MotionReport m;
+    m.gyroX = 42;
+    bool ok = svc.handleMotionData(r.token, 0, m);
+
+    EXPECT(!ok); // backend declined
+    EXPECT_EQ(vigem.submitMotionCalls, 1);
+    // The snapshot doesn't surface motion (web UI isn't asking yet), but the
+    // controller's lastMotionValid flag should still be true. We can't read
+    // private state from the test, so we sanity-check by re-firing motion: the
+    // backend should still receive the new sample (i.e. nothing was rejected).
+    MotionReport m2;
+    m2.gyroX = 99;
+    svc.handleMotionData(r.token, 0, m2);
+    EXPECT_EQ(vigem.submitMotionCalls, 2);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 99);
+}
+
+static void test_handleMotionData_invalidToken() {
+    TEST("handleMotionData — invalid token returns false, backend not called");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    MotionReport m;
+    bool ok = svc.handleMotionData(0xDEADBEEF, 0, m);
+    EXPECT(!ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+}
+
+static void test_handleMotionData_outOfBoundsCtrlIdx() {
+    TEST("handleMotionData — ctrlIdx >= MAX_CONTROLLERS_PER_CONN returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    MotionReport m;
+    bool ok = svc.handleMotionData(r.token, MAX_CONTROLLERS_PER_CONN, m);
+    EXPECT(!ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+}
+
+static void test_handleMotionData_inactiveController() {
+    TEST("handleMotionData — inactive controller returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc); // no controllers added
+    MotionReport m;
+    bool ok = svc.handleMotionData(r.token, 0, m);
+    EXPECT(!ok);
+    EXPECT_EQ(vigem.submitMotionCalls, 0);
+}
+
+static void test_handleMotionData_routesAcrossControllers() {
+    TEST("handleMotionData — routes by serial across multiple controllers");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // serial 1
+    svc.handleControllerAdd(r.token, 1); // serial 2
+
+    MotionReport m0;
+    m0.gyroX = 100;
+    MotionReport m1;
+    m1.gyroX = 200;
+
+    svc.handleMotionData(r.token, 0, m0);
+    EXPECT_EQ(vigem.lastMotionSerial, 1u);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 100);
+
+    svc.handleMotionData(r.token, 1, m1);
+    EXPECT_EQ(vigem.lastMotionSerial, 2u);
+    EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 200);
+}
+
+// ── Battery tests ───────────────────────────────────────────────────────────
+
+static void test_msgBattery_constant() {
+    TEST("MSG_BATTERY — has expected wire value 0x000B");
+    EXPECT_EQ(static_cast<int>(MSG_BATTERY), 0x000B);
+}
+
+static void test_batteryStatusName_known() {
+    TEST("batteryStatusName — every defined status has a non-unknown name");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_DISCHARGING)) == "discharging");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_CHARGING)) == "charging");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_FULL)) == "full");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_WIRED)) == "wired");
+    EXPECT(std::string(batteryStatusName(BATTERY_STATUS_UNKNOWN)) == "unknown");
+    EXPECT(std::string(batteryStatusName(99)) == "unknown");
+}
+
+static void test_handleBatteryUpdate_cachesAndForwards() {
+    TEST("handleBatteryUpdate — caches latest value and forwards to backend");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = 73;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    bool ok = svc.handleBatteryUpdate(r.token, 0, b);
+    EXPECT(ok);
+    EXPECT_EQ(vigem.submitBatteryCalls, 1);
+    EXPECT_EQ(static_cast<int>(vigem.lastBattery.level), 73);
+    EXPECT_EQ(static_cast<int>(vigem.lastBattery.status), BATTERY_STATUS_DISCHARGING);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers.size()), 1);
+    auto& info = snap.connections[0].controllers[0];
+    EXPECT(info.batteryKnown);
+    EXPECT_EQ(static_cast<int>(info.batteryLevel), 73);
+    EXPECT_EQ(static_cast<int>(info.batteryStatus), BATTERY_STATUS_DISCHARGING);
+}
+
+static void test_handleBatteryUpdate_unknownLevelIsAccepted() {
+    TEST("handleBatteryUpdate — BATTERY_LEVEL_UNKNOWN (0xFF) is accepted");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = BATTERY_LEVEL_UNKNOWN;
+    b.status = BATTERY_STATUS_CHARGING;
+    EXPECT(svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 1);
+}
+
+static void test_handleBatteryUpdate_rejectsBogusLevel() {
+    TEST("handleBatteryUpdate — rejects level in 101..254 (bogus, not the 0xFF sentinel)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = 200;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    EXPECT(!svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_handleBatteryUpdate_rejectsBogusStatus() {
+    TEST("handleBatteryUpdate — rejects status >= BATTERY_STATUS_COUNT");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    BatteryReport b;
+    b.level = 50;
+    b.status = BATTERY_STATUS_COUNT; // == 5, not a defined enum
+    EXPECT(!svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_handleBatteryUpdate_invalidToken() {
+    TEST("handleBatteryUpdate — invalid token returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    BatteryReport b;
+    b.level = 50;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    EXPECT(!svc.handleBatteryUpdate(0xDEADBEEF, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_handleBatteryUpdate_inactiveController() {
+    TEST("handleBatteryUpdate — inactive controller returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    BatteryReport b;
+    b.level = 50;
+    b.status = BATTERY_STATUS_DISCHARGING;
+    EXPECT(!svc.handleBatteryUpdate(r.token, 0, b));
+    EXPECT_EQ(vigem.submitBatteryCalls, 0);
+}
+
+static void test_snapshot_batteryDefaultsUnknown() {
+    TEST("getConnectionsSnapshot — newly added controller has batteryKnown=false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers.size()), 1);
+    EXPECT(!snap.connections[0].controllers[0].batteryKnown);
+}
+
+// ── Touchpad (sender → satellite, DS4 / DualSense trackpad) ────────────────
+
+static void test_msgTouchpad_constant() {
+    TEST("MSG_TOUCHPAD constant pins wire byte 0x000C");
+    EXPECT_EQ(static_cast<int>(MSG_TOUCHPAD), 0x000C);
+}
+
+static void test_handleTouchpadData_forwardsToBackend() {
+    TEST("handleTouchpadData — caches + forwards to backend on active controller");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    tp.finger0.trackingId = 7;
+    tp.finger0.x = 1234;
+    tp.finger0.y = -5678;
+    tp.finger1.active = false;
+    tp.buttonPressed = true;
+
+    EXPECT(svc.handleTouchpadData(r.token, 0, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+    EXPECT(vigem.lastTouchpad.finger0.active);
+    EXPECT_EQ(static_cast<int>(vigem.lastTouchpad.finger0.trackingId), 7);
+    EXPECT_EQ(static_cast<int>(vigem.lastTouchpad.finger0.x), 1234);
+    EXPECT_EQ(static_cast<int>(vigem.lastTouchpad.finger0.y), -5678);
+    EXPECT(!vigem.lastTouchpad.finger1.active);
+    EXPECT(vigem.lastTouchpad.buttonPressed);
+}
+
+static void test_handleTouchpadData_cachesEvenWhenBackendDeclines() {
+    TEST("handleTouchpadData — cache is updated even when backend returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    // Default IGamepadPort::submitTouchpad returns false. Mirror it.
+    vigem.submitTouchpadReturnVal = false;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    tp.finger0.x = 42;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    // Snapshot doesn't currently expose touchpad — verify cache by checking
+    // the connection table directly via a follow-up forward call returning
+    // the same cached value (defensive — the snapshot will eventually carry
+    // touchpad too, but adding it isn't this task's scope).
+    EXPECT_EQ(static_cast<int>(vigem.lastTouchpad.finger0.x), 42);
+}
+
+static void test_handleTouchpadData_invalidToken() {
+    TEST("handleTouchpadData — invalid token returns false, backend not called");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    TouchpadReport tp;
+    EXPECT(!svc.handleTouchpadData(/*token=*/0xDEAD'BEEFu, 0, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+}
+
+static void test_handleTouchpadData_outOfBoundsCtrlIdx() {
+    TEST("handleTouchpadData — ctrlIdx >= MAX returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+
+    TouchpadReport tp;
+    EXPECT(!svc.handleTouchpadData(r.token, MAX_CONTROLLERS_PER_CONN, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+}
+
+static void test_handleTouchpadData_inactiveController() {
+    TEST("handleTouchpadData — controller not active returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    // Don't call handleControllerAdd — ctrlIdx 0 is inactive.
+
+    TouchpadReport tp;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+}
+
+// ── Touchpad codec (core/touchpad_codec.h — pure wire/coordinate helpers) ──
+
+static void test_touchpadWireToRange_endpoints() {
+    TEST("touchpadWireToRange — wire endpoints map to device-range edges");
+    EXPECT_EQ(touchpadWireToRange(-32768, 1920), 0);
+    EXPECT_EQ(touchpadWireToRange(32767, 1920), 1919);
+    EXPECT_EQ(touchpadWireToRange(-32768, 943), 0);
+    EXPECT_EQ(touchpadWireToRange(32767, 943), 942);
+    // Centre of the wire range lands near the centre of the device range.
+    const int mid = touchpadWireToRange(0, 1920);
+    EXPECT(mid >= 955 && mid <= 965);
+}
+
+static void test_touchpadWireToRange_clampsAndDegenerate() {
+    TEST("touchpadWireToRange — saturates monotonically; res<=1 yields 0");
+    EXPECT_EQ(touchpadWireToRange(-32768, 1), 0);
+    EXPECT_EQ(touchpadWireToRange(32767, 1), 0);
+    EXPECT(touchpadWireToRange(-10000, 1920) <= touchpadWireToRange(10000, 1920));
+}
+
+static void test_ds4PackTouchFinger_activeFlagAndId() {
+    TEST("ds4PackTouchFinger — bit7 = lifted, low 7 bits = tracking id");
+    TouchpadFinger active;
+    active.active = true;
+    auto a = ds4PackTouchFinger(active, 5);
+    EXPECT_EQ(static_cast<int>(a[0] & 0x80), 0); // active → bit7 clear
+    EXPECT_EQ(static_cast<int>(a[0] & 0x7F), 5); // tracking id in low 7 bits
+
+    TouchpadFinger lifted;
+    lifted.active = false;
+    auto l = ds4PackTouchFinger(lifted, 9);
+    EXPECT_EQ(static_cast<int>(l[0] & 0x80), 0x80); // lifted → bit7 set
+    EXPECT_EQ(static_cast<int>(l[0] & 0x7F), 9);
+}
+
+static void test_ds4PackTouchFinger_coordPacking() {
+    TEST("ds4PackTouchFinger — 12-bit x/y survive the DS4 packing round-trip");
+    TouchpadFinger f;
+    f.active = true;
+    f.x = 32767;  // right edge → x12 = DS4_TOUCHPAD_RES_X - 1
+    f.y = -32768; // top edge   → y12 = 0
+    auto p = ds4PackTouchFinger(f, 0);
+    const int x12 = p[1] | ((p[2] & 0x0F) << 8);
+    const int y12 = (p[2] >> 4) | (p[3] << 4);
+    EXPECT_EQ(x12, DS4_TOUCHPAD_RES_X - 1);
+    EXPECT_EQ(y12, 0);
+}
+
+// ── Touchpad wire decode (core/types.h::decodeTouchpadReport) ──────────────
+
+static void test_decodeTouchpadReport_wireLayout() {
+    TEST("decodeTouchpadReport — flags + finger fields decode from the 11-byte tail");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {};
+    p[0] = 0x07; // flags: finger0 + finger1 active + button
+    p[1] = 0x2A; // finger0 trackingId
+    p[2] = 0xD2;
+    p[3] = 0x04; // finger0 x = 0x04D2 = 1234 (LE)
+    p[4] = 0x2E;
+    p[5] = 0xFB; // finger0 y = 0xFB2E = -1234 (LE)
+    p[6] = 0x55; // finger1 trackingId
+    p[7] = 0x00;
+    p[8] = 0x80; // finger1 x = 0x8000 = -32768
+    p[9] = 0xFF;
+    p[10] = 0x7F; // finger1 y = 0x7FFF = 32767
+    TouchpadReport r = decodeTouchpadReport(p);
+    EXPECT(r.finger0.active);
+    EXPECT(r.finger1.active);
+    EXPECT(r.buttonPressed);
+    EXPECT_EQ(static_cast<int>(r.finger0.trackingId), 0x2A);
+    EXPECT_EQ(static_cast<int>(r.finger0.x), 1234);
+    EXPECT_EQ(static_cast<int>(r.finger0.y), -1234);
+    EXPECT_EQ(static_cast<int>(r.finger1.trackingId), 0x55);
+    EXPECT_EQ(static_cast<int>(r.finger1.x), -32768);
+    EXPECT_EQ(static_cast<int>(r.finger1.y), 32767);
+}
+
+static void test_decodeTouchpadReport_inactiveFlags() {
+    TEST("decodeTouchpadReport — clear flags yield inactive fingers / no button");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {};
+    TouchpadReport r = decodeTouchpadReport(p);
+    EXPECT(!r.finger0.active);
+    EXPECT(!r.finger1.active);
+    EXPECT(!r.buttonPressed);
+}
+
+// ── Touchpad routing modes (Task 1.3 — per-device DS4 / mouse / off) ───────
+
+static void test_touchpadMode_constants() {
+    TEST("TOUCHPAD_MODE_* constants + name round-trip");
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_DS4), 0);
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_MOUSE), 1);
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_OFF), 2);
+    EXPECT_EQ(static_cast<int>(TOUCHPAD_MODE_COUNT), 3);
+    EXPECT_EQ(std::string(touchpadModeName(TOUCHPAD_MODE_DS4)), std::string("ds4"));
+    EXPECT_EQ(std::string(touchpadModeName(TOUCHPAD_MODE_MOUSE)), std::string("mouse"));
+    EXPECT_EQ(std::string(touchpadModeName(TOUCHPAD_MODE_OFF)), std::string("off"));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("ds4")), static_cast<int>(TOUCHPAD_MODE_DS4));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("mouse")),
+              static_cast<int>(TOUCHPAD_MODE_MOUSE));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("off")), static_cast<int>(TOUCHPAD_MODE_OFF));
+    // Unknown / empty (a pre-1.3 config) migrates to DS4 pass-through.
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("")), static_cast<int>(TOUCHPAD_MODE_DS4));
+    EXPECT_EQ(static_cast<int>(touchpadModeFromName("bogus")), static_cast<int>(TOUCHPAD_MODE_DS4));
+}
+
+static void test_openSession_carriesTouchpadMode() {
+    TEST("openSession — touchpadMode seeds the connection + snapshot");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].touchpadMode),
+              static_cast<int>(TOUCHPAD_MODE_MOUSE));
+}
+
+static void test_handleTouchpadData_ds4ModeForwardsToTouchpad() {
+    TEST("handleTouchpadData — DS4 mode routes to submitTouchpad, not the mouse");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_DS4);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
+}
+
+static void test_handleTouchpadData_offModeCachesOnly() {
+    TEST("handleTouchpadData — OFF mode caches for the web UI but forwards nowhere");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_OFF);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, tp)); // OFF → returns false
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
+    // ...but the sample is still cached — the snapshot shows it as active.
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers.size()), 1);
+    EXPECT(snap.connections[0].controllers[0].touchpadActive);
+}
+
+static void test_handleTouchpadData_mouseModeTouchDownNoJump() {
+    TEST("handleTouchpadData — MOUSE mode: a fresh touch-down emits no cursor jump");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport down;
+    down.finger0.active = true;
+    down.finger0.x = 12000;
+    down.finger0.y = -8000;
+    down.buttonPressed = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, down));
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
+    EXPECT_EQ(vigem.lastMouseDx, 0); // first contact re-anchors — no jump
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+    EXPECT(vigem.lastMouseButton); // clicky button still forwarded
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+}
+
+static void test_handleTouchpadData_mouseModeContinuousDelta() {
+    TEST("handleTouchpadData — MOUSE mode: a continuous drag emits a signed delta");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport a;
+    a.finger0.active = true;
+    a.finger0.x = 0;
+    a.finger0.y = 0;
+    svc.handleTouchpadData(r.token, 0, a); // touch-down anchor
+    TouchpadReport b;
+    b.finger0.active = true;
+    b.finger0.x = 10000;  // +10000 wire units
+    b.finger0.y = -10000; // -10000 wire units
+    svc.handleTouchpadData(r.token, 0, b);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 2);
+    // 10000 * TOUCHPAD_MOUSE_SENSITIVITY ≈ 420 px — assert sign + ballpark.
+    EXPECT(vigem.lastMouseDx > 380 && vigem.lastMouseDx < 460);
+    EXPECT(vigem.lastMouseDy < -380 && vigem.lastMouseDy > -460);
+}
+
+static void test_handleTouchpadData_mouseModeSubPixelRemainder() {
+    TEST("handleTouchpadData — MOUSE mode: sub-pixel motion accumulates, not lost");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    // Three samples 15 wire units apart. 15 × ~0.042 ≈ 0.63 px each — under a
+    // whole pixel alone, but two continuous steps cross 1 px.
+    TouchpadReport s;
+    s.finger0.active = true;
+    s.finger0.x = 0;
+    svc.handleTouchpadData(r.token, 0, s); // anchor → dx 0
+    s.finger0.x = 15;
+    svc.handleTouchpadData(r.token, 0, s); // +0.63 px → dx 0, remainder kept
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    s.finger0.x = 30;
+    svc.handleTouchpadData(r.token, 0, s); // +0.63 px → 1.26 px total → dx 1
+    EXPECT_EQ(vigem.lastMouseDx, 1);
+}
+
+static void test_handleTouchpadData_mouseModeLiftResetsAnchor() {
+    TEST("handleTouchpadData — MOUSE mode: a lift between contacts emits no jump");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport s;
+    s.finger0.active = true;
+    s.finger0.x = 0;
+    svc.handleTouchpadData(r.token, 0, s); // contact A
+    TouchpadReport lift;                   // finger up
+    svc.handleTouchpadData(r.token, 0, lift);
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    s.finger0.x = 20000; // contact B, far from A
+    svc.handleTouchpadData(r.token, 0, s);
+    EXPECT_EQ(vigem.lastMouseDx, 0); // discontinuous — no teleport
+}
+
+static void test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity() {
+    TEST("handleTouchpadData — MOUSE mode: a finger-0 trackingId change emits no jump");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // Finger 0 is "active" in both frames, but with different tracking IDs:
+    // this is what slot compaction looks like when the original finger 0
+    // lifts and finger 1 is compacted down into slot 0. The two samples are
+    // two *different* physical fingers, so no cursor delta must be emitted.
+    TouchpadReport a;
+    a.finger0.active = true;
+    a.finger0.trackingId = 5;
+    a.finger0.x = 0;
+    svc.handleTouchpadData(r.token, 0, a);
+
+    TouchpadReport b;
+    b.finger0.active = true;
+    b.finger0.trackingId = 6; // compacted: a different finger now in slot 0
+    b.finger0.x = 20000;      // far from sample a
+    svc.handleTouchpadData(r.token, 0, b);
+    EXPECT_EQ(vigem.lastMouseDx, 0); // trackingId differs → not continuous
+
+    // A third sample with the same trackingId as b *is* continuous with it.
+    TouchpadReport c;
+    c.finger0.active = true;
+    c.finger0.trackingId = 6;
+    c.finger0.x = 30000;
+    svc.handleTouchpadData(r.token, 0, c);
+    EXPECT(vigem.lastMouseDx > 0); // same finger → delta emitted
+}
+
+static void test_setTouchpadMode_hotApplies() {
+    TEST("setTouchpadMode — hot-swaps routing on a live connection (no re-pair)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc); // default DS4
+    svc.handleControllerAdd(r.token, 0);
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    svc.handleTouchpadData(r.token, 0, tp);
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
+
+    EXPECT(svc.setTouchpadMode("dev1", TOUCHPAD_MODE_MOUSE));
+    svc.handleTouchpadData(r.token, 0, tp);
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);      // no further DS4 forwards
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1); // now routed to the mouse
+}
+
+static void test_setTouchpadMode_unknownDeviceAndBadMode() {
+    TEST("setTouchpadMode — unknown device returns false; out-of-range mode rejected");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    openTestSession(svc, "dev1");
+    EXPECT(!svc.setTouchpadMode("no-such-device", TOUCHPAD_MODE_MOUSE));
+    EXPECT(!svc.setTouchpadMode("dev1", TOUCHPAD_MODE_COUNT)); // out of range
+    EXPECT(svc.setTouchpadMode("dev1", TOUCHPAD_MODE_OFF));    // valid → true
+}
+
+// ── Lightbar (host game → satellite → dish, Task 1.4 dedicated stream) ────
+
+static void test_msgLightbar_constant() {
+    TEST("MSG_LIGHTBAR constant pins wire byte 0x000D");
+    EXPECT_EQ(static_cast<int>(MSG_LIGHTBAR), 0x000D);
+}
+
+static void test_constructor_installsLightbarCallback() {
+    TEST("SessionService ctor installs the lightbar callback on the backend");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    EXPECT_EQ(vigem.setLightbarCallbackCalls, 1);
+    EXPECT(static_cast<bool>(vigem.capturedLightbarCb));
+}
+
+static void test_handleLightbarFromBackend_routesToOwningConnection() {
+    TEST(
+        "handleLightbarFromBackend — forwards to the right (connection, ctrlIdx) via sendLightbar");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 3, CAP_LIGHTBAR);
+    const uint32_t serial = vigem.pluggedSerials.back();
+    client.reset();
+
+    vigem.fireLightbar(serial, 0x11, 0x22, 0x33);
+
+    EXPECT_EQ(client.lightbarCalls, 1);
+    EXPECT_EQ(client.lastLightbarConnToken, r.token);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarCtrlIdx), 3);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarR), 0x11);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarG), 0x22);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarB), 0x33);
+}
+
+static void test_handleLightbarFromBackend_unknownSerialDropped() {
+    TEST("handleLightbarFromBackend — unknown serial silently drops");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    client.reset();
+
+    vigem.fireLightbar(/*serial=*/0xDEAD'BEEFu, 1, 2, 3);
+    EXPECT_EQ(client.lightbarCalls, 0);
+}
+
+static void test_handleLightbarFromBackend_coalescesIdenticalColours() {
+    TEST("handleLightbarFromBackend — identical follow-up colour is dropped");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    const uint32_t serial = vigem.pluggedSerials.back();
+    client.reset();
+
+    vigem.fireLightbar(serial, 0xAA, 0xBB, 0xCC);
+    vigem.fireLightbar(serial, 0xAA, 0xBB, 0xCC);
+    vigem.fireLightbar(serial, 0xAA, 0xBB, 0xCC);
+    EXPECT_EQ(client.lightbarCalls, 1);
+}
+
+static void test_handleLightbarFromBackend_anyChannelChangeEmits() {
+    TEST("handleLightbarFromBackend — a single-channel change still emits a packet");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    const uint32_t serial = vigem.pluggedSerials.back();
+    client.reset();
+
+    vigem.fireLightbar(serial, 1, 2, 3);
+    vigem.fireLightbar(serial, 1, 2, 4); // only B changed
+    vigem.fireLightbar(serial, 1, 5, 4); // only G changed
+    vigem.fireLightbar(serial, 6, 5, 4); // only R changed
+    EXPECT_EQ(client.lightbarCalls, 4);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarR), 6);
+}
+
+static void test_handleLightbarFromBackend_separateControllersIndependentlyCoalesced() {
+    TEST("handleLightbarFromBackend — per-controller coalesce state is independent");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    svc.handleControllerAdd(r.token, 1, CAP_LIGHTBAR);
+    const uint32_t s0 = vigem.pluggedSerials[0];
+    const uint32_t s1 = vigem.pluggedSerials[1];
+    client.reset();
+
+    vigem.fireLightbar(s0, 0xFF, 0, 0);
+    vigem.fireLightbar(s1, 0xFF, 0, 0); // same RGB, different controller
+    EXPECT_EQ(client.lightbarCalls, 2);
+}
+
+static void test_capLightbar_constant() {
+    TEST("CAP_LIGHTBAR — has expected capability bit 0x0008");
+    EXPECT_EQ(static_cast<int>(CAP_LIGHTBAR), 0x0008);
+}
+
+// A pre-1.4 sender (caps = 0) must not receive MSG_LIGHTBAR — it cannot decode
+// 0x000D. The colour is still cached for the web UI; that sender gets colour
+// only via the deprecated MSG_RUMBLE tail (see the rumble tests above).
+static void test_handleLightbarFromBackend_notSentWithoutCapLightbar() {
+    TEST("handleLightbarFromBackend — colour is NOT sent to a sender lacking CAP_LIGHTBAR");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // caps = 0 — no CAP_LIGHTBAR
+    const uint32_t serial = vigem.pluggedSerials.back();
+    client.reset();
+
+    vigem.fireLightbar(serial, 0x11, 0x22, 0x33);
+    EXPECT_EQ(client.lightbarCalls, 0);
+
+    // ...but the colour is still cached, so the web UI swatch stays live for
+    // every controller regardless of the dedicated-stream gate.
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].controllers[0].lightbarKnown);
+    EXPECT(!snap.connections[0].controllers[0].lightbarCapable);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].controllers[0].lightbarR), 0x11);
+}
+
+static void test_handleLightbarFromBackend_capLightbarSenderGetsDedicatedStream() {
+    TEST("handleLightbarFromBackend — a CAP_LIGHTBAR sender receives colour via MSG_LIGHTBAR");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 2, CAP_LIGHTBAR);
+    const uint32_t serial = vigem.pluggedSerials.back();
+    client.reset();
+
+    vigem.fireLightbar(serial, 0xDE, 0xAD, 0xBE);
+    EXPECT_EQ(client.lightbarCalls, 1);
+    EXPECT_EQ(client.lastLightbarConnToken, r.token);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarCtrlIdx), 2);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarR), 0xDE);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarG), 0xAD);
+    EXPECT_EQ(static_cast<int>(client.lastLightbarB), 0xBE);
+}
+
+static void test_handleLightbarFromBackend_coalesceStateResetOnReAdd() {
+    TEST("handleLightbarFromBackend — re-adding a controller clears stale colour coalesce state");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    uint32_t serial = vigem.pluggedSerials.back();
+    vigem.fireLightbar(serial, 0x7F, 0x7F, 0x7F);
+    client.reset();
+
+    // Remove + re-add. The re-added controller is a fresh actuator, so the same
+    // colour must reach it again rather than being suppressed as a duplicate.
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    serial = vigem.pluggedSerials.back();
+    vigem.fireLightbar(serial, 0x7F, 0x7F, 0x7F);
+    EXPECT_EQ(client.lightbarCalls, 1);
+}
+
+static void test_lightbar_surfacedInConnectionsSnapshot() {
+    TEST("getConnectionsSnapshot — lightbar capability + live colour are surfaced");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, CAP_LIGHTBAR);
+    const uint32_t serial = vigem.pluggedSerials.back();
+
+    // Capable, but no colour set yet.
+    auto before = svc.getConnectionsSnapshot();
+    EXPECT(before.connections[0].controllers[0].lightbarCapable);
+    EXPECT(!before.connections[0].controllers[0].lightbarKnown);
+
+    vigem.fireLightbar(serial, 0x01, 0x99, 0xFE);
+    auto after = svc.getConnectionsSnapshot();
+    const auto& ci = after.connections[0].controllers[0];
+    EXPECT(ci.lightbarKnown);
+    EXPECT_EQ(static_cast<int>(ci.lightbarR), 0x01);
+    EXPECT_EQ(static_cast<int>(ci.lightbarG), 0x99);
+    EXPECT_EQ(static_cast<int>(ci.lightbarB), 0xFE);
+}
+
 int main() {
     std::cout << "Running SessionService tests...\n\n";
 
@@ -1704,6 +2709,8 @@ int main() {
     test_closeAllSessions_withMixedTypes();
     test_staleReplacement_unplugsDS4Controller();
     test_controllerRemove_thenReaddRetainsTypeFromSameSlot();
+    test_controllerReAdd_clearsCachedSenderStreams();
+    test_controllerReAdd_touchpadMouseNoJumpAfterReconnect();
 
     // ── Protocol constants ──
     test_msgControllerType_constant();
@@ -1716,14 +2723,75 @@ int main() {
     test_handleRumbleFromBackend_inactiveControllerDropped();
     test_handleRumbleFromBackend_coalescesIdenticalReports();
     test_handleRumbleFromBackend_stopReportEmitted();
-    test_handleRumbleFromBackend_lightbarPreserved();
-    test_handleRumbleFromBackend_lightbarChangeDefeatsCoalesce();
     test_handleRumbleFromBackend_routesAcrossMultipleConnections();
     test_handleRumbleFromBackend_serialReuseClearsState();
     test_handleRumbleFromBackend_customDuration();
     test_handleRumbleFromBackend_durationChangeAloneDoesNotEmit();
     test_handleRumbleFromBackend_separateControllersIndependentlyCoalesced();
     test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial();
+
+    // ── Motion (sender → satellite, IMU forwarding) ──
+    test_msgMotion_constant();
+    test_motionReport_wireSize();
+    test_motionScaleConstants_fullScale();
+    test_handleMotionData_forwardsToBackend();
+    test_handleMotionData_cachesEvenWhenBackendDeclines();
+    test_handleMotionData_invalidToken();
+    test_handleMotionData_outOfBoundsCtrlIdx();
+    test_handleMotionData_inactiveController();
+    test_handleMotionData_routesAcrossControllers();
+
+    // ── Battery (sender → satellite, periodic) ──
+    test_msgBattery_constant();
+    test_batteryStatusName_known();
+    test_handleBatteryUpdate_cachesAndForwards();
+    test_handleBatteryUpdate_unknownLevelIsAccepted();
+    test_handleBatteryUpdate_rejectsBogusLevel();
+    test_handleBatteryUpdate_rejectsBogusStatus();
+    test_handleBatteryUpdate_invalidToken();
+    test_handleBatteryUpdate_inactiveController();
+    test_snapshot_batteryDefaultsUnknown();
+
+    // ── Touchpad (sender → satellite, Task 1.3) ──
+    test_msgTouchpad_constant();
+    test_handleTouchpadData_forwardsToBackend();
+    test_handleTouchpadData_cachesEvenWhenBackendDeclines();
+    test_handleTouchpadData_invalidToken();
+    test_handleTouchpadData_outOfBoundsCtrlIdx();
+    test_handleTouchpadData_inactiveController();
+    // Task 1.3 — codec, wire decode, routing modes, hot-apply.
+    test_touchpadWireToRange_endpoints();
+    test_touchpadWireToRange_clampsAndDegenerate();
+    test_ds4PackTouchFinger_activeFlagAndId();
+    test_ds4PackTouchFinger_coordPacking();
+    test_decodeTouchpadReport_wireLayout();
+    test_decodeTouchpadReport_inactiveFlags();
+    test_touchpadMode_constants();
+    test_openSession_carriesTouchpadMode();
+    test_handleTouchpadData_ds4ModeForwardsToTouchpad();
+    test_handleTouchpadData_offModeCachesOnly();
+    test_handleTouchpadData_mouseModeTouchDownNoJump();
+    test_handleTouchpadData_mouseModeContinuousDelta();
+    test_handleTouchpadData_mouseModeSubPixelRemainder();
+    test_handleTouchpadData_mouseModeLiftResetsAnchor();
+    test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity();
+    test_setTouchpadMode_hotApplies();
+    test_setTouchpadMode_unknownDeviceAndBadMode();
+
+    // ── Lightbar (host game → satellite → dish, Task 1.4) ──
+    test_msgLightbar_constant();
+    test_constructor_installsLightbarCallback();
+    test_handleLightbarFromBackend_routesToOwningConnection();
+    test_handleLightbarFromBackend_unknownSerialDropped();
+    test_handleLightbarFromBackend_coalescesIdenticalColours();
+    test_handleLightbarFromBackend_anyChannelChangeEmits();
+    test_handleLightbarFromBackend_separateControllersIndependentlyCoalesced();
+    // Task 1.4 — CAP_LIGHTBAR capability gating.
+    test_capLightbar_constant();
+    test_handleLightbarFromBackend_notSentWithoutCapLightbar();
+    test_handleLightbarFromBackend_capLightbarSenderGetsDedicatedStream();
+    test_handleLightbarFromBackend_coalesceStateResetOnReAdd();
+    test_lightbar_surfacedInConnectionsSnapshot();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

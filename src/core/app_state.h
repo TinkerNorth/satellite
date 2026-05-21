@@ -41,7 +41,12 @@ extern std::mutex g_configMtx;
 // ── App lifecycle / listen state ────────────────────────────────────────────
 extern std::atomic<bool> g_appRunning;
 extern std::atomic<bool> g_listening;
-extern std::atomic<bool> g_wantListen;
+
+// True while the mDNS / Bonjour responder thread holds its multicast socket
+// (Task 1.6). False when the bind/join failed or the thread has exited.
+// Surfaced read-only in the web UI so operators can see the modern discovery
+// path is live without grepping the log ring.
+extern std::atomic<bool> g_mdnsResponderActive;
 
 // ── Telemetry counters (read by webserver SSE) ──────────────────────────────
 extern std::atomic<uint64_t> g_packetCount;
@@ -54,7 +59,12 @@ extern std::atomic<uint64_t> g_decryptFail;
 extern std::atomic<uint64_t> g_replayDrop;
 
 // ── Shared networking state ─────────────────────────────────────────────────
+// g_httpServer is the admin UI + admin API (plain HTTP, bound to 127.0.0.1).
+// g_clientServer points at the sender-facing HTTPS server; it is owned by
+// clientApiThread (an httplib::SSLServer cannot be a global — it has no
+// default constructor) and is null until that thread has constructed it.
 extern httplib::Server g_httpServer;
+extern httplib::Server* g_clientServer;
 extern SOCKET g_pairSock;
 extern std::string g_webDir;
 

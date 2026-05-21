@@ -8,13 +8,18 @@
  * All business logic (connections, controllers, teardown) lives in SessionService.
  */
 #include "receiver.h"
+#include "inner_dispatch.h"
 #include "crypto.h"
 #include "core/session_service.h"
 #include "adapters/client_adapter.h"
 
+// dispatchInnerMessage (the decrypted inner-message parser + length guards)
+// lives in net/inner_dispatch.cpp — a portable, socket-free TU so the guards
+// can be unit tested with raw byte buffers (tests/test_receiver.cpp).
+
 // ── Reaper: delegates timeout cleanup to SessionService ──────────────────────
 static void reaperLoop(SessionService& svc) {
-    while (g_appRunning && g_wantListen.load()) {
+    while (g_appRunning) {
         netSleepMs(1000);
         svc.reapTimedOut();
     }
@@ -27,16 +32,21 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
     SetThreadAffinityMask(GetCurrentThread(), 1ULL);
 #endif
 
-    while (g_appRunning) {
-        while (g_appRunning && !g_wantListen) { netSleepMs(50); }
-        if (!g_appRunning) break;
+    // The receiver runs for the whole app lifetime — there is no start/stop.
+    // The outer loop exists only to re-bind: on a socket/bind failure it logs
+    // once, waits, and retries until the UDP port becomes available.
+    bool bindErrorLogged = false;
 
+    while (g_appRunning) {
         int port = g_config.udpPort;
 
         SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET) {
-            logMsg(LogLevel::ERR, "receiver", "Failed to create UDP socket");
-            g_wantListen = false;
+            if (!bindErrorLogged) {
+                logMsg(LogLevel::ERR, "receiver", "Failed to create UDP socket — retrying");
+                bindErrorLogged = true;
+            }
+            netSleepMs(1000);
             continue;
         }
 
@@ -47,11 +57,16 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         addr.sin_port = htons((uint16_t)port);
         addr.sin_addr.s_addr = INADDR_ANY;
         if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-            logMsg(LogLevel::ERR, "receiver", "Failed to bind UDP port " + std::to_string(port));
+            if (!bindErrorLogged) {
+                logMsg(LogLevel::ERR, "receiver",
+                       "Failed to bind UDP port " + std::to_string(port) + " — retrying");
+                bindErrorLogged = true;
+            }
             closesocket(sock);
-            g_wantListen = false;
+            netSleepMs(1000);
             continue;
         }
+        bindErrorLogged = false;
 
         client.setSocket(sock); // Give the client adapter the socket for sending
 
@@ -76,7 +91,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         // Start reaper thread
         std::thread reaper(reaperLoop, std::ref(svc));
 
-        while (g_appRunning && g_wantListen) {
+        while (g_appRunning) {
             sockaddr_in sender{};
             socklen_t slen = sizeof(sender);
             uint8_t buf[256];
@@ -128,15 +143,11 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             if ((size_t)(INNER_HEADER_SIZE + msgLen) > ptLen) continue;
             uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
-            switch (msgType) {
-            case MSG_GAMEPAD_DATA: {
-                if (msgLen < 13) break;
-                uint8_t ctrlIdx = payload[0];
-                GamepadReport report;
-                memcpy(&report, payload + 1, sizeof(GamepadReport));
+            DispatchResult dr = dispatchInnerMessage(svc, token, msgType, payload, msgLen);
 
-                bool ok = svc.handleGamepadData(token, ctrlIdx, report);
-
+            // Gamepad data is the hot path — record loop latency + submit
+            // outcome telemetry. Other message types skip this block.
+            if (dr.wasGamepadData) {
                 auto t1 = std::chrono::steady_clock::now();
                 uint64_t us =
                     (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
@@ -146,38 +157,11 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 while (us > prev &&
                        !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed)) {}
 
-                if (ok) {
+                if (dr.gamepadOk) {
                     g_submitOk.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     g_submitFail.fetch_add(1, std::memory_order_relaxed);
                 }
-                break;
-            }
-            case MSG_HEARTBEAT_PING:
-                svc.handleHeartbeat(token);
-                break;
-
-            case MSG_CONTROLLER_ADD: {
-                if (msgLen < 1) break;
-                uint8_t ctrlIdx = payload[0];
-                svc.handleControllerAdd(token, ctrlIdx);
-                break;
-            }
-            case MSG_CONTROLLER_REMOVE: {
-                if (msgLen < 1) break;
-                uint8_t ctrlIdx = payload[0];
-                svc.handleControllerRemove(token, ctrlIdx);
-                break;
-            }
-            case MSG_CONTROLLER_TYPE: {
-                if (msgLen < 2) break;
-                uint8_t ctrlIdx = payload[0];
-                uint8_t ctrlType = payload[1];
-                svc.handleControllerType(token, ctrlIdx, ctrlType);
-                break;
-            }
-            default:
-                break;
             }
 
             g_packetCount.fetch_add(1, std::memory_order_relaxed);

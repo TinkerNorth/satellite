@@ -134,6 +134,25 @@ bool submitReportDS4Fast(HANDLE bus, ULONG serial, const DS4_REPORT& rpt, HANDLE
     return ok;
 }
 
+bool submitReportDS4ExFast(HANDLE bus, ULONG serial, const DS4_REPORT_EX& rpt, HANDLE event) {
+    // Same overlapped pattern as submitReportDS4Fast, but the extended IOCTL.
+    // A driver older than ViGEmBus 1.17 fails the DeviceIoControl with
+    // ERROR_INVALID_PARAMETER / ERROR_NOT_SUPPORTED; the caller (ViGEmAdapter)
+    // latches that and stops trying the EX path for this serial.
+    OVERLAPPED ov{};
+    ov.hEvent = event;
+    DWORD xfr = 0;
+    DS4_SUBMIT_REPORT_EX sr;
+    DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
+    sr.Report = rpt;
+    if (!DeviceIoControl(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, nullptr, 0, &xfr, &ov)) {
+        // Synchronous failure (bad IOCTL on an old driver) — no overlapped
+        // completion to wait on.
+        if (GetLastError() != ERROR_IO_PENDING) return false;
+    }
+    return GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
+}
+
 void unplugTarget(HANDLE bus, ULONG serial) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);

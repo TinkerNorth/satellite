@@ -16,6 +16,7 @@
  * the developer's real ~/.config/satellite or ~/.config/autostart.
  */
 #include "../src/platform/linux/config.h"
+#include "../src/platform/linux/gamepad_adapter.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -112,6 +113,23 @@ static void testJsonEscape() {
 
     TEST("jsonEscape — combined special chars");
     EXPECT_EQ(jsonEscape("\"\\\n"), std::string("\\\"\\\\\\n"));
+
+    // C0 control bytes other than \n must become \uXXXX escapes — a raw \r or
+    // \t in a device name would otherwise produce invalid JSON.
+    TEST("jsonEscape — escapes carriage return as \\u000d");
+    EXPECT_EQ(jsonEscape("a\rb"), std::string("a\\u000db"));
+
+    TEST("jsonEscape — escapes tab as \\u0009");
+    EXPECT_EQ(jsonEscape("a\tb"), std::string("a\\u0009b"));
+
+    TEST("jsonEscape — escapes NUL as \\u0000");
+    EXPECT_EQ(jsonEscape(std::string("a\0b", 3)), std::string("a\\u0000b"));
+
+    TEST("jsonEscape — escapes a high C0 control byte (0x1f)");
+    EXPECT_EQ(jsonEscape(std::string("\x1f")), std::string("\\u001f"));
+
+    TEST("jsonEscape — 0x20 (space) is not escaped");
+    EXPECT_EQ(jsonEscape(" "), std::string(" "));
 }
 
 static void testJsonGetString() {
@@ -154,13 +172,13 @@ static void testConfigRoundTrip() {
     out.pairPort = 34567;
     out.discPort = 45678;
     out.autoStart = true;
-    out.credentials = "admin:hash$abc";
     PairedDevice d;
     d.id = "device-1";
     d.name = "Pixel 7";
     d.lastIP = "192.168.1.42";
     d.pairedAt = "2025-01-15";
     d.sharedKeyHex = "deadbeef00";
+    d.touchpadMode = TOUCHPAD_MODE_MOUSE;
     out.pairedDevices.push_back(d);
 
     saveConfig(out);
@@ -178,9 +196,6 @@ static void testConfigRoundTrip() {
     TEST("loadConfig — round-trips autoStart");
     EXPECT_EQ(in.autoStart, true);
 
-    TEST("loadConfig — round-trips credentials with special chars");
-    EXPECT_EQ(in.credentials, std::string("admin:hash$abc"));
-
     TEST("loadConfig — round-trips paired devices");
     EXPECT_EQ(in.pairedDevices.size(), size_t{1});
     if (in.pairedDevices.size() == 1) {
@@ -189,6 +204,44 @@ static void testConfigRoundTrip() {
         EXPECT_EQ(in.pairedDevices[0].lastIP, std::string("192.168.1.42"));
         EXPECT_EQ(in.pairedDevices[0].pairedAt, std::string("2025-01-15"));
         EXPECT_EQ(in.pairedDevices[0].sharedKeyHex, std::string("deadbeef00"));
+        // Task 1.3 — touchpadMode persists across the save/load round-trip.
+        EXPECT_EQ(static_cast<int>(in.pairedDevices[0].touchpadMode),
+                  static_cast<int>(TOUCHPAD_MODE_MOUSE));
+    }
+}
+
+// discoveryBroadcastEnabled (Task 1.6) — round-trips both ways, and an absent
+// key defaults to true so a pre-1.6 config doesn't silently disable the
+// legacy beacon. Each branch uses a fresh TempXdg so the config files don't
+// alias.
+static void testDiscoveryBroadcastConfig() {
+    {
+        TempXdg tmp;
+        Config out;
+        out.discoveryBroadcastEnabled = true;
+        saveConfig(out);
+        Config in = loadConfig();
+        TEST("loadConfig — discoveryBroadcastEnabled round-trips true");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, true);
+    }
+    {
+        TempXdg tmp;
+        Config out;
+        out.discoveryBroadcastEnabled = false;
+        saveConfig(out);
+        Config in = loadConfig();
+        TEST("loadConfig — discoveryBroadcastEnabled round-trips false");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, false);
+    }
+    {
+        TempXdg tmp;
+        // A config JSON with no discoveryBroadcastEnabled key (pre-1.6 shape).
+        std::ofstream f(configPath());
+        f << "{\n  \"udpPort\": 9876,\n  \"pairedDevices\": []\n}\n";
+        f.close();
+        Config in = loadConfig();
+        TEST("loadConfig — absent discoveryBroadcastEnabled key defaults to true");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, true);
     }
 }
 
@@ -200,6 +253,8 @@ static void testLoadConfigMissingFile() {
     EXPECT(c.webPort > 0);
     EXPECT_EQ(c.autoStart, false);
     EXPECT_EQ(c.pairedDevices.size(), size_t{0});
+    // A missing file yields struct defaults — the legacy beacon stays on.
+    EXPECT_EQ(c.discoveryBroadcastEnabled, true);
 }
 
 // ── XDG autostart .desktop file ─────────────────────────────────────────────
@@ -287,6 +342,115 @@ static void testGetCurrentDate() {
     }
 }
 
+// ── uinput sysfs-proxy (battery + lightbar) ─────────────────────────────────
+// Verifies the Linux backend's submitBattery is no-longer-a-no-op and that the
+// installed lightbar callback also mirrors the colour to a sysfs-proxy file.
+// SATELLITE_SYSFS_PROXY_DIR redirects writes into a tmpdir so the test never
+// touches /tmp/satellite (which a real daemon might be using).
+
+struct TempProxyDir {
+    std::string path;
+    TempProxyDir() {
+        char tmpl[] = "/tmp/satellite-proxy-XXXXXX";
+        char* d = mkdtemp(tmpl);
+        path = (d != nullptr) ? d : "";
+        setenv("SATELLITE_SYSFS_PROXY_DIR", path.c_str(), 1);
+    }
+    ~TempProxyDir() {
+        if (!path.empty()) {
+            std::string cmd = "rm -rf " + path;
+            int rc = system(cmd.c_str());
+            (void)rc;
+        }
+        unsetenv("SATELLITE_SYSFS_PROXY_DIR");
+    }
+};
+
+static void testSubmitBatteryWritesProxyFile() {
+    TempProxyDir tmp;
+    GamepadAdapter adapter;
+
+    BatteryReport r;
+    r.level = 73;
+    r.status = BATTERY_STATUS_DISCHARGING;
+    bool ok = adapter.submitBattery(/*serial=*/7, r);
+
+    TEST("submitBattery — returns true on successful proxy write");
+    EXPECT(ok);
+
+    std::string path = tmp.path + "/controller7/battery";
+    TEST("submitBattery — creates per-controller battery file");
+    EXPECT(fileExists(path));
+
+    std::string body = slurp(path);
+    TEST("submitBattery — file contains wire-encoded level + status");
+    EXPECT(body.find("level=73") != std::string::npos);
+    EXPECT(body.find("status=1") != std::string::npos);
+}
+
+static void testSubmitBatteryUnknownLevel() {
+    TempProxyDir tmp;
+    GamepadAdapter adapter;
+
+    BatteryReport r;
+    r.level = BATTERY_LEVEL_UNKNOWN; // 0xFF / 255
+    r.status = BATTERY_STATUS_UNKNOWN;
+    bool ok = adapter.submitBattery(/*serial=*/3, r);
+
+    TEST("submitBattery — accepts BATTERY_LEVEL_UNKNOWN sentinel");
+    EXPECT(ok);
+    std::string body = slurp(tmp.path + "/controller3/battery");
+    EXPECT(body.find("level=255") != std::string::npos);
+    EXPECT(body.find("status=0") != std::string::npos);
+}
+
+static void testSetLightbarCallbackWritesProxyFile() {
+    TempProxyDir tmp;
+    GamepadAdapter adapter;
+
+    // Inner sink: records every (serial, r, g, b) the wrapper forwards.
+    int innerCalls = 0;
+    uint32_t gotSerial = 0;
+    uint8_t gotR = 0, gotG = 0, gotB = 0;
+    adapter.setLightbarCallback([&](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
+        ++innerCalls;
+        gotSerial = serial;
+        gotR = r;
+        gotG = g;
+        gotB = b;
+    });
+
+    // setLightbarCallback alone must not synthesize an invocation — no kernel
+    // readback wires this on uinput, so the inner sink stays idle until
+    // something actively drives it.
+    TEST("setLightbarCallback — install does not synchronously invoke inner sink");
+    EXPECT_EQ(innerCalls, 0);
+
+    // Fire the wrapped callback synthetically and assert both side effects:
+    // (1) the inner sink saw the same (serial, r, g, b), and (2) the proxy
+    // file landed with the expected "RRGGBB\n" payload.
+    adapter.invokeLightbarForTest(/*serial=*/5, 0xFF, 0x80, 0xC0);
+
+    TEST("setLightbarCallback — wrapper forwards to inner sink");
+    EXPECT_EQ(innerCalls, 1);
+    EXPECT_EQ(gotSerial, uint32_t{5});
+    EXPECT_EQ(int(gotR), 0xFF);
+    EXPECT_EQ(int(gotG), 0x80);
+    EXPECT_EQ(int(gotB), 0xC0);
+
+    std::string path = tmp.path + "/controller5/lightbar";
+    TEST("setLightbarCallback — wrapper writes RRGGBB to per-controller lightbar file");
+    EXPECT(fileExists(path));
+    std::string body = slurp(path);
+    EXPECT_EQ(body, std::string("FF80C0\n"));
+}
+
+static void testSysfsProxyDirEnvOverride() {
+    TempProxyDir tmp;
+    TEST("sysfsProxyDir — honours SATELLITE_SYSFS_PROXY_DIR override");
+    EXPECT_EQ(GamepadAdapter::sysfsProxyDir(), tmp.path);
+}
+
 // ── Driver ──────────────────────────────────────────────────────────────────
 int main() {
     std::cout << "Running Linux platform tests...\n\n";
@@ -295,12 +459,17 @@ int main() {
     testJsonGetString();
     testConfigPath();
     testConfigRoundTrip();
+    testDiscoveryBroadcastConfig();
     testLoadConfigMissingFile();
     testAutoStartEnable();
     testAutoStartDisable();
     testAutoStartIdempotent();
     testGetExeDir();
     testGetCurrentDate();
+    testSubmitBatteryWritesProxyFile();
+    testSubmitBatteryUnknownLevel();
+    testSetLightbarCallbackWritesProxyFile();
+    testSysfsProxyDirEnvOverride();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

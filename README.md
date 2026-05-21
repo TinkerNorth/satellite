@@ -12,7 +12,7 @@ Runs as a **system tray application** with a built-in **web UI** for configurati
 │  (XInput)     │    XUSB_REPORT packet       │  (ViGEmBus)      │
 │               │                             │                  │
 │ Physical Xbox │ ◄─────────────────────────  │ Virtual Xbox 360 │
-│  controller   │   MSG_RUMBLE (8–11 bytes)   │   controller     │
+│  controller   │     MSG_RUMBLE (7 bytes)    │   controller     │
 └──────────────┘                              └──────────────────┘
 ```
 
@@ -450,12 +450,12 @@ the matching physical controller (or, on dish-android, the phone itself).
 `MSG_RUMBLE = 0x0009`, satellite → dish, encrypted in the same ChaCha20-Poly1305 envelope as every other message:
 
 ```
-inner header                           inner payload (8 or 11 bytes)
-┌──────────┬──────────┐  ┌──────────┬─────────────┬─────────────┬──────────┬───────┬──────────────────────┐
-│ msgType  │ payload  │  │ ctrlIdx  │  strongMag  │   weakMag   │  durMs   │ flags │   [R, G, B] (DS4)    │
-│  0x0009  │  length  │  │   u8     │   u16 BE    │   u16 BE    │  u16 BE  │  u8   │   u8 × 3 if flags&1  │
-└──────────┴──────────┘  └──────────┴─────────────┴─────────────┴──────────┴───────┴──────────────────────┘
-   2 bytes    2 bytes        1            2             2            2         1            3
+inner header                           inner payload (7 bytes)
+┌──────────┬──────────┐  ┌──────────┬─────────────┬─────────────┬──────────┐
+│ msgType  │ payload  │  │ ctrlIdx  │  strongMag  │   weakMag   │  durMs   │
+│  0x0009  │  length  │  │   u8     │   u16 BE    │   u16 BE    │  u16 BE  │
+└──────────┴──────────┘  └──────────┴─────────────┴─────────────┴──────────┘
+   2 bytes    2 bytes        1            2             2            2
 ```
 
 | Field | Meaning |
@@ -464,8 +464,9 @@ inner header                           inner payload (8 or 11 bytes)
 | `strongMag` | Low-frequency / large-motor magnitude. 0..65535, XInput scale. |
 | `weakMag` | High-frequency / small-motor magnitude. 0..65535. |
 | `durMs` | Wire-side refresh deadline. Stamped by the satellite (default 500 ms); the dish clamps before driving its actuator. `0` is a stop sentinel. |
-| `flags` | Bit 0 set ⇒ trailing R/G/B bytes follow. Higher bits reserved. |
-| `R/G/B` | DualShock 4 lightbar colour. Present only for DS4 virtual devices; Xbox 360 has no lightbar. |
+
+Rumble carries motor vibration only — the lightbar LED is a separate message
+([Lightbar return path](#lightbar-return-path)).
 
 The producer side lives in [`src/adapters/client_adapter.cpp`](src/adapters/client_adapter.cpp); the dish-side parsers (`SatelliteClient::parseRumbleMessage` in dish-linux/windows, `SatelliteClient.parseRumblePayload` in dish-mac, the JNI dispatch in `RumbleBridge.dispatchRumble` on dish-android) all consume this layout verbatim.
 
@@ -473,19 +474,72 @@ The producer side lives in [`src/adapters/client_adapter.cpp`](src/adapters/clie
 
 Games can spam the same magnitudes 60+ Hz across many frames. The
 `SessionService::handleRumbleFromBackend` path keeps the most recent
-`(strong, weak, lightbar)` per controller and suppresses re-emits when
-nothing actuator-relevant has changed. Duration-only changes do *not*
-defeat the suppression — the wire-side refresh deadline is a knob the
-satellite owns, not a player-perceptible value.
+`(strong, weak)` per controller and suppresses re-emits when nothing changed.
+Duration-only changes never defeat the suppression — the wire-side refresh
+deadline is a knob the satellite owns, not a player-perceptible value.
 
 ### Per-dish actuator behaviour
 
 | Dish | Actuator | Notes |
 |---|---|---|
-| dish-windows | `SDL_GameControllerRumble` + `SDL_GameControllerSetLED` | Magnitudes pass through verbatim (XInput scale matches). LED set is a no-op on pads without a lightbar. |
-| dish-linux | Same SDL2 entry points | Underlying call is evdev `EVIOCSFF`. Works for any pad SDL recognises. |
-| dish-mac | `GCController.haptics` + `CHHapticEngine` per locator | Magnitudes mapped to `CHHapticIntensity` 0..1. Lightbar via `controller.light?.color`. Engines kept started; per-call `CHHapticPattern` for sustained drive. Falls back to no-op on legacy MFi pads with no haptics surface. |
+| dish-windows | `SDL_GameControllerRumble` | Magnitudes pass through verbatim (XInput scale matches). Vibration only — the lightbar LED is a decoupled path as of Task 1.4. |
+| dish-linux | Same SDL2 entry point | Underlying call is evdev `EVIOCSFF`. Works for any pad SDL recognises. |
+| dish-mac | `GCController.haptics` + `CHHapticEngine` per locator | Magnitudes mapped to `CHHapticIntensity` 0..1. Engines kept started; per-call `CHHapticPattern` for sustained drive. Falls back to no-op on legacy MFi pads with no haptics surface. Vibration only — lightbar is decoupled. |
 | dish-android | `VibratorManager` (API 31+) / `Vibrator` (legacy) — phone body | All rumble routed to the device's own actuator(s). On dual-actuator phones the strong motor goes to vibrator id 0 and weak to id 1; on single-actuator phones the peak of the two is used. **No fallback to physical-controller actuators by design** — see `RumbleBridge.kt`. |
+
+## Lightbar (return path)
+
+Task 1.4. A game can drive a DualSense / DualShock 4's RGB lightbar
+independently of vibration — plenty of games set a colour and never rumble.
+Satellite forwards those colour changes on a dedicated stream, decoupled from
+`MSG_RUMBLE`.
+
+### Capability gate
+
+A dish advertises `CAP_LIGHTBAR` (`0x0008`) in its `MSG_CONTROLLER_ADD`
+capability word when the bound physical controller has an addressable RGB LED
+(a DualSense / DS4 — not an Xbox pad, and never on dish-android, which has no
+controller-LED API). The satellite emits `MSG_LIGHTBAR` **only** to a
+controller that advertised the bit; a dish that did not simply receives no
+lightbar traffic.
+
+### Wire format
+
+`MSG_LIGHTBAR = 0x000D`, satellite → dish, in the same ChaCha20-Poly1305
+envelope as every other message:
+
+```
+inner header                           inner payload (4 bytes)
+┌──────────┬──────────┐  ┌──────────┬──────────┬──────────┬──────────┐
+│ msgType  │ payload  │  │ ctrlIdx  │    R     │    G     │    B     │
+│  0x000D  │  length  │  │   u8     │   u8     │   u8     │   u8     │
+└──────────┴──────────┘  └──────────┴──────────┴──────────┴──────────┘
+   2 bytes    2 bytes        1           1          1          1
+```
+
+### How it is produced
+
+On Windows the ViGEm DS4 driver delivers rumble and lightbar in the *same*
+`IOCTL_DS4_REQUEST_NOTIFICATION` completion. `vigem_adapter`'s notification
+worker fans that one event out to two sinks — the rumble callback (motors) and
+the lightbar callback (colour). `SessionService::handleLightbarFromBackend`
+resolves the backend serial → `(connection, ctrlIdx)`, coalesces identical
+back-to-back colours, and — for a `CAP_LIGHTBAR` dish — calls
+`IClientPort::sendLightbar`. The colour is cached on the `Controller`
+regardless of the capability, so the web dashboard's per-controller lightbar
+swatch stays live for every controller type.
+
+The Linux uinput and (inert) macOS backends have no host-driven lightbar
+channel, so they never emit `MSG_LIGHTBAR` — lightbar emission is a
+Windows / ViGEm-DS4 feature today.
+
+### Per-dish actuator behaviour
+
+| Dish | Actuator | Notes |
+|---|---|---|
+| dish-windows / dish-linux | `SDL_GameControllerSetLED` | Marshalled onto the SDL thread; a no-op on a pad SDL reports no LED for. |
+| dish-mac | `GCDeviceLight.color` (`GCColor`) | Applied on the main actor. |
+| dish-android | — | No controller-LED API: an arriving `MSG_LIGHTBAR` is logged and dropped, and `CAP_LIGHTBAR` is never advertised. |
 
 ## Code Quality
 
@@ -560,7 +614,8 @@ This compiles `tests/test_session_service.cpp` alongside `src/core/session_servi
 - **Decrypt helpers** — key retrieval, counter updates
 - **Query/stats** — snapshot, device connected check, slot counts
 - **Broadcast** — status broadcasts on controller changes
-- **Rumble (return path)** — backend callback wiring, serial → connection lookup, coalescing of identical magnitudes, lightbar pass-through, multi-connection routing, serial-recycle cache reset, custom wire durations, per-controller cache isolation
+- **Rumble (return path)** — backend callback wiring, serial → connection lookup, coalescing of identical magnitudes, multi-connection routing, serial-recycle cache reset, custom wire durations, per-controller cache isolation
+- **Lightbar (return path)** — `CAP_LIGHTBAR` capability gating, `MSG_LIGHTBAR` dedicated-stream emission, identical-colour coalescing, colour caching for the web UI on every controller type, coalesce-state reset on controller re-add
 
 ## Project structure
 

@@ -106,19 +106,19 @@ function updatesRender(slotId) {
 
   switch (s.state) {
     case UPDATE_STATE_CHECKING:
-      title.textContent = 'Checking for updates…';
+      title.textContent = t('updates.state.checking.title');
       detail.textContent = '';
       break;
     case UPDATE_STATE_UP_TO_DATE:
-      title.textContent = 'Up to date';
-      detail.textContent = 'You’re running the latest version (v' + s.currentVersion + ').';
+      title.textContent = t('updates.state.uptodate.title');
+      detail.textContent = t('updates.state.uptodate.detail', [s.currentVersion]);
       break;
     case UPDATE_STATE_AVAILABLE: {
-      title.textContent = 'Update available: v' + s.info.version;
+      title.textContent = t('updates.state.available.title', [s.info.version]);
       const size = s.info.assetSize ? ' · ' + formatBytes(s.info.assetSize) : '';
       detail.textContent = s.info.assetName + size;
       if (s.info.installMethod === 'manual') {
-        acts.appendChild(makeBtn('btn-undo', 'View Release', () => openExternal(s.info.htmlUrl)));
+        acts.appendChild(makeBtn('btn-undo', t('updates.btn.view-release'), () => openExternal(s.info.htmlUrl)));
         if (s.info.manualInstruction) {
           const code = document.createElement('pre');
           code.className = 'update-manual-cmd';
@@ -127,37 +127,38 @@ function updatesRender(slotId) {
           detail.appendChild(code);
         }
       } else {
-        acts.appendChild(makeBtn('btn-start', 'Download', () => updatesDownload()));
-        acts.appendChild(makeBtn('btn-undo', 'View Notes', () => openExternal(s.info.htmlUrl)));
-        acts.appendChild(makeBtn('btn-undo', 'Remind Me Later', () => updatesDismiss()));
-        acts.appendChild(makeBtn('btn-undo', 'Skip This Version', () => updatesSkip(s.info.version)));
+        acts.appendChild(makeBtn('btn-start', t('updates.btn.download'),       () => updatesDownload()));
+        acts.appendChild(makeBtn('btn-undo',  t('updates.btn.view-notes'),     () => openExternal(s.info.htmlUrl)));
+        acts.appendChild(makeBtn('btn-undo',  t('updates.btn.remind-later'),   () => updatesDismiss()));
+        acts.appendChild(makeBtn('btn-undo',  t('updates.btn.skip-version'),   () => updatesSkip(s.info.version)));
       }
       break;
     }
     case UPDATE_STATE_DOWNLOADING: {
-      title.textContent = 'Downloading v' + s.info.version + '…';
-      detail.textContent = formatBytes(s.bytesDownloaded) + ' of ' +
-                           (s.totalBytes ? formatBytes(s.totalBytes) : '?');
+      title.textContent = t('updates.state.downloading.title', [s.info.version]);
+      detail.textContent = t('updates.state.downloading.detail',
+                             [formatBytes(s.bytesDownloaded),
+                              s.totalBytes ? formatBytes(s.totalBytes) : t('updates.state.downloading.detail-unknown')]);
       prog.style.display = 'block';
       const p = s.totalBytes ? Math.min(100, Math.round(100 * s.bytesDownloaded / s.totalBytes)) : 0;
       fill.style.width = p + '%';
       pct.textContent = p + '%';
-      acts.appendChild(makeBtn('btn-undo', 'Cancel', () => updatesCancel()));
+      acts.appendChild(makeBtn('btn-undo', t('updates.btn.cancel'), () => updatesCancel()));
       break;
     }
     case UPDATE_STATE_VERIFYING:
-      title.textContent = 'Verifying download…';
-      detail.textContent = 'Checking SHA-256 of ' + s.info.assetName;
+      title.textContent = t('updates.state.verifying.title');
+      detail.textContent = t('updates.state.verifying.detail', [s.info.assetName]);
       break;
     case UPDATE_STATE_DOWNLOADED:
-      title.textContent = 'Update v' + s.info.version + ' ready to install';
-      detail.textContent = 'Restart Satellite to finish installing.';
-      acts.appendChild(makeBtn('btn-start', 'Restart & Install', () => updatesPromptRestart()));
-      acts.appendChild(makeBtn('btn-undo', 'Install Later', () => updatesDismiss()));
+      title.textContent = t('updates.state.downloaded.title', [s.info.version]);
+      detail.textContent = t('updates.state.downloaded.detail');
+      acts.appendChild(makeBtn('btn-start', t('updates.btn.restart-install'), () => updatesPromptRestart()));
+      acts.appendChild(makeBtn('btn-undo',  t('updates.btn.install-later'),   () => updatesDismiss()));
       break;
     case UPDATE_STATE_INSTALLING:
-      title.textContent = 'Installing v' + s.info.version + '…';
-      detail.textContent = 'Satellite is restarting. This page will reconnect when the new version is ready.';
+      title.textContent = t('updates.state.installing.title', [s.info.version]);
+      detail.textContent = t('updates.state.installing.detail');
       prog.style.display = 'block';
       fill.style.width = '100%';
       pct.textContent = '';
@@ -165,8 +166,8 @@ function updatesRender(slotId) {
     case UPDATE_STATE_ERROR:
       banner.classList.add('update-banner-error');
       title.textContent = updateErrorTitle(s.failedPhase);
-      detail.textContent = s.message || 'Unknown error';
-      acts.appendChild(makeBtn('btn-undo', 'Try Again', () => updatesCheck()));
+      detail.textContent = s.message || t('updates.error.unknown');
+      acts.appendChild(makeBtn('btn-undo', t('updates.btn.try-again'), () => updatesCheck()));
       break;
     default:
       banner.style.display = 'none';
@@ -212,7 +213,7 @@ function updatesRenderSettingsFields() {
   const s = updatesState;
   setText('settings-version', 'v' + s.currentVersion);
   setText('settings-platform', formatPlatformId(s.platformId));
-  setText('settings-last-check', s.lastCheckEpoch ? formatRelativeEpoch(s.lastCheckEpoch) : 'never');
+  setText('settings-last-check', s.lastCheckEpoch ? formatRelativeEpoch(s.lastCheckEpoch) : t('settings.updates.never'));
   updatesSeedFormOnce();
 }
 
@@ -284,7 +285,12 @@ function updatesResetForm() {
 // ── Restart-confirmation modal ────────────────────────────────────────────
 function updatesPromptRestart() {
   if (!updatesState || !updatesState.info) return;
-  document.getElementById('restart-modal-version').textContent = 'v' + updatesState.info.version;
+  // Replace the modal body in-place so the version is interpolated by the
+  // i18n catalog (rather than spliced into hard-coded English markup).
+  const body = document.getElementById('restart-modal-body');
+  if (body) body.textContent = t('modal.restart.body', ['v' + updatesState.info.version]);
+  const verEl = document.getElementById('restart-modal-version');
+  if (verEl) verEl.textContent = 'v' + updatesState.info.version;
   const warning = document.getElementById('restart-modal-warning');
   // Surface a connection-loss warning if anyone's currently paired & active.
   warning.style.display = (window.__activeConnectionCount || 0) > 0 ? 'block' : 'none';
@@ -348,12 +354,12 @@ function formatBytes(n) {
   return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 function formatRelativeEpoch(epoch) {
-  if (!epoch) return 'never';
+  if (!epoch) return t('settings.updates.never');
   const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
-  if (ageSec < 60) return 'just now';
-  if (ageSec < 3600) return Math.floor(ageSec / 60) + ' min ago';
-  if (ageSec < 86400) return Math.floor(ageSec / 3600) + ' h ago';
-  return Math.floor(ageSec / 86400) + ' d ago';
+  if (ageSec < 60)    return t('updates.time.just-now');
+  if (ageSec < 3600)  return t('updates.time.minutes-ago', [Math.floor(ageSec / 60)]);
+  if (ageSec < 86400) return t('updates.time.hours-ago',   [Math.floor(ageSec / 3600)]);
+  return                     t('updates.time.days-ago',    [Math.floor(ageSec / 86400)]);
 }
 // Title for the Error banner. The server sets `failedPhase` to the phase
 // the updater was running when it tripped — distinguishing "couldn't even
@@ -361,22 +367,22 @@ function formatRelativeEpoch(epoch) {
 // banner doesn't imply an install was attempted when only the check ran.
 function updateErrorTitle(failedPhase) {
   switch (failedPhase) {
-    case UPDATE_STATE_CHECKING:    return 'Couldn’t check for updates';
-    case UPDATE_STATE_DOWNLOADING: return 'Update download failed';
-    case UPDATE_STATE_VERIFYING:   return 'Update verification failed';
-    case UPDATE_STATE_INSTALLING:  return 'Update install failed';
-    default:                       return 'Update failed';
+    case UPDATE_STATE_CHECKING:    return t('updates.error.checking');
+    case UPDATE_STATE_DOWNLOADING: return t('updates.error.downloading');
+    case UPDATE_STATE_VERIFYING:   return t('updates.error.verifying');
+    case UPDATE_STATE_INSTALLING:  return t('updates.error.installing');
+    default:                       return t('updates.error.default');
   }
 }
 function formatPlatformId(id) {
   switch (id) {
-    case 'windows':         return 'Windows installer';
-    case 'macos':           return 'macOS app bundle';
-    case 'linux-appimage':  return 'Linux AppImage';
-    case 'linux-deb':       return 'Linux .deb (apt)';
-    case 'linux-rpm':       return 'Linux .rpm (dnf)';
-    case 'linux-aur':       return 'Arch (AUR)';
-    case 'linux-portable':  return 'Linux portable';
-    default:                return id || 'unknown';
+    case 'windows':         return t('updates.platform.windows');
+    case 'macos':           return t('updates.platform.macos');
+    case 'linux-appimage':  return t('updates.platform.linux-appimage');
+    case 'linux-deb':       return t('updates.platform.linux-deb');
+    case 'linux-rpm':       return t('updates.platform.linux-rpm');
+    case 'linux-aur':       return t('updates.platform.linux-aur');
+    case 'linux-portable':  return t('updates.platform.linux-portable');
+    default:                return id || t('updates.platform.unknown');
   }
 }

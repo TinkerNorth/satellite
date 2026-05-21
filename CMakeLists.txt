@@ -36,9 +36,12 @@ set(SATELLITE_CORE_SOURCES
 # Currently-shared infrastructure (will be ported to POSIX in Stage 3).
 set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
+    src/net/inner_dispatch.cpp
     src/net/webserver.cpp
-    src/net/pairing.cpp
+    src/net/tls.cpp
     src/net/discovery.cpp
+    src/net/mdns_protocol.cpp
+    src/net/mdns_responder.cpp
 )
 
 # Portable adapters (thin shims over platform-specific free functions).
@@ -109,6 +112,7 @@ if(WIN32)
     target_compile_definitions(satellite PRIVATE
         _WIN32_WINNT=0x0A00
         CPPHTTPLIB_NO_EXCEPTIONS
+        CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
     # libsodium: pre-built static lib vendored under lib/libsodium/libsodium-win64/
@@ -132,6 +136,11 @@ if(WIN32)
         # OTA updater: WinHTTP (HTTPS to api.github.com).
         winhttp
     )
+
+    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    # Provide via vcpkg, or set -DOPENSSL_ROOT_DIR=<prefix>.
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     if(MINGW)
         target_compile_options(satellite PRIVATE -O2 -Wall -Wextra)
@@ -166,6 +175,7 @@ elseif(APPLE)
 
     target_compile_definitions(satellite PRIVATE
         CPPHTTPLIB_NO_EXCEPTIONS
+        CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
     # libsodium: prefer pkg-config (Homebrew / MacPorts), fall back to a plain
@@ -200,6 +210,18 @@ elseif(APPLE)
         target_include_directories(satellite PRIVATE ${SODIUM_INCLUDE_DIR})
         target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARY})
     endif()
+
+    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    # Apple ships no OpenSSL development headers; use the Homebrew keg.
+    if(NOT OPENSSL_ROOT_DIR)
+        execute_process(COMMAND brew --prefix openssl@3
+            OUTPUT_VARIABLE BREW_OPENSSL OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(BREW_OPENSSL)
+            set(OPENSSL_ROOT_DIR "${BREW_OPENSSL}")
+        endif()
+    endif()
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     # Cocoa frameworks for menu-bar tray + app lifecycle.
     target_link_libraries(satellite PRIVATE
@@ -246,6 +268,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
     target_compile_definitions(satellite PRIVATE
         CPPHTTPLIB_NO_EXCEPTIONS
+        CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
     # libsodium: resolved via pkg-config (every distro ships libsodium-dev /
@@ -279,6 +302,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_include_directories(satellite PRIVATE ${SODIUM_INCLUDE_DIR})
         target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARY})
     endif()
+
+    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     find_package(Threads REQUIRED)
     target_link_libraries(satellite PRIVATE Threads::Threads)
@@ -442,6 +469,46 @@ set_target_properties(test_session_service PROPERTIES
 
 add_test(NAME session_service COMMAND test_session_service)
 
+# ── Receiver inner-message dispatch tests (portable — no networking) ─────────
+# Exercises net/inner_dispatch.cpp: the per-message length guards that reject
+# truncated / oversized wire payloads before a decoder reads out of bounds.
+# inner_dispatch.cpp is socket-free, so this builds cleanly on every platform.
+add_executable(test_receiver
+    tests/test_receiver.cpp
+    src/net/inner_dispatch.cpp
+    ${SATELLITE_CORE_SOURCES}
+)
+target_include_directories(test_receiver PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+if(WIN32 AND MINGW)
+    target_compile_options(test_receiver PRIVATE -O2 -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(test_receiver PRIVATE /O2 /W4)
+endif()
+set_target_properties(test_receiver PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME receiver COMMAND test_receiver)
+
+# ── mDNS protocol tests (portable — no networking) ───────────────────────────
+add_executable(test_mdns_protocol
+    tests/test_mdns_protocol.cpp
+    src/net/mdns_protocol.cpp
+)
+target_include_directories(test_mdns_protocol PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+if(WIN32 AND MINGW)
+    target_compile_options(test_mdns_protocol PRIVATE -O2 -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(test_mdns_protocol PRIVATE /O2 /W4)
+endif()
+set_target_properties(test_mdns_protocol PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME mdns_protocol COMMAND test_mdns_protocol)
+
 # ── Linux platform tests ────────────────────────────────────────────────────
 # Exercises the Linux-only adapters that don't need root/uinput/D-Bus:
 # JSON helpers, config persistence, XDG autostart .desktop file handling,
@@ -451,6 +518,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         tests/test_linux_platform.cpp
         src/platform/linux/config.cpp
         src/platform/linux/globals.cpp
+        src/platform/linux/gamepad_adapter.cpp
         ${SATELLITE_CORE_SOURCES}
     )
     target_include_directories(test_linux_platform PRIVATE
@@ -458,7 +526,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
-    target_compile_definitions(test_linux_platform PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+    # SATELLITE_BUILD_TESTS gates test-only seams (e.g. the synthetic
+    # invokeLightbarForTest entrypoint) — the symbol is elided from
+    # production builds, which don't define this macro.
+    target_compile_definitions(test_linux_platform PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+    )
     target_compile_options(test_linux_platform PRIVATE -O2 -Wall -Wextra)
     find_package(Threads REQUIRED)
     target_link_libraries(test_linux_platform PRIVATE Threads::Threads)

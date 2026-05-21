@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Dish — master mark">
+  <title>Dish — master mark</title>
+  <desc>Gear-framed brand mark. Use as the canonical Dish identity at hero sizes (≥ 48px).</desc>
+  <defs>
+      <mask id="dish-master" maskUnits="userSpaceOnUse">
+        <rect x="0" y="0" width="200" height="200" fill="white"></rect>
+        
+  <g fill="black">
+    <g transform="rotate(-28 100 84)"><ellipse cx="100" cy="84" rx="55" ry="21"></ellipse></g>
+    <path d="M 88 118 L 112 118 L 68 196 L 46 196 Z"></path>
+    <path d="M 88 118 L 112 118 L 154 196 L 132 196 Z"></path>
+    <rect x="42" y="182" width="116" height="14" rx="3"></rect>
+    <g stroke="black" stroke-width="18" fill="none" stroke-linecap="round">
+      <path d="M 140 50 a 12 12 0 0 1 8 12"></path>
+      <path d="M 152 40 a 22 22 0 0 1 14 22"></path>
+      <path d="M 166 28 a 36 36 0 0 1 22 34"></path>
+    </g>
+  </g>
+
+      </mask>
+    </defs>
+    <g mask="url(#dish-master)">
+      <path d="M 85.50 25.40 L 82.06 7.73 L 117.94 7.73 L 114.50 25.40 A 76 76 0 0 1 142.50 36.99 L 142.50 36.99 L 152.56 22.07 L 177.93 47.44 L 163.01 57.50 A 76 76 0 0 1 174.60 85.50 L 174.60 85.50 L 192.27 82.06 L 192.27 117.94 L 174.60 114.50 A 76 76 0 0 1 163.01 142.50 L 163.01 142.50 L 177.93 152.56 L 152.56 177.93 L 142.50 163.01 A 76 76 0 0 1 114.50 174.60 L 114.50 174.60 L 117.94 192.27 L 82.06 192.27 L 85.50 174.60 A 76 76 0 0 1 57.50 163.01 L 57.50 163.01 L 47.44 177.93 L 22.07 152.56 L 36.99 142.50 A 76 76 0 0 1 25.40 114.50 L 25.40 114.50 L 7.73 117.94 L 7.73 82.06 L 25.40 85.50 A 76 76 0 0 1 36.99 57.50 L 36.99 57.50 L 22.07 47.44 L 47.44 22.07 L 57.50 36.99 A 76 76 0 0 1 85.50 25.40 Z" fill="none" stroke="#8FCFE3" stroke-width="10" stroke-linejoin="round"></path>
+      <circle cx="100" cy="100" r="58" fill="none" stroke="#8FCFE3" stroke-width="10"></circle>
+    </g>
+    
+  <g stroke="#8FCFE3" stroke-width="5" fill="none" stroke-linecap="round">
+    <path d="M 140 50 a 12 12 0 0 1 8 12"></path>
+    <path d="M 152 40 a 22 22 0 0 1 14 22"></path>
+    <path d="M 166 28 a 36 36 0 0 1 22 34"></path>
+  </g>
+  <rect x="98" y="108" width="4" height="20" fill="#8FCFE3"></rect>
+  <path d="M 96 124 L 104 124 L 64 188 L 52 188 Z" fill="#8FCFE3"></path>
+  <path d="M 96 124 L 104 124 L 148 188 L 136 188 Z" fill="#8FCFE3"></path>
+  <rect x="46" y="186" width="108" height="6" rx="1.5" fill="#8FCFE3"></rect>
+  <g transform="rotate(-28 100 84)">
+    <ellipse cx="100" cy="84" rx="48" ry="14" fill="#8FCFE3"></ellipse>
+    <ellipse cx="100" cy="84" rx="38" ry="8" fill="#ffffff" opacity="0.55"></ellipse>
+    <circle cx="100" cy="84" r="3.5" fill="#8FCFE3"></circle>
+    <rect x="98.5" y="66" width="3" height="18" fill="#8FCFE3"></rect>
+    <path d="M 92 58 L 108 58 L 104 68 L 96 68 Z" fill="#8FCFE3"></path>
+  </g>
+</svg>

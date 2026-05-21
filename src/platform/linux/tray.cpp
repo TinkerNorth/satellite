@@ -4,9 +4,8 @@
 /*
  * tray.cpp — libayatana-appindicator status icon and menu (Linux).
  *
- * Menu mirrors the Win32 / macOS trays: Open Web UI / Start-Stop Listener /
- * Quit. The toggle item's label tracks g_listening via a 500 ms GLib timer
- * so we never touch GTK from the worker threads.
+ * Menu mirrors the Win32 / macOS trays: Open Web UI / Check for Updates /
+ * Quit.
  *
  * On vanilla GNOME (no AppIndicator extension) the indicator object is
  * created and "active" on D-Bus, but no shell will render it — there is no
@@ -30,10 +29,8 @@
 #include <string>
 
 static AppIndicator* g_indicator = nullptr;
-static GtkWidget* g_toggleItem = nullptr;
 static GtkWidget* g_updateItem = nullptr;
 static guint g_pollSourceId = 0;
-static bool g_lastListening = false;
 static UpdateState g_lastUpdateState = UpdateState::Idle;
 static std::string g_lastUpdateVersion;
 
@@ -44,8 +41,6 @@ static void onOpenUI(GtkMenuItem*, gpointer) {
                   g_config.webPort);
     (void)std::system(cmd);
 }
-
-static void onToggleListener(GtkMenuItem*, gpointer) { g_wantListen = !g_listening.load(); }
 
 static void onUpdateClick(GtkMenuItem*, gpointer) {
     if (!g_updateService) return;
@@ -69,20 +64,13 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
 
 static void onQuit(GtkMenuItem*, gpointer) {
     g_appRunning = false;
-    g_wantListen = false;
     g_httpServer.stop();
     if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
     gtk_main_quit();
 }
 
-// Keep the toggle + updater items' labels in sync with the actual state.
-static gboolean pollListenerState(gpointer) {
-    bool listening = g_listening.load();
-    if (listening != g_lastListening && g_toggleItem != nullptr) {
-        gtk_menu_item_set_label(GTK_MENU_ITEM(g_toggleItem),
-                                listening ? "Stop Listener" : "Start Listener");
-        g_lastListening = listening;
-    }
+// Keep the updater item's label in sync with the actual state.
+static gboolean pollMenuState(gpointer) {
     if (g_updateService && g_updateItem) {
         UpdateStatusSnapshot s = g_updateService->snapshot();
         if (s.state != g_lastUpdateState || s.info.version != g_lastUpdateVersion) {
@@ -150,15 +138,7 @@ bool addTrayIcon() {
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
-    g_lastListening = g_listening.load();
-    g_toggleItem =
-        gtk_menu_item_new_with_label(g_lastListening ? "Stop Listener" : "Start Listener");
-    g_signal_connect(g_toggleItem, "activate", G_CALLBACK(onToggleListener), nullptr);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), g_toggleItem);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-
-    // Updater item — label kept current by pollListenerState().
+    // Updater item — label kept current by pollMenuState().
     g_updateItem = gtk_menu_item_new_with_label("Check for Updates\xE2\x80\xA6");
     g_signal_connect(g_updateItem, "activate", G_CALLBACK(onUpdateClick), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), g_updateItem);
@@ -172,7 +152,7 @@ bool addTrayIcon() {
     gtk_widget_show_all(menu);
     app_indicator_set_menu(g_indicator, GTK_MENU(menu));
 
-    g_pollSourceId = g_timeout_add(500, pollListenerState, nullptr);
+    g_pollSourceId = g_timeout_add(500, pollMenuState, nullptr);
     return true;
 }
 
@@ -186,7 +166,6 @@ void removeTrayIcon() {
         g_object_unref(G_OBJECT(g_indicator));
         g_indicator = nullptr;
     }
-    g_toggleItem = nullptr;
     g_updateItem = nullptr;
 }
 

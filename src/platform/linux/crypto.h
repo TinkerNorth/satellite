@@ -26,20 +26,19 @@ std::string dpapiDecrypt(const std::string& encoded);
 std::string randomHex(int bytes);
 std::string randomDigits(int n);
 
-// ── Session management ──────────────────────────────────────────────────────
-std::string createSession();
-bool validateSession(const std::string& token);
-void removeSession(const std::string& token);
-std::string getSessionFromCookie(const httplib::Request& req);
-
-// ── Credential helpers ──────────────────────────────────────────────────────
-bool isConfigured(const Config& cfg);
-bool setupCredentials(Config& cfg, const std::string& username, const std::string& password);
-bool verifyCredentials(const Config& cfg, const std::string& username, const std::string& password);
-
 // ── PIN ─────────────────────────────────────────────────────────────────────
 std::string generatePin();
 bool verifyPin(const std::string& pin);
+
+// Snapshot of the in-process PIN state (for /api/pin/status). Mirrors the
+// PinState enum in core/types.h. `secondsRemaining` is 0 unless the state is
+// PinState::PinActive; the dashboard uses it to render an "Expires in m:ss"
+// countdown.
+struct PinSnapshot {
+    PinState state = PinState::PinIdle;
+    int secondsRemaining = 0;
+};
+PinSnapshot pinSnapshot();
 
 // ── Hex encode/decode ───────────────────────────────────────────────────────
 std::string hexEncode(const uint8_t* data, size_t len);

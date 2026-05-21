@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Satellite — orbiting (animated)">
+  <title>Satellite — orbiting (animated)</title>
+  <desc>The whole satellite drifts gently — small vertical bob plus tiny rotation — on a 4s loop. Suggests in-orbit, station-keeping.</desc>
+  
+    <g>
+      
+      
+      <g opacity="1">
+      
+      <rect x="2" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
+      <rect x="42" y="28" width="20" height="10" rx="1" fill="#8FCFE3"></rect>
+      <g fill="#ffffff" opacity="0.55">
+        <rect x="6" y="29" width="1" height="8"></rect>
+        <rect x="10" y="29" width="1" height="8"></rect>
+        <rect x="14" y="29" width="1" height="8"></rect>
+        <rect x="18" y="29" width="1" height="8"></rect>
+        <rect x="46" y="29" width="1" height="8"></rect>
+        <rect x="50" y="29" width="1" height="8"></rect>
+        <rect x="54" y="29" width="1" height="8"></rect>
+        <rect x="58" y="29" width="1" height="8"></rect>
+      </g>
+      
+      <rect x="22" y="31" width="4" height="4" fill="#8FCFE3"></rect>
+      <rect x="38" y="31" width="4" height="4" fill="#8FCFE3"></rect>
+      
+      <rect x="26" y="22" width="12" height="20" rx="2" fill="#8FCFE3"></rect>
+      <rect x="28" y="25" width="8" height="4" rx="1" fill="#ffffff" opacity="0.55"></rect>
+      
+      <rect x="31" y="10" width="2" height="12" fill="#8FCFE3"></rect>
+      <path d="M27 8 Q32 2 37 8 L34 10 Q32 5 30 10 Z" fill="#8FCFE3"></path>
+    </g>
+    </g>
+</svg>

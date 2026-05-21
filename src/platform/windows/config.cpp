@@ -7,17 +7,28 @@
 #include "config.h"
 
 // ── JSON string escaping ────────────────────────────────────────────────────
+// Escapes the JSON structural characters plus every C0 control byte (< 0x20).
+// A raw control byte — a \r or \t buried in a device name, say — is invalid
+// inside a JSON string and would corrupt the config file, so anything below
+// 0x20 that isn't \n is emitted as a \uXXXX escape.
 std::string jsonEscape(const std::string& s) {
+    static const char* kHex = "0123456789abcdef";
     std::string out;
-    for (char c : s) {
-        if (c == '"')
+    for (char ch : s) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        if (c == '"') {
             out += "\\\"";
-        else if (c == '\\')
+        } else if (c == '\\') {
             out += "\\\\";
-        else if (c == '\n')
+        } else if (c == '\n') {
             out += "\\n";
-        else
-            out += c;
+        } else if (c < 0x20) {
+            out += "\\u00";
+            out += kHex[(c >> 4) & 0xF];
+            out += kHex[c & 0xF];
+        } else {
+            out += ch;
+        }
     }
     return out;
 }
@@ -92,8 +103,10 @@ Config loadConfig() {
     if (v > 0) cfg.pairPort = v;
     v = getInt("discPort");
     if (v > 0) cfg.discPort = v;
+    // Task 1.6 — absent on pre-1.6 configs, where the default (true) keeps the
+    // legacy broadcast beacon on so discovery doesn't silently regress.
+    getBoolOpt("discoveryBroadcastEnabled", &cfg.discoveryBroadcastEnabled);
     cfg.autoStart = getBool("autoStart");
-    cfg.credentials = jsonGetString(content, "credentials");
 
     // OTA update preferences. Absent keys keep struct defaults — important
     // on first run after upgrade, so we don't clobber autoCheck=true.
@@ -129,6 +142,9 @@ Config loadConfig() {
                 dev.lastIP = jsonGetString(obj, "lastIP");
                 dev.pairedAt = jsonGetString(obj, "pairedAt");
                 dev.sharedKeyHex = jsonGetString(obj, "sharedKey");
+                // touchpadMode (Task 1.3) — absent on pre-1.3 configs, where
+                // touchpadModeFromName("") yields TOUCHPAD_MODE_DS4.
+                dev.touchpadMode = touchpadModeFromName(jsonGetString(obj, "touchpadMode"));
                 if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
                 pos = objEnd + 1;
             }
@@ -145,6 +161,8 @@ void saveConfig(const Config& cfg) {
       << "  \"webPort\": " << cfg.webPort << ",\n"
       << "  \"pairPort\": " << cfg.pairPort << ",\n"
       << "  \"discPort\": " << cfg.discPort << ",\n"
+      << "  \"discoveryBroadcastEnabled\": " << (cfg.discoveryBroadcastEnabled ? "true" : "false")
+      << ",\n"
       << "  \"autoStart\": " << (cfg.autoStart ? "true" : "false") << ",\n"
       << "  \"updateChannel\": \"" << jsonEscape(cfg.updateChannel) << "\",\n"
       << "  \"autoCheck\": " << (cfg.autoCheck ? "true" : "false") << ",\n"
@@ -154,13 +172,13 @@ void saveConfig(const Config& cfg) {
       << "  \"lastCheckEpoch\": " << cfg.lastCheckEpoch << ",\n"
       << "  \"lastSeenVersion\": \"" << jsonEscape(cfg.lastSeenVersion) << "\",\n"
       << "  \"skipVersion\": \"" << jsonEscape(cfg.skipVersion) << "\",\n"
-      << "  \"credentials\": \"" << jsonEscape(cfg.credentials) << "\",\n"
       << "  \"pairedDevices\": [\n";
     for (size_t i = 0; i < cfg.pairedDevices.size(); i++) {
         const auto& d = cfg.pairedDevices[i];
         f << "    {\"id\":\"" << jsonEscape(d.id) << "\",\"name\":\"" << jsonEscape(d.name)
           << "\",\"lastIP\":\"" << jsonEscape(d.lastIP) << "\",\"pairedAt\":\""
-          << jsonEscape(d.pairedAt) << "\",\"sharedKey\":\"" << jsonEscape(d.sharedKeyHex) << "\"}";
+          << jsonEscape(d.pairedAt) << "\",\"sharedKey\":\"" << jsonEscape(d.sharedKeyHex)
+          << "\",\"touchpadMode\":\"" << touchpadModeName(d.touchpadMode) << "\"}";
         if (i + 1 < cfg.pairedDevices.size()) f << ",";
         f << "\n";
     }

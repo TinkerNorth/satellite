@@ -20,8 +20,8 @@
 
 #include "net/receiver.h"
 #include "net/webserver.h"
-#include "net/pairing.h"
 #include "net/discovery.h"
+#include "net/mdns_responder.h"
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
@@ -41,9 +41,8 @@
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
     (void)sender;
     g_appRunning = false;
-    g_wantListen = false;
     g_httpServer.stop();
-    if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
+    if (g_clientServer) g_clientServer->stop();
     return NSTerminateNow;
 }
 @end
@@ -73,8 +72,6 @@ int main(int argc, const char* argv[]) {
 
         g_config = loadConfig();
         g_config.autoStart = getAutoStart();
-
-        if (g_config.autoStart) g_wantListen = true;
 
         // ── Composition Root ────────────────────────────────────────
         GamepadAdapter gamepadAdapter;
@@ -107,9 +104,10 @@ int main(int argc, const char* argv[]) {
         updateService.start();
 
         std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
-        std::thread httpTh(httpThread, std::ref(svc));
-        std::thread pairTh(pairingThread);
+        std::thread adminTh(adminHttpThread, std::ref(svc));
+        std::thread clientTh(clientApiThread, std::ref(svc));
         std::thread discTh(discoveryThread);
+        std::thread mdnsTh(mdnsResponderThread);
 
         NSApplication* app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -126,9 +124,10 @@ int main(int argc, const char* argv[]) {
         g_updateService = nullptr;
 
         recvTh.join();
-        httpTh.join();
-        pairTh.join();
+        adminTh.join();
+        clientTh.join();
         discTh.join();
+        mdnsTh.join();
 
         svc.closeAllSessions();
         saveConfig(g_config);

@@ -14,7 +14,6 @@
 // ── Menu action target ─────────────────────────────────────────────────────
 @interface SatelliteTrayTarget : NSObject
 - (void)openUI:(id)sender;
-- (void)toggleListener:(id)sender;
 - (void)updateAction:(id)sender;
 - (void)quit:(id)sender;
 - (void)rebuildMenu;
@@ -29,12 +28,6 @@ static SatelliteTrayTarget* g_target = nil;
     (void)sender;
     NSString* url = [NSString stringWithFormat:@"http://localhost:%d", g_config.webPort];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
-}
-
-- (void)toggleListener:(id)sender {
-    (void)sender;
-    g_wantListen = !g_listening.load();
-    [self rebuildMenu];
 }
 
 - (void)updateAction:(id)sender {
@@ -67,15 +60,6 @@ static SatelliteTrayTarget* g_target = nil;
                                                keyEquivalent:@""];
     [openItem setTarget:self];
     [menu addItem:openItem];
-
-    [menu addItem:[NSMenuItem separatorItem]];
-
-    NSString* toggleTitle = g_listening.load() ? @"Stop Listener" : @"Start Listener";
-    NSMenuItem* toggleItem = [[NSMenuItem alloc] initWithTitle:toggleTitle
-                                                        action:@selector(toggleListener:)
-                                                 keyEquivalent:@""];
-    [toggleItem setTarget:self];
-    [menu addItem:toggleItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 

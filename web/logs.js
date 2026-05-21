@@ -6,7 +6,7 @@ let _logEntries = [];   // all entries we have locally
 function initLogs() {
   _logSeq = 0;
   _logEntries = [];
-  document.getElementById('log-entries').innerHTML = '<p class="hint">Loading logs…</p>';
+  document.getElementById('log-entries').innerHTML = '<p class="hint">' + esc(t('logs.loading')) + '</p>';
 
   // Wire up filter checkboxes and search
   ['log-show-info', 'log-show-warn', 'log-show-error'].forEach(id => {
@@ -57,7 +57,7 @@ function renderLogs() {
   });
 
   if (filtered.length === 0) {
-    container.innerHTML = '<p class="hint">No log entries match filters</p>';
+    container.innerHTML = '<p class="hint">' + esc(t('logs.empty.filtered')) + '</p>';
     return;
   }
 

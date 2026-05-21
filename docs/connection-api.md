@@ -172,16 +172,35 @@ Lists all active connections and their controllers. Requires session cookie.
       "connectedAtEpoch": 1711547400,
       "senderIP": "192.168.1.42",
       "activeControllerCount": 2,
+      "touchpadMode": "ds4",
       "controllers": [
         {
           "controllerIndex": 0,
           "serialNo": 1,
-          "pluggedIn": true
+          "pluggedIn": true,
+          "controllerType": "playstation",
+          "controllerTypeLabel": "PlayStation",
+          "battery": { "level": 80, "status": "discharging" },
+          "motionCapable": true,
+          "motionActive": true,
+          "motionSink": true,
+          "touchpadActive": true,
+          "lightbarCapable": true,
+          "lightbar": "#1040ff"
         },
         {
           "controllerIndex": 1,
           "serialNo": 4,
-          "pluggedIn": true
+          "pluggedIn": true,
+          "controllerType": "xbox",
+          "controllerTypeLabel": "Xbox",
+          "battery": null,
+          "motionCapable": false,
+          "motionActive": false,
+          "motionSink": false,
+          "touchpadActive": false,
+          "lightbarCapable": false,
+          "lightbar": null
         }
       ]
     }
@@ -195,6 +214,8 @@ Lists all active connections and their controllers. Requires session cookie.
 Each connection lists its active controllers with **per-device backend state**.
 `connectedAtEpoch` is seconds since Unix epoch (steady clock).
 `activeControllerCount` is the number of active controllers for that connection.
+`touchpadMode` is the connection's current touchpad routing mode (see
+[`POST /api/devices/touchpad-mode`](#post-apidevicestouchpad-mode)).
 `totalControllers` is the sum across all connections. `maxControllers` is the
 global backend limit (16). `backendAvailable` indicates whether the backend
 bus handle is currently open.
@@ -202,10 +223,108 @@ bus handle is currently open.
 | Field                          | Type   | Description                                             |
 |--------------------------------|--------|---------------------------------------------------------|
 | `connections[].activeControllerCount` | int | Number of active controllers for this connection |
+| `connections[].touchpadMode`   | string | Touchpad routing for the connection: `"ds4"`, `"mouse"`, or `"off"` |
 | `controllers[].controllerIndex`| int    | 0-based controller index within the connection          |
 | `controllers[].serialNo`       | int    | Backend serial number (1–16), 0 if not plugged in       |
 | `controllers[].pluggedIn`      | bool   | Whether this controller is plugged into the backend     |
-| `backendAvailable`             | bool   | Whether the backend bus handle is currently open        |
+| `controllers[].controllerType` | string | Stable type id: `"playstation"`, `"xbox"`, etc.          |
+| `controllers[].controllerTypeLabel` | string | Human-readable controller type label               |
+| `controllers[].battery`        | object\|null | Battery report, or `null` if the sender reported none |
+| `controllers[].battery.level`  | int\|null | Charge percentage 0–100, or `null` when unknown      |
+| `controllers[].battery.status` | string | `"charging"`, `"discharging"`, `"full"`, `"wired"`, or `"unknown"` |
+| `controllers[].motionCapable`  | bool   | Controller has a gyro/accelerometer (IMU)                |
+| `controllers[].motionActive`   | bool   | Motion packets are currently being received from the controller |
+| `controllers[].motionSink`     | bool   | Motion is being delivered to the OS-level virtual gamepad. `false` while `motionActive` is `true` means the virtual device exposes no IMU surface (Xbox-typed device, ViGEmBus older than 1.22, or macOS) |
+| `controllers[].touchpadActive` | bool   | Touchpad samples are currently flowing for this controller |
+| `controllers[].lightbarCapable`| bool   | Controller has an addressable RGB lightbar               |
+| `controllers[].lightbar`       | string\|null | Last lightbar colour as `"#rrggbb"`, or `null` until the host game sets one |
+| `backendAvailable`             | bool   | Whether the backend bus handle is currently open         |
+
+The same per-controller fields appear in the SSE `connections` event.
+
+---
+
+### `POST /api/devices/touchpad-mode`
+
+Sets a paired device's touchpad routing mode. The mode is persisted to config
+**and** hot-applied to any live connection for that device, so the change takes
+effect without re-pairing or reconnecting. Requires a session cookie or a
+matching `deviceId` (paired-sender auth).
+
+**Request body:**
+```json
+{
+  "id": "paired-device-uuid",
+  "mode": "ds4"
+}
+```
+
+| Field  | Type   | Description                                                        |
+|--------|--------|--------------------------------------------------------------------|
+| `id`   | string | The paired device id (as returned by `GET /api/devices`)           |
+| `mode` | string | `"ds4"` — forward into the virtual DualShock 4 touchpad surface (PlayStation-typed virtual controllers only); `"mouse"` — relative mouse pointer on the host; `"off"` — ignore touchpad input |
+
+**Success response (200):**
+```json
+{
+  "ok": true,
+  "hotApplied": true
+}
+```
+
+`hotApplied` is `true` when the new mode was pushed to a currently-live
+connection for the device, `false` when the device is paired but not currently
+connected (the mode is still persisted and will apply on the next connection).
+
+> **Note:** `"ds4"` only produces a touchpad surface on a PlayStation-typed
+> virtual controller. For an Xbox-typed controller the samples have nowhere to
+> land and are dropped — the web dashboard flags this mismatch on the
+> per-controller touchpad chip.
+
+**Error responses:**
+
+| Status | Body                                            | Condition                          |
+|--------|-------------------------------------------------|------------------------------------|
+| 400    | `{"error": "missing id or mode"}`               | `id` or `mode` absent/empty        |
+| 400    | `{"error": "mode must be ds4, mouse, or off"}`  | `mode` not one of the three values |
+| 404    | `{"error": "device not paired"}`                | Unknown `id`                       |
+
+---
+
+### `POST /api/config`
+
+Updates server configuration. Requires a session cookie or a matching
+`deviceId`. Every field is optional — only the keys present in the body are
+applied, so a partial POST cannot silently reset an omitted setting.
+
+**Request body:**
+```json
+{
+  "udpPort": 9876,
+  "autoStart": false,
+  "discoveryBroadcastEnabled": true
+}
+```
+
+| Field                       | Type | Description                                                          |
+|-----------------------------|------|----------------------------------------------------------------------|
+| `udpPort`                   | int  | UDP listen port. Accepted range **1024–65535**; a value outside the range is rejected (the stored port is left unchanged). |
+| `autoStart`                 | bool | Start the receiver automatically at OS login                         |
+| `discoveryBroadcastEnabled` | bool | Legacy UDP broadcast discovery beacon. `true` keeps the beacon on as a fallback for senders that predate the mDNS responder; `false` disables it (mDNS / Bonjour then becomes the only discovery path). Omit the key to leave the current value untouched. |
+
+**Success response (200):**
+```json
+{
+  "ok": true,
+  "udpPort": 9876,
+  "udpPortRejected": false
+}
+```
+
+`udpPort` echoes the **effective** port after the update — clients should
+re-seed their port field from this value rather than assuming the requested
+port took effect. `udpPortRejected` is `true` when a `udpPort` was supplied but
+fell outside the accepted range (the previous port was kept).
 
 ---
 
