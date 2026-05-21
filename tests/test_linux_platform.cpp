@@ -16,6 +16,7 @@
  * the developer's real ~/.config/satellite or ~/.config/autostart.
  */
 #include "../src/platform/linux/config.h"
+#include "../src/platform/linux/gamepad_adapter.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -341,6 +342,115 @@ static void testGetCurrentDate() {
     }
 }
 
+// ── uinput sysfs-proxy (battery + lightbar) ─────────────────────────────────
+// Verifies the Linux backend's submitBattery is no-longer-a-no-op and that the
+// installed lightbar callback also mirrors the colour to a sysfs-proxy file.
+// SATELLITE_SYSFS_PROXY_DIR redirects writes into a tmpdir so the test never
+// touches /tmp/satellite (which a real daemon might be using).
+
+struct TempProxyDir {
+    std::string path;
+    TempProxyDir() {
+        char tmpl[] = "/tmp/satellite-proxy-XXXXXX";
+        char* d = mkdtemp(tmpl);
+        path = (d != nullptr) ? d : "";
+        setenv("SATELLITE_SYSFS_PROXY_DIR", path.c_str(), 1);
+    }
+    ~TempProxyDir() {
+        if (!path.empty()) {
+            std::string cmd = "rm -rf " + path;
+            int rc = system(cmd.c_str());
+            (void)rc;
+        }
+        unsetenv("SATELLITE_SYSFS_PROXY_DIR");
+    }
+};
+
+static void testSubmitBatteryWritesProxyFile() {
+    TempProxyDir tmp;
+    GamepadAdapter adapter;
+
+    BatteryReport r;
+    r.level = 73;
+    r.status = BATTERY_STATUS_DISCHARGING;
+    bool ok = adapter.submitBattery(/*serial=*/7, r);
+
+    TEST("submitBattery — returns true on successful proxy write");
+    EXPECT(ok);
+
+    std::string path = tmp.path + "/controller7/battery";
+    TEST("submitBattery — creates per-controller battery file");
+    EXPECT(fileExists(path));
+
+    std::string body = slurp(path);
+    TEST("submitBattery — file contains wire-encoded level + status");
+    EXPECT(body.find("level=73") != std::string::npos);
+    EXPECT(body.find("status=1") != std::string::npos);
+}
+
+static void testSubmitBatteryUnknownLevel() {
+    TempProxyDir tmp;
+    GamepadAdapter adapter;
+
+    BatteryReport r;
+    r.level = BATTERY_LEVEL_UNKNOWN; // 0xFF / 255
+    r.status = BATTERY_STATUS_UNKNOWN;
+    bool ok = adapter.submitBattery(/*serial=*/3, r);
+
+    TEST("submitBattery — accepts BATTERY_LEVEL_UNKNOWN sentinel");
+    EXPECT(ok);
+    std::string body = slurp(tmp.path + "/controller3/battery");
+    EXPECT(body.find("level=255") != std::string::npos);
+    EXPECT(body.find("status=0") != std::string::npos);
+}
+
+static void testSetLightbarCallbackWritesProxyFile() {
+    TempProxyDir tmp;
+    GamepadAdapter adapter;
+
+    // Inner sink: records every (serial, r, g, b) the wrapper forwards.
+    int innerCalls = 0;
+    uint32_t gotSerial = 0;
+    uint8_t gotR = 0, gotG = 0, gotB = 0;
+    adapter.setLightbarCallback([&](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
+        ++innerCalls;
+        gotSerial = serial;
+        gotR = r;
+        gotG = g;
+        gotB = b;
+    });
+
+    // setLightbarCallback alone must not synthesize an invocation — no kernel
+    // readback wires this on uinput, so the inner sink stays idle until
+    // something actively drives it.
+    TEST("setLightbarCallback — install does not synchronously invoke inner sink");
+    EXPECT_EQ(innerCalls, 0);
+
+    // Fire the wrapped callback synthetically and assert both side effects:
+    // (1) the inner sink saw the same (serial, r, g, b), and (2) the proxy
+    // file landed with the expected "RRGGBB\n" payload.
+    adapter.invokeLightbarForTest(/*serial=*/5, 0xFF, 0x80, 0xC0);
+
+    TEST("setLightbarCallback — wrapper forwards to inner sink");
+    EXPECT_EQ(innerCalls, 1);
+    EXPECT_EQ(gotSerial, uint32_t{5});
+    EXPECT_EQ(int(gotR), 0xFF);
+    EXPECT_EQ(int(gotG), 0x80);
+    EXPECT_EQ(int(gotB), 0xC0);
+
+    std::string path = tmp.path + "/controller5/lightbar";
+    TEST("setLightbarCallback — wrapper writes RRGGBB to per-controller lightbar file");
+    EXPECT(fileExists(path));
+    std::string body = slurp(path);
+    EXPECT_EQ(body, std::string("FF80C0\n"));
+}
+
+static void testSysfsProxyDirEnvOverride() {
+    TempProxyDir tmp;
+    TEST("sysfsProxyDir — honours SATELLITE_SYSFS_PROXY_DIR override");
+    EXPECT_EQ(GamepadAdapter::sysfsProxyDir(), tmp.path);
+}
+
 // ── Driver ──────────────────────────────────────────────────────────────────
 int main() {
     std::cout << "Running Linux platform tests...\n\n";
@@ -356,6 +466,10 @@ int main() {
     testAutoStartIdempotent();
     testGetExeDir();
     testGetCurrentDate();
+    testSubmitBatteryWritesProxyFile();
+    testSubmitBatteryUnknownLevel();
+    testSetLightbarCallbackWritesProxyFile();
+    testSysfsProxyDirEnvOverride();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

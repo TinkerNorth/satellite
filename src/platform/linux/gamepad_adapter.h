@@ -54,6 +54,42 @@ class GamepadAdapter : public IGamepadPort {
     // plus BTN_LEFT; the button level is tracked so a held click fires once.
     bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
 
+    // Forward a battery sample to a per-controller text file under
+    // /tmp/satellite/controller<serial>/battery. uinput has no native battery
+    // ioctl (no UI_SET_BATTERY) — the kernel's gamepad battery surface is in
+    // /sys/class/power_supply/ and only available to in-tree HID drivers like
+    // hid-sony/hid-playstation. The sysfs-proxy file is the simplest reliable
+    // hook for userspace consumers (OBS overlays, LED strips, status bars,
+    // shell scripts) and is also logged so an operator can see arrivals.
+    bool submitBattery(uint32_t serial, const BatteryReport& report) override;
+
+    // Install the SessionService's lightbar sink. uinput has no host-game →
+    // adapter readback channel for RGB (EV_LED is single-bit only and the DS4
+    // / DualSense lightbar is a hid-playstation LED-class device that uinput
+    // doesn't replicate), so the wrapped callback is unlikely to fire from
+    // kernel events alone. We wrap the user-supplied sink so that *whenever*
+    // the callback does fire — directly via test code, or via a future
+    // sysfs-watcher bridge — the RGB triple is also written to
+    // /tmp/satellite/controller<serial>/lightbar in "RRGGBB\n" form. The
+    // operator's userspace tooling can poll that file to mirror the colour
+    // (LED strip, OBS overlay, etc.).
+    void setLightbarCallback(LightbarCallback cb) override;
+
+    // Drive the installed lightbar callback synthetically — exposed for test
+    // code and for any future userspace bridge that wants to push RGB into
+    // the satellite return-path without going through uinput. A no-op when
+    // no callback has been installed yet. Safe to call from any thread.
+    void invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g, uint8_t b);
+
+    // sysfs-proxy base directory (default "/tmp/satellite"). Per-controller
+    // files land in <base>/controller<serial>/{battery,lightbar}. Tests
+    // override this via the SATELLITE_SYSFS_PROXY_DIR env var so they don't
+    // race a real running daemon's /tmp tree. Exposed for direct exercise
+    // by unit tests.
+    static std::string sysfsProxyDir();
+    static bool writeSysfsProxyFile(uint32_t serial, const char* leaf,
+                                    const std::string& contents);
+
   private:
     // Per-virtual-device record. Owns the uinput fd, the FF effect table the
     // kernel hands us via UI_FF_UPLOAD, and a reader thread that drains the
@@ -123,6 +159,13 @@ class GamepadAdapter : public IGamepadPort {
     // Installed by the SessionService; copied under mtx_ before each call so
     // the reader doesn't hold the lock across the user-supplied callback.
     RumbleCallback rumbleCb_;
+
+    // Lightbar sink — wraps the SessionService-supplied callback so every
+    // RGB change also lands in <sysfsProxyDir>/controller<serial>/lightbar.
+    // The wrapped cb is rarely exercised on uinput (no kernel readback for
+    // RGB) but the wiring matches the Windows ViGEm path and keeps the door
+    // open for a future userspace bridge.
+    LightbarCallback lightbarCb_;
 
     // TOUCHPAD_MODE_MOUSE host-global pointer device — lazily created on the
     // first submitRelativeMouse, destroyed in closeBus. `relMouseBtnDown_`

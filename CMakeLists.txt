@@ -518,6 +518,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         tests/test_linux_platform.cpp
         src/platform/linux/config.cpp
         src/platform/linux/globals.cpp
+        src/platform/linux/gamepad_adapter.cpp
         ${SATELLITE_CORE_SOURCES}
     )
     target_include_directories(test_linux_platform PRIVATE
