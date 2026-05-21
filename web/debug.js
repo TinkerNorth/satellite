@@ -33,7 +33,6 @@ function stopDebugPolling() {
 async function pollDebug() {
   try {
     const r = await fetch('/api/debug');
-    if (r.status === 401) { stopDebugPolling(); navigate('/login'); return; }
     const d = await r.json();
     const now = performance.now();
 
@@ -52,7 +51,8 @@ async function pollDebug() {
     // ── Update pipeline ──
     document.getElementById('d-pps').textContent = pps + ' pps';
     document.getElementById('d-submit-rate').textContent = submitRate + ' pps';
-    document.getElementById('d-status').textContent = d.listening ? 'Active' : 'Stopped';
+    document.getElementById('d-status').textContent =
+      d.listening ? t('debug.status.active') : t('debug.status.stopped');
 
     // Pipeline coloring (reflects backend availability)
     const udp     = document.getElementById('pipe-udp');
@@ -125,14 +125,14 @@ async function pollDebug() {
       } else {
         beRow.style.display = '';
         const copy  = (typeof BACKEND_COPY === 'object' && BACKEND_COPY[d.backend.id]) || null;
-        const title = (copy && copy.title) || 'Backend';
+        const title = (copy && copy.title) || t('debug.stats.backend');
         beLabel.textContent = title;
         if (d.backend.available) {
-          beVal.textContent = d.backendAvailable ? 'Active' : 'Idle';
+          beVal.textContent = d.backendAvailable ? t('debug.status.active') : t('debug.status.idle');
           beVal.className   = 'debug-stat-value debug-ok';
         } else {
           const errCopy = copy && copy.errors && copy.errors[d.backend.errorCode];
-          beVal.textContent = errCopy ? errCopy.title : (d.backend.errorCode || 'Unavailable');
+          beVal.textContent = errCopy ? errCopy.title : (d.backend.errorCode || t('debug.status.unavailable'));
           beVal.className   = 'debug-stat-value debug-err';
         }
       }

@@ -150,6 +150,23 @@ static void testJsonEscape() {
 
     TEST("jsonEscape — combined special chars");
     EXPECT_EQ(jsonEscape("\"\\\n"), std::string("\\\"\\\\\\n"));
+
+    // C0 control bytes other than \n must become \uXXXX escapes — a raw \r or
+    // \t in a device name would otherwise produce invalid JSON.
+    TEST("jsonEscape — escapes carriage return as \\u000d");
+    EXPECT_EQ(jsonEscape("a\rb"), std::string("a\\u000db"));
+
+    TEST("jsonEscape — escapes tab as \\u0009");
+    EXPECT_EQ(jsonEscape("a\tb"), std::string("a\\u0009b"));
+
+    TEST("jsonEscape — escapes NUL as \\u0000");
+    EXPECT_EQ(jsonEscape(std::string("a\0b", 3)), std::string("a\\u0000b"));
+
+    TEST("jsonEscape — escapes a high C0 control byte (0x1f)");
+    EXPECT_EQ(jsonEscape(std::string("\x1f")), std::string("\\u001f"));
+
+    TEST("jsonEscape — 0x20 (space) is not escaped");
+    EXPECT_EQ(jsonEscape(" "), std::string(" "));
 }
 
 static void testJsonGetString() {
@@ -187,13 +204,13 @@ static void testConfigRoundTrip() {
     out.pairPort = 34567;
     out.discPort = 45678;
     out.autoStart = true;
-    out.credentials = "admin:hash$abc";
     PairedDevice d;
     d.id = "device-1";
     d.name = "Pixel 7";
     d.lastIP = "192.168.1.42";
     d.pairedAt = "2025-01-15";
     d.sharedKeyHex = "deadbeef00";
+    d.touchpadMode = TOUCHPAD_MODE_MOUSE;
     out.pairedDevices.push_back(d);
 
     saveConfig(out);
@@ -211,9 +228,6 @@ static void testConfigRoundTrip() {
     TEST("loadConfig — round-trips autoStart");
     EXPECT_EQ(in.autoStart, true);
 
-    TEST("loadConfig — round-trips credentials with special chars");
-    EXPECT_EQ(in.credentials, std::string("admin:hash$abc"));
-
     TEST("loadConfig — round-trips paired devices");
     EXPECT_EQ(in.pairedDevices.size(), size_t{1});
     if (in.pairedDevices.size() == 1) {
@@ -222,6 +236,42 @@ static void testConfigRoundTrip() {
         EXPECT_EQ(in.pairedDevices[0].lastIP, std::string("192.168.1.42"));
         EXPECT_EQ(in.pairedDevices[0].pairedAt, std::string("2025-01-15"));
         EXPECT_EQ(in.pairedDevices[0].sharedKeyHex, std::string("deadbeef00"));
+        // Task 1.3 — touchpadMode persists across the save/load round-trip.
+        EXPECT_EQ(static_cast<int>(in.pairedDevices[0].touchpadMode),
+                  static_cast<int>(TOUCHPAD_MODE_MOUSE));
+    }
+}
+
+// discoveryBroadcastEnabled (Task 1.6) — round-trips both ways, and an absent
+// key defaults to true so a pre-1.6 config doesn't silently disable the
+// legacy beacon. ConfigFileSnapshot keeps the real config file hermetic.
+static void testDiscoveryBroadcastConfig() {
+    ConfigFileSnapshot snap;
+
+    {
+        Config out;
+        out.discoveryBroadcastEnabled = true;
+        saveConfig(out);
+        Config in = loadConfig();
+        TEST("loadConfig — discoveryBroadcastEnabled round-trips true");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, true);
+    }
+    {
+        Config out;
+        out.discoveryBroadcastEnabled = false;
+        saveConfig(out);
+        Config in = loadConfig();
+        TEST("loadConfig — discoveryBroadcastEnabled round-trips false");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, false);
+    }
+    {
+        // A config JSON with no discoveryBroadcastEnabled key (pre-1.6 shape).
+        std::ofstream f(configPath(), std::ios::binary | std::ios::trunc);
+        f << "{\r\n  \"udpPort\": 9876,\r\n  \"pairedDevices\": []\r\n}\r\n";
+        f.close();
+        Config in = loadConfig();
+        TEST("loadConfig — absent discoveryBroadcastEnabled key defaults to true");
+        EXPECT_EQ(in.discoveryBroadcastEnabled, true);
     }
 }
 
@@ -296,6 +346,7 @@ int main() {
     testJsonGetString();
     testConfigPath();
     testConfigRoundTrip();
+    testDiscoveryBroadcastConfig();
     testAutoStartEnable();
     testAutoStartDisable();
     testAutoStartIdempotent();

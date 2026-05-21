@@ -106,80 +106,25 @@ std::string randomDigits(int n) {
     return out;
 }
 
-// ── Session management ──────────────────────────────────────────────────────
-static std::mutex g_sessionMtx;
-static std::map<std::string, std::chrono::steady_clock::time_point> g_sessions;
-static const int SESSION_LIFETIME_HOURS = 24;
-
-std::string createSession() {
-    std::string token = randomHex(32);
-    std::lock_guard<std::mutex> lk(g_sessionMtx);
-    g_sessions[token] =
-        std::chrono::steady_clock::now() + std::chrono::hours(SESSION_LIFETIME_HOURS);
-    return token;
-}
-
-bool validateSession(const std::string& token) {
-    std::lock_guard<std::mutex> lk(g_sessionMtx);
-    auto it = g_sessions.find(token);
-    if (it == g_sessions.end()) return false;
-    if (std::chrono::steady_clock::now() > it->second) {
-        g_sessions.erase(it);
-        return false;
-    }
-    return true;
-}
-
-void removeSession(const std::string& token) {
-    std::lock_guard<std::mutex> lk(g_sessionMtx);
-    g_sessions.erase(token);
-}
-
-std::string getSessionFromCookie(const httplib::Request& req) {
-    auto it = req.headers.find("Cookie");
-    if (it == req.headers.end()) return "";
-    auto& cookie = it->second;
-    auto pos = cookie.find("session=");
-    if (pos == std::string::npos) return "";
-    auto start = pos + 8;
-    auto end = cookie.find(';', start);
-    return cookie.substr(start, end == std::string::npos ? std::string::npos : end - start);
-}
-
-// ── Credential helpers ──────────────────────────────────────────────────────
-bool isConfigured(const Config& cfg) { return !cfg.credentials.empty(); }
-
-bool setupCredentials(Config& cfg, const std::string& username, const std::string& password) {
-    std::string salt = randomHex(16);
-    std::string hash = sha256hex(salt + password);
-    std::string plain = username + ":" + salt + ":" + hash;
-    cfg.credentials = dpapiEncrypt(plain);
-    return !cfg.credentials.empty();
-}
-
-bool verifyCredentials(const Config& cfg, const std::string& username,
-                       const std::string& password) {
-    std::string plain = dpapiDecrypt(cfg.credentials);
-    if (plain.empty()) return false;
-    auto p1 = plain.find(':');
-    if (p1 == std::string::npos) return false;
-    auto p2 = plain.find(':', p1 + 1);
-    if (p2 == std::string::npos) return false;
-    std::string storedUser = plain.substr(0, p1);
-    std::string salt = plain.substr(p1 + 1, p2 - p1 - 1);
-    std::string storedHash = plain.substr(p2 + 1);
-    return username == storedUser && sha256hex(salt + password) == storedHash;
-}
-
 // ── PIN state ───────────────────────────────────────────────────────────────
+// Formalises the (g_currentPin, g_pinExpiry, g_pinPairedAt) state machine the
+// dashboard reads. See PinState in core/types.h:
+//   PinIdle    — empty + no recent pair.
+//   PinActive  — PIN generated, within the 5-min window.
+//   PinExpired — window lapsed without a successful pair.
+//   PinPaired  — momentary, cleared after PIN_PAIRED_HOLD_SEC.
 static std::mutex g_pinMtx;
 static std::string g_currentPin;
 static std::chrono::steady_clock::time_point g_pinExpiry;
+static std::chrono::steady_clock::time_point g_pinPairedAt;
+static bool g_pinPairedValid = false;
+static constexpr int PIN_PAIRED_HOLD_SEC = 5;
 
 std::string generatePin() {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     g_currentPin = randomDigits(4);
     g_pinExpiry = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+    g_pinPairedValid = false;
     return g_currentPin;
 }
 
@@ -187,8 +132,37 @@ bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     if (g_currentPin.empty() || std::chrono::steady_clock::now() > g_pinExpiry) return false;
     bool ok = (pin == g_currentPin);
-    if (ok) g_currentPin.clear();
+    if (ok) {
+        g_currentPin.clear();
+        g_pinPairedAt = std::chrono::steady_clock::now();
+        g_pinPairedValid = true;
+    }
     return ok;
+}
+
+PinSnapshot pinSnapshot() {
+    std::lock_guard<std::mutex> lk(g_pinMtx);
+    const auto now = std::chrono::steady_clock::now();
+    PinSnapshot s;
+    if (!g_currentPin.empty()) {
+        if (now > g_pinExpiry) {
+            s.state = PinState::PinExpired;
+            s.secondsRemaining = 0;
+        } else {
+            s.state = PinState::PinActive;
+            s.secondsRemaining = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::seconds>(g_pinExpiry - now).count());
+        }
+        return s;
+    }
+    if (g_pinPairedValid && now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
+        s.state = PinState::PinPaired;
+        s.secondsRemaining = 0;
+        return s;
+    }
+    s.state = PinState::PinIdle;
+    s.secondsRemaining = 0;
+    return s;
 }
 
 // ── Hex encode/decode ───────────────────────────────────────────────────────

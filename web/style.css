@@ -272,10 +272,23 @@ h1 .dot {
   border-color: rgba(79, 227, 255, 0.3);
   box-shadow: 0 0 8px rgba(44, 147, 173, 0.4);
 }
+/* Global disabled-button rule — mirrors the design spec's ds-components.jsx
+   Button: opacity 0.4, cursor not-allowed, no further click events. The two
+   .btn-save / .btn-undo overrides above used to drop to 0.35; tightening to
+   0.4 brings the dashboard into line with the design system (dish-mac,
+   dish-android, dish-linux all use the same 0.4 alpha for "this control is
+   not tappable right now"). Combined with an in-button loader, the disabled
+   state and the "working" state read as one thing — a dimmed button with a
+   spinner — and a stray click can't reach the handler. */
+button:disabled,
+.btn:disabled,
 .btn-save:disabled,
-.btn-undo:disabled {
-  opacity: 0.35;
+.btn-undo:disabled,
+.btn-icon:disabled,
+.seg-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
+  pointer-events: none;
 }
 
 .btn-undo {
@@ -386,6 +399,27 @@ h1 .dot {
 .flow-arrow .emoji-icon,
 .pipe-arrow .emoji-icon { width: 1em; height: 1em; vertical-align: -0.15em; }
 
+/* Brand-icon glyph slotted in front of a section title — sized to read
+   alongside the Rajdhani caps without crowding the text. */
+.section-title .section-glyph {
+  width: 18px;
+  height: 18px;
+  vertical-align: -0.25em;
+  margin-right: 4px;
+}
+
+/* Per-row state glyph rendered on device-list rows (active connections +
+   paired devices). Uses the v6 dish family from img/icons/ — the icon
+   choice is keyed on the wire state by DEVICE_LINK_STATE_ICON in
+   dashboard.js so the row's silhouette mirrors the chip text. */
+.device-glyph {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  margin-right: 10px;
+  align-self: center;
+}
+
 .btn-icon:hover {
   color: var(--primary);
   border-color: rgba(79, 227, 255, 0.3);
@@ -437,6 +471,48 @@ h2.section-title { font-size: 14px; }
   margin-top: 8px;
 }
 
+/* ── Dashboard inline error notice ────────────────────────────────── */
+/* Failure feedback for the dashboard's mutating actions (disconnect,
+   remove device, touchpad-mode change). Mirrors the update banner's
+   error styling — see showDashError() in dashboard.js. Auto-hidden
+   (display:none) until an action fails. */
+.dash-notice {
+  display: none;
+  align-items: flex-start;
+  gap: 8px;
+  background: linear-gradient(180deg, rgba(231,76,60,0.08), rgba(231,76,60,0.02));
+  border: 1px solid rgba(231,76,60,0.45);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--error);
+}
+.dash-notice.show { display: flex; }
+.dash-notice-text {
+  flex: 1;
+  min-width: 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+}
+.dash-notice-close {
+  background: none;
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.dash-notice-close:hover { color: var(--text); }
+
+/* Section title with extra top spacing — used where a section heading
+   follows other controls inside the same card block (e.g. Discovery). */
+.section-title-spaced { margin-top: 18px; }
+
 /* ── Device list ──────────────────────────────────────────────────── */
 .device-list {
   display: flex;
@@ -446,7 +522,6 @@ h2.section-title { font-size: 14px; }
 
 .device-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   background: var(--bg);
   border: 1px solid var(--outline);
@@ -458,6 +533,8 @@ h2.section-title { font-size: 14px; }
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .device-name {
@@ -509,6 +586,230 @@ h2.section-title { font-size: 14px; }
 }
 .ctrl-dot.ok  { background: var(--success); }
 .ctrl-dot.err { background: var(--error); }
+
+/* Per-controller right-side chip cluster — battery + motion. Wrapped in one
+   flex child of .ctrl-item so space-between still pins it to the right edge. */
+.ctrl-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+/* Per-controller motion (IMU) state chip — see MOTION_COPY in dashboard.js for
+   the four states. Lives inside .ctrl-chips; the tooltip carries the full
+   explanation of each state. */
+.ctrl-motion {
+  flex-shrink: 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  cursor: help;
+}
+.ctrl-motion.motion-on {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.ctrl-motion.motion-nosink {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.ctrl-motion.motion-ready {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.10);
+}
+.ctrl-motion.motion-na {
+  color: var(--text-muted);
+  background: transparent;
+}
+/* Per-controller battery chip — Task 1.2. Shares the .ctrl-motion chip shape.
+   The sender forwards the controller's own battery, or the host machine's
+   battery when the controller is wired/USB (laptop %, or 100% on a desktop).
+   See batteryChip() in dashboard.js for the state-class logic. */
+.ctrl-battery {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  cursor: help;
+}
+.ctrl-battery.battery-ok {
+  color: var(--text);
+  background: transparent;
+}
+.ctrl-battery.battery-charging {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.ctrl-battery.battery-low {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.ctrl-battery.battery-crit {
+  color: var(--error);
+  background: rgba(231, 76, 60, 0.16);
+  border-color: rgba(231, 76, 60, 0.40);
+}
+.ctrl-battery.battery-na {
+  color: var(--text-muted);
+  background: transparent;
+}
+/* Charge-ladder glyph leading the battery chip — see batteryIconFile() in
+   dashboard.js. The negative block margin lets the 16px icon read at full
+   size while keeping the chip the same height as its icon-less siblings. The
+   glyph keeps its own teal: the chip colour conveys urgency, the fill level
+   conveys charge. */
+.ctrl-battery-icon {
+  width: 16px;
+  height: 16px;
+  margin-block: -3px;
+  flex-shrink: 0;
+}
+/* Per-controller touchpad chip — Task 1.3. Shares the .ctrl-motion chip shape;
+   reflects the owning connection's touchpad mode + whether samples are
+   flowing. See touchpadChip() in dashboard.js. */
+.ctrl-touchpad {
+  flex-shrink: 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  cursor: help;
+}
+.ctrl-touchpad.touchpad-on {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.14);
+  border-color: rgba(79, 227, 255, 0.35);
+}
+.ctrl-touchpad.touchpad-ready {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.07);
+}
+.ctrl-touchpad.touchpad-off {
+  color: var(--text-muted);
+  background: transparent;
+}
+/* Pad mode chosen, but this controller's virtual device has no touchpad
+   surface (a non-PlayStation controller can't expose a DS4 touchpad). */
+.ctrl-touchpad.touchpad-nosurface {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+/* Per-controller lightbar chip — Task 1.4. Shares the .ctrl-motion chip shape;
+   reflects whether the controller has an addressable RGB LED and the live
+   colour the host game is driving. See lightbarChip() in dashboard.js. */
+.ctrl-lightbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  cursor: help;
+}
+.ctrl-lightbar.lightbar-on {
+  color: var(--text);
+  background: transparent;
+}
+.ctrl-lightbar.lightbar-ready {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.07);
+}
+.ctrl-lightbar.lightbar-na {
+  color: var(--text-muted);
+  background: transparent;
+}
+/* Live colour swatch inside the lightbar-on chip — the actual RGB the host
+   game set, so the operator sees the colour itself, not just a hex string. */
+.lightbar-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid var(--outline);
+  flex-shrink: 0;
+  box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.35);
+}
+
+/* Paired-device right-side actions — the touchpad-routing segmented control
+   plus the remove button. Task 1.3. */
+.device-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.seg-label {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: help;
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--outline);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.seg-btn {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  background: var(--bg);
+  color: var(--text-muted);
+  border: none;
+  border-right: 1px solid var(--outline);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.seg-btn:last-child { border-right: none; }
+.seg-btn:hover { color: var(--text); }
+.seg-btn:focus-visible {
+  outline: none;
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--primary), 0 0 6px rgba(79, 227, 255, 0.35);
+}
+.seg-btn.seg-on {
+  background: var(--primary);
+  color: var(--bg);
+  cursor: default;
+}
 .ctrl-type-icon {
   width: 48px;
   height: 32px;
@@ -1168,6 +1469,20 @@ h2.section-title { font-size: 14px; }
   margin-top: 12px;
 }
 
+/* Save-result line under the Save Config button. Default colour is the
+   error red; the .ok modifier switches it to the success token for a
+   transient "saved" confirmation. See settingsSave() in settings.js. */
+.settings-save-status {
+  font-size: 12px;
+  min-height: 16px;
+  margin-top: 8px;
+  color: var(--error);
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.settings-save-status.ok { color: var(--success); }
+
 /* ── Restart-to-install modal ────────────────────────────────────── */
 .modal-overlay {
   position: fixed;
@@ -1213,3 +1528,109 @@ h2.section-title { font-size: 14px; }
   padding: 8px 12px;
   margin-bottom: 12px;
 }
+
+/* ── Connection-state chips ──────────────────────────────────────────────────
+   Per-row chip rendered by dashboard.js (DEVICE_LINK_STATE_LABEL /
+   CONTROLLER_STATE_LABEL). The base shape matches the existing per-controller
+   chips (.ctrl-motion / .ctrl-battery) so a row and the chip cluster below it
+   look like they belong together; the variants below colour each state. */
+.device-state, .ctrl-state {
+  display: inline-block;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.state-active {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.state-paired {
+  color: var(--text-muted);
+  background: transparent;
+}
+.state-linking {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.10);
+  border-color: rgba(79, 227, 255, 0.30);
+}
+.state-notResponding {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+/* Per-controller pipeline states. "live" / "quiet" → mounted (success);
+   "registering" / "allocating" / "detached" → transient (info);
+   "source" → before forwarding (muted); "failed" → blocked (error). */
+.state-live, .state-quiet {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.state-registering, .state-allocating, .state-detached {
+  color: var(--primary);
+  background: rgba(79, 227, 255, 0.10);
+  border-color: rgba(79, 227, 255, 0.30);
+}
+.state-source {
+  color: var(--text-muted);
+  background: transparent;
+}
+.state-failed {
+  color: var(--error);
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+/* ── Indeterminate loaders ──────────────────────────────────────────
+   The loader SVGs (spinnerSVG / dotsSVG / barSVG in loaders.js) draw with
+   `fill="currentColor"` / `stroke="currentColor"`, so the surrounding
+   element's `color` is the colour the loader inherits. Default to
+   --primary so a bare loader without further styling reads as brand cyan.
+*/
+.ldr-spinner, .ldr-dots, .ldr-bar { color: var(--primary); }
+
+/* In-button loader layout — swaps a button's content for "loader + label"
+   while a request is in flight. Pairs with the disabled-button rule above
+   so the user reads one composite state ("working, not tappable") rather
+   than two overlapping ones. Used by genPin() / disconnectConn() /
+   removeDevice() in dashboard.js. */
+.btn-with-loader {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-with-loader .ldr-spinner,
+.btn-with-loader .ldr-dots {
+  /* SVG should not pick up the button's text colour cascade -- it draws
+     in --primary regardless of whether the host is btn-save (dark text)
+     or btn-icon (muted). */
+  color: var(--primary);
+  flex-shrink: 0;
+}
+/* When the in-flight loader sits inside a danger-tinted icon button (the
+   per-row disconnect / remove buttons), let it inherit the error red so
+   the affordance ("this action is destructive, currently working") is
+   preserved through the disabled-alpha dim. */
+.btn-icon.btn-danger .ldr-spinner { color: var(--error); }
+
+/* ── SSE-reconnect bar ──────────────────────────────────────────────
+   Sits at the very top of the dashboard, just below the header, while the
+   EventSource is mid-reconnect (server still reachable per /api/status,
+   but the live stream dropped). Mirrors the design spec's bar = whole-pane
+   loading rule; the offline view takes over only when the server itself
+   becomes unreachable. */
+.sse-reconnect-bar {
+  margin-bottom: 12px;
+  color: var(--primary);
+}
+.sse-reconnect-bar[hidden] { display: none; }
+.sse-reconnect-bar .ldr-bar { width: 100%; }

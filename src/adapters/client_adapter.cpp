@@ -44,7 +44,7 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     sockaddr_in addr{};
     if (!getAddr(conn.token, addr)) return;
 
-    uint8_t ct[64 + AUTH_TAG_SIZE]; // max inner we send is 15 bytes (rumble + lightbar)
+    uint8_t ct[64 + AUTH_TAG_SIZE]; // max inner we send is 11 bytes (rumble)
     unsigned long long ctLen = 0;
     if (!encryptPacket(conn.sharedKey, 0, conn.token, inner, innerLen, ct, &ctLen)) return;
 
@@ -111,13 +111,11 @@ void ClientAdapter::broadcastServerStatus(
 
 void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,
                                const RumbleReport& report) {
-    // Mandatory leading bytes: ctrlIdx + strong + weak + duration + flags = 8.
-    // Optional trailing 3 bytes (R/G/B) when the lightbar flag is set; senders
-    // that don't recognise them simply parse the leading 8 and stop there.
-    const bool lightbar = report.hasLightbar;
-    const uint16_t payloadLen = lightbar ? 11 : 8;
+    // Payload: ctrlIdx + strong + weak + duration = 7 bytes. Motor vibration
+    // only — lightbar colour has its own message (sendLightbar / 0x000D).
+    const uint16_t payloadLen = 7;
 
-    uint8_t inner[4 + 11];
+    uint8_t inner[4 + 7];
     inner[0] = (uint8_t)(MSG_RUMBLE >> 8);
     inner[1] = (uint8_t)(MSG_RUMBLE);
     inner[2] = (uint8_t)(payloadLen >> 8);
@@ -129,11 +127,20 @@ void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,
     inner[8] = (uint8_t)(report.weakMagnitude);
     inner[9] = (uint8_t)(report.durationMs >> 8);
     inner[10] = (uint8_t)(report.durationMs);
-    inner[11] = lightbar ? 0x01 : 0x00; // flags
-    if (lightbar) {
-        inner[12] = report.lightbarR;
-        inner[13] = report.lightbarG;
-        inner[14] = report.lightbarB;
-    }
-    sendEncryptedPacket(conn, inner, 4 + payloadLen);
+    sendEncryptedPacket(conn, inner, sizeof(inner));
+}
+
+void ClientAdapter::sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
+                                 uint8_t b) {
+    // Wire payload: ctrlIdx(1) + r(1) + g(1) + b(1) = 4 bytes.
+    uint8_t inner[4 + 4];
+    inner[0] = (uint8_t)(MSG_LIGHTBAR >> 8);
+    inner[1] = (uint8_t)(MSG_LIGHTBAR);
+    inner[2] = 0; // payload length high
+    inner[3] = 4; // payload length low
+    inner[4] = ctrlIdx;
+    inner[5] = r;
+    inner[6] = g;
+    inner[7] = b;
+    sendEncryptedPacket(conn, inner, sizeof(inner));
 }

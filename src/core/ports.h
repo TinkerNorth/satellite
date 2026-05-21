@@ -64,6 +64,58 @@ class IGamepadPort {
     // destroyed (the SessionService outlives both adapter and callback).
     using RumbleCallback = std::function<void(uint32_t serial, const RumbleReport& report)>;
     virtual void setRumbleCallback(RumbleCallback cb) = 0;
+
+    // Submit an IMU sample (gyro + accel) to the virtual device. Defaults to a
+    // no-op so existing adapters compile unchanged: ViGEm DS4 (Windows) and
+    // uhid DualSense (Linux, future) override this to forward the sample to
+    // the backend's motion fields. The Xbox 360 emulation has no IMU surface
+    // and silently drops; senders shouldn't notice the difference because
+    // motion is only useful when the virtual device advertises a motion cap.
+    virtual bool submitMotion(uint32_t /*serial*/, const MotionReport& /*report*/) { return false; }
+
+    // Submit a battery update. Defaults to no-op. Windows DS4 backend wires
+    // this to the battery byte in DS4_REPORT_EX so games (and Steam Big
+    // Picture) can show charge level. Backends without a battery surface
+    // (Xbox 360, uinput) drop silently; the SessionService still caches
+    // the latest value for the web UI.
+    virtual bool submitBattery(uint32_t /*serial*/, const BatteryReport& /*report*/) {
+        return false;
+    }
+
+    // Submit a touchpad sample to the virtual device (TOUCHPAD_MODE_DS4).
+    // ViGEm DS4 (Windows) writes the finger coordinates + clicky button into
+    // DS4_REPORT_EX's touchpad fields; the Linux adapter emits them on a
+    // dedicated multitouch uinput node. Xbox-typed virtual pads have no
+    // touchpad surface and the default no-op drops the sample. The
+    // SessionService still caches the latest sample on the Controller for the
+    // web UI debug pane regardless of backend support.
+    virtual bool submitTouchpad(uint32_t /*serial*/, const TouchpadReport& /*report*/) {
+        return false;
+    }
+
+    // Inject a relative mouse movement onto the receiver host's desktop — the
+    // TOUCHPAD_MODE_MOUSE routing path. The SessionService converts finger-0
+    // motion into a signed host-pixel delta and maps the clicky-pad button to
+    // mouse button 1. `dx`/`dy` are pixels; `leftButton` is the current button
+    // *level* (not an edge) — the adapter tracks transitions and emits
+    // press/release only on change.
+    //
+    // Deliberately not keyed on a virtual-device serial: this is a host-global
+    // desktop action, distinct from the per-controller virtual-pad ports
+    // above. Windows backs it with SendInput, Linux with a lazily-created
+    // uinput pointer device; the inert macOS backend keeps the default no-op.
+    virtual bool submitRelativeMouse(int /*dx*/, int /*dy*/, bool /*leftButton*/) { return false; }
+
+    // Install a lightbar sink. The Windows ViGEm DS4 callback fires for every
+    // lightbar colour change written by the host game (independent of rumble,
+    // which we coalesce on its own callback). The SessionService installs
+    // this at construction so colour changes can be queued onto MSG_LIGHTBAR
+    // without piggy-backing on rumble.
+    //
+    // Backends without an independent lightbar channel (Xbox 360 ViGEm,
+    // uinput) install a no-op stub.
+    using LightbarCallback = std::function<void(uint32_t serial, uint8_t r, uint8_t g, uint8_t b)>;
+    virtual void setLightbarCallback(LightbarCallback /*cb*/) {}
 };
 
 // ── Outbound: Send encrypted UDP packets to clients ─────────────────────────
@@ -96,19 +148,26 @@ class IClientPort {
                           bool backendAvailable, uint8_t totalActiveControllers) = 0;
 
     // Send a rumble (0x0009) update to the dish that owns `ctrlIdx` on `conn`.
-    // Wire format (encrypted inner payload):
+    // Wire format (encrypted inner payload, 7 bytes):
     //
     //   ctrlIdx   : u8
     //   strongMag : u16 BE
     //   weakMag   : u16 BE
     //   durMs     : u16 BE
-    //   flags     : u8   (bit 0 = lightbar present)
-    //   [lightbarR, lightbarG, lightbarB : u8 × 3 — only when flag bit 0 set]
     //
-    // Senders that don't recognise the trailing lightbar bytes simply ignore
-    // them; the leading 8 bytes are the mandatory subset every dish parses.
+    // Rumble carries motor vibration only; lightbar colour has its own
+    // message (MSG_LIGHTBAR / 0x000D — see sendLightbar).
     virtual void sendRumble(const Connection& conn, uint8_t ctrlIdx,
                             const RumbleReport& report) = 0;
+
+    // Send a lightbar (0x000D) update to the dish. Decouples colour changes
+    // from rumble — games that only set lightbar (no vibration) now drive
+    // the LED through this dedicated stream. Wire payload:
+    //
+    //   ctrlIdx : u8
+    //   r, g, b : u8 × 3
+    virtual void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
+                              uint8_t b) = 0;
 };
 
 // ── Outbound: Configuration persistence ─────────────────────────────────────
