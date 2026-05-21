@@ -526,7 +526,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
-    target_compile_definitions(test_linux_platform PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+    # SATELLITE_BUILD_TESTS gates test-only seams (e.g. the synthetic
+    # invokeLightbarForTest entrypoint) — the symbol is elided from
+    # production builds, which don't define this macro.
+    target_compile_definitions(test_linux_platform PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+    )
     target_compile_options(test_linux_platform PRIVATE -O2 -Wall -Wextra)
     find_package(Threads REQUIRED)
     target_link_libraries(test_linux_platform PRIVATE Threads::Threads)

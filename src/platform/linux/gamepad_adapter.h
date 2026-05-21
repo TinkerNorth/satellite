@@ -75,11 +75,16 @@ class GamepadAdapter : public IGamepadPort {
     // (LED strip, OBS overlay, etc.).
     void setLightbarCallback(LightbarCallback cb) override;
 
-    // Drive the installed lightbar callback synthetically — exposed for test
-    // code and for any future userspace bridge that wants to push RGB into
-    // the satellite return-path without going through uinput. A no-op when
+#ifdef SATELLITE_BUILD_TESTS
+    // Drive the installed lightbar callback synthetically. Compiled only into
+    // the test target (SATELLITE_BUILD_TESTS is defined on test_linux_platform
+    // and nowhere else) so production builds neither expose nor link the
+    // symbol. uinput has no kernel-side RGB readback path, so the wrapped
+    // callback never fires from real games — this entrypoint lets unit tests
+    // exercise the wrapper's sysfs-mirror + inner-sink fan-out. A no-op when
     // no callback has been installed yet. Safe to call from any thread.
     void invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g, uint8_t b);
+#endif
 
     // sysfs-proxy base directory (default "/tmp/satellite"). Per-controller
     // files land in <base>/controller<serial>/{battery,lightbar}. Tests

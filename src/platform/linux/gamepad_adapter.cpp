@@ -612,6 +612,10 @@ bool GamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report)
     return ok;
 }
 
+#ifdef SATELLITE_BUILD_TESTS
+// Test-only synthetic entrypoint; symbol is elided from production builds.
+// See header for rationale (uinput has no RGB readback path, so the
+// callback can't be exercised through normal production code paths).
 void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
     LightbarCallback cb;
     {
@@ -620,6 +624,7 @@ void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g
     }
     if (cb) cb(serial, r, g, b);
 }
+#endif
 
 void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
     // Wrap the SessionService's sink so every fired colour change *also* lands
