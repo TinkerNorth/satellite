@@ -381,6 +381,16 @@ bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
     return SendInput(static_cast<UINT>(n), inputs, sizeof(INPUT)) == static_cast<UINT>(n);
 }
 
+bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {
+    // The DS4 virtual device's DS4_REPORT_EX carries gyro/accel fields;
+    // the Xbox 360 XUSB_REPORT has no IMU surface. Used by SessionService to
+    // populate ConnectionSnapshot::CtrlInfo::motionSinkSupportedForType so
+    // the web UI can warn operators about Xbox-typed slots that won't sink
+    // motion. The actual sample path (submitMotion) still returns false on
+    // Xbox; this method just lets the receiver explain WHY upfront.
+    return controllerTypeUsesDS4(controllerType);
+}
+
 // Caller holds busMtx_; `serial` must exist in ds4State_.
 bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
     auto sit = ds4State_.find(serial);

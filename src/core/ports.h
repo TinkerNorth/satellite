@@ -73,6 +73,33 @@ class IGamepadPort {
     // motion is only useful when the virtual device advertises a motion cap.
     virtual bool submitMotion(uint32_t /*serial*/, const MotionReport& /*report*/) { return false; }
 
+    // Does this backend have an IMU surface for [controllerType]? Used by
+    // SessionService::handleControllerAdd to populate
+    // ConnectionSnapshot::CtrlInfo::motionSinkSupportedForType, which the
+    // web UI surfaces so the operator can see "Xbox-typed virtual pad
+    // can't sink motion on this backend" without having to inspect a
+    // silently-dropped sample stream.
+    //
+    // The CAP_MOTION bit on the dish describes what the *sender* will
+    // stream. This method describes what the *receiver* can land. The
+    // intersection is what actually moves a game's camera.
+    //
+    // Default: false for every type. Windows ViGEm overrides to return
+    // true only for CONTROLLER_TYPE_PLAYSTATION (DS4 has IMU; Xbox 360
+    // does not). Linux uinput likewise overrides only for PLAYSTATION
+    // (DualShock4 motion node), false for Xbox. macOS keeps the default.
+    virtual bool supportsMotionForType(uint8_t /*controllerType*/) const { return false; }
+
+    // True iff backend-side motion delivery succeeded for [serial] on
+    // initial plug-in. On Linux this is `motionFd >= 0` after
+    // openMotionUinputDevice — false means the kernel rejected the
+    // INPUT_PROP_ACCELEROMETER device (rare: kernel too old, no
+    // /dev/uinput permission). The web UI surfaces this so operators can
+    // tell "no game has subscribed" apart from "I couldn't even create
+    // the IMU node." Defaults to true; backends that can fail to create
+    // a motion sink override.
+    virtual bool motionBackendOk(uint32_t /*serial*/) const { return true; }
+
     // Submit a battery update. Defaults to no-op. Windows DS4 backend wires
     // this to the battery byte in DS4_REPORT_EX so games (and Steam Big
     // Picture) can show charge level. Backends without a battery surface
@@ -133,8 +160,17 @@ class IClientPort {
     virtual void sendHeartbeatAck(const Connection& conn) = 0;
 
     // Send controller ACK (0x0006) to a specific client.
+    //
+    // `motionFlags` is appended as a 5th payload byte (extending the wire
+    // length from 4 to 5). Meaningful only on MSG_CONTROLLER_ADD acks with
+    // ACK_OK — every other ack path passes 0 because the controller is not
+    // plugged in and the motion-sink question is moot. See
+    // ACK_MOTION_FLAG_* in core/types.h for the bit definitions. The byte
+    // is always appended (zero or not) so a length-aware dish can
+    // distinguish "old satellite (msgLen == 4, motion-status unknown)" from
+    // "new satellite, motion flags happen to be zero (msgLen == 5)."
     virtual void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
-                                   uint8_t result) = 0;
+                                   uint8_t result, uint8_t motionFlags = 0) = 0;
 
     // Send server status (0x0007) to a specific client. The backendAvailable
     // bool maps to the wire byte at offset 4 of the encrypted payload; the
