@@ -85,7 +85,13 @@ function updatesRender(slotId) {
   // On the settings page, also show the "checking…" and "up-to-date" states
   // so the user sees feedback from clicking "Check for Updates".
   const onSettings = slotId === 'settings-update-slot';
-  const visible = showWhen.has(s.state) ||
+  // A failed background check (network down, GitHub unreachable, rate-limit)
+  // is noise on the dashboard — the user didn't initiate it and can't act on
+  // it from there. Keep it on settings where it belongs next to the "Check
+  // for Updates" button.
+  const isCheckError = s.state === UPDATE_STATE_ERROR &&
+                       s.failedPhase === UPDATE_STATE_CHECKING;
+  const visible = (showWhen.has(s.state) && !(isCheckError && !onSettings)) ||
                   (onSettings && (s.state === UPDATE_STATE_CHECKING ||
                                   s.state === UPDATE_STATE_UP_TO_DATE));
   banner.style.display = visible ? 'flex' : 'none';
