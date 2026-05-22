@@ -554,7 +554,8 @@ h2.section-title { font-size: 14px; }
 .ctrl-item {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
   background: var(--bg);
   border: 1px solid var(--outline);
   border-radius: 4px;
@@ -564,17 +565,20 @@ h2.section-title { font-size: 14px; }
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 .ctrl-name {
   font-family: 'Rajdhani', sans-serif;
   font-weight: 600;
   font-size: 14px;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 .ctrl-meta {
   font-size: 11px;
   color: var(--text-muted);
   font-family: 'Courier New', monospace;
+  overflow-wrap: anywhere;
 }
 .ctrl-dot {
   display: inline-block;
@@ -587,12 +591,15 @@ h2.section-title { font-size: 14px; }
 .ctrl-dot.ok  { background: var(--success); }
 .ctrl-dot.err { background: var(--error); }
 
-/* Per-controller right-side chip cluster — battery + motion. Wrapped in one
-   flex child of .ctrl-item so space-between still pins it to the right edge. */
+/* Per-controller right-side chip cluster — battery + motion + touchpad +
+   lightbar. Stacked vertically so a long controller name keeps its horizontal
+   room instead of being pushed off the card; right-aligned so each chip's
+   right edge lines up against the card edge. */
 .ctrl-chips {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
   flex-shrink: 0;
 }
 /* Per-controller motion (IMU) state chip — see MOTION_COPY in dashboard.js for
@@ -821,6 +828,8 @@ h2.section-title { font-size: 14px; }
 .ctrl-row {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .conn-meta-label {
   font-size: 10px;
