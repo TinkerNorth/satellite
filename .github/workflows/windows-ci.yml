@@ -55,6 +55,10 @@ jobs:
       # docs/architecture.md and the -mwindows / -static link flags in
       # CMakeLists.txt). MSVC is not used here because the ViGEmClient and
       # libsodium static libs are vendored as MinGW-built archives.
+      #
+      # mingw-w64-x86_64-openssl is required because the client API server
+      # speaks HTTPS via cpp-httplib's SSLServer (CPPHTTPLIB_OPENSSL_SUPPORT)
+      # and tls.cpp generates the self-signed cert via libcrypto.
       - name: Set up MSYS2 / MinGW-w64
         uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
         with:
@@ -66,6 +70,7 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-make
             mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-openssl
 
       - name: Tool versions
         shell: msys2 {0}

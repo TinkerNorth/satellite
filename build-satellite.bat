@@ -8,13 +8,16 @@ setlocal
 
 set CXX=g++
 set CXXFLAGS=-O2 -Wall -Wextra -std=c++17 -D_WIN32_WINNT=0x0A00 -static
-set INCLUDES=-Isrc/platform/windows -Ivigem/include -Ilib -Ilib/libsodium/libsodium-win64/include
+REM Vendored third-party headers (lib/httplib.h, vigem/include, libsodium) go in
+REM via -isystem so g++ suppresses their warnings -- we don't control that code
+REM and the upstream cpp-httplib uses its own deprecated APIs internally.
+set INCLUDES=-Isrc/platform/windows -isystem vigem/include -isystem lib -isystem lib/libsodium/libsodium-win64/include
 set LIBDIRS=-Llib/libsodium/libsodium-win64/lib
 REM Source files: platform layer + portable core (session_service / update_service / github_release)
 REM + net layer + adapters + the per-OS updater adapter. `windres` consumes satellite.rc
 REM separately below (which now #includes src/core/version.h — resolved relative to the .rc
 REM file's own directory, so no -I flag needed for the resource step).
-set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/platform/windows/updater_adapter.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/inner_dispatch.cpp src/net/webserver.cpp src/net/pairing.cpp src/net/discovery.cpp src/net/mdns_protocol.cpp src/net/mdns_responder.cpp src/core/session_service.cpp src/core/update_service.cpp src/core/github_release.cpp src/adapters/log_adapter.cpp
+set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/platform/windows/updater_adapter.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/inner_dispatch.cpp src/net/webserver.cpp src/net/tls.cpp src/net/discovery.cpp src/net/mdns_protocol.cpp src/net/mdns_responder.cpp src/core/session_service.cpp src/core/update_service.cpp src/core/github_release.cpp src/adapters/log_adapter.cpp
 
 echo === Building Satellite ===
 echo.
@@ -28,7 +31,11 @@ if %ERRORLEVEL% neq 0 (
 echo [OK]  resources
 
 echo [2/2] satellite.exe
-%CXX% %CXXFLAGS% %INCLUDES% %LIBDIRS% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -o satellite.exe %SRC_FILES% satellite_res.o -lsodium -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -lwinhttp -mwindows
+REM The client API server speaks HTTPS via cpp-httplib's SSLServer, gated on
+REM CPPHTTPLIB_OPENSSL_SUPPORT. OpenSSL (ssl + crypto) is provided by the
+REM MSYS2 ucrt64 package -- see install-dependencies.bat. Static OpenSSL also
+REM needs -lgdi32 and -luser32 (already implicit, listed for clarity).
+%CXX% %CXXFLAGS% %INCLUDES% %LIBDIRS% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -DCPPHTTPLIB_OPENSSL_SUPPORT -o satellite.exe %SRC_FILES% satellite_res.o -lsodium -lssl -lcrypto -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -lwinhttp -lgdi32 -luser32 -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] satellite.exe
     exit /b 1

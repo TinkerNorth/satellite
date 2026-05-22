@@ -105,6 +105,11 @@ if(WIN32)
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    # Vendored third-party headers go in as SYSTEM so the compiler suppresses
+    # warnings emitted from inside them — cpp-httplib uses its own deprecated
+    # APIs internally, and we don't control that upstream code.
+    target_include_directories(satellite SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
         ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
     )
@@ -116,7 +121,7 @@ if(WIN32)
     )
 
     # libsodium: pre-built static lib vendored under lib/libsodium/libsodium-win64/
-    target_include_directories(satellite PRIVATE
+    target_include_directories(satellite SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include
     )
     target_link_directories(satellite PRIVATE
@@ -170,6 +175,10 @@ elseif(APPLE)
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos
+    )
+    # Vendored third-party headers (cpp-httplib) — SYSTEM suppresses upstream
+    # deprecation warnings we can't fix.
+    target_include_directories(satellite SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
 
@@ -263,6 +272,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+    )
+    # Vendored third-party headers (cpp-httplib) — SYSTEM suppresses upstream
+    # deprecation warnings we can't fix.
+    target_include_directories(satellite SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
 
@@ -524,6 +537,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_include_directories(test_linux_platform PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+    )
+    target_include_directories(test_linux_platform SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
     # SATELLITE_BUILD_TESTS gates test-only seams (e.g. the synthetic
@@ -558,6 +573,8 @@ if(WIN32)
     target_include_directories(test_windows_platform PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_include_directories(test_windows_platform SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
         ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
     )
