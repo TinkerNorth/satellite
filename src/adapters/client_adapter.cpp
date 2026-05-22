@@ -76,17 +76,22 @@ void ClientAdapter::sendHeartbeatAck(const Connection& conn) {
 }
 
 void ClientAdapter::sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
-                                      uint8_t result) {
-    uint8_t inner[8];
+                                      uint8_t result, uint8_t motionFlags) {
+    // Payload: reqType(2) + ctrlIdx(1) + result(1) + motionFlags(1) = 5 bytes.
+    // The motionFlags byte is always present (zero or not) so the dish-side
+    // parser can distinguish "old satellite (msgLen == 4, motion status
+    // unknown)" from "new satellite, flags happen to be zero."
+    uint8_t inner[INNER_HEADER_SIZE + 5];
     inner[0] = (uint8_t)(MSG_CONTROLLER_ACK >> 8);
     inner[1] = (uint8_t)(MSG_CONTROLLER_ACK);
     inner[2] = 0;
-    inner[3] = 4;
+    inner[3] = 5;
     inner[4] = (uint8_t)(requestType >> 8);
     inner[5] = (uint8_t)(requestType);
     inner[6] = ctrlIdx;
     inner[7] = result;
-    sendEncryptedPacket(conn, inner, 8);
+    inner[8] = motionFlags;
+    sendEncryptedPacket(conn, inner, sizeof(inner));
 }
 
 void ClientAdapter::sendServerStatus(const Connection& conn, bool backendAvailable,

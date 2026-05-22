@@ -58,6 +58,23 @@ class SessionService {
     // Handle controller type change request.
     void handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8_t controllerType);
 
+    // Handle a mid-session capability update from the dish
+    // (MSG_CONTROLLER_CAPS_UPDATE / 0x000E). Overwrites
+    // `Controller::caps` in place; no replug, no fresh ACK. The receiver
+    // does not gate any data path on the cap bits today
+    // (`session_service.cpp::handleMotionData` is explicit about it), so
+    // this is purely an honesty update for the
+    // ConnectionSnapshot::CtrlInfo::motionCapable / lightbarCapable
+    // fields the web UI surfaces — the dish-side listener gate is the
+    // load-bearing path for "are bytes actually flowing right now."
+    //
+    // Silently dropped if the connection / controller doesn't exist or
+    // is inactive, matching every other "handle*" path's policy of
+    // not surfacing per-packet errors back to the dish (the wire is
+    // not reliable, and a malicious dish couldn't be told anything
+    // useful anyway).
+    void handleControllerCapsUpdate(uint32_t token, uint8_t ctrlIdx, uint16_t caps);
+
     // Handle a rumble notification fired by the platform gamepad backend.
     // Called from the backend's notification thread (ViGEm worker on Windows,
     // uinput reader on Linux). Resolves `serial` → (connection, ctrlIdx),
@@ -166,6 +183,20 @@ class SessionService {
             bool motionCapable;
             bool motionActive;
             bool motionSink;
+            // True iff this satellite's backend has an IMU surface for this
+            // controller's chosen type (DS4 yes, Xbox no, macOS no). The
+            // web UI uses this to warn the operator that an Xbox-typed
+            // slot can never sink motion regardless of whether the dish
+            // advertises it.
+            bool motionSinkSupportedForType;
+            // True iff the platform adapter successfully created the IMU
+            // sink for this serial at plug-in time. False distinguishes
+            // "kernel rejected the motion node" (a real failure to
+            // diagnose) from "no game has subscribed yet" (the common
+            // motionSink == false case). True on Windows/macOS today
+            // since neither can fail per-serial in the same way; the
+            // signal is meaningful on Linux.
+            bool motionBackendOk;
             // True once at least one MSG_TOUCHPAD sample has been decoded for
             // this controller. Where that sample is routed is the
             // connection-level touchpadMode above.

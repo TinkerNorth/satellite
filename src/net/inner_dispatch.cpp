@@ -71,6 +71,18 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         svc.handleControllerType(token, ctrlIdx, ctrlType);
         break;
     }
+    case MSG_CONTROLLER_CAPS_UPDATE: {
+        // Same payload shape as the caps field of MSG_CONTROLLER_ADD —
+        // ctrlIdx(1) + caps(2 BE) = 3 bytes. Lets the dish push a
+        // mid-session capability change (e.g. user flipped the motion
+        // toggle after registration) without unplugging the controller.
+        if (msgLen < 3) break;
+        uint8_t ctrlIdx = payload[0];
+        uint16_t caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
+                                              static_cast<uint16_t>(payload[2]));
+        svc.handleControllerCapsUpdate(token, ctrlIdx, caps);
+        break;
+    }
     case MSG_MOTION: {
         // Wire payload: ctrlIdx(1) + MOTION_WIRE_PAYLOAD_BYTES(16) = 17 bytes.
         // Decoded with explicit little-endian shifts — NOT a struct memcpy —

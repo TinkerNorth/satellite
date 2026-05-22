@@ -25,7 +25,7 @@ class ClientAdapter : public IClientPort {
 
     void sendHeartbeatAck(const Connection& conn) override;
     void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
-                           uint8_t result) override;
+                           uint8_t result, uint8_t motionFlags = 0) override;
     void sendServerStatus(const Connection& conn, bool backendAvailable,
                           uint8_t totalActiveControllers) override;
     void

@@ -344,6 +344,17 @@ bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
     // the gamepad still works and motion is still cached by the
     // SessionService — only the local evdev motion node is missing.
     dev.motionFd = openMotionUinputDevice(serial);
+    if (dev.motionFd < 0) {
+        // Surface the failure clearly. Without this log a kernel too old
+        // for INPUT_PROP_ACCELEROMETER, a missing /dev/uinput permission,
+        // or a /tmp-exhausted system would silently degrade to "motion
+        // captured but never delivered" — indistinguishable from "no game
+        // has subscribed" in the web UI. Pairs with motionBackendOk().
+        std::fprintf(stderr,
+                     "satellite: failed to open DS4 motion uinput device for serial=%u; "
+                     "motion samples will be cached but not forwarded\n",
+                     serial);
+    }
     // Third uinput node for the DualShock 4 touchpad (Task 1.3). Also
     // best-effort — a failure just means TOUCHPAD_MODE_DS4 has nowhere to
     // land for this controller; the sample is still cached for the web UI.
@@ -476,6 +487,28 @@ bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     ok &= emit(fd, EV_ABS, ABS_Z, report.accelZ);
     ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
     return ok;
+}
+
+bool GamepadAdapter::supportsMotionForType(uint8_t controllerType) const {
+    // uinput's IMU surface is the dedicated INPUT_PROP_ACCELEROMETER node
+    // we create alongside a DualShock 4 in pluginDeviceDS4. The Xbox 360
+    // virtual device has no motion node. Independent of plug state — this
+    // is a backend-shape question, not a per-serial query.
+    return controllerTypeUsesDS4(controllerType);
+}
+
+bool GamepadAdapter::motionBackendOk(uint32_t serial) const {
+    // True iff openMotionUinputDevice succeeded for this serial at
+    // plug-in time. The SessionService folds this into ConnectionSnapshot
+    // .CtrlInfo so the web UI can distinguish "no game subscribed" from
+    // "kernel rejected the motion node." A serial we don't know about
+    // (race between unplug and query) reads true — there's nothing to
+    // report failure about, and false here would surface as a phantom
+    // "broken backend" badge.
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = devices_.find(serial);
+    if (it == devices_.end()) return true;
+    return it->second.motionFd >= 0;
 }
 
 bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {

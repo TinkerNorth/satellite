@@ -42,6 +42,21 @@ class GamepadAdapter : public IGamepadPort {
     // false; the SessionService still caches the sample for the web UI.
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
 
+    // uinput exposes an IMU surface only for the DualShock 4 virtual
+    // device (the INPUT_PROP_ACCELEROMETER node from openMotionUinputDevice).
+    // Xbox 360 emulation has no motion node. Surface this fact to the web
+    // UI so the operator knows in advance why an Xbox-typed slot won't
+    // deliver gyro to a game.
+    bool supportsMotionForType(uint8_t controllerType) const override;
+
+    // True iff the per-serial motion uinput node was successfully created
+    // at plug-in time (motionFd >= 0). False distinguishes "kernel
+    // rejected the INPUT_PROP_ACCELEROMETER device" (rare: kernel too
+    // old, no /dev/uinput permission, /tmp exhausted) from "game hasn't
+    // subscribed" — the web UI surfaces this so a silent backend failure
+    // doesn't look like a quiet game.
+    bool motionBackendOk(uint32_t serial) const override;
+
     // Forward a touchpad sample to the DualShock 4's dedicated multitouch
     // uinput node (created alongside the gamepad node). Emits the MT-B
     // protocol — ABS_MT_SLOT / ABS_MT_TRACKING_ID / ABS_MT_POSITION_X/Y plus

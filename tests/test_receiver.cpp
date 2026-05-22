@@ -108,7 +108,7 @@ struct StubClient : IClientPort {
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
     void sendHeartbeatAck(const Connection&) override { heartbeatAcks++; }
-    void sendControllerAck(const Connection&, uint16_t, uint8_t, uint8_t) override {}
+    void sendControllerAck(const Connection&, uint16_t, uint8_t, uint8_t, uint8_t) override {}
     void sendServerStatus(const Connection&, bool, uint8_t) override {}
     void broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>&, bool,
                                uint8_t) override {}
