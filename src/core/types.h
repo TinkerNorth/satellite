@@ -151,6 +151,22 @@ inline const uint16_t MSG_BATTERY = 0x000B;
 inline const uint16_t MSG_TOUCHPAD = 0x000C;
 inline const uint16_t MSG_LIGHTBAR = 0x000D;
 
+// Mid-session capability update from the dish. Same payload shape as
+// MSG_CONTROLLER_ADD's caps field — `ctrlIdx(u8) + caps(u16 BE)` — but
+// applied to an already-registered controller without unplugging the
+// virtual device. The receiver overwrites `Controller::caps` in place
+// and re-derives `motionCapable()` / `lightbarCapable()` from the new
+// word; no replug, no fresh ACK round-trip, no controller flicker.
+//
+// Sent by the dish when its per-slot motion toggle flips after registration
+// time (the original CAP_MOTION bit was an at-registration snapshot — see
+// MotionCapabilityComposer.toCapBits on the dish side). A pre-extension
+// receiver that doesn't recognise this type drops the packet silently in
+// inner_dispatch.cpp; the dish-side runtime listener gate is the
+// load-bearing correctness path, so dropping the wire update only costs
+// dashboard staleness, not real bytes-on-the-wire honesty.
+inline const uint16_t MSG_CONTROLLER_CAPS_UPDATE = 0x000E;
+
 // Controller ACK result codes (wire values are stable across platforms; only
 // the C++ identifier changed from ACK_ERR_VIGEM_UNAVAIL → ACK_ERR_BACKEND_UNAVAIL).
 inline const uint8_t ACK_OK = 0x00;
@@ -159,6 +175,26 @@ inline const uint8_t ACK_ERR_NO_SLOTS = 0x02;
 inline const uint8_t ACK_ERR_ALREADY_EXISTS = 0x03;
 inline const uint8_t ACK_ERR_NOT_FOUND = 0x04;
 inline const uint8_t ACK_ERR_PLUGIN_FAIL = 0x05;
+
+// Optional motion-status byte appended after the 4-byte controller-ACK payload
+// for MSG_CONTROLLER_ADD acks (wire length becomes 5 instead of 4). Lets the
+// dish learn the receiver's two motion-sink facts at the moment they are
+// definitively known (plug-in time) without a separate HTTP poll of
+// /api/connections. A pre-extension dish reads only the first 4 bytes — the
+// extra byte is silently dropped, so the change is forward-compatible. A
+// post-extension dish that talks to a pre-extension satellite sees the
+// payload-length field == 4 and treats the motion-status as unknown.
+//
+// Bit 0: the receiver's backend has an IMU surface for this controller's
+//        chosen type (IGamepadPort::supportsMotionForType). Universal across
+//        the shipping backends — Windows ViGEm + Linux uinput return true only
+//        for PlayStation; macOS returns false.
+// Bit 1: the receiver's backend successfully created the per-serial IMU sink
+//        at plug-in time (IGamepadPort::motionBackendOk). False distinguishes
+//        "kernel rejected the motion node" from "no game has subscribed yet"
+//        — the former is a real failure the dish should surface to the user.
+inline const uint8_t ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE = 0x01;
+inline const uint8_t ACK_MOTION_FLAG_BACKEND_OK = 0x02;
 
 // ── Controller capability bits ──────────────────────────────────────────────
 // Carried in the 2-byte big-endian capability word of the MSG_CONTROLLER_ADD

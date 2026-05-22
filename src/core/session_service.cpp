@@ -269,7 +269,18 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16
                 "Controller #" + std::to_string(ctrlIdx) + " added (serial " +
                     std::to_string(serial) + ") for " + conn.deviceName);
 
-    client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_OK);
+    // Motion-status byte on the ACK. The dish folds these two facts into its
+    // MotionCapability composer so the pill can read "you toggled motion on
+    // but the kernel rejected the uinput motion node" instead of falsely
+    // showing STREAMING while bytes vanish at the receiver. Only meaningful
+    // on the success path — the error paths above pass the default 0 since
+    // the controller never plugged in and the motion question is moot.
+    uint8_t motionFlags = 0;
+    if (backend_.supportsMotionForType(ctrl.controllerType)) {
+        motionFlags |= ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE;
+    }
+    if (backend_.motionBackendOk(serial)) { motionFlags |= ACK_MOTION_FLAG_BACKEND_OK; }
+    client_.sendControllerAck(conn, MSG_CONTROLLER_ADD, ctrlIdx, ACK_OK, motionFlags);
     broadcastStatus();
 }
 
@@ -298,6 +309,35 @@ void SessionService::handleControllerRemove(uint32_t token, uint8_t ctrlIdx) {
 
     closeBackendBusIfIdle();
     client_.sendControllerAck(conn, MSG_CONTROLLER_REMOVE, ctrlIdx, ACK_OK);
+    broadcastStatus();
+}
+
+void SessionService::handleControllerCapsUpdate(uint32_t token, uint8_t ctrlIdx, uint16_t caps) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return;
+
+    Connection& conn = it->second;
+    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+
+    Controller& ctrl = conn.controllers[ctrlIdx];
+    if (!ctrl.active) return;
+
+    // Overwrite in place. Same word the dish sent at MSG_CONTROLLER_ADD;
+    // any number of subsequent updates are idempotent reads of the
+    // most-recent word from the dish.
+    uint16_t oldCaps = ctrl.caps;
+    if (oldCaps == caps) return; // no-op — don't churn the log on duplicate ticks
+    ctrl.caps = caps;
+
+    log_.logMsg(LogLevel::INFO, "service",
+                "Controller #" + std::to_string(ctrlIdx) + " caps updated 0x" +
+                    std::to_string(oldCaps) + " → 0x" + std::to_string(caps) + " (" +
+                    conn.deviceName + ")");
+
+    // Broadcast so the web UI's snapshot redraws with the new
+    // motionCapable / lightbarCapable bits without waiting for the
+    // next /api/connections poll.
     broadcastStatus();
 }
 
@@ -643,7 +683,8 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
                 info.motionCapable = ctrl.motionCapable();
                 info.motionActive = ctrl.lastMotionValid;
                 info.motionSink = ctrl.motionSinkActive;
-                info.motionSinkSupportedForType = backend_.supportsMotionForType(ctrl.controllerType);
+                info.motionSinkSupportedForType =
+                    backend_.supportsMotionForType(ctrl.controllerType);
                 info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
                 info.touchpadActive = ctrl.lastTouchpadValid;
                 info.lightbarCapable = ctrl.lightbarCapable();

@@ -245,8 +245,7 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             // True iff the platform adapter successfully created the IMU
             // sink at plug-in. False distinguishes a kernel-level failure
             // (uinput permissions, kernel too old) from "no game subscribed."
-            json += ",\"motionBackendOk\":" +
-                    std::string(ctrl.motionBackendOk ? "true" : "false");
+            json += ",\"motionBackendOk\":" + std::string(ctrl.motionBackendOk ? "true" : "false");
             json += ",\"touchpadActive\":" + std::string(ctrl.touchpadActive ? "true" : "false");
             json += ",\"lightbarCapable\":" + std::string(ctrl.lightbarCapable ? "true" : "false");
             if (ctrl.lightbarKnown) {

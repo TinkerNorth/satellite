@@ -160,8 +160,17 @@ class IClientPort {
     virtual void sendHeartbeatAck(const Connection& conn) = 0;
 
     // Send controller ACK (0x0006) to a specific client.
+    //
+    // `motionFlags` is appended as a 5th payload byte (extending the wire
+    // length from 4 to 5). Meaningful only on MSG_CONTROLLER_ADD acks with
+    // ACK_OK — every other ack path passes 0 because the controller is not
+    // plugged in and the motion-sink question is moot. See
+    // ACK_MOTION_FLAG_* in core/types.h for the bit definitions. The byte
+    // is always appended (zero or not) so a length-aware dish can
+    // distinguish "old satellite (msgLen == 4, motion-status unknown)" from
+    // "new satellite, motion flags happen to be zero (msgLen == 5)."
     virtual void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
-                                   uint8_t result) = 0;
+                                   uint8_t result, uint8_t motionFlags = 0) = 0;
 
     // Send server status (0x0007) to a specific client. The backendAvailable
     // bool maps to the wire byte at offset 4 of the encrypted payload; the
