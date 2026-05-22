@@ -16,6 +16,7 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include <unordered_map>
 
 // ── Counters & state for assertions ─────────────────────────────────────────
 static int g_pass = 0;
@@ -172,6 +173,28 @@ struct MockViGem : IGamepadPort {
     // Helper for tests: simulate the platform firing a lightbar colour change.
     void fireLightbar(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         if (capturedLightbarCb) capturedLightbarCb(serial, r, g, b);
+    }
+
+    // Per-type "does this backend have a motion sink" toggle. Default mirrors
+    // the real Windows / Linux behaviour: DS4 (PLAYSTATION) is supported,
+    // Xbox is not. Tests can override per-case via supportsMotionForTypeMap
+    // to exercise the alternate code paths.
+    std::unordered_map<uint8_t, bool> supportsMotionForTypeMap{
+        {CONTROLLER_TYPE_XBOX, false},
+        {CONTROLLER_TYPE_PLAYSTATION, true},
+    };
+    bool supportsMotionForType(uint8_t controllerType) const override {
+        auto it = supportsMotionForTypeMap.find(controllerType);
+        return it != supportsMotionForTypeMap.end() ? it->second : false;
+    }
+
+    // Per-serial motionBackendOk override. Default true (the common case);
+    // tests that exercise the kernel-rejected path flip the entry for a
+    // specific serial.
+    std::unordered_map<uint32_t, bool> motionBackendOkMap;
+    bool motionBackendOk(uint32_t serial) const override {
+        auto it = motionBackendOkMap.find(serial);
+        return it != motionBackendOkMap.end() ? it->second : true;
     }
 
     // Custom reset that preserves no state — copy/move-assigning the mock
@@ -1875,6 +1898,126 @@ static void test_handleMotionData_routesAcrossControllers() {
     EXPECT_EQ(static_cast<int>(vigem.lastMotion.gyroX), 200);
 }
 
+static void test_snapshot_motionSinkSupportedForType_DS4() {
+    TEST("snapshot — motionSinkSupportedForType true for DS4-typed slot");
+    // The headline diagnostic: a Playstation-typed slot has a real IMU
+    // surface on the Windows/Linux backends. The web UI uses this to NOT
+    // warn about motion on a DS4 slot, even when no game has subscribed.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections.size(), static_cast<size_t>(1));
+    EXPECT_EQ(snap.connections[0].controllers.size(), static_cast<size_t>(1));
+    EXPECT(snap.connections[0].controllers[0].motionSinkSupportedForType);
+}
+
+static void test_snapshot_motionSinkSupportedForType_Xbox() {
+    TEST("snapshot — motionSinkSupportedForType false for Xbox-typed slot");
+    // The headline UX win: an Xbox virtual pad has no IMU surface. The web
+    // UI must be honest about this so the operator knows up front that
+    // motion can't flow through to a game on this slot — independent of
+    // whether the dish advertises CAP_MOTION.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    // controllerType defaults to CONTROLLER_TYPE_XBOX; pin it explicitly.
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(!snap.connections[0].controllers[0].motionSinkSupportedForType);
+}
+
+static void test_snapshot_motionSinkSupportedForType_macOS_no_backend() {
+    TEST("snapshot — motionSinkSupportedForType false for both types on macOS-like backend");
+    // The macOS adapter is a base no-op IGamepadPort; its
+    // supportsMotionForType returns false unconditionally. Pin that path
+    // so a regression that "helpfully" defaults to true for DS4 in the
+    // base class would be caught.
+    MockViGem vigem;
+    vigem.supportsMotionForTypeMap = {
+        {CONTROLLER_TYPE_XBOX, false},
+        {CONTROLLER_TYPE_PLAYSTATION, false},
+    };
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(!snap.connections[0].controllers[0].motionSinkSupportedForType);
+}
+
+static void test_snapshot_motionBackendOk_default_true() {
+    TEST("snapshot — motionBackendOk defaults to true for a healthy plug");
+    // The success path — the platform adapter reports motionBackendOk=true
+    // for a serial it just plugged in. The web UI then renders the slot
+    // without a "broken IMU" badge.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].controllers[0].motionBackendOk);
+}
+
+static void test_snapshot_motionBackendOk_kernel_rejected() {
+    TEST("snapshot — motionBackendOk false when backend reports failure");
+    // The diagnostic this field exists for: the Linux uinput motion node
+    // failed to open (kernel too old, /dev/uinput permissions, etc.). The
+    // sample is still cached, but the web UI now distinguishes "no game
+    // subscribed" from "platform couldn't even create the sink."
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // serial = 1
+    // Stub the backend to report failure for the just-allocated serial.
+    vigem.motionBackendOkMap[1] = false;
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(!snap.connections[0].controllers[0].motionBackendOk);
+}
+
+static void test_snapshot_motionBackendOk_unknown_serial_is_optimistic() {
+    TEST("snapshot — motionBackendOk is true for a serial the backend doesn't know about");
+    // Race: the snapshot reads `motionBackendOk(serial)` for a serial the
+    // adapter has already forgotten (unplug between query and answer).
+    // The base contract says return true — there's nothing to report
+    // failure about, and false here would surface a phantom red badge.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    // Don't seed motionBackendOkMap for the serial — the default-true
+    // path of the mock is what the unknown-serial contract returns.
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].controllers[0].motionBackendOk);
+}
+
 // ── Battery tests ───────────────────────────────────────────────────────────
 
 static void test_msgBattery_constant() {
@@ -2740,6 +2883,14 @@ int main() {
     test_handleMotionData_outOfBoundsCtrlIdx();
     test_handleMotionData_inactiveController();
     test_handleMotionData_routesAcrossControllers();
+
+    // ── Per-type motion sink + per-serial backend health diagnostics ──
+    test_snapshot_motionSinkSupportedForType_DS4();
+    test_snapshot_motionSinkSupportedForType_Xbox();
+    test_snapshot_motionSinkSupportedForType_macOS_no_backend();
+    test_snapshot_motionBackendOk_default_true();
+    test_snapshot_motionBackendOk_kernel_rejected();
+    test_snapshot_motionBackendOk_unknown_serial_is_optimistic();
 
     // ── Battery (sender → satellite, periodic) ──
     test_msgBattery_constant();

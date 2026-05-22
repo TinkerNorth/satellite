@@ -166,6 +166,20 @@ class SessionService {
             bool motionCapable;
             bool motionActive;
             bool motionSink;
+            // True iff this satellite's backend has an IMU surface for this
+            // controller's chosen type (DS4 yes, Xbox no, macOS no). The
+            // web UI uses this to warn the operator that an Xbox-typed
+            // slot can never sink motion regardless of whether the dish
+            // advertises it.
+            bool motionSinkSupportedForType;
+            // True iff the platform adapter successfully created the IMU
+            // sink for this serial at plug-in time. False distinguishes
+            // "kernel rejected the motion node" (a real failure to
+            // diagnose) from "no game has subscribed yet" (the common
+            // motionSink == false case). True on Windows/macOS today
+            // since neither can fail per-serial in the same way; the
+            // signal is meaningful on Linux.
+            bool motionBackendOk;
             // True once at least one MSG_TOUCHPAD sample has been decoded for
             // this controller. Where that sample is routed is the
             // connection-level touchpadMode above.

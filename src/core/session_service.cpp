@@ -643,6 +643,8 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
                 info.motionCapable = ctrl.motionCapable();
                 info.motionActive = ctrl.lastMotionValid;
                 info.motionSink = ctrl.motionSinkActive;
+                info.motionSinkSupportedForType = backend_.supportsMotionForType(ctrl.controllerType);
+                info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
                 info.touchpadActive = ctrl.lastTouchpadValid;
                 info.lightbarCapable = ctrl.lightbarCapable();
                 info.lightbarKnown = ctrl.lastLightbarValid;

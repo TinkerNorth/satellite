@@ -73,6 +73,33 @@ class IGamepadPort {
     // motion is only useful when the virtual device advertises a motion cap.
     virtual bool submitMotion(uint32_t /*serial*/, const MotionReport& /*report*/) { return false; }
 
+    // Does this backend have an IMU surface for [controllerType]? Used by
+    // SessionService::handleControllerAdd to populate
+    // ConnectionSnapshot::CtrlInfo::motionSinkSupportedForType, which the
+    // web UI surfaces so the operator can see "Xbox-typed virtual pad
+    // can't sink motion on this backend" without having to inspect a
+    // silently-dropped sample stream.
+    //
+    // The CAP_MOTION bit on the dish describes what the *sender* will
+    // stream. This method describes what the *receiver* can land. The
+    // intersection is what actually moves a game's camera.
+    //
+    // Default: false for every type. Windows ViGEm overrides to return
+    // true only for CONTROLLER_TYPE_PLAYSTATION (DS4 has IMU; Xbox 360
+    // does not). Linux uinput likewise overrides only for PLAYSTATION
+    // (DualShock4 motion node), false for Xbox. macOS keeps the default.
+    virtual bool supportsMotionForType(uint8_t /*controllerType*/) const { return false; }
+
+    // True iff backend-side motion delivery succeeded for [serial] on
+    // initial plug-in. On Linux this is `motionFd >= 0` after
+    // openMotionUinputDevice — false means the kernel rejected the
+    // INPUT_PROP_ACCELEROMETER device (rare: kernel too old, no
+    // /dev/uinput permission). The web UI surfaces this so operators can
+    // tell "no game has subscribed" apart from "I couldn't even create
+    // the IMU node." Defaults to true; backends that can fail to create
+    // a motion sink override.
+    virtual bool motionBackendOk(uint32_t /*serial*/) const { return true; }
+
     // Submit a battery update. Defaults to no-op. Windows DS4 backend wires
     // this to the battery byte in DS4_REPORT_EX so games (and Steam Big
     // Picture) can show charge level. Backends without a battery surface

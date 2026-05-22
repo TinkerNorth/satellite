@@ -64,6 +64,12 @@ class ViGEmAdapter : public IGamepadPort {
     // mouse-button level so a held click fires press/release only once.
     bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
 
+    // ViGEm exposes an IMU surface only for the DualShock 4 virtual device
+    // (DS4_REPORT_EX gyro/accel fields). Xbox 360 emulation has no IMU.
+    // The web UI uses this to render an "Xbox virtual pad has no motion
+    // sink" warning when the dish advertises motion on an Xbox-typed slot.
+    bool supportsMotionForType(uint8_t controllerType) const override;
+
   private:
     // Per-controller notification worker. Each plugged virtual device gets a
     // thread that loops on `wait*Notification` and forwards each fired event

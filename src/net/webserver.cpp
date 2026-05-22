@@ -236,6 +236,17 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             json += ",\"motionCapable\":" + std::string(ctrl.motionCapable ? "true" : "false");
             json += ",\"motionActive\":" + std::string(ctrl.motionActive ? "true" : "false");
             json += ",\"motionSink\":" + std::string(ctrl.motionSink ? "true" : "false");
+            // True iff this satellite's backend has an IMU surface for the
+            // slot's chosen controller type. The UI warns when motionCapable
+            // is true but this is false ("dish wants to stream motion but
+            // the backend has nowhere to land it for an Xbox-typed pad").
+            json += ",\"motionSinkSupportedForType\":" +
+                    std::string(ctrl.motionSinkSupportedForType ? "true" : "false");
+            // True iff the platform adapter successfully created the IMU
+            // sink at plug-in. False distinguishes a kernel-level failure
+            // (uinput permissions, kernel too old) from "no game subscribed."
+            json += ",\"motionBackendOk\":" +
+                    std::string(ctrl.motionBackendOk ? "true" : "false");
             json += ",\"touchpadActive\":" + std::string(ctrl.touchpadActive ? "true" : "false");
             json += ",\"lightbarCapable\":" + std::string(ctrl.lightbarCapable ? "true" : "false");
             if (ctrl.lightbarKnown) {
