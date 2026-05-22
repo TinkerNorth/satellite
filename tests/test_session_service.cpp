@@ -10,6 +10,7 @@
  */
 #include "../src/core/session_service.h"
 #include "../src/core/touchpad_codec.h"
+#include "../src/core/gamepad_backend.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -2772,6 +2773,98 @@ static void test_setTouchpadMode_hotApplies() {
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1); // now routed to the mouse
 }
 
+// ── Client-driven mode + server capabilities ──────────────────────────────
+// The server is now a read-only mirror for touchpad mode: the client (dish)
+// sets the mode (POST /api/devices/touchpad-mode), the server validates and
+// routes. These tests pin the contract.
+
+static void test_pairedDevice_defaultsToOff() {
+    TEST("PairedDevice — default touchpadMode is OFF (the safe baseline)");
+    PairedDevice d;
+    EXPECT_EQ(static_cast<int>(d.touchpadMode), static_cast<int>(TOUCHPAD_MODE_OFF));
+}
+
+static void test_connection_defaultsToOff() {
+    TEST("Connection — default touchpadMode is OFF");
+    Connection c;
+    EXPECT_EQ(static_cast<int>(c.touchpadMode), static_cast<int>(TOUCHPAD_MODE_OFF));
+}
+
+static void test_openSession_defaultParamIsOff() {
+    TEST("openSession — default touchpadMode param is OFF; no MSG_TOUCHPAD routes anywhere");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    // Call openSession without specifying the mode — the new default kicks in.
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev1", "TestDevice", "192.168.1.50", key);
+    svc.handleControllerAdd(r.token, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
+    EXPECT_EQ(static_cast<int>(snap.connections[0].touchpadMode),
+              static_cast<int>(TOUCHPAD_MODE_OFF));
+    // And a touchpad sample lands nowhere — neither the DS4 surface nor mouse.
+    TouchpadReport tp;
+    tp.finger0.active = true;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, tp));
+    EXPECT_EQ(vigem.submitTouchpadCalls, 0);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
+}
+
+static void test_deriveTouchpadCapabilities_offAlwaysSupported() {
+    TEST("deriveTouchpadCapabilities — OFF is always supported regardless of backend");
+    BackendStatus none;
+    none.id = BACKEND_ID_NONE;
+    none.supported = false;
+    none.available = false;
+    EXPECT(deriveTouchpadCapabilities(none).offSupported);
+
+    BackendStatus vigem;
+    vigem.id = BACKEND_ID_VIGEM;
+    vigem.supported = true;
+    vigem.available = true;
+    EXPECT(deriveTouchpadCapabilities(vigem).offSupported);
+}
+
+static void test_deriveTouchpadCapabilities_padMouseMatchBackend() {
+    TEST("deriveTouchpadCapabilities — pad+mouse track backend supported");
+    BackendStatus mac;
+    mac.id = BACKEND_ID_NONE;
+    mac.supported = false;
+    auto macCaps = deriveTouchpadCapabilities(mac);
+    EXPECT(!macCaps.padSupported);
+    EXPECT(!macCaps.mouseSupported);
+    EXPECT(macCaps.offSupported);
+
+    BackendStatus uinput;
+    uinput.id = BACKEND_ID_UINPUT;
+    uinput.supported = true;
+    uinput.available = true;
+    auto uinputCaps = deriveTouchpadCapabilities(uinput);
+    EXPECT(uinputCaps.padSupported);
+    EXPECT(uinputCaps.mouseSupported);
+    EXPECT(uinputCaps.offSupported);
+}
+
+static void test_deriveTouchpadCapabilities_driverInstalledButBusDownStillSupports() {
+    TEST("deriveTouchpadCapabilities — driver installed but bus down still advertises support");
+    // A momentary bus-open failure (available=false but supported=true) must
+    // not hide the modes — the client picker should not flap when the bus
+    // bounces. supported=true reflects "this host ships the backend";
+    // available=false reflects "right now I can't open it." Capabilities key
+    // off `supported` only.
+    BackendStatus vigemBusDown;
+    vigemBusDown.id = BACKEND_ID_VIGEM;
+    vigemBusDown.supported = true;
+    vigemBusDown.available = false;
+    vigemBusDown.errorCode = "BUS_OPEN_FAILED";
+    auto caps = deriveTouchpadCapabilities(vigemBusDown);
+    EXPECT(caps.padSupported);
+    EXPECT(caps.mouseSupported);
+    EXPECT(caps.offSupported);
+}
+
 static void test_setTouchpadMode_unknownDeviceAndBadMode() {
     TEST("setTouchpadMode — unknown device returns false; out-of-range mode rejected");
     MockViGem vigem;
@@ -3160,6 +3253,13 @@ int main() {
     test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity();
     test_setTouchpadMode_hotApplies();
     test_setTouchpadMode_unknownDeviceAndBadMode();
+    // Client-driven mode + server capabilities (new in this task).
+    test_pairedDevice_defaultsToOff();
+    test_connection_defaultsToOff();
+    test_openSession_defaultParamIsOff();
+    test_deriveTouchpadCapabilities_offAlwaysSupported();
+    test_deriveTouchpadCapabilities_padMouseMatchBackend();
+    test_deriveTouchpadCapabilities_driverInstalledButBusDownStillSupports();
 
     // ── Lightbar (host game → satellite → dish, Task 1.4) ──
     test_msgLightbar_constant();

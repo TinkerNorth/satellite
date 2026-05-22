@@ -122,10 +122,14 @@ struct StubLog : ILogPort {
 };
 
 // Spin up a SessionService with one open connection holding one active
-// controller at index 0, and return its token.
+// controller at index 0, and return its token. The connection's touchpad
+// mode is seeded to TOUCHPAD_MODE_DS4 so dispatch tests exercise the
+// historical pass-through routing — the new default (OFF) would drop
+// every MSG_TOUCHPAD before the dispatch tests can observe a backend call.
 static uint32_t openWithController(SessionService& svc) {
     uint8_t key[CRYPTO_KEY_SIZE] = {};
-    auto r = svc.openSession("dev-receiver-test", "ReceiverTest", "192.168.1.50", key);
+    auto r = svc.openSession("dev-receiver-test", "ReceiverTest", "192.168.1.50", key,
+                             TOUCHPAD_MODE_DS4);
     svc.handleControllerAdd(r.token, 0);
     return r.token;
 }

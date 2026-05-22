@@ -535,9 +535,11 @@ struct Connection {
     std::array<Controller, MAX_CONTROLLERS_PER_CONN> controllers;
     int activeControllerCount = 0;
     // Touchpad routing for this session (TOUCHPAD_MODE_*). Seeded from the
-    // paired device's persisted setting at openSession; hot-swappable from the
-    // web UI via SessionService::setTouchpadMode without re-pairing.
-    uint8_t touchpadMode = TOUCHPAD_MODE_DS4;
+    // paired device's persisted setting at openSession; hot-swappable from
+    // the client via SessionService::setTouchpadMode (POST
+    // /api/devices/touchpad-mode) without re-pairing. The client owns the
+    // setting; the server only routes and reflects.
+    uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
 };
 
 // ── Paired device info (persisted) ──────────────────────────────────────────
@@ -547,9 +549,14 @@ struct PairedDevice {
     std::string lastIP;
     std::string pairedAt;
     std::string sharedKeyHex; // 64-char hex (32 bytes)
-    // Touchpad routing mode (TOUCHPAD_MODE_*). Devices paired before Task 1.3
-    // load as TOUCHPAD_MODE_DS4 — the historical pass-through behaviour.
-    uint8_t touchpadMode = TOUCHPAD_MODE_DS4;
+    // Touchpad routing mode (TOUCHPAD_MODE_*). Defaults to OFF — the safe
+    // baseline a server can promise without knowing whether the just-paired
+    // client can even capture touchpad input. The client owns the setting:
+    // it can pass an initial value in the pair request, and it can change
+    // it any time via POST /api/devices/touchpad-mode. Devices paired
+    // before this change (when DS4 was the default) load with their
+    // persisted value.
+    uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
 };
 
 // ── Update channels ─────────────────────────────────────────────────────────

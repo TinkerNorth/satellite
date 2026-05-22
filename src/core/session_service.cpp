@@ -124,7 +124,7 @@ OpenSessionResult SessionService::openSession(const std::string& deviceId,
     conn.lastPacketTime = std::chrono::steady_clock::now();
     conn.connectedAt = std::chrono::steady_clock::now();
     conn.activeControllerCount = 0;
-    conn.touchpadMode = (touchpadMode < TOUCHPAD_MODE_COUNT) ? touchpadMode : TOUCHPAD_MODE_DS4;
+    conn.touchpadMode = (touchpadMode < TOUCHPAD_MODE_COUNT) ? touchpadMode : TOUCHPAD_MODE_OFF;
 
     connections_[token] = conn;
 
