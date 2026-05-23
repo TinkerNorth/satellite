@@ -82,11 +82,16 @@ static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& r
     auto deviceId = jsonGetString(req.body, "id");
     auto modeStr = jsonGetString(req.body, "mode");
     if (deviceId.empty() || modeStr.empty()) {
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: missing id or mode in body");
         res.status = 400;
         res.set_content(R"({"error":"missing id or mode"})", "application/json");
         return;
     }
     if (modeStr != "ds4" && modeStr != "mouse" && modeStr != "off") {
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: bad mode '" + modeStr +
+                   "' (expected ds4|mouse|off) for device " + deviceId);
         res.status = 400;
         res.set_content(R"({"error":"mode must be ds4, mouse, or off"})", "application/json");
         return;
@@ -98,6 +103,9 @@ static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& r
                          (modeStr == "ds4" && caps.padSupported) ||
                          (modeStr == "mouse" && caps.mouseSupported);
     if (!modeSupported) {
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: '" + modeStr +
+                   "' not supported by this host's backend (device " + deviceId + ")");
         res.status = 409; // Conflict — server cannot honour this mode
         res.set_content(R"({"error":"mode not supported on this host","supported":false})",
                         "application/json");
@@ -117,6 +125,13 @@ static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& r
         if (found) saveConfig(g_config);
     }
     if (!found) {
+        // Most common cause of a failed mode-set from a dish: the dish remembers
+        // a pairing the satellite no longer has (config wiped, satellite
+        // reinstalled, dish restored from backup). The dish surfaces this as a
+        // toast prompting a re-pair.
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: device " + deviceId +
+                   " is not in pairedDevices — dish needs to re-pair");
         res.status = 404;
         res.set_content(R"({"error":"device not paired"})", "application/json");
         return;
@@ -210,6 +225,17 @@ static bool clientAuthorized(const httplib::Request& req, httplib::Response& res
             if (d.id == deviceId) return true;
         }
     }
+    // Log the 401 so an auth failure is visible in the satellite console
+    // without needing to inspect the client. Two common shapes:
+    //   - empty deviceId: client forgot to send X-Device-Id and the route's
+    //     body schema doesn't include a `deviceId` field for the fallback to
+    //     latch onto. Bug in the dish's request plumbing.
+    //   - non-empty deviceId not in pairedDevices: stale pairing on the dish
+    //     side; user needs to re-pair.
+    logMsg(LogLevel::WARN, "client",
+           "401 unauthorized " + req.method + " " + req.path +
+               (deviceId.empty() ? " (no X-Device-Id header and no deviceId in body)"
+                                 : " (deviceId " + deviceId + " not in pairedDevices)"));
     res.status = 401;
     res.set_content(R"({"error":"unauthorized"})", "application/json");
     return false;

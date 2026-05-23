@@ -12,6 +12,7 @@
 #include "../src/core/touchpad_codec.h"
 #include "../src/core/gamepad_backend.h"
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -2528,7 +2529,7 @@ static void test_ds4PackTouchFinger_coordPacking() {
 // ── Touchpad wire decode (core/types.h::decodeTouchpadReport) ──────────────
 
 static void test_decodeTouchpadReport_wireLayout() {
-    TEST("decodeTouchpadReport — flags + finger fields decode from the 11-byte tail");
+    TEST("decodeTouchpadReport — flags + finger fields + eventTimeMs decode from the 15-byte tail");
     uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {};
     p[0] = 0x07; // flags: finger0 + finger1 active + button
     p[1] = 0x2A; // finger0 trackingId
@@ -2541,6 +2542,10 @@ static void test_decodeTouchpadReport_wireLayout() {
     p[8] = 0x80; // finger1 x = 0x8000 = -32768
     p[9] = 0xFF;
     p[10] = 0x7F; // finger1 y = 0x7FFF = 32767
+    p[11] = 0xEF;
+    p[12] = 0xCD;
+    p[13] = 0xAB;
+    p[14] = 0x89; // eventTimeMs = 0x89ABCDEF (LE)
     TouchpadReport r = decodeTouchpadReport(p);
     EXPECT(r.finger0.active);
     EXPECT(r.finger1.active);
@@ -2551,6 +2556,7 @@ static void test_decodeTouchpadReport_wireLayout() {
     EXPECT_EQ(static_cast<int>(r.finger1.trackingId), 0x55);
     EXPECT_EQ(static_cast<int>(r.finger1.x), -32768);
     EXPECT_EQ(static_cast<int>(r.finger1.y), 32767);
+    EXPECT_EQ(r.eventTimeMs, 0x89ABCDEFu);
 }
 
 static void test_decodeTouchpadReport_inactiveFlags() {
@@ -2664,11 +2670,13 @@ static void test_handleTouchpadData_mouseModeContinuousDelta() {
     a.finger0.active = true;
     a.finger0.x = 0;
     a.finger0.y = 0;
+    a.eventTimeMs = 1000;
     svc.handleTouchpadData(r.token, 0, a); // touch-down anchor
     TouchpadReport b;
     b.finger0.active = true;
-    b.finger0.x = 10000;  // +10000 wire units
-    b.finger0.y = -10000; // -10000 wire units
+    b.finger0.x = 10000;                                                   // +10000 wire units
+    b.finger0.y = -10000;                                                  // -10000 wire units
+    b.eventTimeMs = 1000 + TOUCHPAD_MOUSE_REFERENCE_MS;                    // dt = reference → scale 1
     svc.handleTouchpadData(r.token, 0, b);
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 2);
     // 10000 * TOUCHPAD_MOUSE_SENSITIVITY ≈ 420 px — assert sign + ballpark.
@@ -2684,16 +2692,20 @@ static void test_handleTouchpadData_mouseModeSubPixelRemainder() {
     SessionService svc(vigem, client, log);
     auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
     svc.handleControllerAdd(r.token, 0);
-    // Three samples 15 wire units apart. 15 × ~0.042 ≈ 0.63 px each — under a
-    // whole pixel alone, but two continuous steps cross 1 px.
+    // Three samples 15 wire units apart, each 4 ms apart (dt == reference →
+    // scale = 1.0). 15 × ~0.042 ≈ 0.63 px each — under a whole pixel alone,
+    // but two continuous steps cross 1 px.
     TouchpadReport s;
     s.finger0.active = true;
     s.finger0.x = 0;
+    s.eventTimeMs = 1000;
     svc.handleTouchpadData(r.token, 0, s); // anchor → dx 0
     s.finger0.x = 15;
+    s.eventTimeMs = 1000 + TOUCHPAD_MOUSE_REFERENCE_MS;
     svc.handleTouchpadData(r.token, 0, s); // +0.63 px → dx 0, remainder kept
     EXPECT_EQ(vigem.lastMouseDx, 0);
     s.finger0.x = 30;
+    s.eventTimeMs = 1000 + 2 * TOUCHPAD_MOUSE_REFERENCE_MS;
     svc.handleTouchpadData(r.token, 0, s); // +0.63 px → 1.26 px total → dx 1
     EXPECT_EQ(vigem.lastMouseDx, 1);
 }
@@ -2735,12 +2747,14 @@ static void test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity() 
     a.finger0.active = true;
     a.finger0.trackingId = 5;
     a.finger0.x = 0;
+    a.eventTimeMs = 1000;
     svc.handleTouchpadData(r.token, 0, a);
 
     TouchpadReport b;
     b.finger0.active = true;
     b.finger0.trackingId = 6; // compacted: a different finger now in slot 0
     b.finger0.x = 20000;      // far from sample a
+    b.eventTimeMs = 1000 + TOUCHPAD_MOUSE_REFERENCE_MS;
     svc.handleTouchpadData(r.token, 0, b);
     EXPECT_EQ(vigem.lastMouseDx, 0); // trackingId differs → not continuous
 
@@ -2749,8 +2763,146 @@ static void test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity() 
     c.finger0.active = true;
     c.finger0.trackingId = 6;
     c.finger0.x = 30000;
+    c.eventTimeMs = 1000 + 2 * TOUCHPAD_MOUSE_REFERENCE_MS;
     svc.handleTouchpadData(r.token, 0, c);
     EXPECT(vigem.lastMouseDx > 0); // same finger → delta emitted
+}
+
+// ── Time-scaling (option 4 from the input-latency discussion) ──────────────
+// The next four tests pin the per-sample time-scaling that makes cursor
+// velocity proportional to finger velocity regardless of dt. Without this,
+// the first MOVE event after touchdown (~16 ms on a 60 Hz Android display)
+// produces a delta several times larger than every subsequent ~4 ms sample
+// — the classic first-touch jump the user reported as "100 px first, 5 px
+// second" cursor motion for identical finger movements.
+
+static void test_handleTouchpadData_mouseModeTimeScalingHalvesLongerDt() {
+    TEST("handleTouchpadData — MOUSE mode: 2× dt halves the cursor delta for the same position diff");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // Anchor.
+    TouchpadReport a;
+    a.finger0.active = true;
+    a.finger0.x = 0;
+    a.eventTimeMs = 1000;
+    svc.handleTouchpadData(r.token, 0, a);
+
+    // Same finger, +10000 wire units, dt = 8 ms (2× reference). The scale
+    // factor is REFERENCE_MS/dt = 0.5, so the cursor delta is half the
+    // un-scaled value (≈420 → ≈210).
+    TouchpadReport b;
+    b.finger0.active = true;
+    b.finger0.x = 10000;
+    b.eventTimeMs = 1000 + 2 * TOUCHPAD_MOUSE_REFERENCE_MS;
+    svc.handleTouchpadData(r.token, 0, b);
+    // 10000 * 0.042 * 0.5 ≈ 210 → assert ballpark, not exact (sub-pixel
+    // remainder + int truncation).
+    EXPECT(vigem.lastMouseDx > 190 && vigem.lastMouseDx < 230);
+}
+
+static void test_handleTouchpadData_mouseModeTimeScalingFirstTouchJumpFix() {
+    TEST("handleTouchpadData — MOUSE mode: first-MOVE (16 ms dt) and subsequent (4 ms dt) produce equal cursor velocity");
+    // Repro the user's reported scenario: finger moves at constant velocity.
+    // First MOVE delivers 4× the position-diff of subsequent MOVEs because
+    // Android batched 4× the time. With time-scaling, the per-sample cursor
+    // delta lands in the same ballpark.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // Touch-down at t=0.
+    TouchpadReport down;
+    down.finger0.active = true;
+    down.finger0.x = 0;
+    down.eventTimeMs = 1000;
+    svc.handleTouchpadData(r.token, 0, down);
+
+    // First MOVE at t=16 ms: 16 ms of constant-velocity finger motion =
+    // 4000 wire units worth of travel. Scale = 4/16 = 0.25.
+    TouchpadReport firstMove;
+    firstMove.finger0.active = true;
+    firstMove.finger0.x = 4000;
+    firstMove.eventTimeMs = 1000 + 16;
+    svc.handleTouchpadData(r.token, 0, firstMove);
+    const int firstDx = vigem.lastMouseDx;
+
+    // Subsequent MOVE at t=20 ms: 4 ms of motion = 1000 wire units. Scale 1.0.
+    TouchpadReport secondMove;
+    secondMove.finger0.active = true;
+    secondMove.finger0.x = 5000;
+    secondMove.eventTimeMs = 1000 + 20;
+    svc.handleTouchpadData(r.token, 0, secondMove);
+    const int secondDx = vigem.lastMouseDx;
+
+    // Both samples should produce roughly the same cursor delta — finger
+    // velocity is constant, cursor velocity should be too. Without time-
+    // scaling, firstDx would be ~4× larger than secondDx (the bug).
+    // 4000 * 0.042 * 0.25 = 42, 1000 * 0.042 * 1.0 = 42 → expect within ±5.
+    EXPECT(std::abs(firstDx - secondDx) <= 5);
+    EXPECT(firstDx > 30 && firstDx < 55);
+    EXPECT(secondDx > 30 && secondDx < 55);
+}
+
+static void test_handleTouchpadData_mouseModeDuplicateTimestampEmitsNoMotion() {
+    TEST("handleTouchpadData — MOUSE mode: a sample with dt==0 (duplicate resend) emits no cursor motion");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // The dish's resend loop fires every 4 ms; if no fresh ACTION_MOVE has
+    // landed in that window, the cached state's eventTimeMs is identical to
+    // the previous sample's. Receiver must treat as duplicate (no cursor
+    // motion) instead of dividing by zero / producing a garbage delta.
+    TouchpadReport s;
+    s.finger0.active = true;
+    s.finger0.x = 0;
+    s.eventTimeMs = 1000;
+    svc.handleTouchpadData(r.token, 0, s); // anchor
+    s.finger0.x = 5000; // position changed (impossible for a true resend,
+                        // but tests the dt-guard not the position guard)
+    svc.handleTouchpadData(r.token, 0, s); // same eventTimeMs → dt = 0
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+}
+
+static void test_handleTouchpadData_mouseModeBigGapReanchors() {
+    TEST("handleTouchpadData — MOUSE mode: dt > MAX_GAP_MS re-anchors (no cursor motion, remainder reset)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc, "dev1", "TestDevice", TOUCHPAD_MODE_MOUSE);
+    svc.handleControllerAdd(r.token, 0);
+
+    // The dish paused (backgrounded / network stall / dropped the resend
+    // loop). When motion resumes the receiver must NOT divide a big
+    // position-diff by a tiny scale factor and fling the cursor.
+    TouchpadReport s;
+    s.finger0.active = true;
+    s.finger0.x = 0;
+    s.eventTimeMs = 1000;
+    svc.handleTouchpadData(r.token, 0, s); // anchor
+    s.finger0.x = 20000;
+    s.eventTimeMs = 1000 + TOUCHPAD_MOUSE_MAX_GAP_MS + 50; // big gap
+    svc.handleTouchpadData(r.token, 0, s);
+    EXPECT_EQ(vigem.lastMouseDx, 0); // re-anchored, no motion this frame
+
+    // A subsequent normal-dt sample resumes cleanly.
+    s.finger0.x = 21000;
+    s.eventTimeMs = 1000 + TOUCHPAD_MOUSE_MAX_GAP_MS + 50 + TOUCHPAD_MOUSE_REFERENCE_MS;
+    svc.handleTouchpadData(r.token, 0, s);
+    EXPECT(vigem.lastMouseDx > 30 && vigem.lastMouseDx < 55); // 1000 * 0.042 * 1.0 ≈ 42
 }
 
 static void test_setTouchpadMode_hotApplies() {
@@ -3251,6 +3403,10 @@ int main() {
     test_handleTouchpadData_mouseModeSubPixelRemainder();
     test_handleTouchpadData_mouseModeLiftResetsAnchor();
     test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity();
+    test_handleTouchpadData_mouseModeTimeScalingHalvesLongerDt();
+    test_handleTouchpadData_mouseModeTimeScalingFirstTouchJumpFix();
+    test_handleTouchpadData_mouseModeDuplicateTimestampEmitsNoMotion();
+    test_handleTouchpadData_mouseModeBigGapReanchors();
     test_setTouchpadMode_hotApplies();
     test_setTouchpadMode_unknownDeviceAndBadMode();
     // Client-driven mode + server capabilities (new in this task).

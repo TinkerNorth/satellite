@@ -378,14 +378,28 @@ struct TouchpadReport {
     TouchpadFinger finger0{};
     TouchpadFinger finger1{};
     bool buttonPressed = false;
+    // Sender-side timestamp of when the current finger coordinates were
+    // sampled. On dish-android this is `MotionEvent.getEventTime()`
+    // truncated to u32 (uptime ms, 49.7-day range). The mouse-mode
+    // delta calc in SessionService::handleTouchpadData uses
+    // (curr.eventTimeMs - prev.eventTimeMs) to time-scale the cursor
+    // velocity so the first MOVE after a touch-down (which Android
+    // delivers up to a full input-frame later) doesn't produce a
+    // visibly larger jump than subsequent per-frame samples.
+    //
+    // Resends from the dish carry the SAME eventTimeMs as the last
+    // position change (no new motion since); the receiver treats
+    // dt == 0 as a duplicate sample and emits no cursor motion.
+    uint32_t eventTimeMs = 0;
 };
 
 // Wire layout for MSG_TOUCHPAD payload (after the 1-byte ctrlIdx):
 //   flags(1): bit0=finger0_active, bit1=finger1_active, bit2=button_pressed
 //   finger0_trackingId(1) + finger0_x(2 LE) + finger0_y(2 LE)
 //   finger1_trackingId(1) + finger1_x(2 LE) + finger1_y(2 LE)
-// = 1 + 5 + 5 = 11 bytes after ctrlIdx → 12 bytes total inner payload.
-inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES = 11;
+//   eventTimeMs(4 LE)
+// = 1 + 5 + 5 + 4 = 15 bytes after ctrlIdx → 16 bytes total inner payload.
+inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES = 15;
 
 // Decode a TouchpadReport from `p` (TOUCHPAD_WIRE_PAYLOAD_BYTES bytes — the
 // portion after the 1-byte ctrlIdx). Explicit little-endian shifts, no struct
@@ -395,6 +409,10 @@ inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
     auto le16 = [](const uint8_t* q) -> int16_t {
         return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
                                     (static_cast<uint16_t>(q[1]) << 8));
+    };
+    auto le32 = [](const uint8_t* q) -> uint32_t {
+        return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
+               (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
     };
     TouchpadReport r;
     const uint8_t flags = p[0];
@@ -407,6 +425,7 @@ inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
     r.finger1.trackingId = p[6];
     r.finger1.x = le16(p + 7);
     r.finger1.y = le16(p + 9);
+    r.eventTimeMs = le32(p + 11);
     return r;
 }
 
@@ -432,6 +451,27 @@ inline const uint8_t TOUCHPAD_MODE_COUNT = 3;
 // The SessionService carries a sub-pixel remainder so slow drags don't
 // truncate to zero motion.
 inline const float TOUCHPAD_MOUSE_SENSITIVITY = 0.042f;
+
+// Reference sample spacing the sensitivity was tuned at — the dish's resend
+// loop cadence (250 Hz → 4 ms). The mouse-mode delta calc scales the per-sample
+// motion by REFERENCE_MS/dt so cursor velocity stays proportional to finger
+// velocity regardless of how long the dish actually took between samples.
+// Without this, the first MOVE after touchdown (Android delivers up to a full
+// input-frame later, ~16 ms on 60 Hz) produces a delta covering ~4× the
+// finger-travel of subsequent ~4 ms samples — the visible "first-touch jump."
+inline const int TOUCHPAD_MOUSE_REFERENCE_MS = 4;
+
+// Below this dt the scale factor explodes (and stops mapping to anything
+// physical — the sensor can't produce samples that close together). Clamp
+// the divisor so a near-duplicate sample doesn't fling the cursor.
+inline const int TOUCHPAD_MOUSE_MIN_DT_MS = 1;
+
+// Above this dt we assume the dish paused / backgrounded / network stalled —
+// the sample is not a continuation of the previous one even if the trackingId
+// matches. Treat as a re-anchor (no cursor motion, drop sub-pixel remainder)
+// rather than letting the scale factor go to near-zero and produce a
+// catastrophically large dx on the next sample's remainder catch-up.
+inline const int TOUCHPAD_MOUSE_MAX_GAP_MS = 100;
 
 inline const char* touchpadModeName(uint8_t mode) {
     switch (mode) {

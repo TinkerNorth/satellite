@@ -500,22 +500,56 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         // trackingId, so "finger0 active in both frames" can still be two
         // different physical fingers. Without the id check that compaction
         // teleports the cursor.
+        //
+        // Time-scaling: the per-sample delta is scaled by REFERENCE_MS / dt
+        // so cursor velocity stays proportional to finger velocity even when
+        // the dish takes longer than the typical 4 ms between samples (the
+        // first MOVE after touch-down is the classic offender — Android
+        // delivers it up to a full input-frame after the DOWN, ~16 ms on a
+        // 60 Hz panel, regardless of sensor rate). Without scaling, that
+        // first sample produced a cursor delta several times larger than
+        // every subsequent ~4 ms sample — the visible "first-touch jump."
         int dx = 0;
         int dy = 0;
         const bool continuous = prevValid && prev.finger0.active && report.finger0.active &&
                                 prev.finger0.trackingId == report.finger0.trackingId;
         if (continuous) {
-            const float fx =
-                static_cast<float>(report.finger0.x - prev.finger0.x) * TOUCHPAD_MOUSE_SENSITIVITY +
-                ctrl.touchpadMouseRemX;
-            const float fy =
-                static_cast<float>(report.finger0.y - prev.finger0.y) * TOUCHPAD_MOUSE_SENSITIVITY +
-                ctrl.touchpadMouseRemY;
-            dx = static_cast<int>(fx);
-            dy = static_cast<int>(fy);
-            // Keep the sub-pixel remainder so a slow drag still moves.
-            ctrl.touchpadMouseRemX = fx - static_cast<float>(dx);
-            ctrl.touchpadMouseRemY = fy - static_cast<float>(dy);
+            // Signed cast handles the u32 → millisecond-uptime wrap correctly:
+            // if the dish's MotionEvent.getEventTime() rolls over u32 mid-
+            // session, the unsigned subtract still gives the right small
+            // positive dt; casting through int32_t lets us cheaply detect
+            // out-of-order packets (dt <= 0) without a second branch.
+            const int32_t dt_ms = static_cast<int32_t>(
+                report.eventTimeMs - prev.eventTimeMs);
+            if (dt_ms <= 0) {
+                // Duplicate sample (resend with same eventTime) or an
+                // out-of-order arrival; no new finger motion to integrate.
+                // Preserve the sub-pixel remainder so a slow drag still
+                // accumulates correctly across resends.
+            } else if (dt_ms > TOUCHPAD_MOUSE_MAX_GAP_MS) {
+                // Big time gap — the dish probably paused / backgrounded /
+                // had a network stall. Treat as a fresh re-anchor: no motion
+                // this frame, drop the remainder so a stale slow-drag
+                // remainder doesn't suddenly catch up.
+                ctrl.touchpadMouseRemX = 0.0f;
+                ctrl.touchpadMouseRemY = 0.0f;
+            } else {
+                const int32_t dt_clamped =
+                    dt_ms < TOUCHPAD_MOUSE_MIN_DT_MS ? TOUCHPAD_MOUSE_MIN_DT_MS : dt_ms;
+                const float scale =
+                    static_cast<float>(TOUCHPAD_MOUSE_REFERENCE_MS) / static_cast<float>(dt_clamped);
+                const float fx = static_cast<float>(report.finger0.x - prev.finger0.x) *
+                                     TOUCHPAD_MOUSE_SENSITIVITY * scale +
+                                 ctrl.touchpadMouseRemX;
+                const float fy = static_cast<float>(report.finger0.y - prev.finger0.y) *
+                                     TOUCHPAD_MOUSE_SENSITIVITY * scale +
+                                 ctrl.touchpadMouseRemY;
+                dx = static_cast<int>(fx);
+                dy = static_cast<int>(fy);
+                // Keep the sub-pixel remainder so a slow drag still moves.
+                ctrl.touchpadMouseRemX = fx - static_cast<float>(dx);
+                ctrl.touchpadMouseRemY = fy - static_cast<float>(dy);
+            }
         } else {
             // No continuous contact — drop any accumulated sub-pixel motion.
             ctrl.touchpadMouseRemX = 0.0f;
