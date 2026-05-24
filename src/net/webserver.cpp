@@ -45,6 +45,106 @@ static std::string buildBackendJson() {
     return json;
 }
 
+// ── Helper: emit the server-capabilities JSON exposed at
+// /api/server/capabilities. Drives the client touchpad mode-picker: greys out
+// unsupported modes, keeps `off` always selectable as the inert fallback.
+// Shape:
+//   { "touchpad": { "supportedModes": ["off", "ds4", "mouse"], "defaultMode": "off" },
+//     "backend":  { ...probeBackend()... } }
+static std::string buildCapabilitiesJson() {
+    TouchpadCapabilities caps = probeTouchpadCapabilities();
+    std::string json = "{\"touchpad\":{\"supportedModes\":[";
+    bool first = true;
+    auto emit = [&](const char* name) {
+        if (!first) json += ",";
+        json += "\"";
+        json += name;
+        json += "\"";
+        first = false;
+    };
+    if (caps.offSupported) emit("off");
+    if (caps.padSupported) emit("ds4");
+    if (caps.mouseSupported) emit("mouse");
+    json += "],\"defaultMode\":\"off\"},\"backend\":";
+    json += buildBackendJson();
+    json += "}";
+    return json;
+}
+
+// ── Helper: shared handler for POST /api/devices/touchpad-mode. Validates
+// the requested mode against TOUCHPAD_MODE_* (and the platform's
+// supportedModes from probeTouchpadCapabilities), persists it to the paired
+// device, and hot-applies to any live connection. Used by both the admin
+// HTTP server (localhost; admin tools) and the HTTPS client API (the
+// authoritative caller — dish apps push their selection here).
+static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& req,
+                                  httplib::Response& res) {
+    auto deviceId = jsonGetString(req.body, "id");
+    auto modeStr = jsonGetString(req.body, "mode");
+    if (deviceId.empty() || modeStr.empty()) {
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: missing id or mode in body");
+        res.status = 400;
+        res.set_content(R"({"error":"missing id or mode"})", "application/json");
+        return;
+    }
+    if (modeStr != "ds4" && modeStr != "mouse" && modeStr != "off") {
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: bad mode '" + modeStr +
+                   "' (expected ds4|mouse|off) for device " + deviceId);
+        res.status = 400;
+        res.set_content(R"({"error":"mode must be ds4, mouse, or off"})", "application/json");
+        return;
+    }
+    // Reject modes this platform can't honour. `off` is always supported;
+    // `ds4` / `mouse` ride on the virtual-gamepad backend (absent on macOS).
+    TouchpadCapabilities caps = probeTouchpadCapabilities();
+    bool modeSupported = (modeStr == "off" && caps.offSupported) ||
+                         (modeStr == "ds4" && caps.padSupported) ||
+                         (modeStr == "mouse" && caps.mouseSupported);
+    if (!modeSupported) {
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: '" + modeStr +
+                   "' not supported by this host's backend (device " + deviceId + ")");
+        res.status = 409; // Conflict — server cannot honour this mode
+        res.set_content(R"({"error":"mode not supported on this host","supported":false})",
+                        "application/json");
+        return;
+    }
+    uint8_t mode = touchpadModeFromName(modeStr);
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        for (auto& d : g_config.pairedDevices) {
+            if (d.id == deviceId) {
+                d.touchpadMode = mode;
+                found = true;
+                break;
+            }
+        }
+        if (found) saveConfig(g_config);
+    }
+    if (!found) {
+        // Most common cause of a failed mode-set from a dish: the dish remembers
+        // a pairing the satellite no longer has (config wiped, satellite
+        // reinstalled, dish restored from backup). The dish surfaces this as a
+        // toast prompting a re-pair.
+        logMsg(LogLevel::WARN, "web",
+               "POST /api/devices/touchpad-mode: device " + deviceId +
+                   " is not in pairedDevices — dish needs to re-pair");
+        res.status = 404;
+        res.set_content(R"({"error":"device not paired"})", "application/json");
+        return;
+    }
+    bool hotApplied = svc.setTouchpadMode(deviceId, mode);
+    logMsg(LogLevel::INFO, "web",
+           "Touchpad mode for device " + deviceId + " set to " + modeStr +
+               (hotApplied ? " (applied to live connection)" : ""));
+    res.set_content(std::string("{\"ok\":true,\"hotApplied\":") + (hotApplied ? "true" : "false") +
+                        "}",
+                    "application/json");
+}
+
 // ── JSON value helpers (key-scoped, body-substring-safe) ─────────────────────
 // The codebase's shared JSON helper (config.h) only exposes jsonGetString.
 // These two add bounded boolean / integer reads for request bodies. Unlike a
@@ -125,6 +225,17 @@ static bool clientAuthorized(const httplib::Request& req, httplib::Response& res
             if (d.id == deviceId) return true;
         }
     }
+    // Log the 401 so an auth failure is visible in the satellite console
+    // without needing to inspect the client. Two common shapes:
+    //   - empty deviceId: client forgot to send X-Device-Id and the route's
+    //     body schema doesn't include a `deviceId` field for the fallback to
+    //     latch onto. Bug in the dish's request plumbing.
+    //   - non-empty deviceId not in pairedDevices: stale pairing on the dish
+    //     side; user needs to re-pair.
+    logMsg(LogLevel::WARN, "client",
+           "401 unauthorized " + req.method + " " + req.path +
+               (deviceId.empty() ? " (no X-Device-Id header and no deviceId in body)"
+                                 : " (deviceId " + deviceId + " not in pairedDevices)"));
     res.status = 401;
     res.set_content(R"({"error":"unauthorized"})", "application/json");
     return false;
@@ -433,6 +544,16 @@ static void pairRoute(const httplib::Request& req, httplib::Response& res) {
     dev.lastIP = clientIP;
     dev.pairedAt = getCurrentDate();
     dev.sharedKeyHex = sharedKeyHex;
+    // Optional initial touchpad mode supplied by the client at pair time. The
+    // client is the authority on its own touchpad capabilities (it knows
+    // whether the user-facing controller has a touchpad surface, whether the
+    // app has a virtual touchpad screen, etc.). If absent, fall back to the
+    // PairedDevice default (TOUCHPAD_MODE_OFF) — the safe baseline.
+    auto initialMode = jsonGetString(req.body, "touchpadMode");
+    if (!initialMode.empty() &&
+        (initialMode == "ds4" || initialMode == "mouse" || initialMode == "off")) {
+        dev.touchpadMode = touchpadModeFromName(initialMode);
+    }
     {
         std::lock_guard<std::mutex> lk(g_configMtx);
         auto& devs = g_config.pairedDevices;
@@ -709,46 +830,24 @@ void adminHttpThread(SessionService& svc) {
     // POST /api/devices/touchpad-mode {id, mode} — set a paired device's
     // touchpad routing mode. `mode` is "ds4" | "mouse" | "off". Persisted to
     // config AND hot-applied to any live connection for the device.
-    g_httpServer.Post("/api/devices/touchpad-mode", [&svc](const httplib::Request& req,
-                                                           httplib::Response& res) {
-        auto deviceId = jsonGetString(req.body, "id");
-        auto modeStr = jsonGetString(req.body, "mode");
-        if (deviceId.empty() || modeStr.empty()) {
-            res.status = 400;
-            res.set_content(R"({"error":"missing id or mode"})", "application/json");
-            return;
-        }
-        if (modeStr != "ds4" && modeStr != "mouse" && modeStr != "off") {
-            res.status = 400;
-            res.set_content(R"({"error":"mode must be ds4, mouse, or off"})", "application/json");
-            return;
-        }
-        uint8_t mode = touchpadModeFromName(modeStr);
-        bool found = false;
-        {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            for (auto& d : g_config.pairedDevices) {
-                if (d.id == deviceId) {
-                    d.touchpadMode = mode;
-                    found = true;
-                    break;
-                }
-            }
-            if (found) saveConfig(g_config);
-        }
-        if (!found) {
-            res.status = 404;
-            res.set_content(R"({"error":"device not paired"})", "application/json");
-            return;
-        }
-        bool hotApplied = svc.setTouchpadMode(deviceId, mode);
-        logMsg(LogLevel::INFO, "web",
-               "Touchpad mode for device " + deviceId + " set to " + modeStr +
-                   (hotApplied ? " (applied to live connection)" : ""));
-        res.set_content(std::string("{\"ok\":true,\"hotApplied\":") +
-                            (hotApplied ? "true" : "false") + "}",
-                        "application/json");
-    });
+    //
+    // Localhost variant — kept for admin tooling / scripts. The dashboard UI
+    // is read-only; the client owns the setting and calls the HTTPS variant
+    // on the client API thread.
+    g_httpServer.Post("/api/devices/touchpad-mode",
+                      [&svc](const httplib::Request& req, httplib::Response& res) {
+                          handleTouchpadModeSet(svc, req, res);
+                      });
+
+    // GET /api/server/capabilities — server capability advertisement. Tells
+    // clients which TOUCHPAD_MODE_* values this host can actually honour, so
+    // the client mode-picker UI can disable modes the receiver platform
+    // doesn't ship (e.g. macOS has no virtual gamepad bus → only `off`).
+    // Reads probeBackend() under the hood; safe to call cheaply.
+    g_httpServer.Get("/api/server/capabilities",
+                     [](const httplib::Request&, httplib::Response& res) {
+                         res.set_content(buildCapabilitiesJson(), "application/json");
+                     });
 
     // ── Debug telemetry endpoint ────────────────────────────────────
     g_httpServer.Get("/api/debug", [&svc](const httplib::Request&, httplib::Response& res) {
@@ -939,6 +1038,23 @@ void clientApiThread(SessionService& svc) {
                       if (!clientAuthorized(req, res)) return;
                       closeConnectionRoute(svc, req, res);
                   });
+
+    // POST /api/devices/touchpad-mode — the client (dish app) pushes its
+    // selected touchpad mode. The server validates, persists, and hot-applies
+    // to the live connection. The web UI shows the result read-only; the
+    // client is the authoritative setter.
+    server.Post("/api/devices/touchpad-mode",
+                [&svc](const httplib::Request& req, httplib::Response& res) {
+                    if (!clientAuthorized(req, res)) return;
+                    handleTouchpadModeSet(svc, req, res);
+                });
+
+    // GET /api/server/capabilities — the client queries this on session open
+    // to populate its mode-picker. No auth: capability info is not sensitive
+    // and the picker needs it before a session is fully live.
+    server.Get("/api/server/capabilities", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(buildCapabilitiesJson(), "application/json");
+    });
 
     g_clientServer = &server;
     logMsg(LogLevel::INFO, "client",

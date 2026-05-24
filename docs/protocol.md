@@ -114,7 +114,7 @@ Application/extension types should use 0x0100+.
 | 0x0009 | Rumble            | controller_index(1B) + strongMag(2B) + weakMag(2B) + durMs(2B) | 4+7 = 11 B  | 35 B          | server → client |
 | 0x000A | Motion (IMU)      | controller_index(1B) + MotionReport(16B)      | 4+17 = 21 B | 45 B          | client → server |
 | 0x000B | Battery           | controller_index(1B) + level(1B) + status(1B) | 4+3 = 7 B   | 31 B          | client → server |
-| 0x000C | Touchpad          | controller_index(1B) + flags(1B) + finger0(5B) + finger1(5B) | 4+12 = 16 B | 40 B    | client → server |
+| 0x000C | Touchpad          | controller_index(1B) + flags(1B) + finger0(5B) + finger1(5B) + eventTimeMs(4B) | 4+16 = 20 B | 44 B    | client → server |
 | 0x000D | Lightbar          | controller_index(1B) + r(1B) + g(1B) + b(1B)  | 4+4 = 8 B   | 32 B          | server → client |
 
 > **Total on wire** = 28 + payload bytes (8 header + 4 type/length + payload + 16 tag).
@@ -381,6 +381,7 @@ that have no battery information at all SHOULD NOT send 0x000B at all.
 [flags (1B)]
 [finger0_trackingId (1B)] [finger0_x (2B, host LE)] [finger0_y (2B, host LE)]
 [finger1_trackingId (1B)] [finger1_x (2B, host LE)] [finger1_y (2B, host LE)]
+[eventTimeMs (4B, host LE)]
 ```
 
 Two-finger touchpad report for DS4 / DualSense trackpads. The receiver
@@ -393,6 +394,7 @@ UI and then routes it per the paired device's **touchpad mode** (below).
 | `flags`                | 1 B  | bit 0 = finger0 active; bit 1 = finger1 active; bit 2 = clicky button pressed |
 | `fingerN_trackingId`   | 1 B  | Monotonic per-finger id; wraps freely                      |
 | `fingerN_x` / `_y`     | 2 B  | Signed int16, full int16 range mapped to the touchpad face |
+| `eventTimeMs`          | 4 B  | Sender's `MotionEvent.getEventTime()` (uptime ms, truncated to u32). Used by mouse-mode time-scaling — see "First-touch jump fix" below. |
 
 **Coordinate space.** Coordinates are a normalised int16 (`-32768..32767`)
 on both axes so the wire is resolution-independent. The convention is
@@ -425,8 +427,22 @@ A mode change applies to live connections immediately — no re-pairing.
 
 **Byte order.** `host LE` mirrors `MotionReport`; senders write LE
 explicitly because the receiver decodes via byte-shift, not `memcpy`. The
-inner payload is `controller_index(1) + 11` = 12 bytes
-(`TOUCHPAD_WIRE_PAYLOAD_BYTES` counts the 11 bytes after the index).
+inner payload is `controller_index(1) + 15` = 16 bytes
+(`TOUCHPAD_WIRE_PAYLOAD_BYTES` counts the 15 bytes after the index).
+
+**First-touch jump fix.** The trailing `eventTimeMs` carries the sender's
+per-sample timestamp (Android `MotionEvent.getEventTime()` for dish-android;
+SDL `getCurrentTime()` for SDL clients; equivalent monotonic uptime
+elsewhere). The receiver's MOUSE-mode path scales each per-sample cursor
+delta by `TOUCHPAD_MOUSE_REFERENCE_MS / dt` so cursor velocity is
+proportional to finger velocity regardless of how long the sender took
+between samples. Without this, the first MOVE event after touch-down (which
+Android delivers up to a full input-frame later, ~16 ms on a 60 Hz panel)
+produces a delta several times larger than every subsequent ~4 ms sample —
+the visible "first-touch jump." Resends carry the SAME `eventTimeMs` as the
+last position change (no new motion), so `dt == 0` is the receiver's signal
+for duplicate-sample and emits no cursor motion. `dt > 100 ms` is treated
+as a re-anchor (paused / backgrounded sender).
 
 ### 0x000D — Lightbar
 

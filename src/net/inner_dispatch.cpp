@@ -106,9 +106,11 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         break;
     }
     case MSG_TOUCHPAD: {
-        // Wire payload: ctrlIdx(1) + TOUCHPAD_WIRE_PAYLOAD_BYTES(11) = 12
+        // Wire payload: ctrlIdx(1) + TOUCHPAD_WIRE_PAYLOAD_BYTES(15) = 16
         // bytes. decodeTouchpadReport does the explicit little-endian decode
-        // (see core/types.h) — same pattern as MOTION.
+        // (see core/types.h) — same pattern as MOTION. The trailing 4 bytes
+        // carry the sender's eventTimeMs, used by handleTouchpadData's
+        // mouse-mode time-scaling to fix the first-touch jump.
         if (msgLen < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES) break;
         uint8_t ctrlIdx = payload[0];
         TouchpadReport report = decodeTouchpadReport(payload + 1);

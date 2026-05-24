@@ -705,6 +705,10 @@ function updatePinPanel(s) {
 // ── Devices ─────────────────────────────────────────────────────────────────
 async function loadDevices() {
   try {
+    // First time round, populate the capabilities cache so the touchpad
+    // badge knows which modes this host can honour. Cheap (one fetch) and
+    // server-side state-free — the result lives in g_serverCapabilities.
+    if (g_serverCapabilities == null) await loadServerCapabilities();
     const r = await fetch('/api/devices');
     if (!r.ok) return;
     const devs = await r.json();
@@ -717,21 +721,25 @@ async function loadDevices() {
     // attributes (HTML-escaped) and the click logic is wired via
     // addEventListener below, so an id is never interpolated into a JS
     // string context. Selection on the segmented control is also exposed
-    // to assistive tech via role="radio" + aria-checked (L-2).
+    // The client (dish app) owns the touchpad mode setting; the dashboard is
+    // a read-only mirror. Show the current mode as a badge plus a hint about
+    // which modes this host supports — the client picker greys out the rest.
     const modes = touchpadModes();
     const tpLabel  = t('devices.touchpad.label');
     const tpTip    = t('devices.touchpad.tip');
-    const tpAria   = t('devices.touchpad.routing');
     const removeLb = t('devices.remove');
+    const supportedModes = (g_serverCapabilities && g_serverCapabilities.touchpad &&
+                            Array.isArray(g_serverCapabilities.touchpad.supportedModes))
+      ? g_serverCapabilities.touchpad.supportedModes
+      : ['off'];
+    const supportedLabels = modes
+      .filter(m => supportedModes.indexOf(m.id) !== -1)
+      .map(m => m.label).join(' · ');
     el.innerHTML = devs.map(d => {
-      const tm = d.touchpadMode || 'ds4';
-      const seg = modes.map(mode => {
-        const on = tm === mode.id;
-        return `<button class="seg-btn${on ? ' seg-on' : ''}" type="button" `
-          + `role="radio" aria-checked="${on ? 'true' : 'false'}" `
-          + `title="${esc(mode.title)}" data-act="touchpad-mode" `
-          + `data-id="${esc(d.id)}" data-mode="${esc(mode.id)}">${esc(mode.label)}</button>`;
-      }).join('');
+      const tm = d.touchpadMode || 'off';
+      const modeMeta = modes.find(m => m.id === tm) || modes[modes.length - 1];
+      const supportedHere = supportedModes.indexOf(tm) !== -1;
+      const badgeCls = supportedHere ? `tp-badge tp-badge-${esc(tm)}` : 'tp-badge tp-badge-unsupported';
       // Per-device link-state chip — defaults to "Paired" (offline) for a
       // device with no live connection. Reuses the same vocabulary the
       // Connections section uses (dish-android chip_status_* family).
@@ -747,7 +755,7 @@ async function loadDevices() {
         </div>
         <div class="device-actions">
           <span class="seg-label" title="${esc(tpTip)}">${esc(tpLabel)}</span>
-          <div class="seg" role="group" aria-label="${esc(tpAria)}">${seg}</div>
+          <span class="${badgeCls}" title="${esc(t('devices.touchpad.client-set'))} — ${esc(t('devices.touchpad.supported-here'))}: ${esc(supportedLabels)}">${esc(modeMeta.label)}</span>
           <button class="btn-icon btn-danger" type="button" data-act="remove-device" data-id="${esc(d.id)}" title="${esc(removeLb)}"><img src="img/icons/close_x.svg" alt="${esc(removeLb)}" class="emoji-icon"></button>
         </div>
       </div>`;
@@ -764,10 +772,9 @@ function handleDeviceListClick(e) {
   const id = btn.getAttribute('data-id') || '';
   if (btn.dataset.act === 'remove-device') {
     removeDevice(id, btn);
-  } else if (btn.dataset.act === 'touchpad-mode') {
-    if (btn.classList.contains('seg-on')) return;  // already selected
-    setTouchpadMode(id, btn.getAttribute('data-mode') || '', btn);
   }
+  // Touchpad mode is client-owned; the dashboard reflects state only — no
+  // segment buttons to click.
 }
 
 async function removeDevice(id, btn) {
@@ -791,37 +798,18 @@ async function removeDevice(id, btn) {
   }
 }
 
-// Set a paired device's touchpad routing mode. The server persists it and
-// hot-applies it to any live connection, so the change needs no re-pairing.
-async function setTouchpadMode(id, mode, btn) {
-  // Disable the entire .seg group during the POST. The fetch is short
-  // (~150ms typical) so a per-button loader inside one segment would feel
-  // jittery; greying the whole segmented control reads as "in transit"
-  // without re-laying out the row. The CSS `button:disabled` rule (alpha
-  // 0.4, pointer-events: none) handles the visual + click-blocking.
-  const seg = btn ? btn.closest('.seg') : null;
-  const segButtons = seg ? Array.from(seg.querySelectorAll('button')) : [];
-  segButtons.forEach(b => { b.disabled = true; });
-  if (seg) seg.setAttribute('aria-busy', 'true');
+// Cached server capabilities — populated lazily on first dashboard load.
+// Drives which touchpad modes the read-only badge knows are honoured here;
+// the actual selection is owned by the client (dish app), not the dashboard.
+let g_serverCapabilities = null;
+
+async function loadServerCapabilities() {
   try {
-    const res = await apiPost('/api/devices/touchpad-mode', { id, mode });
-    if (!res.ok) {
-      // A failed POST leaves the clicked segment un-highlighted — surface why,
-      // then re-render so the segmented control snaps back to the server's
-      // actual (unchanged) mode rather than sitting in a half-applied look.
-      showDashError(apiErrorText(res, t('devices.err.touchpad-mode')));
-      loadDevices();
-      return;
+    const res = await fetch('/api/server/capabilities');
+    if (res.ok) {
+      g_serverCapabilities = await res.json();
     }
-    hideDashError();
-    loadDevices();
-  } finally {
-    // loadDevices() rebuilds the segmented control with the new selection,
-    // so the disabled flags we set live on stale nodes — clearing them
-    // here is harmless but keeps the no-op case (failed re-render) sane.
-    segButtons.forEach(b => { b.disabled = false; });
-    if (seg) seg.removeAttribute('aria-busy');
-  }
+  } catch (e) { /* leave g_serverCapabilities null — UI falls back to "off only" */ }
 }
 
 // ── Backend status ──────────────────────────────────────────────────────────

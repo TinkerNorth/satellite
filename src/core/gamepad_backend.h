@@ -38,3 +38,41 @@ struct BackendStatus {
 // Side-effect-free probe. Safe to call from any thread; cheap enough to call
 // from per-request handlers.
 BackendStatus probeBackend();
+
+// ── Touchpad-mode capabilities (server-side advertisement) ──────────────────
+// Which TOUCHPAD_MODE_* values this server can actually honour. Clients query
+// this via GET /api/server/capabilities at session open so their mode-picker UI
+// disables modes the host can't deliver (e.g. macOS has no virtual gamepad bus
+// → Pad and Mouse both no-op there). `off` is always supported (no work).
+//
+// Pad   — depends on a backend that can carry a DS4 touchpad surface
+//         (ViGEm DS4 on Windows, multitouch uinput on Linux).
+// Mouse — depends on a host-global pointer-injection API
+//         (SendInput on Windows, uinput EV_REL on Linux).
+// Off   — always true; the receiver just drops the samples.
+struct TouchpadCapabilities {
+    bool padSupported = false;
+    bool mouseSupported = false;
+    bool offSupported = true;
+};
+
+// Pure derivation from a BackendStatus — kept inline + parameterised so
+// tests can pin behaviour without linking platform-specific probeBackend().
+// Hard-ties pad+mouse to whether the host has any virtual-gamepad backend
+// at all: ViGEm (Windows) / uinput (Linux) ship both; macOS ships neither.
+inline TouchpadCapabilities deriveTouchpadCapabilities(const BackendStatus& s) {
+    TouchpadCapabilities caps;
+    caps.padSupported = s.supported;
+    caps.mouseSupported = s.supported;
+    caps.offSupported = true;
+    return caps;
+}
+
+// Side-effect-free probe. Derived from the backend status so a Mac
+// (BACKEND_ID_NONE) reports only `off`, while a Windows/Linux host with the
+// backend healthy reports all three. A driver-installed-but-bus-down state
+// still advertises support — the client UI shouldn't change just because
+// the bus has momentarily failed.
+inline TouchpadCapabilities probeTouchpadCapabilities() {
+    return deriveTouchpadCapabilities(probeBackend());
+}
