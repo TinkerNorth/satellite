@@ -122,10 +122,14 @@ struct StubLog : ILogPort {
 };
 
 // Spin up a SessionService with one open connection holding one active
-// controller at index 0, and return its token.
+// controller at index 0, and return its token. The connection's touchpad
+// mode is seeded to TOUCHPAD_MODE_DS4 so dispatch tests exercise the
+// historical pass-through routing — the new default (OFF) would drop
+// every MSG_TOUCHPAD before the dispatch tests can observe a backend call.
 static uint32_t openWithController(SessionService& svc) {
     uint8_t key[CRYPTO_KEY_SIZE] = {};
-    auto r = svc.openSession("dev-receiver-test", "ReceiverTest", "192.168.1.50", key);
+    auto r = svc.openSession("dev-receiver-test", "ReceiverTest", "192.168.1.50", key,
+                             TOUCHPAD_MODE_DS4);
     svc.handleControllerAdd(r.token, 0);
     return r.token;
 }
@@ -176,15 +180,16 @@ static void test_decodeMotionReport_noOverRead() {
 }
 
 static void test_decodeTouchpadReport_wireLayout() {
-    TEST("decodeTouchpadReport — decodes flags + both fingers");
+    TEST("decodeTouchpadReport — decodes flags + both fingers + eventTimeMs");
     uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {
-        0x07,       // flags: finger0 + finger1 + button
-        0x11,       // finger0 trackingId
-        0x34, 0x12, // finger0 x = 0x1234
-        0xFF, 0xFF, // finger0 y = -1
-        0x22,       // finger1 trackingId
-        0x00, 0x80, // finger1 x = -32768
-        0xFF, 0x7F  // finger1 y = 32767
+        0x07,                   // flags: finger0 + finger1 + button
+        0x11,                   // finger0 trackingId
+        0x34, 0x12,             // finger0 x = 0x1234
+        0xFF, 0xFF,             // finger0 y = -1
+        0x22,                   // finger1 trackingId
+        0x00, 0x80,             // finger1 x = -32768
+        0xFF, 0x7F,             // finger1 y = 32767
+        0x78, 0x56, 0x34, 0x12, // eventTimeMs = 0x12345678 (LE)
     };
     TouchpadReport r = decodeTouchpadReport(p);
     EXPECT(r.finger0.active);
@@ -196,6 +201,7 @@ static void test_decodeTouchpadReport_wireLayout() {
     EXPECT_EQ(static_cast<int>(r.finger1.trackingId), 0x22);
     EXPECT_EQ(static_cast<int>(r.finger1.x), -32768);
     EXPECT_EQ(static_cast<int>(r.finger1.y), 32767);
+    EXPECT_EQ(r.eventTimeMs, 0x12345678u);
 }
 
 static void test_decodeTouchpadReport_noOverRead() {

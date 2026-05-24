@@ -29,7 +29,7 @@ class SessionService {
     OpenSessionResult openSession(const std::string& deviceId, const std::string& deviceName,
                                   const std::string& clientIP,
                                   const uint8_t sharedKey[CRYPTO_KEY_SIZE],
-                                  uint8_t touchpadMode = TOUCHPAD_MODE_DS4);
+                                  uint8_t touchpadMode = TOUCHPAD_MODE_OFF);
 
     // Close (disconnect) a connection by token.  Returns controllers removed.
     int closeSession(uint32_t token);
