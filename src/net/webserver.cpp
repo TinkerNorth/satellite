@@ -550,7 +550,8 @@ static void pairRoute(const httplib::Request& req, httplib::Response& res) {
     // app has a virtual touchpad screen, etc.). If absent, fall back to the
     // PairedDevice default (TOUCHPAD_MODE_OFF) — the safe baseline.
     auto initialMode = jsonGetString(req.body, "touchpadMode");
-    if (!initialMode.empty() && (initialMode == "ds4" || initialMode == "mouse" || initialMode == "off")) {
+    if (!initialMode.empty() &&
+        (initialMode == "ds4" || initialMode == "mouse" || initialMode == "off")) {
         dev.touchpadMode = touchpadModeFromName(initialMode);
     }
     {
@@ -833,19 +834,20 @@ void adminHttpThread(SessionService& svc) {
     // Localhost variant — kept for admin tooling / scripts. The dashboard UI
     // is read-only; the client owns the setting and calls the HTTPS variant
     // on the client API thread.
-    g_httpServer.Post("/api/devices/touchpad-mode", [&svc](const httplib::Request& req,
-                                                           httplib::Response& res) {
-        handleTouchpadModeSet(svc, req, res);
-    });
+    g_httpServer.Post("/api/devices/touchpad-mode",
+                      [&svc](const httplib::Request& req, httplib::Response& res) {
+                          handleTouchpadModeSet(svc, req, res);
+                      });
 
     // GET /api/server/capabilities — server capability advertisement. Tells
     // clients which TOUCHPAD_MODE_* values this host can actually honour, so
     // the client mode-picker UI can disable modes the receiver platform
     // doesn't ship (e.g. macOS has no virtual gamepad bus → only `off`).
     // Reads probeBackend() under the hood; safe to call cheaply.
-    g_httpServer.Get("/api/server/capabilities", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(buildCapabilitiesJson(), "application/json");
-    });
+    g_httpServer.Get("/api/server/capabilities",
+                     [](const httplib::Request&, httplib::Response& res) {
+                         res.set_content(buildCapabilitiesJson(), "application/json");
+                     });
 
     // ── Debug telemetry endpoint ────────────────────────────────────
     g_httpServer.Get("/api/debug", [&svc](const httplib::Request&, httplib::Response& res) {

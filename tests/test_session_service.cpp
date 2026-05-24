@@ -2674,9 +2674,9 @@ static void test_handleTouchpadData_mouseModeContinuousDelta() {
     svc.handleTouchpadData(r.token, 0, a); // touch-down anchor
     TouchpadReport b;
     b.finger0.active = true;
-    b.finger0.x = 10000;                                                   // +10000 wire units
-    b.finger0.y = -10000;                                                  // -10000 wire units
-    b.eventTimeMs = 1000 + TOUCHPAD_MOUSE_REFERENCE_MS;                    // dt = reference → scale 1
+    b.finger0.x = 10000;                                // +10000 wire units
+    b.finger0.y = -10000;                               // -10000 wire units
+    b.eventTimeMs = 1000 + TOUCHPAD_MOUSE_REFERENCE_MS; // dt = reference → scale 1
     svc.handleTouchpadData(r.token, 0, b);
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 2);
     // 10000 * TOUCHPAD_MOUSE_SENSITIVITY ≈ 420 px — assert sign + ballpark.
@@ -2777,7 +2777,8 @@ static void test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity() 
 // second" cursor motion for identical finger movements.
 
 static void test_handleTouchpadData_mouseModeTimeScalingHalvesLongerDt() {
-    TEST("handleTouchpadData — MOUSE mode: 2× dt halves the cursor delta for the same position diff");
+    TEST("handleTouchpadData — MOUSE mode: 2× dt halves the cursor delta for the same position "
+         "diff");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -2806,7 +2807,8 @@ static void test_handleTouchpadData_mouseModeTimeScalingHalvesLongerDt() {
 }
 
 static void test_handleTouchpadData_mouseModeTimeScalingFirstTouchJumpFix() {
-    TEST("handleTouchpadData — MOUSE mode: first-MOVE (16 ms dt) and subsequent (4 ms dt) produce equal cursor velocity");
+    TEST("handleTouchpadData — MOUSE mode: first-MOVE (16 ms dt) and subsequent (4 ms dt) produce "
+         "equal cursor velocity");
     // Repro the user's reported scenario: finger moves at constant velocity.
     // First MOVE delivers 4× the position-diff of subsequent MOVEs because
     // Android batched 4× the time. With time-scaling, the per-sample cursor
@@ -2852,7 +2854,8 @@ static void test_handleTouchpadData_mouseModeTimeScalingFirstTouchJumpFix() {
 }
 
 static void test_handleTouchpadData_mouseModeDuplicateTimestampEmitsNoMotion() {
-    TEST("handleTouchpadData — MOUSE mode: a sample with dt==0 (duplicate resend) emits no cursor motion");
+    TEST("handleTouchpadData — MOUSE mode: a sample with dt==0 (duplicate resend) emits no cursor "
+         "motion");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -2869,15 +2872,16 @@ static void test_handleTouchpadData_mouseModeDuplicateTimestampEmitsNoMotion() {
     s.finger0.x = 0;
     s.eventTimeMs = 1000;
     svc.handleTouchpadData(r.token, 0, s); // anchor
-    s.finger0.x = 5000; // position changed (impossible for a true resend,
-                        // but tests the dt-guard not the position guard)
+    s.finger0.x = 5000;                    // position changed (impossible for a true resend,
+                                           // but tests the dt-guard not the position guard)
     svc.handleTouchpadData(r.token, 0, s); // same eventTimeMs → dt = 0
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
 
 static void test_handleTouchpadData_mouseModeBigGapReanchors() {
-    TEST("handleTouchpadData — MOUSE mode: dt > MAX_GAP_MS re-anchors (no cursor motion, remainder reset)");
+    TEST("handleTouchpadData — MOUSE mode: dt > MAX_GAP_MS re-anchors (no cursor motion, remainder "
+         "reset)");
     MockViGem vigem;
     MockClient client;
     MockLog log;

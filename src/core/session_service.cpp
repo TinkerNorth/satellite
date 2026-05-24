@@ -519,8 +519,7 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
             // session, the unsigned subtract still gives the right small
             // positive dt; casting through int32_t lets us cheaply detect
             // out-of-order packets (dt <= 0) without a second branch.
-            const int32_t dt_ms = static_cast<int32_t>(
-                report.eventTimeMs - prev.eventTimeMs);
+            const int32_t dt_ms = static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs);
             if (dt_ms <= 0) {
                 // Duplicate sample (resend with same eventTime) or an
                 // out-of-order arrival; no new finger motion to integrate.
@@ -536,8 +535,8 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
             } else {
                 const int32_t dt_clamped =
                     dt_ms < TOUCHPAD_MOUSE_MIN_DT_MS ? TOUCHPAD_MOUSE_MIN_DT_MS : dt_ms;
-                const float scale =
-                    static_cast<float>(TOUCHPAD_MOUSE_REFERENCE_MS) / static_cast<float>(dt_clamped);
+                const float scale = static_cast<float>(TOUCHPAD_MOUSE_REFERENCE_MS) /
+                                    static_cast<float>(dt_clamped);
                 const float fx = static_cast<float>(report.finger0.x - prev.finger0.x) *
                                      TOUCHPAD_MOUSE_SENSITIVITY * scale +
                                  ctrl.touchpadMouseRemX;
