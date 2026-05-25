@@ -5,6 +5,9 @@
  * core/session_service.cpp — Domain service implementation.
  */
 #include "session_service.h"
+
+#include "ipv4_util.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -13,57 +16,12 @@
 // To keep the core free of libsodium, we use a simple random approach.
 #include <random>
 
-// ── Pure-C++ IPv4 codec ─────────────────────────────────────────────────────
-// Kept inline + winsock-free so the portable core can be unit-tested without
-// linking ws2_32. The wire we care about is dotted-quad strings on one side
-// and `sockaddr_in::sin_addr::s_addr` (network byte order) on the other --
-// both trivially representable without involving the socket APIs.
-
-namespace {
-
-// Parse "a.b.c.d" into uint32_t in NETWORK byte order (matches
-// sockaddr_in::sin_addr::s_addr). Returns 0 on any malformed input.
-uint32_t parseIPv4Nbo(const std::string& s) {
-    uint8_t parts[4] = {0, 0, 0, 0};
-    int idx = 0;
-    int val = 0;
-    bool any = false;
-    for (char c : s) {
-        if (c >= '0' && c <= '9') {
-            val = val * 10 + (c - '0');
-            if (val > 255) return 0;
-            any = true;
-        } else if (c == '.') {
-            if (!any || idx >= 3) return 0;
-            parts[idx++] = static_cast<uint8_t>(val);
-            val = 0;
-            any = false;
-        } else {
-            return 0;
-        }
-    }
-    if (!any || idx != 3) return 0;
-    parts[idx] = static_cast<uint8_t>(val);
-    // Network byte order: leftmost octet sits in the low byte of the uint32
-    // when stored as `sin_addr.s_addr`. Compose so a memcpy into a struct
-    // sockaddr_in matches what inet_pton would have written.
-    return static_cast<uint32_t>(parts[0]) | (static_cast<uint32_t>(parts[1]) << 8) |
-           (static_cast<uint32_t>(parts[2]) << 16) | (static_cast<uint32_t>(parts[3]) << 24);
-}
-
-// Format a NETWORK-byte-order uint32 as "a.b.c.d". Always succeeds; caller
-// owns the returned string (small-string-optimised at <= 15 chars).
-std::string formatIPv4Nbo(uint32_t nbo) {
-    const uint8_t a = static_cast<uint8_t>(nbo & 0xFF);
-    const uint8_t b = static_cast<uint8_t>((nbo >> 8) & 0xFF);
-    const uint8_t c = static_cast<uint8_t>((nbo >> 16) & 0xFF);
-    const uint8_t d = static_cast<uint8_t>((nbo >> 24) & 0xFF);
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
-    return std::string(buf);
-}
-
-} // namespace
+// IPv4 dotted-quad <-> uint32 codec lives in core/ipv4_util.h. Pulled in
+// above so the hot path (handleGamepadDataAndUpdate / updatePostDecryptV4)
+// and the cold session-bootstrap path can share the same parser/formatter
+// without dragging winsock into the portable core.
+using satellite::formatIPv4Nbo;
+using satellite::parseIPv4Nbo;
 
 static uint32_t makeRandomToken() {
     static std::random_device rd;
