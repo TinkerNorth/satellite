@@ -63,8 +63,8 @@ IShellLinkW* makeShellLink(const std::wstring& target, const std::wstring& args,
                            const std::wstring& title, const std::wstring& description,
                            const std::wstring& iconPath, int iconIndex) {
     IShellLinkW* link = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_IShellLinkW, reinterpret_cast<void**>(&link));
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                  reinterpret_cast<void**>(&link));
     if (FAILED(hr) || link == nullptr) return nullptr;
 
     link->SetPath(target.c_str());
@@ -153,8 +153,7 @@ bool refreshJumpList() {
     StringCchCatW(explorerExe, MAX_PATH, L"\\explorer.exe");
 
     IShellLinkW* openUi = makeShellLink(explorerExe, urlBuf, L"Open Web UI",
-                                        L"Open the Satellite dashboard in your browser",
-                                        exe, 0);
+                                        L"Open the Satellite dashboard in your browser", exe, 0);
     if (openUi) {
         coll->AddObject(openUi);
         openUi->Release();

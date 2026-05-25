@@ -36,7 +36,7 @@
 #include <string>
 
 static NOTIFYICONDATAW g_nid{};
-static std::mutex g_nidMtx; // updateTooltip + WM_TRAYICON contend
+static std::mutex g_nidMtx;          // updateTooltip + WM_TRAYICON contend
 static bool g_nidGuidActive = false; // true when NIF_GUID succeeded
 static std::wstring g_lastTooltip;   // remember last text so we don't churn NIM_MODIFY
 
@@ -66,11 +66,10 @@ static std::wstring composeTooltip() {
 
     wchar_t buf[128];
     if (listening) {
-        StringCchPrintfW(buf, ARRAYSIZE(buf),
-                         L"Satellite -- listening on :%d  (web UI :%d)", udpPort, webPort);
+        StringCchPrintfW(buf, ARRAYSIZE(buf), L"Satellite -- listening on :%d  (web UI :%d)",
+                         udpPort, webPort);
     } else {
-        StringCchPrintfW(buf, ARRAYSIZE(buf),
-                         L"Satellite -- idle  (web UI :%d)", webPort);
+        StringCchPrintfW(buf, ARRAYSIZE(buf), L"Satellite -- idle  (web UI :%d)", webPort);
     }
     return std::wstring(buf);
 }
@@ -97,11 +96,9 @@ static void registerTrayIcon(HWND hwnd) {
 
     HICON hIcon = static_cast<HICON>(
         LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
-                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
-                   LR_DEFAULTCOLOR));
-    g_nid.hIcon = (hIcon != nullptr)
-                      ? hIcon
-                      : LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
+                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+    g_nid.hIcon =
+        (hIcon != nullptr) ? hIcon : LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
 
     g_lastTooltip = composeTooltip();
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
@@ -137,8 +134,7 @@ static void registerTrayIcon(HWND hwnd) {
 }
 
 void addTrayIcon(HWND hwnd) {
-    if (g_taskbarCreatedMsg == 0)
-        g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    if (g_taskbarCreatedMsg == 0) g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
     registerTrayIcon(hwnd);
 }
 

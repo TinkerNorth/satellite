@@ -10,13 +10,40 @@
 HANDLE openVigemBus();
 bool pluginTarget(HANDLE bus, ULONG serial);
 bool pluginTargetDS4(HANDLE bus, ULONG serial);
+
+// Synchronous-wait submit. Used for the legacy code paths and tests that
+// want to confirm the IOCTL was accepted before returning.
 bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt);
-bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event);
-bool submitReportDS4Fast(HANDLE bus, ULONG serial, const DS4_REPORT& rpt, HANDLE event);
-// Extended DS4 submit — carries the full 63-byte report (gyro/accel/touchpad/
-// battery). Needs ViGEmBus >= 1.17; returns false if the driver rejects
-// IOCTL_DS4_SUBMIT_REPORT_EX, which the adapter treats as "fall back to basic".
-bool submitReportDS4ExFast(HANDLE bus, ULONG serial, const DS4_REPORT_EX& rpt, HANDLE event);
+
+// Fire-and-forget Xbox/DS4/DS4-EX submit. Each call:
+//   1. Waits on `event` (auto-reset, initially signalled) -- in steady
+//      state this is a non-blocking test because the previous IOCTL's
+//      completion already signalled it. Throttles us only if the kernel
+//      is genuinely behind, in which case blocking back-pressure is what
+//      we want.
+//   2. Re-initialises the persistent OVERLAPPED and submit struct that
+//      live in the per-serial slot (the caller-owned `xsr` / `ds4` /
+//      `ds4Ex` and `ov` references).
+//   3. Issues IOCTL_XUSB_SUBMIT_REPORT / IOCTL_DS4_SUBMIT_REPORT[_EX]
+//      and returns IMMEDIATELY without GetOverlappedResult. The kernel
+//      reads the submit struct asynchronously and signals `event` on
+//      completion -- which is what the next call's wait will observe.
+//
+// Returns true if the IOCTL was either accepted synchronously or queued
+// (`ERROR_IO_PENDING`). On a hard synchronous failure the event is
+// re-signalled so the next call doesn't deadlock waiting on completion
+// that will never arrive.
+//
+// IMPORTANT: `xsr`/`ds4`/`ds4Ex` and `ov` MUST outlive the IOCTL. The
+// adapter places them in the per-serial IoSlot, which is freed only at
+// closeBus after a final drain wait on `event`.
+bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
+                             HANDLE event, const void* reportBytes);
+bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
+                            HANDLE event, const DS4_REPORT& rpt);
+bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
+                              HANDLE event, const DS4_REPORT_EX& rpt);
+
 void unplugTarget(HANDLE bus, ULONG serial);
 
 // Block until the driver completes one rumble/LED notification for `serial`.

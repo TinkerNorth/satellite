@@ -82,8 +82,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // common footgun for tray apps (the user double-clicks the desktop
     // icon while we're already running and ports fight). We tap the
     // existing instance's window so it can flash a balloon, then exit.
-    if (!lifecycle::acquireSingleInstance(APP_TITLE))
-        return 0;
+    if (!lifecycle::acquireSingleInstance(APP_TITLE)) return 0;
 
     // ── Modern shell identity ───────────────────────────────────────
     // AppUserModelID must be set BEFORE any HWND or tray icon, or the
@@ -111,8 +110,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     // Initialize libsodium.
     if (!sodiumInit()) {
-        showFatalError(L"Satellite",
-                       L"Cryptography library failed to initialize",
+        showFatalError(L"Satellite", L"Cryptography library failed to initialize",
                        L"libsodium could not start. Satellite cannot run without it.\n\n"
                        L"Try reinstalling Satellite; if the problem persists, file an issue at "
                        L"https://github.com/TinkerNorth/satellite/issues.");
@@ -170,26 +168,23 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         std::atomic<bool> toastedAvailable{false};
         // Note: the callback is invoked from the worker thread without
         // the service's mutex held, so calling Shell_NotifyIcon is safe.
-        updateService.setStatusCallback(
-            [&toastedAvailable](const UpdateStatusSnapshot& snap) {
-                if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
-                    if (!toastedAvailable.exchange(true)) {
-                        shell_integration::showToast(
-                            std::string("Satellite update ready"),
-                            std::string("Version ") + snap.info.version +
-                                " is available. Click to install.");
-                    }
-                } else if (snap.state == UpdateState::Idle ||
-                           snap.state == UpdateState::UpToDate) {
-                    // Transitioned back to a non-actionable state --
-                    // arm the latch so a later UpdateAvailable triggers
-                    // another toast.
-                    toastedAvailable.store(false);
+        updateService.setStatusCallback([&toastedAvailable](const UpdateStatusSnapshot& snap) {
+            if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
+                if (!toastedAvailable.exchange(true)) {
+                    shell_integration::showToast(std::string("Satellite update ready"),
+                                                 std::string("Version ") + snap.info.version +
+                                                     " is available. Click to install.");
                 }
-                // Update the hover tooltip if state transition changed
-                // what we'd display.
-                updateTrayTooltip();
-            });
+            } else if (snap.state == UpdateState::Idle || snap.state == UpdateState::UpToDate) {
+                // Transitioned back to a non-actionable state --
+                // arm the latch so a later UpdateAvailable triggers
+                // another toast.
+                toastedAvailable.store(false);
+            }
+            // Update the hover tooltip if state transition changed
+            // what we'd display.
+            updateTrayTooltip();
+        });
     }
     g_updateService = &updateService;
 
@@ -202,8 +197,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     wc.lpszClassName = L"ControllerForwardTray";
     RegisterClassW(&wc);
 
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"Satellite", 0, 0, 0, 0, 0,
-                             HWND_MESSAGE, nullptr, hInst, nullptr);
+    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"Satellite", 0, 0, 0, 0, 0, HWND_MESSAGE,
+                             nullptr, hInst, nullptr);
 
     addTrayIcon(g_hwnd);
 

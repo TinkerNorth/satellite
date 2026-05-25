@@ -6,11 +6,64 @@
  */
 #include "session_service.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 // We need generateToken — but it uses libsodium.
 // To keep the core free of libsodium, we use a simple random approach.
 #include <random>
+
+// ── Pure-C++ IPv4 codec ─────────────────────────────────────────────────────
+// Kept inline + winsock-free so the portable core can be unit-tested without
+// linking ws2_32. The wire we care about is dotted-quad strings on one side
+// and `sockaddr_in::sin_addr::s_addr` (network byte order) on the other --
+// both trivially representable without involving the socket APIs.
+
+namespace {
+
+// Parse "a.b.c.d" into uint32_t in NETWORK byte order (matches
+// sockaddr_in::sin_addr::s_addr). Returns 0 on any malformed input.
+uint32_t parseIPv4Nbo(const std::string& s) {
+    uint8_t parts[4] = {0, 0, 0, 0};
+    int idx = 0;
+    int val = 0;
+    bool any = false;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') {
+            val = val * 10 + (c - '0');
+            if (val > 255) return 0;
+            any = true;
+        } else if (c == '.') {
+            if (!any || idx >= 3) return 0;
+            parts[idx++] = static_cast<uint8_t>(val);
+            val = 0;
+            any = false;
+        } else {
+            return 0;
+        }
+    }
+    if (!any || idx != 3) return 0;
+    parts[idx] = static_cast<uint8_t>(val);
+    // Network byte order: leftmost octet sits in the low byte of the uint32
+    // when stored as `sin_addr.s_addr`. Compose so a memcpy into a struct
+    // sockaddr_in matches what inet_pton would have written.
+    return static_cast<uint32_t>(parts[0]) | (static_cast<uint32_t>(parts[1]) << 8) |
+           (static_cast<uint32_t>(parts[2]) << 16) | (static_cast<uint32_t>(parts[3]) << 24);
+}
+
+// Format a NETWORK-byte-order uint32 as "a.b.c.d". Always succeeds; caller
+// owns the returned string (small-string-optimised at <= 15 chars).
+std::string formatIPv4Nbo(uint32_t nbo) {
+    const uint8_t a = static_cast<uint8_t>(nbo & 0xFF);
+    const uint8_t b = static_cast<uint8_t>((nbo >> 8) & 0xFF);
+    const uint8_t c = static_cast<uint8_t>((nbo >> 16) & 0xFF);
+    const uint8_t d = static_cast<uint8_t>((nbo >> 24) & 0xFF);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
+    return std::string(buf);
+}
+
+} // namespace
 
 static uint32_t makeRandomToken() {
     static std::random_device rd;
@@ -119,6 +172,11 @@ OpenSessionResult SessionService::openSession(const std::string& deviceId,
     conn.deviceId = deviceId;
     conn.deviceName = deviceName;
     conn.clientIP = clientIP;
+    // Seed the numeric IPv4 cache from the parsed string so the first UDP
+    // packet's "did the address change?" check has something to compare
+    // against. Failure (0) is non-fatal -- the next packet's V4 update
+    // fills it.
+    conn.clientIPv4 = parseIPv4Nbo(clientIP);
     std::memcpy(conn.sharedKey, sharedKey, CRYPTO_KEY_SIZE);
     conn.lastCounter = 0;
     conn.lastPacketTime = std::chrono::steady_clock::now();
@@ -236,6 +294,9 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16
     ctrl.serialNo = serial;
     ctrl.active = true;
     ctrl.caps = caps;
+    // Hot-path cache mirror — the dish can subsequently retype the controller
+    // via handleControllerType which updates this same field.
+    ctrl.usesDS4 = controllerTypeUsesDS4(ctrl.controllerType);
     ctrl.lastReport = GamepadReport{};
     // Clear rumble + lightbar coalesce state — even though the serial may be
     // recycled, the (re)added controller is a fresh actuator from the dish's
@@ -356,6 +417,9 @@ void SessionService::handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8
         (controllerType < CONTROLLER_TYPE_COUNT) ? controllerType : CONTROLLER_TYPE_XBOX;
     uint8_t oldType = ctrl.controllerType;
     ctrl.controllerType = safeType;
+    // Mirror into the hot-path cache so handleGamepadData doesn't re-evaluate
+    // controllerTypeUsesDS4() on every UDP packet.
+    ctrl.usesDS4 = controllerTypeUsesDS4(safeType);
 
     // If switching between DS4 and non-DS4, replug the virtual device
     bool wasDS4 = controllerTypeUsesDS4(oldType);
@@ -670,7 +734,63 @@ void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
     it->second.lastCounter = counter;
     it->second.lastPacketTime = std::chrono::steady_clock::now();
     it->second.clientIP = clientIP;
+    it->second.clientIPv4 = parseIPv4Nbo(clientIP);
     client_.updateClientAddr(token, clientIP, clientPort);
+}
+
+// Internal helper: refresh Connection::clientIP only when the numeric
+// IPv4 changes. The common case (IP stable across a session) is a single
+// integer compare with no heap touch.
+//
+// Caller must hold mtx_.
+static void refreshClientIPCacheLocked(Connection& conn, uint32_t newIPv4) {
+    if (conn.clientIPv4 == newIPv4) return;
+    conn.clientIPv4 = newIPv4;
+    conn.clientIP = formatIPv4Nbo(newIPv4);
+}
+
+void SessionService::updatePostDecryptV4(uint32_t token, uint32_t counter,
+                                         uint32_t ipv4NetworkOrder, uint16_t clientPort) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return;
+    Connection& conn = it->second;
+    conn.lastCounter = counter;
+    conn.lastPacketTime = std::chrono::steady_clock::now();
+    refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
+    client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
+}
+
+bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter,
+                                                uint32_t ipv4NetworkOrder, uint16_t clientPort,
+                                                uint8_t ctrlIdx, const GamepadReport& report) {
+    // SINGLE lock acquisition for the whole gamepad packet. Previously
+    // the receiver took mtx_ three times per packet (getDecryptInfo +
+    // updatePostDecrypt + handleGamepadData) -- three separate windows
+    // for the SSE / heartbeat threads to slip in and add tail latency.
+    // Fusing into one keeps the critical section short and contiguous.
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return false;
+    Connection& conn = it->second;
+
+    // Post-decrypt state update -- counter, timestamp, sender IPv4 cache.
+    conn.lastCounter = counter;
+    conn.lastPacketTime = std::chrono::steady_clock::now();
+    refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
+    client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
+
+    // Gamepad dispatch -- bounds-check, copy report cache, hand to backend.
+    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
+    Controller& ctrl = conn.controllers[ctrlIdx];
+    if (!ctrl.active) return false;
+
+    ctrl.lastReport = report;
+    // The cached `usesDS4` flag mirrors controllerTypeUsesDS4() and is
+    // refreshed on every assignment to `controllerType`, so the hot
+    // branch is one load instead of an inlined enum comparison.
+    if (ctrl.usesDS4) { return backend_.submitDS4Report(ctrl.serialNo, report); }
+    return backend_.submitReport(ctrl.serialNo, report);
 }
 
 // ── Query ───────────────────────────────────────────────────────────────────

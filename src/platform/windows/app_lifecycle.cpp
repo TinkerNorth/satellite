@@ -37,13 +37,13 @@ namespace lifecycle {
 
 namespace {
 
-constexpr const wchar_t* kAppFolder        = L"TinkerNorth\\Satellite";
-constexpr const char*    kSingletonMutex   = "Local\\TinkerNorth.Satellite.Singleton.v1";
-constexpr const char*    kRunKey           = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr const wchar_t* kAppFolder = L"TinkerNorth\\Satellite";
+constexpr const char* kSingletonMutex = "Local\\TinkerNorth.Satellite.Singleton.v1";
+constexpr const char* kRunKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 // Stable, install-set value name. The Inno Setup script writes the same
 // literal string so installer + app never collide via case-insensitive
 // rename. Don't change this without a migration step.
-constexpr const char*    kRunValueName     = "Satellite";
+constexpr const char* kRunValueName = "Satellite";
 
 // Crash-dump retention cap. A leaky build can otherwise drop a 5-20MB
 // .dmp every minute and fill the user's disk. We keep this generous
@@ -54,7 +54,7 @@ constexpr size_t kMaxDumpFiles = 10;
 // trips first. Daily files make it easy for a user to attach "today's
 // log" without manually splicing a giant file.
 constexpr size_t kMaxLogFileBytes = 5 * 1024 * 1024;
-constexpr int    kLogRetentionDays = 7;
+constexpr int kLogRetentionDays = 7;
 
 HANDLE g_singletonMutex = nullptr;
 
@@ -112,7 +112,7 @@ void retainNewestN(const std::wstring& dir, const wchar_t* ext, size_t keep) {
 
     struct Entry {
         std::wstring name;
-        ULONGLONG    mtime;
+        ULONGLONG mtime;
     };
     std::vector<Entry> entries;
     do {
@@ -178,11 +178,11 @@ LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
         // gives us enough to inspect locals. MiniDumpWithThreadInfo
         // captures per-thread state which is useful for our 5-thread
         // tray app.
-        MINIDUMP_TYPE type = static_cast<MINIDUMP_TYPE>(
-            MiniDumpNormal | MiniDumpWithIndirectlyReferencedMemory |
-            MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, type,
-                          ep ? &mei : nullptr, nullptr, nullptr);
+        MINIDUMP_TYPE type =
+            static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithIndirectlyReferencedMemory |
+                                       MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, type, ep ? &mei : nullptr,
+                          nullptr, nullptr);
         CloseHandle(f);
     }
 
@@ -203,10 +203,14 @@ LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
 
 const char* levelStr(LogLevel l) {
     switch (l) {
-    case LogLevel::INFO: return "INFO ";
-    case LogLevel::WARN: return "WARN ";
-    case LogLevel::ERR:  return "ERROR";
-    default:             return "INFO ";
+    case LogLevel::INFO:
+        return "INFO ";
+    case LogLevel::WARN:
+        return "WARN ";
+    case LogLevel::ERR:
+        return "ERROR";
+    default:
+        return "INFO ";
     }
 }
 
@@ -214,8 +218,7 @@ std::string isoTimestamp(std::chrono::system_clock::time_point tp) {
     std::time_t t = std::chrono::system_clock::to_time_t(tp);
     std::tm tm{};
     localtime_s(&tm, &t);
-    auto us = std::chrono::duration_cast<std::chrono::milliseconds>(
-                  tp.time_since_epoch()) % 1000;
+    auto us = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()) % 1000;
     char buf[40];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
     char out[60];
@@ -228,8 +231,8 @@ std::wstring todaysLogPath(const std::wstring& dir) {
     std::tm tm{};
     localtime_s(&tm, &now);
     wchar_t name[32];
-    StringCchPrintfW(name, ARRAYSIZE(name), L"satellite-%04d%02d%02d.log",
-                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    StringCchPrintfW(name, ARRAYSIZE(name), L"satellite-%04d%02d%02d.log", tm.tm_year + 1900,
+                     tm.tm_mon + 1, tm.tm_mday);
     return dir + L"\\" + name;
 }
 
@@ -244,9 +247,9 @@ void loggerLoop() {
 
     uint64_t lastSeq = 0;
     std::wstring currentPath = todaysLogPath(dir);
-    HANDLE h = CreateFileW(currentPath.c_str(), FILE_APPEND_DATA,
-                           FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h =
+        CreateFileW(currentPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
 
     while (g_appRunning.load(std::memory_order_relaxed)) {
@@ -301,8 +304,8 @@ void loggerLoop() {
                     break;
             }
             h = CreateFileW(currentPath.c_str(), FILE_APPEND_DATA,
-                            FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
             if (h == INVALID_HANDLE_VALUE) return;
             deleteOlderThan(dir, L".log", kLogRetentionDays);
         } else {
@@ -311,8 +314,8 @@ void loggerLoop() {
                 CloseHandle(h);
                 currentPath = fresh;
                 h = CreateFileW(currentPath.c_str(), FILE_APPEND_DATA,
-                                FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
                 if (h == INVALID_HANDLE_VALUE) return;
                 deleteOlderThan(dir, L".log", kLogRetentionDays);
             }
@@ -326,7 +329,7 @@ void loggerLoop() {
 } // namespace
 
 std::string dumpDir() { return ensureSubdir(L"dumps"); }
-std::string logDir()  { return ensureSubdir(L"logs"); }
+std::string logDir() { return ensureSubdir(L"logs"); }
 
 bool acquireSingleInstance(const char* appTitle) {
     // Local\ namespace = per-session, so different RDP sessions or fast
@@ -416,8 +419,8 @@ void applyRuntimeMitigations() {
     struct ImageLoad {
         DWORD flags;
     } il{};
-    il.flags = 0x1 /*NoRemoteImages*/ | 0x2 /*NoLowMandatoryLabelImages*/ |
-               0x4 /*PreferSystem32Images*/;
+    il.flags =
+        0x1 /*NoRemoteImages*/ | 0x2 /*NoLowMandatoryLabelImages*/ | 0x4 /*PreferSystem32Images*/;
     set(4, &il, sizeof(il));
 
     // ProcessExtensionPointDisablePolicy (5): block legacy AppInit_DLLs
@@ -447,8 +450,7 @@ void applyRuntimeMitigations() {
 // Strip surrounding quotes from a Run-value string. The shell tolerates
 // either form; we tolerate either for comparison purposes.
 static std::string stripQuotes(const std::string& s) {
-    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
-        return s.substr(1, s.size() - 2);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
     return s;
 }
 
@@ -471,9 +473,8 @@ void reconcileAutoStart() {
     if (len == 0 || len == MAX_PATH) return;
 
     HKEY key = nullptr;
-    if (RegCreateKeyExA(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0,
-                        KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key,
-                        nullptr) != ERROR_SUCCESS)
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_QUERY_VALUE | KEY_SET_VALUE,
+                        nullptr, &key, nullptr) != ERROR_SUCCESS)
         return;
 
     // Read current value (if any) so we can decide whether to touch it.
@@ -506,8 +507,7 @@ void reconcileAutoStart() {
 
     if (shouldWrite) {
         std::string quoted = std::string("\"") + exe + "\"";
-        RegSetValueExA(key, kRunValueName, 0, REG_SZ,
-                       reinterpret_cast<const BYTE*>(quoted.c_str()),
+        RegSetValueExA(key, kRunValueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(quoted.c_str()),
                        static_cast<DWORD>(quoted.size() + 1));
     }
     RegCloseKey(key);

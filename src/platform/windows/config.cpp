@@ -59,11 +59,11 @@ std::string configPath() {
         w += L"\\satellite";
         CreateDirectoryW(w.c_str(), nullptr);
         w += L"\\config.json";
-        int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
-                                    nullptr, 0, nullptr, nullptr);
+        int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
+                                    nullptr, nullptr);
         std::string s(n, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
-                            s.data(), n, nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
+                            nullptr);
         return s;
     }
     return "config.json";
@@ -213,7 +213,7 @@ void saveConfig(const Config& cfg) {
 // resolves to THIS exe. If the value exists but points at a stale
 // install location, we return false so the UI shows the truth and the
 // caller can re-enable to repair.
-static const char* kRunSubkey    = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
+static const char* kRunSubkey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const char* kRunValueName = "Satellite";
 
 static std::string quotedExePath() {
@@ -227,21 +227,19 @@ static std::string quotedExePath() {
 // quoted but we tolerate either form for robustness against pre-1.0
 // installs that wrote unquoted.
 static std::string stripQuotes(const std::string& s) {
-    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
-        return s.substr(1, s.size() - 2);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
     return s;
 }
 
 void setAutoStart(bool enable) {
     HKEY key = nullptr;
-    if (RegCreateKeyExA(HKEY_CURRENT_USER, kRunSubkey, 0, nullptr, 0,
-                        KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, kRunSubkey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key,
+                        nullptr) != ERROR_SUCCESS)
         return;
     if (enable) {
         std::string q = quotedExePath();
         if (!q.empty()) {
-            RegSetValueExA(key, kRunValueName, 0, REG_SZ,
-                           reinterpret_cast<const BYTE*>(q.c_str()),
+            RegSetValueExA(key, kRunValueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(q.c_str()),
                            static_cast<DWORD>(q.size() + 1));
         }
     } else {
@@ -263,8 +261,8 @@ bool getAutoStart() {
     }
 
     std::string buf(size, '\0');
-    r = RegQueryValueExA(key, kRunValueName, nullptr, &type,
-                         reinterpret_cast<BYTE*>(&buf[0]), &size);
+    r = RegQueryValueExA(key, kRunValueName, nullptr, &type, reinterpret_cast<BYTE*>(&buf[0]),
+                         &size);
     RegCloseKey(key);
     if (r != ERROR_SUCCESS) return false;
 

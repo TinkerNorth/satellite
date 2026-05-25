@@ -2,27 +2,44 @@
 // Copyright (C) 2026 Satellite contributors.
 
 /*
- * adapters/vigem_adapter.cpp — IGamepadPort implementation (Windows/ViGEm).
+ * adapters/vigem_adapter.cpp -- IGamepadPort implementation (Windows/ViGEm).
+ *
+ * Hot-path changes vs the previous revision (see header for the full
+ * rationale):
+ *   * Per-serial state lives in a flat `io_[17]` array, no hash lookups.
+ *   * `submitReport` issues the XUSB IOCTL fire-and-forget -- the kernel
+ *     completes asynchronously and signals the slot's auto-reset event,
+ *     which the next submission's wait observes (zero blocking when the
+ *     driver is keeping up).
+ *   * `XUSB_REPORT` is filled by a single 12-byte memcpy from the wire
+ *     bytes; the intermediate stack-local report struct is gone.
+ *   * `ds4State_` (formerly a map) moved into the IoSlot, so DS4
+ *     submission paths also avoid the hash lookup.
  */
 #include "vigem_adapter.h"
 
 #include "core/touchpad_codec.h"
+#include "vigem.h"
 
 // ── Raw ViGEm driver functions (defined in vigem.cpp / infra) ───────────────
 extern HANDLE openVigemBus();
 extern bool pluginTarget(HANDLE bus, unsigned long serial);
 extern bool pluginTargetDS4(HANDLE bus, unsigned long serial);
-extern bool submitReportFast(HANDLE bus, unsigned long serial, const XUSB_REPORT& rpt,
-                             HANDLE event);
-extern bool submitReportDS4Fast(HANDLE bus, unsigned long serial, const DS4_REPORT& rpt,
-                                HANDLE event);
-extern bool submitReportDS4ExFast(HANDLE bus, unsigned long serial, const DS4_REPORT_EX& rpt,
-                                  HANDLE event);
 extern void unplugTarget(HANDLE bus, unsigned long serial);
 extern bool waitNextXusbNotification(HANDLE bus, unsigned long serial, HANDLE cancel,
                                      XUSB_REQUEST_NOTIFICATION& out);
 extern bool waitNextDS4Notification(HANDLE bus, unsigned long serial, HANDLE cancel,
                                     DS4_REQUEST_NOTIFICATION& out);
+
+namespace {
+
+// True if `serial` is in the valid 1..MAX_BACKEND_CONTROLLERS range.
+// Centralised so every public entry point can early-out the same way.
+inline bool isValidSerial(uint32_t serial) {
+    return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS;
+}
+
+} // namespace
 
 ViGEmAdapter::ViGEmAdapter() = default;
 
@@ -36,8 +53,8 @@ bool ViGEmAdapter::ensureBusOpen() {
 }
 
 void ViGEmAdapter::closeBus() {
-    // Stop all notification workers first — they hold pending IOCTLs against
-    // busHandle_, so we must let them unwind before closing the handle.
+    // Stop all notification workers first -- they hold pending IOCTLs on
+    // busHandle_, so they must unwind before we close the handle.
     std::vector<uint32_t> serials;
     {
         std::lock_guard<std::mutex> lk(busMtx_);
@@ -50,12 +67,22 @@ void ViGEmAdapter::closeBus() {
     }
 
     std::lock_guard<std::mutex> lk(busMtx_);
-    // Clean up all submit events
-    for (auto& [serial, evt] : submitEvents_) {
-        if (evt) CloseHandle(evt);
+
+    // Drain + close every per-serial event so the kernel can't write to a
+    // freed OVERLAPPED after we return. WaitForSingleObject blocks for as
+    // long as any in-flight IOCTL takes to complete (microseconds in
+    // practice; the driver signals the event as part of completion).
+    for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
+        IoSlot& slot = io_[s];
+        slot.plugged.store(false, std::memory_order_release);
+        if (slot.event) {
+            WaitForSingleObject(slot.event, INFINITE);
+            CloseHandle(slot.event);
+            slot.event = nullptr;
+        }
+        slot.isDS4 = false;
+        slot.ds4 = {};
     }
-    submitEvents_.clear();
-    ds4State_.clear();
 
     if (busHandle_ != INVALID_HANDLE_VALUE) {
         CloseHandle(busHandle_);
@@ -68,24 +95,35 @@ bool ViGEmAdapter::isBusOpen() const {
     return busHandle_ != INVALID_HANDLE_VALUE;
 }
 
+// Create the per-serial auto-reset event in the signalled state so the
+// very first submission's WaitForSingleObject passes through immediately.
+// Helper used by both Xbox and DS4 plug paths.
+static HANDLE makeSlotEvent() {
+    return CreateEventW(nullptr, /*manualReset=*/FALSE, /*initialState=*/TRUE, nullptr);
+}
+
 bool ViGEmAdapter::pluginDevice(uint32_t serial) {
+    if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    if (!pluginTarget(busHandle_, static_cast<unsigned long>(serial))) return false;
 
-    if (!pluginTarget(busHandle_, (unsigned long)serial)) return false;
-
-    // Pre-allocate overlapped event for fast report submission
-    HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    submitEvents_[serial] = evt;
+    IoSlot& slot = io_[serial];
+    if (slot.event == nullptr) slot.event = makeSlotEvent();
+    slot.isDS4 = false;
+    slot.ds4 = {};
+    slot.plugged.store(true, std::memory_order_release);
 
     startNotificationWorker(serial, /*isDS4=*/false);
     return true;
 }
 
 void ViGEmAdapter::unplugDevice(uint32_t serial) {
-    // Stop the notification worker first; it holds a pending IOCTL keyed on
-    // serial which the driver completes-with-error on unplug, but explicitly
-    // cancelling here keeps the unplug path deterministic.
+    if (!isValidSerial(serial)) return;
+
+    // Stop the notification worker first; it holds a pending IOCTL keyed
+    // on serial which the driver completes-with-error on unplug, but
+    // explicitly cancelling here keeps the unplug path deterministic.
     {
         std::lock_guard<std::mutex> lk(busMtx_);
         stopNotificationWorker(serial);
@@ -94,68 +132,85 @@ void ViGEmAdapter::unplugDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return;
 
-    unplugTarget(busHandle_, (unsigned long)serial);
+    // Stop accepting new submissions immediately so a concurrent receiver
+    // thread can't race the unplug.
+    IoSlot& slot = io_[serial];
+    slot.plugged.store(false, std::memory_order_release);
 
-    auto it = submitEvents_.find(serial);
-    if (it != submitEvents_.end()) {
-        if (it->second) CloseHandle(it->second);
-        submitEvents_.erase(it);
-    }
-    ds4State_.erase(serial);
+    // Drain any IOCTL that beat the plugged-flag flip into the kernel.
+    // The auto-reset wait re-arms for the next plugin of this serial.
+    if (slot.event) WaitForSingleObject(slot.event, INFINITE);
+
+    unplugTarget(busHandle_, static_cast<unsigned long>(serial));
+
+    // We deliberately do NOT CloseHandle(slot.event) here -- it gets
+    // reused if the serial is replugged. Final cleanup is in closeBus.
+    // Re-signal so a fresh plugin's first submit passes through.
+    if (slot.event) SetEvent(slot.event);
+    slot.isDS4 = false;
+    slot.ds4 = {};
 }
 
 bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    if (!isValidSerial(serial)) return false;
 
-    // Convert GamepadReport → XUSB_REPORT (binary compatible)
-    XUSB_REPORT rpt;
+    // Hot path: take the lock long enough to copy the handle + slot
+    // pointer, then drop it. The slot's submit buffer + OVERLAPPED are
+    // persistent (closed only at closeBus), so we can keep using them
+    // after the lock release. closeBus drains the slot event before
+    // freeing anything, so a use-after-free is impossible.
+    HANDLE bus;
+    IoSlot* slot;
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+        slot = &io_[serial];
+        if (!slot->plugged.load(std::memory_order_acquire) || slot->isDS4 || slot->event == nullptr)
+            return false;
+        bus = busHandle_;
+    }
+
+    // Single memcpy from wire-layout GamepadReport into the kernel-bound
+    // XUSB_REPORT (binary-compatible). No intermediate stack-local copy.
     static_assert(sizeof(GamepadReport) == sizeof(XUSB_REPORT),
                   "GamepadReport and XUSB_REPORT must match");
-    std::memcpy(&rpt, &report, sizeof(rpt));
-
-    HANDLE evt = nullptr;
-    auto it = submitEvents_.find(serial);
-    if (it != submitEvents_.end()) evt = it->second;
-
-    if (evt != nullptr) { return submitReportFast(busHandle_, (unsigned long)serial, rpt, evt); }
-    // Fallback (should not happen)
-    return false;
+    return submitXusbFireAndForget(bus, static_cast<unsigned long>(serial), slot->xsr, slot->ov,
+                                   slot->event, &report);
 }
 
 bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
+    if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    if (!pluginTargetDS4(busHandle_, static_cast<unsigned long>(serial))) return false;
 
-    if (!pluginTargetDS4(busHandle_, (unsigned long)serial)) return false;
+    IoSlot& slot = io_[serial];
+    if (slot.event == nullptr) slot.event = makeSlotEvent();
+    slot.isDS4 = true;
+    slot.ds4 = {};
 
-    HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    submitEvents_[serial] = evt;
-
-    // Seed the extended-report cache. Centre the sticks (0x80) so the pad does
-    // not read as a stuck corner before the first gamepad frame. Touch packet
-    // count stays 0 = no touch activity.
-    DS4State st{};
-    st.report.Report.bThumbLX = 0x80;
-    st.report.Report.bThumbLY = 0x80;
-    st.report.Report.bThumbRX = 0x80;
-    st.report.Report.bThumbRY = 0x80;
-    // Seed the battery byte as charged until the first MSG_BATTERY arrives
-    // (Task 1.2). The sender forwards battery on connect, so the real value
-    // lands within ~1 s; seeding "charged" avoids a spurious low-battery
-    // toast on the host in that window.
-    st.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
-    ds4State_[serial] = st;
+    // Seed the extended-report cache. Centre the sticks (0x80) so the pad
+    // doesn't read as a stuck corner before the first gamepad frame.
+    slot.ds4.report.Report.bThumbLX = 0x80;
+    slot.ds4.report.Report.bThumbLY = 0x80;
+    slot.ds4.report.Report.bThumbRX = 0x80;
+    slot.ds4.report.Report.bThumbRY = 0x80;
+    // Seed the battery byte as charged until the first MSG_BATTERY arrives.
+    slot.ds4.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
+    slot.plugged.store(true, std::memory_order_release);
 
     startNotificationWorker(serial, /*isDS4=*/true);
     return true;
 }
 
 bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report) {
+    if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
 
-    // Convert GamepadReport (Xbox-layout) → DS4_REPORT
+    // Convert GamepadReport (Xbox-layout) -> DS4_REPORT
     DS4_REPORT ds4;
     DS4_REPORT_INIT(&ds4);
 
@@ -165,24 +220,24 @@ bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report)
     ds4.bThumbRX = (BYTE)((((int)report.sThumbRX + 32768) * 255) / 65535);
     ds4.bThumbRY = (BYTE)(255 - (((int)report.sThumbRY + 32768) * 255) / 65535); // Y inverted
 
-    // Triggers: Xbox uses 0..255, DS4 uses 0..255 — direct map
+    // Triggers: Xbox uses 0..255, DS4 uses 0..255 -- direct map
     ds4.bTriggerL = report.bLeftTrigger;
     ds4.bTriggerR = report.bRightTrigger;
 
-    // Buttons mapping (Xbox → DS4)
+    // Buttons mapping (Xbox -> DS4)
     USHORT ds4btn = 0;
-    if (report.wButtons & 0x1000) ds4btn |= DS4_BUTTON_CROSS;          // A → Cross
-    if (report.wButtons & 0x2000) ds4btn |= DS4_BUTTON_CIRCLE;         // B → Circle
-    if (report.wButtons & 0x4000) ds4btn |= DS4_BUTTON_SQUARE;         // X → Square
-    if (report.wButtons & 0x8000) ds4btn |= DS4_BUTTON_TRIANGLE;       // Y → Triangle
+    if (report.wButtons & 0x1000) ds4btn |= DS4_BUTTON_CROSS;          // A -> Cross
+    if (report.wButtons & 0x2000) ds4btn |= DS4_BUTTON_CIRCLE;         // B -> Circle
+    if (report.wButtons & 0x4000) ds4btn |= DS4_BUTTON_SQUARE;         // X -> Square
+    if (report.wButtons & 0x8000) ds4btn |= DS4_BUTTON_TRIANGLE;       // Y -> Triangle
     if (report.wButtons & 0x0100) ds4btn |= DS4_BUTTON_SHOULDER_LEFT;  // LB
     if (report.wButtons & 0x0200) ds4btn |= DS4_BUTTON_SHOULDER_RIGHT; // RB
-    if (report.wButtons & 0x0020) ds4btn |= DS4_BUTTON_SHARE;          // Back → Share
-    if (report.wButtons & 0x0010) ds4btn |= DS4_BUTTON_OPTIONS;        // Start → Options
+    if (report.wButtons & 0x0020) ds4btn |= DS4_BUTTON_SHARE;          // Back -> Share
+    if (report.wButtons & 0x0010) ds4btn |= DS4_BUTTON_OPTIONS;        // Start -> Options
     if (report.wButtons & 0x0040) ds4btn |= DS4_BUTTON_THUMB_LEFT;     // LS
     if (report.wButtons & 0x0080) ds4btn |= DS4_BUTTON_THUMB_RIGHT;    // RS
 
-    // D-Pad → DS4 hat encoding
+    // D-Pad -> DS4 hat encoding
     bool up = (report.wButtons & 0x0001) != 0;
     bool down = (report.wButtons & 0x0002) != 0;
     bool left = (report.wButtons & 0x0004) != 0;
@@ -210,48 +265,39 @@ bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report)
     ds4.wButtons = ds4btn;
     DS4_SET_DPAD(&ds4, dpad);
 
-    // Guide → PS button (special byte bit 0)
+    // Guide -> PS button (special byte bit 0)
     if (report.wButtons & 0x0400) ds4.bSpecial |= 0x01;
 
     // Fold the freshly-converted gamepad frame into the controller's running
-    // extended report — the leading 9 fields are layout-identical to
-    // DS4_REPORT — then submit the whole DS4_REPORT_EX so any cached gyro /
-    // accel sample rides along on the same frame.
-    auto sit = ds4State_.find(serial);
-    if (sit == ds4State_.end()) return false; // serial is not a DS4 virtual device
-    auto& er = sit->second.report.Report;
+    // extended report -- the leading fields are layout-identical to
+    // DS4_REPORT -- then submit the whole DS4_REPORT_EX so any cached
+    // gyro/accel sample rides along on the same frame.
+    auto& er = slot.ds4.report.Report;
     er.bThumbLX = ds4.bThumbLX;
     er.bThumbLY = ds4.bThumbLY;
     er.bThumbRX = ds4.bThumbRX;
     er.bThumbRY = ds4.bThumbRY;
     er.wButtons = ds4.wButtons;
-    // Preserve the touchpad clicky-button bit (bSpecial bit 1), which the
-    // touchpad path owns — the gamepad frame only contributes the PS button
-    // (bit 0), so a plain assignment would wipe a held trackpad click between
-    // touch samples.
+    // Preserve the touchpad clicky-button bit (bSpecial bit 1), owned by
+    // the touchpad path -- the gamepad frame only contributes the PS
+    // button (bit 0), so a plain assignment would wipe a held trackpad
+    // click between touch samples.
     er.bSpecial =
-        static_cast<UCHAR>((ds4.bSpecial & ~0x02) | (sit->second.touchpadButton ? 0x02 : 0x00));
+        static_cast<UCHAR>((ds4.bSpecial & ~0x02) | (slot.ds4.touchpadButton ? 0x02 : 0x00));
     er.bTriggerL = ds4.bTriggerL;
     er.bTriggerR = ds4.bTriggerR;
     return submitDS4Locked(serial);
 }
 
 bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
+    if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return false;
 
-    // Only DualShock 4 virtual devices have an IMU surface. An Xbox 360 pad
-    // (no ds4State_ entry) silently drops motion — the SessionService still
-    // caches it for the web UI.
-    auto sit = ds4State_.find(serial);
-    if (sit == ds4State_.end()) return false;
+    IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
 
-    // The wire MotionReport is signed-int16 fixed point (±32767 ≈ ±2000 deg/s
-    // for gyro, ±4 g for accel). A real DS4's gyro/accel are also int16 with a
-    // near-identical full scale, so the values pass straight into the
-    // DS4_REPORT_EX IMU fields — proportional and close to DS4-native. A
-    // consumer applying exact DS4 calibration sees a small scale offset.
-    auto& er = sit->second.report.Report;
+    auto& er = slot.ds4.report.Report;
     er.wGyroX = report.gyroX;
     er.wGyroY = report.gyroY;
     er.wGyroZ = report.gyroZ;
@@ -260,17 +306,17 @@ bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     er.wAccelZ = report.accelZ;
 
     submitDS4Locked(serial);
-    // The IMU fields only actually reach the host on the extended-report path.
-    return sit->second.exSupported;
+    // IMU fields only actually reach the host on the extended-report path.
+    return slot.ds4.exSupported;
 }
 
-// Map a wire BatteryReport (level 0..100 or 0xFF-unknown, status enum) onto the
-// DS4 HID battery byte: bit 4 (0x10) = cable connected, low nibble = level. The
-// host derives capacity ≈ nibble × 10 (clamped to 100%); nibble 11 with the
-// cable bit set is the DualShock 4's "fully charged" sentinel.
+// Map a wire BatteryReport (level 0..100 or 0xFF-unknown, status enum) onto
+// the DS4 HID battery byte: bit 4 (0x10) = cable connected, low nibble =
+// level. The host derives capacity ~ nibble * 10 (clamped to 100%); nibble
+// 11 with the cable bit set is the DualShock 4's "fully charged" sentinel.
 static uint8_t ds4BatteryByte(const BatteryReport& report) {
     int nibble = (report.level == BATTERY_LEVEL_UNKNOWN)
-                     ? 5 // unknown → mid-scale, so the host still shows something
+                     ? 5 // unknown -> mid-scale, so the host still shows something
                      : static_cast<int>(report.level) / 10;
     if (nibble > 10) nibble = 10;
 
@@ -279,46 +325,36 @@ static uint8_t ds4BatteryByte(const BatteryReport& report) {
         return static_cast<uint8_t>(0x10 | nibble); // cable connected + charging
     case BATTERY_STATUS_FULL:
     case BATTERY_STATUS_WIRED:
-        // FULL = sitting on the charger at 100%. WIRED = the controller is
-        // cabled and the sender fell back to host (desktop / AC) power — both
-        // present to the host as a fully-charged pad.
         return static_cast<uint8_t>(0x10 | 11);
-    default: // discharging / unknown — running on battery, no cable bit
+    default: // discharging / unknown -- running on battery, no cable bit
         return static_cast<uint8_t>(nibble);
     }
 }
 
 bool ViGEmAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
+    if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return false;
 
-    // Only DualShock 4 virtual devices expose a battery byte. An Xbox 360 pad
-    // (no ds4State_ entry) silently drops it — the SessionService still caches
-    // the value for the web UI.
-    auto sit = ds4State_.find(serial);
-    if (sit == ds4State_.end()) return false;
+    IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
 
-    sit->second.report.Report.bBatteryLvl = ds4BatteryByte(report);
-
+    slot.ds4.report.Report.bBatteryLvl = ds4BatteryByte(report);
     submitDS4Locked(serial);
-    // The battery byte only actually reaches the host on the extended-report
-    // path — the basic DS4_REPORT has no battery field.
-    return sit->second.exSupported;
+    return slot.ds4.exSupported;
 }
 
 bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {
+    if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return false;
 
-    // Only DualShock 4 virtual devices have a touchpad surface. An Xbox 360
-    // pad (no ds4State_ entry) silently drops it — the SessionService still
-    // caches the sample for the web UI.
-    auto sit = ds4State_.find(serial);
-    if (sit == ds4State_.end()) return false;
-    DS4State& st = sit->second;
+    IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
+    DS4State& st = slot.ds4;
     auto& er = st.report.Report;
 
-    // Bump a finger's tracking id whenever it transitions up→down so a
+    // Bump a finger's tracking id whenever it transitions up->down so a
     // consumer reads a brand-new contact rather than a teleporting drag.
     if (report.finger0.active && !st.fingerDown0)
         st.trackingId0 = static_cast<uint8_t>((st.trackingId0 + 1) & 0x7F);
@@ -327,8 +363,6 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
     st.fingerDown0 = report.finger0.active;
     st.fingerDown1 = report.finger1.active;
 
-    // One current touch frame rides along on this report. ds4PackTouchFinger
-    // (core/touchpad_codec.h) owns the wire→DS4 12-bit coordinate packing.
     DS4_TOUCH& touch = er.sCurrentTouch;
     touch.bPacketCounter = st.touchPacket++;
     const auto f0 = ds4PackTouchFinger(report.finger0, st.trackingId0);
@@ -343,9 +377,9 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
     touch.bTouchData2[2] = f1[3];
     er.bTouchPacketsN = 1;
 
-    // The clicky-trackpad button is bSpecial bit 1 (bit 0 = PS button, owned
-    // by the gamepad-report path). Cache it so submitDS4Report can re-apply it
-    // on plain gamepad frames without clobbering it.
+    // The clicky-trackpad button is bSpecial bit 1 (bit 0 = PS button,
+    // owned by the gamepad-report path). Cache it so submitDS4Report can
+    // re-apply it on plain gamepad frames without clobbering it.
     st.touchpadButton = report.buttonPressed;
     if (report.buttonPressed)
         er.bSpecial |= 0x02;
@@ -353,13 +387,12 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
         er.bSpecial = static_cast<UCHAR>(er.bSpecial & ~0x02);
 
     submitDS4Locked(serial);
-    // Touchpad fields only actually reach the host on the extended-report path.
     return st.exSupported;
 }
 
 bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
-    // Host-global desktop injection — independent of the ViGEm bus, so this
-    // works even with no virtual controllers plugged in.
+    // Host-global desktop injection -- independent of the ViGEm bus, so
+    // this works even with no virtual controllers plugged in.
     INPUT inputs[2] = {};
     int n = 0;
     if (dx != 0 || dy != 0) {
@@ -369,41 +402,30 @@ bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
         inputs[n].mi.dwFlags = MOUSEEVENTF_MOVE;
         ++n;
     }
-    // Emit a button event only on a level change — a held click must not
-    // re-press every frame.
     const bool was = relMouseBtnDown_.exchange(leftButton);
     if (leftButton != was) {
         inputs[n].type = INPUT_MOUSE;
         inputs[n].mi.dwFlags = leftButton ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
         ++n;
     }
-    if (n == 0) return true; // idle frame — nothing to inject, still "handled"
+    if (n == 0) return true; // idle frame -- nothing to inject, still "handled"
     return SendInput(static_cast<UINT>(n), inputs, sizeof(INPUT)) == static_cast<UINT>(n);
 }
 
 bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {
-    // The DS4 virtual device's DS4_REPORT_EX carries gyro/accel fields;
-    // the Xbox 360 XUSB_REPORT has no IMU surface. Used by SessionService to
-    // populate ConnectionSnapshot::CtrlInfo::motionSinkSupportedForType so
-    // the web UI can warn operators about Xbox-typed slots that won't sink
-    // motion. The actual sample path (submitMotion) still returns false on
-    // Xbox; this method just lets the receiver explain WHY upfront.
     return controllerTypeUsesDS4(controllerType);
 }
 
-// Caller holds busMtx_; `serial` must exist in ds4State_.
+// Caller holds busMtx_; `serial` must be a plugged DS4 slot.
 bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
-    auto sit = ds4State_.find(serial);
-    if (sit == ds4State_.end()) return false;
-    DS4State& st = sit->second;
-
-    HANDLE evt = nullptr;
-    if (auto eit = submitEvents_.find(serial); eit != submitEvents_.end()) evt = eit->second;
-    if (evt == nullptr) return false;
+    IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4 || slot.event == nullptr)
+        return false;
+    DS4State& st = slot.ds4;
 
     if (st.exSupported) {
-        // Advance the free-running DS4 report timestamp (~5.33 µs per unit;
-        // 16/3 ≈ 5.33). Skipped on the very first submit (no prior `lastSubmit`).
+        // Advance the free-running DS4 report timestamp (~5.33 us per
+        // unit; 16/3 ~= 5.33). Skipped on the very first submit.
         const auto now = std::chrono::steady_clock::now();
         if (st.lastSubmit.time_since_epoch().count() != 0) {
             const auto us =
@@ -413,13 +435,14 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
         }
         st.lastSubmit = now;
 
-        if (submitReportDS4ExFast(busHandle_, (unsigned long)serial, st.report, evt)) {
+        if (submitDs4ExFireAndForget(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.ov,
+                                     slot.event, st.report)) {
             return true;
         }
-        // The driver rejected IOCTL_DS4_SUBMIT_REPORT_EX — almost certainly a
-        // ViGEmBus older than 1.17. Latch the EX path off for this serial and
-        // fall through to the basic report so buttons / sticks keep working
-        // (the basic report has no IMU fields, so motion is dropped).
+        // The driver rejected IOCTL_DS4_SUBMIT_REPORT_EX -- almost
+        // certainly a ViGEmBus older than 1.17. Latch the EX path off
+        // for this serial and fall through to the basic report so
+        // buttons / sticks keep working (no IMU fields).
         st.exSupported = false;
     }
 
@@ -433,7 +456,8 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
     basic.bSpecial = st.report.Report.bSpecial;
     basic.bTriggerL = st.report.Report.bTriggerL;
     basic.bTriggerR = st.report.Report.bTriggerR;
-    return submitReportDS4Fast(busHandle_, (unsigned long)serial, basic, evt);
+    return submitDs4FireAndForget(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.ov,
+                                  slot.event, basic);
 }
 
 // ── Rumble callback registration ────────────────────────────────────────────
@@ -454,25 +478,19 @@ void ViGEmAdapter::startNotificationWorker(uint32_t serial, bool isDS4) {
     w.cancel = CreateEvent(nullptr, TRUE /* manual reset */, FALSE, nullptr);
     w.isDS4 = isDS4;
     HANDLE cancelHandle = w.cancel;
-    // Capture by value — the worker only ever reads serial/isDS4/cancelHandle.
     w.th = std::thread(
         [this, serial, isDS4, cancelHandle] { notificationLoop(serial, isDS4, cancelHandle); });
 }
 
-// Caller holds busMtx_. Extracts the worker out of the map under lock, then
-// the caller is expected to join + close-handle outside the lock (joining
-// inside would deadlock against the worker's own lock acquisition for the
-// rumble callback copy).
+// Caller holds busMtx_.
 void ViGEmAdapter::stopNotificationWorker(uint32_t serial) {
     auto it = notifWorkers_.find(serial);
     if (it == notifWorkers_.end()) return;
     NotificationWorker w = std::move(it->second);
     notifWorkers_.erase(it);
     if (w.cancel) SetEvent(w.cancel);
-    // We need to release busMtx_ for the join; the caller's lock_guard owns
-    // the lock, so drop and reacquire at the underlying-mutex level. This is
-    // safe because the caller's lock_guard will re-unlock the (now re-locked)
-    // mutex on scope exit.
+    // Drop + reacquire busMtx_ around the join so the worker's own lock
+    // acquisition (for the rumble callback copy) doesn't deadlock.
     busMtx_.unlock();
     if (w.th.joinable()) w.th.join();
     if (w.cancel) CloseHandle(w.cancel);
@@ -488,22 +506,12 @@ void ViGEmAdapter::notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel) 
     if (bus == INVALID_HANDLE_VALUE) return;
 
     while (true) {
-        // Block until the driver has data (game called XInputSetState etc.)
-        // or until cancel is signalled by stopNotificationWorker.
         if (isDS4) {
             DS4_REQUEST_NOTIFICATION n{};
             if (!waitNextDS4Notification(bus, (unsigned long)serial, cancel, n)) return;
             RumbleReport rr{};
-            // Scale the DS4 motor bytes (0..255) up into the XInput-style
-            // 16-bit space the wire format uses, so the dish can handle one
-            // unified scale regardless of source.
             rr.strongMagnitude = static_cast<uint16_t>(n.LargeMotor) * 257;
             rr.weakMagnitude = static_cast<uint16_t>(n.SmallMotor) * 257;
-            // The DS4 driver delivers rumble and lightbar in the *same*
-            // notification. Fan it out to the two independent return paths:
-            // motor vibration via the rumble callback, LED colour via the
-            // lightbar callback. Identical-colour coalescing for the latter is
-            // handled by SessionService::handleLightbarFromBackend.
             RumbleCallback rcb;
             LightbarCallback lcb;
             {

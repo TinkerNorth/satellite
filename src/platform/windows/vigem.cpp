@@ -6,6 +6,7 @@
  */
 #include "vigem.h"
 
+#include <cstring>
 #include <type_traits>
 
 HANDLE openVigemBus() {
@@ -110,7 +111,39 @@ bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt) {
     return ok;
 }
 
+// ── Fire-and-forget submit helpers ─────────────────────────────────────────
+//
+// All three follow the same dance:
+//   1. WaitForSingleObject(event, INFINITE) -- auto-reset, signalled by the
+//      kernel on the *previous* IOCTL's completion. In steady state this
+//      returns immediately; under back-pressure it blocks until the kernel
+//      catches up (which is the correct flow-control behaviour).
+//   2. Re-initialise the caller-owned OVERLAPPED + submit struct in place
+//      (they must outlive the IOCTL, which is the caller's contract).
+//   3. Issue the IOCTL and return WITHOUT waiting. The kernel writes the
+//      completion to OVERLAPPED and signals `event` asynchronously.
+//
+// On a hard synchronous failure (closed handle, driver rejected the IOCTL
+// outright) we re-signal `event` so the next call doesn't deadlock waiting
+// for completion that will never arrive.
+
+static bool issueFireAndForget(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSize, OVERLAPPED& ov,
+                               HANDLE event) {
+    WaitForSingleObject(event, INFINITE);
+    ZeroMemory(&ov, sizeof(ov));
+    ov.hEvent = event;
+    DWORD xfr = 0;
+    BOOL ok = DeviceIoControl(bus, ioctl, inBuf, inSize, nullptr, 0, &xfr, &ov);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) {
+        SetEvent(event);
+        return false;
+    }
+    return true;
+}
+
 bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event) {
+    // Legacy synchronous helper kept for tests; the hot path uses the
+    // fire-and-forget variant below. Builds + waits in one go.
     OVERLAPPED ov{};
     ov.hEvent = event;
     DWORD xfr = 0;
@@ -118,39 +151,35 @@ bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE e
     XUSB_SUBMIT_REPORT_INIT(&sr, serial);
     sr.Report = rpt;
     DeviceIoControl(bus, IOCTL_XUSB_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
-    bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
-    return ok;
+    return GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
 }
 
-bool submitReportDS4Fast(HANDLE bus, ULONG serial, const DS4_REPORT& rpt, HANDLE event) {
-    OVERLAPPED ov{};
-    ov.hEvent = event;
-    DWORD xfr = 0;
-    DS4_SUBMIT_REPORT sr;
+bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
+                             HANDLE event, const void* reportBytes) {
+    // Re-init the persistent submit struct. Size/Type bytes don't change
+    // across calls but the macro is the canonical way to set them and
+    // costs nothing in steady state.
+    XUSB_SUBMIT_REPORT_INIT(&xsr, serial);
+    // The 12-byte XUSB_REPORT is layout-identical to GamepadReport, so the
+    // hot path memcpys plaintext bytes straight in -- one copy from wire
+    // to kernel buffer, no intermediate.
+    static_assert(sizeof(XUSB_REPORT) == 12, "XUSB_REPORT size assumption");
+    std::memcpy(&xsr.Report, reportBytes, sizeof(XUSB_REPORT));
+    return issueFireAndForget(bus, IOCTL_XUSB_SUBMIT_REPORT, &xsr, xsr.Size, ov, event);
+}
+
+bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
+                            HANDLE event, const DS4_REPORT& rpt) {
     DS4_SUBMIT_REPORT_INIT(&sr, serial);
     sr.Report = rpt;
-    DeviceIoControl(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
-    bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
-    return ok;
+    return issueFireAndForget(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, ov, event);
 }
 
-bool submitReportDS4ExFast(HANDLE bus, ULONG serial, const DS4_REPORT_EX& rpt, HANDLE event) {
-    // Same overlapped pattern as submitReportDS4Fast, but the extended IOCTL.
-    // A driver older than ViGEmBus 1.17 fails the DeviceIoControl with
-    // ERROR_INVALID_PARAMETER / ERROR_NOT_SUPPORTED; the caller (ViGEmAdapter)
-    // latches that and stops trying the EX path for this serial.
-    OVERLAPPED ov{};
-    ov.hEvent = event;
-    DWORD xfr = 0;
-    DS4_SUBMIT_REPORT_EX sr;
+bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
+                              HANDLE event, const DS4_REPORT_EX& rpt) {
     DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
     sr.Report = rpt;
-    if (!DeviceIoControl(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, nullptr, 0, &xfr, &ov)) {
-        // Synchronous failure (bad IOCTL on an old driver) — no overlapped
-        // completion to wait on.
-        if (GetLastError() != ERROR_IO_PENDING) return false;
-    }
-    return GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
+    return issueFireAndForget(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, ov, event);
 }
 
 void unplugTarget(HANDLE bus, ULONG serial) {
