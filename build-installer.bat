@@ -2,10 +2,17 @@
 REM ============================================================================
 REM  Build the Windows Inno Setup installer (SatelliteSetup.exe)
 REM
-REM  This is the canonical Windows entry point for producing dist\SatelliteSetup.exe.
-REM  It runs the two steps the installer pipeline needs, in order:
+REM  Pipeline:
 REM    [1] scripts\fetch-redist.ps1  -- downloads + SHA-256 verifies redist\*.exe
-REM    [2] iscc installer.iss        -- compiles the installer
+REM    [2] scripts\sign.ps1          -- signs satellite.exe (if SATELLITE_SIGN_*
+REM                                     or CLOUD_SIGN_TOOL env is set; skipped
+REM                                     otherwise with a warning)
+REM    [3] iscc installer.iss        -- compiles the installer
+REM    [4] scripts\sign.ps1          -- signs SatelliteSetup.exe (same gating)
+REM    [5] scripts\generate-sbom.ps1 -- emits dist\satellite-sbom.cdx.json
+REM
+REM  Steps [2] and [4] no-op cleanly if no signing credentials are
+REM  present, so this script is safe to run on a dev machine.
 REM
 REM  Requires:
 REM    - satellite.exe already built (run build-satellite.bat first)
@@ -17,6 +24,8 @@ setlocal
 
 set ROOT=%~dp0
 set FETCH=%ROOT%scripts\fetch-redist.ps1
+set SIGN=%ROOT%scripts\sign.ps1
+set SBOM=%ROOT%scripts\generate-sbom.ps1
 
 if not exist "%ROOT%satellite.exe" (
     echo [FAIL] satellite.exe not found in %ROOT%
@@ -24,7 +33,7 @@ if not exist "%ROOT%satellite.exe" (
     exit /b 1
 )
 
-echo === [1/2] Fetching redistributables ===
+echo === [1/5] Fetching redistributables ===
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%FETCH%"
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] fetch-redist.ps1
@@ -32,7 +41,25 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-echo === [2/2] Compiling installer ^(iscc installer.iss^) ===
+echo === [2/5] Signing satellite.exe ===
+REM Skip if no signing creds are configured -- dev builds should still work.
+if not defined SATELLITE_SIGN_THUMBPRINT if not defined SATELLITE_SIGN_PFX if not defined CLOUD_SIGN_TOOL (
+    echo [SKIP] No signing credentials in env -- satellite.exe will be unsigned.
+    echo        SmartScreen will warn first-time users. To enable signing:
+    echo          set SATELLITE_SIGN_THUMBPRINT=...  ^(local hardware/store cert^)
+    echo          set SATELLITE_SIGN_PFX=...^&^& set SATELLITE_SIGN_PFX_PASSWORD=...
+    echo          set CLOUD_SIGN_TOOL="AzureSignTool sign ..."  ^(cloud signing^)
+    goto :compile
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SIGN%" -Files "satellite.exe"
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] sign satellite.exe
+    exit /b 1
+)
+echo.
+
+:compile
+echo === [3/5] Compiling installer (iscc installer.iss) ===
 
 REM Locate iscc.exe. Prefer PATH; fall back to standard install locations
 REM so a fresh shell after a per-user winget install of Inno Setup just
@@ -56,8 +83,28 @@ if %ERRORLEVEL% neq 0 (
     echo [FAIL] iscc
     exit /b 1
 )
-
 echo.
+
+echo === [4/5] Signing SatelliteSetup.exe ===
+if not defined SATELLITE_SIGN_THUMBPRINT if not defined SATELLITE_SIGN_PFX if not defined CLOUD_SIGN_TOOL (
+    echo [SKIP] No signing credentials in env -- SatelliteSetup.exe will be unsigned.
+    goto :sbom
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SIGN%" -Files "dist\SatelliteSetup.exe"
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] sign SatelliteSetup.exe
+    exit /b 1
+)
+echo.
+
+:sbom
+echo === [5/5] Generating SBOM ===
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SBOM%"
+if %ERRORLEVEL% neq 0 (
+    echo [WARN] sbom generation failed -- continuing anyway
+)
+echo.
+
 echo === Installer built: dist\SatelliteSetup.exe ===
 
 endlocal

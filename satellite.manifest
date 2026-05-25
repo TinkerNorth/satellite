@@ -6,19 +6,75 @@
     name="TinkerNorth.Satellite"
     type="win32"
   />
-  <description>Satellite</description>
+  <description>Satellite low-latency Xbox controller forwarding over LAN.</description>
+
+  <!--
+    Privileges: asInvoker.
+
+    The app does NOT need administrator at runtime. ViGEmBus's device
+    interface has a permissive DACL by design (DS4Windows, BetterJoy
+    etc. all run unelevated). Ports 9876 to 9879 and 9443 are above
+    1024, so no privilege is required to bind them.
+    HIGH_PRIORITY_CLASS, timeBeginPeriod and SetupDiGetClassDevs do
+    not need a privilege. Config lives under %APPDATA% and autostart
+    lives under HKCU\Run.
+
+    Admin is only ever needed at install time (Program Files,
+    ViGEmBus driver, firewall rules); the installer handles that and
+    the installed binary then runs as the invoking user.
+
+    Critically, asInvoker is also what makes HKCU\Run autostart
+    work: the shell's Run-key launcher cannot trigger UAC at logon,
+    so any requireAdministrator manifest silently disables autostart.
+  -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>
+
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+
+  <!--
+    OS compatibility GUIDs. Windows 10 and Windows 11 share the same
+    compat GUID (Microsoft kept this stable), so a single entry covers
+    both. Tooling (sigcheck, Compatibility tab, Store certification)
+    uses this list when reporting supported OSes.
+  -->
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
-      <!-- Windows 10 / 11 -->
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
     </application>
   </compatibility>
-</assembly>
 
+  <!--
+    Modern Win32 niceties:
+      PerMonitorV2 DPI for crisp rendering on mixed-DPI multi-monitor
+      setups; longPathAware to accept paths above MAX_PATH; UTF-8
+      activeCodePage so the *A() Win32 APIs we call throughout
+      (RegSetValueExA, ShellExecuteA, etc.) interpret char* as UTF-8
+      instead of the legacy ANSI code page; heapType SegmentHeap for
+      the modern low-fragmentation allocator.
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness     xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2,PerMonitor</dpiAwareness>
+      <longPathAware    xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <activeCodePage   xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <heapType         xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+    </windowsSettings>
+  </application>
+</assembly>
