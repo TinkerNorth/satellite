@@ -143,6 +143,32 @@ static bool issueOverlappedSync(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSi
     return GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
 }
 
+// ── EXPERIMENT (uncommitted): fire-and-forget submit, take 2 ────────────────
+// The previous FAF revision had a real buffer race: the caller (e.g.
+// submitXusbFireAndForget) ran XUSB_SUBMIT_REPORT_INIT + memcpy BEFORE
+// issueFireAndForget did its WaitForSingleObject. If a previous IOCTL was
+// still in flight, the kernel was reading from `xsr` at the same time we
+// were memcpy'ing fresh wire bytes into it -- garbled submit, no visible
+// driver error, dish reports "no input reaching the game".
+//
+// Fix: wait FIRST (release the previous IOCTL's hold on xsr/ov), then
+// mutate, then issue. Wait-first is the only correct ordering for any
+// kernel object the caller mutates between submissions.
+//
+// `ov` is the caller-owned per-slot persistent OVERLAPPED. Kernel writes
+// Internal/InternalHigh to it during the IRP; we must not free it while
+// in flight. Persistent across calls.
+static bool issueFireAndForget(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSize, OVERLAPPED& ov,
+                               HANDLE event) {
+    DWORD xfr = 0;
+    BOOL ok = DeviceIoControl(bus, ioctl, inBuf, inSize, nullptr, 0, &xfr, &ov);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) {
+        SetEvent(event); // re-arm so the next caller's wait doesn't deadlock
+        return false;
+    }
+    return true;
+}
+
 bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event) {
     // Legacy helper kept for the synchronous code paths and tests that
     // still construct a fresh XUSB_REPORT on the stack. The hot path
@@ -155,16 +181,31 @@ bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE e
 
 bool submitXusbSync(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, HANDLE event,
                     const void* reportBytes) {
-    // Re-init the persistent submit struct. Size/SerialNo don't change
-    // across calls (slot is bound to a single serial for its lifetime)
-    // but the macro is the canonical way to set them.
     XUSB_SUBMIT_REPORT_INIT(&xsr, serial);
-    // The 12-byte XUSB_REPORT is layout-identical to GamepadReport, so
-    // the hot path memcpys plaintext bytes straight in -- one copy from
-    // wire to kernel buffer, no intermediate.
     static_assert(sizeof(XUSB_REPORT) == 12, "XUSB_REPORT size assumption");
     std::memcpy(&xsr.Report, reportBytes, sizeof(XUSB_REPORT));
     return issueOverlappedSync(bus, IOCTL_XUSB_SUBMIT_REPORT, &xsr, xsr.Size, event);
+}
+
+// EXPERIMENT (uncommitted): true fire-and-forget Xbox submit. Caller
+// provides a per-slot persistent OVERLAPPED (so the kernel can safely
+// touch Internal/InternalHigh after we return) and a per-slot auto-reset
+// event (initially signalled). Sequence:
+//   1. WaitForSingleObject(event, INFINITE) -- release the previous
+//      IOCTL's claim on xsr + ov. First call sails through because the
+//      event is created signalled at plugin time.
+//   2. Mutate xsr (init + memcpy report).
+//   3. Re-init ov, set hEvent.
+//   4. DeviceIoControl, return immediately.
+bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
+                             HANDLE event, const void* reportBytes) {
+    WaitForSingleObject(event, INFINITE);
+    XUSB_SUBMIT_REPORT_INIT(&xsr, serial);
+    static_assert(sizeof(XUSB_REPORT) == 12, "XUSB_REPORT size assumption");
+    std::memcpy(&xsr.Report, reportBytes, sizeof(XUSB_REPORT));
+    ZeroMemory(&ov, sizeof(ov));
+    ov.hEvent = event;
+    return issueFireAndForget(bus, IOCTL_XUSB_SUBMIT_REPORT, &xsr, xsr.Size, ov, event);
 }
 
 bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event,
@@ -174,11 +215,35 @@ bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event
     return issueOverlappedSync(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, event);
 }
 
+// EXPERIMENT (uncommitted): DS4 basic fire-and-forget. Same shape as
+// submitXusbFireAndForget; see that function for the rationale.
+bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
+                            HANDLE event, const DS4_REPORT& rpt) {
+    WaitForSingleObject(event, INFINITE);
+    DS4_SUBMIT_REPORT_INIT(&sr, serial);
+    sr.Report = rpt;
+    ZeroMemory(&ov, sizeof(ov));
+    ov.hEvent = event;
+    return issueFireAndForget(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, ov, event);
+}
+
 bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE event,
                      const DS4_REPORT_EX& rpt) {
     DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
     sr.Report = rpt;
     return issueOverlappedSync(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, event);
+}
+
+// EXPERIMENT (uncommitted): DS4-EX fire-and-forget. Same shape as
+// submitXusbFireAndForget; see that function for the rationale.
+bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
+                              HANDLE event, const DS4_REPORT_EX& rpt) {
+    WaitForSingleObject(event, INFINITE);
+    DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
+    sr.Report = rpt;
+    ZeroMemory(&ov, sizeof(ov));
+    ov.hEvent = event;
+    return issueFireAndForget(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, ov, event);
 }
 
 void unplugTarget(HANDLE bus, ULONG serial) {

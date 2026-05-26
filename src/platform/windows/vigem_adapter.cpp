@@ -75,17 +75,14 @@ void ViGEmAdapter::closeBus() {
 
     std::lock_guard<std::mutex> lk(busMtx_);
 
-    // Close every per-serial event. Submit is fully synchronous (the
-    // helpers GetOverlappedResult(bWait=TRUE) before returning), so by
-    // the time we get here no IOCTL can still be in flight against any
-    // slot's event/buffer -- the receiver thread either hasn't called
-    // submit at all or has already had its call return. No drain wait
-    // is needed; trying to wait on an auto-reset event the receiver
-    // already consumed via GetOverlappedResult would deadlock.
+    // EXPERIMENT (uncommitted): with FAF, the kernel may still be reading
+    // from slot.xsr / writing to slot.ov when we get here. Drain by
+    // waiting on each slot's event before we free anything.
     for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
         IoSlot& slot = io_[s];
         slot.plugged.store(false, std::memory_order_release);
         if (slot.event) {
+            WaitForSingleObject(slot.event, INFINITE);
             CloseHandle(slot.event);
             slot.event = nullptr;
         }
@@ -141,19 +138,23 @@ void ViGEmAdapter::unplugDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return;
 
-    // Stop accepting new submissions immediately. With synchronous
-    // submit (GetOverlappedResult(bWait=TRUE) inside each helper), a
-    // concurrent receiver-thread submit that already slipped past the
-    // plugged check before we took the lock is harmless: it will return
-    // from its sync IOCTL before our unplug runs (we hold the same
-    // mutex it acquired). Once we have the lock, no IOCTL is in flight.
+    // Stop accepting new submissions immediately so a concurrent receiver
+    // thread can't race the unplug.
     IoSlot& slot = io_[serial];
     slot.plugged.store(false, std::memory_order_release);
+
+    // EXPERIMENT (uncommitted): with FAF, an in-flight IOCTL may still
+    // be holding the slot's persistent OVERLAPPED + xsr buffer. Drain
+    // by waiting on the event before tearing down the virtual device.
+    // The auto-reset wait re-clears the event; SetEvent below re-arms
+    // it so a fresh plugin's first submit's wait passes through.
+    if (slot.event) WaitForSingleObject(slot.event, INFINITE);
 
     unplugTarget(busHandle_, static_cast<unsigned long>(serial));
 
     // We deliberately do NOT CloseHandle(slot.event) here -- it gets
     // reused if the serial is replugged. Final cleanup is in closeBus.
+    if (slot.event) SetEvent(slot.event);
     slot.isDS4 = false;
     slot.ds4 = {};
 }
@@ -183,7 +184,12 @@ bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     // XUSB_REPORT (binary-compatible). No intermediate stack-local copy.
     static_assert(sizeof(GamepadReport) == sizeof(XUSB_REPORT),
                   "GamepadReport and XUSB_REPORT must match");
-    return submitXusbSync(bus, static_cast<unsigned long>(serial), slot->xsr, slot->event, &report);
+    // EXPERIMENT (uncommitted): FAF. Pass the slot-persistent OVERLAPPED
+    // so the kernel can safely write completion data to it asynchronously
+    // after we return; the FAF helper does wait-FIRST then mutate-then-issue
+    // (the correct ordering -- the previous FAF attempt had this backwards).
+    return submitXusbFireAndForget(bus, static_cast<unsigned long>(serial), slot->xsr, slot->ov,
+                                   slot->event, &report);
 }
 
 bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
@@ -443,7 +449,8 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
         }
         st.lastSubmit = now;
 
-        if (submitDs4ExSync(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.event, st.report)) {
+        if (submitDs4ExFireAndForget(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.ov,
+                                     slot.event, st.report)) {
             return true;
         }
         // The driver rejected IOCTL_DS4_SUBMIT_REPORT_EX -- almost
@@ -463,7 +470,8 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
     basic.bSpecial = st.report.Report.bSpecial;
     basic.bTriggerL = st.report.Report.bTriggerL;
     basic.bTriggerR = st.report.Report.bTriggerR;
-    return submitDs4Sync(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.event, basic);
+    return submitDs4FireAndForget(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.ov,
+                                  slot.event, basic);
 }
 
 // ── Rumble callback registration ────────────────────────────────────────────

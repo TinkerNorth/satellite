@@ -41,6 +41,26 @@ bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event
 bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE event,
                      const DS4_REPORT_EX& rpt);
 
+// ── EXPERIMENT (uncommitted): fire-and-forget submit, take 2 ────────────────
+// Properly orders the buffer mutation AFTER the wait-for-previous-IOCTL
+// completion (the previous FAF revision had this backwards, which is why
+// the dish saw no input). Caller supplies a per-slot PERSISTENT
+// OVERLAPPED so the kernel can safely write Internal/InternalHigh to it
+// after we return.
+//
+// Each call:
+//   1. WaitForSingleObject(event, INFINITE) -- release any in-flight
+//      IOCTL's claim on `sr` + `ov`. Steady-state: instant test-and-clear.
+//   2. Re-init `sr` + memcpy report bytes.
+//   3. Re-init `ov` (kernel will write completion data into it), set hEvent.
+//   4. DeviceIoControl -- return immediately, kernel handles async.
+bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
+                             HANDLE event, const void* reportBytes);
+bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
+                            HANDLE event, const DS4_REPORT& rpt);
+bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
+                              HANDLE event, const DS4_REPORT_EX& rpt);
+
 void unplugTarget(HANDLE bus, ULONG serial);
 
 // Block until the driver completes one rumble/LED notification for `serial`.
