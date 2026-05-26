@@ -15,34 +15,31 @@ bool pluginTargetDS4(HANDLE bus, ULONG serial);
 // want to confirm the IOCTL was accepted before returning.
 bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt);
 
-// Fire-and-forget Xbox/DS4/DS4-EX submit. Each call:
-//   1. Waits on `event` (auto-reset, initially signalled) -- in steady
-//      state this is a non-blocking test because the previous IOCTL's
-//      completion already signalled it. Throttles us only if the kernel
-//      is genuinely behind, in which case blocking back-pressure is what
-//      we want.
-//   2. Re-initialises the persistent OVERLAPPED and submit struct that
-//      live in the per-serial slot (the caller-owned `xsr` / `ds4` /
-//      `ds4Ex` and `ov` references).
-//   3. Issues IOCTL_XUSB_SUBMIT_REPORT / IOCTL_DS4_SUBMIT_REPORT[_EX]
-//      and returns IMMEDIATELY without GetOverlappedResult. The kernel
-//      reads the submit struct asynchronously and signals `event` on
-//      completion -- which is what the next call's wait will observe.
+// Per-slot submit helpers. Use a CALLER-OWNED submit struct (`xsr` /
+// `ds4` / `ds4Ex`) plus a CALLER-OWNED auto-reset event so a single
+// 12-byte memcpy from the wire bytes into the persistent submit
+// buffer is the only data copy on the hot path -- no intermediate
+// stack-local report struct, no per-call CreateEvent/CloseHandle pair.
 //
-// Returns true if the IOCTL was either accepted synchronously or queued
-// (`ERROR_IO_PENDING`). On a hard synchronous failure the event is
-// re-signalled so the next call doesn't deadlock waiting on completion
-// that will never arrive.
+// IO sequencing: OVERLAPPED is stack-local inside each helper, hEvent
+// is set to the caller-owned per-slot event, then GetOverlappedResult
+// is called with bWait=TRUE so the driver has finished consuming the
+// submit struct by the time we return. Synchronous-wait semantics --
+// match the pre-PR behaviour exactly. A previous revision experimented
+// with fire-and-forget (return immediately, wait at the start of the
+// NEXT call) and the dish reported "no input reaching the game" with
+// no driver-side error, so we've reverted to the documented sync path.
+// The hot-path wins from the slot-persistent submit buffer and the
+// dropped busMtx_ around DeviceIoControl are retained.
 //
-// IMPORTANT: `xsr`/`ds4`/`ds4Ex` and `ov` MUST outlive the IOCTL. The
-// adapter places them in the per-serial IoSlot, which is freed only at
-// closeBus after a final drain wait on `event`.
-bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
-                             HANDLE event, const void* reportBytes);
-bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
-                            HANDLE event, const DS4_REPORT& rpt);
-bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
-                              HANDLE event, const DS4_REPORT_EX& rpt);
+// Returns true on driver acceptance (GetOverlappedResult succeeded),
+// false otherwise.
+bool submitXusbSync(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, HANDLE event,
+                    const void* reportBytes);
+bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event,
+                   const DS4_REPORT& rpt);
+bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE event,
+                     const DS4_REPORT_EX& rpt);
 
 void unplugTarget(HANDLE bus, ULONG serial);
 

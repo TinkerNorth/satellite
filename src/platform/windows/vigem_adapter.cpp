@@ -4,17 +4,24 @@
 /*
  * adapters/vigem_adapter.cpp -- IGamepadPort implementation (Windows/ViGEm).
  *
- * Hot-path changes vs the previous revision (see header for the full
+ * Hot-path changes vs the pre-PR revision (see header for the full
  * rationale):
  *   * Per-serial state lives in a flat `io_[17]` array, no hash lookups.
- *   * `submitReport` issues the XUSB IOCTL fire-and-forget -- the kernel
- *     completes asynchronously and signals the slot's auto-reset event,
- *     which the next submission's wait observes (zero blocking when the
- *     driver is keeping up).
  *   * `XUSB_REPORT` is filled by a single 12-byte memcpy from the wire
- *     bytes; the intermediate stack-local report struct is gone.
+ *     bytes straight into the slot-persistent submit buffer -- the
+ *     intermediate stack-local `XUSB_REPORT rpt` is gone.
  *   * `ds4State_` (formerly a map) moved into the IoSlot, so DS4
  *     submission paths also avoid the hash lookup.
+ *   * `submitReport` validates + grabs the bus handle under busMtx_,
+ *     then drops the lock for the actual DeviceIoControl, so the
+ *     notification thread is no longer blocked on the IOCTL syscall.
+ *
+ * IO sequencing is SYNCHRONOUS (GetOverlappedResult bWait=TRUE) -- a
+ * previous revision tried fire-and-forget here and the dish reported
+ * "no input reaching the game" with no driver-side error. The sync
+ * path is the documented-safe behaviour for ViGEmBus IOCTLs; see
+ * vigem.h's helper comments for the full reasoning. The
+ * slot-persistent submit buffer + dropped-busMtx_ wins are retained.
  */
 #include "vigem_adapter.h"
 
@@ -68,15 +75,17 @@ void ViGEmAdapter::closeBus() {
 
     std::lock_guard<std::mutex> lk(busMtx_);
 
-    // Drain + close every per-serial event so the kernel can't write to a
-    // freed OVERLAPPED after we return. WaitForSingleObject blocks for as
-    // long as any in-flight IOCTL takes to complete (microseconds in
-    // practice; the driver signals the event as part of completion).
+    // Close every per-serial event. Submit is fully synchronous (the
+    // helpers GetOverlappedResult(bWait=TRUE) before returning), so by
+    // the time we get here no IOCTL can still be in flight against any
+    // slot's event/buffer -- the receiver thread either hasn't called
+    // submit at all or has already had its call return. No drain wait
+    // is needed; trying to wait on an auto-reset event the receiver
+    // already consumed via GetOverlappedResult would deadlock.
     for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
         IoSlot& slot = io_[s];
         slot.plugged.store(false, std::memory_order_release);
         if (slot.event) {
-            WaitForSingleObject(slot.event, INFINITE);
             CloseHandle(slot.event);
             slot.event = nullptr;
         }
@@ -132,21 +141,19 @@ void ViGEmAdapter::unplugDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return;
 
-    // Stop accepting new submissions immediately so a concurrent receiver
-    // thread can't race the unplug.
+    // Stop accepting new submissions immediately. With synchronous
+    // submit (GetOverlappedResult(bWait=TRUE) inside each helper), a
+    // concurrent receiver-thread submit that already slipped past the
+    // plugged check before we took the lock is harmless: it will return
+    // from its sync IOCTL before our unplug runs (we hold the same
+    // mutex it acquired). Once we have the lock, no IOCTL is in flight.
     IoSlot& slot = io_[serial];
     slot.plugged.store(false, std::memory_order_release);
-
-    // Drain any IOCTL that beat the plugged-flag flip into the kernel.
-    // The auto-reset wait re-arms for the next plugin of this serial.
-    if (slot.event) WaitForSingleObject(slot.event, INFINITE);
 
     unplugTarget(busHandle_, static_cast<unsigned long>(serial));
 
     // We deliberately do NOT CloseHandle(slot.event) here -- it gets
     // reused if the serial is replugged. Final cleanup is in closeBus.
-    // Re-signal so a fresh plugin's first submit passes through.
-    if (slot.event) SetEvent(slot.event);
     slot.isDS4 = false;
     slot.ds4 = {};
 }
@@ -155,10 +162,12 @@ bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     if (!isValidSerial(serial)) return false;
 
     // Hot path: take the lock long enough to copy the handle + slot
-    // pointer, then drop it. The slot's submit buffer + OVERLAPPED are
+    // pointer, then drop it. The slot's submit buffer + event are
     // persistent (closed only at closeBus), so we can keep using them
-    // after the lock release. closeBus drains the slot event before
-    // freeing anything, so a use-after-free is impossible.
+    // after the lock release. Sync submit means the IOCTL has returned
+    // by the time closeBus could observe us -- no in-flight kernel
+    // reference to the slot is possible at teardown, so the previously
+    // needed drain wait is gone.
     HANDLE bus;
     IoSlot* slot;
     {
@@ -174,8 +183,7 @@ bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     // XUSB_REPORT (binary-compatible). No intermediate stack-local copy.
     static_assert(sizeof(GamepadReport) == sizeof(XUSB_REPORT),
                   "GamepadReport and XUSB_REPORT must match");
-    return submitXusbFireAndForget(bus, static_cast<unsigned long>(serial), slot->xsr, slot->ov,
-                                   slot->event, &report);
+    return submitXusbSync(bus, static_cast<unsigned long>(serial), slot->xsr, slot->event, &report);
 }
 
 bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
@@ -435,8 +443,7 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
         }
         st.lastSubmit = now;
 
-        if (submitDs4ExFireAndForget(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.ov,
-                                     slot.event, st.report)) {
+        if (submitDs4ExSync(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.event, st.report)) {
             return true;
         }
         // The driver rejected IOCTL_DS4_SUBMIT_REPORT_EX -- almost
@@ -456,8 +463,7 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
     basic.bSpecial = st.report.Report.bSpecial;
     basic.bTriggerL = st.report.Report.bTriggerL;
     basic.bTriggerR = st.report.Report.bTriggerR;
-    return submitDs4FireAndForget(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.ov,
-                                  slot.event, basic);
+    return submitDs4Sync(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.event, basic);
 }
 
 // ── Rumble callback registration ────────────────────────────────────────────

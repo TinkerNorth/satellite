@@ -10,23 +10,27 @@
  *     previous std::unordered_map<uint32_t, HANDLE> + std::unordered_map<
  *     uint32_t, DS4State> meant two hash lookups per submitted gamepad
  *     frame; the flat array is one indexed load with no hashing.
- *   * Each slot owns one persistent OVERLAPPED + auto-reset event +
- *     submit buffer for Xbox / DS4 / DS4_EX paths. The buffers live as
- *     long as the slot does -- the kernel reads from them asynchronously
- *     during fire-and-forget IOCTLs, so they must outlive the IOCTL.
- *   * `submitReport` does not wait for kernel completion any more.
- *     `WaitForSingleObject(slot.event, INFINITE)` runs at the *next*
- *     submission and throttles us to the kernel's pace -- in steady
- *     state the event is already signalled, so the wait is a single
- *     test-and-clear with no syscall blocking.
+ *   * Each slot owns one persistent auto-reset event + persistent submit
+ *     buffer for Xbox / DS4 / DS4_EX paths. The buffer persistence lets
+ *     the wire-bytes -> kernel-buffer copy be a single 12-byte memcpy on
+ *     the hot path with no stack-local intermediate. The event is
+ *     persistent so we avoid the CreateEvent/CloseHandle pair the
+ *     pre-PR stack-local OVERLAPPED path paid every packet.
+ *   * IO sequencing is SYNCHRONOUS-wait via GetOverlappedResult(TRUE).
+ *     A previous revision experimented with fire-and-forget (return
+ *     immediately, wait at the start of the next call) -- the dish
+ *     reported "no input reaching the game" with no driver-side error,
+ *     so we've reverted to the documented sync path. The slot-persistent
+ *     buffer + the dropped busMtx_ around DeviceIoControl wins are
+ *     retained; only the FAF half of the change is gone.
  *
  * Locking:
  *   * `busMtx_` still guards `busHandle_`, the notification-worker map,
  *     and slot bookkeeping (plugin/unplug). The hot submit path acquires
  *     the lock for a brief validate-and-copy-handle, then drops it for
- *     the DeviceIoControl + Wait. Slot teardown happens only at
- *     `closeBus` and waits on `slot.event` before closing it, so an
- *     in-flight IOCTL cannot use-after-free the event handle.
+ *     the DeviceIoControl + GetOverlappedResult wait. Slot teardown
+ *     happens only at `closeBus` and waits on `slot.event` before
+ *     closing it, so an in-flight IOCTL cannot use-after-free the event.
  */
 #pragma once
 
@@ -89,19 +93,24 @@ class ViGEmAdapter : public IGamepadPort {
     };
 
     // One slot per backend serial (1..16). Indexed by serial; slot 0 is
-    // unused (serial 0 means "not plugged"). All non-trivial fields are
-    // persistent across IOCTL calls because the kernel reads them
-    // asynchronously after we return from DeviceIoControl.
+    // unused (serial 0 means "not plugged"). The submit buffers are
+    // persistent across IOCTL calls so the hot path's wire-bytes ->
+    // kernel-buffer copy is a single memcpy with no stack intermediate.
+    // OVERLAPPED is stack-local in the submit helpers (we use sync wait
+    // via GetOverlappedResult so its lifetime ends with the helper call).
     struct IoSlot {
-        // Auto-reset event, signalled by the kernel on IOCTL completion.
-        // Created in the signalled state at plugin time so the very first
-        // submit's WaitForSingleObject passes through immediately.
+        // Auto-reset event reused across submissions. The submit helpers
+        // wrap a stack OVERLAPPED whose hEvent points at this; the event
+        // is signalled by the kernel on completion and waited-on via
+        // GetOverlappedResult(bWait=TRUE). Persistent so we don't pay a
+        // CreateEvent/CloseHandle pair on the 250 Hz hot path.
         HANDLE event = nullptr;
-        OVERLAPPED ov{};
 
-        // Submit buffers for each report kind. We keep all three because
-        // a DS4 slot may need to fall back from EX to basic mid-session
-        // when an older ViGEmBus driver rejects the EX IOCTL.
+        // Submit buffers for each report kind. Persistent so the hot
+        // path's only data touch is one 12-byte memcpy into &xsr.Report
+        // (or the DS4 equivalents). All three are kept because a DS4
+        // slot may need to fall back from EX to basic mid-session when
+        // an older ViGEmBus driver rejects the EX IOCTL.
         XUSB_SUBMIT_REPORT xsr{};
         DS4_SUBMIT_REPORT ds4Basic{};
         DS4_SUBMIT_REPORT_EX ds4Ex{};
