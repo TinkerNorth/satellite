@@ -48,6 +48,8 @@ inline const UINT IDM_OPEN_UI = 1001;
 inline const UINT IDM_EXIT = 1003;
 inline const UINT IDM_CHECK_UPDATES = 1004;  // tray "Check for Updates…"
 inline const UINT IDM_INSTALL_UPDATE = 1005; // tray "Install Update vX.Y.Z" (dynamic)
+inline const UINT IDM_OPEN_LOGS = 1006;      // tray "Open Logs Folder"
+inline const UINT IDM_REPORT_PROBLEM = 1007; // tray "Report a Problem..."
 
 // ── Win32-only shared state ─────────────────────────────────────────────────
 extern HWND g_hwnd;

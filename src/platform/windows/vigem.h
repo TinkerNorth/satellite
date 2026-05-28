@@ -10,13 +10,57 @@
 HANDLE openVigemBus();
 bool pluginTarget(HANDLE bus, ULONG serial);
 bool pluginTargetDS4(HANDLE bus, ULONG serial);
+
+// Synchronous-wait submit. Used for the legacy code paths and tests that
+// want to confirm the IOCTL was accepted before returning.
 bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt);
-bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event);
-bool submitReportDS4Fast(HANDLE bus, ULONG serial, const DS4_REPORT& rpt, HANDLE event);
-// Extended DS4 submit — carries the full 63-byte report (gyro/accel/touchpad/
-// battery). Needs ViGEmBus >= 1.17; returns false if the driver rejects
-// IOCTL_DS4_SUBMIT_REPORT_EX, which the adapter treats as "fall back to basic".
-bool submitReportDS4ExFast(HANDLE bus, ULONG serial, const DS4_REPORT_EX& rpt, HANDLE event);
+
+// Per-slot submit helpers. Use a CALLER-OWNED submit struct (`xsr` /
+// `ds4` / `ds4Ex`) plus a CALLER-OWNED auto-reset event so a single
+// 12-byte memcpy from the wire bytes into the persistent submit
+// buffer is the only data copy on the hot path -- no intermediate
+// stack-local report struct, no per-call CreateEvent/CloseHandle pair.
+//
+// IO sequencing: OVERLAPPED is stack-local inside each helper, hEvent
+// is set to the caller-owned per-slot event, then GetOverlappedResult
+// is called with bWait=TRUE so the driver has finished consuming the
+// submit struct by the time we return. Synchronous-wait semantics --
+// match the pre-PR behaviour exactly. A previous revision experimented
+// with fire-and-forget (return immediately, wait at the start of the
+// NEXT call) and the dish reported "no input reaching the game" with
+// no driver-side error, so we've reverted to the documented sync path.
+// The hot-path wins from the slot-persistent submit buffer and the
+// dropped busMtx_ around DeviceIoControl are retained.
+//
+// Returns true on driver acceptance (GetOverlappedResult succeeded),
+// false otherwise.
+bool submitXusbSync(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, HANDLE event,
+                    const void* reportBytes);
+bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event,
+                   const DS4_REPORT& rpt);
+bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE event,
+                     const DS4_REPORT_EX& rpt);
+
+// ── EXPERIMENT (uncommitted): fire-and-forget submit, take 2 ────────────────
+// Properly orders the buffer mutation AFTER the wait-for-previous-IOCTL
+// completion (the previous FAF revision had this backwards, which is why
+// the dish saw no input). Caller supplies a per-slot PERSISTENT
+// OVERLAPPED so the kernel can safely write Internal/InternalHigh to it
+// after we return.
+//
+// Each call:
+//   1. WaitForSingleObject(event, INFINITE) -- release any in-flight
+//      IOCTL's claim on `sr` + `ov`. Steady-state: instant test-and-clear.
+//   2. Re-init `sr` + memcpy report bytes.
+//   3. Re-init `ov` (kernel will write completion data into it), set hEvent.
+//   4. DeviceIoControl -- return immediately, kernel handles async.
+bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
+                             HANDLE event, const void* reportBytes);
+bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
+                            HANDLE event, const DS4_REPORT& rpt);
+bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
+                              HANDLE event, const DS4_REPORT_EX& rpt);
+
 void unplugTarget(HANDLE bus, ULONG serial);
 
 // Block until the driver completes one rumble/LED notification for `serial`.

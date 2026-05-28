@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+#
+# WinGet installer manifest for Satellite. This is the per-version
+# manifest -- bump PackageVersion and InstallerSha256 each release, then
+# submit to https://github.com/microsoft/winget-pkgs via PR (or via the
+# wingetcreate tool: `wingetcreate update TinkerNorth.Satellite -u <url> -v <ver>`).
+#
+# The three sibling files (installer / locale.en-US / version) must be
+# updated together; CI does this from a single template if you wire it up.
+
+PackageIdentifier: TinkerNorth.Satellite
+PackageVersion: 1.0.0
+InstallerLocale: en-US
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.0.0
+InstallerType: inno
+Scope: machine
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: 2026-05-24
+Commands:
+  - satellite
+Protocols:
+  - http
+FileExtensions: []
+InstallerSwitches:
+  Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+  SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART
+  Custom: /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/TinkerNorth/satellite/releases/download/v1.0.0/SatelliteSetup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    ProductCode: '{B8F3A2E1-7D4C-4E5F-9A1B-3C6D8E0F2A4B}_is1'
+    AppsAndFeaturesEntries:
+      - DisplayName: Satellite
+        Publisher: TinkerNorth
+        DisplayVersion: 1.0.0
+        ProductCode: '{B8F3A2E1-7D4C-4E5F-9A1B-3C6D8E0F2A4B}_is1'
+        InstallerType: inno
+
+ManifestType: installer
+ManifestVersion: 1.6.0

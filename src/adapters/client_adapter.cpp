@@ -24,6 +24,22 @@ void ClientAdapter::updateClientAddr(uint32_t token, const std::string& ip, uint
     addrs_[token] = addr;
 }
 
+void ClientAdapter::updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) {
+    // Direct path: the receiver already has the sender's sin_addr.s_addr
+    // in network byte order, so we can drop it straight into sockaddr_in
+    // without the inet_ntop -> std::string -> inet_pton round-trip the
+    // string overload pays. This is on the hot UDP path (one call per
+    // received packet), so saving the string allocation here removes
+    // every heap touch from the receive loop.
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = ipv4NetworkOrder;
+
+    std::lock_guard<std::mutex> lk(addrMtx_);
+    addrs_[token] = addr;
+}
+
 void ClientAdapter::removeClientAddr(uint32_t token) {
     std::lock_guard<std::mutex> lk(addrMtx_);
     addrs_.erase(token);
