@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: TinkerNorth.Satellite
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: TinkerNorth
+PublisherUrl: https://github.com/TinkerNorth
+PublisherSupportUrl: https://github.com/TinkerNorth/satellite/issues
+Author: TinkerNorth
+PackageName: Satellite
+PackageUrl: https://github.com/TinkerNorth/satellite
+License: LGPL-3.0-or-later
+LicenseUrl: https://github.com/TinkerNorth/satellite/blob/main/LICENSE
+Copyright: Copyright (c) 2026 TinkerNorth
+CopyrightUrl: https://github.com/TinkerNorth/satellite/blob/main/LICENSE
+ShortDescription: Low-latency Xbox controller forwarding over LAN -- tray app + local web UI.
+Description: |-
+  Satellite is a Windows tray application that turns a PC into a low-latency
+  receiver for Xbox controller input forwarded over your LAN. It uses the
+  ViGEmBus kernel driver to expose received input as a virtual Xbox 360
+  gamepad to games, supports rumble and full controller motion (gyro and
+  accelerometer via the DualShock 4 extended report), and offers an
+  in-browser admin UI at http://localhost:9877 for pairing, status, and
+  configuration.
+Moniker: satellite
+Tags:
+  - controller
+  - gamepad
+  - gaming
+  - input
+  - lan
+  - remote
+  - streaming
+  - vigem
+  - xbox
+ReleaseNotes: |-
+  See https://github.com/TinkerNorth/satellite/releases/tag/v1.0.0
+ReleaseNotesUrl: https://github.com/TinkerNorth/satellite/releases/tag/v1.0.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -21,6 +21,10 @@ class ClientAdapter : public IClientPort {
     void setSocket(SOCKET sock);
 
     void updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) override;
+    // Hot-path override: skips the inet_pton + std::string round-trip and
+    // writes the IPv4 directly into sin_addr. Called once per UDP packet
+    // by the receiver, so the per-call cost matters.
+    void updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) override;
     void removeClientAddr(uint32_t token) override;
 
     void sendHeartbeatAck(const Connection& conn) override;

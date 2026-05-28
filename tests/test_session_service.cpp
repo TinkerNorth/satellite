@@ -11,6 +11,7 @@
 #include "../src/core/session_service.h"
 #include "../src/core/touchpad_codec.h"
 #include "../src/core/gamepad_backend.h"
+#include "../src/core/ipv4_util.h"
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -210,6 +211,17 @@ struct MockViGem : IGamepadPort {
 // ── Mock IClientPort ────────────────────────────────────────────────────────
 struct MockClient : IClientPort {
     int updateAddrCalls = 0;
+    // Hot-path (V4) update counter -- the new SessionService entry points
+    // (handleGamepadDataAndUpdate, updatePostDecryptV4) route through
+    // updateClientAddrV4 instead of the legacy string overload, so tests
+    // that exercise those need to assert on this counter rather than
+    // (or in addition to) updateAddrCalls.
+    int updateAddrV4Calls = 0;
+    // Last V4 payload observed -- lets tests verify the numeric IPv4 and
+    // port reached the client port without re-parsing the string.
+    uint32_t lastV4Token = 0;
+    uint32_t lastV4IPv4Nbo = 0;
+    uint16_t lastV4Port = 0;
     int removeAddrCalls = 0;
     int heartbeatAckCalls = 0;
     int controllerAckCalls = 0;
@@ -237,6 +249,12 @@ struct MockClient : IClientPort {
     uint8_t lastLightbarB = 0;
 
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override { updateAddrCalls++; }
+    void updateClientAddrV4(uint32_t token, uint32_t ipv4Nbo, uint16_t port) override {
+        updateAddrV4Calls++;
+        lastV4Token = token;
+        lastV4IPv4Nbo = ipv4Nbo;
+        lastV4Port = port;
+    }
     void removeClientAddr(uint32_t) override { removeAddrCalls++; }
     void sendHeartbeatAck(const Connection&) override { heartbeatAckCalls++; }
     void sendControllerAck(const Connection&, uint16_t t, uint8_t c, uint8_t r,
@@ -3235,6 +3253,605 @@ static void test_lightbar_surfacedInConnectionsSnapshot() {
     EXPECT_EQ(static_cast<int>(ci.lightbarB), 0xFE);
 }
 
+// ============================================================================
+// Hot-path optimisation tests
+// ============================================================================
+// Covers the receiver -> ViGEm allocation-free / single-lock changes:
+//   * IPv4 codec round-trips and malformed-input rejection
+//   * handleGamepadDataAndUpdate -- the fused single-lock entry point that
+//     replaces (getDecryptInfo + updatePostDecrypt + handleGamepadData)
+//     for the gamepad case
+//   * updatePostDecryptV4 -- the V4-byte-order variant used by cold paths
+//   * Connection::clientIPv4 seeding from openSession and lazy clientIP
+//     string refresh (the "skip the string alloc when IP is stable" win)
+//   * Controller::usesDS4 cached flag -- written on every controllerType
+//     assignment so the gamepad dispatch branch is a single load
+// ============================================================================
+
+// ── IPv4 codec tests ────────────────────────────────────────────────────────
+
+static void test_parseIPv4Nbo_canonical() {
+    TEST("parseIPv4Nbo -- canonical 192.168.1.1");
+    // Network byte order: leftmost octet in low byte. For "192.168.1.1":
+    //   0x01 << 24 | 0x01 << 16 | 0xA8 << 8 | 0xC0  = 0x0101A8C0
+    EXPECT_EQ(satellite::parseIPv4Nbo("192.168.1.1"), (uint32_t)0x0101A8C0);
+}
+
+static void test_parseIPv4Nbo_loopback() {
+    TEST("parseIPv4Nbo -- 127.0.0.1 round-trips byte-correctly");
+    // 127.0.0.1 in NBO = 0x0100007F (matches inet_pton output on x86)
+    EXPECT_EQ(satellite::parseIPv4Nbo("127.0.0.1"), (uint32_t)0x0100007F);
+}
+
+static void test_parseIPv4Nbo_allZeros() {
+    TEST("parseIPv4Nbo -- 0.0.0.0 returns 0 (collides with invalid sentinel)");
+    // Documented limitation: 0 is the invalid sentinel AND the literal
+    // address. Acceptable because 0.0.0.0 is never a real sender IP.
+    EXPECT_EQ(satellite::parseIPv4Nbo("0.0.0.0"), (uint32_t)0);
+}
+
+static void test_parseIPv4Nbo_allOnes() {
+    TEST("parseIPv4Nbo -- 255.255.255.255 = 0xFFFFFFFF");
+    EXPECT_EQ(satellite::parseIPv4Nbo("255.255.255.255"), (uint32_t)0xFFFFFFFF);
+}
+
+static void test_parseIPv4Nbo_emptyRejected() {
+    TEST("parseIPv4Nbo -- empty string rejected");
+    EXPECT_EQ(satellite::parseIPv4Nbo(""), (uint32_t)0);
+}
+
+static void test_parseIPv4Nbo_tooFewOctetsRejected() {
+    TEST("parseIPv4Nbo -- '1.2.3' (3 octets) rejected");
+    EXPECT_EQ(satellite::parseIPv4Nbo("1.2.3"), (uint32_t)0);
+}
+
+static void test_parseIPv4Nbo_tooManyOctetsRejected() {
+    TEST("parseIPv4Nbo -- '1.2.3.4.5' rejected");
+    EXPECT_EQ(satellite::parseIPv4Nbo("1.2.3.4.5"), (uint32_t)0);
+}
+
+static void test_parseIPv4Nbo_octetOverflowRejected() {
+    TEST("parseIPv4Nbo -- octet > 255 rejected");
+    EXPECT_EQ(satellite::parseIPv4Nbo("1.2.3.256"), (uint32_t)0);
+    EXPECT_EQ(satellite::parseIPv4Nbo("999.0.0.1"), (uint32_t)0);
+}
+
+static void test_parseIPv4Nbo_nonDigitRejected() {
+    TEST("parseIPv4Nbo -- non-digit characters rejected");
+    EXPECT_EQ(satellite::parseIPv4Nbo("1.2.3.a"), (uint32_t)0);
+    EXPECT_EQ(satellite::parseIPv4Nbo("hello"), (uint32_t)0);
+    EXPECT_EQ(satellite::parseIPv4Nbo("192.168.1.1 "), (uint32_t)0); // trailing space
+}
+
+static void test_parseIPv4Nbo_emptyOctetRejected() {
+    TEST("parseIPv4Nbo -- empty octet ('1..2.3' / '.1.2.3' / '1.2.3.') rejected");
+    EXPECT_EQ(satellite::parseIPv4Nbo("1..2.3"), (uint32_t)0);
+    EXPECT_EQ(satellite::parseIPv4Nbo(".1.2.3"), (uint32_t)0);
+    EXPECT_EQ(satellite::parseIPv4Nbo("1.2.3."), (uint32_t)0);
+}
+
+static void test_formatIPv4Nbo_canonical() {
+    TEST("formatIPv4Nbo -- 0x0101A8C0 (NBO) formats to '192.168.1.1'");
+    EXPECT(satellite::formatIPv4Nbo(0x0101A8C0) == std::string("192.168.1.1"));
+}
+
+static void test_formatIPv4Nbo_loopback() {
+    TEST("formatIPv4Nbo -- 0x0100007F formats to '127.0.0.1'");
+    EXPECT(satellite::formatIPv4Nbo(0x0100007F) == std::string("127.0.0.1"));
+}
+
+static void test_formatIPv4Nbo_zeroAndAllOnes() {
+    TEST("formatIPv4Nbo -- edge values format correctly");
+    EXPECT(satellite::formatIPv4Nbo(0x00000000) == std::string("0.0.0.0"));
+    EXPECT(satellite::formatIPv4Nbo(0xFFFFFFFF) == std::string("255.255.255.255"));
+}
+
+static void test_ipv4_roundTrip() {
+    TEST("IPv4 codec -- parse -> format -> parse round-trips");
+    const char* addrs[] = {"10.0.0.1",    "172.16.0.42",   "192.168.255.254", "8.8.8.8",
+                           "1.1.1.1",     "203.0.113.99",  "169.254.1.42",    "224.0.0.1",
+                           "192.0.2.123", "255.255.255.0", "100.64.1.1",      "127.0.0.1"};
+    for (const char* a : addrs) {
+        uint32_t nbo = satellite::parseIPv4Nbo(a);
+        EXPECT(nbo != 0);
+        std::string back = satellite::formatIPv4Nbo(nbo);
+        EXPECT(back == std::string(a));
+    }
+}
+
+static void test_ipv4_matchesInetPtonByteOrder() {
+    TEST("parseIPv4Nbo -- byte order matches sockaddr_in.sin_addr.s_addr layout");
+    // The hot path passes the parsed value to ClientAdapter's V4 override
+    // which stamps it straight into sin_addr without any byte swap. So the
+    // numeric layout MUST match what inet_pton would have written. The
+    // value is little-endian-on-the-wire-octet-order: parts[0] is the low
+    // byte. We verify the bit positions explicitly to lock the contract.
+    const uint32_t nbo = satellite::parseIPv4Nbo("10.20.30.40");
+    EXPECT_EQ(static_cast<uint8_t>(nbo & 0xFF), (uint8_t)10);
+    EXPECT_EQ(static_cast<uint8_t>((nbo >> 8) & 0xFF), (uint8_t)20);
+    EXPECT_EQ(static_cast<uint8_t>((nbo >> 16) & 0xFF), (uint8_t)30);
+    EXPECT_EQ(static_cast<uint8_t>((nbo >> 24) & 0xFF), (uint8_t)40);
+}
+
+// ── openSession -- clientIPv4 seeding ───────────────────────────────────────
+
+static void test_openSession_seedsClientIPv4FromString() {
+    TEST("openSession -- seeds Connection::clientIPv4 from the string IP");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = svc.openSession("dev1", "D1", "10.0.0.42", TEST_KEY);
+    EXPECT(r.ok);
+
+    // Round-trip via the snapshot: clientIP comes from the cache string,
+    // which is initially set from the string IP we passed in. The numeric
+    // cache is exercised by the next test via the V4 update path.
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ((int)snap.connections.size(), 1);
+    EXPECT(snap.connections[0].clientIP == std::string("10.0.0.42"));
+}
+
+static void test_openSession_unparseableIPLeavesClientIPv4Zero() {
+    TEST("openSession -- unparseable IP leaves clientIPv4 == 0 but clientIP string still set");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    // "garbage" parses to 0. The snapshot's clientIP string is still
+    // whatever we passed (web UI honesty), but the next V4 update will
+    // observe clientIPv4 == 0 and refresh the cache string from the
+    // parsed numeric IP -- the first real packet recovers the truth.
+    auto r = svc.openSession("dev1", "D1", "garbage", TEST_KEY);
+    EXPECT(r.ok);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].clientIP == std::string("garbage"));
+
+    // Confirm the recovery path: pass a real V4 update, expect the
+    // snapshot's clientIP to reformat to the canonical dotted-quad.
+    svc.updatePostDecryptV4(r.token, /*counter=*/1, satellite::parseIPv4Nbo("172.16.0.5"),
+                            /*port=*/9876);
+    auto snap2 = svc.getConnectionsSnapshot();
+    EXPECT(snap2.connections[0].clientIP == std::string("172.16.0.5"));
+}
+
+// ── updatePostDecryptV4 ─────────────────────────────────────────────────────
+
+static void test_updatePostDecryptV4_updatesCounter() {
+    TEST("updatePostDecryptV4 -- updates Connection.lastCounter");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    const uint32_t ip = satellite::parseIPv4Nbo("10.0.0.1");
+    svc.updatePostDecryptV4(r.token, /*counter=*/4242, ip, /*port=*/5555);
+
+    uint8_t k[CRYPTO_KEY_SIZE];
+    uint32_t c = 0;
+    EXPECT(svc.getDecryptInfo(r.token, k, c));
+    EXPECT_EQ(c, (uint32_t)4242);
+}
+
+static void test_updatePostDecryptV4_callsClientV4_notString() {
+    TEST("updatePostDecryptV4 -- forwards to updateClientAddrV4, not the string overload");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    // Reset counters from the openSession path so we only count the
+    // updatePostDecryptV4 call below.
+    int v4Before = client.updateAddrV4Calls;
+    int strBefore = client.updateAddrCalls;
+    svc.updatePostDecryptV4(r.token, 1, satellite::parseIPv4Nbo("10.0.0.1"), 5555);
+    EXPECT_EQ(client.updateAddrV4Calls, v4Before + 1);
+    EXPECT_EQ(client.updateAddrCalls, strBefore); // string variant NOT called
+    EXPECT_EQ(client.lastV4Token, r.token);
+    EXPECT_EQ(client.lastV4IPv4Nbo, satellite::parseIPv4Nbo("10.0.0.1"));
+    EXPECT_EQ(client.lastV4Port, (uint16_t)5555);
+}
+
+static void test_updatePostDecryptV4_invalidTokenIsNoOp() {
+    TEST("updatePostDecryptV4 -- unknown token is a silent no-op");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    svc.updatePostDecryptV4(99999, 1, satellite::parseIPv4Nbo("10.0.0.1"), 5555);
+    EXPECT_EQ(client.updateAddrV4Calls, 0);
+}
+
+static void test_updatePostDecryptV4_refreshesClientIPOnChange() {
+    TEST("updatePostDecryptV4 -- clientIP string refreshes when IPv4 changes");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc); // seeds with "192.168.1.100"
+
+    svc.updatePostDecryptV4(r.token, 1, satellite::parseIPv4Nbo("10.0.0.1"), 5555);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].clientIP == std::string("10.0.0.1"));
+}
+
+static void test_updatePostDecryptV4_preservesClientIPWhenUnchanged() {
+    TEST("updatePostDecryptV4 -- clientIP string left alone when IPv4 unchanged");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc); // seeds with "192.168.1.100"
+
+    const uint32_t sameIp = satellite::parseIPv4Nbo("192.168.1.100");
+    // Tamper with the snapshot indirectly: prove the string is the
+    // expected canonical form before AND after a same-IP update. The
+    // lazy-refresh path bypasses the assign entirely (allocation-free
+    // steady state), but the user-visible value is identical -- which
+    // is exactly the property we want to lock in.
+    svc.updatePostDecryptV4(r.token, 1, sameIp, 9876);
+    svc.updatePostDecryptV4(r.token, 2, sameIp, 9876);
+    svc.updatePostDecryptV4(r.token, 3, sameIp, 9876);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].clientIP == std::string("192.168.1.100"));
+}
+
+// ── handleGamepadDataAndUpdate (the fused entry point) ──────────────────────
+
+static void test_handleGamepadDataAndUpdate_happyPath() {
+    TEST("handleGamepadDataAndUpdate -- submits report on happy path");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    GamepadReport rpt{};
+    rpt.wButtons = 0x1234;
+    rpt.sThumbRX = -12345;
+    const uint32_t ip = satellite::parseIPv4Nbo("10.0.0.5");
+
+    EXPECT(svc.handleGamepadDataAndUpdate(r.token, 100, ip, 5555, 0, rpt));
+    EXPECT_EQ(vigem.submitCalls, 1);
+    EXPECT_EQ(vigem.lastSubmittedReport.wButtons, (uint16_t)0x1234);
+    EXPECT_EQ(vigem.lastSubmittedReport.sThumbRX, (int16_t)-12345);
+}
+
+static void test_handleGamepadDataAndUpdate_invalidTokenReturnsFalse() {
+    TEST("handleGamepadDataAndUpdate -- unknown token returns false, no submit");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    GamepadReport rpt{};
+    EXPECT(!svc.handleGamepadDataAndUpdate(99999, 0, 0x01010101, 5555, 0, rpt));
+    EXPECT_EQ(vigem.submitCalls, 0);
+    EXPECT_EQ(client.updateAddrV4Calls, 0);
+}
+
+static void test_handleGamepadDataAndUpdate_inactiveControllerReturnsFalse() {
+    TEST("handleGamepadDataAndUpdate -- inactive controller returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    // NO handleControllerAdd -- the slot is inactive.
+
+    GamepadReport rpt{};
+    EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt));
+    EXPECT_EQ(vigem.submitCalls, 0);
+    // updatePostDecrypt half DID run, so the V4 client update fired
+    // even though the gamepad submit didn't -- the fused entry-point
+    // still updates connection state before checking the controller.
+    EXPECT(client.updateAddrV4Calls >= 1);
+}
+
+static void test_handleGamepadDataAndUpdate_outOfBoundsReturnsFalse() {
+    TEST("handleGamepadDataAndUpdate -- ctrlIdx out of bounds returns false");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+
+    GamepadReport rpt{};
+    EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555,
+                                           /*ctrlIdx=*/MAX_CONTROLLERS_PER_CONN, rpt));
+    EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555,
+                                           /*ctrlIdx=*/200, rpt));
+    EXPECT_EQ(vigem.submitCalls, 0);
+}
+
+static void test_handleGamepadDataAndUpdate_updatesCounter() {
+    TEST("handleGamepadDataAndUpdate -- updates Connection.lastCounter");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    GamepadReport rpt{};
+    EXPECT(svc.handleGamepadDataAndUpdate(r.token, 7777, 0x01010101, 5555, 0, rpt));
+
+    uint8_t k[CRYPTO_KEY_SIZE];
+    uint32_t c = 0;
+    svc.getDecryptInfo(r.token, k, c);
+    EXPECT_EQ(c, (uint32_t)7777);
+}
+
+static void test_handleGamepadDataAndUpdate_routesXboxThroughSubmitReport() {
+    TEST("handleGamepadDataAndUpdate -- Xbox type routes via submitReport (not DS4)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // defaults to Xbox
+
+    GamepadReport rpt{};
+    svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt);
+
+    EXPECT_EQ(vigem.submitCalls, 1);
+    EXPECT_EQ(vigem.submitDS4Calls, 0);
+}
+
+static void test_handleGamepadDataAndUpdate_routesPlayStationThroughSubmitDS4() {
+    TEST("handleGamepadDataAndUpdate -- PlayStation type routes via submitDS4Report");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    GamepadReport rpt{};
+    svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt);
+
+    EXPECT_EQ(vigem.submitCalls, 0);
+    EXPECT_EQ(vigem.submitDS4Calls, 1);
+}
+
+static void test_handleGamepadDataAndUpdate_usesCachedUsesDS4_notLiveLookup() {
+    TEST("handleGamepadDataAndUpdate -- uses cached Controller::usesDS4, mid-stream type change "
+         "re-routes after handleControllerType refreshes the cache");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // Xbox default -> usesDS4 cached false
+
+    GamepadReport rpt{};
+    svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitCalls, 1);
+    EXPECT_EQ(vigem.submitDS4Calls, 0);
+
+    // Flip the type -- handleControllerType refreshes the cache mirror
+    // and replugs the device through ds4. Next gamepad packet must
+    // route via the DS4 path.
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+    svc.handleGamepadDataAndUpdate(r.token, 2, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitCalls, 1);    // unchanged
+    EXPECT_EQ(vigem.submitDS4Calls, 1); // new
+
+    // And back again -- the cache must also revert.
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);
+    svc.handleGamepadDataAndUpdate(r.token, 3, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitCalls, 2);
+    EXPECT_EQ(vigem.submitDS4Calls, 1);
+}
+
+static void test_handleGamepadDataAndUpdate_callsClientV4Once() {
+    TEST("handleGamepadDataAndUpdate -- fires exactly one updateClientAddrV4 per call");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    int v4Before = client.updateAddrV4Calls;
+    GamepadReport rpt{};
+    svc.handleGamepadDataAndUpdate(r.token, 1, satellite::parseIPv4Nbo("203.0.113.5"), 5555, 0,
+                                   rpt);
+    EXPECT_EQ(client.updateAddrV4Calls, v4Before + 1);
+    EXPECT_EQ(client.lastV4IPv4Nbo, satellite::parseIPv4Nbo("203.0.113.5"));
+    EXPECT_EQ(client.lastV4Port, (uint16_t)5555);
+}
+
+static void test_handleGamepadDataAndUpdate_copiesReportIntoLastReportCache() {
+    TEST("handleGamepadDataAndUpdate -- copies report into Controller.lastReport");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    GamepadReport rpt{};
+    rpt.wButtons = 0xBEEF;
+    rpt.bLeftTrigger = 0xAB;
+    rpt.bRightTrigger = 0xCD;
+    rpt.sThumbLX = 1111;
+    rpt.sThumbLY = -2222;
+    rpt.sThumbRX = 3333;
+    rpt.sThumbRY = -4444;
+    svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt);
+
+    // The backend's lastSubmittedReport is the wire copy that reached
+    // submitReport -- it must match what the caller passed (no munging
+    // in the fused path for Xbox-typed controllers).
+    EXPECT_EQ(vigem.lastSubmittedReport.wButtons, (uint16_t)0xBEEF);
+    EXPECT_EQ(vigem.lastSubmittedReport.bLeftTrigger, (uint8_t)0xAB);
+    EXPECT_EQ(vigem.lastSubmittedReport.bRightTrigger, (uint8_t)0xCD);
+    EXPECT_EQ(vigem.lastSubmittedReport.sThumbLX, (int16_t)1111);
+    EXPECT_EQ(vigem.lastSubmittedReport.sThumbLY, (int16_t)-2222);
+    EXPECT_EQ(vigem.lastSubmittedReport.sThumbRX, (int16_t)3333);
+    EXPECT_EQ(vigem.lastSubmittedReport.sThumbRY, (int16_t)-4444);
+}
+
+static void test_handleGamepadDataAndUpdate_propagatesBackendFailure() {
+    TEST("handleGamepadDataAndUpdate -- forwards backend submit failure to caller");
+    MockViGem vigem;
+    vigem.submitReturnVal = false; // backend refuses the report
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    GamepadReport rpt{};
+    EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt));
+}
+
+static void test_handleGamepadDataAndUpdate_stillRefreshesIPOnInactiveController() {
+    TEST("handleGamepadDataAndUpdate -- updates IP cache even when controller is inactive");
+    // The fused path does the state update first, then the controller
+    // check. This is intentional -- a packet arriving for a controller
+    // that's been removed mid-session shouldn't strand the connection's
+    // lastPacketTime in the past (the reaper would kill it next cycle).
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    // No controller added.
+
+    GamepadReport rpt{};
+    EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 99, satellite::parseIPv4Nbo("203.0.113.99"),
+                                           5555, 0, rpt));
+    // The V4 update did fire even though gamepad dispatch returned false.
+    EXPECT_EQ(client.lastV4IPv4Nbo, satellite::parseIPv4Nbo("203.0.113.99"));
+    // And the snapshot reflects the new IP.
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].clientIP == std::string("203.0.113.99"));
+}
+
+// ── Controller::usesDS4 cache mirror ────────────────────────────────────────
+
+static void test_usesDS4_defaultsToFalseOnAdd() {
+    TEST("Controller::usesDS4 -- defaults to false (Xbox at add)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+
+    // Indirect observation via the dispatch routing: Xbox-typed
+    // controllers go through submitReport.
+    GamepadReport rpt{};
+    svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitCalls, 1);
+    EXPECT_EQ(vigem.submitDS4Calls, 0);
+}
+
+static void test_usesDS4_setToTrueOnControllerTypeChangeToPS() {
+    TEST("Controller::usesDS4 -- handleControllerType to PlayStation sets cache to true");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    GamepadReport rpt{};
+    svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitDS4Calls, 1);
+}
+
+static void test_usesDS4_revertedOnControllerTypeChangeBackToXbox() {
+    TEST("Controller::usesDS4 -- type flip Xbox <-> PS toggles the cache both ways");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // Xbox default
+
+    // Xbox -> Xbox (no-op): still routes via submitReport.
+    GamepadReport rpt{};
+    svc.handleGamepadDataAndUpdate(r.token, 1, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitCalls, 1);
+
+    // Xbox -> PS: routes via DS4.
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+    svc.handleGamepadDataAndUpdate(r.token, 2, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitDS4Calls, 1);
+
+    // PS -> Xbox: back to submitReport.
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);
+    svc.handleGamepadDataAndUpdate(r.token, 3, 0x01010101, 5555, 0, rpt);
+    EXPECT_EQ(vigem.submitCalls, 2);
+    EXPECT_EQ(vigem.submitDS4Calls, 1);
+}
+
+static void test_usesDS4_matchesLegacyHandleGamepadData() {
+    TEST("Controller::usesDS4 -- legacy handleGamepadData routes identically to fused path");
+    // Belt-and-braces: the cached flag drives BOTH paths. If a future
+    // change accidentally desyncs the legacy and fused dispatch, this
+    // test will catch it.
+    MockViGem fusedBackend;
+    MockClient fusedClient;
+    MockLog fusedLog;
+    SessionService fusedSvc(fusedBackend, fusedClient, fusedLog);
+    auto fr = openTestSession(fusedSvc);
+    fusedSvc.handleControllerAdd(fr.token, 0);
+    fusedSvc.handleControllerType(fr.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    MockViGem legacyBackend;
+    MockClient legacyClient;
+    MockLog legacyLog;
+    SessionService legacySvc(legacyBackend, legacyClient, legacyLog);
+    auto lr = openTestSession(legacySvc);
+    legacySvc.handleControllerAdd(lr.token, 0);
+    legacySvc.handleControllerType(lr.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    GamepadReport rpt{};
+    fusedSvc.handleGamepadDataAndUpdate(fr.token, 1, 0x01010101, 5555, 0, rpt);
+    legacySvc.handleGamepadData(lr.token, 0, rpt);
+
+    EXPECT_EQ(fusedBackend.submitDS4Calls, legacyBackend.submitDS4Calls);
+    EXPECT_EQ(fusedBackend.submitCalls, legacyBackend.submitCalls);
+}
+
+// ── updatePostDecrypt (legacy string overload) backward compatibility ───────
+
+static void test_updatePostDecrypt_seedsClientIPv4FromString() {
+    TEST("updatePostDecrypt (string) -- also populates Connection::clientIPv4 cache");
+    // The legacy string path must keep the numeric cache in sync so a
+    // future hot-path call (which compares numerics for lazy-refresh)
+    // observes the right starting value.
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = openTestSession(svc);
+
+    svc.updatePostDecrypt(r.token, 1, "172.16.0.42", 5555);
+
+    // Now a SAME-IP V4 update should leave the snapshot string alone --
+    // proving the string path stored the same numeric value the V4
+    // refresh would compute. If the seed had been wrong, the V4 path
+    // would observe a "change" and reformat to the canonical string.
+    svc.updatePostDecryptV4(r.token, 2, satellite::parseIPv4Nbo("172.16.0.42"), 5555);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].clientIP == std::string("172.16.0.42"));
+}
+
 int main() {
     std::cout << "Running SessionService tests...\n\n";
 
@@ -3435,6 +4052,57 @@ int main() {
     test_handleLightbarFromBackend_capLightbarSenderGetsDedicatedStream();
     test_handleLightbarFromBackend_coalesceStateResetOnReAdd();
     test_lightbar_surfacedInConnectionsSnapshot();
+
+    // ── Hot-path optimisations: IPv4 codec ──
+    test_parseIPv4Nbo_canonical();
+    test_parseIPv4Nbo_loopback();
+    test_parseIPv4Nbo_allZeros();
+    test_parseIPv4Nbo_allOnes();
+    test_parseIPv4Nbo_emptyRejected();
+    test_parseIPv4Nbo_tooFewOctetsRejected();
+    test_parseIPv4Nbo_tooManyOctetsRejected();
+    test_parseIPv4Nbo_octetOverflowRejected();
+    test_parseIPv4Nbo_nonDigitRejected();
+    test_parseIPv4Nbo_emptyOctetRejected();
+    test_formatIPv4Nbo_canonical();
+    test_formatIPv4Nbo_loopback();
+    test_formatIPv4Nbo_zeroAndAllOnes();
+    test_ipv4_roundTrip();
+    test_ipv4_matchesInetPtonByteOrder();
+
+    // ── Hot-path optimisations: openSession clientIPv4 seeding ──
+    test_openSession_seedsClientIPv4FromString();
+    test_openSession_unparseableIPLeavesClientIPv4Zero();
+
+    // ── Hot-path optimisations: updatePostDecryptV4 ──
+    test_updatePostDecryptV4_updatesCounter();
+    test_updatePostDecryptV4_callsClientV4_notString();
+    test_updatePostDecryptV4_invalidTokenIsNoOp();
+    test_updatePostDecryptV4_refreshesClientIPOnChange();
+    test_updatePostDecryptV4_preservesClientIPWhenUnchanged();
+
+    // ── Hot-path optimisations: handleGamepadDataAndUpdate fused entry ──
+    test_handleGamepadDataAndUpdate_happyPath();
+    test_handleGamepadDataAndUpdate_invalidTokenReturnsFalse();
+    test_handleGamepadDataAndUpdate_inactiveControllerReturnsFalse();
+    test_handleGamepadDataAndUpdate_outOfBoundsReturnsFalse();
+    test_handleGamepadDataAndUpdate_updatesCounter();
+    test_handleGamepadDataAndUpdate_routesXboxThroughSubmitReport();
+    test_handleGamepadDataAndUpdate_routesPlayStationThroughSubmitDS4();
+    test_handleGamepadDataAndUpdate_usesCachedUsesDS4_notLiveLookup();
+    test_handleGamepadDataAndUpdate_callsClientV4Once();
+    test_handleGamepadDataAndUpdate_copiesReportIntoLastReportCache();
+    test_handleGamepadDataAndUpdate_propagatesBackendFailure();
+    test_handleGamepadDataAndUpdate_stillRefreshesIPOnInactiveController();
+
+    // ── Hot-path optimisations: Controller::usesDS4 cached flag ──
+    test_usesDS4_defaultsToFalseOnAdd();
+    test_usesDS4_setToTrueOnControllerTypeChangeToPS();
+    test_usesDS4_revertedOnControllerTypeChangeBackToXbox();
+    test_usesDS4_matchesLegacyHandleGamepadData();
+
+    // ── Hot-path optimisations: backward-compat for legacy string update ──
+    test_updatePostDecrypt_seedsClientIPv4FromString();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

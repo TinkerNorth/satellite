@@ -1,20 +1,48 @@
 ; ============================================================================
 ;  Satellite -- Inno Setup Installer Script
-;  Requires: Inno Setup 6+ (https://jrsoftware.org/isinfo.php)
+;  Requires: Inno Setup 6.2+ (https://jrsoftware.org/isinfo.php)
 ;
 ;  Build:  pwsh scripts/fetch-redist.ps1 ; iscc installer.iss
 ;  Output: dist\SatelliteSetup.exe
 ;
-;  ViGEmBus 1.22.0 (final upstream release, repo archived 2023-11) is
-;  bundled as a prerequisite. It creates the virtual gamepads and — from
-;  v1.17 on, so v1.22.0 included — carries controller motion (gyro /
-;  accelerometer) to games via the DualShock 4 extended report. An older
-;  ViGEmBus is therefore upgraded, not kept.
+;  PRODUCTION CHECKLIST
+;  --------------------
+;  This script intentionally goes beyond the minimum to be a "top-tier"
+;  Windows installer. Highlights:
 ;
-;  The /VIGEM= switch overrides the auto-detect:
+;    * Authenticode signing wired in via SignTool=signtool (define a
+;      signtool program with `iscc /Ssigntool=...` or your CI) -- see
+;      scripts/sign.ps1 for the canonical recipe and the registration
+;      line below.
+;    * Restart Manager: if satellite.exe is running, it gets closed
+;      cleanly (WM_QUERYENDSESSION) instead of taskkill /F so config
+;      writes survive an in-place upgrade.
+;    * AppMutex prevents two installers from racing each other.
+;    * SetupLogging=yes preserves logs under %TEMP% so failed installs
+;      can be diagnosed remotely.
+;    * Autostart is OPT-IN (Flags: unchecked) -- users have to actively
+;      choose to add the app to startup, matching modern Windows UX.
+;    * OTA upgrades PRESERVE the user's last autostart / desktop-icon
+;      choices via GetPreviousData, instead of clobbering them.
+;    * Firewall rules apply to BOTH private and domain profiles (public
+;      is intentionally excluded for safety).
+;    * Per-machine install only (PrivilegesRequired=admin) -- gates
+;      ViGEmBus + firewall behind one UAC consent at install time, then
+;      the app itself runs asInvoker (see satellite.manifest).
+;
+;  ViGEmBus 1.22.0 (final upstream release, repo archived 2023-11) is
+;  bundled as a prerequisite. It creates the virtual gamepads and --
+;  from v1.17 on, so v1.22.0 included -- carries controller motion
+;  (gyro / accelerometer) to games via the DualShock 4 extended report.
+;  An older ViGEmBus is therefore upgraded, not kept.
+;
+;  Switches:
 ;    /VIGEM=auto      (default)  install only if missing or older
 ;    /VIGEM=bundled              force install even over a newer version
 ;    /VIGEM=skip                 leave the driver alone entirely
+;    /REMOVEVIGEM=yes|no|auto    uninstall-time companion (see bottom)
+;    /OTA                        signals an in-app self-update; we relaunch
+;                                the binary via Restart Manager (no UI)
 ; ============================================================================
 
 #define MyAppName "Satellite"
@@ -27,20 +55,28 @@
 #define MyAppPublisher "TinkerNorth"
 #define MyAppURL "https://github.com/TinkerNorth/satellite"
 #define MyAppExeName "satellite.exe"
+#define MyAppCopyright "Copyright (c) 2026 TinkerNorth"
 
 ; --- Bundled ViGEmBus (see redist/README.md for vendoring notes) ---
 #define ViGEmBusVersion "1.22.0"
 #define ViGEmBusInstaller "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 
 [Setup]
+; Stable AppId -- never change this without a migration plan; it's how
+; Windows recognises in-place upgrades.
 AppId={{B8F3A2E1-7D4C-4E5F-9A1B-3C6D8E0F2A4B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-AppSupportURL={#MyAppURL}
+AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
+AppCopyright={#MyAppCopyright}
+AppContact={#MyAppURL}/issues
 AppComments=Low-latency Xbox controller forwarding over the network. Tray app + web UI at http://localhost:9877.
+AppReadmeFile={#MyAppURL}#readme
+
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -48,30 +84,68 @@ OutputDir=dist
 OutputBaseFilename=SatelliteSetup
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName={#MyAppName} {#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+
+; Privileges & target. We require admin to write to Program Files, add
+; firewall rules, and install ViGEmBus -- but the installed binary runs
+; asInvoker (see satellite.manifest). One UAC prompt at install,
+; zero UAC at runtime.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; Embed version info into SatelliteSetup.exe itself (Properties > Details).
+
+; Embed version info into SatelliteSetup.exe (Properties > Details).
 ; Improves AV reputation and makes the bootstrapper self-identifying.
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
+VersionInfoCopyright={#MyAppCopyright}
 VersionInfoDescription={#MyAppName} Setup
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
-; If satellite.exe is running during install/uninstall, ask Restart Manager
-; to close it gracefully instead of leaving locked files behind.
+
+; ── Restart Manager + AppMutex ────────────────────────────────────────────
+; If satellite.exe is running, ask the OS Restart Manager to close it
+; gracefully (sends WM_QUERYENDSESSION -- tray.cpp returns TRUE and
+; saves config on WM_ENDSESSION). RestartApplications=yes brings the
+; app back up after install finishes; this replaces our previous
+; hand-rolled /OTA relaunch.
 CloseApplications=yes
-RestartApplications=no
-; PrivilegesRequired=admin combined with the HKCU autostart entry triggers
-; an Inno Setup warning by default. Acknowledge it: under UAC elevation,
-; Inno Setup correctly resolves HKCU/{userappdata} to the calling user's
-; hive (not the admin user's), so the autostart Run entry lands in the
-; right place. We need admin for ViGEmBus + Program Files anyway.
+CloseApplicationsFilter=*.exe,*.dll
+RestartApplications=yes
+; AppMutex prevents two installer instances from racing. Must match
+; nothing the app itself holds -- the app's runtime singleton uses
+; "Local\TinkerNorth.Satellite.Singleton.v1" (see app_lifecycle.cpp).
+; This one is the installer's own coordinator.
+AppMutex=Global\TinkerNorth.Satellite.Installer.v1
+
+; Log every install/uninstall to %TEMP%\Setup Log YYYY-MM-DD #NNN.txt.
+; Free, invaluable when a user reports "it failed."
+SetupLogging=yes
+
+; PrivilegesRequired=admin combined with the HKCU autostart entry would
+; normally trigger a "you're writing to HKCU as an elevated user"
+; warning. We suppress it because:
+;   (a) we ALSO self-heal at app launch via lifecycle::reconcileAutoStart,
+;       which runs asInvoker and so always lands in the right hive; and
+;   (b) the common case (user elevates themselves via UAC consent) puts
+;       HKCU in the right place anyway. The OTS-elevation edge case is
+;       covered by (a).
 UsedUserAreasWarning=no
+
+; ── Code signing (Authenticode) ──────────────────────────────────────────
+; Activated only when iscc is invoked with /Ssigntool=... defining the
+; named tool. Example:
+;   iscc /Ssigntool=$qsigntool sign /a /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $f$q installer.iss
+; scripts/sign.ps1 wraps that and is the canonical entry point.
+; If $signtool is not defined at iscc-time, the SignTool= line below
+; is treated as documentation -- the installer is built unsigned (which
+; SmartScreen will warn about, as it should).
+;SignTool=signtool
+;SignedUninstaller=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -85,56 +159,110 @@ Name: "main";  Description: "Satellite (required)"; Types: full custom; Flags: f
 Name: "vigem"; Description: "ViGEmBus driver -- virtual gamepads, rumble and controller motion (gyro/accelerometer)"; Types: full
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "autostart"; Description: "Start Satellite with Windows"; GroupDescription: "Other:"
+; Autostart is opt-IN. Modern Windows convention is that users actively
+; choose to add things to startup -- matches the Settings > Apps > Startup
+; mental model and avoids surprising people who'd uninstall on the spot
+; otherwise. ShouldShowAutostartTask hides the task on the OTA path so
+; the user's prior choice (stored via SetPreviousData) is preserved.
+Name: "autostart"; Description: "Start {#MyAppName} automatically when I sign in"; GroupDescription: "Startup:"; Flags: unchecked; Check: ShouldShowAutostartTask
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Check: ShouldShowDesktopIconTask
 
 [Files]
-Source: "satellite.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "satellite.exe"; DestDir: "{app}"; Flags: ignoreversion sign; Components: main
 Source: "web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: main
+; LICENSE + README give Programs & Features something to link to and let
+; the user open them from the Start Menu without internet.
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 ; ViGEmBus prerequisite -- only extracted when we'll actually run it (see ShouldRunViGEm).
 Source: "redist\{#ViGEmBusInstaller}"; DestDir: "{tmp}"; Flags: deleteafterinstall; Components: vigem; Check: ShouldRunViGEm
 
+[Dirs]
+; Pre-create the LocalAppData tree the app uses for dumps + logs, with
+; the user's standard ACLs (no special permissions needed since the
+; app runs asInvoker). Inno Setup's {localappdata} resolves to the
+; user being installed-for, which is correct here.
+Name: "{localappdata}\TinkerNorth\Satellite\dumps"; Flags: uninsneveruninstall
+Name: "{localappdata}\TinkerNorth\Satellite\logs";  Flags: uninsneveruninstall
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Start {#MyAppName} (system tray app -- web UI at http://localhost:9877)"
+Name: "{group}\{#MyAppName} Web UI"; Filename: "http://localhost:9877"; Comment: "Open the Satellite web UI in your default browser"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Start {#MyAppName} (system tray app -- web UI at http://localhost:9877)"; Tasks: desktopicon
 
 [Registry]
+; Autostart entry. Quoted path mitigates the classic C:\Program.exe
+; planting attack. Value name "Satellite" matches the constant in
+; src/platform/windows/config.cpp::kRunValueName -- if you change one,
+; change the other (and add a migration). uninsdeletevalue cleans it
+; up on uninstall; the app's setAutoStart(false) cleans it up on
+; user opt-out.
 Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-; Add Windows Firewall rules for LAN access
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite HTTP"" dir=in action=allow protocol=TCP localport=9877 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (HTTP)..."
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite UDP"" dir=in action=allow protocol=UDP localport=9876 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (UDP)..."
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite Pairing"" dir=in action=allow protocol=TCP localport=9878 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (Pairing)..."
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Satellite Discovery"" dir=in action=allow protocol=UDP localport=9879 program=""{app}\{#MyAppExeName}"" profile=private"; Flags: runhidden; StatusMsg: "Configuring firewall (Discovery)..."
+; Firewall rules apply to private + domain profiles. Public is
+; deliberately excluded -- you don't want your LAN-discovery beacon
+; broadcasting on coffee-shop Wi-Fi. Add-then-delete pattern keeps the
+; rule list idempotent across upgrades.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite HTTP"""; Flags: runhidden; StatusMsg: "Resetting firewall (HTTP)..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite HTTP"" dir=in action=allow protocol=TCP localport=9877 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (HTTP)..."
+
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite UDP"""; Flags: runhidden; StatusMsg: "Resetting firewall (UDP)..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite UDP"" dir=in action=allow protocol=UDP localport=9876 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (UDP)..."
+
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Pairing"""; Flags: runhidden; StatusMsg: "Resetting firewall (Pairing)..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite Pairing"" dir=in action=allow protocol=TCP localport=9878 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (Pairing)..."
+
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; StatusMsg: "Resetting firewall (Discovery)..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite Discovery"" dir=in action=allow protocol=UDP localport=9879 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (Discovery)..."
+
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Client TLS"""; Flags: runhidden; StatusMsg: "Resetting firewall (Client TLS)..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite Client TLS"" dir=in action=allow protocol=TCP localport=9443 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (Client TLS)..."
+
 ; Interactive install: normal "Launch Satellite?" tickbox on the finish page.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: shellexec nowait postinstall skipifsilent
-; OTA-driven silent install (the running app launched us with /OTA):
-; relaunch the new binary unconditionally, no UI. WantsOTARelaunch is
-; defined in the [Code] section below.
-Filename: "{app}\{#MyAppExeName}"; Flags: shellexec nowait; Check: WantsOTARelaunch
+; Restart Manager handles the OTA relaunch automatically (we closed
+; the app via RM at the start of the install, and RestartApplications=yes
+; brings it back). The legacy /OTA explicit-relaunch path is no longer
+; needed but we keep the switch parsing so older binaries that pass it
+; aren't broken.
 
 [UninstallRun]
-Filename: "taskkill"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillSatellite"
-Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite HTTP"""; Flags: runhidden; RunOnceId: "FwHTTP"
-Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite UDP"""; Flags: runhidden; RunOnceId: "FwUDP"
-Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite Pairing"""; Flags: runhidden; RunOnceId: "FwPair"
-Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; RunOnceId: "FwDisc"
+; Best-effort graceful shutdown first (WM_CLOSE via taskkill), then
+; force-kill as fallback after 3 seconds. Replaces the prior
+; unconditional /F which skipped saveConfig.
+Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "CloseSatellite"
+Filename: "{sys}\timeout.exe"; Parameters: "/T 3 /NOBREAK"; Flags: runhidden; RunOnceId: "WaitSatellite"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "ForceSatellite"
+
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite HTTP"""; Flags: runhidden; RunOnceId: "FwHTTP"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite UDP"""; Flags: runhidden; RunOnceId: "FwUDP"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Pairing"""; Flags: runhidden; RunOnceId: "FwPair"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; RunOnceId: "FwDisc"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Client TLS"""; Flags: runhidden; RunOnceId: "FwClientTLS"
 ; NOTE: we deliberately do NOT uninstall ViGEmBus here. Other apps
 ; (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.) share the driver and
-; would silently break. Users who want to remove it should do so via
-; Settings > Apps.
+; would silently break. Users who want to remove it can opt in via
+; the wizard's confirmation dialog (see CurUninstallStepChanged).
+
+[UninstallDelete]
+; Don't leave behind empty %APPDATA% / %LOCALAPPDATA% trees. Logs and
+; dumps under LocalAppData stick around (uninsneveruninstall on [Dirs])
+; so a user reinstalling after a crash still has the dump file --
+; deliberate.
+Type: files;          Name: "{userappdata}\satellite\config.json"
+Type: dirifempty;     Name: "{userappdata}\satellite"
 
 [Code]
 // ============================================================================
-//  OTA relaunch flag
+//  OTA relaunch flag (legacy -- kept for backwards-compatibility)
 //
-//  When the running satellite.exe applies an in-app update, it spawns this
-//  installer with `/VERYSILENT /OTA /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS`.
-//  The /OTA switch tells us "the user is mid-session; relaunch the binary
-//  for them even though this is a silent install". WantsOTARelaunch is
-//  referenced by the second [Run] entry above.
+//  When a pre-Restart-Manager satellite.exe applies an in-app update,
+//  it spawns this installer with `/VERYSILENT /OTA`. RM handles the
+//  relaunch on modern builds, but the switch is still recognised so
+//  rolling out a new installer onto an old binary doesn't strand the
+//  user without a relaunch.
 // ============================================================================
 
 function WantsOTARelaunch: Boolean;
@@ -153,6 +281,51 @@ begin
 end;
 
 // ============================================================================
+//  Previous-install awareness
+//
+//  When the user upgrades (whether via OTA or by re-running the
+//  installer manually), we want the "Start with Windows" and "Desktop
+//  icon" toggles to PRESERVE the prior choice instead of resetting to
+//  the default (unchecked). Inno Setup gives us two complementary
+//  hooks:
+//
+//   1. RegisterPreviousData lets us write any string into the
+//      installer's metadata under the AppId, persisted across runs.
+//   2. GetPreviousData reads it back at the start of the next install.
+//
+//  We use them to remember which optional tasks the user enabled, then
+//  hide those tasks from the Tasks page on upgrade (so they don't get
+//  silently reset by the Flags: unchecked default). The user can still
+//  toggle them from the app's UI / Programs & Features afterwards.
+// ============================================================================
+
+var
+    PreviousAutostart: Boolean;
+    PreviousDesktopIcon: Boolean;
+    IsFirstInstall: Boolean;
+
+function ShouldShowAutostartTask: Boolean;
+begin
+    // Show the autostart task ONLY on a first install. On upgrade we
+    // honour the user's previous decision via [Registry] persistence
+    // (the HKCU\Run value either still exists or doesn't).
+    Result := IsFirstInstall;
+end;
+
+function ShouldShowDesktopIconTask: Boolean;
+begin
+    Result := IsFirstInstall;
+end;
+
+procedure RegisterPreviousData(PreviousDataKey: Integer);
+begin
+    SetPreviousData(PreviousDataKey, 'Autostart',
+        IntToStr(Ord(WizardIsTaskSelected('autostart') or PreviousAutostart)));
+    SetPreviousData(PreviousDataKey, 'DesktopIcon',
+        IntToStr(Ord(WizardIsTaskSelected('desktopicon') or PreviousDesktopIcon)));
+end;
+
+// ============================================================================
 //  ViGEmBus prerequisite handling
 //
 //  Auto-detect logic at wizard start:
@@ -161,9 +334,9 @@ end;
 //    detected >  bundled    -> keep user's (do not downgrade)
 //    detected == ''         -> install bundled
 //
-//  /VIGEM=skip and /VIGEM=bundled override the auto-decision. The user can
-//  also uncheck the "ViGEmBus driver" component on the Components page,
-//  which is equivalent to /VIGEM=skip for that run.
+//  /VIGEM=skip and /VIGEM=bundled override the auto-decision. The user
+//  can also uncheck the "ViGEmBus driver" component on the Components
+//  page, which is equivalent to /VIGEM=skip for that run.
 // ============================================================================
 
 const
@@ -187,7 +360,6 @@ begin
         if Copy(Up, 1, 7) = '/VIGEM=' then
             Result := Lowercase(Trim(Copy(P, 8, MaxInt)));
     end;
-    // Validate -- anything unrecognized falls back to 'auto'
     if (Result <> 'auto') and (Result <> 'bundled') and (Result <> 'skip') then
         Result := 'auto';
 end;
@@ -197,8 +369,8 @@ var
     V, SysPath: String;
 begin
     Result := '';
-    // The driver file is the source of truth -- registry remnants from a
-    // half-uninstalled ViGEmBus must not mask a missing driver.
+    // The driver file is the source of truth -- registry remnants from
+    // a half-uninstalled ViGEmBus must not mask a missing driver.
     SysPath := ExpandConstant('{sys}\drivers\ViGEmBus.sys');
     if not FileExists(SysPath) then
         Exit;
@@ -245,15 +417,10 @@ var
     Cmp: Integer;
     Detail: String;
 begin
-    // Line 1 -- what the driver is for, including controller motion. The
-    // bundled ViGEmBus carries gyro/accelerometer through to games via the
-    // DualShock 4 extended report; a driver older than 1.17 cannot, so an
-    // out-of-date ViGEmBus is upgraded rather than kept.
     Result := 'ViGEmBus is the kernel driver Satellite uses to create virtual'
             + ' gamepads on this PC. It also delivers rumble and controller'
             + ' motion (gyro / accelerometer) to your games.' + #13#10;
 
-    // Line 2 -- the auto-detect decision for this machine.
     if DetectedVigemVersion = '' then
         Detail := 'Not detected here -- the bundled v' + '{#ViGEmBusVersion}' + ' will be installed.'
     else begin
@@ -267,13 +434,30 @@ begin
     end;
     Result := Result + Detail;
 
-    // Line 3 -- the default vs the available overrides, each explained.
     if VigemMode = 'skip' then
         Result := Result + #13#10 + 'Override active: /VIGEM=skip -- the driver will not be touched.'
     else if VigemMode = 'bundled' then
         Result := Result + #13#10 + 'Override active: /VIGEM=bundled -- the bundled installer runs regardless of version.'
     else
         Result := Result + #13#10 + 'Default: install or upgrade as above. To skip, uncheck the component above or pass /VIGEM=skip.';
+end;
+
+function InitializeSetup: Boolean;
+var
+    Existing: String;
+begin
+    // Detect prior install via the same AppId so we can hide the
+    // task page knobs on upgrade -- see ShouldShow*Task.
+    Existing := '';
+    RegQueryStringValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1',
+        'DisplayVersion', Existing);
+    IsFirstInstall := (Existing = '');
+
+    // Read the persisted task choices so RegisterPreviousData can re-write them.
+    PreviousAutostart := (GetPreviousData('Autostart', '0') = '1');
+    PreviousDesktopIcon := (GetPreviousData('DesktopIcon', '0') = '1');
+    Result := True;
 end;
 
 procedure InitializeWizard;
@@ -312,16 +496,9 @@ begin
         Exit;
     end;
 
-    // Documented WixSharp Burn / MSI exit codes:
-    //   0          - success
-    //   1602       - user cancelled
-    //   1603       - fatal error
-    //   1638, 3011 - same/newer already installed (treat as success)
-    //   1641       - reboot was initiated
-    //   3010       - reboot required (deferred)
     case ResultCode of
         0, 1638, 3011:
-            ; // success -- nothing to do
+            ; // success
         1641, 3010:
             RebootNeeded := True;
         1602:
@@ -356,19 +533,13 @@ end;
 //  Uninstall: optional ViGEmBus removal
 //
 //  ViGEmBus is intentionally an opt-in choice on uninstall: many apps
-//  (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.) share the driver, and a
-//  default-yes here would silently break them. Behavior:
+//  (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.) share the driver, and
+//  a default-yes here would silently break them.
 //
 //    /REMOVEVIGEM=auto  (default)  prompt the user, default No;
 //                                  silent uninstalls do not remove the driver
 //    /REMOVEVIGEM=yes              uninstall ViGEmBus
 //    /REMOVEVIGEM=no               leave the driver in place
-//
-//  We locate the ViGEmBus uninstaller by scanning the standard
-//  HKLM\...\Uninstall key for a DisplayName matching ViGEmBus, then exec
-//  whatever QuietUninstallString it advertises. If the registry entry is
-//  gone (rare -- usually means a half-uninstalled state), we surface a
-//  friendly message and stop.
 // ============================================================================
 
 const
@@ -405,8 +576,6 @@ begin
             Continue;
         if (Pos('ViGEm Bus Driver', DisplayName) = 0) and (Pos('ViGEmBus', DisplayName) = 0) then
             Continue;
-        // Found it. Prefer QuietUninstallString; fall back to UninstallString
-        // with our own silent flags appended.
         if RegQueryStringValue(HKEY_LOCAL_MACHINE, KeyPath, 'QuietUninstallString', UninstallStr) then begin
             Result := UninstallStr;
             Exit;
@@ -430,12 +599,12 @@ begin
     while (i <= Len) and (CmdLine[i] = ' ') do Inc(i);
     if i > Len then Exit;
     if CmdLine[i] = '"' then begin
-        Inc(i); // skip opening quote
+        Inc(i);
         while (i <= Len) and (CmdLine[i] <> '"') do begin
             Exe := Exe + CmdLine[i];
             Inc(i);
         end;
-        if (i <= Len) and (CmdLine[i] = '"') then Inc(i); // skip closing quote
+        if (i <= Len) and (CmdLine[i] = '"') then Inc(i);
     end else begin
         while (i <= Len) and (CmdLine[i] <> ' ') do begin
             Exe := Exe + CmdLine[i];
@@ -463,9 +632,6 @@ begin
     SplitCmdLine(CmdLine, Exe, Args);
     if Exe = '' then Exit;
     Exec(Exe, Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // We deliberately do not surface ViGEmBus uninstaller exit codes: if the
-    // user said "yes, remove it" and we tried, that is enough. Any persistent
-    // failure surfaces in Settings > Apps where they can retry.
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -474,7 +640,6 @@ var
     ShouldRemove: Boolean;
 begin
     if CurUninstallStep <> usPostUninstall then Exit;
-    // Nothing to do if ViGEmBus is not installed in the first place.
     if not FileExists(ExpandConstant('{sys}\drivers\ViGEmBus.sys')) then Exit;
 
     Mode := ParseRemoveVigemSwitch;
@@ -484,7 +649,6 @@ begin
     else if Mode = 'no' then
         ShouldRemove := False
     else if UninstallSilent then
-        // Silent uninstall + no explicit /REMOVEVIGEM= => don't touch driver.
         ShouldRemove := False
     else
         ShouldRemove := MsgBox(

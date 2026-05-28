@@ -150,8 +150,23 @@ class IClientPort {
   public:
     virtual ~IClientPort() = default;
 
-    // Update the network address for a token (called on every packet recv).
+    // Update the network address for a token. Used by cold paths and tests
+    // that already have a string IP on hand.
     virtual void updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) = 0;
+
+    // Hot-path variant: takes the IPv4 in network byte order (matches the
+    // raw `sockaddr_in::sin_addr::s_addr` the receiver thread already
+    // has). Avoids the per-packet inet_ntop + std::string allocation +
+    // inet_pton round-trip the string variant pays.
+    //
+    // Default implementation is a deliberate no-op so adding the new
+    // entry point doesn't drag winsock headers into every consumer of
+    // this header (test stubs, the linux/macos builds, etc.). The
+    // production ClientAdapter overrides this for the real win.
+    // Callers that need the cross-platform fallback can route through
+    // updateClientAddr explicitly after formatting the IPv4 themselves.
+    virtual void updateClientAddrV4(uint32_t /*token*/, uint32_t /*ipv4NetworkOrder*/,
+                                    uint16_t /*port*/) {}
 
     // Remove address mapping for a token.
     virtual void removeClientAddr(uint32_t token) = 0;

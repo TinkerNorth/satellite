@@ -514,6 +514,11 @@ struct Controller {
     uint32_t serialNo = 0; // backend serial (1–16), 0 = not plugged
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
+    // Hot-path cache of controllerTypeUsesDS4(controllerType). The flag is
+    // populated on every assignment to `controllerType` (handleControllerAdd /
+    // handleControllerType) so the hot gamepad-submit branch can read it as a
+    // single load instead of going through the inline helper on every packet.
+    bool usesDS4 = false;
     // Capability word from MSG_CONTROLLER_ADD (CAP_* bits). 0 when the dish is
     // pre-cap-aware. `motionCapable()` / `lightbarCapable()` are the convenience
     // accessors the web UI / return-path routing use.
@@ -567,6 +572,15 @@ struct Connection {
     uint32_t token = 0;
     std::string deviceId;
     std::string deviceName;
+    // Hot-path IPv4 in NETWORK byte order (matches sockaddr_in::sin_addr).
+    // Compared against the sender on every received packet; only when it
+    // differs do we re-format the human-readable `clientIP` cache below.
+    // Saves the per-packet inet_ntop + std::string allocation that the
+    // old "update clientIP every time" path paid.
+    uint32_t clientIPv4 = 0;
+    // Human-readable cache of clientIPv4, refreshed lazily when the
+    // numeric IPv4 actually changes (rare within a session). Surfaced
+    // by ConnectionsSnapshot for the web UI.
     std::string clientIP;
     uint8_t sharedKey[CRYPTO_KEY_SIZE] = {};
     uint32_t lastCounter = 0; // replay protection

@@ -10,4 +10,8 @@
 void addTrayIcon(HWND hwnd);
 void removeTrayIcon();
 void showTrayMenu(HWND hwnd);
+// Refresh the tray icon's hover tooltip to reflect current listening
+// state + ports. Cheap (no-ops when text is unchanged); call from any
+// thread whenever a status-affecting field changes.
+void updateTrayTooltip();
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);

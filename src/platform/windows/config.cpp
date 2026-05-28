@@ -47,12 +47,24 @@ std::string jsonGetString(const std::string& json, const std::string& key) {
 }
 
 // ── Config path ─────────────────────────────────────────────────────────────
+// SHGetKnownFolderPath supersedes the deprecated SHGetFolderPath -- the
+// CSIDL_* enum has been replaced by the FOLDERID_* GUID surface since
+// Vista. The wide return is converted at the boundary so the rest of
+// the path handling can stay narrow (config is ASCII).
 std::string configPath() {
-    char buf[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, buf))) {
-        std::string dir = std::string(buf) + "\\satellite";
-        CreateDirectoryA(dir.c_str(), nullptr);
-        return dir + "\\config.json";
+    PWSTR raw = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &raw)) && raw) {
+        std::wstring w(raw);
+        CoTaskMemFree(raw);
+        w += L"\\satellite";
+        CreateDirectoryW(w.c_str(), nullptr);
+        w += L"\\config.json";
+        int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
+                                    nullptr, nullptr);
+        std::string s(n, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
+                            nullptr);
+        return s;
     }
     return "config.json";
 }
@@ -186,31 +198,85 @@ void saveConfig(const Config& cfg) {
 }
 
 // ── Auto-start (registry) ───────────────────────────────────────────────────
+//
+// Value name is the human-visible "Satellite" (the same literal Inno
+// Setup writes from {#MyAppName}). Lookups are case-insensitive, but
+// writes can rename a value to whatever case we pass -- so we hold the
+// installer's casing consistently across all our writes to avoid
+// ugly case flicker in Task Manager > Startup tab.
+//
+// Value data is always the quoted absolute path. An unquoted Run-key
+// value pointing into "C:\Program Files\..." is the textbook
+// binary-planting vector (Windows tries "C:\Program.exe" first).
+//
+// getAutoStart returns true only if the registry value EXISTS AND
+// resolves to THIS exe. If the value exists but points at a stale
+// install location, we return false so the UI shows the truth and the
+// caller can re-enable to repair.
+static const char* kRunSubkey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
+static const char* kRunValueName = "Satellite";
+
+static std::string quotedExePath() {
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n == 0 || n == MAX_PATH) return {};
+    return std::string("\"") + buf + "\"";
+}
+
+// Strip surrounding quotes for comparison; the registry value should be
+// quoted but we tolerate either form for robustness against pre-1.0
+// installs that wrote unquoted.
+static std::string stripQuotes(const std::string& s) {
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
+    return s;
+}
+
 void setAutoStart(bool enable) {
     HKEY key = nullptr;
-    const char* run = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, kRunSubkey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key,
+                        nullptr) != ERROR_SUCCESS)
+        return;
     if (enable) {
-        char exePath[MAX_PATH];
-        GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-        RegSetValueExA(key, APP_NAME, 0, REG_SZ, reinterpret_cast<const BYTE*>(exePath),
-                       (DWORD)strlen(exePath) + 1);
+        std::string q = quotedExePath();
+        if (!q.empty()) {
+            RegSetValueExA(key, kRunValueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(q.c_str()),
+                           static_cast<DWORD>(q.size() + 1));
+        }
     } else {
-        RegDeleteValueA(key, APP_NAME);
+        RegDeleteValueA(key, kRunValueName);
     }
     RegCloseKey(key);
 }
 
 bool getAutoStart() {
     HKEY key = nullptr;
-    const char* run = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, run, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, kRunSubkey, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return false;
+
+    DWORD type = 0, size = 0;
+    LONG r = RegQueryValueExA(key, kRunValueName, nullptr, &type, nullptr, &size);
+    if (r != ERROR_SUCCESS || type != REG_SZ || size == 0) {
+        RegCloseKey(key);
         return false;
     }
-    DWORD type = 0, size = 0;
-    bool exists = RegQueryValueExA(key, APP_NAME, nullptr, &type, nullptr, &size) == ERROR_SUCCESS;
+
+    std::string buf(size, '\0');
+    r = RegQueryValueExA(key, kRunValueName, nullptr, &type, reinterpret_cast<BYTE*>(&buf[0]),
+                         &size);
     RegCloseKey(key);
-    return exists;
+    if (r != ERROR_SUCCESS) return false;
+
+    // Strip trailing NULs that REG_SZ may include in the byte count.
+    while (!buf.empty() && buf.back() == '\0') buf.pop_back();
+
+    char self[MAX_PATH];
+    if (GetModuleFileNameA(nullptr, self, MAX_PATH) == 0) return !buf.empty();
+
+    // Path comparison is case-insensitive on Windows. If the value
+    // points at a different exe (stale install location, side-loaded
+    // copy in Downloads, etc.), report autostart as disabled so the
+    // UI doesn't lie to the user.
+    return _stricmp(stripQuotes(buf).c_str(), self) == 0;
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────────

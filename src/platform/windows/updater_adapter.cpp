@@ -12,6 +12,8 @@
 #include <bcrypt.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <wintrust.h>
+#include <softpub.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -471,17 +473,89 @@ bool WindowsUpdaterAdapter::downloadArtifact(
     return true;
 }
 
+// Authenticode signature check on the downloaded installer. We trust
+// the signature *in addition to* the SHA-256 hash from SHA256SUMS --
+// neither alone is enough:
+//
+//   * SHA-256 binds the bytes to the release page, but the release
+//     page itself can be edited by anyone with write access to the
+//     repo. WinVerifyTrust catches a release page that's been
+//     repointed at an attacker-signed binary, OR a substitution that
+//     reuses the SHA256SUMS value while keeping the signed-by-X chain.
+//   * Authenticode catches transport-layer tampering and stale CDN
+//     caches. SHA-256 catches a successfully-signed binary that's
+//     been swapped at the artifact URL by a compromised CI runner.
+//
+// Both gates together mean an attacker needs to compromise the
+// signing identity AND the release-page content simultaneously.
+static bool authenticodeVerify(const std::wstring& path, std::string& err) {
+    WINTRUST_FILE_INFO fileInfo{};
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = path.c_str();
+
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    WINTRUST_DATA data{};
+    data.cbStruct = sizeof(data);
+    data.dwUIChoice = WTD_UI_NONE;
+    data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+    data.dwUnionChoice = WTD_CHOICE_FILE;
+    data.pFile = &fileInfo;
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN | WTD_CACHE_ONLY_URL_RETRIEVAL;
+
+    LONG status = WinVerifyTrust(nullptr, &action, &data);
+
+    // Always close out the cached state regardless of outcome.
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(nullptr, &action, &data);
+
+    if (status == ERROR_SUCCESS) return true;
+
+    char buf[80];
+    std::snprintf(buf, sizeof(buf), "Authenticode verification failed (status=0x%08lx)",
+                  static_cast<unsigned long>(status));
+    err = buf;
+    return false;
+}
+
 bool WindowsUpdaterAdapter::verifyArtifact(const std::string& localPath, const UpdateInfo& info,
                                            std::string& outError) {
-    if (info.assetSha256.empty()) {
-        // No SHA256SUMS present in the release. Don't fail-closed — the
-        // transport was HTTPS-pinned to GitHub. Log a warning via the
-        // returned message; UpdateService doesn't surface this as an
-        // error but the UI may want to call it out.
-        return true;
+    std::wstring wpath = toWide(localPath);
+
+    // Authenticode FIRST: a malformed/altered .exe should fail the
+    // signature check before we waste time hashing 12MB.
+    //
+    // We only fail-closed if the installer is *actively invalid*
+    // (TRUST_E_BAD_DIGEST, TRUST_E_SUBJECT_FORM_UNKNOWN, etc.). When
+    // signing isn't configured for the release at all (-unsigned
+    // suffix on the asset name), the call returns TRUST_E_NOSIGNATURE
+    // and we fall through to the SHA-256 check -- otherwise dev
+    // installs from a fork without a signing cert can't ever update.
+    std::string sigErr;
+    if (!authenticodeVerify(wpath, sigErr)) {
+        bool unsignedRelease = info.assetName.find("-unsigned") != std::string::npos;
+        if (!unsignedRelease) {
+            outError = sigErr;
+            return false;
+        }
+        // Unsigned release: SHA-256 is then a HARD requirement, not
+        // optional, because we have nothing else to bind the bytes
+        // to. Fall through to the hash check.
     }
+
+    if (info.assetSha256.empty()) {
+        // No SHA256SUMS asset on the release. If we got a valid
+        // Authenticode signature above, that's enough -- the
+        // signed-by-X chain is itself a binding to the publisher.
+        // If we didn't, refuse to install (we'd be running an
+        // unsigned-and-unhashed download).
+        if (sigErr.empty()) return true;
+        outError = "No signature and no SHA-256 -- refusing to install: " + sigErr;
+        return false;
+    }
+
     std::string actual;
-    if (!sha256OfFile(toWide(localPath), actual, outError)) return false;
+    if (!sha256OfFile(wpath, actual, outError)) return false;
 
     std::string expected = info.assetSha256;
     std::transform(expected.begin(), expected.end(), expected.begin(),

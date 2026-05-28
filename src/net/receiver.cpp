@@ -2,10 +2,28 @@
 // Copyright (C) 2026 Satellite contributors.
 
 /*
- * receiver.cpp — UDP receiver thread (thin infrastructure layer)
+ * receiver.cpp -- UDP receiver thread (thin infrastructure layer)
  *
- * Responsibilities: UDP socket, recv loop, decrypt, delegate to SessionService.
- * All business logic (connections, controllers, teardown) lives in SessionService.
+ * The hot loop is intentionally allocation-free and single-lock per
+ * gamepad packet (the dish-android sender mirrors this discipline on
+ * its side). Specifically:
+ *   * `recvfrom` writes into a stack buffer; no heap touch.
+ *   * `decryptPacket` runs IN PLACE, using `ciphertext == plaintext`
+ *     so the plaintext occupies the same bytes as the ciphertext minus
+ *     the 16-byte auth tag. libsodium's chacha20-poly1305 supports
+ *     overlapping src/dst, saving 256 bytes of stack and a cache line.
+ *   * Gamepad packets take exactly ONE SessionService::mtx_ acquisition
+ *     via handleGamepadDataAndUpdate (was three: getDecryptInfo +
+ *     updatePostDecrypt + handleGamepadData). Cold paths (motion,
+ *     touchpad, heartbeat, etc.) still take two locks; they're rare
+ *     enough that fusing them isn't worth the API churn.
+ *   * The sender's IPv4 address is passed as a uint32 in network byte
+ *     order all the way down -- no inet_ntop, no std::string alloc per
+ *     packet. SessionService refreshes the human-readable cache only
+ *     when the numeric address actually changes.
+ *   * g_maxLoopUs uses a thread-local high-water-mark to skip the
+ *     atomic CAS-loop on the ~99% of packets where the loop time is
+ *     below the running per-second peak.
  */
 #include "receiver.h"
 #include "inner_dispatch.h"
@@ -14,7 +32,7 @@
 #include "adapters/client_adapter.h"
 
 // dispatchInnerMessage (the decrypted inner-message parser + length guards)
-// lives in net/inner_dispatch.cpp — a portable, socket-free TU so the guards
+// lives in net/inner_dispatch.cpp -- a portable, socket-free TU so the guards
 // can be unit tested with raw byte buffers (tests/test_receiver.cpp).
 
 // ── Reaper: delegates timeout cleanup to SessionService ──────────────────────
@@ -91,6 +109,14 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         // Start reaper thread
         std::thread reaper(reaperLoop, std::ref(svc));
 
+        // Per-thread high-water-mark for the loop-microseconds metric.
+        // Avoids the cross-thread CAS on g_maxLoopUs on the ~99% of
+        // packets whose loop time is below the running peak; we only
+        // touch the atomic when we set a new local record. The atomic
+        // still ends up reflecting the global max because every thread
+        // raising its own water-mark also pushes the atomic up.
+        uint64_t localMaxUs = 0;
+
         while (g_appRunning) {
             sockaddr_in sender{};
             socklen_t slen = sizeof(sender);
@@ -120,21 +146,25 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 continue;
             }
 
-            // Decrypt
+            // In-place decrypt: the plaintext is exactly ctLen - 16 bytes and
+            // fits inside the ciphertext span. libsodium's chacha20-poly1305
+            // explicitly supports `m == c` overlap. Saves the second 256-byte
+            // stack buffer (and the corresponding cache footprint) the old
+            // path used.
             uint8_t* ciphertext = buf + HEADER_SIZE;
             auto ctLen = static_cast<size_t>(n - HEADER_SIZE);
-            uint8_t plaintext[256];
             unsigned long long ptLen = 0;
-            if (!decryptPacket(key, counter, token, ciphertext, ctLen, plaintext, &ptLen)) {
+            if (!decryptPacket(key, counter, token, ciphertext, ctLen, ciphertext, &ptLen)) {
                 g_decryptFail.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
+            uint8_t* plaintext = ciphertext; // alias after in-place decrypt
 
-            // Update connection state post-decrypt (counter, timestamp, address)
-            char clientIP[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &sender.sin_addr, clientIP, sizeof(clientIP));
-            uint16_t clientPort = ntohs(sender.sin_port);
-            svc.updatePostDecrypt(token, counter, clientIP, clientPort);
+            // Sender address as uint32 (network byte order) -- no inet_ntop,
+            // no std::string alloc on the hot path. SessionService refreshes
+            // the human-readable cache only when this value changes.
+            const uint32_t senderIPv4 = sender.sin_addr.s_addr;
+            const uint16_t senderPort = ntohs(sender.sin_port);
 
             // Parse inner message
             if (ptLen < (unsigned long long)INNER_HEADER_SIZE) continue;
@@ -143,9 +173,24 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             if ((size_t)(INNER_HEADER_SIZE + msgLen) > ptLen) continue;
             uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
-            DispatchResult dr = dispatchInnerMessage(svc, token, msgType, payload, msgLen);
+            // Fast path: MSG_GAMEPAD_DATA hits the fused single-lock entry
+            // point. Every other message kind takes the cold two-lock
+            // path (updatePostDecrypt + dispatchInnerMessage) -- those
+            // are sub-Hz so the extra acquire is invisible.
+            DispatchResult dr;
+            if (msgType == MSG_GAMEPAD_DATA && msgLen >= 13) {
+                uint8_t ctrlIdx = payload[0];
+                GamepadReport report;
+                std::memcpy(&report, payload + 1, sizeof(GamepadReport));
+                dr.wasGamepadData = true;
+                dr.gamepadOk = svc.handleGamepadDataAndUpdate(token, counter, senderIPv4,
+                                                              senderPort, ctrlIdx, report);
+            } else {
+                svc.updatePostDecryptV4(token, counter, senderIPv4, senderPort);
+                dr = dispatchInnerMessage(svc, token, msgType, payload, msgLen);
+            }
 
-            // Gamepad data is the hot path — record loop latency + submit
+            // Gamepad data is the hot path -- record loop latency + submit
             // outcome telemetry. Other message types skip this block.
             if (dr.wasGamepadData) {
                 auto t1 = std::chrono::steady_clock::now();
@@ -153,9 +198,16 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                     (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
                         .count();
                 g_lastLoopUs.store(us, std::memory_order_relaxed);
-                uint64_t prev = g_maxLoopUs.load(std::memory_order_relaxed);
-                while (us > prev &&
-                       !g_maxLoopUs.compare_exchange_weak(prev, us, std::memory_order_relaxed)) {}
+                // Only touch the cross-thread g_maxLoopUs CAS when we
+                // beat our own per-thread record. ~99% of packets skip
+                // the CAS loop entirely because the running max is
+                // higher than the current sample.
+                if (us > localMaxUs) {
+                    localMaxUs = us;
+                    uint64_t prev = g_maxLoopUs.load(std::memory_order_relaxed);
+                    while (us > prev && !g_maxLoopUs.compare_exchange_weak(
+                                            prev, us, std::memory_order_relaxed)) {}
+                }
 
                 if (dr.gamepadOk) {
                     g_submitOk.fetch_add(1, std::memory_order_relaxed);
@@ -167,7 +219,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             g_packetCount.fetch_add(1, std::memory_order_relaxed);
 
             if ((g_packetCount.load(std::memory_order_relaxed) & 0xFF) == 0) {
-                g_senderIP.store(sender.sin_addr.s_addr);
+                g_senderIP.store(senderIPv4);
             }
         }
 

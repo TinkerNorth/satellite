@@ -61,6 +61,8 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/vigem_adapter.cpp
     src/platform/windows/gamepad_backend.cpp
     src/platform/windows/updater_adapter.cpp
+    src/platform/windows/app_lifecycle.cpp
+    src/platform/windows/shell_integration.cpp
 )
 
 # macOS-only infrastructure.
@@ -140,6 +142,22 @@ if(WIN32)
         winmm
         # OTA updater: WinHTTP (HTTPS to api.github.com).
         winhttp
+        # Authenticode signature check on OTA-downloaded installer.
+        wintrust
+        # IPropertyStore + PKEY_AppUserModel_ID for jump-list user tasks.
+        propsys
+        # TaskDialogIndirect / modern common controls.
+        comctl32
+        comdlg32
+        # MiniDumpWriteDump for the crash filter.
+        dbghelp
+        # In-library GUID + PROPERTYKEY definitions (FOLDERID_*,
+        # CLSID_ShellLink, PKEY_Title, etc.). Without -luuid the
+        # KnownFolders/ShObjIdl headers' extern consts are unresolved.
+        uuid
+        # InitPropVariantFromString is an inline wrapper around SHStrDupW
+        # (shlwapi). Missing this lib causes ld to fail silently.
+        shlwapi
     )
 
     # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
@@ -147,11 +165,38 @@ if(WIN32)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
+    # Exploit-mitigation flags. Kept in sync with build-satellite.bat --
+    # the two paths share a single binary outcome, so a flag landing in
+    # only one place creates a "works in CI, breaks in dev" gap.
     if(MINGW)
-        target_compile_options(satellite PRIVATE -O2 -Wall -Wextra)
-        target_link_options(satellite PRIVATE -static -mwindows)
+        target_compile_options(satellite PRIVATE
+            -O2 -Wall -Wextra
+            -fstack-protector-strong
+            -D_FORTIFY_SOURCE=2
+            -Wformat -Wformat-security
+        )
+        target_link_options(satellite PRIVATE
+            -static -mwindows
+            -Wl,--dynamicbase
+            -Wl,--high-entropy-va
+            -Wl,--nxcompat
+            -Wl,--disable-auto-image-base
+        )
     elseif(MSVC)
-        target_compile_options(satellite PRIVATE /O2 /W4 /permissive-)
+        target_compile_options(satellite PRIVATE
+            /O2 /W4 /permissive-
+            /GS                # stack-buffer security check
+            /guard:cf          # Control Flow Guard
+            /Qspectre          # Spectre v1 mitigations
+            /sdl               # Security Development Lifecycle checks
+        )
+        target_link_options(satellite PRIVATE
+            /DYNAMICBASE
+            /HIGHENTROPYVA
+            /NXCOMPAT
+            /GUARD:CF
+            /CETCOMPAT         # Win11 hardware shadow stack
+        )
         set_target_properties(satellite PROPERTIES
             LINK_FLAGS "/SUBSYSTEM:WINDOWS"
             MSVC_RUNTIME_LIBRARY "MultiThreaded"

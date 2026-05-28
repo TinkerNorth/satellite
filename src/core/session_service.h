@@ -142,6 +142,24 @@ class SessionService {
     void updatePostDecrypt(uint32_t token, uint32_t counter, const std::string& clientIP,
                            uint16_t clientPort);
 
+    // Hot-path variant: takes the IPv4 in network byte order to match the
+    // raw sockaddr the receiver already has, and skips the per-packet
+    // std::string allocation. Only re-formats the Connection::clientIP
+    // string cache when the IPv4 actually changes (which is essentially
+    // never within a session).
+    void updatePostDecryptV4(uint32_t token, uint32_t counter, uint32_t ipv4NetworkOrder,
+                             uint16_t clientPort);
+
+    // FUSED hot path: combines updatePostDecryptV4 + handleGamepadData
+    // under a SINGLE acquisition of mtx_. The previous receiver flow took
+    // mtx_ three times per packet (getDecryptInfo + updatePostDecrypt +
+    // handleGamepadData), giving the SSE / heartbeat threads three
+    // chances to slip in and add tail latency. This entry-point cuts that
+    // to one. Returns true if the report was submitted successfully.
+    bool handleGamepadDataAndUpdate(uint32_t token, uint32_t counter, uint32_t ipv4NetworkOrder,
+                                    uint16_t clientPort, uint8_t ctrlIdx,
+                                    const GamepadReport& report);
+
     // ── Query ───────────────────────────────────────────────────────────
 
     // Build a snapshot of all connections for JSON serialization (thread-safe).
