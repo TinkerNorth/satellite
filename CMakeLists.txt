@@ -647,3 +647,42 @@ if(WIN32)
     )
     add_test(NAME windows_platform COMMAND test_windows_platform)
 endif()
+
+# ── ViGEm adapter submit-path tests ─────────────────────────────────────────
+# Links the real vigem_adapter.cpp against an in-test fake ViGEmBus driver
+# layer (the free functions from vigem.cpp) so the submit IO path can be
+# exercised without the driver. Pins that submits use the SYNCHRONOUS helpers
+# (never fire-and-forget) and that a DS4 EX rejection falls back to the basic
+# DS4 report — the regression that silently killed PlayStation input.
+if(WIN32)
+    add_executable(test_vigem_adapter
+        tests/test_vigem_adapter.cpp
+        src/platform/windows/vigem_adapter.cpp
+    )
+    target_include_directories(test_vigem_adapter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_include_directories(test_vigem_adapter SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
+    )
+    target_compile_definitions(test_vigem_adapter PRIVATE
+        _WIN32_WINNT=0x0A00
+    )
+    target_link_libraries(test_vigem_adapter PRIVATE
+        ws2_32
+        user32
+        setupapi
+    )
+    if(MINGW)
+        target_compile_options(test_vigem_adapter PRIVATE -O2 -Wall -Wextra)
+        target_link_options(test_vigem_adapter PRIVATE -static)
+    elseif(MSVC)
+        target_compile_options(test_vigem_adapter PRIVATE /O2 /W4)
+    endif()
+    set_target_properties(test_vigem_adapter PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME vigem_adapter COMMAND test_vigem_adapter)
+endif()

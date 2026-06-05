@@ -99,19 +99,11 @@ class ViGEmAdapter : public IGamepadPort {
     // OVERLAPPED is stack-local in the submit helpers (we use sync wait
     // via GetOverlappedResult so its lifetime ends with the helper call).
     struct IoSlot {
-        // Auto-reset event reused across submissions. Signalled by the
-        // kernel on IOCTL completion. Persistent so we don't pay a
-        // CreateEvent/CloseHandle pair on the 250 Hz hot path.
+        // Auto-reset event reused across submissions. Used as the
+        // OVERLAPPED hEvent for this slot's synchronous submits; the
+        // kernel signals it on IOCTL completion. Persistent so we don't
+        // pay a CreateEvent/CloseHandle pair on the 250 Hz hot path.
         HANDLE event = nullptr;
-
-        // EXPERIMENT (uncommitted): persistent OVERLAPPED for the
-        // fire-and-forget submit path. Kernel writes Internal /
-        // InternalHigh into it asynchronously after we return from
-        // DeviceIoControl, so it MUST outlive the IOCTL -- a stack
-        // OVERLAPPED would be use-after-free territory. Re-initialised
-        // (ZeroMemory) at the start of each FAF call, after the
-        // wait-for-previous-IOCTL synchronisation step.
-        OVERLAPPED ov{};
 
         // Submit buffers for each report kind. Persistent so the hot
         // path's only data touch is one 12-byte memcpy into &xsr.Report
