@@ -9,6 +9,7 @@
  */
 #include "mdns_responder.h"
 #include "config.h"
+#include "machine_id.h"
 
 #include <chrono>
 #include <cctype>
@@ -74,6 +75,9 @@ void fillServiceInputs(mdns::ResponseInputs& out, const std::string& instanceLab
         {"udp", std::to_string(g_config.udpPort)},
         {"pair", std::to_string(DEFAULT_CLIENT_PORT)},
         {"http", std::to_string(DEFAULT_CLIENT_PORT)},
+        // Stable per-install id so the dish dedupes this receiver across DHCP
+        // address changes instead of keying on the (mutable) IP.
+        {"mid", ensureMachineId()},
     };
     if (ipv4 != nullptr) out.ipv4 = ipv4;
 }
