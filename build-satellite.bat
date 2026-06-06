@@ -29,7 +29,7 @@ REM Source files: platform layer + portable core (session_service / update_servi
 REM + net layer + adapters + the per-OS updater adapter. `windres` consumes satellite.rc
 REM separately below (which now #includes src/core/version.h — resolved relative to the .rc
 REM file's own directory, so no -I flag needed for the resource step).
-set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/app_lifecycle.cpp src/platform/windows/shell_integration.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/platform/windows/updater_adapter.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/inner_dispatch.cpp src/net/webserver.cpp src/net/tls.cpp src/net/discovery.cpp src/net/mdns_protocol.cpp src/net/mdns_responder.cpp src/core/session_service.cpp src/core/update_service.cpp src/core/github_release.cpp src/adapters/log_adapter.cpp
+set SRC_FILES=src/platform/windows/main.cpp src/platform/windows/globals.cpp src/platform/windows/config.cpp src/platform/windows/crypto.cpp src/platform/windows/vigem.cpp src/platform/windows/tray.cpp src/platform/windows/toast.cpp src/platform/windows/app_lifecycle.cpp src/platform/windows/shell_integration.cpp src/platform/windows/vigem_adapter.cpp src/platform/windows/gamepad_backend.cpp src/platform/windows/updater_adapter.cpp src/adapters/client_adapter.cpp src/net/receiver.cpp src/net/inner_dispatch.cpp src/net/webserver.cpp src/net/tls.cpp src/net/machine_id.cpp src/net/pairing.cpp src/net/pairing_service.cpp src/net/discovery.cpp src/net/mdns_protocol.cpp src/net/mdns_responder.cpp src/core/session_service.cpp src/core/update_service.cpp src/core/github_release.cpp src/adapters/log_adapter.cpp
 
 echo === Building Satellite ===
 echo.
@@ -52,6 +52,9 @@ REM src/platform/windows/app_lifecycle.cpp). All other dependencies of the
 REM lifecycle helpers (RegisterApplicationRestart, SetDefaultDllDirectories,
 REM CreateMutex, etc.) come from kernel32 which is implicit.
 REM Additional libraries beyond the platform default:
+REM   -lruntimeobject WinRT RoActivateInstance / RoGetActivationFactory + HSTRING
+REM                 (WindowsCreateString/WindowsDeleteString) for the actionable
+REM                 reverse-pairing toast (src/platform/windows/toast.cpp).
 REM   -lwintrust    WinVerifyTrust on OTA-downloaded installer (updater_adapter)
 REM   -lpropsys     IPropertyStore + PKEY_AppUserModel_ID (shell_integration)
 REM   -lcomctl32    TaskDialogIndirect (main.cpp's fatal-error dialog)
@@ -63,7 +66,7 @@ REM           Without it: undefined references to FOLDERID_* / IID_*.
 REM -lshlwapi InitPropVariantFromString is an inline shim around
 REM           SHStrDupW (in shlwapi). Without it ld silently fails the
 REM           link without printing a diagnostic.
-%CXX% %CXXFLAGS% %LDFLAGS% %INCLUDES% %LIBDIRS% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -DCPPHTTPLIB_OPENSSL_SUPPORT -o satellite.exe %SRC_FILES% satellite_res.o -lsodium -lssl -lcrypto -lsetupapi -lws2_32 -lshell32 -lole32 -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -lwinhttp -lwintrust -lpropsys -lshlwapi -lcomctl32 -lcomdlg32 -luuid -lgdi32 -luser32 -lDbgHelp -mwindows
+%CXX% %CXXFLAGS% %LDFLAGS% %INCLUDES% %LIBDIRS% -Isrc -DCPPHTTPLIB_NO_EXCEPTIONS -DCPPHTTPLIB_OPENSSL_SUPPORT -o satellite.exe %SRC_FILES% satellite_res.o -lsodium -lssl -lcrypto -lsetupapi -lws2_32 -lshell32 -lole32 -lruntimeobject -ladvapi32 -lbcrypt -lcrypt32 -lwinmm -lwinhttp -lwintrust -lpropsys -lshlwapi -lcomctl32 -lcomdlg32 -luuid -lgdi32 -luser32 -lDbgHelp -mwindows
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] satellite.exe
     exit /b 1
