@@ -15,6 +15,7 @@
  */
 #include "discovery.h"
 #include "config.h"
+#include "machine_id.h"
 
 void discoveryThread() {
     if (!netInit()) return;
@@ -33,6 +34,11 @@ void discoveryThread() {
     // Get host name for beacon
     char hostname[256] = {};
     netGetHostname(hostname, sizeof(hostname));
+
+    // Resolve the stable per-install id once. It outlives DHCP lease changes,
+    // so the dish keys its remembered-satellite entry on this instead of the
+    // (mutable) IP and stops accumulating a fresh row each time we move.
+    const std::string machineId = ensureMachineId();
 
     sockaddr_in dest{};
     dest.sin_family = AF_INET;
@@ -73,8 +79,8 @@ void discoveryThread() {
             // reachable from a sender.
             snprintf(
                 beacon, sizeof(beacon),
-                R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d})",
-                hostname, udpPort, DEFAULT_CLIENT_PORT, DEFAULT_CLIENT_PORT);
+                R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d,"machineId":"%s"})",
+                hostname, udpPort, DEFAULT_CLIENT_PORT, DEFAULT_CLIENT_PORT, machineId.c_str());
 
             sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
                    sizeof(dest));

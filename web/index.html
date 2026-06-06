@@ -154,6 +154,16 @@
       <p class="hint" id="pin-hint" data-i18n="pin.hint.idle">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
     </div>
 
+    <!-- ── Incoming pairing requests (reverse direction: the dish shows its
+         own PIN and asks to be accepted here). Hidden until a request arrives;
+         populated by updatePairRequests() from the SSE `pairRequests` stream.
+         The operator accepts by typing the PIN shown on the dish — that match
+         is the authentication, so the server never sends the PIN here. -->
+    <div class="section" id="pair-request-section" style="display:none">
+      <h2 class="section-title"><img src="img/icons/bluetooth-pairing-animated.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="pairreq.section.title">Pairing Requests</span></h2>
+      <div id="pair-request-list" class="device-list"></div>
+    </div>
+
     <!-- ── Connections ── -->
     <div class="section">
       <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="connections.section.title">Connections</span></h2>

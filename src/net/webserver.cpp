@@ -14,6 +14,7 @@
 #include "tls.h"
 #include "crypto.h"
 #include "config.h"
+#include "pairing.h"
 #include "core/gamepad_backend.h"
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -470,113 +471,140 @@ static void openConnectionRoute(SessionService& svc, const httplib::Request& req
     res.set_content(response, "application/json");
 }
 
-// ── POST /api/pair — PIN-gated device pairing ────────────────────────────────
-// Folds in the former TCP pairing server. Runs over HTTPS, so the PIN and the
-// resulting shared key are encrypted in transit. Body: {deviceId, deviceName,
-// pin, publicKey?}. Always replies 200 with a JSON body the sender classifies
-// on its `ok` field.
-static void pairRoute(const httplib::Request& req, httplib::Response& res) {
-    auto deviceId = jsonGetString(req.body, "deviceId");
-    auto deviceName = jsonGetString(req.body, "deviceName");
-    auto pin = jsonGetString(req.body, "pin");
-    auto clientPkHex = jsonGetString(req.body, "publicKey"); // client's X25519 public key
-    const std::string clientIP = req.remote_addr;
-
-    // Check if already paired
-    bool alreadyPaired = false;
-    std::string storedKey;
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        for (auto& d : g_config.pairedDevices) {
-            if (d.id == deviceId) {
-                alreadyPaired = true;
-                d.lastIP = clientIP;
-                storedKey = d.sharedKeyHex;
-                break;
-            }
-        }
-        if (alreadyPaired) saveConfig(g_config);
-    }
-
-    if (alreadyPaired) {
-        logMsg(LogLevel::INFO, "pairing",
-               "Device " + deviceName + " (" + clientIP + ") already paired, updating IP");
-        res.set_content(R"({"ok":true,"message":"already paired","sharedKey":")" + storedKey +
-                            R"("})",
-                        "application/json");
-        return;
-    }
-
-    if (!verifyPin(pin)) {
-        logMsg(LogLevel::WARN, "pairing", "Invalid PIN attempt from " + clientIP);
-        res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
-        return;
-    }
-
-    // Generate server key pair for X25519 key exchange
-    uint8_t serverPk[32], serverSk[32];
-    generateKeyPair(serverPk, serverSk);
-
-    // Decode client's public key (optional — absent for the trusted-network mode)
-    uint8_t clientPk[32];
-    bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
-
-    std::string sharedKeyHex;
-    if (hasClientKey) {
-        uint8_t sharedKey[32];
-        if (computeSharedKey(sharedKey, clientPk, serverSk, serverPk)) {
-            sharedKeyHex = hexEncode(sharedKey, 32);
-            sodium_memzero(sharedKey, 32);
-        }
-    }
-    if (sharedKeyHex.empty()) {
-        // No client key exchange — mint a random shared key. Sent back over
-        // the TLS channel, so it is not exposed on the wire.
-        uint8_t randomKey[32];
-        randombytes_buf(randomKey, 32);
-        sharedKeyHex = hexEncode(randomKey, 32);
-        sodium_memzero(randomKey, 32);
-    }
-
+// Shared PairedDevice upsert — both pairing paths (server-PIN entry and
+// dish-PIN approval) land here so persistence + the name/touchpad fallbacks
+// live in exactly one place.
+static void upsertPairedDevice(const std::string& deviceId, const std::string& deviceName,
+                               const std::string& clientIP, const std::string& sharedKeyHex,
+                               const std::string& initialTouchpadMode) {
     PairedDevice dev;
     dev.id = deviceId;
     dev.name = deviceName.empty() ? ("Device-" + deviceId.substr(0, 8)) : deviceName;
     dev.lastIP = clientIP;
     dev.pairedAt = getCurrentDate();
     dev.sharedKeyHex = sharedKeyHex;
-    // Optional initial touchpad mode supplied by the client at pair time. The
-    // client is the authority on its own touchpad capabilities (it knows
-    // whether the user-facing controller has a touchpad surface, whether the
-    // app has a virtual touchpad screen, etc.). If absent, fall back to the
-    // PairedDevice default (TOUCHPAD_MODE_OFF) — the safe baseline.
-    auto initialMode = jsonGetString(req.body, "touchpadMode");
-    if (!initialMode.empty() &&
-        (initialMode == "ds4" || initialMode == "mouse" || initialMode == "off")) {
-        dev.touchpadMode = touchpadModeFromName(initialMode);
+    // The client is the authority on its own touchpad capability; honour a
+    // valid initial mode, else leave the PairedDevice default (OFF).
+    if (initialTouchpadMode == "ds4" || initialTouchpadMode == "mouse" ||
+        initialTouchpadMode == "off") {
+        dev.touchpadMode = touchpadModeFromName(initialTouchpadMode);
     }
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        auto& devs = g_config.pairedDevices;
-        devs.erase(std::remove_if(devs.begin(), devs.end(),
-                                  [&](const PairedDevice& d) { return d.id == deviceId; }),
-                   devs.end());
-        devs.push_back(dev);
-        saveConfig(g_config);
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    auto& devs = g_config.pairedDevices;
+    devs.erase(std::remove_if(devs.begin(), devs.end(),
+                              [&](const PairedDevice& d) { return d.id == deviceId; }),
+               devs.end());
+    devs.push_back(dev);
+    saveConfig(g_config);
+}
+
+// ── POST /api/pair — dual-path device pairing ────────────────────────────────
+// Runs over HTTPS, so PINs and the resulting shared key are encrypted in
+// transit. Body: {deviceId, deviceName, pin?, clientPin?, publicKey?,
+// touchpadMode?}. Two ways in, either completes a pairing:
+//
+//   Path A — `pin` is the PIN the operator generated on the satellite and the
+//            user typed into the dish. verifyPin() → pair immediately.
+//   Path B — `clientPin` is the PIN the *dish* is showing. We can't pair on the
+//            dish's say-so, so we register a request and reply pending=true; the
+//            operator accepts on the dashboard and the dish polls /api/pair/status.
+//
+// Always replies 200 with a JSON body the sender classifies on `ok` / `pending`.
+static void pairRoute(const httplib::Request& req, httplib::Response& res) {
+    auto deviceId = jsonGetString(req.body, "deviceId");
+    auto deviceName = jsonGetString(req.body, "deviceName");
+    auto pin = jsonGetString(req.body, "pin");               // server-shown PIN (Path A)
+    auto clientPin = jsonGetString(req.body, "clientPin");   // dish-shown PIN (Path B)
+    auto clientPkHex = jsonGetString(req.body, "publicKey"); // client's X25519 public key
+    auto initialMode = jsonGetString(req.body, "touchpadMode");
+    const std::string clientIP = req.remote_addr;
+
+    if (deviceId.empty()) {
+        res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
+        return;
     }
 
-    std::string serverPkHex = hexEncode(serverPk, 32);
-    sodium_memzero(serverSk, 32);
-    if (hasClientKey) {
-        res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
-                            serverPkHex + R"("})",
-                        "application/json");
-    } else {
-        res.set_content(R"({"ok":true,"message":"paired successfully","sharedKey":")" +
-                            sharedKeyHex + R"("})",
-                        "application/json");
+    // Already paired — hand back the stored key without troubling either PIN.
+    // Also the graceful tail of Path B: the key is persisted at approval time,
+    // so a dish whose status-poll was missed re-pairs straight into success.
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        for (auto& d : g_config.pairedDevices) {
+            if (d.id == deviceId) {
+                d.lastIP = clientIP;
+                std::string storedKey = d.sharedKeyHex;
+                saveConfig(g_config);
+                logMsg(LogLevel::INFO, "pairing",
+                       "Device " + deviceName + " (" + clientIP + ") already paired, updating IP");
+                res.set_content(R"({"ok":true,"message":"already paired","sharedKey":")" +
+                                    storedKey + R"("})",
+                                "application/json");
+                return;
+            }
+        }
     }
-    logMsg(LogLevel::INFO, "pairing",
-           "Successfully paired device: " + dev.name + " (" + clientIP + ")");
+
+    // Path A — the dish entered the PIN the operator generated on the satellite.
+    if (!pin.empty() && verifyPin(pin)) {
+        uint8_t serverPk[32], serverSk[32];
+        generateKeyPair(serverPk, serverSk);
+
+        // Decode the client's public key (optional — absent for trusted-network mode).
+        uint8_t clientPk[32];
+        bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
+
+        std::string sharedKeyHex;
+        if (hasClientKey) {
+            uint8_t sharedKey[32];
+            if (computeSharedKey(sharedKey, clientPk, serverSk, serverPk)) {
+                sharedKeyHex = hexEncode(sharedKey, 32);
+                sodium_memzero(sharedKey, 32);
+            }
+        }
+        if (sharedKeyHex.empty()) {
+            // No client key exchange — mint a random key, sent back over TLS.
+            uint8_t randomKey[32];
+            randombytes_buf(randomKey, 32);
+            sharedKeyHex = hexEncode(randomKey, 32);
+            sodium_memzero(randomKey, 32);
+        }
+
+        upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex, initialMode);
+
+        std::string serverPkHex = hexEncode(serverPk, 32);
+        sodium_memzero(serverSk, 32);
+        logMsg(LogLevel::INFO, "pairing",
+               "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
+        if (hasClientKey) {
+            res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
+                                serverPkHex + R"("})",
+                            "application/json");
+        } else {
+            res.set_content(R"({"ok":true,"message":"paired successfully","sharedKey":")" +
+                                sharedKeyHex + R"("})",
+                            "application/json");
+        }
+        return;
+    }
+
+    // Path B — the dish is showing its own PIN and asking the operator to accept
+    // it. Register the request; the dish polls /api/pair/status from here. The
+    // clientPin is never echoed anywhere server-visible — the operator must read
+    // it off the dish, which is what makes the accept meaningful.
+    if (!clientPin.empty()) {
+        submitPairRequest(deviceId, deviceName, clientIP, clientPin);
+        logMsg(LogLevel::INFO, "pairing",
+               "Pairing request from " + (deviceName.empty() ? deviceId : deviceName) + " (" +
+                   clientIP + ") awaiting operator approval");
+        res.set_content(
+            R"({"ok":false,"pending":true,"message":"awaiting approval on the satellite"})",
+            "application/json");
+        return;
+    }
+
+    // Neither a valid server PIN nor a dish PIN to request with.
+    logMsg(LogLevel::WARN, "pairing", "Invalid or empty PIN attempt from " + clientIP);
+    res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -794,6 +822,64 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
+    // ── Reverse-direction pairing (the dish shows a PIN; the operator accepts
+    // it here). GET lists the in-flight requests for the dashboard panel;
+    // POST is the accept/deny action. Localhost admin surface — the operator
+    // is physically at the satellite — so no device auth. ─────────────────
+    g_httpServer.Get("/api/pair/requests", [](const httplib::Request&, httplib::Response& res) {
+        // No PIN in the payload on purpose: accepting requires typing the PIN
+        // shown on the dish, so echoing it here would defeat the check.
+        auto reqs = pendingPairRequests();
+        std::string json = "[";
+        for (size_t i = 0; i < reqs.size(); i++) {
+            const auto& r = reqs[i];
+            if (i) json += ",";
+            json += "{\"deviceId\":\"" + jsonEscape(r.deviceId) + "\",\"deviceName\":\"" +
+                    jsonEscape(r.deviceName) + "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
+                    "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) + "}";
+        }
+        json += "]";
+        res.set_content(json, "application/json");
+    });
+
+    g_httpServer.Post("/api/pair/respond", [](const httplib::Request& req, httplib::Response& res) {
+        auto deviceId = jsonGetString(req.body, "deviceId");
+        auto pin = jsonGetString(req.body, "pin");
+        bool accept = false;
+        jsonGetBoolKeyed(req.body, "accept", &accept);
+        if (deviceId.empty()) {
+            res.status = 400;
+            res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
+            return;
+        }
+        if (!accept) {
+            denyPairRequest(deviceId);
+            logMsg(LogLevel::INFO, "pairing", "Operator denied pairing request " + deviceId);
+            res.set_content(R"({"ok":true,"accepted":false})", "application/json");
+            return;
+        }
+        // Mint the key up front; acceptPairRequest keeps it only if the typed
+        // PIN matches the dish's. A discarded key on mismatch is harmless.
+        uint8_t randomKey[32];
+        randombytes_buf(randomKey, 32);
+        std::string keyHex = hexEncode(randomKey, 32);
+        sodium_memzero(randomKey, 32);
+
+        std::string name, ip;
+        if (!acceptPairRequest(deviceId, pin, keyHex, name, ip)) {
+            logMsg(LogLevel::WARN, "pairing",
+                   "Operator accept for " + deviceId + " rejected (PIN mismatch or no request)");
+            res.set_content(R"({"ok":false,"error":"pin mismatch or no pending request"})",
+                            "application/json");
+            return;
+        }
+        upsertPairedDevice(deviceId, name, ip, keyHex, "");
+        logMsg(LogLevel::INFO, "pairing",
+               "Operator accepted pairing for " + (name.empty() ? deviceId : name) + " (" + ip +
+                   ")");
+        res.set_content(R"({"ok":true,"accepted":true})", "application/json");
+    });
+
     g_httpServer.Get("/api/devices", [&svc](const httplib::Request&, httplib::Response& res) {
         // Per-device `state` is the DeviceLinkState (lowercase enum name) —
         // either "paired" (no live connection), "active" (live, recent
@@ -995,6 +1081,24 @@ void adminHttpThread(SessionService& svc) {
                     event += "}\n\n";
                 }
 
+                // Reverse-pairing requests — pushed each tick so the dashboard's
+                // accept/deny panel appears the instant a dish asks and its
+                // countdown ticks without a parallel poll.
+                {
+                    auto pairReqs = pendingPairRequests();
+                    event += "event: pairRequests\ndata: [";
+                    for (size_t i = 0; i < pairReqs.size(); i++) {
+                        const auto& r = pairReqs[i];
+                        if (i) event += ",";
+                        event += "{\"deviceId\":\"" + jsonEscape(r.deviceId) +
+                                 "\",\"deviceName\":\"" + jsonEscape(r.deviceName) +
+                                 "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
+                                 "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) +
+                                 "}";
+                    }
+                    event += "]\n\n";
+                }
+
                 if (!sink.write(event.c_str(), event.size())) return false;
                 for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);
             }
@@ -1025,6 +1129,30 @@ void clientApiThread(SessionService& svc) {
     // POST /api/pair — PIN-gated; no device auth (the device is not paired yet).
     server.Post("/api/pair",
                 [](const httplib::Request& req, httplib::Response& res) { pairRoute(req, res); });
+
+    // GET /api/pair/status?deviceId=... — the dish polls this after a Path-B
+    // request until the operator accepts/denies on the satellite. No device
+    // auth: the device is not paired yet. On approval the freshly minted key is
+    // handed back exactly once (pollPairRequest clears it).
+    server.Get("/api/pair/status", [](const httplib::Request& req, httplib::Response& res) {
+        std::string deviceId;
+        if (req.has_param("deviceId")) deviceId = req.get_param_value("deviceId");
+        if (deviceId.empty()) {
+            res.status = 400;
+            res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
+            return;
+        }
+        std::string keyHex;
+        PairRequestState st = pollPairRequest(deviceId, keyHex);
+        if (st == PairRequestState::Approved) {
+            res.set_content(R"({"ok":true,"status":"approved","sharedKey":")" + keyHex + R"("})",
+                            "application/json");
+            return;
+        }
+        res.set_content(std::string(R"({"ok":false,"status":")") + pairRequestStateName(st) +
+                            R"("})",
+                        "application/json");
+    });
 
     // POST /api/connections — open a session. Requires a paired deviceId.
     server.Post("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {

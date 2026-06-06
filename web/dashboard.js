@@ -374,6 +374,8 @@ function initDashboard() {
     if (devList) devList.addEventListener('click', handleDeviceListClick);
     const connList = document.getElementById('connection-list');
     if (connList) connList.addEventListener('click', handleConnectionListClick);
+    const pairList = document.getElementById('pair-request-list');
+    if (pairList) pairList.addEventListener('click', handlePairRequestClick);
     dashboardListenersWired = true;
   }
   startSSE();
@@ -447,6 +449,16 @@ function startSSE() {
     try {
       const d = JSON.parse(e.data);
       updatePinPanel(d);
+    } catch (err) { /* ignore */ }
+  });
+
+  // Reverse-pairing requests — array of { deviceId, deviceName, clientIP,
+  // secondsRemaining }. Drives the accept/deny panel; an empty array hides it.
+  eventSource.addEventListener('pairRequests', (e) => {
+    onAnyMessage();
+    try {
+      const d = JSON.parse(e.data);
+      updatePairRequests(d);
     } catch (err) { /* ignore */ }
   });
 
@@ -699,6 +711,96 @@ function updatePinPanel(s) {
     default:
       hint.textContent = t('pin.hint.idle');
       break;
+  }
+}
+
+// ── Reverse-direction pairing (the dish shows a PIN; the operator accepts) ───
+// Render one row per in-flight request with a box to type the dish's PIN into.
+// The server never sends that PIN, so the input starts empty — typing it is
+// what authenticates the device. We preserve a half-typed value across the
+// per-second SSE re-render so the operator isn't interrupted mid-entry.
+function updatePairRequests(list) {
+  const section = document.getElementById('pair-request-section');
+  const el = document.getElementById('pair-request-list');
+  if (!section || !el) return;
+
+  const reqs = Array.isArray(list) ? list : [];
+  if (reqs.length === 0) {
+    section.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  section.style.display = '';
+
+  const typed = {};
+  el.querySelectorAll('[data-pair-pin]').forEach(inp => {
+    typed[inp.getAttribute('data-pair-pin')] = inp.value;
+  });
+
+  const acceptLabel = t('pairreq.accept');
+  const denyLabel = t('pairreq.deny');
+  const pinPlaceholder = t('pairreq.pin.placeholder');
+  el.innerHTML = reqs.map(r => {
+    const secs = Math.max(0, parseInt(r.secondsRemaining, 10) || 0);
+    const mm = Math.floor(secs / 60);
+    const ss = (secs % 60).toString().padStart(2, '0');
+    const prior = (typed[r.deviceId] != null) ? typed[r.deviceId] : '';
+    return `
+      <div class="device-item pair-request-item">
+        <img class="device-glyph" src="img/icons/dish-scanning-animated.svg" alt="">
+        <div class="device-info">
+          <span class="device-name">${esc(r.deviceName || r.deviceId)}</span>
+          <span class="device-meta">${esc(r.clientIP)} · ${esc(t('pairreq.expires', [mm + ':' + ss]))}</span>
+        </div>
+        <div class="device-actions">
+          <input type="text" inputmode="numeric" autocomplete="off" maxlength="8" style="width:120px"
+                 class="pair-pin-input" data-pair-pin="${esc(r.deviceId)}"
+                 placeholder="${esc(pinPlaceholder)}" value="${esc(prior)}">
+          <button class="btn btn-save" type="button" data-act="pair-accept" data-id="${esc(r.deviceId)}">${esc(acceptLabel)}</button>
+          <button class="btn-icon btn-danger" type="button" data-act="pair-deny" data-id="${esc(r.deviceId)}" title="${esc(denyLabel)}"><img src="img/icons/close_x.svg" alt="${esc(denyLabel)}" class="emoji-icon"></button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// Delegated click handler for the pairing-request list. Accept reads the PIN
+// from the row's own input (never a global selector) so two concurrent
+// requests can't cross-wire their PINs.
+function handlePairRequestClick(e) {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-id') || '';
+  if (btn.dataset.act === 'pair-deny') {
+    respondPairRequest(id, '', false, btn);
+    return;
+  }
+  if (btn.dataset.act === 'pair-accept') {
+    const row = btn.closest('.pair-request-item');
+    const input = row ? row.querySelector('.pair-pin-input') : null;
+    const pin = input ? input.value.trim() : '';
+    if (!pin) {
+      showDashError(t('pairreq.err.pin-required'));
+      if (input) input.focus();
+      return;
+    }
+    respondPairRequest(id, pin, true, btn);
+  }
+}
+
+async function respondPairRequest(deviceId, pin, accept, btn) {
+  const restore = setButtonLoading(btn, accept ? t('pairreq.accepting') : null);
+  try {
+    const res = await apiPost('/api/pair/respond', { deviceId, pin, accept });
+    // A PIN mismatch comes back HTTP-200 with ok:false, so check both layers.
+    if (!res.ok || (res.data && res.data.ok === false)) {
+      showDashError(apiErrorText(res, accept ? t('pairreq.err.accept') : t('pairreq.err.deny')));
+      restore();
+      return;
+    }
+    hideDashError();
+    // Leave the spinner — the SSE pairRequests tick drops this row within ~1s.
+  } catch (e) {
+    restore();
   }
 }
 
