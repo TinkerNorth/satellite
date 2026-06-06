@@ -21,6 +21,7 @@
  */
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,26 @@ PairRequestState pollPairRequest(const std::string& deviceId, std::string& outSh
 
 // Non-expired Pending requests for the dashboard list + SSE push.
 std::vector<PairRequestView> pendingPairRequests();
+
+// In-process snapshot of one request INCLUDING its PIN — for the native
+// notifier only. The PIN is deliberately never exposed over the HTTP API (the
+// dashboard makes the operator type it); a native prompt instead *shows* it for
+// visual confirmation, which is safe precisely because it never leaves the
+// process. Returns false when no Pending request exists for deviceId.
+bool pairRequestSnapshot(const std::string& deviceId, std::string& outDeviceName,
+                         std::string& outClientIP, std::string& outPin, int& outSecondsRemaining);
+
+// Accept a request the operator confirmed by sight (the native prompt showed
+// the PIN and they verified it matches the dish), so no PIN is re-checked.
+// Otherwise mirrors acceptPairRequest. Returns false when no Pending request.
+bool acceptPairRequestConfirmed(const std::string& deviceId, const std::string& mintedKeyHex,
+                                std::string& outDeviceName, std::string& outClientIP);
+
+// Register a callback fired when a new Path-B request arrives, so the platform
+// can raise a native notification. Invoked on the submitting thread *outside*
+// the registry lock, so the callback may call back in safely. Set-once at
+// startup; the deviceId can be handed to pairRequestSnapshot.
+void setPairRequestListener(std::function<void(const std::string& deviceId)> cb);
 
 // Test seam: drop all state so a unit test starts from a clean registry.
 void resetPairRequestsForTest();

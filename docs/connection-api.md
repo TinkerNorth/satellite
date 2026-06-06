@@ -81,9 +81,12 @@ screen the user is in front of:
   (`POST /api/pin/generate`, web dashboard) and the user types it into the
   dish. The dish proves it in `POST /api/pair` and pairs immediately.
 - **Path B — dish PIN.** The dish shows *its own* PIN and submits it as a
-  request; the operator accepts on the dashboard by typing that PIN back. The
-  dish polls `GET /api/pair/status` until the operator acts. The dish PIN is
-  never echoed by the server — typing it is what authenticates the device.
+  request; the operator accepts it — either on the web dashboard (by typing the
+  PIN back) **or from the native OS notification** the satellite raises (Windows
+  toast → dialog, macOS notification → alert, Linux libnotify actions), which
+  shows the PIN to confirm by sight. The dish polls `GET /api/pair/status` until
+  the operator acts. The PIN is never sent over the HTTP API; confirming it is
+  what authenticates the device.
 
 ### `POST /api/pair`
 

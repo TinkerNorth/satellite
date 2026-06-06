@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <mutex>
 
 namespace {
@@ -20,6 +21,9 @@ struct PendingPair {
 
 std::mutex g_pairMtx;
 std::vector<PendingPair> g_pending;
+
+// Fired when a new request arrives so the platform can raise a native prompt.
+std::function<void(const std::string&)> g_onNewRequest;
 
 // Matches the Path-A PIN window (5 min) loosely, but shorter: a request is a
 // live "someone is staring at both screens right now" handshake, so a tight
@@ -69,31 +73,35 @@ const char* pairRequestStateName(PairRequestState s) {
 
 void submitPairRequest(const std::string& deviceId, const std::string& deviceName,
                        const std::string& clientIP, const std::string& clientPin) {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
-    pruneLocked();
+    std::function<void(const std::string&)> notify;
+    {
+        std::lock_guard<std::mutex> lk(g_pairMtx);
+        pruneLocked();
 
-    if (auto* existing = findLocked(deviceId)) {
-        // A re-tap from the same dish refreshes its PIN + timer in place; the
-        // operator should never see two rows for one phone.
-        existing->deviceName = deviceName;
-        existing->clientIP = clientIP;
-        existing->clientPin = clientPin;
-        existing->keyHex.clear();
-        existing->state = PairRequestState::Pending;
-        existing->createdAt = std::chrono::steady_clock::now();
-        return;
+        if (auto* existing = findLocked(deviceId)) {
+            // A re-tap from the same dish refreshes its PIN + timer in place; the
+            // operator should never see two rows for one phone.
+            existing->deviceName = deviceName;
+            existing->clientIP = clientIP;
+            existing->clientPin = clientPin;
+            existing->keyHex.clear();
+            existing->state = PairRequestState::Pending;
+            existing->createdAt = std::chrono::steady_clock::now();
+        } else {
+            if (g_pending.size() >= kMaxPending) g_pending.erase(g_pending.begin());
+            PendingPair p;
+            p.deviceId = deviceId;
+            p.deviceName = deviceName;
+            p.clientIP = clientIP;
+            p.clientPin = clientPin;
+            p.state = PairRequestState::Pending;
+            p.createdAt = std::chrono::steady_clock::now();
+            g_pending.push_back(std::move(p));
+        }
+        notify = g_onNewRequest;
     }
-
-    if (g_pending.size() >= kMaxPending) g_pending.erase(g_pending.begin());
-
-    PendingPair p;
-    p.deviceId = deviceId;
-    p.deviceName = deviceName;
-    p.clientIP = clientIP;
-    p.clientPin = clientPin;
-    p.state = PairRequestState::Pending;
-    p.createdAt = std::chrono::steady_clock::now();
-    g_pending.push_back(std::move(p));
+    // Fire outside the lock so the native UI callback can call back in safely.
+    if (notify) notify(deviceId);
 }
 
 bool acceptPairRequest(const std::string& deviceId, const std::string& operatorPin,
@@ -156,7 +164,43 @@ std::vector<PairRequestView> pendingPairRequests() {
     return out;
 }
 
+bool pairRequestSnapshot(const std::string& deviceId, std::string& outDeviceName,
+                         std::string& outClientIP, std::string& outPin, int& outSecondsRemaining) {
+    std::lock_guard<std::mutex> lk(g_pairMtx);
+    pruneLocked();
+    auto* p = findLocked(deviceId);
+    if (p == nullptr || p->state != PairRequestState::Pending) return false;
+    outDeviceName = p->deviceName;
+    outClientIP = p->clientIP;
+    outPin = p->clientPin;
+    const int rem =
+        static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                             kPairTtl - (std::chrono::steady_clock::now() - p->createdAt))
+                             .count());
+    outSecondsRemaining = rem < 0 ? 0 : rem;
+    return true;
+}
+
+bool acceptPairRequestConfirmed(const std::string& deviceId, const std::string& mintedKeyHex,
+                                std::string& outDeviceName, std::string& outClientIP) {
+    std::lock_guard<std::mutex> lk(g_pairMtx);
+    pruneLocked();
+    auto* p = findLocked(deviceId);
+    if (p == nullptr || p->state != PairRequestState::Pending) return false;
+    p->state = PairRequestState::Approved;
+    p->keyHex = mintedKeyHex;
+    outDeviceName = p->deviceName;
+    outClientIP = p->clientIP;
+    return true;
+}
+
+void setPairRequestListener(std::function<void(const std::string&)> cb) {
+    std::lock_guard<std::mutex> lk(g_pairMtx);
+    g_onNewRequest = std::move(cb);
+}
+
 void resetPairRequestsForTest() {
     std::lock_guard<std::mutex> lk(g_pairMtx);
     g_pending.clear();
+    g_onNewRequest = nullptr;
 }

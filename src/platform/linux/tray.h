@@ -12,8 +12,14 @@
 #pragma once
 #include "globals.h"
 
+#include <string>
+
 // Returns true if the tray icon was created and the GTK main loop is usable.
 // Returns false on truly headless boxes or when SATELLITE_HAS_TRAY was not
 // defined at build time; the caller should run a sigwait-based main loop.
 bool addTrayIcon();
 void removeTrayIcon();
+// pairing.cpp listener: raise a native (libnotify) notification with Accept /
+// Reject actions for a reverse-pairing request. No-op on headless builds or when
+// libnotify was unavailable at build time. Registered from main.cpp.
+void notifyPairRequestLinux(const std::string& deviceId);

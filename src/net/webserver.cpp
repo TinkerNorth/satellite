@@ -15,6 +15,7 @@
 #include "crypto.h"
 #include "config.h"
 #include "pairing.h"
+#include "pairing_service.h"
 #include "core/gamepad_backend.h"
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -471,32 +472,9 @@ static void openConnectionRoute(SessionService& svc, const httplib::Request& req
     res.set_content(response, "application/json");
 }
 
-// Shared PairedDevice upsert — both pairing paths (server-PIN entry and
-// dish-PIN approval) land here so persistence + the name/touchpad fallbacks
-// live in exactly one place.
-static void upsertPairedDevice(const std::string& deviceId, const std::string& deviceName,
-                               const std::string& clientIP, const std::string& sharedKeyHex,
-                               const std::string& initialTouchpadMode) {
-    PairedDevice dev;
-    dev.id = deviceId;
-    dev.name = deviceName.empty() ? ("Device-" + deviceId.substr(0, 8)) : deviceName;
-    dev.lastIP = clientIP;
-    dev.pairedAt = getCurrentDate();
-    dev.sharedKeyHex = sharedKeyHex;
-    // The client is the authority on its own touchpad capability; honour a
-    // valid initial mode, else leave the PairedDevice default (OFF).
-    if (initialTouchpadMode == "ds4" || initialTouchpadMode == "mouse" ||
-        initialTouchpadMode == "off") {
-        dev.touchpadMode = touchpadModeFromName(initialTouchpadMode);
-    }
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    auto& devs = g_config.pairedDevices;
-    devs.erase(std::remove_if(devs.begin(), devs.end(),
-                              [&](const PairedDevice& d) { return d.id == deviceId; }),
-               devs.end());
-    devs.push_back(dev);
-    saveConfig(g_config);
-}
+// upsertPairedDevice + the accept/decline helpers now live in pairing_service
+// so the HTTPS dashboard route and the native tray prompts share one accept
+// path (mint key → verify/confirm → persist).
 
 // ── POST /api/pair — dual-path device pairing ────────────────────────────────
 // Runs over HTTPS, so PINs and the resulting shared key are encrypted in
@@ -853,30 +831,21 @@ void adminHttpThread(SessionService& svc) {
             return;
         }
         if (!accept) {
-            denyPairRequest(deviceId);
+            declinePairing(deviceId);
             logMsg(LogLevel::INFO, "pairing", "Operator denied pairing request " + deviceId);
             res.set_content(R"({"ok":true,"accepted":false})", "application/json");
             return;
         }
-        // Mint the key up front; acceptPairRequest keeps it only if the typed
-        // PIN matches the dish's. A discarded key on mismatch is harmless.
-        uint8_t randomKey[32];
-        randombytes_buf(randomKey, 32);
-        std::string keyHex = hexEncode(randomKey, 32);
-        sodium_memzero(randomKey, 32);
-
-        std::string name, ip;
-        if (!acceptPairRequest(deviceId, pin, keyHex, name, ip)) {
+        // Key minting + persistence live in pairing_service so the dashboard and
+        // the native tray prompts accept identically.
+        if (!acceptPairingWithPin(deviceId, pin)) {
             logMsg(LogLevel::WARN, "pairing",
                    "Operator accept for " + deviceId + " rejected (PIN mismatch or no request)");
             res.set_content(R"({"ok":false,"error":"pin mismatch or no pending request"})",
                             "application/json");
             return;
         }
-        upsertPairedDevice(deviceId, name, ip, keyHex, "");
-        logMsg(LogLevel::INFO, "pairing",
-               "Operator accepted pairing for " + (name.empty() ? deviceId : name) + " (" + ip +
-                   ")");
+        logMsg(LogLevel::INFO, "pairing", "Operator accepted pairing for " + deviceId);
         res.set_content(R"({"ok":true,"accepted":true})", "application/json");
     });
 

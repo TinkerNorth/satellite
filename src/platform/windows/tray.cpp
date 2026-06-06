@@ -29,9 +29,14 @@
 #include "resource.h"
 #include "shell_integration.h"
 #include "core/update_service.h"
+#include "net/pairing.h"
+#include "net/pairing_service.h"
 
 #include <strsafe.h>
 
+#include <algorithm>
+#include <commctrl.h>
+#include <deque>
 #include <mutex>
 #include <string>
 
@@ -223,6 +228,73 @@ static std::wstring webUiUrl(const wchar_t* path = L"") {
     return std::wstring(buf);
 }
 
+// ── Reverse-pairing native prompt ───────────────────────────────────────────
+// A dish that shows its own PIN raises a request; we toast the operator, and
+// the toast click opens a native Accept/Reject dialog — no browser. deviceIds
+// awaiting that click are queued here (the toast carries no payload of its own).
+static std::mutex g_pairQueueMtx;
+static std::deque<std::string> g_pendingPrompts;
+
+// Native accept/reject dialog for one request. Shows the dish's PIN so the
+// operator can confirm it matches the device (the auth is that visual match —
+// see net/pairing.h), then confirm/decline through pairing_service.
+static void showPairingDialogWindows(HWND hwnd, const std::string& deviceId) {
+    std::string name, ip, pin;
+    int secs = 0;
+    // Re-snapshot at click time: the request may have expired or been handled
+    // from the dashboard between the toast and the click.
+    if (!pairRequestSnapshot(deviceId, name, ip, pin, secs)) return;
+
+    const std::wstring wInstr =
+        toWide((name.empty() ? std::string("A device") : name) + " wants to pair");
+    const std::wstring wContent =
+        toWide("From " + ip + "\n\nPIN on the device:  " + pin +
+               "\n\nConfirm this matches the PIN shown on the device, then choose Accept.");
+
+    const int kAccept = 1001;
+    const int kReject = 1002;
+    const TASKDIALOG_BUTTON buttons[] = {{kAccept, L"Accept"}, {kReject, L"Reject"}};
+    TASKDIALOGCONFIG cfg{};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = hwnd;
+    cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+    cfg.pszWindowTitle = L"Satellite — pairing request";
+    cfg.pszMainIcon = TD_INFORMATION_ICON;
+    cfg.pszMainInstruction = wInstr.c_str();
+    cfg.pszContent = wContent.c_str();
+    cfg.cButtons = ARRAYSIZE(buttons);
+    cfg.pButtons = buttons;
+    cfg.nDefaultButton = kReject; // safe default if the operator just hits Enter
+
+    int pressed = 0;
+    if (TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr) != S_OK) return;
+    if (pressed == kAccept) {
+        confirmPairing(deviceId);
+    } else if (pressed == kReject) {
+        declinePairing(deviceId);
+    }
+    // Esc / cancel: leave it pending — the dashboard or the TTL handles it.
+}
+
+// pairing.cpp listener (registered from main). Fires on the HTTP thread, so it
+// only touches the thread-safe queue + Shell_NotifyIcon (toast) here; the modal
+// dialog waits for the GUI thread's balloon-click handler.
+void notifyPairRequestWindows(const std::string& deviceId) {
+    std::string name, ip, pin;
+    int secs = 0;
+    if (!pairRequestSnapshot(deviceId, name, ip, pin, secs)) return;
+    {
+        std::lock_guard<std::mutex> lk(g_pairQueueMtx);
+        if (std::find(g_pendingPrompts.begin(), g_pendingPrompts.end(), deviceId) ==
+            g_pendingPrompts.end()) {
+            g_pendingPrompts.push_back(deviceId);
+        }
+    }
+    shell_integration::showToast("Pairing request",
+                                 (name.empty() ? std::string("A device") : name) + " (" + ip +
+                                     ") wants to pair. Click to accept or reject.");
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // Explorer (re)created its taskbar. Re-add our icon so the user
     // doesn't end up with a running-but-invisible tray app.
@@ -244,9 +316,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP) {
             showTrayMenu(hwnd);
         } else if (event == NIN_BALLOONUSERCLICK) {
-            // User clicked the toast itself: open whichever surface is
-            // most useful right now. If an update is staged, go to the
-            // settings page; otherwise the dashboard.
+            // A queued pairing prompt means the toast the user just clicked was
+            // a pairing request — open the native Accept/Reject dialog(s).
+            std::deque<std::string> todo;
+            {
+                std::lock_guard<std::mutex> lk(g_pairQueueMtx);
+                todo.swap(g_pendingPrompts);
+            }
+            if (!todo.empty()) {
+                for (const auto& id : todo) showPairingDialogWindows(hwnd, id);
+                return 0;
+            }
+            // Otherwise: open whichever surface is most useful. Update staged →
+            // settings page; else the dashboard.
             if (g_updateService) {
                 UpdateStatusSnapshot s = g_updateService->snapshot();
                 if (s.info.available) {

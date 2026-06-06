@@ -22,6 +22,7 @@
 #include "net/webserver.h"
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
+#include "net/pairing.h"
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
@@ -116,6 +117,11 @@ int main(int argc, const char* argv[]) {
         [app setDelegate:delegate];
 
         addTrayIcon();
+
+        // Reverse-pairing: a dish request raises a native notification +
+        // Accept/Reject alert so the operator never needs the web UI.
+        setPairRequestListener(notifyPairRequestMac);
+
         [app run];
         removeTrayIcon();
 

@@ -24,6 +24,7 @@
 #include "net/webserver.h"
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
+#include "net/pairing.h"
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
@@ -143,6 +144,9 @@ int main(int argc, const char* argv[]) {
         signal(SIGPIPE, SIG_IGN);
         g_unix_signal_add(SIGINT, onTraySignal, nullptr);
         g_unix_signal_add(SIGTERM, onTraySignal, nullptr);
+        // Reverse-pairing: a dish request raises a native notification with
+        // Accept/Reject so the operator never has to open the web UI.
+        setPairRequestListener(notifyPairRequestLinux);
         gtk_main();
         removeTrayIcon();
     }

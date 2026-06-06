@@ -16,6 +16,7 @@
 #include "net/webserver.h"
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
+#include "net/pairing.h"
 #include "tray.h"
 #include "app_lifecycle.h"
 #include "shell_integration.h"
@@ -201,6 +202,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
                              nullptr, hInst, nullptr);
 
     addTrayIcon(g_hwnd);
+
+    // Reverse-pairing: when a dish submits a request, raise a native toast +
+    // Accept/Reject dialog so the operator never has to open the web UI.
+    setPairRequestListener(notifyPairRequestWindows);
 
     // Register the taskbar jump list. Needs to happen AFTER the AUMID
     // is set + COM is initialised. CommitList is idempotent and cheap.
