@@ -57,9 +57,16 @@ jobs:
           queries: security-extended,security-and-quality
 
       - name: Build (Release, tray enabled)
+        # Standard private-repo runners are 2 vCPU / 7 GB. An unbounded `-j`
+        # reads the host core count (not the cgroup cap) and oversubscribes,
+        # and CodeQL's extractor multiplies per-compile memory — together they
+        # OOM-reclaim the runner (SIGTERM / exit 143). Pin `-j 2` and build only
+        # the `satellite` target: it already compiles every core/net/adapters/
+        # platform source CodeQL needs to analyze, while skipping the test
+        # executables that just duplicate-compile those sources.
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release -j
+          cmake --build build --config Release --target satellite -j 2
 
       - name: Perform CodeQL analysis
         # SARIF upload requires GitHub Advanced Security on private repos.
