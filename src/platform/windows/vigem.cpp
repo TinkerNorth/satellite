@@ -120,51 +120,12 @@ static bool issueOverlappedSync(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSi
     return GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
 }
 
-// EXPERIMENTAL fire-and-forget. Take 1 raced: the caller ran INIT+memcpy on
-// `xsr` BEFORE the wait, so the kernel could read it mid-flight -> garbled
-// submit, dish saw no input. Correct order is wait-first, then mutate, then
-// issue. `ov` is the caller-owned persistent OVERLAPPED the kernel writes to
-// during the IRP -- must not be freed while in flight.
-static bool issueFireAndForget(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSize, OVERLAPPED& ov,
-                               HANDLE event) {
-    DWORD xfr = 0;
-    BOOL ok = DeviceIoControl(bus, ioctl, inBuf, inSize, nullptr, 0, &xfr, &ov);
-    if (!ok && GetLastError() != ERROR_IO_PENDING) {
-        SetEvent(event); // re-arm so the next caller's wait doesn't deadlock
-        return false;
-    }
-    return true;
-}
-
-bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event) {
-    // Legacy helper for paths/tests that build a stack XUSB_REPORT; the hot path
-    // uses submitXusbSync for the slot-persistent buffer.
-    XUSB_SUBMIT_REPORT sr;
-    XUSB_SUBMIT_REPORT_INIT(&sr, serial);
-    sr.Report = rpt;
-    return issueOverlappedSync(bus, IOCTL_XUSB_SUBMIT_REPORT, &sr, sr.Size, event);
-}
-
 bool submitXusbSync(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, HANDLE event,
                     const void* reportBytes) {
     XUSB_SUBMIT_REPORT_INIT(&xsr, serial);
     static_assert(sizeof(XUSB_REPORT) == 12, "XUSB_REPORT size assumption");
     std::memcpy(&xsr.Report, reportBytes, sizeof(XUSB_REPORT));
     return issueOverlappedSync(bus, IOCTL_XUSB_SUBMIT_REPORT, &xsr, xsr.Size, event);
-}
-
-// EXPERIMENTAL fire-and-forget Xbox submit. Wait-first releases the prior
-// IOCTL's claim on xsr+ov (first call sails through: the event is created
-// signalled at plugin time), then mutate, then issue and return immediately.
-bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
-                             HANDLE event, const void* reportBytes) {
-    WaitForSingleObject(event, INFINITE);
-    XUSB_SUBMIT_REPORT_INIT(&xsr, serial);
-    static_assert(sizeof(XUSB_REPORT) == 12, "XUSB_REPORT size assumption");
-    std::memcpy(&xsr.Report, reportBytes, sizeof(XUSB_REPORT));
-    ZeroMemory(&ov, sizeof(ov));
-    ov.hEvent = event;
-    return issueFireAndForget(bus, IOCTL_XUSB_SUBMIT_REPORT, &xsr, xsr.Size, ov, event);
 }
 
 bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event,
@@ -174,33 +135,11 @@ bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event
     return issueOverlappedSync(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, event);
 }
 
-// EXPERIMENTAL DS4 basic fire-and-forget; see submitXusbFireAndForget.
-bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
-                            HANDLE event, const DS4_REPORT& rpt) {
-    WaitForSingleObject(event, INFINITE);
-    DS4_SUBMIT_REPORT_INIT(&sr, serial);
-    sr.Report = rpt;
-    ZeroMemory(&ov, sizeof(ov));
-    ov.hEvent = event;
-    return issueFireAndForget(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, ov, event);
-}
-
 bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE event,
                      const DS4_REPORT_EX& rpt) {
     DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
     sr.Report = rpt;
     return issueOverlappedSync(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, event);
-}
-
-// EXPERIMENTAL DS4-EX fire-and-forget; see submitXusbFireAndForget.
-bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
-                              HANDLE event, const DS4_REPORT_EX& rpt) {
-    WaitForSingleObject(event, INFINITE);
-    DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
-    sr.Report = rpt;
-    ZeroMemory(&ov, sizeof(ov));
-    ov.hEvent = event;
-    return issueFireAndForget(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, ov, event);
 }
 
 void unplugTarget(HANDLE bus, ULONG serial) {

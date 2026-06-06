@@ -21,16 +21,6 @@ bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event
 bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE event,
                      const DS4_REPORT_EX& rpt);
 
-// EXPERIMENTAL fire-and-forget, take 2: waits for the previous IOCTL FIRST, then
-// mutates the buffer (take 1 had this backwards -> dish saw no input). Caller
-// supplies a per-slot PERSISTENT OVERLAPPED the kernel writes to after we return.
-bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
-                             HANDLE event, const void* reportBytes);
-bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
-                            HANDLE event, const DS4_REPORT& rpt);
-bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
-                              HANDLE event, const DS4_REPORT_EX& rpt);
-
 void unplugTarget(HANDLE bus, ULONG serial);
 
 // Block until one rumble/LED notification for `serial`. `cancel` (signalled on

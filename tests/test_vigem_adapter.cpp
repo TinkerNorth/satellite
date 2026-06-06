@@ -53,9 +53,6 @@ struct State {
     int xusbSyncCalls = 0;
     int ds4ExSyncCalls = 0;
     int ds4BasicSyncCalls = 0;
-    // Any fire-and-forget call is a regression: the adapter must use the
-    // synchronous helpers so the DS4 EX rejection is observable.
-    int fafCalls = 0;
 
     // Driver verdicts the test can flip.
     bool ds4ExAccepts = true; // false => simulate a pre-1.17 ViGEmBus
@@ -73,7 +70,7 @@ struct State {
     // purely on subsequent submit behaviour.
     void resetCounts() {
         pluginXboxCalls = pluginDs4Calls = unplugCalls = 0;
-        xusbSyncCalls = ds4ExSyncCalls = ds4BasicSyncCalls = fafCalls = 0;
+        xusbSyncCalls = ds4ExSyncCalls = ds4BasicSyncCalls = 0;
     }
 };
 static State g;
@@ -110,23 +107,6 @@ bool submitDs4ExSync(HANDLE, ULONG, DS4_SUBMIT_REPORT_EX&, HANDLE, const DS4_REP
     return fake::g.ds4ExAccepts;
 }
 
-// Fire-and-forget fakes: present only so a regression that re-wires the adapter
-// back to FAF links and trips fafCalls instead of failing as an undefined ref.
-bool submitXusbFireAndForget(HANDLE, ULONG, XUSB_SUBMIT_REPORT&, OVERLAPPED&, HANDLE, const void*) {
-    fake::g.fafCalls++;
-    return true;
-}
-bool submitDs4FireAndForget(HANDLE, ULONG, DS4_SUBMIT_REPORT&, OVERLAPPED&, HANDLE,
-                            const DS4_REPORT&) {
-    fake::g.fafCalls++;
-    return true;
-}
-bool submitDs4ExFireAndForget(HANDLE, ULONG, DS4_SUBMIT_REPORT_EX&, OVERLAPPED&, HANDLE,
-                              const DS4_REPORT_EX&) {
-    fake::g.fafCalls++;
-    return true;
-}
-
 // The notification worker the adapter spawns at plugin time blocks here; park
 // on the cancel event so unplug/closeBus joins cleanly without real IOCTLs.
 bool waitNextXusbNotification(HANDLE, ULONG, HANDLE cancel, XUSB_REQUEST_NOTIFICATION&) {
@@ -152,7 +132,6 @@ static void test_ds4_plugin_probes_ex_and_reports_sink_ok() {
     // Exactly one EX submit happened at plug-in, with no basic fallback.
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     // The honesty fix: the IMU-sink flag reflects the real (accepted) probe.
     EXPECT(a.motionBackendOk(1));
     a.closeBus();
@@ -186,7 +165,6 @@ static void test_ds4_ex_rejected_falls_back_and_reports_no_sink() {
     EXPECT(a.submitDS4Report(1, rpt));
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 0); // not retried
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 1);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     a.closeBus();
 }
 
@@ -205,7 +183,6 @@ static void test_ds4_ex_accepted_uses_ex_path() {
     EXPECT(a.submitDS4Report(1, rpt));
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     a.closeBus();
 }
 
@@ -242,7 +219,6 @@ static void test_xbox_uses_synchronous_xusb_submit() {
     EXPECT_EQ(fake::g.xusbSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 0);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     a.closeBus();
 }
 
