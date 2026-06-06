@@ -82,9 +82,11 @@ screen the user is in front of:
   dish. The dish proves it in `POST /api/pair` and pairs immediately.
 - **Path B — dish PIN.** The dish shows *its own* PIN and submits it as a
   request; the operator accepts it — either on the web dashboard (by typing the
-  PIN back) **or from the native OS notification** the satellite raises (Windows
-  toast → dialog, macOS notification → alert, Linux libnotify actions), which
-  shows the PIN to confirm by sight. The dish polls `GET /api/pair/status` until
+  PIN back), **from the native OS notification** the satellite raises (Windows:
+  an actionable toast with inline Accept/Reject; macOS: notification → alert;
+  Linux: libnotify actions), **from the tray right-click menu**, or **from the
+  dashboard's Pairing Requests panel** (a header badge flags pending ones). All
+  show the PIN to confirm by sight. The dish polls `GET /api/pair/status` until
   the operator acts. The PIN is never sent over the HTTP API; confirming it is
   what authenticates the device.
 

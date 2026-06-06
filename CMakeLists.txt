@@ -60,6 +60,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/config.cpp
     src/platform/windows/crypto.cpp
     src/platform/windows/tray.cpp
+    src/platform/windows/toast.cpp
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
     src/platform/windows/gamepad_backend.cpp
@@ -139,6 +140,9 @@ if(WIN32)
         ws2_32
         shell32
         ole32
+        # WinRT: RoActivateInstance / RoGetActivationFactory + HSTRING for the
+        # actionable pairing toast (src/platform/windows/toast.cpp).
+        runtimeobject
         advapi32
         bcrypt
         crypt32
