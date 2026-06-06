@@ -75,14 +75,13 @@ void ViGEmAdapter::closeBus() {
 
     std::lock_guard<std::mutex> lk(busMtx_);
 
-    // EXPERIMENT (uncommitted): with FAF, the kernel may still be reading
-    // from slot.xsr / writing to slot.ov when we get here. Drain by
-    // waiting on each slot's event before we free anything.
+    // Submit IO is synchronous, so no submit IOCTL is ever in flight here:
+    // every submitReport / submitDS4Locked has already waited on its own
+    // completion before returning. Just free each slot's persistent event.
     for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
         IoSlot& slot = io_[s];
         slot.plugged.store(false, std::memory_order_release);
         if (slot.event) {
-            WaitForSingleObject(slot.event, INFINITE);
             CloseHandle(slot.event);
             slot.event = nullptr;
         }
@@ -101,9 +100,11 @@ bool ViGEmAdapter::isBusOpen() const {
     return busHandle_ != INVALID_HANDLE_VALUE;
 }
 
-// Create the per-serial auto-reset event in the signalled state so the
-// very first submission's WaitForSingleObject passes through immediately.
-// Helper used by both Xbox and DS4 plug paths.
+// Create the per-serial auto-reset event used as the OVERLAPPED hEvent for
+// the slot's synchronous submits. The synchronous submit path resets it at
+// IOCTL-start and the kernel signals it on completion, so the initial state
+// is immaterial; created signalled only so no teardown path can ever block
+// on it. Helper used by both Xbox and DS4 plug paths.
 static HANDLE makeSlotEvent() {
     return CreateEventW(nullptr, /*manualReset=*/FALSE, /*initialState=*/TRUE, nullptr);
 }
@@ -143,18 +144,14 @@ void ViGEmAdapter::unplugDevice(uint32_t serial) {
     IoSlot& slot = io_[serial];
     slot.plugged.store(false, std::memory_order_release);
 
-    // EXPERIMENT (uncommitted): with FAF, an in-flight IOCTL may still
-    // be holding the slot's persistent OVERLAPPED + xsr buffer. Drain
-    // by waiting on the event before tearing down the virtual device.
-    // The auto-reset wait re-clears the event; SetEvent below re-arms
-    // it so a fresh plugin's first submit's wait passes through.
-    if (slot.event) WaitForSingleObject(slot.event, INFINITE);
-
+    // Submit IO is synchronous, so there is never an in-flight submit
+    // IOCTL holding slot.xsr / slot.event at this point -- no drain wait
+    // needed. (busMtx_ is held, and the plugged=false store above blocks
+    // any new submitReport / submitDS4Report from starting.)
     unplugTarget(busHandle_, static_cast<unsigned long>(serial));
 
     // We deliberately do NOT CloseHandle(slot.event) here -- it gets
     // reused if the serial is replugged. Final cleanup is in closeBus.
-    if (slot.event) SetEvent(slot.event);
     slot.isDS4 = false;
     slot.ds4 = {};
 }
@@ -184,12 +181,13 @@ bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     // XUSB_REPORT (binary-compatible). No intermediate stack-local copy.
     static_assert(sizeof(GamepadReport) == sizeof(XUSB_REPORT),
                   "GamepadReport and XUSB_REPORT must match");
-    // EXPERIMENT (uncommitted): FAF. Pass the slot-persistent OVERLAPPED
-    // so the kernel can safely write completion data to it asynchronously
-    // after we return; the FAF helper does wait-FIRST then mutate-then-issue
-    // (the correct ordering -- the previous FAF attempt had this backwards).
-    return submitXusbFireAndForget(bus, static_cast<unsigned long>(serial), slot->xsr, slot->ov,
-                                   slot->event, &report);
+    // Synchronous-wait submit (GetOverlappedResult bWait=TRUE inside the
+    // helper). The driver has finished consuming slot->xsr by the time
+    // this returns, so the slot's buffer + event are immediately reusable
+    // and no in-flight kernel reference to the slot survives the call --
+    // this is the documented-safe path (see vigem.h). Fire-and-forget was
+    // tried here and reverted: the dish saw "no input reaching the game".
+    return submitXusbSync(bus, static_cast<unsigned long>(serial), slot->xsr, slot->event, &report);
 }
 
 bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
@@ -212,6 +210,17 @@ bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
     // Seed the battery byte as charged until the first MSG_BATTERY arrives.
     slot.ds4.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
     slot.plugged.store(true, std::memory_order_release);
+
+    // Probe the DS4 extended-report path once, now, by submitting the seeded
+    // neutral report. submitDS4Locked attempts DS4_SUBMIT_REPORT_EX first and
+    // latches slot.ds4.exSupported = false if this ViGEmBus is too old to accept
+    // it (falling back to the basic report). Doing it at plug-in means
+    // motionBackendOk(serial) reflects real IMU-sink capability by the time the
+    // controller-add ACK is built — instead of optimistically claiming the sink
+    // is up before any EX submit has happened. The neutral report also
+    // initialises the pad to a centered, button-free state. Best-effort: the
+    // device is already plugged, so a rejected submit doesn't fail the plug-in.
+    submitDS4Locked(serial);
 
     startNotificationWorker(serial, /*isDS4=*/true);
     return true;
@@ -430,6 +439,23 @@ bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {
     return controllerTypeUsesDS4(controllerType);
 }
 
+// True iff the backend can actually land IMU samples for `serial`. On Windows
+// motion (gyro/accel) rides only the DS4 extended report, so this is real iff
+// the slot is a plugged DS4 target whose DS4_SUBMIT_REPORT_EX was accepted —
+// latched into ds4.exSupported by the probe submit in pluginDeviceDS4. An X360
+// target has no IMU surface; an unplugged / unknown serial reads true (mirrors
+// the Linux adapter: there's nothing to report a failure about, and false would
+// surface a phantom "broken backend" badge). The serial-keyed semantics match
+// GamepadAdapter::motionBackendOk so the dish sees one cross-platform contract.
+bool ViGEmAdapter::motionBackendOk(uint32_t serial) const {
+    if (!isValidSerial(serial)) return true;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    const IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_acquire)) return true;
+    if (!slot.isDS4) return false;
+    return slot.ds4.exSupported;
+}
+
 // Caller holds busMtx_; `serial` must be a plugged DS4 slot.
 bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
     IoSlot& slot = io_[serial];
@@ -449,14 +475,17 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
         }
         st.lastSubmit = now;
 
-        if (submitDs4ExFireAndForget(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.ov,
-                                     slot.event, st.report)) {
+        if (submitDs4ExSync(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.event, st.report)) {
             return true;
         }
         // The driver rejected IOCTL_DS4_SUBMIT_REPORT_EX -- almost
         // certainly a ViGEmBus older than 1.17. Latch the EX path off
         // for this serial and fall through to the basic report so
-        // buttons / sticks keep working (no IMU fields).
+        // buttons / sticks keep working (no IMU fields). The synchronous
+        // submit above is what makes this rejection observable: a
+        // fire-and-forget submit returns success the instant the IOCTL is
+        // queued (ERROR_IO_PENDING), so the EX rejection would never be
+        // seen and PlayStation input would silently die here.
         st.exSupported = false;
     }
 
@@ -470,8 +499,7 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
     basic.bSpecial = st.report.Report.bSpecial;
     basic.bTriggerL = st.report.Report.bTriggerL;
     basic.bTriggerR = st.report.Report.bTriggerR;
-    return submitDs4FireAndForget(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.ov,
-                                  slot.event, basic);
+    return submitDs4Sync(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.event, basic);
 }
 
 // ── Rumble callback registration ────────────────────────────────────────────
