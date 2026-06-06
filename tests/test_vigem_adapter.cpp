@@ -91,6 +91,14 @@ struct State {
     DS4_REPORT lastDs4Basic{};
 
     void reset() { *this = State{}; }
+
+    // Zero just the call counters, preserving the driver verdicts. Lets a test
+    // ignore the one-shot EX probe submit pluginDeviceDS4 now fires and assert
+    // purely on subsequent submit behaviour.
+    void resetCounts() {
+        pluginXboxCalls = pluginDs4Calls = unplugCalls = 0;
+        xusbSyncCalls = ds4ExSyncCalls = ds4BasicSyncCalls = fafCalls = 0;
+    }
 };
 static State g;
 } // namespace fake
@@ -157,52 +165,92 @@ bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICAT
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-// The fix: when the driver rejects the DS4 EX report, the adapter must observe
-// that (only possible with a synchronous submit), latch EX off, and fall back
-// to the basic DS4 report so input still reaches the pad. Pre-fix this never
-// happened and PlayStation input was dead.
-static void test_ds4_ex_rejected_falls_back_to_basic() {
-    TEST("DS4 EX rejected → falls back to basic submit and latches EX off");
-    fake::g.reset();
-    fake::g.ds4ExAccepts = false; // simulate an older ViGEmBus
+// pluginDeviceDS4 fires a one-shot EX probe submit so EX capability is known
+// before the controller-add ACK is built. On a modern ViGEmBus the probe is
+// accepted, EX stays latched on, and motionBackendOk reports the IMU sink up.
+static void test_ds4_plugin_probes_ex_and_reports_sink_ok() {
+    TEST("DS4 plug-in probes EX (accepted) → motionBackendOk true");
+    fake::g.reset(); // ds4ExAccepts defaults true
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
     EXPECT(a.pluginDeviceDS4(1));
 
-    GamepadReport rpt{};
-    rpt.wButtons = 0x1000; // A
-
-    // First frame: EX tried, rejected, basic used. Adapter returns the basic
-    // submit's result (true) — input applied, not silently dropped.
-    EXPECT(a.submitDS4Report(1, rpt));
+    // Exactly one EX submit happened at plug-in, with no basic fallback.
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
-    EXPECT_EQ(fake::g.ds4BasicSyncCalls, 1);
-
-    // Second frame: EX is latched off, so it goes straight to basic.
-    EXPECT(a.submitDS4Report(1, rpt));
-    EXPECT_EQ(fake::g.ds4ExSyncCalls, 1); // not retried
-    EXPECT_EQ(fake::g.ds4BasicSyncCalls, 2);
-
-    EXPECT_EQ(fake::g.fafCalls, 0); // never fire-and-forget
+    EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
+    EXPECT_EQ(fake::g.fafCalls, 0);
+    // The honesty fix: the IMU-sink flag reflects the real (accepted) probe.
+    EXPECT(a.motionBackendOk(1));
     a.closeBus();
 }
 
-// When the driver accepts EX (modern ViGEmBus), the adapter uses the EX path
-// and does not fall back.
+// The fix: when the driver rejects the DS4 EX report, the adapter must observe
+// that (only possible with a synchronous submit), latch EX off, fall back to
+// the basic DS4 report so input still reaches the pad — and report the IMU
+// sink as unavailable. Pre-fix this never happened and PlayStation input was
+// dead while the sink flag lied "ok".
+static void test_ds4_ex_rejected_falls_back_and_reports_no_sink() {
+    TEST("DS4 EX rejected → falls back to basic, latches EX off, motionBackendOk false");
+    fake::g.reset();
+    fake::g.ds4ExAccepts = false; // simulate a pre-1.17 ViGEmBus
+
+    ViGEmAdapter a;
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDeviceDS4(1));
+
+    // The plug-in probe already detected the EX rejection: one EX attempt, one
+    // basic fallback, and the IMU-sink flag is honestly false.
+    EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
+    EXPECT_EQ(fake::g.ds4BasicSyncCalls, 1);
+    EXPECT(!a.motionBackendOk(1));
+
+    // Subsequent gamepad frames go straight to basic (EX latched off) and still
+    // apply — input is never silently dropped.
+    fake::g.resetCounts();
+    GamepadReport rpt{};
+    rpt.wButtons = 0x1000; // A
+    EXPECT(a.submitDS4Report(1, rpt));
+    EXPECT_EQ(fake::g.ds4ExSyncCalls, 0); // not retried
+    EXPECT_EQ(fake::g.ds4BasicSyncCalls, 1);
+    EXPECT_EQ(fake::g.fafCalls, 0);
+    a.closeBus();
+}
+
+// When the driver accepts EX, gamepad frames after the plug-in probe use the EX
+// path and never fall back.
 static void test_ds4_ex_accepted_uses_ex_path() {
-    TEST("DS4 EX accepted → uses EX submit, no basic fallback");
+    TEST("DS4 EX accepted → gamepad frames use EX submit, no basic fallback");
     fake::g.reset();
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
     EXPECT(a.pluginDeviceDS4(1));
+    fake::g.resetCounts(); // ignore the plug-in probe
 
     GamepadReport rpt{};
     EXPECT(a.submitDS4Report(1, rpt));
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
     EXPECT_EQ(fake::g.fafCalls, 0);
+    a.closeBus();
+}
+
+// motionBackendOk is honest for the non-DS4 and not-plugged cases too: an X360
+// target has no IMU surface (false); an unplugged or out-of-range serial has
+// nothing to report (true), mirroring the Linux adapter's serial-keyed contract.
+static void test_motion_backend_ok_nonds4_and_unplugged() {
+    TEST("motionBackendOk: Xbox slot false, unplugged/invalid serial true");
+    fake::g.reset();
+
+    ViGEmAdapter a;
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(2)); // X360 target — no IMU surface
+    EXPECT(!a.motionBackendOk(2));
+
+    EXPECT(a.motionBackendOk(1)); // valid serial, never plugged
+    EXPECT(a.motionBackendOk(0)); // out-of-range serial
+    EXPECT(a.motionBackendOk(99));
     a.closeBus();
 }
 
@@ -270,8 +318,10 @@ static void test_xusb_to_ds4_conversion_maps_input() {
 int main() {
     std::cout << "=== test_vigem_adapter ===\n";
 
-    test_ds4_ex_rejected_falls_back_to_basic();
+    test_ds4_plugin_probes_ex_and_reports_sink_ok();
+    test_ds4_ex_rejected_falls_back_and_reports_no_sink();
     test_ds4_ex_accepted_uses_ex_path();
+    test_motion_backend_ok_nonds4_and_unplugged();
     test_xbox_uses_synchronous_xusb_submit();
     test_submit_to_unplugged_serial_is_rejected();
     test_xusb_to_ds4_conversion_maps_input();

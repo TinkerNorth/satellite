@@ -211,6 +211,17 @@ bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
     slot.ds4.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
     slot.plugged.store(true, std::memory_order_release);
 
+    // Probe the DS4 extended-report path once, now, by submitting the seeded
+    // neutral report. submitDS4Locked attempts DS4_SUBMIT_REPORT_EX first and
+    // latches slot.ds4.exSupported = false if this ViGEmBus is too old to accept
+    // it (falling back to the basic report). Doing it at plug-in means
+    // motionBackendOk(serial) reflects real IMU-sink capability by the time the
+    // controller-add ACK is built — instead of optimistically claiming the sink
+    // is up before any EX submit has happened. The neutral report also
+    // initialises the pad to a centered, button-free state. Best-effort: the
+    // device is already plugged, so a rejected submit doesn't fail the plug-in.
+    submitDS4Locked(serial);
+
     startNotificationWorker(serial, /*isDS4=*/true);
     return true;
 }
@@ -426,6 +437,23 @@ bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
 
 bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {
     return controllerTypeUsesDS4(controllerType);
+}
+
+// True iff the backend can actually land IMU samples for `serial`. On Windows
+// motion (gyro/accel) rides only the DS4 extended report, so this is real iff
+// the slot is a plugged DS4 target whose DS4_SUBMIT_REPORT_EX was accepted —
+// latched into ds4.exSupported by the probe submit in pluginDeviceDS4. An X360
+// target has no IMU surface; an unplugged / unknown serial reads true (mirrors
+// the Linux adapter: there's nothing to report a failure about, and false would
+// surface a phantom "broken backend" badge). The serial-keyed semantics match
+// GamepadAdapter::motionBackendOk so the dish sees one cross-platform contract.
+bool ViGEmAdapter::motionBackendOk(uint32_t serial) const {
+    if (!isValidSerial(serial)) return true;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    const IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_acquire)) return true;
+    if (!slot.isDS4) return false;
+    return slot.ds4.exSupported;
 }
 
 // Caller holds busMtx_; `serial` must be a plugged DS4 slot.

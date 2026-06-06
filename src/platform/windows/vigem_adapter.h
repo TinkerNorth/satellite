@@ -69,6 +69,7 @@ class ViGEmAdapter : public IGamepadPort {
     bool submitTouchpad(uint32_t serial, const TouchpadReport& report) override;
     bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
     bool supportsMotionForType(uint8_t controllerType) const override;
+    bool motionBackendOk(uint32_t serial) const override;
 
   private:
     struct NotificationWorker {
