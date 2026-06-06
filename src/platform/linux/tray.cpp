@@ -17,15 +17,21 @@
 
 #include "config.h"
 #include "core/update_service.h"
+#include "net/pairing.h"
+#include "net/pairing_service.h"
 
 #include <libayatana-appindicator/app-indicator.h>
 #include <glib-unix.h>
 #include <gtk/gtk.h>
+#ifdef SATELLITE_HAS_LIBNOTIFY
+#include <libnotify/notify.h>
+#endif
 
 #include <sys/stat.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 static AppIndicator* g_indicator = nullptr;
@@ -116,12 +122,65 @@ static void applyIcon(AppIndicator* ind) {
     app_indicator_set_icon_full(ind, "input-gaming", APP_TITLE);
 }
 
+// ── Reverse-pairing native prompt (libnotify) ───────────────────────────────
+#ifdef SATELLITE_HAS_LIBNOTIFY
+static void onPairAccept(NotifyNotification*, char* action, gpointer user_data) {
+    (void)action;
+    const char* id = static_cast<const char*>(user_data);
+    if (id != nullptr) confirmPairing(id);
+}
+
+static void onPairReject(NotifyNotification*, char* action, gpointer user_data) {
+    (void)action;
+    const char* id = static_cast<const char*>(user_data);
+    if (id != nullptr) declinePairing(id);
+}
+
+// Release our GObject ref once the notification closes (after any action fires).
+static void onPairClosed(NotifyNotification* n, gpointer) { g_object_unref(n); }
+
+// Runs on the GTK main loop (g_idle_add target). Shows the dish's PIN so the
+// operator can confirm it matches the device — that visual match is the auth.
+static gboolean showPairPromptIdle(gpointer data) {
+    std::unique_ptr<std::string> deviceId(static_cast<std::string*>(data));
+    std::string name, ip, pin;
+    int secs = 0;
+    if (!pairRequestSnapshot(*deviceId, name, ip, pin, secs)) return G_SOURCE_REMOVE;
+
+    const std::string body = (name.empty() ? std::string("A device") : name) + " (" + ip +
+                             ") wants to pair.\nPIN on the device: " + pin +
+                             "\nConfirm it matches the device, then Accept.";
+    NotifyNotification* n =
+        notify_notification_new("Pairing request", body.c_str(), "input-gaming");
+    notify_notification_set_timeout(n, NOTIFY_EXPIRES_NEVER);
+    // The action user_data must outlive the notification → g_strdup + g_free.
+    notify_notification_add_action(n, "accept", "Accept", onPairAccept, g_strdup(deviceId->c_str()),
+                                   g_free);
+    notify_notification_add_action(n, "reject", "Reject", onPairReject, g_strdup(deviceId->c_str()),
+                                   g_free);
+    g_signal_connect(n, "closed", G_CALLBACK(onPairClosed), nullptr);
+    notify_notification_show(n, nullptr);
+    return G_SOURCE_REMOVE;
+}
+
+void notifyPairRequestLinux(const std::string& deviceId) {
+    // Marshal onto the GTK main loop — libnotify/GLib isn't thread-safe off it,
+    // and the listener fires on the HTTP thread.
+    g_idle_add(showPairPromptIdle, new std::string(deviceId));
+}
+#else
+void notifyPairRequestLinux(const std::string&) {}
+#endif
+
 // ── Public API ──────────────────────────────────────────────────────────────
 bool addTrayIcon() {
     if (getenv("DISPLAY") == nullptr && getenv("WAYLAND_DISPLAY") == nullptr) { return false; }
     int argc = 0;
     char** argv = nullptr;
     if (!gtk_init_check(&argc, &argv)) return false;
+#ifdef SATELLITE_HAS_LIBNOTIFY
+    notify_init(APP_TITLE);
+#endif
 
     g_indicator =
         app_indicator_new("satellite", "input-gaming", APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
@@ -167,11 +226,15 @@ void removeTrayIcon() {
         g_indicator = nullptr;
     }
     g_updateItem = nullptr;
+#ifdef SATELLITE_HAS_LIBNOTIFY
+    notify_uninit();
+#endif
 }
 
 #else // SATELLITE_HAS_TRAY
 
 bool addTrayIcon() { return false; }
 void removeTrayIcon() {}
+void notifyPairRequestLinux(const std::string&) {}
 
 #endif // SATELLITE_HAS_TRAY

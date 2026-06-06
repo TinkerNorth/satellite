@@ -11,5 +11,10 @@
 #pragma once
 #include "globals.h"
 
+#include <string>
+
 void addTrayIcon();
 void removeTrayIcon();
+// pairing.cpp listener: deliver a native notification for a reverse-pairing
+// request; activating it shows an Accept/Reject alert. Registered from main.mm.
+void notifyPairRequestMac(const std::string& deviceId);

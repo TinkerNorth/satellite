@@ -41,6 +41,7 @@ set(SATELLITE_NET_SOURCES
     src/net/tls.cpp
     src/net/machine_id.cpp
     src/net/pairing.cpp
+    src/net/pairing_service.cpp
     src/net/discovery.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
@@ -408,6 +409,21 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             target_link_libraries(satellite PRIVATE
                 ${APPINDICATOR_LIBRARIES} ${GTK3_LIBRARIES})
             message(STATUS "satellite: tray icon enabled (libayatana-appindicator + GTK3).")
+            # libnotify (optional) drives the native reverse-pairing prompt with
+            # Accept/Reject actions. Absent → the prompt falls back to the web
+            # dashboard. Debian/Ubuntu: libnotify-dev; Fedora: libnotify-devel;
+            # Arch: libnotify.
+            pkg_check_modules(LIBNOTIFY QUIET libnotify)
+            if(LIBNOTIFY_FOUND)
+                target_compile_definitions(satellite PRIVATE SATELLITE_HAS_LIBNOTIFY=1)
+                target_include_directories(satellite PRIVATE ${LIBNOTIFY_INCLUDE_DIRS})
+                target_link_directories(satellite PRIVATE ${LIBNOTIFY_LIBRARY_DIRS})
+                target_link_libraries(satellite PRIVATE ${LIBNOTIFY_LIBRARIES})
+                message(STATUS "satellite: native pairing notifications enabled (libnotify).")
+            else()
+                message(STATUS "satellite: libnotify not found; reverse-pairing prompts use "
+                               "the web dashboard only.")
+            endif()
         else()
             message(STATUS "satellite: libayatana-appindicator not found; "
                            "building headless (no tray icon).")
