@@ -18,6 +18,7 @@
 #include "net/mdns_responder.h"
 #include "net/pairing.h"
 #include "tray.h"
+#include "toast.h"
 #include "app_lifecycle.h"
 #include "shell_integration.h"
 
@@ -72,12 +73,33 @@ void tooltipTickerThread() {
 
 } // namespace
 
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // ── Pre-init hardening (must happen before any LoadLibrary / file I/O) ──
     lifecycle::hardenDllSearchPath();
     lifecycle::applyRuntimeMitigations();
     lifecycle::installCrashHandler();
     lifecycle::registerForRestart();
+
+    // Protocol activation: a toast button launched us with a `satellite-pair:`
+    // URI. Forward it to the already-running instance (which holds the pairing
+    // registry) and exit — a deep link must never start a second copy.
+    {
+        std::string cmd = lpCmdLine != nullptr ? lpCmdLine : "";
+        auto at = cmd.find("satellite-pair:");
+        if (at != std::string::npos) {
+            std::string uri = cmd.substr(at);
+            while (!uri.empty() && (uri.back() == '"' || uri.back() == ' ')) uri.pop_back();
+            HWND running = FindWindowW(L"ControllerForwardTray", nullptr);
+            if (running != nullptr) {
+                COPYDATASTRUCT cds{};
+                cds.dwData = PAIR_URI_COPYDATA;
+                cds.cbData = static_cast<DWORD>(uri.size() + 1);
+                cds.lpData = const_cast<char*>(uri.c_str());
+                SendMessageW(running, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
+            }
+            return 0;
+        }
+    }
 
     // Refuse to start a second copy. Same-session double-launch is a
     // common footgun for tray apps (the user double-clicks the desktop
@@ -206,6 +228,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     // Reverse-pairing: when a dish submits a request, raise a native toast +
     // Accept/Reject dialog so the operator never has to open the web UI.
     setPairRequestListener(notifyPairRequestWindows);
+
+    // Register the satellite-pair: URL scheme so the toast's Accept/Reject
+    // buttons route back to this instance.
+    registerPairProtocol();
 
     // Register the taskbar jump list. Needs to happen AFTER the AUMID
     // is set + COM is initialised. CommitList is idempotent and cheap.

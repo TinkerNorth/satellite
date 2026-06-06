@@ -376,6 +376,13 @@ function initDashboard() {
     if (connList) connList.addEventListener('click', handleConnectionListClick);
     const pairList = document.getElementById('pair-request-list');
     if (pairList) pairList.addEventListener('click', handlePairRequestClick);
+    const pairBadge = document.getElementById('pair-badge');
+    if (pairBadge) {
+      pairBadge.addEventListener('click', () => {
+        const sec = document.getElementById('pair-request-section');
+        if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
     dashboardListenersWired = true;
   }
   startSSE();
@@ -722,9 +729,16 @@ function updatePinPanel(s) {
 function updatePairRequests(list) {
   const section = document.getElementById('pair-request-section');
   const el = document.getElementById('pair-request-list');
-  if (!section || !el) return;
-
   const reqs = Array.isArray(list) ? list : [];
+
+  // Header marker — shows the pending count and jumps to the panel on click.
+  const badge = document.getElementById('pair-badge');
+  if (badge) {
+    badge.textContent = String(reqs.length);
+    badge.style.display = reqs.length > 0 ? '' : 'none';
+  }
+
+  if (!section || !el) return;
   if (reqs.length === 0) {
     section.style.display = 'none';
     el.innerHTML = '';

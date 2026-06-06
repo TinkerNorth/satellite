@@ -31,6 +31,7 @@
 #include "core/update_service.h"
 #include "net/pairing.h"
 #include "net/pairing_service.h"
+#include "toast.h"
 
 #include <strsafe.h>
 
@@ -48,6 +49,17 @@ static std::wstring g_lastTooltip;   // remember last text so we don't churn NIM
 // Registered window message broadcast by Explorer when the taskbar is
 // (re)created. Identifier is initialised lazily on first add.
 static UINT g_taskbarCreatedMsg = 0;
+
+// index → deviceId backing the current tray-menu pairing items. Touched only on
+// the GUI thread (menu build + WM_COMMAND), so it needs no lock.
+static std::vector<std::string> g_menuPairIds;
+
+// Requests arrive on the HTTP thread, but the WinRT toast (+ COM) must run on the
+// COM-initialised GUI thread. The listener queues the deviceId here and posts
+// WM_PAIR_NOTIFY for the message loop to drain.
+static const UINT WM_PAIR_NOTIFY = WM_USER + 101;
+static std::mutex g_incomingMtx;
+static std::deque<std::string> g_incoming;
 
 static std::wstring toWide(const std::string& s) {
     if (s.empty()) return {};
@@ -168,6 +180,22 @@ void showTrayMenu(HWND hwnd) {
     POINT pt;
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
+
+    // Pending reverse-pairing requests sit at the top — clicking one reopens its
+    // Accept/Reject dialog. Rebuilt every open from the live registry; the
+    // id→deviceId map is snapshotted so WM_COMMAND can resolve the click.
+    auto pairReqs = pendingPairRequests();
+    g_menuPairIds.clear();
+    for (size_t i = 0; i < pairReqs.size(); i++) {
+        const auto& r = pairReqs[i];
+        std::wstring label = L"Pairing: " +
+                             toWide(r.deviceName.empty() ? r.clientIP : r.deviceName) + L" (" +
+                             toWide(r.clientIP) + L")…";
+        AppendMenuW(menu, MF_STRING, IDM_PAIR_REVIEW_BASE + static_cast<UINT>(i), label.c_str());
+        g_menuPairIds.push_back(r.deviceId);
+    }
+    if (!g_menuPairIds.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
     AppendMenuW(menu, MF_STRING, IDM_OPEN_UI, L"Open Web UI");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
@@ -280,19 +308,13 @@ static void showPairingDialogWindows(HWND hwnd, const std::string& deviceId) {
 // only touches the thread-safe queue + Shell_NotifyIcon (toast) here; the modal
 // dialog waits for the GUI thread's balloon-click handler.
 void notifyPairRequestWindows(const std::string& deviceId) {
-    std::string name, ip, pin;
-    int secs = 0;
-    if (!pairRequestSnapshot(deviceId, name, ip, pin, secs)) return;
+    // Fires on the HTTP thread; the WinRT toast must be raised on the
+    // COM-initialised GUI thread, so hand off and wake the message loop.
     {
-        std::lock_guard<std::mutex> lk(g_pairQueueMtx);
-        if (std::find(g_pendingPrompts.begin(), g_pendingPrompts.end(), deviceId) ==
-            g_pendingPrompts.end()) {
-            g_pendingPrompts.push_back(deviceId);
-        }
+        std::lock_guard<std::mutex> lk(g_incomingMtx);
+        g_incoming.push_back(deviceId);
     }
-    shell_integration::showToast("Pairing request",
-                                 (name.empty() ? std::string("A device") : name) + " (" + ip +
-                                     ") wants to pair. Click to accept or reject.");
+    if (g_hwnd != nullptr) PostMessageW(g_hwnd, WM_PAIR_NOTIFY, 0, 0);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -346,8 +368,55 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
-    case WM_COMMAND:
-        switch (LOWORD(wp)) {
+    case WM_COPYDATA: {
+        // A protocol-activated toast button (satellite-pair:accept|reject/<id>)
+        // launched a second process, which forwarded the URI here.
+        auto* cds = reinterpret_cast<COPYDATASTRUCT*>(lp);
+        if (cds != nullptr && cds->dwData == PAIR_URI_COPYDATA && cds->lpData != nullptr) {
+            const size_t n = cds->cbData > 0 ? cds->cbData - 1 : 0;
+            handlePairProtocolUri(std::string(static_cast<const char*>(cds->lpData), n));
+        }
+        return TRUE;
+    }
+
+    case WM_PAIR_NOTIFY: {
+        // Drained on the GUI thread (COM-initialised), so the WinRT toast works.
+        std::deque<std::string> todo;
+        {
+            std::lock_guard<std::mutex> lk(g_incomingMtx);
+            todo.swap(g_incoming);
+        }
+        for (const auto& id : todo) {
+            std::string name, ip, pin;
+            int secs = 0;
+            if (!pairRequestSnapshot(id, name, ip, pin, secs)) continue;
+            // Prefer the actionable toast; fall back to a balloon whose click
+            // opens the Accept/Reject dialog (the deviceId is then queued for
+            // NIN_BALLOONUSERCLICK above).
+            if (showActionablePairToast(id, name, ip, pin)) continue;
+            {
+                std::lock_guard<std::mutex> lk(g_pairQueueMtx);
+                if (std::find(g_pendingPrompts.begin(), g_pendingPrompts.end(), id) ==
+                    g_pendingPrompts.end()) {
+                    g_pendingPrompts.push_back(id);
+                }
+            }
+            shell_integration::showToast("Pairing request",
+                                         (name.empty() ? std::string("A device") : name) + " (" +
+                                             ip + ") wants to pair. Click to accept or reject.");
+        }
+        return 0;
+    }
+
+    case WM_COMMAND: {
+        const UINT cmd = LOWORD(wp);
+        // Dynamic pairing-review items resolve through the snapshot vector.
+        if (cmd >= IDM_PAIR_REVIEW_BASE &&
+            cmd < IDM_PAIR_REVIEW_BASE + static_cast<UINT>(g_menuPairIds.size())) {
+            showPairingDialogWindows(hwnd, g_menuPairIds[cmd - IDM_PAIR_REVIEW_BASE]);
+            return 0;
+        }
+        switch (cmd) {
         default:
             break;
         case IDM_OPEN_UI:
@@ -396,6 +465,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         return 0;
+    }
 
     // Restart Manager (the installer's CloseApplications path) sends
     // WM_QUERYENDSESSION with ENDSESSION_CLOSEAPP set. Returning TRUE

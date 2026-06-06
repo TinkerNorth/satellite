@@ -50,6 +50,10 @@ inline const UINT IDM_CHECK_UPDATES = 1004;  // tray "Check for Updates…"
 inline const UINT IDM_INSTALL_UPDATE = 1005; // tray "Install Update vX.Y.Z" (dynamic)
 inline const UINT IDM_OPEN_LOGS = 1006;      // tray "Open Logs Folder"
 inline const UINT IDM_REPORT_PROBLEM = 1007; // tray "Report a Problem..."
+// Dynamic per-request "review pairing" items occupy [IDM_PAIR_REVIEW_BASE,
+// IDM_PAIR_REVIEW_BASE + N); their order maps to the deviceId vector the tray
+// menu snapshots from pendingPairRequests().
+inline const UINT IDM_PAIR_REVIEW_BASE = 1100;
 
 // ── Win32-only shared state ─────────────────────────────────────────────────
 extern HWND g_hwnd;
