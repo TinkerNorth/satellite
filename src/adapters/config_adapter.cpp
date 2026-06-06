@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * adapters/config_adapter.cpp — IConfigPort implementation.
- *
- * Delegates to the free functions in config.cpp.
- * This adapter exists so that SessionService can persist config
- * through a mockable interface.
- */
+// Wraps config.cpp's free functions so SessionService can persist config
+// through a mockable interface.
 #include "config_adapter.h"
 
-// ── Forward declarations of functions in config.cpp ─────────────────────
-// (These will remain as free functions; the adapter just wraps them.)
 extern Config loadConfig();
 extern void saveConfig(const Config& cfg);
 extern void setAutoStart(bool enable);

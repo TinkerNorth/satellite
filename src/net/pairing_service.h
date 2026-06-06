@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * net/pairing_service.h — the crypto + persistence side of pairing acceptance.
- *
- * net/pairing.cpp is a pure (sodium-free, config-free) request registry so it
- * stays portably testable. This module is the glue that mints the session key
- * and writes the PairedDevice — shared by the HTTPS dashboard route AND the
- * platform-native tray prompts, so "accept a pairing" means the same thing, and
- * persists identically, regardless of where the operator clicked.
- */
+// Crypto + persistence side of pairing acceptance: mints the session key and
+// writes the PairedDevice. Shared by the HTTPS dashboard route AND the native
+// tray prompts so "accept a pairing" persists identically either way.
+// (net/pairing.cpp is the pure, testable request registry.)
 #pragma once
 
 #include <string>

@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
 #include "toast.h"
 #include "net/pairing_service.h"
 #include "shell_integration.h" // kAppUserModelID
@@ -55,8 +53,8 @@ std::wstring toWide(const std::string& s) {
     return w;
 }
 
-// Escape the five XML predefined entities so a device name can't break the
-// toast document or smuggle in markup.
+// Escape the five XML entities so a device name can't break the document or
+// inject markup.
 std::wstring xmlEscape(const std::wstring& s) {
     std::wstring out;
     out.reserve(s.size());
@@ -94,8 +92,7 @@ bool showActionablePairToast(const std::string& deviceId, const std::string& dev
     const std::wstring wpin = xmlEscape(toWide(pin));
     const std::wstring wid = toWide(deviceId); // 32 hex chars — no escaping needed
 
-    // ToastGeneric with two protocol-activated buttons. The body shows the PIN so
-    // the operator confirms it by sight before accepting.
+    // Body shows the PIN so the operator confirms it by sight before accepting.
     const std::wstring xml = L"<toast activationType=\"protocol\" launch=\"satellite-pair:open\">"
                              L"<visual><binding template=\"ToastGeneric\">"
                              L"<text>Pairing request</text>"
@@ -114,7 +111,6 @@ bool showActionablePairToast(const std::string& deviceId, const std::string& dev
                              L"\"/>"
                              L"</actions></toast>";
 
-    // Build an XmlDocument and load the toast markup into it.
     Com<IInspectable> inspectable;
     HStr xmlDocClass(L"Windows.Data.Xml.Dom.XmlDocument");
     if (FAILED(RoActivateInstance(xmlDocClass.get(), inspectable.put())) || !inspectable) {
@@ -145,7 +141,6 @@ bool showActionablePairToast(const std::string& deviceId, const std::string& dev
         return false;
     }
 
-    // XML → ToastNotification → show.
     Com<IToastNotificationFactory> factory;
     HStr toastClass(L"Windows.UI.Notifications.ToastNotification");
     if (FAILED(RoGetActivationFactory(toastClass.get(), __uuidof(IToastNotificationFactory),

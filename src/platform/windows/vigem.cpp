@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * vigem.cpp — ViGEmBus driver interaction
- */
 #include "vigem.h"
 
 #include <cstring>
@@ -111,30 +106,12 @@ bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt) {
     return ok;
 }
 
-// ── Per-slot synchronous submit helpers ────────────────────────────────────
-//
-// All three follow the same shape:
-//   1. Initialise the caller-owned submit struct (size + serial + Report).
-//   2. Issue IOCTL with a stack OVERLAPPED whose hEvent is the caller's
-//      per-slot auto-reset event.
-//   3. GetOverlappedResult(bWait=TRUE) -- block until the kernel finishes
-//      consuming the submit struct, then return.
-//
-// The submit struct is caller-owned so the receiver thread's only data
-// touch is one 12-byte memcpy from wire-bytes into &sr.Report. The event
-// is also caller-owned (per-slot persistent) to avoid the
-// CreateEvent/CloseHandle pair the legacy stack-local OVERLAPPED path
-// paid every packet.
-//
-// A previous revision did fire-and-forget here: return immediately, wait
-// at the start of the next call. The dish reported "no input reaching
-// the game" after the change with no driver-side error -- the kernel
-// either doesn't reliably set the user event on synchronous-success
-// completion for ViGEmBus IOCTLs, or some other timing edge bit us. The
-// documented-safe sync-wait path below restores the pre-PR behaviour for
-// the IO sequencing while keeping the slot-persistent submit buffer +
-// dropped-busMtx_ wins.
-
+// Per-slot synchronous submit helpers. Caller-owned submit struct + per-slot
+// persistent event keep the hot path to one memcpy and no CreateEvent/Close
+// pair. Sync (GetOverlappedResult bWait=TRUE) is mandatory: fire-and-forget here
+// made the dish report "no input reaching the game" with no driver-side error
+// (the kernel seems not to reliably signal the user event on sync-success
+// completion for ViGEmBus IOCTLs).
 static bool issueOverlappedSync(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSize, HANDLE event) {
     OVERLAPPED ov{};
     ov.hEvent = event;
@@ -143,21 +120,11 @@ static bool issueOverlappedSync(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSi
     return GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
 }
 
-// ── EXPERIMENT (uncommitted): fire-and-forget submit, take 2 ────────────────
-// The previous FAF revision had a real buffer race: the caller (e.g.
-// submitXusbFireAndForget) ran XUSB_SUBMIT_REPORT_INIT + memcpy BEFORE
-// issueFireAndForget did its WaitForSingleObject. If a previous IOCTL was
-// still in flight, the kernel was reading from `xsr` at the same time we
-// were memcpy'ing fresh wire bytes into it -- garbled submit, no visible
-// driver error, dish reports "no input reaching the game".
-//
-// Fix: wait FIRST (release the previous IOCTL's hold on xsr/ov), then
-// mutate, then issue. Wait-first is the only correct ordering for any
-// kernel object the caller mutates between submissions.
-//
-// `ov` is the caller-owned per-slot persistent OVERLAPPED. Kernel writes
-// Internal/InternalHigh to it during the IRP; we must not free it while
-// in flight. Persistent across calls.
+// EXPERIMENTAL fire-and-forget. Take 1 raced: the caller ran INIT+memcpy on
+// `xsr` BEFORE the wait, so the kernel could read it mid-flight -> garbled
+// submit, dish saw no input. Correct order is wait-first, then mutate, then
+// issue. `ov` is the caller-owned persistent OVERLAPPED the kernel writes to
+// during the IRP -- must not be freed while in flight.
 static bool issueFireAndForget(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSize, OVERLAPPED& ov,
                                HANDLE event) {
     DWORD xfr = 0;
@@ -170,9 +137,8 @@ static bool issueFireAndForget(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSiz
 }
 
 bool submitReportFast(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt, HANDLE event) {
-    // Legacy helper kept for the synchronous code paths and tests that
-    // still construct a fresh XUSB_REPORT on the stack. The hot path
-    // uses submitXusbSync below for the slot-persistent-buffer win.
+    // Legacy helper for paths/tests that build a stack XUSB_REPORT; the hot path
+    // uses submitXusbSync for the slot-persistent buffer.
     XUSB_SUBMIT_REPORT sr;
     XUSB_SUBMIT_REPORT_INIT(&sr, serial);
     sr.Report = rpt;
@@ -187,16 +153,9 @@ bool submitXusbSync(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, HANDLE ev
     return issueOverlappedSync(bus, IOCTL_XUSB_SUBMIT_REPORT, &xsr, xsr.Size, event);
 }
 
-// EXPERIMENT (uncommitted): true fire-and-forget Xbox submit. Caller
-// provides a per-slot persistent OVERLAPPED (so the kernel can safely
-// touch Internal/InternalHigh after we return) and a per-slot auto-reset
-// event (initially signalled). Sequence:
-//   1. WaitForSingleObject(event, INFINITE) -- release the previous
-//      IOCTL's claim on xsr + ov. First call sails through because the
-//      event is created signalled at plugin time.
-//   2. Mutate xsr (init + memcpy report).
-//   3. Re-init ov, set hEvent.
-//   4. DeviceIoControl, return immediately.
+// EXPERIMENTAL fire-and-forget Xbox submit. Wait-first releases the prior
+// IOCTL's claim on xsr+ov (first call sails through: the event is created
+// signalled at plugin time), then mutate, then issue and return immediately.
 bool submitXusbFireAndForget(HANDLE bus, ULONG serial, XUSB_SUBMIT_REPORT& xsr, OVERLAPPED& ov,
                              HANDLE event, const void* reportBytes) {
     WaitForSingleObject(event, INFINITE);
@@ -215,8 +174,7 @@ bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event
     return issueOverlappedSync(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, event);
 }
 
-// EXPERIMENT (uncommitted): DS4 basic fire-and-forget. Same shape as
-// submitXusbFireAndForget; see that function for the rationale.
+// EXPERIMENTAL DS4 basic fire-and-forget; see submitXusbFireAndForget.
 bool submitDs4FireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, OVERLAPPED& ov,
                             HANDLE event, const DS4_REPORT& rpt) {
     WaitForSingleObject(event, INFINITE);
@@ -234,8 +192,7 @@ bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE 
     return issueOverlappedSync(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, event);
 }
 
-// EXPERIMENT (uncommitted): DS4-EX fire-and-forget. Same shape as
-// submitXusbFireAndForget; see that function for the rationale.
+// EXPERIMENTAL DS4-EX fire-and-forget; see submitXusbFireAndForget.
 bool submitDs4ExFireAndForget(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, OVERLAPPED& ov,
                               HANDLE event, const DS4_REPORT_EX& rpt) {
     WaitForSingleObject(event, INFINITE);
@@ -257,12 +214,9 @@ void unplugTarget(HANDLE bus, ULONG serial) {
     CloseHandle(ov.hEvent);
 }
 
-// ── Notification waits ─────────────────────────────────────────────────────
-// The IOCTL is "post one buffer, wait until the driver has data". We wait on
-// either the IO completion event or the caller-provided cancel event; if the
-// cancel event wins we issue CancelIoEx so the OVERLAPPED structure can be
-// safely reclaimed.
-
+// "Post one buffer, wait until the driver has data." Waits on the IO completion
+// event or the cancel event; on cancel, CancelIoEx so the OVERLAPPED can be
+// reclaimed safely.
 namespace {
 
 template <typename Notification, ULONG IoctlCode>

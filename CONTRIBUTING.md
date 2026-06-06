@@ -22,14 +22,15 @@ macOS, and Windows runners, so anything that slips locally fails the PR.
 
 ## License headers
 
-Every source file (`*.h`, `*.cpp`, `*.mm`) starts with:
+Every source file (`*.h`, `*.cpp`, `*.mm`) starts with a single SPDX line:
 
 ```cpp
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 ```
 
-New files must include both lines. Don't introduce code under a different
+That one line is the whole header — no per-file copyright blurb or
+description block (the path names the file; authorship lives in git). New
+files must include the SPDX line. Don't introduce code under a different
 license — the project is LGPL-3.0-or-later end-to-end (`LICENSE`,
 `COPYING.GPL3`, source headers). Vendored third-party components under
 `lib/` and `vigem/include/` keep their original (MIT-compatible) licenses
@@ -48,6 +49,26 @@ and are noted in the README.
 - New ports must be testable from `tests/test_session_service.cpp` with a
   mock implementation. Don't add framework dependencies to the test suite —
   the tiny in-tree assertion macros are enough for the current scope.
+
+### Comments — why, not what
+
+Comments justify **why**, not what. Names and types already describe
+behaviour; a comment earns its place only by explaining a decision,
+constraint, or surprise the code can't show. Keep them short — a
+one-liner is the norm. This mirrors the `dish-android` discipline.
+
+**Keep** (condensed to a line where you can): a rationale that isn't
+deducible from the code; a constraint a type can't express (units,
+ranges, threading / lock order, ownership, wire-format byte layouts,
+RFC citations); a workaround for a specific platform or library bug; a
+surprising invariant or security note.
+
+**Don't add**: narration that restates the code (`// increment counter`),
+history (git owns it), commented-out code, decorative box-drawing
+section dividers, file-header description blocks, or `TODO`/`FIXME`
+markers (open an issue instead). Durable design rationale belongs in
+`docs/` (architecture, protocol) or `SECURITY.md`, not in a comment
+essay at the top of a file.
 
 ## Branching & PRs
 

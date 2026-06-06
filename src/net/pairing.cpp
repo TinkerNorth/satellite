@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
 #include "pairing.h"
 
@@ -25,12 +24,11 @@ std::vector<PendingPair> g_pending;
 // Fired when a new request arrives so the platform can raise a native prompt.
 std::function<void(const std::string&)> g_onNewRequest;
 
-// Matches the Path-A PIN window (5 min) loosely, but shorter: a request is a
-// live "someone is staring at both screens right now" handshake, so a tight
-// TTL keeps a forgotten prompt from lingering on the dashboard.
+// Tight TTL: a request is a live "both screens watched now" handshake, so a
+// forgotten prompt shouldn't linger.
 constexpr auto kPairTtl = std::chrono::minutes(2);
-// Cap the list so a flood of unknown devices can't push the operator's real
-// request off-screen. Oldest is evicted first.
+// Cap so a flood of unknown devices can't push the operator's real request
+// off-screen. Oldest evicted first.
 constexpr size_t kMaxPending = 8;
 
 bool isExpired(const PendingPair& p) {
@@ -79,8 +77,7 @@ void submitPairRequest(const std::string& deviceId, const std::string& deviceNam
         pruneLocked();
 
         if (auto* existing = findLocked(deviceId)) {
-            // A re-tap from the same dish refreshes its PIN + timer in place; the
-            // operator should never see two rows for one phone.
+            // Re-tap refreshes PIN + timer in place — never two rows for one phone.
             existing->deviceName = deviceName;
             existing->clientIP = clientIP;
             existing->clientPin = clientPin;
@@ -112,8 +109,7 @@ bool acceptPairRequest(const std::string& deviceId, const std::string& operatorP
 
     auto* p = findLocked(deviceId);
     if (p == nullptr || p->state != PairRequestState::Pending) return false;
-    // The operator-typed PIN must match the one on the dish — that match is the
-    // whole authentication: it proves the operator physically saw the device.
+    // The PIN match IS the authentication — it proves the operator saw the device.
     if (operatorPin != p->clientPin) return false;
 
     p->state = PairRequestState::Approved;
@@ -140,8 +136,8 @@ PairRequestState pollPairRequest(const std::string& deviceId, std::string& outSh
 
     if (p->state == PairRequestState::Approved) {
         outSharedKeyHex = p->keyHex;
-        // Hand the key back exactly once, then forget the request so a replayed
-        // poll can't re-read it and a later reuse of the id starts clean.
+        // Single-use: hand back the key once and forget, so a replayed poll
+        // can't re-read it and a later id reuse starts clean.
         eraseLocked(deviceId);
         return PairRequestState::Approved;
     }

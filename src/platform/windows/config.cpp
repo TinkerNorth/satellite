@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * config.cpp — Configuration persistence, JSON helpers, auto-start
- */
 #include "config.h"
 
-// ── JSON string escaping ────────────────────────────────────────────────────
-// Escapes the JSON structural characters plus every C0 control byte (< 0x20).
-// A raw control byte — a \r or \t buried in a device name, say — is invalid
-// inside a JSON string and would corrupt the config file, so anything below
-// 0x20 that isn't \n is emitted as a \uXXXX escape.
+// C0 control bytes (< 0x20) are invalid raw inside a JSON string and would
+// corrupt the config file, so emit them as \uXXXX (except \n).
 std::string jsonEscape(const std::string& s) {
     static const char* kHex = "0123456789abcdef";
     std::string out;
@@ -46,11 +38,8 @@ std::string jsonGetString(const std::string& json, const std::string& key) {
     return json.substr(q1 + 1, q2 - q1 - 1);
 }
 
-// ── Config path ─────────────────────────────────────────────────────────────
-// SHGetKnownFolderPath supersedes the deprecated SHGetFolderPath -- the
-// CSIDL_* enum has been replaced by the FOLDERID_* GUID surface since
-// Vista. The wide return is converted at the boundary so the rest of
-// the path handling can stay narrow (config is ASCII).
+// SHGetKnownFolderPath (FOLDERID_*) supersedes the deprecated SHGetFolderPath
+// (CSIDL_*). Converted to narrow at the boundary; config paths are ASCII.
 std::string configPath() {
     PWSTR raw = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &raw)) && raw) {
@@ -69,7 +58,6 @@ std::string configPath() {
     return "config.json";
 }
 
-// ── Load config ─────────────────────────────────────────────────────────────
 Config loadConfig() {
     Config cfg;
     std::ifstream f(configPath());
@@ -91,8 +79,7 @@ Config loadConfig() {
         auto rest = content.substr(colon + 1, 10);
         return rest.find("true") != std::string::npos;
     };
-    // Like getBool but only sets *out if the key is present, so we don't
-    // silently overwrite struct defaults for absent keys.
+    // Only writes *out if the key is present, so absent keys keep struct defaults.
     auto getBoolOpt = [&](const char* key, bool* out) {
         auto pos = content.find(std::string("\"") + key + "\"");
         if (pos == std::string::npos) return;
@@ -115,13 +102,10 @@ Config loadConfig() {
     if (v > 0) cfg.pairPort = v;
     v = getInt("discPort");
     if (v > 0) cfg.discPort = v;
-    // Task 1.6 — absent on pre-1.6 configs, where the default (true) keeps the
-    // legacy broadcast beacon on so discovery doesn't silently regress.
+    // Absent on pre-1.6 configs; default (true) keeps the broadcast beacon on.
     getBoolOpt("discoveryBroadcastEnabled", &cfg.discoveryBroadcastEnabled);
     cfg.autoStart = getBool("autoStart");
 
-    // OTA update preferences. Absent keys keep struct defaults — important
-    // on first run after upgrade, so we don't clobber autoCheck=true.
     std::string ch = jsonGetString(content, "updateChannel");
     if (!ch.empty()) cfg.updateChannel = ch;
     getBoolOpt("autoCheck", &cfg.autoCheck);
@@ -134,7 +118,6 @@ Config loadConfig() {
     cfg.lastSeenVersion = jsonGetString(content, "lastSeenVersion");
     cfg.skipVersion = jsonGetString(content, "skipVersion");
 
-    // Parse paired devices array
     auto arrStart = content.find("\"pairedDevices\"");
     if (arrStart != std::string::npos) {
         auto bracket = content.find('[', arrStart);
@@ -154,8 +137,7 @@ Config loadConfig() {
                 dev.lastIP = jsonGetString(obj, "lastIP");
                 dev.pairedAt = jsonGetString(obj, "pairedAt");
                 dev.sharedKeyHex = jsonGetString(obj, "sharedKey");
-                // touchpadMode (Task 1.3) — absent on pre-1.3 configs, where
-                // touchpadModeFromName("") yields TOUCHPAD_MODE_DS4.
+                // Absent on pre-1.3 configs; touchpadModeFromName("") -> TOUCHPAD_MODE_DS4.
                 dev.touchpadMode = touchpadModeFromName(jsonGetString(obj, "touchpadMode"));
                 if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
                 pos = objEnd + 1;
@@ -165,7 +147,6 @@ Config loadConfig() {
     return cfg;
 }
 
-// ── Save config ─────────────────────────────────────────────────────────────
 void saveConfig(const Config& cfg) {
     std::ofstream f(configPath());
     f << "{\n"
@@ -197,22 +178,11 @@ void saveConfig(const Config& cfg) {
     f << "  ]\n}\n";
 }
 
-// ── Auto-start (registry) ───────────────────────────────────────────────────
-//
-// Value name is the human-visible "Satellite" (the same literal Inno
-// Setup writes from {#MyAppName}). Lookups are case-insensitive, but
-// writes can rename a value to whatever case we pass -- so we hold the
-// installer's casing consistently across all our writes to avoid
-// ugly case flicker in Task Manager > Startup tab.
-//
-// Value data is always the quoted absolute path. An unquoted Run-key
-// value pointing into "C:\Program Files\..." is the textbook
-// binary-planting vector (Windows tries "C:\Program.exe" first).
-//
-// getAutoStart returns true only if the registry value EXISTS AND
-// resolves to THIS exe. If the value exists but points at a stale
-// install location, we return false so the UI shows the truth and the
-// caller can re-enable to repair.
+// Value name must match the literal Inno Setup writes ({#MyAppName}); keep its
+// casing consistent across writes (lookups are case-insensitive but writes
+// rename). Value data is always the quoted absolute path: an unquoted Run-key
+// value into "C:\Program Files\..." is a binary-planting vector (Windows tries
+// "C:\Program.exe" first).
 static const char* kRunSubkey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const char* kRunValueName = "Satellite";
 
@@ -223,9 +193,7 @@ static std::string quotedExePath() {
     return std::string("\"") + buf + "\"";
 }
 
-// Strip surrounding quotes for comparison; the registry value should be
-// quoted but we tolerate either form for robustness against pre-1.0
-// installs that wrote unquoted.
+// Tolerate either form; pre-1.0 installs wrote the value unquoted.
 static std::string stripQuotes(const std::string& s) {
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
     return s;
@@ -272,14 +240,11 @@ bool getAutoStart() {
     char self[MAX_PATH];
     if (GetModuleFileNameA(nullptr, self, MAX_PATH) == 0) return !buf.empty();
 
-    // Path comparison is case-insensitive on Windows. If the value
-    // points at a different exe (stale install location, side-loaded
-    // copy in Downloads, etc.), report autostart as disabled so the
-    // UI doesn't lie to the user.
+    // A value pointing at a different exe (stale/side-loaded) reads as disabled
+    // so the UI doesn't lie. Case-insensitive per Windows path rules.
     return _stricmp(stripQuotes(buf).c_str(), self) == 0;
 }
 
-// ── Utility ─────────────────────────────────────────────────────────────────
 std::string getExeDir() {
     char buf[MAX_PATH];
     GetModuleFileNameA(nullptr, buf, MAX_PATH);

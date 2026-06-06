@@ -1,13 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tests/test_session_service.cpp — Unit tests for SessionService.
- *
- * Self-contained: no external test framework required.
- * Build:  build-tests.bat
- * Run:    test_session_service.exe
- */
 #include "../src/core/session_service.h"
 #include "../src/core/touchpad_codec.h"
 #include "../src/core/gamepad_backend.h"
@@ -21,7 +12,6 @@
 #include <chrono>
 #include <unordered_map>
 
-// ── Counters & state for assertions ─────────────────────────────────────────
 static int g_pass = 0;
 static int g_fail = 0;
 static std::string g_currentTest;
@@ -53,7 +43,6 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
-// ── Mock IGamepadPort ───────────────────────────────────────────────────────
 struct MockViGem : IGamepadPort {
     bool busOpen = false;
     bool ensureBusReturnVal = true;
@@ -75,8 +64,7 @@ struct MockViGem : IGamepadPort {
     int submitRelativeMouseCalls = 0;
     int setLightbarCallbackCalls = 0;
 
-    // Optional return value for submitMotion/submitBattery overrides — defaults
-    // mimic the IGamepadPort default (no backend supports it yet).
+    // Defaults mimic the IGamepadPort base (no backend supports these yet).
     bool submitMotionReturnVal = true;
     bool submitBatteryReturnVal = true;
     bool submitTouchpadReturnVal = true;
@@ -85,20 +73,17 @@ struct MockViGem : IGamepadPort {
     std::vector<uint32_t> pluggedSerials;
     std::vector<uint32_t> unpluggedSerials;
     GamepadReport lastSubmittedReport{};
-    // Last motion / battery dispatched to the backend, for assertions.
     uint32_t lastMotionSerial = 0;
     MotionReport lastMotion{};
     uint32_t lastBatterySerial = 0;
     BatteryReport lastBattery{};
     uint32_t lastTouchpadSerial = 0;
     TouchpadReport lastTouchpad{};
-    // Last relative-mouse injection (from submitRelativeMouse).
     int lastMouseDx = 0;
     int lastMouseDy = 0;
     bool lastMouseButton = false;
-    // Captured rumble + lightbar callbacks. Tests synthesize "the platform
-    // fired a notification" by invoking these directly via fireRumble /
-    // fireLightbar.
+    // Tests synthesize "the platform fired a notification" by invoking these via
+    // fireRumble / fireLightbar.
     RumbleCallback capturedRumbleCb;
     LightbarCallback capturedLightbarCb;
 
@@ -140,7 +125,6 @@ struct MockViGem : IGamepadPort {
         setRumbleCallbackCalls++;
         capturedRumbleCb = std::move(cb);
     }
-    // Helper for tests: simulate the platform firing a rumble notification.
     void fireRumble(uint32_t serial, const RumbleReport& r) {
         if (capturedRumbleCb) capturedRumbleCb(serial, r);
     }
@@ -173,15 +157,12 @@ struct MockViGem : IGamepadPort {
         setLightbarCallbackCalls++;
         capturedLightbarCb = std::move(cb);
     }
-    // Helper for tests: simulate the platform firing a lightbar colour change.
     void fireLightbar(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         if (capturedLightbarCb) capturedLightbarCb(serial, r, g, b);
     }
 
-    // Per-type "does this backend have a motion sink" toggle. Default mirrors
-    // the real Windows / Linux behaviour: DS4 (PLAYSTATION) is supported,
-    // Xbox is not. Tests can override per-case via supportsMotionForTypeMap
-    // to exercise the alternate code paths.
+    // Default mirrors real Windows/Linux: DS4 has an IMU sink, Xbox does not.
+    // Tests override per-case to exercise the alternate paths.
     std::unordered_map<uint8_t, bool> supportsMotionForTypeMap{
         {CONTROLLER_TYPE_XBOX, false},
         {CONTROLLER_TYPE_PLAYSTATION, true},
@@ -191,34 +172,21 @@ struct MockViGem : IGamepadPort {
         return it != supportsMotionForTypeMap.end() ? it->second : false;
     }
 
-    // Per-serial motionBackendOk override. Default true (the common case);
-    // tests that exercise the kernel-rejected path flip the entry for a
-    // specific serial.
+    // Default true; tests flip a serial's entry to exercise the kernel-rejected path.
     std::unordered_map<uint32_t, bool> motionBackendOkMap;
     bool motionBackendOk(uint32_t serial) const override {
         auto it = motionBackendOkMap.find(serial);
         return it != motionBackendOkMap.end() ? it->second : true;
     }
 
-    // Custom reset that preserves no state — copy/move-assigning the mock
-    // would clobber the std::function which is fine since tests reset
-    // between cases. Note: we don't use `*this = MockViGem{}` because that
-    // would also wipe `setRumbleCallbackCalls` which tests sometimes care
-    // about across phases of a single case.
     void reset() { *this = MockViGem{}; }
 };
 
-// ── Mock IClientPort ────────────────────────────────────────────────────────
 struct MockClient : IClientPort {
     int updateAddrCalls = 0;
-    // Hot-path (V4) update counter -- the new SessionService entry points
-    // (handleGamepadDataAndUpdate, updatePostDecryptV4) route through
-    // updateClientAddrV4 instead of the legacy string overload, so tests
-    // that exercise those need to assert on this counter rather than
-    // (or in addition to) updateAddrCalls.
+    // Hot-path entry points (handleGamepadDataAndUpdate, updatePostDecryptV4)
+    // route through updateClientAddrV4, not the legacy string overload.
     int updateAddrV4Calls = 0;
-    // Last V4 payload observed -- lets tests verify the numeric IPv4 and
-    // port reached the client port without re-parsing the string.
     uint32_t lastV4Token = 0;
     uint32_t lastV4IPv4Nbo = 0;
     uint16_t lastV4Port = 0;
@@ -230,18 +198,15 @@ struct MockClient : IClientPort {
     int rumbleCalls = 0;
     int lightbarCalls = 0;
 
-    // Last controller ACK params
     uint16_t lastAckType = 0;
     uint8_t lastAckCtrl = 0;
     uint8_t lastAckResult = 0;
     uint8_t lastAckMotionFlags = 0;
 
-    // Last rumble dispatch params (from sendRumble).
     uint32_t lastRumbleConnToken = 0;
     uint8_t lastRumbleCtrlIdx = 0;
     RumbleReport lastRumble{};
 
-    // Last lightbar dispatch params (from sendLightbar).
     uint32_t lastLightbarConnToken = 0;
     uint8_t lastLightbarCtrlIdx = 0;
     uint8_t lastLightbarR = 0;
@@ -289,7 +254,6 @@ struct MockClient : IClientPort {
     void reset() { *this = MockClient{}; }
 };
 
-// ── Mock ILogPort ───────────────────────────────────────────────────────────
 struct MockLog : ILogPort {
     int logCalls = 0;
     std::vector<std::string> messages;
@@ -301,7 +265,6 @@ struct MockLog : ILogPort {
     void reset() { *this = MockLog{}; }
 };
 
-// ── Helper ──────────────────────────────────────────────────────────────────
 static const uint8_t TEST_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
                                                   12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
                                                   23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
@@ -311,8 +274,6 @@ static OpenSessionResult openTestSession(SessionService& svc, const std::string&
                                          uint8_t touchpadMode = TOUCHPAD_MODE_DS4) {
     return svc.openSession(devId, devName, "192.168.1.100", TEST_KEY, touchpadMode);
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 static void test_openSession_basic() {
     TEST("openSession — basic");
@@ -792,26 +753,9 @@ static void test_staleReplacementCleansUpControllers() {
     EXPECT_EQ(svc.totalActiveControllers(), 0);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CONTROLLER TYPE TESTS
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// These tests document the controller type system introduced to support
-// multiple virtual device types through ViGEm. Currently Xbox (X360)
-// and PlayStation (DS4) are the two supported types.
-//
-// Key behaviors:
-//   • Each controller defaults to CONTROLLER_TYPE_XBOX (value 0).
-//   • Setting type to CONTROLLER_TYPE_PLAYSTATION (value 1) causes the
-//     ViGEm virtual device to be replugged as a DualShock 4.
-//   • Switching back replugs as Xbox 360.
-//   • Same-family type changes do NOT replug (no-op at ViGEm level).
-//   • Invalid type values are clamped to XBOX.
-//   • Gamepad data is routed to submitDS4Report when type is PlayStation.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ── types.h helper functions ────────────────────────────────────────────────
-
+// Controller type system: a controller defaults to XBOX (X360) and can switch
+// to PLAYSTATION (DS4), which replugs the ViGEm virtual device; same-family
+// changes don't replug, and invalid values clamp to XBOX.
 static void test_controllerTypeName_xbox() {
     TEST("controllerTypeName — XBOX returns 'xbox'");
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_XBOX)), std::string("xbox"));
@@ -869,8 +813,6 @@ static void test_controllerType_constants() {
     EXPECT_EQ((int)CONTROLLER_TYPE_PLAYSTATION, 1);
     EXPECT_EQ((int)CONTROLLER_TYPE_COUNT, 2);
 }
-
-// ── handleControllerType — basic behavior ───────────────────────────────────
 
 static void test_handleControllerType_setsTypeAndBroadcasts() {
     TEST("handleControllerType — sets type in state and broadcasts to clients");
@@ -964,8 +906,6 @@ static void test_handleControllerType_boundaryValueClampsToXbox() {
     auto snap = svc.getConnectionsSnapshot();
     EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
 }
-
-// ── handleControllerType — replug behavior (Xbox ↔ DS4) ─────────────────────
 
 static void test_handleControllerType_xboxToPlaystationReplugsAsDS4() {
     TEST("handleControllerType — Xbox→PlayStation unplugs Xbox, replugs as DS4");
@@ -1107,8 +1047,6 @@ static void test_handleControllerType_multipleRapidSwitches() {
     EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
 }
 
-// ── handleControllerAdd — DS4-aware plugin ──────────────────────────────────
-
 static void test_handleControllerAdd_defaultTypeIsXbox() {
     TEST("handleControllerAdd — default type is XBOX, uses pluginDevice (not DS4)");
     MockViGem vigem;
@@ -1128,10 +1066,8 @@ static void test_handleControllerAdd_defaultTypeIsXbox() {
 
 static void test_handleControllerAdd_presetPlaystationType() {
     TEST("handleControllerAdd — if type was pre-set to PlayStation, uses DS4 plugin");
-    // NOTE: In the current flow, the controller type is set AFTER add via a
-    // separate MSG_CONTROLLER_TYPE message. But if the Controller struct's type
-    // were somehow pre-set, add should respect it. This tests that code path.
-    // Currently controllers always start as XBOX, so add always uses Xbox plugin.
+    // Controllers always start as XBOX (type is set after add via
+    // MSG_CONTROLLER_TYPE), so add always uses the Xbox plugin today.
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1151,38 +1087,30 @@ static void test_handleControllerAdd_thenSetPlaystation_fullFlow() {
     MockLog log;
     SessionService svc(vigem, client, log);
 
-    // 1. Open session
     auto r = openTestSession(svc);
     EXPECT(r.ok);
 
-    // 2. Add controller (starts as Xbox)
     svc.handleControllerAdd(r.token, 0);
     EXPECT_EQ(client.lastAckResult, ACK_OK);
     EXPECT_EQ(vigem.pluginCalls, 1);
     EXPECT_EQ(vigem.pluginDS4Calls, 0);
 
-    // 3. Change type to PlayStation
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
-    EXPECT_EQ(vigem.unplugCalls, 1);    // unplug Xbox
-    EXPECT_EQ(vigem.pluginDS4Calls, 1); // plugin DS4
+    EXPECT_EQ(vigem.unplugCalls, 1);
+    EXPECT_EQ(vigem.pluginDS4Calls, 1);
 
-    // 4. Submit gamepad data — should route to DS4
     GamepadReport rpt{};
     rpt.wButtons = 0x1000;
     EXPECT(svc.handleGamepadData(r.token, 0, rpt));
     EXPECT_EQ(vigem.submitDS4Calls, 1);
     EXPECT_EQ(vigem.submitCalls, 0);
 
-    // 5. Snapshot should reflect PlayStation type
     auto snap = svc.getConnectionsSnapshot();
     EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_PLAYSTATION);
 }
 
-// ── handleControllerAdd — motion-status byte in the ACK ─────────────────────
-// Each test pins one corner of the 2-bit motionFlags byte (see
-// ACK_MOTION_FLAG_* in core/types.h). The dish consumes these to drive its
-// per-slot motion pill — see MotionCapabilityComposer on the dish side.
-
+// Each test pins one corner of the 2-bit motionFlags ACK byte (ACK_MOTION_FLAG_*
+// in core/types.h); the dish drives its per-slot motion pill from these.
 static void test_handleControllerAdd_motionFlags_xboxTypeBackendOk() {
     TEST("handleControllerAdd — motion flags: Xbox type → BACKEND_OK only (no sink for type)");
     MockViGem vigem;
@@ -1204,24 +1132,12 @@ static void test_handleControllerAdd_motionFlags_playstationTypeBothBits() {
     MockViGem vigem;
     MockClient client;
     MockLog log;
-    // Pre-arrange Xbox→PS in the supportsMotionForType map so this controller
-    // — though it adds as Xbox first — would report sink-for-type=true if its
-    // type were PS. We have to flip the type AFTER add (currently no preset),
-    // so we test via the snapshot path: the ACK at add time reflects Xbox,
-    // then we verify the per-type computation by simulating a fresh add at
-    // PlayStation. The mock's map is what handleControllerAdd consults at
-    // ACK build time.
+    // Type can only be set after add (no preset), so pin the PS branch via the
+    // snapshot: after the PS-type change, motionSinkSupportedForType reflects PS.
     SessionService svc(vigem, client, log);
     auto r = openTestSession(svc);
     svc.handleControllerAdd(r.token, 0);
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
-    // Re-add a second controller index, this time post-existing-PS-typed
-    // controllers — the new ctrl's type still starts as XBOX. To test the
-    // PS branch we directly call sendControllerAck via a successful re-add
-    // sequence with the type forcibly observed.
-    //
-    // The cleanest pin: after the PS-type change, the snapshot's
-    // motionSinkSupportedForType reflects PS (mock map returns true).
     auto snap = svc.getConnectionsSnapshot();
     EXPECT_EQ(snap.connections[0].controllers[0].motionSinkSupportedForType, true);
     EXPECT_EQ(snap.connections[0].controllers[0].motionBackendOk, true);
@@ -1277,12 +1193,8 @@ static void test_handleControllerRemove_motionFlags_carriesZero() {
     EXPECT_EQ(client.lastAckMotionFlags, 0);
 }
 
-// ── handleControllerCapsUpdate — mid-session cap word refresh ──────────────
-// The dish sends MSG_CONTROLLER_CAPS_UPDATE (0x000E) when its per-slot
-// motion toggle flips after registration. The satellite overwrites
-// `Controller::caps` in place — no replug, no fresh ACK, no controller
-// flicker on the receiver host.
-
+// MSG_CONTROLLER_CAPS_UPDATE (0x000E) overwrites Controller::caps in place — no
+// replug, no fresh ACK, no controller flicker on the receiver host.
 static void test_handleControllerCapsUpdate_overwritesCapsInPlace() {
     TEST("handleControllerCapsUpdate — caps word is updated in place");
     MockViGem vigem;
@@ -1375,25 +1287,17 @@ static void test_handleControllerCapsUpdate_inactiveControllerIgnored() {
     SessionService svc(vigem, client, log);
 
     auto r = openTestSession(svc);
-    // Controller index 0 was never added — it's inactive by default. The
-    // dish shouldn't send caps updates for a controller it didn't
-    // register, but a stale post-detach send must not corrupt the slot.
+    // A stale caps-update for a never-added slot must not corrupt or activate it.
     auto broadcastsBefore = client.broadcastCalls;
     svc.handleControllerCapsUpdate(r.token, 0, CAP_MOTION);
 
-    // The snapshot only enumerates ACTIVE controllers (see
-    // session_service.cpp::getConnectionsSnapshot) — so we cannot index
-    // into controllers[0] here. The right assertions are:
-    //   - no controller has been activated as a side effect, AND
-    //   - no spurious broadcastStatus fired (caps-update is a no-op
-    //     for an inactive slot, so the web UI should not redraw).
+    // The snapshot enumerates only ACTIVE controllers, so controllers[0] is
+    // absent: assert nothing was activated and no spurious broadcast fired.
     auto snap = svc.getConnectionsSnapshot();
     EXPECT_EQ(snap.connections[0].activeControllerCount, 0);
     EXPECT_EQ((int)snap.connections[0].controllers.size(), 0);
     EXPECT_EQ(client.broadcastCalls, broadcastsBefore);
 }
-
-// ── Gamepad data routing — Xbox vs DS4 ──────────────────────────────────────
 
 static void test_gamepadData_xboxTypeUsesSubmitReport() {
     TEST("handleGamepadData — Xbox type uses submitReport (not DS4)");
@@ -1449,25 +1353,20 @@ static void test_gamepadData_routingSwitchesWithType() {
 
     GamepadReport rpt{};
 
-    // Initially Xbox → submitReport
     svc.handleGamepadData(r.token, 0, rpt);
     EXPECT_EQ(vigem.submitCalls, 1);
     EXPECT_EQ(vigem.submitDS4Calls, 0);
 
-    // Switch to PlayStation → submitDS4Report
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
     svc.handleGamepadData(r.token, 0, rpt);
     EXPECT_EQ(vigem.submitDS4Calls, 1);
     EXPECT_EQ(vigem.submitCalls, 1); // unchanged
 
-    // Switch back to Xbox → submitReport
     svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);
     svc.handleGamepadData(r.token, 0, rpt);
     EXPECT_EQ(vigem.submitCalls, 2);
     EXPECT_EQ(vigem.submitDS4Calls, 1); // unchanged
 }
-
-// ── Snapshot — controller type field ────────────────────────────────────────
 
 static void test_snapshot_defaultControllerType() {
     TEST("getConnectionsSnapshot — new controller has XBOX type in snapshot");
@@ -1516,8 +1415,6 @@ static void test_snapshot_multipleControllersWithDifferentTypes() {
     EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
     EXPECT_EQ(snap.connections[0].controllers[1].controllerType, CONTROLLER_TYPE_PLAYSTATION);
 }
-
-// ── Session lifecycle with DS4 ──────────────────────────────────────────────
 
 static void test_closeSession_unplugsDS4Controllers() {
     TEST("closeSession — correctly unplugs DS4 (PlayStation) controllers");
@@ -1675,34 +1572,14 @@ static void test_controllerReAdd_touchpadMouseNoJumpAfterReconnect() {
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
 
-// ── MSG_CONTROLLER_TYPE protocol constant ───────────────────────────────────
-
 static void test_msgControllerType_constant() {
     TEST("MSG_CONTROLLER_TYPE — has expected wire value 0x0008");
     EXPECT_EQ(MSG_CONTROLLER_TYPE, (uint16_t)0x0008);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// RUMBLE TESTS
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Rumble is the reverse-direction message (satellite → dish): the platform
-// gamepad backend (ViGEm/uinput) fires a notification when a game sets
-// vibration on the virtual device, the SessionService maps the backend
-// `serial` back to a (Connection, ctrlIdx), coalesces against the prior
-// value, and dispatches via IClientPort::sendRumble.
-//
-// Tests below cover:
-//   • Protocol constant value
-//   • Callback installation by the constructor
-//   • Routing serial → connection/controller
-//   • Coalescing (don't re-emit identical reports)
-//   • Wire duration stamping
-//   • Stray/orphan notifications drop silently
-//   • Full add → rumble → remove lifecycle
-//   • Lightbar-bearing (DS4) reports preserve flag + RGB through the service
-// ═══════════════════════════════════════════════════════════════════════════
-
+// Rumble is the reverse path (satellite → dish): the backend fires a
+// notification, SessionService maps the serial back to a (Connection, ctrlIdx),
+// coalesces against the prior value, and dispatches via IClientPort::sendRumble.
 static void test_msgRumble_constant() {
     TEST("MSG_RUMBLE — has expected wire value 0x0009");
     EXPECT_EQ(MSG_RUMBLE, (uint16_t)0x0009);
@@ -1985,8 +1862,6 @@ static void test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial() {
     EXPECT_EQ(client.rumbleCalls, 1);
 }
 
-// ── Motion tests ────────────────────────────────────────────────────────────
-
 static void test_msgMotion_constant() {
     TEST("MSG_MOTION — has expected wire value 0x000A");
     EXPECT_EQ(static_cast<int>(MSG_MOTION), 0x000A);
@@ -2256,8 +2131,6 @@ static void test_snapshot_motionBackendOk_unknown_serial_is_optimistic() {
     EXPECT(snap.connections[0].controllers[0].motionBackendOk);
 }
 
-// ── Battery tests ───────────────────────────────────────────────────────────
-
 static void test_msgBattery_constant() {
     TEST("MSG_BATTERY — has expected wire value 0x000B");
     EXPECT_EQ(static_cast<int>(MSG_BATTERY), 0x000B);
@@ -2397,8 +2270,6 @@ static void test_snapshot_batteryDefaultsUnknown() {
     EXPECT(!snap.connections[0].controllers[0].batteryKnown);
 }
 
-// ── Touchpad (sender → satellite, DS4 / DualSense trackpad) ────────────────
-
 static void test_msgTouchpad_constant() {
     TEST("MSG_TOUCHPAD constant pins wire byte 0x000C");
     EXPECT_EQ(static_cast<int>(MSG_TOUCHPAD), 0x000C);
@@ -2450,10 +2321,8 @@ static void test_handleTouchpadData_cachesEvenWhenBackendDeclines() {
 
     auto snap = svc.getConnectionsSnapshot();
     EXPECT_EQ(static_cast<int>(snap.connections.size()), 1);
-    // Snapshot doesn't currently expose touchpad — verify cache by checking
-    // the connection table directly via a follow-up forward call returning
-    // the same cached value (defensive — the snapshot will eventually carry
-    // touchpad too, but adding it isn't this task's scope).
+    // Snapshot doesn't expose touchpad yet — verify the cache via the value the
+    // backend last received.
     EXPECT_EQ(static_cast<int>(vigem.lastTouchpad.finger0.x), 42);
 }
 
@@ -2495,8 +2364,6 @@ static void test_handleTouchpadData_inactiveController() {
     EXPECT(!svc.handleTouchpadData(r.token, 0, tp));
     EXPECT_EQ(vigem.submitTouchpadCalls, 0);
 }
-
-// ── Touchpad codec (core/touchpad_codec.h — pure wire/coordinate helpers) ──
 
 static void test_touchpadWireToRange_endpoints() {
     TEST("touchpadWireToRange — wire endpoints map to device-range edges");
@@ -2544,8 +2411,6 @@ static void test_ds4PackTouchFinger_coordPacking() {
     EXPECT_EQ(y12, 0);
 }
 
-// ── Touchpad wire decode (core/types.h::decodeTouchpadReport) ──────────────
-
 static void test_decodeTouchpadReport_wireLayout() {
     TEST("decodeTouchpadReport — flags + finger fields + eventTimeMs decode from the 15-byte tail");
     uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {};
@@ -2585,8 +2450,6 @@ static void test_decodeTouchpadReport_inactiveFlags() {
     EXPECT(!r.finger1.active);
     EXPECT(!r.buttonPressed);
 }
-
-// ── Touchpad routing modes (Task 1.3 — per-device DS4 / mouse / off) ───────
 
 static void test_touchpadMode_constants() {
     TEST("TOUCHPAD_MODE_* constants + name round-trip");
@@ -2786,14 +2649,10 @@ static void test_handleTouchpadData_mouseModeTrackingIdChangeBreaksContinuity() 
     EXPECT(vigem.lastMouseDx > 0); // same finger → delta emitted
 }
 
-// ── Time-scaling (option 4 from the input-latency discussion) ──────────────
-// The next four tests pin the per-sample time-scaling that makes cursor
-// velocity proportional to finger velocity regardless of dt. Without this,
-// the first MOVE event after touchdown (~16 ms on a 60 Hz Android display)
-// produces a delta several times larger than every subsequent ~4 ms sample
-// — the classic first-touch jump the user reported as "100 px first, 5 px
-// second" cursor motion for identical finger movements.
-
+// Per-sample time-scaling makes cursor velocity proportional to finger velocity
+// regardless of dt. Without it the first MOVE after touchdown (~16 ms on 60 Hz
+// Android) produces a delta several times larger than later ~4 ms samples — the
+// classic first-touch jump.
 static void test_handleTouchpadData_mouseModeTimeScalingHalvesLongerDt() {
     TEST("handleTouchpadData — MOUSE mode: 2× dt halves the cursor delta for the same position "
          "diff");
@@ -2947,11 +2806,8 @@ static void test_setTouchpadMode_hotApplies() {
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1); // now routed to the mouse
 }
 
-// ── Client-driven mode + server capabilities ──────────────────────────────
-// The server is now a read-only mirror for touchpad mode: the client (dish)
-// sets the mode (POST /api/devices/touchpad-mode), the server validates and
-// routes. These tests pin the contract.
-
+// The server is a read-only mirror for touchpad mode: the dish sets it (POST
+// /api/devices/touchpad-mode), the server validates and routes.
 static void test_pairedDevice_defaultsToOff() {
     TEST("PairedDevice — default touchpadMode is OFF (the safe baseline)");
     PairedDevice d;
@@ -3050,8 +2906,6 @@ static void test_setTouchpadMode_unknownDeviceAndBadMode() {
     EXPECT(!svc.setTouchpadMode("dev1", TOUCHPAD_MODE_COUNT)); // out of range
     EXPECT(svc.setTouchpadMode("dev1", TOUCHPAD_MODE_OFF));    // valid → true
 }
-
-// ── Lightbar (host game → satellite → dish, Task 1.4 dedicated stream) ────
 
 static void test_msgLightbar_constant() {
     TEST("MSG_LIGHTBAR constant pins wire byte 0x000D");
@@ -3253,23 +3107,9 @@ static void test_lightbar_surfacedInConnectionsSnapshot() {
     EXPECT_EQ(static_cast<int>(ci.lightbarB), 0xFE);
 }
 
-// ============================================================================
-// Hot-path optimisation tests
-// ============================================================================
-// Covers the receiver -> ViGEm allocation-free / single-lock changes:
-//   * IPv4 codec round-trips and malformed-input rejection
-//   * handleGamepadDataAndUpdate -- the fused single-lock entry point that
-//     replaces (getDecryptInfo + updatePostDecrypt + handleGamepadData)
-//     for the gamepad case
-//   * updatePostDecryptV4 -- the V4-byte-order variant used by cold paths
-//   * Connection::clientIPv4 seeding from openSession and lazy clientIP
-//     string refresh (the "skip the string alloc when IP is stable" win)
-//   * Controller::usesDS4 cached flag -- written on every controllerType
-//     assignment so the gamepad dispatch branch is a single load
-// ============================================================================
-
-// ── IPv4 codec tests ────────────────────────────────────────────────────────
-
+// Hot-path (receiver → ViGEm allocation-free / single-lock) tests: the IPv4
+// codec, the fused handleGamepadDataAndUpdate entry point, updatePostDecryptV4,
+// lazy clientIP refresh, and the Controller::usesDS4 cache mirror.
 static void test_parseIPv4Nbo_canonical() {
     TEST("parseIPv4Nbo -- canonical 192.168.1.1");
     // Network byte order: leftmost octet in low byte. For "192.168.1.1":
@@ -3373,8 +3213,6 @@ static void test_ipv4_matchesInetPtonByteOrder() {
     EXPECT_EQ(static_cast<uint8_t>((nbo >> 24) & 0xFF), (uint8_t)40);
 }
 
-// ── openSession -- clientIPv4 seeding ───────────────────────────────────────
-
 static void test_openSession_seedsClientIPv4FromString() {
     TEST("openSession -- seeds Connection::clientIPv4 from the string IP");
     MockViGem vigem;
@@ -3416,8 +3254,6 @@ static void test_openSession_unparseableIPLeavesClientIPv4Zero() {
     auto snap2 = svc.getConnectionsSnapshot();
     EXPECT(snap2.connections[0].clientIP == std::string("172.16.0.5"));
 }
-
-// ── updatePostDecryptV4 ─────────────────────────────────────────────────────
 
 static void test_updatePostDecryptV4_updatesCounter() {
     TEST("updatePostDecryptV4 -- updates Connection.lastCounter");
@@ -3499,8 +3335,6 @@ static void test_updatePostDecryptV4_preservesClientIPWhenUnchanged() {
     auto snap = svc.getConnectionsSnapshot();
     EXPECT(snap.connections[0].clientIP == std::string("192.168.1.100"));
 }
-
-// ── handleGamepadDataAndUpdate (the fused entry point) ──────────────────────
 
 static void test_handleGamepadDataAndUpdate_happyPath() {
     TEST("handleGamepadDataAndUpdate -- submits report on happy path");
@@ -3739,8 +3573,6 @@ static void test_handleGamepadDataAndUpdate_stillRefreshesIPOnInactiveController
     EXPECT(snap.connections[0].clientIP == std::string("203.0.113.99"));
 }
 
-// ── Controller::usesDS4 cache mirror ────────────────────────────────────────
-
 static void test_usesDS4_defaultsToFalseOnAdd() {
     TEST("Controller::usesDS4 -- defaults to false (Xbox at add)");
     MockViGem vigem;
@@ -3828,8 +3660,6 @@ static void test_usesDS4_matchesLegacyHandleGamepadData() {
     EXPECT_EQ(fusedBackend.submitCalls, legacyBackend.submitCalls);
 }
 
-// ── updatePostDecrypt (legacy string overload) backward compatibility ───────
-
 static void test_updatePostDecrypt_seedsClientIPv4FromString() {
     TEST("updatePostDecrypt (string) -- also populates Connection::clientIPv4 cache");
     // The legacy string path must keep the numeric cache in sync so a
@@ -3887,7 +3717,7 @@ int main() {
     test_serialRecycling();
     test_broadcastOnControllerChange();
     test_staleReplacementCleansUpControllers();
-    // ── Controller type helper functions (types.h) ──
+    // Controller type helper functions (types.h)
     test_controllerTypeName_xbox();
     test_controllerTypeName_playstation();
     test_controllerTypeName_outOfRange();
@@ -3899,7 +3729,7 @@ int main() {
     test_controllerTypeUsesDS4_outOfRange();
     test_controllerType_constants();
 
-    // ── handleControllerType — basic behavior ──
+    // handleControllerType — basic behavior
     test_handleControllerType_setsTypeAndBroadcasts();
     test_handleControllerType_invalidToken();
     test_handleControllerType_outOfBoundsCtrlIdx();
@@ -3907,7 +3737,7 @@ int main() {
     test_handleControllerType_invalidValueClampsToXbox();
     test_handleControllerType_boundaryValueClampsToXbox();
 
-    // ── handleControllerType — replug behavior ──
+    // handleControllerType — replug behavior
     test_handleControllerType_xboxToPlaystationReplugsAsDS4();
     test_handleControllerType_playstationToXboxReplugsAsXbox();
     test_handleControllerType_xboxToXboxNoReplug();
@@ -3916,36 +3746,36 @@ int main() {
     test_handleControllerType_replugFailureLogsError();
     test_handleControllerType_multipleRapidSwitches();
 
-    // ── handleControllerAdd — DS4-aware ──
+    // handleControllerAdd — DS4-aware
     test_handleControllerAdd_defaultTypeIsXbox();
     test_handleControllerAdd_presetPlaystationType();
     test_handleControllerAdd_thenSetPlaystation_fullFlow();
 
-    // ── handleControllerAdd — motion-status byte on the ACK ──
+    // handleControllerAdd — motion-status byte on the ACK
     test_handleControllerAdd_motionFlags_xboxTypeBackendOk();
     test_handleControllerAdd_motionFlags_playstationTypeBothBits();
     test_handleControllerAdd_motionFlags_backendBroken();
     test_handleControllerAdd_motionFlags_errorAcksCarryZero();
     test_handleControllerRemove_motionFlags_carriesZero();
 
-    // ── handleControllerCapsUpdate — mid-session cap word refresh ──
+    // handleControllerCapsUpdate — mid-session cap word refresh
     test_handleControllerCapsUpdate_overwritesCapsInPlace();
     test_handleControllerCapsUpdate_idempotentOnSameWord();
     test_handleControllerCapsUpdate_invalidToken();
     test_handleControllerCapsUpdate_outOfBoundsCtrlIdx();
     test_handleControllerCapsUpdate_inactiveControllerIgnored();
 
-    // ── Gamepad data routing ──
+    // Gamepad data routing
     test_gamepadData_xboxTypeUsesSubmitReport();
     test_gamepadData_playstationTypeUsesSubmitDS4Report();
     test_gamepadData_routingSwitchesWithType();
 
-    // ── Snapshot ──
+    // Snapshot
     test_snapshot_defaultControllerType();
     test_snapshot_reflectsTypeChange();
     test_snapshot_multipleControllersWithDifferentTypes();
 
-    // ── Session lifecycle with DS4 ──
+    // Session lifecycle with DS4
     test_closeSession_unplugsDS4Controllers();
     test_closeAllSessions_withMixedTypes();
     test_staleReplacement_unplugsDS4Controller();
@@ -3953,10 +3783,10 @@ int main() {
     test_controllerReAdd_clearsCachedSenderStreams();
     test_controllerReAdd_touchpadMouseNoJumpAfterReconnect();
 
-    // ── Protocol constants ──
+    // Protocol constants
     test_msgControllerType_constant();
 
-    // ── Rumble (return-path) ──
+    // Rumble (return-path)
     test_msgRumble_constant();
     test_constructor_installsRumbleCallback();
     test_handleRumbleFromBackend_routesToOwningConnection();
@@ -3971,7 +3801,7 @@ int main() {
     test_handleRumbleFromBackend_separateControllersIndependentlyCoalesced();
     test_handleRumbleFromBackend_zeroIsCoalescedWhenInitial();
 
-    // ── Motion (sender → satellite, IMU forwarding) ──
+    // Motion (sender → satellite, IMU forwarding)
     test_msgMotion_constant();
     test_motionReport_wireSize();
     test_motionScaleConstants_fullScale();
@@ -3982,7 +3812,7 @@ int main() {
     test_handleMotionData_inactiveController();
     test_handleMotionData_routesAcrossControllers();
 
-    // ── Per-type motion sink + per-serial backend health diagnostics ──
+    // Per-type motion sink + per-serial backend health diagnostics
     test_snapshot_motionSinkSupportedForType_DS4();
     test_snapshot_motionSinkSupportedForType_Xbox();
     test_snapshot_motionSinkSupportedForType_macOS_no_backend();
@@ -3990,7 +3820,7 @@ int main() {
     test_snapshot_motionBackendOk_kernel_rejected();
     test_snapshot_motionBackendOk_unknown_serial_is_optimistic();
 
-    // ── Battery (sender → satellite, periodic) ──
+    // Battery (sender → satellite, periodic)
     test_msgBattery_constant();
     test_batteryStatusName_known();
     test_handleBatteryUpdate_cachesAndForwards();
@@ -4001,14 +3831,14 @@ int main() {
     test_handleBatteryUpdate_inactiveController();
     test_snapshot_batteryDefaultsUnknown();
 
-    // ── Touchpad (sender → satellite, Task 1.3) ──
+    // Touchpad (sender → satellite)
     test_msgTouchpad_constant();
     test_handleTouchpadData_forwardsToBackend();
     test_handleTouchpadData_cachesEvenWhenBackendDeclines();
     test_handleTouchpadData_invalidToken();
     test_handleTouchpadData_outOfBoundsCtrlIdx();
     test_handleTouchpadData_inactiveController();
-    // Task 1.3 — codec, wire decode, routing modes, hot-apply.
+    // Codec, wire decode, routing modes, hot-apply.
     test_touchpadWireToRange_endpoints();
     test_touchpadWireToRange_clampsAndDegenerate();
     test_ds4PackTouchFinger_activeFlagAndId();
@@ -4030,7 +3860,7 @@ int main() {
     test_handleTouchpadData_mouseModeBigGapReanchors();
     test_setTouchpadMode_hotApplies();
     test_setTouchpadMode_unknownDeviceAndBadMode();
-    // Client-driven mode + server capabilities (new in this task).
+    // Client-driven mode + server capabilities.
     test_pairedDevice_defaultsToOff();
     test_connection_defaultsToOff();
     test_openSession_defaultParamIsOff();
@@ -4038,7 +3868,7 @@ int main() {
     test_deriveTouchpadCapabilities_padMouseMatchBackend();
     test_deriveTouchpadCapabilities_driverInstalledButBusDownStillSupports();
 
-    // ── Lightbar (host game → satellite → dish, Task 1.4) ──
+    // Lightbar (host game → satellite → dish)
     test_msgLightbar_constant();
     test_constructor_installsLightbarCallback();
     test_handleLightbarFromBackend_routesToOwningConnection();
@@ -4046,14 +3876,14 @@ int main() {
     test_handleLightbarFromBackend_coalescesIdenticalColours();
     test_handleLightbarFromBackend_anyChannelChangeEmits();
     test_handleLightbarFromBackend_separateControllersIndependentlyCoalesced();
-    // Task 1.4 — CAP_LIGHTBAR capability gating.
+    // CAP_LIGHTBAR capability gating.
     test_capLightbar_constant();
     test_handleLightbarFromBackend_notSentWithoutCapLightbar();
     test_handleLightbarFromBackend_capLightbarSenderGetsDedicatedStream();
     test_handleLightbarFromBackend_coalesceStateResetOnReAdd();
     test_lightbar_surfacedInConnectionsSnapshot();
 
-    // ── Hot-path optimisations: IPv4 codec ──
+    // Hot-path optimisations: IPv4 codec
     test_parseIPv4Nbo_canonical();
     test_parseIPv4Nbo_loopback();
     test_parseIPv4Nbo_allZeros();
@@ -4070,18 +3900,18 @@ int main() {
     test_ipv4_roundTrip();
     test_ipv4_matchesInetPtonByteOrder();
 
-    // ── Hot-path optimisations: openSession clientIPv4 seeding ──
+    // Hot-path optimisations: openSession clientIPv4 seeding
     test_openSession_seedsClientIPv4FromString();
     test_openSession_unparseableIPLeavesClientIPv4Zero();
 
-    // ── Hot-path optimisations: updatePostDecryptV4 ──
+    // Hot-path optimisations: updatePostDecryptV4
     test_updatePostDecryptV4_updatesCounter();
     test_updatePostDecryptV4_callsClientV4_notString();
     test_updatePostDecryptV4_invalidTokenIsNoOp();
     test_updatePostDecryptV4_refreshesClientIPOnChange();
     test_updatePostDecryptV4_preservesClientIPWhenUnchanged();
 
-    // ── Hot-path optimisations: handleGamepadDataAndUpdate fused entry ──
+    // Hot-path optimisations: handleGamepadDataAndUpdate fused entry
     test_handleGamepadDataAndUpdate_happyPath();
     test_handleGamepadDataAndUpdate_invalidTokenReturnsFalse();
     test_handleGamepadDataAndUpdate_inactiveControllerReturnsFalse();
@@ -4095,13 +3925,13 @@ int main() {
     test_handleGamepadDataAndUpdate_propagatesBackendFailure();
     test_handleGamepadDataAndUpdate_stillRefreshesIPOnInactiveController();
 
-    // ── Hot-path optimisations: Controller::usesDS4 cached flag ──
+    // Hot-path optimisations: Controller::usesDS4 cached flag
     test_usesDS4_defaultsToFalseOnAdd();
     test_usesDS4_setToTrueOnControllerTypeChangeToPS();
     test_usesDS4_revertedOnControllerTypeChangeBackToXbox();
     test_usesDS4_matchesLegacyHandleGamepadData();
 
-    // ── Hot-path optimisations: backward-compat for legacy string update ──
+    // Hot-path optimisations: backward-compat for legacy string update
     test_updatePostDecrypt_seedsClientIPv4FromString();
 
     std::cout << "\n=== Test Results ===\n";

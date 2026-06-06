@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tray.mm — macOS menu-bar status item and menu actions.
- */
 #include "tray.h"
 #include "config.h"
 #include "core/update_service.h"
@@ -13,7 +8,6 @@
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
-// ── Menu action target ─────────────────────────────────────────────────────
 @interface SatelliteTrayTarget : NSObject <NSUserNotificationCenterDelegate>
 - (void)openUI:(id)sender;
 - (void)updateAction:(id)sender;
@@ -101,8 +95,7 @@ static SatelliteTrayTarget* g_target = nil;
     [g_statusItem setMenu:menu];
 }
 
-// ── Reverse-pairing notification delegate ──────────────────────────────────
-// Always present (the app is an accessory item, never frontmost).
+// Always present: the app is an accessory item, never frontmost.
 - (BOOL)userNotificationCenter:(NSUserNotificationCenter*)center
      shouldPresentNotification:(NSUserNotification*)notification {
     (void)center;
@@ -144,7 +137,6 @@ static SatelliteTrayTarget* g_target = nil;
 
 @end
 
-// ── Public API ─────────────────────────────────────────────────────────────
 void addTrayIcon() {
     g_statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     NSStatusBarButton* btn = [g_statusItem button];

@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * app_state.h — Portable shared app state (extern declarations).
- *
- * These were previously declared in platform/windows/globals.h, which is
- * not reachable from a macOS/Linux build. Extracting them here lets the
- * net/ layer depend only on portable headers.
- *
- * Definitions live in the per-platform globals.cpp (currently just
- * platform/windows/globals.cpp; a platform/macos/globals.cpp will mirror
- * it in Stage 5).
- */
+// Definitions live in the per-platform globals.cpp.
 #pragma once
 
 #include "core/types.h"
@@ -34,21 +23,17 @@
 #include <unordered_map>
 #include <vector>
 
-// ── Config ──────────────────────────────────────────────────────────────────
 extern Config g_config;
 extern std::mutex g_configMtx;
 
-// ── App lifecycle / listen state ────────────────────────────────────────────
 extern std::atomic<bool> g_appRunning;
 extern std::atomic<bool> g_listening;
 
-// True while the mDNS / Bonjour responder thread holds its multicast socket
-// (Task 1.6). False when the bind/join failed or the thread has exited.
-// Surfaced read-only in the web UI so operators can see the modern discovery
-// path is live without grepping the log ring.
+// True while the mDNS responder thread holds its multicast socket; false when
+// bind/join failed or the thread exited. Surfaced read-only in the web UI.
 extern std::atomic<bool> g_mdnsResponderActive;
 
-// ── Telemetry counters (read by webserver SSE) ──────────────────────────────
+// Telemetry counters (read by webserver SSE).
 extern std::atomic<uint64_t> g_packetCount;
 extern std::atomic<uint64_t> g_submitOk;
 extern std::atomic<uint64_t> g_submitFail;
@@ -58,24 +43,19 @@ extern std::atomic<uint32_t> g_senderIP;
 extern std::atomic<uint64_t> g_decryptFail;
 extern std::atomic<uint64_t> g_replayDrop;
 
-// ── Shared networking state ─────────────────────────────────────────────────
 // g_httpServer is the admin UI + admin API (plain HTTP, bound to 127.0.0.1).
-// g_clientServer points at the sender-facing HTTPS server; it is owned by
-// clientApiThread (an httplib::SSLServer cannot be a global — it has no
-// default constructor) and is null until that thread has constructed it.
+// g_clientServer points at the sender-facing HTTPS server; owned by
+// clientApiThread (an httplib::SSLServer has no default ctor so can't be a
+// global) and null until that thread constructs it.
 extern httplib::Server g_httpServer;
 extern httplib::Server* g_clientServer;
 extern SOCKET g_pairSock;
 extern std::string g_webDir;
 
-// ── OTA updater (composition-root assigned, nullable) ───────────────────────
-// Owned by main.cpp on each platform. Webserver and tray code use this
-// pointer when present; null on platforms where the updater isn't wired
-// (e.g. portable Linux builds that still link the .cpp may opt out).
+// Owned by main.cpp per platform; null where the updater isn't wired.
 class UpdateService;
 extern UpdateService* g_updateService;
 
-// ── Log ring ────────────────────────────────────────────────────────────────
 extern std::mutex g_logMtx;
 extern std::vector<LogEntry> g_logRing;
 extern int g_logHead;     // next write position

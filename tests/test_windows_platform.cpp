@@ -1,24 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tests/test_windows_platform.cpp — Unit tests for the Windows platform port.
- *
- * Self-contained: no external test framework required.
- * Covers the bits of platform/windows/ that are testable without a real
- * desktop session, ViGEm bus driver, or paired client:
- *   - JSON helpers (jsonEscape, jsonGetString)
- *   - Config persistence round-trip (loadConfig / saveConfig)
- *   - Run-key autostart create / remove (setAutoStart / getAutoStart)
- *   - Path helpers (getExeDir, getCurrentDate, configPath)
- *
- * configPath() resolves under %APPDATA%\satellite, which we cannot
- * redirect with an env var on Windows (SHGetFolderPath consults the
- * shell folders registry, not %APPDATA%). The autostart tests likewise
- * touch HKCU\...\Run\satellite. Both kinds of side effect are made
- * hermetic with snapshot / restore so the tests are safe to run
- * locally as well as on an ephemeral CI runner.
- */
+// configPath() resolves under %APPDATA%\satellite and can't be redirected via
+// env var on Windows (SHGetFolderPath reads the shell-folders registry); the
+// autostart tests touch HKCU\...\Run\satellite. Both side effects are made
+// hermetic via snapshot/restore so the tests are safe to run locally and in CI.
 #include "../src/platform/windows/config.h"
 
 #include <fstream>
@@ -26,7 +10,6 @@
 #include <sstream>
 #include <string>
 
-// ── Test harness (mirrors tests/test_linux_platform.cpp) ─────────────────────
 static int g_pass = 0;
 static int g_fail = 0;
 static std::string g_currentTest;
@@ -58,10 +41,8 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
-// ── HKCU\...\Run\satellite snapshot/restore ─────────────────────────────────
-// Captures whatever value (if any) the developer or CI runner already has
-// under the autostart Run key for our APP_NAME, so the registry tests can
-// flip it freely and put it back afterwards.
+// Captures any existing HKCU Run-key value for APP_NAME so the registry tests
+// can flip it freely and put it back afterwards.
 struct AutoStartSnapshot {
     bool existed = false;
     std::string value;
@@ -100,9 +81,8 @@ struct AutoStartSnapshot {
     }
 };
 
-// ── %APPDATA%\satellite\config.json snapshot/restore ────────────────────────
-// configPath() can't be redirected on Windows, so we save and restore
-// whatever's already on disk to keep the round-trip test hermetic.
+// configPath() can't be redirected on Windows, so save/restore whatever's
+// already on disk to keep the round-trip test hermetic.
 struct ConfigFileSnapshot {
     std::string path;
     bool existed = false;
@@ -131,7 +111,6 @@ static bool fileExists(const std::string& p) {
     return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-// ── jsonEscape / jsonGetString ──────────────────────────────────────────────
 static void testJsonEscape() {
     TEST("jsonEscape — passthrough of plain ASCII");
     EXPECT_EQ(jsonEscape("hello"), std::string("hello"));
@@ -188,7 +167,6 @@ static void testJsonGetString() {
     EXPECT_EQ(jsonGetString(R"({"name":""})", "name"), std::string(""));
 }
 
-// ── configPath / loadConfig / saveConfig ────────────────────────────────────
 static void testConfigPath() {
     TEST("configPath — lives under satellite\\config.json");
     std::string p = configPath();
@@ -236,15 +214,13 @@ static void testConfigRoundTrip() {
         EXPECT_EQ(in.pairedDevices[0].lastIP, std::string("192.168.1.42"));
         EXPECT_EQ(in.pairedDevices[0].pairedAt, std::string("2025-01-15"));
         EXPECT_EQ(in.pairedDevices[0].sharedKeyHex, std::string("deadbeef00"));
-        // Task 1.3 — touchpadMode persists across the save/load round-trip.
         EXPECT_EQ(static_cast<int>(in.pairedDevices[0].touchpadMode),
                   static_cast<int>(TOUCHPAD_MODE_MOUSE));
     }
 }
 
-// discoveryBroadcastEnabled (Task 1.6) — round-trips both ways, and an absent
-// key defaults to true so a pre-1.6 config doesn't silently disable the
-// legacy beacon. ConfigFileSnapshot keeps the real config file hermetic.
+// An absent discoveryBroadcastEnabled key must default to true so a pre-1.6
+// config doesn't silently disable the legacy beacon.
 static void testDiscoveryBroadcastConfig() {
     ConfigFileSnapshot snap;
 
@@ -275,7 +251,6 @@ static void testDiscoveryBroadcastConfig() {
     }
 }
 
-// ── HKCU\...\Run autostart ──────────────────────────────────────────────────
 static void testAutoStartEnable() {
     AutoStartSnapshot snap;
     setAutoStart(false);
@@ -314,7 +289,6 @@ static void testAutoStartIdempotent() {
     EXPECT_EQ(getAutoStart(), true);
 }
 
-// ── Path / date helpers ─────────────────────────────────────────────────────
 static void testGetExeDir() {
     TEST("getExeDir — returns a non-empty path");
     std::string d = getExeDir();
@@ -338,7 +312,6 @@ static void testGetCurrentDate() {
     }
 }
 
-// ── Driver ──────────────────────────────────────────────────────────────────
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 

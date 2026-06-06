@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * crypto.cpp — DPAPI, SHA-256, sessions, PIN, credentials, libsodium wrappers
- */
 #include "crypto.h"
 #include <sodium.h>
 
-// ── Base64 helpers ──────────────────────────────────────────────────────────
 static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 std::string base64Encode(const std::vector<BYTE>& data) {
@@ -43,7 +37,6 @@ std::vector<BYTE> base64Decode(const std::string& s) {
     return out;
 }
 
-// ── SHA-256 via Windows BCrypt ──────────────────────────────────────────────
 std::string sha256hex(const std::string& input) {
     BCRYPT_ALG_HANDLE hAlg = nullptr;
     BCRYPT_HASH_HANDLE hHash = nullptr;
@@ -61,7 +54,6 @@ std::string sha256hex(const std::string& input) {
     return std::string(hex);
 }
 
-// ── DPAPI encrypt/decrypt ───────────────────────────────────────────────────
 std::string dpapiEncrypt(const std::string& plaintext) {
     DATA_BLOB in, out;
     in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plaintext.data()));
@@ -83,61 +75,64 @@ std::string dpapiDecrypt(const std::string& encoded) {
     return result;
 }
 
-// ── Random hex/digit generation ─────────────────────────────────────────────
+// PINs and identity tokens are security-sensitive, so these draw from
+// libsodium's CSPRNG, never std::mt19937 (deterministic, reconstructable).
 std::string randomHex(int bytes) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 255);
     std::string out;
     char buf[3];
     for (int i = 0; i < bytes; i++) {
-        sprintf(buf, "%02x", dis(gen));
+        uint8_t b = 0;
+        randombytes_buf(&b, 1);
+        (void)sprintf(buf, "%02x", b);
         out += buf;
     }
     return out;
 }
 
 std::string randomDigits(int n) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 9);
     std::string out;
-    for (int i = 0; i < n; i++) out += ('0' + dis(gen));
+    // randombytes_uniform is rejection-sampled — no modulo bias (unlike % 10).
+    for (int i = 0; i < n; i++) out += static_cast<char>('0' + randombytes_uniform(10));
     return out;
 }
 
-// ── PIN state ───────────────────────────────────────────────────────────────
-// Formalises the (g_currentPin, g_pinExpiry, g_pinPairedAt) state machine the
-// dashboard reads. See PinState in core/types.h:
-//   PinIdle    — empty + no recent pair.
-//   PinActive  — PIN generated, within the 5-min window.
-//   PinExpired — window lapsed without a successful pair.
-//   PinPaired  — momentary, cleared after PIN_PAIRED_HOLD_SEC.
+// PIN state machine surfaced to the dashboard; see PinState in core/types.h.
 static std::mutex g_pinMtx;
 static std::string g_currentPin;
 static std::chrono::steady_clock::time_point g_pinExpiry;
 static std::chrono::steady_clock::time_point g_pinPairedAt;
 static bool g_pinPairedValid = false;
+static int g_pinFailCount = 0;
 static constexpr int PIN_PAIRED_HOLD_SEC = 5;
+// Burn the PIN after this many wrong guesses; otherwise the 4-digit space is
+// online-brute-forceable within the 5-minute window.
+static constexpr int PIN_MAX_FAILS = 5;
 
 std::string generatePin() {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     g_currentPin = randomDigits(4);
     g_pinExpiry = std::chrono::steady_clock::now() + std::chrono::minutes(5);
     g_pinPairedValid = false;
+    g_pinFailCount = 0;
     return g_currentPin;
 }
 
 bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     if (g_currentPin.empty() || std::chrono::steady_clock::now() > g_pinExpiry) return false;
-    bool ok = (pin == g_currentPin);
+    // Constant-time compare so a wrong guess can't leak (via timing) how many
+    // leading digits matched. sodium_memcmp needs equal lengths — gate on size.
+    bool ok = (pin.size() == g_currentPin.size()) &&
+              sodium_memcmp(pin.data(), g_currentPin.data(), g_currentPin.size()) == 0;
     if (ok) {
         g_currentPin.clear();
+        g_pinFailCount = 0;
         g_pinPairedAt = std::chrono::steady_clock::now();
         g_pinPairedValid = true;
+        return true;
     }
-    return ok;
+    if (++g_pinFailCount >= PIN_MAX_FAILS) g_currentPin.clear();
+    return false;
 }
 
 PinSnapshot pinSnapshot() {
@@ -165,7 +160,6 @@ PinSnapshot pinSnapshot() {
     return s;
 }
 
-// ── Hex encode/decode ───────────────────────────────────────────────────────
 std::string hexEncode(const uint8_t* data, size_t len) {
     std::string out;
     out.reserve(len * 2);
@@ -187,47 +181,38 @@ bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen) {
     return true;
 }
 
-// ── libsodium initialization ────────────────────────────────────────────────
 bool sodiumInit() {
-    return sodium_init() >= 0; // returns 0 on first init, 1 if already initialized
+    return sodium_init() >= 0; // 0 = first init, 1 = already initialized; both OK
 }
 
-// ── X25519 key pair generation ──────────────────────────────────────────────
 void generateKeyPair(uint8_t pk[32], uint8_t sk[32]) { crypto_kx_keypair(pk, sk); }
 
-// ── Compute shared key from X25519 key exchange (server side) ───────────────
 bool computeSharedKey(uint8_t sharedKey[32], const uint8_t clientPk[32], const uint8_t serverSk[32],
                       const uint8_t serverPk[32]) {
-    // Server uses rx key (what client sends is what server receives)
     uint8_t rx[32], tx[32];
     if (crypto_kx_server_session_keys(rx, tx, serverPk, serverSk, clientPk) != 0) return false;
-    // Use rx as the shared key (client encrypts with tx, server decrypts with rx)
-    // For simplicity, we use rx for both directions (symmetric)
+    // Symmetric: both directions key off rx, so the client's tx matches.
     memcpy(sharedKey, rx, 32);
     return true;
 }
 
-// ── Generate a random 4-byte token ──────────────────────────────────────────
 uint32_t generateToken() {
     uint32_t token = 0;
     randombytes_buf(&token, sizeof(token));
-    // Avoid token 0 (reserved for "no token")
-    while (token == 0) randombytes_buf(&token, sizeof(token));
+    while (token == 0) randombytes_buf(&token, sizeof(token)); // 0 is reserved for "no token"
     return token;
 }
 
-// ── Encrypt a packet (ChaCha20-Poly1305 IETF) ──────────────────────────────
 bool encryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
                    const uint8_t* plaintext, size_t ptLen, uint8_t* ciphertext,
                    unsigned long long* ctLen) {
-    // Build 12-byte nonce: zero-pad the 4-byte counter (big-endian, right-aligned)
+    // Nonce: 4-byte counter big-endian, right-aligned in 12 zero bytes. AAD: token big-endian.
     uint8_t nonce[12] = {};
     nonce[8] = (uint8_t)(counter >> 24);
     nonce[9] = (uint8_t)(counter >> 16);
     nonce[10] = (uint8_t)(counter >> 8);
     nonce[11] = (uint8_t)(counter);
 
-    // AAD is the 4-byte token (big-endian)
     uint8_t aad[4];
     aad[0] = (uint8_t)(token >> 24);
     aad[1] = (uint8_t)(token >> 16);
@@ -238,7 +223,6 @@ bool encryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
                                                      sizeof(aad), nullptr, nonce, key) == 0;
 }
 
-// ── Decrypt a packet (ChaCha20-Poly1305 IETF) ──────────────────────────────
 bool decryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
                    const uint8_t* ciphertext, size_t ctLen, uint8_t* plaintext,
                    unsigned long long* ptLen) {

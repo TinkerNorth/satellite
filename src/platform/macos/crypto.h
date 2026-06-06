@@ -1,51 +1,36 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * crypto.h — SHA-256, sessions, PIN, credentials, libsodium wrappers (macOS).
- *
- * Mirrors the Windows API surface (crypto.h) so files under src/net/ compile
- * unchanged.
- * Where Windows uses DPAPI + BCrypt, macOS uses libsodium primitives backed by
- * a per-user keyfile stored in the app-support directory.
- */
+// Mirrors the Windows crypto.h API surface so files under src/net/ compile
+// unchanged. Windows uses DPAPI + BCrypt; macOS uses libsodium primitives
+// backed by a per-user keyfile in the app-support directory (no Keychain yet).
 #pragma once
 #include "globals.h"
 
 #include <cstdint>
 
-// ── Crypto ──────────────────────────────────────────────────────────────────
 std::string sha256hex(const std::string& input);
 
-// Encrypt/decrypt arbitrary-length plaintext for local persistence.
-// Windows uses DPAPI; macOS uses libsodium secretbox + local keyfile.
+// dpapi* names kept for cross-platform parity; macOS backs these with libsodium
+// secretbox + local keyfile rather than DPAPI.
 std::string dpapiEncrypt(const std::string& plaintext);
 std::string dpapiDecrypt(const std::string& encoded);
 
-// ── Random ──────────────────────────────────────────────────────────────────
 std::string randomHex(int bytes);
 std::string randomDigits(int n);
 
-// ── PIN ─────────────────────────────────────────────────────────────────────
 std::string generatePin();
 bool verifyPin(const std::string& pin);
 
-// Snapshot of the in-process PIN state (for /api/pin/status). Mirrors the
-// PinState enum in core/types.h but also carries the remaining-time hint so
-// the dashboard can render an "Expires in m:ss" countdown without re-deriving
-// from a separate `expiresAtEpoch` field. `secondsRemaining` is 0 unless
-// `state == PinState::PinActive`.
+// secondsRemaining lets the dashboard render an "Expires in m:ss" countdown
+// without a separate expiresAtEpoch field; it is 0 unless state == PinActive.
 struct PinSnapshot {
     PinState state = PinState::PinIdle;
     int secondsRemaining = 0;
 };
 PinSnapshot pinSnapshot();
 
-// ── Hex encode/decode ───────────────────────────────────────────────────────
 std::string hexEncode(const uint8_t* data, size_t len);
 bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen);
 
-// ── libsodium / ChaCha20-Poly1305 ──────────────────────────────────────────
 bool sodiumInit();
 void generateKeyPair(uint8_t pk[32], uint8_t sk[32]);
 bool computeSharedKey(uint8_t sharedKey[32], const uint8_t clientPk[32], const uint8_t serverSk[32],

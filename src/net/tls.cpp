@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * tls.cpp — self-signed TLS certificate generation (OpenSSL).
- *
- * The client API server (webserver.cpp) is HTTPS-only. It needs a cert+key;
- * with no CA available on a LAN we generate a self-signed pair on first run
- * and persist it next to the config file so the identity is stable across
- * restarts. Requires OpenSSL 3.0+ (EVP_RSA_gen).
- */
+// Self-signed TLS cert generation (OpenSSL 3.0+, EVP_RSA_gen). The client API
+// server is HTTPS-only; with no CA on a LAN we generate a self-signed pair on
+// first run and persist it beside the config file for a stable identity.
 #include "tls.h"
 #include "config.h" // configPath()
 

@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tray.cpp — libayatana-appindicator status icon and menu (Linux).
- *
- * Menu mirrors the Win32 / macOS trays: Open Web UI / Check for Updates /
- * Quit.
- *
- * On vanilla GNOME (no AppIndicator extension) the indicator object is
- * created and "active" on D-Bus, but no shell will render it — there is no
- * portable way to detect that case at runtime. Document it instead.
- */
+// libayatana-appindicator status icon and menu. Caveat: on vanilla GNOME (no
+// AppIndicator extension) the indicator is created and "active" on D-Bus but no
+// shell renders it, and there's no portable way to detect that at runtime.
 #include "tray.h"
 
 #ifdef SATELLITE_HAS_TRAY
@@ -40,7 +31,6 @@ static guint g_pollSourceId = 0;
 static UpdateState g_lastUpdateState = UpdateState::Idle;
 static std::string g_lastUpdateVersion;
 
-// ── Menu callbacks ──────────────────────────────────────────────────────────
 static void onOpenUI(GtkMenuItem*, gpointer) {
     char cmd[96];
     std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d >/dev/null 2>&1 &",
@@ -54,8 +44,8 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
     if (s.state == UpdateState::Downloaded) {
         g_updateService->requestInstall();
     } else if (s.state == UpdateState::UpdateAvailable) {
-        // Manual installs (Deb/Portable) can't be triggered in-app —
-        // open the settings page so the user sees the copy-button.
+        // Manual installs (Deb/Portable) can't run in-app; the settings page
+        // shows the copy-button instead.
         if (s.info.installMethod == InstallMethod::SelfInstall) {
             g_updateService->requestDownload();
         }
@@ -104,16 +94,15 @@ static gboolean pollMenuState(gpointer) {
     return G_SOURCE_CONTINUE;
 }
 
-// Resolve the icon: prefer the bundled web/icon.png (dev / portable layout),
-// otherwise fall back to the freedesktop "input-gaming" themed name which
-// virtually every icon theme ships.
+// Prefer the bundled web/icon.png; else fall back to the freedesktop
+// "input-gaming" themed name that virtually every icon theme ships.
 static void applyIcon(AppIndicator* ind) {
     if (!g_webDir.empty()) {
         struct stat st;
         std::string iconFile = g_webDir + "/icon.png";
         if (stat(iconFile.c_str(), &st) == 0) {
-            // app-indicator looks up names within the theme path: place the
-            // file as <dir>/icon.png and ask for "icon" (no extension).
+            // app-indicator looks names up within the theme path, so point it at
+            // <dir> and ask for "icon" (no extension).
             app_indicator_set_icon_theme_path(ind, g_webDir.c_str());
             app_indicator_set_icon_full(ind, "icon", APP_TITLE);
             return;
@@ -122,7 +111,6 @@ static void applyIcon(AppIndicator* ind) {
     app_indicator_set_icon_full(ind, "input-gaming", APP_TITLE);
 }
 
-// ── Reverse-pairing native prompt (libnotify) ───────────────────────────────
 #ifdef SATELLITE_HAS_LIBNOTIFY
 static void onPairAccept(NotifyNotification*, char* action, gpointer user_data) {
     (void)action;
@@ -139,8 +127,8 @@ static void onPairReject(NotifyNotification*, char* action, gpointer user_data) 
 // Release our GObject ref once the notification closes (after any action fires).
 static void onPairClosed(NotifyNotification* n, gpointer) { g_object_unref(n); }
 
-// Runs on the GTK main loop (g_idle_add target). Shows the dish's PIN so the
-// operator can confirm it matches the device — that visual match is the auth.
+// g_idle_add target (GTK main loop). Shows the dish's PIN so the operator can
+// confirm it matches the device — that visual match is the auth.
 static gboolean showPairPromptIdle(gpointer data) {
     std::unique_ptr<std::string> deviceId(static_cast<std::string*>(data));
     std::string name, ip, pin;
@@ -172,7 +160,6 @@ void notifyPairRequestLinux(const std::string& deviceId) {
 void notifyPairRequestLinux(const std::string&) {}
 #endif
 
-// ── Public API ──────────────────────────────────────────────────────────────
 bool addTrayIcon() {
     if (getenv("DISPLAY") == nullptr && getenv("WAYLAND_DISPLAY") == nullptr) { return false; }
     int argc = 0;
