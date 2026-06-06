@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * platform/linux/gamepad_backend.cpp — Linux uinput probe.
- *
- * Reports backend status as one of:
- *   available           — /dev/uinput exists and the current user can write to it
- *   PERMISSION_DENIED   — /dev/uinput exists but is not writable
- *   DEVICE_MISSING      — /dev/uinput is absent (uinput module likely not loaded)
- *
- * Note: we don't try to distinguish "module exists but not loaded" from
- * "module not built into the kernel" — both surface as DEVICE_MISSING. The
- * web UI's remediation copy covers `modprobe uinput` either way.
- */
+// Linux uinput probe. "module not loaded" vs "not built into the kernel" both
+// surface as DEVICE_MISSING — the web UI's `modprobe uinput` copy covers both.
 #include "core/gamepad_backend.h"
 
 #include <sys/stat.h>

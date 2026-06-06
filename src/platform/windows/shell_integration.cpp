@@ -1,23 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * shell_integration.cpp -- AppUserModelID, jump list, toast helpers.
- *
- * COM is the through-line: jump lists and shortcut-property writes
- * both go through CoCreateInstance, so callers MUST have called
- * CoInitializeEx (apartment-threaded is fine) before invoking
- * refreshJumpList. main.cpp does this once at startup -- see the
- * CoInitializeEx call alongside lifecycle::registerForRestart.
- *
- * Toasts deliberately avoid the WinRT path. On Win10+, Explorer
- * auto-promotes Shell_NotifyIcon(NIM_MODIFY, NIF_INFO) notifications
- * to Action Center toasts *if and only if* the calling process has
- * a registered AUMID. That's one call + one struct vs. the WinRT
- * dance (RoInitialize, GetActivationFactory, XmlDocument, IToastNotifier);
- * the legacy API works fine for our use case (status nudges, not
- * interactive notifications).
- */
+// Callers MUST have called CoInitializeEx (any apartment) before
+// refreshJumpList -- jump lists and shortcut-property writes go through
+// CoCreateInstance. main.cpp does this at startup.
 #include "shell_integration.h"
 
 #include "config.h"
@@ -47,8 +31,8 @@ std::wstring toWide(const std::string& s) {
     return w;
 }
 
-// Pulled from app_lifecycle.cpp but inlined to keep the dependency
-// graph clean (shell_integration is one layer below app_lifecycle).
+// Inlined rather than shared from app_lifecycle: shell_integration is the
+// lower layer.
 std::wstring exePathWide() {
     wchar_t buf[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
@@ -56,9 +40,8 @@ std::wstring exePathWide() {
     return std::wstring(buf, n);
 }
 
-// Create an IShellLinkW representing one jump-list task and stamp it
-// with the AppUserModelID so Explorer routes it through our group.
-// On failure returns nullptr; caller must Release().
+// Build one jump-list task stamped with the AUMID. nullptr on failure;
+// caller must Release().
 IShellLinkW* makeShellLink(const std::wstring& target, const std::wstring& args,
                            const std::wstring& title, const std::wstring& description,
                            const std::wstring& iconPath, int iconIndex) {
@@ -72,9 +55,8 @@ IShellLinkW* makeShellLink(const std::wstring& target, const std::wstring& args,
     link->SetDescription(description.c_str());
     if (!iconPath.empty()) link->SetIconLocation(iconPath.c_str(), iconIndex);
 
-    // The IPropertyStore dance is mandatory: jump-list user tasks
-    // without System.Title don't render. We also stamp the AUMID so
-    // even out-of-context launches (Win+R, etc.) group correctly.
+    // Mandatory: jump-list user tasks without System.Title don't render. AUMID
+    // stamp groups even out-of-context launches (Win+R).
     IPropertyStore* props = nullptr;
     if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props))) && props) {
         PROPVARIANT pv{};
@@ -114,8 +96,7 @@ bool refreshJumpList() {
         return false;
     }
 
-    // Stamp the destination list with our AUMID so it lands in the
-    // pinned-app group rather than the generic "satellite.exe" bucket.
+    // AUMID so the list lands in the pinned-app group, not the generic bucket.
     dst->SetAppID(kAppUserModelID);
 
     UINT slots = 0;
@@ -144,10 +125,8 @@ bool refreshJumpList() {
     wchar_t urlBuf[64];
     StringCchPrintfW(urlBuf, 64, L"http://localhost:%d", webPort);
 
-    // Task 1: Open Web UI -- ShellExecute the URL via explorer.exe so
-    // it lands in the user's default browser. We use the explorer
-    // launcher (not satellite.exe) so the launcher's "Run" verb is
-    // implicit; SetPath requires an .exe.
+    // Open Web UI via explorer.exe so the URL opens in the default browser
+    // (SetPath requires an .exe, so we can't point straight at the URL).
     wchar_t explorerExe[MAX_PATH];
     GetWindowsDirectoryW(explorerExe, MAX_PATH);
     StringCchCatW(explorerExe, MAX_PATH, L"\\explorer.exe");
@@ -159,8 +138,8 @@ bool refreshJumpList() {
         openUi->Release();
     }
 
-    // Task 2: Open Logs Folder. Path resolved at runtime so it tracks
-    // the user's actual %LOCALAPPDATA% (matters for roaming profiles).
+    // Open Logs Folder. Path resolved at runtime so it tracks the user's
+    // actual %LOCALAPPDATA% (matters for roaming profiles).
     PWSTR localAppData = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
         std::wstring logsDir = std::wstring(localAppData) + L"\\TinkerNorth\\Satellite\\logs";
@@ -173,12 +152,9 @@ bool refreshJumpList() {
         }
     }
 
-    // Task 3: Check for Updates. Launches a second satellite.exe
-    // instance with --check-updates; the singleton mutex (see
-    // app_lifecycle::acquireSingleInstance) catches that and the
-    // already-running instance picks up the request via its
-    // second-instance handler. Future: pass via shared memory or a
-    // named pipe so the click does the right thing reliably.
+    // Check for Updates. Launches a second satellite.exe with --check-updates;
+    // the singleton mutex (acquireSingleInstance) routes it to the running
+    // instance's second-instance handler.
     IShellLinkW* checkUpdates =
         makeShellLink(exe, L"--check-updates", L"Check for Updates",
                       L"Look for a newer Satellite release on GitHub", exe, 0);
@@ -202,8 +178,7 @@ bool refreshJumpList() {
 void showToast(const std::string& title, const std::string& body) {
     if (g_hwnd == nullptr) return;
 
-    // NOTIFYICONDATAW so the wide-string fields don't truncate at the
-    // ANSI code page boundary for non-ASCII titles/bodies.
+    // Wide variant so non-ASCII titles/bodies don't truncate at the ANSI boundary.
     NOTIFYICONDATAW nid{};
     nid.cbSize = sizeof(nid);
     nid.hWnd = g_hwnd;

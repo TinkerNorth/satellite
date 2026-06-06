@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * globals.h — macOS-specific shared state and constants.
- *
- * Portable app state (Config, atomics, log ring, httplib, g_pairSock) lives in
- * core/app_state.h; this header layers the macOS-only extras on top and pulls
- * in the system headers that the rest of the files under platform/macos/ rely on.
- */
+// Layers macOS-only extras and system-header includes on top of the portable
+// app state (Config, atomics, log ring, httplib, g_pairSock) in core/app_state.h.
 #pragma once
 
 // Portable shared state (pulls in net_compat.h).

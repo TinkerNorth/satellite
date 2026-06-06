@@ -1,28 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tray.cpp -- System tray icon, menu, WndProc
- *
- * Modern Win10/11 tray surface. Three things make this "first-class":
- *   * NOTIFYICONDATAW + NOTIFYICON_VERSION_4 -- the only protocol
- *     Explorer actively maintains. v3 still works but loses out on
- *     correct mouse coords and balloon-callback fidelity.
- *   * NIF_GUID identity -- Explorer keys tray-hide / promotion choices
- *     on this GUID, so they survive reinstalls and exe-path changes.
- *     Without it, every update re-prompts the user to allow the icon.
- *   * Dynamic tooltip via NIM_MODIFY -- the hover string reflects live
- *     state (listening / idle / session count) rather than just the
- *     app name. tray::updateTooltip() pushes the latest snapshot.
- *
- * The class also owns:
- *   * WM_TASKBARCREATED re-registration so Explorer crashes / RDP
- *     reconnects don't leave us with an invisible icon.
- *   * Restart Manager + WM_QUERYENDSESSION clean shutdown so installer
- *     OTA upgrades let saveConfig run.
- *   * Single-instance ping handling (WM_SECOND_INSTANCE) so a stray
- *     double-launch from the desktop just re-opens the web UI.
- */
 #include "tray.h"
 #include "app_lifecycle.h"
 #include "config.h"
@@ -50,13 +26,11 @@ static std::wstring g_lastTooltip;   // remember last text so we don't churn NIM
 // (re)created. Identifier is initialised lazily on first add.
 static UINT g_taskbarCreatedMsg = 0;
 
-// index → deviceId backing the current tray-menu pairing items. Touched only on
-// the GUI thread (menu build + WM_COMMAND), so it needs no lock.
+// index → deviceId for tray-menu pairing items. GUI-thread only; no lock.
 static std::vector<std::string> g_menuPairIds;
 
-// Requests arrive on the HTTP thread, but the WinRT toast (+ COM) must run on the
-// COM-initialised GUI thread. The listener queues the deviceId here and posts
-// WM_PAIR_NOTIFY for the message loop to drain.
+// Requests arrive on the HTTP thread but the WinRT toast (+ COM) must run on the
+// COM-initialised GUI thread, so queue the deviceId and post WM_PAIR_NOTIFY.
 static const UINT WM_PAIR_NOTIFY = WM_USER + 101;
 static std::mutex g_incomingMtx;
 static std::deque<std::string> g_incoming;
@@ -69,9 +43,7 @@ static std::wstring toWide(const std::string& s) {
     return w;
 }
 
-// Compose the live status string used as the tray tooltip. Kept short
-// because szTip is capped at 128 wchars and most shells truncate around
-// 64 for hover layout reasons.
+// szTip caps at 128 wchars and most shells truncate hover text near 64.
 static std::wstring composeTooltip() {
     int udpPort, webPort;
     {
@@ -120,12 +92,9 @@ static void registerTrayIcon(HWND hwnd) {
     g_lastTooltip = composeTooltip();
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
 
-    // First attempt: with NIF_GUID. Common failure mode: the GUID is
-    // already registered to a different (stale) exe path -- Explorer
-    // refuses to remap silently. Recover by deleting the stale
-    // registration and trying again. If even that fails (corrupted
-    // tray cache, Win7 fallback), drop NIF_GUID entirely and live
-    // without the cross-install identity.
+    // NIF_GUID add can fail when the GUID is still registered to a stale exe
+    // path (Explorer won't remap silently). Delete + retry; if that also fails
+    // (corrupt tray cache, Win7), drop NIF_GUID and lose cross-install identity.
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) {
         NOTIFYICONDATAW del{};
         del.cbSize = sizeof(del);
@@ -140,12 +109,8 @@ static void registerTrayIcon(HWND hwnd) {
         }
     }
 
-    // NIM_SETVERSION enables modern behaviour (correct mouse coords in
-    // WM_TRAYICON LPARAM, balloon-callback notifications via NIN_*).
-    // Must come after NIM_ADD. The message format becomes:
-    //   LOWORD(lp) = event (WM_LBUTTONDBLCLK, WM_CONTEXTMENU, NIN_*)
-    //   HIWORD(lp) = icon uID
-    //   WPARAM    = packed cursor x/y
+    // Must follow NIM_ADD. v4 changes WM_TRAYICON layout: LOWORD(lp)=event,
+    // HIWORD(lp)=uID, WPARAM=packed cursor x/y (see WM_TRAYICON handler).
     g_nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
 }
@@ -172,7 +137,6 @@ void updateTrayTooltip() {
     StringCchCopyW(upd.szTip, ARRAYSIZE(upd.szTip), g_lastTooltip.c_str());
     Shell_NotifyIconW(NIM_MODIFY, &upd);
 
-    // Keep the cached struct in sync for future NIM_MODIFY calls.
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
 }
 
@@ -181,9 +145,8 @@ void showTrayMenu(HWND hwnd) {
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
 
-    // Pending reverse-pairing requests sit at the top — clicking one reopens its
-    // Accept/Reject dialog. Rebuilt every open from the live registry; the
-    // id→deviceId map is snapshotted so WM_COMMAND can resolve the click.
+    // Pending pairing requests at the top; the id→deviceId map is snapshotted so
+    // WM_COMMAND can resolve the click.
     auto pairReqs = pendingPairRequests();
     g_menuPairIds.clear();
     for (size_t i = 0; i < pairReqs.size(); i++) {
@@ -199,11 +162,8 @@ void showTrayMenu(HWND hwnd) {
     AppendMenuW(menu, MF_STRING, IDM_OPEN_UI, L"Open Web UI");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    // Updater entry -- rebuilt each open so the label reflects current
-    // state ("Install Update v1.2.3" vs "Check for Updates..."). When
-    // the updater isn't wired (g_updateService==nullptr), fall back to
-    // a disabled "Check for Updates..." item so the menu shape stays
-    // stable.
+    // Rebuilt each open so the label reflects current update state. Disabled
+    // fallback when the updater isn't wired keeps the menu shape stable.
     if (g_updateService) {
         UpdateStatusSnapshot snap = g_updateService->snapshot();
         if (snap.state == UpdateState::Downloaded && snap.info.available) {
@@ -229,16 +189,13 @@ void showTrayMenu(HWND hwnd) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
 
-    // SetForegroundWindow is required or the menu can fail to dismiss
-    // when the user clicks outside it -- a classic Win32 footgun.
+    // Required or the menu fails to dismiss on click-outside (Win32 footgun).
     SetForegroundWindow(hwnd);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
 }
 
-// Second-instance ping from app_lifecycle::acquireSingleInstance.
-// We use it as the "user tried to launch a second copy" cue and open
-// the web UI for them -- their probable intent.
+// Ping from acquireSingleInstance: a second launch attempt; we open the web UI.
 static const UINT WM_SECOND_INSTANCE = WM_USER + 100;
 
 static void openUrl(const wchar_t* url) {
@@ -256,21 +213,17 @@ static std::wstring webUiUrl(const wchar_t* path = L"") {
     return std::wstring(buf);
 }
 
-// ── Reverse-pairing native prompt ───────────────────────────────────────────
-// A dish that shows its own PIN raises a request; we toast the operator, and
-// the toast click opens a native Accept/Reject dialog — no browser. deviceIds
-// awaiting that click are queued here (the toast carries no payload of its own).
+// deviceIds awaiting a balloon click queue here (the toast carries no payload).
 static std::mutex g_pairQueueMtx;
 static std::deque<std::string> g_pendingPrompts;
 
-// Native accept/reject dialog for one request. Shows the dish's PIN so the
-// operator can confirm it matches the device (the auth is that visual match —
-// see net/pairing.h), then confirm/decline through pairing_service.
+// Accept/reject dialog for one request. The auth is the operator's visual match
+// of the displayed PIN against the device (see net/pairing.h).
 static void showPairingDialogWindows(HWND hwnd, const std::string& deviceId) {
     std::string name, ip, pin;
     int secs = 0;
     // Re-snapshot at click time: the request may have expired or been handled
-    // from the dashboard between the toast and the click.
+    // from the dashboard since the toast.
     if (!pairRequestSnapshot(deviceId, name, ip, pin, secs)) return;
 
     const std::wstring wInstr =
@@ -304,12 +257,10 @@ static void showPairingDialogWindows(HWND hwnd, const std::string& deviceId) {
     // Esc / cancel: leave it pending — the dashboard or the TTL handles it.
 }
 
-// pairing.cpp listener (registered from main). Fires on the HTTP thread, so it
-// only touches the thread-safe queue + Shell_NotifyIcon (toast) here; the modal
-// dialog waits for the GUI thread's balloon-click handler.
+// pairing.cpp listener (registered from main). Fires on the HTTP thread; the
+// WinRT toast must be raised on the COM-initialised GUI thread, so hand off via
+// the queue and wake the message loop.
 void notifyPairRequestWindows(const std::string& deviceId) {
-    // Fires on the HTTP thread; the WinRT toast must be raised on the
-    // COM-initialised GUI thread, so hand off and wake the message loop.
     {
         std::lock_guard<std::mutex> lk(g_incomingMtx);
         g_incoming.push_back(deviceId);
@@ -318,8 +269,8 @@ void notifyPairRequestWindows(const std::string& deviceId) {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    // Explorer (re)created its taskbar. Re-add our icon so the user
-    // doesn't end up with a running-but-invisible tray app.
+    // Explorer (re)created its taskbar (crash / RDP reconnect); re-add our icon
+    // so we're not running-but-invisible.
     if (g_taskbarCreatedMsg != 0 && msg == g_taskbarCreatedMsg) {
         registerTrayIcon(hwnd);
         return 0;
@@ -327,19 +278,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
     case WM_TRAYICON: {
-        // NOTIFYICON_VERSION_4 packs the mouse/keyboard event into
-        // LOWORD(lp); HIWORD(lp) is the icon uID. WPARAM carries
-        // the cursor's screen coordinates. The legacy v3 protocol put
-        // the event directly into lp -- comparing the whole lp against
-        // WM_LBUTTONDBLCLK never matches under v4.
+        // v4: event is LOWORD(lp), not the whole lp (v3) -- comparing the whole
+        // lp against WM_LBUTTONDBLCLK never matches under v4.
         UINT event = LOWORD(lp);
         if (event == WM_LBUTTONDBLCLK || event == NIN_KEYSELECT) {
             openUrl(webUiUrl().c_str());
         } else if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP) {
             showTrayMenu(hwnd);
         } else if (event == NIN_BALLOONUSERCLICK) {
-            // A queued pairing prompt means the toast the user just clicked was
-            // a pairing request — open the native Accept/Reject dialog(s).
+            // A queued prompt means the clicked toast was a pairing request.
             std::deque<std::string> todo;
             {
                 std::lock_guard<std::mutex> lk(g_pairQueueMtx);
@@ -349,8 +296,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 for (const auto& id : todo) showPairingDialogWindows(hwnd, id);
                 return 0;
             }
-            // Otherwise: open whichever surface is most useful. Update staged →
-            // settings page; else the dashboard.
+            // Else: staged update → settings page; otherwise the dashboard.
             if (g_updateService) {
                 UpdateStatusSnapshot s = g_updateService->snapshot();
                 if (s.info.available) {
@@ -369,8 +315,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_COPYDATA: {
-        // A protocol-activated toast button (satellite-pair:accept|reject/<id>)
-        // launched a second process, which forwarded the URI here.
+        // A protocol-activated toast button launched a second process that
+        // forwarded the satellite-pair: URI here.
         auto* cds = reinterpret_cast<COPYDATASTRUCT*>(lp);
         if (cds != nullptr && cds->dwData == PAIR_URI_COPYDATA && cds->lpData != nullptr) {
             const size_t n = cds->cbData > 0 ? cds->cbData - 1 : 0;
@@ -390,9 +336,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::string name, ip, pin;
             int secs = 0;
             if (!pairRequestSnapshot(id, name, ip, pin, secs)) continue;
-            // Prefer the actionable toast; fall back to a balloon whose click
-            // opens the Accept/Reject dialog (the deviceId is then queued for
-            // NIN_BALLOONUSERCLICK above).
+            // Prefer the actionable toast; else a balloon whose click is handled
+            // via the g_pendingPrompts queue under NIN_BALLOONUSERCLICK.
             if (showActionablePairToast(id, name, ip, pin)) continue;
             {
                 std::lock_guard<std::mutex> lk(g_pairQueueMtx);
@@ -410,7 +355,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_COMMAND: {
         const UINT cmd = LOWORD(wp);
-        // Dynamic pairing-review items resolve through the snapshot vector.
         if (cmd >= IDM_PAIR_REVIEW_BASE &&
             cmd < IDM_PAIR_REVIEW_BASE + static_cast<UINT>(g_menuPairIds.size())) {
             showPairingDialogWindows(hwnd, g_menuPairIds[cmd - IDM_PAIR_REVIEW_BASE]);
@@ -431,9 +375,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case IDM_REPORT_PROBLEM: {
-            // Open the GitHub issue tracker with a body that pre-fills
-            // the version + log/dump paths the user should attach.
-            // URL-encode the body so newlines and brackets survive.
+            // GitHub issue with a URL-encoded body pre-filling the log/dump paths.
             std::wstring url =
                 L"https://github.com/TinkerNorth/satellite/issues/new"
                 L"?labels=bug"
@@ -467,10 +409,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
-    // Restart Manager (the installer's CloseApplications path) sends
-    // WM_QUERYENDSESSION with ENDSESSION_CLOSEAPP set. Returning TRUE
-    // and then exiting on WM_ENDSESSION lets the installer (or a
-    // system shutdown) close us cleanly so saveConfig actually runs.
+    // Restart Manager (installer CloseApplications) and system shutdown go
+    // through here; replying TRUE then exiting on WM_ENDSESSION lets saveConfig run.
     case WM_QUERYENDSESSION:
         return TRUE;
     case WM_ENDSESSION:

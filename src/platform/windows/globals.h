@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * globals.h — Windows-specific shared state and constants.
- *
- * Portable app state (Config, atomics, log ring, httplib, g_pairSock) now
- * lives in core/app_state.h; this header just layers the Win32-only
- * extras on top and pulls in the Windows system headers that all
- * platform/windows translation units transitively rely on.
- */
 #pragma once
 
-// Portable shared state (pulls in net_compat.h, which in turn pulls in
-// <winsock2.h> before <windows.h> — keep this first to preserve the
-// required winsock2-before-windows.h include order).
+// Pulls in <winsock2.h> before <windows.h> — keep first to preserve the
+// required winsock2-before-windows.h include order.
 #include "core/app_state.h"
 
 #include <cstdio>
@@ -42,7 +31,6 @@
 
 #include "ViGEm/BusShared.h"
 
-// ── Win32-only constants (not part of domain) ───────────────────────────────
 inline const UINT WM_TRAYICON = WM_APP + 1;
 inline const UINT IDM_OPEN_UI = 1001;
 inline const UINT IDM_EXIT = 1003;
@@ -55,5 +43,4 @@ inline const UINT IDM_REPORT_PROBLEM = 1007; // tray "Report a Problem..."
 // menu snapshots from pendingPairRequests().
 inline const UINT IDM_PAIR_REVIEW_BASE = 1100;
 
-// ── Win32-only shared state ─────────────────────────────────────────────────
 extern HWND g_hwnd;

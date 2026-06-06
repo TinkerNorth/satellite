@@ -1,20 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tests/test_linux_platform.cpp — Unit tests for the Linux platform port.
- *
- * Self-contained: no external test framework required.
- * Covers the bits of platform/linux/ that are testable without root or
- * real I/O against /dev/uinput / D-Bus / a display server:
- *   - JSON helpers (jsonEscape, jsonGetString)
- *   - Config persistence round-trip (loadConfig / saveConfig)
- *   - XDG autostart .desktop file create / remove (setAutoStart / getAutoStart)
- *   - Path helpers (getExeDir, getCurrentDate, configPath)
- *
- * Each test points XDG_CONFIG_HOME at a fresh tmp dir so it never touches
- * the developer's real ~/.config/satellite or ~/.config/autostart.
- */
 #include "../src/platform/linux/config.h"
 #include "../src/platform/linux/gamepad_adapter.h"
 
@@ -29,7 +13,6 @@
 #include <sstream>
 #include <string>
 
-// ── Test harness (mirrors tests/test_session_service.cpp) ────────────────────
 static int g_pass = 0;
 static int g_fail = 0;
 static std::string g_currentTest;
@@ -61,10 +44,8 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
-// ── Hermetic XDG_CONFIG_HOME ────────────────────────────────────────────────
-// Each test creates its own tmp dir under /tmp and points XDG_CONFIG_HOME at
-// it; on teardown we recursively remove it. This isolates the tests from the
-// real user config and from each other.
+// Per-test tmp dir as XDG_CONFIG_HOME, removed on teardown: isolates tests from
+// the real user config and from each other.
 struct TempXdg {
     std::string path;
     TempXdg() {
@@ -94,7 +75,6 @@ static std::string slurp(const std::string& p) {
     return ss.str();
 }
 
-// ── jsonEscape / jsonGetString ──────────────────────────────────────────────
 static void testJsonEscape() {
     TEST("jsonEscape — passthrough of plain ASCII");
     EXPECT_EQ(jsonEscape("hello"), std::string("hello"));
@@ -151,7 +131,6 @@ static void testJsonGetString() {
     EXPECT_EQ(jsonGetString(R"({"name":""})", "name"), std::string(""));
 }
 
-// ── configPath / loadConfig / saveConfig ────────────────────────────────────
 static void testConfigPath() {
     TempXdg tmp;
     TEST("configPath — lives under XDG_CONFIG_HOME/satellite");
@@ -204,16 +183,13 @@ static void testConfigRoundTrip() {
         EXPECT_EQ(in.pairedDevices[0].lastIP, std::string("192.168.1.42"));
         EXPECT_EQ(in.pairedDevices[0].pairedAt, std::string("2025-01-15"));
         EXPECT_EQ(in.pairedDevices[0].sharedKeyHex, std::string("deadbeef00"));
-        // Task 1.3 — touchpadMode persists across the save/load round-trip.
         EXPECT_EQ(static_cast<int>(in.pairedDevices[0].touchpadMode),
                   static_cast<int>(TOUCHPAD_MODE_MOUSE));
     }
 }
 
-// discoveryBroadcastEnabled (Task 1.6) — round-trips both ways, and an absent
-// key defaults to true so a pre-1.6 config doesn't silently disable the
-// legacy beacon. Each branch uses a fresh TempXdg so the config files don't
-// alias.
+// An absent discoveryBroadcastEnabled key must default to true so a pre-1.6
+// config doesn't silently disable the legacy beacon.
 static void testDiscoveryBroadcastConfig() {
     {
         TempXdg tmp;
@@ -235,7 +211,7 @@ static void testDiscoveryBroadcastConfig() {
     }
     {
         TempXdg tmp;
-        // A config JSON with no discoveryBroadcastEnabled key (pre-1.6 shape).
+        // Pre-1.6 config shape: no discoveryBroadcastEnabled key.
         std::ofstream f(configPath());
         f << "{\n  \"udpPort\": 9876,\n  \"pairedDevices\": []\n}\n";
         f.close();
@@ -253,11 +229,10 @@ static void testLoadConfigMissingFile() {
     EXPECT(c.webPort > 0);
     EXPECT_EQ(c.autoStart, false);
     EXPECT_EQ(c.pairedDevices.size(), size_t{0});
-    // A missing file yields struct defaults — the legacy beacon stays on.
+    // Missing file yields struct defaults — the legacy beacon stays on.
     EXPECT_EQ(c.discoveryBroadcastEnabled, true);
 }
 
-// ── XDG autostart .desktop file ─────────────────────────────────────────────
 static void testAutoStartEnable() {
     TempXdg tmp;
     std::string desktop = tmp.path + "/autostart/satellite.desktop";
@@ -317,7 +292,6 @@ static void testAutoStartIdempotent() {
     EXPECT_EQ(getAutoStart(), true);
 }
 
-// ── Path / date helpers ─────────────────────────────────────────────────────
 static void testGetExeDir() {
     TEST("getExeDir — returns an absolute path");
     std::string d = getExeDir();
@@ -342,12 +316,8 @@ static void testGetCurrentDate() {
     }
 }
 
-// ── uinput sysfs-proxy (battery + lightbar) ─────────────────────────────────
-// Verifies the Linux backend's submitBattery is no-longer-a-no-op and that the
-// installed lightbar callback also mirrors the colour to a sysfs-proxy file.
-// SATELLITE_SYSFS_PROXY_DIR redirects writes into a tmpdir so the test never
-// touches /tmp/satellite (which a real daemon might be using).
-
+// SATELLITE_SYSFS_PROXY_DIR redirects the uinput sysfs-proxy writes into a
+// tmpdir so the test never touches /tmp/satellite (which a real daemon may use).
 struct TempProxyDir {
     std::string path;
     TempProxyDir() {
@@ -408,7 +378,6 @@ static void testSetLightbarCallbackWritesProxyFile() {
     TempProxyDir tmp;
     GamepadAdapter adapter;
 
-    // Inner sink: records every (serial, r, g, b) the wrapper forwards.
     int innerCalls = 0;
     uint32_t gotSerial = 0;
     uint8_t gotR = 0, gotG = 0, gotB = 0;
@@ -420,15 +389,11 @@ static void testSetLightbarCallbackWritesProxyFile() {
         gotB = b;
     });
 
-    // setLightbarCallback alone must not synthesize an invocation — no kernel
-    // readback wires this on uinput, so the inner sink stays idle until
-    // something actively drives it.
+    // Install alone must not synthesize an invocation — nothing drives the sink
+    // until a colour change actually fires.
     TEST("setLightbarCallback — install does not synchronously invoke inner sink");
     EXPECT_EQ(innerCalls, 0);
 
-    // Fire the wrapped callback synthetically and assert both side effects:
-    // (1) the inner sink saw the same (serial, r, g, b), and (2) the proxy
-    // file landed with the expected "RRGGBB\n" payload.
     adapter.invokeLightbarForTest(/*serial=*/5, 0xFF, 0x80, 0xC0);
 
     TEST("setLightbarCallback — wrapper forwards to inner sink");
@@ -451,7 +416,6 @@ static void testSysfsProxyDirEnvOverride() {
     EXPECT_EQ(GamepadAdapter::sysfsProxyDir(), tmp.path);
 }
 
-// ── Driver ──────────────────────────────────────────────────────────────────
 int main() {
     std::cout << "Running Linux platform tests...\n\n";
 

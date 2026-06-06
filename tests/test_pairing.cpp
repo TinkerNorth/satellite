@@ -1,13 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tests/test_pairing.cpp — unit tests for the Path-B ("dish shows a PIN, the
- * operator accepts it on the satellite") pairing-request registry in
- * src/net/pairing.cpp. Pure logic, crypto-free: submit → poll(Pending) →
- * accept(matched) → poll(Approved + key, single-use) → poll(None), plus
- * PIN-mismatch reject, deny, refresh-in-place, and independent devices.
- */
 #include "../src/net/pairing.h"
 
 #include <iostream>

@@ -1,22 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * core/github_release.h — Minimal parser for the GitHub Releases API
- *                         response shape that the OTA updater consumes.
- *
- * Pure types + a tiny recursive-descent JSON parser, narrowed to the
- * release subset we care about. Shared across the Windows / macOS /
- * Linux updater adapters so each only owns its platform IO.
- *
- * Why a custom parser?  The project deliberately avoids pulling in a
- * JSON library (no nlohmann/json, no rapidjson) — the rest of the
- * codebase uses hand-rolled jsonGetString helpers. For GitHub the
- * release body can contain arbitrary text including `"key":"value"`
- * substrings, so the shallow key-find approach used elsewhere would
- * mis-match. The parser below is ~150 LOC and tolerant of the
- * fields we don't read.
- */
+// Custom JSON parser by design: the project avoids a JSON library, but the
+// shallow key-find helpers used elsewhere mis-match because a release body can
+// contain arbitrary `"key":"value"` substrings. This is a real (tolerant)
+// recursive-descent parser narrowed to the release subset.
 #pragma once
 
 #include <cstdint>
@@ -41,25 +28,19 @@ struct GitHubRelease {
     std::vector<GitHubAsset> assets;
 };
 
-// Parse the response body of GET /repos/{owner}/{repo}/releases/latest.
-// Returns true on success and fills `out`. False means the JSON was
-// malformed enough that no fields could be extracted.
+// Parse GET .../releases/latest. False means the JSON was too malformed to
+// extract any field.
 bool parseGitHubRelease(const std::string& json, GitHubRelease& out);
 
-// Parse the response body of GET /repos/{owner}/{repo}/releases
-// (a JSON array of release objects). Same return semantics.
+// Parse GET .../releases (a JSON array). Same return semantics.
 bool parseGitHubReleaseList(const std::string& json, std::vector<GitHubRelease>& out);
 
-// Convert tag "v1.2.3" → version "1.2.3". Returns the input unchanged if
-// it doesn't start with v/V.
+// "v1.2.3" → "1.2.3"; input unchanged if it doesn't start with v/V.
 std::string stripTagPrefix(const std::string& tag);
 
-// Convert ISO-8601 "2026-05-13T12:34:56Z" → unix epoch seconds. Returns 0
-// on parse failure.
+// ISO-8601 "2026-05-13T12:34:56Z" → unix epoch seconds; 0 on parse failure.
 int64_t isoToEpoch(const std::string& iso);
 
-// Find a single line in a SHA256SUMS body matching the given filename.
-// Returns the hex digest (lowercase, 64 chars) or "" if absent.
-// Tolerates `*` mode markers (sha256sum --binary) and arbitrary
-// surrounding whitespace.
+// Returns the lowercase 64-char digest for `filename` from a SHA256SUMS body,
+// or "" if absent. Tolerates `*` binary-mode markers and surrounding whitespace.
 std::string lookupSha256(const std::string& sha256sumsBody, const std::string& filename);

@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * main.mm — macOS entry point / Composition Root.
- *
- * Mirrors platform/windows/main.cpp:
- *   - Initialize networking + libsodium
- *   - Load config, apply autoStart
- *   - Wire adapters into SessionService
- *   - Spawn the four worker threads (receiver, http, pairing, discovery)
- *   - Run the Cocoa event loop so the menu-bar status item is responsive
- */
+// macOS entry point / Composition Root; mirrors platform/windows/main.cpp.
 #include "globals.h"
 #include "config.h"
 #include "crypto.h"
@@ -34,7 +23,7 @@
 
 #import <AppKit/AppKit.h>
 
-// ── Cocoa delegate: clean shutdown on terminate ─────────────────────────────
+// Cocoa delegate: clean shutdown on terminate.
 @interface SatelliteAppDelegate : NSObject <NSApplicationDelegate>
 @end
 
@@ -53,11 +42,8 @@ int main(int argc, const char* argv[]) {
     (void)argv;
 
     @autoreleasepool {
-        // ── Stub-build banner ───────────────────────────────────────
-        // macOS lacks a signed DriverKit equivalent of ViGEmBus, so this
-        // build runs the protocol stack but cannot synthesize virtual
-        // gamepads. Surface that immediately so log scraping makes the
-        // limitation obvious.
+        // macOS lacks a signed DriverKit equivalent of ViGEmBus, so this build
+        // runs the protocol stack but cannot synthesize virtual gamepads.
         fprintf(stderr, "[satellite] macOS stub build — virtual gamepads disabled "
                         "(controller-add requests will return ACK_ERR_BACKEND_UNAVAIL).\n");
 
@@ -74,7 +60,6 @@ int main(int argc, const char* argv[]) {
         g_config = loadConfig();
         g_config.autoStart = getAutoStart();
 
-        // ── Composition Root ────────────────────────────────────────
         GamepadAdapter gamepadAdapter;
         ClientAdapter clientAdapter;
         LogAdapter logAdapter;

@@ -1,18 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * main.cpp — Linux entry point / Composition Root.
- *
- * Mirrors platform/windows/main.cpp and platform/macos/main.mm:
- *   - Initialize networking + libsodium
- *   - Load config, apply autoStart
- *   - Wire adapters into SessionService
- *   - Spawn the four worker threads (receiver, http, pairing, discovery)
- *   - Run the GTK main loop so the libayatana-appindicator status icon is
- *     responsive; fall back to a sigwait-based headless loop on truly
- *     headless boxes or when the binary was built without tray support.
- */
+// Linux entry point / composition root. Mirrors the Windows and macOS mains.
 #include "globals.h"
 #include "config.h"
 #include "crypto.h"
@@ -43,10 +30,9 @@
 #include <gtk/gtk.h>
 #endif
 
-// Headless main-loop signal blocking: SIGINT/SIGTERM are delivered via sigwait
-// in the main thread, avoiding default-termination during long-running syscalls
-// in worker threads (recvfrom, accept, ...). SIGPIPE is always ignored — it
-// fires when an httplib client disconnects mid-write.
+// Block SIGINT/SIGTERM so the headless loop can sigwait them on the main thread
+// rather than default-terminating during a worker's blocking syscall (recvfrom,
+// accept). SIGPIPE is blocked too — it fires on httplib mid-write disconnects.
 static void installHeadlessSignalHandling(sigset_t& set) {
     sigemptyset(&set);
     sigaddset(&set, SIGINT);
@@ -56,9 +42,8 @@ static void installHeadlessSignalHandling(sigset_t& set) {
 }
 
 #ifdef SATELLITE_HAS_TRAY
-// Bridge SIGINT/SIGTERM into the GTK main loop. The handler runs on whatever
-// thread the kernel chose; g_unix_signal_add internally pipes the signal so
-// the actual callback fires on the main loop.
+// Bridge SIGINT/SIGTERM into the GTK main loop (g_unix_signal_add pipes the
+// signal so this fires on the main loop, not the delivering thread).
 static gboolean onTraySignal(gpointer) {
     g_appRunning = false;
     g_httpServer.stop();
@@ -85,7 +70,6 @@ int main(int argc, const char* argv[]) {
     g_config = loadConfig();
     g_config.autoStart = getAutoStart();
 
-    // ── Composition Root ────────────────────────────────────────
     GamepadAdapter gamepadAdapter;
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
@@ -99,11 +83,8 @@ int main(int argc, const char* argv[]) {
     });
     g_updateService = &updateService;
 
-    // Resolve web/ directory:
-    //   1. <exeDir>/web            — dev / side-by-side layout
-    //   2. <exeDir>/../share/satellite/web — FHS install from prefix
-    //   3. /usr/local/share/satellite/web  — manual sudo install
-    //   4. /usr/share/satellite/web        — package install
+    // Resolve web/ in priority order: side-by-side (dev), FHS-from-prefix,
+    // manual sudo install, then package install.
     {
         std::string exeDir = getExeDir();
         struct stat st;
@@ -133,9 +114,8 @@ int main(int argc, const char* argv[]) {
     std::fprintf(stderr, "%s running — web UI at http://localhost:%d\n", APP_TITLE,
                  g_config.webPort);
 
-    // Try the tray-driven GTK loop first. Falls back to a sigwait-based
-    // headless loop if there's no display server, the AppIndicator/GTK init
-    // fails, or the binary was built without SATELLITE_HAS_TRAY.
+    // Tray-driven GTK loop; falls back to the headless sigwait loop with no
+    // display server, on GTK init failure, or when built without SATELLITE_HAS_TRAY.
     bool trayActive = addTrayIcon();
 
 #ifdef SATELLITE_HAS_TRAY

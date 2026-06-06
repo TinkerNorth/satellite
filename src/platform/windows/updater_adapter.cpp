@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
 #include "updater_adapter.h"
 
 #include "config.h"
@@ -22,9 +20,7 @@
 #include <string>
 #include <vector>
 
-// Linker pragmas: MinGW + MSVC both honor #pragma comment(lib, ...).
-// We also list these libs in CMakeLists.txt so a from-scratch build doesn't
-// rely on the pragma — this is just for the build-satellite.bat path.
+// Also listed in CMakeLists.txt; this pragma only covers the build-satellite.bat path.
 #ifdef _MSC_VER
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "bcrypt.lib")
@@ -32,7 +28,6 @@
 
 namespace {
 
-// ── UTF-8 ⇄ UTF-16 helpers (WinHTTP wants wide) ────────────────────────────
 std::wstring toWide(const std::string& s) {
     if (s.empty()) return std::wstring{};
     int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
@@ -51,7 +46,6 @@ std::string fromWide(const std::wstring& w) {
     return s;
 }
 
-// ── RAII for WinHTTP handles ───────────────────────────────────────────────
 struct WinHttpHandle {
     HINTERNET h = nullptr;
     WinHttpHandle() = default;
@@ -65,7 +59,6 @@ struct WinHttpHandle {
     operator HINTERNET() const { return h; }
 };
 
-// ── URL splitter (https://host[:port]/path) ────────────────────────────────
 struct ParsedUrl {
     std::wstring host;
     INTERNET_PORT port = 443;
@@ -91,9 +84,7 @@ bool parseUrl(const std::wstring& url, ParsedUrl& out) {
     return true;
 }
 
-// ── HTTPS GET into memory (small responses only — releases.json, SHA256SUMS).
-//    Follows redirects. Sends a Satellite User-Agent and Accept header
-//    suitable for the GitHub REST API.
+// HTTPS GET into memory (small responses: releases.json, SHA256SUMS).
 bool httpGetToString(const std::wstring& url, std::string& out, std::string& err) {
     ParsedUrl u;
     if (!parseUrl(url, u)) {
@@ -173,7 +164,7 @@ bool httpGetToString(const std::wstring& url, std::string& out, std::string& err
     return true;
 }
 
-// ── HTTPS GET streaming to a file with progress + cancel ───────────────────
+// HTTPS GET streaming to a file with progress + cancel.
 bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
                    const std::function<void(uint64_t, uint64_t)>& onProgress,
                    const std::atomic<bool>* cancel, std::string& err) {
@@ -230,8 +221,8 @@ bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
         return false;
     }
 
-    // Pull Content-Length for the progress total, when present.
-    uint64_t total = 0;
+    uint64_t total = 0; // Content-Length, for the progress total when present
+
     {
         wchar_t lenBuf[64] = {};
         DWORD lenSize = sizeof(lenBuf);
@@ -284,7 +275,6 @@ bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
     return true;
 }
 
-// ── SHA-256 via BCrypt ─────────────────────────────────────────────────────
 bool sha256OfFile(const std::wstring& path, std::string& hexOut, std::string& err) {
     BCRYPT_ALG_HANDLE alg = nullptr;
     NTSTATUS st = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
@@ -346,9 +336,7 @@ bool sha256OfFile(const std::wstring& path, std::string& hexOut, std::string& er
     return true;
 }
 
-// ── Asset selector for Windows ─────────────────────────────────────────────
-// Match: starts with "SatelliteSetup-" and ends with ".exe". Tolerates the
-// "-unsigned" suffix produced by un-signed CI runs.
+// Match SatelliteSetup-*.exe (tolerates the "-unsigned" suffix from CI runs).
 bool pickWindowsAsset(const GitHubRelease& rel, GitHubAsset& out) {
     for (const auto& a : rel.assets) {
         if (a.name.size() < std::string("SatelliteSetup-").size() + 4) continue;
@@ -360,8 +348,8 @@ bool pickWindowsAsset(const GitHubRelease& rel, GitHubAsset& out) {
     return false;
 }
 
-// Look up a SHA256SUMS asset and pull its digest for the installer asset.
-// Empty string return is non-fatal — the caller decides whether to refuse.
+// Digest for `assetName` from the release's SHA256SUMS asset. Empty return is
+// non-fatal; the caller decides whether to refuse.
 std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetName) {
     for (const auto& a : rel.assets) {
         if (a.name == "SHA256SUMS") {
@@ -375,7 +363,6 @@ std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetN
 
 } // namespace
 
-// ── WindowsUpdaterAdapter ──────────────────────────────────────────────────
 WindowsUpdaterAdapter::WindowsUpdaterAdapter(std::string owner, std::string repo)
     : owner_(std::move(owner)), repo_(std::move(repo)) {}
 
@@ -385,10 +372,8 @@ bool WindowsUpdaterAdapter::fetchLatestRelease(const std::string& channel,
     out = {};
     const bool wantPrerelease = (channel == "prerelease");
 
-    // Stable channel: /releases/latest is exactly what we want.
-    // Prerelease channel: scan /releases for the highest-versioned release
-    // (which may itself be a stable release if there's nothing newer
-    // pre-released).
+    // Prerelease channel scans /releases (newest may be a stable one);
+    // stable uses /releases/latest.
     std::wstring url;
     if (wantPrerelease) {
         url = L"https://api.github.com/repos/" + toWide(owner_) + L"/" + toWide(repo_) +
@@ -408,7 +393,7 @@ bool WindowsUpdaterAdapter::fetchLatestRelease(const std::string& channel,
             outError = "Failed to parse releases list";
             return false;
         }
-        // Pick the first non-draft entry (the API returns newest-first).
+        // First non-draft entry (API returns newest-first).
         bool found = false;
         for (const auto& r : list) {
             if (r.draft) continue;
@@ -444,8 +429,7 @@ bool WindowsUpdaterAdapter::fetchLatestRelease(const std::string& channel,
     out.assetUrl = asset.browserUrl;
     out.assetSize = asset.size;
     out.assetSha256 = fetchAssetDigest(pick, asset.name);
-    // Truncate the release body to keep the SSE payload modest; the
-    // settings page links to the full notes via htmlUrl anyway.
+    // Truncate to keep the SSE payload modest; full notes are at htmlUrl.
     out.releaseNotes = pick.body.size() > 8192 ? pick.body.substr(0, 8192) + "..." : pick.body;
     out.htmlUrl = pick.htmlUrl;
     out.publishedAtEpoch = isoToEpoch(pick.publishedAt);
@@ -457,8 +441,8 @@ bool WindowsUpdaterAdapter::fetchLatestRelease(const std::string& channel,
 bool WindowsUpdaterAdapter::downloadArtifact(
     const UpdateInfo& info, const std::function<void(uint64_t, uint64_t)>& onProgress,
     const std::atomic<bool>* cancel, std::string& outLocalPath, std::string& outError) {
-    // Stage under %LOCALAPPDATA%\satellite\updates so a Program Files
-    // install can still download without elevation.
+    // Stage under %LOCALAPPDATA% so a Program Files install can download
+    // without elevation.
     wchar_t localAppData[MAX_PATH] = {};
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData))) {
         outError = "Cannot resolve %LOCALAPPDATA%";
@@ -473,21 +457,10 @@ bool WindowsUpdaterAdapter::downloadArtifact(
     return true;
 }
 
-// Authenticode signature check on the downloaded installer. We trust
-// the signature *in addition to* the SHA-256 hash from SHA256SUMS --
-// neither alone is enough:
-//
-//   * SHA-256 binds the bytes to the release page, but the release
-//     page itself can be edited by anyone with write access to the
-//     repo. WinVerifyTrust catches a release page that's been
-//     repointed at an attacker-signed binary, OR a substitution that
-//     reuses the SHA256SUMS value while keeping the signed-by-X chain.
-//   * Authenticode catches transport-layer tampering and stale CDN
-//     caches. SHA-256 catches a successfully-signed binary that's
-//     been swapped at the artifact URL by a compromised CI runner.
-//
-// Both gates together mean an attacker needs to compromise the
-// signing identity AND the release-page content simultaneously.
+// Authenticode is checked IN ADDITION to the SHA256SUMS hash: SHA-256 binds
+// bytes to the (editable) release page, Authenticode binds to the signing
+// identity. Requiring both means an attacker must compromise the signing
+// identity AND the release-page content at once.
 static bool authenticodeVerify(const std::wstring& path, std::string& err) {
     WINTRUST_FILE_INFO fileInfo{};
     fileInfo.cbStruct = sizeof(fileInfo);
@@ -505,7 +478,7 @@ static bool authenticodeVerify(const std::wstring& path, std::string& err) {
 
     LONG status = WinVerifyTrust(nullptr, &action, &data);
 
-    // Always close out the cached state regardless of outcome.
+    // Close out the cached state regardless of outcome.
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     WinVerifyTrust(nullptr, &action, &data);
 
@@ -522,15 +495,9 @@ bool WindowsUpdaterAdapter::verifyArtifact(const std::string& localPath, const U
                                            std::string& outError) {
     std::wstring wpath = toWide(localPath);
 
-    // Authenticode FIRST: a malformed/altered .exe should fail the
-    // signature check before we waste time hashing 12MB.
-    //
-    // We only fail-closed if the installer is *actively invalid*
-    // (TRUST_E_BAD_DIGEST, TRUST_E_SUBJECT_FORM_UNKNOWN, etc.). When
-    // signing isn't configured for the release at all (-unsigned
-    // suffix on the asset name), the call returns TRUST_E_NOSIGNATURE
-    // and we fall through to the SHA-256 check -- otherwise dev
-    // installs from a fork without a signing cert can't ever update.
+    // Authenticode FIRST so an altered .exe fails before we hash 12MB.
+    // Fail closed on an actively-invalid signature, but a -unsigned asset
+    // (TRUST_E_NOSIGNATURE) falls through to SHA-256 so fork builds can update.
     std::string sigErr;
     if (!authenticodeVerify(wpath, sigErr)) {
         bool unsignedRelease = info.assetName.find("-unsigned") != std::string::npos;
@@ -538,17 +505,13 @@ bool WindowsUpdaterAdapter::verifyArtifact(const std::string& localPath, const U
             outError = sigErr;
             return false;
         }
-        // Unsigned release: SHA-256 is then a HARD requirement, not
-        // optional, because we have nothing else to bind the bytes
-        // to. Fall through to the hash check.
+        // Unsigned release: SHA-256 is now a HARD requirement (nothing else
+        // binds the bytes). Fall through.
     }
 
     if (info.assetSha256.empty()) {
-        // No SHA256SUMS asset on the release. If we got a valid
-        // Authenticode signature above, that's enough -- the
-        // signed-by-X chain is itself a binding to the publisher.
-        // If we didn't, refuse to install (we'd be running an
-        // unsigned-and-unhashed download).
+        // No SHA256SUMS asset: a valid signature alone is sufficient; without
+        // one, refuse (unsigned-and-unhashed).
         if (sigErr.empty()) return true;
         outError = "No signature and no SHA-256 -- refusing to install: " + sigErr;
         return false;
@@ -570,11 +533,9 @@ bool WindowsUpdaterAdapter::verifyArtifact(const std::string& localPath, const U
 bool WindowsUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
                                         std::string& outError) {
     (void)info;
-    // Launch the Inno installer with /VERYSILENT /OTA. The /OTA flag is
-    // honored by installer.iss → WantsOTARelaunch and triggers an auto-
-    // relaunch of satellite.exe at the end, even though it's a silent
-    // install. /CLOSEAPPLICATIONS lets Inno's Restart Manager close us
-    // gracefully so the .exe isn't locked when files are written.
+    // /OTA (installer.iss WantsOTARelaunch) auto-relaunches satellite.exe at the
+    // end even silently; /CLOSEAPPLICATIONS lets Inno's Restart Manager close us
+    // so the .exe isn't locked during the write.
     SHELLEXECUTEINFOA sei{};
     sei.cbSize = sizeof(sei);
     sei.fMask = SEE_MASK_NOASYNC;
@@ -591,12 +552,9 @@ bool WindowsUpdaterAdapter::applyUpdate(const std::string& localPath, const Upda
         outError = buf;
         return false;
     }
-    // Hand off control to the installer. Triggering our own exit lets
-    // Inno's Restart Manager replace the .exe immediately rather than
-    // waiting on the close-detection timeout. The webserver thread is
-    // still serving the "Installing — restarting…" SSE event; that's
-    // intentional, we want the user to see it briefly before the http
-    // listener actually goes down.
+    // Exit now so Inno's Restart Manager replaces the .exe immediately rather
+    // than waiting on its close-detection timeout. The webserver keeps serving
+    // the "Installing…" SSE briefly until the listener goes down -- intentional.
     PostMessage(g_hwnd, WM_CLOSE, 0, 0);
     return true;
 }

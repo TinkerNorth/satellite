@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
 #include "pairing_service.h"
 #include "config.h" // g_config, g_configMtx, saveConfig, getCurrentDate
@@ -22,7 +21,7 @@ void upsertPairedDevice(const std::string& deviceId, const std::string& deviceNa
     dev.pairedAt = getCurrentDate();
     dev.sharedKeyHex = sharedKeyHex;
     // The client is the authority on its own touchpad capability; honour a
-    // valid initial mode, else leave the PairedDevice default (OFF).
+    // valid initial mode, else leave the default (OFF).
     if (initialTouchpadMode == "ds4" || initialTouchpadMode == "mouse" ||
         initialTouchpadMode == "off") {
         dev.touchpadMode = touchpadModeFromName(initialTouchpadMode);

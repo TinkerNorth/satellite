@@ -1,19 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tests/test_mdns_protocol.cpp — unit tests for the pure mDNS encoders /
- * parsers in src/net/mdns_protocol.cpp.
- *
- * Coverage: DNS name encode/decode (incl. compression pointers + malformed
- * input), query packet parsing, response encoding (record shapes, cache-flush
- * bits, SRV port, TXT pairs, A record, RFC 6762 §10.1 goodbye / TTL-0), the
- * questionMatchesService predicate, and the full RFC 6762 §8.1 + §8.2 probing
- * surface — probe-query shape (ANY question, QU bit, authority-section
- * proposed records, NSCOUNT), authority-section parsing of an inbound probe,
- * the §8.2.1 lexicographic record-set tiebreak comparator, buildProposedRecords,
- * and the §9 conflict-rename suffix increment.
- */
 #include "../src/net/mdns_protocol.h"
 
 #include <cctype>
@@ -55,8 +40,6 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
-// ── Test helpers ────────────────────────────────────────────────────────────
-
 static uint16_t readBE16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
 
 static uint32_t readBE32(const uint8_t* p) {
@@ -64,8 +47,8 @@ static uint32_t readBE32(const uint8_t* p) {
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
 
-// One decoded resource record from an encodeResponse() packet. `cls` keeps the
-// cache-flush bit as-is so tests can assert on it directly.
+// One decoded RR from an encodeResponse() packet. `cls` keeps the cache-flush
+// bit as-is so tests can assert on it directly.
 struct Rr {
     std::string name;
     uint16_t type = 0;
@@ -75,10 +58,9 @@ struct Rr {
     uint16_t rdlen = 0;
 };
 
-// Walk an encodeResponse() packet into its header + answer records. Skips the
-// (always empty in our responses) question section. Returns false on a
-// malformed / truncated packet. Uses the production readDnsName so the helper
-// itself exercises the decoder.
+// Walk an encodeResponse() packet into its header + answer records. Returns
+// false on a malformed / truncated packet. Uses the production readDnsName so
+// the helper itself exercises the decoder.
 static bool parseResponseRecords(const uint8_t* buf, size_t len, mdns::Header& hdr,
                                  std::vector<Rr>& out) {
     out.clear();
@@ -117,7 +99,6 @@ static bool parseResponseRecords(const uint8_t* buf, size_t len, mdns::Header& h
     return true;
 }
 
-// Find the first record of `type`, or nullptr.
 static const Rr* findRr(const std::vector<Rr>& rrs, uint16_t type) {
     for (const auto& rr : rrs) {
         if (rr.type == type) return &rr;
@@ -125,7 +106,7 @@ static const Rr* findRr(const std::vector<Rr>& rrs, uint16_t type) {
     return nullptr;
 }
 
-// Build the canonical set of response inputs used across the encode tests.
+// Canonical response inputs shared across the encode tests.
 static mdns::ResponseInputs sampleInputs() {
     mdns::ResponseInputs in;
     in.instanceName = "satellite-host";
@@ -134,8 +115,6 @@ static mdns::ResponseInputs sampleInputs() {
     in.txtPairs = {{"udp", "9876"}, {"pair", "9878"}, {"http", "9877"}};
     return in;
 }
-
-// ── DNS name encoding ───────────────────────────────────────────────────────
 
 static void test_writeDnsName_basic() {
     TEST("writeDnsName encodes 'foo.bar.local.' as labelled-length form");
@@ -195,8 +174,6 @@ static void test_writeDnsName_rejectsBufferTooSmallForTerminator() {
     EXPECT_EQ(mdns::writeDnsName(buf, sizeof(buf), "ab."), 0u);
 }
 
-// ── DNS name decoding ───────────────────────────────────────────────────────
-
 static void test_readDnsName_roundTrip() {
     TEST("writeDnsName + readDnsName round-trip basic name");
     uint8_t buf[64];
@@ -232,9 +209,7 @@ static void test_readDnsName_atNonZeroOffset() {
 
 static void test_readDnsName_followsCompressionPointer() {
     TEST("readDnsName follows a backwards compression pointer");
-    // Layout:
-    //   0: 0x03 'f' 'o' 'o' 0x03 'b' 'a' 'r' 0x00      (9 bytes, "foo.bar.")
-    //   9: 0x03 'b' 'a' 'z' 0xC0 0x04                  (6 bytes, "baz." + ptr to byte 4)
+    // "foo.bar." at 0; "baz." + a pointer to byte 4 ("bar.") at offset 9.
     uint8_t packet[] = {
         3, 'f', 'o', 'o', 3, 'b', 'a', 'r', 0, 3, 'b', 'a', 'z', 0xC0, 0x04,
     };
@@ -266,8 +241,6 @@ static void test_readDnsName_rejectsPointerPastEnd() {
     EXPECT_EQ(mdns::readDnsName(packet, sizeof(packet), 5, out), 0u);
 }
 
-// ── Packet parsing ──────────────────────────────────────────────────────────
-
 // Append a DNS question (name + qtype + qclass) to `buf` at `pos`, return new pos.
 static size_t appendQuestion(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
                              uint16_t qtype, uint16_t qclass) {
@@ -291,11 +264,9 @@ static void writeQueryHeader(uint8_t* buf, uint16_t id, uint16_t qd, uint16_t an
     buf[8] = buf[9] = buf[10] = buf[11] = 0x00; // NS / AR counts
 }
 
-// Append a DNS answer record (name + type + class + ttl + rdlen + rdata) to
-// `buf` at `pos`; returns the new pos. Used to build the Known-Answer list
-// (RFC 6762 §7.1) carried in a query's answer section. `rdata` may be null
-// for a zero-length record — the parser only keys on name/type/ttl, so the
-// exact rdata bytes are immaterial to the suppression tests.
+// Append a DNS answer record to `buf` at `pos`; returns the new pos. Builds the
+// Known-Answer list (RFC 6762 §7.1). `rdata` may be null for a zero-length
+// record — the parser only keys on name/type/ttl.
 static size_t appendAnswer(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
                            uint16_t rtype, uint16_t rclass, uint32_t ttl, const uint8_t* rdata,
                            uint16_t rdlen) {
@@ -404,8 +375,6 @@ static void test_parsePacket_rejectsTruncatedQuestion() {
     EXPECT(!mdns::parsePacket(buf, 13, h, qs));
 }
 
-// ── questionMatchesService ──────────────────────────────────────────────────
-
 static mdns::Question makeQuestion(const std::string& name, uint16_t type) {
     mdns::Question q;
     q.name = name;
@@ -451,8 +420,6 @@ static void test_questionMatchesService_rejectsPrefixAndSuffix() {
         makeQuestion("_satellite._udp.local.extra.", mdns::TYPE_PTR)));
     EXPECT(!mdns::questionMatchesService(makeQuestion("", mdns::TYPE_PTR)));
 }
-
-// ── Response encoding ───────────────────────────────────────────────────────
 
 static void test_encodeResponse_minimumPacketShape() {
     TEST("encodeResponse writes header + 3 answers (PTR/SRV/TXT) without an A record");
@@ -651,8 +618,7 @@ static void test_encodeResponse_rejectsBufferBetweenHeaderAndBody() {
     EXPECT_EQ(mdns::encodeResponse(buf, sizeof(buf), 1, in), 0u);
 }
 
-// ── Startup announcement (RFC 6762 §8.3) ────────────────────────────────────
-
+// Startup announcement (RFC 6762 §8.3).
 static void test_encodeAnnouncement_recordSetAndShape() {
     TEST("encodeAnnouncement emits PTR/SRV/TXT/A with txId 0 and QR+AA set");
     uint8_t buf[512];
@@ -778,8 +744,7 @@ static void test_encodeAnnouncement_normalTtlsNeverZero() {
     EXPECT(allNonZero);
 }
 
-// ── Probe query (RFC 6762 §8.1 + §8.2) ──────────────────────────────────────
-
+// Probe query (RFC 6762 §8.1 + §8.2).
 static void test_encodeProbeQuery_shape() {
     TEST("encodeProbeQuery emits one ANY question for the instance FQDN with the QU bit set");
     uint8_t buf[768];
@@ -870,11 +835,8 @@ static void test_encodeProbeQuery_rejectsUndersizedBuffer() {
     EXPECT_EQ(mdns::encodeProbeQuery(buf, sizeof(buf), in), 0u);
 }
 
-// ── Authority-section parsing of an inbound probe (RFC 6762 §8.1) ───────────
-
-// Append an authority-section resource record (name + type + class + ttl +
-// rdlen + rdata) to `buf` at `pos`; returns the new pos. Mirrors appendAnswer
-// — the on-wire record layout is identical, only the section differs.
+// Append an authority-section RR to `buf` at `pos`; returns the new pos. The
+// on-wire layout is identical to an answer record, only the section differs.
 static size_t appendAuthority(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
                               uint16_t rtype, uint16_t rclass, uint32_t ttl, const uint8_t* rdata,
                               uint16_t rdlen) {
@@ -978,9 +940,7 @@ static void test_authorityHasRecordFor_matchesCaseInsensitively() {
     EXPECT(!mdns::authorityHasRecordFor({}, "satellite-host.local."));
 }
 
-// ── §8.2.1 simultaneous-probe tiebreak comparator ───────────────────────────
-
-// Build a ProbeRecord directly from raw rdata bytes for the comparator tests.
+// §8.2.1 simultaneous-probe tiebreak comparator.
 static mdns::ProbeRecord makeProbeRec(const std::string& name, uint16_t type, uint16_t cls,
                                       std::vector<uint8_t> rdata) {
     mdns::ProbeRecord r;
@@ -1118,8 +1078,6 @@ static void test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs() {
     EXPECT(mdns::compareRecordSets(ours, theirs) > 0); // 'z' > 'a' → we win
 }
 
-// ── buildProposedRecords (RFC 6762 §8.1 proposed unique set) ────────────────
-
 static void test_buildProposedRecords_srvTxtOnlyWithoutIpv4() {
     TEST("buildProposedRecords yields SRV + TXT (no A, no PTR) when no IPv4 is supplied");
     mdns::ResponseInputs in = sampleInputs();
@@ -1172,12 +1130,10 @@ static void test_buildProposedRecords_matchesEncodedProbeAuthority() {
     EXPECT_EQ(mdns::compareRecordSets(built, authority), 0); // identical → no conflict
 }
 
-// ── §9 conflict → rename suffix increment ───────────────────────────────────
-// nextInstanceLabel (the §9 suffix logic) lives in mdns_responder.cpp's
-// anonymous namespace and is not exported. To keep the §9 increment under
-// test without widening the production surface, this mirror is kept
-// byte-for-byte identical to that function; the comment on the production
-// copy points here so the two cannot silently drift.
+// nextInstanceLabel (the §9 suffix logic) lives unexported in
+// mdns_responder.cpp's anonymous namespace. This mirror is kept byte-for-byte
+// identical to test the §9 increment without widening the production surface;
+// the production copy carries a comment pointing here so the two cannot drift.
 static std::string testNextInstanceLabel(const std::string& label) {
     if (!label.empty() && label.back() == ')') {
         const size_t open = label.rfind(" (");
@@ -1228,8 +1184,6 @@ static void test_conflictRename_nonSuffixParensAreNotMistakenForCounter() {
     // Empty parens are not digits either.
     EXPECT_EQ(testNextInstanceLabel("box ()"), std::string("box () (2)"));
 }
-
-// ── Known-Answer parsing (RFC 6762 §7.1) ────────────────────────────────────
 
 static void test_parsePacket_surfacesKnownAnswer() {
     TEST("parsePacket(5-arg) surfaces a query's answer-section record");
@@ -1395,8 +1349,6 @@ static void test_parsePacket_rejectsAnswerCompressionLoop() {
     EXPECT(!mdns::parsePacket(buf, pos, h, qs, ans));
 }
 
-// ── isKnownAnswerSuppressed (RFC 6762 §7.1) ─────────────────────────────────
-
 static mdns::Answer makeAnswer(const std::string& name, uint16_t type, uint32_t ttl) {
     mdns::Answer a;
     a.name = name;
@@ -1454,8 +1406,6 @@ static void test_isKnownAnswerSuppressed_caseInsensitiveName() {
     EXPECT(mdns::isKnownAnswerSuppressed(known, "_satellite._udp.local.", mdns::TYPE_PTR,
                                          mdns::TTL_SERVICE));
 }
-
-// ── Known-Answer suppression in encodeResponse (RFC 6762 §7.1) ──────────────
 
 static void test_encodeResponse_suppressPtrOmitsPtr() {
     TEST("encodeResponse with suppressPtr drops the PTR and adjusts ANCOUNT");
@@ -1521,11 +1471,8 @@ static void test_encodeResponse_suppressAOnlyDropsA() {
     EXPECT(findRr(rrs, mdns::TYPE_A) == nullptr);
 }
 
-// End-to-end: parse a query carrying a known answer, then verify the response
-// omits exactly that record — and that a stale known answer is not suppressed.
 static void test_knownAnswer_endToEnd_suppressesKnownPtr() {
     TEST("a query carrying a fresh known PTR yields a response with the PTR omitted");
-    // Build the query: PTR question + a known PTR answer with a fresh TTL.
     uint8_t qbuf[256];
     writeQueryHeader(qbuf, 0x44, /*qd=*/1, /*an=*/1);
     size_t qpos = appendQuestion(qbuf, sizeof(qbuf), 12, "_satellite._udp.local.", mdns::TYPE_PTR,
@@ -1541,7 +1488,6 @@ static void test_knownAnswer_endToEnd_suppressesKnownPtr() {
     EXPECT(mdns::parsePacket(qbuf, qpos, qh, qqs, qans));
     EXPECT_EQ(qans.size(), 1u);
 
-    // Responder logic: decide suppression from the known-answer list.
     mdns::ResponseInputs in = sampleInputs();
     in.suppressPtr = mdns::isKnownAnswerSuppressed(qans, "_satellite._udp.local.", mdns::TYPE_PTR,
                                                    mdns::TTL_SERVICE);
@@ -1584,8 +1530,6 @@ static void test_knownAnswer_endToEnd_staleTtlStillSent() {
     EXPECT(parseResponseRecords(rbuf, rn, rh, rrs));
     EXPECT(findRr(rrs, mdns::TYPE_PTR) != nullptr); // sent — querier's copy was stale
 }
-
-// ── Driver ──────────────────────────────────────────────────────────────────
 
 int main() {
     std::cout << "Running mDNS protocol tests...\n\n";

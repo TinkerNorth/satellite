@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
 #include "machine_id.h"
 #include "config.h" // configPath()
@@ -13,8 +12,8 @@ namespace {
 std::mutex g_machineIdMtx;
 std::string g_machineId;
 
-// Beside the config file, like tls.cpp's cert — one place that already holds
-// per-install identity that must survive restarts.
+// Beside the config file, like tls.cpp's cert — per-install identity that must
+// survive restarts.
 std::string machineIdPath() {
     std::string p = configPath();
     auto pos = p.find_last_of("/\\");
@@ -45,8 +44,8 @@ std::string ensureMachineId() {
             while (!persisted.empty() && (persisted.back() == '\n' || persisted.back() == '\r' ||
                                           persisted.back() == ' '))
                 persisted.pop_back();
-            // Only honour a well-formed 16-byte hex token; treat anything else
-            // as corruption and regenerate rather than advertise a junk id.
+            // Only honour a well-formed 32-hex-char token; regenerate on
+            // corruption rather than advertise a junk id.
             if (persisted.size() == 32 &&
                 persisted.find_first_not_of("0123456789abcdef") == std::string::npos) {
                 g_machineId = persisted;
@@ -59,9 +58,8 @@ std::string ensureMachineId() {
     randombytes_buf(raw, sizeof(raw));
     g_machineId = toHex(raw, sizeof(raw));
 
-    // Best-effort persist: a failed write (read-only dir) still leaves a valid
-    // id for this run — no worse than the pre-machine-id behaviour, and the
-    // dish re-learns it on the next scan.
+    // Best-effort persist: a failed write still leaves a valid id for this run;
+    // the dish re-learns it on the next scan.
     std::ofstream out(path, std::ios::trunc);
     if (out) out << g_machineId << "\n";
 

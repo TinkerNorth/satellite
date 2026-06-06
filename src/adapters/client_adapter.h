@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * adapters/client_adapter.h — IClientPort implementation.
- *
- * Wraps encrypted UDP packet sending via the net_compat socket shim.
- * Owns: socket reference, token→sockaddr_in mapping.
- */
 #pragma once
 
 #include "core/ports.h"
@@ -17,13 +10,12 @@
 
 class ClientAdapter : public IClientPort {
   public:
-    // The adapter borrows the receiver's UDP socket (set after bind).
+    // Borrows the receiver's UDP socket; call after bind.
     void setSocket(SOCKET sock);
 
     void updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) override;
-    // Hot-path override: skips the inet_pton + std::string round-trip and
-    // writes the IPv4 directly into sin_addr. Called once per UDP packet
-    // by the receiver, so the per-call cost matters.
+    // Hot path (one call per received UDP packet): writes the IPv4 directly
+    // into sin_addr, skipping the inet_pton + std::string round-trip.
     void updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) override;
     void removeClientAddr(uint32_t token) override;
 
@@ -44,9 +36,7 @@ class ClientAdapter : public IClientPort {
     std::mutex addrMtx_;
     std::unordered_map<uint32_t, sockaddr_in> addrs_;
 
-    // Build a full encrypted packet and send it.
     void sendEncryptedPacket(const Connection& conn, const uint8_t* inner, size_t innerLen);
 
-    // Resolve the sockaddr_in for a token.
     bool getAddr(uint32_t token, sockaddr_in& out);
 };
