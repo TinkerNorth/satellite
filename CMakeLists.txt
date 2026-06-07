@@ -17,7 +17,7 @@ message(STATUS "satellite: building version ${SATELLITE_VERSION}")
 
 project(satellite VERSION ${SATELLITE_VERSION} LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -126,16 +126,11 @@ if(WIN32)
         CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
-    # libsodium: pre-built static lib vendored under lib/libsodium/libsodium-win64/
-    target_include_directories(satellite SYSTEM PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include
-    )
-    target_link_directories(satellite PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib
-    )
+    # libsodium is resolved per-toolchain after the system-library list below:
+    # the vendored MinGW archive for GCC, or vcpkg for MSVC (see the if(MINGW)
+    # block further down).
 
     target_link_libraries(satellite PRIVATE
-        sodium
         setupapi
         ws2_32
         shell32
@@ -147,6 +142,8 @@ if(WIN32)
         bcrypt
         crypt32
         winmm
+        # MMCSS (AvSetMmThreadCharacteristics) for the low-latency receiver thread.
+        avrt
         # OTA updater: WinHTTP (HTTPS to api.github.com).
         winhttp
         # Authenticode signature check on OTA-downloaded installer.
@@ -172,9 +169,25 @@ if(WIN32)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
-    # Exploit-mitigation flags. Kept in sync with build-satellite.bat --
-    # the two paths share a single binary outcome, so a flag landing in
-    # only one place creates a "works in CI, breaks in dev" gap.
+    # libsodium: MinGW links the vendored prebuilt static archive; MSVC pulls an
+    # ABI-matching static build from vcpkg (x64-windows-static → /MT, matching
+    # MSVC_RUNTIME_LIBRARY below). The vendored .a is the only thing that forces
+    # a toolchain — the vcpkg path is what makes the hardened MSVC build (CFG/CET)
+    # achievable without re-vendoring libsodium for MSVC by hand.
+    if(MINGW)
+        target_include_directories(satellite SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
+        target_link_directories(satellite PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib)
+        target_link_libraries(satellite PRIVATE sodium)
+    else()
+        find_package(unofficial-sodium CONFIG REQUIRED)
+        target_link_libraries(satellite PRIVATE unofficial-sodium::sodium)
+    endif()
+
+    # Exploit-mitigation flags. CMake is the single source of truth for the
+    # build (build-satellite.bat is now a thin wrapper that just drives CMake),
+    # so these flags apply to every Windows build path.
     if(MINGW)
         target_compile_options(satellite PRIVATE
             -O2 -Wall -Wextra
@@ -210,8 +223,15 @@ if(WIN32)
         )
     endif()
 
+    # Drop satellite.exe at the source root for BOTH single-config (MinGW
+    # Makefiles / Ninja) and multi-config (Visual Studio) generators. The
+    # per-config properties stop VS from nesting the binary under Release/, so
+    # installer.iss and release.yml find it at the same path under either
+    # toolchain.
     set_target_properties(satellite PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR}
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
 elseif(APPLE)
@@ -524,6 +544,23 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
 else()
     message(STATUS "satellite: unsupported platform; configuring tests only.")
+endif()
+
+# ── Link-Time Optimization (IPO/LTO) for the shipped binary ──────────────────
+# Cross-TU inlining across the hot path (receiver → session_service →
+# vigem_adapter → vigem). check_ipo_supported gates it so a toolchain that can't
+# do LTO degrades gracefully instead of failing configure. Release-only — the
+# test executables stay non-LTO for fast, debuggable builds. MSVC maps this to
+# /GL + /LTCG (which also strengthens /guard:cf); GCC/Clang to -flto.
+if(TARGET satellite)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT SATELLITE_IPO_OK OUTPUT SATELLITE_IPO_MSG LANGUAGES CXX)
+    if(SATELLITE_IPO_OK)
+        set_target_properties(satellite PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        message(STATUS "satellite: LTO/IPO enabled for Release builds.")
+    else()
+        message(STATUS "satellite: LTO/IPO unavailable — ${SATELLITE_IPO_MSG}")
+    endif()
 endif()
 
 # ── Tests (portable — core-only) ─────────────────────────────────────────────

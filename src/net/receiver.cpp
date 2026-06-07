@@ -7,6 +7,10 @@
 #include "core/session_service.h"
 #include "adapters/client_adapter.h"
 
+#ifdef _WIN32
+#include <avrt.h> // MMCSS: AvSetMmThreadCharacteristics for the RX thread
+#endif
+
 // dispatchInnerMessage (inner-message parser + length guards) lives in
 // net/inner_dispatch.cpp — socket-free so the guards can be unit tested.
 
@@ -19,7 +23,17 @@ static void reaperLoop(SessionService& svc) {
 
 void receiverThread(SessionService& svc, ClientAdapter& client) {
 #ifdef _WIN32
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    // Register with MMCSS (Multimedia Class Scheduler) under the "Games" task —
+    // the OS-sanctioned low-latency scheduling class. It boosts this thread
+    // while registered and, unlike a hand-set TIME_CRITICAL priority, lets the
+    // scheduler manage it so it can't starve the rest of the system. Fall back
+    // to TIME_CRITICAL only if MMCSS is unavailable (service disabled or the
+    // "Games" task profile missing). Reverted at thread exit.
+    DWORD mmcssTaskIndex = 0;
+    HANDLE mmcssHandle = AvSetMmThreadCharacteristicsW(L"Games", &mmcssTaskIndex);
+    if (mmcssHandle == nullptr) {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
     SetThreadAffinityMask(GetCurrentThread(), 1ULL);
 #endif
 
@@ -191,4 +205,8 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
 
         reaper.join();
     }
+
+#ifdef _WIN32
+    if (mmcssHandle != nullptr) AvRevertMmThreadCharacteristics(mmcssHandle);
+#endif
 }

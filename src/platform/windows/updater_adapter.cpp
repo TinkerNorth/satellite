@@ -20,7 +20,9 @@
 #include <string>
 #include <vector>
 
-// Also listed in CMakeLists.txt; this pragma only covers the build-satellite.bat path.
+// Auto-link for the MSVC build (#pragma comment(lib) is a no-op under MinGW
+// g++). These libs are also listed in CMakeLists.txt, the authoritative source
+// for both toolchains.
 #ifdef _MSC_VER
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "bcrypt.lib")

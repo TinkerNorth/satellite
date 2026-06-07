@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "satellite",
+  "version": "1.0.0",
+  "description": "Low-latency Xbox controller forwarding over the network.",
+  "homepage": "https://github.com/TinkerNorth/satellite",
+  "dependencies": [
+    "libsodium",
+    "openssl"
+  ]
+}
