@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * gamepad_adapter.cpp — IGamepadPort implementation (Linux / uinput).
- */
 #include "gamepad_adapter.h"
 
 #include "core/touchpad_codec.h"
@@ -24,10 +19,8 @@
 #include <string>
 #include <vector>
 
-// Forward-declared so gamepad_adapter.cpp doesn't have to pull in
-// core/app_state.h (which drags httplib + net_compat.h into a TU that
-// otherwise has no business knowing about HTTP). The Linux-specific
-// definition lives in platform/linux/globals.cpp.
+// Forward-declared to avoid pulling core/app_state.h (httplib + net_compat.h)
+// into this TU. Defined in platform/linux/globals.cpp.
 void logMsg(LogLevel level, const std::string& source, const std::string& message);
 
 namespace {
@@ -37,11 +30,10 @@ constexpr uint16_t XBOX_PID = 0x028e;
 constexpr uint16_t DS4_VID = 0x054c;
 constexpr uint16_t DS4_PID = 0x05c4;
 
-// Buttons exposed on both profiles. Code values follow evdev conventions.
+// Buttons exposed on both profiles (evdev codes).
 constexpr int BUTTONS[] = {BTN_A,      BTN_B,     BTN_X,    BTN_Y,      BTN_TL,    BTN_TR,
                            BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR};
 
-// Emit a single input_event to the uinput fd.
 bool emit(int fd, uint16_t type, uint16_t code, int32_t value) {
     struct input_event ev{};
     ev.type = type;
@@ -50,7 +42,7 @@ bool emit(int fd, uint16_t type, uint16_t code, int32_t value) {
     return ::write(fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev);
 }
 
-// Configure one absolute axis via UI_ABS_SETUP (kernel ≥ 4.5).
+// Configure one absolute axis via UI_ABS_SETUP (kernel >= 4.5).
 bool setupAbs(int fd, uint16_t code, int32_t min, int32_t max, int32_t flat, int32_t fuzz) {
     struct uinput_abs_setup abs{};
     abs.code = code;
@@ -61,10 +53,9 @@ bool setupAbs(int fd, uint16_t code, int32_t min, int32_t max, int32_t flat, int
     return ::ioctl(fd, UI_ABS_SETUP, &abs) == 0;
 }
 
-// Configure one absolute axis with a resolution (units per physical unit).
-// For an INPUT_PROP_ACCELEROMETER device the kernel ABI defines resolution as
-// units/g for ABS_X/Y/Z and units/(deg/s) for ABS_RX/RY/RZ — that lets evdev
-// consumers convert the raw int16 wire values back to physical units.
+// Axis with resolution. For INPUT_PROP_ACCELEROMETER the kernel ABI defines it
+// as units/g (ABS_X/Y/Z) and units/(deg/s) (ABS_RX/RY/RZ) so consumers can
+// convert raw int16 wire values back to physical units.
 bool setupAbsRes(int fd, uint16_t code, int32_t min, int32_t max, int32_t resolution) {
     struct uinput_abs_setup abs{};
     abs.code = code;
@@ -80,18 +71,15 @@ GamepadAdapter::~GamepadAdapter() { closeBus(); }
 
 bool GamepadAdapter::ensureBusOpen() {
     std::lock_guard<std::mutex> lk(mtx_);
-    // "Bus" on Linux is just the uinput module + device node; verify we can
-    // write to it. Actual device fds are opened per plugin.
+    // "Bus" here is just the uinput node; per-device fds open per plugin.
     if (::access("/dev/uinput", W_OK) != 0) return false;
     busOpen_ = true;
     return true;
 }
 
 void GamepadAdapter::closeBus() {
-    // Stop all reader threads first while holding the lock long enough to take
-    // a snapshot of the serials, then drop the lock to join (joining inside
-    // the lock would deadlock against the reader trying to take it for the
-    // RumbleCallback copy).
+    // Snapshot serials under the lock, then join outside it: joining while
+    // holding mtx_ deadlocks against the reader taking it for the rumble copy.
     std::vector<uint32_t> serials;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -118,7 +106,7 @@ void GamepadAdapter::closeBus() {
             ::close(dev.touchFd);
         }
     }
-    // The relative-mouse pointer node is host-global, not per-controller.
+    // Pointer node is host-global, not per-controller.
     if (relMouseFd_ >= 0) {
         (void)::ioctl(relMouseFd_, UI_DEV_DESTROY);
         ::close(relMouseFd_);
@@ -135,19 +123,15 @@ bool GamepadAdapter::isBusOpen() const {
 }
 
 int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
-    // O_RDWR (not O_WRONLY): we read FF_UPLOAD/FF_ERASE/EV_FF events back from
-    // the same fd in the reader thread.
+    // O_RDWR (not O_WRONLY): the reader thread reads FF_UPLOAD/FF_ERASE/EV_FF back.
     int fd = ::open("/dev/uinput", O_RDWR | O_NONBLOCK);
     if (fd < 0) return -1;
 
-    // Enable event classes.
     if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
-    // Force-feedback: enable the EV_FF event class plus the FF_RUMBLE
-    // capability so games see the virtual pad as having dual-motor rumble.
-    // Without these the kernel rejects every UI_FF_UPLOAD with -EOPNOTSUPP and
-    // SDL/Steam Input report the pad as "no haptics".
+    // Without EV_FF + FF_RUMBLE the kernel rejects every UI_FF_UPLOAD with
+    // -EOPNOTSUPP and SDL/Steam Input report the pad as "no haptics".
     if (::ioctl(fd, UI_SET_EVBIT, EV_FF) < 0) goto fail;
     if (::ioctl(fd, UI_SET_FFBIT, FF_RUMBLE) < 0) goto fail;
 
@@ -155,12 +139,11 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
         if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
     }
 
-    // Absolute axes used by both Xbox and DS4 profiles.
     for (int ax : {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y}) {
         if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
     }
 
-    // Per-axis absinfo (range/flat/fuzz) — matches xpad driver defaults.
+    // Per-axis absinfo (range/flat/fuzz) matches xpad driver defaults.
     if (!setupAbs(fd, ABS_X, -32768, 32767, 128, 16)) goto fail;
     if (!setupAbs(fd, ABS_Y, -32768, 32767, 128, 16)) goto fail;
     if (!setupAbs(fd, ABS_RX, -32768, 32767, 128, 16)) goto fail;
@@ -176,8 +159,7 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
         usetup.id.vendor = ds4 ? DS4_VID : XBOX_VID;
         usetup.id.product = ds4 ? DS4_PID : XBOX_PID;
         usetup.id.version = ds4 ? 0x0100 : 0x0110;
-        // Number of effects the kernel will let games upload before recycling
-        // slots. 16 matches what the in-tree xpad driver advertises.
+        // 16 effect slots, matching the in-tree xpad driver.
         usetup.ff_effects_max = 16;
         const char* name = ds4 ? "Satellite Virtual DualShock 4" : "Satellite Virtual Xbox 360 Pad";
         std::snprintf(usetup.name, sizeof(usetup.name), "%s #%u", name, serial);
@@ -193,25 +175,22 @@ fail:
 }
 
 int GamepadAdapter::openMotionUinputDevice(uint32_t serial) {
-    // Output-only node — no FF readback — so O_WRONLY is sufficient.
+    // Output-only node (no FF readback), so O_WRONLY suffices.
     int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK);
     if (fd < 0) return -1;
 
     if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
-    // INPUT_PROP_ACCELEROMETER tells userspace that ABS_X/Y/Z + ABS_RX/RY/RZ
-    // on this node are an accelerometer + gyroscope, not stick axes — the
-    // same convention the in-tree hid-playstation driver uses for the
-    // DualSense's dedicated motion device.
+    // INPUT_PROP_ACCELEROMETER marks ABS_X/Y/Z + RX/RY/RZ as accel+gyro, not
+    // stick axes — same convention as hid-playstation's DualSense motion node.
     if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_ACCELEROMETER) < 0) goto fail;
 
     for (int ax : {ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ}) {
         if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
     }
 
-    // Accelerometer axes (ABS_X/Y/Z): full int16 range; resolution ≈ 8192
-    // units/g (wire LSB = 4/32767 g). Gyro axes (ABS_RX/RY/RZ): resolution
-    // ≈ 16 units/(deg/s) (wire LSB = 2000/32767 deg/s).
+    // Accel ABS_X/Y/Z: resolution ~8192 units/g (wire LSB = 4/32767 g).
+    // Gyro ABS_RX/RY/RZ: ~16 units/(deg/s) (wire LSB = 2000/32767 deg/s).
     if (!setupAbsRes(fd, ABS_X, -32768, 32767, 8192)) goto fail;
     if (!setupAbsRes(fd, ABS_Y, -32768, 32767, 8192)) goto fail;
     if (!setupAbsRes(fd, ABS_Z, -32768, 32767, 8192)) goto fail;
@@ -239,30 +218,28 @@ fail:
 }
 
 int GamepadAdapter::openTouchpadUinputDevice(uint32_t serial) {
-    // Output-only node — no FF readback — so O_WRONLY is sufficient.
+    // Output-only node (no FF readback), so O_WRONLY suffices.
     int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK);
     if (fd < 0) return -1;
 
     if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
-    // INPUT_PROP_POINTER marks this as an indirect pointing device; the DS4 /
-    // DualSense trackpad is a clickpad, so INPUT_PROP_BUTTONPAD too — libinput
-    // then treats the whole surface as one big button.
+    // POINTER = indirect pointing device; BUTTONPAD because the DS4 trackpad is
+    // a clickpad, so libinput treats the whole surface as one button.
     if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_POINTER) < 0) goto fail;
     if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_BUTTONPAD) < 0) goto fail;
 
     for (int btn : {BTN_TOUCH, BTN_TOOL_FINGER, BTN_TOOL_DOUBLETAP, BTN_LEFT}) {
         if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
     }
-    // ABS_X/Y carry a single-touch mirror of finger 0; the ABS_MT_* axes carry
-    // the full two-finger multitouch (MT-B) stream.
+    // ABS_X/Y mirror finger 0 (single-touch); ABS_MT_* carry the two-finger MT-B stream.
     for (int ax :
          {ABS_X, ABS_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y}) {
         if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
     }
 
-    // DS4 native touchpad resolution. ABS_MT_SLOT caps at the two-contact pad.
+    // DS4 native touchpad resolution; ABS_MT_SLOT caps at the two-contact pad.
     if (!setupAbs(fd, ABS_X, 0, DS4_TOUCHPAD_RES_X - 1, 0, 0)) goto fail;
     if (!setupAbs(fd, ABS_Y, 0, DS4_TOUCHPAD_RES_Y - 1, 0, 0)) goto fail;
     if (!setupAbs(fd, ABS_MT_SLOT, 0, 1, 0, 0)) goto fail;
@@ -340,24 +317,19 @@ bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
     auto& dev = devices_[serial];
     dev.fd = fd;
     dev.ds4 = true;
-    // Second uinput node for the DualShock 4 IMU. Best-effort: if it fails
-    // the gamepad still works and motion is still cached by the
-    // SessionService — only the local evdev motion node is missing.
+    // DS4 IMU node. Best-effort: on failure the gamepad still works and
+    // motion is still cached by SessionService; only the evdev node is missing.
     dev.motionFd = openMotionUinputDevice(serial);
     if (dev.motionFd < 0) {
-        // Surface the failure clearly. Without this log a kernel too old
-        // for INPUT_PROP_ACCELEROMETER, a missing /dev/uinput permission,
-        // or a /tmp-exhausted system would silently degrade to "motion
-        // captured but never delivered" — indistinguishable from "no game
-        // has subscribed" in the web UI. Pairs with motionBackendOk().
+        // Log so a too-old kernel / missing permission / exhausted /tmp doesn't
+        // silently look like "no game subscribed". Pairs with motionBackendOk().
         std::fprintf(stderr,
                      "satellite: failed to open DS4 motion uinput device for serial=%u; "
                      "motion samples will be cached but not forwarded\n",
                      serial);
     }
-    // Third uinput node for the DualShock 4 touchpad (Task 1.3). Also
-    // best-effort — a failure just means TOUCHPAD_MODE_DS4 has nowhere to
-    // land for this controller; the sample is still cached for the web UI.
+    // DS4 touchpad node. Best-effort: on failure TOUCHPAD_MODE_DS4 has nowhere
+    // to land for this controller, but the sample is still cached for the web UI.
     dev.touchFd = openTouchpadUinputDevice(serial);
     startReader(serial, dev);
     return true;
@@ -369,7 +341,7 @@ void GamepadAdapter::unplugDevice(uint32_t serial) {
     if (it == devices_.end()) return;
     stopReader(serial); // joins reader thread; safe to take the fd after
     it = devices_.find(serial);
-    if (it == devices_.end()) return; // stopReader didn't erase, but be defensive
+    if (it == devices_.end()) return; // defensive: stopReader doesn't erase
     if (it->second.fd >= 0) {
         (void)::ioctl(it->second.fd, UI_DEV_DESTROY);
         ::close(it->second.fd);
@@ -385,7 +357,6 @@ void GamepadAdapter::unplugDevice(uint32_t serial) {
     devices_.erase(it);
 }
 
-// ── Report submission ───────────────────────────────────────────────────────
 // XUSB wButtons bit layout (matches core/types.h convention).
 namespace {
 constexpr uint16_t XUSB_DPAD_UP = 0x0001;
@@ -404,8 +375,8 @@ constexpr uint16_t XUSB_B = 0x2000;
 constexpr uint16_t XUSB_X = 0x4000;
 constexpr uint16_t XUSB_Y = 0x8000;
 
-// Clamp a signed 16-bit sample so negating -32768 does not overflow when we
-// flip the Y axis to match evdev's "down is positive" convention.
+// Clamp so negating -32768 doesn't overflow when we flip Y for evdev's
+// "down is positive" convention.
 int32_t clampS16(int32_t v) {
     if (v < -32767) return -32767;
     if (v > 32767) return 32767;
@@ -420,17 +391,15 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
     int fd = it->second.fd;
 
     bool ok = true;
-    // Sticks. XUSB Y is positive-up; evdev Y is positive-down — invert.
+    // XUSB Y is positive-up; evdev Y is positive-down — invert.
     ok &= emit(fd, EV_ABS, ABS_X, report.sThumbLX);
     ok &= emit(fd, EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
     ok &= emit(fd, EV_ABS, ABS_RX, report.sThumbRX);
     ok &= emit(fd, EV_ABS, ABS_RY, -clampS16(report.sThumbRY));
 
-    // Triggers (0..255).
     ok &= emit(fd, EV_ABS, ABS_Z, report.bLeftTrigger);
     ok &= emit(fd, EV_ABS, ABS_RZ, report.bRightTrigger);
 
-    // D-pad via ABS_HAT0X/Y.
     int32_t hatX = 0, hatY = 0;
     if (report.wButtons & XUSB_DPAD_LEFT)
         hatX = -1;
@@ -443,7 +412,6 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
     ok &= emit(fd, EV_ABS, ABS_HAT0X, hatX);
     ok &= emit(fd, EV_ABS, ABS_HAT0Y, hatY);
 
-    // Buttons.
     ok &= emit(fd, EV_KEY, BTN_A, (report.wButtons & XUSB_A) ? 1 : 0);
     ok &= emit(fd, EV_KEY, BTN_B, (report.wButtons & XUSB_B) ? 1 : 0);
     ok &= emit(fd, EV_KEY, BTN_X, (report.wButtons & XUSB_X) ? 1 : 0);
@@ -456,15 +424,13 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
     ok &= emit(fd, EV_KEY, BTN_THUMBL, (report.wButtons & XUSB_LS) ? 1 : 0);
     ok &= emit(fd, EV_KEY, BTN_THUMBR, (report.wButtons & XUSB_RS) ? 1 : 0);
 
-    // Flush the frame.
     ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
     return ok;
 }
 
 bool GamepadAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report) {
-    // The uinput device is configured with DS4 VID/PID but exposes the same
-    // evdev button/axis codes — SDL2 / Steam Input identify it as a DualShock 4
-    // via the USB IDs and remap face buttons accordingly.
+    // Same evdev codes as the Xbox path; SDL2/Steam Input identify it as a DS4
+    // via the DS4 VID/PID set at device creation and remap face buttons.
     return submitReport(serial, report);
 }
 
@@ -474,10 +440,8 @@ bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     if (it == devices_.end() || it->second.motionFd < 0) return false;
     int fd = it->second.motionFd;
 
-    // Gyro → ABS_RX/RY/RZ, accel → ABS_X/Y/Z. The raw signed-int16 wire values
-    // are emitted verbatim; the node's per-axis absinfo.resolution (set in
-    // openMotionUinputDevice) describes the units so consumers can convert
-    // back to deg/s and g.
+    // Gyro -> ABS_RX/RY/RZ, accel -> ABS_X/Y/Z. Raw int16 wire values emitted
+    // verbatim; the node's absinfo.resolution carries the units (see openMotionUinputDevice).
     bool ok = true;
     ok &= emit(fd, EV_ABS, ABS_RX, report.gyroX);
     ok &= emit(fd, EV_ABS, ABS_RY, report.gyroY);
@@ -490,21 +454,13 @@ bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
 }
 
 bool GamepadAdapter::supportsMotionForType(uint8_t controllerType) const {
-    // uinput's IMU surface is the dedicated INPUT_PROP_ACCELEROMETER node
-    // we create alongside a DualShock 4 in pluginDeviceDS4. The Xbox 360
-    // virtual device has no motion node. Independent of plug state — this
-    // is a backend-shape question, not a per-serial query.
+    // Backend-shape, not per-serial: only the DS4 profile gets a motion node.
     return controllerTypeUsesDS4(controllerType);
 }
 
 bool GamepadAdapter::motionBackendOk(uint32_t serial) const {
-    // True iff openMotionUinputDevice succeeded for this serial at
-    // plug-in time. The SessionService folds this into ConnectionSnapshot
-    // .CtrlInfo so the web UI can distinguish "no game subscribed" from
-    // "kernel rejected the motion node." A serial we don't know about
-    // (race between unplug and query) reads true — there's nothing to
-    // report failure about, and false here would surface as a phantom
-    // "broken backend" badge.
+    // An unknown serial (unplug/query race) reads true: false would surface as a
+    // phantom "broken backend" badge in the web UI when there's nothing to report.
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = devices_.find(serial);
     if (it == devices_.end()) return true;
@@ -526,8 +482,8 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
         ok &= emit(fd, EV_ABS, ABS_MT_SLOT, slot);
         if (f.active) {
             ++activeCount;
-            // Allocate a fresh tracking id on a touch-down and reuse it for the
-            // life of the contact so MT-B consumers see one continuous finger.
+            // Fresh tracking id on touch-down, reused for the contact's life so
+            // MT-B consumers see one continuous finger.
             if (dev.touchSlotId[slot] < 0) {
                 dev.touchSlotId[slot] = (dev.touchTrackingId++) & 0xFFFF;
             }
@@ -535,7 +491,7 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
             ok &= emit(fd, EV_ABS, ABS_MT_POSITION_X, touchpadWireToRange(f.x, DS4_TOUCHPAD_RES_X));
             ok &= emit(fd, EV_ABS, ABS_MT_POSITION_Y, touchpadWireToRange(f.y, DS4_TOUCHPAD_RES_Y));
         } else if (dev.touchSlotId[slot] >= 0) {
-            // Finger lifted — release the MT slot (tracking id -1).
+            // Finger lifted: release the MT slot (tracking id -1).
             dev.touchSlotId[slot] = -1;
             ok &= emit(fd, EV_ABS, ABS_MT_TRACKING_ID, -1);
         }
@@ -546,8 +502,7 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
     ok &= emit(fd, EV_KEY, BTN_TOOL_DOUBLETAP, activeCount == 2 ? 1 : 0);
     ok &= emit(fd, EV_KEY, BTN_LEFT, report.buttonPressed ? 1 : 0);
 
-    // Single-touch (ST) compatibility: mirror finger 0 onto ABS_X/Y so non-MT
-    // consumers still track the primary contact.
+    // Mirror finger 0 onto ABS_X/Y so non-MT consumers track the primary contact.
     if (report.finger0.active) {
         ok &= emit(fd, EV_ABS, ABS_X, touchpadWireToRange(report.finger0.x, DS4_TOUCHPAD_RES_X));
         ok &= emit(fd, EV_ABS, ABS_Y, touchpadWireToRange(report.finger0.y, DS4_TOUCHPAD_RES_Y));
@@ -559,8 +514,7 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
 
 bool GamepadAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
     std::lock_guard<std::mutex> lk(mtx_);
-    // The pointer node is host-global and lazily created — the first
-    // TOUCHPAD_MODE_MOUSE sample is what brings it into existence.
+    // Pointer node is host-global, created lazily by the first sample.
     if (relMouseFd_ < 0) {
         relMouseFd_ = openRelMouseUinputDevice();
         if (relMouseFd_ < 0) return false;
@@ -579,23 +533,15 @@ bool GamepadAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
     return ok;
 }
 
-// ── Battery + lightbar sysfs proxy ──────────────────────────────────────────
-// uinput exposes no native channel for either: there is no UI_SET_BATTERY
-// ioctl in any in-tree kernel (battery state for HID gamepads comes from the
-// in-tree drivers' /sys/class/power_supply/ entries, which userspace virtual
-// devices can't synthesize), and EV_LED is a single-bit-per-LED stream that
-// can't carry an RGB triple. Rather than silently drop these like the default
-// IGamepadPort no-ops, we mirror each update to a per-controller file under
-// /tmp/satellite/controller<serial>/ so operator-level userspace (OBS
-// overlays, LED-strip daemons, status bars, shell scripts) has *something*
-// to read. This is Option-A-lite: best-effort surfacing rather than no
-// surfacing. The SessionService still caches the latest sample on Controller
-// regardless, so the web UI is unchanged.
+// Battery + lightbar sysfs proxy: uinput has no native channel for either (no
+// UI_SET_BATTERY ioctl; EV_LED is single-bit and can't carry an RGB triple), so
+// rather than drop them we mirror each update to /tmp/satellite/controller<serial>/
+// for operator userspace (OBS overlays, LED daemons, status bars). SessionService
+// still caches the latest sample, so the web UI is unchanged.
 
 std::string GamepadAdapter::sysfsProxyDir() {
     // SATELLITE_SYSFS_PROXY_DIR lets tests redirect to a hermetic temp dir;
-    // the daemon itself just uses the /tmp default so an operator's tooling
-    // can hardcode a stable path.
+    // the daemon uses the stable /tmp default for operator tooling.
     if (const char* env = std::getenv("SATELLITE_SYSFS_PROXY_DIR")) {
         if (env[0] != '\0') return std::string(env);
     }
@@ -605,8 +551,7 @@ std::string GamepadAdapter::sysfsProxyDir() {
 bool GamepadAdapter::writeSysfsProxyFile(uint32_t serial, const char* leaf,
                                          const std::string& contents) {
     const std::string base = sysfsProxyDir();
-    // mkdir is non-recursive — create the base, then the per-controller dir.
-    // EEXIST is fine on either step; any other errno means we can't proceed.
+    // mkdir is non-recursive: base then per-controller dir. EEXIST is fine.
     if (::mkdir(base.c_str(), 0755) != 0 && errno != EEXIST) return false;
     char ctrlDir[64];
     std::snprintf(ctrlDir, sizeof(ctrlDir), "/controller%u", serial);
@@ -614,9 +559,8 @@ bool GamepadAdapter::writeSysfsProxyFile(uint32_t serial, const char* leaf,
     if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) return false;
 
     const std::string path = dir + "/" + leaf;
-    // Write-then-rename would be more crash-safe, but these files are pure
-    // telemetry — a torn read yields stale text, not data corruption — and
-    // the simpler O_TRUNC write avoids leaving rename-tmps behind on crash.
+    // Plain O_TRUNC write (no write-then-rename): pure telemetry, so a torn read
+    // yields stale text, not corruption, and we avoid leaving rename-tmps on crash.
     int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return false;
     ssize_t want = static_cast<ssize_t>(contents.size());
@@ -626,9 +570,8 @@ bool GamepadAdapter::writeSysfsProxyFile(uint32_t serial, const char* leaf,
 }
 
 bool GamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
-    // Two-line "key=value" file so a shell consumer can parse it with `source`.
-    // The values mirror the wire encoding exactly (level 0..100 or 255 for
-    // unknown; status 0..4 per BATTERY_STATUS_*).
+    // "key=value" lines (shell `source`-able). Values mirror the wire encoding:
+    // level 0..100 or 255 unknown; status 0..4 per BATTERY_STATUS_*.
     char buf[64];
     int n =
         std::snprintf(buf, sizeof(buf), "level=%u\nstatus=%u\n",
@@ -645,9 +588,7 @@ bool GamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report)
 }
 
 #ifdef SATELLITE_BUILD_TESTS
-// Test-only synthetic entrypoint; symbol is elided from production builds.
-// See header for rationale (uinput has no RGB readback path, so the
-// callback can't be exercised through normal production code paths).
+// Test-only synthetic entrypoint (see header rationale).
 void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
     LightbarCallback cb;
     {
@@ -659,18 +600,14 @@ void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g
 #endif
 
 void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
-    // Wrap the SessionService's sink so every fired colour change *also* lands
-    // in the per-controller sysfs-proxy file. The wrapped cb itself is rarely
-    // exercised on uinput (no kernel-side readback path for RGB) but staying
-    // wired keeps the path consistent with the Windows ViGEm adapter, and any
-    // future bridge (sysfs-watcher → userspace lightbar daemon, FF-effect
-    // sniffing, etc.) gets the file mirroring "for free".
+    // Wrap the sink so every fired colour also lands in the sysfs-proxy file.
+    // Rarely fires on uinput (no RGB readback) but keeps parity with ViGEm and
+    // gives a future bridge the file mirroring for free.
     std::lock_guard<std::mutex> lk(mtx_);
     LightbarCallback inner = std::move(cb);
     lightbarCb_ = [inner](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         char buf[16];
-        // RRGGBB form (no leading #) so shell consumers can prepend whatever
-        // they need without an extra strip-pass.
+        // RRGGBB (no leading #) so shell consumers can prepend as needed.
         std::snprintf(buf, sizeof(buf), "%02X%02X%02X\n", r, g, b);
         bool ok = writeSysfsProxyFile(serial, "lightbar", std::string(buf));
 
@@ -683,8 +620,6 @@ void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
     };
 }
 
-// ── Rumble callback registration ────────────────────────────────────────────
-
 void GamepadAdapter::setRumbleCallback(RumbleCallback cb) {
     std::lock_guard<std::mutex> lk(mtx_);
     rumbleCb_ = std::move(cb);
@@ -694,8 +629,8 @@ void GamepadAdapter::setRumbleCallback(RumbleCallback cb) {
 void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
     int fds[2] = {-1, -1};
     if (::pipe(fds) != 0) return;
-    // Non-blocking on the read side so a spurious wake doesn't stall the
-    // reader if the write side closes without a byte.
+    // Non-blocking read side so a spurious wake (write side closed without a
+    // byte) doesn't stall the reader.
     int flags = ::fcntl(fds[0], F_GETFL, 0);
     if (flags >= 0) ::fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
     dev.wakePipeRead = fds[0];
@@ -708,9 +643,8 @@ void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
         [this, serial, devFd, wakeFd, isDS4] { readerLoop(serial, devFd, wakeFd, isDS4); });
 }
 
-// Caller holds mtx_. Mirrors the Windows ViGEm pattern: extract under the
-// lock, drop it for the join, retake it. Joining inline would deadlock with
-// the reader's lock acquisition for the rumble callback copy.
+// Caller holds mtx_. Extract under the lock, drop it for the join, retake it:
+// joining inline deadlocks with the reader taking the lock for the rumble copy.
 void GamepadAdapter::stopReader(uint32_t serial) {
     auto it = devices_.find(serial);
     if (it == devices_.end()) return;
@@ -758,14 +692,9 @@ void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4)
             return;
         }
 
-        // Three event types matter to us:
-        //   EV_UINPUT.UI_FF_UPLOAD — game registered a new effect; reply with
-        //     the assigned effect-id and cache its strong/weak magnitudes.
-        //   EV_UINPUT.UI_FF_ERASE  — game freed an effect-id; drop the cached
-        //     entry. Must be acknowledged or the kernel rejects future uploads.
-        //   EV_FF                  — game pressed play/stop on an effect-id.
-        //     value > 0 plays, value == 0 stops; magnitudes come from the
-        //     cached effect descriptor.
+        // FF handshake: UI_FF_UPLOAD registers an effect (cache its magnitudes);
+        // UI_FF_ERASE frees one (must be acked or the kernel rejects future
+        // uploads); EV_FF plays/stops it (value>0 play, ==0 stop).
         if (ev.type == EV_UINPUT && ev.code == UI_FF_UPLOAD) {
             struct uinput_ff_upload upload{};
             upload.request_id = ev.value;
@@ -797,7 +726,7 @@ void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4)
             }
         } else if (ev.type == EV_FF) {
             int effectId = ev.code;
-            int playValue = ev.value; // 0 = stop, >0 = play
+            int playValue = ev.value;
             RumbleReport rr{};
             RumbleCallback cb;
             {
@@ -809,7 +738,7 @@ void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4)
                     rr.strongMagnitude = eit->second.strong;
                     rr.weakMagnitude = eit->second.weak;
                 }
-                // playValue == 0 → keep magnitudes at 0 (stop)
+                // playValue == 0 leaves magnitudes at 0 (stop).
                 cb = rumbleCb_;
             }
             if (cb) cb(serial, rr);

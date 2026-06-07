@@ -20,7 +20,7 @@ function setButtonLoading(btn, label) {
   btn.disabled = true;
   btn.setAttribute('aria-busy', 'true');
   // Sizing: 12px for icon-only buttons (fits inside the 32×32 .btn-icon),
-  // 14px for text buttons so the spinner reads alongside the Rajdhani label.
+  // 14px for text buttons so the spinner reads alongside the button label.
   const size = btn.classList.contains('btn-icon') ? 12 : 14;
   if (label) {
     btn.innerHTML = '<span class="btn-with-loader">' + spinnerSVG(size) + '<span>' + esc(label) + '</span></span>';
@@ -374,6 +374,15 @@ function initDashboard() {
     if (devList) devList.addEventListener('click', handleDeviceListClick);
     const connList = document.getElementById('connection-list');
     if (connList) connList.addEventListener('click', handleConnectionListClick);
+    const pairList = document.getElementById('pair-request-list');
+    if (pairList) pairList.addEventListener('click', handlePairRequestClick);
+    const pairBadge = document.getElementById('pair-badge');
+    if (pairBadge) {
+      pairBadge.addEventListener('click', () => {
+        const sec = document.getElementById('pair-request-section');
+        if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
     dashboardListenersWired = true;
   }
   startSSE();
@@ -450,6 +459,16 @@ function startSSE() {
     } catch (err) { /* ignore */ }
   });
 
+  // Reverse-pairing requests — array of { deviceId, deviceName, clientIP,
+  // secondsRemaining }. Drives the accept/deny panel; an empty array hides it.
+  eventSource.addEventListener('pairRequests', (e) => {
+    onAnyMessage();
+    try {
+      const d = JSON.parse(e.data);
+      updatePairRequests(d);
+    } catch (err) { /* ignore */ }
+  });
+
   eventSource.onerror = () => {
     stopSSE();
     // Check if server is truly unreachable vs just a transient SSE glitch
@@ -487,17 +506,6 @@ function stopSSE() {
 }
 
 function updateStatus(d) {
-  document.getElementById('s-status').textContent =
-    d.listening ? t('dashboard.status.listening') : t('dashboard.status.stopped');
-  document.getElementById('s-packets').textContent = d.packets.toLocaleString();
-  document.getElementById('s-sender').textContent = d.senderIP;
-  document.getElementById('s-port').textContent = d.udpPort;
-  document.getElementById('s-http-port').textContent = d.webPort || location.port || '—';
-
-  const dot = document.getElementById('dot');
-  dot.className = 'dot ' + (d.listening ? 'on' : 'off');
-
-  // Update backend status from SSE data if available
   if (d.backend) {
     updateBackendPanel(d.backend, d.backendAvailable);
   }
@@ -702,6 +710,103 @@ function updatePinPanel(s) {
   }
 }
 
+// ── Reverse-direction pairing (the dish shows a PIN; the operator accepts) ───
+// Render one row per in-flight request with a box to type the dish's PIN into.
+// The server never sends that PIN, so the input starts empty — typing it is
+// what authenticates the device. We preserve a half-typed value across the
+// per-second SSE re-render so the operator isn't interrupted mid-entry.
+function updatePairRequests(list) {
+  const section = document.getElementById('pair-request-section');
+  const el = document.getElementById('pair-request-list');
+  const reqs = Array.isArray(list) ? list : [];
+
+  // Header marker — shows the pending count and jumps to the panel on click.
+  const badge = document.getElementById('pair-badge');
+  if (badge) {
+    badge.textContent = String(reqs.length);
+    badge.style.display = reqs.length > 0 ? '' : 'none';
+  }
+
+  if (!section || !el) return;
+  if (reqs.length === 0) {
+    section.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  section.style.display = '';
+
+  const typed = {};
+  el.querySelectorAll('[data-pair-pin]').forEach(inp => {
+    typed[inp.getAttribute('data-pair-pin')] = inp.value;
+  });
+
+  const acceptLabel = t('pairreq.accept');
+  const denyLabel = t('pairreq.deny');
+  const pinPlaceholder = t('pairreq.pin.placeholder');
+  el.innerHTML = reqs.map(r => {
+    const secs = Math.max(0, parseInt(r.secondsRemaining, 10) || 0);
+    const mm = Math.floor(secs / 60);
+    const ss = (secs % 60).toString().padStart(2, '0');
+    const prior = (typed[r.deviceId] != null) ? typed[r.deviceId] : '';
+    return `
+      <div class="device-item pair-request-item">
+        <img class="device-glyph" src="img/icons/dish-scanning-animated.svg" alt="">
+        <div class="device-info">
+          <span class="device-name">${esc(r.deviceName || r.deviceId)}</span>
+          <span class="device-meta">${esc(r.clientIP)} · ${esc(t('pairreq.expires', [mm + ':' + ss]))}</span>
+        </div>
+        <div class="device-actions">
+          <input type="text" inputmode="numeric" autocomplete="off" maxlength="8" style="width:120px"
+                 class="pair-pin-input" data-pair-pin="${esc(r.deviceId)}"
+                 placeholder="${esc(pinPlaceholder)}" value="${esc(prior)}">
+          <button class="btn btn-save" type="button" data-act="pair-accept" data-id="${esc(r.deviceId)}">${esc(acceptLabel)}</button>
+          <button class="btn-icon btn-danger" type="button" data-act="pair-deny" data-id="${esc(r.deviceId)}" title="${esc(denyLabel)}"><img src="img/icons/close_x.svg" alt="${esc(denyLabel)}" class="emoji-icon"></button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// Delegated click handler for the pairing-request list. Accept reads the PIN
+// from the row's own input (never a global selector) so two concurrent
+// requests can't cross-wire their PINs.
+function handlePairRequestClick(e) {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-id') || '';
+  if (btn.dataset.act === 'pair-deny') {
+    respondPairRequest(id, '', false, btn);
+    return;
+  }
+  if (btn.dataset.act === 'pair-accept') {
+    const row = btn.closest('.pair-request-item');
+    const input = row ? row.querySelector('.pair-pin-input') : null;
+    const pin = input ? input.value.trim() : '';
+    if (!pin) {
+      showDashError(t('pairreq.err.pin-required'));
+      if (input) input.focus();
+      return;
+    }
+    respondPairRequest(id, pin, true, btn);
+  }
+}
+
+async function respondPairRequest(deviceId, pin, accept, btn) {
+  const restore = setButtonLoading(btn, accept ? t('pairreq.accepting') : null);
+  try {
+    const res = await apiPost('/api/pair/respond', { deviceId, pin, accept });
+    // A PIN mismatch comes back HTTP-200 with ok:false, so check both layers.
+    if (!res.ok || (res.data && res.data.ok === false)) {
+      showDashError(apiErrorText(res, accept ? t('pairreq.err.accept') : t('pairreq.err.deny')));
+      restore();
+      return;
+    }
+    hideDashError();
+    // Leave the spinner — the SSE pairRequests tick drops this row within ~1s.
+  } catch (e) {
+    restore();
+  }
+}
+
 // ── Devices ─────────────────────────────────────────────────────────────────
 async function loadDevices() {
   try {
@@ -812,56 +917,26 @@ async function loadServerCapabilities() {
   } catch (e) { /* leave g_serverCapabilities null — UI falls back to "off only" */ }
 }
 
-// ── Backend status ──────────────────────────────────────────────────────────
-// `backend` is { id, supported, available, errorCode } from /api/backend/status
-// or the SSE status stream. `backendActive` (optional) is the runtime "bus is
-// open with controllers plugged in" flag from the SessionService.
 let backendGuideOpen = false;
 
 function updateBackendPanel(backend, backendActive) {
-  const section = document.getElementById('backend-section');
-  if (!section) return;
+  const alert = document.getElementById('backend-alert');
+  if (!alert) return;
 
-  // macOS / unsupported: hide the panel entirely.
-  if (!backend || !backend.supported) {
-    section.style.display = 'none';
+  if (!backend || !backend.supported || backend.available) {
+    alert.classList.remove('show');
+    const guide = document.getElementById('backend-guide');
+    if (guide) guide.style.display = 'none';
+    backendGuideOpen = false;
     return;
   }
-  section.style.display = '';
 
-  const copy = backendCopy(backend.id);
-  const titleEl  = document.getElementById('backend-title');
-  const flowText = document.getElementById('flow-backend-text');
-  if (titleEl)  titleEl.textContent  = copy.title || t('backend.section.title');
-  if (flowText) flowText.textContent = copy.flowLabel || backend.id;
-
-  const dot     = document.getElementById('backend-dot');
-  const label   = document.getElementById('backend-label');
-  const toggle  = document.getElementById('backend-guide-toggle');
-  const flowBe  = document.getElementById('flow-backend');
-  const flowSys = document.getElementById('flow-system');
-  const guide   = document.getElementById('backend-guide');
-
-  if (backend.available) {
-    dot.className   = 'backend-dot backend-ok';
-    label.textContent = backendActive ? (copy.statusActive || t('debug.status.active'))
-                                      : (copy.statusIdle   || t('debug.status.idle'));
-    label.className = 'backend-label backend-ok-text';
-    toggle.style.display = 'none';
-    flowBe.className  = 'flow-step done';
-    flowSys.className = 'flow-step ' + (backendActive ? 'done' : '');
-    guide.style.display = 'none';
-    backendGuideOpen = false;
-  } else {
-    dot.className   = 'backend-dot backend-err';
-    const err = (copy.errors && copy.errors[backend.errorCode]) || null;
-    label.textContent = err ? err.title : t('backend.unavailable');
-    label.className = 'backend-label backend-err-text';
-    toggle.style.display = '';
-    flowBe.className  = 'flow-step fail';
-    flowSys.className = 'flow-step fail';
-    populateBackendGuide(err);
-  }
+  alert.classList.add('show');
+  const copy  = backendCopy(backend.id);
+  const err   = (copy.errors && copy.errors[backend.errorCode]) || null;
+  const label = document.getElementById('backend-label');
+  if (label) label.textContent = err ? err.title : t('backend.unavailable');
+  populateBackendGuide(err);
 }
 
 function populateBackendGuide(err) {

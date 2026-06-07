@@ -14,6 +14,14 @@ the `_satellite._udp.local.` service — and the legacy UDP broadcast beacon on
 mDNS responder. See [architecture.md](architecture.md) for both the beacon
 format and the mDNS records.
 
+Both discovery payloads also carry a **stable `machineId`** (32 hex chars): the
+broadcast beacon as a top-level `"machineId"` JSON field, the mDNS responder as
+a `mid` TXT key. It is a persisted per-install identifier (`net/machine_id.cpp`)
+that survives restarts **and IP changes**, so a client can recognise the same
+receiver across DHCP lease renewals instead of keying on the mutable
+`ip:udpPort`. Clients SHOULD key a remembered receiver on `machineId` when
+present and fall back to `ip:udpPort` for older servers that don't advertise it.
+
 ## Packet Format
 
 ### Unencrypted (plaintext header)

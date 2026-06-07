@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * gamepad_adapter.h — IGamepadPort stub for macOS.
- *
- * Reports the bus as unavailable and refuses plug-in / submit operations.
- * Lets the SessionService still run end-to-end (pairing, discovery, auth,
- * telemetry), while clients learn via ACK_ERR_BACKEND_UNAVAIL that no
- * virtual controllers can be attached on this host.
- */
+// IGamepadPort stub: macOS has no virtual gamepad bus, so the bus reports
+// unavailable and plug-in/submit are refused. SessionService still runs
+// end-to-end (pairing, discovery, auth, telemetry); clients learn no
+// controllers can attach via ACK_ERR_BACKEND_UNAVAIL.
 #pragma once
 
 #include "core/ports.h"
@@ -27,8 +21,7 @@ class GamepadAdapter : public IGamepadPort {
     bool submitReport(uint32_t, const GamepadReport&) override { return false; }
     bool submitDS4Report(uint32_t, const GamepadReport&) override { return false; }
 
-    // No virtual gamepads on macOS → no game ever produces rumble events. The
-    // callback is accepted (so SessionService composition is uniform across
-    // platforms) but never invoked.
+    // Accepted for uniform composition across platforms but never invoked: no
+    // virtual gamepads means no game ever produces rumble events.
     void setRumbleCallback(RumbleCallback) override {}
 };

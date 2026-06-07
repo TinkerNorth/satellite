@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * globals.h — Linux-specific shared state and constants.
- *
- * Portable app state (Config, atomics, log ring, httplib, g_pairSock) lives in
- * core/app_state.h; this header layers the Linux-only extras on top and pulls
- * in the system headers that the rest of the files under platform/linux/ rely on.
- */
+// Linux-only shared state on top of core/app_state.h, plus the system headers
+// the rest of platform/linux/ relies on.
 #pragma once
 
 // Portable shared state (pulls in net_compat.h).

@@ -28,6 +28,7 @@
   "dashboard.stats.http-port": "HTTP Port",
   "dashboard.status.listening": "Listening",
   "dashboard.status.stopped": "Stopped",
+  "dashboard.region.pairing": "Pairing",
 
   "backend.section.title": "Backend",
   "backend.label.checking": "Checking…",
@@ -80,6 +81,16 @@
   "pin.hint.active": "Enter this PIN on the sender to pair. Expires in %1$s.",
   "pin.hint.expired": "PIN expired — generate a new one to pair another device.",
   "pin.hint.paired": "Paired successfully — that PIN is now spent.",
+
+  "pairreq.section.title": "Pairing Requests",
+  "pairreq.expires": "expires in %1$s",
+  "pairreq.pin.placeholder": "PIN on device",
+  "pairreq.accept": "Accept",
+  "pairreq.accepting": "Accepting…",
+  "pairreq.deny": "Dismiss",
+  "pairreq.err.pin-required": "Type the PIN shown on the device to accept it.",
+  "pairreq.err.accept": "Couldn't accept the pairing request",
+  "pairreq.err.deny": "Couldn't dismiss the request",
 
   "connections.section.title": "Connections",
   "connections.empty": "No active connections",
@@ -252,6 +263,7 @@
   "debug.stats.max-loop": "Max Loop (peak)",
   "debug.stats.sender-ip": "Sender IP",
   "debug.stats.udp-port": "UDP Port",
+  "debug.stats.http-port": "HTTP Port",
   "debug.stats.decrypt-failures": "Decrypt Failures",
   "debug.stats.replay-drops": "Replay Drops",
   "debug.stats.backend": "Backend",

@@ -13,6 +13,7 @@
 # CMake
 build/
 build-*/
+vcpkg_installed/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake

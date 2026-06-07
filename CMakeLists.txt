@@ -17,12 +17,16 @@ message(STATUS "satellite: building version ${SATELLITE_VERSION}")
 
 project(satellite VERSION ${SATELLITE_VERSION} LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+if(WIN32)
+    add_compile_definitions(NOMINMAX)
 endif()
 
 # ── Source lists ─────────────────────────────────────────────────────────────
@@ -39,6 +43,9 @@ set(SATELLITE_NET_SOURCES
     src/net/inner_dispatch.cpp
     src/net/webserver.cpp
     src/net/tls.cpp
+    src/net/machine_id.cpp
+    src/net/pairing.cpp
+    src/net/pairing_service.cpp
     src/net/discovery.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
@@ -57,6 +64,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/config.cpp
     src/platform/windows/crypto.cpp
     src/platform/windows/tray.cpp
+    src/platform/windows/toast.cpp
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
     src/platform/windows/gamepad_backend.cpp
@@ -122,24 +130,24 @@ if(WIN32)
         CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
-    # libsodium: pre-built static lib vendored under lib/libsodium/libsodium-win64/
-    target_include_directories(satellite SYSTEM PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include
-    )
-    target_link_directories(satellite PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib
-    )
+    # libsodium is resolved per-toolchain after the system-library list below:
+    # the vendored MinGW archive for GCC, or vcpkg for MSVC (see the if(MINGW)
+    # block further down).
 
     target_link_libraries(satellite PRIVATE
-        sodium
         setupapi
         ws2_32
         shell32
         ole32
+        # WinRT: RoActivateInstance / RoGetActivationFactory + HSTRING for the
+        # actionable pairing toast (src/platform/windows/toast.cpp).
+        runtimeobject
         advapi32
         bcrypt
         crypt32
         winmm
+        # MMCSS (AvSetMmThreadCharacteristics) for the low-latency receiver thread.
+        avrt
         # OTA updater: WinHTTP (HTTPS to api.github.com).
         winhttp
         # Authenticode signature check on OTA-downloaded installer.
@@ -165,9 +173,25 @@ if(WIN32)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
-    # Exploit-mitigation flags. Kept in sync with build-satellite.bat --
-    # the two paths share a single binary outcome, so a flag landing in
-    # only one place creates a "works in CI, breaks in dev" gap.
+    # libsodium: MinGW links the vendored prebuilt static archive; MSVC pulls an
+    # ABI-matching static build from vcpkg (x64-windows-static → /MT, matching
+    # MSVC_RUNTIME_LIBRARY below). The vendored .a is the only thing that forces
+    # a toolchain — the vcpkg path is what makes the hardened MSVC build (CFG/CET)
+    # achievable without re-vendoring libsodium for MSVC by hand.
+    if(MINGW)
+        target_include_directories(satellite SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
+        target_link_directories(satellite PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib)
+        target_link_libraries(satellite PRIVATE sodium)
+    else()
+        find_package(unofficial-sodium CONFIG REQUIRED)
+        target_link_libraries(satellite PRIVATE unofficial-sodium::sodium)
+    endif()
+
+    # Exploit-mitigation flags. CMake is the single source of truth for the
+    # build (build-satellite.bat is now a thin wrapper that just drives CMake),
+    # so these flags apply to every Windows build path.
     if(MINGW)
         target_compile_options(satellite PRIVATE
             -O2 -Wall -Wextra
@@ -196,6 +220,12 @@ if(WIN32)
             /NXCOMPAT
             /GUARD:CF
             /CETCOMPAT         # Win11 hardware shadow stack
+            # satellite.rc already embeds satellite.manifest as RT_MANIFEST id 1
+            # (the cross-toolchain source of truth windres also consumes). MSVC's
+            # linker generates and embeds its own manifest by default, which
+            # collides with it — CVT1100 "duplicate resource". Suppress the
+            # linker copy so the .rc stays the single manifest source.
+            /MANIFEST:NO
         )
         set_target_properties(satellite PROPERTIES
             LINK_FLAGS "/SUBSYSTEM:WINDOWS"
@@ -203,8 +233,15 @@ if(WIN32)
         )
     endif()
 
+    # Drop satellite.exe at the source root for BOTH single-config (MinGW
+    # Makefiles / Ninja) and multi-config (Visual Studio) generators. The
+    # per-config properties stop VS from nesting the binary under Release/, so
+    # installer.iss and release.yml find it at the same path under either
+    # toolchain.
     set_target_properties(satellite PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR}
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
 elseif(APPLE)
@@ -406,6 +443,21 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             target_link_libraries(satellite PRIVATE
                 ${APPINDICATOR_LIBRARIES} ${GTK3_LIBRARIES})
             message(STATUS "satellite: tray icon enabled (libayatana-appindicator + GTK3).")
+            # libnotify (optional) drives the native reverse-pairing prompt with
+            # Accept/Reject actions. Absent → the prompt falls back to the web
+            # dashboard. Debian/Ubuntu: libnotify-dev; Fedora: libnotify-devel;
+            # Arch: libnotify.
+            pkg_check_modules(LIBNOTIFY QUIET libnotify)
+            if(LIBNOTIFY_FOUND)
+                target_compile_definitions(satellite PRIVATE SATELLITE_HAS_LIBNOTIFY=1)
+                target_include_directories(satellite PRIVATE ${LIBNOTIFY_INCLUDE_DIRS})
+                target_link_directories(satellite PRIVATE ${LIBNOTIFY_LIBRARY_DIRS})
+                target_link_libraries(satellite PRIVATE ${LIBNOTIFY_LIBRARIES})
+                message(STATUS "satellite: native pairing notifications enabled (libnotify).")
+            else()
+                message(STATUS "satellite: libnotify not found; reverse-pairing prompts use "
+                               "the web dashboard only.")
+            endif()
         else()
             message(STATUS "satellite: libayatana-appindicator not found; "
                            "building headless (no tray icon).")
@@ -504,6 +556,23 @@ else()
     message(STATUS "satellite: unsupported platform; configuring tests only.")
 endif()
 
+# ── Link-Time Optimization (IPO/LTO) for the shipped binary ──────────────────
+# Cross-TU inlining across the hot path (receiver → session_service →
+# vigem_adapter → vigem). check_ipo_supported gates it so a toolchain that can't
+# do LTO degrades gracefully instead of failing configure. Release-only — the
+# test executables stay non-LTO for fast, debuggable builds. MSVC maps this to
+# /GL + /LTCG (which also strengthens /guard:cf); GCC/Clang to -flto.
+if(TARGET satellite)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT SATELLITE_IPO_OK OUTPUT SATELLITE_IPO_MSG LANGUAGES CXX)
+    if(SATELLITE_IPO_OK)
+        set_target_properties(satellite PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        message(STATUS "satellite: LTO/IPO enabled for Release builds.")
+    else()
+        message(STATUS "satellite: LTO/IPO unavailable — ${SATELLITE_IPO_MSG}")
+    endif()
+endif()
+
 # ── Tests (portable — core-only) ─────────────────────────────────────────────
 enable_testing()
 
@@ -567,6 +636,28 @@ set_target_properties(test_mdns_protocol PROPERTIES
 )
 add_test(NAME mdns_protocol COMMAND test_mdns_protocol)
 
+# ── Pairing-request registry tests (portable — no networking, no sodium) ─────
+# Exercises net/pairing.cpp: the Path-B (dish shows PIN, operator accepts)
+# request lifecycle — submit, poll, PIN-matched accept, single-use key
+# handback, deny, and refresh-in-place. Deliberately crypto-free, so it builds
+# on every platform without libsodium.
+add_executable(test_pairing
+    tests/test_pairing.cpp
+    src/net/pairing.cpp
+)
+target_include_directories(test_pairing PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+if(WIN32 AND MINGW)
+    target_compile_options(test_pairing PRIVATE -O2 -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(test_pairing PRIVATE /O2 /W4)
+endif()
+set_target_properties(test_pairing PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME pairing COMMAND test_pairing)
+
 # ── Linux platform tests ────────────────────────────────────────────────────
 # Exercises the Linux-only adapters that don't need root/uinput/D-Bus:
 # JSON helpers, config persistence, XDG autostart .desktop file handling,
@@ -613,6 +704,7 @@ if(WIN32)
         tests/test_windows_platform.cpp
         src/platform/windows/config.cpp
         src/platform/windows/globals.cpp
+        src/platform/windows/crypto.cpp
         ${SATELLITE_CORE_SOURCES}
     )
     target_include_directories(test_windows_platform PRIVATE
@@ -639,8 +731,15 @@ if(WIN32)
     if(MINGW)
         target_compile_options(test_windows_platform PRIVATE -O2 -Wall -Wextra)
         target_link_options(test_windows_platform PRIVATE -static)
+        target_include_directories(test_windows_platform SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
+        target_link_directories(test_windows_platform PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib)
+        target_link_libraries(test_windows_platform PRIVATE sodium)
     elseif(MSVC)
         target_compile_options(test_windows_platform PRIVATE /O2 /W4)
+        find_package(unofficial-sodium CONFIG REQUIRED)
+        target_link_libraries(test_windows_platform PRIVATE unofficial-sodium::sodium)
     endif()
     set_target_properties(test_windows_platform PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

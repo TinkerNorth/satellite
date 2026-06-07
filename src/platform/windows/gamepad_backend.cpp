@@ -1,15 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * platform/windows/gamepad_backend.cpp — ViGEmBus probe.
- *
- * Reports backend status as one of:
- *   available         — bus can be opened (driver installed and responsive)
- *   DRIVER_MISSING    — could not enumerate the ViGEm device interface
- *   BUS_OPEN_FAILED   — interface present, but CreateFile/version check failed
- *                       (driver installed but in a bad state)
- */
 #include "core/gamepad_backend.h"
 #include "vigem.h"
 
@@ -32,14 +21,14 @@ BackendStatus probeBackend() {
 
     if (!isViGEmDeviceInterfacePresent()) {
         status.available = false;
-        status.errorCode = "DRIVER_MISSING";
+        status.errorCode = "DRIVER_MISSING"; // interface not enumerable
         return status;
     }
 
     HANDLE h = openVigemBus();
     if (h == INVALID_HANDLE_VALUE) {
         status.available = false;
-        status.errorCode = "BUS_OPEN_FAILED";
+        status.errorCode = "BUS_OPEN_FAILED"; // installed but in a bad state
         return status;
     }
     CloseHandle(h);

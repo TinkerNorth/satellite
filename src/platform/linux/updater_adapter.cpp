@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
 #include "updater_adapter.h"
 
 #include "config.h"
@@ -24,11 +22,8 @@
 
 namespace {
 
-// ── libcurl wrappers ─────────────────────────────────────────────────────
-// We dlopen libcurl at runtime via the system linker so distros without
-// libcurl-dev installed at build-time can still build (we only need libcurl
-// at runtime for the updater feature). For simplicity though we link it
-// directly — every desktop distro ships libcurl as a base package.
+// libcurl is linked directly (not dlopen'd): every desktop distro ships it as a
+// base package.
 
 struct CurlWriteCtx {
     std::string* str = nullptr;
@@ -86,7 +81,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeStringCb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &ctx);
-    // TLS verification ON (the default, but be explicit).
+    // TLS verification ON — explicit for the security-sensitive updater path.
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
 
@@ -170,7 +165,6 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
     return true;
 }
 
-// ── Asset selection ──────────────────────────────────────────────────────
 bool pickAppImageAsset(const GitHubRelease& rel, GitHubAsset& out) {
     for (const auto& a : rel.assets) {
         if (a.name.find("-x86_64.AppImage") != std::string::npos &&
@@ -215,7 +209,6 @@ std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetN
     return "";
 }
 
-// ── SHA-256 via libsodium ────────────────────────────────────────────────
 bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err) {
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) {
@@ -242,25 +235,15 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
 
 } // namespace
 
-// ── LinuxUpdaterAdapter ──────────────────────────────────────────────────
 LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const {
-    // 1. AppImage: $APPIMAGE env var is set by the AppImage runtime.
-    //    Most reliable — the runtime guarantees it.
+    // AppImage runtime guarantees $APPIMAGE — most reliable, check first.
     if (const char* env = std::getenv("APPIMAGE"); env != nullptr && env[0] != '\0') {
         struct stat st;
         if (stat(env, &st) == 0) return InstallType::AppImage;
     }
 
-    // 2. Path-based detection for everything that lives under a system
-    //    bin/. We avoid spawning dpkg/rpm/pacman (slow, not always
-    //    available) and key off filesystem artefacts:
-    //
-    //      /opt/satellite/satellite.AppImage     → AUR satellite-bin
-    //        (the shim at /usr/bin/satellite execs it)
-    //      /usr/bin/satellite + /var/lib/dpkg    → Deb
-    //      /usr/bin/satellite + /var/lib/rpm     → Rpm
-    //      /usr/local/bin/satellite              → Deb (manual `dpkg -i`)
-    //                                              or generic local install
+    // Otherwise key off filesystem artefacts rather than spawning dpkg/rpm/pacman
+    // (slow, not always present).
     char buf[PATH_MAX];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n > 0) {
@@ -268,24 +251,20 @@ LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const 
         std::string p(buf);
         struct stat st;
 
-        // AUR satellite-bin keeps the real binary in /opt/satellite/ and
-        // the shim in /usr/bin. Either path resolves here.
+        // AUR satellite-bin keeps the real binary in /opt and a /usr/bin shim.
         if (p == "/opt/satellite/satellite.AppImage" ||
             stat("/opt/satellite/satellite.AppImage", &st) == 0) {
             return InstallType::Aur;
         }
 
         if (p == "/usr/bin/satellite" || p == "/usr/local/bin/satellite") {
-            // Discriminate dpkg vs rpm by which package database exists.
-            // Both can coexist (e.g. Fedora with alien-installed .debs)
-            // but a satellite binary in /usr/bin will only have been put
-            // there by one of them.
+            // Discriminate dpkg vs rpm by which package DB exists (both can
+            // coexist, but only one installed this binary).
             const bool hasDpkg = (stat("/var/lib/dpkg/status", &st) == 0);
             const bool hasRpm = (stat("/var/lib/rpm", &st) == 0);
             if (hasRpm && !hasDpkg) return InstallType::Rpm;
             if (hasDpkg && !hasRpm) return InstallType::Deb;
-            // Tie-break: prefer the family whose package actually owns
-            // the file. A query to dpkg's own info-list is cheap.
+            // Both present: tie-break to whichever package owns the file.
             if (hasDpkg) {
                 std::string dpkgInfo = "/var/lib/dpkg/info/satellite.list";
                 if (stat(dpkgInfo.c_str(), &st) == 0) return InstallType::Deb;
@@ -317,8 +296,6 @@ LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)
         platformId_ = "linux-portable";
         break;
     }
-    // Initialize libcurl once. Safe to call multiple times — the second
-    // call is a no-op when already initialized.
     curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
@@ -367,7 +344,6 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         return false;
     }
 
-    // Asset and install method depend on how we were installed.
     GitHubAsset asset;
     std::string manual;
     InstallMethod method = InstallMethod::SelfInstall;
@@ -385,11 +361,8 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
             return false;
         }
         method = InstallMethod::Manual;
-        // Users on our APT repo get this for free from `apt upgrade`; the
-        // instruction is also correct for users who installed via a local
-        // `dpkg -i ./satellite_*.deb`, since apt will offer the matching
-        // upgrade once they've added the repo from the install instructions
-        // at https://tinkernorth.github.io/satellite/.
+        // Correct for both APT-repo users and local `dpkg -i` users once they've
+        // added the repo (per the install instructions site).
         manual = "sudo apt update && sudo apt install --only-upgrade satellite";
         break;
     case InstallType::Rpm:
@@ -401,10 +374,9 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         manual = "sudo dnf upgrade --refresh satellite";
         break;
     case InstallType::Aur:
-        // The AUR -bin package wraps the AppImage, so the artifact metadata
-        // we surface is the AppImage (used purely for "show release notes"
-        // — we don't try to download it ourselves). The manual instruction
-        // tells the user to upgrade via their AUR helper of choice.
+        // The AUR -bin package wraps the AppImage; we surface its metadata only
+        // for release notes (never download it) and tell the user to use their
+        // AUR helper.
         if (!pickAppImageAsset(pick, asset)) {
             outError = "No AppImage asset in release " + pick.tagName;
             return false;
@@ -413,7 +385,6 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         manual = "yay -Syu satellite-bin   # or: paru -Syu satellite-bin";
         break;
     case InstallType::Portable:
-        // Default to AppImage if present, otherwise .deb, otherwise fail.
         if (pickAppImageAsset(pick, asset)) {
             method = InstallMethod::Manual;
             manual = "Download " + asset.name + " from " + pick.htmlUrl +
@@ -447,7 +418,6 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
 bool LinuxUpdaterAdapter::downloadArtifact(
     const UpdateInfo& info, const std::function<void(uint64_t, uint64_t)>& onProgress,
     const std::atomic<bool>* cancel, std::string& outLocalPath, std::string& outError) {
-    // ~/.cache/satellite/updates/...
     const char* xdg = std::getenv("XDG_CACHE_HOME");
     std::string dir;
     if (xdg && xdg[0]) {
@@ -456,7 +426,7 @@ bool LinuxUpdaterAdapter::downloadArtifact(
         const char* home = std::getenv("HOME");
         dir = std::string(home ? home : "/tmp") + "/.cache/satellite/updates";
     }
-    // Best-effort directory creation (`mkdir -p` semantics).
+    // Best-effort `mkdir -p`.
     for (size_t i = 1; i < dir.size(); i++) {
         if (dir[i] == '/') {
             dir[i] = '\0';
@@ -490,8 +460,7 @@ bool LinuxUpdaterAdapter::verifyArtifact(const std::string& localPath, const Upd
 bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
                                       std::string& outError) {
     if (info.installMethod == InstallMethod::Manual) {
-        // Nothing to do — the manualInstruction has already been surfaced
-        // in the UI. The web "Install" button is hidden in the Manual case.
+        // Nothing to do: the UI surfaces manualInstruction and hides "Install".
         return true;
     }
     if (installType_ != InstallType::AppImage) {
@@ -499,13 +468,12 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         return false;
     }
 
-    // 1. chmod +x the downloaded AppImage.
     if (::chmod(localPath.c_str(), 0755) != 0) {
         outError = std::string("chmod failed: ") + std::strerror(errno);
         return false;
     }
 
-    // 2. Resolve $APPIMAGE — the current running binary path.
+    // $APPIMAGE is the running binary's path.
     const char* appimg = std::getenv("APPIMAGE");
     if (!appimg || appimg[0] == '\0') {
         outError = "APPIMAGE env var missing (am I really an AppImage?)";
@@ -513,7 +481,7 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
     }
     std::string currentPath = appimg;
 
-    // 3. Write a helper script that waits for our PID, swaps, relaunches.
+    // Helper script: wait for our PID to exit, swap the binary, relaunch.
     pid_t pid = getpid();
     char helperPath[] = "/tmp/satellite-update-XXXXXX.sh";
     int fd = ::mkstemps(helperPath, 3);
@@ -521,7 +489,6 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         outError = "mkstemps failed";
         return false;
     }
-    // Use printf-piped writes so we don't need a separate fdopen.
     auto append = [&](const std::string& line) { ::write(fd, line.c_str(), line.size()); };
     append("#!/bin/bash\n");
     append("set -e\n");
@@ -532,33 +499,31 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
     append("  if ! kill -0 \"$PID\" 2>/dev/null; then break; fi\n");
     append("  sleep 0.5\n");
     append("done\n");
-    // mv across the same filesystem is atomic. Keep a .old copy until the
-    // new binary launches successfully — paranoia in case the new one
-    // segfaults on startup, the user can manually rename .old back.
+    // Same-fs mv is atomic. Keep a .old copy so the user can roll back if the
+    // new binary crashes on startup.
     append("if [ -f \"$DST\" ]; then mv -f \"$DST\" \"$DST.old\" || true; fi\n");
     append("mv -f \"$SRC\" \"$DST\"\n");
     append("chmod +x \"$DST\"\n");
-    // Re-exec the new AppImage. Detach via setsid so it survives our exit.
+    // setsid so the relaunched AppImage survives our exit.
     append("setsid \"$DST\" >/dev/null 2>&1 &\n");
     append("rm -f -- \"$0\"\n");
     ::fchmod(fd, 0700);
     ::close(fd);
 
-    // 4. Fork+exec the helper, then signal a clean shutdown.
+    // Fork+exec the helper, then signal a clean shutdown.
     pid_t child = fork();
     if (child < 0) {
         outError = std::string("fork failed: ") + std::strerror(errno);
         return false;
     }
     if (child == 0) {
-        // Detach from our process group so we survive our parent's exit.
+        // setsid so the helper survives our exit.
         ::setsid();
         ::execlp("/bin/bash", "bash", helperPath, nullptr);
         ::_exit(127);
     }
 
-    // Tell the main loop to wind down. The Linux build's main.cpp listens
-    // for SIGTERM via g_unix_signal_add and translates it to gtk_main_quit.
+    // main.cpp turns SIGTERM into gtk_main_quit for a clean shutdown.
     ::kill(pid, SIGTERM);
     return true;
 }

@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * webserver.cpp — the two server threads.
- *
- *   adminHttpThread  — web UI + admin API. Plain HTTP, bound to 127.0.0.1.
- *                      No authentication: localhost is the trust boundary.
- *   clientApiThread  — sender-facing API (pairing + connections). HTTPS with
- *                      a self-signed cert (see tls.cpp), bound to 0.0.0.0.
- *                      The connection routes require a paired deviceId.
- */
 #include "webserver.h"
 #include "tls.h"
 #include "crypto.h"
 #include "config.h"
+#include "pairing.h"
+#include "pairing_service.h"
 #include "core/gamepad_backend.h"
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -22,9 +13,7 @@
 
 #include <sodium.h>
 
-// ── Helper: emit the {backend: { id, supported, available, errorCode }} JSON
-// fragment used by /api/backend/status, /api/status, /api/debug, and the SSE
-// stream. The web UI keys all user-facing copy off (id, errorCode).
+// Web UI keys all backend-status copy off (id, errorCode).
 static std::string buildBackendJson() {
     BackendStatus s = probeBackend();
     std::string json = "{\"id\":\"";
@@ -45,12 +34,7 @@ static std::string buildBackendJson() {
     return json;
 }
 
-// ── Helper: emit the server-capabilities JSON exposed at
-// /api/server/capabilities. Drives the client touchpad mode-picker: greys out
-// unsupported modes, keeps `off` always selectable as the inert fallback.
-// Shape:
-//   { "touchpad": { "supportedModes": ["off", "ds4", "mouse"], "defaultMode": "off" },
-//     "backend":  { ...probeBackend()... } }
+// Drives the client touchpad mode-picker; `off` is always offered as the inert fallback.
 static std::string buildCapabilitiesJson() {
     TouchpadCapabilities caps = probeTouchpadCapabilities();
     std::string json = "{\"touchpad\":{\"supportedModes\":[";
@@ -71,12 +55,8 @@ static std::string buildCapabilitiesJson() {
     return json;
 }
 
-// ── Helper: shared handler for POST /api/devices/touchpad-mode. Validates
-// the requested mode against TOUCHPAD_MODE_* (and the platform's
-// supportedModes from probeTouchpadCapabilities), persists it to the paired
-// device, and hot-applies to any live connection. Used by both the admin
-// HTTP server (localhost; admin tools) and the HTTPS client API (the
-// authoritative caller — dish apps push their selection here).
+// Shared by the admin HTTP server and the authoritative HTTPS client API:
+// validate the mode, persist to the paired device, hot-apply to live connections.
 static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& req,
                                   httplib::Response& res) {
     auto deviceId = jsonGetString(req.body, "id");
@@ -96,8 +76,7 @@ static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& r
         res.set_content(R"({"error":"mode must be ds4, mouse, or off"})", "application/json");
         return;
     }
-    // Reject modes this platform can't honour. `off` is always supported;
-    // `ds4` / `mouse` ride on the virtual-gamepad backend (absent on macOS).
+    // `ds4`/`mouse` ride on the virtual-gamepad backend (absent on macOS); `off` always works.
     TouchpadCapabilities caps = probeTouchpadCapabilities();
     bool modeSupported = (modeStr == "off" && caps.offSupported) ||
                          (modeStr == "ds4" && caps.padSupported) ||
@@ -125,10 +104,8 @@ static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& r
         if (found) saveConfig(g_config);
     }
     if (!found) {
-        // Most common cause of a failed mode-set from a dish: the dish remembers
-        // a pairing the satellite no longer has (config wiped, satellite
-        // reinstalled, dish restored from backup). The dish surfaces this as a
-        // toast prompting a re-pair.
+        // Usually a stale pairing on the dish (config wiped / reinstalled);
+        // the dish surfaces the 404 as a re-pair prompt.
         logMsg(LogLevel::WARN, "web",
                "POST /api/devices/touchpad-mode: device " + deviceId +
                    " is not in pairedDevices — dish needs to re-pair");
@@ -145,27 +122,15 @@ static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& r
                     "application/json");
 }
 
-// ── JSON value helpers (key-scoped, body-substring-safe) ─────────────────────
-// The codebase's shared JSON helper (config.h) only exposes jsonGetString.
-// These two add bounded boolean / integer reads for request bodies. Unlike a
-// naive body.find("\"key\":true"), they locate the *quoted* key, step past the
-// colon, and inspect only the value token that immediately follows — so a
-// value cannot false-positive on a substring elsewhere in the body (e.g. a
-// device name, or one key's literal appearing inside another's value).
-//
-// Returns false when the key is absent or malformed; *out is left untouched.
-
-// Find the start of a top-level-ish key's value: index just past the ':'.
+// Key-scoped bool/int reads for request bodies: locate the *quoted* key and
+// inspect only the token after its colon, so a value can't false-positive on a
+// substring elsewhere in the body. Return false (out untouched) if absent/malformed.
 static bool jsonValueStart(const std::string& json, const std::string& key, size_t& out) {
     std::string needle = "\"" + key + "\"";
     size_t pos = 0;
     for (;;) {
         pos = json.find(needle, pos);
         if (pos == std::string::npos) return false;
-        // Reject a match that is itself the tail of a longer key, e.g. key
-        // "autoCheck" must not match inside "\"xautoCheck\"". The opening
-        // quote of `needle` already pins the left edge; nothing more needed
-        // because the leading '"' cannot be part of an identifier.
         size_t colon = json.find_first_not_of(" \t\r\n", pos + needle.size());
         if (colon == std::string::npos || json[colon] != ':') {
             pos += needle.size();
@@ -197,23 +162,17 @@ static bool jsonGetIntKeyed(const std::string& json, const std::string& key, lon
     if (!jsonValueStart(json, key, vs)) return false;
     size_t t = json.find_first_not_of(" \t\r\n", vs);
     if (t == std::string::npos) return false;
-    // Require a numeric value token — reject strings/objects/garbage so a
-    // non-numeric value can't be silently coerced to 0 by atoi.
+    // Require a numeric token so non-numbers aren't silently coerced to 0 by atoi.
     if (json[t] != '-' && (json[t] < '0' || json[t] > '9')) return false;
     char* end = nullptr;
     long v = strtol(json.c_str() + t, &end, 10);
     if (end == json.c_str() + t) return false; // no digits consumed
-    // Overflow (strtol → LONG_MIN/MAX) is harmless here: the caller range-
-    // checks the result, so an out-of-range value is simply rejected.
-    *out = v;
+    *out = v; // strtol overflow is harmless — the caller range-checks
     return true;
 }
 
-// ── Client API authorization ─────────────────────────────────────────────────
-// The client API (HTTPS, 0.0.0.0) is reachable from the LAN, so its connection
-// routes require a paired deviceId. The id is read from the X-Device-Id header,
-// falling back to the request body. The admin API needs no equivalent — it is
-// bound to 127.0.0.1.
+// LAN-reachable client API: connection routes require a paired deviceId (from
+// X-Device-Id, falling back to the body). The admin API needs none — it's loopback.
 static bool clientAuthorized(const httplib::Request& req, httplib::Response& res) {
     std::string deviceId;
     auto hdr = req.headers.find("X-Device-Id");
@@ -225,13 +184,8 @@ static bool clientAuthorized(const httplib::Request& req, httplib::Response& res
             if (d.id == deviceId) return true;
         }
     }
-    // Log the 401 so an auth failure is visible in the satellite console
-    // without needing to inspect the client. Two common shapes:
-    //   - empty deviceId: client forgot to send X-Device-Id and the route's
-    //     body schema doesn't include a `deviceId` field for the fallback to
-    //     latch onto. Bug in the dish's request plumbing.
-    //   - non-empty deviceId not in pairedDevices: stale pairing on the dish
-    //     side; user needs to re-pair.
+    // Log the 401 so the failure is visible server-side: empty id means a dish
+    // plumbing bug; an unknown id means a stale pairing needing re-pair.
     logMsg(LogLevel::WARN, "client",
            "401 unauthorized " + req.method + " " + req.path +
                (deviceId.empty() ? " (no X-Device-Id header and no deviceId in body)"
@@ -241,17 +195,13 @@ static bool clientAuthorized(const httplib::Request& req, httplib::Response& res
     return false;
 }
 
-// ── Read file helper ────────────────────────────────────────────────────────
 static std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
     return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-// ── Build update-status JSON from an UpdateStatusSnapshot ───────────────────
-// Used by GET /api/updates/status, GET /api/version (subset), and the SSE
-// "update" event channel. Keep this in sync with the web/ JS which expects
-// these exact keys.
+// Keys must stay in sync with the web/ JS that consumes them.
 static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
     std::string json = "{";
     json += "\"state\":\"" + std::string(updateStateName(s.state)) + "\"";
@@ -284,11 +234,8 @@ static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
     return json;
 }
 
-// ── Build connections JSON from SessionService snapshot ──────────────────────
-// JSON shape includes a per-connection `state` (DeviceLinkState) and a
-// per-controller `state` (ControllerState). Both serialise as lowercase enum
-// names (see deviceLinkStateName / controllerStateName in core/types.h). The
-// strings are the canonical wire form; the dashboard maps them onto chip text.
+// `state` fields serialise as lowercase enum names (deviceLinkStateName /
+// controllerStateName in core/types.h) — the canonical wire form.
 static std::string buildConnectionsJson(const SessionService& svc) {
     auto snap = svc.getConnectionsSnapshot();
     std::string json = "{\"connections\":[";
@@ -306,8 +253,7 @@ static std::string buildConnectionsJson(const SessionService& svc) {
                 jsonEscape(cs.deviceName) + "\",\"senderIP\":\"" + jsonEscape(cs.clientIP) + "\"";
 
         json += ",\"connectedAtEpoch\":" + std::to_string(cs.connectedAtEpoch);
-        // Per-connection link state — Active or NotResponding here. The
-        // /api/devices feed covers the Paired (offline) case.
+        // Active or NotResponding here; /api/devices covers the Paired (offline) case.
         json += ",\"state\":\"" + std::string(deviceLinkStateName(cs.linkState)) + "\"";
 
         json += ",\"controllers\":[";
@@ -315,15 +261,8 @@ static std::string buildConnectionsJson(const SessionService& svc) {
         for (const auto& ctrl : cs.controllers) {
             if (!cfirst) json += ",";
             cfirst = false;
-            // Per-controller pipeline state. Today we surface only Live (a
-            // virtual device exists and reports are flowing); the snapshot
-            // does not yet thread the in-flight transitions
-            // (Registering/Allocating/Detached) or per-controller failure
-            // reasons. See ControllerState in core/types.h.
-            // TODO: thread transient ControllerState through SessionService
-            // so MSG_CONTROLLER_ADD's in-flight window can surface as
-            // "registering" / "allocating", and the ACK_ERR_* failure code
-            // can be retained per controller index to surface "failed".
+            // Only Live/Detached are surfaced today; transient states aren't yet
+            // threaded through SessionService. See ControllerState in core/types.h.
             const char* ctrlState = ctrl.active ? controllerStateName(ControllerState::Live)
                                                 : controllerStateName(ControllerState::Detached);
             json += "{\"controllerIndex\":" + std::to_string(ctrl.index) +
@@ -347,15 +286,12 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             json += ",\"motionCapable\":" + std::string(ctrl.motionCapable ? "true" : "false");
             json += ",\"motionActive\":" + std::string(ctrl.motionActive ? "true" : "false");
             json += ",\"motionSink\":" + std::string(ctrl.motionSink ? "true" : "false");
-            // True iff this satellite's backend has an IMU surface for the
-            // slot's chosen controller type. The UI warns when motionCapable
-            // is true but this is false ("dish wants to stream motion but
-            // the backend has nowhere to land it for an Xbox-typed pad").
+            // Backend has an IMU surface for this controller type; UI warns when
+            // motionCapable but not this (motion has nowhere to land, e.g. Xbox pad).
             json += ",\"motionSinkSupportedForType\":" +
                     std::string(ctrl.motionSinkSupportedForType ? "true" : "false");
-            // True iff the platform adapter successfully created the IMU
-            // sink at plug-in. False distinguishes a kernel-level failure
-            // (uinput permissions, kernel too old) from "no game subscribed."
+            // IMU sink was created at plug-in; false flags a kernel-level failure
+            // (uinput perms, kernel too old) vs. just "no game subscribed".
             json += ",\"motionBackendOk\":" + std::string(ctrl.motionBackendOk ? "true" : "false");
             json += ",\"touchpadActive\":" + std::string(ctrl.touchpadActive ? "true" : "false");
             json += ",\"lightbarCapable\":" + std::string(ctrl.lightbarCapable ? "true" : "false");
@@ -378,19 +314,21 @@ static std::string buildConnectionsJson(const SessionService& svc) {
     return json;
 }
 
-// ── DELETE /api/connections/:id — shared by the admin and client servers ─────
-// Admin uses it for the dashboard's disconnect button; a sender uses it to
-// tear down its own session. The teardown is delegated to SessionService.
+// Shared by admin (dashboard disconnect) and client (self-teardown).
 static void closeConnectionRoute(SessionService& svc, const httplib::Request& req,
                                  httplib::Response& res) {
     auto connId = req.matches[1].str();
 
-    // Parse token from connId (format: conn_XXXXXXXX)
+    // connId format: conn_XXXXXXXX (hex token).
     std::string tokenStr = connId;
     if (tokenStr.substr(0, 5) == "conn_") tokenStr = tokenStr.substr(5);
 
     uint32_t token = 0;
+#ifdef _MSC_VER
+    if (sscanf_s(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
+#else
     if (sscanf(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
+#endif
         res.status = 404;
         res.set_content(R"({"error":"connection not found"})", "application/json");
         return;
@@ -407,7 +345,6 @@ static void closeConnectionRoute(SessionService& svc, const httplib::Request& re
                     "application/json");
 }
 
-// ── POST /api/connections — open a connection for a paired device ────────────
 static void openConnectionRoute(SessionService& svc, const httplib::Request& req,
                                 httplib::Response& res) {
     auto deviceId = jsonGetString(req.body, "deviceId");
@@ -418,7 +355,6 @@ static void openConnectionRoute(SessionService& svc, const httplib::Request& req
         return;
     }
 
-    // Find paired device
     PairedDevice* found = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_configMtx);
@@ -437,7 +373,6 @@ static void openConnectionRoute(SessionService& svc, const httplib::Request& req
         return;
     }
 
-    // Decode shared key
     uint8_t sharedKey[CRYPTO_KEY_SIZE];
     if (!hexDecode(found->sharedKeyHex, sharedKey, CRYPTO_KEY_SIZE)) {
         logMsg(LogLevel::ERR, "client",
@@ -447,7 +382,7 @@ static void openConnectionRoute(SessionService& svc, const httplib::Request& req
         return;
     }
 
-    // Delegate to SessionService (handles stale cleanup, token gen, slot counting)
+    // SessionService handles stale cleanup, token gen, and slot counting.
     auto result =
         svc.openSession(found->id, found->name, found->lastIP, sharedKey, found->touchpadMode);
     if (!result.ok) {
@@ -470,128 +405,153 @@ static void openConnectionRoute(SessionService& svc, const httplib::Request& req
     res.set_content(response, "application/json");
 }
 
-// ── POST /api/pair — PIN-gated device pairing ────────────────────────────────
-// Folds in the former TCP pairing server. Runs over HTTPS, so the PIN and the
-// resulting shared key are encrypted in transit. Body: {deviceId, deviceName,
-// pin, publicKey?}. Always replies 200 with a JSON body the sender classifies
-// on its `ok` field.
+// upsertPairedDevice + accept/decline live in pairing_service so the dashboard
+// route and the native tray prompts share one accept path.
+
+// Dual-path device pairing over HTTPS (PINs + shared key encrypted in transit).
+// Path A: `pin` (server-generated, typed into the dish) → verifyPin, pair now.
+// Path B: `clientPin` (dish-shown) → register a request, reply pending=true; the
+//   operator accepts on the dashboard and the dish polls /api/pair/status.
+// See docs/protocol.md. Always 200; the sender classifies on `ok`/`pending`.
 static void pairRoute(const httplib::Request& req, httplib::Response& res) {
     auto deviceId = jsonGetString(req.body, "deviceId");
     auto deviceName = jsonGetString(req.body, "deviceName");
-    auto pin = jsonGetString(req.body, "pin");
+    auto pin = jsonGetString(req.body, "pin");               // server-shown PIN (Path A)
+    auto clientPin = jsonGetString(req.body, "clientPin");   // dish-shown PIN (Path B)
     auto clientPkHex = jsonGetString(req.body, "publicKey"); // client's X25519 public key
+    auto initialMode = jsonGetString(req.body, "touchpadMode");
     const std::string clientIP = req.remote_addr;
 
-    // Check if already paired
-    bool alreadyPaired = false;
-    std::string storedKey;
+    if (deviceId.empty()) {
+        res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
+        return;
+    }
+
+    // Already paired — hand back the stored key without a PIN. Also the graceful
+    // tail of Path B: a dish that missed its status-poll re-pairs into success.
     {
         std::lock_guard<std::mutex> lk(g_configMtx);
         for (auto& d : g_config.pairedDevices) {
             if (d.id == deviceId) {
-                alreadyPaired = true;
                 d.lastIP = clientIP;
-                storedKey = d.sharedKeyHex;
-                break;
+                std::string storedKey = d.sharedKeyHex;
+                saveConfig(g_config);
+                logMsg(LogLevel::INFO, "pairing",
+                       "Device " + deviceName + " (" + clientIP + ") already paired, updating IP");
+                res.set_content(R"({"ok":true,"message":"already paired","sharedKey":")" +
+                                    storedKey + R"("})",
+                                "application/json");
+                return;
             }
         }
-        if (alreadyPaired) saveConfig(g_config);
     }
 
-    if (alreadyPaired) {
-        logMsg(LogLevel::INFO, "pairing",
-               "Device " + deviceName + " (" + clientIP + ") already paired, updating IP");
-        res.set_content(R"({"ok":true,"message":"already paired","sharedKey":")" + storedKey +
-                            R"("})",
-                        "application/json");
-        return;
-    }
+    // Path A — dish entered the operator's server-generated PIN.
+    if (!pin.empty() && verifyPin(pin)) {
+        uint8_t serverPk[32], serverSk[32];
+        generateKeyPair(serverPk, serverSk);
 
-    if (!verifyPin(pin)) {
-        logMsg(LogLevel::WARN, "pairing", "Invalid PIN attempt from " + clientIP);
-        res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
-        return;
-    }
+        // Client key is optional — absent in trusted-network mode.
+        uint8_t clientPk[32];
+        bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
 
-    // Generate server key pair for X25519 key exchange
-    uint8_t serverPk[32], serverSk[32];
-    generateKeyPair(serverPk, serverSk);
-
-    // Decode client's public key (optional — absent for the trusted-network mode)
-    uint8_t clientPk[32];
-    bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
-
-    std::string sharedKeyHex;
-    if (hasClientKey) {
-        uint8_t sharedKey[32];
-        if (computeSharedKey(sharedKey, clientPk, serverSk, serverPk)) {
-            sharedKeyHex = hexEncode(sharedKey, 32);
-            sodium_memzero(sharedKey, 32);
+        std::string sharedKeyHex;
+        if (hasClientKey) {
+            uint8_t sharedKey[32];
+            if (computeSharedKey(sharedKey, clientPk, serverSk, serverPk)) {
+                sharedKeyHex = hexEncode(sharedKey, 32);
+                sodium_memzero(sharedKey, 32);
+            }
         }
-    }
-    if (sharedKeyHex.empty()) {
-        // No client key exchange — mint a random shared key. Sent back over
-        // the TLS channel, so it is not exposed on the wire.
-        uint8_t randomKey[32];
-        randombytes_buf(randomKey, 32);
-        sharedKeyHex = hexEncode(randomKey, 32);
-        sodium_memzero(randomKey, 32);
+        if (sharedKeyHex.empty()) {
+            // No key exchange — mint a random key, returned over TLS.
+            uint8_t randomKey[32];
+            randombytes_buf(randomKey, 32);
+            sharedKeyHex = hexEncode(randomKey, 32);
+            sodium_memzero(randomKey, 32);
+        }
+
+        upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex, initialMode);
+
+        std::string serverPkHex = hexEncode(serverPk, 32);
+        sodium_memzero(serverSk, 32);
+        logMsg(LogLevel::INFO, "pairing",
+               "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
+        if (hasClientKey) {
+            res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
+                                serverPkHex + R"("})",
+                            "application/json");
+        } else {
+            res.set_content(R"({"ok":true,"message":"paired successfully","sharedKey":")" +
+                                sharedKeyHex + R"("})",
+                            "application/json");
+        }
+        return;
     }
 
-    PairedDevice dev;
-    dev.id = deviceId;
-    dev.name = deviceName.empty() ? ("Device-" + deviceId.substr(0, 8)) : deviceName;
-    dev.lastIP = clientIP;
-    dev.pairedAt = getCurrentDate();
-    dev.sharedKeyHex = sharedKeyHex;
-    // Optional initial touchpad mode supplied by the client at pair time. The
-    // client is the authority on its own touchpad capabilities (it knows
-    // whether the user-facing controller has a touchpad surface, whether the
-    // app has a virtual touchpad screen, etc.). If absent, fall back to the
-    // PairedDevice default (TOUCHPAD_MODE_OFF) — the safe baseline.
-    auto initialMode = jsonGetString(req.body, "touchpadMode");
-    if (!initialMode.empty() &&
-        (initialMode == "ds4" || initialMode == "mouse" || initialMode == "off")) {
-        dev.touchpadMode = touchpadModeFromName(initialMode);
-    }
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        auto& devs = g_config.pairedDevices;
-        devs.erase(std::remove_if(devs.begin(), devs.end(),
-                                  [&](const PairedDevice& d) { return d.id == deviceId; }),
-                   devs.end());
-        devs.push_back(dev);
-        saveConfig(g_config);
+    // Path B — register the dish's request; it then polls /api/pair/status. The
+    // clientPin is never echoed server-side — the operator must read it off the
+    // dish, which is what makes the accept meaningful.
+    if (!clientPin.empty()) {
+        submitPairRequest(deviceId, deviceName, clientIP, clientPin);
+        logMsg(LogLevel::INFO, "pairing",
+               "Pairing request from " + (deviceName.empty() ? deviceId : deviceName) + " (" +
+                   clientIP + ") awaiting operator approval");
+        res.set_content(
+            R"({"ok":false,"pending":true,"message":"awaiting approval on the satellite"})",
+            "application/json");
+        return;
     }
 
-    std::string serverPkHex = hexEncode(serverPk, 32);
-    sodium_memzero(serverSk, 32);
-    if (hasClientKey) {
-        res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
-                            serverPkHex + R"("})",
-                        "application/json");
-    } else {
-        res.set_content(R"({"ok":true,"message":"paired successfully","sharedKey":")" +
-                            sharedKeyHex + R"("})",
-                        "application/json");
-    }
-    logMsg(LogLevel::INFO, "pairing",
-           "Successfully paired device: " + dev.name + " (" + clientIP + ")");
+    logMsg(LogLevel::WARN, "pairing", "Invalid or empty PIN attempt from " + clientIP);
+    res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Admin server — web UI + admin API. Plain HTTP, 127.0.0.1, no authentication.
-// ════════════════════════════════════════════════════════════════════════════
+// Admin server — web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
+
+// Origin guard closing the two browser-borne attacks that cross the loopback
+// trust boundary: DNS rebinding (reject non-loopback Host) and CSRF (reject
+// writes whose Origin is present and non-loopback). See SECURITY.md.
+static bool isLoopbackHostValue(const std::string& v) {
+    // Strip an optional :port, and surrounding [] for IPv6 literals.
+    std::string h = v.substr(0, v.rfind(':') == std::string::npos ? v.size() : v.rfind(':'));
+    if (!h.empty() && h.front() == '[' && h.back() == ']') h = h.substr(1, h.size() - 2);
+    return h == "127.0.0.1" || h == "localhost" || h == "::1";
+}
+static bool isLoopbackOrigin(const std::string& origin) {
+    // origin is like "http://127.0.0.1:8080" — match the host segment.
+    auto schemeEnd = origin.find("//");
+    if (schemeEnd == std::string::npos) return false;
+    return isLoopbackHostValue(origin.substr(schemeEnd + 2));
+}
+
 void adminHttpThread(SessionService& svc) {
-    // Serve static files from web/
+    // Reject cross-origin / rebound requests before any route runs.
+    g_httpServer.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
+        auto host = req.get_header_value("Host");
+        if (!host.empty() && !isLoopbackHostValue(host)) {
+            res.status = 403;
+            res.set_content(R"({"error":"forbidden host"})", "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        if (req.method != "GET" && req.method != "HEAD" && req.method != "OPTIONS") {
+            auto origin = req.get_header_value("Origin");
+            if (!origin.empty() && !isLoopbackOrigin(origin)) {
+                res.status = 403;
+                res.set_content(R"({"error":"cross-site request blocked"})", "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+
     g_httpServer.set_mount_point("/", g_webDir);
 
-    // ── Root redirect ────────────────────────────────────────────────────
     g_httpServer.Get("/", [](const httplib::Request&, httplib::Response& res) {
         res.set_redirect("/dashboard");
     });
 
-    // ── SPA routing: serve index.html for the client-side routes ────────
+    // SPA routes fall back to index.html.
     auto serveIndex = [](const httplib::Request&, httplib::Response& res) {
         std::string html = readFile(g_webDir + "/index.html");
         if (html.empty()) {
@@ -605,7 +565,6 @@ void adminHttpThread(SessionService& svc) {
     g_httpServer.Get("/debug", serveIndex);
     g_httpServer.Get("/logs", serveIndex);
 
-    // ── Backend probe — web UI keys its copy/remediation table off (id, errorCode).
     g_httpServer.Get("/api/backend/status", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(buildBackendJson(), "application/json");
     });
@@ -637,9 +596,7 @@ void adminHttpThread(SessionService& svc) {
         bool portRejected = false;
         std::lock_guard<std::mutex> lk(g_configMtx);
 
-        // udpPort — key-scoped numeric parse. Out-of-range values are
-        // rejected (not clamped); the response echoes the effective port so
-        // the web UI can show what actually took effect.
+        // Out-of-range ports are rejected, not clamped; the response echoes the effective port.
         long port = 0;
         if (jsonGetIntKeyed(body, "udpPort", &port)) {
             if (port >= 1024 && port <= 65535) {
@@ -649,18 +606,14 @@ void adminHttpThread(SessionService& svc) {
             }
         }
 
-        // autoStart — key-scoped boolean. Only applied when the key is
-        // present, so a partial POST leaves the stored value untouched.
+        // Applied only when present, so a partial POST leaves the stored value untouched.
         bool autoStartVal = false;
         if (jsonGetBoolKeyed(body, "autoStart", &autoStartVal)) {
             g_config.autoStart = autoStartVal;
             setAutoStart(g_config.autoStart);
         }
 
-        // Legacy UDP broadcast beacon toggle (Task 1.6). Key-scoped so a
-        // device name or any unrelated body text can't false-positive it,
-        // and applied only when present so a partial POST can't silently
-        // flip discovery off.
+        // Applied only when present so a partial POST can't silently flip discovery off.
         bool broadcastVal = false;
         if (jsonGetBoolKeyed(body, "discoveryBroadcastEnabled", &broadcastVal)) {
             g_config.discoveryBroadcastEnabled = broadcastVal;
@@ -677,7 +630,6 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(resp, "application/json");
     });
 
-    // ── Version + update endpoints ──────────────────────────────────────
     g_httpServer.Get("/api/version", [](const httplib::Request&, httplib::Response& res) {
         std::string json = "{\"version\":\"";
         json += SATELLITE_VERSION;
@@ -772,18 +724,13 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
-    // ── PIN generation (the operator generates a PIN here, then types it
-    // into the sender, which pairs against the client API). ────────────
     g_httpServer.Post("/api/pin/generate", [](const httplib::Request&, httplib::Response& res) {
         auto pin = generatePin();
         res.set_content("{\"pin\":\"" + pin + "\"}", "application/json");
     });
 
-    // GET /api/pin/status — surface the PinState enum + remaining-time hint.
-    // Used by the dashboard's PIN panel to render an "Expires in m:ss"
-    // countdown and to flash a brief "Paired!" confirmation. Does NOT echo
-    // the PIN itself — the PIN is returned only to the original POST so a
-    // refresh of /dashboard doesn't leak it to a parallel admin tab.
+    // Never echoes the PIN — it's returned only to the generate POST, so a
+    // /dashboard refresh can't leak it to a parallel admin tab.
     g_httpServer.Get("/api/pin/status", [](const httplib::Request&, httplib::Response& res) {
         PinSnapshot s = pinSnapshot();
         std::string json = "{\"state\":\"";
@@ -794,11 +741,53 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
+    // Reverse-direction pairing (dish shows a PIN, operator accepts here).
+    // Localhost admin surface — operator is at the satellite — so no device auth.
+    g_httpServer.Get("/api/pair/requests", [](const httplib::Request&, httplib::Response& res) {
+        // No PIN in the payload: accepting requires reading it off the dish.
+        auto reqs = pendingPairRequests();
+        std::string json = "[";
+        for (size_t i = 0; i < reqs.size(); i++) {
+            const auto& r = reqs[i];
+            if (i) json += ",";
+            json += "{\"deviceId\":\"" + jsonEscape(r.deviceId) + "\",\"deviceName\":\"" +
+                    jsonEscape(r.deviceName) + "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
+                    "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) + "}";
+        }
+        json += "]";
+        res.set_content(json, "application/json");
+    });
+
+    g_httpServer.Post("/api/pair/respond", [](const httplib::Request& req, httplib::Response& res) {
+        auto deviceId = jsonGetString(req.body, "deviceId");
+        auto pin = jsonGetString(req.body, "pin");
+        bool accept = false;
+        jsonGetBoolKeyed(req.body, "accept", &accept);
+        if (deviceId.empty()) {
+            res.status = 400;
+            res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
+            return;
+        }
+        if (!accept) {
+            declinePairing(deviceId);
+            logMsg(LogLevel::INFO, "pairing", "Operator denied pairing request " + deviceId);
+            res.set_content(R"({"ok":true,"accepted":false})", "application/json");
+            return;
+        }
+        // Key minting + persistence live in pairing_service (shared with tray prompts).
+        if (!acceptPairingWithPin(deviceId, pin)) {
+            logMsg(LogLevel::WARN, "pairing",
+                   "Operator accept for " + deviceId + " rejected (PIN mismatch or no request)");
+            res.set_content(R"({"ok":false,"error":"pin mismatch or no pending request"})",
+                            "application/json");
+            return;
+        }
+        logMsg(LogLevel::INFO, "pairing", "Operator accepted pairing for " + deviceId);
+        res.set_content(R"({"ok":true,"accepted":true})", "application/json");
+    });
+
     g_httpServer.Get("/api/devices", [&svc](const httplib::Request&, httplib::Response& res) {
-        // Per-device `state` is the DeviceLinkState (lowercase enum name) —
-        // either "paired" (no live connection), "active" (live, recent
-        // packets), or "notResponding" (live but stalled). Dashboard maps
-        // these onto chip text.
+        // `state` is the DeviceLinkState: paired | active | notResponding.
         std::string json = "[";
         std::lock_guard<std::mutex> lk(g_configMtx);
         for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
@@ -827,29 +816,20 @@ void adminHttpThread(SessionService& svc) {
             res.set_content(R"({"ok":true})", "application/json");
         });
 
-    // POST /api/devices/touchpad-mode {id, mode} — set a paired device's
-    // touchpad routing mode. `mode` is "ds4" | "mouse" | "off". Persisted to
-    // config AND hot-applied to any live connection for the device.
-    //
-    // Localhost variant — kept for admin tooling / scripts. The dashboard UI
-    // is read-only; the client owns the setting and calls the HTTPS variant
-    // on the client API thread.
+    // Localhost variant for admin tooling/scripts; the dashboard is read-only and
+    // the client owns the setting via the HTTPS variant.
     g_httpServer.Post("/api/devices/touchpad-mode",
                       [&svc](const httplib::Request& req, httplib::Response& res) {
                           handleTouchpadModeSet(svc, req, res);
                       });
 
-    // GET /api/server/capabilities — server capability advertisement. Tells
-    // clients which TOUCHPAD_MODE_* values this host can actually honour, so
-    // the client mode-picker UI can disable modes the receiver platform
-    // doesn't ship (e.g. macOS has no virtual gamepad bus → only `off`).
-    // Reads probeBackend() under the hood; safe to call cheaply.
+    // Advertises which TOUCHPAD_MODE_* this host can honour so the client
+    // mode-picker greys out the rest (e.g. macOS → only `off`).
     g_httpServer.Get("/api/server/capabilities",
                      [](const httplib::Request&, httplib::Response& res) {
                          res.set_content(buildCapabilitiesJson(), "application/json");
                      });
 
-    // ── Debug telemetry endpoint ────────────────────────────────────
     g_httpServer.Get("/api/debug", [&svc](const httplib::Request&, httplib::Response& res) {
         char senderIP[INET_ADDRSTRLEN] = "none";
         uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
@@ -876,7 +856,6 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
-    // ── Connection management (read + teardown) for the dashboard ────
     g_httpServer.Get("/api/connections", [&svc](const httplib::Request&, httplib::Response& res) {
         res.set_content(buildConnectionsJson(svc), "application/json");
     });
@@ -886,7 +865,6 @@ void adminHttpThread(SessionService& svc) {
                             closeConnectionRoute(svc, req, res);
                         });
 
-    // ── Log endpoint ────────────────────────────────────────────────
     g_httpServer.Get("/api/logs", [](const httplib::Request& req, httplib::Response& res) {
         uint64_t since = 0;
         if (req.has_param("since")) {
@@ -926,7 +904,7 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
-    // ── SSE: Server-Sent Events for real-time updates ────────────────
+    // SSE: one stream multiplexes status/connections/update/pin/pairRequests events.
     g_httpServer.Get("/api/events", [&svc](const httplib::Request&, httplib::Response& res) {
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
@@ -981,11 +959,8 @@ void adminHttpThread(SessionService& svc) {
                     event += "\n\n";
                 }
 
-                // PIN state — pushed every tick so the dashboard's
-                // "Expires in m:ss" countdown updates without a parallel
-                // poller, and so a freshly opened tab sees the current
-                // state immediately rather than waiting for the next
-                // /api/pin/status fetch.
+                // Pushed each tick so the countdown ticks and a fresh tab sees
+                // current state without a parallel /api/pin/status poll.
                 {
                     PinSnapshot pinSnap = pinSnapshot();
                     event += "event: pin\ndata: {\"state\":\"";
@@ -993,6 +968,22 @@ void adminHttpThread(SessionService& svc) {
                     event += "\",\"secondsRemaining\":";
                     event += std::to_string(pinSnap.secondsRemaining);
                     event += "}\n\n";
+                }
+
+                // Pushed each tick so the accept/deny panel appears the instant a dish asks.
+                {
+                    auto pairReqs = pendingPairRequests();
+                    event += "event: pairRequests\ndata: [";
+                    for (size_t i = 0; i < pairReqs.size(); i++) {
+                        const auto& r = pairReqs[i];
+                        if (i) event += ",";
+                        event += "{\"deviceId\":\"" + jsonEscape(r.deviceId) +
+                                 "\",\"deviceName\":\"" + jsonEscape(r.deviceName) +
+                                 "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
+                                 "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) +
+                                 "}";
+                    }
+                    event += "]\n\n";
                 }
 
                 if (!sink.write(event.c_str(), event.size())) return false;
@@ -1006,9 +997,7 @@ void adminHttpThread(SessionService& svc) {
     g_httpServer.listen("127.0.0.1", g_config.webPort);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
 // Client API server — pairing + connections. HTTPS (self-signed), 0.0.0.0.
-// ════════════════════════════════════════════════════════════════════════════
 void clientApiThread(SessionService& svc) {
     std::string certPath, keyPath;
     if (!ensureServerCert(certPath, keyPath)) {
@@ -1026,6 +1015,28 @@ void clientApiThread(SessionService& svc) {
     server.Post("/api/pair",
                 [](const httplib::Request& req, httplib::Response& res) { pairRoute(req, res); });
 
+    // Path-B poll. No device auth (not paired yet); the minted key is handed
+    // back exactly once on approval (pollPairRequest clears it).
+    server.Get("/api/pair/status", [](const httplib::Request& req, httplib::Response& res) {
+        std::string deviceId;
+        if (req.has_param("deviceId")) deviceId = req.get_param_value("deviceId");
+        if (deviceId.empty()) {
+            res.status = 400;
+            res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
+            return;
+        }
+        std::string keyHex;
+        PairRequestState st = pollPairRequest(deviceId, keyHex);
+        if (st == PairRequestState::Approved) {
+            res.set_content(R"({"ok":true,"status":"approved","sharedKey":")" + keyHex + R"("})",
+                            "application/json");
+            return;
+        }
+        res.set_content(std::string(R"({"ok":false,"status":")") + pairRequestStateName(st) +
+                            R"("})",
+                        "application/json");
+    });
+
     // POST /api/connections — open a session. Requires a paired deviceId.
     server.Post("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
         if (!clientAuthorized(req, res)) return;
@@ -1039,19 +1050,14 @@ void clientApiThread(SessionService& svc) {
                       closeConnectionRoute(svc, req, res);
                   });
 
-    // POST /api/devices/touchpad-mode — the client (dish app) pushes its
-    // selected touchpad mode. The server validates, persists, and hot-applies
-    // to the live connection. The web UI shows the result read-only; the
-    // client is the authoritative setter.
+    // Authoritative setter: the client pushes its touchpad mode here.
     server.Post("/api/devices/touchpad-mode",
                 [&svc](const httplib::Request& req, httplib::Response& res) {
                     if (!clientAuthorized(req, res)) return;
                     handleTouchpadModeSet(svc, req, res);
                 });
 
-    // GET /api/server/capabilities — the client queries this on session open
-    // to populate its mode-picker. No auth: capability info is not sensitive
-    // and the picker needs it before a session is fully live.
+    // No auth: capabilities aren't sensitive and the picker needs them pre-session.
     server.Get("/api/server/capabilities", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(buildCapabilitiesJson(), "application/json");
     });

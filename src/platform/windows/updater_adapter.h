@@ -1,20 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * updater_adapter.h — IUpdaterPort implementation for Windows.
- *
- * Backed by:
- *   - WinHTTP for HTTPS to api.github.com and the GitHub Releases CDN.
- *   - BCrypt for SHA-256 verification of the downloaded installer.
- *   - ShellExecuteEx to launch SatelliteSetup-vX.Y.Z.exe with
- *     /VERYSILENT /OTA, then PostQuitMessage so our process exits
- *     cleanly and the installer can replace the .exe.
- *
- * The bundled installer's [Run] section is augmented (see installer.iss
- * → WantsOTARelaunch check) so that an /OTA install auto-relaunches
- * satellite.exe at the end, even in silent mode.
- */
+// IUpdaterPort for Windows: WinHTTP to GitHub, BCrypt SHA-256, ShellExecuteEx
+// to run the Inno installer. An /OTA install auto-relaunches satellite.exe at
+// the end even in silent mode (see installer.iss WantsOTARelaunch).
 #pragma once
 
 #include "core/ports.h"

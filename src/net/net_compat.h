@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * net_compat.h — Cross-platform socket compatibility shim.
- *
- * Papers over the handful of differences between Winsock and BSD sockets
- * so that files under src/net/ can compile unchanged on Windows and POSIX
- * (macOS, Linux). Header-only: all helpers are `inline`.
- *
- * Rules:
- *   - On Windows, this header must be included before <windows.h> so
- *     that <winsock2.h> is seen first (avoiding the winsock1 auto-pull
- *     that <windows.h> performs otherwise).
- *   - POSIX builds get: SOCKET=int, INVALID_SOCKET=-1, SOCKET_ERROR=-1,
- *     and an inline `closesocket()` that calls ::close().
- */
+// Winsock/BSD-sockets compatibility shim (header-only) for src/net/.
+// On Windows this header MUST be included before <windows.h> so <winsock2.h> is
+// seen first — otherwise <windows.h> auto-pulls winsock1.
 #pragma once
 
 #ifdef _WIN32
@@ -49,7 +37,6 @@ constexpr int SOCKET_ERROR = -1;
 inline int closesocket(SOCKET s) { return ::close(s); }
 #endif
 
-// ── Process-wide network subsystem init/shutdown ─────────────────────────────
 // WSAStartup/WSACleanup on Windows; no-op elsewhere.
 inline bool netInit() {
 #ifdef _WIN32
@@ -66,7 +53,6 @@ inline void netShutdown() {
 #endif
 }
 
-// ── Per-socket helpers ──────────────────────────────────────────────────────
 inline bool netSetNonBlocking(SOCKET s, bool nonblock) {
 #ifdef _WIN32
     u_long v = nonblock ? 1 : 0;

@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * discovery.cpp — UDP broadcast beacon for LAN discovery
- *
- * Every 2 seconds, broadcasts a JSON packet on UDP port 9879 (configurable)
- * so that senders on the same LAN can auto-detect this receiver.
- *
- * This is the legacy discovery path. mDNS / Bonjour (net/mdns_responder.cpp,
- * Task 1.6) is the modern path; the broadcast beacon stays on as a fallback
- * for senders that predate the mDNS responder. The beacon can be toggled at
- * runtime via Config::discoveryBroadcastEnabled (web UI Settings → Discovery)
- * and is slated for removal in 2027.
- */
+// Legacy UDP broadcast beacon — fallback for senders that predate the mDNS
+// responder (net/mdns_responder.cpp). Toggleable at runtime; slated for
+// removal in 2027.
 #include "discovery.h"
 #include "config.h"
+#include "machine_id.h"
 
 void discoveryThread() {
     if (!netInit()) return;
@@ -25,29 +16,27 @@ void discoveryThread() {
         return;
     }
 
-    // Enable broadcast
     int bcast = 1;
     setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&bcast),
                sizeof(bcast));
 
-    // Get host name for beacon
     char hostname[256] = {};
     netGetHostname(hostname, sizeof(hostname));
+
+    // Stable per-install id: outlives DHCP lease changes, so the dish keys its
+    // remembered-satellite entry on this instead of the (mutable) IP.
+    const std::string machineId = ensureMachineId();
 
     sockaddr_in dest{};
     dest.sin_family = AF_INET;
     dest.sin_addr.s_addr = INADDR_BROADCAST;
 
-    // The thread runs for the process lifetime even when the beacon is
-    // disabled, so flipping Config::discoveryBroadcastEnabled back on
-    // hot-resumes broadcasting without a restart. `announced` tracks the last
-    // logged state so each transition is logged exactly once.
+    // Thread runs for the process lifetime even when disabled, so flipping the
+    // config flag hot-resumes broadcasting. `announced` logs each transition once.
     bool announced = false;
     while (g_appRunning) {
-        // Read discoveryBroadcastEnabled under g_configMtx — the webserver
-        // mutates it from POST /api/config under the same lock. Snapshot it
-        // (plus the ports, which the same handler can change) into locals so
-        // the rest of the loop iteration works off a consistent view.
+        // Snapshot under g_configMtx — the webserver mutates these from
+        // POST /api/config under the same lock.
         bool enabled = false;
         int discPort = 0, udpPort = 0;
         {
@@ -66,21 +55,19 @@ void discoveryThread() {
         if (enabled) {
             dest.sin_port = htons((uint16_t)discPort);
 
-            // Build beacon JSON
             char beacon[512];
-            // pairPort / httpPort both carry the single HTTPS client API
-            // port — the admin web port is bound to localhost and is never
-            // reachable from a sender.
+            // pairPort / httpPort both carry the single HTTPS client API port;
+            // the admin web port is localhost-only and never reachable here.
             snprintf(
                 beacon, sizeof(beacon),
-                R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d})",
-                hostname, udpPort, DEFAULT_CLIENT_PORT, DEFAULT_CLIENT_PORT);
+                R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d,"machineId":"%s"})",
+                hostname, udpPort, DEFAULT_CLIENT_PORT, DEFAULT_CLIENT_PORT, machineId.c_str());
 
             sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
                    sizeof(dest));
         }
 
-        // Sleep 2 seconds in 100ms increments to allow quick shutdown
+        // 2 s in 100ms slices so shutdown is noticed promptly.
         for (int i = 0; i < 20 && g_appRunning; i++) netSleepMs(100);
     }
 

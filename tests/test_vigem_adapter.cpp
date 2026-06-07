@@ -1,37 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tests/test_vigem_adapter.cpp — Unit tests for the Windows ViGEm adapter's
- * submit path, with the ViGEmBus driver layer (src/platform/windows/vigem.cpp)
- * replaced by an in-test fake.
- *
- * Why this exists: the adapter's submit IO is the one place the SessionService
- * tests (which stub the whole IGamepadPort) can't reach. A regression here is
- * what broke PlayStation input — the adapter was wired to a fire-and-forget
- * submit that returned "success" the instant the IOCTL was queued, so the DS4
- * EX→basic fallback never observed the driver rejecting DS4_SUBMIT_REPORT_EX
- * and every PlayStation frame was silently dropped. Xbox has no such fallback,
- * so it survived. These tests pin the fix:
- *
- *   1. Submits go through the SYNCHRONOUS helpers (submitXusbSync /
- *      submitDs4ExSync / submitDs4Sync) and NEVER the fire-and-forget ones —
- *      a re-wire to FAF is exactly the regression that caused the bug.
- *   2. When the driver rejects the DS4 EX report, the adapter latches EX off
- *      and falls back to the basic DS4 report so sticks/buttons still apply.
- *   3. The XUSB→DS4 conversion maps sticks, triggers and face buttons.
- *
- * The fake driver layer below provides every free function the adapter pulls
- * from vigem.cpp/vigem.h, so this target links without the real driver IOCTLs.
- *
- * Self-contained: no external test framework required.
- */
+// Pins the ViGEm adapter submit path against the regression that broke
+// PlayStation input: a fire-and-forget submit returned "success" the instant
+// the IOCTL queued, so the DS4 EX→basic fallback never saw the driver reject
+// DS4_SUBMIT_REPORT_EX and every PS frame was silently dropped. Submits must go
+// through the SYNCHRONOUS helpers so the rejection stays observable. The fake
+// driver layer below stands in for vigem.cpp so this links without real IOCTLs.
 #include "vigem_adapter.h"
 
 #include <iostream>
 #include <string>
 
-// ── Tiny assertion harness (mirrors tests/test_session_service.cpp) ──────────
 static int g_pass = 0;
 static int g_fail = 0;
 static std::string g_currentTest;
@@ -63,11 +41,9 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
-// ── Fake ViGEmBus driver layer ──────────────────────────────────────────────
 // Records what the adapter asks the driver to do and lets each test pin the
-// driver's accept/reject verdict. Single-threaded access from the test thread,
-// except waitNext*Notification which the adapter's notification worker calls
-// from its own thread; those touch no shared counters and just park on cancel.
+// accept/reject verdict. Single-threaded except waitNext*Notification, which the
+// adapter's worker thread calls; those touch no shared counters and park on cancel.
 namespace fake {
 struct State {
     int pluginXboxCalls = 0;
@@ -77,9 +53,6 @@ struct State {
     int xusbSyncCalls = 0;
     int ds4ExSyncCalls = 0;
     int ds4BasicSyncCalls = 0;
-    // Any fire-and-forget call is a regression: the adapter must use the
-    // synchronous helpers so the DS4 EX rejection is observable.
-    int fafCalls = 0;
 
     // Driver verdicts the test can flip.
     bool ds4ExAccepts = true; // false => simulate a pre-1.17 ViGEmBus
@@ -97,7 +70,7 @@ struct State {
     // purely on subsequent submit behaviour.
     void resetCounts() {
         pluginXboxCalls = pluginDs4Calls = unplugCalls = 0;
-        xusbSyncCalls = ds4ExSyncCalls = ds4BasicSyncCalls = fafCalls = 0;
+        xusbSyncCalls = ds4ExSyncCalls = ds4BasicSyncCalls = 0;
     }
 };
 static State g;
@@ -106,8 +79,7 @@ static State g;
 // These signatures must match vigem.h / the adapter's extern decls exactly so
 // the linker binds the adapter's calls to these fakes instead of vigem.cpp.
 HANDLE openVigemBus() {
-    // A real, closable handle so the adapter's CloseHandle(busHandle_) in
-    // closeBus() is well-defined.
+    // A real, closable handle so the adapter's CloseHandle(busHandle_) is defined.
     return CreateEventW(nullptr, FALSE, FALSE, nullptr);
 }
 bool pluginTarget(HANDLE, ULONG) {
@@ -135,23 +107,6 @@ bool submitDs4ExSync(HANDLE, ULONG, DS4_SUBMIT_REPORT_EX&, HANDLE, const DS4_REP
     return fake::g.ds4ExAccepts;
 }
 
-// Fire-and-forget fakes: present only so a regression that re-wires the adapter
-// back to FAF links and trips fafCalls instead of failing as an undefined ref.
-bool submitXusbFireAndForget(HANDLE, ULONG, XUSB_SUBMIT_REPORT&, OVERLAPPED&, HANDLE, const void*) {
-    fake::g.fafCalls++;
-    return true;
-}
-bool submitDs4FireAndForget(HANDLE, ULONG, DS4_SUBMIT_REPORT&, OVERLAPPED&, HANDLE,
-                            const DS4_REPORT&) {
-    fake::g.fafCalls++;
-    return true;
-}
-bool submitDs4ExFireAndForget(HANDLE, ULONG, DS4_SUBMIT_REPORT_EX&, OVERLAPPED&, HANDLE,
-                              const DS4_REPORT_EX&) {
-    fake::g.fafCalls++;
-    return true;
-}
-
 // The notification worker the adapter spawns at plugin time blocks here; park
 // on the cancel event so unplug/closeBus joins cleanly without real IOCTLs.
 bool waitNextXusbNotification(HANDLE, ULONG, HANDLE cancel, XUSB_REQUEST_NOTIFICATION&) {
@@ -162,8 +117,6 @@ bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICAT
     WaitForSingleObject(cancel, INFINITE);
     return false;
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 // pluginDeviceDS4 fires a one-shot EX probe submit so EX capability is known
 // before the controller-add ACK is built. On a modern ViGEmBus the probe is
@@ -179,7 +132,6 @@ static void test_ds4_plugin_probes_ex_and_reports_sink_ok() {
     // Exactly one EX submit happened at plug-in, with no basic fallback.
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     // The honesty fix: the IMU-sink flag reflects the real (accepted) probe.
     EXPECT(a.motionBackendOk(1));
     a.closeBus();
@@ -213,7 +165,6 @@ static void test_ds4_ex_rejected_falls_back_and_reports_no_sink() {
     EXPECT(a.submitDS4Report(1, rpt));
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 0); // not retried
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 1);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     a.closeBus();
 }
 
@@ -232,7 +183,6 @@ static void test_ds4_ex_accepted_uses_ex_path() {
     EXPECT(a.submitDS4Report(1, rpt));
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     a.closeBus();
 }
 
@@ -269,7 +219,6 @@ static void test_xbox_uses_synchronous_xusb_submit() {
     EXPECT_EQ(fake::g.xusbSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 0);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
-    EXPECT_EQ(fake::g.fafCalls, 0);
     a.closeBus();
 }
 

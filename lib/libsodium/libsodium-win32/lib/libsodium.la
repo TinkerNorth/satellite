@@ -23,8 +23,8 @@ dependency_libs=' -lpthread'
 weak_library_names=''
 
 # Version information for libsodium.
-current=29
-age=3
+current=30
+age=4
 revision=0
 
 # Is this an already installed library?

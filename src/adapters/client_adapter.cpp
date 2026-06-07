@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * adapters/client_adapter.cpp — IClientPort implementation.
- */
 #include "client_adapter.h"
 #include <cstring>
 
-// ── Crypto functions (defined in crypto.cpp) ──────────────────────────────
+// Defined in crypto.cpp.
 extern bool encryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
                           const uint8_t* plaintext, size_t ptLen, uint8_t* ciphertext,
                           unsigned long long* ctLen);
@@ -25,12 +21,8 @@ void ClientAdapter::updateClientAddr(uint32_t token, const std::string& ip, uint
 }
 
 void ClientAdapter::updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) {
-    // Direct path: the receiver already has the sender's sin_addr.s_addr
-    // in network byte order, so we can drop it straight into sockaddr_in
-    // without the inet_ntop -> std::string -> inet_pton round-trip the
-    // string overload pays. This is on the hot UDP path (one call per
-    // received packet), so saving the string allocation here removes
-    // every heap touch from the receive loop.
+    // ipv4NetworkOrder is already network byte order, so drop it straight in;
+    // avoids the string overload's heap allocation on the hot receive path.
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -73,14 +65,12 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     pkt[4] = 0;
     pkt[5] = 0;
     pkt[6] = 0;
-    pkt[7] = 0; // counter 0
+    pkt[7] = 0; // bytes 4-7: counter, fixed at 0
     memcpy(pkt + HEADER_SIZE, ct, ctLen);
 
     sendto(sock_, reinterpret_cast<const char*>(pkt), (int)(HEADER_SIZE + ctLen), 0,
            reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
 }
-
-// ── IClientPort methods ──────────────────────────────────────────────────
 
 void ClientAdapter::sendHeartbeatAck(const Connection& conn) {
     uint8_t inner[4];
@@ -93,10 +83,9 @@ void ClientAdapter::sendHeartbeatAck(const Connection& conn) {
 
 void ClientAdapter::sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
                                       uint8_t result, uint8_t motionFlags) {
-    // Payload: reqType(2) + ctrlIdx(1) + result(1) + motionFlags(1) = 5 bytes.
-    // The motionFlags byte is always present (zero or not) so the dish-side
-    // parser can distinguish "old satellite (msgLen == 4, motion status
-    // unknown)" from "new satellite, flags happen to be zero."
+    // Wire: reqType(2)+ctrlIdx(1)+result(1)+motionFlags(1)=5 bytes. motionFlags
+    // is always sent so dish can tell old satellites (msgLen==4) from new ones
+    // whose flags are zero.
     uint8_t inner[INNER_HEADER_SIZE + 5];
     inner[0] = (uint8_t)(MSG_CONTROLLER_ACK >> 8);
     inner[1] = (uint8_t)(MSG_CONTROLLER_ACK);
@@ -132,8 +121,8 @@ void ClientAdapter::broadcastServerStatus(
 
 void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,
                                const RumbleReport& report) {
-    // Payload: ctrlIdx + strong + weak + duration = 7 bytes. Motor vibration
-    // only — lightbar colour has its own message (sendLightbar / 0x000D).
+    // Wire: ctrlIdx+strong+weak+duration=7 bytes. Motor only; lightbar colour
+    // is a separate message (sendLightbar / 0x000D).
     const uint16_t payloadLen = 7;
 
     uint8_t inner[4 + 7];
@@ -153,12 +142,12 @@ void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,
 
 void ClientAdapter::sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                                  uint8_t b) {
-    // Wire payload: ctrlIdx(1) + r(1) + g(1) + b(1) = 4 bytes.
+    // Wire: ctrlIdx(1)+r(1)+g(1)+b(1)=4 bytes.
     uint8_t inner[4 + 4];
     inner[0] = (uint8_t)(MSG_LIGHTBAR >> 8);
     inner[1] = (uint8_t)(MSG_LIGHTBAR);
-    inner[2] = 0; // payload length high
-    inner[3] = 4; // payload length low
+    inner[2] = 0;
+    inner[3] = 4;
     inner[4] = ctrlIdx;
     inner[5] = r;
     inner[6] = g;

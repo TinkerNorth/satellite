@@ -69,7 +69,7 @@
   <!-- ── Dashboard ── -->
   <div class="card" id="view-dashboard" style="display:none">
     <div class="header-row">
-      <h1><span class="dot off" id="dot"></span> <span data-i18n="header.satellite">Satellite</span></h1>
+      <h1><img src="icon.png" alt="" class="brand-logo"> <span data-i18n="header.satellite">Satellite</span> <span class="badge" id="pair-badge" style="display:none;background:#F5A623;color:#06121f;cursor:pointer" title="Pending pairing requests — click to review">0</span></h1>
       <div style="display:flex;gap:8px">
         <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/logs')" data-i18n-attr="title:header.logs" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
@@ -96,42 +96,14 @@
       <button class="dash-notice-close" id="dash-notice-close" type="button" data-i18n-attr="aria-label:connections.notice.dismiss" aria-label="Dismiss">&times;</button>
     </div>
 
-    <div id="stats">
-      <div class="stat"><span class="label" data-i18n="dashboard.stats.status">Status</span><span class="value" id="s-status" data-i18n="dashboard.status.stopped">Stopped</span></div>
-      <div class="stat"><span class="label" data-i18n="dashboard.stats.packets">Packets</span><span class="value" id="s-packets">0</span></div>
-      <div class="stat"><span class="label" data-i18n="dashboard.stats.sender">Sender</span><span class="value" id="s-sender">—</span></div>
-      <div class="stat"><span class="label" data-i18n="dashboard.stats.udp-port">UDP Port</span><span class="value" id="s-port">—</span></div>
-      <div class="stat"><span class="label" data-i18n="dashboard.stats.http-port">HTTP Port</span><span class="value" id="s-http-port">—</span></div>
-    </div>
-
-    <!-- ── Backend Status (per-OS: ViGEmBus on Windows, uinput on Linux,
-         hidden entirely on macOS where supported=false). All copy is driven
-         by the BACKEND_COPY table in dashboard.js, keyed by (id, errorCode). -->
-    <div class="section" id="backend-section" style="display:none">
-      <h2 class="section-title" id="backend-title" data-i18n="backend.section.title">Backend</h2>
-      <div class="backend-status-row">
-        <div class="backend-indicator">
-          <span class="backend-dot" id="backend-dot"></span>
-          <span class="backend-label" id="backend-label" data-i18n="backend.label.checking">Checking…</span>
+    <div class="backend-alert" id="backend-alert">
+      <div class="backend-alert-row">
+        <div class="backend-alert-indicator">
+          <span class="backend-dot backend-err" id="backend-dot"></span>
+          <span class="backend-label backend-err-text" id="backend-label" data-i18n="backend.unavailable">Backend unavailable</span>
         </div>
-        <button class="btn-link" id="backend-guide-toggle" onclick="toggleBackendGuide()" style="display:none"><span data-i18n="backend.guide.toggle">Setup Guide</span> <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon"></button>
+        <button class="btn-link" id="backend-guide-toggle" onclick="toggleBackendGuide()"><span data-i18n="backend.guide.toggle">Setup Guide</span> <img src="img/icons/chevron_right.svg" alt="" class="emoji-icon"></button>
       </div>
-
-      <!-- Flow diagram -->
-      <div class="backend-flow">
-        <div class="flow-step" id="flow-backend">
-          <span class="flow-icon"><img src="img/icons/gamepad.svg" alt="" class="emoji-icon"></span>
-          <span class="flow-text" id="flow-backend-text" data-i18n="backend.flow.backend">Backend</span>
-        </div>
-        <div class="flow-arrow"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
-        <div class="flow-step" id="flow-system">
-          <span class="flow-icon"><img src="img/icons/monitor.svg" alt="" class="emoji-icon"></span>
-          <span class="flow-text" data-i18n="backend.flow.system">System</span>
-        </div>
-      </div>
-
-      <!-- Setup guide (hidden by default; populated dynamically from
-           BACKEND_COPY[id].errors[errorCode] in dashboard.js). -->
       <div class="backend-guide" id="backend-guide" style="display:none">
         <h3 class="guide-title" id="backend-guide-title"></h3>
         <p class="backend-guide-body" id="backend-guide-body"></p>
@@ -139,22 +111,6 @@
       </div>
     </div>
 
-    <!-- ── PIN Pairing ── -->
-    <div class="section">
-      <h2 class="section-title"><img src="img/icons/bluetooth-pairing-animated.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="pin.section.title">Device Pairing</span></h2>
-      <div class="pin-row">
-        <button class="btn btn-save" onclick="genPin(event)" data-i18n="pin.generate">Generate PIN</button>
-        <span class="pin-display" id="pin-display">—</span>
-      </div>
-      <!-- updatePinPanel() rewrites this line on every SSE `pin` tick:
-           - idle:    "Enter this PIN on the sender to pair. Expires in 5 minutes."
-           - active:  "Enter this PIN on the sender to pair. Expires in m:ss."
-           - expired: "PIN expired — generate a new one…"
-           - paired:  "Paired successfully — that PIN is now spent." -->
-      <p class="hint" id="pin-hint" data-i18n="pin.hint.idle">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
-    </div>
-
-    <!-- ── Connections ── -->
     <div class="section">
       <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="connections.section.title">Connections</span></h2>
       <div id="connection-list" class="device-list">
@@ -162,7 +118,6 @@
       </div>
     </div>
 
-    <!-- ── Virtual Controllers ── -->
     <div class="section">
       <h2 class="section-title"><span data-i18n="controllers.section.title">Virtual Controllers</span> <span class="badge" id="controller-count">0 / 16</span></h2>
       <div id="controller-list" class="device-list">
@@ -170,7 +125,20 @@
       </div>
     </div>
 
-    <!-- ── Paired Devices ── -->
+    <div class="section">
+      <h2 class="section-title"><img src="img/icons/bluetooth-pairing-animated.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="dashboard.region.pairing">Pairing</span></h2>
+      <div class="pin-row">
+        <button class="btn btn-save" onclick="genPin(event)" data-i18n="pin.generate">Generate PIN</button>
+        <span class="pin-display" id="pin-display">—</span>
+      </div>
+      <p class="hint" id="pin-hint" data-i18n="pin.hint.idle">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
+
+      <div id="pair-request-section" style="display:none;margin-top:16px">
+        <h3 class="section-title" style="margin-top:0"><span data-i18n="pairreq.section.title">Pairing Requests</span></h3>
+        <div id="pair-request-list" class="device-list"></div>
+      </div>
+    </div>
+
     <div class="section">
       <h2 class="section-title"><img src="img/icons/dish.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="devices.section.title">Paired Devices</span></h2>
       <div id="device-list" class="device-list">
@@ -277,8 +245,6 @@
     <div class="header-row">
       <h1><img src="img/icons/microscope.svg" alt="" class="emoji-icon"> <span data-i18n="header.debug-title">Debug Telemetry</span></h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
-        <button class="btn-icon" onclick="navigate('/logs')" data-i18n-attr="title:header.logs" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
       </div>
     </div>
@@ -339,6 +305,10 @@
         <span class="debug-stat-value" id="d-port">—</span>
       </div>
       <div class="debug-stat">
+        <span class="debug-stat-label" data-i18n="debug.stats.http-port">HTTP Port</span>
+        <span class="debug-stat-value" id="d-http-port">—</span>
+      </div>
+      <div class="debug-stat">
         <span class="debug-stat-label" data-i18n="debug.stats.decrypt-failures">Decrypt Failures</span>
         <span class="debug-stat-value debug-ok" id="d-decrypt-fail">0</span>
       </div>
@@ -365,7 +335,6 @@
     <div class="header-row">
       <h1><img src="img/icons/clipboard_lines.svg" alt="" class="emoji-icon"> <span data-i18n="header.logs-title">System Logs</span></h1>
       <div style="display:flex;gap:8px">
-        <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
       </div>
     </div>

@@ -11,9 +11,9 @@ on:
 
 # Builds release artifacts on all three target platforms in parallel:
 #
-#   * Windows: builds satellite.exe under MSYS2/MinGW, then runs Inno Setup
-#     to produce SatelliteSetup.exe. Code-signed if WIN_SIGN_CERT_BASE64 +
-#     WIN_SIGN_PASSWORD are set.
+#   * Windows: builds satellite.exe under MSVC + vcpkg (hardened: CFG + CET +
+#     Spectre), then runs Inno Setup to produce SatelliteSetup.exe. Code-signed
+#     if WIN_SIGN_CERT_BASE64 + WIN_SIGN_PASSWORD are set.
 #   * macOS:   builds the *stub* satellite.app (no virtual gamepad — see
 #     README "How it works"). Codesigned + notarized if Developer ID secrets
 #     are set.
@@ -121,23 +121,24 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Set up MSYS2 / MinGW-w64
-        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
-        with:
-          msystem: MINGW64
-          update: false
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-make
-            mingw-w64-x86_64-pkgconf
-
-      - name: Build satellite.exe
-        shell: msys2 {0}
+      # MSVC build (hardened: CFG + CET + Spectre). Dependencies come from
+      # vcpkg's static triplet so their CRT linkage matches the app's /MT.
+      # windows-latest ships VS 2022 (+ Spectre-mitigated libs) and a vcpkg
+      # checkout; windows-msvc-ci.yml A/B-validates this same path on every PR.
+      - name: Build satellite.exe (MSVC + vcpkg, hardened)
+        shell: pwsh
         run: |
-          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release -j
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cmake --preset windows-msvc
+          cmake --build build-msvc --config Release
+          if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
+
+      # installer.iss bundles the ViGEmBus driver from redist/, which is not
+      # committed -- fetch + hash-verify it first (the documented
+      # `pwsh scripts/fetch-redist.ps1 ; iscc installer.iss` recipe).
+      - name: Fetch pinned redistributables (ViGEmBus)
+        shell: pwsh
+        run: pwsh scripts/fetch-redist.ps1
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress

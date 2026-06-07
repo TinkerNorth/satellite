@@ -1,21 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * tests/test_receiver.cpp — Unit tests for the receiver's wire decode.
- *
- * Self-contained: no external test framework required.
- *
- * Covers net/inner_dispatch.cpp — the per-message length guards that the UDP
- * receiver applies to a decrypted inner message before handing it to a
- * decoder. The focus is malformed input: truncated and oversized payloads for
- * MSG_MOTION / MSG_BATTERY / MSG_TOUCHPAD (and MSG_GAMEPAD_DATA) must be
- * rejected, and a well-formed payload must NOT be read past `payload + msgLen`.
- *
- * The "no out-of-bounds read" assertions place the wire bytes at the very end
- * of a heap allocation so any over-read runs off the buffer — caught by
- * AddressSanitizer in CI even though the bytes' values look benign.
- */
 #include "../src/net/inner_dispatch.h"
 #include "../src/core/session_service.h"
 
@@ -24,7 +7,6 @@
 #include <iostream>
 #include <vector>
 
-// ── Test harness (mirrors tests/test_session_service.cpp) ────────────────────
 static int g_pass = 0;
 static int g_fail = 0;
 static std::string g_currentTest;
@@ -56,10 +38,8 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
-// ── Minimal SessionService doubles ──────────────────────────────────────────
-// dispatchInnerMessage needs a real SessionService; SessionService needs the
-// three outbound ports. These are bare stubs — the tests assert against the
-// stubs' call counters to confirm whether a message was accepted or rejected.
+// Bare port stubs — tests assert against the call counters to confirm whether a
+// message was accepted or rejected.
 struct StubGamepad : IGamepadPort {
     bool ensureBusOpen() override { return true; }
     void closeBus() override {}
@@ -121,11 +101,9 @@ struct StubLog : ILogPort {
     void logMsg(LogLevel, const std::string&, const std::string&) override {}
 };
 
-// Spin up a SessionService with one open connection holding one active
-// controller at index 0, and return its token. The connection's touchpad
-// mode is seeded to TOUCHPAD_MODE_DS4 so dispatch tests exercise the
-// historical pass-through routing — the new default (OFF) would drop
-// every MSG_TOUCHPAD before the dispatch tests can observe a backend call.
+// Open a connection with one active controller at index 0. Touchpad mode is
+// seeded to TOUCHPAD_MODE_DS4 so dispatch tests see pass-through routing — the
+// OFF default would drop every MSG_TOUCHPAD before a backend call is observable.
 static uint32_t openWithController(SessionService& svc) {
     uint8_t key[CRYPTO_KEY_SIZE] = {};
     auto r = svc.openSession("dev-receiver-test", "ReceiverTest", "192.168.1.50", key,
@@ -134,17 +112,15 @@ static uint32_t openWithController(SessionService& svc) {
     return r.token;
 }
 
-// Copy `msg` into a fresh heap buffer sized exactly to `msg.size()` and invoke
-// dispatchInnerMessage on it. Because the buffer has no slack, an over-read
-// past `payload + msgLen` runs off the allocation — ASan flags it in CI.
+// Dispatch `msg` from an exact-size heap buffer with no slack, so an over-read
+// past `payload + msgLen` runs off the allocation and ASan flags it in CI.
 static DispatchResult dispatchTight(SessionService& svc, uint32_t token, uint16_t msgType,
                                     const std::vector<uint8_t>& msg) {
-    std::vector<uint8_t> buf(msg); // exact-size allocation, no trailing slack
+    std::vector<uint8_t> buf(msg);
     return dispatchInnerMessage(svc, token, msgType, buf.empty() ? nullptr : buf.data(),
                                 static_cast<uint16_t>(buf.size()));
 }
 
-// ── decodeMotionReport / decodeTouchpadReport — wire decode correctness ─────
 static void test_decodeMotionReport_littleEndian() {
     TEST("decodeMotionReport — decodes little-endian fields");
     // 16 wire bytes: gyroX..gyroZ, accelX..accelZ (6×i16 LE), then u32 LE.
@@ -169,9 +145,6 @@ static void test_decodeMotionReport_littleEndian() {
 
 static void test_decodeMotionReport_noOverRead() {
     TEST("decodeMotionReport — reads exactly MOTION_WIRE_PAYLOAD_BYTES, no more");
-    // Place the 16 decode bytes at the tail of the allocation: byte index 0 of
-    // the decoder maps to the last 16 bytes of buf, so any 17th-byte read runs
-    // off the end.
     std::vector<uint8_t> buf(MOTION_WIRE_PAYLOAD_BYTES, 0x5A);
     MotionReport r = decodeMotionReport(buf.data());
     // 0x5A5A = 23130 for every i16 field; u32 = 0x5A5A5A5A.
@@ -212,7 +185,6 @@ static void test_decodeTouchpadReport_noOverRead() {
     EXPECT(!r.finger1.active);
 }
 
-// ── MSG_MOTION length guard ─────────────────────────────────────────────────
 static void test_dispatch_motion_truncatedRejected() {
     TEST("dispatchInnerMessage — truncated MSG_MOTION is rejected (no decode)");
     StubGamepad gp;
@@ -266,7 +238,6 @@ static void test_dispatch_motion_oversizedAccepted() {
     EXPECT_EQ(static_cast<int>(gp.lastMotion.gyroY), 1);
 }
 
-// ── MSG_BATTERY length guard ────────────────────────────────────────────────
 static void test_dispatch_battery_truncatedRejected() {
     TEST("dispatchInnerMessage — truncated MSG_BATTERY is rejected");
     StubGamepad gp;
@@ -298,7 +269,6 @@ static void test_dispatch_battery_exactLengthAccepted() {
     EXPECT_EQ(static_cast<int>(gp.lastBattery.status), static_cast<int>(BATTERY_STATUS_CHARGING));
 }
 
-// ── MSG_TOUCHPAD length guard ───────────────────────────────────────────────
 static void test_dispatch_touchpad_truncatedRejected() {
     TEST("dispatchInnerMessage — truncated MSG_TOUCHPAD is rejected (no decode)");
     StubGamepad gp;
@@ -333,7 +303,6 @@ static void test_dispatch_touchpad_exactLengthAccepted() {
     EXPECT_EQ(static_cast<int>(gp.lastTouchpad.finger0.trackingId), 0x2A);
 }
 
-// ── MSG_GAMEPAD_DATA length guard ───────────────────────────────────────────
 static void test_dispatch_gamepad_truncatedRejected() {
     TEST("dispatchInnerMessage — truncated MSG_GAMEPAD_DATA is rejected");
     StubGamepad gp;
@@ -366,7 +335,6 @@ static void test_dispatch_gamepad_exactLengthAccepted() {
     EXPECT_EQ(gp.gamepadCalls, 1);
 }
 
-// ── Unknown / heartbeat ─────────────────────────────────────────────────────
 static void test_dispatch_unknownTypeIgnored() {
     TEST("dispatchInnerMessage — unknown message type is ignored, no decode");
     StubGamepad gp;
@@ -396,7 +364,6 @@ static void test_dispatch_heartbeatZeroLength() {
     EXPECT_EQ(cl.heartbeatAcks, 1);
 }
 
-// ── Driver ──────────────────────────────────────────────────────────────────
 int main() {
     std::cout << "Running receiver wire-decode tests...\n\n";
 

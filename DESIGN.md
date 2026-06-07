@@ -31,6 +31,30 @@ Palette: **cyan / deep-space** — mirrors dish-website.
 | `--warning` | `#F59E0B` | Status — warning |
 | `--error` | `#E74C3C` | Status — error |
 
+## Typography + shape — dish-android voice
+
+The visual language mirrors dish-android's Material 3 voice: sans-serif
+titles/body/buttons in **normal case**, a small **monospace letter-spaced
+eyebrow** for section labels and the brand wordmark, **no neon glow**, and a
+graduated corner-radius scale. Only the cyan/deep-space palette above is shared
+with the old "cyberpunk console" look.
+
+| Var | Value | Role |
+|---|---|---|
+| `--font-sans` | `'Inter', system-ui, …` | Titles, body, names, buttons (normal case) |
+| `--font-mono` | `ui-monospace, 'Source Code Pro', …` | Eyebrows, brand wordmark, values, IPs, code |
+| `--corner-chip` | `4px` | Status chips, small badges |
+| `--corner-button` | `6px` | Buttons, inputs |
+| `--corner-card` | `8px` | Cards, list rows, log container |
+| `--corner-notification` | `10px` | Notices, banners, modal |
+| `--corner-pill` | `20px` | Switch track, count badges |
+
+Eyebrows (`.section-title`) and the brand wordmark (`h1`) are the only
+uppercase, letter-spaced (`0.12em`) elements — everything else is sentence /
+title case. Buttons follow dish-android's two-tier system: filled
+(`--primary-dim` bg, `--on-primary` text) and outlined (transparent +
+`--outline` border).
+
 ## Log-viewer extension (scoped, satellite-only)
 
 The log viewer has its own paired bg+text palette for the three log
@@ -82,17 +106,14 @@ const accent = themeColor('--primary');
    [web/img/satellite-icon.png](web/img/satellite-icon.png) are
    byte-identical 529KB duplicates. Future cleanup: consolidate to one
    canonical asset.
-2. **rgba derivatives**: `rgba(255, 193, 7, ...)` (primary at alpha) and
-   similar rgba literals appear in glow / box-shadow rules. Migration
-   deferred until repo-wide adoption of `rgb(from var(--x) r g b / alpha)`
-   syntax. If `--primary` changes, audit those literals by hand.
-3. **Font choice**: style.css imports `Rajdhani` from Google Fonts. Other
-   entities use Orbitron (web) or system defaults (native). Separate
-   cleanup from color work.
-4. **Warning glow rgba mismatch**: `.backend-dot.backend-warn` now uses
-   `var(--warning)` (`#F59E0B`) but its outer glow is
-   `rgba(255, 193, 7, 0.4)` (= primary). Visually close but technically
-   stale. Same caveat as (2).
+2. **rgba derivatives**: cyan/amber/red literals at alpha (e.g.
+   `rgba(79, 227, 255, 0.14)`) appear in chip/notice background rules.
+   Migration deferred until repo-wide adoption of
+   `rgb(from var(--x) r g b / alpha)` syntax. If a base token changes,
+   audit those literals by hand.
+3. **Translation pass**: the dish-android alignment added
+   `dashboard.region.pairing` and `debug.stats.http-port` to `lang/en.json`
+   only; the other locales fall back to English until a translator fills them.
 
 ## Consolidation history
 

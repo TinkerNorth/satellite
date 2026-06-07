@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
 #include "core/github_release.h"
 
@@ -11,11 +10,9 @@
 
 namespace {
 
-// ── Tiny JSON parser (subset) ──────────────────────────────────────────────
-// Supports: objects, arrays, strings, numbers, bool, null. Skips unknown
-// values. Throws std::runtime_error on unrecoverable malformation; callers
-// catch and fall back to "false" returns.
-
+// Tiny JSON parser subset: objects, arrays, strings, numbers, bool, null;
+// skips unknown values. Throws on malformation; callers catch and fall back
+// to "false" returns.
 class JsonError : public std::exception {
   public:
     const char* what() const noexcept override { return "json parse error"; }
@@ -54,7 +51,6 @@ class JsonScanner {
         return false;
     }
 
-    // Read a JSON string (with the surrounding quotes consumed).
     std::string readString() {
         expect('"');
         std::string out;
@@ -89,8 +85,7 @@ class JsonScanner {
                     out += '\t';
                     break;
                 case 'u': {
-                    // Decode the 4-hex codepoint into UTF-8. We don't
-                    // handle surrogate pairs — they degrade to U+FFFD.
+                    // 4-hex codepoint → UTF-8; surrogate pairs degrade to U+FFFD.
                     if (p_ + 4 > s_.size()) throw JsonError{};
                     unsigned cp = 0;
                     for (int i = 0; i < 4; i++) {
@@ -111,8 +106,7 @@ class JsonScanner {
                         out += static_cast<char>(0xC0 | (cp >> 6));
                         out += static_cast<char>(0x80 | (cp & 0x3F));
                     } else if (cp >= 0xD800 && cp <= 0xDFFF) {
-                        // Surrogate half — emit replacement character.
-                        out += "\xEF\xBF\xBD";
+                        out += "\xEF\xBF\xBD"; // surrogate half → U+FFFD
                     } else {
                         out += static_cast<char>(0xE0 | (cp >> 12));
                         out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
@@ -130,9 +124,8 @@ class JsonScanner {
         throw JsonError{};
     }
 
-    // Read a JSON number into a 64-bit signed integer. Fractional parts
-    // and exponents are tolerated by parsing as double, then casting —
-    // GitHub's "size" field is always an integer in practice.
+    // GitHub's "size" field is always an integer in practice; fractional/
+    // exponent chars are consumed but strtoll truncates at the first non-digit.
     int64_t readNumber() {
         skipWs();
         size_t start = p_;
@@ -169,7 +162,6 @@ class JsonScanner {
         throw JsonError{};
     }
 
-    // Discard the next value, whatever its type.
     void skipValue() {
         char c = peek();
         if (c == '"') {
@@ -204,8 +196,6 @@ class JsonScanner {
     const std::string& s_;
     size_t p_ = 0;
 };
-
-// ── Field readers (release + asset) ────────────────────────────────────────
 
 GitHubAsset readAsset(JsonScanner& js) {
     GitHubAsset a;
@@ -244,8 +234,7 @@ GitHubRelease readRelease(JsonScanner& js) {
         if (key == "tag_name") {
             r.tagName = js.readString();
         } else if (key == "name") {
-            // The "name" field of a release can legitimately be null
-            // (when not set in the GitHub UI).
+            // A release "name" is null when unset in the GitHub UI.
             if (js.peek() == '"')
                 r.name = js.readString();
             else
@@ -285,7 +274,6 @@ GitHubRelease readRelease(JsonScanner& js) {
 
 } // namespace
 
-// ── Public API ─────────────────────────────────────────────────────────────
 bool parseGitHubRelease(const std::string& json, GitHubRelease& out) {
     try {
         JsonScanner js(json);
@@ -314,17 +302,19 @@ int64_t isoToEpoch(const std::string& iso) {
     if (iso.size() < 19) return 0;
     struct tm t{};
     int y, mo, d, h, mi, se;
+#ifdef _MSC_VER
+    if (sscanf_s(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+#else
     if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+#endif
     t.tm_year = y - 1900;
     t.tm_mon = mo - 1;
     t.tm_mday = d;
     t.tm_hour = h;
     t.tm_min = mi;
     t.tm_sec = se;
-    // The ISO string is UTC ("Z" suffix). timegm() is non-portable, so
-    // emulate it via mktime + timezone offset on Windows or call timegm
-    // elsewhere. Approximate: this is for display only, an off-by-DST
-    // doesn't affect update logic.
+    // ISO string is UTC ("Z"). timegm() is non-portable; use _mkgmtime on
+    // Windows. Display-only, so an off-by-DST doesn't affect update logic.
 #if defined(_WIN32)
     return _mkgmtime(&t);
 #else
@@ -338,22 +328,18 @@ std::string lookupSha256(const std::string& body, const std::string& filename) {
     while (std::getline(ss, line)) {
         // Format: "<64-hex>  <filename>" or "<64-hex> *<filename>" (binary mode).
         if (line.size() < 66) continue;
-        // Find the first non-hex character after the digest.
         size_t i = 0;
         while (i < line.size() && std::isxdigit(static_cast<unsigned char>(line[i]))) ++i;
         if (i != 64) continue;
         std::string digest = line.substr(0, 64);
-        // Skip whitespace + optional '*'.
         while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-        if (i < line.size() && line[i] == '*') ++i;
+        if (i < line.size() && line[i] == '*') ++i; // binary-mode marker
         std::string name = line.substr(i);
-        // Trim trailing whitespace / CR.
         while (!name.empty() &&
                (name.back() == '\r' || name.back() == '\n' || name.back() == ' ')) {
             name.pop_back();
         }
         if (name == filename) {
-            // Normalize digest to lowercase.
             std::transform(digest.begin(), digest.end(), digest.begin(),
                            [](char c) { return static_cast<char>(std::tolower(c)); });
             return digest;
