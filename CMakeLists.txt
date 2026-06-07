@@ -220,6 +220,12 @@ if(WIN32)
             /NXCOMPAT
             /GUARD:CF
             /CETCOMPAT         # Win11 hardware shadow stack
+            # satellite.rc already embeds satellite.manifest as RT_MANIFEST id 1
+            # (the cross-toolchain source of truth windres also consumes). MSVC's
+            # linker generates and embeds its own manifest by default, which
+            # collides with it — CVT1100 "duplicate resource". Suppress the
+            # linker copy so the .rc stays the single manifest source.
+            /MANIFEST:NO
         )
         set_target_properties(satellite PROPERTIES
             LINK_FLAGS "/SUBSYSTEM:WINDOWS"
