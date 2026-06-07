@@ -1,31 +1,32 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Rajdhani:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 
-/* ── Design tokens ─────────────────────────────────────────────────── */
-/* Token names follow the TinkerNorth cross-repo schema. Same names appear in
-   dish-android/colors.xml, dish-mac/Theme.swift, dish-linux/Theme.h.
-   See DESIGN.md for the full catalog and the cyan-vs-amber decision. */
 :root {
-  /* ── Core (cyan / deep-space palette, mirrors dish-website) ── */
-  --bg: #060818;          /* --tn-ink */
-  --surface: #0C1027;     /* --tn-night */
-  --surface-dim: #131A3A; /* --tn-deep */
+  --bg: #060818;
+  --surface: #0C1027;
+  --surface-dim: #131A3A;
   --outline: rgba(79, 227, 255, 0.18);
 
-  --primary: #4FE3FF;     /* --tn-signal (cyan) */
-  --primary-mid: #2C93AD; /* aliased to primary-dim — web has no mid */
-  --primary-dim: #2C93AD; /* --tn-signal-dim */
+  --primary: #4FE3FF;
+  --primary-mid: #2C93AD;
+  --primary-dim: #2C93AD;
   --on-primary: #060818;
 
-  --text: #E6ECFF;        /* --body-color */
-  --text-muted: #93A0C8;  /* --muted */
+  --text: #E6ECFF;
+  --text-muted: #93A0C8;
 
   --success: #22C55E;
   --warning: #F59E0B;
   --error: #E74C3C;
 
-  /* ── Log-viewer extension (scoped to .log-* selectors only) ──
-     This is a separate semantic surface — info/warn/error badges with
-     paired bg+text. Not part of the cross-repo schema. */
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Source Code Pro', 'Consolas', 'Courier New', monospace;
+
+  --corner-chip: 4px;
+  --corner-button: 6px;
+  --corner-card: 8px;
+  --corner-notification: 10px;
+  --corner-pill: 20px;
+
   --log-info-bg: #1E3A5F;
   --log-info-text: #60A5FA;
   --log-warn-bg: #4A3728;
@@ -36,16 +37,14 @@
   --log-source: #A78BFA;
 }
 
-/* ── Reset ─────────────────────────────────────────────────────────── */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-/* ── Base ──────────────────────────────────────────────────────────── */
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   background: var(--bg);
   color: var(--text);
   display: flex;
@@ -54,52 +53,36 @@ body {
   min-height: 100vh;
 }
 
-/* ── Card ──────────────────────────────────────────────────────────── */
 .card {
   background: var(--surface);
-  border-radius: 6px;
-  padding: 32px;
+  border-radius: var(--corner-card);
+  padding: 24px;
   width: 440px;
   margin: 0 auto;
   border: 1px solid rgba(79, 227, 255, 0.12);
-  box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.6),
-    0 0 40px rgba(79, 227, 255, 0.04);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
 }
 
-/* ── Header ────────────────────────────────────────────────────────── */
 h1 {
-  font-family: 'Rajdhani', sans-serif;
-  font-weight: 700;
-  font-size: 22px;
-  letter-spacing: 0.05em;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 18px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   color: var(--primary);
-  text-shadow: 0 0 6px rgba(79, 227, 255, 0.4);
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-h1 .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+h1 .brand-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
   flex-shrink: 0;
 }
 
-.dot.on {
-  background: var(--primary);
-  box-shadow: 0 0 8px var(--primary), 0 0 16px rgba(79, 227, 255, 0.4);
-}
-
-.dot.off {
-  background: var(--primary-dim);
-  box-shadow: 0 0 6px rgba(44, 147, 173, 0.5);
-}
-
-/* ── Stats ─────────────────────────────────────────────────────────── */
 .stat {
   display: flex;
   justify-content: space-between;
@@ -109,21 +92,18 @@ h1 .dot {
 }
 
 .stat .label {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
-  letter-spacing: 0.04em;
   color: var(--text-muted);
-  text-transform: uppercase;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .stat .value {
   color: var(--text);
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
 }
 
-/* ── Controls ──────────────────────────────────────────────────────── */
 .controls {
   margin-top: 24px;
   display: flex;
@@ -138,23 +118,21 @@ h1 .dot {
 }
 
 .row label {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
   font-size: 13px;
-  letter-spacing: 0.04em;
   color: var(--text-muted);
   min-width: 80px;
-  text-transform: uppercase;
 }
 
 .row input[type=number] {
   flex: 1;
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-button);
   padding: 8px 12px;
   color: var(--text);
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 14px;
   transition: border-color 0.2s;
 }
@@ -162,10 +140,8 @@ h1 .dot {
 .row input[type=number]:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 8px rgba(79, 227, 255, 0.2);
 }
 
-/* ── Toggle ─────────────────────────────────────────────────────────── */
 .toggle-row {
   display: flex;
   align-items: center;
@@ -174,12 +150,10 @@ h1 .dot {
 }
 
 .toggle-row span {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
   font-size: 13px;
-  letter-spacing: 0.04em;
   color: var(--text-muted);
-  text-transform: uppercase;
 }
 
 .switch {
@@ -198,7 +172,7 @@ h1 .dot {
   position: absolute;
   inset: 0;
   background: var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-pill);
   cursor: pointer;
   transition: 0.2s;
 }
@@ -211,13 +185,12 @@ h1 .dot {
   left: 3px;
   bottom: 3px;
   background: var(--text-muted);
-  border-radius: 3px;
+  border-radius: 50%;
   transition: 0.2s;
 }
 
 .switch input:checked + .slider {
-  background: var(--primary-mid);
-  box-shadow: 0 0 8px rgba(44, 147, 173, 0.4);
+  background: var(--primary-dim);
 }
 
 .switch input:checked + .slider:before {
@@ -225,61 +198,44 @@ h1 .dot {
   background: var(--primary);
 }
 
-/* ── Buttons ───────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 10px 20px;
+  padding: 9px 18px;
   border: none;
-  border-radius: 4px;
-  font-family: 'Rajdhani', sans-serif;
+  border-radius: var(--corner-button);
+  font-family: var(--font-sans);
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   cursor: pointer;
   transition: 0.15s;
 }
 
-.btn-start {
-  background: var(--primary);
-  color: var(--bg);
-  box-shadow: 0 0 12px rgba(79, 227, 255, 0.3);
-}
-.btn-start:hover {
-  background: var(--primary);
-  box-shadow: 0 0 16px rgba(79, 227, 255, 0.6);
-}
-
-.btn-stop {
-  background: var(--primary-dim);
-  color: var(--text);
-  box-shadow: 0 0 8px rgba(44, 147, 173, 0.3);
-}
-.btn-stop:hover {
-  background: var(--primary-mid);
-  box-shadow: 0 0 12px rgba(44, 147, 173, 0.5);
-}
-
+.btn-start,
 .btn-save {
   background: var(--primary-dim);
-  color: var(--text);
-  border: 1px solid rgba(79, 227, 255, 0.15);
+  color: var(--on-primary);
+  border: 1px solid transparent;
 }
+.btn-start:hover:not(:disabled),
 .btn-save:hover:not(:disabled) {
-  background: var(--primary-mid);
-  border-color: rgba(79, 227, 255, 0.3);
-  box-shadow: 0 0 8px rgba(44, 147, 173, 0.4);
+  background: var(--primary);
 }
-/* Global disabled-button rule — mirrors the design spec's ds-components.jsx
-   Button: opacity 0.4, cursor not-allowed, no further click events. The two
-   .btn-save / .btn-undo overrides above used to drop to 0.35; tightening to
-   0.4 brings the dashboard into line with the design system (dish-mac,
-   dish-android, dish-linux all use the same 0.4 alpha for "this control is
-   not tappable right now"). Combined with an in-button loader, the disabled
-   state and the "working" state read as one thing — a dimmed button with a
-   spinner — and a stray click can't reach the handler. */
+
+.btn-stop,
+.btn-undo {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--outline);
+}
+.btn-stop:hover:not(:disabled),
+.btn-undo:hover:not(:disabled) {
+  color: var(--text);
+  border-color: rgba(79, 227, 255, 0.4);
+  background: rgba(79, 227, 255, 0.06);
+}
+
 button:disabled,
 .btn:disabled,
 .btn-save:disabled,
@@ -291,24 +247,12 @@ button:disabled,
   pointer-events: none;
 }
 
-.btn-undo {
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid var(--outline);
-}
-.btn-undo:hover:not(:disabled) {
-  color: var(--text);
-  border-color: rgba(79, 227, 255, 0.3);
-}
-
 .btn-row {
   display: flex;
   gap: 12px;
   margin-top: 8px;
 }
 
-
-/* ── Form elements (setup/login) ──────────────────────────────────── */
 .subtitle {
   color: var(--text-muted);
   font-size: 13px;
@@ -321,12 +265,10 @@ button:disabled,
 
 .form-label {
   display: block;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
-  font-size: 12px;
-  letter-spacing: 0.04em;
+  font-size: 13px;
   color: var(--text-muted);
-  text-transform: uppercase;
   margin-bottom: 4px;
 }
 
@@ -334,10 +276,10 @@ button:disabled,
   width: 100%;
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-button);
   padding: 10px 12px;
   color: var(--text);
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   transition: border-color 0.2s;
 }
@@ -345,7 +287,6 @@ button:disabled,
 .form-input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 8px rgba(79, 227, 255, 0.2);
 }
 
 .error-msg {
@@ -360,7 +301,6 @@ button:disabled,
   margin-top: 4px;
 }
 
-/* ── Header row (title + logout) ──────────────────────────────────── */
 .header-row {
   display: flex;
   justify-content: space-between;
@@ -377,7 +317,7 @@ button:disabled,
   color: var(--text-muted);
   width: 32px;
   height: 32px;
-  border-radius: 4px;
+  border-radius: var(--corner-button);
   cursor: pointer;
   font-size: 14px;
   display: flex;
@@ -386,8 +326,6 @@ button:disabled,
   transition: 0.15s;
 }
 
-/* Inline icon swap for emoji-as-icon. Sizes itself to the parent text so it
-   slots into the same boxes that originally held the emoji glyph. */
 .emoji-icon {
   width: 1em;
   height: 1em;
@@ -399,19 +337,11 @@ button:disabled,
 .flow-arrow .emoji-icon,
 .pipe-arrow .emoji-icon { width: 1em; height: 1em; vertical-align: -0.15em; }
 
-/* Brand-icon glyph slotted in front of a section title — sized to read
-   alongside the Rajdhani caps without crowding the text. */
 .section-title .section-glyph {
-  width: 18px;
-  height: 18px;
-  vertical-align: -0.25em;
-  margin-right: 4px;
+  width: 16px;
+  height: 16px;
 }
 
-/* Per-row state glyph rendered on device-list rows (active connections +
-   paired devices). Uses the v6 dish family from img/icons/ — the icon
-   choice is keyed on the wire state by DEVICE_LINK_STATE_ICON in
-   dashboard.js so the row's silhouette mirrors the chip text. */
 .device-glyph {
   width: 28px;
   height: 28px;
@@ -422,15 +352,14 @@ button:disabled,
 
 .btn-icon:hover {
   color: var(--primary);
-  border-color: rgba(79, 227, 255, 0.3);
+  border-color: rgba(79, 227, 255, 0.4);
 }
 
 .btn-icon.btn-danger:hover {
   color: var(--error);
-  border-color: rgba(231, 76, 60, 0.3);
+  border-color: rgba(231, 76, 60, 0.4);
 }
 
-/* ── Sections (PIN, Devices) ──────────────────────────────────────── */
 .section {
   margin-top: 24px;
   padding-top: 20px;
@@ -438,17 +367,33 @@ button:disabled,
 }
 
 .section-title {
-  font-family: 'Rajdhani', sans-serif;
-  font-weight: 600;
-  font-size: 14px;
-  letter-spacing: 0.06em;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--primary);
   margin-bottom: 12px;
-  text-shadow: 0 0 4px rgba(79, 227, 255, 0.3);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-h2.section-title { font-size: 14px; }
+h2.section-title { font-size: 12px; }
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--outline);
+  border-radius: var(--corner-pill);
+  padding: 1px 8px;
+  text-transform: none;
+}
 
 .pin-row {
   display: flex;
@@ -457,32 +402,28 @@ h2.section-title { font-size: 14px; }
 }
 
 .pin-display {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 28px;
-  font-weight: bold;
+  font-weight: 600;
   color: var(--primary);
   letter-spacing: 0.2em;
-  text-shadow: 0 0 8px rgba(79, 227, 255, 0.4);
 }
 
 .hint {
   color: var(--text-muted);
   font-size: 12px;
   margin-top: 8px;
+  font-family: var(--font-sans);
+  line-height: 1.5;
 }
 
-/* ── Dashboard inline error notice ────────────────────────────────── */
-/* Failure feedback for the dashboard's mutating actions (disconnect,
-   remove device, touchpad-mode change). Mirrors the update banner's
-   error styling — see showDashError() in dashboard.js. Auto-hidden
-   (display:none) until an action fails. */
 .dash-notice {
   display: none;
   align-items: flex-start;
   gap: 8px;
-  background: linear-gradient(180deg, rgba(231,76,60,0.08), rgba(231,76,60,0.02));
-  border: 1px solid rgba(231,76,60,0.45);
-  border-radius: 5px;
+  background: rgba(231, 76, 60, 0.08);
+  border: 1px solid rgba(231, 76, 60, 0.45);
+  border-radius: var(--corner-notification);
   padding: 8px 10px;
   margin-bottom: 8px;
   font-size: 12px;
@@ -492,9 +433,8 @@ h2.section-title { font-size: 14px; }
 .dash-notice-text {
   flex: 1;
   min-width: 0;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
-  letter-spacing: 0.02em;
   line-height: 1.4;
 }
 .dash-notice-close {
@@ -509,11 +449,32 @@ h2.section-title { font-size: 14px; }
 }
 .dash-notice-close:hover { color: var(--text); }
 
-/* Section title with extra top spacing — used where a section heading
-   follows other controls inside the same card block (e.g. Discovery). */
 .section-title-spaced { margin-top: 18px; }
 
-/* ── Device list ──────────────────────────────────────────────────── */
+.backend-alert {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(231, 76, 60, 0.08);
+  border: 1px solid rgba(231, 76, 60, 0.45);
+  border-radius: var(--corner-notification);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+.backend-alert.show { display: flex; }
+.backend-alert-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.backend-alert-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .device-list {
   display: flex;
   flex-direction: column;
@@ -525,7 +486,7 @@ h2.section-title { font-size: 14px; }
   align-items: center;
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-card);
   padding: 10px 12px;
 }
 
@@ -538,7 +499,7 @@ h2.section-title { font-size: 14px; }
 }
 
 .device-name {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 14px;
   color: var(--text);
@@ -547,10 +508,9 @@ h2.section-title { font-size: 14px; }
 .device-meta {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
 }
 
-/* ── Controller list items ───────────────────────────────────────── */
 .ctrl-item {
   display: flex;
   justify-content: space-between;
@@ -558,7 +518,7 @@ h2.section-title { font-size: 14px; }
   gap: 12px;
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-card);
   padding: 10px 12px;
 }
 .ctrl-info {
@@ -568,7 +528,7 @@ h2.section-title { font-size: 14px; }
   min-width: 0;
 }
 .ctrl-name {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 14px;
   color: var(--text);
@@ -577,7 +537,7 @@ h2.section-title { font-size: 14px; }
 .ctrl-meta {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 .ctrl-dot {
@@ -591,10 +551,6 @@ h2.section-title { font-size: 14px; }
 .ctrl-dot.ok  { background: var(--success); }
 .ctrl-dot.err { background: var(--error); }
 
-/* Per-controller right-side chip cluster — battery + motion + touchpad +
-   lightbar. Stacked vertically so a long controller name keeps its horizontal
-   room instead of being pushed off the card; right-aligned so each chip's
-   right edge lines up against the card edge. */
 .ctrl-chips {
   display: flex;
   flex-direction: column;
@@ -602,18 +558,20 @@ h2.section-title { font-size: 14px; }
   gap: 4px;
   flex-shrink: 0;
 }
-/* Per-controller motion (IMU) state chip — see MOTION_COPY in dashboard.js for
-   the four states. Lives inside .ctrl-chips; the tooltip carries the full
-   explanation of each state. */
-.ctrl-motion {
+
+.ctrl-motion,
+.ctrl-battery,
+.ctrl-touchpad,
+.ctrl-lightbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   padding: 3px 8px;
-  border-radius: 5px;
+  border-radius: var(--corner-chip);
   white-space: nowrap;
   border: 1px solid var(--outline);
   cursor: help;
@@ -636,26 +594,7 @@ h2.section-title { font-size: 14px; }
   color: var(--text-muted);
   background: transparent;
 }
-/* Per-controller battery chip — Task 1.2. Shares the .ctrl-motion chip shape.
-   The sender forwards the controller's own battery, or the host machine's
-   battery when the controller is wired/USB (laptop %, or 100% on a desktop).
-   See batteryChip() in dashboard.js for the state-class logic. */
-.ctrl-battery {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  font-family: 'Rajdhani', sans-serif;
-  font-weight: 600;
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  padding: 3px 8px;
-  border-radius: 5px;
-  white-space: nowrap;
-  border: 1px solid var(--outline);
-  cursor: help;
-}
+
 .ctrl-battery.battery-ok {
   color: var(--text);
   background: transparent;
@@ -679,33 +618,14 @@ h2.section-title { font-size: 14px; }
   color: var(--text-muted);
   background: transparent;
 }
-/* Charge-ladder glyph leading the battery chip — see batteryIconFile() in
-   dashboard.js. The negative block margin lets the 16px icon read at full
-   size while keeping the chip the same height as its icon-less siblings. The
-   glyph keeps its own teal: the chip colour conveys urgency, the fill level
-   conveys charge. */
+
 .ctrl-battery-icon {
   width: 16px;
   height: 16px;
   margin-block: -3px;
   flex-shrink: 0;
 }
-/* Per-controller touchpad chip — Task 1.3. Shares the .ctrl-motion chip shape;
-   reflects the owning connection's touchpad mode + whether samples are
-   flowing. See touchpadChip() in dashboard.js. */
-.ctrl-touchpad {
-  flex-shrink: 0;
-  font-family: 'Rajdhani', sans-serif;
-  font-weight: 600;
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  padding: 3px 8px;
-  border-radius: 5px;
-  white-space: nowrap;
-  border: 1px solid var(--outline);
-  cursor: help;
-}
+
 .ctrl-touchpad.touchpad-on {
   color: var(--primary);
   background: rgba(79, 227, 255, 0.14);
@@ -719,32 +639,13 @@ h2.section-title { font-size: 14px; }
   color: var(--text-muted);
   background: transparent;
 }
-/* Pad mode chosen, but this controller's virtual device has no touchpad
-   surface (a non-PlayStation controller can't expose a DS4 touchpad). */
+
 .ctrl-touchpad.touchpad-nosurface {
   color: var(--warning);
   background: rgba(245, 158, 11, 0.14);
   border-color: rgba(245, 158, 11, 0.35);
 }
-/* Per-controller lightbar chip — Task 1.4. Shares the .ctrl-motion chip shape;
-   reflects whether the controller has an addressable RGB LED and the live
-   colour the host game is driving. See lightbarChip() in dashboard.js. */
-.ctrl-lightbar {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  font-family: 'Rajdhani', sans-serif;
-  font-weight: 600;
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  padding: 3px 8px;
-  border-radius: 5px;
-  white-space: nowrap;
-  border: 1px solid var(--outline);
-  cursor: help;
-}
+
 .ctrl-lightbar.lightbar-on {
   color: var(--text);
   background: transparent;
@@ -757,8 +658,7 @@ h2.section-title { font-size: 14px; }
   color: var(--text-muted);
   background: transparent;
 }
-/* Live colour swatch inside the lightbar-on chip — the actual RGB the host
-   game set, so the operator sees the colour itself, not just a hex string. */
+
 .lightbar-swatch {
   width: 11px;
   height: 11px;
@@ -768,8 +668,6 @@ h2.section-title { font-size: 14px; }
   box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.35);
 }
 
-/* Paired-device right-side actions — the touchpad-routing segmented control
-   plus the remove button. Task 1.3. */
 .device-actions {
   display: flex;
   align-items: center;
@@ -777,26 +675,22 @@ h2.section-title { font-size: 14px; }
   flex-shrink: 0;
 }
 .seg-label {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--text-muted);
   cursor: help;
 }
 .seg {
   display: inline-flex;
   border: 1px solid var(--outline);
-  border-radius: 5px;
+  border-radius: var(--corner-chip);
   overflow: hidden;
 }
 .seg-btn {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   padding: 4px 10px;
   background: var(--bg);
   color: var(--text-muted);
@@ -810,27 +704,23 @@ h2.section-title { font-size: 14px; }
 .seg-btn:focus-visible {
   outline: none;
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--primary), 0 0 6px rgba(79, 227, 255, 0.35);
+  box-shadow: inset 0 0 0 1px var(--primary);
 }
 .seg-btn.seg-on {
   background: var(--primary);
-  color: var(--bg);
+  color: var(--on-primary);
   cursor: default;
 }
-/* Read-only touchpad-mode badge — the client owns the setting; the dashboard
-   reflects it. Same visual weight as a seg-on segment so the row keeps its
-   rhythm, but no hover/active affordance and `default` cursor. */
+
 .tp-badge {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   padding: 4px 10px;
-  border-radius: 5px;
+  border-radius: var(--corner-chip);
   cursor: help;
   background: var(--primary);
-  color: var(--bg);
+  color: var(--on-primary);
 }
 .tp-badge-off { background: var(--bg); color: var(--text-muted); border: 1px solid var(--outline); }
 .tp-badge-unsupported {
@@ -844,7 +734,7 @@ h2.section-title { font-size: 14px; }
   height: 32px;
   margin-right: 10px;
   flex-shrink: 0;
-  border-radius: 4px;
+  border-radius: var(--corner-button);
   object-fit: contain;
 }
 .ctrl-row {
@@ -856,11 +746,8 @@ h2.section-title { font-size: 14px; }
 .conn-meta-label {
   font-size: 10px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
-/* ── Loading overlay ─────────────────────────────────────────────── */
 .loading-overlay {
   position: fixed;
   inset: 0;
@@ -893,18 +780,11 @@ h2.section-title { font-size: 14px; }
   width: 40px;
   height: 40px;
   animation: loading-pulse 1.4s ease-in-out infinite;
-  filter: drop-shadow(0 0 12px var(--primary)) drop-shadow(0 0 24px rgba(79, 227, 255, 0.5));
 }
 
 @keyframes loading-pulse {
-  0%, 100% {
-    transform: scale(1);
-    filter: drop-shadow(0 0 8px var(--primary)) drop-shadow(0 0 16px rgba(79, 227, 255, 0.4));
-  }
-  50% {
-    transform: scale(1.15);
-    filter: drop-shadow(0 0 20px var(--primary)) drop-shadow(0 0 40px rgba(79, 227, 255, 0.7));
-  }
+  0%, 100% { transform: scale(1);    opacity: 0.85; }
+  50%      { transform: scale(1.12); opacity: 1; }
 }
 
 .loading-icon::before {
@@ -923,7 +803,6 @@ h2.section-title { font-size: 14px; }
   to { transform: rotate(360deg); }
 }
 
-/* ── Backend Status (per-OS: ViGEm / uinput / hidden on macOS) ── */
 .backend-status-row {
   display: flex;
   justify-content: space-between;
@@ -938,34 +817,21 @@ h2.section-title { font-size: 14px; }
 }
 
 .backend-dot {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.backend-dot.backend-ok {
-  background: var(--success);
-  box-shadow: 0 0 8px var(--success), 0 0 16px rgba(34, 197, 94, 0.4);
-}
-
-.backend-dot.backend-err {
-  background: var(--error);
-  box-shadow: 0 0 8px var(--error), 0 0 16px rgba(231, 76, 60, 0.4);
-}
+.backend-dot.backend-ok   { background: var(--success); }
+.backend-dot.backend-err  { background: var(--error); }
+.backend-dot.backend-warn { background: var(--warning); }
 
 .backend-label {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 13px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--text-muted);
-}
-
-.backend-dot.backend-warn {
-  background: var(--warning);
-  box-shadow: 0 0 8px var(--warning), 0 0 16px rgba(245, 158, 11, 0.4);
 }
 
 .backend-ok-text { color: var(--success); }
@@ -976,99 +842,35 @@ h2.section-title { font-size: 14px; }
   background: none;
   border: none;
   color: var(--primary);
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   cursor: pointer;
   transition: 0.15s;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .btn-link:hover {
   color: var(--primary);
-  text-shadow: 0 0 6px rgba(79, 227, 255, 0.4);
+  text-decoration: underline;
 }
 
-/* ── Flow diagram ─────────────────────────────────────────────── */
-.backend-flow {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 16px 0;
-  margin-bottom: 4px;
-}
-
-.flow-step {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 10px 14px;
-  background: var(--bg);
-  border: 1px solid var(--outline);
-  border-radius: 6px;
-  min-width: 72px;
-  transition: border-color 0.3s, box-shadow 0.3s;
-}
-
-.flow-step.done {
-  border-color: rgba(34, 197, 94, 0.4);
-  box-shadow: 0 0 8px rgba(34, 197, 94, 0.1);
-}
-
-.flow-step.fail {
-  border-color: rgba(231, 76, 60, 0.4);
-  box-shadow: 0 0 8px rgba(231, 76, 60, 0.1);
-}
-
-.flow-icon {
-  font-size: 20px;
-  line-height: 1;
-}
-
-.flow-text {
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.flow-step.done .flow-text { color: var(--success); }
-.flow-step.warn .flow-text { color: var(--warning); }
-.flow-step.fail .flow-text { color: var(--error); }
-
-.flow-step.warn {
-  border-color: rgba(245, 158, 11, 0.4);
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.1);
-}
-
-.flow-arrow {
-  color: var(--outline);
-  font-size: 16px;
-  font-weight: bold;
-}
-
-/* ── Setup guide ──────────────────────────────────────────────── */
 .backend-guide {
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 6px;
+  border-radius: var(--corner-button);
   padding: 16px 20px;
-  margin-top: 12px;
+  margin-top: 4px;
 }
 
 .guide-title {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--primary);
+  font-size: 14px;
+  color: var(--text);
   margin-bottom: 12px;
 }
 
@@ -1096,6 +898,7 @@ h2.section-title { font-size: 14px; }
   border-radius: 3px;
   font-size: 12px;
   color: var(--text);
+  font-family: var(--font-mono);
 }
 
 .backend-guide-body {
@@ -1105,16 +908,14 @@ h2.section-title { font-size: 14px; }
   margin-bottom: 12px;
 }
 
-/* Inline shell commands inside remediation steps. Block-level so long
-   commands wrap cleanly; click-to-select is the implicit affordance. */
 .guide-steps pre.guide-cmd {
   display: block;
   background: var(--surface);
   border: 1px solid var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-button);
   padding: 6px 10px;
   margin: 6px 0 0;
-  font-family: 'Source Code Pro', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
   white-space: pre-wrap;
@@ -1122,7 +923,6 @@ h2.section-title { font-size: 14px; }
   user-select: all;
 }
 
-/* ── Debug page ──────────────────────────────────────────────── */
 .card-wide {
   width: 560px;
 }
@@ -1143,36 +943,23 @@ h2.section-title { font-size: 14px; }
   padding: 12px 16px;
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 6px;
+  border-radius: var(--corner-button);
   min-width: 100px;
-  transition: border-color 0.3s, box-shadow 0.3s;
+  transition: border-color 0.3s;
 }
 
-.pipe-stage.pipe-active {
-  border-color: rgba(34, 197, 94, 0.5);
-  box-shadow: 0 0 12px rgba(34, 197, 94, 0.15);
-}
-
-.pipe-stage.pipe-idle {
-  border-color: rgba(245, 158, 11, 0.3);
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.08);
-}
-
-.pipe-stage.pipe-error {
-  border-color: rgba(231, 76, 60, 0.5);
-  box-shadow: 0 0 12px rgba(231, 76, 60, 0.15);
-}
+.pipe-stage.pipe-active { border-color: rgba(34, 197, 94, 0.5); }
+.pipe-stage.pipe-idle   { border-color: rgba(245, 158, 11, 0.4); }
+.pipe-stage.pipe-error  { border-color: rgba(231, 76, 60, 0.5); }
 
 .pipe-stage.pipe-error .pipe-label { color: var(--error); }
 
 .pipe-icon { font-size: 22px; line-height: 1; }
 
 .pipe-label {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--text-muted);
 }
 
@@ -1180,7 +967,7 @@ h2.section-title { font-size: 14px; }
 .pipe-stage.pipe-idle .pipe-label { color: var(--warning); }
 
 .pipe-value {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text);
 }
@@ -1192,12 +979,8 @@ h2.section-title { font-size: 14px; }
   transition: color 0.3s;
 }
 
-.pipe-arrow.pipe-flow {
-  color: var(--success);
-  text-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
-}
+.pipe-arrow.pipe-flow { color: var(--success); }
 
-/* Stats grid */
 .debug-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1211,20 +994,18 @@ h2.section-title { font-size: 14px; }
   padding: 8px 12px;
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-button);
 }
 
 .debug-stat-label {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
   font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--text-muted);
 }
 
 .debug-stat-value {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text);
 }
@@ -1233,7 +1014,6 @@ h2.section-title { font-size: 14px; }
 .debug-warn { color: var(--warning); }
 .debug-err { color: var(--error); }
 
-/* Sparkline chart */
 .debug-chart {
   min-height: 70px;
   display: flex;
@@ -1256,14 +1036,13 @@ h2.section-title { font-size: 14px; }
 }
 
 .chart-max {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-muted);
   writing-mode: vertical-rl;
   margin-left: 6px;
 }
 
-/* ── Log viewer ────────────────────────────────────────────────────── */
 .log-controls {
   display: flex;
   justify-content: space-between;
@@ -1293,11 +1072,11 @@ h2.section-title { font-size: 14px; }
 .log-container {
   background: var(--bg);
   border: 1px solid var(--outline);
-  border-radius: 6px;
+  border-radius: var(--corner-card);
   height: 420px;
   overflow-y: auto;
   padding: 4px 0;
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 .log-line {
@@ -1324,7 +1103,6 @@ h2.section-title { font-size: 14px; }
 .log-line.log-error .log-msg { color: var(--log-error-text); }
 .log-line.log-warn .log-msg  { color: var(--log-warn-text); }
 
-/* ── Server offline view ───────────────────────────────────────── */
 .offline-content {
   text-align: center;
   padding: 32px 16px;
@@ -1384,21 +1162,15 @@ h2.section-title { font-size: 14px; }
   margin: 0;
 }
 
-/* ── Update banner ─────────────────────────────────────────────────── */
-/* Used at the top of the dashboard and inside the settings updates section.
-   Layout: icon | body (title + detail + progress) | actions. Actions wrap
-   so the banner stays single-row on wide screens and stacks on the narrow
-   440px card. */
 .update-banner {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  background: linear-gradient(180deg, rgba(79,227,255,0.06), rgba(79,227,255,0.02));
-  border: 1px solid rgba(79,227,255,0.35);
-  border-radius: 6px;
+  background: rgba(79, 227, 255, 0.06);
+  border: 1px solid rgba(79, 227, 255, 0.35);
+  border-radius: var(--corner-notification);
   padding: 12px 14px;
   margin-bottom: 16px;
-  box-shadow: 0 0 16px rgba(79,227,255,0.08);
 }
 .update-banner-icon {
   flex-shrink: 0;
@@ -1415,13 +1187,10 @@ h2.section-title { font-size: 14px; }
   min-width: 0;
 }
 .update-banner-title {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 14px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--primary);
-  text-shadow: 0 0 4px rgba(79,227,255,0.3);
   margin-bottom: 2px;
 }
 .update-banner-detail {
@@ -1450,13 +1219,12 @@ h2.section-title { font-size: 14px; }
   background: linear-gradient(90deg, var(--primary), var(--primary-dim));
   width: 0%;
   transition: width 0.2s ease-out;
-  box-shadow: 0 0 8px rgba(79,227,255,0.4);
 }
 .update-banner-progress-text {
   position: absolute;
   right: 0;
   top: 0;
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text);
   line-height: 14px;
@@ -1473,22 +1241,20 @@ h2.section-title { font-size: 14px; }
   font-size: 12px;
 }
 .update-banner.update-banner-error {
-  background: linear-gradient(180deg, rgba(231,76,60,0.08), rgba(231,76,60,0.02));
-  border-color: rgba(231,76,60,0.45);
-  box-shadow: 0 0 16px rgba(231,76,60,0.12);
+  background: rgba(231, 76, 60, 0.08);
+  border-color: rgba(231, 76, 60, 0.45);
 }
 .update-banner.update-banner-error .update-banner-title {
   color: var(--error);
-  text-shadow: 0 0 4px rgba(231,76,60,0.3);
 }
 .update-manual-cmd {
   display: block;
   background: var(--surface);
   border: 1px solid var(--outline);
-  border-radius: 4px;
+  border-radius: var(--corner-button);
   padding: 6px 10px;
   margin: 8px 0 0;
-  font-family: 'Source Code Pro', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
   white-space: pre-wrap;
@@ -1500,26 +1266,21 @@ h2.section-title { font-size: 14px; }
   margin-top: 12px;
 }
 
-/* Save-result line under the Save Config button. Default colour is the
-   error red; the .ok modifier switches it to the success token for a
-   transient "saved" confirmation. See settingsSave() in settings.js. */
 .settings-save-status {
   font-size: 12px;
   min-height: 16px;
   margin-top: 8px;
   color: var(--error);
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
-  letter-spacing: 0.02em;
 }
 .settings-save-status.ok { color: var(--success); }
 
-/* ── Restart-to-install modal ────────────────────────────────────── */
 .modal-overlay {
   position: fixed;
   inset: 0;
   z-index: 10000;
-  background: rgba(6,8,24,0.78);
+  background: rgba(6, 8, 24, 0.78);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -1528,14 +1289,12 @@ h2.section-title { font-size: 14px; }
 }
 .modal-card {
   background: var(--surface);
-  border: 1px solid rgba(79,227,255,0.2);
-  border-radius: 6px;
+  border: 1px solid rgba(79, 227, 255, 0.2);
+  border-radius: var(--corner-notification);
   padding: 24px;
   max-width: 440px;
   width: 100%;
-  box-shadow:
-    0 8px 32px rgba(0,0,0,0.6),
-    0 0 40px rgba(79,227,255,0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
 }
 .modal-card .section-title {
   margin-bottom: 12px;
@@ -1547,33 +1306,26 @@ h2.section-title { font-size: 14px; }
   margin-bottom: 16px;
 }
 .modal-version {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   color: var(--primary);
 }
 .modal-warning {
   color: var(--warning);
   font-size: 12px;
-  background: rgba(245,158,11,0.08);
-  border: 1px solid rgba(245,158,11,0.25);
-  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: var(--corner-button);
   padding: 8px 12px;
   margin-bottom: 12px;
 }
 
-/* ── Connection-state chips ──────────────────────────────────────────────────
-   Per-row chip rendered by dashboard.js (DEVICE_LINK_STATE_LABEL /
-   CONTROLLER_STATE_LABEL). The base shape matches the existing per-controller
-   chips (.ctrl-motion / .ctrl-battery) so a row and the chip cluster below it
-   look like they belong together; the variants below colour each state. */
 .device-state, .ctrl-state {
   display: inline-block;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   padding: 2px 7px;
-  border-radius: 5px;
+  border-radius: var(--corner-chip);
   white-space: nowrap;
   border: 1px solid var(--outline);
   vertical-align: middle;
@@ -1598,9 +1350,7 @@ h2.section-title { font-size: 14px; }
   background: rgba(245, 158, 11, 0.14);
   border-color: rgba(245, 158, 11, 0.35);
 }
-/* Per-controller pipeline states. "live" / "quiet" → mounted (success);
-   "registering" / "allocating" / "detached" → transient (info);
-   "source" → before forwarding (muted); "failed" → blocked (error). */
+
 .state-live, .state-quiet {
   color: var(--success);
   background: rgba(34, 197, 94, 0.14);
@@ -1621,19 +1371,8 @@ h2.section-title { font-size: 14px; }
   border-color: rgba(239, 68, 68, 0.35);
 }
 
-/* ── Indeterminate loaders ──────────────────────────────────────────
-   The loader SVGs (spinnerSVG / dotsSVG / barSVG in loaders.js) draw with
-   `fill="currentColor"` / `stroke="currentColor"`, so the surrounding
-   element's `color` is the colour the loader inherits. Default to
-   --primary so a bare loader without further styling reads as brand cyan.
-*/
 .ldr-spinner, .ldr-dots, .ldr-bar { color: var(--primary); }
 
-/* In-button loader layout — swaps a button's content for "loader + label"
-   while a request is in flight. Pairs with the disabled-button rule above
-   so the user reads one composite state ("working, not tappable") rather
-   than two overlapping ones. Used by genPin() / disconnectConn() /
-   removeDevice() in dashboard.js. */
 .btn-with-loader {
   display: inline-flex;
   align-items: center;
@@ -1641,24 +1380,12 @@ h2.section-title { font-size: 14px; }
 }
 .btn-with-loader .ldr-spinner,
 .btn-with-loader .ldr-dots {
-  /* SVG should not pick up the button's text colour cascade -- it draws
-     in --primary regardless of whether the host is btn-save (dark text)
-     or btn-icon (muted). */
   color: var(--primary);
   flex-shrink: 0;
 }
-/* When the in-flight loader sits inside a danger-tinted icon button (the
-   per-row disconnect / remove buttons), let it inherit the error red so
-   the affordance ("this action is destructive, currently working") is
-   preserved through the disabled-alpha dim. */
+
 .btn-icon.btn-danger .ldr-spinner { color: var(--error); }
 
-/* ── SSE-reconnect bar ──────────────────────────────────────────────
-   Sits at the very top of the dashboard, just below the header, while the
-   EventSource is mid-reconnect (server still reachable per /api/status,
-   but the live stream dropped). Mirrors the design spec's bar = whole-pane
-   loading rule; the offline view takes over only when the server itself
-   becomes unreachable. */
 .sse-reconnect-bar {
   margin-bottom: 12px;
   color: var(--primary);

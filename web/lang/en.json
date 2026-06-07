@@ -28,6 +28,7 @@
   "dashboard.stats.http-port": "HTTP Port",
   "dashboard.status.listening": "Listening",
   "dashboard.status.stopped": "Stopped",
+  "dashboard.region.pairing": "Pairing",
 
   "backend.section.title": "Backend",
   "backend.label.checking": "Checking…",
@@ -262,6 +263,7 @@
   "debug.stats.max-loop": "Max Loop (peak)",
   "debug.stats.sender-ip": "Sender IP",
   "debug.stats.udp-port": "UDP Port",
+  "debug.stats.http-port": "HTTP Port",
   "debug.stats.decrypt-failures": "Decrypt Failures",
   "debug.stats.replay-drops": "Replay Drops",
   "debug.stats.backend": "Backend",

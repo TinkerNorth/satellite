@@ -20,7 +20,7 @@ function setButtonLoading(btn, label) {
   btn.disabled = true;
   btn.setAttribute('aria-busy', 'true');
   // Sizing: 12px for icon-only buttons (fits inside the 32×32 .btn-icon),
-  // 14px for text buttons so the spinner reads alongside the Rajdhani label.
+  // 14px for text buttons so the spinner reads alongside the button label.
   const size = btn.classList.contains('btn-icon') ? 12 : 14;
   if (label) {
     btn.innerHTML = '<span class="btn-with-loader">' + spinnerSVG(size) + '<span>' + esc(label) + '</span></span>';
@@ -506,17 +506,6 @@ function stopSSE() {
 }
 
 function updateStatus(d) {
-  document.getElementById('s-status').textContent =
-    d.listening ? t('dashboard.status.listening') : t('dashboard.status.stopped');
-  document.getElementById('s-packets').textContent = d.packets.toLocaleString();
-  document.getElementById('s-sender').textContent = d.senderIP;
-  document.getElementById('s-port').textContent = d.udpPort;
-  document.getElementById('s-http-port').textContent = d.webPort || location.port || '—';
-
-  const dot = document.getElementById('dot');
-  dot.className = 'dot ' + (d.listening ? 'on' : 'off');
-
-  // Update backend status from SSE data if available
   if (d.backend) {
     updateBackendPanel(d.backend, d.backendAvailable);
   }
@@ -928,56 +917,26 @@ async function loadServerCapabilities() {
   } catch (e) { /* leave g_serverCapabilities null — UI falls back to "off only" */ }
 }
 
-// ── Backend status ──────────────────────────────────────────────────────────
-// `backend` is { id, supported, available, errorCode } from /api/backend/status
-// or the SSE status stream. `backendActive` (optional) is the runtime "bus is
-// open with controllers plugged in" flag from the SessionService.
 let backendGuideOpen = false;
 
 function updateBackendPanel(backend, backendActive) {
-  const section = document.getElementById('backend-section');
-  if (!section) return;
+  const alert = document.getElementById('backend-alert');
+  if (!alert) return;
 
-  // macOS / unsupported: hide the panel entirely.
-  if (!backend || !backend.supported) {
-    section.style.display = 'none';
+  if (!backend || !backend.supported || backend.available) {
+    alert.classList.remove('show');
+    const guide = document.getElementById('backend-guide');
+    if (guide) guide.style.display = 'none';
+    backendGuideOpen = false;
     return;
   }
-  section.style.display = '';
 
-  const copy = backendCopy(backend.id);
-  const titleEl  = document.getElementById('backend-title');
-  const flowText = document.getElementById('flow-backend-text');
-  if (titleEl)  titleEl.textContent  = copy.title || t('backend.section.title');
-  if (flowText) flowText.textContent = copy.flowLabel || backend.id;
-
-  const dot     = document.getElementById('backend-dot');
-  const label   = document.getElementById('backend-label');
-  const toggle  = document.getElementById('backend-guide-toggle');
-  const flowBe  = document.getElementById('flow-backend');
-  const flowSys = document.getElementById('flow-system');
-  const guide   = document.getElementById('backend-guide');
-
-  if (backend.available) {
-    dot.className   = 'backend-dot backend-ok';
-    label.textContent = backendActive ? (copy.statusActive || t('debug.status.active'))
-                                      : (copy.statusIdle   || t('debug.status.idle'));
-    label.className = 'backend-label backend-ok-text';
-    toggle.style.display = 'none';
-    flowBe.className  = 'flow-step done';
-    flowSys.className = 'flow-step ' + (backendActive ? 'done' : '');
-    guide.style.display = 'none';
-    backendGuideOpen = false;
-  } else {
-    dot.className   = 'backend-dot backend-err';
-    const err = (copy.errors && copy.errors[backend.errorCode]) || null;
-    label.textContent = err ? err.title : t('backend.unavailable');
-    label.className = 'backend-label backend-err-text';
-    toggle.style.display = '';
-    flowBe.className  = 'flow-step fail';
-    flowSys.className = 'flow-step fail';
-    populateBackendGuide(err);
-  }
+  alert.classList.add('show');
+  const copy  = backendCopy(backend.id);
+  const err   = (copy.errors && copy.errors[backend.errorCode]) || null;
+  const label = document.getElementById('backend-label');
+  if (label) label.textContent = err ? err.title : t('backend.unavailable');
+  populateBackendGuide(err);
 }
 
 function populateBackendGuide(err) {
