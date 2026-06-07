@@ -49,7 +49,7 @@ std::string sha256hex(const std::string& input) {
     BCryptCloseAlgorithmProvider(hAlg, 0);
     char hex[65];
     for (int i = 0; i < 32; i++)
-        (void)sprintf(hex + static_cast<ptrdiff_t>(i) * 2, "%02x", hash[i]);
+        (void)snprintf(hex + static_cast<ptrdiff_t>(i) * 2, 3, "%02x", hash[i]);
     hex[64] = 0;
     return std::string(hex);
 }
@@ -83,7 +83,7 @@ std::string randomHex(int bytes) {
     for (int i = 0; i < bytes; i++) {
         uint8_t b = 0;
         randombytes_buf(&b, 1);
-        (void)sprintf(buf, "%02x", b);
+        (void)snprintf(buf, sizeof(buf), "%02x", b);
         out += buf;
     }
     return out;
@@ -165,18 +165,26 @@ std::string hexEncode(const uint8_t* data, size_t len) {
     out.reserve(len * 2);
     char buf[3];
     for (size_t i = 0; i < len; i++) {
-        (void)sprintf(buf, "%02x", data[i]);
+        (void)snprintf(buf, sizeof(buf), "%02x", data[i]);
         out += buf;
     }
     return out;
 }
 
+static int hexNibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen) {
     if (hex.size() != outLen * 2) return false;
     for (size_t i = 0; i < outLen; i++) {
-        unsigned int b = 0;
-        if (sscanf(hex.c_str() + i * 2, "%02x", &b) != 1) return false;
-        out[i] = (uint8_t)b;
+        int hi = hexNibble(hex[i * 2]);
+        int lo = hexNibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = static_cast<uint8_t>((hi << 4) | lo);
     }
     return true;
 }

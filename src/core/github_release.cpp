@@ -302,7 +302,11 @@ int64_t isoToEpoch(const std::string& iso) {
     if (iso.size() < 19) return 0;
     struct tm t{};
     int y, mo, d, h, mi, se;
+#ifdef _MSC_VER
+    if (sscanf_s(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+#else
     if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+#endif
     t.tm_year = y - 1900;
     t.tm_mon = mo - 1;
     t.tm_mday = d;

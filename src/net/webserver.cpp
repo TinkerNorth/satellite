@@ -324,7 +324,11 @@ static void closeConnectionRoute(SessionService& svc, const httplib::Request& re
     if (tokenStr.substr(0, 5) == "conn_") tokenStr = tokenStr.substr(5);
 
     uint32_t token = 0;
+#ifdef _MSC_VER
+    if (sscanf_s(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
+#else
     if (sscanf(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
+#endif
         res.status = 404;
         res.set_content(R"({"error":"connection not found"})", "application/json");
         return;

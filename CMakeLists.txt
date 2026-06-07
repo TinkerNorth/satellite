@@ -25,6 +25,10 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+if(WIN32)
+    add_compile_definitions(NOMINMAX)
+endif()
+
 # ── Source lists ─────────────────────────────────────────────────────────────
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
@@ -694,6 +698,7 @@ if(WIN32)
         tests/test_windows_platform.cpp
         src/platform/windows/config.cpp
         src/platform/windows/globals.cpp
+        src/platform/windows/crypto.cpp
         ${SATELLITE_CORE_SOURCES}
     )
     target_include_directories(test_windows_platform PRIVATE
@@ -720,8 +725,15 @@ if(WIN32)
     if(MINGW)
         target_compile_options(test_windows_platform PRIVATE -O2 -Wall -Wextra)
         target_link_options(test_windows_platform PRIVATE -static)
+        target_include_directories(test_windows_platform SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
+        target_link_directories(test_windows_platform PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib)
+        target_link_libraries(test_windows_platform PRIVATE sodium)
     elseif(MSVC)
         target_compile_options(test_windows_platform PRIVATE /O2 /W4)
+        find_package(unofficial-sodium CONFIG REQUIRED)
+        target_link_libraries(test_windows_platform PRIVATE unofficial-sodium::sodium)
     endif()
     set_target_properties(test_windows_platform PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

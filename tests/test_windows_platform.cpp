@@ -4,7 +4,9 @@
 // autostart tests touch HKCU\...\Run\satellite. Both side effects are made
 // hermetic via snapshot/restore so the tests are safe to run locally and in CI.
 #include "../src/platform/windows/config.h"
+#include "../src/platform/windows/crypto.h"
 
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -312,6 +314,38 @@ static void testGetCurrentDate() {
     }
 }
 
+static void testHexCodec() {
+    TEST("hexEncode — known vector");
+    const uint8_t in[] = {0x00, 0x0f, 0xa5, 0xff};
+    EXPECT_EQ(hexEncode(in, sizeof(in)), std::string("000fa5ff"));
+
+    TEST("hexDecode — roundtrip of hexEncode");
+    uint8_t out[4] = {0};
+    EXPECT(hexDecode("000fa5ff", out, sizeof(out)));
+    EXPECT_EQ((int)out[0], 0x00);
+    EXPECT_EQ((int)out[1], 0x0f);
+    EXPECT_EQ((int)out[2], 0xa5);
+    EXPECT_EQ((int)out[3], 0xff);
+
+    TEST("hexDecode — uppercase accepted");
+    uint8_t up[2] = {0};
+    EXPECT(hexDecode("A5FF", up, sizeof(up)));
+    EXPECT_EQ((int)up[0], 0xa5);
+    EXPECT_EQ((int)up[1], 0xff);
+
+    TEST("hexDecode — wrong length rejected");
+    uint8_t two[2] = {0};
+    EXPECT(!hexDecode("abc", two, sizeof(two)));
+
+    TEST("hexDecode — non-hex rejected");
+    uint8_t two2[2] = {0};
+    EXPECT(!hexDecode("zz00", two2, sizeof(two2)));
+
+    TEST("sha256hex — empty-string vector");
+    EXPECT_EQ(sha256hex(""),
+              std::string("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -325,6 +359,7 @@ int main() {
     testAutoStartIdempotent();
     testGetExeDir();
     testGetCurrentDate();
+    testHexCodec();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
