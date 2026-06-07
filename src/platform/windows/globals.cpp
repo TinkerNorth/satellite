@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * globals.cpp — Definition of shared global state
- */
 #include "globals.h"
 
 Config g_config;
@@ -24,11 +19,9 @@ SOCKET g_pairSock = INVALID_SOCKET;
 std::string g_webDir;
 UpdateService* g_updateService = nullptr;
 
-// ── Telemetry counters ───────────────────────────────────────────────────────
 std::atomic<uint64_t> g_decryptFail{0};
 std::atomic<uint64_t> g_replayDrop{0};
 
-// ── Logging ─────────────────────────────────────────────────────────────────
 std::mutex g_logMtx;
 std::vector<LogEntry> g_logRing(LOG_RING_SIZE);
 int g_logHead = 0;

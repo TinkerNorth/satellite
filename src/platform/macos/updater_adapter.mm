@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
 #include "updater_adapter.h"
 
 #include "config.h"
@@ -18,8 +16,7 @@
 
 namespace {
 
-// ── NSURLSession helpers ──────────────────────────────────────────────────
-// httpGetToString — small response (release metadata, SHA256SUMS).
+// Small responses (release metadata, SHA256SUMS) buffered to a string.
 bool httpGetToString(const std::string& url, std::string& out, std::string& err) {
     @autoreleasepool {
         NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
@@ -35,8 +32,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
         [req setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
         [req setValue:@"2022-11-28" forHTTPHeaderField:@"X-GitHub-Api-Version"];
 
-        // Synchronous wait on a semaphore. We're already on a worker thread
-        // so this won't block the UI.
+        // Synchronous semaphore wait is safe: already on a worker thread, so the UI doesn't block.
         __block NSData* body = nil;
         __block NSURLResponse* resp = nil;
         __block NSError* nserr = nil;
@@ -70,9 +66,6 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
     }
 }
 
-// httpGetToFile — large response (the .zip itself) streamed to disk with
-// progress callbacks via NSURLSessionDownloadDelegate (modeled inline as
-// a block-based session).
 class ProgressDelegate {
   public:
     ProgressDelegate(const std::function<void(uint64_t, uint64_t)>& cb,
@@ -90,9 +83,7 @@ class ProgressDelegate {
 
 } // namespace
 
-// Objective-C download delegate. Exposes per-byte progress + cooperative
-// cancellation. The PIMPL is a raw pointer because ARC can't manage C++
-// callable types.
+// impl is a raw pointer because ARC can't manage C++ callable types.
 @interface SatelliteDownloadDelegate : NSObject <NSURLSessionDownloadDelegate>
 @property(assign) ProgressDelegate* impl;
 @property(strong) NSURL* destination;
@@ -130,7 +121,6 @@ class ProgressDelegate {
         self.ok = NO;
         self.errorString = err.localizedDescription ?: @"move failed";
     } else {
-        // Accept 2xx only.
         NSHTTPURLResponse* http = (NSHTTPURLResponse*)task.response;
         if (http.statusCode < 200 || http.statusCode >= 300) {
             self.ok = NO;
@@ -201,10 +191,9 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
     }
 }
 
-// ── Asset selection ──────────────────────────────────────────────────────
+// Matches satellite-macos-*.zip.
 bool pickMacAsset(const GitHubRelease& rel, GitHubAsset& out) {
     for (const auto& a : rel.assets) {
-        // satellite-macos-stub-vX.Y.Z*.zip
         if (a.name.find("satellite-macos") == std::string::npos) continue;
         if (a.name.size() < 4 || a.name.compare(a.name.size() - 4, 4, ".zip") != 0) continue;
         out = a;
@@ -224,7 +213,6 @@ std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetN
     return "";
 }
 
-// ── SHA-256 via CommonCrypto ─────────────────────────────────────────────
 bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err) {
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) {
@@ -251,10 +239,8 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     return true;
 }
 
-// ── Current .app bundle resolution ───────────────────────────────────────
-// Walk up from the running binary at .../Contents/MacOS/satellite to
-// .../Satellite.app. Returns empty if the layout doesn't look like a
-// bundle (development build run outside an .app).
+// Empty if not running inside an .app (development build), which disables
+// in-place self-update.
 std::string currentAppBundle() {
     @autoreleasepool {
         NSBundle* b = [NSBundle mainBundle];
@@ -267,7 +253,6 @@ std::string currentAppBundle() {
 
 } // namespace
 
-// ── MacOSUpdaterAdapter ──────────────────────────────────────────────────
 MacOSUpdaterAdapter::MacOSUpdaterAdapter(std::string owner, std::string repo)
     : owner_(std::move(owner)), repo_(std::move(repo)) {}
 
@@ -381,7 +366,6 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
             return false;
         }
 
-        // Stage the new .app under .../updates/staging-XXXX/Satellite.app.
         NSString* zipPath = [NSString stringWithUTF8String:localPath.c_str()];
         NSString* stagingDir = [NSString
             stringWithFormat:@"%@/satellite/staging-%d", NSTemporaryDirectory(), (int)getpid()];
@@ -390,8 +374,8 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
                                   withIntermediateDirectories:YES
                                                    attributes:nil
                                                         error:nil];
-        // Use ditto to unzip — it preserves extended attributes and resource
-        // forks, important for codesigned bundles.
+        // ditto preserves extended attributes and resource forks, required to
+        // keep codesigned bundles valid.
         NSTask* task = [[NSTask alloc] init];
         task.launchPath = @"/usr/bin/ditto";
         task.arguments = @[ @"-xk", zipPath, stagingDir ];
@@ -402,7 +386,6 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
             return false;
         }
 
-        // Find the unpacked .app — top-level entry in stagingDir.
         NSArray<NSString*>* entries =
             [[NSFileManager defaultManager] contentsOfDirectoryAtPath:stagingDir error:nil];
         NSString* newApp = nil;
@@ -417,10 +400,9 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
             return false;
         }
 
-        // Write a helper that waits for our PID to exit, swaps, relaunches.
-        // Single self-contained shell script — no quoting tricks needed
-        // because both paths come from a controlled (NSTemporaryDirectory)
-        // tree and are quoted in the heredoc below.
+        // The swap must outlive this process, so it runs in a detached helper
+        // that waits for our PID to exit before swapping and relaunching. Paths
+        // come from a controlled NSTemporaryDirectory tree and are quoted below.
         NSString* helper = [NSString
             stringWithFormat:@"%@/satellite/swap-%d.sh", NSTemporaryDirectory(), (int)getpid()];
         NSString* script = [NSString
@@ -444,13 +426,12 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         [script writeToFile:helper atomically:YES encoding:NSUTF8StringEncoding error:nil];
         chmod(helper.UTF8String, 0755);
 
-        // Detach the helper so it survives our termination.
         NSTask* run = [[NSTask alloc] init];
         run.launchPath = @"/bin/bash";
         run.arguments = @[ helper ];
         [run launch];
 
-        // Trigger our own clean shutdown.
+        // Terminate so the detached helper can swap the bundle we still hold open.
         dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
         return true;
     }

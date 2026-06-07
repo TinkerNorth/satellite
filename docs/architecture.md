@@ -198,6 +198,33 @@ recvfrom()
   └─ unknown → drop
 ```
 
+### Hot-path discipline
+
+The gamepad packet path runs at controller-polling rate, so the receive
+loop is kept allocation-free and minimally locked. If you touch
+`receiver.cpp` or `SessionService::handleGamepadDataAndUpdate`, preserve:
+
+- **No heap on the hot path.** `recvfrom` writes into a stack buffer;
+  decryption runs **in place** (`ciphertext == plaintext`, relying on
+  libsodium's overlapping src/dst support), so the plaintext reuses the
+  ciphertext bytes minus the 16-byte tag.
+- **One lock for gamepad packets.** A gamepad packet takes exactly one
+  `SessionService` mutex acquisition via `handleGamepadDataAndUpdate`
+  (decrypt-info lookup, post-decrypt update, and apply fused). Cold paths
+  (motion, touchpad, heartbeat, controller add/remove) still take two
+  locks — they're rare enough that fusing them isn't worth the API churn.
+- **No per-packet string work.** The sender's IPv4 address is threaded
+  down as a `uint32` in network byte order; `SessionService` refreshes
+  the human-readable cache only when the numeric address changes (no
+  `inet_ntop` / `std::string` allocation per packet).
+- **Lock-free loop telemetry.** `g_maxLoopUs` uses a thread-local
+  high-water-mark so the atomic CAS loop is skipped on the ~99% of
+  packets below the running per-second peak.
+
+The conceptual pipeline above lists `getDecryptInfo` /
+`updatePostDecrypt` / `handleGamepadData` as distinct steps; on the
+gamepad hot path these are the single fused call.
+
 ### Reaper
 
 Runs once per second via `svc.reapTimedOut()` — teardown logic is

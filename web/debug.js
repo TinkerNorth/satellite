@@ -104,6 +104,8 @@ async function pollDebug() {
     document.getElementById('d-max-loop').textContent = d.maxLoopUs + ' µs';
     document.getElementById('d-sender').textContent = d.senderIP;
     document.getElementById('d-port').textContent = d.udpPort;
+    const httpEl = document.getElementById('d-http-port');
+    if (httpEl) httpEl.textContent = d.webPort || location.port || '—';
 
     // ── Crypto stats ──
     const dfEl = document.getElementById('d-decrypt-fail');

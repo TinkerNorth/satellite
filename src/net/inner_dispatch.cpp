@@ -1,32 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * inner_dispatch.cpp — decrypted inner-message parser.
- *
- * Split out of receiver.cpp so the per-message length guards have no socket /
- * crypto / globals dependency and can be unit tested directly with raw byte
- * buffers (tests/test_receiver.cpp). receiver.cpp owns the UDP socket, recv
- * loop and decryption; once it has a decrypted plaintext it hands the inner
- * message here.
- */
+// Split out of receiver.cpp so the length guards have no socket/crypto/globals
+// dependency and can be unit tested with raw byte buffers.
 #include "inner_dispatch.h"
 
 #include "core/session_service.h"
 
 #include <cstring>
 
-// Parses the decrypted inner-message payload and delegates to SessionService.
-//
-// `payload` points at exactly `msgLen` valid bytes (the bytes after the 4-byte
-// inner header). The caller has already verified `INNER_HEADER_SIZE + msgLen`
-// fits the decrypted plaintext. Every per-type length guard below MUST reject
-// a short / truncated payload before the matching decoder runs, so a malformed
-// or oversized packet can never read past `payload + msgLen`.
-//
-// Returns whether this was a MSG_GAMEPAD_DATA packet and, if so, whether the
-// backend accepted the report — the caller folds that into the g_submitOk /
-// g_submitFail telemetry counters.
+// Every per-type length guard below MUST reject a short payload before its
+// decoder runs, so a malformed packet can never read past `payload + msgLen`.
 DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_t msgType,
                                     const uint8_t* payload, uint16_t msgLen) {
     DispatchResult result;
@@ -48,8 +31,8 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
     case MSG_CONTROLLER_ADD: {
         if (msgLen < 1) break;
         uint8_t ctrlIdx = payload[0];
-        // Capability word: 2 bytes big-endian, optional. A pre-cap
-        // dish sends only ctrlIdx (msgLen 1) — caps default to 0.
+        // caps: 2 bytes BE, optional — a pre-cap dish sends only ctrlIdx
+        // (msgLen 1), caps default to 0.
         uint16_t caps = 0;
         if (msgLen >= 3) {
             caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
@@ -72,10 +55,8 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         break;
     }
     case MSG_CONTROLLER_CAPS_UPDATE: {
-        // Same payload shape as the caps field of MSG_CONTROLLER_ADD —
-        // ctrlIdx(1) + caps(2 BE) = 3 bytes. Lets the dish push a
-        // mid-session capability change (e.g. user flipped the motion
-        // toggle after registration) without unplugging the controller.
+        // ctrlIdx(1) + caps(2 BE) = 3 bytes. Lets the dish push a mid-session
+        // capability change without unplugging the controller.
         if (msgLen < 3) break;
         uint8_t ctrlIdx = payload[0];
         uint16_t caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
@@ -84,11 +65,9 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         break;
     }
     case MSG_MOTION: {
-        // Wire payload: ctrlIdx(1) + MOTION_WIRE_PAYLOAD_BYTES(16) = 17 bytes.
-        // Decoded with explicit little-endian shifts — NOT a struct memcpy —
-        // so the wire stays byte-order-independent and a future change to
-        // MotionReport's layout/padding can't silently corrupt it. Mirrors
-        // the MSG_TOUCHPAD decode.
+        // ctrlIdx(1) + MOTION_WIRE_PAYLOAD_BYTES(16) = 17 bytes. decodeMotionReport
+        // does explicit LE shifts (not a struct memcpy) so the wire stays
+        // byte-order-independent against MotionReport layout changes.
         if (msgLen < 1 + MOTION_WIRE_PAYLOAD_BYTES) break;
         uint8_t ctrlIdx = payload[0];
         MotionReport report = decodeMotionReport(payload + 1);
@@ -106,10 +85,8 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         break;
     }
     case MSG_TOUCHPAD: {
-        // Wire payload: ctrlIdx(1) + TOUCHPAD_WIRE_PAYLOAD_BYTES(15) = 16
-        // bytes. decodeTouchpadReport does the explicit little-endian decode
-        // (see core/types.h) — same pattern as MOTION. The trailing 4 bytes
-        // carry the sender's eventTimeMs, used by handleTouchpadData's
+        // ctrlIdx(1) + TOUCHPAD_WIRE_PAYLOAD_BYTES(15) = 16 bytes; explicit LE
+        // decode like MOTION. Trailing 4 bytes carry eventTimeMs, used by
         // mouse-mode time-scaling to fix the first-touch jump.
         if (msgLen < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES) break;
         uint8_t ctrlIdx = payload[0];

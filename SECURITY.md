@@ -80,6 +80,44 @@ the previous minor only receives backports for high/critical fixes.
 
 ---
 
+## Satellite local-surface hardening
+
+The `satellite` server exposes two HTTP surfaces with deliberately
+different trust models:
+
+- **Admin API / web UI** — plain HTTP, bound to `127.0.0.1`. There is no
+  authentication because loopback *is* the trust boundary. Two
+  browser-borne attacks can still reach a loopback port, so an origin
+  guard runs before every route:
+  - **DNS rebinding** — a page on `evil.com` whose A record is flipped to
+    `127.0.0.1` can script requests at us, but the browser still sends
+    `Host: evil.com`. We reject any request whose `Host` is not loopback.
+  - **CSRF** — a page can fire a no-cors cross-site `POST` straight at
+    `http://127.0.0.1:<port>` (loopback `Host`, so the check above
+    passes). The browser attaches `Origin: http://evil.com` to such a
+    write, so we reject state-changing methods whose `Origin` is present
+    and non-loopback. Same-origin dashboard requests carry a loopback (or
+    absent) `Origin` and pass untouched.
+
+- **Client API** — HTTPS (self-signed), bound to `0.0.0.0` and therefore
+  LAN-reachable. Connection routes require a paired `deviceId`; pairing
+  itself is PIN-gated.
+
+### PIN pairing
+
+PINs gate the LAN-facing pairing flow and are hardened accordingly:
+
+- PINs and identity tokens are drawn from libsodium's CSPRNG — never a
+  deterministic PRNG such as `std::mt19937`.
+- PIN comparison is constant-time (`sodium_memcmp`) so a wrong guess
+  cannot leak, via timing, how many leading digits matched.
+- A PIN is burned after 5 failed guesses and expires 5 minutes after
+  generation, so the 4-digit space is not online-brute-forceable.
+- The PIN is returned only to the client that generated it and is never
+  echoed by status endpoints or the SSE stream.
+
+---
+
 ## How CI prevents vulnerable code from shipping
 
 Each repo runs the same shape of gates:

@@ -1,0 +1,80 @@
+name: Windows MSVC CI
+
+# Hardened A/B of the Windows binary, built alongside the MinGW windows-ci.yml.
+# MSVC unlocks control-flow-integrity mitigations GCC/binutils MinGW cannot emit:
+#   /guard:cf   Control Flow Guard      (forward-edge CFI: validates indirect calls)
+#   /CETCOMPAT  Intel CET shadow stack  (backward-edge CFI: validates returns / ROP)
+#   /Qspectre   Spectre v1 mitigations
+# Dependencies come from vcpkg's x64-windows-static triplet so their CRT linkage
+# matches the app's /MT (MSVC_RUNTIME_LIBRARY MultiThreaded in CMakeLists.txt).
+#
+# This job does NOT publish — it proves the hardened build stays green. Promoting
+# it to the shipping artifact is a one-job swap in release.yml's `windows` job.
+#
+# Pin map (matches windows-ci.yml):
+#   actions/checkout        @ v6.0.2 → de0fac2e4500dabe0009e67214ff5f5447ce83dd
+#   actions/upload-artifact @ v7.0.1 → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msvc:
+    name: Build, test (MSVC + vcpkg, hardened)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # windows-2022 ships VS 2022 (MSVC + Spectre-mitigated libs) and a vcpkg
+      # checkout at VCPKG_INSTALLATION_ROOT. The configure step's vcpkg toolchain
+      # auto-installs libsodium + openssl (static) from vcpkg.json — the first
+      # run builds OpenSSL from source (several minutes); add vcpkg binary
+      # caching later if that wall-time matters.
+      - name: Configure (MSVC + vcpkg static, hardened release)
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cmake --preset windows-msvc
+
+      - name: Build (Release + LTCG)
+        shell: pwsh
+        run: cmake --build build-msvc --config Release
+
+      - name: Test
+        shell: pwsh
+        run: ctest --test-dir build-msvc -C Release --output-on-failure
+
+      - name: Verify satellite.exe was produced
+        shell: pwsh
+        run: |
+          if (-not (Test-Path satellite.exe)) { throw "satellite.exe not produced at repo root" }
+          Get-Item satellite.exe | Format-List Name, Length, LastWriteTime
+
+      # Best-effort proof the CFG + CET bits actually landed in the PE header.
+      # Informational only — never fails the build (dumpbin location varies).
+      - name: Confirm CFG / CET bits (informational)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $dumpbin = Get-ChildItem -ErrorAction SilentlyContinue -Path `
+            "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe", `
+            "C:\Program Files (x86)\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+            Select-Object -First 1
+          if ($null -eq $dumpbin) { Write-Host "dumpbin not found — skipping check"; exit 0 }
+          & $dumpbin.FullName /headers /loadconfig satellite.exe |
+            Select-String -Pattern 'Guard|CET|Control Flow|cfInstrumented|Shadow'
+
+      - name: Upload MSVC artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: satellite-windows-x64-msvc
+          path: satellite.exe
+          retention-days: 14

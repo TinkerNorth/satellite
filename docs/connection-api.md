@@ -71,6 +71,90 @@ endpoints are open without authentication.
 
 ---
 
+## Pairing
+
+Pairing establishes the shared key for a device and runs over the HTTPS client
+API. There are **two directions, and either completes a pairing** — whichever
+screen the user is in front of:
+
+- **Path A — server PIN.** The operator generates a PIN on the satellite
+  (`POST /api/pin/generate`, web dashboard) and the user types it into the
+  dish. The dish proves it in `POST /api/pair` and pairs immediately.
+- **Path B — dish PIN.** The dish shows *its own* PIN and submits it as a
+  request; the operator accepts it — either on the web dashboard (by typing the
+  PIN back), **from the native OS notification** the satellite raises (Windows:
+  an actionable toast with inline Accept/Reject; macOS: notification → alert;
+  Linux: libnotify actions), **from the tray right-click menu**, or **from the
+  dashboard's Pairing Requests panel** (a header badge flags pending ones). All
+  show the PIN to confirm by sight. The dish polls `GET /api/pair/status` until
+  the operator acts. The PIN is never sent over the HTTP API; confirming it is
+  what authenticates the device.
+
+### `POST /api/pair`
+
+Client API (HTTPS), no device auth (the device is not paired yet).
+
+**Request body:**
+```json
+{ "deviceId": "uuid", "deviceName": "Pixel 8", "pin": "1234", "clientPin": "4821", "publicKey": "…", "touchpadMode": "ds4" }
+```
+
+| Field          | When         | Description                                              |
+|----------------|--------------|----------------------------------------------------------|
+| `deviceId`     | always       | Stable per-install dish id                               |
+| `deviceName`   | optional     | Shown on the dashboard                                   |
+| `pin`          | Path A       | The PIN the operator generated on the satellite          |
+| `clientPin`    | Path B       | The PIN the dish is **showing**; submits an approval request |
+| `publicKey`    | optional     | Dish X25519 public key; when present the key is derived rather than server-minted |
+| `touchpadMode` | optional     | Initial touchpad routing (`ds4` \| `mouse` \| `off`)     |
+
+**Responses (always HTTP 200; classify on the body):**
+
+| Body                                                        | Meaning                                  |
+|-------------------------------------------------------------|------------------------------------------|
+| `{"ok":true,"sharedKey":"<64hex>"}`                         | Paired (Path A, or already-paired). Persist the key. |
+| `{"ok":true,"serverPublicKey":"<64hex>"}`                   | Paired via X25519 (client sent `publicKey`); derive the key locally. |
+| `{"ok":false,"pending":true,"message":"…"}`                 | Path B request registered — poll `GET /api/pair/status`. |
+| `{"ok":false,"error":"invalid or expired PIN"}`             | No valid server PIN and no `clientPin` to request with. |
+
+### `GET /api/pair/status?deviceId=<id>`
+
+Client API (HTTPS), no device auth. The dish polls this after a Path-B request.
+
+| Body                                                | Meaning                                           |
+|-----------------------------------------------------|---------------------------------------------------|
+| `{"ok":false,"status":"pending"}`                   | Awaiting the operator's decision.                 |
+| `{"ok":true,"status":"approved","sharedKey":"…"}`   | Accepted. The key is handed back **exactly once** (the request is then cleared); persist it. |
+| `{"ok":false,"status":"none"}`                      | No request (expired, already consumed, or denied). |
+
+### `GET /api/pair/requests`
+
+Admin API (localhost). Lists in-flight Path-B requests for the dashboard's
+accept/deny panel. Deliberately **omits the PIN** — accepting requires typing
+the PIN shown on the dish.
+
+```json
+[ { "deviceId": "uuid", "deviceName": "Pixel 8", "clientIP": "192.168.1.42", "secondsRemaining": 96 } ]
+```
+
+### `POST /api/pair/respond`
+
+Admin API (localhost). The operator's accept/deny action.
+
+**Request body:** `{ "deviceId": "uuid", "pin": "4821", "accept": true }`
+
+On `accept:true` the `pin` must match the PIN the dish is showing. On success
+the device is persisted as paired and the key is staged for the dish's next
+`GET /api/pair/status`. `accept:false` dismisses the request.
+
+| Body                                                  | Condition                          |
+|-------------------------------------------------------|------------------------------------|
+| `{"ok":true,"accepted":true}`                         | Accepted (PIN matched).            |
+| `{"ok":true,"accepted":false}`                        | Dismissed.                         |
+| `{"ok":false,"error":"pin mismatch or no pending request"}` | Wrong PIN, or the request expired. |
+
+---
+
 ### `POST /api/connections`
 
 Opens a new connection for a paired device.

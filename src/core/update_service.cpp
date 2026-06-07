@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
 #include "core/update_service.h"
 
@@ -12,11 +11,9 @@
 
 namespace {
 
-// ── semver(ish) comparison ──────────────────────────────────────────────────
-// Accepts "1.2.3" and "1.2.3-rc.1". Returns -1, 0, +1 like memcmp.
-// Numeric components are compared as integers (so "1.10.0" > "1.2.0");
-// a "-prerelease" suffix sorts BEFORE the release with the same MAJOR.MINOR.PATCH
-// (so "1.2.3-rc.1" < "1.2.3"). Unparseable components are treated as 0.
+// semver(ish): "1.2.3" / "1.2.3-rc.1". Returns -1/0/+1. Numeric components
+// compared as ints; a "-prerelease" suffix sorts BEFORE the same core release.
+// Unparseable components treated as 0.
 int compareSemver(const std::string& a, const std::string& b) {
     auto split = [](const std::string& s, std::string& core, std::string& pre) {
         auto dash = s.find('-');
@@ -56,7 +53,6 @@ int compareSemver(const std::string& a, const std::string& b) {
 
 } // namespace
 
-// ── Lifecycle ───────────────────────────────────────────────────────────────
 UpdateService::UpdateService(IUpdaterPort& updater, ILogPort& log, Config& sharedConfig,
                              std::mutex& configMtx)
     : updater_(updater), log_(log), config_(sharedConfig), configMtx_(configMtx) {}
@@ -84,7 +80,6 @@ void UpdateService::stop() {
     started_ = false;
 }
 
-// ── Public requests ─────────────────────────────────────────────────────────
 void UpdateService::requestCheck(bool userInitiated) {
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -124,7 +119,6 @@ void UpdateService::cancelInFlight() {
     cv_.notify_all();
 }
 
-// ── Snapshot ────────────────────────────────────────────────────────────────
 UpdateStatusSnapshot UpdateService::snapshot() const {
     std::lock_guard<std::mutex> lk(mtx_);
     UpdateStatusSnapshot s;
@@ -157,7 +151,6 @@ void UpdateService::setPersistCallback(PersistCallback cb) {
     persistCb_ = std::move(cb);
 }
 
-// ── User decisions ──────────────────────────────────────────────────────────
 void UpdateService::skipVersion(const std::string& version) {
     {
         std::lock_guard<std::mutex> ck(configMtx_);
@@ -209,7 +202,6 @@ void UpdateService::updatePreferences(const std::string& channel, bool autoCheck
     if (channelChanged) requestCheck(/*userInitiated=*/false);
 }
 
-// ── Worker thread ───────────────────────────────────────────────────────────
 void UpdateService::workerLoop() {
     while (!stopping_) {
         bool doCheckNow = false, doDownloadNow = false, doInstallNow = false;
@@ -235,7 +227,6 @@ void UpdateService::workerLoop() {
             doInstall();
         } else if (doDownloadNow) {
             doDownload();
-            // Auto-install chain.
             bool autoInstall = false;
             {
                 std::lock_guard<std::mutex> ck(configMtx_);
@@ -247,7 +238,6 @@ void UpdateService::workerLoop() {
             }
         } else if (doCheckNow) {
             doCheck(userInitiatedCheck_);
-            // Auto-download chain.
             bool autoDownload = false;
             {
                 std::lock_guard<std::mutex> ck(configMtx_);
@@ -264,7 +254,6 @@ void UpdateService::workerLoop() {
     }
 }
 
-// ── Timer thread ────────────────────────────────────────────────────────────
 void UpdateService::timerLoop() {
     using namespace std::chrono_literals;
     for (int i = 0; i < 30 && !stopping_; i++) std::this_thread::sleep_for(1s);
@@ -284,10 +273,8 @@ void UpdateService::timerLoop() {
     }
 }
 
-// ── Broadcast helper ────────────────────────────────────────────────────────
-// Builds a snapshot under the lock, copies the callback under the lock, then
-// drops the lock and fires. Safe to call from any state-transition site;
-// callers should NOT be holding mtx_ when they invoke this.
+// Builds a snapshot + copies the callback under the lock, then drops it and
+// fires. Callers must NOT hold mtx_.
 void UpdateService::fireBroadcast() {
     UpdateStatusSnapshot snap;
     StatusCallback cb;
@@ -322,7 +309,6 @@ bool UpdateService::versionStrictlyNewer(const std::string& a, const std::string
     return compareSemver(a, b) > 0;
 }
 
-// ── State transitions ──────────────────────────────────────────────────────
 void UpdateService::doCheck(bool userInitiated) {
     {
         std::lock_guard<std::mutex> lk(mtx_);

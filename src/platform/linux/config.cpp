@@ -1,13 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
-
-/*
- * config.cpp — Configuration persistence, JSON helpers, auto-start (Linux)
- *
- * Config lives under $XDG_CONFIG_HOME/satellite/ (falls back to
- * $HOME/.config/satellite/). Auto-start uses the XDG autostart spec:
- * a .desktop file under $XDG_CONFIG_HOME/autostart/.
- */
 #include "config.h"
 
 #include <pwd.h>
@@ -17,11 +8,8 @@
 
 #include <climits>
 
-// ── JSON string escaping ────────────────────────────────────────────────────
-// Escapes the JSON structural characters plus every C0 control byte (< 0x20).
-// A raw control byte — a \r or \t buried in a device name, say — is invalid
-// inside a JSON string and would corrupt the config file, so anything below
-// 0x20 that isn't \n is emitted as a \uXXXX escape.
+// Escapes JSON structural chars plus every C0 control byte (<0x20): a raw \r/\t
+// in e.g. a device name is invalid inside a JSON string and would corrupt the file.
 std::string jsonEscape(const std::string& s) {
     static const char* kHex = "0123456789abcdef";
     std::string out;
@@ -57,7 +45,6 @@ std::string jsonGetString(const std::string& json, const std::string& key) {
     return json.substr(q1 + 1, q2 - q1 - 1);
 }
 
-// ── Home / config directory ─────────────────────────────────────────────────
 static std::string homeDir() {
     const char* h = getenv("HOME");
     if (h != nullptr && *h != 0) return h;
@@ -81,7 +68,6 @@ static std::string appConfigDir() {
 
 std::string configPath() { return appConfigDir() + "/config.json"; }
 
-// ── Load config ─────────────────────────────────────────────────────────────
 Config loadConfig() {
     Config cfg;
     std::ifstream f(configPath());
@@ -125,13 +111,12 @@ Config loadConfig() {
     if (v > 0) cfg.pairPort = v;
     v = getInt("discPort");
     if (v > 0) cfg.discPort = v;
-    // Task 1.6 — absent on pre-1.6 configs, where the default (true) keeps the
-    // legacy broadcast beacon on so discovery doesn't silently regress.
+    // Absent on pre-1.6 configs; default (true) keeps the legacy broadcast
+    // beacon on so discovery doesn't silently regress.
     getBoolOpt("discoveryBroadcastEnabled", &cfg.discoveryBroadcastEnabled);
     cfg.autoStart = getBool("autoStart");
 
-    // OTA update preferences (see core/update_service.h). Absent keys keep
-    // struct defaults so an old config doesn't accidentally disable auto-check.
+    // Absent OTA keys keep struct defaults so an old config doesn't disable auto-check.
     std::string ch = jsonGetString(content, "updateChannel");
     if (!ch.empty()) cfg.updateChannel = ch;
     getBoolOpt("autoCheck", &cfg.autoCheck);
@@ -144,7 +129,6 @@ Config loadConfig() {
     cfg.lastSeenVersion = jsonGetString(content, "lastSeenVersion");
     cfg.skipVersion = jsonGetString(content, "skipVersion");
 
-    // Parse paired devices array
     auto arrStart = content.find("\"pairedDevices\"");
     if (arrStart != std::string::npos) {
         auto bracket = content.find('[', arrStart);
@@ -164,8 +148,7 @@ Config loadConfig() {
                 dev.lastIP = jsonGetString(obj, "lastIP");
                 dev.pairedAt = jsonGetString(obj, "pairedAt");
                 dev.sharedKeyHex = jsonGetString(obj, "sharedKey");
-                // touchpadMode (Task 1.3) — absent on pre-1.3 configs, where
-                // touchpadModeFromName("") yields TOUCHPAD_MODE_DS4.
+                // Absent on pre-1.3 configs: ""  yields TOUCHPAD_MODE_DS4.
                 dev.touchpadMode = touchpadModeFromName(jsonGetString(obj, "touchpadMode"));
                 if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
                 pos = objEnd + 1;
@@ -175,7 +158,6 @@ Config loadConfig() {
     return cfg;
 }
 
-// ── Save config ─────────────────────────────────────────────────────────────
 void saveConfig(const Config& cfg) {
     std::ofstream f(configPath());
     f << "{\n"
@@ -207,7 +189,6 @@ void saveConfig(const Config& cfg) {
     f << "  ]\n}\n";
 }
 
-// ── Auto-start (XDG autostart .desktop file) ────────────────────────────────
 static std::string autostartDir() {
     std::string dir = xdgConfigHome() + "/autostart";
     mkdir(dir.c_str(), 0755);
@@ -239,7 +220,6 @@ bool getAutoStart() {
     return stat(autostartPath().c_str(), &st) == 0;
 }
 
-// ── Utility ─────────────────────────────────────────────────────────────────
 std::string getExeDir() {
     char buf[PATH_MAX];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);

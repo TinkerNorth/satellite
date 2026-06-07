@@ -1,35 +1,14 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * core/update_types.h — Pure domain types for the OTA update flow.
- *
- * No platform headers, no networking — just the data the update state
- * machine moves around between IUpdaterPort, UpdateService, and the
- * webserver / tray UIs.
- */
+// Pure domain types for the OTA update flow.
 #pragma once
 
 #include <cstdint>
 #include <string>
 
-// ── State machine ───────────────────────────────────────────────────────────
-// Linear with one branch:
-//
-//   Idle ──check──► Checking ──► UpToDate ──┐
-//                         │                 │
-//                         ▼                 ▼
-//                   UpdateAvailable ──► (auto-download? Downloading ─►
-//                         │                 │     Verifying ─► Downloaded)
-//                         │                 ▼
-//                         └──┬──► Downloading ─► Verifying ─► Downloaded
-//                            │                                   │
-//                            ▼                                   ▼
-//                          Error                              Installing ─► (exit)
-//
-// Error is sticky: it carries the message and the previous state, so the
-// UI can show "we were Downloading and it failed: <reason>". The user
-// can retry from any error state, returning the machine to Idle.
+// Error is sticky: it carries the message and the failed phase so the UI can
+// show "we were Downloading and it failed: <reason>". Retrying from any error
+// returns the machine to Idle.
 enum class UpdateState : uint8_t {
     Idle = 0,
     Checking,
@@ -66,21 +45,15 @@ inline const char* updateStateName(UpdateState s) {
     return "unknown";
 }
 
-// ── Install method ──────────────────────────────────────────────────────────
-// SelfInstall — the updater takes over: download artifact, run platform
-//   installer (Inno Setup /VERYSILENT on Windows; bundle swap on macOS;
-//   AppImage replace-in-place on Linux), exit, relaunch.
-// Manual      — surface an external instruction to the user (e.g. `apt
-//   upgrade satellite` for .deb builds). applyUpdate is a no-op.
+// SelfInstall — updater downloads + runs the platform installer, exits,
+//   relaunches. Manual — surface an external instruction (e.g. `apt upgrade`);
+//   applyUpdate is a no-op.
 enum class InstallMethod : uint8_t {
     SelfInstall = 0,
     Manual = 1,
 };
 
-// ── Release / artifact descriptor ───────────────────────────────────────────
-// Populated by IUpdaterPort::fetchLatestRelease(). Carries everything the
-// UI needs to render a "v1.2.3 — release notes — 4.2 MB" prompt and
-// everything the downloader needs to fetch the right asset.
+// Populated by IUpdaterPort::fetchLatestRelease().
 struct UpdateInfo {
     bool available = false;       // strictly newer than current
     std::string version;          // e.g. "1.2.3"  (no leading v)
@@ -96,9 +69,7 @@ struct UpdateInfo {
     std::string manualInstruction; // shell command, when installMethod=Manual
 };
 
-// ── Snapshot delivered to the UI ────────────────────────────────────────────
-// One immutable struct the webserver can render as JSON and the SSE
-// channel can broadcast on every state transition.
+// Rendered as JSON by the webserver and broadcast on the SSE channel.
 struct UpdateStatusSnapshot {
     UpdateState state = UpdateState::Idle;
     std::string currentVersion; // SATELLITE_VERSION
@@ -108,30 +79,22 @@ struct UpdateStatusSnapshot {
     uint64_t bytesDownloaded = 0;
     uint64_t totalBytes = 0;
 
-    // User-facing message — populated for Error, optionally for Installing
-    // ("Restarting in 3 seconds…"). Never carries a stack trace.
+    // User-facing; populated for Error / optionally Installing. Never a stack trace.
     std::string message;
 
-    // The phase the service was running when it transitioned to Error.
-    // Lets the UI distinguish "couldn't reach the update server" from
-    // "download/verify/install failed" — the four error sites in
-    // UpdateService all surface as state=Error with different semantics.
-    // Idle when state != Error.
+    // The phase running when it hit Error, so the UI can tell "couldn't reach
+    // the server" from download/verify/install failures. Idle when state != Error.
     UpdateState failedPhase = UpdateState::Idle;
 
-    // Most-recent successful check, unix seconds. Mirrors Config.lastCheckEpoch
-    // but reflects the *running* service value (which may be ahead of the
-    // persisted config until the next saveConfig()).
+    // Mirrors Config.lastCheckEpoch but reflects the running value (may be ahead
+    // of the persisted config until the next saveConfig()).
     int64_t lastCheckEpoch = 0;
 
-    // User pref snapshot — surfaced so the UI doesn't need a separate GET.
+    // User pref snapshot, so the UI needs no separate GET.
     std::string channel;
     bool autoCheck = true;
     bool autoDownload = false;
     bool autoInstall = false;
 
-    // Identification of the running binary's install method. Determines
-    // whether the "Install now" affordance is shown vs the manual-command
-    // copy-button. Mirrors IUpdaterPort::platformId().
-    std::string platformId;
+    std::string platformId; // mirrors IUpdaterPort::platformId()
 };

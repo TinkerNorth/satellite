@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * tls.cpp — self-signed TLS certificate generation (OpenSSL).
- *
- * The client API server (webserver.cpp) is HTTPS-only. It needs a cert+key;
- * with no CA available on a LAN we generate a self-signed pair on first run
- * and persist it next to the config file so the identity is stable across
- * restarts. Requires OpenSSL 3.0+ (EVP_RSA_gen).
- */
+// Self-signed TLS cert generation (OpenSSL 3.0+, EVP_RSA_gen). The client API
+// server is HTTPS-only; with no CA on a LAN we generate a self-signed pair on
+// first run and persist it beside the config file for a stable identity.
 #include "tls.h"
 #include "config.h" // configPath()
 
@@ -24,6 +18,15 @@
 #endif
 
 namespace {
+
+FILE* openWrite(const char* path) {
+#ifdef _MSC_VER
+    FILE* f = nullptr;
+    return (fopen_s(&f, path, "wb") == 0) ? f : nullptr;
+#else
+    return std::fopen(path, "wb");
+#endif
+}
 
 // The cert/key live in the same directory as the config file.
 std::string certDir() {
@@ -63,13 +66,13 @@ bool generateSelfSigned(const std::string& certPath, const std::string& keyPath)
         if (X509_set_issuer_name(x509, name) != 1) break; // self-signed: issuer == subject
         if (X509_sign(x509, pkey, EVP_sha256()) == 0) break;
 
-        FILE* cf = std::fopen(certPath.c_str(), "wb");
+        FILE* cf = openWrite(certPath.c_str());
         if (cf == nullptr) break;
         const int cwrote = PEM_write_X509(cf, x509);
         std::fclose(cf);
         if (cwrote != 1) break;
 
-        FILE* kf = std::fopen(keyPath.c_str(), "wb");
+        FILE* kf = openWrite(keyPath.c_str());
         if (kf == nullptr) break;
         const int kwrote = PEM_write_PrivateKey(kf, pkey, nullptr, nullptr, 0, nullptr, nullptr);
         std::fclose(kf);

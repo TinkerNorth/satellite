@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * core/types.h — Pure domain types. No Windows, no Winsock, no platform-
- * specific virtual-gamepad headers.
- */
+// Pure domain types: no Windows, Winsock, or platform gamepad headers.
 #pragma once
 
 #include "core/version.h"
@@ -16,38 +12,22 @@
 #include <vector>
 #include <chrono>
 
-// ── Constants ───────────────────────────────────────────────────────────────
 inline const char* APP_NAME = "satellite";
 inline const char* APP_TITLE = "Satellite";
 
-// Build-time version, threaded into the binary from src/core/version.h
-// and mirrored in /VERSION (which CMake + installer.iss read). Surfaced
-// at runtime via /api/version and the update checker.
 inline const char* SATELLITE_VERSION = SATELLITE_VERSION_STRING;
 
 inline const int DEFAULT_UDP_PORT = 9876;
 inline const int DEFAULT_WEB_PORT = 9877;
 inline const int DEFAULT_PAIR_PORT = 9878;
 inline const int DEFAULT_DISC_PORT = 9879;
-// Sender-facing API (pairing + connections), served over HTTPS on 0.0.0.0.
-// The admin web UI on DEFAULT_WEB_PORT is bound to 127.0.0.1; this is the
-// only TCP port a sender on the LAN connects to.
+// Sender-facing API (pairing + connections), HTTPS on 0.0.0.0 — the only TCP
+// port a LAN sender connects to. The admin UI on DEFAULT_WEB_PORT is 127.0.0.1.
 inline const int DEFAULT_CLIENT_PORT = 9443;
 
-// ── Connection-state nomenclature (server-side view) ────────────────────────
-// Internal + JSON-surface formalisation of state that already existed implicitly
-// in `pairedDevices` / `connections_` / the controller `active` flag / the
-// `g_currentPin` + `g_pinExpiry` pair. NOT a protocol-wire change: the MSG_* /
-// ACK_* wire codes below are untouched. These enums drive the `state` strings
-// that /api/connections, /api/devices, and /api/pin/status surface; the web
-// dashboard maps those onto user-facing chip text.
-//
-// Mirrors the client-side LinkState (see dish-android) but trimmed: the server
-// only ever sees its own paired list, so there is no "Found" (unpaired-seen) or
-// "Stale" (broken-pairing) row — a device the server has forgotten simply isn't
-// in the list.
-
-/// Per-paired-device link state, server's view.
+// Connection-state enums driving the `state` strings on /api/connections,
+// /api/devices, /api/pin/status. Not a wire change; the MSG_*/ACK_* codes below
+// are untouched.
 enum class DeviceLinkState {
     Paired,        // in pairedDevices, no live connection (offline)
     Linking,       // POST /api/connections handshake in flight (transient)
@@ -56,7 +36,7 @@ enum class DeviceLinkState {
                    // not yet reaped (>=2 missed heartbeats, < HEARTBEAT_MISS_MAX)
 };
 
-/// Pairing PIN lifecycle on the server.
+// Pairing PIN lifecycle on the server.
 enum class PinState {
     PinIdle,    // no PIN outstanding
     PinActive,  // PIN generated, within 5-min window
@@ -64,9 +44,8 @@ enum class PinState {
     PinPaired,  // a device just consumed it — momentary success state
 };
 
-/// Per-controller pipeline state (physical-on-client → bridge → virtual on
-/// server). The wire ACK codes already enumerate the failure side; this
-/// formalises the success/transient side too.
+// Per-controller pipeline state (physical-on-client → bridge → virtual). The
+// wire ACK codes enumerate failures; this adds the success/transient side.
 enum class ControllerState {
     Source,      // physical pad detected on client, not yet forwarded
     Registering, // MSG_CONTROLLER_ADD sent, awaiting MSG_CONTROLLER_ACK
@@ -75,19 +54,14 @@ enum class ControllerState {
     Quiet,       // Live, but no input recently (optional UI distinction)
     Detached,    // MSG_CONTROLLER_REMOVE sent, virtual being torn down
     Failed,      // ACK arrived with an ACK_ERR_* code
-                 // TODO: retain the last failure reason per controller index so
-                 // the dashboard can show "Failed (BACKEND_UNAVAIL)" etc.
 };
 
-// ── Stalling threshold for DeviceLinkState::NotResponding ───────────────────
-// A connection enters NotResponding when no decrypted packet has arrived for
-// roughly two heartbeat intervals (HEARTBEAT_INTERVAL_SEC * 2 = 4s) but the
-// reaper hasn't yet evicted it (HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_MAX
-// = 10s). The window between is what surfaces as "Not responding" in the UI.
+// A connection enters NotResponding after ~2 heartbeat intervals without a
+// decrypted packet (HEARTBEAT_INTERVAL_SEC * 2 = 4s) but before the reaper
+// evicts it (* HEARTBEAT_MISS_MAX = 10s). That window surfaces as "Not responding".
 inline const int HEARTBEAT_STALL_FACTOR = 2;
 
-// Serialise as lowercase strings on the wire. Web dashboard maps these onto
-// the user-facing chip text (paired→"Paired", active→"Online", etc.).
+// Lowercase wire strings; the dashboard maps them onto chip text.
 inline const char* deviceLinkStateName(DeviceLinkState s) {
     switch (s) {
     case DeviceLinkState::Paired:
@@ -136,7 +110,7 @@ inline const char* controllerStateName(ControllerState s) {
     return "live";
 }
 
-// ── Protocol constants ──────────────────────────────────────────────────────
+// Protocol message types.
 inline const uint16_t MSG_GAMEPAD_DATA = 0x0001;
 inline const uint16_t MSG_HEARTBEAT_PING = 0x0002;
 inline const uint16_t MSG_HEARTBEAT_ACK = 0x0003;
@@ -151,24 +125,13 @@ inline const uint16_t MSG_BATTERY = 0x000B;
 inline const uint16_t MSG_TOUCHPAD = 0x000C;
 inline const uint16_t MSG_LIGHTBAR = 0x000D;
 
-// Mid-session capability update from the dish. Same payload shape as
-// MSG_CONTROLLER_ADD's caps field — `ctrlIdx(u8) + caps(u16 BE)` — but
-// applied to an already-registered controller without unplugging the
-// virtual device. The receiver overwrites `Controller::caps` in place
-// and re-derives `motionCapable()` / `lightbarCapable()` from the new
-// word; no replug, no fresh ACK round-trip, no controller flicker.
-//
-// Sent by the dish when its per-slot motion toggle flips after registration
-// time (the original CAP_MOTION bit was an at-registration snapshot — see
-// MotionCapabilityComposer.toCapBits on the dish side). A pre-extension
-// receiver that doesn't recognise this type drops the packet silently in
-// inner_dispatch.cpp; the dish-side runtime listener gate is the
-// load-bearing correctness path, so dropping the wire update only costs
-// dashboard staleness, not real bytes-on-the-wire honesty.
+// Mid-session cap update. Payload shape = ctrlIdx(u8) + caps(u16 BE), applied to
+// a registered controller without unplugging (no replug, no fresh ACK). A
+// pre-extension receiver drops it silently; the dish-side listener gate is the
+// load-bearing path, so dropping it only costs dashboard staleness.
 inline const uint16_t MSG_CONTROLLER_CAPS_UPDATE = 0x000E;
 
-// Controller ACK result codes (wire values are stable across platforms; only
-// the C++ identifier changed from ACK_ERR_VIGEM_UNAVAIL → ACK_ERR_BACKEND_UNAVAIL).
+// Controller ACK result codes (wire values stable across platforms).
 inline const uint8_t ACK_OK = 0x00;
 inline const uint8_t ACK_ERR_BACKEND_UNAVAIL = 0x01;
 inline const uint8_t ACK_ERR_NO_SLOTS = 0x02;
@@ -176,32 +139,19 @@ inline const uint8_t ACK_ERR_ALREADY_EXISTS = 0x03;
 inline const uint8_t ACK_ERR_NOT_FOUND = 0x04;
 inline const uint8_t ACK_ERR_PLUGIN_FAIL = 0x05;
 
-// Optional motion-status byte appended after the 4-byte controller-ACK payload
-// for MSG_CONTROLLER_ADD acks (wire length becomes 5 instead of 4). Lets the
-// dish learn the receiver's two motion-sink facts at the moment they are
-// definitively known (plug-in time) without a separate HTTP poll of
-// /api/connections. A pre-extension dish reads only the first 4 bytes — the
-// extra byte is silently dropped, so the change is forward-compatible. A
-// post-extension dish that talks to a pre-extension satellite sees the
-// payload-length field == 4 and treats the motion-status as unknown.
-//
-// Bit 0: the receiver's backend has an IMU surface for this controller's
-//        chosen type (IGamepadPort::supportsMotionForType). Universal across
-//        the shipping backends — Windows ViGEm + Linux uinput return true only
-//        for PlayStation; macOS returns false.
-// Bit 1: the receiver's backend successfully created the per-serial IMU sink
-//        at plug-in time (IGamepadPort::motionBackendOk). False distinguishes
-//        "kernel rejected the motion node" from "no game has subscribed yet"
-//        — the former is a real failure the dish should surface to the user.
+// Optional motion-status byte appended to MSG_CONTROLLER_ADD acks (wire len
+// 4→5). Forward-compatible: a pre-extension dish reads only 4 bytes; a
+// post-extension dish talking to an old satellite sees len 4 and treats motion
+// as unknown.
+//   Bit 0: backend has an IMU surface for the chosen type (supportsMotionForType).
+//   Bit 1: per-serial IMU sink created at plug-in (motionBackendOk); false ⇒
+//          kernel rejected the node, a real failure to surface.
 inline const uint8_t ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE = 0x01;
 inline const uint8_t ACK_MOTION_FLAG_BACKEND_OK = 0x02;
 
-// ── Controller capability bits ──────────────────────────────────────────────
-// Carried in the 2-byte big-endian capability word of the MSG_CONTROLLER_ADD
-// (0x0004) payload. The dish advertises these at controller-add time so the
-// receiver knows which optional streams to expect from that client. Unknown /
-// unset bits are forward-compatible: a pre-cap-aware dish sends 0 and the
-// receiver treats every capability as "unknown / best-effort".
+// Controller capability bits in the MSG_CONTROLLER_ADD 2-byte BE cap word.
+// Forward-compatible: a pre-cap-aware dish sends 0 and every cap reads as
+// "unknown / best-effort".
 inline const uint16_t CAP_ANALOG_TRIGGERS = 0x0001; // analog L/R triggers
 inline const uint16_t CAP_RUMBLE = 0x0002;          // accepts the MSG_RUMBLE return path
 inline const uint16_t CAP_MOTION = 0x0004;          // streams MSG_MOTION (0x000A) IMU data
@@ -220,7 +170,7 @@ inline const int HEARTBEAT_MISS_MAX = 5;
 inline const int MAX_CONTROLLERS_PER_CONN = 16;
 inline const int MAX_BACKEND_CONTROLLERS = 16;
 
-// ── Controller types ─────────────────────────────────────────────────────────
+// Controller types.
 inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
 inline const uint8_t CONTROLLER_TYPE_PLAYSTATION = 1;
 inline const uint8_t CONTROLLER_TYPE_COUNT = 2;
@@ -247,10 +197,9 @@ inline const char* controllerTypeLabel(uint8_t type) {
     }
 }
 
-// Returns true if this controller type should use a DualShock 4 virtual device.
 inline bool controllerTypeUsesDS4(uint8_t type) { return type == CONTROLLER_TYPE_PLAYSTATION; }
 
-// ── Gamepad report (binary-compatible with XUSB_REPORT / XINPUT_GAMEPAD) ───
+// Binary-compatible with XUSB_REPORT / XINPUT_GAMEPAD.
 struct GamepadReport {
     uint16_t wButtons = 0;
     uint8_t bLeftTrigger = 0;
@@ -262,39 +211,24 @@ struct GamepadReport {
 };
 static_assert(sizeof(GamepadReport) == 12, "GamepadReport must be 12 bytes");
 
-// ── Rumble report (game → physical controller, return path) ─────────────────
-// Magnitudes are 16-bit unsigned to match XInput's `XINPUT_VIBRATION` scale
-// (0..65535). Backends report low-frequency / high-frequency intensities; on
-// Linux uinput these map to the FF_RUMBLE strong/weak magnitudes verbatim.
-//
-// Rumble carries motor vibration only. The controller's RGB lightbar is a
-// separate return path — see MSG_LIGHTBAR (0x000D) / IClientPort::sendLightbar.
-//
-// `durationMs == 0` is the "until-overridden" mode: the actuator should keep
-// the magnitudes applied until the next rumble packet for the same controller.
-// Non-zero durations are clamped on the dish side to match what each platform's
-// rumble API accepts (XInput / SDL: u32 ms; Android Vibrator: u32 ms).
+// Rumble (game → controller, return path). Magnitudes are u16 to match XInput's
+// XINPUT_VIBRATION scale (0..65535); on Linux uinput these map to FF_RUMBLE
+// strong/weak verbatim. Motor vibration only — the RGB lightbar is a separate
+// return path (MSG_LIGHTBAR). durationMs == 0 = hold until the next packet.
 struct RumbleReport {
     uint16_t strongMagnitude = 0; // low-frequency / large motor
     uint16_t weakMagnitude = 0;   // high-frequency / small motor
     uint16_t durationMs = 0;      // 0 = continuous (until next packet)
 };
 
-// ── Motion report (sender → satellite, gyro + accel from a real IMU) ────────
-// Wire scale uses a fixed full-scale convention so no per-axis
-// renormalisation is needed downstream:
-//
-//   gyro  axes: deg/s, ±2000 deg/s full scale → int16 LSB = 2000 / 32767 deg/s
-//   accel axes: g,     ±4 g     full scale → int16 LSB = 4    / 32767 g
-//
-// Axis frame is right-handed, +X = right, +Y = up, +Z = toward the player
-// (the same convention as Sony's DualSense IMU after applying the
-// manufacturer rotation matrix). Senders MUST apply that matrix; receivers
-// do not rotate.
-//
-// `timestampDeltaUs` is microseconds elapsed since the previous MOTION packet
-// for the same controller on the same connection. The first packet uses 0.
-// 32 bits is enough for ~71 minutes of gap, well past any realistic stall.
+// Motion report (sender → satellite, gyro + accel). Fixed full-scale wire
+// convention so no downstream renormalisation:
+//   gyro  ±2000 deg/s → int16 LSB = 2000/32767 deg/s
+//   accel ±4 g        → int16 LSB = 4/32767 g
+// Axis frame right-handed, +X right, +Y up, +Z toward player (DualSense IMU
+// convention after the manufacturer rotation). Senders MUST apply that matrix;
+// receivers do not rotate. timestampDeltaUs = µs since the previous MOTION
+// packet for the same controller (first packet 0; u32 spans ~71 min).
 inline const float MOTION_GYRO_SCALE_DEG_S = 2000.0f / 32767.0f;
 inline const float MOTION_ACCEL_SCALE_G = 4.0f / 32767.0f;
 
@@ -309,14 +243,11 @@ struct MotionReport {
 };
 static_assert(sizeof(MotionReport) == 16, "MotionReport must be 16 bytes on the wire");
 
-// Wire payload length of MSG_MOTION's MotionReport portion (after the 1-byte
-// ctrlIdx) — 6×int16 + uint32. The receiver guards on ctrlIdx(1) + this.
+// MSG_MOTION payload length after the 1-byte ctrlIdx: 6×int16 + uint32.
 inline const int MOTION_WIRE_PAYLOAD_BYTES = 16;
 
-// Decode a MotionReport from `p` (16 wire bytes, little-endian, the portion
-// after the 1-byte ctrlIdx). Explicit shifts — no struct memcpy — so decoding
-// is byte-order-independent and immune to MotionReport layout/padding changes.
-// Senders encode the matching little-endian layout; see docs/protocol.md.
+// Decode the 16 little-endian wire bytes after ctrlIdx. Explicit shifts (no
+// memcpy) keep decoding byte-order-independent. See docs/protocol.md.
 inline MotionReport decodeMotionReport(const uint8_t* p) {
     auto le16 = [](const uint8_t* q) -> int16_t {
         return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
@@ -337,10 +268,9 @@ inline MotionReport decodeMotionReport(const uint8_t* p) {
     return r;
 }
 
-// ── Battery report (sender → satellite, periodic) ───────────────────────────
-// Sent once per BATTERY_REPORT_INTERVAL_SEC and again whenever the controller
-// transitions between charging states. `level` is 0..100 inclusive; 0xFF means
-// the sender can't read the level (some Bluetooth pads only report state).
+// Battery report (sender → satellite, periodic). Sent every
+// BATTERY_REPORT_INTERVAL_SEC and on charging-state transitions. level 0..100;
+// 0xFF = sender can't read the level (some BT pads report state only).
 inline const uint8_t BATTERY_LEVEL_UNKNOWN = 0xFF;
 inline const uint8_t BATTERY_STATUS_UNKNOWN = 0;
 inline const uint8_t BATTERY_STATUS_DISCHARGING = 1;
@@ -355,18 +285,12 @@ struct BatteryReport {
     uint8_t status = BATTERY_STATUS_UNKNOWN;
 };
 
-// ── Touchpad report (sender → satellite, DS4 / DualSense trackpad) ──────────
-// Two simultaneous finger contacts max (matching the DS4 / DualSense hardware
-// surface). Coordinates are normalized int16 (-32768..32767) on both axes so
-// the wire is resolution-independent — the receiver maps to whichever virtual
-// device's coordinate space it owns (DS4: 1920×943, mouse: monitor pixels).
-//
-// Each finger carries a "tracking ID" so the receiver can correlate a finger
-// across frames even when finger 0 lifts and finger 1 keeps contact. IDs are
-// monotonically increasing per controller; the sender wraps freely.
-//
-// `buttonPressed` is the dedicated clicky-trackpad button (DS4 + DualSense
-// both have one). It is logically independent from any touch.
+// Touchpad report (sender → satellite). Max 2 fingers (DS4/DualSense hardware).
+// Coordinates are normalized int16 (-32768..32767), resolution-independent — the
+// receiver maps to its device's space (DS4 1920×943, mouse: monitor pixels).
+// Each finger's trackingId lets the receiver correlate a finger across frames
+// when one lifts and another keeps contact (monotonic per controller, wraps).
+// buttonPressed is the clicky-pad button, independent of any touch.
 struct TouchpadFinger {
     bool active = false;
     uint8_t trackingId = 0;
@@ -378,18 +302,10 @@ struct TouchpadReport {
     TouchpadFinger finger0{};
     TouchpadFinger finger1{};
     bool buttonPressed = false;
-    // Sender-side timestamp of when the current finger coordinates were
-    // sampled. On dish-android this is `MotionEvent.getEventTime()`
-    // truncated to u32 (uptime ms, 49.7-day range). The mouse-mode
-    // delta calc in SessionService::handleTouchpadData uses
-    // (curr.eventTimeMs - prev.eventTimeMs) to time-scale the cursor
-    // velocity so the first MOVE after a touch-down (which Android
-    // delivers up to a full input-frame later) doesn't produce a
-    // visibly larger jump than subsequent per-frame samples.
-    //
-    // Resends from the dish carry the SAME eventTimeMs as the last
-    // position change (no new motion since); the receiver treats
-    // dt == 0 as a duplicate sample and emits no cursor motion.
+    // Sender-side sample timestamp (Android MotionEvent.getEventTime() truncated
+    // to u32, uptime ms). Mouse-mode time-scales by (curr - prev) so the late
+    // first MOVE after touch-down doesn't jump. Resends carry the SAME value;
+    // the receiver treats dt == 0 as a duplicate and emits no motion.
     uint32_t eventTimeMs = 0;
 };
 
@@ -401,10 +317,8 @@ struct TouchpadReport {
 // = 1 + 5 + 5 + 4 = 15 bytes after ctrlIdx → 16 bytes total inner payload.
 inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES = 15;
 
-// Decode a TouchpadReport from `p` (TOUCHPAD_WIRE_PAYLOAD_BYTES bytes — the
-// portion after the 1-byte ctrlIdx). Explicit little-endian shifts, no struct
-// memcpy, so the wire stays byte-order-independent. Mirrors decodeMotionReport;
-// senders encode the matching layout (see docs/protocol.md).
+// Decode the TOUCHPAD_WIRE_PAYLOAD_BYTES bytes after ctrlIdx. Explicit LE shifts
+// (no memcpy) keep the wire byte-order-independent. See docs/protocol.md.
 inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
     auto le16 = [](const uint8_t* q) -> int16_t {
         return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
@@ -429,48 +343,31 @@ inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
     return r;
 }
 
-// ── Touchpad routing modes (per-paired-device, Task 1.3) ────────────────────
-// How the receiver routes a paired device's MSG_TOUCHPAD samples. Persisted in
-// PairedDevice, mirrored onto every live Connection, and hot-applied from the
-// web UI without re-pairing.
-//   DS4   — feed the finger coordinates + clicky button into the virtual
-//           DualShock 4 touchpad surface (DS4_REPORT_EX on Windows, a
-//           multitouch uinput node on Linux). Xbox-typed virtual pads have no
-//           touchpad surface and drop it.
-//   MOUSE — synthesize a relative-mouse pointer on the receiver host: finger 0
-//           movement drives the cursor, the clicky button is mouse button 1.
-//   OFF   — ignore touchpad entirely (still cached for the web UI debug pane).
+// Touchpad routing modes (per-paired-device). Persisted in PairedDevice,
+// mirrored onto every live Connection, hot-applied without re-pairing.
+//   DS4   — feed into the virtual DS4 touchpad surface; Xbox pads drop it.
+//   MOUSE — finger 0 drives the host cursor, clicky button is mouse button 1.
+//   OFF   — ignore (still cached for the web UI).
 inline const uint8_t TOUCHPAD_MODE_DS4 = 0;
 inline const uint8_t TOUCHPAD_MODE_MOUSE = 1;
 inline const uint8_t TOUCHPAD_MODE_OFF = 2;
 inline const uint8_t TOUCHPAD_MODE_COUNT = 3;
 
-// Relative-mouse sensitivity for TOUCHPAD_MODE_MOUSE: host pixels travelled per
-// unit of wire-coordinate finger movement. The pad spans 65535 wire units per
-// axis, so a full-width swipe travels ~2750 px — close to a laptop trackpad.
-// The SessionService carries a sub-pixel remainder so slow drags don't
-// truncate to zero motion.
+// Host pixels per wire-coordinate unit. The pad spans 65535 units/axis, so a
+// full-width swipe travels ~2750 px (laptop-trackpad-like). A sub-pixel
+// remainder is carried so slow drags don't truncate to zero.
 inline const float TOUCHPAD_MOUSE_SENSITIVITY = 0.042f;
 
-// Reference sample spacing the sensitivity was tuned at — the dish's resend
-// loop cadence (250 Hz → 4 ms). The mouse-mode delta calc scales the per-sample
-// motion by REFERENCE_MS/dt so cursor velocity stays proportional to finger
-// velocity regardless of how long the dish actually took between samples.
-// Without this, the first MOVE after touchdown (Android delivers up to a full
-// input-frame later, ~16 ms on 60 Hz) produces a delta covering ~4× the
-// finger-travel of subsequent ~4 ms samples — the visible "first-touch jump."
+// Sample spacing the sensitivity was tuned at (dish resend cadence, 250 Hz →
+// 4 ms). Delta scales by REFERENCE_MS/dt so velocity is dt-independent.
 inline const int TOUCHPAD_MOUSE_REFERENCE_MS = 4;
 
-// Below this dt the scale factor explodes (and stops mapping to anything
-// physical — the sensor can't produce samples that close together). Clamp
-// the divisor so a near-duplicate sample doesn't fling the cursor.
+// Clamp the divisor: below this dt the scale factor explodes and a near-
+// duplicate sample would fling the cursor.
 inline const int TOUCHPAD_MOUSE_MIN_DT_MS = 1;
 
-// Above this dt we assume the dish paused / backgrounded / network stalled —
-// the sample is not a continuation of the previous one even if the trackingId
-// matches. Treat as a re-anchor (no cursor motion, drop sub-pixel remainder)
-// rather than letting the scale factor go to near-zero and produce a
-// catastrophically large dx on the next sample's remainder catch-up.
+// Above this dt assume a pause/background/stall: re-anchor (no motion, drop
+// remainder) rather than let the scale → 0 produce a huge dx next sample.
 inline const int TOUCHPAD_MOUSE_MAX_GAP_MS = 100;
 
 inline const char* touchpadModeName(uint8_t mode) {
@@ -485,8 +382,7 @@ inline const char* touchpadModeName(uint8_t mode) {
     }
 }
 
-// Parse a touchpad-mode name (web UI / config JSON). Unknown or empty → DS4, so
-// a config written before Task 1.3 migrates to the historical pass-through.
+// Unknown/empty → DS4, so pre-1.3 configs migrate to the historical pass-through.
 inline uint8_t touchpadModeFromName(const std::string& s) {
     if (s == "mouse") return TOUCHPAD_MODE_MOUSE;
     if (s == "off") return TOUCHPAD_MODE_OFF;
@@ -508,155 +404,101 @@ inline const char* batteryStatusName(uint8_t status) {
     }
 }
 
-// ── Controller (per virtual gamepad) ────────────────────────────────────────
+// Controller (per virtual gamepad).
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // backend serial (1–16), 0 = not plugged
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
-    // Hot-path cache of controllerTypeUsesDS4(controllerType). The flag is
-    // populated on every assignment to `controllerType` (handleControllerAdd /
-    // handleControllerType) so the hot gamepad-submit branch can read it as a
-    // single load instead of going through the inline helper on every packet.
-    bool usesDS4 = false;
-    // Capability word from MSG_CONTROLLER_ADD (CAP_* bits). 0 when the dish is
-    // pre-cap-aware. `motionCapable()` / `lightbarCapable()` are the convenience
-    // accessors the web UI / return-path routing use.
-    uint16_t caps = 0;
+    bool usesDS4 = false; // hot-path cache of controllerTypeUsesDS4(controllerType)
+    uint16_t caps = 0;    // CAP_* word from MSG_CONTROLLER_ADD; 0 if pre-cap-aware
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }
     bool lightbarCapable() const { return (caps & CAP_LIGHTBAR) != 0; }
     GamepadReport lastReport{};
-    // Most recent rumble state forwarded to the dish. Used to coalesce identical
-    // back-to-back game updates so we don't blast the wire when a game holds
-    // both motors at the same magnitude across many frames.
+    // Last rumble forwarded to the dish; used to coalesce identical back-to-back
+    // updates so a game holding the motors steady doesn't blast the wire.
     RumbleReport lastRumble{};
     bool lastRumbleValid = false;
-    // Most recent motion sample (sender → satellite). Stored so the web UI's
-    // debug pane can show live IMU values without keeping a parallel cache.
-    MotionReport lastMotion{};
+    MotionReport lastMotion{}; // last sample, cached for the web UI debug pane
     bool lastMotionValid = false;
-    // True when the most recent motion sample was actually delivered to the
-    // virtual-gamepad backend's IMU surface (ViGEm DS4 extended report /
-    // Linux uinput motion node). False means motion is captured & cached
-    // but NOT delivered to any IMU surface — e.g. an Xbox-typed virtual
-    // device, a ViGEmBus too old for the extended report, or the inert
-    // macOS backend. Drives the web UI's motion state.
+    // True when the last motion sample reached the backend's IMU surface. False
+    // = cached but not delivered (Xbox device, old ViGEmBus, or macOS).
     bool motionSinkActive = false;
-    // Most recent battery sample (sender → satellite). Surfaced in the
-    // web UI's connection list and (eventually) forwarded to the virtual
-    // device's battery channel where the backend supports it.
-    BatteryReport lastBattery{};
+    BatteryReport lastBattery{}; // last sample, cached for the web UI
     bool lastBatteryValid = false;
-    // Most recent touchpad sample (sender → satellite, DS4 / DualSense
-    // trackpad). Backends with a touchpad surface (ViGEm DS4) forward
-    // these into DS4_REPORT_EX touchpad fields; the rest cache for the
-    // web UI debug pane.
-    TouchpadReport lastTouchpad{};
+    TouchpadReport lastTouchpad{}; // last sample, cached for the web UI
     bool lastTouchpadValid = false;
-    // TOUCHPAD_MODE_MOUSE sub-pixel remainder — the fraction of a pixel a slow
-    // finger drag hasn't yet accumulated into a whole-pixel mouse delta. Reset
-    // on a fresh contact and whenever the touchpad mode changes.
+    // TOUCHPAD_MODE_MOUSE sub-pixel remainder. Reset on a fresh contact and on
+    // mode change.
     float touchpadMouseRemX = 0.0f;
     float touchpadMouseRemY = 0.0f;
-    // Most recent lightbar colour the host game set on this controller.
-    // Written by handleLightbarFromBackend; forwarded to the dish via
-    // MSG_LIGHTBAR (for CAP_LIGHTBAR senders) and surfaced in the web UI.
+    // Last lightbar colour the host game set; forwarded via MSG_LIGHTBAR (for
+    // CAP_LIGHTBAR senders) and surfaced in the web UI.
     uint8_t lightbarR = 0;
     uint8_t lightbarG = 0;
     uint8_t lightbarB = 0;
     bool lastLightbarValid = false;
 };
 
-// ── Connection (per paired client session) ──────────────────────────────────
+// Connection (per paired client session).
 struct Connection {
     uint32_t token = 0;
     std::string deviceId;
     std::string deviceName;
     // Hot-path IPv4 in NETWORK byte order (matches sockaddr_in::sin_addr).
-    // Compared against the sender on every received packet; only when it
-    // differs do we re-format the human-readable `clientIP` cache below.
-    // Saves the per-packet inet_ntop + std::string allocation that the
-    // old "update clientIP every time" path paid.
+    // Compared every packet; only on change do we re-format clientIP below,
+    // saving the per-packet inet_ntop + std::string allocation.
     uint32_t clientIPv4 = 0;
-    // Human-readable cache of clientIPv4, refreshed lazily when the
-    // numeric IPv4 actually changes (rare within a session). Surfaced
-    // by ConnectionsSnapshot for the web UI.
-    std::string clientIP;
+    std::string clientIP; // human-readable cache of clientIPv4, refreshed lazily
     uint8_t sharedKey[CRYPTO_KEY_SIZE] = {};
     uint32_t lastCounter = 0; // replay protection
     std::chrono::steady_clock::time_point lastPacketTime;
     std::chrono::steady_clock::time_point connectedAt;
     std::array<Controller, MAX_CONTROLLERS_PER_CONN> controllers;
     int activeControllerCount = 0;
-    // Touchpad routing for this session (TOUCHPAD_MODE_*). Seeded from the
-    // paired device's persisted setting at openSession; hot-swappable from
-    // the client via SessionService::setTouchpadMode (POST
-    // /api/devices/touchpad-mode) without re-pairing. The client owns the
-    // setting; the server only routes and reflects.
+    // TOUCHPAD_MODE_*; seeded from the persisted setting at openSession,
+    // hot-swappable via setTouchpadMode. The client owns it; the server routes.
     uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
 };
 
-// ── Paired device info (persisted) ──────────────────────────────────────────
+// Paired device info (persisted).
 struct PairedDevice {
     std::string id;
     std::string name;
     std::string lastIP;
     std::string pairedAt;
     std::string sharedKeyHex; // 64-char hex (32 bytes)
-    // Touchpad routing mode (TOUCHPAD_MODE_*). Defaults to OFF — the safe
-    // baseline a server can promise without knowing whether the just-paired
-    // client can even capture touchpad input. The client owns the setting:
-    // it can pass an initial value in the pair request, and it can change
-    // it any time via POST /api/devices/touchpad-mode. Devices paired
-    // before this change (when DS4 was the default) load with their
-    // persisted value.
+    // TOUCHPAD_MODE_*; defaults OFF — the safe baseline before knowing whether
+    // the client can capture touchpad input. The client owns it. Devices paired
+    // when DS4 was the default load with their persisted value.
     uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
 };
 
-// ── Update channels ─────────────────────────────────────────────────────────
-// "stable" — only published GitHub Releases tagged vMAJOR.MINOR.PATCH.
-// "prerelease" — include pre-release tags (vX.Y.Z-rc.1, -beta.2, etc.).
-// Anything else is treated as "stable".
+// Update channels: "stable" = released vMAJOR.MINOR.PATCH only; "prerelease"
+// also includes -rc/-beta tags. Anything else is treated as "stable".
 inline const char* UPDATE_CHANNEL_STABLE = "stable";
 inline const char* UPDATE_CHANNEL_PRERELEASE = "prerelease";
 
-// Default cadence for the background "auto-check" timer.
 inline const int UPDATE_DEFAULT_CHECK_INTERVAL_HOURS = 24;
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct Config {
     int udpPort = DEFAULT_UDP_PORT;
     int webPort = DEFAULT_WEB_PORT;
     int pairPort = DEFAULT_PAIR_PORT;
     int discPort = DEFAULT_DISC_PORT;
-    // Legacy UDP broadcast beacon on discPort. mDNS/Bonjour (Task 1.6) is the
-    // modern discovery path; the broadcast beacon stays on as a fallback for
-    // senders that predate the mDNS responder. Operators on an all-mDNS LAN
-    // can disable it to cut broadcast noise. Slated for removal in 2027 once
-    // the install base has migrated. Absent in pre-1.6 configs → defaults on.
+    // Legacy UDP broadcast beacon, kept as a fallback for senders predating the
+    // mDNS responder. Slated for removal in 2027. Absent in pre-1.6 configs → on.
     bool discoveryBroadcastEnabled = true;
     bool autoStart = false;
     std::vector<PairedDevice> pairedDevices;
 
-    // ── OTA update preferences (see core/update_service.h) ─────────────
-    // updateChannel:   "stable" or "prerelease".
-    // autoCheck:       if true, the background timer hits the GitHub
-    //                  releases API every updateCheckIntervalHours.
-    // autoDownload:    if true, an available update is fetched in the
-    //                  background once discovered (still requires the
-    //                  user to confirm the restart-and-install step).
-    // autoInstall:     if true, after a successful auto-download the
-    //                  updater triggers the platform install flow
-    //                  immediately. Off by default — most users want
-    //                  the "ready to install" prompt.
-    // lastCheckEpoch:  unix seconds of the most recent check attempt
-    //                  (0 = never). Surfaced in the settings UI.
-    // lastSeenVersion: highest version we've seen since the last user
-    //                  acknowledgement. Used so we don't re-pop the
-    //                  banner after a user has clicked "remind me later".
-    // skipVersion:     a version the user explicitly told us to skip.
-    //                  We won't notify again until something newer
-    //                  than this appears.
+    // OTA update preferences (see core/update_service.h).
+    //   autoDownload: fetch in the background once discovered (still needs user
+    //                 confirm to install).
+    //   autoInstall:  install immediately after an auto-download. Off by default.
+    //   lastSeenVersion: highest version seen since the last ack, so "remind me
+    //                 later" doesn't re-pop the banner.
+    //   skipVersion:  suppress notifications until something newer appears.
     std::string updateChannel = UPDATE_CHANNEL_STABLE;
     bool autoCheck = true;
     bool autoDownload = false;
@@ -667,7 +509,6 @@ struct Config {
     std::string skipVersion;
 };
 
-// ── Logging ─────────────────────────────────────────────────────────────────
 enum class LogLevel { INFO, WARN, ERR };
 inline const int LOG_RING_SIZE = 500;
 
@@ -678,7 +519,6 @@ struct LogEntry {
     std::string message;
 };
 
-// ── Result types ────────────────────────────────────────────────────────────
 struct OpenSessionResult {
     bool ok = false;
     uint32_t token = 0;

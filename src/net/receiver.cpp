@@ -1,41 +1,19 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright (C) 2026 Satellite contributors.
 
-/*
- * receiver.cpp -- UDP receiver thread (thin infrastructure layer)
- *
- * The hot loop is intentionally allocation-free and single-lock per
- * gamepad packet (the dish-android sender mirrors this discipline on
- * its side). Specifically:
- *   * `recvfrom` writes into a stack buffer; no heap touch.
- *   * `decryptPacket` runs IN PLACE, using `ciphertext == plaintext`
- *     so the plaintext occupies the same bytes as the ciphertext minus
- *     the 16-byte auth tag. libsodium's chacha20-poly1305 supports
- *     overlapping src/dst, saving 256 bytes of stack and a cache line.
- *   * Gamepad packets take exactly ONE SessionService::mtx_ acquisition
- *     via handleGamepadDataAndUpdate (was three: getDecryptInfo +
- *     updatePostDecrypt + handleGamepadData). Cold paths (motion,
- *     touchpad, heartbeat, etc.) still take two locks; they're rare
- *     enough that fusing them isn't worth the API churn.
- *   * The sender's IPv4 address is passed as a uint32 in network byte
- *     order all the way down -- no inet_ntop, no std::string alloc per
- *     packet. SessionService refreshes the human-readable cache only
- *     when the numeric address actually changes.
- *   * g_maxLoopUs uses a thread-local high-water-mark to skip the
- *     atomic CAS-loop on the ~99% of packets where the loop time is
- *     below the running per-second peak.
- */
+// Hot loop is allocation-free and single-lock per gamepad packet — keep it that way.
 #include "receiver.h"
 #include "inner_dispatch.h"
 #include "crypto.h"
 #include "core/session_service.h"
 #include "adapters/client_adapter.h"
 
-// dispatchInnerMessage (the decrypted inner-message parser + length guards)
-// lives in net/inner_dispatch.cpp -- a portable, socket-free TU so the guards
-// can be unit tested with raw byte buffers (tests/test_receiver.cpp).
+#ifdef _WIN32
+#include <avrt.h> // MMCSS: AvSetMmThreadCharacteristics for the RX thread
+#endif
 
-// ── Reaper: delegates timeout cleanup to SessionService ──────────────────────
+// dispatchInnerMessage (inner-message parser + length guards) lives in
+// net/inner_dispatch.cpp — socket-free so the guards can be unit tested.
+
 static void reaperLoop(SessionService& svc) {
     while (g_appRunning) {
         netSleepMs(1000);
@@ -43,16 +21,24 @@ static void reaperLoop(SessionService& svc) {
     }
 }
 
-// ── Main receiver loop ──────────────────────────────────────────────────────
 void receiverThread(SessionService& svc, ClientAdapter& client) {
 #ifdef _WIN32
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    // Register with MMCSS (Multimedia Class Scheduler) under the "Games" task —
+    // the OS-sanctioned low-latency scheduling class. It boosts this thread
+    // while registered and, unlike a hand-set TIME_CRITICAL priority, lets the
+    // scheduler manage it so it can't starve the rest of the system. Fall back
+    // to TIME_CRITICAL only if MMCSS is unavailable (service disabled or the
+    // "Games" task profile missing). Reverted at thread exit.
+    DWORD mmcssTaskIndex = 0;
+    HANDLE mmcssHandle = AvSetMmThreadCharacteristicsW(L"Games", &mmcssTaskIndex);
+    if (mmcssHandle == nullptr) {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
     SetThreadAffinityMask(GetCurrentThread(), 1ULL);
 #endif
 
-    // The receiver runs for the whole app lifetime — there is no start/stop.
-    // The outer loop exists only to re-bind: on a socket/bind failure it logs
-    // once, waits, and retries until the UDP port becomes available.
+    // Outer loop exists only to re-bind: on a socket/bind failure, log once,
+    // wait, and retry until the UDP port is available.
     bool bindErrorLogged = false;
 
     while (g_appRunning) {
@@ -86,7 +72,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         }
         bindErrorLogged = false;
 
-        client.setSocket(sock); // Give the client adapter the socket for sending
+        client.setSocket(sock);
 
         netSetRecvTimeoutMs(sock, 10);
         int rcvBuf = 65536;
@@ -106,15 +92,12 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         g_replayDrop.store(0, std::memory_order_relaxed);
         g_senderIP.store(0);
 
-        // Start reaper thread
         std::thread reaper(reaperLoop, std::ref(svc));
 
-        // Per-thread high-water-mark for the loop-microseconds metric.
-        // Avoids the cross-thread CAS on g_maxLoopUs on the ~99% of
-        // packets whose loop time is below the running peak; we only
-        // touch the atomic when we set a new local record. The atomic
-        // still ends up reflecting the global max because every thread
-        // raising its own water-mark also pushes the atomic up.
+        // Per-thread high-water-mark: skip the cross-thread CAS on g_maxLoopUs
+        // on the ~99% of packets below the running peak. The atomic still
+        // reflects the global max since every thread raising its own mark
+        // pushes the atomic up.
         uint64_t localMaxUs = 0;
 
         while (g_appRunning) {
@@ -129,28 +112,25 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
 
             auto t0 = std::chrono::steady_clock::now();
 
-            // Parse plaintext header
             uint32_t token = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
                              ((uint32_t)buf[2] << 8) | (uint32_t)buf[3];
             uint32_t counter = ((uint32_t)buf[4] << 24) | ((uint32_t)buf[5] << 16) |
                                ((uint32_t)buf[6] << 8) | (uint32_t)buf[7];
 
-            // Look up connection key for decryption (brief lock)
+            // Look up connection key (brief lock).
             uint8_t key[CRYPTO_KEY_SIZE];
             uint32_t lastCounter;
             if (!svc.getDecryptInfo(token, key, lastCounter)) continue;
 
-            // Replay protection
+            // Replay protection.
             if (counter <= lastCounter && lastCounter != 0) {
                 g_replayDrop.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
-            // In-place decrypt: the plaintext is exactly ctLen - 16 bytes and
-            // fits inside the ciphertext span. libsodium's chacha20-poly1305
-            // explicitly supports `m == c` overlap. Saves the second 256-byte
-            // stack buffer (and the corresponding cache footprint) the old
-            // path used.
+            // In-place decrypt (plaintext = ctLen - 16 bytes, fits the
+            // ciphertext span): libsodium chacha20-poly1305 supports `m == c`
+            // overlap, saving a second 256-byte stack buffer.
             uint8_t* ciphertext = buf + HEADER_SIZE;
             auto ctLen = static_cast<size_t>(n - HEADER_SIZE);
             unsigned long long ptLen = 0;
@@ -160,23 +140,21 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             }
             uint8_t* plaintext = ciphertext; // alias after in-place decrypt
 
-            // Sender address as uint32 (network byte order) -- no inet_ntop,
-            // no std::string alloc on the hot path. SessionService refreshes
-            // the human-readable cache only when this value changes.
+            // Sender address as uint32 (network byte order) — no inet_ntop, no
+            // std::string alloc on the hot path. SessionService refreshes the
+            // human-readable cache only when this value changes.
             const uint32_t senderIPv4 = sender.sin_addr.s_addr;
             const uint16_t senderPort = ntohs(sender.sin_port);
 
-            // Parse inner message
             if (ptLen < (unsigned long long)INNER_HEADER_SIZE) continue;
             uint16_t msgType = ((uint16_t)plaintext[0] << 8) | (uint16_t)plaintext[1];
             uint16_t msgLen = ((uint16_t)plaintext[2] << 8) | (uint16_t)plaintext[3];
             if ((size_t)(INNER_HEADER_SIZE + msgLen) > ptLen) continue;
             uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
-            // Fast path: MSG_GAMEPAD_DATA hits the fused single-lock entry
-            // point. Every other message kind takes the cold two-lock
-            // path (updatePostDecrypt + dispatchInnerMessage) -- those
-            // are sub-Hz so the extra acquire is invisible.
+            // Fast path: MSG_GAMEPAD_DATA hits the fused single-lock entry.
+            // Every other kind takes the cold two-lock path — sub-Hz, so the
+            // extra acquire is invisible.
             DispatchResult dr;
             if (msgType == MSG_GAMEPAD_DATA && msgLen >= 13) {
                 uint8_t ctrlIdx = payload[0];
@@ -190,18 +168,14 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 dr = dispatchInnerMessage(svc, token, msgType, payload, msgLen);
             }
 
-            // Gamepad data is the hot path -- record loop latency + submit
-            // outcome telemetry. Other message types skip this block.
+            // Hot path only: record loop latency + submit-outcome telemetry.
             if (dr.wasGamepadData) {
                 auto t1 = std::chrono::steady_clock::now();
                 uint64_t us =
                     (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
                         .count();
                 g_lastLoopUs.store(us, std::memory_order_relaxed);
-                // Only touch the cross-thread g_maxLoopUs CAS when we
-                // beat our own per-thread record. ~99% of packets skip
-                // the CAS loop entirely because the running max is
-                // higher than the current sample.
+                // Touch the cross-thread CAS only when we beat our own record.
                 if (us > localMaxUs) {
                     localMaxUs = us;
                     uint64_t prev = g_maxLoopUs.load(std::memory_order_relaxed);
@@ -227,9 +201,12 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         closesocket(sock);
         client.setSocket(INVALID_SOCKET);
 
-        // Tear down all connections via SessionService
         svc.closeAllSessions();
 
         reaper.join();
     }
+
+#ifdef _WIN32
+    if (mmcssHandle != nullptr) AvRevertMmThreadCharacteristics(mmcssHandle);
+#endif
 }
