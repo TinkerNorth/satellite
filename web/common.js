@@ -80,13 +80,42 @@ function navigate(path) {
   route();
 }
 
-const ALL_VIEWS = ['view-offline', 'view-dashboard', 'view-debug', 'view-logs', 'view-settings'];
+const ALL_VIEWS = ['view-offline', 'view-dashboard', 'view-debug', 'view-logs', 'view-settings', 'view-donate'];
 
 function showView(id) {
   ALL_VIEWS.forEach(v => {
     const el = document.getElementById(v);
     if (el) el.style.display = v === id ? 'block' : 'none';
   });
+  updateDonatePill(id);
+}
+
+const DONATE_DISMISS_KEY = 'satellite-donate-dismissed';
+
+function donatePillDismissed() {
+  try { return sessionStorage.getItem(DONATE_DISMISS_KEY) === '1'; }
+  catch (e) { return false; }
+}
+
+function updateDonatePill(viewId) {
+  const bar = document.getElementById('donate-bar');
+  if (!bar) return;
+  const hideHere = viewId === 'view-donate' || viewId === 'view-offline';
+  bar.hidden = hideHere || donatePillDismissed();
+}
+
+function wireDonatePill() {
+  const bar = document.getElementById('donate-bar');
+  if (!bar) return;
+  const dismiss = bar.querySelector('.donate-bar-dismiss');
+  if (dismiss) {
+    dismiss.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      bar.hidden = true;
+      try { sessionStorage.setItem(DONATE_DISMISS_KEY, '1'); } catch (e) {}
+    });
+  }
 }
 
 // The admin UI is bound to localhost and has no authentication — routing is a
@@ -103,6 +132,9 @@ function route() {
   } else if (path === '/logs') {
     showView('view-logs');
     if (typeof initLogs === 'function') initLogs();
+  } else if (path === '/donate') {
+    showView('view-donate');
+    if (typeof initDonate === 'function') initDonate();
   } else {
     if (path !== '/dashboard') { navigate('/dashboard'); return; }
     showView('view-dashboard');
@@ -131,5 +163,6 @@ function bootRoute() {
   }
 }
 window.addEventListener('popstate', route);
+document.addEventListener('DOMContentLoaded', wireDonatePill);
 document.addEventListener('DOMContentLoaded', bootRoute);
 

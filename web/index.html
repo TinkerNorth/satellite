@@ -74,6 +74,7 @@
         <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/logs')" data-i18n-attr="title:header.logs" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/debug')" data-i18n-attr="title:header.debug" title="Debug"><img src="img/icons/microscope.svg" alt="Debug" class="emoji-icon"></button>
+        <button class="btn-icon btn-donate-icon" onclick="navigate('/donate')" data-i18n-attr="title:header.donate" title="Donate"><img src="img/icons/heart-pink.svg" alt="Donate" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -153,6 +154,7 @@
       <h1><img src="img/icons/gear.svg" alt="" class="emoji-icon"> <span data-i18n="header.settings">Settings</span></h1>
       <div style="display:flex;gap:8px">
         <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon btn-donate-icon" onclick="navigate('/donate')" data-i18n-attr="title:header.donate" title="Donate"><img src="img/icons/heart-pink.svg" alt="Donate" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -246,6 +248,7 @@
       <h1><img src="img/icons/microscope.svg" alt="" class="emoji-icon"> <span data-i18n="header.debug-title">Debug Telemetry</span></h1>
       <div style="display:flex;gap:8px">
         <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon btn-donate-icon" onclick="navigate('/donate')" data-i18n-attr="title:header.donate" title="Donate"><img src="img/icons/heart-pink.svg" alt="Donate" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -336,6 +339,7 @@
       <h1><img src="img/icons/clipboard_lines.svg" alt="" class="emoji-icon"> <span data-i18n="header.logs-title">System Logs</span></h1>
       <div style="display:flex;gap:8px">
         <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+        <button class="btn-icon btn-donate-icon" onclick="navigate('/donate')" data-i18n-attr="title:header.donate" title="Donate"><img src="img/icons/heart-pink.svg" alt="Donate" class="emoji-icon"></button>
       </div>
     </div>
 
@@ -368,6 +372,129 @@
     <p class="hint" data-i18n="logs.hint">Showing last 500 log entries · auto-refreshes every 2 seconds</p>
   </div>
 
+  <div class="card card-wide" id="view-donate" style="display:none">
+    <div class="header-row">
+      <h1><img src="img/icons/heart-pink.svg" alt="" class="emoji-icon"> <span data-i18n="donate.title">Support Satellite</span></h1>
+      <div style="display:flex;gap:8px">
+        <button class="btn-icon" onclick="navigate('/dashboard')" data-i18n-attr="title:header.back" title="Back"><img src="img/icons/arrow_left.svg" alt="Back" class="emoji-icon"></button>
+      </div>
+    </div>
+
+    <div class="donate-hero">
+      <span class="donate-heart" aria-hidden="true"><img src="img/icons/heart-pink.svg" alt="" class="donate-heart-img"></span>
+      <span class="donate-eyebrow" data-i18n="donate.eyebrow">Support the project</span>
+      <h2 class="donate-headline" data-i18n="donate.h1">Satellite runs on coffee and goodwill.</h2>
+      <p class="donate-lead" data-i18n-html="donate.lead">Satellite, Dish, and every Dish client are <strong>free, open source, ad-free, and analytics-free</strong>. No paywalled features, no upsells, and no plans for any of that. Donations are what keep them true.</p>
+      <p class="donate-cta-row">
+        <a class="btn btn-donate" href="https://github.com/sponsors/TinkerNorth" rel="noopener noreferrer" target="_blank">
+          <img src="img/icons/heart-pink.svg" alt="" class="emoji-icon"> <span data-i18n="donate.cta-recommended">Sponsor on GitHub Sponsors (recommended)</span>
+        </a>
+      </p>
+    </div>
+
+    <div class="section">
+      <h2 class="section-title" data-i18n="donate.ways.title">Ways to give</h2>
+      <div class="donate-ways">
+        <a class="donate-way donate-recommended" href="https://github.com/sponsors/TinkerNorth" rel="noopener noreferrer" target="_blank">
+          <div class="donate-way-head">
+            <h3 data-i18n="donate.tiers.sponsors.label">GitHub Sponsors</h3>
+            <span class="donate-badge" data-i18n="donate.badge-recommended">Recommended</span>
+          </div>
+          <p class="donate-blurb" data-i18n="donate.tiers.sponsors.blurb">Monthly sponsorship, processed by GitHub. Lowest fees, no platform cut, and the only one GitHub matches dollar-for-dollar where eligible.</p>
+          <dl class="donate-way-meta">
+            <div><dt data-i18n="donate.meta-cadence">Cadence</dt><dd data-i18n="donate.cadence.recurring">Recurring</dd></div>
+            <div><dt data-i18n="donate.meta-pays-with">Pays with</dt><dd data-i18n="donate.tiers.sponsors.currencies">Card, PayPal, GitHub credit</dd></div>
+          </dl>
+          <span class="donate-visit" data-i18n="donate.tiers.sponsors.visit">Open GitHub Sponsors →</span>
+        </a>
+
+        <a class="donate-way" href="https://ko-fi.com/tinkernorth" rel="noopener noreferrer" target="_blank">
+          <div class="donate-way-head">
+            <h3 data-i18n="donate.tiers.kofi.label">Ko-fi</h3>
+          </div>
+          <p class="donate-blurb" data-i18n="donate.tiers.kofi.blurb">Tip jar. Buy us a coffee, no account required. Ko-fi takes 0% on one-time tips, so every dollar reaches the project.</p>
+          <dl class="donate-way-meta">
+            <div><dt data-i18n="donate.meta-cadence">Cadence</dt><dd data-i18n="donate.cadence.one-time">One-time</dd></div>
+            <div><dt data-i18n="donate.meta-pays-with">Pays with</dt><dd data-i18n="donate.tiers.kofi.currencies">Card, Apple Pay, Google Pay, PayPal</dd></div>
+          </dl>
+          <span class="donate-visit" data-i18n="donate.tiers.kofi.visit">Open Ko-fi →</span>
+        </a>
+
+        <a class="donate-way" href="https://buymeacoffee.com/tinkernorth" rel="noopener noreferrer" target="_blank">
+          <div class="donate-way-head">
+            <h3 data-i18n="donate.tiers.bmac.label">Buy Me a Coffee</h3>
+          </div>
+          <p class="donate-blurb" data-i18n="donate.tiers.bmac.blurb">Quick one-time gift or a monthly membership. Card, Apple Pay, or Google Pay. Great if you don't have a GitHub account.</p>
+          <dl class="donate-way-meta">
+            <div><dt data-i18n="donate.meta-cadence">Cadence</dt><dd data-i18n="donate.cadence.either">Either</dd></div>
+            <div><dt data-i18n="donate.meta-pays-with">Pays with</dt><dd data-i18n="donate.tiers.bmac.currencies">Card, Apple Pay, Google Pay</dd></div>
+          </dl>
+          <span class="donate-visit" data-i18n="donate.tiers.bmac.visit">Open Buy Me a Coffee →</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2 class="section-title" data-i18n="donate.why.title">What your donation actually pays for</h2>
+      <ul class="donate-list">
+        <li data-i18n-html="donate.why.hosting"><strong>Hosting.</strong> dish.tinkernorth.com, tinkernorth.com, and every signed-installer mirror.</li>
+        <li data-i18n-html="donate.why.signing"><strong>Code-signing certificates.</strong> Windows SmartScreen only plays nice because we pay for an EV certificate every year, and the same goes for the Apple Developer Program account for the upcoming macOS client.</li>
+        <li data-i18n-html="donate.why.play"><strong>Google Play developer fee.</strong> Plus the time required to keep the Play listing compliant with every new policy round.</li>
+        <li data-i18n-html="donate.why.hardware"><strong>Hardware testing.</strong> Phones across the Android version range, gaming PCs at different tiers, and the controllers we benchmark against.</li>
+        <li data-i18n-html="donate.why.time"><strong>Time.</strong> Honest answer: most of it. This is a nights-and-weekends project. Donations let me say "yes" to working on it instead of taking on extra consulting.</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h2 class="section-title" data-i18n="donate.faq.title">Donation FAQ</h2>
+      <div class="donate-faq">
+        <details>
+          <summary data-i18n="donate.faq.where.q">Where does the money actually go?</summary>
+          <p data-i18n="donate.faq.where.a">Code-signing certificates, the Google Play developer fee, hosting, the eventual Apple Developer Program account for Dish for macOS, domain renewals, and the time I'd otherwise spend taking contract work instead of shipping.</p>
+        </details>
+        <details>
+          <summary data-i18n="donate.faq.nonprofit.q">Is TinkerNorth a registered non-profit?</summary>
+          <p data-i18n="donate.faq.nonprofit.a">No. TinkerNorth is an independent maker, so donations are not tax-deductible. They're treated as gifts.</p>
+        </details>
+        <details>
+          <summary data-i18n="donate.faq.which.q">Which platform should I use?</summary>
+          <p data-i18n="donate.faq.which.a">GitHub Sponsors if you can — it takes 0% platform fees on individual sponsorships and makes recurring support trivial. Ko-fi is great for one-off tips. Buy Me a Coffee works well if you'd rather pay with Apple/Google Pay and don't have a GitHub account.</p>
+        </details>
+        <details>
+          <summary data-i18n="donate.faq.perks.q">Do sponsors get anything special?</summary>
+          <p data-i18n="donate.faq.perks.a">Nothing functional. Every feature, every release, every privacy guarantee is the same for sponsors and non-sponsors. What you get is a shout-out in the release notes for major versions and the knowledge that you're directly funding a free-as-in-freedom project.</p>
+        </details>
+        <details>
+          <summary data-i18n="donate.faq.cant.q">I can't donate. How else can I help?</summary>
+          <p data-i18n="donate.faq.cant.a">Star the repos on GitHub, file good bug reports, contribute a PR, write a blog post or video, or just tell a friend who's been hunting for a wireless gamepad solution.</p>
+        </details>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2 class="section-title" data-i18n="donate.other.title">Can't donate? You can still help.</h2>
+      <ul class="donate-list">
+        <li data-i18n-html="donate.other.star"><strong>Star</strong> the <a href="https://github.com/TinkerNorth/satellite" rel="noopener noreferrer" target="_blank">Satellite repo</a> and the <a href="https://github.com/TinkerNorth/dish-android" rel="noopener noreferrer" target="_blank">Dish for Android repo</a> on GitHub. It genuinely moves the needle for discovery.</li>
+        <li data-i18n-html="donate.other.bugs"><strong>File good bug reports.</strong> A reproducible issue is worth ten "doesn't work" threads.</li>
+        <li data-i18n-html="donate.other.tell"><strong>Tell a friend.</strong> A single post or short video is worth a lot.</li>
+        <li data-i18n-html="donate.other.contribute"><strong>Contribute.</strong> Pull requests are welcome on every repo — see CONTRIBUTING.md. Translations are particularly easy to land.</li>
+      </ul>
+    </div>
+
+    <p class="donate-thanks" data-i18n="donate.thanks">Thank you. Every dollar, every star, every shared link. They all add up. ~Emir</p>
+  </div>
+
+  <aside class="donate-bar" id="donate-bar" hidden>
+    <a class="donate-pill" href="/donate" onclick="navigate('/donate');return false;">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="copy">
+        <strong data-i18n="donate.pill.headline">Support Satellite</strong>
+        <span class="ask" data-i18n="donate.pill.ask">Donate now</span>
+      </span>
+    </a>
+    <button class="donate-bar-dismiss" type="button" data-i18n-attr="aria-label:donate.pill.dismiss" aria-label="Dismiss donate prompt">&times;</button>
+  </aside>
+
   <script src="common.js"></script>
   <script src="loaders.js"></script>
   <script src="updates.js"></script>
@@ -375,5 +502,6 @@
   <script src="settings.js"></script>
   <script src="debug.js"></script>
   <script src="logs.js"></script>
+  <script src="donate.js"></script>
 </body>
 </html>
