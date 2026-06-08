@@ -17,6 +17,7 @@
   "header.settings": "Settings",
   "header.logs": "Logs",
   "header.debug": "Debug",
+  "header.donate": "Donate",
   "header.back": "Back",
   "header.debug-title": "Debug Telemetry",
   "header.logs-title": "System Logs",
@@ -282,5 +283,65 @@
   "logs.autoscroll": "Auto-scroll",
   "logs.loading": "Loading logs…",
   "logs.empty.filtered": "No log entries match filters",
-  "logs.hint": "Showing last 500 log entries · auto-refreshes every 2 seconds"
+  "logs.hint": "Showing last 500 log entries · auto-refreshes every 2 seconds",
+
+  "donate.title": "Support Satellite",
+  "donate.eyebrow": "Support the project",
+  "donate.h1": "Satellite runs on coffee and goodwill.",
+  "donate.lead": "Satellite, Dish, and every Dish client are <strong>free, open source, ad-free, and analytics-free</strong>. No paywalled features, no upsells, and no plans for any of that. Donations are what keep them true.",
+  "donate.cta-recommended": "Sponsor on GitHub Sponsors (recommended)",
+
+  "donate.pill.headline": "Support Satellite",
+  "donate.pill.ask": "Donate now",
+  "donate.pill.dismiss": "Dismiss donate prompt",
+
+  "donate.ways.title": "Ways to give",
+  "donate.badge-recommended": "Recommended",
+  "donate.meta-cadence": "Cadence",
+  "donate.meta-pays-with": "Pays with",
+  "donate.cadence.recurring": "Recurring",
+  "donate.cadence.one-time": "One-time",
+  "donate.cadence.either": "Either",
+
+  "donate.tiers.sponsors.label": "GitHub Sponsors",
+  "donate.tiers.sponsors.blurb": "Monthly sponsorship, processed by GitHub. Lowest fees, no platform cut. The most stable way to support the project month after month, and the only one GitHub matches dollar-for-dollar through the GitHub Sponsors Matching Fund where eligible.",
+  "donate.tiers.sponsors.currencies": "Card, PayPal, GitHub credit",
+  "donate.tiers.sponsors.visit": "Open GitHub Sponsors →",
+
+  "donate.tiers.kofi.label": "Ko-fi",
+  "donate.tiers.kofi.blurb": "Tip jar. Buy us a coffee, no account required. Ko-fi takes 0% on one-time tips, so every dollar reaches the project.",
+  "donate.tiers.kofi.currencies": "Card, Apple Pay, Google Pay, PayPal",
+  "donate.tiers.kofi.visit": "Open Ko-fi →",
+
+  "donate.tiers.bmac.label": "Buy Me a Coffee",
+  "donate.tiers.bmac.blurb": "Quick one-time gift or a monthly membership. Card, Apple Pay, or Google Pay. Great if you don't have a GitHub account.",
+  "donate.tiers.bmac.currencies": "Card, Apple Pay, Google Pay",
+  "donate.tiers.bmac.visit": "Open Buy Me a Coffee →",
+
+  "donate.why.title": "What your donation actually pays for",
+  "donate.why.hosting": "<strong>Hosting.</strong> dish.tinkernorth.com, tinkernorth.com, and every signed-installer mirror.",
+  "donate.why.signing": "<strong>Code-signing certificates.</strong> Windows SmartScreen only plays nice because we pay for an EV certificate every year, and the same goes for the Apple Developer Program account for the upcoming macOS client.",
+  "donate.why.play": "<strong>Google Play developer fee.</strong> Plus the time required to keep the Play listing compliant with every new policy round.",
+  "donate.why.hardware": "<strong>Hardware testing.</strong> Phones across the Android version range, gaming PCs at different tiers, and the controllers we benchmark against.",
+  "donate.why.time": "<strong>Time.</strong> Honest answer: most of it. This is a nights-and-weekends project. Donations let me say \"yes\" to working on it instead of taking on extra consulting.",
+
+  "donate.faq.title": "Donation FAQ",
+  "donate.faq.where.q": "Where does the money actually go?",
+  "donate.faq.where.a": "Code-signing certificates, the Google Play developer fee, hosting, the eventual Apple Developer Program account for Dish for macOS, domain renewals, and the time I'd otherwise spend taking contract work instead of shipping.",
+  "donate.faq.nonprofit.q": "Is TinkerNorth a registered non-profit?",
+  "donate.faq.nonprofit.a": "No. TinkerNorth is an independent maker, so donations are not tax-deductible. They're treated as gifts.",
+  "donate.faq.which.q": "Which platform should I use?",
+  "donate.faq.which.a": "GitHub Sponsors if you can — it takes 0% platform fees on individual sponsorships and makes recurring support trivial. Ko-fi is great for one-off tips. Buy Me a Coffee works well if you'd rather pay with Apple/Google Pay and don't have a GitHub account.",
+  "donate.faq.perks.q": "Do sponsors get anything special?",
+  "donate.faq.perks.a": "Nothing functional. Every feature, every release, every privacy guarantee is the same for sponsors and non-sponsors. What you get is a shout-out in the release notes for major versions and the knowledge that you're directly funding a free-as-in-freedom project.",
+  "donate.faq.cant.q": "I can't donate. How else can I help?",
+  "donate.faq.cant.a": "Star the repos on GitHub, file good bug reports, contribute a PR, write a blog post or video, or just tell a friend who's been hunting for a wireless gamepad solution.",
+
+  "donate.other.title": "Can't donate? You can still help.",
+  "donate.other.star": "<strong>Star</strong> the <a href=\"https://github.com/TinkerNorth/satellite\" rel=\"noopener noreferrer\" target=\"_blank\">Satellite repo</a> and the <a href=\"https://github.com/TinkerNorth/dish-android\" rel=\"noopener noreferrer\" target=\"_blank\">Dish for Android repo</a> on GitHub. It genuinely moves the needle for discovery.",
+  "donate.other.bugs": "<strong>File good bug reports.</strong> A reproducible issue is worth ten \"doesn't work\" threads.",
+  "donate.other.tell": "<strong>Tell a friend.</strong> A single post or short video is worth a lot.",
+  "donate.other.contribute": "<strong>Contribute.</strong> Pull requests are welcome on every repo — see CONTRIBUTING.md. Translations are particularly easy to land.",
+
+  "donate.thanks": "Thank you. Every dollar, every star, every shared link. They all add up. ~Emir"
 }

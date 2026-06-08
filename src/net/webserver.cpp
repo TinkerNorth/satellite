@@ -564,6 +564,7 @@ void adminHttpThread(SessionService& svc) {
     g_httpServer.Get("/settings", serveIndex);
     g_httpServer.Get("/debug", serveIndex);
     g_httpServer.Get("/logs", serveIndex);
+    g_httpServer.Get("/donate", serveIndex);
 
     g_httpServer.Get("/api/backend/status", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(buildBackendJson(), "application/json");

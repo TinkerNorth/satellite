@@ -10,6 +10,7 @@
 
 @interface SatelliteTrayTarget : NSObject <NSUserNotificationCenterDelegate>
 - (void)openUI:(id)sender;
+- (void)donate:(id)sender;
 - (void)updateAction:(id)sender;
 - (void)quit:(id)sender;
 - (void)rebuildMenu;
@@ -23,6 +24,12 @@ static SatelliteTrayTarget* g_target = nil;
 - (void)openUI:(id)sender {
     (void)sender;
     NSString* url = [NSString stringWithFormat:@"http://localhost:%d", g_config.webPort];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
+}
+
+- (void)donate:(id)sender {
+    (void)sender;
+    NSString* url = [NSString stringWithFormat:@"http://localhost:%d/donate", g_config.webPort];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
 }
 
@@ -56,6 +63,12 @@ static SatelliteTrayTarget* g_target = nil;
                                                keyEquivalent:@""];
     [openItem setTarget:self];
     [menu addItem:openItem];
+
+    NSMenuItem* donateItem = [[NSMenuItem alloc] initWithTitle:@"Donate"
+                                                        action:@selector(donate:)
+                                                 keyEquivalent:@""];
+    [donateItem setTarget:self];
+    [menu addItem:donateItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 

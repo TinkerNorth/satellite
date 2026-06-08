@@ -38,6 +38,13 @@ static void onOpenUI(GtkMenuItem*, gpointer) {
     (void)std::system(cmd);
 }
 
+static void onDonate(GtkMenuItem*, gpointer) {
+    char cmd[112];
+    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d/donate >/dev/null 2>&1 &",
+                  g_config.webPort);
+    (void)std::system(cmd);
+}
+
 static void onUpdateClick(GtkMenuItem*, gpointer) {
     if (!g_updateService) return;
     UpdateStatusSnapshot s = g_updateService->snapshot();
@@ -181,6 +188,10 @@ bool addTrayIcon() {
     GtkWidget* openItem = gtk_menu_item_new_with_label("Open Web UI");
     g_signal_connect(openItem, "activate", G_CALLBACK(onOpenUI), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), openItem);
+
+    GtkWidget* donateItem = gtk_menu_item_new_with_label("Donate");
+    g_signal_connect(donateItem, "activate", G_CALLBACK(onDonate), nullptr);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), donateItem);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
