@@ -160,6 +160,7 @@ void showTrayMenu(HWND hwnd) {
     if (!g_menuPairIds.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     AppendMenuW(menu, MF_STRING, IDM_OPEN_UI, L"Open Web UI");
+    AppendMenuW(menu, MF_STRING, IDM_DONATE, L"Donate");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     // Rebuilt each open so the label reflects current update state. Disabled
@@ -365,6 +366,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case IDM_OPEN_UI:
             openUrl(webUiUrl().c_str());
+            break;
+        case IDM_DONATE:
+            openUrl(webUiUrl(L"/donate").c_str());
             break;
         case IDM_OPEN_LOGS: {
             std::string dir = lifecycle::logDir();
