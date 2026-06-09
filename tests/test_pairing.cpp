@@ -119,6 +119,62 @@ int main() {
         EXPECT(pollPairRequest("b", key) == PairRequestState::Pending);
     }
 
+    {
+        resetPairRequestsForTest();
+        TEST("pairRequestSnapshot exposes the PIN in-process for a Pending request");
+        submitPairRequest("dev1", "Pixel", "10.0.0.9", "7777");
+        std::string name, ip, pin;
+        int secs = 0;
+        EXPECT(pairRequestSnapshot("dev1", name, ip, pin, secs));
+        EXPECT(name == "Pixel");
+        EXPECT(ip == "10.0.0.9");
+        EXPECT(pin == "7777"); // only the in-process snapshot carries the PIN
+        EXPECT(secs > 0);
+        // No request for an unknown device.
+        EXPECT(!pairRequestSnapshot("nope", name, ip, pin, secs));
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("acceptPairRequestConfirmed approves without re-checking the PIN");
+        submitPairRequest("dev1", "Pixel", "ip", "4821");
+        std::string name, ip;
+        EXPECT(acceptPairRequestConfirmed("dev1", "confirmedkey", name, ip));
+        EXPECT(name == "Pixel");
+        std::string key;
+        EXPECT(pollPairRequest("dev1", key) == PairRequestState::Approved);
+        EXPECT(key == "confirmedkey");
+        // No Pending request → false.
+        EXPECT(!acceptPairRequestConfirmed("ghost", "k", name, ip));
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("setPairRequestListener fires once per new request with the device id");
+        std::string fired;
+        int count = 0;
+        setPairRequestListener([&](const std::string& id) {
+            fired = id;
+            count++;
+        });
+        submitPairRequest("dev-listen", "Pixel", "ip", "1234");
+        EXPECT(count == 1);
+        EXPECT(fired == "dev-listen");
+        setPairRequestListener(nullptr); // detach so later tests are unaffected
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("the pending registry caps at kMaxPending (8), evicting the oldest");
+        for (int i = 1; i <= 9; i++) {
+            submitPairRequest("dev" + std::to_string(i), "D", "ip", "0000");
+        }
+        EXPECT(pendingPairRequests().size() == 8); // capped, not 9
+        std::string key;
+        EXPECT(pollPairRequest("dev1", key) == PairRequestState::None); // oldest evicted
+        EXPECT(pollPairRequest("dev9", key) == PairRequestState::Pending);
+    }
+
     std::cout << "test_pairing: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }
