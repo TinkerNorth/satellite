@@ -128,17 +128,6 @@ class IClientPort {
                               uint8_t b) = 0;
 };
 
-// Configuration persistence.
-class IConfigPort {
-  public:
-    virtual ~IConfigPort() = default;
-
-    virtual Config loadConfig() = 0;
-    virtual void saveConfig(const Config& cfg) = 0;
-    virtual void setAutoStart(bool enable) = 0;
-    virtual bool getAutoStart() = 0;
-};
-
 // Logging.
 class ILogPort {
   public:

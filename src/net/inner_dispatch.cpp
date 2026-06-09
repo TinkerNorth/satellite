@@ -38,7 +38,13 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
             caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
                                          static_cast<uint16_t>(payload[2]));
         }
-        svc.handleControllerAdd(token, ctrlIdx, caps);
+        // controllerType: 1 byte, optional — a pre-extension dish omits it
+        // (msgLen 3), so we pass UNSPECIFIED and the handler retains the slot's
+        // existing type (a follow-up MSG_CONTROLLER_TYPE then corrects it). A
+        // current dish sends it so the first plug is the correct device.
+        uint8_t controllerType = CONTROLLER_TYPE_UNSPECIFIED;
+        if (msgLen >= 4) { controllerType = payload[3]; }
+        svc.handleControllerAdd(token, ctrlIdx, caps, controllerType);
         break;
     }
     case MSG_CONTROLLER_REMOVE: {

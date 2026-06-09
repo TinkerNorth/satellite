@@ -75,6 +75,10 @@ void UpdateService::stop() {
         std::lock_guard<std::mutex> lk(mtx_);
         cv_.notify_all();
     }
+    {
+        std::lock_guard<std::mutex> lk(timerMtx_);
+        timerCv_.notify_all();
+    }
     if (workerTh_.joinable()) workerTh_.join();
     if (timerTh_.joinable()) timerTh_.join();
     started_ = false;
@@ -256,7 +260,11 @@ void UpdateService::workerLoop() {
 
 void UpdateService::timerLoop() {
     using namespace std::chrono_literals;
-    for (int i = 0; i < 30 && !stopping_; i++) std::this_thread::sleep_for(1s);
+    auto interruptibleSleep = [this](std::chrono::seconds d) {
+        std::unique_lock<std::mutex> lk(timerMtx_);
+        timerCv_.wait_for(lk, d, [this] { return stopping_.load(); });
+    };
+    interruptibleSleep(30s); // settle before the first periodic eval
     while (!stopping_) {
         bool shouldCheck = false;
         {
@@ -269,7 +277,7 @@ void UpdateService::timerLoop() {
             }
         }
         if (shouldCheck) requestCheck(/*userInitiated=*/false);
-        for (int i = 0; i < 60 && !stopping_; i++) std::this_thread::sleep_for(1s);
+        interruptibleSleep(60s);
     }
 }
 

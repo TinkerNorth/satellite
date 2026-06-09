@@ -5,6 +5,7 @@
 // removal in 2027.
 #include "discovery.h"
 #include "config.h"
+#include "discovery_beacon.h"
 #include "machine_id.h"
 
 void discoveryThread() {
@@ -55,15 +56,12 @@ void discoveryThread() {
         if (enabled) {
             dest.sin_port = htons((uint16_t)discPort);
 
-            char beacon[512];
             // pairPort / httpPort both carry the single HTTPS client API port;
             // the admin web port is localhost-only and never reachable here.
-            snprintf(
-                beacon, sizeof(beacon),
-                R"({"service":"satellite","name":"%s","udpPort":%d,"pairPort":%d,"httpPort":%d,"machineId":"%s"})",
-                hostname, udpPort, DEFAULT_CLIENT_PORT, DEFAULT_CLIENT_PORT, machineId.c_str());
+            const std::string beacon = buildDiscoveryBeacon(hostname, udpPort, DEFAULT_CLIENT_PORT,
+                                                            DEFAULT_CLIENT_PORT, machineId);
 
-            sendto(sock, beacon, (int)strlen(beacon), 0, reinterpret_cast<sockaddr*>(&dest),
+            sendto(sock, beacon.c_str(), (int)beacon.size(), 0, reinterpret_cast<sockaddr*>(&dest),
                    sizeof(dest));
         }
 

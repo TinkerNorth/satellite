@@ -174,6 +174,10 @@ inline const int MAX_BACKEND_CONTROLLERS = 16;
 inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
 inline const uint8_t CONTROLLER_TYPE_PLAYSTATION = 1;
 inline const uint8_t CONTROLLER_TYPE_COUNT = 2;
+// Sentinel for "type not supplied on this MSG_CONTROLLER_ADD" — a pre-extension
+// dish omits the type byte, and the add then retains the slot's existing type
+// instead of forcing it to a default.
+inline const uint8_t CONTROLLER_TYPE_UNSPECIFIED = 0xFF;
 
 inline const char* controllerTypeName(uint8_t type) {
     switch (type) {

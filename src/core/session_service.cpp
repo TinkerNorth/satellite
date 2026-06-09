@@ -188,7 +188,8 @@ void SessionService::handleHeartbeat(uint32_t token) {
     client_.sendServerStatus(conn, backend_.isBusOpen(), (uint8_t)countGlobalActiveControllers());
 }
 
-void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16_t caps) {
+void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16_t caps,
+                                         uint8_t controllerType) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
@@ -220,6 +221,13 @@ void SessionService::handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16
         return;
     }
 
+    // A pre-extension dish omits the type byte (UNSPECIFIED): retain the slot's
+    // existing type. A current dish supplies it so the first plug is the correct
+    // device (no follow-up MSG_CONTROLLER_TYPE / replug).
+    if (controllerType != CONTROLLER_TYPE_UNSPECIFIED) {
+        ctrl.controllerType =
+            (controllerType < CONTROLLER_TYPE_COUNT) ? controllerType : CONTROLLER_TYPE_XBOX;
+    }
     bool plugOk = controllerTypeUsesDS4(ctrl.controllerType) ? backend_.pluginDeviceDS4(serial)
                                                              : backend_.pluginDevice(serial);
     if (!plugOk) {
@@ -358,6 +366,14 @@ void SessionService::handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8
                         "Replugged controller #" + std::to_string(ctrlIdx) + " as " +
                             controllerTypeLabel(safeType) + " (serial " + std::to_string(serial) +
                             ")");
+            // The replug rebuilt the virtual device, so the motion flags the dish
+            // latched at ADD time are stale. Re-send a fresh ACK.
+            uint8_t motionFlags = 0;
+            if (backend_.supportsMotionForType(ctrl.controllerType)) {
+                motionFlags |= ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE;
+            }
+            if (backend_.motionBackendOk(serial)) { motionFlags |= ACK_MOTION_FLAG_BACKEND_OK; }
+            client_.sendControllerAck(conn, MSG_CONTROLLER_TYPE, ctrlIdx, ACK_OK, motionFlags);
         }
     } else {
         log_.logMsg(LogLevel::INFO, "service",

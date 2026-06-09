@@ -658,6 +658,35 @@ set_target_properties(test_pairing PROPERTIES
 )
 add_test(NAME pairing COMMAND test_pairing)
 
+# ── Portable pure-logic suites (header-only or single-TU, no networking) ─────
+# Each pairs a pure unit (codec / parser / predicate) with its own test binary,
+# mirroring the "pure core, separate from I/O" split the app itself uses.
+function(satellite_add_pure_test name)
+    add_executable(${name} ${ARGN})
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(WIN32 AND MINGW)
+        target_compile_options(${name} PRIVATE -O2 -Wall -Wextra)
+    elseif(MSVC)
+        target_compile_options(${name} PRIVATE /O2 /W4)
+    endif()
+    set_target_properties(${name} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+satellite_add_pure_test(test_ipv4_util tests/test_ipv4_util.cpp)
+satellite_add_pure_test(test_codecs tests/test_codecs.cpp)
+satellite_add_pure_test(test_machine_id tests/test_machine_id.cpp)
+satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
+satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
+satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
+
+# UpdateService spawns worker/timer threads, so this suite needs pthreads on
+# Linux/macOS (MinGW links winpthread implicitly).
+find_package(Threads REQUIRED)
+target_link_libraries(test_update_service PRIVATE Threads::Threads)
+
 # ── Linux platform tests ────────────────────────────────────────────────────
 # Exercises the Linux-only adapters that don't need root/uinput/D-Bus:
 # JSON helpers, config persistence, XDG autostart .desktop file handling,

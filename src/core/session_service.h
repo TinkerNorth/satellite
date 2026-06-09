@@ -37,7 +37,12 @@ class SessionService {
 
     // `caps` is the CAP_* word from the payload (0 when the dish is
     // pre-cap-aware), stored so the web UI knows which streams to expect.
-    void handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16_t caps = 0);
+    // `controllerType` lets a single MSG_CONTROLLER_ADD plug the correct virtual
+    // device on the first try. CONTROLLER_TYPE_UNSPECIFIED (a pre-extension dish
+    // that omits the type byte) retains the slot's existing type instead, then
+    // a follow-up MSG_CONTROLLER_TYPE corrects it.
+    void handleControllerAdd(uint32_t token, uint8_t ctrlIdx, uint16_t caps = 0,
+                             uint8_t controllerType = CONTROLLER_TYPE_UNSPECIFIED);
 
     void handleControllerRemove(uint32_t token, uint8_t ctrlIdx);
     void handleControllerType(uint32_t token, uint8_t ctrlIdx, uint8_t controllerType);

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Linux-only shared state on top of core/app_state.h, plus the system headers
+// Linux-only shared state on top of app/app_state.h, plus the system headers
 // the rest of platform/linux/ relies on.
 #pragma once
 
 // Portable shared state (pulls in net_compat.h).
-#include "core/app_state.h"
+#include "app/app_state.h"
 
 #include <cstdio>
 #include <cstdlib>
