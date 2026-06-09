@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Layers macOS-only extras and system-header includes on top of the portable
-// app state (Config, atomics, log ring, httplib, g_pairSock) in core/app_state.h.
+// app state (Config, atomics, log ring, httplib, g_pairSock) in app/app_state.h.
 #pragma once
 
 // Portable shared state (pulls in net_compat.h).
-#include "core/app_state.h"
+#include "app/app_state.h"
 
 #include <cstdio>
 #include <cstdlib>

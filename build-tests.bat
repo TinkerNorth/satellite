@@ -1,31 +1,40 @@
 @echo off
 REM ============================================================================
-REM  Build & Run Tests (Satellite)
-REM  Requires: MinGW-w64 (g++) in PATH
+REM  Build & Run Tests (Satellite) -- thin CMake/CTest wrapper.
+REM
+REM  This script used to hand-compile a single test binary, so the other suites
+REM  registered in CMakeLists.txt (receiver, mdns, pairing, vigem_adapter, ...)
+REM  silently never ran here. CMakeLists.txt is the single source of truth for
+REM  what gets built and tested; this wrapper just drives it.
+REM
+REM  Requires: CMake + a MinGW-w64 g++ (MSYS2) on PATH (see install-dependencies.bat).
 REM ============================================================================
 
 setlocal
 
-set CXX=g++
-set CXXFLAGS=-O2 -Wall -Wextra -std=c++17 -D_WIN32_WINNT=0x0A00
-set INCLUDES=-Isrc
-
-echo === Building Tests ===
-echo.
-
-echo [1/1] test_session_service.exe
-%CXX% %CXXFLAGS% %INCLUDES% -o test_session_service.exe tests/test_session_service.cpp src/core/session_service.cpp
+where cmake >nul 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo [FAIL] test_session_service.exe
+    echo [FAIL] cmake not found on PATH. Install CMake and MinGW-w64 g++ first;
+    echo        see install-dependencies.bat.
     exit /b 1
 )
-echo [OK]  test_session_service.exe
 
-echo.
-echo === Running Tests ===
-echo.
+echo === [1/3] Configure (Release, MinGW Makefiles) ===
+cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] configure
+    exit /b 1
+)
 
-test_session_service.exe
+echo === [2/3] Build ===
+cmake --build build --config Release -j
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] build
+    exit /b 1
+)
+
+echo === [3/3] Run tests (ctest) ===
+ctest --test-dir build --output-on-failure -C Release
 if %ERRORLEVEL% neq 0 (
     echo.
     echo === Tests FAILED ===
@@ -34,4 +43,3 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo === All tests passed ===
-

@@ -111,12 +111,52 @@ webserver.cpp ─────►  closeSession()    ────► ClientAdapte
 
 ### Key Design Principles
 
-- **`core/`** contains no Win32, Winsock, or ViGEm `#include`s
+- **`core/`** contains no Win32, Winsock, ViGEm, or `httplib` `#include`s —
+  the invariant is enforced literally. Process-wide infrastructure globals
+  (config, log ring, telemetry atomics, the HTTP server handle, sockets) live
+  in **`src/app/app_state.h`**, a separate infra layer, never in `core/`.
 - **SessionService** is the sole owner of connection state, serial pool,
   and controller lifecycle — no duplicated teardown logic
 - **Adapters** are injected via constructor (dependency injection)
 - **`main.cpp`** is the Composition Root — instantiates adapters and
   wires them to the service
+
+### Where a port belongs
+
+A port exists **for what the domain core needs**, not for every piece of
+infrastructure. `SessionService` needs gamepad, client, and log I/O, so those
+are ports (`IGamepadPort` / `IClientPort` / `ILogPort`); `UpdateService` adds
+`IUpdaterPort`. Configuration is **not** a port: the core never reads it. The
+webserver and `UpdateService` are themselves adapters/infrastructure and touch
+`g_config` (+ `loadConfig`/`saveConfig`) directly — inverting that behind a port
+would add a seam with no domain consumer. (An earlier unused `IConfigPort` /
+`ConfigAdapter` pair was removed for exactly this reason.)
+
+### Pattern: a pure codec, separate from its I/O
+
+Every wire format or derived value is split into a **pure, socket-free core**
+and a thin I/O shell, so the format is unit-testable without a socket or driver:
+
+| Pure core (tested directly)            | I/O shell                          |
+|----------------------------------------|------------------------------------|
+| `net/mdns_protocol.{h,cpp}` (encode/parse) | `net/mdns_responder.cpp` (multicast loop) |
+| `net/inner_dispatch.cpp` (length guards)   | `net/receiver.cpp` (recvfrom loop) |
+| `net/discovery_beacon.h` (`buildDiscoveryBeacon`) | `net/discovery.cpp` (broadcast loop) |
+| `net/machine_id.h` (`isValidMachineId`)    | `net/machine_id.cpp` (file + RNG)  |
+| `vigem_submit_policy.h` (`ds4ExSubmitLanded`) | `vigem.cpp` (`DeviceIoControl`)  |
+
+When adding a wire format, follow this split — put the byte-shaping in a pure
+function and give it a `tests/test_*.cpp` suite.
+
+## Testing
+
+`ctest` (driven by `cmake`) is the single entry point; `build-tests.bat` is a
+thin wrapper around it. Each pure unit gets its own portable suite under
+`tests/` using the in-repo `TEST`/`EXPECT` macros (no external framework).
+Domain logic is tested against **mock ports** (e.g. `MockViGem : IGamepadPort`,
+`MockUpdater : IUpdaterPort`), so the core is exercised with zero platform code.
+Socket/`httplib` loops and OpenSSL cert generation are intentionally not
+unit-tested — their pure cores (above) are the tested seams.
 
 ## Data Model
 

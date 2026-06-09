@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "vigem.h"
 
+#include "vigem_submit_policy.h"
+
 #include <cstring>
 #include <type_traits>
 
@@ -139,7 +141,18 @@ bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE 
                      const DS4_REPORT_EX& rpt) {
     DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
     sr.Report = rpt;
-    return issueOverlappedSync(bus, IOCTL_DS4_SUBMIT_REPORT_EX, &sr, sr.Size, event);
+    // Upstream ViGEmBus has no separate "_EX" submit IOCTL: vigem_target_ds4_update_ex
+    // submits the extended report through the SAME IOCTL_DS4_SUBMIT_REPORT and the
+    // driver dispatches basic vs extended by the buffer size (sr.Size, = 71 packed).
+    OVERLAPPED ov{};
+    ov.hEvent = event;
+    ResetEvent(event);
+    DWORD xfr = 0;
+    DeviceIoControl(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
+    const BOOL ok = GetOverlappedResult(bus, &ov, &xfr, TRUE);
+    // Interpret the completion per ViGEmClient's criterion (see ds4ExSubmitLanded):
+    // most non-signalling completions still delivered the report.
+    return ds4ExSubmitLanded(ok != 0, ok ? 0u : GetLastError());
 }
 
 void unplugTarget(HANDLE bus, ULONG serial) {

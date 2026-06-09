@@ -7,6 +7,8 @@
 // driver layer below stands in for vigem.cpp so this links without real IOCTLs.
 #include "vigem_adapter.h"
 
+#include "vigem_submit_policy.h"
+
 #include <iostream>
 #include <string>
 
@@ -264,6 +266,110 @@ static void test_xusb_to_ds4_conversion_maps_input() {
     a.closeBus();
 }
 
+// ── DS4 extended-report submit policy (the 50→1784→259 regression) ──────────
+//
+// ds4ExSubmitLanded decides whether an EX submit reached the device from the
+// GetOverlappedResult outcome. The driver routinely completes this IOCTL with a
+// benign non-zero status (259 etc.) yet still applies the report, so only
+// ACCESS_DENIED and a wrong-buffer-size reject count as a true miss.
+static void test_ds4ExSubmitLanded_overlapped_success_always_lands() {
+    TEST("ds4ExSubmitLanded: GetOverlappedResult success → landed, regardless of stale error");
+    EXPECT(ds4ExSubmitLanded(true, 0));
+    EXPECT(ds4ExSubmitLanded(true, ERROR_ACCESS_DENIED)); // ok wins over a stale error
+    EXPECT(ds4ExSubmitLanded(true, ERROR_INVALID_PARAMETER));
+}
+
+static void test_ds4ExSubmitLanded_benign_failures_still_land() {
+    TEST("ds4ExSubmitLanded: benign completion statuses still delivered the report");
+    EXPECT(ds4ExSubmitLanded(false, 0));
+    EXPECT(ds4ExSubmitLanded(false, ERROR_NO_MORE_ITEMS)); // 259 — the one that derailed us
+    EXPECT(ds4ExSubmitLanded(false, ERROR_IO_PENDING));    // 997
+    EXPECT(ds4ExSubmitLanded(false, ERROR_OPERATION_ABORTED));
+}
+
+static void test_ds4ExSubmitLanded_real_failures_do_not_land() {
+    TEST("ds4ExSubmitLanded: ACCESS_DENIED and wrong-size rejects are true misses");
+    EXPECT(!ds4ExSubmitLanded(false, ERROR_ACCESS_DENIED));       // 5  — target gone
+    EXPECT(!ds4ExSubmitLanded(false, ERROR_INVALID_PARAMETER));   // 87 — pre-1.17 wrong size
+    EXPECT(!ds4ExSubmitLanded(false, ERROR_INVALID_USER_BUFFER)); // 1784 — 1.21 wrong size
+}
+
+// The extended submit struct must be 71 bytes (packed) so the driver routes it
+// to the EX path; a different size is rejected (the INVALID_USER_BUFFER bug). The
+// EX report itself is the 63-byte DS4 USB input report. EX and basic submits ride
+// the SAME IOCTL, distinguished only by size — so the two must differ.
+static void test_ds4_ex_struct_abi() {
+    TEST("DS4 EX ABI: EX submit is 71 bytes, EX report is 63, distinct from basic submit");
+    EXPECT_EQ(sizeof(DS4_REPORT_EX), (size_t)63);
+    EXPECT_EQ(sizeof(DS4_SUBMIT_REPORT_EX), (size_t)71);
+    EXPECT(sizeof(DS4_SUBMIT_REPORT_EX) != sizeof(DS4_SUBMIT_REPORT));
+    DS4_SUBMIT_REPORT_EX sr{};
+    DS4_SUBMIT_REPORT_EX_INIT(&sr, 1);
+    EXPECT_EQ((size_t)sr.Size, sizeof(DS4_SUBMIT_REPORT_EX)); // Size field the driver reads
+}
+
+// submitMotion forwards gyro/accel onto the EX report and reports the IMU sink
+// as live when the driver accepts EX.
+static void test_motion_submit_lands_on_ex_when_supported() {
+    TEST("submitMotion: gyro/accel reach the EX report and it returns true when EX is accepted");
+    fake::g.reset();
+
+    ViGEmAdapter a;
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDeviceDS4(1));
+    fake::g.resetCounts(); // ignore the plug-in probe
+
+    MotionReport m{};
+    m.gyroX = 1234;
+    m.gyroY = -5;
+    m.gyroZ = 32000;
+    m.accelX = -1;
+    m.accelZ = 5678;
+    EXPECT(a.submitMotion(1, m));
+    EXPECT_EQ(fake::g.ds4ExSyncCalls, 1); // went through the EX path
+    EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
+    const DS4_REPORT_EX& ex = fake::g.lastDs4Ex;
+    EXPECT_EQ((int)ex.Report.wGyroX, 1234);
+    EXPECT_EQ((int)ex.Report.wGyroY, -5);
+    EXPECT_EQ((int)ex.Report.wGyroZ, 32000);
+    EXPECT_EQ((int)ex.Report.wAccelX, -1);
+    EXPECT_EQ((int)ex.Report.wAccelZ, 5678);
+    a.closeBus();
+}
+
+// When the driver can't take EX (old ViGEmBus), motion is captured but not
+// delivered: submitMotion returns false and never claims success.
+static void test_motion_submit_not_delivered_when_ex_unsupported() {
+    TEST("submitMotion: returns false when EX is unsupported (no IMU sink)");
+    fake::g.reset();
+    fake::g.ds4ExAccepts = false;
+
+    ViGEmAdapter a;
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDeviceDS4(1)); // probe latches EX off
+    fake::g.resetCounts();
+
+    MotionReport m{};
+    m.gyroX = 999;
+    EXPECT(!a.submitMotion(1, m));
+    a.closeBus();
+}
+
+// Motion to a non-DS4 (Xbox) slot or an unplugged serial is never delivered.
+static void test_motion_submit_rejected_for_xbox_and_unplugged() {
+    TEST("submitMotion: false for an Xbox slot and for an unplugged serial");
+    fake::g.reset();
+
+    ViGEmAdapter a;
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(2)); // Xbox target — no IMU surface
+
+    MotionReport m{};
+    EXPECT(!a.submitMotion(2, m)); // Xbox slot
+    EXPECT(!a.submitMotion(7, m)); // never plugged
+    a.closeBus();
+}
+
 int main() {
     std::cout << "=== test_vigem_adapter ===\n";
 
@@ -274,6 +380,14 @@ int main() {
     test_xbox_uses_synchronous_xusb_submit();
     test_submit_to_unplugged_serial_is_rejected();
     test_xusb_to_ds4_conversion_maps_input();
+
+    test_ds4ExSubmitLanded_overlapped_success_always_lands();
+    test_ds4ExSubmitLanded_benign_failures_still_land();
+    test_ds4ExSubmitLanded_real_failures_do_not_land();
+    test_ds4_ex_struct_abi();
+    test_motion_submit_lands_on_ex_when_supported();
+    test_motion_submit_not_delivered_when_ex_unsupported();
+    test_motion_submit_rejected_for_xbox_and_unplugged();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

@@ -114,7 +114,7 @@ Application/extension types should use 0x0100+.
 | 0x0001 | Gamepad Data      | controller_index(1B) + XUSB_REPORT(12B)       | 4+13 = 17 B | 41 B          | client → server |
 | 0x0002 | Heartbeat Ping    | (none)                                        | 4 B         | 28 B          | client → server |
 | 0x0003 | Heartbeat ACK     | (none)                                        | 4 B         | 28 B          | server → client |
-| 0x0004 | Controller Add    | controller_index(1B) + caps(2B)               | 4+3 = 7 B   | 31 B          | client → server |
+| 0x0004 | Controller Add    | controller_index(1B) + caps(2B) + type(1B, opt) | 4+3..4 = 7..8 B | 31..32 B   | client → server |
 | 0x0005 | Controller Remove | controller_index(1B)                          | 4+1 = 5 B   | 29 B          | client → server |
 | 0x0006 | Controller ACK    | requestType(2B) + ctrlIdx(1B) + result(1B)    | 4+4 = 8 B   | 32 B          | server → client |
 | 0x0007 | Server Status     | backendAvailable(1B) + activeControllers(1B)  | 4+2 = 6 B   | 30 B          | server → client |
@@ -155,13 +155,20 @@ No payload. Sent by the server in response to a 0x0002 ping.
 ### 0x0004 — Controller Add
 
 ```
-[controller_index (1B)] [capabilities (2B, big-endian)]
+[controller_index (1B)] [capabilities (2B, big-endian)] [controller_type (1B, optional)]
 ```
 
-Requests the server to create a new ViGEm controller for this index. The
+Requests the server to create a new virtual controller for this index. The
 server replies with a **0x0006 Controller ACK** indicating success or
-failure. On success, the server plugs in a new virtual Xbox 360 controller
-and maps it to `(token, controller_index)`.
+failure. On success, the server plugs in the virtual controller and maps it
+to `(token, controller_index)`.
+
+The optional trailing `controller_type` byte (`0x00` = Xbox, `0x01` =
+PlayStation; same encoding as 0x0008) lets a single Add plug the correct
+device on the first try — no follow-up 0x0008 / replug. **A pre-extension dish
+omits the byte** (3-byte payload); the server then retains the slot's existing
+type (Xbox for a fresh slot) and waits for a 0x0008 Controller Type to correct
+it. An out-of-range value clamps to Xbox.
 
 If the virtual-gamepad backend bus is not yet open, the server will attempt to
 open it lazily. If it is still unavailable, the ACK reports

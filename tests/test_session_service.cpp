@@ -1024,6 +1024,95 @@ static void test_handleControllerType_replugFailureLogsError() {
     EXPECT(foundError);
 }
 
+static void test_handleControllerType_replugResendsMotionAckPlaystation() {
+    TEST("handleControllerType — Xbox→PlayStation replug re-sends a motion ACK with both bits");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    client.reset();
+
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+    EXPECT_EQ(client.controllerAckCalls, 1);
+    EXPECT_EQ(client.lastAckType, MSG_CONTROLLER_TYPE);
+    EXPECT_EQ(client.lastAckResult, ACK_OK);
+    EXPECT_EQ(client.lastAckMotionFlags,
+              (uint8_t)(ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE | ACK_MOTION_FLAG_BACKEND_OK));
+}
+
+static void test_handleControllerType_replugResendsMotionAckBackendBroken() {
+    TEST("handleControllerType — replug re-sends a motion ACK without BACKEND_OK when kernel "
+         "rejects");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    vigem.motionBackendOkMap[1] = false;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    client.reset();
+
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+    EXPECT_EQ(client.controllerAckCalls, 1);
+    EXPECT_EQ(client.lastAckType, MSG_CONTROLLER_TYPE);
+    EXPECT_EQ(client.lastAckMotionFlags, (uint8_t)ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE);
+}
+
+static void test_handleControllerType_replugToXboxResendsMotionAck() {
+    TEST("handleControllerType — PlayStation→Xbox replug re-sends a motion ACK with BACKEND_OK "
+         "only");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+    client.reset();
+
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);
+    EXPECT_EQ(client.controllerAckCalls, 1);
+    EXPECT_EQ(client.lastAckType, MSG_CONTROLLER_TYPE);
+    EXPECT_EQ(client.lastAckResult, ACK_OK);
+    EXPECT_EQ(client.lastAckMotionFlags, (uint8_t)ACK_MOTION_FLAG_BACKEND_OK);
+}
+
+static void test_handleControllerType_sameTypeSendsNoAck() {
+    TEST("handleControllerType — setting the same type does NOT re-send an ACK (no replug)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    client.reset();
+
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_XBOX);
+    EXPECT_EQ(client.controllerAckCalls, 0);
+}
+
+static void test_handleControllerType_replugFailureSendsNoAck() {
+    TEST("handleControllerType — a failed replug does NOT re-send an ACK");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0);
+    vigem.pluginReturnVal = false;
+    client.reset();
+
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION);
+    EXPECT_EQ(client.controllerAckCalls, 0);
+}
+
 static void test_handleControllerType_multipleRapidSwitches() {
     TEST("handleControllerType — rapid Xbox↔PS↔Xbox↔PS is stable");
     MockViGem vigem;
@@ -1062,6 +1151,149 @@ static void test_handleControllerAdd_defaultTypeIsXbox() {
 
     auto snap = svc.getConnectionsSnapshot();
     EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
+}
+
+static void test_handleControllerAdd_withType_playstationPlugsDS4Directly() {
+    TEST("handleControllerAdd — controllerType=PlayStation plugs DS4 on the first plug, no replug");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    EXPECT_EQ(vigem.pluginDS4Calls, 1);
+    EXPECT_EQ(vigem.pluginCalls, 0);
+    EXPECT_EQ(vigem.unplugCalls, 0);
+    EXPECT_EQ(client.lastAckType, MSG_CONTROLLER_ADD);
+    EXPECT_EQ(client.lastAckResult, ACK_OK);
+    EXPECT_EQ(client.lastAckMotionFlags,
+              (uint8_t)(ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE | ACK_MOTION_FLAG_BACKEND_OK));
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_PLAYSTATION);
+}
+
+static void test_handleControllerAdd_withType_invalidClampsToXbox() {
+    TEST("handleControllerAdd — explicit out-of-range controllerType clamps to Xbox");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    // CONTROLLER_TYPE_COUNT is an explicit-but-invalid value (distinct from the
+    // UNSPECIFIED sentinel), so it clamps to Xbox rather than retaining.
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_COUNT);
+
+    EXPECT_EQ(vigem.pluginCalls, 1);
+    EXPECT_EQ(vigem.pluginDS4Calls, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
+}
+
+static void test_handleControllerAdd_unspecifiedRetainsExistingType() {
+    TEST("handleControllerAdd — UNSPECIFIED type retains the slot's existing type across re-add");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_PLAYSTATION);
+    svc.handleControllerRemove(r.token, 0);
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_UNSPECIFIED);
+
+    EXPECT_EQ(vigem.pluginDS4Calls, 2);
+    EXPECT_EQ(vigem.pluginCalls, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_PLAYSTATION);
+}
+
+static void test_handleControllerAdd_withType_xboxExplicitPlugsXbox() {
+    TEST("handleControllerAdd — explicit Xbox type plugs Xbox, ACK has BACKEND_OK only (no sink)");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_XBOX);
+
+    EXPECT_EQ(vigem.pluginCalls, 1);
+    EXPECT_EQ(vigem.pluginDS4Calls, 0);
+    EXPECT_EQ(client.lastAckType, MSG_CONTROLLER_ADD);
+    EXPECT_EQ(client.lastAckResult, ACK_OK);
+    // Xbox: supportsMotionForType=false → no SINK; motionBackendOk default true → BACKEND_OK.
+    EXPECT_EQ(client.lastAckMotionFlags, (uint8_t)ACK_MOTION_FLAG_BACKEND_OK);
+}
+
+static void test_handleControllerAdd_withType_playstationBackendRejected() {
+    TEST("handleControllerAdd — PlayStation type but kernel-rejected sink → ACK has SINK, no "
+         "BACKEND_OK");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    vigem.motionBackendOkMap[1] = false; // first serial's IMU sink rejected
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_PLAYSTATION);
+
+    EXPECT_EQ(vigem.pluginDS4Calls, 1);
+    EXPECT_EQ(client.lastAckResult, ACK_OK);
+    EXPECT_EQ(client.lastAckMotionFlags, (uint8_t)ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE);
+}
+
+static void test_handleControllerAdd_withType_unspecifiedFreshSlotDefaultsXbox() {
+    TEST("handleControllerAdd — UNSPECIFIED on a never-set slot keeps the default Xbox");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_UNSPECIFIED);
+
+    EXPECT_EQ(vigem.pluginCalls, 1);
+    EXPECT_EQ(vigem.pluginDS4Calls, 0);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
+}
+
+static void test_handleControllerType_replugAckCarriesIdxAndType() {
+    TEST("handleControllerType — replug ACK targets the right ctrlIdx with requestType TYPE");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0); // idx 0, Xbox
+    svc.handleControllerAdd(r.token, 1); // idx 1, Xbox
+    client.reset();
+
+    svc.handleControllerType(r.token, 1, CONTROLLER_TYPE_PLAYSTATION); // replug idx 1
+    EXPECT_EQ(client.controllerAckCalls, 1);
+    EXPECT_EQ(client.lastAckType, MSG_CONTROLLER_TYPE);
+    EXPECT_EQ((int)client.lastAckCtrl, 1);
+    EXPECT_EQ(client.lastAckResult, ACK_OK);
+}
+
+static void test_handleControllerType_playstationToPlaystationSendsNoAck() {
+    TEST("handleControllerType — PlayStation→PlayStation does not replug and sends no ACK");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = openTestSession(svc);
+    svc.handleControllerAdd(r.token, 0, 0, CONTROLLER_TYPE_PLAYSTATION);
+    client.reset();
+
+    svc.handleControllerType(r.token, 0, CONTROLLER_TYPE_PLAYSTATION); // same type
+    EXPECT_EQ(client.controllerAckCalls, 0);
+    EXPECT_EQ(vigem.unplugCalls, 0);
 }
 
 static void test_handleControllerAdd_presetPlaystationType() {
@@ -3744,10 +3976,23 @@ int main() {
     test_handleControllerType_playstationToPlaystationNoReplug();
     test_handleControllerType_replugPreservesSerial();
     test_handleControllerType_replugFailureLogsError();
+    test_handleControllerType_replugResendsMotionAckPlaystation();
+    test_handleControllerType_replugResendsMotionAckBackendBroken();
+    test_handleControllerType_replugToXboxResendsMotionAck();
+    test_handleControllerType_sameTypeSendsNoAck();
+    test_handleControllerType_replugFailureSendsNoAck();
+    test_handleControllerType_replugAckCarriesIdxAndType();
+    test_handleControllerType_playstationToPlaystationSendsNoAck();
     test_handleControllerType_multipleRapidSwitches();
 
     // handleControllerAdd — DS4-aware
     test_handleControllerAdd_defaultTypeIsXbox();
+    test_handleControllerAdd_withType_playstationPlugsDS4Directly();
+    test_handleControllerAdd_withType_invalidClampsToXbox();
+    test_handleControllerAdd_unspecifiedRetainsExistingType();
+    test_handleControllerAdd_withType_xboxExplicitPlugsXbox();
+    test_handleControllerAdd_withType_playstationBackendRejected();
+    test_handleControllerAdd_withType_unspecifiedFreshSlotDefaultsXbox();
     test_handleControllerAdd_presetPlaystationType();
     test_handleControllerAdd_thenSetPlaystation_fullFlow();
 

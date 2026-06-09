@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-// Forward-declared to avoid pulling core/app_state.h (httplib + net_compat.h)
+// Forward-declared to avoid pulling app/app_state.h (httplib + net_compat.h)
 // into this TU. Defined in platform/linux/globals.cpp.
 void logMsg(LogLevel level, const std::string& source, const std::string& message);
 
