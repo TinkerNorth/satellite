@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 // OTA update orchestrator. Owns the one and only UpdateState transition and
-// drives an IUpdaterPort for IO. Persists prefs via callbacks rather than an
-// IConfigPort, mirroring the webserver's direct g_config + saveConfig() pattern.
+// drives an IUpdaterPort for IO. Persists prefs via a callback + shared Config&,
+// not a port: config is infrastructure the adapters own, not domain state.
 //
 // Thread model: request*() are non-blocking and enqueue onto one worker thread
 // (start/stop own it) that runs fetch/download/verify/apply. A second timer
@@ -66,6 +66,10 @@ class UpdateService {
     void updatePreferences(const std::string& channel, bool autoCheck, bool autoDownload,
                            bool autoInstall);
 
+    // Public so the semver rule that gates "is there an update" is unit-testable
+    // without driving the whole worker thread. Pure: true iff `a` > `b`.
+    static bool versionStrictlyNewer(const std::string& a, const std::string& b);
+
   private:
     void workerLoop();
     void timerLoop();
@@ -80,7 +84,6 @@ class UpdateService {
     // be held.
     void fireBroadcast();
 
-    static bool versionStrictlyNewer(const std::string& a, const std::string& b);
     static int64_t nowEpoch();
 
     IUpdaterPort& updater_;
@@ -91,6 +94,11 @@ class UpdateService {
     // cv_ wakes the worker for any pending job.
     mutable std::mutex mtx_;
     std::condition_variable cv_;
+    // Separate cv so stop() interrupts the timer's interval sleep at once,
+    // instead of waiting out the current 1 s slice (slow app shutdown + slow
+    // tests). The timer never contends on mtx_, so it gets its own mutex.
+    std::mutex timerMtx_;
+    std::condition_variable timerCv_;
     UpdateState state_ = UpdateState::Idle;
     UpdateInfo info_{}; // valid only when state_ >= UpdateAvailable
     std::string lastError_;

@@ -44,10 +44,8 @@ std::string ensureMachineId() {
             while (!persisted.empty() && (persisted.back() == '\n' || persisted.back() == '\r' ||
                                           persisted.back() == ' '))
                 persisted.pop_back();
-            // Only honour a well-formed 32-hex-char token; regenerate on
-            // corruption rather than advertise a junk id.
-            if (persisted.size() == 32 &&
-                persisted.find_first_not_of("0123456789abcdef") == std::string::npos) {
+            // Regenerate on corruption rather than advertise a junk id.
+            if (isValidMachineId(persisted)) {
                 g_machineId = persisted;
                 return g_machineId;
             }
