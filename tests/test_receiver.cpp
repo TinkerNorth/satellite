@@ -364,6 +364,124 @@ static void test_dispatch_heartbeatZeroLength() {
     EXPECT_EQ(cl.heartbeatAcks, 1);
 }
 
+static void test_dispatch_controllerAdd_carriesType() {
+    TEST("dispatchInnerMessage — MSG_CONTROLLER_ADD 4th byte selects controller type");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev-add-type", "AddType", "192.168.1.51", key, TOUCHPAD_MODE_DS4);
+
+    // ctrlIdx=0, caps=0x0000, type=PlayStation.
+    std::vector<uint8_t> msg = {0x00, 0x00, 0x00, CONTROLLER_TYPE_PLAYSTATION};
+    dispatchTight(svc, r.token, MSG_CONTROLLER_ADD, msg);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ((int)snap.connections[0].controllers.size(), 1);
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_PLAYSTATION);
+}
+
+static void test_dispatch_controllerAdd_legacyNoTypeDefaultsXbox() {
+    TEST("dispatchInnerMessage — MSG_CONTROLLER_ADD without the type byte defaults to Xbox");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev-add-legacy", "AddLegacy", "192.168.1.52", key, TOUCHPAD_MODE_DS4);
+
+    // Legacy 3-byte payload: ctrlIdx + caps, no type byte.
+    std::vector<uint8_t> msg = {0x00, 0x00, 0x00};
+    dispatchTight(svc, r.token, MSG_CONTROLLER_ADD, msg);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
+}
+
+static void test_dispatch_controllerAdd_typeXboxExplicit() {
+    TEST("dispatchInnerMessage — MSG_CONTROLLER_ADD type byte 0x00 selects Xbox");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev-add-xb", "AddXb", "192.168.1.53", key, TOUCHPAD_MODE_DS4);
+
+    std::vector<uint8_t> msg = {0x00, 0x00, 0x00, CONTROLLER_TYPE_XBOX};
+    dispatchTight(svc, r.token, MSG_CONTROLLER_ADD, msg);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
+}
+
+static void test_dispatch_controllerAdd_oversizedKeepsTypeIgnoresExtra() {
+    TEST("dispatchInnerMessage — MSG_CONTROLLER_ADD reads type at byte 3, ignores trailing bytes");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev-add-big", "AddBig", "192.168.1.54", key, TOUCHPAD_MODE_DS4);
+
+    // idx + caps + type(PlayStation) + trailing junk that must be ignored.
+    std::vector<uint8_t> msg = {0x00, 0x00, 0x00, CONTROLLER_TYPE_PLAYSTATION, 0xAB, 0xCD};
+    dispatchTight(svc, r.token, MSG_CONTROLLER_ADD, msg);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_PLAYSTATION);
+}
+
+static void test_dispatch_controllerAdd_unspecifiedByteRetains() {
+    TEST("dispatchInnerMessage — MSG_CONTROLLER_ADD type byte 0xFF (UNSPECIFIED) keeps default "
+         "Xbox");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev-add-uns", "AddUns", "192.168.1.55", key, TOUCHPAD_MODE_DS4);
+
+    std::vector<uint8_t> msg = {0x00, 0x00, 0x00, CONTROLLER_TYPE_UNSPECIFIED};
+    dispatchTight(svc, r.token, MSG_CONTROLLER_ADD, msg);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
+}
+
+static void test_dispatch_controllerAdd_invalidTypeByteClampsXbox() {
+    TEST("dispatchInnerMessage — MSG_CONTROLLER_ADD out-of-range type byte clamps to Xbox");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev-add-inv", "AddInv", "192.168.1.56", key, TOUCHPAD_MODE_DS4);
+
+    // CONTROLLER_TYPE_COUNT is explicit-but-invalid (distinct from 0xFF).
+    std::vector<uint8_t> msg = {0x00, 0x00, 0x00, CONTROLLER_TYPE_COUNT};
+    dispatchTight(svc, r.token, MSG_CONTROLLER_ADD, msg);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap.connections[0].controllers[0].controllerType, CONTROLLER_TYPE_XBOX);
+}
+
+static void test_dispatch_controllerAdd_emptyPayloadRejected() {
+    TEST("dispatchInnerMessage — MSG_CONTROLLER_ADD with empty payload is rejected (no add)");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    auto r = svc.openSession("dev-add-mt", "AddMt", "192.168.1.57", key, TOUCHPAD_MODE_DS4);
+
+    std::vector<uint8_t> empty;
+    dispatchTight(svc, r.token, MSG_CONTROLLER_ADD, empty);
+
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ((int)snap.connections[0].controllers.size(), 0);
+}
+
 int main() {
     std::cout << "Running receiver wire-decode tests...\n\n";
 
@@ -387,6 +505,14 @@ int main() {
 
     test_dispatch_unknownTypeIgnored();
     test_dispatch_heartbeatZeroLength();
+
+    test_dispatch_controllerAdd_carriesType();
+    test_dispatch_controllerAdd_legacyNoTypeDefaultsXbox();
+    test_dispatch_controllerAdd_typeXboxExplicit();
+    test_dispatch_controllerAdd_oversizedKeepsTypeIgnoresExtra();
+    test_dispatch_controllerAdd_unspecifiedByteRetains();
+    test_dispatch_controllerAdd_invalidTypeByteClampsXbox();
+    test_dispatch_controllerAdd_emptyPayloadRejected();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

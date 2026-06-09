@@ -29,19 +29,18 @@ DEFINE_GUID(GUID_DEVINTERFACE_BUSENUM_VIGEM,
 #define IOCTL_XUSB_SUBMIT_REPORT        BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x201)
 #define IOCTL_DS4_SUBMIT_REPORT         BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x202)
 #define IOCTL_DS4_REQUEST_NOTIFICATION  BUSENUM_RW_IOCTL(IOCTL_VIGEM_BASE + 0x203)
-// Extended-report submit IOCTLs. The original four submit/notify codes occupy
-// 0x200..0x203; the _EX variants were appended after, XUSB first then DS4 —
-// hence XUSB_SUBMIT_REPORT_EX = 0x204, DS4_SUBMIT_REPORT_EX = 0x205. The DS4 EX
-// path carries the full 63-byte report (gyro/accel/touchpad/battery); it is
-// the only ViGEm submit path with IMU fields.
+// CORRECTION (verified against nefarius/ViGEmBus and the ViGEmClient source):
+// there is NO separate "_EX" submit IOCTL. The extended 63-byte DS4 report
+// (gyro/accel/touchpad/battery) is submitted through the SAME
+// IOCTL_DS4_SUBMIT_REPORT (0x202) used by the basic report — the driver
+// dispatches basic vs extended purely by the input buffer size
+// (sizeof(DS4_SUBMIT_REPORT) vs sizeof(DS4_SUBMIT_REPORT_EX)). See
+// vigem_target_ds4_update_ex in ViGEmClient: "Same IOCTL, just different size".
 //
-// !! UNVERIFIED CONSTANT !! This index could not be confirmed against upstream
-// offline — it is the single value in the EX path not cross-checked. The
-// bundled driver (ViGEmBus 1.22.0, see installer.iss) DOES implement the EX
-// IOCTL, so motion depends on this number being right. If it is wrong the
-// driver rejects the IOCTL and ViGEmAdapter falls back to the basic DS4 report
-// (buttons/sticks keep working, no IMU, no crash). VERIFY against the real
-// nefarius/ViGEmBus 1.22.0 BusShared.h before relying on Windows virtual-pad IMU.
+// The 0x205 code below was a guessed value the driver does not implement, so it
+// returned ERROR_NOT_SUPPORTED (50) and motion never reached the host. It is
+// kept only for historical reference and is intentionally UNUSED — submitDs4ExSync
+// now uses IOCTL_DS4_SUBMIT_REPORT. Do not resurrect the _EX submit codes.
 #define IOCTL_XUSB_SUBMIT_REPORT_EX     BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x204)
 #define IOCTL_DS4_SUBMIT_REPORT_EX      BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x205)
 
@@ -224,12 +223,24 @@ typedef struct _DS4_REPORT_EX {
 static_assert(sizeof(DS4_REPORT_EX) == 63, "DS4_REPORT_EX must be the 63-byte DS4 report");
 #endif
 
-// Submit extended DualShock 4 report
+// Submit extended DualShock 4 report. MUST be packed to 1 byte: upstream wraps
+// this struct in <pshpack1.h>/<poppack.h>, making it 71 bytes (4 + 4 + 63).
+// Default alignment pads it to 72; the driver compares the submitted Size against
+// its own (71) and rejects a 72-byte buffer with ERROR_INVALID_USER_BUFFER (1784),
+// so motion never lands. (The basic DS4_SUBMIT_REPORT above is intentionally NOT
+// packed — that matches upstream too, which is why buttons/sticks always worked.)
+#pragma pack(push, 1)
 typedef struct _DS4_SUBMIT_REPORT_EX {
     ULONG Size;
     ULONG SerialNo;
     DS4_REPORT_EX Report;
 } DS4_SUBMIT_REPORT_EX, *PDS4_SUBMIT_REPORT_EX;
+#pragma pack(pop)
+
+#ifdef __cplusplus
+static_assert(sizeof(DS4_SUBMIT_REPORT_EX) == 71,
+              "DS4_SUBMIT_REPORT_EX must be 71 bytes (packed) to match the ViGEmBus driver");
+#endif
 
 VOID FORCEINLINE DS4_SUBMIT_REPORT_EX_INIT(PDS4_SUBMIT_REPORT_EX Report, ULONG SerialNo) {
     RtlZeroMemory(Report, sizeof(DS4_SUBMIT_REPORT_EX));
