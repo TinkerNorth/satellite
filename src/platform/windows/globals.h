@@ -3,7 +3,7 @@
 
 // Pulls in <winsock2.h> before <windows.h> — keep first to preserve the
 // required winsock2-before-windows.h include order.
-#include "core/app_state.h"
+#include "app/app_state.h"
 
 #include <cstdio>
 #include <cstdlib>

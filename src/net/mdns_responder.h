@@ -11,7 +11,7 @@
 // in mdns_protocol.h (pure, unit-tested); this is just the socket + recv loop.
 #pragma once
 
-#include "core/app_state.h"
+#include "app/app_state.h"
 #include "net/mdns_protocol.h"
 #include "net/net_compat.h"
 
