@@ -5,13 +5,21 @@
 #include "config.h"
 #include "pairing.h"
 #include "pairing_service.h"
+#include "session_crypto.h"
+#include "core/catalog.h"
 #include "core/gamepad_backend.h"
+#include "core/json_mini.h"
 #include "core/session_service.h"
 #include "core/update_service.h"
 #include "core/update_types.h"
 #include "core/version.h"
 
 #include <sodium.h>
+
+using satellite::jsonGetArrayObjects;
+using satellite::jsonGetBoolKeyed;
+using satellite::jsonGetIntKeyed;
+using satellite::jsonGetObject;
 
 // Web UI keys all backend-status copy off (id, errorCode).
 static std::string buildBackendJson() {
@@ -34,165 +42,42 @@ static std::string buildBackendJson() {
     return json;
 }
 
-// Drives the client touchpad mode-picker; `off` is always offered as the inert fallback.
+// Static facts about the backend that shape the catalog — keyed off the
+// backend's identity, not its live health (the catalog only changes on
+// server upgrade; live health is /api/server/capabilities).
+static satellite::CatalogBackendTraits catalogBackendTraits() {
+    BackendStatus s = probeBackend();
+    satellite::CatalogBackendTraits t;
+    const std::string id = s.id;
+    if (id == BACKEND_ID_VIGEM) {
+        t.ds4MotionSupported = true;
+        t.ds4MotionRequires = "vigembus>=1.17";
+        t.ds4TouchpadSupported = true;
+        t.ds4LightbarSupported = true;
+        t.mouseControlSupported = true;
+    } else if (id == BACKEND_ID_UINPUT) {
+        t.ds4MotionSupported = true;
+        t.ds4TouchpadSupported = true;
+        t.ds4LightbarSupported = true;
+        t.mouseControlSupported = true;
+    }
+    return t;
+}
+
+// GET /api/server/capabilities — CURRENT dynamic state (contract.md layer 2;
+// the static what-exists layer is /api/catalog).
 static std::string buildCapabilitiesJson() {
-    TouchpadCapabilities caps = probeTouchpadCapabilities();
-    std::string json = "{\"touchpad\":{\"supportedModes\":[";
-    bool first = true;
-    auto emit = [&](const char* name) {
-        if (!first) json += ",";
-        json += "\"";
-        json += name;
-        json += "\"";
-        first = false;
-    };
-    if (caps.offSupported) emit("off");
-    if (caps.padSupported) emit("ds4");
-    if (caps.mouseSupported) emit("mouse");
-    json += "],\"defaultMode\":\"off\"},\"backend\":";
-    json += buildBackendJson();
-    json += "}";
+    BackendStatus s = probeBackend();
+    satellite::CatalogBackendTraits traits = catalogBackendTraits();
+    std::string json = "{\"protocolVersion\":" + std::to_string(PROTOCOL_VERSION);
+    json += ",\"serverVersion\":\"";
+    json += SATELLITE_VERSION;
+    json += "\",\"maxControllers\":" + std::to_string(MAX_BACKEND_CONTROLLERS);
+    json += ",\"backend\":" + buildBackendJson();
+    json += ",\"motion\":{\"available\":";
+    json += (s.available && traits.ds4MotionSupported) ? "true" : "false";
+    json += "}}";
     return json;
-}
-
-// Shared by the admin HTTP server and the authoritative HTTPS client API:
-// validate the mode, persist to the paired device, hot-apply to live connections.
-static void handleTouchpadModeSet(SessionService& svc, const httplib::Request& req,
-                                  httplib::Response& res) {
-    auto deviceId = jsonGetString(req.body, "id");
-    auto modeStr = jsonGetString(req.body, "mode");
-    if (deviceId.empty() || modeStr.empty()) {
-        logMsg(LogLevel::WARN, "web",
-               "POST /api/devices/touchpad-mode: missing id or mode in body");
-        res.status = 400;
-        res.set_content(R"({"error":"missing id or mode"})", "application/json");
-        return;
-    }
-    if (modeStr != "ds4" && modeStr != "mouse" && modeStr != "off") {
-        logMsg(LogLevel::WARN, "web",
-               "POST /api/devices/touchpad-mode: bad mode '" + modeStr +
-                   "' (expected ds4|mouse|off) for device " + deviceId);
-        res.status = 400;
-        res.set_content(R"({"error":"mode must be ds4, mouse, or off"})", "application/json");
-        return;
-    }
-    // `ds4`/`mouse` ride on the virtual-gamepad backend (absent on macOS); `off` always works.
-    TouchpadCapabilities caps = probeTouchpadCapabilities();
-    bool modeSupported = (modeStr == "off" && caps.offSupported) ||
-                         (modeStr == "ds4" && caps.padSupported) ||
-                         (modeStr == "mouse" && caps.mouseSupported);
-    if (!modeSupported) {
-        logMsg(LogLevel::WARN, "web",
-               "POST /api/devices/touchpad-mode: '" + modeStr +
-                   "' not supported by this host's backend (device " + deviceId + ")");
-        res.status = 409; // Conflict — server cannot honour this mode
-        res.set_content(R"({"error":"mode not supported on this host","supported":false})",
-                        "application/json");
-        return;
-    }
-    uint8_t mode = touchpadModeFromName(modeStr);
-    bool found = false;
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        for (auto& d : g_config.pairedDevices) {
-            if (d.id == deviceId) {
-                d.touchpadMode = mode;
-                found = true;
-                break;
-            }
-        }
-        if (found) saveConfig(g_config);
-    }
-    if (!found) {
-        // Usually a stale pairing on the dish (config wiped / reinstalled);
-        // the dish surfaces the 404 as a re-pair prompt.
-        logMsg(LogLevel::WARN, "web",
-               "POST /api/devices/touchpad-mode: device " + deviceId +
-                   " is not in pairedDevices — dish needs to re-pair");
-        res.status = 404;
-        res.set_content(R"({"error":"device not paired"})", "application/json");
-        return;
-    }
-    bool hotApplied = svc.setTouchpadMode(deviceId, mode);
-    logMsg(LogLevel::INFO, "web",
-           "Touchpad mode for device " + deviceId + " set to " + modeStr +
-               (hotApplied ? " (applied to live connection)" : ""));
-    res.set_content(std::string("{\"ok\":true,\"hotApplied\":") + (hotApplied ? "true" : "false") +
-                        "}",
-                    "application/json");
-}
-
-// Key-scoped bool/int reads for request bodies: locate the *quoted* key and
-// inspect only the token after its colon, so a value can't false-positive on a
-// substring elsewhere in the body. Return false (out untouched) if absent/malformed.
-static bool jsonValueStart(const std::string& json, const std::string& key, size_t& out) {
-    std::string needle = "\"" + key + "\"";
-    size_t pos = 0;
-    for (;;) {
-        pos = json.find(needle, pos);
-        if (pos == std::string::npos) return false;
-        size_t colon = json.find_first_not_of(" \t\r\n", pos + needle.size());
-        if (colon == std::string::npos || json[colon] != ':') {
-            pos += needle.size();
-            continue; // "key" not followed by ':' — keep searching
-        }
-        out = colon + 1;
-        return true;
-    }
-}
-
-static bool jsonGetBoolKeyed(const std::string& json, const std::string& key, bool* out) {
-    size_t vs;
-    if (!jsonValueStart(json, key, vs)) return false;
-    size_t t = json.find_first_not_of(" \t\r\n", vs);
-    if (t == std::string::npos) return false;
-    if (json.compare(t, 4, "true") == 0) {
-        *out = true;
-        return true;
-    }
-    if (json.compare(t, 5, "false") == 0) {
-        *out = false;
-        return true;
-    }
-    return false; // not a boolean literal — treat as absent
-}
-
-static bool jsonGetIntKeyed(const std::string& json, const std::string& key, long* out) {
-    size_t vs;
-    if (!jsonValueStart(json, key, vs)) return false;
-    size_t t = json.find_first_not_of(" \t\r\n", vs);
-    if (t == std::string::npos) return false;
-    // Require a numeric token so non-numbers aren't silently coerced to 0 by atoi.
-    if (json[t] != '-' && (json[t] < '0' || json[t] > '9')) return false;
-    char* end = nullptr;
-    long v = strtol(json.c_str() + t, &end, 10);
-    if (end == json.c_str() + t) return false; // no digits consumed
-    *out = v; // strtol overflow is harmless — the caller range-checks
-    return true;
-}
-
-// LAN-reachable client API: connection routes require a paired deviceId (from
-// X-Device-Id, falling back to the body). The admin API needs none — it's loopback.
-static bool clientAuthorized(const httplib::Request& req, httplib::Response& res) {
-    std::string deviceId;
-    auto hdr = req.headers.find("X-Device-Id");
-    if (hdr != req.headers.end()) { deviceId = hdr->second; }
-    if (deviceId.empty() && !req.body.empty()) { deviceId = jsonGetString(req.body, "deviceId"); }
-    if (!deviceId.empty()) {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        for (const auto& d : g_config.pairedDevices) {
-            if (d.id == deviceId) return true;
-        }
-    }
-    // Log the 401 so the failure is visible server-side: empty id means a dish
-    // plumbing bug; an unknown id means a stale pairing needing re-pair.
-    logMsg(LogLevel::WARN, "client",
-           "401 unauthorized " + req.method + " " + req.path +
-               (deviceId.empty() ? " (no X-Device-Id header and no deviceId in body)"
-                                 : " (deviceId " + deviceId + " not in pairedDevices)"));
-    res.status = 401;
-    res.set_content(R"({"error":"unauthorized"})", "application/json");
-    return false;
 }
 
 static std::string readFile(const std::string& path) {
@@ -234,8 +119,20 @@ static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
     return json;
 }
 
+static std::string boolStr(bool v) { return v ? "true" : "false"; }
+
+static std::string capsJson(uint16_t caps) {
+    std::string j = "{\"rumble\":" + boolStr((caps & CAP_RUMBLE) != 0);
+    j += ",\"motion\":" + boolStr((caps & CAP_MOTION) != 0);
+    j += ",\"analogTriggers\":" + boolStr((caps & CAP_ANALOG_TRIGGERS) != 0);
+    j += ",\"lightbar\":" + boolStr((caps & CAP_LIGHTBAR) != 0);
+    j += "}";
+    return j;
+}
+
 // `state` fields serialise as lowercase enum names (deviceLinkStateName /
 // controllerStateName in core/types.h) — the canonical wire form.
+// `connectedAtEpoch` is steady-clock seconds (boot-relative), not Unix epoch.
 static std::string buildConnectionsJson(const SessionService& svc) {
     auto snap = svc.getConnectionsSnapshot();
     std::string json = "{\"connections\":[";
@@ -244,15 +141,13 @@ static std::string buildConnectionsJson(const SessionService& svc) {
         if (!first) json += ",";
         first = false;
 
-        char tokenHex[9];
-        snprintf(tokenHex, sizeof(tokenHex), "%08x", cs.token);
-
-        json += "{\"connectionId\":\"conn_";
-        json += tokenHex;
-        json += "\",\"deviceId\":\"" + jsonEscape(cs.deviceId) + "\",\"deviceName\":\"" +
+        json += "{\"connectionId\":\"" + jsonEscape(cs.connectionId) + "\"";
+        json += ",\"deviceId\":\"" + jsonEscape(cs.deviceId) + "\",\"deviceName\":\"" +
                 jsonEscape(cs.deviceName) + "\",\"senderIP\":\"" + jsonEscape(cs.clientIP) + "\"";
 
         json += ",\"connectedAtEpoch\":" + std::to_string(cs.connectedAtEpoch);
+        json += ",\"epoch\":" + std::to_string(cs.epoch);
+        json += ",\"mouseControlGranted\":" + boolStr(cs.mouseControlGranted);
         // Active or NotResponding here; /api/devices covers the Paired (offline) case.
         json += ",\"state\":\"" + std::string(deviceLinkStateName(cs.linkState)) + "\"";
 
@@ -267,10 +162,11 @@ static std::string buildConnectionsJson(const SessionService& svc) {
                                                 : controllerStateName(ControllerState::Detached);
             json += "{\"controllerIndex\":" + std::to_string(ctrl.index) +
                     ",\"serialNo\":" + std::to_string(ctrl.serial) +
-                    ",\"pluggedIn\":" + (ctrl.serial > 0 ? "true" : "false") + ",\"state\":\"" +
+                    ",\"pluggedIn\":" + boolStr(ctrl.pluggedIn) + ",\"state\":\"" +
                     std::string(ctrlState) + "\"" + ",\"controllerType\":\"" +
                     controllerTypeName(ctrl.controllerType) + "\",\"controllerTypeLabel\":\"" +
-                    controllerTypeLabel(ctrl.controllerType) + "\"";
+                    controllerTypeLabel(ctrl.controllerType) + "\",\"touchpadMode\":\"" +
+                    touchpadModeName(ctrl.touchpadMode) + "\"";
             if (ctrl.batteryKnown) {
                 json += ",\"battery\":{";
                 if (ctrl.batteryLevel == BATTERY_LEVEL_UNKNOWN) {
@@ -283,18 +179,17 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             } else {
                 json += ",\"battery\":null";
             }
-            json += ",\"motionCapable\":" + std::string(ctrl.motionCapable ? "true" : "false");
-            json += ",\"motionActive\":" + std::string(ctrl.motionActive ? "true" : "false");
-            json += ",\"motionSink\":" + std::string(ctrl.motionSink ? "true" : "false");
+            json += ",\"motionCapable\":" + boolStr(ctrl.motionCapable);
+            json += ",\"motionActive\":" + boolStr(ctrl.motionActive);
+            json += ",\"motionSink\":" + boolStr(ctrl.motionSink);
             // Backend has an IMU surface for this controller type; UI warns when
             // motionCapable but not this (motion has nowhere to land, e.g. Xbox pad).
-            json += ",\"motionSinkSupportedForType\":" +
-                    std::string(ctrl.motionSinkSupportedForType ? "true" : "false");
+            json += ",\"motionSinkSupportedForType\":" + boolStr(ctrl.motionSinkSupportedForType);
             // IMU sink was created at plug-in; false flags a kernel-level failure
             // (uinput perms, kernel too old) vs. just "no game subscribed".
-            json += ",\"motionBackendOk\":" + std::string(ctrl.motionBackendOk ? "true" : "false");
-            json += ",\"touchpadActive\":" + std::string(ctrl.touchpadActive ? "true" : "false");
-            json += ",\"lightbarCapable\":" + std::string(ctrl.lightbarCapable ? "true" : "false");
+            json += ",\"motionBackendOk\":" + boolStr(ctrl.motionBackendOk);
+            json += ",\"touchpadActive\":" + boolStr(ctrl.touchpadActive);
+            json += ",\"lightbarCapable\":" + boolStr(ctrl.lightbarCapable);
             if (ctrl.lightbarKnown) {
                 char rgb[8];
                 snprintf(rgb, sizeof(rgb), "#%02x%02x%02x", ctrl.lightbarR, ctrl.lightbarG,
@@ -305,145 +200,330 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             }
             json += "}";
         }
-        json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) +
-                ",\"touchpadMode\":\"" + touchpadModeName(cs.touchpadMode) + "\"}";
+        json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) + "}";
     }
     json += "],\"totalControllers\":" + std::to_string(snap.totalControllers) +
             ",\"maxControllers\":" + std::to_string(snap.maxControllers) +
-            ",\"backendAvailable\":" + (snap.backendAvailable ? "true" : "false") + "}";
+            ",\"backendAvailable\":" + boolStr(snap.backendAvailable) + "}";
     return json;
 }
 
-// Shared by admin (dashboard disconnect) and client (self-teardown).
-static void closeConnectionRoute(SessionService& svc, const httplib::Request& req,
-                                 httplib::Response& res) {
-    auto connId = req.matches[1].str();
-
-    // connId format: conn_XXXXXXXX (hex token).
-    std::string tokenStr = connId;
-    if (tokenStr.substr(0, 5) == "conn_") tokenStr = tokenStr.substr(5);
-
-    uint32_t token = 0;
-#ifdef _MSC_VER
-    if (sscanf_s(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
-#else
-    if (sscanf(tokenStr.c_str(), "%08x", &token) != 1 || token == 0) {
-#endif
-        res.status = 404;
-        res.set_content(R"({"error":"connection not found"})", "application/json");
-        return;
+// Paired devices + their live link state — `state` is paired | active |
+// notResponding. Shared by the admin route and the SSE devices event.
+static std::string buildDevicesJson(const SessionService& svc) {
+    std::string json = "[";
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
+        const auto& d = g_config.pairedDevices[i];
+        DeviceLinkState s = svc.linkStateForDevice(d.id);
+        json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
+                "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
+                jsonEscape(d.pairedAt) + "\",\"state\":\"" + deviceLinkStateName(s) + "\"}";
+        if (i + 1 < g_config.pairedDevices.size()) json += ",";
     }
-
-    int removed = svc.closeSession(token);
-    if (removed < 0) {
-        res.status = 404;
-        res.set_content(R"({"error":"connection not found"})", "application/json");
-        return;
-    }
-
-    res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
-                    "application/json");
+    json += "]";
+    return json;
 }
 
-static void openConnectionRoute(SessionService& svc, const httplib::Request& req,
-                                httplib::Response& res) {
-    auto deviceId = jsonGetString(req.body, "deviceId");
-    if (deviceId.empty()) {
-        logMsg(LogLevel::WARN, "client", "POST /api/connections: missing deviceId");
-        res.status = 400;
-        res.set_content(R"({"error":"missing deviceId"})", "application/json");
-        return;
-    }
+// ── Client auth (HTTPS surface) ──────────────────────────────────────────────
 
-    PairedDevice* found = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        for (auto& d : g_config.pairedDevices) {
-            if (d.id == deviceId) {
-                found = &d;
-                break;
+struct ClientAuth {
+    std::string deviceId;
+    PairedDevice device; // copy-by-value under g_configMtx — never a pointer
+    uint8_t pairingKey[CRYPTO_KEY_SIZE];
+};
+
+static std::string headerOrBody(const httplib::Request& req, const char* header,
+                                const char* bodyKey) {
+    auto hdr = req.headers.find(header);
+    if (hdr != req.headers.end() && !hdr->second.empty()) return hdr->second;
+    if (!req.body.empty()) return jsonGetString(req.body, bodyKey);
+    return "";
+}
+
+// Every authenticated client route requires a paired deviceId AND an hmacProof
+// of the pairing key, so a diverged key fails HERE with a terminal 401 instead
+// of producing a silently-undecryptable UDP session. The PairedDevice is
+// copied by value under g_configMtx — a concurrent unpair can't dangle it.
+static bool clientAuthed(const httplib::Request& req, httplib::Response& res, ClientAuth& out) {
+    out.deviceId = headerOrBody(req, "X-Device-Id", "deviceId");
+    const std::string proof = headerOrBody(req, "X-Hmac-Proof", "hmacProof");
+
+    const char* code = "NOT_PAIRED";
+    if (!out.deviceId.empty()) {
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            for (const auto& d : g_config.pairedDevices) {
+                if (d.id == out.deviceId) {
+                    out.device = d;
+                    found = true;
+                    break;
+                }
             }
         }
+        if (found) {
+            if (hexDecode(out.device.sharedKeyHex, out.pairingKey, CRYPTO_KEY_SIZE) &&
+                verifyHmacProof(out.pairingKey, out.deviceId, proof)) {
+                return true;
+            }
+            code = "BAD_PROOF";
+        }
     }
-    if (!found) {
+
+    logMsg(LogLevel::WARN, "client",
+           "401 unauthorized " + req.method + " " + req.path + " (" + code +
+               (out.deviceId.empty() ? ", no deviceId supplied" : ", deviceId " + out.deviceId) +
+               ")");
+    res.status = 401;
+    res.set_content(std::string(R"({"error":"unauthorized","code":")") + code + R"("})",
+                    "application/json");
+    return false;
+}
+
+static bool protocolVersionOk(const std::string& body, httplib::Response& res) {
+    long pv = PROTOCOL_VERSION;
+    if (jsonGetIntKeyed(body, "protocolVersion", &pv) && pv != PROTOCOL_VERSION) {
+        res.status = 409;
+        res.set_content("{\"error\":\"protocol version unsupported\",\"supported\":" +
+                            std::to_string(PROTOCOL_VERSION) + "}",
+                        "application/json");
+        return false;
+    }
+    return true;
+}
+
+// ── Descriptor parsing (session/controller PUT bodies) ──────────────────────
+
+// One ControllerDescriptor from its JSON object. `type` is REQUIRED — a
+// descriptor without it would force a server-side default type, which is
+// exactly the default-then-correct bug class this contract removes.
+static bool parseDescriptorObject(const std::string& obj, bool requireIdx,
+                                  ControllerDescriptor& d) {
+    long idx = 0;
+    if (jsonGetIntKeyed(obj, "ctrlIdx", &idx)) {
+        if (idx < 0) return false;
+        d.ctrlIdx = idx > 255 ? 255 : static_cast<uint8_t>(idx);
+    } else if (requireIdx) {
+        return false;
+    }
+    long type = 0;
+    if (!jsonGetIntKeyed(obj, "type", &type) || type < 0) return false;
+    // Out-of-range values pass through; the service reports invalidType per
+    // controller rather than failing the whole request.
+    d.type = type > 255 ? 255 : static_cast<uint8_t>(type);
+
+    d.caps = 0;
+    const std::string caps = jsonGetObject(obj, "caps");
+    bool b = false;
+    if (jsonGetBoolKeyed(caps, "rumble", &b) && b) d.caps |= CAP_RUMBLE;
+    b = false;
+    if (jsonGetBoolKeyed(caps, "motion", &b) && b) d.caps |= CAP_MOTION;
+    b = false;
+    if (jsonGetBoolKeyed(caps, "analogTriggers", &b) && b) d.caps |= CAP_ANALOG_TRIGGERS;
+    b = false;
+    if (jsonGetBoolKeyed(caps, "lightbar", &b) && b) d.caps |= CAP_LIGHTBAR;
+
+    const std::string mode = jsonGetString(obj, "touchpadMode");
+    if (mode == "ds4") {
+        d.touchpadMode = TOUCHPAD_MODE_DS4;
+    } else if (mode == "mouse") {
+        d.touchpadMode = TOUCHPAD_MODE_MOUSE;
+    } else {
+        d.touchpadMode = TOUCHPAD_MODE_OFF;
+    }
+    return true;
+}
+
+static bool parseControllerDescriptors(const std::string& body,
+                                       std::vector<ControllerDescriptor>& out) {
+    auto objs = jsonGetArrayObjects(body, "controllers");
+    for (const auto& obj : objs) {
+        ControllerDescriptor d;
+        if (!parseDescriptorObject(obj, /*requireIdx=*/true, d)) return false;
+        out.push_back(d);
+    }
+    return true;
+}
+
+// ── Session response builders ────────────────────────────────────────────────
+
+static std::string controllerApplyJson(const ControllerApplyResult& r) {
+    std::string j = "{\"ctrlIdx\":" + std::to_string(r.ctrlIdx);
+    j += ",\"result\":\"" + std::string(applyResultName(r.result)) + "\"";
+    j += ",\"appliedType\":" + std::to_string(r.appliedType);
+    j += ",\"motion\":{\"sinkSupportedForType\":" + boolStr(r.motionSinkSupportedForType);
+    j += ",\"backendOk\":" + boolStr(r.motionBackendOk) + "}}";
+    return j;
+}
+
+static std::string mouseControlJson(bool granted, const std::string& denyReason) {
+    std::string j = "{\"granted\":" + boolStr(granted);
+    if (!granted && !denyReason.empty()) j += ",\"reason\":\"" + jsonEscape(denyReason) + "\"";
+    j += "}";
+    return j;
+}
+
+static std::string buildUpsertResponseJson(const SessionUpsertResult& r) {
+    char tokenHex[9];
+    snprintf(tokenHex, sizeof(tokenHex), "%08x", r.token);
+
+    std::string json = "{\"connectionId\":\"" + jsonEscape(r.connectionId) + "\"";
+    json += ",\"token\":\"";
+    json += tokenHex;
+    json += "\",\"sessionSalt\":\"" + hexEncode(r.sessionSalt, SESSION_SALT_SIZE) + "\"";
+    json += ",\"epoch\":" + std::to_string(r.epoch);
+    json += ",\"maxControllers\":" + std::to_string(r.maxControllers);
+    json += ",\"protocolVersion\":" + std::to_string(PROTOCOL_VERSION);
+    json += ",\"controllers\":[";
+    for (size_t i = 0; i < r.controllers.size(); i++) {
+        if (i) json += ",";
+        json += controllerApplyJson(r.controllers[i]);
+    }
+    json += "],\"hostFeatures\":{\"mouseControl\":" +
+            mouseControlJson(r.mouseControlGranted, r.mouseControlDenyReason) + "}}";
+    return json;
+}
+
+static std::string buildSessionViewJson(const SessionService::SessionView& v) {
+    std::string json = "{\"connectionId\":\"" + jsonEscape(v.connectionId) + "\"";
+    json += ",\"deviceId\":\"" + jsonEscape(v.deviceId) + "\"";
+    json += ",\"epoch\":" + std::to_string(v.epoch);
+    json += ",\"protocolVersion\":" + std::to_string(PROTOCOL_VERSION);
+    json += ",\"maxControllers\":" + std::to_string(MAX_BACKEND_CONTROLLERS);
+    json += ",\"controllers\":[";
+    for (size_t i = 0; i < v.controllers.size(); i++) {
+        const auto& c = v.controllers[i];
+        if (i) json += ",";
+        json += "{\"ctrlIdx\":" + std::to_string(c.ctrlIdx) + ",\"active\":true";
+        json += ",\"appliedType\":" + std::to_string(c.appliedType);
+        json += ",\"caps\":" + capsJson(c.caps);
+        json += ",\"touchpadMode\":\"" + std::string(touchpadModeName(c.touchpadMode)) + "\"";
+        json += ",\"motion\":{\"sinkSupportedForType\":" + boolStr(c.motionSinkSupportedForType);
+        json += ",\"backendOk\":" + boolStr(c.motionBackendOk) + "}}";
+    }
+    json += "],\"hostFeatures\":{\"mouseControl\":" + mouseControlJson(v.mouseControlGranted, "") +
+            "}}";
+    return json;
+}
+
+// ── Client session routes ────────────────────────────────────────────────────
+
+// PUT /api/connections — the declarative upsert (docs/contract.md §Session).
+// Connect + full topology = ONE call; re-PUT converges; partial success rides
+// in the body, never in the HTTP status.
+static void upsertConnectionRoute(SessionService& svc, const httplib::Request& req,
+                                  httplib::Response& res) {
+    if (!g_appRunning) {
+        res.status = 503;
+        res.set_content(R"({"error":"shutting down"})", "application/json");
+        return;
+    }
+    ClientAuth auth;
+    if (!clientAuthed(req, res, auth)) return;
+    if (!protocolVersionOk(req.body, res)) return;
+
+    std::string deviceName = jsonGetString(req.body, "deviceName");
+    if (deviceName.empty()) deviceName = auth.device.name;
+
+    std::vector<ControllerDescriptor> descriptors;
+    if (!parseControllerDescriptors(req.body, descriptors)) {
         logMsg(LogLevel::WARN, "client",
-               "POST /api/connections: device not paired (id=" + deviceId + ")");
-        res.status = 403;
-        res.set_content(R"({"error":"device not paired"})", "application/json");
+               "PUT /api/connections: malformed controllers array (ctrlIdx and type are "
+               "required) from " +
+                   auth.deviceId);
+        res.status = 400;
+        res.set_content(R"({"error":"controllers entries require ctrlIdx and type"})",
+                        "application/json");
         return;
     }
 
-    uint8_t sharedKey[CRYPTO_KEY_SIZE];
-    if (!hexDecode(found->sharedKeyHex, sharedKey, CRYPTO_KEY_SIZE)) {
-        logMsg(LogLevel::ERR, "client",
-               "POST /api/connections: invalid shared key for " + found->name);
-        res.status = 500;
-        res.set_content(R"({"error":"invalid shared key"})", "application/json");
-        return;
-    }
+    bool mouseRequested = false;
+    const std::string hostFeatures = jsonGetObject(req.body, "hostFeatures");
+    if (!hostFeatures.empty()) jsonGetBoolKeyed(hostFeatures, "mouseControl", &mouseRequested);
 
-    // SessionService handles stale cleanup, token gen, and slot counting.
-    auto result =
-        svc.openSession(found->id, found->name, found->lastIP, sharedKey, found->touchpadMode);
+    auto result = svc.upsertSession(auth.deviceId, deviceName, req.remote_addr, auth.pairingKey,
+                                    descriptors, mouseRequested);
     if (!result.ok) {
         res.status = 500;
         res.set_content("{\"error\":\"" + jsonEscape(result.error) + "\"}", "application/json");
         return;
     }
 
-    char tokenHex[9];
-    snprintf(tokenHex, sizeof(tokenHex), "%08x", result.token);
+    // Refresh the paired record's last-seen identity (name can change on the
+    // client between sessions).
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        for (auto& d : g_config.pairedDevices) {
+            if (d.id == auth.deviceId) {
+                d.lastIP = req.remote_addr;
+                d.name = deviceName;
+                break;
+            }
+        }
+        saveConfig(g_config);
+    }
 
-    std::string response = "{\"connectionId\":\"conn_";
-    response += tokenHex;
-    response += "\",\"token\":\"";
-    response += tokenHex;
-    response += "\",\"maxControllers\":" + std::to_string(result.availableSlots);
-    response += "}";
-
-    res.status = 201;
-    res.set_content(response, "application/json");
+    res.set_content(buildUpsertResponseJson(result), "application/json");
 }
 
-// upsertPairedDevice + accept/decline live in pairing_service so the dashboard
-// route and the native tray prompts share one accept path.
+// ── Pairing routes ───────────────────────────────────────────────────────────
 
-// Dual-path device pairing over HTTPS (PINs + shared key encrypted in transit).
+// Dual-path device pairing over HTTPS (PINs + pairing key encrypted in transit).
 // Path A: `pin` (server-generated, typed into the dish) → verifyPin, pair now.
 // Path B: `clientPin` (dish-shown) → register a request, reply pending=true; the
-//   operator accepts on the dashboard and the dish polls /api/pair/status.
-// See docs/protocol.md. Always 200; the sender classifies on `ok`/`pending`.
-static void pairRoute(const httplib::Request& req, httplib::Response& res) {
+//   operator accepts on the dashboard/tray and the dish polls /api/pair/status.
+// Key rotation: `hmacProof` of the CURRENT key mints and returns a fresh key.
+// There is NO PIN-free already-paired short-circuit: handing the stored key to
+// anyone who learned a deviceId let any LAN actor exfiltrate it.
+// Always 200 on the PIN paths; the sender classifies on `ok`/`pending`.
+static void pairRoute(SessionService& svc, const httplib::Request& req, httplib::Response& res) {
     auto deviceId = jsonGetString(req.body, "deviceId");
     auto deviceName = jsonGetString(req.body, "deviceName");
     auto pin = jsonGetString(req.body, "pin");               // server-shown PIN (Path A)
     auto clientPin = jsonGetString(req.body, "clientPin");   // dish-shown PIN (Path B)
     auto clientPkHex = jsonGetString(req.body, "publicKey"); // client's X25519 public key
-    auto initialMode = jsonGetString(req.body, "touchpadMode");
+    auto hmacProof = jsonGetString(req.body, "hmacProof");   // key-rotation proof
     const std::string clientIP = req.remote_addr;
 
     if (deviceId.empty()) {
         res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
         return;
     }
+    if (!protocolVersionOk(req.body, res)) return;
 
-    // Already paired — hand back the stored key without a PIN. Also the graceful
-    // tail of Path B: a dish that missed its status-poll re-pairs into success.
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        for (auto& d : g_config.pairedDevices) {
-            if (d.id == deviceId) {
-                d.lastIP = clientIP;
-                std::string storedKey = d.sharedKeyHex;
-                saveConfig(g_config);
-                logMsg(LogLevel::INFO, "pairing",
-                       "Device " + deviceName + " (" + clientIP + ") already paired, updating IP");
-                res.set_content(R"({"ok":true,"message":"already paired","sharedKey":")" +
-                                    storedKey + R"("})",
-                                "application/json");
-                return;
+    // Key rotation / re-pair with proof of the current key. A failed proof
+    // falls through to the PIN paths — identical to a fresh pairing attempt.
+    if (!hmacProof.empty()) {
+        PairedDevice dev;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            for (const auto& d : g_config.pairedDevices) {
+                if (d.id == deviceId) {
+                    dev = d;
+                    found = true;
+                    break;
+                }
             }
         }
+        uint8_t currentKey[CRYPTO_KEY_SIZE];
+        if (found && hexDecode(dev.sharedKeyHex, currentKey, CRYPTO_KEY_SIZE) &&
+            verifyHmacProof(currentKey, deviceId, hmacProof)) {
+            std::string newKeyHex;
+            rotatePairedDeviceKey(deviceId, clientIP, newKeyHex);
+            // The old key dies with the rotation, so any live session keyed off
+            // it must die too.
+            svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
+            logMsg(LogLevel::INFO, "pairing",
+                   "Rotated pairing key for " + deviceId + " (" + clientIP + ")");
+            res.set_content(R"({"ok":true,"message":"key rotated","sharedKey":")" + newKeyHex +
+                                R"(","protocolVersion":)" + std::to_string(PROTOCOL_VERSION) + "}",
+                            "application/json");
+            return;
+        }
+        logMsg(LogLevel::WARN, "pairing",
+               "Rejected proof-based re-pair for " + deviceId + " (" + clientIP + ")");
     }
 
     // Path A — dish entered the operator's server-generated PIN.
@@ -471,7 +551,10 @@ static void pairRoute(const httplib::Request& req, httplib::Response& res) {
             sodium_memzero(randomKey, 32);
         }
 
-        upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex, initialMode);
+        upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex);
+        // A re-pair invalidates the previous key; a session still keyed off it
+        // would churn undecryptably, so close it now.
+        svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
 
         std::string serverPkHex = hexEncode(serverPk, 32);
         sodium_memzero(serverSk, 32);
@@ -479,11 +562,13 @@ static void pairRoute(const httplib::Request& req, httplib::Response& res) {
                "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
         if (hasClientKey) {
             res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
-                                serverPkHex + R"("})",
+                                serverPkHex + R"(","protocolVersion":)" +
+                                std::to_string(PROTOCOL_VERSION) + "}",
                             "application/json");
         } else {
             res.set_content(R"({"ok":true,"message":"paired successfully","sharedKey":")" +
-                                sharedKeyHex + R"("})",
+                                sharedKeyHex + R"(","protocolVersion":)" +
+                                std::to_string(PROTOCOL_VERSION) + "}",
                             "application/json");
         }
         return;
@@ -505,6 +590,69 @@ static void pairRoute(const httplib::Request& req, httplib::Response& res) {
 
     logMsg(LogLevel::WARN, "pairing", "Invalid or empty PIN attempt from " + clientIP);
     res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
+}
+
+// DELETE /api/pair — client self-unpair (hmacProof-authed). Closes any live
+// session first (close-notify reason=unpaired rides the still-valid key).
+static void selfUnpairRoute(SessionService& svc, const httplib::Request& req,
+                            httplib::Response& res) {
+    ClientAuth auth;
+    if (!clientAuthed(req, res, auth)) return;
+
+    svc.closeSessionsForDevice(auth.deviceId, CLOSE_REASON_UNPAIRED);
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        auto& devs = g_config.pairedDevices;
+        devs.erase(std::remove_if(devs.begin(), devs.end(),
+                                  [&](const PairedDevice& d) { return d.id == auth.deviceId; }),
+                   devs.end());
+        saveConfig(g_config);
+    }
+    logMsg(LogLevel::INFO, "pairing", "Device self-unpaired: " + auth.deviceId);
+    res.set_content(R"({"ok":true})", "application/json");
+}
+
+// ── Catalog routes (unauthenticated — the UI renders BEFORE pairing) ────────
+
+static void catalogRoute(const httplib::Request& req, httplib::Response& res) {
+    const std::string locale =
+        satellite::resolveCatalogLocale(req.get_header_value("Accept-Language"));
+    const std::string etag = satellite::catalogETag(SATELLITE_VERSION, locale);
+    res.set_header("ETag", etag);
+    res.set_header("Vary", "Accept-Language");
+    if (req.get_header_value("If-None-Match") == etag) {
+        res.status = 304;
+        return;
+    }
+    const std::string langJson = readFile(g_webDir + "/lang/" + locale + ".json");
+    const std::string enJson = (locale == "en") ? langJson : readFile(g_webDir + "/lang/en.json");
+    res.set_content(satellite::buildCatalogJson(locale, langJson, enJson, SATELLITE_VERSION,
+                                                catalogBackendTraits()),
+                    "application/json");
+}
+
+static void catalogImageRoute(const httplib::Request& req, httplib::Response& res) {
+    const std::string slug = req.matches[1].str();
+    bool known = false;
+    for (const auto& s : satellite::catalogImageSlugs()) {
+        if (s == slug) {
+            known = true;
+            break;
+        }
+    }
+    std::string svg = known ? readFile(g_webDir + "/img/catalog/" + slug + ".svg") : "";
+    if (svg.empty()) {
+        res.status = 404;
+        res.set_content(R"({"error":"unknown catalog image"})", "application/json");
+        return;
+    }
+    const std::string etag = std::string("\"") + SATELLITE_VERSION + "\"";
+    res.set_header("ETag", etag);
+    if (req.get_header_value("If-None-Match") == etag) {
+        res.status = 304;
+        return;
+    }
+    res.set_content(svg, "image/svg+xml");
 }
 
 // Admin server — web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
@@ -788,44 +936,37 @@ void adminHttpThread(SessionService& svc) {
     });
 
     g_httpServer.Get("/api/devices", [&svc](const httplib::Request&, httplib::Response& res) {
-        // `state` is the DeviceLinkState: paired | active | notResponding.
-        std::string json = "[";
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
-            const auto& d = g_config.pairedDevices[i];
-            DeviceLinkState s = svc.linkStateForDevice(d.id);
-            json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
-                    "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
-                    jsonEscape(d.pairedAt) + "\",\"touchpadMode\":\"" +
-                    touchpadModeName(d.touchpadMode) + "\",\"state\":\"" + deviceLinkStateName(s) +
-                    "\"}";
-            if (i + 1 < g_config.pairedDevices.size()) json += ",";
-        }
-        json += "]";
-        res.set_content(json, "application/json");
+        res.set_content(buildDevicesJson(svc), "application/json");
     });
 
-    g_httpServer.Post(
-        "/api/devices/remove", [](const httplib::Request& req, httplib::Response& res) {
-            auto deviceId = jsonGetString(req.body, "id");
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            auto& devs = g_config.pairedDevices;
-            devs.erase(std::remove_if(devs.begin(), devs.end(),
-                                      [&](const PairedDevice& d) { return d.id == deviceId; }),
-                       devs.end());
-            saveConfig(g_config);
-            res.set_content(R"({"ok":true})", "application/json");
+    // Admin unpair. Closes any live session for the device first — an unpaired
+    // device must not keep streaming on a key the server no longer trusts.
+    g_httpServer.Delete(
+        R"(/api/devices/([^/]+))", [&svc](const httplib::Request& req, httplib::Response& res) {
+            auto deviceId = req.matches[1].str();
+            int closed = svc.closeSessionsForDevice(deviceId, CLOSE_REASON_UNPAIRED);
+            bool removed = false;
+            {
+                std::lock_guard<std::mutex> lk(g_configMtx);
+                auto& devs = g_config.pairedDevices;
+                size_t before = devs.size();
+                devs.erase(std::remove_if(devs.begin(), devs.end(),
+                                          [&](const PairedDevice& d) { return d.id == deviceId; }),
+                           devs.end());
+                removed = devs.size() != before;
+                if (removed) saveConfig(g_config);
+            }
+            if (!removed) {
+                res.status = 404;
+                res.set_content(R"({"error":"device not paired"})", "application/json");
+                return;
+            }
+            logMsg(LogLevel::INFO, "pairing",
+                   "Unpaired device " + deviceId + (closed > 0 ? " (live session closed)" : ""));
+            res.set_content("{\"ok\":true,\"sessionsClosed\":" + std::to_string(closed) + "}",
+                            "application/json");
         });
 
-    // Localhost variant for admin tooling/scripts; the dashboard is read-only and
-    // the client owns the setting via the HTTPS variant.
-    g_httpServer.Post("/api/devices/touchpad-mode",
-                      [&svc](const httplib::Request& req, httplib::Response& res) {
-                          handleTouchpadModeSet(svc, req, res);
-                      });
-
-    // Advertises which TOUCHPAD_MODE_* this host can honour so the client
-    // mode-picker greys out the rest (e.g. macOS → only `off`).
     g_httpServer.Get("/api/server/capabilities",
                      [](const httplib::Request&, httplib::Response& res) {
                          res.set_content(buildCapabilitiesJson(), "application/json");
@@ -861,10 +1002,21 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(buildConnectionsJson(svc), "application/json");
     });
 
-    g_httpServer.Delete(R"(/api/connections/(\w+))",
-                        [&svc](const httplib::Request& req, httplib::Response& res) {
-                            closeConnectionRoute(svc, req, res);
-                        });
+    // Admin kick — transient by design (a retrying client may re-PUT and
+    // reconnect; to keep a device out, unpair it). Close-notify rides first.
+    g_httpServer.Delete(
+        R"(/api/connections/(\w+))", [&svc](const httplib::Request& req, httplib::Response& res) {
+            auto connId = req.matches[1].str();
+            int removed = svc.closeSessionById(connId, "", CLOSE_REASON_KICKED,
+                                               /*notify=*/true);
+            if (removed < 0) {
+                res.status = 404;
+                res.set_content(R"({"error":"connection not found"})", "application/json");
+                return;
+            }
+            res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
+                            "application/json");
+        });
 
     g_httpServer.Get("/api/logs", [](const httplib::Request& req, httplib::Response& res) {
         uint64_t since = 0;
@@ -905,7 +1057,8 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(json, "application/json");
     });
 
-    // SSE: one stream multiplexes status/connections/update/pin/pairRequests events.
+    // SSE: one stream multiplexes status/connections/devices/update/pin/
+    // pairRequests events.
     g_httpServer.Get("/api/events", [&svc](const httplib::Request&, httplib::Response& res) {
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
@@ -921,6 +1074,7 @@ void adminHttpThread(SessionService& svc) {
                 }
 
                 std::string connJson = buildConnectionsJson(svc);
+                std::string devicesJson = buildDevicesJson(svc);
 
                 uint64_t logSeqNow;
                 {
@@ -952,6 +1106,12 @@ void adminHttpThread(SessionService& svc) {
 
                 event += "event: connections\ndata: ";
                 event += connJson;
+                event += "\n\n";
+
+                // The dashboard renders one device-centric list, so it needs
+                // the paired set on every tick, not just the live connections.
+                event += "event: devices\ndata: ";
+                event += devicesJson;
                 event += "\n\n";
 
                 if (g_updateService) {
@@ -998,7 +1158,7 @@ void adminHttpThread(SessionService& svc) {
     g_httpServer.listen("127.0.0.1", g_config.webPort);
 }
 
-// Client API server — pairing + connections. HTTPS (self-signed), 0.0.0.0.
+// Client API server — pairing + sessions + catalog. HTTPS (self-signed), 0.0.0.0.
 void clientApiThread(SessionService& svc) {
     std::string certPath, keyPath;
     if (!ensureServerCert(certPath, keyPath)) {
@@ -1012,9 +1172,11 @@ void clientApiThread(SessionService& svc) {
         return;
     }
 
-    // POST /api/pair — PIN-gated; no device auth (the device is not paired yet).
-    server.Post("/api/pair",
-                [](const httplib::Request& req, httplib::Response& res) { pairRoute(req, res); });
+    // POST /api/pair — PIN-gated (or hmacProof-gated rotation); no device auth
+    // for the PIN paths (the device is not paired yet).
+    server.Post("/api/pair", [&svc](const httplib::Request& req, httplib::Response& res) {
+        pairRoute(svc, req, res);
+    });
 
     // Path-B poll. No device auth (not paired yet); the minted key is handed
     // back exactly once on approval (pollPairRequest clears it).
@@ -1038,30 +1200,101 @@ void clientApiThread(SessionService& svc) {
                         "application/json");
     });
 
-    // POST /api/connections — open a session. Requires a paired deviceId.
-    server.Post("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
-        if (!clientAuthorized(req, res)) return;
-        openConnectionRoute(svc, req, res);
+    // DELETE /api/pair — client self-unpair (closes any live session first).
+    server.Delete("/api/pair", [&svc](const httplib::Request& req, httplib::Response& res) {
+        selfUnpairRoute(svc, req, res);
     });
 
-    // DELETE /api/connections/:id — a sender tears down its own session.
-    server.Delete(R"(/api/connections/(\w+))",
-                  [&svc](const httplib::Request& req, httplib::Response& res) {
-                      if (!clientAuthorized(req, res)) return;
-                      closeConnectionRoute(svc, req, res);
-                  });
+    // PUT /api/connections — idempotent session upsert keyed on deviceId.
+    server.Put("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
+        upsertConnectionRoute(svc, req, res);
+    });
 
-    // Authoritative setter: the client pushes its touchpad mode here.
-    server.Post("/api/devices/touchpad-mode",
-                [&svc](const httplib::Request& req, httplib::Response& res) {
-                    if (!clientAuthorized(req, res)) return;
-                    handleTouchpadModeSet(svc, req, res);
-                });
+    // GET /api/connections/:id — the reconcile endpoint, scoped to OWN session.
+    server.Get(R"(/api/connections/(\w+))",
+               [&svc](const httplib::Request& req, httplib::Response& res) {
+                   ClientAuth auth;
+                   if (!clientAuthed(req, res, auth)) return;
+                   auto view = svc.getSessionView(req.matches[1].str(), auth.deviceId);
+                   if (!view.found) {
+                       res.status = 404;
+                       res.set_content(R"({"error":"connection not found"})", "application/json");
+                       return;
+                   }
+                   res.set_content(buildSessionViewJson(view), "application/json");
+               });
 
-    // No auth: capabilities aren't sensitive and the picker needs them pre-session.
+    // DELETE /api/connections/:id — graceful close of OWN session (no notify:
+    // the closer already knows).
+    server.Delete(
+        R"(/api/connections/(\w+))", [&svc](const httplib::Request& req, httplib::Response& res) {
+            ClientAuth auth;
+            if (!clientAuthed(req, res, auth)) return;
+            int removed = svc.closeSessionById(req.matches[1].str(), auth.deviceId,
+                                               CLOSE_REASON_REPLACED, /*notify=*/false);
+            if (removed < 0) {
+                res.status = 404;
+                res.set_content(R"({"error":"connection not found"})", "application/json");
+                return;
+            }
+            res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
+                            "application/json");
+        });
+
+    // PUT /api/connections/:id/controllers/:idx — standalone single-descriptor
+    // upsert (the FULL descriptor; ctrlIdx in the path wins).
+    server.Put(R"(/api/connections/(\w+)/controllers/(\d+))", [&svc](const httplib::Request& req,
+                                                                     httplib::Response& res) {
+        ClientAuth auth;
+        if (!clientAuthed(req, res, auth)) return;
+        if (!protocolVersionOk(req.body, res)) return;
+        ControllerDescriptor d;
+        if (!parseDescriptorObject(req.body, /*requireIdx=*/false, d)) {
+            res.status = 400;
+            res.set_content(R"({"error":"descriptor requires type"})", "application/json");
+            return;
+        }
+        long idx = strtol(req.matches[2].str().c_str(), nullptr, 10);
+        d.ctrlIdx = idx > 255 ? 255 : static_cast<uint8_t>(idx);
+        ControllerApplyResult ar;
+        uint16_t epoch = 0;
+        if (!svc.applyController(req.matches[1].str(), auth.deviceId, d, ar, epoch)) {
+            res.status = 404;
+            res.set_content(R"({"error":"connection not found"})", "application/json");
+            return;
+        }
+        res.set_content("{\"epoch\":" + std::to_string(epoch) +
+                            ",\"controller\":" + controllerApplyJson(ar) + "}",
+                        "application/json");
+    });
+
+    // DELETE /api/connections/:id/controllers/:idx — removes the SLOT only;
+    // the session lives on (zero-controller sessions are valid).
+    server.Delete(R"(/api/connections/(\w+)/controllers/(\d+))", [&svc](const httplib::Request& req,
+                                                                        httplib::Response& res) {
+        ClientAuth auth;
+        if (!clientAuthed(req, res, auth)) return;
+        long idx = strtol(req.matches[2].str().c_str(), nullptr, 10);
+        uint16_t epoch = 0;
+        if (!svc.removeController(req.matches[1].str(), auth.deviceId,
+                                  idx > 255 ? 255 : static_cast<uint8_t>(idx), epoch)) {
+            res.status = 404;
+            res.set_content(R"({"error":"connection not found"})", "application/json");
+            return;
+        }
+        res.set_content("{\"ok\":true,\"epoch\":" + std::to_string(epoch) + "}",
+                        "application/json");
+    });
+
+    // No auth on the read-only info surface: the client UI renders BEFORE pairing.
     server.Get("/api/server/capabilities", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(buildCapabilitiesJson(), "application/json");
     });
+    server.Get("/api/catalog",
+               [](const httplib::Request& req, httplib::Response& res) { catalogRoute(req, res); });
+    server.Get(
+        R"(/api/catalog/images/([\w-]+))",
+        [](const httplib::Request& req, httplib::Response& res) { catalogImageRoute(req, res); });
 
     g_clientServer = &server;
     logMsg(LogLevel::INFO, "client",

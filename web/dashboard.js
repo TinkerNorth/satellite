@@ -271,21 +271,9 @@ function batteryChip(ctrl) {
   return { cls, text, title, icon: batteryIconFile(b, lvl) };
 }
 
-// ── Per-device touchpad routing (Task 1.3) ──────────────────────────────────
-// The paired-device touchpad-mode selector. Mirrors TOUCHPAD_MODE_* on the
-// server; the chosen mode is persisted in config and hot-applied to any live
-// connection (no re-pairing). Pad → virtual DualShock 4 touchpad surface;
-// Mouse → relative mouse pointer on this host; Off → ignore.
-function touchpadModes() {
-  return [
-    { id: 'ds4',   label: t('devices.touchpad.pad'),   title: t('devices.touchpad.pad.tip') },
-    { id: 'mouse', label: t('devices.touchpad.mouse'), title: t('devices.touchpad.mouse.tip') },
-    { id: 'off',   label: t('devices.touchpad.off'),   title: t('devices.touchpad.off.tip') },
-  ];
-}
-
 // Per-controller touchpad chip — derived from the controller's `touchpadActive`
-// flag, its `controllerType`, and the owning connection's `touchpadMode`.
+// flag, its `controllerType`, and its own `touchpadMode` (per-controller —
+// the descriptor field, client-owned; the dashboard only mirrors it).
 // Mirrors MOTION_COPY's { cls, text, title } shape.
 function touchpadChip(ctrl) {
   const mode = ctrl.touchpadMode || 'ds4';
@@ -362,7 +350,7 @@ function apiErrorText(res, fallback) {
 
 // Guards one-time listener wiring — initDashboard() runs on every nav back to
 // /dashboard, but the elements it binds (#dash-notice-close, #device-list,
-// #connection-list) are static, so their listeners must attach exactly once.
+// #device-list) are static, so their listeners must attach exactly once.
 let dashboardListenersWired = false;
 
 function initDashboard() {
@@ -372,8 +360,6 @@ function initDashboard() {
     if (closeBtn) closeBtn.addEventListener('click', hideDashError);
     const devList = document.getElementById('device-list');
     if (devList) devList.addEventListener('click', handleDeviceListClick);
-    const connList = document.getElementById('connection-list');
-    if (connList) connList.addEventListener('click', handleConnectionListClick);
     const pairList = document.getElementById('pair-request-list');
     if (pairList) pairList.addEventListener('click', handlePairRequestClick);
     const pairBadge = document.getElementById('pair-badge');
@@ -428,15 +414,21 @@ function startSSE() {
     onAnyMessage();
     try {
       const d = JSON.parse(e.data);
+      g_lastConnections = d;
       updateConnections(d);
+      renderDeviceList();
       // Capture active-connection count for the restart-confirmation modal.
       window.__activeConnectionCount = (d.connections || []).length;
-      // Keep the paired-device touchpad segmented control in sync. The SSE
-      // stream only pushes `connections`, so a touchpad-mode change made in
-      // another tab would otherwise leave the segmented control stale while
-      // the per-controller chip (SSE-fed) updates — the two would visibly
-      // disagree. Re-render the device list from /api/devices on each tick.
-      loadDevices();
+    } catch (err) { /* ignore */ }
+  });
+
+  // Paired set + link state, pushed each tick — the device-centric list needs
+  // both this and `connections` to render one row per device.
+  eventSource.addEventListener('devices', (e) => {
+    onAnyMessage();
+    try {
+      g_lastDevices = JSON.parse(e.data);
+      renderDeviceList();
     } catch (err) { /* ignore */ }
   });
 
@@ -522,43 +514,13 @@ function setHTML(el, html) {
 }
 
 function updateConnections(d) {
-  const connEl = document.getElementById('connection-list');
   const ctrlEl = document.getElementById('controller-list');
   const countEl = document.getElementById('controller-count');
 
   if (!d.connections || d.connections.length === 0) {
-    if (connEl) connEl.innerHTML = '<p class="hint">' + esc(t('connections.empty')) + '</p>';
     if (ctrlEl) setHTML(ctrlEl, '<p class="hint">' + esc(t('controllers.empty')) + '</p>');
     if (countEl) countEl.textContent = '0 / ' + (d.maxControllers || 16);
     return;
-  }
-
-  // ── Connections list (network sessions) ──
-  // Disconnect rides in a data-* attribute + delegated handler rather than an
-  // inline onclick — the connectionId is never spliced into a JS-string
-  // context (esc() only escapes for the HTML-attribute context).
-  // The `device-state` chip text comes from DEVICE_LINK_STATE_LABEL keyed on
-  // the server's lowercase `state` string (defaults to "Online" — a row that
-  // shows up in /api/connections at all is at least Active).
-  if (connEl) {
-    connEl.innerHTML = d.connections.map(c => {
-      const stateKey = c.state || 'active';
-      const stateText = deviceLinkStateLabel(stateKey);
-      const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.active;
-      const ctrlCount = c.activeControllerCount || 0;
-      const ctrlNoun  = ctrlCount === 1 ? t('connections.controller.singular')
-                                        : t('connections.controller.plural');
-      const disconnectLabel = t('connections.disconnect');
-      return `
-      <div class="device-item">
-        <img class="device-glyph" src="img/icons/${esc(stateIcon)}" alt="">
-        <div class="device-info">
-          <span class="device-name">${esc(c.deviceName)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
-          <span class="device-meta">${esc(c.senderIP)} · ${ctrlCount} ${esc(ctrlNoun)}</span>
-        </div>
-        <button class="btn-icon btn-danger" type="button" data-act="disconnect" data-conn-id="${esc(c.connectionId)}" title="${esc(disconnectLabel)}"><img src="img/icons/close_x.svg" alt="${esc(disconnectLabel)}" class="emoji-icon"></button>
-      </div>`;
-    }).join('');
   }
 
   // ── Virtual controllers list (per-device ViGEm state) ──
@@ -566,14 +528,18 @@ function updateConnections(d) {
     const allCtrls = [];
     d.connections.forEach(c => {
       c.controllers.forEach(ctrl => {
+        // touchpadMode is per-controller (rides the descriptor); the owning
+        // connection contributes only identity + link state.
         allCtrls.push({ ...ctrl, deviceName: c.deviceName, connectionId: c.connectionId,
-                        touchpadMode: c.touchpadMode });
+                        connState: c.state || 'active' });
       });
     });
     if (allCtrls.length === 0) {
       setHTML(ctrlEl, '<p class="hint">' + esc(t('controllers.empty')) + '</p>');
     } else {
       setHTML(ctrlEl, allCtrls.map(ctrl => {
+        // pluggedIn is adapter truth (a virtual device exists right now), not
+        // an inference from the serial number.
         const ok = ctrl.pluggedIn;
         const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
@@ -588,12 +554,17 @@ function updateConnections(d) {
         const stateText = controllerStateLabel(stateKey);
         const ctrlHeading = t('controllers.controller-num', [ctrl.controllerIndex]);
         const serialLabel = t('controllers.serial');
+        // A pad owned by a stalling connection is about to die with it —
+        // tag the row so it can't masquerade as a healthy duplicate.
+        const staleTag = ctrl.connState === 'notResponding'
+          ? ` <span class="device-state state-notResponding">${esc(deviceLinkStateLabel('notResponding'))}</span>`
+          : '';
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
             <img class="ctrl-type-icon" src="img/ctrl-${esc(ctrlType)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}">
             <div class="ctrl-info">
-              <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}</span>
+              <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>
               <span class="ctrl-meta">${esc(ctrl.deviceName)} · ${esc(serialLabel)} ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
             </div>
           </div>
@@ -649,13 +620,6 @@ async function disconnectConn(connId, btn) {
   }
 }
 
-// Delegated click handler for the connections list — keeps connectionIds out
-// of inline onclick= JS-string contexts.
-function handleConnectionListClick(e) {
-  const btn = e.target.closest('[data-act="disconnect"]');
-  if (!btn) return;
-  disconnectConn(btn.getAttribute('data-conn-id') || '', btn);
-}
 
 // ── PIN ─────────────────────────────────────────────────────────────────────
 // Triggered by the inline onclick on the Generate PIN button. The fetch is
@@ -807,88 +771,93 @@ async function respondPairRequest(deviceId, pin, accept, btn) {
   }
 }
 
-// ── Devices ─────────────────────────────────────────────────────────────────
+// ── Devices (one device-centric list) ───────────────────────────────────────
+// Every paired device is exactly one row; its live session (when any) rides as
+// a state chip + meta on the SAME row instead of a parallel "Connections"
+// section, so one healthy phone can never legitimately occupy multiple rows.
+// Fed by the SSE `devices` + `connections` events; loadDevices() seeds the
+// first paint before the stream connects.
+let g_lastDevices = null;
+let g_lastConnections = null;
+
+function renderDeviceList() {
+  const el = document.getElementById('device-list');
+  if (!el) return;
+  const devs = Array.isArray(g_lastDevices) ? g_lastDevices : [];
+  if (devs.length === 0) {
+    setHTML(el, '<p class="hint">' + esc(t('devices.empty')) + '</p>');
+    return;
+  }
+  const conns = (g_lastConnections && Array.isArray(g_lastConnections.connections))
+    ? g_lastConnections.connections : [];
+  const removeLb = t('devices.remove');
+  const disconnectLb = t('connections.disconnect');
+  setHTML(el, devs.map(d => {
+    const conn = conns.find(c => c.deviceId === d.id) || null;
+    // The /api/devices state already folds in liveness (paired when offline,
+    // active/notResponding when a session exists).
+    const stateKey = d.state || 'paired';
+    const stateText = deviceLinkStateLabel(stateKey);
+    const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.paired;
+    let meta;
+    if (conn) {
+      const ctrlCount = conn.activeControllerCount || 0;
+      const ctrlNoun = ctrlCount === 1 ? t('connections.controller.singular')
+                                       : t('connections.controller.plural');
+      meta = `${esc(conn.senderIP)} · ${ctrlCount} ${esc(ctrlNoun)}`;
+    } else {
+      meta = `${esc(d.lastIP)} · ${esc(d.pairedAt)}`;
+    }
+    // Kick (session-scoped, transient — the dish may reconnect) only renders
+    // for a live session; unpair (trust-scoped) always.
+    const kickBtn = conn
+      ? `<button class="btn-icon" type="button" data-act="disconnect" data-conn-id="${esc(conn.connectionId)}" title="${esc(disconnectLb)}"><img src="img/icons/close_x.svg" alt="${esc(disconnectLb)}" class="emoji-icon"></button>`
+      : '';
+    return `
+    <div class="device-item">
+      <img class="device-glyph" src="img/icons/${esc(stateIcon)}" alt="">
+      <div class="device-info">
+        <span class="device-name">${esc(d.name)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
+        <span class="device-meta">${meta}</span>
+      </div>
+      <div class="device-actions">
+        ${kickBtn}
+        <button class="btn-icon btn-danger" type="button" data-act="remove-device" data-id="${esc(d.id)}" title="${esc(removeLb)}"><img src="img/icons/close_x.svg" alt="${esc(removeLb)}" class="emoji-icon"></button>
+      </div>
+    </div>`;
+  }).join(''));
+}
+
+// First-paint seed before the SSE stream connects (and refresh after unpair).
 async function loadDevices() {
   try {
-    // First time round, populate the capabilities cache so the touchpad
-    // badge knows which modes this host can honour. Cheap (one fetch) and
-    // server-side state-free — the result lives in g_serverCapabilities.
-    if (g_serverCapabilities == null) await loadServerCapabilities();
     const r = await fetch('/api/devices');
     if (!r.ok) return;
-    const devs = await r.json();
-    const el = document.getElementById('device-list');
-    if (devs.length === 0) {
-      el.innerHTML = '<p class="hint">' + esc(t('devices.empty')) + '</p>';
-      return;
-    }
-    // Build markup with no inline handlers — device ids ride in data-*
-    // attributes (HTML-escaped) and the click logic is wired via
-    // addEventListener below, so an id is never interpolated into a JS
-    // string context. Selection on the segmented control is also exposed
-    // The client (dish app) owns the touchpad mode setting; the dashboard is
-    // a read-only mirror. Show the current mode as a badge plus a hint about
-    // which modes this host supports — the client picker greys out the rest.
-    const modes = touchpadModes();
-    const tpLabel  = t('devices.touchpad.label');
-    const tpTip    = t('devices.touchpad.tip');
-    const removeLb = t('devices.remove');
-    const supportedModes = (g_serverCapabilities && g_serverCapabilities.touchpad &&
-                            Array.isArray(g_serverCapabilities.touchpad.supportedModes))
-      ? g_serverCapabilities.touchpad.supportedModes
-      : ['off'];
-    const supportedLabels = modes
-      .filter(m => supportedModes.indexOf(m.id) !== -1)
-      .map(m => m.label).join(' · ');
-    el.innerHTML = devs.map(d => {
-      const tm = d.touchpadMode || 'off';
-      const modeMeta = modes.find(m => m.id === tm) || modes[modes.length - 1];
-      const supportedHere = supportedModes.indexOf(tm) !== -1;
-      const badgeCls = supportedHere ? `tp-badge tp-badge-${esc(tm)}` : 'tp-badge tp-badge-unsupported';
-      // Per-device link-state chip — defaults to "Paired" (offline) for a
-      // device with no live connection. Reuses the same vocabulary the
-      // Connections section uses (dish-android chip_status_* family).
-      const stateKey = d.state || 'paired';
-      const stateText = deviceLinkStateLabel(stateKey);
-      const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.paired;
-      return `
-      <div class="device-item">
-        <img class="device-glyph" src="img/icons/${esc(stateIcon)}" alt="">
-        <div class="device-info">
-          <span class="device-name">${esc(d.name)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
-          <span class="device-meta">${esc(d.lastIP)} · ${esc(d.pairedAt)}</span>
-        </div>
-        <div class="device-actions">
-          <span class="seg-label" title="${esc(tpTip)}">${esc(tpLabel)}</span>
-          <span class="${badgeCls}" title="${esc(t('devices.touchpad.client-set'))} — ${esc(t('devices.touchpad.supported-here'))}: ${esc(supportedLabels)}">${esc(modeMeta.label)}</span>
-          <button class="btn-icon btn-danger" type="button" data-act="remove-device" data-id="${esc(d.id)}" title="${esc(removeLb)}"><img src="img/icons/close_x.svg" alt="${esc(removeLb)}" class="emoji-icon"></button>
-        </div>
-      </div>`;
-    }).join('');
+    g_lastDevices = await r.json();
+    renderDeviceList();
   } catch (e) { /* ignore */ }
 }
 
-// Single delegated click handler for the paired-device list — keeps device
-// ids out of inline onclick= JS-string contexts (see esc() note: it is an
-// HTML escaper, not a JS-string escaper).
+// Single delegated click handler for the device list — keeps device ids and
+// connection ids out of inline onclick= JS-string contexts (see esc() note:
+// it is an HTML escaper, not a JS-string escaper).
 function handleDeviceListClick(e) {
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
-  const id = btn.getAttribute('data-id') || '';
   if (btn.dataset.act === 'remove-device') {
-    removeDevice(id, btn);
+    removeDevice(btn.getAttribute('data-id') || '', btn);
+  } else if (btn.dataset.act === 'disconnect') {
+    disconnectConn(btn.getAttribute('data-conn-id') || '', btn);
   }
-  // Touchpad mode is client-owned; the dashboard reflects state only — no
-  // segment buttons to click.
 }
 
 async function removeDevice(id, btn) {
-  // POST /api/devices/remove is ~0.2s. Same pattern as disconnect — swap the
-  // close-X for the spinner inside the icon button, then let the loadDevices()
-  // re-render replace the row.
+  // DELETE /api/devices/<id> unpairs AND closes any live session (the server
+  // sends the close-notify first). Swap the glyph for the spinner inside the
+  // icon button, then let the re-render replace the row.
   const restore = setButtonLoading(btn);
   try {
-    const res = await apiPost('/api/devices/remove', { id });
+    const res = await api('/api/devices/' + encodeURIComponent(id), { method: 'DELETE' });
     if (!res.ok) {
       showDashError(apiErrorText(res, t('devices.err.remove')));
       restore();
@@ -896,25 +865,11 @@ async function removeDevice(id, btn) {
     }
     hideDashError();
     // Don't restore() — loadDevices() rebuilds the list, which removes this
-    // button entirely. Restoring would just flash the close-X glyph back.
+    // button entirely. Restoring would just flash the glyph back.
     loadDevices();
   } catch (e) {
     restore();
   }
-}
-
-// Cached server capabilities — populated lazily on first dashboard load.
-// Drives which touchpad modes the read-only badge knows are honoured here;
-// the actual selection is owned by the client (dish app), not the dashboard.
-let g_serverCapabilities = null;
-
-async function loadServerCapabilities() {
-  try {
-    const res = await fetch('/api/server/capabilities');
-    if (res.ok) {
-      g_serverCapabilities = await res.json();
-    }
-  } catch (e) { /* leave g_serverCapabilities null — UI falls back to "off only" */ }
 }
 
 let backendGuideOpen = false;

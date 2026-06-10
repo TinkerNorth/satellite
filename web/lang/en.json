@@ -1,4 +1,10 @@
 {
+  "catalog.type.xbox360.name": "Xbox 360 Controller",
+  "catalog.type.xbox360.shortName": "Xbox",
+  "catalog.type.xbox360.description": "Best compatibility. Works with virtually every PC game.",
+  "catalog.type.ds4.name": "DualShock 4",
+  "catalog.type.ds4.shortName": "PlayStation",
+  "catalog.type.ds4.description": "PlayStation controller with motion controls, touchpad and light bar.",
   "_meta.note": "English source catalog. Keys prefixed by surface (dashboard/settings/debug/logs/updates/offline/modal/pin/backend/etc). Comments below each block trace dish-android source keys when present; entries marked 'review:' are web-only and need translator review.",
 
   "offline.title": "Server Unreachable",
@@ -119,7 +125,7 @@
   "device.state.online": "Online",
   "device.state.notresponding": "Not responding",
 
-  "devices.section.title": "Paired Devices",
+  "devices.section.title": "Devices",
   "devices.empty": "No paired devices",
   "devices.remove": "Remove",
   "devices.touchpad.label": "Touchpad",

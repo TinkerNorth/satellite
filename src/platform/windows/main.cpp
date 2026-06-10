@@ -7,6 +7,7 @@
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
 #include "net/pairing.h"
+#include "net/session_crypto.h"
 #include "tray.h"
 #include "toast.h"
 #include "app_lifecycle.h"
@@ -132,11 +133,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // before the user can report a crash.
     lifecycle::startFileLogger();
 
-    // Composition root: wire adapters → service.
+    // Composition root: wire adapters → service. Session keys are derived via
+    // HKDF (net/session_crypto) — injected so the core stays libsodium-free.
     ViGEmAdapter vigemAdapter;
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
-    SessionService svc(vigemAdapter, clientAdapter, logAdapter);
+    SessionService svc(vigemAdapter, clientAdapter, logAdapter, deriveSessionKey);
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     // The persist callback runs under g_configMtx so saveConfig sees a consistent struct.

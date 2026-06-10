@@ -36,7 +36,8 @@ class ViGEmAdapter : public IGamepadPort {
     bool isBusOpen() const override;
     bool pluginDevice(uint32_t serial) override;
     bool pluginDeviceDS4(uint32_t serial) override;
-    void unplugDevice(uint32_t serial) override;
+    bool unplugDevice(uint32_t serial) override;
+    bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
@@ -46,6 +47,7 @@ class ViGEmAdapter : public IGamepadPort {
     bool submitBattery(uint32_t serial, const BatteryReport& report) override;
     bool submitTouchpad(uint32_t serial, const TouchpadReport& report) override;
     bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
+    bool supportsRelativeMouse() const override { return true; }
     bool supportsMotionForType(uint8_t controllerType) const override;
     bool motionBackendOk(uint32_t serial) const override;
 

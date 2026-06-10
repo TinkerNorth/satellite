@@ -26,11 +26,10 @@ inline const int DEFAULT_DISC_PORT = 9879;
 inline const int DEFAULT_CLIENT_PORT = 9443;
 
 // Connection-state enums driving the `state` strings on /api/connections,
-// /api/devices, /api/pin/status. Not a wire change; the MSG_*/ACK_* codes below
-// are untouched.
+// /api/devices, /api/pin/status.
 enum class DeviceLinkState {
     Paired,        // in pairedDevices, no live connection (offline)
-    Linking,       // POST /api/connections handshake in flight (transient)
+    Linking,       // PUT /api/connections handshake in flight (transient)
     Active,        // live connection, packets arriving recently
     NotResponding, // was Active, lastPacketTime > stalling threshold,
                    // not yet reaped (>=2 missed heartbeats, < HEARTBEAT_MISS_MAX)
@@ -45,15 +44,15 @@ enum class PinState {
 };
 
 // Per-controller pipeline state (physical-on-client → bridge → virtual). The
-// wire ACK codes enumerate failures; this adds the success/transient side.
+// APPLY_* codes enumerate failures; this adds the success/transient side.
 enum class ControllerState {
     Source,      // physical pad detected on client, not yet forwarded
-    Registering, // MSG_CONTROLLER_ADD sent, awaiting MSG_CONTROLLER_ACK
-    Allocating,  // ACK_OK received, backend creating the virtual device
+    Registering, // descriptor PUT in flight
+    Allocating,  // descriptor accepted, backend creating the virtual device
     Live,        // virtual device exists, reports flowing
     Quiet,       // Live, but no input recently (optional UI distinction)
-    Detached,    // MSG_CONTROLLER_REMOVE sent, virtual being torn down
-    Failed,      // ACK arrived with an ACK_ERR_* code
+    Detached,    // slot deleted, virtual being torn down
+    Failed,      // descriptor apply returned an APPLY_ERR_* code
 };
 
 // A connection enters NotResponding after ~2 heartbeat intervals without a
@@ -110,52 +109,85 @@ inline const char* controllerStateName(ControllerState s) {
     return "live";
 }
 
-// Protocol message types.
+// REST + wire protocol version (docs/contract.md). Rides in every pairing and
+// session request/response so any future change is gateable.
+inline const int PROTOCOL_VERSION = 1;
+
+// Protocol message types (UDP streams + authenticated notifications only —
+// topology mutation is REST-only per docs/contract.md).
 inline const uint16_t MSG_GAMEPAD_DATA = 0x0001;
 inline const uint16_t MSG_HEARTBEAT_PING = 0x0002;
+// Enriched ack: backendAvailable(1) + totalActiveControllers(1) + epoch(u16 BE)
+// + active-controller bitmap(u16 BE). The epoch/bitmap pair is the client's
+// reconcile trigger for involuntary server-side topology changes.
 inline const uint16_t MSG_HEARTBEAT_ACK = 0x0003;
-inline const uint16_t MSG_CONTROLLER_ADD = 0x0004;
-inline const uint16_t MSG_CONTROLLER_REMOVE = 0x0005;
-inline const uint16_t MSG_CONTROLLER_ACK = 0x0006;
-inline const uint16_t MSG_SERVER_STATUS = 0x0007;
-inline const uint16_t MSG_CONTROLLER_TYPE = 0x0008;
 inline const uint16_t MSG_RUMBLE = 0x0009;
 inline const uint16_t MSG_MOTION = 0x000A;
 inline const uint16_t MSG_BATTERY = 0x000B;
 inline const uint16_t MSG_TOUCHPAD = 0x000C;
 inline const uint16_t MSG_LIGHTBAR = 0x000D;
+// Best-effort close notify, sent encrypted BEFORE teardown. Only valid while
+// the session key exists (an unauthenticated close would be a spoofable DoS);
+// after teardown the only safe channel is REST status codes.
+inline const uint16_t MSG_SESSION_CLOSE = 0x000F;
 
-// Mid-session cap update. Payload shape = ctrlIdx(u8) + caps(u16 BE), applied to
-// a registered controller without unplugging (no replug, no fresh ACK). A
-// pre-extension receiver drops it silently; the dish-side listener gate is the
-// load-bearing path, so dropping it only costs dashboard staleness.
-inline const uint16_t MSG_CONTROLLER_CAPS_UPDATE = 0x000E;
+// MSG_SESSION_CLOSE reason byte.
+inline const uint8_t CLOSE_REASON_SHUTDOWN = 0;
+inline const uint8_t CLOSE_REASON_KICKED = 1;
+inline const uint8_t CLOSE_REASON_REPLACED = 2;
+inline const uint8_t CLOSE_REASON_UNPAIRED = 3;
 
-// Controller ACK result codes (wire values stable across platforms).
-inline const uint8_t ACK_OK = 0x00;
-inline const uint8_t ACK_ERR_BACKEND_UNAVAIL = 0x01;
-inline const uint8_t ACK_ERR_NO_SLOTS = 0x02;
-inline const uint8_t ACK_ERR_ALREADY_EXISTS = 0x03;
-inline const uint8_t ACK_ERR_NOT_FOUND = 0x04;
-inline const uint8_t ACK_ERR_PLUGIN_FAIL = 0x05;
+inline const char* closeReasonName(uint8_t reason) {
+    switch (reason) {
+    case CLOSE_REASON_SHUTDOWN:
+        return "shutdown";
+    case CLOSE_REASON_KICKED:
+        return "kicked";
+    case CLOSE_REASON_REPLACED:
+        return "replaced";
+    case CLOSE_REASON_UNPAIRED:
+        return "unpaired";
+    }
+    return "shutdown";
+}
 
-// Optional motion-status byte appended to MSG_CONTROLLER_ADD acks (wire len
-// 4→5). Forward-compatible: a pre-extension dish reads only 4 bytes; a
-// post-extension dish talking to an old satellite sees len 4 and treats motion
-// as unknown.
-//   Bit 0: backend has an IMU surface for the chosen type (supportsMotionForType).
-//   Bit 1: per-serial IMU sink created at plug-in (motionBackendOk); false ⇒
-//          kernel rejected the node, a real failure to surface.
-inline const uint8_t ACK_MOTION_FLAG_SINK_SUPPORTED_FOR_TYPE = 0x01;
-inline const uint8_t ACK_MOTION_FLAG_BACKEND_OK = 0x02;
-
-// Controller capability bits in the MSG_CONTROLLER_ADD 2-byte BE cap word.
-// Forward-compatible: a pre-cap-aware dish sends 0 and every cap reads as
-// "unknown / best-effort".
+// Controller capability bits, carried in ControllerDescriptor::caps (set from
+// the JSON caps object of the session PUT). A descriptor with caps 0 means
+// "advertises nothing"; every cap reads as best-effort.
 inline const uint16_t CAP_ANALOG_TRIGGERS = 0x0001; // analog L/R triggers
 inline const uint16_t CAP_RUMBLE = 0x0002;          // accepts the MSG_RUMBLE return path
 inline const uint16_t CAP_MOTION = 0x0004;          // streams MSG_MOTION (0x000A) IMU data
 inline const uint16_t CAP_LIGHTBAR = 0x0008;        // accepts the MSG_LIGHTBAR (0x000D) return path
+
+// Per-controller apply outcome for the declarative session/controller PUT.
+// Wire form is the lowercase string (protocol constant, never localized).
+inline const uint8_t APPLY_OK = 0;
+inline const uint8_t APPLY_ERR_NO_SLOTS = 1;
+inline const uint8_t APPLY_ERR_PLUGIN_FAIL = 2;
+inline const uint8_t APPLY_ERR_REPLUG_FAIL = 3;
+inline const uint8_t APPLY_ERR_BACKEND_UNAVAIL = 4;
+inline const uint8_t APPLY_ERR_INVALID_TYPE = 5;
+inline const uint8_t APPLY_ERR_INVALID_INDEX = 6;
+
+inline const char* applyResultName(uint8_t code) {
+    switch (code) {
+    case APPLY_OK:
+        return "ok";
+    case APPLY_ERR_NO_SLOTS:
+        return "noSlots";
+    case APPLY_ERR_PLUGIN_FAIL:
+        return "pluginFailed";
+    case APPLY_ERR_REPLUG_FAIL:
+        return "replugFailed";
+    case APPLY_ERR_BACKEND_UNAVAIL:
+        return "backendUnavailable";
+    case APPLY_ERR_INVALID_TYPE:
+        return "invalidType";
+    case APPLY_ERR_INVALID_INDEX:
+        return "invalidIndex";
+    }
+    return "pluginFailed";
+}
 
 // Wire format sizes
 inline const int HEADER_SIZE = 8;       // token(4) + counter(4)
@@ -163,6 +195,12 @@ inline const int INNER_HEADER_SIZE = 4; // type(2) + length(2)
 inline const int AUTH_TAG_SIZE = 16;    // Poly1305
 inline const int CRYPTO_KEY_SIZE = 32;
 inline const int CRYPTO_NONCE_SIZE = 12;
+inline const int SESSION_SALT_SIZE = 8; // HKDF salt minted per session PUT
+
+// Nonce direction byte (nonce[0]) so the two directions of one session key can
+// never share a nonce. See docs/contract.md §Crypto.
+inline const uint8_t CRYPTO_DIR_CLIENT_TO_SERVER = 0x00;
+inline const uint8_t CRYPTO_DIR_SERVER_TO_CLIENT = 0x01;
 
 // Timeouts & limits
 inline const int HEARTBEAT_INTERVAL_SEC = 2;
@@ -170,14 +208,17 @@ inline const int HEARTBEAT_MISS_MAX = 5;
 inline const int MAX_CONTROLLERS_PER_CONN = 16;
 inline const int MAX_BACKEND_CONTROLLERS = 16;
 
-// Controller types.
+// A fresh/rotated session counts the REST upsert as provisional liveness for
+// this long, so a half-open session (UDP blocked one way) surfaces on the
+// client instead of flapping through the reaper.
+inline const int REST_LIVENESS_GRACE_SEC = 15;
+
+// Controller types — the catalog ids (GET /api/catalog) and descriptor `type`
+// values. Adding a type = new id + catalog entry; clients render unknown ids
+// from the catalog's server-provided strings.
 inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
 inline const uint8_t CONTROLLER_TYPE_PLAYSTATION = 1;
 inline const uint8_t CONTROLLER_TYPE_COUNT = 2;
-// Sentinel for "type not supplied on this MSG_CONTROLLER_ADD" — a pre-extension
-// dish omits the type byte, and the add then retains the slot's existing type
-// instead of forcing it to a default.
-inline const uint8_t CONTROLLER_TYPE_UNSPECIFIED = 0xFF;
 
 inline const char* controllerTypeName(uint8_t type) {
     switch (type) {
@@ -347,8 +388,8 @@ inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
     return r;
 }
 
-// Touchpad routing modes (per-paired-device). Persisted in PairedDevice,
-// mirrored onto every live Connection, hot-applied without re-pairing.
+// Touchpad routing modes (per-controller, client-owned via the descriptor;
+// "mouse" additionally requires the session's mouseControl host-feature grant).
 //   DS4   — feed into the virtual DS4 touchpad surface; Xbox pads drop it.
 //   MOUSE — finger 0 drives the host cursor, clicky button is mouse button 1.
 //   OFF   — ignore (still cached for the web UI).
@@ -374,6 +415,8 @@ inline const int TOUCHPAD_MOUSE_MIN_DT_MS = 1;
 // remainder) rather than let the scale → 0 produce a huge dx next sample.
 inline const int TOUCHPAD_MOUSE_MAX_GAP_MS = 100;
 
+// Wire/UI name for a mode (protocol constant — never localized). The inverse
+// mapping lives in the descriptor parser, which defaults unknowns to OFF.
 inline const char* touchpadModeName(uint8_t mode) {
     switch (mode) {
     case TOUCHPAD_MODE_MOUSE:
@@ -384,13 +427,6 @@ inline const char* touchpadModeName(uint8_t mode) {
     default:
         return "ds4";
     }
-}
-
-// Unknown/empty → DS4, so pre-1.3 configs migrate to the historical pass-through.
-inline uint8_t touchpadModeFromName(const std::string& s) {
-    if (s == "mouse") return TOUCHPAD_MODE_MOUSE;
-    if (s == "off") return TOUCHPAD_MODE_OFF;
-    return TOUCHPAD_MODE_DS4;
 }
 
 inline const char* batteryStatusName(uint8_t status) {
@@ -408,14 +444,38 @@ inline const char* batteryStatusName(uint8_t status) {
     }
 }
 
+// Declarative per-controller desired state, parsed from the session/controller
+// PUT body. Always sent WHOLE by the client (a toggle = re-send with one field
+// changed); the server converges. See docs/contract.md.
+struct ControllerDescriptor {
+    uint8_t ctrlIdx = 0;
+    uint8_t type = CONTROLLER_TYPE_XBOX; // catalog id (wire enum value)
+    uint16_t caps = 0;                   // CAP_* word
+    uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
+};
+
+// Per-controller apply outcome returned in the PUT response body.
+struct ControllerApplyResult {
+    uint8_t ctrlIdx = 0;
+    uint8_t result = APPLY_OK; // APPLY_*
+    // Type actually in force after the converge (== descriptor type on success;
+    // the previous type after a failed replug left the old pad untouched).
+    uint8_t appliedType = CONTROLLER_TYPE_XBOX;
+    bool motionSinkSupportedForType = false;
+    bool motionBackendOk = false;
+};
+
 // Controller (per virtual gamepad).
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // backend serial (1–16), 0 = not plugged
     bool active = false;
-    uint8_t controllerType = CONTROLLER_TYPE_XBOX; // visual type (cosmetic)
+    uint8_t controllerType = CONTROLLER_TYPE_XBOX; // device family actually plugged
     bool usesDS4 = false; // hot-path cache of controllerTypeUsesDS4(controllerType)
-    uint16_t caps = 0;    // CAP_* word from MSG_CONTROLLER_ADD; 0 if pre-cap-aware
+    uint16_t caps = 0;    // CAP_* word from the descriptor
+    // TOUCHPAD_MODE_*; client-owned via the descriptor. MOUSE routing is gated
+    // on the connection's mouseControlGranted.
+    uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }
     bool lightbarCapable() const { return (caps & CAP_LIGHTBAR) != 0; }
     GamepadReport lastReport{};
@@ -444,9 +504,13 @@ struct Controller {
     bool lastLightbarValid = false;
 };
 
-// Connection (per paired client session).
+// Connection (per paired client session). The row is keyed on deviceId and is
+// STABLE across reconnects: a re-PUT rotates token/salt/sessionKey in place,
+// it never tears the row (or its pads) down.
 struct Connection {
-    uint32_t token = 0;
+    // Stable across reconnects ("conn_" + 8 hex), minted once per row.
+    std::string connectionId;
+    uint32_t token = 0; // rotates on every session PUT; UDP routes by it
     std::string deviceId;
     std::string deviceName;
     // Hot-path IPv4 in NETWORK byte order (matches sockaddr_in::sin_addr).
@@ -454,15 +518,24 @@ struct Connection {
     // saving the per-packet inet_ntop + std::string allocation.
     uint32_t clientIPv4 = 0;
     std::string clientIP; // human-readable cache of clientIPv4, refreshed lazily
-    uint8_t sharedKey[CRYPTO_KEY_SIZE] = {};
-    uint32_t lastCounter = 0; // replay protection
+    // Per-session key = HKDF(pairingKey, sessionSalt, token); never the raw
+    // pairing key, so counters restart at 1 with no cross-session nonce reuse.
+    uint8_t sessionKey[CRYPTO_KEY_SIZE] = {};
+    uint8_t sessionSalt[SESSION_SALT_SIZE] = {};
+    uint32_t lastCounter = 0; // replay protection (client → server direction)
+    // Bumps on every applied-topology change regardless of initiator; echoed in
+    // PUT/GET responses and every heartbeat ack so the client can reconcile.
+    uint16_t epoch = 0;
     std::chrono::steady_clock::time_point lastPacketTime;
     std::chrono::steady_clock::time_point connectedAt;
+    // REST-open provisional-liveness window; the reaper ignores the row until
+    // it lapses (REST_LIVENESS_GRACE_SEC after each PUT).
+    std::chrono::steady_clock::time_point graceUntil;
     std::array<Controller, MAX_CONTROLLERS_PER_CONN> controllers;
     int activeControllerCount = 0;
-    // TOUCHPAD_MODE_*; seeded from the persisted setting at openSession,
-    // hot-swappable via setTouchpadMode. The client owns it; the server routes.
-    uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
+    // Host-feature grants for this session (server policy, returned in the PUT
+    // response). Streams for ungranted features are dropped.
+    bool mouseControlGranted = false;
 };
 
 // Paired device info (persisted).
@@ -471,11 +544,7 @@ struct PairedDevice {
     std::string name;
     std::string lastIP;
     std::string pairedAt;
-    std::string sharedKeyHex; // 64-char hex (32 bytes)
-    // TOUCHPAD_MODE_*; defaults OFF — the safe baseline before knowing whether
-    // the client can capture touchpad input. The client owns it. Devices paired
-    // when DS4 was the default load with their persisted value.
-    uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
+    std::string sharedKeyHex; // 64-char hex (32 bytes) — the pairing key
 };
 
 // Update channels: "stable" = released vMAJOR.MINOR.PATCH only; "prerelease"
@@ -523,13 +592,20 @@ struct LogEntry {
     std::string message;
 };
 
-struct OpenSessionResult {
-    bool ok = false;
-    uint32_t token = 0;
-    int availableSlots = 0;
-    std::string error;
-};
+// Host-feature deny reasons (protocol constants, never localized).
+inline const char* HOST_FEATURE_DENY_NOT_SUPPORTED = "notSupported";
+inline const char* HOST_FEATURE_DENY_BACKEND_UNAVAILABLE = "backendUnavailable";
 
-struct AddControllerResult {
-    uint8_t resultCode = ACK_OK;
+// Outcome of the declarative session upsert (PUT /api/connections).
+struct SessionUpsertResult {
+    bool ok = false;
+    std::string error; // non-empty only when !ok
+    std::string connectionId;
+    uint32_t token = 0;
+    uint8_t sessionSalt[SESSION_SALT_SIZE] = {};
+    uint16_t epoch = 0;
+    int maxControllers = MAX_BACKEND_CONTROLLERS;
+    std::vector<ControllerApplyResult> controllers;
+    bool mouseControlGranted = false;
+    std::string mouseControlDenyReason; // empty when granted
 };

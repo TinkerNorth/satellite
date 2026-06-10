@@ -155,15 +155,20 @@ bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE 
     return ds4ExSubmitLanded(ok != 0, ok ? 0u : GetLastError());
 }
 
-void unplugTarget(HANDLE bus, ULONG serial) {
+// Observable: true iff the driver accepted the unplug. PnP teardown is still
+// asynchronous (there is no unplug analog of IOCTL_VIGEM_WAIT_DEVICE_READY),
+// but a refused IOCTL means the target is in an unknown state and the caller
+// must quarantine the serial rather than reuse it.
+bool unplugTarget(HANDLE bus, ULONG serial) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     DWORD xfr = 0;
     VIGEM_UNPLUG_TARGET up;
     VIGEM_UNPLUG_TARGET_INIT(&up, serial);
     DeviceIoControl(bus, IOCTL_VIGEM_UNPLUG_TARGET, &up, up.Size, nullptr, 0, &xfr, &ov);
-    GetOverlappedResult(bus, &ov, &xfr, TRUE);
+    const bool ok = GetOverlappedResult(bus, &ov, &xfr, TRUE) != 0;
     CloseHandle(ov.hEvent);
+    return ok;
 }
 
 // "Post one buffer, wait until the driver has data." Waits on the IO completion

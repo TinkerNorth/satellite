@@ -112,10 +112,12 @@
       </div>
     </div>
 
+    <!-- One device-centric list: every paired device is exactly one row, its
+         live-connection state rides as a chip (paired / active / notResponding). -->
     <div class="section">
-      <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="connections.section.title">Connections</span></h2>
-      <div id="connection-list" class="device-list">
-        <p class="hint" data-i18n="connections.empty">No active connections</p>
+      <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="devices.section.title">Devices</span></h2>
+      <div id="device-list" class="device-list">
+        <p class="hint" data-i18n="devices.empty">No paired devices</p>
       </div>
     </div>
 
@@ -137,13 +139,6 @@
       <div id="pair-request-section" style="display:none;margin-top:16px">
         <h3 class="section-title" style="margin-top:0"><span data-i18n="pairreq.section.title">Pairing Requests</span></h3>
         <div id="pair-request-list" class="device-list"></div>
-      </div>
-    </div>
-
-    <div class="section">
-      <h2 class="section-title"><img src="img/icons/dish.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="devices.section.title">Paired Devices</span></h2>
-      <div id="device-list" class="device-list">
-        <p class="hint" data-i18n="devices.empty">No paired devices</p>
       </div>
     </div>
   </div>

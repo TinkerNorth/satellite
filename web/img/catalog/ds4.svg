@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 88" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="DualShock 4">
+  <!-- Theme-neutral: strokes inherit currentColor so light/dark themes both render. -->
+  <path d="M36 16 C50 11 78 11 92 16 C102 19 114 40 118 58 C120 70 113 79 104 77 C95 75 91 64 84 60 C72 54 56 54 44 60 C37 64 33 75 24 77 C15 79 8 70 10 58 C14 40 26 19 36 16 Z"/>
+  <!-- Touchpad -->
+  <rect x="48" y="18" width="32" height="16" rx="3"/>
+  <!-- Light bar hint above the touchpad -->
+  <line x1="54" y1="14" x2="74" y2="14"/>
+  <circle cx="46" cy="48" r="9"/>
+  <circle cx="46" cy="48" r="3" fill="currentColor" stroke="none"/>
+  <circle cx="82" cy="48" r="9"/>
+  <circle cx="82" cy="48" r="3" fill="currentColor" stroke="none"/>
+  <g stroke="none" fill="currentColor">
+    <circle cx="100" cy="26" r="4"/>
+    <circle cx="110" cy="36" r="4"/>
+    <circle cx="90" cy="36" r="4"/>
+    <circle cx="100" cy="46" r="4"/>
+  </g>
+  <path d="M22 30 h6 v-6 h6 v6 h6 v6 h-6 v6 h-6 v-6 h-6 Z"/>
+</svg>

@@ -261,41 +261,5 @@ uint32_t generateToken() {
     return token;
 }
 
-bool encryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
-                   const uint8_t* plaintext, size_t ptLen, uint8_t* ciphertext,
-                   unsigned long long* ctLen) {
-    // Nonce: 4-byte counter big-endian, right-aligned in 12 zero bytes. AAD: token big-endian.
-    uint8_t nonce[12] = {};
-    nonce[8] = (uint8_t)(counter >> 24);
-    nonce[9] = (uint8_t)(counter >> 16);
-    nonce[10] = (uint8_t)(counter >> 8);
-    nonce[11] = (uint8_t)(counter);
-
-    uint8_t aad[4];
-    aad[0] = (uint8_t)(token >> 24);
-    aad[1] = (uint8_t)(token >> 16);
-    aad[2] = (uint8_t)(token >> 8);
-    aad[3] = (uint8_t)(token);
-
-    return crypto_aead_chacha20poly1305_ietf_encrypt(ciphertext, ctLen, plaintext, ptLen, aad,
-                                                     sizeof(aad), nullptr, nonce, key) == 0;
-}
-
-bool decryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
-                   const uint8_t* ciphertext, size_t ctLen, uint8_t* plaintext,
-                   unsigned long long* ptLen) {
-    uint8_t nonce[12] = {};
-    nonce[8] = (uint8_t)(counter >> 24);
-    nonce[9] = (uint8_t)(counter >> 16);
-    nonce[10] = (uint8_t)(counter >> 8);
-    nonce[11] = (uint8_t)(counter);
-
-    uint8_t aad[4];
-    aad[0] = (uint8_t)(token >> 24);
-    aad[1] = (uint8_t)(token >> 16);
-    aad[2] = (uint8_t)(token >> 8);
-    aad[3] = (uint8_t)(token);
-
-    return crypto_aead_chacha20poly1305_ietf_decrypt(plaintext, ptLen, nullptr, ciphertext, ctLen,
-                                                     aad, sizeof(aad), nonce, key) == 0;
-}
+// Packet AEAD (encryptPacket/decryptPacket) lives in net/session_crypto.cpp —
+// one shared implementation across platforms.
