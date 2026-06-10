@@ -60,6 +60,11 @@ wire had shipped; there are no legacy paths and no dual-protocol support.
   reconfigure path.
 - REST-open liveness grace (15 s) so half-open sessions surface client-side
   instead of flapping through the reaper.
+- Fixed a deadlock between unplug and the backend's rumble/lightbar
+  notification workers: unplug joins the worker while holding the session
+  lock, so the backend→service callbacks now take it with try_lock and drop
+  the frame when contended (safe — both streams are coalesced and
+  re-notified, so a dropped frame self-heals).
 - `PairedDevice` is copied by value under the config lock in every client
   route (fixes a use-after-unlock).
 - Dashboard: one device-centric list (paired + live state chips) instead of

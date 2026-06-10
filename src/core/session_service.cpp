@@ -149,10 +149,9 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lightbarG = 0;
     ctrl.lightbarB = 0;
     ctrl.lastLightbarValid = false;
-    // Clear cached sender→satellite streams too: the Controller struct persists
-    // across remove/re-add of the same slot, so stale samples would show
-    // phantom "active" state and — in TOUCHPAD_MODE_MOUSE — make the first
-    // sample compute a delta against a pre-readd finger position, jumping the cursor.
+    // Sender→satellite caches too: Controller structs persist across
+    // remove/re-add, so stale samples would show phantom "active" state and a
+    // MOUSE first sample would delta against a pre-readd finger (cursor jump).
     ctrl.lastMotion = MotionReport{};
     ctrl.lastMotionValid = false;
     ctrl.motionSinkActive = false;
@@ -596,17 +595,14 @@ void SessionService::handleHeartbeat(uint32_t token) {
 
 void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
                                              uint16_t wireDurationMs) {
-    // try_to_lock, never block: every unplug path holds mtx_ while it joins
-    // this notification worker's thread — a blocking acquisition here deadlocks
-    // the whole service (unplug waits on the join, the worker waits on mtx_).
-    // Rumble is coalesced and re-notified, so a dropped frame self-heals.
+    // try_to_lock, NEVER block: unplug paths join this notification worker
+    // while holding mtx_, so a blocking acquire here deadlocks. A dropped
+    // frame self-heals — rumble is coalesced and re-notified.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
-    // Linear scan for the controller owning `serial`: bounded by the global
-    // 16-controller cap, and a reverse index would have to stay consistent with
-    // allocateSerial/releaseSerial — not worth it for this callback.
-
+    // Linear serial→controller scan: bounded by the 16-controller cap; not
+    // worth a reverse index that must track allocateSerial/releaseSerial.
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     for (auto& [tok, conn] : connections_) {
@@ -619,11 +615,8 @@ void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport
         }
         if (foundConn) break;
     }
-    if (!foundConn || !foundCtrl) {
-        // Stray notification: the controller was just unplugged but a worker
-        // fired one last queued event. Drop silently.
-        return;
-    }
+    // Stray event from a just-unplugged controller's worker — drop.
+    if (!foundConn || !foundCtrl) return;
 
     // Coalesce identical back-to-back updates (games hold both motors steady
     // across many frames). wireDurationMs is excluded so the caller can bump
@@ -694,14 +687,11 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         // ungranted streams are dropped (cached above for the debug pane).
         if (!conn.mouseControlGranted) return false;
 
-        // Finger 0 drives the cursor; a delta is emitted only while finger 0 is
-        // continuously down across both frames AND the trackingId matches —
-        // when one finger lifts the hardware compacts the survivor into slot 0
-        // with a new trackingId, so without the id check that teleports the
-        // cursor. The per-sample delta is scaled by REFERENCE_MS/dt so cursor
-        // velocity tracks finger velocity even when the dish runs slow (the
-        // first MOVE after touch-down arrives up to ~16 ms late on Android,
-        // causing a visible "first-touch jump" without scaling).
+        // Delta only while finger 0 is down across both frames AND the
+        // trackingId matches — a lifted finger compacts the survivor into
+        // slot 0 with a new id; without the check the cursor teleports.
+        // Scale by REFERENCE_MS/dt so velocity is dt-independent (Android's
+        // first MOVE lands ~16 ms late → visible first-touch jump otherwise).
         int dx = 0;
         int dy = 0;
         const bool continuous = prevValid && prev.finger0.active && report.finger0.active &&
@@ -751,13 +741,11 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
 }
 
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
-    // try_to_lock for the same reason as handleRumbleFromBackend: the unplug
-    // path joins this worker while holding mtx_; blocking here deadlocks.
+    // try_to_lock for the same reason as handleRumbleFromBackend: unplug joins
+    // this worker while holding mtx_; blocking here deadlocks.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
-    // Same serial → controller scan as the rumble callback; bounded by the
-    // global 16-controller cap.
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     for (auto& [tok, conn] : connections_) {
@@ -855,9 +843,7 @@ void SessionService::updatePostDecryptV4(uint32_t token, uint32_t counter,
 bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter,
                                                 uint32_t ipv4NetworkOrder, uint16_t clientPort,
                                                 uint8_t ctrlIdx, const GamepadReport& report) {
-    // ONE lock acquisition for the whole packet: the unfused path took mtx_
-    // three times (getDecryptInfo + updatePostDecrypt + handleGamepadData),
-    // giving SSE/heartbeat threads three chances to add tail latency.
+    // ONE mtx_ acquisition for the whole packet (see header: tail latency).
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return false;

@@ -292,7 +292,7 @@ static_assert(sizeof(MotionReport) == 16, "MotionReport must be 16 bytes on the 
 inline const int MOTION_WIRE_PAYLOAD_BYTES = 16;
 
 // Decode the 16 little-endian wire bytes after ctrlIdx. Explicit shifts (no
-// memcpy) keep decoding byte-order-independent. See docs/protocol.md.
+// memcpy) keep decoding byte-order-independent. See docs/contract.md.
 inline MotionReport decodeMotionReport(const uint8_t* p) {
     auto le16 = [](const uint8_t* q) -> int16_t {
         return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
@@ -363,7 +363,7 @@ struct TouchpadReport {
 inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES = 15;
 
 // Decode the TOUCHPAD_WIRE_PAYLOAD_BYTES bytes after ctrlIdx. Explicit LE shifts
-// (no memcpy) keep the wire byte-order-independent. See docs/protocol.md.
+// (no memcpy) keep the wire byte-order-independent. See docs/contract.md.
 inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
     auto le16 = [](const uint8_t* q) -> int16_t {
         return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
@@ -493,7 +493,7 @@ struct Controller {
     TouchpadReport lastTouchpad{}; // last sample, cached for the web UI
     bool lastTouchpadValid = false;
     // TOUCHPAD_MODE_MOUSE sub-pixel remainder. Reset on a fresh contact and on
-    // mode change.
+    // (re)plug; preserved across dt<=0 resends so slow drags still accumulate.
     float touchpadMouseRemX = 0.0f;
     float touchpadMouseRemY = 0.0f;
     // Last lightbar colour the host game set; forwarded via MSG_LIGHTBAR (for

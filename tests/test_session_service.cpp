@@ -956,6 +956,31 @@ static void test_touchpad_mouseStreamDroppedWithoutGrant() {
     EXPECT(snap.connections[0].controllers[0].touchpadActive);
 }
 
+static void test_mouseControl_rePutWithoutRequestRevokes() {
+    TEST("hostFeatures — grants are per-PUT: a re-PUT without the request revokes");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r1 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D",
+                     /*mouseControl=*/true);
+    EXPECT(r1.mouseControlGranted);
+    TouchpadReport tr{};
+    tr.finger0.active = true;
+    tr.eventTimeMs = 1000;
+    EXPECT(svc.handleTouchpadData(r1.token, 0, tr));
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
+
+    auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D",
+                     /*mouseControl=*/false);
+    EXPECT(!r2.mouseControlGranted);
+    EXPECT(!svc.getSessionView(r2.connectionId, "dev1").mouseControlGranted);
+    tr.eventTimeMs = 1004;
+    EXPECT(!svc.handleTouchpadData(r2.token, 0, tr)); // dropped, not routed
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
+}
+
 // ── Serial lifecycle ─────────────────────────────────────────────────────────
 
 static void test_serials_roundRobinAvoidsInstantReuse() {
@@ -1491,6 +1516,61 @@ static void test_touchpad_mouseMode_buttonLevel() {
     EXPECT(!vigem.lastMouseButton);
 }
 
+static void test_touchpad_mouseMode_clickWithoutTouch() {
+    TEST("touchpad — mouse mode: clicky button with no finger contact still forwards");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(false, 0, 0, 0, 1000, /*button=*/true)));
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
+    EXPECT(vigem.lastMouseButton);
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+}
+
+static void test_touchpad_mouseMode_subPixelRemainder() {
+    TEST("touchpad — mouse mode: sub-pixel remainder accumulates; resends keep it; gaps drop it");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    // 10 wire units / 4 ms ≈ 0.42 px per sample: truncation alone would never
+    // move the cursor; the carried remainder must cross 1 px on the 3rd step.
+    const uint32_t dt = TOUCHPAD_MOUSE_REFERENCE_MS;
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000)); // anchor
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 10, -10, 1000 + dt));
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    // A dt <= 0 resend emits no motion but must NOT drop the remainder…
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    // …so the next real step crosses ±1 px (0.42 × 3 ≈ 1.26).
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 30, -30, 1000 + 3 * dt));
+    EXPECT_EQ(vigem.lastMouseDx, 1);
+    EXPECT_EQ(vigem.lastMouseDy, -1);
+
+    // A MAX_GAP re-anchor DOES drop the remainder: grow it to ~0.68, gap, then
+    // step — from a clean slate the step stays sub-pixel (0.42); a wrongly
+    // kept remainder would cross 1 px (1.10).
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 40, -40, 1000 + 4 * dt));
+    EXPECT_EQ(vigem.lastMouseDx, 0); // remainder now ≈ 0.68
+    const uint32_t tGap = 1000 + 4 * dt + TOUCHPAD_MOUSE_MAX_GAP_MS + 1;
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 50, -50, tGap));
+    EXPECT_EQ(vigem.lastMouseDx, 0); // re-anchored
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 60, -60, tGap + dt));
+    EXPECT_EQ(vigem.lastMouseDx, 0);
+    EXPECT_EQ(vigem.lastMouseDy, 0);
+}
+
 static void test_replug_resetsStreamCaches() {
     TEST("replug — type change clears cached stream state (no phantom samples)");
     MockViGem vigem;
@@ -1576,6 +1656,45 @@ static void test_lightbar_gatedOnCap() {
             EXPECT_EQ((int)c.lightbarR, 1);
         }
     }
+}
+
+static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
+    TEST("rumble/lightbar — backend callbacks drop (never block) while mtx_ is held");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto rA = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE | CAP_LIGHTBAR)},
+                     "devA", "A");
+    uint32_t serialA = vigem.pluggedSerials.back();
+    auto rB = upsert(svc, {}, "devB", "B");
+    (void)rA;
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 1000;
+    // onSessionClose fires while the closing thread holds mtx_. A worker
+    // thread invoking the backend callbacks then MUST fail its try_lock and
+    // return — a blocking acquire would deadlock this join (the production
+    // bug: unplug joins the notification worker while holding mtx_).
+    client.onSessionClose = [&] {
+        std::thread worker([&] {
+            vigem.fireRumble(serialA, rr);
+            vigem.fireLightbar(serialA, 1, 2, 3);
+        });
+        worker.join();
+    };
+    svc.closeSessionById(rB.connectionId, "", CLOSE_REASON_KICKED, /*notify=*/true);
+    client.onSessionClose = nullptr;
+    EXPECT_EQ(client.rumbleCalls, 0); // dropped, not delivered
+    EXPECT_EQ(client.lightbarCalls, 0);
+
+    // The drop didn't poison the coalesce caches: the same values re-notified
+    // with the lock free go out (self-heal).
+    vigem.fireRumble(serialA, rr);
+    vigem.fireLightbar(serialA, 1, 2, 3);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ(client.lightbarCalls, 1);
 }
 
 // ── Concurrency smoke ────────────────────────────────────────────────────────
@@ -1702,6 +1821,7 @@ int main() {
     test_mouseControl_deniedWhenUnsupported();
     test_mouseControl_notRequestedNotGranted();
     test_touchpad_mouseStreamDroppedWithoutGrant();
+    test_mouseControl_rePutWithoutRequestRevokes();
 
     test_serials_roundRobinAvoidsInstantReuse();
     test_serials_quarantineOnUnplugFailure();
@@ -1735,9 +1855,12 @@ int main() {
     test_touchpad_mouseMode_duplicateTimestampNoMotion();
     test_touchpad_mouseMode_gapReanchors();
     test_touchpad_mouseMode_buttonLevel();
+    test_touchpad_mouseMode_clickWithoutTouch();
+    test_touchpad_mouseMode_subPixelRemainder();
     test_replug_resetsStreamCaches();
     test_rumble_forwardsAndCoalesces();
     test_lightbar_gatedOnCap();
+    test_backendCallbacks_dropNotBlock_whenLockHeld();
 
     test_concurrent_upsertCloseSnapshot();
 

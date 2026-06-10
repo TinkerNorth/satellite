@@ -410,13 +410,14 @@ The `version-consistency` CI gate fails if the two diverge.
 
 ## Architecture
 
-The receiver runs three threads:
+The receiver runs four main threads:
 
 | Thread       | Role                                                        |
 |--------------|-------------------------------------------------------------|
 | **Main**     | Win32 message loop, system tray icon                        |
-| **Receiver** | UDP socket → ViGEmBus `DeviceIoControl` (the hot path)      |
-| **HTTP**     | Embedded web server ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) serving the config UI |
+| **Receiver** | UDP socket → ViGEmBus `DeviceIoControl` (the hot path); spawns the reaper |
+| **Client API** | HTTPS 9443 ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) — pairing, sessions, catalog |
+| **Admin HTTP** | Loopback 9877 — web UI, admin API, SSE                    |
 
 ## Why UDP?
 

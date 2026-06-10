@@ -161,6 +161,39 @@ static void test_catalogString_fallbackChain() {
     EXPECT_EQ(catalogString(lang, en, "missing.key"), std::string("missing.key"));
 }
 
+static void test_resolveLocale_malformedHeaders() {
+    TEST("resolveCatalogLocale — malformed Accept-Language degrades, never throws");
+    EXPECT_EQ(resolveCatalogLocale(",,,"), std::string("en"));
+    EXPECT_EQ(resolveCatalogLocale(";q=0.5"), std::string("en"));
+    EXPECT_EQ(resolveCatalogLocale("   "), std::string("en"));
+    // Garbage q-value parses as 0 but the tag itself still matches.
+    EXPECT_EQ(resolveCatalogLocale("de;q=notanumber"), std::string("de"));
+    // Whitespace-padded tags are trimmed; q ordering still applies.
+    EXPECT_EQ(resolveCatalogLocale("  de-DE  ;  q=0.9  ,fr"), std::string("fr"));
+}
+
+static void test_catalogJson_escapesLocalizedStrings() {
+    TEST("buildCatalogJson — quotes/backslashes in lang strings stay valid JSON");
+    // Lang value decodes to D"S\4; the builder must re-escape it on output.
+    // Ordinary escaped literals, hoisted: raw strings containing \" break
+    // MSVC's traditional preprocessor when stringized in macro args.
+    const std::string lang = "{\"catalog.type.ds4.name\":\"D\\\"S\\\\4\"}";
+    const std::string needle = "\"name\":\"D\\\"S\\\\4\"";
+    CatalogBackendTraits traits;
+    std::string json = buildCatalogJson("en", lang, lang, "1.6.0", traits);
+    EXPECT(json.find(needle) != std::string::npos);
+}
+
+static void test_imageSlugs_matchCatalogIds() {
+    TEST("catalogImageSlugs — slug order matches catalog ids (image route contract)");
+    const auto& slugs = catalogImageSlugs();
+    EXPECT_EQ(slugs.size(), size_t{2});
+    if (slugs.size() == 2) {
+        EXPECT_EQ(slugs[0], std::string("xbox360")); // id 0
+        EXPECT_EQ(slugs[1], std::string("ds4"));     // id 1
+    }
+}
+
 // CI completeness gate: every controller-TYPE string present in all supported
 // locales. Feature slugs / modes / requires codes are NOT in the lang files —
 // they are protocol constants and the structure test above pins them literal.
@@ -210,6 +243,9 @@ int main() {
     test_catalogJson_structure();
     test_catalogJson_inertBackend();
     test_catalogString_fallbackChain();
+    test_resolveLocale_malformedHeaders();
+    test_catalogJson_escapesLocalizedStrings();
+    test_imageSlugs_matchCatalogIds();
     test_localeCompletenessGate();
     test_localizedCatalogsRenderLocalizedNames();
 

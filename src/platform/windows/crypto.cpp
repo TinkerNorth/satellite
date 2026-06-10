@@ -210,6 +210,3 @@ uint32_t generateToken() {
     while (token == 0) randombytes_buf(&token, sizeof(token)); // 0 is reserved for "no token"
     return token;
 }
-
-// Packet AEAD (encryptPacket/decryptPacket) lives in net/session_crypto.cpp —
-// one shared implementation across platforms.

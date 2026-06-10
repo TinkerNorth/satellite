@@ -146,6 +146,48 @@ static void test_structuralSpan_escapes() {
     EXPECT_EQ(span, std::string(backslashSpan));
 }
 
+static void test_truncatedBodies() {
+    TEST("truncated bodies — read as absent, output untouched, no over-read");
+    long n = 7;
+    EXPECT(!jsonGetIntKeyed(R"({"n":)", "n", &n));   // EOF right after the colon
+    EXPECT(!jsonGetIntKeyed(R"({"n": })", "n", &n)); // no value token
+    EXPECT_EQ(n, 7L);
+    bool b = false;
+    EXPECT(!jsonGetBoolKeyed(R"({"on":tru)", "on", &b)); // truncated literal
+    EXPECT(!jsonGetBoolKeyed(R"({"on":)", "on", &b));
+    // Escape as the LAST character: the span scanner must stop cleanly.
+    // (Hoisted: see test_valueStart.)
+    const char* trailingEscape = R"({"o":{"s":"\)";
+    EXPECT_EQ(jsonGetObject(trailingEscape, "o"), std::string(""));
+}
+
+static void test_nestedAndUnknownKeys() {
+    TEST("nested lookup + unknown keys — documented top-level-or-nested tolerance");
+    long v = 0;
+    // jsonValueStart matches nested keys too (documented; the request parsers
+    // only feed it bodies where the key is unambiguous).
+    EXPECT(jsonGetIntKeyed(R"({"outer":{"n":9}})", "n", &v));
+    EXPECT_EQ(v, 9L);
+    // Unknown sibling keys never disturb extraction.
+    EXPECT(jsonGetIntKeyed(R"({"future":true,"n":4,"alsoNew":[1]})", "n", &v));
+    EXPECT_EQ(v, 4L);
+    // Whitespace between key and colon is tolerated.
+    size_t pos = 0;
+    EXPECT(jsonValueStart(R"({"k" : 1})", "k", pos));
+}
+
+static void test_arrayObjects_nestedArrays() {
+    TEST("jsonGetArrayObjects — nested arrays inside elements don't split them");
+    bool present = false;
+    auto objs = jsonGetArrayObjects(R"({"a":[{"x":[1,2]},{"y":3}]})", "a", &present);
+    EXPECT(present);
+    EXPECT_EQ(objs.size(), size_t{2});
+    if (objs.size() == 2) {
+        EXPECT_EQ(objs[0], std::string(R"({"x":[1,2]})"));
+        EXPECT_EQ(objs[1], std::string(R"({"y":3})"));
+    }
+}
+
 int main() {
     test_valueStart();
     test_boolKeyed();
@@ -154,6 +196,9 @@ int main() {
     test_getArrayObjects();
     test_arrayObjects_withStringsContainingBrackets();
     test_structuralSpan_escapes();
+    test_truncatedBodies();
+    test_nestedAndUnknownKeys();
+    test_arrayObjects_nestedArrays();
 
     std::cout << "json_mini: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;

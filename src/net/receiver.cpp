@@ -12,9 +12,6 @@
 #include <avrt.h> // MMCSS: AvSetMmThreadCharacteristics for the RX thread
 #endif
 
-// dispatchInnerMessage (inner-message parser + length guards) lives in
-// net/inner_dispatch.cpp — socket-free so the guards can be unit tested.
-
 static void reaperLoop(SessionService& svc) {
     while (g_appRunning) {
         netSleepMs(1000);
