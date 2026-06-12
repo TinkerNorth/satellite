@@ -136,13 +136,14 @@ jobs:
 
       # MSVC build (hardened: CFG + CET + Spectre). Dependencies come from
       # vcpkg's static triplet so their CRT linkage matches the app's /MT.
-      # windows-latest ships VS 2022 (+ Spectre-mitigated libs) and a vcpkg
+      # windows-latest ships VS (+ Spectre-mitigated libs) and a vcpkg
       # checkout; windows-msvc-ci.yml A/B-validates this same path on every PR.
       - name: Build satellite.exe (MSVC + vcpkg, hardened)
         shell: pwsh
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cmake --preset windows-msvc
+          $generator = ./scripts/windows-vs-generator.ps1
+          cmake --preset windows-msvc -G $generator
           cmake --build build-msvc --config Release
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
 
@@ -172,8 +173,11 @@ jobs:
         run: |
           $cert = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
           [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WIN_SIGN_CERT_BASE64))
-          $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe"
-          & $signtool sign /f $cert /p $env:WIN_SIGN_PASSWORD `
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.0.*\x64\signtool.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if ($null -eq $signtool) { throw "signtool.exe not found under Windows Kits" }
+          & $signtool.FullName sign /f $cert /p $env:WIN_SIGN_PASSWORD `
             /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
             dist/SatelliteSetup.exe
 
