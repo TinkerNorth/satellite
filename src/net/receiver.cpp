@@ -4,15 +4,13 @@
 #include "receiver.h"
 #include "inner_dispatch.h"
 #include "crypto.h"
+#include "session_crypto.h"
 #include "core/session_service.h"
 #include "adapters/client_adapter.h"
 
 #ifdef _WIN32
 #include <avrt.h> // MMCSS: AvSetMmThreadCharacteristics for the RX thread
 #endif
-
-// dispatchInnerMessage (inner-message parser + length guards) lives in
-// net/inner_dispatch.cpp — socket-free so the guards can be unit tested.
 
 static void reaperLoop(SessionService& svc) {
     while (g_appRunning) {
@@ -134,7 +132,8 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             uint8_t* ciphertext = buf + HEADER_SIZE;
             auto ctLen = static_cast<size_t>(n - HEADER_SIZE);
             unsigned long long ptLen = 0;
-            if (!decryptPacket(key, counter, token, ciphertext, ctLen, ciphertext, &ptLen)) {
+            if (!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, counter, token, ciphertext, ctLen,
+                               ciphertext, &ptLen)) {
                 g_decryptFail.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
@@ -198,10 +197,13 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         }
 
         g_listening = false;
+
+        // Close sessions while the socket is still usable so the best-effort
+        // close-notify (reason=shutdown) can ride out before teardown.
+        svc.closeAllSessions(CLOSE_REASON_SHUTDOWN);
+
         closesocket(sock);
         client.setSocket(INVALID_SOCKET);
-
-        svc.closeAllSessions();
 
         reaper.join();
     }

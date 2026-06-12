@@ -12,20 +12,13 @@
 #include <mutex>
 
 void upsertPairedDevice(const std::string& deviceId, const std::string& deviceName,
-                        const std::string& clientIP, const std::string& sharedKeyHex,
-                        const std::string& initialTouchpadMode) {
+                        const std::string& clientIP, const std::string& sharedKeyHex) {
     PairedDevice dev;
     dev.id = deviceId;
     dev.name = deviceName.empty() ? ("Device-" + deviceId.substr(0, 8)) : deviceName;
     dev.lastIP = clientIP;
     dev.pairedAt = getCurrentDate();
     dev.sharedKeyHex = sharedKeyHex;
-    // The client is the authority on its own touchpad capability; honour a
-    // valid initial mode, else leave the default (OFF).
-    if (initialTouchpadMode == "ds4" || initialTouchpadMode == "mouse" ||
-        initialTouchpadMode == "off") {
-        dev.touchpadMode = touchpadModeFromName(initialTouchpadMode);
-    }
     std::lock_guard<std::mutex> lk(g_configMtx);
     auto& devs = g_config.pairedDevices;
     devs.erase(std::remove_if(devs.begin(), devs.end(),
@@ -36,8 +29,8 @@ void upsertPairedDevice(const std::string& deviceId, const std::string& deviceNa
 }
 
 namespace {
-// Mint a fresh 32-byte session key as hex; the caller persists it.
-std::string mintSessionKeyHex() {
+// Mint a fresh 32-byte pairing key as hex; the caller persists it.
+std::string mintPairingKeyHex() {
     uint8_t key[32];
     randombytes_buf(key, sizeof(key));
     std::string hex = hexEncode(key, sizeof(key));
@@ -46,19 +39,26 @@ std::string mintSessionKeyHex() {
 }
 } // namespace
 
-bool acceptPairingWithPin(const std::string& deviceId, const std::string& operatorPin) {
-    const std::string keyHex = mintSessionKeyHex();
-    std::string name, ip;
-    if (!acceptPairRequest(deviceId, operatorPin, keyHex, name, ip)) return false;
-    upsertPairedDevice(deviceId, name, ip, keyHex, "");
-    return true;
+bool rotatePairedDeviceKey(const std::string& deviceId, const std::string& clientIP,
+                           std::string& outKeyHex) {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    for (auto& d : g_config.pairedDevices) {
+        if (d.id != deviceId) continue;
+        outKeyHex = mintPairingKeyHex();
+        d.sharedKeyHex = outKeyHex;
+        d.lastIP = clientIP;
+        d.pairedAt = getCurrentDate();
+        saveConfig(g_config);
+        return true;
+    }
+    return false;
 }
 
 bool confirmPairing(const std::string& deviceId) {
-    const std::string keyHex = mintSessionKeyHex();
+    const std::string keyHex = mintPairingKeyHex();
     std::string name, ip;
     if (!acceptPairRequestConfirmed(deviceId, keyHex, name, ip)) return false;
-    upsertPairedDevice(deviceId, name, ip, keyHex, "");
+    upsertPairedDevice(deviceId, name, ip, keyHex);
     return true;
 }
 

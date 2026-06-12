@@ -60,6 +60,7 @@ struct State {
     bool ds4ExAccepts = true; // false => simulate a pre-1.17 ViGEmBus
     bool ds4BasicAccepts = true;
     bool xusbAccepts = true;
+    bool unplugAccepts = true; // false => driver refused the unplug IOCTL
 
     // Last reports the adapter handed the driver (for conversion assertions).
     DS4_REPORT_EX lastDs4Ex{};
@@ -92,7 +93,10 @@ bool pluginTargetDS4(HANDLE, ULONG) {
     fake::g.pluginDs4Calls++;
     return true;
 }
-void unplugTarget(HANDLE, ULONG) { fake::g.unplugCalls++; }
+bool unplugTarget(HANDLE, ULONG) {
+    fake::g.unplugCalls++;
+    return fake::g.unplugAccepts;
+}
 
 bool submitXusbSync(HANDLE, ULONG, XUSB_SUBMIT_REPORT&, HANDLE, const void*) {
     fake::g.xusbSyncCalls++;

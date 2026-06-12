@@ -413,6 +413,32 @@ h2.section-title { font-size: 12px; }
   letter-spacing: 0.2em;
 }
 
+.pin-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pin-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.pin-display-prev {
+  color: var(--text-muted);
+}
+
+.pair-request-pin {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--primary);
+  letter-spacing: 0.15em;
+  margin-right: 12px;
+}
+
 .hint {
   color: var(--text-muted);
   font-size: 12px;

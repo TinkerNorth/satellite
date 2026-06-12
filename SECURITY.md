@@ -111,10 +111,11 @@ PINs gate the LAN-facing pairing flow and are hardened accordingly:
   deterministic PRNG such as `std::mt19937`.
 - PIN comparison is constant-time (`sodium_memcmp`) so a wrong guess
   cannot leak, via timing, how many leading digits matched.
-- A PIN is burned after 5 failed guesses and expires 5 minutes after
-  generation, so the 4-digit space is not online-brute-forceable.
-- The PIN is returned only to the client that generated it and is never
-  echoed by status endpoints or the SSE stream.
+- PINs rotate every 5 minutes (the previous PIN stays valid for one
+  extra period), are consumed on a successful pair, and both are burned
+  after 5 failed guesses, so the 4-digit space is not online-brute-forceable.
+- The rotating PINs are echoed only on the loopback-bound admin surface
+  (dashboard SSE / status endpoint), never on the LAN-facing client API.
 
 ---
 

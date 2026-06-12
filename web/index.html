@@ -112,10 +112,12 @@
       </div>
     </div>
 
+    <!-- One device-centric list: every paired device is exactly one row, its
+         live-connection state rides as a chip (paired / active / notResponding). -->
     <div class="section">
-      <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="connections.section.title">Connections</span></h2>
-      <div id="connection-list" class="device-list">
-        <p class="hint" data-i18n="connections.empty">No active connections</p>
+      <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="devices.section.title">Devices</span></h2>
+      <div id="device-list" class="device-list">
+        <p class="hint" data-i18n="devices.empty">No paired devices</p>
       </div>
     </div>
 
@@ -129,21 +131,21 @@
     <div class="section">
       <h2 class="section-title"><img src="img/icons/bluetooth-pairing-animated.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="dashboard.region.pairing">Pairing</span></h2>
       <div class="pin-row">
-        <button class="btn btn-save" onclick="genPin(event)" data-i18n="pin.generate">Generate PIN</button>
-        <span class="pin-display" id="pin-display">—</span>
+        <div class="pin-slot">
+          <span class="pin-label" data-i18n="pin.current">Current PIN</span>
+          <span class="pin-display" id="pin-current">—</span>
+        </div>
+        <div class="pin-slot">
+          <span class="pin-label" data-i18n="pin.previous">Previous PIN</span>
+          <span class="pin-display pin-display-prev" id="pin-previous">—</span>
+        </div>
       </div>
-      <p class="hint" id="pin-hint" data-i18n="pin.hint.idle">Enter this PIN on the sender to pair. Expires in 5 minutes.</p>
+      <p class="hint" id="pin-hint" data-i18n="pin.hint">Enter the current PIN on the sender to pair. A new PIN is issued every 5 minutes.</p>
 
       <div id="pair-request-section" style="display:none;margin-top:16px">
         <h3 class="section-title" style="margin-top:0"><span data-i18n="pairreq.section.title">Pairing Requests</span></h3>
+        <p class="hint" data-i18n="pairreq.hint">Accept only if the PIN matches the one shown on the device.</p>
         <div id="pair-request-list" class="device-list"></div>
-      </div>
-    </div>
-
-    <div class="section">
-      <h2 class="section-title"><img src="img/icons/dish.svg" alt="" class="emoji-icon section-glyph"> <span data-i18n="devices.section.title">Paired Devices</span></h2>
-      <div id="device-list" class="device-list">
-        <p class="hint" data-i18n="devices.empty">No paired devices</p>
       </div>
     </div>
   </div>

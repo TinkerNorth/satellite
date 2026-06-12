@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "client_adapter.h"
-#include <cstring>
 
-// Defined in crypto.cpp.
-extern bool encryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
-                          const uint8_t* plaintext, size_t ptLen, uint8_t* ciphertext,
-                          unsigned long long* ctLen);
+#include "net/session_crypto.h"
+
+#include <cstring>
 
 void ClientAdapter::setSocket(SOCKET sock) { sock_ = sock; }
 
@@ -35,6 +33,7 @@ void ClientAdapter::updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder
 void ClientAdapter::removeClientAddr(uint32_t token) {
     std::lock_guard<std::mutex> lk(addrMtx_);
     addrs_.erase(token);
+    txCounters_.erase(token);
 }
 
 bool ClientAdapter::getAddr(uint32_t token, sockaddr_in& out) {
@@ -45,6 +44,11 @@ bool ClientAdapter::getAddr(uint32_t token, sockaddr_in& out) {
     return true;
 }
 
+uint32_t ClientAdapter::nextTxCounter(uint32_t token) {
+    std::lock_guard<std::mutex> lk(addrMtx_);
+    return ++txCounters_[token];
+}
+
 void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* inner,
                                         size_t innerLen) {
     if (sock_ == INVALID_SOCKET) return;
@@ -52,9 +56,16 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     sockaddr_in addr{};
     if (!getAddr(conn.token, addr)) return;
 
+    // Monotonic per-token counter in the nonce; the direction byte keeps this
+    // direction's nonces disjoint from the client's under the shared session key.
+    const uint32_t counter = nextTxCounter(conn.token);
+
     uint8_t ct[64 + AUTH_TAG_SIZE]; // max inner we send is 11 bytes (rumble)
     unsigned long long ctLen = 0;
-    if (!encryptPacket(conn.sharedKey, 0, conn.token, inner, innerLen, ct, &ctLen)) return;
+    if (!encryptPacket(conn.sessionKey, CRYPTO_DIR_SERVER_TO_CLIENT, counter, conn.token, inner,
+                       innerLen, ct, &ctLen)) {
+        return;
+    }
 
     uint8_t pkt[HEADER_SIZE + sizeof(ct)];
     uint32_t t = conn.token;
@@ -62,61 +73,46 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     pkt[1] = (uint8_t)(t >> 16);
     pkt[2] = (uint8_t)(t >> 8);
     pkt[3] = (uint8_t)(t);
-    pkt[4] = 0;
-    pkt[5] = 0;
-    pkt[6] = 0;
-    pkt[7] = 0; // bytes 4-7: counter, fixed at 0
+    pkt[4] = (uint8_t)(counter >> 24);
+    pkt[5] = (uint8_t)(counter >> 16);
+    pkt[6] = (uint8_t)(counter >> 8);
+    pkt[7] = (uint8_t)(counter);
     memcpy(pkt + HEADER_SIZE, ct, ctLen);
 
     sendto(sock_, reinterpret_cast<const char*>(pkt), (int)(HEADER_SIZE + ctLen), 0,
            reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
 }
 
-void ClientAdapter::sendHeartbeatAck(const Connection& conn) {
-    uint8_t inner[4];
+void ClientAdapter::sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+                                     uint8_t totalActiveControllers, uint16_t epoch,
+                                     uint16_t activeBitmap) {
+    // Wire: backendAvailable(1) + totalActiveControllers(1) + epoch(u16 BE) +
+    // bitmap(u16 BE) = 6 bytes. The epoch/bitmap pair makes involuntary
+    // server-side topology loss self-healing within one heartbeat.
+    uint8_t inner[INNER_HEADER_SIZE + 6];
     inner[0] = (uint8_t)(MSG_HEARTBEAT_ACK >> 8);
     inner[1] = (uint8_t)(MSG_HEARTBEAT_ACK);
     inner[2] = 0;
-    inner[3] = 0;
-    sendEncryptedPacket(conn, inner, 4);
-}
-
-void ClientAdapter::sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
-                                      uint8_t result, uint8_t motionFlags) {
-    // Wire: reqType(2)+ctrlIdx(1)+result(1)+motionFlags(1)=5 bytes. motionFlags
-    // is always sent so dish can tell old satellites (msgLen==4) from new ones
-    // whose flags are zero.
-    uint8_t inner[INNER_HEADER_SIZE + 5];
-    inner[0] = (uint8_t)(MSG_CONTROLLER_ACK >> 8);
-    inner[1] = (uint8_t)(MSG_CONTROLLER_ACK);
-    inner[2] = 0;
-    inner[3] = 5;
-    inner[4] = (uint8_t)(requestType >> 8);
-    inner[5] = (uint8_t)(requestType);
-    inner[6] = ctrlIdx;
-    inner[7] = result;
-    inner[8] = motionFlags;
+    inner[3] = 6;
+    inner[4] = backendAvailable ? 1 : 0;
+    inner[5] = totalActiveControllers;
+    inner[6] = (uint8_t)(epoch >> 8);
+    inner[7] = (uint8_t)(epoch);
+    inner[8] = (uint8_t)(activeBitmap >> 8);
+    inner[9] = (uint8_t)(activeBitmap);
     sendEncryptedPacket(conn, inner, sizeof(inner));
 }
 
-void ClientAdapter::sendServerStatus(const Connection& conn, bool backendAvailable,
-                                     uint8_t totalActiveControllers) {
-    uint8_t inner[6];
-    inner[0] = (uint8_t)(MSG_SERVER_STATUS >> 8);
-    inner[1] = (uint8_t)(MSG_SERVER_STATUS);
+void ClientAdapter::sendSessionClose(const Connection& conn, uint8_t reason) {
+    // Wire: reason(1). Best-effort; must go out BEFORE teardown while the
+    // session key and address still exist.
+    uint8_t inner[INNER_HEADER_SIZE + 1];
+    inner[0] = (uint8_t)(MSG_SESSION_CLOSE >> 8);
+    inner[1] = (uint8_t)(MSG_SESSION_CLOSE);
     inner[2] = 0;
-    inner[3] = 2;
-    inner[4] = backendAvailable ? 1 : 0;
-    inner[5] = totalActiveControllers;
-    sendEncryptedPacket(conn, inner, 6);
-}
-
-void ClientAdapter::broadcastServerStatus(
-    const std::vector<std::pair<uint32_t, const Connection*>>& connections, bool backendAvailable,
-    uint8_t totalActiveControllers) {
-    for (auto& [tok, conn] : connections) {
-        sendServerStatus(*conn, backendAvailable, totalActiveControllers);
-    }
+    inner[3] = 1;
+    inner[4] = reason;
+    sendEncryptedPacket(conn, inner, sizeof(inner));
 }
 
 void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,

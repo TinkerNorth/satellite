@@ -33,6 +33,7 @@ endif()
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
+    src/core/catalog.cpp
     src/core/update_service.cpp
     src/core/github_release.cpp
 )
@@ -46,6 +47,7 @@ set(SATELLITE_NET_SOURCES
     src/net/machine_id.cpp
     src/net/pairing.cpp
     src/net/pairing_service.cpp
+    src/net/session_crypto.cpp
     src/net/discovery.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
@@ -583,6 +585,8 @@ add_executable(test_session_service
 target_include_directories(test_session_service PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+# Enables the backdateForTest seam for reap/grace coverage.
+target_compile_definitions(test_session_service PRIVATE SATELLITE_BUILD_TESTS)
 
 if(WIN32 AND MINGW)
     target_compile_options(test_session_service PRIVATE -O2 -Wall -Wextra)
@@ -681,6 +685,15 @@ satellite_add_pure_test(test_machine_id tests/test_machine_id.cpp)
 satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
 satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
+satellite_add_pure_test(test_json_mini tests/test_json_mini.cpp)
+
+# Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
+# at the real web/lang catalogs so every controller-type string is asserted
+# present in every supported locale (mirror of Android's MissingTranslation).
+satellite_add_pure_test(test_catalog tests/test_catalog.cpp src/core/catalog.cpp)
+target_compile_definitions(test_catalog PRIVATE
+    WEB_LANG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/lang"
+)
 
 # UpdateService spawns worker/timer threads, so this suite needs pthreads on
 # Linux/macOS (MinGW links winpthread implicitly).
@@ -734,6 +747,7 @@ if(WIN32)
         src/platform/windows/config.cpp
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
+        src/net/session_crypto.cpp
         ${SATELLITE_CORE_SOURCES}
     )
     target_include_directories(test_windows_platform PRIVATE

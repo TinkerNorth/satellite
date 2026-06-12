@@ -44,10 +44,10 @@ The **return path** carries rumble events the other direction: when a game on th
 ### Receiver machine
 - **Windows 10/11** with the **[ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases)** installed (the `SatelliteSetup.exe` installer bundles ViGEmBus 1.22.0 and installs it for you if it's missing — see [Installation](#installation)), **or**
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup), **or**
-- **macOS** for development / web-UI testing only — controller injection is unavailable, so the receiver returns `ACK_ERR_VIGEM_UNAVAIL` for `add controller` requests
+- **macOS** for development / web-UI testing only — controller injection is unavailable, so controller descriptors apply as `backendUnavailable`
 
-### Sender machine
-- **Windows 10/11** with an Xbox controller connected (XInput is the only sender backend at present)
+### Client (sender) device
+- **dish-android** — an Android phone running the Dish app (Bluetooth/USB controllers, touch overlay, motion). Other Dish clients implement the same contract ([`docs/contract.md`](docs/contract.md)).
 
 ### Build toolchain
 - **Windows:** **[MinGW-w64](https://winlibs.com/)** (g++) — or any C++17 compiler targeting Windows. **[Inno Setup 6](https://jrsoftware.org/isinfo.php)** is only needed to build the installer.
@@ -89,7 +89,9 @@ Use **Settings → Apps → Installed Apps → Satellite → Uninstall**, or run
 the uninstaller from the Start Menu. The uninstaller will:
 
 - Stop `satellite.exe` if it's running.
-- Remove the four Windows Firewall rules (HTTP/UDP/Pairing/Discovery).
+- Remove the Windows Firewall rules (UDP input stream 9876, HTTPS client
+  API 9443, discovery 9879 — the admin UI on 9877 is loopback-only and
+  needs no rule).
 - Delete the program files, Start Menu and Desktop shortcuts, and the
   HKCU "Run at login" registry entry.
 - **Ask** whether to also uninstall the ViGEmBus driver. The default is
@@ -122,7 +124,7 @@ build-satellite.bat
 Virtual-gamepad injection is not available on macOS — there is no signed
 DriverKit equivalent of ViGEmBus — so the macOS build produces a server that
 still pairs, authenticates, serves the web UI, and reports status to clients,
-but refuses controller-add requests with `ACK_ERR_VIGEM_UNAVAIL`. This is
+but applies every controller descriptor as `backendUnavailable`. This is
 useful for development, protocol testing, and running the web dashboard from
 a Mac; it is **not** a drop-in receiver for game input.
 
@@ -326,28 +328,18 @@ directly if you're scripting around it (the PowerShell script accepts
 
 ## Usage
 
-### Receiver (tray app)
+Run `satellite.exe`. It starts minimized to the system tray and begins
+listening immediately — there is no start/stop button.
 
-Run `controller-receiver.exe`. It starts minimized to the system tray.
-
-- **Right-click** the tray icon → **Open Web UI** to configure
+- **Right-click** the tray icon → **Open Web UI** for the dashboard
 - Or open `http://localhost:9877` in your browser
-- Click **Start** in the web UI to begin listening for controller input
+- Enter the rotating PIN shown on the dashboard (or approve the client-shown
+  PIN) to pair a Dish client; clients then connect on their own
 - Enable **Start with Windows** to auto-launch on boot
 
-### Sender (console app)
-
-```
-controller-sender.exe <receiver-ip> [port] [poll-rate-hz] [controller-index]
-controller-sender.exe 192.168.1.50 9876 250 0
-```
-
-| Argument           | Default     | Description                          |
-|--------------------|-------------|--------------------------------------|
-| `receiver-ip`      | `127.0.0.1` | IP address of the receiver machine   |
-| `port`             | `9876`      | UDP port                             |
-| `poll-rate-hz`     | `250`       | How often to poll the controller (Hz)|
-| `controller-index` | `0`         | XInput user index (0-3)              |
+Clients (dish-android first) discover the satellite via mDNS, pair over
+HTTPS 9443, and stream input over UDP 9876 — the full client ↔ server
+contract is [`docs/contract.md`](docs/contract.md).
 
 ## OTA Updates
 
@@ -418,13 +410,14 @@ The `version-consistency` CI gate fails if the two diverge.
 
 ## Architecture
 
-The receiver runs three threads:
+The receiver runs four main threads:
 
 | Thread       | Role                                                        |
 |--------------|-------------------------------------------------------------|
 | **Main**     | Win32 message loop, system tray icon                        |
-| **Receiver** | UDP socket → ViGEmBus `DeviceIoControl` (the hot path)      |
-| **HTTP**     | Embedded web server ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) serving the config UI |
+| **Receiver** | UDP socket → ViGEmBus `DeviceIoControl` (the hot path); spawns the reaper |
+| **Client API** | HTTPS 9443 ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) — pairing, sessions, catalog |
+| **Admin HTTP** | Loopback 9877 — web UI, admin API, SSE                    |
 
 ## Why UDP?
 
@@ -496,12 +489,12 @@ Satellite forwards those colour changes on a dedicated stream, decoupled from
 
 ### Capability gate
 
-A dish advertises `CAP_LIGHTBAR` (`0x0008`) in its `MSG_CONTROLLER_ADD`
-capability word when the bound physical controller has an addressable RGB LED
-(a DualSense / DS4 — not an Xbox pad, and never on dish-android, which has no
-controller-LED API). The satellite emits `MSG_LIGHTBAR` **only** to a
-controller that advertised the bit; a dish that did not simply receives no
-lightbar traffic.
+A dish advertises `lightbar` in its controller descriptor's `caps` object
+(the session PUT — see [`docs/contract.md`](docs/contract.md)) when the bound
+physical controller has an addressable RGB LED (a DualSense / DS4 — not an
+Xbox pad, and never on dish-android, which has no controller-LED API). The
+satellite emits `MSG_LIGHTBAR` **only** to a controller that advertised the
+capability; a dish that did not simply receives no lightbar traffic.
 
 ### Wire format
 
@@ -594,58 +587,66 @@ cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem -Ivigem/includ
 
 ## Testing
 
-Unit tests cover the core domain service (`SessionService`) using mock implementations of all port interfaces. No external test framework is required.
-
-### Running tests
+Unit tests use mock implementations of the port interfaces; no external test
+framework is required. CMake registers every suite with CTest:
 
 ```powershell
-build-tests.bat
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
-This compiles `tests/test_session_service.cpp` alongside `src/core/session_service.cpp`, then runs the test binary. Output shows pass/fail counts and individual failure details.
+### Suites
 
-### What's tested
-
-- **Connection lifecycle** — open, close, close-all, stale replacement, multiple devices
-- **Controller lifecycle** — add, remove, serial allocation/recycling, bus open/close
-- **Error handling** — invalid tokens, out-of-bounds indices, ViGEm unavailable, no slots, plugin failures
-- **Gamepad data** — report submission, inactive controller rejection
-- **Heartbeat** — ACK + server status responses
-- **Decrypt helpers** — key retrieval, counter updates
-- **Query/stats** — snapshot, device connected check, slot counts
-- **Broadcast** — status broadcasts on controller changes
-- **Rumble (return path)** — backend callback wiring, serial → connection lookup, coalescing of identical magnitudes, multi-connection routing, serial-recycle cache reset, custom wire durations, per-controller cache isolation
-- **Lightbar (return path)** — `CAP_LIGHTBAR` capability gating, `MSG_LIGHTBAR` dedicated-stream emission, identical-colour coalescing, colour caching for the web UI on every controller type, coalesce-state reset on controller re-add
+| Suite | Covers |
+|---|---|
+| `session_service` | Declarative session upsert/converge, transactional replug, serial round-robin + quarantine, epoch/bitmap, close-notify ordering, liveness grace + reap, host-feature grants, data streams |
+| `receiver` | Inner-message length guards, wire decode, deleted-opcode drop |
+| `test_catalog` | Catalog JSON, Accept-Language resolution, ETag, locale completeness gate |
+| `test_json_mini` | Request-body JSON extraction helpers |
+| `pairing` | Path-B pairing request registry lifecycle |
+| `mdns_protocol` / `test_discovery` / `test_machine_id` | Discovery + identity |
+| `test_codecs` / `test_ipv4_util` | Pure codecs (touchpad pack, IPv4 fast path) |
+| `test_github_release` / `test_update_service` | OTA updater |
+| `windows_platform` | Config persistence, autostart, hex/JSON helpers, HKDF + hmacProof + packet-AEAD vectors |
+| `vigem_adapter` | Synchronous submit policy, DS4 EX fallback, observable unplug |
+| `linux_platform` (Linux only) | Linux config/adapters |
 
 ## Project structure
 
 ```
 ├── src/
 │   ├── core/                   # Pure domain logic (no platform deps)
-│   │   ├── types.h             # Data structs, constants, enums
-│   │   ├── ports.h             # Outbound port interfaces
-│   │   ├── session_service.h   # SessionService declaration
-│   │   └── session_service.cpp # SessionService implementation
-│   ├── adapters/               # Infrastructure adapters
-│   │   ├── vigem_adapter.*     # IGamepadPort — ViGEm bus driver
-│   │   ├── client_adapter.*    # IClientPort — encrypted UDP
-│   │   ├── log_adapter.*       # ILogPort — ring buffer logger
-│   │   └── config_adapter.*    # IConfigPort — JSON config
-│   ├── main.cpp                # Composition root (wires adapters)
-│   ├── receiver.cpp            # UDP recv/decrypt loop
-│   ├── webserver.cpp           # HTTP API + SSE + web UI
-│   └── ...                     # config, crypto, pairing, discovery, tray
-├── tests/
-│   └── test_session_service.cpp # Unit tests (self-contained, no framework)
-├── lib/
-│   └── httplib.h               # cpp-httplib (vendored)
+│   │   ├── types.h             # Data structs, protocol constants, enums
+│   │   ├── ports.h             # Outbound port interfaces (hexagonal)
+│   │   ├── session_service.*   # Declarative session/controller converge
+│   │   ├── catalog.*           # /api/catalog builder + locale resolution
+│   │   ├── json_mini.h         # Dependency-free JSON extraction helpers
+│   │   └── update_service.*    # OTA update state machine
+│   ├── net/                    # Shared transport layer (all platforms)
+│   │   ├── receiver.cpp        # UDP recv/decrypt hot loop
+│   │   ├── inner_dispatch.cpp  # Inner-message parser + length guards
+│   │   ├── webserver.cpp       # HTTPS client API + loopback admin UI + SSE
+│   │   ├── session_crypto.*    # HKDF session keys, hmacProof, packet AEAD
+│   │   ├── pairing*.{h,cpp}    # PIN pairing + Path-B request registry
+│   │   └── discovery / mdns_*  # mDNS responder + legacy beacon
+│   ├── adapters/               # Portable adapters
+│   │   ├── client_adapter.*    # IClientPort — encrypted UDP downstream
+│   │   └── log_adapter.*       # ILogPort — ring buffer logger
+│   └── platform/
+│       ├── windows/            # main, tray, config, ViGEm adapter (vigem*.{h,cpp})
+│       ├── linux/              # main, tray, config, uinput adapter
+│       └── macos/              # main, tray, config, inert gamepad stub
+├── tests/                      # Self-contained suites (no framework), one per area
+├── docs/
+│   ├── contract.md             # THE client ↔ server protocol contract
+│   └── architecture.md         # Server internals
+├── lib/                        # cpp-httplib + libsodium (vendored)
 ├── vigem/include/ViGEm/        # ViGEm driver headers
-├── web/                        # Web UI static files
-├── build-satellite.bat         # Build script
-├── build-tests.bat             # Test build & run script
+├── web/                        # Admin web UI + lang catalogs + catalog images
 ├── .clang-format               # Code formatting rules
 ├── .clang-tidy                 # Linting checks
-├── LICENSE                     # MIT
+├── LICENSE                     # LGPL-3.0-or-later
 └── README.md
 ```
 
