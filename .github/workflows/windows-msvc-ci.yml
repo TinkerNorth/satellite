@@ -28,21 +28,23 @@ concurrency:
 jobs:
   msvc:
     name: Build, test (MSVC + vcpkg, hardened)
-    runs-on: windows-2022
+    runs-on: windows-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # windows-2022 ships VS 2022 (MSVC + Spectre-mitigated libs) and a vcpkg
-      # checkout at VCPKG_INSTALLATION_ROOT. The configure step's vcpkg toolchain
-      # auto-installs libsodium + openssl (static) from vcpkg.json — the first
-      # run builds OpenSSL from source (several minutes); add vcpkg binary
-      # caching later if that wall-time matters.
+      # windows-latest ships VS (MSVC + Spectre-mitigated libs) and a vcpkg
+      # checkout at VCPKG_INSTALLATION_ROOT — the same image release.yml builds
+      # on. The configure step's vcpkg toolchain auto-installs libsodium +
+      # openssl (static) from vcpkg.json — the first run builds OpenSSL from
+      # source (several minutes); add vcpkg binary caching later if that
+      # wall-time matters.
       - name: Configure (MSVC + vcpkg static, hardened release)
         shell: pwsh
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cmake --preset windows-msvc
+          $generator = ./scripts/windows-vs-generator.ps1
+          cmake --preset windows-msvc -G $generator
 
       - name: Build (Release + LTCG)
         shell: pwsh
@@ -65,8 +67,8 @@ jobs:
         continue-on-error: true
         run: |
           $dumpbin = Get-ChildItem -ErrorAction SilentlyContinue -Path `
-            "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe", `
-            "C:\Program Files (x86)\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+            "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe", `
+            "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
             Select-Object -First 1
           if ($null -eq $dumpbin) { Write-Host "dumpbin not found — skipping check"; exit 0 }
           & $dumpbin.FullName /headers /loadconfig satellite.exe |
