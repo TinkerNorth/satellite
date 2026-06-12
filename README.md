@@ -333,8 +333,8 @@ listening immediately — there is no start/stop button.
 
 - **Right-click** the tray icon → **Open Web UI** for the dashboard
 - Or open `http://localhost:9877` in your browser
-- Generate a PIN on the dashboard (or approve the client-shown PIN) to pair
-  a Dish client; clients then connect on their own
+- Enter the rotating PIN shown on the dashboard (or approve the client-shown
+  PIN) to pair a Dish client; clients then connect on their own
 - Enable **Start with Windows** to auto-launch on boot
 
 Clients (dish-android first) discover the satellite via mDNS, pair over

@@ -159,64 +159,70 @@ std::string randomDigits(int n) {
 // PIN state machine surfaced to the dashboard; see PinState in core/types.h.
 static std::mutex g_pinMtx;
 static std::string g_currentPin;
-static std::chrono::steady_clock::time_point g_pinExpiry;
+static std::string g_previousPin;
+static std::chrono::steady_clock::time_point g_pinRotateAt;
 static std::chrono::steady_clock::time_point g_pinPairedAt;
 static bool g_pinPairedValid = false;
 static int g_pinFailCount = 0;
 static constexpr int PIN_PAIRED_HOLD_SEC = 5;
-// Burn the PIN after this many wrong guesses; otherwise the 4-digit space is
-// online-brute-forceable within the 5-minute window.
+static constexpr auto PIN_ROTATE_PERIOD = std::chrono::minutes(5);
+// Burn both PINs after this many wrong guesses; otherwise the 4-digit space is
+// online-brute-forceable within the rotation period.
 static constexpr int PIN_MAX_FAILS = 5;
 
-std::string generatePin() {
-    std::lock_guard<std::mutex> lk(g_pinMtx);
+static void resetPinsLocked() {
     g_currentPin = randomDigits(4);
-    g_pinExpiry = std::chrono::steady_clock::now() + std::chrono::minutes(5);
-    g_pinPairedValid = false;
+    g_previousPin.clear();
+    g_pinRotateAt = std::chrono::steady_clock::now() + PIN_ROTATE_PERIOD;
     g_pinFailCount = 0;
-    return g_currentPin;
+}
+
+static void rotatePinsIfDueLocked() {
+    const auto now = std::chrono::steady_clock::now();
+    if (g_currentPin.empty()) {
+        resetPinsLocked();
+        return;
+    }
+    if (now < g_pinRotateAt) return;
+    g_previousPin = (now - g_pinRotateAt < PIN_ROTATE_PERIOD) ? g_currentPin : std::string();
+    g_currentPin = randomDigits(4);
+    g_pinRotateAt = now + PIN_ROTATE_PERIOD;
+    g_pinFailCount = 0;
 }
 
 bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
-    if (g_currentPin.empty() || std::chrono::steady_clock::now() > g_pinExpiry) return false;
+    rotatePinsIfDueLocked();
     // Constant-time compare so a wrong guess can't leak (via timing) how many
     // leading digits matched. sodium_memcmp needs equal lengths — gate on size.
-    bool ok = (pin.size() == g_currentPin.size()) &&
-              sodium_memcmp(pin.data(), g_currentPin.data(), g_currentPin.size()) == 0;
-    if (ok) {
-        g_currentPin.clear();
-        g_pinFailCount = 0;
+    auto matches = [&](const std::string& candidate) {
+        return !candidate.empty() && pin.size() == candidate.size() &&
+               sodium_memcmp(pin.data(), candidate.data(), candidate.size()) == 0;
+    };
+    const bool okCurrent = matches(g_currentPin);
+    const bool okPrevious = matches(g_previousPin);
+    if (okCurrent || okPrevious) {
+        resetPinsLocked();
         g_pinPairedAt = std::chrono::steady_clock::now();
         g_pinPairedValid = true;
         return true;
     }
-    if (++g_pinFailCount >= PIN_MAX_FAILS) g_currentPin.clear();
+    if (++g_pinFailCount >= PIN_MAX_FAILS) resetPinsLocked();
     return false;
 }
 
 PinSnapshot pinSnapshot() {
     std::lock_guard<std::mutex> lk(g_pinMtx);
+    rotatePinsIfDueLocked();
     const auto now = std::chrono::steady_clock::now();
     PinSnapshot s;
-    if (!g_currentPin.empty()) {
-        if (now > g_pinExpiry) {
-            s.state = PinState::PinExpired;
-            s.secondsRemaining = 0;
-        } else {
-            s.state = PinState::PinActive;
-            s.secondsRemaining = static_cast<int>(
-                std::chrono::duration_cast<std::chrono::seconds>(g_pinExpiry - now).count());
-        }
-        return s;
-    }
-    if (g_pinPairedValid && now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC)) {
-        s.state = PinState::PinPaired;
-        s.secondsRemaining = 0;
-        return s;
-    }
-    s.state = PinState::PinIdle;
-    s.secondsRemaining = 0;
+    s.currentPin = g_currentPin;
+    s.previousPin = g_previousPin;
+    const auto rem = std::chrono::duration_cast<std::chrono::seconds>(g_pinRotateAt - now).count();
+    s.secondsRemaining = rem < 0 ? 0 : static_cast<int>(rem);
+    s.state = (g_pinPairedValid && now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC))
+                  ? PinState::PinPaired
+                  : PinState::PinActive;
     return s;
 }
 

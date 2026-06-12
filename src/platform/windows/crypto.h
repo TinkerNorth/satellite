@@ -12,12 +12,14 @@ std::string dpapiDecrypt(const std::string& encoded);
 std::string randomHex(int bytes);
 std::string randomDigits(int n);
 
-std::string generatePin();
 bool verifyPin(const std::string& pin);
 
-// secondsRemaining is 0 unless state is PinState::PinActive.
+// secondsRemaining counts down to the next PIN rotation; previousPin is empty
+// until the first rotation (and after a pair/burn reset).
 struct PinSnapshot {
-    PinState state = PinState::PinIdle;
+    PinState state = PinState::PinActive;
+    std::string currentPin;
+    std::string previousPin;
     int secondsRemaining = 0;
 };
 PinSnapshot pinSnapshot();

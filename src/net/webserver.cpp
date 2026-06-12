@@ -225,6 +225,28 @@ static std::string buildDevicesJson(const SessionService& svc) {
     return json;
 }
 
+static std::string buildPinJson() {
+    PinSnapshot s = pinSnapshot();
+    return std::string("{\"state\":\"") + pinStateName(s.state) + "\",\"currentPin\":\"" +
+           s.currentPin + "\",\"previousPin\":\"" + s.previousPin +
+           "\",\"secondsRemaining\":" + std::to_string(s.secondsRemaining) + "}";
+}
+
+static std::string buildPairRequestsJson() {
+    auto reqs = pendingPairRequests();
+    std::string json = "[";
+    for (size_t i = 0; i < reqs.size(); i++) {
+        const auto& r = reqs[i];
+        if (i) json += ",";
+        json += "{\"deviceId\":\"" + jsonEscape(r.deviceId) + "\",\"deviceName\":\"" +
+                jsonEscape(r.deviceName) + "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
+                "\",\"pin\":\"" + jsonEscape(r.pin) +
+                "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) + "}";
+    }
+    json += "]";
+    return json;
+}
+
 // ── Client auth (HTTPS surface) ──────────────────────────────────────────────
 
 struct ClientAuth {
@@ -873,43 +895,20 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
-    g_httpServer.Post("/api/pin/generate", [](const httplib::Request&, httplib::Response& res) {
-        auto pin = generatePin();
-        res.set_content("{\"pin\":\"" + pin + "\"}", "application/json");
-    });
-
-    // Never echoes the PIN — it's returned only to the generate POST, so a
-    // /dashboard refresh can't leak it to a parallel admin tab.
+    // The rotating PINs are echoed here for the dashboard to display — safe
+    // because this is the loopback-only admin surface.
     g_httpServer.Get("/api/pin/status", [](const httplib::Request&, httplib::Response& res) {
-        PinSnapshot s = pinSnapshot();
-        std::string json = "{\"state\":\"";
-        json += pinStateName(s.state);
-        json += "\",\"secondsRemaining\":";
-        json += std::to_string(s.secondsRemaining);
-        json += "}";
-        res.set_content(json, "application/json");
+        res.set_content(buildPinJson(), "application/json");
     });
 
     // Reverse-direction pairing (dish shows a PIN, operator accepts here).
     // Localhost admin surface — operator is at the satellite — so no device auth.
     g_httpServer.Get("/api/pair/requests", [](const httplib::Request&, httplib::Response& res) {
-        // No PIN in the payload: accepting requires reading it off the dish.
-        auto reqs = pendingPairRequests();
-        std::string json = "[";
-        for (size_t i = 0; i < reqs.size(); i++) {
-            const auto& r = reqs[i];
-            if (i) json += ",";
-            json += "{\"deviceId\":\"" + jsonEscape(r.deviceId) + "\",\"deviceName\":\"" +
-                    jsonEscape(r.deviceName) + "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
-                    "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) + "}";
-        }
-        json += "]";
-        res.set_content(json, "application/json");
+        res.set_content(buildPairRequestsJson(), "application/json");
     });
 
     g_httpServer.Post("/api/pair/respond", [](const httplib::Request& req, httplib::Response& res) {
         auto deviceId = jsonGetString(req.body, "deviceId");
-        auto pin = jsonGetString(req.body, "pin");
         bool accept = false;
         jsonGetBoolKeyed(req.body, "accept", &accept);
         if (deviceId.empty()) {
@@ -924,11 +923,10 @@ void adminHttpThread(SessionService& svc) {
             return;
         }
         // Key minting + persistence live in pairing_service (shared with tray prompts).
-        if (!acceptPairingWithPin(deviceId, pin)) {
+        if (!confirmPairing(deviceId)) {
             logMsg(LogLevel::WARN, "pairing",
-                   "Operator accept for " + deviceId + " rejected (PIN mismatch or no request)");
-            res.set_content(R"({"ok":false,"error":"pin mismatch or no pending request"})",
-                            "application/json");
+                   "Operator accept for " + deviceId + " rejected (no pending request)");
+            res.set_content(R"({"ok":false,"error":"no pending request"})", "application/json");
             return;
         }
         logMsg(LogLevel::INFO, "pairing", "Operator accepted pairing for " + deviceId);
@@ -1122,30 +1120,14 @@ void adminHttpThread(SessionService& svc) {
 
                 // Pushed each tick so the countdown ticks and a fresh tab sees
                 // current state without a parallel /api/pin/status poll.
-                {
-                    PinSnapshot pinSnap = pinSnapshot();
-                    event += "event: pin\ndata: {\"state\":\"";
-                    event += pinStateName(pinSnap.state);
-                    event += "\",\"secondsRemaining\":";
-                    event += std::to_string(pinSnap.secondsRemaining);
-                    event += "}\n\n";
-                }
+                event += "event: pin\ndata: ";
+                event += buildPinJson();
+                event += "\n\n";
 
                 // Pushed each tick so the accept/deny panel appears the instant a dish asks.
-                {
-                    auto pairReqs = pendingPairRequests();
-                    event += "event: pairRequests\ndata: [";
-                    for (size_t i = 0; i < pairReqs.size(); i++) {
-                        const auto& r = pairReqs[i];
-                        if (i) event += ",";
-                        event += "{\"deviceId\":\"" + jsonEscape(r.deviceId) +
-                                 "\",\"deviceName\":\"" + jsonEscape(r.deviceName) +
-                                 "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
-                                 "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) +
-                                 "}";
-                    }
-                    event += "]\n\n";
-                }
+                event += "event: pairRequests\ndata: ";
+                event += buildPairRequestsJson();
+                event += "\n\n";
 
                 if (!sink.write(event.c_str(), event.size())) return false;
                 for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);

@@ -17,13 +17,15 @@ std::string dpapiDecrypt(const std::string& encoded);
 std::string randomHex(int bytes);
 std::string randomDigits(int n);
 
-std::string generatePin();
 bool verifyPin(const std::string& pin);
 
-// secondsRemaining lets the dashboard render an "Expires in m:ss" countdown
-// without a separate expiresAtEpoch field; it is 0 unless state == PinActive.
+// secondsRemaining lets the dashboard render a "New PIN in m:ss" countdown
+// without a separate rotateAtEpoch field; previousPin is empty until the
+// first rotation (and after a pair/burn reset).
 struct PinSnapshot {
-    PinState state = PinState::PinIdle;
+    PinState state = PinState::PinActive;
+    std::string currentPin;
+    std::string previousPin;
     int secondsRemaining = 0;
 };
 PinSnapshot pinSnapshot();

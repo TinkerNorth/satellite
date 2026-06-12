@@ -35,12 +35,11 @@ enum class DeviceLinkState {
                    // not yet reaped (>=2 missed heartbeats, < HEARTBEAT_MISS_MAX)
 };
 
-// Pairing PIN lifecycle on the server.
+// Pairing PIN lifecycle on the server. PINs rotate on a fixed period; the
+// outgoing PIN stays accepted as "previous" for one more period.
 enum class PinState {
-    PinIdle,    // no PIN outstanding
-    PinActive,  // PIN generated, within 5-min window
-    PinExpired, // window lapsed unused
-    PinPaired,  // a device just consumed it — momentary success state
+    PinActive, // rotating current/previous PIN pair is live
+    PinPaired, // a device just consumed a PIN — momentary success state
 };
 
 // Per-controller pipeline state (physical-on-client → bridge → virtual). The
@@ -77,16 +76,12 @@ inline const char* deviceLinkStateName(DeviceLinkState s) {
 
 inline const char* pinStateName(PinState s) {
     switch (s) {
-    case PinState::PinIdle:
-        return "idle";
     case PinState::PinActive:
         return "active";
-    case PinState::PinExpired:
-        return "expired";
     case PinState::PinPaired:
         return "paired";
     }
-    return "idle";
+    return "active";
 }
 
 inline const char* controllerStateName(ControllerState s) {

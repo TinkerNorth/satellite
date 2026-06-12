@@ -12,7 +12,7 @@ struct PendingPair {
     std::string deviceId;
     std::string deviceName;
     std::string clientIP;
-    std::string clientPin; // the PIN the dish is showing; the operator must type it back
+    std::string clientPin; // the PIN the dish is showing; the operator confirms it by sight
     std::string keyHex;    // staged session key, set on Approved
     PairRequestState state = PairRequestState::Pending;
     std::chrono::steady_clock::time_point createdAt;
@@ -101,24 +101,6 @@ void submitPairRequest(const std::string& deviceId, const std::string& deviceNam
     if (notify) notify(deviceId);
 }
 
-bool acceptPairRequest(const std::string& deviceId, const std::string& operatorPin,
-                       const std::string& mintedKeyHex, std::string& outDeviceName,
-                       std::string& outClientIP) {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
-    pruneLocked();
-
-    auto* p = findLocked(deviceId);
-    if (p == nullptr || p->state != PairRequestState::Pending) return false;
-    // The PIN match IS the authentication — it proves the operator saw the device.
-    if (operatorPin != p->clientPin) return false;
-
-    p->state = PairRequestState::Approved;
-    p->keyHex = mintedKeyHex;
-    outDeviceName = p->deviceName;
-    outClientIP = p->clientIP;
-    return true;
-}
-
 bool denyPairRequest(const std::string& deviceId) {
     std::lock_guard<std::mutex> lk(g_pairMtx);
     auto* p = findLocked(deviceId);
@@ -155,7 +137,7 @@ std::vector<PairRequestView> pendingPairRequests() {
         const int rem = static_cast<int>(
             std::chrono::duration_cast<std::chrono::seconds>(kPairTtl - (now - p.createdAt))
                 .count());
-        out.push_back({p.deviceId, p.deviceName, p.clientIP, rem < 0 ? 0 : rem});
+        out.push_back({p.deviceId, p.deviceName, p.clientIP, p.clientPin, rem < 0 ? 0 : rem});
     }
     return out;
 }

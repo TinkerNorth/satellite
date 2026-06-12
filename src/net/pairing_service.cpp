@@ -54,14 +54,6 @@ bool rotatePairedDeviceKey(const std::string& deviceId, const std::string& clien
     return false;
 }
 
-bool acceptPairingWithPin(const std::string& deviceId, const std::string& operatorPin) {
-    const std::string keyHex = mintPairingKeyHex();
-    std::string name, ip;
-    if (!acceptPairRequest(deviceId, operatorPin, keyHex, name, ip)) return false;
-    upsertPairedDevice(deviceId, name, ip, keyHex);
-    return true;
-}
-
 bool confirmPairing(const std::string& deviceId) {
     const std::string keyHex = mintPairingKeyHex();
     std::string name, ip;

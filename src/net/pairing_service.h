@@ -17,14 +17,9 @@ void upsertPairedDevice(const std::string& deviceId, const std::string& deviceNa
 bool rotatePairedDeviceKey(const std::string& deviceId, const std::string& clientIP,
                            std::string& outKeyHex);
 
-// Dashboard accept: the operator typed the dish's PIN. Mints a key, verifies the
-// typed PIN against the pending request, persists on match. False on mismatch /
-// no pending request.
-bool acceptPairingWithPin(const std::string& deviceId, const std::string& operatorPin);
-
-// Native accept: the operator confirmed by sight that the prompt's PIN matches
-// the dish, so nothing is re-typed. Mints a key, persists. False when no pending
-// request exists (e.g. it already expired).
+// Accept (dashboard or native prompt): the operator confirmed by sight that
+// the shown PIN matches the dish. Mints a key, persists. False when no
+// pending request exists (e.g. it already expired).
 bool confirmPairing(const std::string& deviceId);
 
 // Decline a pending request. True iff one existed.
