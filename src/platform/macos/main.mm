@@ -12,6 +12,7 @@
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
 #include "net/pairing.h"
+#include "net/session_crypto.h"
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
@@ -45,7 +46,7 @@ int main(int argc, const char* argv[]) {
         // macOS lacks a signed DriverKit equivalent of ViGEmBus, so this build
         // runs the protocol stack but cannot synthesize virtual gamepads.
         fprintf(stderr, "[satellite] macOS stub build — virtual gamepads disabled "
-                        "(controller-add requests will return ACK_ERR_BACKEND_UNAVAIL).\n");
+                        "(controller descriptors will apply as backendUnavailable).\n");
 
         if (!netInit()) {
             fprintf(stderr, "Failed to initialize network subsystem\n");
@@ -63,7 +64,7 @@ int main(int argc, const char* argv[]) {
         GamepadAdapter gamepadAdapter;
         ClientAdapter clientAdapter;
         LogAdapter logAdapter;
-        SessionService svc(gamepadAdapter, clientAdapter, logAdapter);
+        SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey);
 
         MacOSUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
         UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);

@@ -157,7 +157,6 @@ static void testConfigRoundTrip() {
     d.lastIP = "192.168.1.42";
     d.pairedAt = "2025-01-15";
     d.sharedKeyHex = "deadbeef00";
-    d.touchpadMode = TOUCHPAD_MODE_MOUSE;
     out.pairedDevices.push_back(d);
 
     saveConfig(out);
@@ -183,8 +182,6 @@ static void testConfigRoundTrip() {
         EXPECT_EQ(in.pairedDevices[0].lastIP, std::string("192.168.1.42"));
         EXPECT_EQ(in.pairedDevices[0].pairedAt, std::string("2025-01-15"));
         EXPECT_EQ(in.pairedDevices[0].sharedKeyHex, std::string("deadbeef00"));
-        EXPECT_EQ(static_cast<int>(in.pairedDevices[0].touchpadMode),
-                  static_cast<int>(TOUCHPAD_MODE_MOUSE));
     }
 }
 

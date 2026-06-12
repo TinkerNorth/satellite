@@ -34,6 +34,7 @@ int main() {
         EXPECT(list[0].deviceId == "dev1");
         EXPECT(list[0].deviceName == "Pixel");
         EXPECT(list[0].clientIP == "192.168.1.5");
+        EXPECT(list[0].pin == "1234");
         EXPECT(list[0].secondsRemaining > 0);
     }
 
@@ -47,10 +48,10 @@ int main() {
 
     {
         resetPairRequestsForTest();
-        TEST("matched accept approves and hands the key back exactly once");
+        TEST("accept approves and hands the key back exactly once");
         submitPairRequest("dev1", "Pixel", "ip", "4821");
         std::string name, ip;
-        EXPECT(acceptPairRequest("dev1", "4821", "deadbeefkey", name, ip));
+        EXPECT(acceptPairRequestConfirmed("dev1", "deadbeefkey", name, ip));
         EXPECT(name == "Pixel");
         EXPECT(ip == "ip");
         std::string key;
@@ -61,27 +62,6 @@ int main() {
         EXPECT(pollPairRequest("dev1", key2) == PairRequestState::None);
         EXPECT(key2.empty());
         EXPECT(pendingPairRequests().empty());
-    }
-
-    {
-        resetPairRequestsForTest();
-        TEST("wrong PIN is rejected and leaves the request pending for a retry");
-        submitPairRequest("dev1", "Pixel", "ip", "1111");
-        std::string name, ip;
-        EXPECT(!acceptPairRequest("dev1", "9999", "key", name, ip));
-        std::string key;
-        EXPECT(pollPairRequest("dev1", key) == PairRequestState::Pending);
-        // A subsequent correct accept still works.
-        EXPECT(acceptPairRequest("dev1", "1111", "key2", name, ip));
-        EXPECT(pollPairRequest("dev1", key) == PairRequestState::Approved);
-        EXPECT(key == "key2");
-    }
-
-    {
-        resetPairRequestsForTest();
-        TEST("accept for an unknown device is false");
-        std::string name, ip;
-        EXPECT(!acceptPairRequest("ghost", "0000", "k", name, ip));
     }
 
     {
@@ -101,9 +81,7 @@ int main() {
         submitPairRequest("dev1", "Pixel 8", "ip2", "2222");
         EXPECT(pendingPairRequests().size() == 1);
         EXPECT(pendingPairRequests()[0].deviceName == "Pixel 8");
-        std::string name, ip;
-        EXPECT(!acceptPairRequest("dev1", "1111", "k", name, ip)); // stale PIN no longer valid
-        EXPECT(acceptPairRequest("dev1", "2222", "k", name, ip));
+        EXPECT(pendingPairRequests()[0].pin == "2222"); // dashboard shows the fresh PIN
     }
 
     {
@@ -113,7 +91,7 @@ int main() {
         submitPairRequest("b", "B", "ip", "2000");
         EXPECT(pendingPairRequests().size() == 2);
         std::string name, ip;
-        EXPECT(acceptPairRequest("a", "1000", "ka", name, ip));
+        EXPECT(acceptPairRequestConfirmed("a", "ka", name, ip));
         EXPECT(pendingPairRequests().size() == 1); // b is still pending
         std::string key;
         EXPECT(pollPairRequest("b", key) == PairRequestState::Pending);
@@ -128,7 +106,7 @@ int main() {
         EXPECT(pairRequestSnapshot("dev1", name, ip, pin, secs));
         EXPECT(name == "Pixel");
         EXPECT(ip == "10.0.0.9");
-        EXPECT(pin == "7777"); // only the in-process snapshot carries the PIN
+        EXPECT(pin == "7777");
         EXPECT(secs > 0);
         // No request for an unknown device.
         EXPECT(!pairRequestSnapshot("nope", name, ip, pin, secs));

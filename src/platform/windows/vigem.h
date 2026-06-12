@@ -21,7 +21,9 @@ bool submitDs4Sync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT& sr, HANDLE event
 bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE event,
                      const DS4_REPORT_EX& rpt);
 
-void unplugTarget(HANDLE bus, ULONG serial);
+// True iff the driver accepted the unplug; false ⇒ target state unknown,
+// caller must quarantine the serial. PnP teardown stays asynchronous either way.
+bool unplugTarget(HANDLE bus, ULONG serial);
 
 // Block until one rumble/LED notification for `serial`. `cancel` (signalled on
 // unplug) aborts the pending IOCTL via CancelIoEx and returns false. True on a

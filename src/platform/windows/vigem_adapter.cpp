@@ -7,7 +7,7 @@
 extern HANDLE openVigemBus();
 extern bool pluginTarget(HANDLE bus, unsigned long serial);
 extern bool pluginTargetDS4(HANDLE bus, unsigned long serial);
-extern void unplugTarget(HANDLE bus, unsigned long serial);
+extern bool unplugTarget(HANDLE bus, unsigned long serial);
 extern bool waitNextXusbNotification(HANDLE bus, unsigned long serial, HANDLE cancel,
                                      XUSB_REQUEST_NOTIFICATION& out);
 extern bool waitNextDS4Notification(HANDLE bus, unsigned long serial, HANDLE cancel,
@@ -93,8 +93,8 @@ bool ViGEmAdapter::pluginDevice(uint32_t serial) {
     return true;
 }
 
-void ViGEmAdapter::unplugDevice(uint32_t serial) {
-    if (!isValidSerial(serial)) return;
+bool ViGEmAdapter::unplugDevice(uint32_t serial) {
+    if (!isValidSerial(serial)) return true; // nothing to remove
 
     // Stop the worker first; explicit cancel keeps the unplug path deterministic.
     {
@@ -103,18 +103,33 @@ void ViGEmAdapter::unplugDevice(uint32_t serial) {
     }
 
     std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return;
+    IoSlot& slot = io_[serial];
+
+    // A closed bus has no live targets — the device is gone by definition.
+    if (busHandle_ == INVALID_HANDLE_VALUE) {
+        slot.plugged.store(false, std::memory_order_release);
+        slot.isDS4 = false;
+        slot.ds4 = {};
+        return true;
+    }
 
     // Stop accepting submissions before unplug so a receiver can't race it.
-    IoSlot& slot = io_[serial];
     slot.plugged.store(false, std::memory_order_release);
 
     // Sync submits mean nothing holds slot.xsr/event now, so no drain wait.
-    unplugTarget(busHandle_, static_cast<unsigned long>(serial));
+    const bool ok = unplugTarget(busHandle_, static_cast<unsigned long>(serial));
 
     // Keep slot.event for a possible replug; final close is in closeBus.
     slot.isDS4 = false;
     slot.ds4 = {};
+    return ok;
+}
+
+bool ViGEmAdapter::isDevicePlugged(uint32_t serial) const {
+    if (!isValidSerial(serial)) return false;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    return io_[serial].plugged.load(std::memory_order_acquire);
 }
 
 bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {

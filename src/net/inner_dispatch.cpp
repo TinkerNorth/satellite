@@ -28,48 +28,10 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         svc.handleHeartbeat(token);
         break;
 
-    case MSG_CONTROLLER_ADD: {
-        if (msgLen < 1) break;
-        uint8_t ctrlIdx = payload[0];
-        // caps: 2 bytes BE, optional — a pre-cap dish sends only ctrlIdx
-        // (msgLen 1), caps default to 0.
-        uint16_t caps = 0;
-        if (msgLen >= 3) {
-            caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
-                                         static_cast<uint16_t>(payload[2]));
-        }
-        // controllerType: 1 byte, optional — a pre-extension dish omits it
-        // (msgLen 3), so we pass UNSPECIFIED and the handler retains the slot's
-        // existing type (a follow-up MSG_CONTROLLER_TYPE then corrects it). A
-        // current dish sends it so the first plug is the correct device.
-        uint8_t controllerType = CONTROLLER_TYPE_UNSPECIFIED;
-        if (msgLen >= 4) { controllerType = payload[3]; }
-        svc.handleControllerAdd(token, ctrlIdx, caps, controllerType);
-        break;
-    }
-    case MSG_CONTROLLER_REMOVE: {
-        if (msgLen < 1) break;
-        uint8_t ctrlIdx = payload[0];
-        svc.handleControllerRemove(token, ctrlIdx);
-        break;
-    }
-    case MSG_CONTROLLER_TYPE: {
-        if (msgLen < 2) break;
-        uint8_t ctrlIdx = payload[0];
-        uint8_t ctrlType = payload[1];
-        svc.handleControllerType(token, ctrlIdx, ctrlType);
-        break;
-    }
-    case MSG_CONTROLLER_CAPS_UPDATE: {
-        // ctrlIdx(1) + caps(2 BE) = 3 bytes. Lets the dish push a mid-session
-        // capability change without unplugging the controller.
-        if (msgLen < 3) break;
-        uint8_t ctrlIdx = payload[0];
-        uint16_t caps = static_cast<uint16_t>((static_cast<uint16_t>(payload[1]) << 8) |
-                                              static_cast<uint16_t>(payload[2]));
-        svc.handleControllerCapsUpdate(token, ctrlIdx, caps);
-        break;
-    }
+        // Topology mutation is REST-only: the registration opcodes (0x0004 ADD,
+        // 0x0005 REMOVE, 0x0008 TYPE, 0x000E CAPS) no longer exist, so anything
+        // carrying them falls through to the default drop below.
+
     case MSG_MOTION: {
         // ctrlIdx(1) + MOTION_WIRE_PAYLOAD_BYTES(16) = 17 bytes. decodeMotionReport
         // does explicit LE shifts (not a struct memcpy) so the wire stays

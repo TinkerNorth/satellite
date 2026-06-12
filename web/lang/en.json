@@ -1,4 +1,10 @@
 {
+  "catalog.type.xbox360.name": "Xbox 360 Controller",
+  "catalog.type.xbox360.shortName": "Xbox",
+  "catalog.type.xbox360.description": "Best compatibility. Works with virtually every PC game.",
+  "catalog.type.ds4.name": "DualShock 4",
+  "catalog.type.ds4.shortName": "PlayStation",
+  "catalog.type.ds4.description": "PlayStation controller with motion controls, touchpad and light bar.",
   "_meta.note": "English source catalog. Keys prefixed by surface (dashboard/settings/debug/logs/updates/offline/modal/pin/backend/etc). Comments below each block trace dish-android source keys when present; entries marked 'review:' are web-only and need translator review.",
 
   "offline.title": "Server Unreachable",
@@ -76,20 +82,18 @@
   "backend.uinput.err.permission-denied.step4": "Log out and back in for the group change to apply, then refresh this page",
 
   "pin.section.title": "Device Pairing",
-  "pin.generate": "Generate PIN",
-  "pin.generating": "Generating…",
-  "pin.hint.idle": "Enter this PIN on the sender to pair. Expires in 5 minutes.",
-  "pin.hint.active": "Enter this PIN on the sender to pair. Expires in %1$s.",
-  "pin.hint.expired": "PIN expired — generate a new one to pair another device.",
-  "pin.hint.paired": "Paired successfully — that PIN is now spent.",
+  "pin.current": "Current PIN",
+  "pin.previous": "Previous PIN",
+  "pin.hint": "Enter the current PIN on the sender to pair. A new PIN is issued every 5 minutes.",
+  "pin.hint.active": "Enter the current PIN on the sender to pair. New PIN in %1$s.",
+  "pin.hint.paired": "Paired successfully.",
 
   "pairreq.section.title": "Pairing Requests",
+  "pairreq.hint": "Accept only if the PIN matches the one shown on the device.",
   "pairreq.expires": "expires in %1$s",
-  "pairreq.pin.placeholder": "PIN on device",
   "pairreq.accept": "Accept",
   "pairreq.accepting": "Accepting…",
   "pairreq.deny": "Dismiss",
-  "pairreq.err.pin-required": "Type the PIN shown on the device to accept it.",
   "pairreq.err.accept": "Couldn't accept the pairing request",
   "pairreq.err.deny": "Couldn't dismiss the request",
 
@@ -119,7 +123,7 @@
   "device.state.online": "Online",
   "device.state.notresponding": "Not responding",
 
-  "devices.section.title": "Paired Devices",
+  "devices.section.title": "Devices",
   "devices.empty": "No paired devices",
   "devices.remove": "Remove",
   "devices.touchpad.label": "Touchpad",

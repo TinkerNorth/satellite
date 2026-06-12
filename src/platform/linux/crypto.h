@@ -17,12 +17,14 @@ std::string dpapiDecrypt(const std::string& encoded);
 std::string randomHex(int bytes);
 std::string randomDigits(int n);
 
-std::string generatePin();
 bool verifyPin(const std::string& pin);
 
-// secondsRemaining is 0 unless state == PinState::PinActive.
+// secondsRemaining counts down to the next PIN rotation; previousPin is empty
+// until the first rotation (and after a pair/burn reset).
 struct PinSnapshot {
-    PinState state = PinState::PinIdle;
+    PinState state = PinState::PinActive;
+    std::string currentPin;
+    std::string previousPin;
     int secondsRemaining = 0;
 };
 PinSnapshot pinSnapshot();
@@ -35,9 +37,4 @@ void generateKeyPair(uint8_t pk[32], uint8_t sk[32]);
 bool computeSharedKey(uint8_t sharedKey[32], const uint8_t clientPk[32], const uint8_t serverSk[32],
                       const uint8_t serverPk[32]);
 uint32_t generateToken();
-bool encryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
-                   const uint8_t* plaintext, size_t ptLen, uint8_t* ciphertext,
-                   unsigned long long* ctLen);
-bool decryptPacket(const uint8_t key[32], uint32_t counter, uint32_t token,
-                   const uint8_t* ciphertext, size_t ctLen, uint8_t* plaintext,
-                   unsigned long long* ptLen);
+// Packet AEAD lives in net/session_crypto.h (shared across platforms).

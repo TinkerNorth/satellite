@@ -8,30 +8,31 @@ The server broadcasts a UDP beacon every 2 seconds on the discovery port
 ### Beacon Format
 
 ```json
-{"service":"satellite","name":"MyPC","udpPort":9876,"pairPort":9878,"httpPort":9877}
+{"service":"satellite","name":"MyPC","udpPort":9876,"pairPort":9443,"httpPort":9443,"machineId":"<32-hex>"}
 ```
 
-| Field      | Type   | Description                                      |
-|------------|--------|--------------------------------------------------|
-| `service`  | string | Always `"satellite"` — identifies the protocol   |
-| `name`     | string | Computer hostname (from `GetComputerNameA`)       |
-| `udpPort`  | int    | Port for encrypted gamepad UDP packets            |
-| `pairPort` | int    | Port for TCP PIN pairing handshake                |
-| `httpPort` | int    | Port for the HTTP API and web UI                  |
+| Field       | Type   | Description                                          |
+|-------------|--------|------------------------------------------------------|
+| `service`   | string | Always `"satellite"` — identifies the protocol       |
+| `name`      | string | Computer hostname                                    |
+| `udpPort`   | int    | Port for the encrypted UDP data streams              |
+| `pairPort`  | int    | HTTPS client API (pairing) — always 9443             |
+| `httpPort`  | int    | HTTPS client API (sessions, catalog) — always 9443   |
+| `machineId` | string | Stable per-install id; clients key remembered satellites on it |
 
-Clients listen on the discovery port for these broadcasts. The `httpPort`
-field tells the client where to send HTTP requests (`POST /api/connections`,
-etc.) without hardcoding or guessing.
+`pairPort` and `httpPort` both carry the single HTTPS client-API port:
+everything client-facing rides HTTPS 9443. There is no client-facing TCP
+pairing port, and the admin UI on 9877 is loopback-only and never advertised.
 
 ### Default Ports
 
-| Port  | Purpose                        | Config key      |
-|-------|--------------------------------|-----------------|
-| 9876  | UDP gamepad                    | `udpPort`       |
-| 9877  | HTTP API/UI                    | `webPort`       |
-| 9878  | TCP pairing                    | `pairPort`      |
-| 9879  | UDP discovery (legacy beacon)  | `discPort`      |
-| 5353  | mDNS (`_satellite._udp.local.`) | (RFC 6762 fixed) |
+| Port  | Purpose                                   | Config key      |
+|-------|-------------------------------------------|-----------------|
+| 9876  | UDP data streams                          | `udpPort`       |
+| 9877  | Admin web UI + admin API (loopback only)  | `webPort`       |
+| 9443  | HTTPS client API (pairing, sessions, catalog) | (fixed `DEFAULT_CLIENT_PORT`) |
+| 9879  | UDP discovery (legacy beacon)             | `discPort`      |
+| 5353  | mDNS (`_satellite._udp.local.`)           | (RFC 6762 fixed) |
 
 ## mDNS / Bonjour Service Discovery
 
@@ -42,7 +43,8 @@ Bonjour stack can still find it.
 
 * **Service type:** `_satellite._udp.local.`
 * **Multicast group / port:** 224.0.0.251:5353 (per RFC 6762)
-* **TXT records:** `udp=<udpPort>`, `pair=<pairPort>`, `http=<webPort>`
+* **TXT records:** `udp=<udpPort>`, `pair=9443`, `http=9443`,
+  `mid=<machineId>` (the stable per-install id clients dedupe on)
 * **SRV target:** `<host-label>.local.` on `<udpPort>`
 
 On startup the responder first **probes** for its instance name per
@@ -100,13 +102,14 @@ implemented by concrete adapters.
 Inbound Adapters          Core Domain           Outbound Adapters
 ─────────────────     ──────────────────     ──────────────────────
 receiver.cpp  ─────►                    ────► ViGEmAdapter (IGamepadPort)
-  (UDP recv)         SessionService          pluginDevice, submitReport
-                     openSession()
-webserver.cpp ─────►  closeSession()    ────► ClientAdapter (IClientPort)
-  (HTTP API)         handleGamepadData()     sendHeartbeatAck, sendControllerAck
-                     handleHeartbeat()
-                     handleControllerAdd()  ──► LogAdapter (ILogPort)
-                     getConnectionsSnapshot()   logMsg → ring buffer
+  (UDP recv)         SessionService          pluginDevice, unplugDevice,
+                     upsertSession()         submitReport, isDevicePlugged
+webserver.cpp ─────►  applyController() ────► ClientAdapter (IClientPort)
+  (HTTPS/admin)      removeController()      sendHeartbeatAck, sendSessionClose
+                     closeSessionById()
+                     handleGamepadData()  ──► LogAdapter (ILogPort)
+                     handleHeartbeat()        logMsg → ring buffer
+                     getConnectionsSnapshot()
 ```
 
 ### Key Design Principles
@@ -165,34 +168,42 @@ unit-tested — their pure cores (above) are the tested seams.
 **Connections** and **controllers** are separate concepts:
 
 - A **connection** is a network session between a paired client and the
-  server. It has a token, encryption key, and IP address. One connection
-  can own zero or more controllers.
-- A **controller** (device) is an individual virtual gamepad plugged into
-  ViGEm. Each controller has its own state (`active`, `serialNo`).
-  Controllers are created/removed independently via UDP messages
-  (0x0004 / 0x0005) and each receives its own ACK with a per-device
-  result code.
+  server, keyed on `deviceId` and **stable across reconnects**: a re-PUT
+  rotates the token/salt/session-key in place; the row (and its pads) never
+  churns. It carries a stable `connectionId`, the per-session key, the
+  reconcile `epoch`, and the host-feature grants. Zero-controller sessions
+  are valid.
+- A **controller** (slot) is an individual virtual gamepad plugged into the
+  backend. Slots are declared via `ControllerDescriptor`s in the session PUT
+  (or the standalone controller PUT/DELETE); the service converges the
+  backend to the declared set and reports per-slot apply results. UDP never
+  mutates this set.
 
 ```cpp
-// core/types.h — pure data, no platform dependencies
+// core/types.h — pure data, no platform dependencies (abridged)
 struct Controller {
     uint8_t  index    = 0;       // 0-based within connection
-    uint32_t serialNo = 0;       // ViGEm serial (1–16), 0 = not plugged
+    uint32_t serialNo = 0;       // backend serial (1–16), 0 = not plugged
     bool     active   = false;
+    uint8_t  controllerType;     // device family actually plugged
+    uint16_t caps;               // CAP_* word from the descriptor
+    uint8_t  touchpadMode;       // per-slot routing (client-owned)
     GamepadReport lastReport{};
 };
 
 struct Connection {
-    uint32_t    token       = 0;
+    std::string connectionId;    // stable across reconnects
+    uint32_t    token = 0;       // rotates on every session PUT
     std::string deviceId;
     std::string deviceName;
-    std::string clientIP;
-    uint8_t     sharedKey[32] = {};
-    uint32_t    lastCounter = 0;      // replay protection
+    uint8_t     sessionKey[32];  // HKDF(pairingKey, salt, token)
+    uint8_t     sessionSalt[8];
+    uint32_t    lastCounter = 0; // replay protection (client → server)
+    uint16_t    epoch = 0;       // bumps on every applied-topology change
     std::chrono::steady_clock::time_point lastPacketTime;
-    std::chrono::steady_clock::time_point connectedAt;
+    std::chrono::steady_clock::time_point graceUntil; // REST-open liveness grace
     std::array<Controller, 16> controllers;
-    int activeControllerCount = 0;
+    bool mouseControlGranted = false;
 };
 ```
 
@@ -231,12 +242,15 @@ recvfrom()
   │
   ├─ Parse inner message: type (2B) + length (2B) + payload
   │
-  ├─ 0x0001 → svc.handleGamepadData(token, ctrlIdx, report)
-  ├─ 0x0002 → svc.handleHeartbeat(token)
-  ├─ 0x0004 → svc.handleControllerAdd(token, ctrlIdx)
-  ├─ 0x0005 → svc.handleControllerRemove(token, ctrlIdx)
-  └─ unknown → drop
+  ├─ 0x0001 → svc.handleGamepadDataAndUpdate(...)   (fused hot path)
+  ├─ 0x0002 → svc.handleHeartbeat(token)            (enriched ack out)
+  ├─ 0x000A/B/C → motion / battery / touchpad streams
+  └─ unknown (incl. the deleted registration opcodes) → drop
 ```
+
+Topology mutation is REST-only (see `contract.md`); the registration
+opcodes 0x0004/0x0005/0x0008/0x000E no longer exist, so a spoofed or
+stale datagram can never plug, unplug, or retype a controller.
 
 ### Hot-path discipline
 
@@ -270,34 +284,39 @@ gamepad hot path these are the single fused call.
 Runs once per second via `svc.reapTimedOut()` — teardown logic is
 inside SessionService, not in the receiver.
 
-## HTTP Thread (Inbound HTTP Adapter)
+## HTTP Threads (Inbound HTTP Adapters)
 
-`webserver.cpp` handles `POST/DELETE/GET /api/connections` by calling
-SessionService. No connection or controller state is managed here.
+`webserver.cpp` runs two servers — the loopback admin UI (9877) and the
+HTTPS client API (9443) — both calling into SessionService. No connection
+or controller state is managed here. Route semantics, auth (`hmacProof`),
+and body shapes are specified in [`contract.md`](contract.md); the notes
+below are server-internal.
 
-### POST /api/connections
+### PUT /api/connections (client API)
 
-1. Validate `deviceId` against paired devices (from `g_config`)
-2. Auto-start receiver if needed (`g_wantListen = true`)
-3. Hex-decode shared key
-4. `svc.openSession(deviceId, name, ip, key)` — handles stale cleanup,
-   token generation, slot counting internally
-5. Return `connectionId`, `token`, `maxControllers`
+1. `clientAuthed()` — resolve the paired device by `X-Device-Id`, COPY the
+   `PairedDevice` by value under `g_configMtx` (never hold a pointer across
+   the unlock), verify `X-Hmac-Proof` against the pairing key
+2. Parse the full descriptor set (`core/json_mini.h` helpers)
+3. `svc.upsertSession(...)` — converges topology, rotates token/salt/key,
+   derives the session key via the injected HKDF, returns applied state
+4. Serialize per-controller results + host-feature grants
 
-> **Note:** Connection succeeds independently of ViGEm. The ViGEm bus
-> is only needed at controller-add time (0x0004).
+> **Note:** The session upsert succeeds independently of ViGEm. Per-
+> controller failures (`backendUnavailable`, `noSlots`, …) ride in the
+> response body — partial success is normal, not an HTTP error.
 
 ### DELETE /api/connections/:id
 
-1. Parse token from `conn_XXXXXXXX`
-2. `svc.closeSession(token)` — handles all teardown internally
-3. Return `controllersRemoved` count (or 404 if not found)
+Client API: authed, scoped to the caller's own session, no close-notify.
+Admin API: kick — `svc.closeSessionById(..., CLOSE_REASON_KICKED, notify)`
+sends the encrypted 0x000F before teardown.
 
-### GET /api/connections
+### GET /api/connections (admin)
 
 `svc.getConnectionsSnapshot()` returns a thread-safe copy of all
-connections, controllers, and ViGEm status — no locking needed by the
-caller.
+connections, controllers (with adapter-truth `pluggedIn`), and backend
+status — no locking needed by the caller.
 
 ## Thread Safety
 
@@ -333,15 +352,19 @@ std::mutex g_logMtx;                  // protects all of the above
 
 ### Log Sources
 
-| Source     | Events logged                                                |
-|------------|--------------------------------------------------------------|
-| `receiver` | Reaper timeouts, controller add/remove, socket bind          |
-| `pairing`  | Server start, pair success, pair failure (bad PIN), re-pair  |
-| `web`      | Login success/failure, setup, config changes, connection open/close, all connection error paths |
+| Source     | Events logged                                                  |
+|------------|----------------------------------------------------------------|
+| `receiver` | Socket bind/rebind, listen state                               |
+| `service`  | Session create/rotate/close, controller plug/replug/remove, reaper timeouts, serial quarantine, bus open/close |
+| `pairing`  | Pair success, pair failure (bad PIN), key rotation, unpair     |
+| `client`   | HTTPS client-API auth failures (401s), malformed requests      |
+| `web`      | Admin config changes, update preferences                       |
 
 ### API Integration
 
 - `GET /api/logs?since=N` returns entries with seq > N (incremental fetch)
-- SSE stream includes `logSeq` in the `status` event so the frontend knows
+- SSE stream (`GET /api/events`, admin) multiplexes six event types —
+  `status`, `connections`, `devices`, `update`, `pin`, `pairRequests` —
+  pushed every second; `status` includes `logSeq` so the frontend knows
   when new logs are available without polling the log endpoint
 

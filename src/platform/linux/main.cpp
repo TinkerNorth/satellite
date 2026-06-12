@@ -12,6 +12,7 @@
 #include "net/discovery.h"
 #include "net/mdns_responder.h"
 #include "net/pairing.h"
+#include "net/session_crypto.h"
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
@@ -73,7 +74,7 @@ int main(int argc, const char* argv[]) {
     GamepadAdapter gamepadAdapter;
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
-    SessionService svc(gamepadAdapter, clientAdapter, logAdapter);
+    SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey);
 
     LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
     UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);

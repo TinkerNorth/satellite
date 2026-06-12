@@ -27,7 +27,16 @@ class IGamepadPort {
 
     virtual bool pluginDevice(uint32_t serial) = 0;    // virtual Xbox 360
     virtual bool pluginDeviceDS4(uint32_t serial) = 0; // virtual DualShock 4
-    virtual void unplugDevice(uint32_t serial) = 0;
+
+    // True iff the device is gone (or was never plugged). False means the
+    // backend could not confirm removal — the caller MUST quarantine the
+    // serial so a zombie target can't poison the next plug on it.
+    virtual bool unplugDevice(uint32_t serial) = 0;
+
+    // Adapter truth for "a virtual device exists on this serial right now".
+    // Drives the dashboard's pluggedIn instead of inferring from serialNo > 0.
+    // Default mirrors the legacy inference for backends without slot state.
+    virtual bool isDevicePlugged(uint32_t serial) const { return serial != 0; }
 
     virtual bool submitReport(uint32_t serial, const GamepadReport& report) = 0;
     virtual bool submitDS4Report(uint32_t serial, const GamepadReport& report) = 0;
@@ -74,6 +83,11 @@ class IGamepadPort {
     // on a serial. SendInput on Windows, uinput pointer on Linux, no-op macOS.
     virtual bool submitRelativeMouse(int /*dx*/, int /*dy*/, bool /*leftButton*/) { return false; }
 
+    // Whether submitRelativeMouse can reach the host at all. Drives the
+    // mouseControl host-feature grant on the session PUT. Default false so
+    // inert backends (macOS) deny rather than silently swallow the stream.
+    virtual bool supportsRelativeMouse() const { return false; }
+
     // Lightbar sink, independent of rumble (coalesced on its own callback) so a
     // game that only sets colour still drives the LED. Backends without an
     // independent lightbar channel (Xbox 360, uinput) install a no-op stub.
@@ -97,24 +111,17 @@ class IClientPort {
 
     virtual void removeClientAddr(uint32_t token) = 0;
 
-    virtual void sendHeartbeatAck(const Connection& conn) = 0; // 0x0003
+    // Enriched heartbeat ack (0x0003): server status + the session epoch and
+    // active-controller bitmap the client reconciles against. Payload:
+    // backendAvailable(1) + totalActiveControllers(1) + epoch(u16 BE) +
+    // bitmap(u16 BE).
+    virtual void sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+                                  uint8_t totalActiveControllers, uint16_t epoch,
+                                  uint16_t activeBitmap) = 0;
 
-    // Controller ACK (0x0006). `motionFlags` is appended as a 5th payload byte
-    // (wire len 4→5), meaningful only on MSG_CONTROLLER_ADD/ACK_OK; other paths
-    // pass 0. Always appended so a length-aware dish distinguishes "old
-    // satellite (len 4, unknown)" from "new satellite, flags happen to be 0
-    // (len 5)." See ACK_MOTION_FLAG_* in core/types.h.
-    virtual void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
-                                   uint8_t result, uint8_t motionFlags = 0) = 0;
-
-    // Server status (0x0007). backendAvailable maps to the wire byte at payload
-    // offset 4.
-    virtual void sendServerStatus(const Connection& conn, bool backendAvailable,
-                                  uint8_t totalActiveControllers) = 0;
-
-    virtual void
-    broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
-                          bool backendAvailable, uint8_t totalActiveControllers) = 0;
+    // Best-effort close notify (0x000F), payload reason(1) = CLOSE_REASON_*.
+    // Must be sent BEFORE teardown while the session key and address exist.
+    virtual void sendSessionClose(const Connection& conn, uint8_t reason) = 0;
 
     // Rumble (0x0009), encrypted 7-byte inner payload:
     //   ctrlIdx u8, strongMag u16 BE, weakMag u16 BE, durMs u16 BE.

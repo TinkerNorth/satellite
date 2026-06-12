@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 // Registry of in-flight client-initiated (Path B) pairing requests: the dish
-// shows ITS OWN PIN, POSTs it as a request, and the operator accepts on the
-// dashboard by typing it back; the dish polls until they act. (Path A — the
-// operator types a satellite-generated PIN into the dish — is handled inline in
-// pairRoute.) Deliberately free of libsodium/config so it stays portably
-// unit-testable; the webserver route owns key minting and persistence.
+// shows ITS OWN PIN, POSTs it as a request, and the operator sees that PIN on
+// the dashboard (or native prompt) and accepts or rejects; the dish polls
+// until they act. (Path A — the operator types a satellite-shown PIN into the
+// dish — is handled inline in pairRoute.) Deliberately free of
+// libsodium/config so it stays portably unit-testable; the webserver route
+// owns key minting and persistence.
 #pragma once
 
 #include <functional>
@@ -21,13 +22,15 @@ enum class PairRequestState {
 
 const char* pairRequestStateName(PairRequestState s);
 
-// A pending request as the dashboard renders it. Deliberately carries no PIN
-// or key: the operator authenticates by typing the PIN shown on the dish, so
-// echoing it on the server would let a dashboard shoulder-surfer accept blind.
+// A pending request as the dashboard renders it: the dish's PIN is shown so
+// the operator can confirm it matches the device before accepting (same model
+// as the native prompt; the dashboard is a loopback-only admin surface). The
+// staged key is never included.
 struct PairRequestView {
     std::string deviceId;
     std::string deviceName;
     std::string clientIP;
+    std::string pin;
     int secondsRemaining = 0;
 };
 
@@ -35,14 +38,6 @@ struct PairRequestView {
 // repeat submit for the same deviceId refreshes in place rather than piling up.
 void submitPairRequest(const std::string& deviceId, const std::string& deviceName,
                        const std::string& clientIP, const std::string& clientPin);
-
-// Operator accepts by typing the dish's PIN. True iff a non-expired Pending
-// request existed AND `operatorPin` matched; on success the request flips to
-// Approved (staging mintedKeyHex for the next poll) and outDeviceName/
-// outClientIP are filled. On false the caller discards mintedKeyHex.
-bool acceptPairRequest(const std::string& deviceId, const std::string& operatorPin,
-                       const std::string& mintedKeyHex, std::string& outDeviceName,
-                       std::string& outClientIP);
 
 // Operator rejects. Returns true iff a request for deviceId existed. The
 // request is erased so the dish's next poll reads None → "declined".
@@ -56,15 +51,16 @@ PairRequestState pollPairRequest(const std::string& deviceId, std::string& outSh
 // Non-expired Pending requests for the dashboard list + SSE push.
 std::vector<PairRequestView> pendingPairRequests();
 
-// In-process snapshot INCLUDING the PIN — for the native notifier only. The PIN
-// is never exposed over the HTTP API; a native prompt *shows* it for visual
-// confirmation, safe because it never leaves the process. False if no Pending.
+// In-process snapshot of a single request for the native notifier. False if
+// no Pending request for deviceId.
 bool pairRequestSnapshot(const std::string& deviceId, std::string& outDeviceName,
                          std::string& outClientIP, std::string& outPin, int& outSecondsRemaining);
 
-// Accept a request the operator confirmed by sight (the native prompt showed
-// the PIN and they verified it matches the dish), so no PIN is re-checked.
-// Otherwise mirrors acceptPairRequest. Returns false when no Pending request.
+// Accept a request the operator confirmed by sight (the prompt showed the
+// PIN and they verified it matches the dish). True iff a non-expired Pending
+// request existed; on success the request flips to Approved (staging
+// mintedKeyHex for the next poll) and outDeviceName/outClientIP are filled.
+// On false the caller discards mintedKeyHex.
 bool acceptPairRequestConfirmed(const std::string& deviceId, const std::string& mintedKeyHex,
                                 std::string& outDeviceName, std::string& outClientIP);
 

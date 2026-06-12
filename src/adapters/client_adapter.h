@@ -19,14 +19,10 @@ class ClientAdapter : public IClientPort {
     void updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) override;
     void removeClientAddr(uint32_t token) override;
 
-    void sendHeartbeatAck(const Connection& conn) override;
-    void sendControllerAck(const Connection& conn, uint16_t requestType, uint8_t ctrlIdx,
-                           uint8_t result, uint8_t motionFlags = 0) override;
-    void sendServerStatus(const Connection& conn, bool backendAvailable,
-                          uint8_t totalActiveControllers) override;
-    void
-    broadcastServerStatus(const std::vector<std::pair<uint32_t, const Connection*>>& connections,
-                          bool backendAvailable, uint8_t totalActiveControllers) override;
+    void sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+                          uint8_t totalActiveControllers, uint16_t epoch,
+                          uint16_t activeBitmap) override;
+    void sendSessionClose(const Connection& conn, uint8_t reason) override;
     void sendRumble(const Connection& conn, uint8_t ctrlIdx, const RumbleReport& report) override;
     void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                       uint8_t b) override;
@@ -35,8 +31,13 @@ class ClientAdapter : public IClientPort {
     SOCKET sock_ = INVALID_SOCKET;
     std::mutex addrMtx_;
     std::unordered_map<uint32_t, sockaddr_in> addrs_;
+    // Per-token server→client send counter (nonce material). Counters and the
+    // session key rotate together: a fresh token starts at 0 here and the
+    // first send goes out as counter 1.
+    std::unordered_map<uint32_t, uint32_t> txCounters_;
 
     void sendEncryptedPacket(const Connection& conn, const uint8_t* inner, size_t innerLen);
 
     bool getAddr(uint32_t token, sockaddr_in& out);
+    uint32_t nextTxCounter(uint32_t token);
 };

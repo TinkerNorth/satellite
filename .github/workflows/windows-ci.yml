@@ -85,7 +85,7 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        run: cmake --build build --config Release -j
+        run: cmake --build build --config Release -j "$(nproc)"
 
       - name: Run tests
         shell: msys2 {0}

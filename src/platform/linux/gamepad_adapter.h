@@ -22,7 +22,8 @@ class GamepadAdapter : public IGamepadPort {
     bool isBusOpen() const override;
     bool pluginDevice(uint32_t serial) override;
     bool pluginDeviceDS4(uint32_t serial) override;
-    void unplugDevice(uint32_t serial) override;
+    bool unplugDevice(uint32_t serial) override;
+    bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
@@ -47,6 +48,7 @@ class GamepadAdapter : public IGamepadPort {
     // TOUCHPAD_MODE_MOUSE via a host-global pointer node, created lazily on first
     // use. Button level is tracked so a held click fires one press / one release.
     bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
+    bool supportsRelativeMouse() const override { return true; }
 
     // uinput has no battery ioctl (UI_SET_BATTERY doesn't exist; the kernel
     // surface in /sys/class/power_supply is in-tree-driver-only), so we mirror

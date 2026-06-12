@@ -335,13 +335,13 @@ bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
     return true;
 }
 
-void GamepadAdapter::unplugDevice(uint32_t serial) {
+bool GamepadAdapter::unplugDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = devices_.find(serial);
-    if (it == devices_.end()) return;
-    stopReader(serial); // joins reader thread; safe to take the fd after
+    if (it == devices_.end()) return true; // never plugged ⇒ already gone
+    stopReader(serial);                    // joins reader thread; safe to take the fd after
     it = devices_.find(serial);
-    if (it == devices_.end()) return; // defensive: stopReader doesn't erase
+    if (it == devices_.end()) return true; // defensive: stopReader doesn't erase
     if (it->second.fd >= 0) {
         (void)::ioctl(it->second.fd, UI_DEV_DESTROY);
         ::close(it->second.fd);
@@ -355,6 +355,14 @@ void GamepadAdapter::unplugDevice(uint32_t serial) {
         ::close(it->second.touchFd);
     }
     devices_.erase(it);
+    // close(fd) destroys a uinput device synchronously even if UI_DEV_DESTROY
+    // failed, so removal is confirmed by reaching here.
+    return true;
+}
+
+bool GamepadAdapter::isDevicePlugged(uint32_t serial) const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return devices_.find(serial) != devices_.end();
 }
 
 // XUSB wButtons bit layout (matches core/types.h convention).
