@@ -36,6 +36,7 @@ set(SATELLITE_CORE_SOURCES
     src/core/catalog.cpp
     src/core/update_service.cpp
     src/core/github_release.cpp
+    src/core/network_info.cpp
 )
 
 # Currently-shared infrastructure (will be ported to POSIX in Stage 3).
@@ -51,6 +52,7 @@ set(SATELLITE_NET_SOURCES
     src/net/discovery.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
+    src/net/local_iface.cpp
 )
 
 # Portable adapters (thin shims over platform-specific free functions).
@@ -139,6 +141,7 @@ if(WIN32)
     target_link_libraries(satellite PRIVATE
         setupapi
         ws2_32
+        iphlpapi
         shell32
         ole32
         # WinRT: RoActivateInstance / RoGetActivationFactory + HSTRING for the
@@ -686,6 +689,7 @@ satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
 satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
 satellite_add_pure_test(test_json_mini tests/test_json_mini.cpp)
+satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
 # at the real web/lang catalogs so every controller-type string is asserted
