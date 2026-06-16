@@ -5,15 +5,25 @@ cmake_minimum_required(VERSION 3.20)
 # the same value as preprocessor macros (so satellite.rc and C++ both see
 # it without a generated header). The version-consistency CI gate fails
 # if these drift.
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SATELLITE_VERSION LIMIT_COUNT 1)
-string(STRIP "${SATELLITE_VERSION}" SATELLITE_VERSION)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SATELLITE_VERSION_FILE LIMIT_COUNT 1)
+string(STRIP "${SATELLITE_VERSION_FILE}" SATELLITE_VERSION_FILE)
+
+if(DEFINED SATELLITE_RELEASE_VERSION AND NOT "${SATELLITE_RELEASE_VERSION}" STREQUAL "")
+    set(SATELLITE_VERSION_DISPLAY "${SATELLITE_RELEASE_VERSION}")
+    string(REGEX REPLACE "^[vV]" "" SATELLITE_VERSION "${SATELLITE_RELEASE_VERSION}")
+    string(REGEX REPLACE "[-+].*$" "" SATELLITE_VERSION "${SATELLITE_VERSION}")
+else()
+    set(SATELLITE_VERSION "${SATELLITE_VERSION_FILE}")
+    set(SATELLITE_VERSION_DISPLAY "${SATELLITE_VERSION_FILE}-dev")
+endif()
+
 if(NOT SATELLITE_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
-    message(FATAL_ERROR "VERSION file content '${SATELLITE_VERSION}' is not in MAJOR.MINOR.PATCH form.")
+    message(FATAL_ERROR "Resolved version '${SATELLITE_VERSION}' is not in MAJOR.MINOR.PATCH form.")
 endif()
 set(SATELLITE_VERSION_MAJOR "${CMAKE_MATCH_1}")
 set(SATELLITE_VERSION_MINOR "${CMAKE_MATCH_2}")
 set(SATELLITE_VERSION_PATCH "${CMAKE_MATCH_3}")
-message(STATUS "satellite: building version ${SATELLITE_VERSION}")
+message(STATUS "satellite: building ${SATELLITE_VERSION} (display: ${SATELLITE_VERSION_DISPLAY})")
 
 project(satellite VERSION ${SATELLITE_VERSION} LANGUAGES CXX)
 
@@ -105,6 +115,11 @@ if(WIN32)
     # Resource file (icon + manifest + version info).
     set(SATELLITE_RC ${CMAKE_CURRENT_SOURCE_DIR}/satellite.rc)
 
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/version_rc.h.in
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/version_rc.h
+        @ONLY)
+
     add_executable(satellite WIN32
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
@@ -119,6 +134,7 @@ if(WIN32)
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
     )
     # Vendored third-party headers go in as SYSTEM so the compiler suppresses
     # warnings emitted from inside them — cpp-httplib uses its own deprecated
@@ -569,6 +585,9 @@ endif()
 # test executables stay non-LTO for fast, debuggable builds. MSVC maps this to
 # /GL + /LTCG (which also strengthens /guard:cf); GCC/Clang to -flto.
 if(TARGET satellite)
+    target_compile_definitions(satellite PRIVATE
+        SATELLITE_VERSION_RESOLVED="${SATELLITE_VERSION_DISPLAY}")
+
     include(CheckIPOSupported)
     check_ipo_supported(RESULT SATELLITE_IPO_OK OUTPUT SATELLITE_IPO_MSG LANGUAGES CXX)
     if(SATELLITE_IPO_OK)
