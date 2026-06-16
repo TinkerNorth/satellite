@@ -683,6 +683,7 @@ function(satellite_add_pure_test name)
 endfunction()
 
 satellite_add_pure_test(test_ipv4_util tests/test_ipv4_util.cpp)
+satellite_add_pure_test(test_mdns_rejoin tests/test_mdns_rejoin.cpp)
 satellite_add_pure_test(test_codecs tests/test_codecs.cpp)
 satellite_add_pure_test(test_machine_id tests/test_machine_id.cpp)
 satellite_add_pure_test(test_discovery tests/test_discovery.cpp)

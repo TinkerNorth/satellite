@@ -6,6 +6,7 @@
 #include "config.h"
 #include "machine_id.h"
 #include "net/local_iface.h"
+#include "net/mdns_rejoin.h"
 
 #include <chrono>
 #include <cctype>
@@ -16,6 +17,8 @@
 #include <vector>
 
 namespace {
+
+std::atomic<bool> g_mdnsRejoinRequested{false};
 
 // Primary LAN IPv4 via the routing table: a UDP `connect` sends nothing but
 // fixes the socket's peer so `getsockname` reports the chosen interface.
@@ -369,6 +372,8 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
 
 } // namespace
 
+void requestMdnsRejoin() { g_mdnsRejoinRequested.store(true, std::memory_order_relaxed); }
+
 void mdnsResponderThread() {
     if (!netInit()) return;
 
@@ -403,7 +408,7 @@ void mdnsResponderThread() {
     }
 
     uint8_t selfIp[4];
-    const bool haveSelfIp = boundIPv4(selfIp);
+    bool haveSelfIp = boundIPv4(selfIp);
     in_addr ifAddr{};
     if (haveSelfIp) {
         std::memcpy(&ifAddr.s_addr, selfIp, 4);
@@ -473,26 +478,61 @@ void mdnsResponderThread() {
     // Startup announcement (RFC 6762 §8.3): multicast the unsolicited answer
     // set so running senders learn of us without re-querying. §8.3 wants 2-8
     // announcements ~1 s apart; we send three.
-    {
+    auto announceBurst = [&]() {
         mdns::ResponseInputs ann;
         fillServiceInputs(ann, instance, host, haveSelfIp ? selfIp : nullptr);
         uint8_t annBuf[1024];
         const size_t annLen = mdns::encodeAnnouncement(annBuf, sizeof(annBuf), ann);
-        if (annLen > 0) {
-            constexpr int kAnnouncements = 3;
-            for (int i = 0; i < kAnnouncements && g_appRunning; ++i) {
-                sendto(sock, reinterpret_cast<const char*>(annBuf), static_cast<int>(annLen), 0,
-                       reinterpret_cast<const sockaddr*>(&groupAddr), sizeof(groupAddr));
-                // ~1 s between announcements (§8.3), in 100 ms slices for prompt
-                // shutdown; skip after the last.
-                if (i + 1 < kAnnouncements) {
-                    for (int s = 0; s < 10 && g_appRunning; ++s) netSleepMs(100);
-                }
+        if (annLen == 0) return;
+        constexpr int kAnnouncements = 3;
+        for (int i = 0; i < kAnnouncements && g_appRunning; ++i) {
+            sendto(sock, reinterpret_cast<const char*>(annBuf), static_cast<int>(annLen), 0,
+                   reinterpret_cast<const sockaddr*>(&groupAddr), sizeof(groupAddr));
+            if (i + 1 < kAnnouncements) {
+                for (int s = 0; s < 10 && g_appRunning; ++s) netSleepMs(100);
             }
         }
-    }
+    };
+
+    auto rejoinMulticast = [&](bool force) {
+        uint8_t newIp[4];
+        const bool haveNew = boundIPv4(newIp);
+        const mdns::RejoinDecision dec =
+            mdns::evaluateRejoin(force, haveSelfIp, selfIp, haveNew, newIp);
+        if (!dec.rejoin) return;
+        setsockopt(sock, IPPROTO_IP, IP_DROP_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
+                   sizeof(mreq));
+        if (haveNew) {
+            std::memcpy(selfIp, newIp, 4);
+            std::memcpy(&ifAddr.s_addr, selfIp, 4);
+        } else {
+            ifAddr.s_addr = INADDR_ANY;
+        }
+        haveSelfIp = haveNew;
+        mreq.imr_interface = ifAddr;
+        setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
+                   sizeof(mreq));
+        setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&ifAddr),
+                   sizeof(ifAddr));
+        logMsg(LogLevel::INFO, "mdns",
+               dec.ipChanged ? "Bound address changed — rebound mDNS multicast and re-announcing"
+                             : "Resume/network event — rebound mDNS multicast and re-announcing");
+        announceBurst();
+    };
+
+    announceBurst();
+
+    constexpr auto kRejoinInterval = std::chrono::seconds(30);
+    auto lastRejoinCheck = std::chrono::steady_clock::now();
 
     while (g_appRunning) {
+        const bool forcedRejoin = g_mdnsRejoinRequested.exchange(false, std::memory_order_relaxed);
+        const auto nowTp = std::chrono::steady_clock::now();
+        if (forcedRejoin || nowTp - lastRejoinCheck >= kRejoinInterval) {
+            rejoinMulticast(forcedRejoin);
+            lastRejoinCheck = std::chrono::steady_clock::now();
+        }
+
         sockaddr_in from{};
         socklen_t fromLen = sizeof(from);
         uint8_t buf[2048];
