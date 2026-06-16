@@ -151,6 +151,8 @@ static void testConfigRoundTrip() {
     out.pairPort = 34567;
     out.discPort = 45678;
     out.autoStart = true;
+    out.networkInterface = "Ethernet 2";
+    out.allowPublicNetwork = true;
     PairedDevice d;
     d.id = "device-1";
     d.name = "Pixel 7";
@@ -173,6 +175,10 @@ static void testConfigRoundTrip() {
 
     TEST("loadConfig — round-trips autoStart");
     EXPECT_EQ(in.autoStart, true);
+
+    TEST("loadConfig — round-trips networkInterface and allowPublicNetwork");
+    EXPECT_EQ(in.networkInterface, std::string("Ethernet 2"));
+    EXPECT_EQ(in.allowPublicNetwork, true);
 
     TEST("loadConfig — round-trips paired devices");
     EXPECT_EQ(in.pairedDevices.size(), size_t{1});
@@ -215,6 +221,10 @@ static void testDiscoveryBroadcastConfig() {
         Config in = loadConfig();
         TEST("loadConfig — absent discoveryBroadcastEnabled key defaults to true");
         EXPECT_EQ(in.discoveryBroadcastEnabled, true);
+
+        TEST("loadConfig — absent networkInterface/allowPublicNetwork keep defaults");
+        EXPECT_EQ(in.networkInterface, std::string(""));
+        EXPECT_EQ(in.allowPublicNetwork, false);
     }
 }
 
