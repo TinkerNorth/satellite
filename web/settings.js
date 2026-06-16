@@ -95,7 +95,7 @@ async function settingsSave() {
     return;
   }
   settingsSetSaveStatus(t('settings.save.ok'), true);
-  fetchNetInfo('settings-netinfo');
+  initNetworkSettings();
 }
 
 // Render the read-only mDNS responder state. Active is the healthy path;
@@ -158,5 +158,67 @@ async function initSettings() {
   // Pull update state and prefs. updates.js renders both the banner + form.
   if (typeof updatesFetch === 'function') updatesFetch();
 
-  fetchNetInfo('settings-netinfo');
+  initNetworkSettings();
+}
+
+async function initNetworkSettings() {
+  const d = await getNetInfo();
+  if (!d) return;
+  renderNetInfoPanel('settings-netinfo', d);
+  settingsRenderInterfaceOptions(d);
+  settingsRenderNetWarning(d);
+}
+
+function settingsRenderInterfaceOptions(d) {
+  const sel = document.getElementById('settings-interface');
+  if (!sel) return;
+  let html = '<option value="">' + esc(t('netinfo.interface.auto')) + '</option>';
+  if (Array.isArray(d.interfaces)) {
+    for (const f of d.interfaces) {
+      const tag = f.physical ? '' : ' ' + t('netinfo.virtual');
+      const label = (f.name || '') + ' — ' + (f.ip || '') + tag;
+      html += '<option value="' + esc(f.name) + '">' + esc(label) + '</option>';
+    }
+  }
+  sel.innerHTML = html;
+  sel.value = d.selected || '';
+  sel.onchange = settingsInterfaceChange;
+}
+
+function settingsRenderNetWarning(d) {
+  const el = document.getElementById('settings-net-warning');
+  if (!el) return;
+  if (!(d.category === 'public' && !d.allowPublic)) {
+    el.classList.remove('show');
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = '<span>' + esc(t('netinfo.public.warn')) + ' </span>' +
+    '<button class="btn btn-save" id="settings-allow-public" type="button">' +
+    esc(t('netinfo.public.allow')) + '</button> ' +
+    '<span id="settings-allow-public-status"></span>';
+  el.classList.add('show');
+  const btn = document.getElementById('settings-allow-public');
+  if (btn) btn.onclick = settingsAllowPublic;
+}
+
+async function settingsAllowPublic() {
+  const status = document.getElementById('settings-allow-public-status');
+  if (status) status.textContent = t('netinfo.public.allowing');
+  const res = await apiPost('/api/network/allow-public', {});
+  if (res.ok && res.data && res.data.ok) {
+    if (status) status.textContent = t('netinfo.public.allowed');
+    initNetworkSettings();
+  } else {
+    if (status) status.textContent = t('netinfo.public.cancelled');
+  }
+}
+
+async function settingsInterfaceChange() {
+  const sel = document.getElementById('settings-interface');
+  if (!sel) return;
+  const res = await apiPost('/api/config', { networkInterface: sel.value });
+  const note = document.getElementById('settings-interface-note');
+  if (note) note.textContent = res.ok ? t('netinfo.restart-note') : t('settings.save.unreachable');
+  initNetworkSettings();
 }

@@ -374,6 +374,22 @@ function initDashboard() {
   startSSE();
   loadDevices();
   checkBackendStatus();
+  dashRenderNetWarning();
+}
+
+async function dashRenderNetWarning() {
+  const el = document.getElementById('dash-net-notice');
+  if (!el) return;
+  const d = await getNetInfo();
+  if (d && d.category === 'public' && !d.allowPublic) {
+    el.innerHTML = esc(t('dash.net.public')) +
+      ' <a href="/settings" onclick="navigate(\'/settings\');return false;">' +
+      esc(t('dash.net.open-settings')) + '</a>';
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
+    el.innerHTML = '';
+  }
 }
 
 // ── SSE-reconnect bar ──────────────────────────────────────────────────────

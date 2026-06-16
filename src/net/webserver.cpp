@@ -767,18 +767,41 @@ void adminHttpThread(SessionService& svc) {
 
     g_httpServer.Get("/api/netinfo", [](const httplib::Request&, httplib::Response& res) {
         NetworkInfo info;
+        std::string selected;
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
             info.udpPort = g_config.udpPort;
             info.webPort = g_config.webPort;
             info.pairPort = g_config.pairPort;
             info.discPort = g_config.discPort;
+            selected = g_config.networkInterface;
+            info.allowPublic = g_config.allowPublicNetwork;
         }
         info.clientPort = DEFAULT_CLIENT_PORT;
         info.mdnsPort = mdns::MULTICAST_PORT;
-        resolveLocalInterface(info.lanIp, info.device);
+        info.selected = selected;
+        info.interfaces = enumerateInterfaces(true);
+        int idx = chooseInterface(info.interfaces, selected);
+        if (idx >= 0) {
+            const LocalInterface& bound = info.interfaces[static_cast<size_t>(idx)];
+            info.lanIp = bound.ipv4;
+            info.device = bound.name;
+            info.category = bound.category;
+        }
         res.set_content(buildNetworkInfoJson(info), "application/json");
     });
+
+    g_httpServer.Post(
+        "/api/network/allow-public", [](const httplib::Request&, httplib::Response& res) {
+            bool ok = allowPublicFirewall();
+            if (ok) {
+                std::lock_guard<std::mutex> lk(g_configMtx);
+                g_config.allowPublicNetwork = true;
+                saveConfig(g_config);
+            }
+            std::string resp = std::string("{\"ok\":") + (ok ? "true" : "false") + "}";
+            res.set_content(resp, "application/json");
+        });
 
     g_httpServer.Post("/api/config", [](const httplib::Request& req, httplib::Response& res) {
         const std::string& body = req.body;
@@ -806,6 +829,10 @@ void adminHttpThread(SessionService& svc) {
         bool broadcastVal = false;
         if (jsonGetBoolKeyed(body, "discoveryBroadcastEnabled", &broadcastVal)) {
             g_config.discoveryBroadcastEnabled = broadcastVal;
+        }
+
+        if (body.find("\"networkInterface\"") != std::string::npos) {
+            g_config.networkInterface = jsonGetString(body, "networkInterface");
         }
 
         saveConfig(g_config);

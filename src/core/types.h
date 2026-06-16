@@ -575,6 +575,8 @@ struct Config {
     int64_t lastCheckEpoch = 0;
     std::string lastSeenVersion;
     std::string skipVersion;
+    std::string networkInterface;
+    bool allowPublicNetwork = false;
 };
 
 enum class LogLevel { INFO, WARN, ERR };

@@ -5,6 +5,7 @@
 #include "mdns_responder.h"
 #include "config.h"
 #include "machine_id.h"
+#include "net/local_iface.h"
 
 #include <chrono>
 #include <cctype>
@@ -39,6 +40,20 @@ bool getLocalIPv4(uint8_t out[4]) {
     }
     closesocket(s);
     return ok;
+}
+
+bool boundIPv4(uint8_t out[4]) {
+    std::string sel;
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        sel = g_config.networkInterface;
+    }
+    uint32_t ip = 0;
+    if (resolveBoundIPv4(sel, ip)) {
+        std::memcpy(out, &ip, 4);
+        return true;
+    }
+    return getLocalIPv4(out);
 }
 
 // Host label with any trailing `.local` (and FQDN suffix) trimmed, so the SRV
@@ -387,10 +402,19 @@ void mdnsResponderThread() {
         return;
     }
 
+    uint8_t selfIp[4];
+    const bool haveSelfIp = boundIPv4(selfIp);
+    in_addr ifAddr{};
+    if (haveSelfIp) {
+        std::memcpy(&ifAddr.s_addr, selfIp, 4);
+    } else {
+        ifAddr.s_addr = INADDR_ANY;
+    }
+
     // Join the mDNS multicast group so the NIC delivers 224.0.0.251 traffic.
     ip_mreq mreq{};
     inet_pton(AF_INET, mdns::MULTICAST_GROUP_V4, &mreq.imr_multiaddr);
-    mreq.imr_interface.s_addr = INADDR_ANY;
+    mreq.imr_interface = ifAddr;
     if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
                    sizeof(mreq)) == SOCKET_ERROR) {
         logMsg(LogLevel::WARN, "mdns", "Could not join 224.0.0.251 — mDNS discovery disabled");
@@ -398,6 +422,8 @@ void mdnsResponderThread() {
         netShutdown();
         return;
     }
+    setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&ifAddr),
+               sizeof(ifAddr));
 
     // RFC 6762 §11: mDNS packets use IP TTL 255 so a misconfigured router
     // can't silently confine us; loop-back on so same-host clients see us.
@@ -418,12 +444,6 @@ void mdnsResponderThread() {
     inet_pton(AF_INET, mdns::MULTICAST_GROUP_V4, &groupAddr.sin_addr);
 
     const std::string host = shortHostLabel();
-
-    // Resolve LAN IPv4 once for the proposed A record (probe authority + §8.3
-    // announcement). Steady-state responses re-resolve per request, since the
-    // address can change. Best-effort: no IPv4 → advertise/probe PTR+SRV+TXT only.
-    uint8_t selfIp[4];
-    const bool haveSelfIp = getLocalIPv4(selfIp);
 
     // Claim the instance name via the §8.1/§8.2 probe sequence before
     // announcing (see runProbeSequence; adds ~750 ms+ to startup).
@@ -517,7 +537,7 @@ void mdnsResponderThread() {
         // A record is best-effort: with no LAN IP we still answer PTR+SRV+TXT
         // and a proper client resolves `<host>.local.` itself.
         uint8_t ipv4[4];
-        const bool haveIp = getLocalIPv4(ipv4);
+        const bool haveIp = boundIPv4(ipv4);
         mdns::ResponseInputs in;
         fillServiceInputs(in, instance, host, haveIp ? ipv4 : nullptr);
 
@@ -549,7 +569,7 @@ void mdnsResponderThread() {
     g_mdnsResponderActive.store(false, std::memory_order_relaxed);
     {
         uint8_t byeIp[4];
-        const bool haveByeIp = getLocalIPv4(byeIp);
+        const bool haveByeIp = boundIPv4(byeIp);
         mdns::ResponseInputs bye;
         fillServiceInputs(bye, instance, host, haveByeIp ? byeIp : nullptr);
         bye.goodbye = true;

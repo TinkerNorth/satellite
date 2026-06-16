@@ -128,6 +128,8 @@ Config loadConfig() {
     if (le >= 0) cfg.lastCheckEpoch = le;
     cfg.lastSeenVersion = jsonGetString(content, "lastSeenVersion");
     cfg.skipVersion = jsonGetString(content, "skipVersion");
+    cfg.networkInterface = jsonGetString(content, "networkInterface");
+    cfg.allowPublicNetwork = getBool("allowPublicNetwork");
 
     auto arrStart = content.find("\"pairedDevices\"");
     if (arrStart != std::string::npos) {
@@ -174,6 +176,8 @@ void saveConfig(const Config& cfg) {
       << "  \"lastCheckEpoch\": " << cfg.lastCheckEpoch << ",\n"
       << "  \"lastSeenVersion\": \"" << jsonEscape(cfg.lastSeenVersion) << "\",\n"
       << "  \"skipVersion\": \"" << jsonEscape(cfg.skipVersion) << "\",\n"
+      << "  \"networkInterface\": \"" << jsonEscape(cfg.networkInterface) << "\",\n"
+      << "  \"allowPublicNetwork\": " << (cfg.allowPublicNetwork ? "true" : "false") << ",\n"
       << "  \"pairedDevices\": [\n";
     for (size_t i = 0; i < cfg.pairedDevices.size(); i++) {
         const auto& d = cfg.pairedDevices[i];
