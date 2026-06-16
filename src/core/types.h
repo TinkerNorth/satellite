@@ -15,7 +15,11 @@
 inline const char* APP_NAME = "satellite";
 inline const char* APP_TITLE = "Satellite";
 
+#ifdef SATELLITE_VERSION_RESOLVED
+inline const char* SATELLITE_VERSION = SATELLITE_VERSION_RESOLVED;
+#else
 inline const char* SATELLITE_VERSION = SATELLITE_VERSION_STRING;
+#endif
 
 inline const int DEFAULT_UDP_PORT = 9876;
 inline const int DEFAULT_WEB_PORT = 9877;

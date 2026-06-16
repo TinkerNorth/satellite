@@ -48,10 +48,12 @@
 #define MyAppName "Satellite"
 ; Read the authoritative version from the /VERSION file at preprocess time.
 ; Single source of truth shared with CMake + src/core/version.h.
+#ifndef MyAppVersion
 #define VersionFile FileOpen(SourcePath + "VERSION")
 #define MyAppVersion Trim(FileRead(VersionFile))
 #expr FileClose(VersionFile)
 #undef VersionFile
+#endif
 #define MyAppPublisher "TinkerNorth"
 #define MyAppURL "https://github.com/TinkerNorth/satellite"
 #define MyAppExeName "satellite.exe"

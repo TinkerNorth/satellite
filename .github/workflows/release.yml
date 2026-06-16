@@ -143,7 +143,8 @@ jobs:
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $generator = ./scripts/windows-vs-generator.ps1
-          cmake --preset windows-msvc -G $generator
+          $disp = ("${{ inputs.tag || github.ref_name }}") -replace '^v',''
+          cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp"
           cmake --build build-msvc --config Release
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
 
@@ -160,7 +161,8 @@ jobs:
       - name: Run Inno Setup
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" installer.iss
+          $num = (("${{ inputs.tag || github.ref_name }}") -replace '^v','') -replace '[-+].*$',''
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=$num" installer.iss
           if (-not (Test-Path "dist/SatelliteSetup.exe")) {
             throw "iscc did not produce dist/SatelliteSetup.exe"
           }
@@ -212,7 +214,8 @@ jobs:
 
       - name: Build satellite.app (stub)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          tag="${{ inputs.tag || github.ref_name }}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
           cmake --build build --config Release -j
 
       - name: Sign + notarize (if Developer ID configured)
@@ -317,7 +320,8 @@ jobs:
 
       - name: Build satellite
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          tag="${{ inputs.tag || github.ref_name }}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
           cmake --build build --config Release -j
 
       - name: Stage version

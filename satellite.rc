@@ -1,5 +1,5 @@
 #include "src/platform/windows/resource.h"
-#include "src/core/version.h"
+#include "version_rc.h"
 #include <winver.h>
 
 /* ── Application icon ──────────────────────────────────────────────────── */
@@ -10,8 +10,8 @@ IDI_APP_ICON ICON "icon.ico"
 
 /* ── Version information ───────────────────────────────────────────────── */
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     SATELLITE_VERSION_COMMA
-PRODUCTVERSION  SATELLITE_VERSION_COMMA
+FILEVERSION     SATELLITE_RC_FILEVERSION
+PRODUCTVERSION  SATELLITE_RC_FILEVERSION
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
@@ -24,12 +24,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "TinkerNorth"
             VALUE "FileDescription",  "Satellite"
-            VALUE "FileVersion",      SATELLITE_VERSION_DOTTED
+            VALUE "FileVersion",      SATELLITE_RC_VERSION_STRING
             VALUE "InternalName",     "satellite"
             VALUE "LegalCopyright",   "Copyright (c) 2026 TinkerNorth"
             VALUE "OriginalFilename", "satellite.exe"
             VALUE "ProductName",      "Satellite"
-            VALUE "ProductVersion",   SATELLITE_VERSION_DOTTED
+            VALUE "ProductVersion",   SATELLITE_RC_PRODUCT_STRING
         END
     END
     BLOCK "VarFileInfo"
