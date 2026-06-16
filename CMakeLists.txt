@@ -57,6 +57,7 @@ set(SATELLITE_NET_SOURCES
     src/net/tls.cpp
     src/net/machine_id.cpp
     src/net/pairing.cpp
+    src/net/pairing_keys.cpp
     src/net/pairing_service.cpp
     src/net/session_crypto.cpp
     src/net/discovery.cpp
@@ -703,6 +704,7 @@ function(satellite_add_pure_test name)
 endfunction()
 
 satellite_add_pure_test(test_ipv4_util tests/test_ipv4_util.cpp)
+satellite_add_pure_test(test_semver tests/test_semver.cpp)
 satellite_add_pure_test(test_mdns_rejoin tests/test_mdns_rejoin.cpp)
 satellite_add_pure_test(test_firewall_status tests/test_firewall_status.cpp)
 satellite_add_pure_test(test_codecs tests/test_codecs.cpp)
@@ -774,6 +776,7 @@ if(WIN32)
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
         src/net/session_crypto.cpp
+        src/net/pairing_keys.cpp
         ${SATELLITE_CORE_SOURCES}
     )
     target_include_directories(test_windows_platform PRIVATE

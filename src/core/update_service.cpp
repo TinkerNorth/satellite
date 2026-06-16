@@ -3,55 +3,11 @@
 #include "core/update_service.h"
 
 #include "core/ports.h"
+#include "core/semver.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <sstream>
-
-namespace {
-
-// semver(ish): "1.2.3" / "1.2.3-rc.1". Returns -1/0/+1. Numeric components
-// compared as ints; a "-prerelease" suffix sorts BEFORE the same core release.
-// Unparseable components treated as 0.
-int compareSemver(const std::string& a, const std::string& b) {
-    auto split = [](const std::string& s, std::string& core, std::string& pre) {
-        auto dash = s.find('-');
-        if (dash == std::string::npos) {
-            core = s;
-            pre = "";
-        } else {
-            core = s.substr(0, dash);
-            pre = s.substr(dash + 1);
-        }
-    };
-    auto parseCore = [](const std::string& core, int out[3]) {
-        out[0] = out[1] = out[2] = 0;
-        int i = 0;
-        std::stringstream ss(core);
-        std::string tok;
-        while (i < 3 && std::getline(ss, tok, '.')) {
-            try {
-                out[i++] = std::stoi(tok);
-            } catch (...) { out[i++] = 0; }
-        }
-    };
-    std::string aCore, aPre, bCore, bPre;
-    split(a, aCore, aPre);
-    split(b, bCore, bPre);
-    int av[3], bv[3];
-    parseCore(aCore, av);
-    parseCore(bCore, bv);
-    for (int i = 0; i < 3; i++) {
-        if (av[i] != bv[i]) return av[i] < bv[i] ? -1 : +1;
-    }
-    if (aPre.empty() && bPre.empty()) return 0;
-    if (aPre.empty()) return +1; // release > prerelease
-    if (bPre.empty()) return -1;
-    return aPre.compare(bPre);
-}
-
-} // namespace
 
 UpdateService::UpdateService(IUpdaterPort& updater, ILogPort& log, Config& sharedConfig,
                              std::mutex& configMtx)
@@ -314,7 +270,7 @@ int64_t UpdateService::nowEpoch() {
 }
 
 bool UpdateService::versionStrictlyNewer(const std::string& a, const std::string& b) {
-    return compareSemver(a, b) > 0;
+    return satellite::compareSemver(a, b) > 0;
 }
 
 void UpdateService::doCheck(bool userInitiated) {
@@ -372,7 +328,7 @@ void UpdateService::doCheck(bool userInitiated) {
         return;
     }
 
-    if (!skipVer.empty() && compareSemver(info.version, skipVer) <= 0) {
+    if (!skipVer.empty() && satellite::compareSemver(info.version, skipVer) <= 0) {
         {
             std::lock_guard<std::mutex> lk(mtx_);
             info.available = false;

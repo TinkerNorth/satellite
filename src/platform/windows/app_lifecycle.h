@@ -39,4 +39,6 @@ void reconcileAutoStart();
 // logDir(), 7-day retention). Idempotent; stops when g_appRunning is false.
 void startFileLogger();
 
+void stopFileLogger();
+
 } // namespace lifecycle

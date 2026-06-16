@@ -40,7 +40,11 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
     bool bindErrorLogged = false;
 
     while (g_appRunning) {
-        int port = g_config.udpPort;
+        int port;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            port = g_config.udpPort;
+        }
 
         SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET) {
