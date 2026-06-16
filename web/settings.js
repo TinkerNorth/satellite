@@ -95,6 +95,7 @@ async function settingsSave() {
     return;
   }
   settingsSetSaveStatus(t('settings.save.ok'), true);
+  fetchNetInfo('settings-netinfo');
 }
 
 // Render the read-only mDNS responder state. Active is the healthy path;
@@ -156,4 +157,6 @@ async function initSettings() {
 
   // Pull update state and prefs. updates.js renders both the banner + form.
   if (typeof updatesFetch === 'function') updatesFetch();
+
+  fetchNetInfo('settings-netinfo');
 }

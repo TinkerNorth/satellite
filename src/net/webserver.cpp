@@ -13,6 +13,9 @@
 #include "core/update_service.h"
 #include "core/update_types.h"
 #include "core/version.h"
+#include "core/network_info.h"
+#include "local_iface.h"
+#include "mdns_protocol.h"
 
 #include <sodium.h>
 
@@ -760,6 +763,21 @@ void adminHttpThread(SessionService& svc) {
             g_mdnsResponderActive.load() ? "true" : "false", backendUp ? "true" : "false",
             backendJson.c_str());
         res.set_content(json, "application/json");
+    });
+
+    g_httpServer.Get("/api/netinfo", [](const httplib::Request&, httplib::Response& res) {
+        NetworkInfo info;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            info.udpPort = g_config.udpPort;
+            info.webPort = g_config.webPort;
+            info.pairPort = g_config.pairPort;
+            info.discPort = g_config.discPort;
+        }
+        info.clientPort = DEFAULT_CLIENT_PORT;
+        info.mdnsPort = mdns::MULTICAST_PORT;
+        resolveLocalInterface(info.lanIp, info.device);
+        res.set_content(buildNetworkInfoJson(info), "application/json");
     });
 
     g_httpServer.Post("/api/config", [](const httplib::Request& req, httplib::Response& res) {
