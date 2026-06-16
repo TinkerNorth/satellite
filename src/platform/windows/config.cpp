@@ -147,8 +147,52 @@ Config loadConfig() {
     return cfg;
 }
 
+static std::wstring toWidePath(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+bool atomicWriteFile(const std::string& path, const std::string& bytes) {
+    std::wstring wpath = toWidePath(path);
+    if (wpath.empty()) return false;
+    std::wstring wtmp = wpath + L".tmp";
+
+    HANDLE h = CreateFileW(wtmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    bool ok = true;
+    size_t off = 0;
+    while (off < bytes.size()) {
+        size_t remaining = bytes.size() - off;
+        DWORD chunk = remaining > 0x10000000u ? 0x10000000u : static_cast<DWORD>(remaining);
+        DWORD wrote = 0;
+        if (!WriteFile(h, bytes.data() + off, chunk, &wrote, nullptr) || wrote == 0) {
+            ok = false;
+            break;
+        }
+        off += wrote;
+    }
+    if (ok) ok = FlushFileBuffers(h) != 0;
+    CloseHandle(h);
+
+    if (!ok) {
+        DeleteFileW(wtmp.c_str());
+        return false;
+    }
+    if (!MoveFileExW(wtmp.c_str(), wpath.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(wtmp.c_str());
+        return false;
+    }
+    return true;
+}
+
 void saveConfig(const Config& cfg) {
-    std::ofstream f(configPath());
+    std::ostringstream f;
     f << "{\n"
       << "  \"udpPort\": " << cfg.udpPort << ",\n"
       << "  \"webPort\": " << cfg.webPort << ",\n"
@@ -177,6 +221,7 @@ void saveConfig(const Config& cfg) {
         f << "\n";
     }
     f << "  ]\n}\n";
+    atomicWriteFile(configPath(), f.str());
 }
 
 // Value name must match the literal Inno Setup writes ({#MyAppName}); keep its

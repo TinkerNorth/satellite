@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "config.h"
 
+#include <fcntl.h>
 #include <pwd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <climits>
+#include <sstream>
 
 // Escapes JSON structural chars plus every C0 control byte (<0x20): a raw \r/\t
 // in e.g. a device name is invalid inside a JSON string and would corrupt the file.
@@ -158,8 +161,34 @@ Config loadConfig() {
     return cfg;
 }
 
+bool atomicWriteFile(const std::string& path, const std::string& bytes) {
+    std::string tmp = path + ".tmp";
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return false;
+
+    bool ok = true;
+    size_t off = 0;
+    while (off < bytes.size()) {
+        ssize_t n = ::write(fd, bytes.data() + off, bytes.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        off += static_cast<size_t>(n);
+    }
+    if (ok) ok = ::fsync(fd) == 0;
+    if (::close(fd) != 0) ok = false;
+
+    if (!ok || ::rename(tmp.c_str(), path.c_str()) != 0) {
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
 void saveConfig(const Config& cfg) {
-    std::ofstream f(configPath());
+    std::ostringstream f;
     f << "{\n"
       << "  \"udpPort\": " << cfg.udpPort << ",\n"
       << "  \"webPort\": " << cfg.webPort << ",\n"
@@ -188,6 +217,7 @@ void saveConfig(const Config& cfg) {
         f << "\n";
     }
     f << "  ]\n}\n";
+    atomicWriteFile(configPath(), f.str());
 }
 
 static std::string autostartDir() {

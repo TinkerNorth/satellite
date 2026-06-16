@@ -5,6 +5,7 @@
 // hermetic via snapshot/restore so the tests are safe to run locally and in CI.
 #include "../src/platform/windows/config.h"
 #include "../src/platform/windows/crypto.h"
+#include "../src/net/pairing_keys.h"
 #include "../src/net/session_crypto.h"
 
 #include <cstdint>
@@ -200,6 +201,9 @@ static void testConfigRoundTrip() {
 
     TEST("saveConfig — writes file");
     EXPECT(fileExists(configPath()));
+
+    TEST("saveConfig — leaves no .tmp sibling behind");
+    EXPECT(!fileExists(configPath() + ".tmp"));
 
     Config in = loadConfig();
     TEST("loadConfig — round-trips ports");
@@ -462,6 +466,100 @@ static void testPacketAeadDirections() {
     EXPECT(std::memcmp(ct, ct2, (size_t)ctLen) != 0);
 }
 
+static std::string readFileBytes(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+static void testAtomicWriteFile() {
+    char tmpDir[MAX_PATH];
+    DWORD n = GetTempPathA(MAX_PATH, tmpDir);
+    std::string base = (n > 0 && n < MAX_PATH) ? std::string(tmpDir, n) : std::string();
+    std::string path = base + "satellite_atomic_test.json";
+    std::string tmpPath = path + ".tmp";
+    DeleteFileA(path.c_str());
+    DeleteFileA(tmpPath.c_str());
+
+    TEST("atomicWriteFile — writes the exact bytes");
+    EXPECT(atomicWriteFile(path, "hello world"));
+    EXPECT(fileExists(path));
+    EXPECT_EQ(readFileBytes(path), std::string("hello world"));
+
+    TEST("atomicWriteFile — leaves no .tmp behind");
+    EXPECT(!fileExists(tmpPath));
+
+    TEST("atomicWriteFile — replaces existing content");
+    EXPECT(atomicWriteFile(path, "second write, shorter-then-longer payload"));
+    EXPECT_EQ(readFileBytes(path), std::string("second write, shorter-then-longer payload"));
+    EXPECT(!fileExists(tmpPath));
+
+    TEST("atomicWriteFile — preserves embedded NULs and newlines");
+    std::string payload("a\0b\r\nc", 6);
+    EXPECT(atomicWriteFile(path, payload));
+    EXPECT_EQ(readFileBytes(path), payload);
+
+    TEST("atomicWriteFile — handles empty content");
+    EXPECT(atomicWriteFile(path, ""));
+    EXPECT(fileExists(path));
+    EXPECT_EQ(readFileBytes(path), std::string(""));
+
+    DeleteFileA(path.c_str());
+    DeleteFileA(tmpPath.c_str());
+}
+
+static void testResolvePairingSharedKey() {
+    uint8_t serverPk[32], serverSk[32];
+    generateKeyPair(serverPk, serverSk);
+
+    uint8_t clientPk[32], clientSk[32];
+    generateKeyPair(clientPk, clientSk);
+    std::string clientPkHex = hexEncode(clientPk, 32);
+
+    TEST("resolvePairingSharedKey — valid client key derives an ECDH key");
+    std::string k1;
+    PairingKeyOutcome o1 = resolvePairingSharedKey(clientPkHex, serverPk, serverSk, k1);
+    EXPECT(o1 == PairingKeyOutcome::Derived);
+    EXPECT_EQ(k1.size(), size_t{64});
+
+    TEST("resolvePairingSharedKey — derivation is deterministic for fixed inputs");
+    std::string k1b;
+    PairingKeyOutcome o1b = resolvePairingSharedKey(clientPkHex, serverPk, serverSk, k1b);
+    EXPECT(o1b == PairingKeyOutcome::Derived);
+    EXPECT_EQ(k1, k1b);
+
+    TEST("resolvePairingSharedKey — empty client key mints a random key");
+    std::string k2;
+    PairingKeyOutcome o2 = resolvePairingSharedKey("", serverPk, serverSk, k2);
+    EXPECT(o2 == PairingKeyOutcome::Random);
+    EXPECT_EQ(k2.size(), size_t{64});
+
+    TEST("resolvePairingSharedKey — random keys differ across calls");
+    std::string k2b;
+    resolvePairingSharedKey("", serverPk, serverSk, k2b);
+    EXPECT(k2 != k2b);
+
+    TEST("resolvePairingSharedKey — malformed hex is rejected, not silently randomized");
+    std::string k3 = "sentinel";
+    PairingKeyOutcome o3 = resolvePairingSharedKey("zzzz", serverPk, serverSk, k3);
+    EXPECT(o3 == PairingKeyOutcome::InvalidClientKey);
+    EXPECT(k3.empty());
+
+    TEST("resolvePairingSharedKey — wrong-length client key is rejected");
+    std::string k4;
+    PairingKeyOutcome o4 = resolvePairingSharedKey("abcd", serverPk, serverSk, k4);
+    EXPECT(o4 == PairingKeyOutcome::InvalidClientKey);
+    EXPECT(k4.empty());
+
+    TEST("resolvePairingSharedKey — low-order (all-zero) client key is rejected");
+    std::string allZero(64, '0');
+    std::string k5 = "sentinel";
+    PairingKeyOutcome o5 = resolvePairingSharedKey(allZero, serverPk, serverSk, k5);
+    EXPECT(o5 == PairingKeyOutcome::InvalidClientKey);
+    EXPECT(k5.empty());
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -474,6 +572,7 @@ int main() {
     testJsonGetString();
     testConfigPath();
     testConfigRoundTrip();
+    testAtomicWriteFile();
     testDiscoveryBroadcastConfig();
     testAutoStartEnable();
     testAutoStartDisable();
@@ -484,6 +583,7 @@ int main() {
     testSessionKeyDerivation();
     testHmacProof();
     testPacketAeadDirections();
+    testResolvePairingSharedKey();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
