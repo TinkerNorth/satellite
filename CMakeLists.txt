@@ -115,6 +115,11 @@ if(WIN32)
     # Resource file (icon + manifest + version info).
     set(SATELLITE_RC ${CMAKE_CURRENT_SOURCE_DIR}/satellite.rc)
 
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/version_rc.h.in
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/version_rc.h
+        @ONLY)
+
     add_executable(satellite WIN32
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
@@ -129,6 +134,7 @@ if(WIN32)
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
     )
     # Vendored third-party headers go in as SYSTEM so the compiler suppresses
     # warnings emitted from inside them — cpp-httplib uses its own deprecated
