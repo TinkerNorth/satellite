@@ -92,6 +92,7 @@
     <!-- Inline failure feedback for dashboard mutating actions (disconnect,
          remove device, touchpad-mode change). Shown via showDashError() in
          dashboard.js; hidden by default. -->
+    <div class="dash-notice" id="dash-net-notice" role="alert"></div>
     <div class="dash-notice" id="dash-notice" role="alert">
       <span class="dash-notice-text" id="dash-notice-text"></span>
       <button class="dash-notice-close" id="dash-notice-close" type="button" data-i18n-attr="aria-label:connections.notice.dismiss" aria-label="Dismiss">&times;</button>
@@ -199,6 +200,12 @@
 
     <div class="section">
       <h2 class="section-title" data-i18n="netinfo.title">Network</h2>
+      <div class="dash-notice" id="settings-net-warning" role="alert"></div>
+      <div class="row">
+        <label data-i18n="netinfo.interface">Network interface</label>
+        <select id="settings-interface" class="form-input" style="flex:1"></select>
+      </div>
+      <p class="hint" id="settings-interface-note" data-i18n="netinfo.interface-hint">Automatic prefers your physical LAN adapter over VPN/virtual ones. Changing this takes effect after restarting Satellite.</p>
       <div id="settings-netinfo"></div>
       <p class="hint" data-i18n="netinfo.hint">Ports and addresses this PC uses on the LAN. Only the UDP input port is configurable; the rest are shown for reference.</p>
     </div>

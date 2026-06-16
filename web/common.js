@@ -149,13 +149,19 @@ function esc(s) {
   return d.innerHTML;
 }
 
-async function fetchNetInfo(containerId) {
+async function getNetInfo() {
   try {
     const r = await fetch('/api/netinfo');
-    if (!r.ok) return;
-    const d = await r.json();
-    renderNetInfo(containerId, d);
-  } catch (e) {}
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchNetInfo(containerId) {
+  const d = await getNetInfo();
+  if (d) renderNetInfoPanel(containerId, d);
 }
 
 function netInfoRow(label, value) {
@@ -163,7 +169,14 @@ function netInfoRow(label, value) {
          '</span><span class="value">' + esc(value) + '</span></div>';
 }
 
-function renderNetInfo(containerId, d) {
+function netCategoryLabel(cat) {
+  if (cat === 'private') return t('netinfo.cat.private');
+  if (cat === 'domain') return t('netinfo.cat.domain');
+  if (cat === 'public') return t('netinfo.cat.public');
+  return t('netinfo.unknown');
+}
+
+function renderNetInfoPanel(containerId, d) {
   const el = document.getElementById(containerId);
   if (!el || !d) return;
   const p = d.ports || {};
@@ -172,6 +185,13 @@ function renderNetInfo(containerId, d) {
   let html = '';
   html += netInfoRow(t('netinfo.ip'), d.lanIp || unknown);
   html += netInfoRow(t('netinfo.device'), d.device || unknown);
+  html += netInfoRow(t('netinfo.category'), netCategoryLabel(d.category));
+  if (Array.isArray(d.interfaces)) {
+    for (const f of d.interfaces) {
+      const tag = f.physical ? '' : ' ' + t('netinfo.virtual');
+      html += netInfoRow((f.name || unknown) + tag, f.ip || unknown);
+    }
+  }
   html += netInfoRow(t('netinfo.port.udp'), port(p.udp));
   html += netInfoRow(t('netinfo.port.web'), port(p.web));
   html += netInfoRow(t('netinfo.port.pair'), port(p.pair));
