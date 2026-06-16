@@ -116,7 +116,11 @@ std::string buildNetworkInfoJson(const NetworkInfo& info) {
     out += std::to_string(info.clientPort);
     out += ",\"mdns\":";
     out += std::to_string(info.mdnsPort);
-    out += "},\"interfaces\":[";
+    out += "},\"firewall\":{\"supported\":";
+    out += info.firewallSupported ? "true" : "false";
+    out += ",\"state\":\"";
+    out += escapeJson(info.firewallState);
+    out += "\"},\"interfaces\":[";
     for (size_t i = 0; i < info.interfaces.size(); ++i) {
         if (i != 0) { out += ","; }
         appendInterface(out, info.interfaces[i]);

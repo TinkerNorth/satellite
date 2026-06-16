@@ -153,6 +153,67 @@ int main() {
         EXPECT(pollPairRequest("dev9", key) == PairRequestState::Pending);
     }
 
+    {
+        resetPairRequestsForTest();
+        TEST("accepting an unknown device fails so the operator can be warned");
+        std::string name, ip;
+        EXPECT(!acceptPairRequestConfirmed("ghost", "k", name, ip));
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("a second accept of an already-approved request fails (no silent double-pair)");
+        submitPairRequest("dev1", "Pixel", "ip", "1234");
+        std::string name, ip;
+        EXPECT(acceptPairRequestConfirmed("dev1", "key-one", name, ip));
+        EXPECT(!acceptPairRequestConfirmed("dev1", "key-two", name, ip));
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("accepting a denied request fails (the request is gone)");
+        submitPairRequest("dev1", "Pixel", "ip", "1234");
+        EXPECT(denyPairRequest("dev1"));
+        std::string name, ip;
+        EXPECT(!acceptPairRequestConfirmed("dev1", "key", name, ip));
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("a re-tap after approval clears the staged key and returns to Pending");
+        submitPairRequest("dev1", "Pixel", "ip", "1111");
+        std::string name, ip;
+        EXPECT(acceptPairRequestConfirmed("dev1", "stale-key", name, ip));
+        submitPairRequest("dev1", "Pixel", "ip", "2222");
+        std::string key = "sentinel";
+        EXPECT(pollPairRequest("dev1", key) == PairRequestState::Pending);
+        EXPECT(key == "sentinel");
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("a re-tapped request can be approved again with a fresh key");
+        submitPairRequest("dev1", "Pixel", "ip", "1111");
+        std::string name, ip;
+        EXPECT(acceptPairRequestConfirmed("dev1", "stale-key", name, ip));
+        submitPairRequest("dev1", "Pixel", "ip", "2222");
+        EXPECT(acceptPairRequestConfirmed("dev1", "fresh-key", name, ip));
+        std::string key;
+        EXPECT(pollPairRequest("dev1", key) == PairRequestState::Approved);
+        EXPECT(key == "fresh-key");
+    }
+
+    {
+        resetPairRequestsForTest();
+        TEST("a freshly submitted request reflects the extended 5-minute TTL");
+        submitPairRequest("dev1", "Pixel", "ip", "1234");
+        std::string name, ip, pin;
+        int secs = 0;
+        EXPECT(pairRequestSnapshot("dev1", name, ip, pin, secs));
+        EXPECT(secs > 240);
+        EXPECT(secs <= 300);
+    }
+
     std::cout << "test_pairing: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

@@ -25,6 +25,7 @@
 
 #include <objbase.h>
 #include <commctrl.h> // TaskDialogIndirect
+#include <iphlpapi.h>
 
 #include <atomic>
 #include <chrono>
@@ -53,6 +54,34 @@ void tooltipTickerThread() {
     while (g_appRunning.load(std::memory_order_relaxed)) {
         updateTrayTooltip();
         std::this_thread::sleep_for(2s);
+    }
+}
+
+void addrChangeWatcherThread() {
+    while (g_appRunning.load(std::memory_order_relaxed)) {
+        OVERLAPPED ov{};
+        ov.hEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (ov.hEvent == nullptr) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+        HANDLE h = nullptr;
+        DWORD ret = NotifyAddrChange(&h, &ov);
+        if (ret != NO_ERROR && ret != ERROR_IO_PENDING) {
+            CloseHandle(ov.hEvent);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+        bool signaled = false;
+        while (g_appRunning.load(std::memory_order_relaxed)) {
+            if (WaitForSingleObject(ov.hEvent, 500) == WAIT_OBJECT_0) {
+                signaled = true;
+                break;
+            }
+        }
+        if (!signaled) CancelIPChangeNotify(&ov);
+        CloseHandle(ov.hEvent);
+        if (signaled && g_appRunning.load(std::memory_order_relaxed)) requestMdnsRejoin();
     }
 }
 
@@ -181,6 +210,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"Satellite", 0, 0, 0, 0, 0, HWND_MESSAGE,
                              nullptr, hInst, nullptr);
 
+    HPOWERNOTIFY powerNotify =
+        RegisterSuspendResumeNotification(g_hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
+
     addTrayIcon(g_hwnd);
 
     // Reverse-pairing: when a dish submits a request, raise a native toast +
@@ -203,6 +235,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     std::thread discTh(discoveryThread);
     std::thread mdnsTh(mdnsResponderThread);
     std::thread tooltipTh(tooltipTickerThread);
+    std::thread addrTh(addrChangeWatcherThread);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
@@ -211,6 +244,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     }
 
     g_appRunning = false;
+    if (powerNotify) UnregisterSuspendResumeNotification(powerNotify);
     g_httpServer.stop();
     if (g_clientServer) g_clientServer->stop();
 
@@ -225,6 +259,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     discTh.join();
     mdnsTh.join();
     tooltipTh.join();
+    addrTh.join();
 
     svc.closeAllSessions();
 

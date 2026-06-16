@@ -203,7 +203,8 @@ static void test_buildJson_empty() {
     EXPECT_EQ(buildNetworkInfoJson(info),
               std::string("{\"lanIp\":\"\",\"device\":\"\",\"category\":\"\",\"selected\":\"\","
                           "\"allowPublic\":false,\"ports\":{\"udp\":0,\"web\":0,\"pair\":0,"
-                          "\"discovery\":0,\"client\":0,\"mdns\":0},\"interfaces\":[]}"));
+                          "\"discovery\":0,\"client\":0,\"mdns\":0},\"firewall\":{\"supported\":"
+                          "false,\"state\":\"\"},\"interfaces\":[]}"));
 }
 
 static void test_buildJson_topLevel() {
@@ -224,7 +225,8 @@ static void test_buildJson_topLevel() {
               std::string("{\"lanIp\":\"10.0.0.5\",\"device\":\"Ethernet 2\",\"category\":"
                           "\"private\",\"selected\":\"Ethernet 2\",\"allowPublic\":true,\"ports\":{"
                           "\"udp\":9876,\"web\":9877,\"pair\":9878,\"discovery\":9879,\"client\":"
-                          "9443,\"mdns\":5353},\"interfaces\":[]}"));
+                          "9443,\"mdns\":5353},\"firewall\":{\"supported\":false,\"state\":\"\"},"
+                          "\"interfaces\":[]}"));
 }
 
 static void test_buildJson_interfaces() {
@@ -294,6 +296,18 @@ static void test_buildJson_escaping() {
     EXPECT(contains(ij, "\"category\":\"pu\\\\b\""));
 }
 
+static void test_buildJson_firewall() {
+    TEST("buildNetworkInfoJson — firewall supported+state serialize");
+    NetworkInfo a;
+    a.firewallSupported = true;
+    a.firewallState = "wrong-profile";
+    EXPECT(contains(buildNetworkInfoJson(a),
+                    "\"firewall\":{\"supported\":true,\"state\":\"wrong-profile\"}"));
+
+    NetworkInfo b;
+    EXPECT(contains(buildNetworkInfoJson(b), "\"firewall\":{\"supported\":false,\"state\":\"\"}"));
+}
+
 int main() {
     test_isPrivateIPv4_ranges();
     test_isPrivateIPv4_malformed();
@@ -305,6 +319,7 @@ int main() {
     test_buildJson_interfaces();
     test_buildJson_flags();
     test_buildJson_escaping();
+    test_buildJson_firewall();
 
     std::cout << "network_info: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;

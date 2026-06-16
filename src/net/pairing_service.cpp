@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "pairing_service.h"
+#include "app/app_state.h"
 #include "config.h" // g_config, g_configMtx, saveConfig, getCurrentDate
 #include "core/types.h"
 #include "crypto.h" // hexEncode
@@ -57,8 +58,15 @@ bool rotatePairedDeviceKey(const std::string& deviceId, const std::string& clien
 bool confirmPairing(const std::string& deviceId) {
     const std::string keyHex = mintPairingKeyHex();
     std::string name, ip;
-    if (!acceptPairRequestConfirmed(deviceId, keyHex, name, ip)) return false;
+    if (!acceptPairRequestConfirmed(deviceId, keyHex, name, ip)) {
+        logMsg(LogLevel::WARN, "pairing",
+               "Accept for " + deviceId +
+                   " did nothing — the request already expired or was withdrawn; ask the device "
+                   "to tap Pair again");
+        return false;
+    }
     upsertPairedDevice(deviceId, name, ip, keyHex);
+    logMsg(LogLevel::INFO, "pairing", "Paired device via prompt: " + deviceId + " (" + ip + ")");
     return true;
 }
 

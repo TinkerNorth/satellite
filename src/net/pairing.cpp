@@ -26,7 +26,7 @@ std::function<void(const std::string&)> g_onNewRequest;
 
 // Tight TTL: a request is a live "both screens watched now" handshake, so a
 // forgotten prompt shouldn't linger.
-constexpr auto kPairTtl = std::chrono::minutes(2);
+constexpr auto kPairTtl = std::chrono::minutes(5);
 // Cap so a flood of unknown devices can't push the operator's real request
 // off-screen. Oldest evicted first.
 constexpr size_t kMaxPending = 8;

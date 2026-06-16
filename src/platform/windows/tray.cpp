@@ -5,6 +5,7 @@
 #include "resource.h"
 #include "shell_integration.h"
 #include "core/update_service.h"
+#include "net/mdns_responder.h"
 #include "net/pairing.h"
 #include "net/pairing_service.h"
 #include "toast.h"
@@ -251,7 +252,11 @@ static void showPairingDialogWindows(HWND hwnd, const std::string& deviceId) {
     int pressed = 0;
     if (TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr) != S_OK) return;
     if (pressed == kAccept) {
-        confirmPairing(deviceId);
+        if (!confirmPairing(deviceId)) {
+            shell_integration::showToast("Pairing not completed",
+                                         "That request expired before you accepted it. Ask the "
+                                         "device to tap Pair again.");
+        }
     } else if (pressed == kReject) {
         declinePairing(deviceId);
     }
@@ -313,6 +318,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SECOND_INSTANCE: {
         openUrl(webUiUrl().c_str());
         return 0;
+    }
+
+    case WM_POWERBROADCAST: {
+        if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND) requestMdnsRejoin();
+        return TRUE;
     }
 
     case WM_COPYDATA: {

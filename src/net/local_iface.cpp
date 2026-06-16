@@ -10,7 +10,9 @@
 #ifdef _WIN32
 #include <iphlpapi.h>
 #include <ipifcons.h>
+#include <netfw.h>
 #include <netlistmgr.h>
+#include <oleauto.h>
 #include <shellapi.h>
 
 #include <map>
@@ -207,6 +209,84 @@ bool allowPublicFirewall() {
     }
     return true;
 }
+
+static std::wstring lowerWide(const wchar_t* w) {
+    std::wstring s = (w != nullptr) ? w : L"";
+    for (wchar_t& c : s) {
+        if (c >= L'A' && c <= L'Z') { c = static_cast<wchar_t>(c - L'A' + L'a'); }
+    }
+    return s;
+}
+
+bool selfInboundFirewallRules(int& ruleMask, bool& haveRule) {
+    ruleMask = 0;
+    haveRule = false;
+
+    wchar_t exe[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) { return false; }
+    const std::wstring self = lowerWide(exe);
+
+    ComScope com;
+    INetFwPolicy2* policy = nullptr;
+    if (FAILED(CoCreateInstance(__uuidof(NetFwPolicy2), nullptr, CLSCTX_INPROC_SERVER,
+                                __uuidof(INetFwPolicy2), reinterpret_cast<void**>(&policy))) ||
+        policy == nullptr) {
+        return false;
+    }
+
+    bool queried = false;
+    INetFwRules* rules = nullptr;
+    if (SUCCEEDED(policy->get_Rules(&rules)) && rules != nullptr) {
+        IUnknown* unk = nullptr;
+        if (SUCCEEDED(rules->get__NewEnum(&unk)) && unk != nullptr) {
+            IEnumVARIANT* en = nullptr;
+            if (SUCCEEDED(
+                    unk->QueryInterface(__uuidof(IEnumVARIANT), reinterpret_cast<void**>(&en))) &&
+                en != nullptr) {
+                queried = true;
+                VARIANT v;
+                VariantInit(&v);
+                ULONG got = 0;
+                while (en->Next(1, &v, &got) == S_OK && got == 1) {
+                    if (v.vt == VT_DISPATCH && v.pdispVal != nullptr) {
+                        INetFwRule* rule = nullptr;
+                        if (SUCCEEDED(v.pdispVal->QueryInterface(
+                                __uuidof(INetFwRule), reinterpret_cast<void**>(&rule))) &&
+                            rule != nullptr) {
+                            NET_FW_RULE_DIRECTION dir = NET_FW_RULE_DIR_IN;
+                            NET_FW_ACTION action = NET_FW_ACTION_BLOCK;
+                            VARIANT_BOOL enabled = VARIANT_FALSE;
+                            BSTR app = nullptr;
+                            long profiles = 0;
+                            if (SUCCEEDED(rule->get_Direction(&dir)) && dir == NET_FW_RULE_DIR_IN &&
+                                SUCCEEDED(rule->get_Action(&action)) &&
+                                action == NET_FW_ACTION_ALLOW &&
+                                SUCCEEDED(rule->get_Enabled(&enabled)) && enabled == VARIANT_TRUE &&
+                                SUCCEEDED(rule->get_ApplicationName(&app)) && app != nullptr &&
+                                lowerWide(app) == self) {
+                                haveRule = true;
+                                if (SUCCEEDED(rule->get_Profiles(&profiles))) {
+                                    ruleMask |= static_cast<int>(profiles);
+                                }
+                            }
+                            if (app != nullptr) { SysFreeString(app); }
+                            rule->Release();
+                        }
+                    }
+                    VariantClear(&v);
+                    VariantInit(&v);
+                    got = 0;
+                }
+                en->Release();
+            }
+            unk->Release();
+        }
+        rules->Release();
+    }
+    policy->Release();
+    return queried;
+}
 #endif
 
 #ifndef _WIN32
@@ -232,6 +312,8 @@ std::vector<LocalInterface> enumerateInterfaces(bool) {
 }
 
 bool allowPublicFirewall() { return false; }
+
+bool selfInboundFirewallRules(int&, bool&) { return false; }
 #endif
 
 bool resolveBoundIPv4(const std::string& selectedName, uint32_t& ipv4NetworkOrder) {
