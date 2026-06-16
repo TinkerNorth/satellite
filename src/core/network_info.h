@@ -24,6 +24,8 @@ struct NetworkInfo {
     int discPort = 0;
     int clientPort = 0;
     int mdnsPort = 0;
+    bool firewallSupported = false;
+    std::string firewallState;
     std::vector<LocalInterface> interfaces;
 };
 

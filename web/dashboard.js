@@ -381,8 +381,15 @@ async function dashRenderNetWarning() {
   const el = document.getElementById('dash-net-notice');
   if (!el) return;
   const d = await getNetInfo();
+  let msg = '';
   if (d && d.category === 'public' && !d.allowPublic) {
-    el.innerHTML = esc(t('dash.net.public')) +
+    msg = t('dash.net.public');
+  } else if (d && d.firewall && d.firewall.supported &&
+             (d.firewall.state === 'missing' || d.firewall.state === 'wrong-profile')) {
+    msg = t('dash.firewall.warn');
+  }
+  if (msg) {
+    el.innerHTML = esc(msg) +
       ' <a href="/settings" onclick="navigate(\'/settings\');return false;">' +
       esc(t('dash.net.open-settings')) + '</a>';
     el.classList.add('show');

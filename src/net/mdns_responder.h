@@ -19,3 +19,5 @@
 // holds 5353 without SO_REUSEPORT) is non-fatal — the thread logs and exits;
 // the legacy broadcast beacon still advertises us.
 void mdnsResponderThread();
+
+void requestMdnsRejoin();

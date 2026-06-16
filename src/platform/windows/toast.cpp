@@ -194,7 +194,11 @@ void handlePairProtocolUri(const std::string& uri) {
         deviceId.pop_back();
     }
     if (action == "accept") {
-        confirmPairing(deviceId);
+        if (!confirmPairing(deviceId)) {
+            shell_integration::showToast("Pairing not completed",
+                                         "That request expired before you accepted it. Ask the "
+                                         "device to tap Pair again.");
+        }
     } else if (action == "reject") {
         declinePairing(deviceId);
     }

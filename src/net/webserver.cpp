@@ -13,6 +13,7 @@
 #include "core/update_service.h"
 #include "core/update_types.h"
 #include "core/version.h"
+#include "core/firewall_status.h"
 #include "core/network_info.h"
 #include "local_iface.h"
 #include "mdns_protocol.h"
@@ -787,6 +788,13 @@ void adminHttpThread(SessionService& svc) {
             info.lanIp = bound.ipv4;
             info.device = bound.name;
             info.category = bound.category;
+        }
+        int ruleMask = 0;
+        bool haveRule = false;
+        if (selfInboundFirewallRules(ruleMask, haveRule)) {
+            info.firewallSupported = true;
+            info.firewallState = fw::firewallStateString(
+                fw::evaluateFirewall(fw::profileBit(info.category), ruleMask, haveRule));
         }
         res.set_content(buildNetworkInfoJson(info), "application/json");
     });

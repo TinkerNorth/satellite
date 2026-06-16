@@ -10,3 +10,4 @@
 std::vector<LocalInterface> enumerateInterfaces(bool withCategory);
 bool resolveBoundIPv4(const std::string& selectedName, uint32_t& ipv4NetworkOrder);
 bool allowPublicFirewall();
+bool selfInboundFirewallRules(int& ruleMask, bool& haveRule);

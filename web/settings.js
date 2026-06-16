@@ -188,18 +188,24 @@ function settingsRenderInterfaceOptions(d) {
 function settingsRenderNetWarning(d) {
   const el = document.getElementById('settings-net-warning');
   if (!el) return;
-  if (!(d.category === 'public' && !d.allowPublic)) {
-    el.classList.remove('show');
-    el.innerHTML = '';
+  if (d.category === 'public' && !d.allowPublic) {
+    el.innerHTML = '<span>' + esc(t('netinfo.public.warn')) + ' </span>' +
+      '<button class="btn btn-save" id="settings-allow-public" type="button">' +
+      esc(t('netinfo.public.allow')) + '</button> ' +
+      '<span id="settings-allow-public-status"></span>';
+    el.classList.add('show');
+    const btn = document.getElementById('settings-allow-public');
+    if (btn) btn.onclick = settingsAllowPublic;
     return;
   }
-  el.innerHTML = '<span>' + esc(t('netinfo.public.warn')) + ' </span>' +
-    '<button class="btn btn-save" id="settings-allow-public" type="button">' +
-    esc(t('netinfo.public.allow')) + '</button> ' +
-    '<span id="settings-allow-public-status"></span>';
-  el.classList.add('show');
-  const btn = document.getElementById('settings-allow-public');
-  if (btn) btn.onclick = settingsAllowPublic;
+  const fwState = d.firewall && d.firewall.supported ? d.firewall.state : '';
+  if (fwState === 'missing' || fwState === 'wrong-profile') {
+    el.innerHTML = '<span>' + esc(t('netinfo.firewall.warn')) + '</span>';
+    el.classList.add('show');
+    return;
+  }
+  el.classList.remove('show');
+  el.innerHTML = '';
 }
 
 async function settingsAllowPublic() {
