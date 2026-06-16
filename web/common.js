@@ -169,6 +169,19 @@ function netInfoRow(label, value) {
          '</span><span class="value">' + esc(value) + '</span></div>';
 }
 
+function netInfoStatusRow(label, value, color) {
+  const style = color ? ' style="color:' + color + '"' : '';
+  return '<div class="stat"><span class="label">' + esc(label) +
+         '</span><span class="value"' + style + '>' + esc(value) + '</span></div>';
+}
+
+function firewallStatusView(state) {
+  if (state === 'configured') return { text: t('netinfo.fw.ok'), color: 'var(--success)' };
+  if (state === 'wrong-profile') return { text: t('netinfo.fw.blocked'), color: 'var(--warning)' };
+  if (state === 'missing') return { text: t('netinfo.fw.missing'), color: 'var(--warning)' };
+  return { text: t('netinfo.unknown'), color: '' };
+}
+
 function netCategoryLabel(cat) {
   if (cat === 'private') return t('netinfo.cat.private');
   if (cat === 'domain') return t('netinfo.cat.domain');
@@ -186,6 +199,10 @@ function renderNetInfoPanel(containerId, d) {
   html += netInfoRow(t('netinfo.ip'), d.lanIp || unknown);
   html += netInfoRow(t('netinfo.device'), d.device || unknown);
   html += netInfoRow(t('netinfo.category'), netCategoryLabel(d.category));
+  if (d.firewall && d.firewall.supported) {
+    const fwv = firewallStatusView(d.firewall.state);
+    html += netInfoStatusRow(t('netinfo.firewall'), fwv.text, fwv.color);
+  }
   if (Array.isArray(d.interfaces)) {
     for (const f of d.interfaces) {
       const tag = f.physical ? '' : ' ' + t('netinfo.virtual');
