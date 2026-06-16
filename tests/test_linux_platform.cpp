@@ -142,6 +142,35 @@ static void testConfigPath() {
     EXPECT(fileExists(tmp.path + "/satellite"));
 }
 
+static void testAtomicWriteFile() {
+    TempXdg tmp;
+    std::string path = tmp.path + "/atomic_test.json";
+    std::string tmpPath = path + ".tmp";
+
+    TEST("atomicWriteFile — writes the exact bytes");
+    EXPECT(atomicWriteFile(path, "hello world"));
+    EXPECT(fileExists(path));
+    EXPECT_EQ(slurp(path), std::string("hello world"));
+
+    TEST("atomicWriteFile — leaves no .tmp behind");
+    EXPECT(!fileExists(tmpPath));
+
+    TEST("atomicWriteFile — replaces existing content");
+    EXPECT(atomicWriteFile(path, "second payload, a different length"));
+    EXPECT_EQ(slurp(path), std::string("second payload, a different length"));
+    EXPECT(!fileExists(tmpPath));
+
+    TEST("atomicWriteFile — preserves embedded NULs and newlines");
+    std::string payload("a\0b\nc", 5);
+    EXPECT(atomicWriteFile(path, payload));
+    EXPECT_EQ(slurp(path), payload);
+
+    TEST("atomicWriteFile — handles empty content");
+    EXPECT(atomicWriteFile(path, ""));
+    EXPECT(fileExists(path));
+    EXPECT_EQ(slurp(path), std::string(""));
+}
+
 static void testConfigRoundTrip() {
     TempXdg tmp;
 
@@ -165,6 +194,9 @@ static void testConfigRoundTrip() {
 
     TEST("saveConfig — writes file");
     EXPECT(fileExists(configPath()));
+
+    TEST("saveConfig — leaves no .tmp sibling behind");
+    EXPECT(!fileExists(configPath() + ".tmp"));
 
     Config in = loadConfig();
     TEST("loadConfig — round-trips ports");
@@ -429,6 +461,7 @@ int main() {
     testJsonEscape();
     testJsonGetString();
     testConfigPath();
+    testAtomicWriteFile();
     testConfigRoundTrip();
     testDiscoveryBroadcastConfig();
     testLoadConfigMissingFile();
