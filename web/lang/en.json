@@ -289,6 +289,18 @@
   "logs.empty.filtered": "No log entries match filters",
   "logs.hint": "Showing last 500 log entries · auto-refreshes every 2 seconds",
 
+  "netinfo.title": "Network",
+  "netinfo.ip": "LAN IP Address",
+  "netinfo.device": "Network Device",
+  "netinfo.unknown": "Unknown",
+  "netinfo.hint": "Ports and addresses this PC uses on the LAN. Only the UDP input port is configurable; the rest are shown for reference.",
+  "netinfo.port.udp": "UDP Input Port",
+  "netinfo.port.web": "Admin UI Port",
+  "netinfo.port.pair": "Pairing Port",
+  "netinfo.port.client": "Client API Port (HTTPS)",
+  "netinfo.port.discovery": "Discovery Beacon Port",
+  "netinfo.port.mdns": "mDNS / DNS Port",
+
   "donate.title": "Support Satellite",
   "donate.eyebrow": "Support the project",
   "donate.h1": "Satellite runs on coffee and goodwill.",

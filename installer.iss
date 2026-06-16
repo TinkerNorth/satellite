@@ -217,6 +217,9 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""S
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; StatusMsg: "Resetting firewall (Discovery)..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite Discovery"" dir=in action=allow protocol=UDP localport=9879 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (Discovery)..."
 
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite mDNS"""; Flags: runhidden; StatusMsg: "Resetting firewall (mDNS)..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite mDNS"" dir=in action=allow protocol=UDP localport=5353 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (mDNS discovery)..."
+
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Client TLS"""; Flags: runhidden; StatusMsg: "Resetting firewall (Client TLS)..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite Client TLS"" dir=in action=allow protocol=TCP localport=9443 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (Client TLS)..."
 
@@ -240,6 +243,7 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite UDP"""; Flags: runhidden; RunOnceId: "FwUDP"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Pairing"""; Flags: runhidden; RunOnceId: "FwPair"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; RunOnceId: "FwDisc"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite mDNS"""; Flags: runhidden; RunOnceId: "FwMDNS"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Client TLS"""; Flags: runhidden; RunOnceId: "FwClientTLS"
 ; NOTE: we deliberately do NOT uninstall ViGEmBus here. Other apps
 ; (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.) share the driver and

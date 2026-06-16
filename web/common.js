@@ -149,6 +149,38 @@ function esc(s) {
   return d.innerHTML;
 }
 
+async function fetchNetInfo(containerId) {
+  try {
+    const r = await fetch('/api/netinfo');
+    if (!r.ok) return;
+    const d = await r.json();
+    renderNetInfo(containerId, d);
+  } catch (e) {}
+}
+
+function netInfoRow(label, value) {
+  return '<div class="stat"><span class="label">' + esc(label) +
+         '</span><span class="value">' + esc(value) + '</span></div>';
+}
+
+function renderNetInfo(containerId, d) {
+  const el = document.getElementById(containerId);
+  if (!el || !d) return;
+  const p = d.ports || {};
+  const unknown = t('netinfo.unknown');
+  const port = v => (v == null ? unknown : String(v));
+  let html = '';
+  html += netInfoRow(t('netinfo.ip'), d.lanIp || unknown);
+  html += netInfoRow(t('netinfo.device'), d.device || unknown);
+  html += netInfoRow(t('netinfo.port.udp'), port(p.udp));
+  html += netInfoRow(t('netinfo.port.web'), port(p.web));
+  html += netInfoRow(t('netinfo.port.pair'), port(p.pair));
+  html += netInfoRow(t('netinfo.port.client'), port(p.client));
+  html += netInfoRow(t('netinfo.port.discovery'), port(p.discovery));
+  html += netInfoRow(t('netinfo.port.mdns'), port(p.mdns));
+  el.innerHTML = html;
+}
+
 // ── Init ────────────────────────────────────────────────────────────────────
 // Defer route() until the i18n catalog is in hand so the init functions
 // (initDashboard / initSettings / initDebug / initLogs) see translated

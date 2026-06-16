@@ -17,6 +17,8 @@ function initLogs() {
   fetchLogs();
   clearInterval(_logTimer);
   _logTimer = setInterval(fetchLogs, 2000);
+
+  fetchNetInfo('logs-netinfo');
 }
 
 async function fetchLogs() {
