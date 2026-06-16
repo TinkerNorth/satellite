@@ -4,6 +4,7 @@
 #include "crypto.h"
 #include "config.h"
 #include "pairing.h"
+#include "pairing_keys.h"
 #include "pairing_service.h"
 #include "session_crypto.h"
 #include "core/catalog.h"
@@ -557,24 +558,16 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
         uint8_t serverPk[32], serverSk[32];
         generateKeyPair(serverPk, serverSk);
 
-        // Client key is optional — absent in trusted-network mode.
-        uint8_t clientPk[32];
-        bool hasClientKey = !clientPkHex.empty() && hexDecode(clientPkHex, clientPk, 32);
-
         std::string sharedKeyHex;
-        if (hasClientKey) {
-            uint8_t sharedKey[32];
-            if (computeSharedKey(sharedKey, clientPk, serverSk, serverPk)) {
-                sharedKeyHex = hexEncode(sharedKey, 32);
-                sodium_memzero(sharedKey, 32);
-            }
-        }
-        if (sharedKeyHex.empty()) {
-            // No key exchange — mint a random key, returned over TLS.
-            uint8_t randomKey[32];
-            randombytes_buf(randomKey, 32);
-            sharedKeyHex = hexEncode(randomKey, 32);
-            sodium_memzero(randomKey, 32);
+        PairingKeyOutcome outcome =
+            resolvePairingSharedKey(clientPkHex, serverPk, serverSk, sharedKeyHex);
+        if (outcome == PairingKeyOutcome::InvalidClientKey) {
+            sodium_memzero(serverSk, 32);
+            logMsg(LogLevel::WARN, "pairing",
+                   "Rejected pairing: unusable client public key from " + deviceId + " (" +
+                       clientIP + ")");
+            res.set_content(R"({"ok":false,"error":"invalid public key"})", "application/json");
+            return;
         }
 
         upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex);
@@ -586,7 +579,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
         sodium_memzero(serverSk, 32);
         logMsg(LogLevel::INFO, "pairing",
                "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
-        if (hasClientKey) {
+        if (outcome == PairingKeyOutcome::Derived) {
             res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
                                 serverPkHex + R"(","protocolVersion":)" +
                                 std::to_string(PROTOCOL_VERSION) + "}",
@@ -754,13 +747,21 @@ void adminHttpThread(SessionService& svc) {
         }
         std::string backendJson = buildBackendJson();
         bool backendUp = svc.isBackendAvailable();
+        int udpPort, webPort;
+        bool autoStart, broadcast;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            udpPort = g_config.udpPort;
+            webPort = g_config.webPort;
+            autoStart = g_config.autoStart;
+            broadcast = g_config.discoveryBroadcastEnabled;
+        }
         char json[1024];
         snprintf(
             json, sizeof(json),
             R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s,"discoveryBroadcastEnabled":%s,"mdnsResponderActive":%s,"backendAvailable":%s,"backend":%s})",
             g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
-            senderIP, g_config.udpPort, g_config.webPort, g_config.autoStart ? "true" : "false",
-            g_config.discoveryBroadcastEnabled ? "true" : "false",
+            senderIP, udpPort, webPort, autoStart ? "true" : "false", broadcast ? "true" : "false",
             g_mdnsResponderActive.load() ? "true" : "false", backendUp ? "true" : "false",
             backendJson.c_str());
         res.set_content(json, "application/json");
@@ -1035,6 +1036,11 @@ void adminHttpThread(SessionService& svc) {
         char json[1536];
         std::string backendJson = buildBackendJson();
         bool backendUp = svc.isBackendAvailable();
+        int udpPort;
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            udpPort = g_config.udpPort;
+        }
         snprintf(json, sizeof(json),
                  R"({"listening":%s,"packets":%llu,"submitOk":%llu,"submitFail":%llu,)"
                  R"("lastLoopUs":%llu,"maxLoopUs":%llu,"senderIP":"%s","udpPort":%d,)"
@@ -1043,7 +1049,7 @@ void adminHttpThread(SessionService& svc) {
                  g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
                  (unsigned long long)g_submitOk.load(), (unsigned long long)g_submitFail.load(),
                  (unsigned long long)g_lastLoopUs.load(), (unsigned long long)maxUs, senderIP,
-                 g_config.udpPort, (unsigned long long)g_decryptFail.load(),
+                 udpPort, (unsigned long long)g_decryptFail.load(),
                  (unsigned long long)g_replayDrop.load(), backendUp ? "true" : "false",
                  backendJson.c_str());
         res.set_content(json, "application/json");
@@ -1135,6 +1141,13 @@ void adminHttpThread(SessionService& svc) {
 
                 bool backendUp = svc.isBackendAvailable();
                 std::string backendJson = buildBackendJson();
+                int udpPort;
+                bool autoStart;
+                {
+                    std::lock_guard<std::mutex> lk(g_configMtx);
+                    udpPort = g_config.udpPort;
+                    autoStart = g_config.autoStart;
+                }
                 char statusBuf[1536];
                 snprintf(statusBuf, sizeof(statusBuf),
                          R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,)"
@@ -1143,8 +1156,8 @@ void adminHttpThread(SessionService& svc) {
                          R"("lastLoopUs":%llu,"decryptFail":%llu,"replayDrop":%llu,)"
                          R"("logSeq":%llu})",
                          g_listening.load() ? "true" : "false",
-                         (unsigned long long)g_packetCount.load(), senderIP, g_config.udpPort,
-                         g_config.autoStart ? "true" : "false", backendUp ? "true" : "false",
+                         (unsigned long long)g_packetCount.load(), senderIP, udpPort,
+                         autoStart ? "true" : "false", backendUp ? "true" : "false",
                          backendJson.c_str(), (unsigned long long)g_submitOk.load(),
                          (unsigned long long)g_submitFail.load(),
                          (unsigned long long)g_lastLoopUs.load(),
@@ -1189,8 +1202,13 @@ void adminHttpThread(SessionService& svc) {
         });
     });
 
-    logMsg(LogLevel::INFO, "web", "Admin web UI on 127.0.0.1:" + std::to_string(g_config.webPort));
-    g_httpServer.listen("127.0.0.1", g_config.webPort);
+    int webPort;
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        webPort = g_config.webPort;
+    }
+    logMsg(LogLevel::INFO, "web", "Admin web UI on 127.0.0.1:" + std::to_string(webPort));
+    g_httpServer.listen("127.0.0.1", webPort);
 }
 
 // Client API server — pairing + sessions + catalog. HTTPS (self-signed), 0.0.0.0.

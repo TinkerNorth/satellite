@@ -10,6 +10,8 @@ std::string configPath();
 Config loadConfig();
 void saveConfig(const Config& cfg);
 
+bool atomicWriteFile(const std::string& path, const std::string& bytes);
+
 // Auto-start via an XDG autostart .desktop file.
 void setAutoStart(bool enable);
 bool getAutoStart();

@@ -122,19 +122,32 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // AppUserModelID must be set before any HWND/tray icon, or taskbar/toast/
     // jump-list grouping falls back to "satellite.exe". COM apartment is
     // required by the jump-list registration below.
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    HRESULT hrCoInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hrCoInit)) {
+        logMsg(LogLevel::WARN, "startup",
+               "CoInitializeEx failed; jump list and toasts may be unavailable");
+    }
     shell_integration::registerAppUserModelID();
 
     // Needed for TaskDialogIndirect; done early so a failed libsodium init can
     // use the modern dialog rather than MessageBox.
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES};
-    InitCommonControlsEx(&icc);
+    if (!InitCommonControlsEx(&icc)) {
+        logMsg(LogLevel::WARN, "startup",
+               "InitCommonControlsEx failed; dialogs may render plainly");
+    }
 
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS); // low-latency input forwarding
     timeBeginPeriod(1); // default 15.6ms timer resolution would distort scheduling
 
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa); // httplib requires Winsock up globally
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { // httplib requires Winsock up globally
+        showFatalError(L"Satellite", L"Network stack failed to initialize",
+                       L"Windows Sockets (Winsock) could not start, so Satellite cannot reach "
+                       L"your devices.\n\nTry restarting Windows; if the problem persists, file an "
+                       L"issue at https://github.com/TinkerNorth/satellite/issues.");
+        return 1;
+    }
 
     if (!sodiumInit()) {
         showFatalError(L"Satellite", L"Cryptography library failed to initialize",
@@ -263,10 +276,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
 
     svc.closeAllSessions();
 
+    lifecycle::stopFileLogger();
+
     removeTrayIcon();
     saveConfig(g_config);
     timeEndPeriod(1);
     WSACleanup();
-    CoUninitialize();
+    if (SUCCEEDED(hrCoInit)) CoUninitialize();
     return 0;
 }

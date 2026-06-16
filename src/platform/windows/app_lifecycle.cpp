@@ -44,6 +44,8 @@ HANDLE g_singletonMutex = nullptr;
 std::atomic<bool> g_loggerStarted{false};
 std::thread g_loggerThread;
 
+wchar_t g_dumpDirW[MAX_PATH] = {};
+
 std::wstring utf8ToWide(const std::string& s) {
     if (s.empty()) return {};
     int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
@@ -63,7 +65,7 @@ std::string wideToUtf8(const std::wstring& w) {
 }
 
 // Resolve %LOCALAPPDATA%\TinkerNorth\Satellite\<sub>, creating dirs on the way.
-std::string ensureSubdir(const wchar_t* sub) {
+std::wstring ensureSubdirW(const wchar_t* sub) {
     PWSTR raw = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) || raw == nullptr)
         return {};
@@ -76,8 +78,10 @@ std::string ensureSubdir(const wchar_t* sub) {
     out += L"\\";
     out += sub;
     CreateDirectoryW(out.c_str(), nullptr);
-    return wideToUtf8(out);
+    return out;
 }
+
+std::string ensureSubdir(const wchar_t* sub) { return wideToUtf8(ensureSubdirW(sub)); }
 
 // Keep the N newest files matching `ext`, delete the rest. Best-effort.
 void retainNewestN(const std::wstring& dir, const wchar_t* ext, size_t keep) {
@@ -134,19 +138,19 @@ void deleteOlderThan(const std::wstring& dir, const wchar_t* ext, int days) {
 }
 
 LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
-    std::string dir = dumpDir();
-    if (dir.empty()) return EXCEPTION_EXECUTE_HANDLER;
+    if (g_dumpDirW[0] == L'\0') return EXCEPTION_EXECUTE_HANDLER;
 
-    char ts[32];
-    std::time_t now = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &now);
-    std::strftime(ts, sizeof(ts), "%Y%m%d-%H%M%S", &tm);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t path[MAX_PATH];
+    if (FAILED(StringCchPrintfW(path, ARRAYSIZE(path),
+                                L"%s\\satellite-%04u%02u%02u-%02u%02u%02u.dmp", g_dumpDirW,
+                                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond))) {
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
 
-    std::string path = dir + "\\satellite-" + ts + ".dmp";
-    std::wstring wpath = utf8ToWide(path);
-    HANDLE f = CreateFileW(wpath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE f =
+        CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f != INVALID_HANDLE_VALUE) {
         MINIDUMP_EXCEPTION_INFORMATION mei{GetCurrentThreadId(), ep, FALSE};
         // Small dumps that still capture locals + per-thread state.
@@ -157,9 +161,6 @@ LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
                           nullptr, nullptr);
         CloseHandle(f);
     }
-
-    // Cap here (after writing) so it survives even when normal shutdown never runs.
-    retainNewestN(utf8ToWide(dir), L".dmp", kMaxDumpFiles);
 
     // Hand off to the default handler so WER still runs.
     return EXCEPTION_EXECUTE_HANDLER;
@@ -314,10 +315,13 @@ void installCrashHandler() {
     // standard "Satellite has stopped working" dialog.
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 
+    std::wstring dumps = ensureSubdirW(L"dumps");
+    StringCchCopyW(g_dumpDirW, ARRAYSIZE(g_dumpDirW), dumps.c_str());
+
     SetUnhandledExceptionFilter(dumpFilter);
 
     // One-shot trim now, since rotation otherwise waits for the next crash.
-    retainNewestN(utf8ToWide(dumpDir()), L".dmp", kMaxDumpFiles);
+    retainNewestN(dumps, L".dmp", kMaxDumpFiles);
 }
 
 void registerForRestart() {
@@ -436,7 +440,10 @@ void reconcileAutoStart() {
 void startFileLogger() {
     if (g_loggerStarted.exchange(true)) return; // idempotent
     g_loggerThread = std::thread(loggerLoop);
-    g_loggerThread.detach(); // bounded by g_appRunning
+}
+
+void stopFileLogger() {
+    if (g_loggerThread.joinable()) g_loggerThread.join();
 }
 
 } // namespace lifecycle
