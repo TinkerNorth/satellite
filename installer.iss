@@ -477,24 +477,40 @@ begin
     StatusLabel.Caption := StatusText;
 end;
 
+const
+    VigemBusyCode = 1618;
+    VigemMaxAttempts = 4;
+    VigemRetryDelayMs = 8000;
+
 procedure RunBundledViGEm;
 var
     InstallerPath: String;
     ResultCode: Integer;
     Msg: String;
+    Attempt: Integer;
 begin
     InstallerPath := ExpandConstant('{tmp}\{#ViGEmBusInstaller}');
     WizardForm.StatusLabel.Caption := 'Installing ViGEmBus driver (this can take a minute)...';
     WizardForm.FilenameLabel.Caption := '{#ViGEmBusInstaller}';
 
-    if not Exec(InstallerPath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-        MsgBox('Could not launch the bundled ViGEmBus installer. Satellite ' +
-               'will still install, but you must install ViGEmBus manually ' +
-               'before connecting a sender.' + #13#10 + #13#10 +
-               'Get it from: https://github.com/nefarius/ViGEmBus/releases',
-               mbInformation, MB_OK);
-        Exit;
-    end;
+    Attempt := 0;
+    repeat
+        Inc(Attempt);
+        if not Exec(InstallerPath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+            MsgBox('Could not launch the bundled ViGEmBus installer. Satellite ' +
+                   'will still install, but you must install ViGEmBus manually ' +
+                   'before connecting a sender.' + #13#10 + #13#10 +
+                   'Get it from: https://github.com/nefarius/ViGEmBus/releases',
+                   mbInformation, MB_OK);
+            Exit;
+        end;
+        if ResultCode <> VigemBusyCode then
+            Break;
+        if Attempt < VigemMaxAttempts then begin
+            WizardForm.StatusLabel.Caption := 'Another Windows install is busy; waiting to install ViGEmBus...';
+            Sleep(VigemRetryDelayMs);
+        end;
+    until Attempt >= VigemMaxAttempts;
 
     case ResultCode of
         0, 1638, 3011:
@@ -509,6 +525,11 @@ begin
             MsgBox('ViGEmBus installation failed (fatal error). Check the ' +
                    'installer log under %TEMP% and install manually before ' +
                    'using virtual gamepads.', mbError, MB_OK);
+        VigemBusyCode:
+            MsgBox('Another installation (often Windows Update) was still in ' +
+                   'progress, so ViGEmBus could not be installed right now. ' +
+                   'Let any pending updates finish, then re-run the Satellite ' +
+                   'installer to add the driver.', mbInformation, MB_OK);
         else begin
             Msg := 'ViGEmBus installer returned exit code ' + IntToStr(ResultCode) + '.' + #13#10 +
                    'Satellite will still install, but virtual gamepad output ' +
