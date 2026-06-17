@@ -12,3 +12,6 @@ BackendStatus probeBackend() {
     status.errorCode = nullptr;
     return status;
 }
+
+// No virtual-pad backend ships for macOS, so there are no options to advertise.
+std::vector<satellite::BackendRuntimeStatus> enumerateBackends() { return {}; }

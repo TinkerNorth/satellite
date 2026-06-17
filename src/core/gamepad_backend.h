@@ -5,10 +5,15 @@
 // impl in src/platform/<os>/gamepad_backend.cpp.
 #pragma once
 
+#include "core/backend_registry.h"
+
+#include <vector>
+
 // Stable identifiers exposed in the JSON API. Web UI matches on these.
-inline const char* BACKEND_ID_VIGEM = "vigem";   // Windows / ViGEmBus
-inline const char* BACKEND_ID_UINPUT = "uinput"; // Linux / /dev/uinput
-inline const char* BACKEND_ID_NONE = "none";     // macOS / unsupported
+inline const char* BACKEND_ID_VIGEM = "vigem";           // Windows / ViGEmBus
+inline const char* BACKEND_ID_HIDMAESTRO = "hidmaestro"; // Windows / HIDMaestro (UMDF2)
+inline const char* BACKEND_ID_UINPUT = "uinput";         // Linux / /dev/uinput
+inline const char* BACKEND_ID_NONE = "none";             // macOS / unsupported
 
 // Per-backend error codes. Null means the backend is available.
 //
@@ -21,13 +26,21 @@ inline const char* BACKEND_ID_NONE = "none";     // macOS / unsupported
 
 struct BackendStatus {
     const char* id = BACKEND_ID_NONE; // one of BACKEND_ID_*
+    const char* vendor = "";          // registry vendor of `id`; "" when none
     bool supported = false;           // false → web hides the backend panel
     bool available = false;           // can the backend accept controllers right now?
     const char* errorCode = nullptr;  // null when available, else a per-backend tag
 };
 
 // Side-effect-free; safe to call from any thread and from per-request handlers.
+// Returns the host's active/default backend (drives the legacy single-backend
+// panel). enumerateBackends() is the full library-agnostic option list.
 BackendStatus probeBackend();
+
+// Every backend candidate for THIS host with live availability, most-preferred
+// (lowest-latency) first. Platform-implemented. The API joins these with the
+// static registry to advertise every option, its vendor, and its latency tiers.
+std::vector<satellite::BackendRuntimeStatus> enumerateBackends();
 
 // Which TOUCHPAD_MODE_* values this server can honour. Clients query via GET
 // /api/server/capabilities so their mode-picker disables modes the host can't

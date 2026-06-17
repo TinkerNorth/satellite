@@ -76,7 +76,8 @@ class ViGEmAdapter : public IGamepadPort {
     // plugged). Buffers persist across IOCTLs so a submit is one memcpy.
     struct IoSlot {
         // OVERLAPPED hEvent for this slot's sync submits; persistent to avoid a
-        // CreateEvent/CloseHandle pair on the 250 Hz hot path.
+        // CreateEvent/CloseHandle pair on the per-frame submit path, whose rate
+        // is client-driven (no server cap; commonly 250–500 Hz).
         HANDLE event = nullptr;
 
         // All three kept: a DS4 slot may fall back EX -> basic mid-session when

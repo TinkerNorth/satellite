@@ -31,6 +31,8 @@ static std::string buildBackendJson() {
     BackendStatus s = probeBackend();
     std::string json = "{\"id\":\"";
     json += s.id;
+    json += "\",\"vendor\":\"";
+    json += s.vendor ? s.vendor : "";
     json += "\",\"supported\":";
     json += s.supported ? "true" : "false";
     json += ",\"available\":";
@@ -79,6 +81,7 @@ static std::string buildCapabilitiesJson() {
     json += SATELLITE_VERSION;
     json += "\",\"maxControllers\":" + std::to_string(MAX_BACKEND_CONTROLLERS);
     json += ",\"backend\":" + buildBackendJson();
+    json += ",\"backends\":" + satellite::buildBackendsJson(enumerateBackends());
     json += ",\"motion\":{\"available\":";
     json += (s.available && traits.ds4MotionSupported) ? "true" : "false";
     json += "}}";
