@@ -402,8 +402,9 @@ inline const uint8_t TOUCHPAD_MODE_COUNT = 3;
 // remainder is carried so slow drags don't truncate to zero.
 inline const float TOUCHPAD_MOUSE_SENSITIVITY = 0.042f;
 
-// Sample spacing the sensitivity was tuned at (dish resend cadence, 250 Hz →
-// 4 ms). Delta scales by REFERENCE_MS/dt so velocity is dt-independent.
+// Reference sample spacing the sensitivity was calibrated against (4 ms). Delta
+// scales by REFERENCE_MS/dt, so cursor velocity is independent of the client's
+// actual send rate — a faster client just yields more, smaller deltas.
 inline const int TOUCHPAD_MOUSE_REFERENCE_MS = 4;
 
 // Clamp the divisor: below this dt the scale factor explodes and a near-

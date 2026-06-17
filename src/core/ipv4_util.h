@@ -3,7 +3,8 @@
 // Deliberately winsock-free so the portable test target links without ws2_32.
 // Both helpers use NETWORK byte order, matching sockaddr_in::sin_addr::s_addr,
 // so the uint32 from recvfrom passes straight through. On the hot path (one
-// call per UDP packet at ~250 Hz) so kept tiny and allocation-free.
+// call per UDP gamepad packet, at the client's send rate — uncapped, up to
+// ~500 Hz) so kept tiny and allocation-free.
 #pragma once
 
 #include <cstdint>

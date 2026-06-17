@@ -44,6 +44,7 @@ endif()
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
     src/core/catalog.cpp
+    src/core/backend_registry.cpp
     src/core/update_service.cpp
     src/core/github_release.cpp
     src/core/network_info.cpp
@@ -715,6 +716,16 @@ satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/co
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
 satellite_add_pure_test(test_json_mini tests/test_json_mini.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
+
+# Library-agnostic backend registry (identity / vendor / per-type latency tiers)
+# and its JSON builder.
+satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
+    src/core/backend_registry.cpp)
+
+# HIDMaestro shared-memory input packer: pure byte/seqlock logic, verified on
+# every platform even though the live backend is Windows-only.
+satellite_add_pure_test(test_hidmaestro_wire tests/test_hidmaestro_wire.cpp
+    src/platform/windows/hidmaestro_wire.cpp)
 
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
 # at the real web/lang catalogs so every controller-type string is asserted
