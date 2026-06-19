@@ -101,6 +101,7 @@ static void test_catalogJson_structure() {
     traits.ds4TouchpadSupported = true;
     traits.ds4LightbarSupported = true;
     traits.mouseControlSupported = true;
+    traits.rumbleSupported = true;
 
     const std::string enJson = readFileAll(langPath("en"));
     EXPECT(!enJson.empty());
@@ -129,12 +130,18 @@ static void test_catalogJson_structure() {
         EXPECT(types[1].find("\"requires\":\"vigembus>=1.17\"") != std::string::npos);
         // Xbox 360 has no motion/lightbar/touchpad.
         EXPECT(types[0].find("\"motion\":{\"supported\":false}") != std::string::npos);
+        // The DS4 touchpad advertises its pad mode explicitly (read, not inferred).
+        EXPECT(types[1].find("\"touchpad\":{\"supported\":true,\"modes\":[\"ds4\"]}") !=
+               std::string::npos);
     }
 
     // hostFeatures: pure capability data + machine-readable mode slugs.
     EXPECT(json.find("\"hostFeatures\":{\"mouseControl\":{\"supported\":true") !=
            std::string::npos);
     EXPECT(json.find("\"modes\":[\"off\",\"ds4\",\"mouse\"]") != std::string::npos);
+    // rumble (RECEIVE) and keyboardControl (SEND) are explicit host features now.
+    EXPECT(json.find("\"rumble\":{\"supported\":true}") != std::string::npos);
+    EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
 }
 
 static void test_catalogJson_inertBackend() {
@@ -143,12 +150,54 @@ static void test_catalogJson_inertBackend() {
     const std::string enJson = readFileAll(langPath("en"));
     std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
     EXPECT(json.find("\"mouseControl\":{\"supported\":false") != std::string::npos);
+    // An inert backend returns no rumble either (RECEIVE host feature gated off).
+    EXPECT(json.find("\"rumble\":{\"supported\":false}") != std::string::npos);
     auto types = jsonGetArrayObjects(json, "controllerTypes");
     EXPECT_EQ(types.size(), size_t{2});
     if (types.size() == 2) {
         EXPECT(types[1].find("\"motion\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[1].find("requires") == std::string::npos);
+        // touchpad unsupported → no modes array emitted.
+        EXPECT(types[1].find("\"touchpad\":{\"supported\":false}") != std::string::npos);
     }
+    EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
+}
+
+static void test_hostBlock_liveBackend() {
+    TEST("buildHostBlockJson — live backend: supported features are also available");
+    CatalogBackendTraits traits;
+    traits.mouseControlSupported = true;
+    traits.rumbleSupported = true;
+    const std::string json = buildHostBlockJson(traits, /*backendAvailable=*/true);
+    EXPECT(json.find("\"catalog\":{\"supported\":true}") != std::string::npos);
+    EXPECT(json.find("\"mouseControl\":{\"supported\":true,\"available\":true}") !=
+           std::string::npos);
+    EXPECT(json.find("\"rumble\":{\"supported\":true,\"available\":true}") != std::string::npos);
+    // keyboardControl carries no runtime backend, so no available field — supported only.
+    EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
+}
+
+static void test_hostBlock_supportedButDown() {
+    TEST("buildHostBlockJson — supported but backend down: present yet unavailable");
+    CatalogBackendTraits traits;
+    traits.mouseControlSupported = true;
+    traits.rumbleSupported = true;
+    const std::string json = buildHostBlockJson(traits, /*backendAvailable=*/false);
+    EXPECT(json.find("\"mouseControl\":{\"supported\":true,\"available\":false}") !=
+           std::string::npos);
+    EXPECT(json.find("\"rumble\":{\"supported\":true,\"available\":false}") != std::string::npos);
+    EXPECT(json.find("\"catalog\":{\"supported\":true}") != std::string::npos);
+}
+
+static void test_hostBlock_inertBackend() {
+    TEST("buildHostBlockJson — inert backend: nothing supported, catalog still present");
+    CatalogBackendTraits traits; // all false
+    const std::string json = buildHostBlockJson(traits, /*backendAvailable=*/false);
+    EXPECT(json.find("\"mouseControl\":{\"supported\":false,\"available\":false}") !=
+           std::string::npos);
+    EXPECT(json.find("\"rumble\":{\"supported\":false,\"available\":false}") != std::string::npos);
+    EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
+    EXPECT(json.find("\"catalog\":{\"supported\":true}") != std::string::npos);
 }
 
 static void test_catalogString_fallbackChain() {
@@ -242,6 +291,9 @@ int main() {
     test_catalogETag_shape();
     test_catalogJson_structure();
     test_catalogJson_inertBackend();
+    test_hostBlock_liveBackend();
+    test_hostBlock_supportedButDown();
+    test_hostBlock_inertBackend();
     test_catalogString_fallbackChain();
     test_resolveLocale_malformedHeaders();
     test_catalogJson_escapesLocalizedStrings();

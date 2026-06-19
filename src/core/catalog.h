@@ -32,6 +32,11 @@ struct CatalogBackendTraits {
     bool ds4TouchpadSupported = false;
     bool ds4LightbarSupported = false;
     bool mouseControlSupported = false;
+    // Host features beyond mouse. rumble is RECEIVE (the host streams rumble back to
+    // the client); keyboardControl is SEND (the host injects keystrokes). A backend
+    // that cannot do one reports it so the client gates instead of assuming.
+    bool rumbleSupported = false;
+    bool keyboardControlSupported = false;
 };
 
 // Localized string lookup: the locale's flat web/lang JSON first, then the
@@ -45,6 +50,11 @@ std::string catalogString(const std::string& langJson, const std::string& enJson
 std::string buildCatalogJson(const std::string& locale, const std::string& langJson,
                              const std::string& enJson, const std::string& serverVersion,
                              const CatalogBackendTraits& traits);
+
+// The /api/server/capabilities `host` block: the receiver's own capability inventory,
+// readable pre-pairing. `supported` mirrors the catalog hostFeatures; `available` ANDs
+// it with live backend liveness so a feature can read present-but-currently-down.
+std::string buildHostBlockJson(const CatalogBackendTraits& traits, bool backendAvailable);
 
 // Catalog ETag: content varies only by server version and locale.
 std::string catalogETag(const std::string& serverVersion, const std::string& locale);
