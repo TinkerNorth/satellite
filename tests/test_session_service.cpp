@@ -51,8 +51,8 @@ struct MockViGem : IGamepadPort {
 
     std::vector<uint32_t> pluggedSerials;
     std::vector<uint32_t> unpluggedSerials;
-    // Adapter truth for isDevicePlugged — maintained by plugin/unplug; a test
-    // can erase entries to simulate a target that vanished driver-side.
+    // Adapter truth for isDevicePlugged, maintained by plugin/unplug; a test can
+    // erase entries to simulate a target that vanished driver-side.
     std::set<uint32_t> pluggedSet;
     GamepadReport lastSubmittedReport{};
     uint32_t lastMotionSerial = 0;
@@ -277,10 +277,8 @@ static SessionUpsertResult upsert(SessionService& svc,
     return svc.upsertSession(devId, devName, "192.168.1.100", TEST_KEY, descriptors, mouseControl);
 }
 
-// ── Session upsert / converge ────────────────────────────────────────────────
-
 static void test_upsert_createsSession() {
-    TEST("upsert — creates a session row");
+    TEST("upsert: creates a session row");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -297,7 +295,7 @@ static void test_upsert_createsSession() {
 }
 
 static void test_upsert_zeroControllerSessionIsValid() {
-    TEST("upsert — zero-controller session is valid and persists");
+    TEST("upsert: zero-controller session is valid and persists");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -312,7 +310,7 @@ static void test_upsert_zeroControllerSessionIsValid() {
 }
 
 static void test_upsert_idempotent_stableConnectionId_rotatingToken() {
-    TEST("upsert — same device twice: same connectionId, token rotates, no pad churn");
+    TEST("upsert: same device twice: same connectionId, token rotates, no pad churn");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -338,7 +336,7 @@ static void test_upsert_idempotent_stableConnectionId_rotatingToken() {
 }
 
 static void test_upsert_rotation_notifiesOldTokenReplaced() {
-    TEST("upsert — rotation sends close-notify(replaced) on the OLD token");
+    TEST("upsert: rotation sends close-notify(replaced) on the OLD token");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -353,7 +351,7 @@ static void test_upsert_rotation_notifiesOldTokenReplaced() {
 }
 
 static void test_upsert_saltAndCounterRotate() {
-    TEST("upsert — fresh salt + counter reset on every PUT");
+    TEST("upsert: fresh salt + counter reset on every PUT");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -371,7 +369,7 @@ static void test_upsert_saltAndCounterRotate() {
 }
 
 static void test_upsert_keyDeriverIsUsed() {
-    TEST("upsert — injected KeyDeriver output becomes the session key");
+    TEST("upsert: injected KeyDeriver output becomes the session key");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -397,7 +395,7 @@ static void test_upsert_keyDeriverIsUsed() {
 }
 
 static void test_upsert_defaultDeriverCopiesPairingKey() {
-    TEST("upsert — without a deriver the pairing key is copied (test mode)");
+    TEST("upsert: without a deriver the pairing key is copied (test mode)");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -411,7 +409,7 @@ static void test_upsert_defaultDeriverCopiesPairingKey() {
 }
 
 static void test_upsert_keyCopiedNotAliased() {
-    TEST("upsert — pairing key is copied by value (caller buffer can die)");
+    TEST("upsert: pairing key is copied by value (caller buffer can die)");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -428,7 +426,7 @@ static void test_upsert_keyCopiedNotAliased() {
 }
 
 static void test_upsert_firstPlugCarriesFinalType() {
-    TEST("upsert — DS4 descriptor plugs DS4 on the FIRST try (no Xbox-default phase)");
+    TEST("upsert: DS4 descriptor plugs DS4 on the FIRST try (no Xbox-default phase)");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -444,7 +442,7 @@ static void test_upsert_firstPlugCarriesFinalType() {
 }
 
 static void test_upsert_convergeRemovesAbsentSlots() {
-    TEST("upsert — slots absent from the desired set are unplugged");
+    TEST("upsert: slots absent from the desired set are unplugged");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -460,7 +458,7 @@ static void test_upsert_convergeRemovesAbsentSlots() {
 }
 
 static void test_upsert_convergeToZeroKeepsSession() {
-    TEST("upsert — converge to zero controllers keeps the session (user in menus)");
+    TEST("upsert: converge to zero controllers keeps the session (user in menus)");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -476,7 +474,7 @@ static void test_upsert_convergeToZeroKeepsSession() {
 }
 
 static void test_upsert_addsNewSlots() {
-    TEST("upsert — new descriptor indexes are plugged");
+    TEST("upsert: new descriptor indexes are plugged");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -490,7 +488,7 @@ static void test_upsert_addsNewSlots() {
 }
 
 static void test_upsert_duplicateIdxLastWins() {
-    TEST("upsert — duplicate ctrlIdx in one body: last write wins, one result");
+    TEST("upsert: duplicate ctrlIdx in one body: last write wins, one result");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -505,7 +503,7 @@ static void test_upsert_duplicateIdxLastWins() {
 }
 
 static void test_upsert_invalidTypeReported() {
-    TEST("upsert — unknown type id → invalidType, nothing plugged");
+    TEST("upsert: unknown type id → invalidType, nothing plugged");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -518,7 +516,7 @@ static void test_upsert_invalidTypeReported() {
 }
 
 static void test_upsert_invalidIndexReported() {
-    TEST("upsert — ctrlIdx >= 16 → invalidIndex, nothing plugged");
+    TEST("upsert: ctrlIdx >= 16 → invalidIndex, nothing plugged");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -530,7 +528,7 @@ static void test_upsert_invalidIndexReported() {
 }
 
 static void test_upsert_backendUnavailable() {
-    TEST("upsert — bus won't open → backendUnavailable per controller, session still ok");
+    TEST("upsert: bus won't open → backendUnavailable per controller, session still ok");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -544,7 +542,7 @@ static void test_upsert_backendUnavailable() {
 }
 
 static void test_upsert_pluginFailReleasesSerial() {
-    TEST("upsert — plug failure → pluginFailed, serial released");
+    TEST("upsert: plug failure → pluginFailed, serial released");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -557,7 +555,7 @@ static void test_upsert_pluginFailReleasesSerial() {
 }
 
 static void test_upsert_noSlots() {
-    TEST("upsert — 17th controller across sessions → noSlots");
+    TEST("upsert: 17th controller across sessions → noSlots");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -573,7 +571,7 @@ static void test_upsert_noSlots() {
 }
 
 static void test_upsert_partialSuccess() {
-    TEST("upsert — one good + one bad descriptor: per-controller results, no abort");
+    TEST("upsert: one good + one bad descriptor: per-controller results, no abort");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -587,10 +585,8 @@ static void test_upsert_partialSuccess() {
     EXPECT_EQ(svc.totalActiveControllers(), 1);
 }
 
-// ── Descriptor convergence: type / caps / touchpad ───────────────────────────
-
 static void test_converge_typeFamilyChange_transactionalReplug() {
-    TEST("converge — family change plugs NEW serial first, then retires the old");
+    TEST("converge: family change plugs NEW serial first, then retires the old");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -616,7 +612,7 @@ static void test_converge_typeFamilyChange_transactionalReplug() {
 }
 
 static void test_converge_replugFailure_keepsOldPad() {
-    TEST("converge — failed replug leaves the old pad untouched and reports replugFailed");
+    TEST("converge: failed replug leaves the old pad untouched and reports replugFailed");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -644,7 +640,7 @@ static void test_converge_replugFailure_keepsOldPad() {
 }
 
 static void test_converge_fullBus_fallsBackToUnplugFirst() {
-    TEST("converge — 16/16 serials: family change falls back to unplug-first, same serial");
+    TEST("converge: 16/16 serials: family change falls back to unplug-first, same serial");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -671,7 +667,7 @@ static void test_converge_fullBus_fallsBackToUnplugFirst() {
 }
 
 static void test_converge_capsAndModeChange_noReplug() {
-    TEST("converge — caps/touchpadMode change, same family → no replug, no epoch bump");
+    TEST("converge: caps/touchpadMode change, same family → no replug, no epoch bump");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -692,7 +688,7 @@ static void test_converge_capsAndModeChange_noReplug() {
 }
 
 static void test_converge_sameDescriptorIsNoOp() {
-    TEST("converge — re-PUT of the identical descriptor set: no churn, same epoch");
+    TEST("converge: re-PUT of the identical descriptor set: no churn, same epoch");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -706,10 +702,8 @@ static void test_converge_sameDescriptorIsNoOp() {
     EXPECT_EQ(r2.epoch, r1.epoch);
 }
 
-// ── Epoch & heartbeat reconcile material ─────────────────────────────────────
-
 static void test_epoch_bumpsOnTopologyChanges() {
-    TEST("epoch — bumps on add/remove/replug, not on no-ops");
+    TEST("epoch: bumps on add/remove/replug, not on no-ops");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -727,7 +721,7 @@ static void test_epoch_bumpsOnTopologyChanges() {
 }
 
 static void test_epoch_bumpsOnFailedReplug() {
-    TEST("epoch — failed replug bumps so a lost PUT response still reconciles");
+    TEST("epoch: failed replug bumps so a lost PUT response still reconciles");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -740,7 +734,7 @@ static void test_epoch_bumpsOnFailedReplug() {
 }
 
 static void test_heartbeat_enrichedAck() {
-    TEST("heartbeat — ack carries backend status + epoch + active bitmap");
+    TEST("heartbeat: ack carries backend status + epoch + active bitmap");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -756,7 +750,7 @@ static void test_heartbeat_enrichedAck() {
 }
 
 static void test_heartbeat_invalidTokenIsNoOp() {
-    TEST("heartbeat — invalid token is a no-op");
+    TEST("heartbeat: invalid token is a no-op");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -767,7 +761,7 @@ static void test_heartbeat_invalidTokenIsNoOp() {
 }
 
 static void test_heartbeat_reflectsInvoluntaryLoss() {
-    TEST("heartbeat — slot removed server-side shows up as epoch+bitmap change");
+    TEST("heartbeat: slot removed server-side shows up as epoch+bitmap change");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -787,10 +781,8 @@ static void test_heartbeat_reflectsInvoluntaryLoss() {
     EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b1);
 }
 
-// ── Standalone controller routes ─────────────────────────────────────────────
-
 static void test_applyController_standalone() {
-    TEST("applyController — standalone descriptor upsert on a live session");
+    TEST("applyController: standalone descriptor upsert on a live session");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -807,7 +799,7 @@ static void test_applyController_standalone() {
 }
 
 static void test_applyController_scopedToOwner() {
-    TEST("applyController — another device's connectionId is not found");
+    TEST("applyController: another device's connectionId is not found");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -821,7 +813,7 @@ static void test_applyController_scopedToOwner() {
 }
 
 static void test_removeController_slotOnly() {
-    TEST("removeController — removes the SLOT; the session lives on");
+    TEST("removeController: removes the SLOT; the session lives on");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -842,7 +834,7 @@ static void test_removeController_slotOnly() {
 }
 
 static void test_sessionView_scopedAndComplete() {
-    TEST("getSessionView — applied state, scoped to the owning device");
+    TEST("getSessionView: applied state, scoped to the owning device");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -867,10 +859,8 @@ static void test_sessionView_scopedAndComplete() {
     EXPECT(svc.getSessionView(r.connectionId, "").found);
 }
 
-// ── Host features ────────────────────────────────────────────────────────────
-
 static void test_mouseControl_grantedWhenSupported() {
-    TEST("hostFeatures — mouseControl granted when requested and supported");
+    TEST("hostFeatures: mouseControl granted when requested and supported");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -882,7 +872,7 @@ static void test_mouseControl_grantedWhenSupported() {
 }
 
 static void test_mouseControl_deniedWhenUnsupported() {
-    TEST("hostFeatures — mouseControl denied with notSupported on an inert backend");
+    TEST("hostFeatures: mouseControl denied with notSupported on an inert backend");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -895,7 +885,7 @@ static void test_mouseControl_deniedWhenUnsupported() {
 }
 
 static void test_mouseControl_notRequestedNotGranted() {
-    TEST("hostFeatures — mouseControl not requested → not granted, no reason");
+    TEST("hostFeatures: mouseControl not requested → not granted, no reason");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -907,7 +897,7 @@ static void test_mouseControl_notRequestedNotGranted() {
 }
 
 static void test_touchpad_mouseStreamDroppedWithoutGrant() {
-    TEST("hostFeatures — mouse-mode touchpad stream is dropped without the grant");
+    TEST("hostFeatures: mouse-mode touchpad stream is dropped without the grant");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -928,7 +918,7 @@ static void test_touchpad_mouseStreamDroppedWithoutGrant() {
 }
 
 static void test_mouseControl_rePutWithoutRequestRevokes() {
-    TEST("hostFeatures — grants are per-PUT: a re-PUT without the request revokes");
+    TEST("hostFeatures: grants are per-PUT: a re-PUT without the request revokes");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -952,10 +942,8 @@ static void test_mouseControl_rePutWithoutRequestRevokes() {
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
 }
 
-// ── Serial lifecycle ─────────────────────────────────────────────────────────
-
 static void test_serials_roundRobinAvoidsInstantReuse() {
-    TEST("serials — a just-freed serial is not the next one allocated");
+    TEST("serials: a just-freed serial is not the next one allocated");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -971,7 +959,7 @@ static void test_serials_roundRobinAvoidsInstantReuse() {
 }
 
 static void test_serials_quarantineOnUnplugFailure() {
-    TEST("serials — unconfirmed unplug quarantines the serial until the bus closes");
+    TEST("serials: unconfirmed unplug quarantines the serial until the bus closes");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1007,10 +995,8 @@ static void test_serials_quarantineOnUnplugFailure() {
     EXPECT_EQ(svc.availableSlots(), 16);
 }
 
-// ── Close paths & notifications ──────────────────────────────────────────────
-
 static void test_closeById_kick_notifiesBeforeTeardown() {
-    TEST("closeSessionById — kick sends close-notify BEFORE any unplug");
+    TEST("closeSessionById: kick sends close-notify BEFORE any unplug");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1027,7 +1013,7 @@ static void test_closeById_kick_notifiesBeforeTeardown() {
 }
 
 static void test_closeById_clientCloseNoNotify() {
-    TEST("closeSessionById — client's own close sends no notify");
+    TEST("closeSessionById: client's own close sends no notify");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1041,7 +1027,7 @@ static void test_closeById_clientCloseNoNotify() {
 }
 
 static void test_closeById_scopeAndNotFound() {
-    TEST("closeSessionById — wrong owner or unknown id → -1");
+    TEST("closeSessionById: wrong owner or unknown id → -1");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1054,7 +1040,7 @@ static void test_closeById_scopeAndNotFound() {
 }
 
 static void test_closeForDevice_unpairClosesLiveSession() {
-    TEST("closeSessionsForDevice — unpair closes the live session with reason=unpaired");
+    TEST("closeSessionsForDevice: unpair closes the live session with reason=unpaired");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1073,7 +1059,7 @@ static void test_closeForDevice_unpairClosesLiveSession() {
 }
 
 static void test_closeAll_broadcastsShutdownFirst() {
-    TEST("closeAllSessions — broadcasts close-notify(shutdown) before teardown");
+    TEST("closeAllSessions: broadcasts close-notify(shutdown) before teardown");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1093,10 +1079,8 @@ static void test_closeAll_broadcastsShutdownFirst() {
     EXPECT_EQ((int)snap.connections.size(), 0);
 }
 
-// ── Liveness: grace + reap + link state ──────────────────────────────────────
-
 static void test_reap_honoursRestGraceWindow() {
-    TEST("reap — a stale-but-in-grace session is NOT reaped (half-open protection)");
+    TEST("reap: a stale-but-in-grace session is NOT reaped (half-open protection)");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1111,7 +1095,7 @@ static void test_reap_honoursRestGraceWindow() {
 }
 
 static void test_reap_firesAfterGraceExpires() {
-    TEST("reap — grace lapsed + no packets → reaped, pads unplugged");
+    TEST("reap: grace lapsed + no packets → reaped, pads unplugged");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1127,7 +1111,7 @@ static void test_reap_firesAfterGraceExpires() {
 }
 
 static void test_reap_recentPacketsKeepAlive() {
-    TEST("reap — fresh packets keep the session alive after grace");
+    TEST("reap: fresh packets keep the session alive after grace");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1141,7 +1125,7 @@ static void test_reap_recentPacketsKeepAlive() {
 }
 
 static void test_linkState_graceCountsAsActive() {
-    TEST("linkState — in-grace session reads Active, not NotResponding");
+    TEST("linkState: in-grace session reads Active, not NotResponding");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1159,7 +1143,7 @@ static void test_linkState_graceCountsAsActive() {
 }
 
 static void test_snapshot_notRespondingState() {
-    TEST("snapshot — stale post-grace connection tagged notResponding");
+    TEST("snapshot: stale post-grace connection tagged notResponding");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1171,10 +1155,8 @@ static void test_snapshot_notRespondingState() {
     EXPECT(snap.connections[0].linkState == DeviceLinkState::NotResponding);
 }
 
-// ── Snapshot truth ───────────────────────────────────────────────────────────
-
 static void test_snapshot_pluggedInFromAdapterTruth() {
-    TEST("snapshot — pluggedIn reflects the adapter, not serialNo > 0");
+    TEST("snapshot: pluggedIn reflects the adapter, not serialNo > 0");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1194,7 +1176,7 @@ static void test_snapshot_pluggedInFromAdapterTruth() {
 }
 
 static void test_snapshot_carriesIdentityAndEpoch() {
-    TEST("snapshot — carries connectionId, epoch, grants, per-controller mode");
+    TEST("snapshot: carries connectionId, epoch, grants, per-controller mode");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1210,10 +1192,10 @@ static void test_snapshot_carriesIdentityAndEpoch() {
     EXPECT_EQ(snap.connections[0].deviceName, std::string("TestDevice"));
 }
 
-// ── Data streams (unchanged plane — regression coverage) ─────────────────────
+// Data streams (unchanged plane, regression coverage).
 
 static void test_gamepadData_routesByType() {
-    TEST("gamepadData — XUSB for Xbox slots, DS4 for PlayStation slots");
+    TEST("gamepadData: XUSB for Xbox slots, DS4 for PlayStation slots");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1232,7 +1214,7 @@ static void test_gamepadData_routesByType() {
 }
 
 static void test_gamepadData_guards() {
-    TEST("gamepadData — invalid token / inactive slot / out-of-range idx");
+    TEST("gamepadData: invalid token / inactive slot / out-of-range idx");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1246,7 +1228,7 @@ static void test_gamepadData_guards() {
 }
 
 static void test_fusedHotPath() {
-    TEST("handleGamepadDataAndUpdate — fused path updates counter+addr and submits");
+    TEST("handleGamepadDataAndUpdate: fused path updates counter+addr and submits");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1267,7 +1249,7 @@ static void test_fusedHotPath() {
 }
 
 static void test_fusedHotPath_guards() {
-    TEST("handleGamepadDataAndUpdate — guards mirror the unfused path");
+    TEST("handleGamepadDataAndUpdate: guards mirror the unfused path");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1288,7 +1270,7 @@ static void test_fusedHotPath_guards() {
 }
 
 static void test_motionData_cachedAndForwarded() {
-    TEST("motion — cached for UI and forwarded to the backend sink");
+    TEST("motion: cached for UI and forwarded to the backend sink");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1306,7 +1288,7 @@ static void test_motionData_cachedAndForwarded() {
 }
 
 static void test_motionData_acceptedWithoutCapAndCachedOnDecline() {
-    TEST("motion — best-effort: accepted without CAP_MOTION, cached when backend declines");
+    TEST("motion: best-effort: accepted without CAP_MOTION, cached when backend declines");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1323,7 +1305,7 @@ static void test_motionData_acceptedWithoutCapAndCachedOnDecline() {
 }
 
 static void test_battery_validation() {
-    TEST("battery — valid levels cached, malformed rejected");
+    TEST("battery: valid levels cached, malformed rejected");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1349,7 +1331,7 @@ static void test_battery_validation() {
 }
 
 static void test_touchpad_ds4ModeRoutesToPad() {
-    TEST("touchpad — DS4 mode routes to submitTouchpad");
+    TEST("touchpad: DS4 mode routes to submitTouchpad");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1363,7 +1345,7 @@ static void test_touchpad_ds4ModeRoutesToPad() {
 }
 
 static void test_touchpad_offModeCachesOnly() {
-    TEST("touchpad — OFF mode caches but routes nowhere");
+    TEST("touchpad: OFF mode caches but routes nowhere");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1392,7 +1374,7 @@ static TouchpadReport mkTouch(bool f0, uint8_t id, int16_t x, int16_t y, uint32_
 }
 
 static void test_touchpad_mouseMode_deltaAndAnchoring() {
-    TEST("touchpad — mouse mode: continuous delta, re-anchor on new contact");
+    TEST("touchpad: mouse mode: continuous delta, re-anchor on new contact");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1419,7 +1401,7 @@ static void test_touchpad_mouseMode_deltaAndAnchoring() {
 }
 
 static void test_touchpad_mouseMode_dtScaling() {
-    TEST("touchpad — mouse mode: doubled dt halves the emitted delta");
+    TEST("touchpad: mouse mode: doubled dt halves the emitted delta");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1442,7 +1424,7 @@ static void test_touchpad_mouseMode_dtScaling() {
 }
 
 static void test_touchpad_mouseMode_duplicateTimestampNoMotion() {
-    TEST("touchpad — mouse mode: dt <= 0 (resend) emits no motion");
+    TEST("touchpad: mouse mode: dt <= 0 (resend) emits no motion");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1457,7 +1439,7 @@ static void test_touchpad_mouseMode_duplicateTimestampNoMotion() {
 }
 
 static void test_touchpad_mouseMode_gapReanchors() {
-    TEST("touchpad — mouse mode: dt gap > max re-anchors instead of flinging");
+    TEST("touchpad: mouse mode: dt gap > max re-anchors instead of flinging");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1473,7 +1455,7 @@ static void test_touchpad_mouseMode_gapReanchors() {
 }
 
 static void test_touchpad_mouseMode_buttonLevel() {
-    TEST("touchpad — mouse mode forwards the button level");
+    TEST("touchpad: mouse mode forwards the button level");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1488,7 +1470,7 @@ static void test_touchpad_mouseMode_buttonLevel() {
 }
 
 static void test_touchpad_mouseMode_clickWithoutTouch() {
-    TEST("touchpad — mouse mode: clicky button with no finger contact still forwards");
+    TEST("touchpad: mouse mode: clicky button with no finger contact still forwards");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1504,7 +1486,7 @@ static void test_touchpad_mouseMode_clickWithoutTouch() {
 }
 
 static void test_touchpad_mouseMode_subPixelRemainder() {
-    TEST("touchpad — mouse mode: sub-pixel remainder accumulates; resends keep it; gaps drop it");
+    TEST("touchpad: mouse mode: sub-pixel remainder accumulates; resends keep it; gaps drop it");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1530,7 +1512,7 @@ static void test_touchpad_mouseMode_subPixelRemainder() {
     EXPECT_EQ(vigem.lastMouseDy, -1);
 
     // A MAX_GAP re-anchor DOES drop the remainder: grow it to ~0.68, gap, then
-    // step — from a clean slate the step stays sub-pixel (0.42); a wrongly
+    // step; from a clean slate the step stays sub-pixel (0.42), but a wrongly
     // kept remainder would cross 1 px (1.10).
     svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 40, -40, 1000 + 4 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 0); // remainder now ≈ 0.68
@@ -1543,7 +1525,7 @@ static void test_touchpad_mouseMode_subPixelRemainder() {
 }
 
 static void test_replug_resetsStreamCaches() {
-    TEST("replug — type change clears cached stream state (no phantom samples)");
+    TEST("replug: type change clears cached stream state (no phantom samples)");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1571,7 +1553,7 @@ static void test_replug_resetsStreamCaches() {
 }
 
 static void test_rumble_forwardsAndCoalesces() {
-    TEST("rumble — backend event forwarded once, identical repeats coalesced");
+    TEST("rumble: backend event forwarded once, identical repeats coalesced");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1597,7 +1579,7 @@ static void test_rumble_forwardsAndCoalesces() {
 }
 
 static void test_lightbar_gatedOnCap() {
-    TEST("lightbar — forwarded only to CAP_LIGHTBAR senders, always cached");
+    TEST("lightbar: forwarded only to CAP_LIGHTBAR senders, always cached");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1630,7 +1612,7 @@ static void test_lightbar_gatedOnCap() {
 }
 
 static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
-    TEST("rumble/lightbar — backend callbacks drop (never block) while mtx_ is held");
+    TEST("rumble/lightbar: backend callbacks drop (never block) while mtx_ is held");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1646,8 +1628,8 @@ static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
     rr.strongMagnitude = 1000;
     // onSessionClose fires while the closing thread holds mtx_. A worker
     // thread invoking the backend callbacks then MUST fail its try_lock and
-    // return — a blocking acquire would deadlock this join (the production
-    // bug: unplug joins the notification worker while holding mtx_).
+    // return; a blocking acquire would deadlock this join (the production bug:
+    // unplug joins the notification worker while holding mtx_).
     client.onSessionClose = [&] {
         std::thread worker([&] {
             vigem.fireRumble(serialA, rr);
@@ -1668,10 +1650,8 @@ static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
     EXPECT_EQ(client.lightbarCalls, 1);
 }
 
-// ── Concurrency smoke ────────────────────────────────────────────────────────
-
 static void test_concurrent_upsertCloseSnapshot() {
-    TEST("concurrency — upsert vs unpair-close vs snapshot races don't corrupt state");
+    TEST("concurrency: upsert vs unpair-close vs snapshot races don't corrupt state");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -1696,10 +1676,8 @@ static void test_concurrent_upsertCloseSnapshot() {
     EXPECT_EQ(svc.availableSlots(), 16);
 }
 
-// ── Protocol constants ───────────────────────────────────────────────────────
-
 static void test_controllerTypeHelpers() {
-    TEST("controller type helpers — names, labels, families, clamping");
+    TEST("controller type helpers: names, labels, families, clamping");
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_XBOX)), std::string("xbox"));
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_PLAYSTATION)),
               std::string("playstation"));
@@ -1714,7 +1692,7 @@ static void test_controllerTypeHelpers() {
 }
 
 static void test_applyResultNames() {
-    TEST("apply result names — protocol constants, machine-readable");
+    TEST("apply result names: protocol constants, machine-readable");
     EXPECT_EQ(std::string(applyResultName(APPLY_OK)), std::string("ok"));
     EXPECT_EQ(std::string(applyResultName(APPLY_ERR_NO_SLOTS)), std::string("noSlots"));
     EXPECT_EQ(std::string(applyResultName(APPLY_ERR_PLUGIN_FAIL)), std::string("pluginFailed"));
@@ -1726,7 +1704,7 @@ static void test_applyResultNames() {
 }
 
 static void test_closeReasonNames() {
-    TEST("close reason names — protocol constants");
+    TEST("close reason names: protocol constants");
     EXPECT_EQ(std::string(closeReasonName(CLOSE_REASON_SHUTDOWN)), std::string("shutdown"));
     EXPECT_EQ(std::string(closeReasonName(CLOSE_REASON_KICKED)), std::string("kicked"));
     EXPECT_EQ(std::string(closeReasonName(CLOSE_REASON_REPLACED)), std::string("replaced"));
@@ -1734,7 +1712,7 @@ static void test_closeReasonNames() {
 }
 
 static void test_wireConstants() {
-    TEST("wire constants — remaining opcodes + close reasons + protocol version");
+    TEST("wire constants: remaining opcodes + close reasons + protocol version");
     EXPECT_EQ((int)MSG_GAMEPAD_DATA, 0x0001);
     EXPECT_EQ((int)MSG_HEARTBEAT_PING, 0x0002);
     EXPECT_EQ((int)MSG_HEARTBEAT_ACK, 0x0003);

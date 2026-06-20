@@ -40,7 +40,7 @@ static StatusFields makeFields() {
 }
 
 static void test_status_exact_shape() {
-    TEST("buildStatusJson — exact JSON shape and field order");
+    TEST("buildStatusJson: exact JSON shape and field order");
     std::string s = buildStatusJson(makeFields());
     EXPECT_EQ(
         s,
@@ -51,7 +51,7 @@ static void test_status_exact_shape() {
 }
 
 static void test_debug_exact_shape() {
-    TEST("buildDebugJson — exact JSON shape and field order");
+    TEST("buildDebugJson: exact JSON shape and field order");
     std::string s = buildDebugJson(makeFields());
     EXPECT_EQ(
         s,
@@ -62,7 +62,7 @@ static void test_debug_exact_shape() {
 }
 
 static void test_sse_exact_shape() {
-    TEST("buildSseStatusObject — exact JSON shape and field order");
+    TEST("buildSseStatusObject: exact JSON shape and field order");
     std::string s = jsonDump(buildSseStatusObject(makeFields()));
     EXPECT_EQ(
         s,

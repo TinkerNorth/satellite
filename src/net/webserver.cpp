@@ -62,9 +62,9 @@ static std::string buildBackendJson(const BackendStatus& s) { return jsonDump(ba
 
 static std::string buildBackendJson() { return buildBackendJson(probeBackend()); }
 
-// Static facts about the backend that shape the catalog — keyed off the
-// backend's identity, not its live health (the catalog only changes on
-// server upgrade; live health is /api/server/capabilities).
+// Static facts about the backend that shape the catalog, keyed off the
+// backend's identity not its live health (the catalog only changes on server
+// upgrade; live health is /api/server/capabilities).
 static satellite::CatalogBackendTraits catalogBackendTraits(const BackendStatus& s) {
     satellite::CatalogBackendTraits t;
     const std::string id = s.id;
@@ -93,11 +93,11 @@ static satellite::CatalogBackendTraits catalogBackendTraits() {
     return catalogBackendTraits(probeBackend());
 }
 
-// GET /api/server/capabilities — CURRENT dynamic state (contract.md layer 2;
-// the static what-exists layer is /api/catalog).
+// GET /api/server/capabilities: CURRENT dynamic state (the static
+// what-exists layer is /api/catalog).
 static std::string buildCapabilitiesJson() {
-    // Probe ONCE and thread it: backend/motion/host must agree within one response, so
-    // they can't each re-probe and race a driver unplug mid-build.
+    // Probe ONCE and thread it: backend/motion/host must agree within one
+    // response, so they can't each re-probe and race a driver unplug mid-build.
     BackendStatus s = probeBackend();
     satellite::CatalogBackendTraits traits = catalogBackendTraits(s);
     JsonOut j;
@@ -158,8 +158,7 @@ static JsonOut capsJsonObj(uint16_t caps) {
     return j;
 }
 
-// `state` fields serialise as lowercase enum names (deviceLinkStateName /
-// controllerStateName in core/types.h) — the canonical wire form.
+// `state` fields serialise as lowercase enum names, the canonical wire form.
 // `connectedAtEpoch` is steady-clock seconds (boot-relative), not Unix epoch.
 static std::string buildConnectionsJson(const SessionService& svc) {
     auto snap = svc.getConnectionsSnapshot();
@@ -235,8 +234,8 @@ static std::string buildConnectionsJson(const SessionService& svc) {
     return jsonDump(j);
 }
 
-// Paired devices + their live link state — `state` is paired | active |
-// notResponding. Shared by the admin route and the SSE devices event.
+// Paired devices + their live link state (paired | active | notResponding).
+// Shared by the admin route and the SSE devices event.
 static std::string buildDevicesJson(const SessionService& svc) {
     JsonOut arr = JsonOut::array();
     std::lock_guard<std::mutex> lk(g_configMtx);
@@ -278,11 +277,9 @@ static std::string buildPairRequestsJson() {
     return jsonDump(arr);
 }
 
-// ── Client auth (HTTPS surface) ──────────────────────────────────────────────
-
 struct ClientAuth {
     std::string deviceId;
-    PairedDevice device; // copy-by-value under g_configMtx — never a pointer
+    PairedDevice device; // copy-by-value under g_configMtx, never a pointer
     uint8_t pairingKey[CRYPTO_KEY_SIZE];
 };
 
@@ -296,8 +293,8 @@ static std::string headerOrBody(const httplib::Request& req, const char* header,
 
 // Every authenticated client route requires a paired deviceId AND an hmacProof
 // of the pairing key, so a diverged key fails HERE with a terminal 401 instead
-// of producing a silently-undecryptable UDP session. The PairedDevice is
-// copied by value under g_configMtx — a concurrent unpair can't dangle it.
+// of a silently-undecryptable UDP session. The PairedDevice is copied by value
+// under g_configMtx so a concurrent unpair can't dangle it.
 static bool clientAuthed(const httplib::Request& req, httplib::Response& res, ClientAuth& out) {
     out.deviceId = headerOrBody(req, "X-Device-Id", "deviceId");
     const std::string proof = headerOrBody(req, "X-Hmac-Proof", "hmacProof");
@@ -349,11 +346,8 @@ static bool protocolVersionOk(const std::string& body, httplib::Response& res) {
     return true;
 }
 
-// ── Descriptor parsing (session/controller PUT bodies) ──────────────────────
-
-// One ControllerDescriptor from its JSON object. `type` is REQUIRED — a
-// descriptor without it would force a server-side default type, which is
-// exactly the default-then-correct bug class this contract removes.
+// `type` is REQUIRED: a descriptor without it would force a server-side default
+// type, the default-then-correct bug class this contract removes.
 static bool parseDescriptorObject(const Json& obj, bool requireIdx, ControllerDescriptor& d) {
     long idx = 0;
     if (jsonTryInt(obj, "ctrlIdx", idx)) {
@@ -397,8 +391,6 @@ static bool parseControllerDescriptors(const Json& body, std::vector<ControllerD
     }
     return true;
 }
-
-// ── Session response builders ────────────────────────────────────────────────
 
 static JsonOut controllerApplyObj(const ControllerApplyResult& r) {
     JsonOut j;
@@ -467,11 +459,8 @@ static std::string buildSessionViewJson(const SessionService::SessionView& v) {
     return jsonDump(j);
 }
 
-// ── Client session routes ────────────────────────────────────────────────────
-
-// PUT /api/connections — the declarative upsert (docs/contract.md §Session).
-// Connect + full topology = ONE call; re-PUT converges; partial success rides
-// in the body, never in the HTTP status.
+// PUT /api/connections: the declarative upsert. Connect + full topology = ONE
+// call; re-PUT converges; partial success rides in the body, never the status.
 static void upsertConnectionRoute(SessionService& svc, const httplib::Request& req,
                                   httplib::Response& res) {
     if (!g_appRunning) {
@@ -528,15 +517,13 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
     res.set_content(buildUpsertResponseJson(result), "application/json");
 }
 
-// ── Pairing routes ───────────────────────────────────────────────────────────
-
-// Dual-path device pairing over HTTPS (PINs + pairing key encrypted in transit).
-// Path A: `pin` (server-generated, typed into the dish) → verifyPin, pair now.
-// Path B: `clientPin` (dish-shown) → register a request, reply pending=true; the
+// Dual-path device pairing over HTTPS.
+// Path A: `pin` (server-generated, typed into the dish), verifyPin, pair now.
+// Path B: `clientPin` (dish-shown), register a request, reply pending=true; the
 //   operator accepts on the dashboard/tray and the dish polls /api/pair/status.
 // Key rotation: `hmacProof` of the CURRENT key mints and returns a fresh key.
 // There is NO PIN-free already-paired short-circuit: handing the stored key to
-// anyone who learned a deviceId let any LAN actor exfiltrate it.
+// anyone who learned a deviceId would let any LAN actor exfiltrate it.
 // Always 200 on the PIN paths; the sender classifies on `ok`/`pending`.
 static void pairRoute(SessionService& svc, const httplib::Request& req, httplib::Response& res) {
     Json body = parseBody(req.body);
@@ -555,7 +542,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
     if (!protocolVersionOk(req.body, res)) return;
 
     // Key rotation / re-pair with proof of the current key. A failed proof
-    // falls through to the PIN paths — identical to a fresh pairing attempt.
+    // falls through to the PIN paths, identical to a fresh pairing attempt.
     if (!hmacProof.empty()) {
         PairedDevice dev;
         bool found = false;
@@ -574,7 +561,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
             verifyHmacProof(currentKey, deviceId, hmacProof)) {
             std::string newKeyHex;
             rotatePairedDeviceKey(deviceId, clientIP, newKeyHex);
-            // The old key dies with the rotation, so any live session keyed off
+            // The old key dies with the rotation, so any live session keyed on
             // it must die too.
             svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
             logMsg(LogLevel::INFO, "pairing",
@@ -591,7 +578,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
                "Rejected proof-based re-pair for " + deviceId + " (" + clientIP + ")");
     }
 
-    // Path A — dish entered the operator's server-generated PIN.
+    // Path A: dish entered the operator's server-generated PIN.
     if (!pin.empty() && verifyPin(pin)) {
         uint8_t serverPk[32], serverSk[32];
         generateKeyPair(serverPk, serverSk);
@@ -609,7 +596,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
         }
 
         upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex);
-        // A re-pair invalidates the previous key; a session still keyed off it
+        // A re-pair invalidates the previous key; a session still keyed on it
         // would churn undecryptably, so close it now.
         svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
 
@@ -630,8 +617,8 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
         return;
     }
 
-    // Path B — register the dish's request; it then polls /api/pair/status. The
-    // clientPin is never echoed server-side — the operator must read it off the
+    // Path B: register the dish's request; it then polls /api/pair/status. The
+    // clientPin is never echoed server-side; the operator must read it off the
     // dish, which is what makes the accept meaningful.
     if (!clientPin.empty()) {
         submitPairRequest(deviceId, deviceName, clientIP, clientPin);
@@ -648,7 +635,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
     res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
 }
 
-// DELETE /api/pair — client self-unpair (hmacProof-authed). Closes any live
+// DELETE /api/pair: client self-unpair (hmacProof-authed). Closes any live
 // session first (close-notify reason=unpaired rides the still-valid key).
 static void selfUnpairRoute(SessionService& svc, const httplib::Request& req,
                             httplib::Response& res) {
@@ -668,8 +655,7 @@ static void selfUnpairRoute(SessionService& svc, const httplib::Request& req,
     res.set_content(R"({"ok":true})", "application/json");
 }
 
-// ── Catalog routes (unauthenticated — the UI renders BEFORE pairing) ────────
-
+// Catalog routes are unauthenticated: the UI renders BEFORE pairing.
 static void catalogRoute(const httplib::Request& req, httplib::Response& res) {
     const std::string locale =
         satellite::resolveCatalogLocale(req.get_header_value("Accept-Language"));
@@ -711,8 +697,7 @@ static void catalogImageRoute(const httplib::Request& req, httplib::Response& re
     res.set_content(svg, "image/svg+xml");
 }
 
-// Admin server — web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
-
+// Admin server: web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 void adminHttpThread(SessionService& svc) {
     // Reject cross-origin / rebound requests before any route runs.
     g_httpServer.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
@@ -866,7 +851,7 @@ void adminHttpThread(SessionService& svc) {
                "Config updated: udpPort=" + std::to_string(g_config.udpPort) + " autoStart=" +
                    std::string(g_config.autoStart ? "true" : "false") + " broadcast=" +
                    std::string(g_config.discoveryBroadcastEnabled ? "true" : "false") +
-                   (portRejected ? " (udpPort out of range — ignored)" : ""));
+                   (portRejected ? " (udpPort out of range, ignored)" : ""));
         JsonOut resp;
         resp["ok"] = true;
         resp["udpPort"] = g_config.udpPort;
@@ -962,14 +947,14 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
-    // The rotating PINs are echoed here for the dashboard to display — safe
-    // because this is the loopback-only admin surface.
+    // PINs are echoed here for the dashboard; safe because this is the
+    // loopback-only admin surface.
     g_httpServer.Get("/api/pin/status", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(buildPinJson(), "application/json");
     });
 
     // Reverse-direction pairing (dish shows a PIN, operator accepts here).
-    // Localhost admin surface — operator is at the satellite — so no device auth.
+    // Localhost admin surface (operator is at the satellite), so no device auth.
     g_httpServer.Get("/api/pair/requests", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(buildPairRequestsJson(), "application/json");
     });
@@ -1004,8 +989,8 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(buildDevicesJson(svc), "application/json");
     });
 
-    // Admin unpair. Closes any live session for the device first — an unpaired
-    // device must not keep streaming on a key the server no longer trusts.
+    // Admin unpair. Closes any live session first: an unpaired device must not
+    // keep streaming on a key the server no longer trusts.
     g_httpServer.Delete(
         R"(/api/devices/([^/]+))", [&svc](const httplib::Request& req, httplib::Response& res) {
             auto deviceId = req.matches[1].str();
@@ -1071,7 +1056,7 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(buildConnectionsJson(svc), "application/json");
     });
 
-    // Admin kick — transient by design (a retrying client may re-PUT and
+    // Admin kick is transient by design (a retrying client may re-PUT and
     // reconnect; to keep a device out, unpair it). Close-notify rides first.
     g_httpServer.Delete(
         R"(/api/connections/(\w+))", [&svc](const httplib::Request& req, httplib::Response& res) {
@@ -1219,21 +1204,21 @@ void adminHttpThread(SessionService& svc) {
     g_httpServer.listen("127.0.0.1", webPort);
 }
 
-// Client API server — pairing + sessions + catalog. HTTPS (self-signed), 0.0.0.0.
+// Client API server: pairing + sessions + catalog. HTTPS (self-signed), 0.0.0.0.
 void clientApiThread(SessionService& svc) {
     std::string certPath, keyPath;
     if (!ensureServerCert(certPath, keyPath)) {
-        logMsg(LogLevel::ERR, "client", "Failed to generate TLS certificate — client API disabled");
+        logMsg(LogLevel::ERR, "client", "Failed to generate TLS certificate; client API disabled");
         return;
     }
 
     httplib::SSLServer server(certPath.c_str(), keyPath.c_str());
     if (!server.is_valid()) {
-        logMsg(LogLevel::ERR, "client", "TLS server context invalid — client API disabled");
+        logMsg(LogLevel::ERR, "client", "TLS server context invalid; client API disabled");
         return;
     }
 
-    // POST /api/pair — PIN-gated (or hmacProof-gated rotation); no device auth
+    // POST /api/pair: PIN-gated (or hmacProof-gated rotation); no device auth
     // for the PIN paths (the device is not paired yet).
     server.Post("/api/pair", [&svc](const httplib::Request& req, httplib::Response& res) {
         pairRoute(svc, req, res);
@@ -1265,17 +1250,17 @@ void clientApiThread(SessionService& svc) {
         res.set_content(jsonDump(r), "application/json");
     });
 
-    // DELETE /api/pair — client self-unpair (closes any live session first).
+    // DELETE /api/pair: client self-unpair (closes any live session first).
     server.Delete("/api/pair", [&svc](const httplib::Request& req, httplib::Response& res) {
         selfUnpairRoute(svc, req, res);
     });
 
-    // PUT /api/connections — idempotent session upsert keyed on deviceId.
+    // PUT /api/connections: idempotent session upsert keyed on deviceId.
     server.Put("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
         upsertConnectionRoute(svc, req, res);
     });
 
-    // GET /api/connections/:id — the reconcile endpoint, scoped to OWN session.
+    // GET /api/connections/:id: the reconcile endpoint, scoped to OWN session.
     server.Get(R"(/api/connections/(\w+))",
                [&svc](const httplib::Request& req, httplib::Response& res) {
                    ClientAuth auth;
@@ -1289,7 +1274,7 @@ void clientApiThread(SessionService& svc) {
                    res.set_content(buildSessionViewJson(view), "application/json");
                });
 
-    // DELETE /api/connections/:id — graceful close of OWN session (no notify:
+    // DELETE /api/connections/:id: graceful close of OWN session (no notify:
     // the closer already knows).
     server.Delete(
         R"(/api/connections/(\w+))", [&svc](const httplib::Request& req, httplib::Response& res) {
@@ -1308,7 +1293,7 @@ void clientApiThread(SessionService& svc) {
             res.set_content(jsonDump(ok), "application/json");
         });
 
-    // PUT /api/connections/:id/controllers/:idx — standalone single-descriptor
+    // PUT /api/connections/:id/controllers/:idx: standalone single-descriptor
     // upsert (the FULL descriptor; ctrlIdx in the path wins).
     server.Put(R"(/api/connections/(\w+)/controllers/(\d+))", [&svc](const httplib::Request& req,
                                                                      httplib::Response& res) {
@@ -1336,7 +1321,7 @@ void clientApiThread(SessionService& svc) {
         res.set_content(jsonDump(j), "application/json");
     });
 
-    // DELETE /api/connections/:id/controllers/:idx — removes the SLOT only;
+    // DELETE /api/connections/:id/controllers/:idx: removes the SLOT only;
     // the session lives on (zero-controller sessions are valid).
     server.Delete(R"(/api/connections/(\w+)/controllers/(\d+))", [&svc](const httplib::Request& req,
                                                                         httplib::Response& res) {

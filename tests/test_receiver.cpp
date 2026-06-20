@@ -9,7 +9,7 @@
 
 #include "test_util.h"
 
-// Bare port stubs — tests assert against the call counters to confirm whether a
+// Bare port stubs; tests assert against the call counters to confirm whether a
 // message was accepted or rejected.
 struct StubGamepad : IGamepadPort {
     bool ensureBusOpen() override { return true; }
@@ -73,7 +73,7 @@ struct StubLog : ILogPort {
 };
 
 // Open a session with one active controller at index 0. Touchpad mode rides
-// the descriptor (DS4 so dispatch tests see pass-through routing — the OFF
+// the descriptor (DS4 so dispatch tests see pass-through routing; the OFF
 // default would drop every MSG_TOUCHPAD before a backend call is observable).
 static uint32_t openWithController(SessionService& svc,
                                    const std::string& devId = "dev-receiver-test") {
@@ -97,7 +97,7 @@ static DispatchResult dispatchTight(SessionService& svc, uint32_t token, uint16_
 }
 
 static void test_decodeMotionReport_littleEndian() {
-    TEST("decodeMotionReport — decodes little-endian fields");
+    TEST("decodeMotionReport: decodes little-endian fields");
     // 16 wire bytes: gyroX..gyroZ, accelX..accelZ (6×i16 LE), then u32 LE.
     uint8_t p[MOTION_WIRE_PAYLOAD_BYTES] = {
         0x10, 0x20,            // gyroX  = 0x2010
@@ -119,7 +119,7 @@ static void test_decodeMotionReport_littleEndian() {
 }
 
 static void test_decodeMotionReport_noOverRead() {
-    TEST("decodeMotionReport — reads exactly MOTION_WIRE_PAYLOAD_BYTES, no more");
+    TEST("decodeMotionReport: reads exactly MOTION_WIRE_PAYLOAD_BYTES, no more");
     std::vector<uint8_t> buf(MOTION_WIRE_PAYLOAD_BYTES, 0x5A);
     MotionReport r = decodeMotionReport(buf.data());
     // 0x5A5A = 23130 for every i16 field; u32 = 0x5A5A5A5A.
@@ -128,7 +128,7 @@ static void test_decodeMotionReport_noOverRead() {
 }
 
 static void test_decodeTouchpadReport_wireLayout() {
-    TEST("decodeTouchpadReport — decodes flags + both fingers + eventTimeMs");
+    TEST("decodeTouchpadReport: decodes flags + both fingers + eventTimeMs");
     uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {
         0x07,                   // flags: finger0 + finger1 + button
         0x11,                   // finger0 trackingId
@@ -153,7 +153,7 @@ static void test_decodeTouchpadReport_wireLayout() {
 }
 
 static void test_decodeTouchpadReport_noOverRead() {
-    TEST("decodeTouchpadReport — reads exactly TOUCHPAD_WIRE_PAYLOAD_BYTES");
+    TEST("decodeTouchpadReport: reads exactly TOUCHPAD_WIRE_PAYLOAD_BYTES");
     std::vector<uint8_t> buf(TOUCHPAD_WIRE_PAYLOAD_BYTES, 0x00);
     TouchpadReport r = decodeTouchpadReport(buf.data());
     EXPECT(!r.finger0.active);
@@ -161,7 +161,7 @@ static void test_decodeTouchpadReport_noOverRead() {
 }
 
 static void test_dispatch_motion_truncatedRejected() {
-    TEST("dispatchInnerMessage — truncated MSG_MOTION is rejected (no decode)");
+    TEST("dispatchInnerMessage: truncated MSG_MOTION is rejected (no decode)");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -178,7 +178,7 @@ static void test_dispatch_motion_truncatedRejected() {
 }
 
 static void test_dispatch_motion_exactLengthAccepted() {
-    TEST("dispatchInnerMessage — MSG_MOTION at exact wire length is decoded");
+    TEST("dispatchInnerMessage: MSG_MOTION at exact wire length is decoded");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -195,14 +195,14 @@ static void test_dispatch_motion_exactLengthAccepted() {
 }
 
 static void test_dispatch_motion_oversizedAccepted() {
-    TEST("dispatchInnerMessage — oversized MSG_MOTION decodes only the leading bytes");
+    TEST("dispatchInnerMessage: oversized MSG_MOTION decodes only the leading bytes");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
     SessionService svc(gp, cl, lg);
     uint32_t token = openWithController(svc);
 
-    // 8 trailing junk bytes past the 17-byte payload — a forward-compatible
+    // 8 trailing junk bytes past the 17-byte payload, a forward-compatible
     // sender extension. The guard is `>=`, so it is accepted; the decoder
     // still reads only the documented 16 bytes after ctrlIdx.
     std::vector<uint8_t> msg(1 + MOTION_WIRE_PAYLOAD_BYTES + 8, 0x00);
@@ -214,7 +214,7 @@ static void test_dispatch_motion_oversizedAccepted() {
 }
 
 static void test_dispatch_battery_truncatedRejected() {
-    TEST("dispatchInnerMessage — truncated MSG_BATTERY is rejected");
+    TEST("dispatchInnerMessage: truncated MSG_BATTERY is rejected");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -230,7 +230,7 @@ static void test_dispatch_battery_truncatedRejected() {
 }
 
 static void test_dispatch_battery_exactLengthAccepted() {
-    TEST("dispatchInnerMessage — MSG_BATTERY at exact wire length is decoded");
+    TEST("dispatchInnerMessage: MSG_BATTERY at exact wire length is decoded");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -245,7 +245,7 @@ static void test_dispatch_battery_exactLengthAccepted() {
 }
 
 static void test_dispatch_touchpad_truncatedRejected() {
-    TEST("dispatchInnerMessage — truncated MSG_TOUCHPAD is rejected (no decode)");
+    TEST("dispatchInnerMessage: truncated MSG_TOUCHPAD is rejected (no decode)");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -261,7 +261,7 @@ static void test_dispatch_touchpad_truncatedRejected() {
 }
 
 static void test_dispatch_touchpad_exactLengthAccepted() {
-    TEST("dispatchInnerMessage — MSG_TOUCHPAD at exact wire length is decoded");
+    TEST("dispatchInnerMessage: MSG_TOUCHPAD at exact wire length is decoded");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -279,7 +279,7 @@ static void test_dispatch_touchpad_exactLengthAccepted() {
 }
 
 static void test_dispatch_gamepad_truncatedRejected() {
-    TEST("dispatchInnerMessage — truncated MSG_GAMEPAD_DATA is rejected");
+    TEST("dispatchInnerMessage: truncated MSG_GAMEPAD_DATA is rejected");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -296,7 +296,7 @@ static void test_dispatch_gamepad_truncatedRejected() {
 }
 
 static void test_dispatch_gamepad_exactLengthAccepted() {
-    TEST("dispatchInnerMessage — MSG_GAMEPAD_DATA at exact wire length is forwarded");
+    TEST("dispatchInnerMessage: MSG_GAMEPAD_DATA at exact wire length is forwarded");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -311,7 +311,7 @@ static void test_dispatch_gamepad_exactLengthAccepted() {
 }
 
 static void test_dispatch_unknownTypeIgnored() {
-    TEST("dispatchInnerMessage — unknown message type is ignored, no decode");
+    TEST("dispatchInnerMessage: unknown message type is ignored, no decode");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -327,7 +327,7 @@ static void test_dispatch_unknownTypeIgnored() {
 }
 
 static void test_dispatch_heartbeatZeroLength() {
-    TEST("dispatchInnerMessage — MSG_HEARTBEAT_PING with empty payload is handled");
+    TEST("dispatchInnerMessage: MSG_HEARTBEAT_PING with empty payload is handled");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -341,10 +341,10 @@ static void test_dispatch_heartbeatZeroLength() {
 
 // Topology mutation is REST-only: the deleted registration opcodes (0x0004
 // ADD, 0x0005 REMOVE, 0x0008 TYPE, 0x000E CAPS_UPDATE) MUST fall through to
-// the default drop — a spoofed or stale datagram can never mutate the
+// the default drop; a spoofed or stale datagram can never mutate the
 // controller set again.
 static void test_dispatch_deletedRegistrationOpcodesAreDropped() {
-    TEST("dispatchInnerMessage — deleted registration opcodes mutate nothing");
+    TEST("dispatchInnerMessage: deleted registration opcodes mutate nothing");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
@@ -359,22 +359,22 @@ static void test_dispatch_deletedRegistrationOpcodesAreDropped() {
     };
     EXPECT_EQ(countActive(), 1);
 
-    // 0x0004 ADD (idx 1, caps, type) — must not plug a second pad.
+    // 0x0004 ADD (idx 1, caps, type): must not plug a second pad.
     std::vector<uint8_t> add = {0x01, 0x00, 0x00, CONTROLLER_TYPE_PLAYSTATION};
     dispatchTight(svc, token, 0x0004, add);
     EXPECT_EQ(countActive(), 1);
 
-    // 0x0005 REMOVE (idx 0) — must not unplug the live pad.
+    // 0x0005 REMOVE (idx 0): must not unplug the live pad.
     std::vector<uint8_t> remove = {0x00};
     dispatchTight(svc, token, 0x0005, remove);
     EXPECT_EQ(countActive(), 1);
 
-    // 0x0008 TYPE (idx 0 → PlayStation) — must not switch the family.
+    // 0x0008 TYPE (idx 0 -> PlayStation): must not switch the family.
     std::vector<uint8_t> type = {0x00, CONTROLLER_TYPE_PLAYSTATION};
     dispatchTight(svc, token, 0x0008, type);
     EXPECT_EQ((int)typeOfSlot0(), (int)CONTROLLER_TYPE_XBOX);
 
-    // 0x000E CAPS_UPDATE (idx 0, CAP_MOTION) — must not rewrite caps.
+    // 0x000E CAPS_UPDATE (idx 0, CAP_MOTION): must not rewrite caps.
     const uint16_t caps = CAP_MOTION;
     std::vector<uint8_t> capsMsg = {0x00, (uint8_t)(caps >> 8), (uint8_t)(caps & 0xFF)};
     dispatchTight(svc, token, 0x000E, capsMsg);
@@ -387,7 +387,7 @@ static void test_dispatch_deletedRegistrationOpcodesAreDropped() {
 }
 
 static void test_dispatch_gamepad_backendRejectReportsNotOk() {
-    TEST("dispatchInnerMessage — MSG_GAMEPAD_DATA surfaces a backend reject as gamepadOk=false");
+    TEST("dispatchInnerMessage: MSG_GAMEPAD_DATA surfaces a backend reject as gamepadOk=false");
     StubGamepad gp;
     gp.submitReturnVal = false; // backend refuses the submit
     StubClient cl;

@@ -7,10 +7,8 @@
 
 #include "test_util.h"
 
-// ---- parseGitHubRelease ------------------------------------------------------
-
 static void test_parse_full_release() {
-    TEST("parseGitHubRelease — extracts every field + nested assets");
+    TEST("parseGitHubRelease: extracts every field + nested assets");
     const std::string json = R"({
       "tag_name": "v1.2.3",
       "name": "Release 1.2.3",
@@ -42,7 +40,7 @@ static void test_parse_full_release() {
 }
 
 static void test_parse_null_optional_fields() {
-    TEST("parseGitHubRelease — tolerates null name/body/published_at");
+    TEST("parseGitHubRelease: tolerates null name/body/published_at");
     const std::string json = R"({"tag_name":"v2.0.0","name":null,"body":null,
       "published_at":null,"prerelease":true,"assets":[]})";
     GitHubRelease r;
@@ -55,17 +53,15 @@ static void test_parse_null_optional_fields() {
 }
 
 static void test_parse_malformed_returns_false() {
-    TEST("parseGitHubRelease — malformed JSON returns false");
+    TEST("parseGitHubRelease: malformed JSON returns false");
     GitHubRelease r;
     EXPECT(!parseGitHubRelease("not json at all", r));
     EXPECT(!parseGitHubRelease("{\"tag_name\": ", r)); // truncated
     EXPECT(!parseGitHubRelease("", r));
 }
 
-// ---- parseGitHubReleaseList --------------------------------------------------
-
 static void test_parse_list() {
-    TEST("parseGitHubReleaseList — array of releases, and empty array");
+    TEST("parseGitHubReleaseList: array of releases, and empty array");
     std::vector<GitHubRelease> out;
     EXPECT(parseGitHubReleaseList(R"([{"tag_name":"v1.0.0"},{"tag_name":"v1.1.0"}])", out));
     EXPECT_EQ(out.size(), (size_t)2);
@@ -79,20 +75,16 @@ static void test_parse_list() {
     EXPECT(!parseGitHubReleaseList("[{", bad));
 }
 
-// ---- stripTagPrefix ----------------------------------------------------------
-
 static void test_strip_tag_prefix() {
-    TEST("stripTagPrefix — drops a leading v/V, leaves the rest untouched");
+    TEST("stripTagPrefix: drops a leading v/V, leaves the rest untouched");
     EXPECT_EQ(stripTagPrefix("v1.2.3"), std::string("1.2.3"));
     EXPECT_EQ(stripTagPrefix("V1.2.3"), std::string("1.2.3"));
     EXPECT_EQ(stripTagPrefix("1.2.3"), std::string("1.2.3"));
     EXPECT_EQ(stripTagPrefix(""), std::string(""));
 }
 
-// ---- isoToEpoch --------------------------------------------------------------
-
 static void test_iso_to_epoch() {
-    TEST("isoToEpoch — known UTC vectors, 0 on parse failure");
+    TEST("isoToEpoch: known UTC vectors, 0 on parse failure");
     EXPECT_EQ(isoToEpoch("1970-01-01T00:00:00Z"), (int64_t)0);
     EXPECT_EQ(isoToEpoch("2021-01-01T00:00:00Z"), (int64_t)1609459200);
     EXPECT_EQ(isoToEpoch("2000-01-01T00:00:00Z"), (int64_t)946684800);
@@ -100,10 +92,8 @@ static void test_iso_to_epoch() {
     EXPECT_EQ(isoToEpoch("not-a-timestamp-xx"), (int64_t)0);
 }
 
-// ---- lookupSha256 ------------------------------------------------------------
-
 static void test_lookup_sha256() {
-    TEST("lookupSha256 — hit, binary-mode marker, lowercasing, miss");
+    TEST("lookupSha256: hit, binary-mode marker, lowercasing, miss");
     const std::string a(64, 'a');
     const std::string b(64, 'A'); // uppercase digest, expect lowercased return
     const std::string body = a + "  SatelliteSetup.exe\n" + b + " *Other.zip\n";

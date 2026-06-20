@@ -22,7 +22,7 @@ std::atomic<bool> g_mdnsRejoinRequested{false};
 
 // Primary LAN IPv4 via the routing table: a UDP `connect` sends nothing but
 // fixes the socket's peer so `getsockname` reports the chosen interface.
-// Portable trick (Windows/macOS/Linux). `out` = 4 bytes, network order.
+// `out` = 4 bytes, network order.
 bool getLocalIPv4(uint8_t out[4]) {
     SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return false;
@@ -70,7 +70,7 @@ std::string shortHostLabel() {
     return h.empty() ? "satellite" : h;
 }
 
-// Populate the shared encoder inputs. Instance and host labels can differ —
+// Populate the shared encoder inputs. Instance and host labels can differ:
 // §8.1 probing may rename the instance on a clash while leaving the host alone.
 // `ipv4` (4 bytes, network order) is borrowed and must outlive `out`.
 void fillServiceInputs(mdns::ResponseInputs& out, const std::string& instanceLabel,
@@ -78,9 +78,8 @@ void fillServiceInputs(mdns::ResponseInputs& out, const std::string& instanceLab
     out.instanceName = instanceLabel;
     out.hostName = hostLabel;
     out.udpPort = static_cast<uint16_t>(g_config.udpPort);
-    // `pair`/`http` both carry the single HTTPS client API port; the admin web
-    // port is localhost-only and never advertised. `mid` is the stable
-    // per-install id so the dish dedupes us across DHCP address changes.
+    // `pair`/`http` both carry the single HTTPS client API port. `mid` is the
+    // stable per-install id so the dish dedupes us across DHCP address changes.
     out.txtPairs = {
         {"udp", std::to_string(g_config.udpPort)},
         {"pair", std::to_string(DEFAULT_CLIENT_PORT)},
@@ -103,7 +102,7 @@ bool interruptibleSleep(unsigned ms) {
     return g_appRunning.load();
 }
 
-// Case-insensitive DNS-name compare (RFC 1035 §2.3.3) — Bonjour/Avahi may
+// Case-insensitive DNS-name compare (RFC 1035 §2.3.3); Bonjour/Avahi may
 // capitalise labels differently from us.
 bool nameEqCi(const std::string& x, const std::string& y) {
     if (x.size() != y.size()) return false;
@@ -115,9 +114,8 @@ bool nameEqCi(const std::string& x, const std::string& y) {
     return true;
 }
 
-// RFC 6762 §9 name-conflict disambiguation. Given the current instance label,
-// return the next candidate by appending " (2)" or incrementing an existing
-// " (N)" suffix: "kitchen" → "kitchen (2)" → "kitchen (3)" → …
+// RFC 6762 §9 name-conflict disambiguation. Returns the next candidate by
+// appending " (2)" or incrementing an existing " (N)" suffix.
 std::string nextInstanceLabel(const std::string& label) {
     if (!label.empty() && label.back() == ')') {
         const size_t open = label.rfind(" (");
@@ -178,9 +176,9 @@ ProbeEvent classifyProbePacket(const uint8_t* buf, size_t n, const std::string& 
         return ProbeEvent::None;
     }
 
-    // A query is a *probe* (§8.2) iff it questions our name AND carries
-    // authority records. A bare query is an ordinary lookup — it can't conflict
-    // with a name we don't yet own, so ignore it while probing.
+    // A query is a probe (§8.2) iff it questions our name AND carries authority
+    // records. A bare query is an ordinary lookup: it can't conflict with a name
+    // we don't yet own, so ignore it while probing.
     bool questionsOurName = false;
     for (const auto& q : qs) {
         if (nameEqCi(q.name, instanceFqdn) || nameEqCi(q.name, hostFqdn)) {
@@ -191,7 +189,7 @@ ProbeEvent classifyProbePacket(const uint8_t* buf, size_t n, const std::string& 
     if (!questionsOurName || authority.empty()) return ProbeEvent::None;
 
     // §8.2 compares like-for-like records. Restrict BOTH sides to one contested
-    // name — else the §8.2.1 "list runs out" rule would let a host win merely
+    // name, else the §8.2.1 "list runs out" rule would let a host win merely
     // because the peer probed fewer names. Instance (SRV+TXT) and host (A) are
     // independent, so a peer probe touching either contests that name alone.
     auto sideFor = [](const std::vector<mdns::ProbeRecord>& recs, const std::string& fqdn) {
@@ -215,8 +213,8 @@ ProbeEvent classifyProbePacket(const uint8_t* buf, size_t n, const std::string& 
 // Result of the RFC 6762 §8.1 probe sequence.
 struct ProbeResult {
     std::string instance;  // final (possibly renamed) instance label to advertise
-    bool shutdown = false; // g_appRunning cleared mid-probe — caller must not announce
-    bool gaveUp = false;   // §9 rename cap hit — advertising unprobed, conflicts possible
+    bool shutdown = false; // g_appRunning cleared mid-probe; caller must not announce
+    bool gaveUp = false;   // §9 rename cap hit; advertising unprobed, conflicts possible
 };
 
 // Run the full RFC 6762 §8.1 + §8.2 probe sequence for `<host>` on `sock`,
@@ -259,8 +257,8 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
             result.instance + "." + std::string(mdns::SERVICE_TYPE_DOMAIN);
         const std::string hostFqdn = host + ".local.";
 
-        // Our proposed record set for this name — carried in every probe and
-        // used as "our side" of the §8.2 tiebreak.
+        // Our proposed record set for this name, carried in every probe and used
+        // as "our side" of the §8.2 tiebreak.
         mdns::ResponseInputs probeIn;
         fillServiceInputs(probeIn, result.instance, host, haveSelfIp ? selfIp : nullptr);
         const std::vector<mdns::ProbeRecord> ours = mdns::buildProposedRecords(probeIn);
@@ -268,10 +266,10 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
         uint8_t probeBuf[768];
         const size_t probeLen = mdns::encodeProbeQuery(probeBuf, sizeof(probeBuf), probeIn);
         if (probeLen == 0) {
-            // Encoder failure — skip probing rather than spin; the announcement
+            // Encoder failure: skip probing rather than spin; the announcement
             // still advertises us.
             logMsg(LogLevel::WARN, "mdns",
-                   "mDNS probe encoding failed — skipping probe, announcing unprobed");
+                   "mDNS probe encoding failed; skipping probe, announcing unprobed");
             return result;
         }
 
@@ -287,7 +285,7 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
                 conflictTimes.pop_front();
             if (conflictTimes.size() >= kRateLimitConflicts) {
                 logMsg(LogLevel::WARN, "mdns",
-                       "mDNS probing rate-limited — 15+ conflicts in 10 s; "
+                       "mDNS probing rate-limited: 15+ conflicts in 10 s; "
                        "waiting 5 s before the next probe");
                 if (!interruptibleSleep(kRateLimitDelayMs)) {
                     result.shutdown = true;
@@ -309,7 +307,7 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
                 const int pn =
                     static_cast<int>(recvfrom(sock, reinterpret_cast<char*>(pbuf), sizeof(pbuf), 0,
                                               reinterpret_cast<sockaddr*>(&pfrom), &pfromLen));
-                if (pn <= 0) continue; // timeout slice — re-check the deadline
+                if (pn <= 0) continue; // timeout slice; re-check the deadline
                 const ProbeEvent ev = classifyProbePacket(pbuf, static_cast<size_t>(pn),
                                                           instanceFqdn, hostFqdn, ours);
                 if (ev == ProbeEvent::Conflict) {
@@ -329,15 +327,15 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
         }
 
         if (!conflict && !lostTiebreak) {
-            // Three clean probes — the name is ours (§8.1).
+            // Three clean probes: the name is ours (§8.1).
             if (attempt > 0)
                 logMsg(LogLevel::INFO, "mdns",
-                       "mDNS probing succeeded — claimed '" + result.instance + "' after rename");
+                       "mDNS probing succeeded; claimed '" + result.instance + "' after rename");
             return result;
         }
 
-        // A §9 conflict or a lost §8.2 tiebreak — record it for the
-        // rate-limit window.
+        // A §9 conflict or a lost §8.2 tiebreak: record it for the rate-limit
+        // window.
         conflictTimes.push_back(std::chrono::steady_clock::now());
 
         if (lostTiebreak) {
@@ -346,7 +344,7 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
             // rename attempt.
             logMsg(LogLevel::INFO, "mdns",
                    "mDNS simultaneous-probe tiebreak lost for '" + result.instance +
-                       "' — deferring 1 s, then re-probing the same name");
+                       "'; deferring 1 s, then re-probing the same name");
             if (!interruptibleSleep(1000)) {
                 result.shutdown = true;
                 return result;
@@ -355,17 +353,17 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
             continue;
         }
 
-        // §9 conflict — another host owns the name. Pick the next candidate
-        // and restart probing from probe #1.
+        // §9 conflict: another host owns the name. Pick the next candidate and
+        // restart probing from probe #1.
         const std::string previous = result.instance;
         result.instance = nextInstanceLabel(result.instance);
         logMsg(LogLevel::WARN, "mdns",
-               "mDNS name conflict — '" + previous +
+               "mDNS name conflict: '" + previous +
                    "._satellite._udp.local.' already claimed on this segment; re-probing as '" +
                    result.instance + "'");
     }
 
-    // Fell out of the rename loop without a clean claim — §9 rename cap hit.
+    // Fell out of the rename loop without a clean claim: §9 rename cap hit.
     result.gaveUp = true;
     return result;
 }
@@ -385,7 +383,7 @@ void mdnsResponderThread() {
 
     // Port 5353 is usually already held by the OS responder (mDNSResponder /
     // avahi-daemon). SO_REUSEADDR + SO_REUSEPORT let us co-bind so multicast is
-    // delivered to every listener — how mDNS apps coexist.
+    // delivered to every listener, how mDNS apps coexist.
     int reuse = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
                sizeof(reuse));
@@ -399,9 +397,9 @@ void mdnsResponderThread() {
     bindAddr.sin_addr.s_addr = INADDR_ANY;
     bindAddr.sin_port = htons(mdns::MULTICAST_PORT);
     if (bind(sock, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) == SOCKET_ERROR) {
-        // Another responder holds the port without REUSEPORT — non-fatal.
+        // Another responder holds the port without REUSEPORT; non-fatal.
         logMsg(LogLevel::WARN, "mdns",
-               "Could not bind UDP 5353 — mDNS discovery disabled (broadcast still active)");
+               "Could not bind UDP 5353; mDNS discovery disabled (broadcast still active)");
         closesocket(sock);
         netShutdown();
         return;
@@ -422,7 +420,7 @@ void mdnsResponderThread() {
     mreq.imr_interface = ifAddr;
     if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
                    sizeof(mreq)) == SOCKET_ERROR) {
-        logMsg(LogLevel::WARN, "mdns", "Could not join 224.0.0.251 — mDNS discovery disabled");
+        logMsg(LogLevel::WARN, "mdns", "Could not join 224.0.0.251; mDNS discovery disabled");
         closesocket(sock);
         netShutdown();
         return;
@@ -454,7 +452,7 @@ void mdnsResponderThread() {
     // announcing (see runProbeSequence; adds ~750 ms+ to startup).
     const ProbeResult probe = runProbeSequence(sock, groupAddr, host, selfIp, haveSelfIp);
     if (probe.shutdown) {
-        // g_appRunning cleared mid-probe — unwind without announcing.
+        // g_appRunning cleared mid-probe; unwind without announcing.
         g_mdnsResponderActive.store(false, std::memory_order_relaxed);
         setsockopt(sock, IPPROTO_IP, IP_DROP_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
                    sizeof(mreq));
@@ -466,13 +464,13 @@ void mdnsResponderThread() {
     const std::string instance = probe.instance;
     if (probe.gaveUp) {
         logMsg(LogLevel::ERR, "mdns",
-               "mDNS probing gave up after 10 rename attempts — the segment is saturated "
+               "mDNS probing gave up after 10 rename attempts; the segment is saturated "
                "with '_satellite._udp.local.' names; advertising anyway as '" +
                    instance + "' (cache conflicts possible)");
     }
 
     logMsg(LogLevel::INFO, "mdns",
-           "mDNS responder up — advertising _satellite._udp.local. as '" + instance + "'");
+           "mDNS responder up; advertising _satellite._udp.local. as '" + instance + "'");
     g_mdnsResponderActive.store(true, std::memory_order_relaxed);
 
     // Startup announcement (RFC 6762 §8.3): multicast the unsolicited answer
@@ -515,8 +513,8 @@ void mdnsResponderThread() {
         setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&ifAddr),
                    sizeof(ifAddr));
         logMsg(LogLevel::INFO, "mdns",
-               dec.ipChanged ? "Bound address changed — rebound mDNS multicast and re-announcing"
-                             : "Resume/network event — rebound mDNS multicast and re-announcing");
+               dec.ipChanged ? "Bound address changed; rebound mDNS multicast and re-announcing"
+                             : "Resume/network event; rebound mDNS multicast and re-announcing");
         announceBurst();
     };
 
@@ -546,13 +544,13 @@ void mdnsResponderThread() {
         if (!mdns::parsePacket(buf, static_cast<size_t>(n), header, questions, knownAnswers))
             continue;
 
-        // Ignore responses (QR bit set) — we only answer queries.
+        // Ignore responses (QR bit set); we only answer queries.
         constexpr uint16_t QR_BIT = 0x8000;
         if (header.flags & QR_BIT) continue;
 
-        // Match the shared service type (PTR/ANY) OR — §8.1 name defence — one
-        // of our own unique names (instance/host FQDN). Answering the latter
-        // asserts ownership and makes a peer probing our name back off.
+        // Match the shared service type (PTR/ANY) OR, for §8.1 name defence, one
+        // of our own unique names. Answering the latter asserts ownership and
+        // makes a peer probing our name back off.
         const std::string serviceType = mdns::SERVICE_TYPE_DOMAIN;
         const std::string instanceFqdn = instance + "." + serviceType;
         const std::string hostFqdn = host + ".local.";
@@ -604,8 +602,8 @@ void mdnsResponderThread() {
                reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
     }
 
-    // RFC 6762 §10.1 goodbye — a TTL-0 record set so caches drop the service
-    // immediately instead of holding it until the 120 s TTL. Best-effort.
+    // RFC 6762 §10.1 goodbye: a TTL-0 record set so caches drop the service
+    // immediately instead of holding it until the TTL. Best-effort.
     g_mdnsResponderActive.store(false, std::memory_order_relaxed);
     {
         uint8_t byeIp[4];

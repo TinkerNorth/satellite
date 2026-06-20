@@ -6,8 +6,7 @@
 #include <string>
 
 // Pure builder for the legacy UDP discovery beacon JSON, split from the socket
-// loop in discovery.cpp so the wire format is unit-testable without a socket
-// (same split as net/mdns_protocol.h vs net/mdns_responder.cpp).
+// loop in discovery.cpp so the wire format is unit-testable without a socket.
 inline std::string buildDiscoveryBeacon(const std::string& name, int udpPort, int pairPort,
                                         int httpPort, const std::string& machineId) {
     satellite::JsonOut j;

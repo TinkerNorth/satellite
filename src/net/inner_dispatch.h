@@ -12,8 +12,8 @@ class SessionService;
 // Lets the receiver loop fold the gamepad hot-path result into its telemetry
 // counters without re-parsing the message.
 struct DispatchResult {
-    bool wasGamepadData = false; // the message was MSG_GAMEPAD_DATA
-    bool gamepadOk = false;      // (only meaningful when wasGamepadData) backend accepted it
+    bool wasGamepadData = false;
+    bool gamepadOk = false; // only meaningful when wasGamepadData
 };
 
 // Parse one decrypted inner message and delegate to SessionService. `payload`

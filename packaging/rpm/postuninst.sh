@@ -1,5 +1,5 @@
 #!/bin/sh
-# RPM %postun scriptlet — runs after files are removed from the filesystem.
+# RPM %postun scriptlet: runs after files are removed from the filesystem.
 #
 # Mirrors packaging/debian/postrm: reload udev. We deliberately leave the
 # `input` group membership in place since other tools (joystick devices,

@@ -13,11 +13,11 @@ The server broadcasts a UDP beacon every 2 seconds on the discovery port
 
 | Field       | Type   | Description                                          |
 |-------------|--------|------------------------------------------------------|
-| `service`   | string | Always `"satellite"` — identifies the protocol       |
+| `service`   | string | Always `"satellite"` (identifies the protocol)       |
 | `name`      | string | Computer hostname                                    |
 | `udpPort`   | int    | Port for the encrypted UDP data streams              |
-| `pairPort`  | int    | HTTPS client API (pairing) — always 9443             |
-| `httpPort`  | int    | HTTPS client API (sessions, catalog) — always 9443   |
+| `pairPort`  | int    | HTTPS client API (pairing), always 9443              |
+| `httpPort`  | int    | HTTPS client API (sessions, catalog), always 9443    |
 | `machineId` | string | Stable per-install id; clients key remembered satellites on it |
 
 `pairPort` and `httpPort` both carry the single HTTPS client-API port:
@@ -32,7 +32,7 @@ pairing port, and the admin UI on 9877 is loopback-only and never advertised.
 | 9877  | Admin web UI + admin API (loopback only)  | `webPort`       |
 | 9443  | HTTPS client API (pairing, sessions, catalog) | (fixed `DEFAULT_CLIENT_PORT`) |
 | 9879  | UDP discovery (legacy beacon)             | `discPort`      |
-| 5353  | mDNS (`_satellite._udp.local.`)           | (RFC 6762 fixed) |
+| 5353  | mDNS (`_satellite._udp.local.`)           | (RFC 6762 fixed)|
 
 ## mDNS / Bonjour Service Discovery
 
@@ -53,18 +53,18 @@ probe queries 250 ms apart, each carrying its proposed unique records
 (SRV/TXT/A) in the authority section. A conflicting response means
 another host already owns the name, so the instance label is
 disambiguated (`<host>`, `<host> (2)`, `<host> (3)`, …, RFC 6762 §9)
-and the probe sequence restarts; conflict rate-limiting (15 conflicts
-within 10 s → a 5 s backoff before each probe) is applied, and renaming
-is capped at ten attempts. A *simultaneous* probe from a peer for the
-same name is not treated as an outright conflict — it is resolved by
-the RFC 6762 §8.2 / §8.2.1 lexicographic record-set tiebreak; the loser
-defers one second and re-probes. Once three probes complete cleanly the
+and the probe sequence restarts. Conflict rate-limiting (15 conflicts
+within 10 s triggers a 5 s backoff before each probe) is applied, and
+renaming is capped at ten attempts. A simultaneous probe from a peer for
+the same name is not treated as an outright conflict; it is resolved by
+the RFC 6762 §8.2 / §8.2.1 lexicographic record-set tiebreak, and the
+loser defers one second and re-probes. Once three probes complete cleanly the
 name is claimed and the §8.3 announcement (below) uses that final name.
 
 After probing, the responder answers PTR / ANY queries for the service
 type with PTR + SRV + TXT (+ A) records, and also answers ANY/SRV/TXT/A
-queries for its own instance and host names — the latter is how it
-*defends* its name against a later peer probe (RFC 6762 §8.1). It
+queries for its own instance and host names. The latter is how it
+defends its name against a later peer probe (RFC 6762 §8.1). It
 multicasts the full answer set three times ~1 s apart at startup
 (RFC 6762 §8.3 unsolicited announcement). On shutdown it multicasts a
 goodbye announcement (every record at TTL 0, RFC 6762 §10.1) so resolver
@@ -74,12 +74,12 @@ shown in the web UI (Settings → Discovery).
 
 Senders SHOULD prefer the mDNS path when available. The legacy UDP
 broadcast beacon stays in place as a fallback for senders that predate
-the mDNS responder; it is gated behind `Config::discoveryBroadcastEnabled`
+the mDNS responder. It is gated behind `Config::discoveryBroadcastEnabled`
 (default `true`, toggleable at runtime from the web UI Settings →
-Discovery panel — `POST /api/config`) and is slated for removal in 2027.
-Disabling it does not stop the `discoveryThread` worker; the thread keeps
-running and simply skips the broadcast send, so re-enabling hot-resumes
-the beacon without a restart.
+Discovery panel via `POST /api/config`) and is slated for removal in 2027.
+Disabling it does not stop the `discoveryThread` worker: the thread keeps
+running and skips the broadcast send, so re-enabling hot-resumes the
+beacon without a restart.
 
 The encoder / parser surface for the mDNS protocol records lives in
 `src/net/mdns_protocol.{h,cpp}` and is exercised by
@@ -91,9 +91,9 @@ lexicographic tiebreak comparator, and the §9 rename-suffix increment).
 The probing state machine, multicast group join / socket bind + recv
 loop live in `src/net/mdns_responder.{h,cpp}`.
 
-## Architecture — Hexagonal (Ports & Adapters)
+## Architecture: Hexagonal (Ports & Adapters)
 
-The server follows **Hexagonal Architecture**. All business logic lives
+The server follows hexagonal architecture. All business logic lives
 in `SessionService` (the domain core). External infrastructure (ViGEm
 driver, UDP sockets, config files) is accessed through port interfaces,
 implemented by concrete adapters.
@@ -114,30 +114,30 @@ webserver.cpp ─────►  applyController() ────► ClientAdapte
 
 ### Key Design Principles
 
-- **`core/`** contains no Win32, Winsock, ViGEm, or `httplib` `#include`s —
+- `core/` contains no Win32, Winsock, ViGEm, or `httplib` `#include`s, and
   the invariant is enforced literally. Process-wide infrastructure globals
   (config, log ring, telemetry atomics, the HTTP server handle, sockets) live
-  in **`src/app/app_state.h`**, a separate infra layer, never in `core/`.
-- **SessionService** is the sole owner of connection state, serial pool,
-  and controller lifecycle — no duplicated teardown logic
-- **Adapters** are injected via constructor (dependency injection)
-- **`main.cpp`** is the Composition Root — instantiates adapters and
-  wires them to the service
+  in `src/app/app_state.h`, a separate infra layer, never in `core/`.
+- `SessionService` is the sole owner of connection state, serial pool,
+  and controller lifecycle, so teardown logic lives in one place.
+- Adapters are injected via constructor (dependency injection).
+- `main.cpp` is the composition root: it instantiates adapters and
+  wires them to the service.
 
 ### Where a port belongs
 
-A port exists **for what the domain core needs**, not for every piece of
+A port exists for what the domain core needs, not for every piece of
 infrastructure. `SessionService` needs gamepad, client, and log I/O, so those
 are ports (`IGamepadPort` / `IClientPort` / `ILogPort`); `UpdateService` adds
-`IUpdaterPort`. Configuration is **not** a port: the core never reads it. The
+`IUpdaterPort`. Configuration is not a port: the core never reads it. The
 webserver and `UpdateService` are themselves adapters/infrastructure and touch
-`g_config` (+ `loadConfig`/`saveConfig`) directly — inverting that behind a port
-would add a seam with no domain consumer. (An earlier unused `IConfigPort` /
+`g_config` (plus `loadConfig`/`saveConfig`) directly. Inverting that behind a
+port would add a seam with no domain consumer. (An earlier unused `IConfigPort` /
 `ConfigAdapter` pair was removed for exactly this reason.)
 
 ### Pattern: a pure codec, separate from its I/O
 
-Every wire format or derived value is split into a **pure, socket-free core**
+Every wire format or derived value is split into a pure, socket-free core
 and a thin I/O shell, so the format is unit-testable without a socket or driver:
 
 | Pure core (tested directly)            | I/O shell                          |
@@ -148,7 +148,7 @@ and a thin I/O shell, so the format is unit-testable without a socket or driver:
 | `net/machine_id.h` (`isValidMachineId`)    | `net/machine_id.cpp` (file + RNG)  |
 | `vigem_submit_policy.h` (`ds4ExSubmitLanded`) | `vigem.cpp` (`DeviceIoControl`)  |
 
-When adding a wire format, follow this split — put the byte-shaping in a pure
+When adding a wire format, follow this split: put the byte-shaping in a pure
 function and give it a `tests/test_*.cpp` suite.
 
 ## Testing
@@ -156,34 +156,34 @@ function and give it a `tests/test_*.cpp` suite.
 `ctest` (driven by `cmake`) is the single entry point; `build-tests.bat` is a
 thin wrapper around it. Each pure unit gets its own portable suite under
 `tests/` using the in-repo `TEST`/`EXPECT` macros (no external framework).
-Domain logic is tested against **mock ports** (e.g. `MockViGem : IGamepadPort`,
+Domain logic is tested against mock ports (e.g. `MockViGem : IGamepadPort`,
 `MockUpdater : IUpdaterPort`), so the core is exercised with zero platform code.
 Socket/`httplib` loops and OpenSSL cert generation are intentionally not
-unit-tested — their pure cores (above) are the tested seams.
+unit-tested; their pure cores (above) are the tested seams.
 
 ## Data Model
 
 ### Connection vs. Controller (Device)
 
-**Connections** and **controllers** are separate concepts:
+Connections and controllers are separate concepts:
 
-- A **connection** is a network session between a paired client and the
-  server, keyed on `deviceId` and **stable across reconnects**: a re-PUT
-  rotates the token/salt/session-key in place; the row (and its pads) never
-  churns. It carries a stable `connectionId`, the per-session key, the
+- A connection is a network session between a paired client and the
+  server, keyed on `deviceId` and stable across reconnects: a re-PUT
+  rotates the token/salt/session-key in place, and the row (and its pads)
+  never churns. It carries a stable `connectionId`, the per-session key, the
   reconcile `epoch`, and the host-feature grants. Zero-controller sessions
   are valid.
-- A **controller** (slot) is an individual virtual gamepad plugged into the
+- A controller (slot) is an individual virtual gamepad plugged into the
   backend. Slots are declared via `ControllerDescriptor`s in the session PUT
   (or the standalone controller PUT/DELETE); the service converges the
   backend to the declared set and reports per-slot apply results. UDP never
   mutates this set.
 
 ```cpp
-// core/types.h — pure data, no platform dependencies (abridged)
+// core/types.h: pure data, no platform dependencies (abridged)
 struct Controller {
     uint8_t  index    = 0;       // 0-based within connection
-    uint32_t serialNo = 0;       // backend serial (1–16), 0 = not plugged
+    uint32_t serialNo = 0;       // backend serial (1-16), 0 = not plugged
     bool     active   = false;
     uint8_t  controllerType;     // device family actually plugged
     uint16_t caps;               // CAP_* word from the descriptor
@@ -213,7 +213,7 @@ All connection and controller state is owned by `SessionService` behind
 a single `std::mutex`. There are no global connection maps or serial
 arrays. The remaining globals are:
 
-- `g_config` / `g_configMtx` — application configuration
+- `g_config` / `g_configMtx`: application configuration
 - Atomic telemetry counters (`g_packetCount`, `g_submitOk`, etc.)
 - Log ring buffer (`g_logRing`, `g_logMtx`)
 - Win32 plumbing (`g_hwnd`, `g_httpServer`, `g_appRunning`)
@@ -231,7 +231,7 @@ recvfrom()
   │
   ├─ n < 8 → drop (too small for header)
   │
-  ├─ Extract token (bytes 0–3), counter (bytes 4–7)
+  ├─ Extract token (bytes 0-3), counter (bytes 4-7)
   │  └─ svc.getDecryptInfo(token) → not found → drop
   │  └─ counter <= lastCounter → drop (replay)
   │
@@ -258,20 +258,20 @@ The gamepad packet path runs at controller-polling rate, so the receive
 loop is kept allocation-free and minimally locked. If you touch
 `receiver.cpp` or `SessionService::handleGamepadDataAndUpdate`, preserve:
 
-- **No heap on the hot path.** `recvfrom` writes into a stack buffer;
-  decryption runs **in place** (`ciphertext == plaintext`, relying on
+- No heap on the hot path. `recvfrom` writes into a stack buffer, and
+  decryption runs in place (`ciphertext == plaintext`, relying on
   libsodium's overlapping src/dst support), so the plaintext reuses the
   ciphertext bytes minus the 16-byte tag.
-- **One lock for gamepad packets.** A gamepad packet takes exactly one
+- One lock for gamepad packets. A gamepad packet takes exactly one
   `SessionService` mutex acquisition via `handleGamepadDataAndUpdate`
   (decrypt-info lookup, post-decrypt update, and apply fused). Cold paths
   (motion, touchpad, heartbeat, controller add/remove) still take two
-  locks — they're rare enough that fusing them isn't worth the API churn.
-- **No per-packet string work.** The sender's IPv4 address is threaded
+  locks; they're rare enough that fusing them isn't worth the API churn.
+- No per-packet string work. The sender's IPv4 address is threaded
   down as a `uint32` in network byte order; `SessionService` refreshes
   the human-readable cache only when the numeric address changes (no
   `inet_ntop` / `std::string` allocation per packet).
-- **Lock-free loop telemetry.** `g_maxLoopUs` uses a thread-local
+- Lock-free loop telemetry. `g_maxLoopUs` uses a thread-local
   high-water-mark so the atomic CAS loop is skipped on the ~99% of
   packets below the running per-second peak.
 
@@ -281,42 +281,42 @@ gamepad hot path these are the single fused call.
 
 ### Reaper
 
-Runs once per second via `svc.reapTimedOut()` — teardown logic is
+Runs once per second via `svc.reapTimedOut()`. Teardown logic is
 inside SessionService, not in the receiver.
 
 ## HTTP Threads (Inbound HTTP Adapters)
 
-`webserver.cpp` runs two servers — the loopback admin UI (9877) and the
-HTTPS client API (9443) — both calling into SessionService. No connection
+`webserver.cpp` runs two servers, the loopback admin UI (9877) and the
+HTTPS client API (9443), both calling into SessionService. No connection
 or controller state is managed here. Route semantics, auth (`hmacProof`),
 and body shapes are specified in [`contract.md`](contract.md); the notes
 below are server-internal.
 
 ### PUT /api/connections (client API)
 
-1. `clientAuthed()` — resolve the paired device by `X-Device-Id`, COPY the
+1. `clientAuthed()`: resolve the paired device by `X-Device-Id`, COPY the
    `PairedDevice` by value under `g_configMtx` (never hold a pointer across
    the unlock), verify `X-Hmac-Proof` against the pairing key
-2. Parse the full descriptor set (`core/json.h` — nlohmann/json)
-3. `svc.upsertSession(...)` — converges topology, rotates token/salt/key,
+2. Parse the full descriptor set (`core/json.h`, nlohmann/json)
+3. `svc.upsertSession(...)`: converges topology, rotates token/salt/key,
    derives the session key via the injected HKDF, returns applied state
 4. Serialize per-controller results + host-feature grants
 
-> **Note:** The session upsert succeeds independently of ViGEm. Per-
-> controller failures (`backendUnavailable`, `noSlots`, …) ride in the
-> response body — partial success is normal, not an HTTP error.
+The session upsert succeeds independently of ViGEm. Per-controller
+failures (`backendUnavailable`, `noSlots`, …) ride in the response body;
+partial success is normal, not an HTTP error.
 
 ### DELETE /api/connections/:id
 
 Client API: authed, scoped to the caller's own session, no close-notify.
-Admin API: kick — `svc.closeSessionById(..., CLOSE_REASON_KICKED, notify)`
+Admin API kick: `svc.closeSessionById(..., CLOSE_REASON_KICKED, notify)`
 sends the encrypted 0x000F before teardown.
 
 ### GET /api/connections (admin)
 
 `svc.getConnectionsSnapshot()` returns a thread-safe copy of all
 connections, controllers (with adapter-truth `pluggedIn`), and backend
-status — no locking needed by the caller.
+status, so the caller needs no locking.
 
 ## Thread Safety
 
@@ -363,8 +363,8 @@ std::mutex g_logMtx;                  // protects all of the above
 ### API Integration
 
 - `GET /api/logs?since=N` returns entries with seq > N (incremental fetch)
-- SSE stream (`GET /api/events`, admin) multiplexes six event types —
-  `status`, `connections`, `devices`, `update`, `pin`, `pairRequests` —
+- SSE stream (`GET /api/events`, admin) multiplexes six event types
+  (`status`, `connections`, `devices`, `update`, `pin`, `pairRequests`)
   pushed every second; `status` includes `logSeq` so the frontend knows
   when new logs are available without polling the log endpoint
 

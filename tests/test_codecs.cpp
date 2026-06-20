@@ -8,10 +8,8 @@
 
 #include "test_util.h"
 
-// ---- touchpadWireToRange -----------------------------------------------------
-
 static void test_wireToRange_saturates_at_edges() {
-    TEST("touchpadWireToRange — min wire maps to 0, max to res-1");
+    TEST("touchpadWireToRange: min wire maps to 0, max to res-1");
     EXPECT_EQ(touchpadWireToRange(-32768, DS4_TOUCHPAD_RES_X), 0);
     EXPECT_EQ(touchpadWireToRange(32767, DS4_TOUCHPAD_RES_X), DS4_TOUCHPAD_RES_X - 1);
     EXPECT_EQ(touchpadWireToRange(-32768, DS4_TOUCHPAD_RES_Y), 0);
@@ -19,22 +17,20 @@ static void test_wireToRange_saturates_at_edges() {
 }
 
 static void test_wireToRange_centre() {
-    TEST("touchpadWireToRange — centre wire (0) maps to ~res/2");
+    TEST("touchpadWireToRange: centre wire (0) maps to ~res/2");
     EXPECT_EQ(touchpadWireToRange(0, DS4_TOUCHPAD_RES_X), 960); // 32768*1920/65536
     EXPECT_EQ(touchpadWireToRange(0, DS4_TOUCHPAD_RES_Y), 471); // 32768*943/65536
 }
 
 static void test_wireToRange_degenerate_res() {
-    TEST("touchpadWireToRange — res<=1 collapses to 0 (no divide-by-tiny)");
+    TEST("touchpadWireToRange: res<=1 collapses to 0 (no divide-by-tiny)");
     EXPECT_EQ(touchpadWireToRange(0, 1), 0);
     EXPECT_EQ(touchpadWireToRange(32767, 0), 0);
     EXPECT_EQ(touchpadWireToRange(-1, -5), 0);
 }
 
-// ---- ds4PackTouchFinger ------------------------------------------------------
-
 static void test_ds4Pack_roundtrips_coordinates() {
-    TEST("ds4PackTouchFinger — packed 12-bit x/y reconstruct to device coords");
+    TEST("ds4PackTouchFinger: packed 12-bit x/y reconstruct to device coords");
     TouchpadFinger f;
     f.active = true;
     f.trackingId = 5;
@@ -51,7 +47,7 @@ static void test_ds4Pack_roundtrips_coordinates() {
 }
 
 static void test_ds4Pack_tracking_and_lift_bit() {
-    TEST("ds4PackTouchFinger — bit7 marks lift, low 7 bits carry tracking id");
+    TEST("ds4PackTouchFinger: bit7 marks lift, low 7 bits carry tracking id");
     TouchpadFinger down;
     down.active = true;
     auto bd = ds4PackTouchFinger(down, 0x05);
@@ -68,10 +64,8 @@ static void test_ds4Pack_tracking_and_lift_bit() {
     EXPECT_EQ(bm[0], (uint8_t)0x7F);
 }
 
-// ---- decodeMotionReport ------------------------------------------------------
-
 static void test_decodeMotion_le_fields() {
-    TEST("decodeMotionReport — little-endian int16 axes + u32 timestamp");
+    TEST("decodeMotionReport: little-endian int16 axes + u32 timestamp");
     uint8_t p[MOTION_WIRE_PAYLOAD_BYTES] = {
         0x01, 0x00,             // gyroX = 1
         0xFF, 0xFF,             // gyroY = -1
@@ -91,10 +85,8 @@ static void test_decodeMotion_le_fields() {
     EXPECT_EQ(r.timestampDeltaUs, 0x01020304u);
 }
 
-// ---- decodeTouchpadReport ----------------------------------------------------
-
 static void test_decodeTouchpad_flags_fingers_time() {
-    TEST("decodeTouchpadReport — flags, both fingers, and eventTimeMs");
+    TEST("decodeTouchpadReport: flags, both fingers, and eventTimeMs");
     uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {
         0x07,                   // flags: f0 active, f1 active, button pressed
         0x11,                   // finger0 trackingId
@@ -119,7 +111,7 @@ static void test_decodeTouchpad_flags_fingers_time() {
 }
 
 static void test_decodeTouchpad_clear_flags() {
-    TEST("decodeTouchpadReport — zero flags means no contact, no button");
+    TEST("decodeTouchpadReport: zero flags means no contact, no button");
     uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {0};
     TouchpadReport r = decodeTouchpadReport(p);
     EXPECT(!r.finger0.active);

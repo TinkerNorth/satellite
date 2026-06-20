@@ -23,13 +23,13 @@ static LocalInterface mkIf(const std::string& name, const std::string& ip, bool 
 }
 
 static void test_isPrivateIPv4_ranges() {
-    TEST("isPrivateIPv4 — 10/8");
+    TEST("isPrivateIPv4: 10/8");
     EXPECT(isPrivateIPv4("10.0.0.0"));
     EXPECT(isPrivateIPv4("10.0.0.1"));
     EXPECT(isPrivateIPv4("10.128.64.7"));
     EXPECT(isPrivateIPv4("10.255.255.255"));
 
-    TEST("isPrivateIPv4 — 172.16/12 boundaries");
+    TEST("isPrivateIPv4: 172.16/12 boundaries");
     EXPECT(isPrivateIPv4("172.16.0.0"));
     EXPECT(isPrivateIPv4("172.16.5.5"));
     EXPECT(isPrivateIPv4("172.20.0.1"));
@@ -39,14 +39,14 @@ static void test_isPrivateIPv4_ranges() {
     EXPECT(!isPrivateIPv4("172.0.0.1"));
     EXPECT(!isPrivateIPv4("172.255.0.1"));
 
-    TEST("isPrivateIPv4 — 192.168/16 boundaries");
+    TEST("isPrivateIPv4: 192.168/16 boundaries");
     EXPECT(isPrivateIPv4("192.168.0.0"));
     EXPECT(isPrivateIPv4("192.168.1.50"));
     EXPECT(isPrivateIPv4("192.168.255.255"));
     EXPECT(!isPrivateIPv4("192.167.255.255"));
     EXPECT(!isPrivateIPv4("192.169.0.0"));
 
-    TEST("isPrivateIPv4 — public / special are not private");
+    TEST("isPrivateIPv4: public / special are not private");
     EXPECT(!isPrivateIPv4("0.0.0.0"));
     EXPECT(!isPrivateIPv4("255.255.255.255"));
     EXPECT(!isPrivateIPv4("127.0.0.1"));
@@ -59,7 +59,7 @@ static void test_isPrivateIPv4_ranges() {
 }
 
 static void test_isPrivateIPv4_malformed() {
-    TEST("isPrivateIPv4 — malformed inputs read as not-private, never crash");
+    TEST("isPrivateIPv4: malformed inputs read as not-private, never crash");
     EXPECT(!isPrivateIPv4(""));
     EXPECT(!isPrivateIPv4("10"));
     EXPECT(!isPrivateIPv4("10.0"));
@@ -78,13 +78,13 @@ static void test_isPrivateIPv4_malformed() {
     EXPECT(!isPrivateIPv4("10.0.0.-1"));
     EXPECT(!isPrivateIPv4("10:0:0:1"));
 
-    TEST("isPrivateIPv4 — leading zeros parse as decimal");
+    TEST("isPrivateIPv4: leading zeros parse as decimal");
     EXPECT(isPrivateIPv4("010.0.0.1"));
     EXPECT(isPrivateIPv4("192.168.001.001"));
 }
 
 static void test_pickAuto_priority() {
-    TEST("pickAutoInterface — physical+private wins over VPN-private regardless of order");
+    TEST("pickAutoInterface: physical+private wins over VPN-private regardless of order");
     std::vector<LocalInterface> vpnFirst;
     vpnFirst.push_back(mkIf("NordLynx", "10.5.0.2", false, true));
     vpnFirst.push_back(mkIf("Ethernet", "10.0.0.5", true, true));
@@ -95,26 +95,26 @@ static void test_pickAuto_priority() {
     ethFirst.push_back(mkIf("NordLynx", "10.5.0.2", false, true));
     EXPECT_EQ(pickAutoInterface(ethFirst), 0);
 
-    TEST("pickAutoInterface — private (even VPN) beats physical-public");
+    TEST("pickAutoInterface: private (even VPN) beats physical-public");
     std::vector<LocalInterface> v;
     v.push_back(mkIf("WAN", "203.0.113.9", true, false));
     v.push_back(mkIf("NordLynx", "10.5.0.2", false, true));
     EXPECT_EQ(pickAutoInterface(v), 1);
 
-    TEST("pickAutoInterface — physical-public beats non-physical-public");
+    TEST("pickAutoInterface: physical-public beats non-physical-public");
     std::vector<LocalInterface> w;
     w.push_back(mkIf("WeirdVirtual", "203.0.113.7", false, false));
     w.push_back(mkIf("WAN", "203.0.113.9", true, false));
     EXPECT_EQ(pickAutoInterface(w), 1);
 
-    TEST("pickAutoInterface — falls through to first usable when nothing better");
+    TEST("pickAutoInterface: falls through to first usable when nothing better");
     std::vector<LocalInterface> x;
     x.push_back(mkIf("OnlyOne", "203.0.113.9", false, false));
     EXPECT_EQ(pickAutoInterface(x), 0);
 }
 
 static void test_pickAuto_order_and_empty() {
-    TEST("pickAutoInterface — empty list and all-blank IPs yield -1");
+    TEST("pickAutoInterface: empty list and all-blank IPs yield -1");
     std::vector<LocalInterface> empty;
     EXPECT_EQ(pickAutoInterface(empty), -1);
     std::vector<LocalInterface> blanks;
@@ -122,13 +122,13 @@ static void test_pickAuto_order_and_empty() {
     blanks.push_back(mkIf("B", "", false, false));
     EXPECT_EQ(pickAutoInterface(blanks), -1);
 
-    TEST("pickAutoInterface — blank-IP candidates are skipped");
+    TEST("pickAutoInterface: blank-IP candidates are skipped");
     std::vector<LocalInterface> mixed;
     mixed.push_back(mkIf("Disconnected", "", true, true));
     mixed.push_back(mkIf("Ethernet", "192.168.1.2", true, true));
     EXPECT_EQ(pickAutoInterface(mixed), 1);
 
-    TEST("pickAutoInterface — first among equals (default/first)");
+    TEST("pickAutoInterface: first among equals (default/first)");
     std::vector<LocalInterface> twoEqual;
     twoEqual.push_back(mkIf("Eth1", "10.0.0.2", true, true));
     twoEqual.push_back(mkIf("Eth2", "10.0.0.3", true, true));
@@ -141,7 +141,7 @@ static void test_pickAuto_order_and_empty() {
 }
 
 static void test_chooseInterface() {
-    TEST("chooseInterface — exact name match selected");
+    TEST("chooseInterface: exact name match selected");
     std::vector<LocalInterface> ifaces;
     ifaces.push_back(mkIf("NordLynx", "10.5.0.2", false, true));
     ifaces.push_back(mkIf("Ethernet", "10.0.0.5", true, true));
@@ -150,26 +150,26 @@ static void test_chooseInterface() {
     EXPECT_EQ(chooseInterface(ifaces, "Ethernet"), 1);
     EXPECT_EQ(chooseInterface(ifaces, "Wi-Fi"), 2);
 
-    TEST("chooseInterface — empty selection and misses fall back to auto");
+    TEST("chooseInterface: empty selection and misses fall back to auto");
     EXPECT_EQ(chooseInterface(ifaces, ""), 1);
     EXPECT_EQ(chooseInterface(ifaces, "Missing"), 1);
 
-    TEST("chooseInterface — name match is case-sensitive");
+    TEST("chooseInterface: name match is case-sensitive");
     EXPECT_EQ(chooseInterface(ifaces, "ethernet"), 1);
 
-    TEST("chooseInterface — selected with no IP falls back to auto");
+    TEST("chooseInterface: selected with no IP falls back to auto");
     std::vector<LocalInterface> noip;
     noip.push_back(mkIf("Ethernet", "", true, false));
     noip.push_back(mkIf("Wi-Fi", "192.168.0.9", true, true));
     EXPECT_EQ(chooseInterface(noip, "Ethernet"), 1);
 
-    TEST("chooseInterface — no usable interface yields -1");
+    TEST("chooseInterface: no usable interface yields -1");
     std::vector<LocalInterface> none;
     EXPECT_EQ(chooseInterface(none, "Ethernet"), -1);
 }
 
 static void test_buildJson_empty() {
-    TEST("buildNetworkInfoJson — all-default produces canonical empty shape");
+    TEST("buildNetworkInfoJson: all-default produces canonical empty shape");
     NetworkInfo info;
     EXPECT_EQ(buildNetworkInfoJson(info),
               std::string("{\"lanIp\":\"\",\"device\":\"\",\"category\":\"\",\"selected\":\"\","
@@ -179,7 +179,7 @@ static void test_buildJson_empty() {
 }
 
 static void test_buildJson_topLevel() {
-    TEST("buildNetworkInfoJson — top-level fields + ports, no interfaces");
+    TEST("buildNetworkInfoJson: top-level fields + ports, no interfaces");
     NetworkInfo info;
     info.lanIp = "10.0.0.5";
     info.device = "Ethernet 2";
@@ -201,7 +201,7 @@ static void test_buildJson_topLevel() {
 }
 
 static void test_buildJson_interfaces() {
-    TEST("buildNetworkInfoJson — full interfaces array exact");
+    TEST("buildNetworkInfoJson: full interfaces array exact");
     NetworkInfo info;
     info.lanIp = "10.0.0.5";
     info.device = "Ethernet 2";
@@ -213,7 +213,7 @@ static void test_buildJson_interfaces() {
                     "\"public\",\"physical\":true,\"private\":true},{\"name\":\"NordLynx\",\"ip\":"
                     "\"10.5.0.2\",\"category\":\"\",\"physical\":false,\"private\":true}]"));
 
-    TEST("buildNetworkInfoJson — single interface, flags reflected");
+    TEST("buildNetworkInfoJson: single interface, flags reflected");
     NetworkInfo one;
     one.interfaces.push_back(mkIf("Wi-Fi", "192.168.1.7", true, true, "private"));
     const std::string j = buildNetworkInfoJson(one);
@@ -222,7 +222,7 @@ static void test_buildJson_interfaces() {
 }
 
 static void test_buildJson_flags() {
-    TEST("buildNetworkInfoJson — allowPublic true/false and categories serialize");
+    TEST("buildNetworkInfoJson: allowPublic true/false and categories serialize");
     NetworkInfo a;
     a.allowPublic = true;
     EXPECT(contains(buildNetworkInfoJson(a), "\"allowPublic\":true"));
@@ -239,7 +239,7 @@ static void test_buildJson_flags() {
 }
 
 static void test_buildJson_escaping() {
-    TEST("buildNetworkInfoJson — escapes quotes/backslash/newline/control in strings");
+    TEST("buildNetworkInfoJson: escapes quotes/backslash/newline/control in strings");
     NetworkInfo info;
     info.device = "My \"Cool\" \\Net";
     info.selected = "a\"b";
@@ -259,7 +259,7 @@ static void test_buildJson_escaping() {
                               "b");
     EXPECT(contains(buildNetworkInfoJson(ctrl), "\\u0001"));
 
-    TEST("buildNetworkInfoJson — escapes interface name and category");
+    TEST("buildNetworkInfoJson: escapes interface name and category");
     NetworkInfo ifc;
     ifc.interfaces.push_back(mkIf("Tap \"VPN\"", "10.9.0.2", false, true, "pu\\b"));
     const std::string ij = buildNetworkInfoJson(ifc);
@@ -268,7 +268,7 @@ static void test_buildJson_escaping() {
 }
 
 static void test_buildJson_firewall() {
-    TEST("buildNetworkInfoJson — firewall supported+state serialize");
+    TEST("buildNetworkInfoJson: firewall supported+state serialize");
     NetworkInfo a;
     a.firewallSupported = true;
     a.firewallState = "wrong-profile";

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// core/catalog — Accept-Language resolution, catalog JSON shape, ETag, and the
+// core/catalog: Accept-Language resolution, catalog JSON shape, ETag, and the
 // locale completeness gate: every controller-TYPE string must resolve in every
 // supported locale (mirror of Android's MissingTranslation lint), while
 // feature/mode slugs stay machine-readable protocol constants.
@@ -41,7 +41,7 @@ static std::vector<std::string> controllerTypeElems(const std::string& json,
 }
 
 static void test_resolveLocale_exactMatch() {
-    TEST("resolveCatalogLocale — exact tags, case-insensitive");
+    TEST("resolveCatalogLocale: exact tags, case-insensitive");
     EXPECT_EQ(resolveCatalogLocale("en"), std::string("en"));
     EXPECT_EQ(resolveCatalogLocale("de"), std::string("de"));
     EXPECT_EQ(resolveCatalogLocale("DE"), std::string("de"));
@@ -50,7 +50,7 @@ static void test_resolveLocale_exactMatch() {
 }
 
 static void test_resolveLocale_primarySubtag() {
-    TEST("resolveCatalogLocale — primary-subtag fallback");
+    TEST("resolveCatalogLocale: primary-subtag fallback");
     EXPECT_EQ(resolveCatalogLocale("de-AT"), std::string("de"));
     EXPECT_EQ(resolveCatalogLocale("es-MX"), std::string("es"));
     EXPECT_EQ(resolveCatalogLocale("pt"), std::string("pt-BR"));
@@ -58,14 +58,14 @@ static void test_resolveLocale_primarySubtag() {
 }
 
 static void test_resolveLocale_qValueOrdering() {
-    TEST("resolveCatalogLocale — q-values order the candidates");
+    TEST("resolveCatalogLocale: q-values order the candidates");
     EXPECT_EQ(resolveCatalogLocale("fr;q=0.5, de;q=0.9"), std::string("de"));
     EXPECT_EQ(resolveCatalogLocale("ja, fr;q=0.8, en;q=0.1"), std::string("fr"));
     EXPECT_EQ(resolveCatalogLocale("de-DE, de;q=0.9, en;q=0.8"), std::string("de"));
 }
 
 static void test_resolveLocale_fallbackEn() {
-    TEST("resolveCatalogLocale — unknown/empty/wildcard fall back to en");
+    TEST("resolveCatalogLocale: unknown/empty/wildcard fall back to en");
     EXPECT_EQ(resolveCatalogLocale(""), std::string("en"));
     EXPECT_EQ(resolveCatalogLocale("ja"), std::string("en"));
     EXPECT_EQ(resolveCatalogLocale("*"), std::string("en"));
@@ -73,14 +73,14 @@ static void test_resolveLocale_fallbackEn() {
 }
 
 static void test_catalogETag_shape() {
-    TEST("catalogETag — version+locale, quoted");
+    TEST("catalogETag: version+locale, quoted");
     EXPECT_EQ(catalogETag("1.6.0", "de"), std::string("\"1.6.0+de\""));
     EXPECT(catalogETag("1.6.0", "de") != catalogETag("1.6.0", "en"));
     EXPECT(catalogETag("1.6.0", "de") != catalogETag("1.6.1", "de"));
 }
 
 static void test_catalogJson_structure() {
-    TEST("buildCatalogJson — ids match the wire enum, slugs and layers correct");
+    TEST("buildCatalogJson: ids match the wire enum, slugs and layers correct");
     CatalogBackendTraits traits;
     traits.ds4MotionSupported = true;
     traits.ds4MotionRequires = "vigembus>=1.17";
@@ -129,7 +129,7 @@ static void test_catalogJson_structure() {
 }
 
 static void test_catalogJson_inertBackend() {
-    TEST("buildCatalogJson — inert backend (macOS): nothing supported, no requires");
+    TEST("buildCatalogJson: inert backend (macOS): nothing supported, no requires");
     CatalogBackendTraits traits; // all false
     const std::string enJson = readFileAll(langPath("en"));
     std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
@@ -149,7 +149,7 @@ static void test_catalogJson_inertBackend() {
 }
 
 static void test_hostBlock_liveBackend() {
-    TEST("buildHostBlockJson — live backend: supported features are also available");
+    TEST("buildHostBlockJson: live backend: supported features are also available");
     CatalogBackendTraits traits;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
@@ -158,12 +158,12 @@ static void test_hostBlock_liveBackend() {
     EXPECT(json.find("\"mouseControl\":{\"supported\":true,\"available\":true}") !=
            std::string::npos);
     EXPECT(json.find("\"rumble\":{\"supported\":true,\"available\":true}") != std::string::npos);
-    // keyboardControl carries no runtime backend, so no available field — supported only.
+    // keyboardControl carries no runtime backend, so no available field, supported only.
     EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
 }
 
 static void test_hostBlock_supportedButDown() {
-    TEST("buildHostBlockJson — supported but backend down: present yet unavailable");
+    TEST("buildHostBlockJson: supported but backend down: present yet unavailable");
     CatalogBackendTraits traits;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
@@ -175,7 +175,7 @@ static void test_hostBlock_supportedButDown() {
 }
 
 static void test_hostBlock_inertBackend() {
-    TEST("buildHostBlockJson — inert backend: nothing supported, catalog still present");
+    TEST("buildHostBlockJson: inert backend: nothing supported, catalog still present");
     CatalogBackendTraits traits; // all false
     const std::string json = buildHostBlockJson(traits, /*backendAvailable=*/false);
     EXPECT(json.find("\"mouseControl\":{\"supported\":false,\"available\":false}") !=
@@ -186,7 +186,7 @@ static void test_hostBlock_inertBackend() {
 }
 
 static void test_catalogString_fallbackChain() {
-    TEST("catalogString — locale → en → key marker");
+    TEST("catalogString: locale → en → key marker");
     const std::string lang = R"({"catalog.type.ds4.name":"DualShock 4 übersetzt"})";
     const std::string en = R"({"catalog.type.ds4.name":"DualShock 4","only.en":"English"})";
     EXPECT_EQ(catalogString(lang, en, "catalog.type.ds4.name"),
@@ -196,7 +196,7 @@ static void test_catalogString_fallbackChain() {
 }
 
 static void test_resolveLocale_malformedHeaders() {
-    TEST("resolveCatalogLocale — malformed Accept-Language degrades, never throws");
+    TEST("resolveCatalogLocale: malformed Accept-Language degrades, never throws");
     EXPECT_EQ(resolveCatalogLocale(",,,"), std::string("en"));
     EXPECT_EQ(resolveCatalogLocale(";q=0.5"), std::string("en"));
     EXPECT_EQ(resolveCatalogLocale("   "), std::string("en"));
@@ -207,7 +207,7 @@ static void test_resolveLocale_malformedHeaders() {
 }
 
 static void test_catalogJson_escapesLocalizedStrings() {
-    TEST("buildCatalogJson — quotes/backslashes in lang strings stay valid JSON");
+    TEST("buildCatalogJson: quotes/backslashes in lang strings stay valid JSON");
     // Lang value decodes to D"S\4; the builder must re-escape it on output.
     // Ordinary escaped literals, hoisted: raw strings containing \" break
     // MSVC's traditional preprocessor when stringized in macro args.
@@ -219,7 +219,7 @@ static void test_catalogJson_escapesLocalizedStrings() {
 }
 
 static void test_imageSlugs_matchCatalogIds() {
-    TEST("catalogImageSlugs — slug order matches catalog ids (image route contract)");
+    TEST("catalogImageSlugs: slug order matches catalog ids (image route contract)");
     const auto& slugs = catalogImageSlugs();
     EXPECT_EQ(slugs.size(), size_t{2});
     if (slugs.size() == 2) {
@@ -229,10 +229,10 @@ static void test_imageSlugs_matchCatalogIds() {
 }
 
 // CI completeness gate: every controller-TYPE string present in all supported
-// locales. Feature slugs / modes / requires codes are NOT in the lang files —
-// they are protocol constants and the structure test above pins them literal.
+// locales. Feature slugs/modes/requires codes are NOT in the lang files; they
+// are protocol constants and the structure test above pins them literal.
 static void test_localeCompletenessGate() {
-    TEST("locale gate — every catalog string resolves in every supported locale");
+    TEST("locale gate: every catalog string resolves in every supported locale");
     for (const auto& locale : catalogLocales()) {
         const std::string content = readFileAll(langPath(locale));
         if (content.empty()) {
@@ -241,7 +241,7 @@ static void test_localeCompletenessGate() {
             continue;
         }
         for (const auto& key : catalogStringKeys()) {
-            // catalogString falls back to the KEY ITSELF when missing — assert
+            // catalogString falls back to the KEY ITSELF when missing; assert
             // the locale file resolves it directly (no en fallback allowed).
             const std::string v = catalogString(content, "", key);
             if (v == key) {
@@ -255,14 +255,14 @@ static void test_localeCompletenessGate() {
 }
 
 static void test_localizedCatalogsRenderLocalizedNames() {
-    TEST("locale gate — non-English catalogs serve non-marker strings");
+    TEST("locale gate: non-English catalogs serve non-marker strings");
     const std::string enJson = readFileAll(langPath("en"));
     CatalogBackendTraits traits;
     for (const auto& locale : catalogLocales()) {
         const std::string langJson = readFileAll(langPath(locale));
         std::string json = buildCatalogJson(locale, langJson, enJson, "1.6.0", traits);
         EXPECT(json.find("\"locale\":\"" + locale + "\"") != std::string::npos);
-        // The missing-string marker is the raw key — it must never surface.
+        // The missing-string marker is the raw key; it must never surface.
         EXPECT(json.find("catalog.type.xbox360.name\"") == std::string::npos ||
                json.find("\"name\":\"catalog.type.") == std::string::npos);
     }

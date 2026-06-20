@@ -25,8 +25,8 @@
                                     "AzureSignTool sign -kvu https://... -kvi ... -kvs ... -kvc ... -tr http://timestamp.digicert.com -td sha256"
 
     All modes append SHA-256 file digest + RFC-3161 timestamp. SHA-1
-    is intentionally not added -- Microsoft retired SHA-1 Authenticode
-    in 2016 and Windows 10+ ignores it.
+    is not added: Microsoft retired SHA-1 Authenticode in 2016 and
+    Windows 10+ ignores it.
 
     Idempotent: signing an already-signed file just re-signs it.
 
@@ -124,8 +124,6 @@ function Test-AlreadySigned {
     return ($sig -and $sig.Status -eq 'Valid')
 }
 
-# --- main loop ------------------------------------------------------------
-
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
@@ -150,7 +148,7 @@ try {
         }
 
         if (-not (Test-AlreadySigned -File $abs)) {
-            throw "$rel did not validate after signing -- aborting."
+            throw "$rel did not validate after signing; aborting."
         }
         $signed += $rel
     }

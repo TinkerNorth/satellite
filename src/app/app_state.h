@@ -43,7 +43,7 @@ extern std::atomic<uint32_t> g_senderIP;
 extern std::atomic<uint64_t> g_decryptFail;
 extern std::atomic<uint64_t> g_replayDrop;
 
-// g_httpServer is the admin UI + admin API (plain HTTP, bound to 127.0.0.1).
+// g_httpServer is the admin UI + admin API (plain HTTP, 127.0.0.1).
 // g_clientServer points at the sender-facing HTTPS server; owned by
 // clientApiThread (an httplib::SSLServer has no default ctor so can't be a
 // global) and null until that thread constructs it.

@@ -83,8 +83,8 @@ int64_t isoToEpoch(const std::string& iso) {
     t.tm_hour = h;
     t.tm_min = mi;
     t.tm_sec = se;
-    // ISO string is UTC ("Z"). timegm() is non-portable; use _mkgmtime on
-    // Windows. Display-only, so an off-by-DST doesn't affect update logic.
+    // ISO string is UTC. timegm() is non-portable; use _mkgmtime on Windows.
+    // Display-only, so an off-by-DST doesn't affect update logic.
 #if defined(_WIN32)
     return _mkgmtime(&t);
 #else

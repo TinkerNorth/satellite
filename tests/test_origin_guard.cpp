@@ -10,7 +10,7 @@ using satellite::isLoopbackHost;
 using satellite::isLoopbackOrigin;
 
 static void test_host_accepts_loopback() {
-    TEST("isLoopbackHost — accepts loopback hosts");
+    TEST("isLoopbackHost: accepts loopback hosts");
     EXPECT(isLoopbackHost("127.0.0.1"));
     EXPECT(isLoopbackHost("localhost"));
     EXPECT(isLoopbackHost("::1"));
@@ -21,7 +21,7 @@ static void test_host_accepts_loopback() {
 }
 
 static void test_host_rejects_nonloopback() {
-    TEST("isLoopbackHost — rejects non-loopback hosts");
+    TEST("isLoopbackHost: rejects non-loopback hosts");
     EXPECT(!isLoopbackHost("evil.com"));
     EXPECT(!isLoopbackHost("127.0.0.1.evil.com"));
     EXPECT(!isLoopbackHost("localhost.evil.com"));
@@ -50,14 +50,14 @@ static void test_host_rejects_nonloopback() {
 }
 
 static void test_origin_accepts_loopback() {
-    TEST("isLoopbackOrigin — accepts loopback origins");
+    TEST("isLoopbackOrigin: accepts loopback origins");
     EXPECT(isLoopbackOrigin("http://127.0.0.1:8080"));
     EXPECT(isLoopbackOrigin("https://localhost"));
     EXPECT(isLoopbackOrigin("http://[::1]:8080"));
 }
 
 static void test_origin_rejects_nonloopback() {
-    TEST("isLoopbackOrigin — rejects non-loopback / malformed origins");
+    TEST("isLoopbackOrigin: rejects non-loopback / malformed origins");
     EXPECT(!isLoopbackOrigin("http://evil.com"));
     EXPECT(!isLoopbackOrigin("http://127.0.0.1.evil.com"));
     EXPECT(!isLoopbackOrigin("null"));

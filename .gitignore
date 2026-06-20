@@ -55,6 +55,6 @@ Desktop.ini
 .tmp-*
 /tmp-*
 
-# Vendored libraries (tracked — do NOT ignore lib/)
+# Vendored libraries (tracked; do NOT ignore lib/)
 # lib/httplib.h is intentionally committed
 

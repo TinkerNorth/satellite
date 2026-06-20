@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Session-key derivation + REST proof-of-key-possession (docs/contract.md
-// §Crypto / §hmacProof). Shared by every platform; libsodium-backed, kept out
-// of core/ so the core stays libsodium-free.
+// Session-key derivation + REST proof-of-key-possession (docs/contract.md).
+// Shared by every platform; libsodium-backed, kept out of core/ so the core
+// stays libsodium-free.
 #pragma once
 
 #include "core/types.h"
@@ -27,7 +27,7 @@ bool verifyHmacProof(const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::strin
                      const std::string& proofHex);
 
 // UDP packet AEAD (ChaCha20-Poly1305-IETF), one shared implementation for all
-// platforms. Nonce = direction(1) | 0×7 | counter(4 BE); AAD = token(4 BE).
+// platforms. Nonce = direction(1) | 0x7 | counter(4 BE); AAD = token(4 BE).
 // The direction byte (CRYPTO_DIR_*) keeps the two directions of one session
 // key from ever sharing a nonce.
 bool encryptPacket(const uint8_t key[CRYPTO_KEY_SIZE], uint8_t direction, uint32_t counter,

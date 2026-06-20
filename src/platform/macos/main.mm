@@ -45,7 +45,7 @@ int main(int argc, const char* argv[]) {
     @autoreleasepool {
         // macOS lacks a signed DriverKit equivalent of ViGEmBus, so this build
         // runs the protocol stack but cannot synthesize virtual gamepads.
-        fprintf(stderr, "[satellite] macOS stub build — virtual gamepads disabled "
+        fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
                         "(controller descriptors will apply as backendUnavailable).\n");
 
         if (!netInit()) {
@@ -111,7 +111,7 @@ int main(int argc, const char* argv[]) {
         [app run];
         removeTrayIcon();
 
-        // Cleanup — applicationShouldTerminate: has already flipped the flags.
+        // applicationShouldTerminate: has already flipped the flags.
         updateService.stop();
         g_updateService = nullptr;
 

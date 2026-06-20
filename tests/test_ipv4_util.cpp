@@ -10,7 +10,7 @@ using satellite::formatIPv4Nbo;
 using satellite::parseIPv4Nbo;
 
 static void test_parse_valid() {
-    TEST("parseIPv4Nbo — network byte order matches sockaddr layout");
+    TEST("parseIPv4Nbo: network byte order matches sockaddr layout");
     // 1.2.3.4 → leftmost octet in the low byte.
     EXPECT_EQ(parseIPv4Nbo("1.2.3.4"), 0x04030201u);
     EXPECT_EQ(parseIPv4Nbo("0.0.0.0"), 0x00000000u);
@@ -19,7 +19,7 @@ static void test_parse_valid() {
 }
 
 static void test_parse_malformed_returns_zero() {
-    TEST("parseIPv4Nbo — malformed input returns 0");
+    TEST("parseIPv4Nbo: malformed input returns 0");
     EXPECT_EQ(parseIPv4Nbo(""), 0u);
     EXPECT_EQ(parseIPv4Nbo("1.2.3"), 0u);        // too few octets
     EXPECT_EQ(parseIPv4Nbo("1.2.3.4.5"), 0u);    // too many octets
@@ -34,7 +34,7 @@ static void test_parse_malformed_returns_zero() {
 }
 
 static void test_format() {
-    TEST("formatIPv4Nbo — renders network-order uint32 as dotted quad");
+    TEST("formatIPv4Nbo: renders network-order uint32 as dotted quad");
     EXPECT_EQ(formatIPv4Nbo(0x04030201u), std::string("1.2.3.4"));
     EXPECT_EQ(formatIPv4Nbo(0x00000000u), std::string("0.0.0.0"));
     EXPECT_EQ(formatIPv4Nbo(0xFFFFFFFFu), std::string("255.255.255.255"));

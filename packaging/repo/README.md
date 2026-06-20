@@ -48,7 +48,7 @@ after the main `publish` job succeeds. Both:
 The Pages site rebuilds automatically; users on `apt update` /
 `dnf check-update` pick up the new version within seconds.
 
-## Maintainer setup — one-time
+## Maintainer setup (one-time)
 
 The CI workflow needs two repository secrets:
 
@@ -97,7 +97,7 @@ automatically and populate `https://tinkernorth.github.io/satellite/`.
 
 ## Local testing
 
-The publishing scripts run fine standalone — give them a scratch
+The publishing scripts run fine standalone. Give them a scratch
 `pages-dir` and a directory holding the latest `.deb` / `.rpm`:
 
 ```bash

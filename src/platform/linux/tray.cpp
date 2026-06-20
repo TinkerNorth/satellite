@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// libayatana-appindicator status icon and menu. Caveat: on vanilla GNOME (no
-// AppIndicator extension) the indicator is created and "active" on D-Bus but no
-// shell renders it, and there's no portable way to detect that at runtime.
+// Caveat: on vanilla GNOME (no AppIndicator extension) the indicator is created
+// and "active" on D-Bus but no shell renders it, with no runtime way to detect that.
 #include "tray.h"
 
 #ifdef SATELLITE_HAS_TRAY
@@ -51,8 +50,7 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
     if (s.state == UpdateState::Downloaded) {
         g_updateService->requestInstall();
     } else if (s.state == UpdateState::UpdateAvailable) {
-        // Manual installs (Deb/Portable) can't run in-app; the settings page
-        // shows the copy-button instead.
+        // Manual installs (Deb/Portable) can't run in-app.
         if (s.info.installMethod == InstallMethod::SelfInstall) {
             g_updateService->requestDownload();
         }
@@ -72,7 +70,6 @@ static void onQuit(GtkMenuItem*, gpointer) {
     gtk_main_quit();
 }
 
-// Keep the updater item's label in sync with the actual state.
 static gboolean pollMenuState(gpointer) {
     if (g_updateService && g_updateItem) {
         UpdateStatusSnapshot s = g_updateService->snapshot();
@@ -101,14 +98,13 @@ static gboolean pollMenuState(gpointer) {
     return G_SOURCE_CONTINUE;
 }
 
-// Prefer the bundled web/icon.png; else fall back to the freedesktop
-// "input-gaming" themed name that virtually every icon theme ships.
+// Prefer bundled web/icon.png; else the freedesktop "input-gaming" themed name.
 static void applyIcon(AppIndicator* ind) {
     if (!g_webDir.empty()) {
         struct stat st;
         std::string iconFile = g_webDir + "/icon.png";
         if (stat(iconFile.c_str(), &st) == 0) {
-            // app-indicator looks names up within the theme path, so point it at
+            // app-indicator resolves names within the theme path, so point it at
             // <dir> and ask for "icon" (no extension).
             app_indicator_set_icon_theme_path(ind, g_webDir.c_str());
             app_indicator_set_icon_full(ind, "icon", APP_TITLE);
@@ -131,11 +127,10 @@ static void onPairReject(NotifyNotification*, char* action, gpointer user_data) 
     if (id != nullptr) declinePairing(id);
 }
 
-// Release our GObject ref once the notification closes (after any action fires).
 static void onPairClosed(NotifyNotification* n, gpointer) { g_object_unref(n); }
 
-// g_idle_add target (GTK main loop). Shows the dish's PIN so the operator can
-// confirm it matches the device — that visual match is the auth.
+// Shows the dish's PIN so the operator confirms it matches the device; that
+// visual match is the auth.
 static gboolean showPairPromptIdle(gpointer data) {
     std::unique_ptr<std::string> deviceId(static_cast<std::string*>(data));
     std::string name, ip, pin;
@@ -148,7 +143,7 @@ static gboolean showPairPromptIdle(gpointer data) {
     NotifyNotification* n =
         notify_notification_new("Pairing request", body.c_str(), "input-gaming");
     notify_notification_set_timeout(n, NOTIFY_EXPIRES_NEVER);
-    // The action user_data must outlive the notification → g_strdup + g_free.
+    // The action user_data must outlive the notification: g_strdup + g_free.
     notify_notification_add_action(n, "accept", "Accept", onPairAccept, g_strdup(deviceId->c_str()),
                                    g_free);
     notify_notification_add_action(n, "reject", "Reject", onPairReject, g_strdup(deviceId->c_str()),
@@ -159,7 +154,7 @@ static gboolean showPairPromptIdle(gpointer data) {
 }
 
 void notifyPairRequestLinux(const std::string& deviceId) {
-    // Marshal onto the GTK main loop — libnotify/GLib isn't thread-safe off it,
+    // Marshal onto the GTK main loop: libnotify/GLib isn't thread-safe off it,
     // and the listener fires on the HTTP thread.
     g_idle_add(showPairPromptIdle, new std::string(deviceId));
 }
@@ -195,7 +190,7 @@ bool addTrayIcon() {
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
-    // Updater item — label kept current by pollMenuState().
+    // Label kept current by pollMenuState().
     g_updateItem = gtk_menu_item_new_with_label("Check for Updates\xE2\x80\xA6");
     g_signal_connect(g_updateItem, "activate", G_CALLBACK(onUpdateClick), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), g_updateItem);

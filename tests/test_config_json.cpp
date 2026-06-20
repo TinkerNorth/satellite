@@ -10,7 +10,7 @@
 using namespace satellite;
 
 static void test_full_round_trip() {
-    TEST("serializeConfig/parseConfigInto — every field survives a round-trip");
+    TEST("serializeConfig/parseConfigInto: every field survives a round-trip");
     Config in;
     in.udpPort = 11111;
     in.webPort = 22222;

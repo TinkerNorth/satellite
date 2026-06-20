@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// IUpdaterPort for macOS: fetch release metadata + artifact via NSURLSession,
-// verify SHA-256 via CommonCrypto, then a POSIX swap-and-relaunch helper does
-// the in-place .app update. No codesign/notarization validation here — we rely
-// on the release pipeline producing notarized bundles; the SHA-256 check only
-// guards against tampering in transit.
+// No codesign/notarization validation here: we rely on the release pipeline
+// producing notarized bundles; the SHA-256 check only guards transit tampering.
 #pragma once
 
 #include "core/ports.h"

@@ -51,7 +51,6 @@ std::string resolveCatalogLocale(const std::string& acceptLanguage) {
             if (qpos != std::string::npos) q = strtod(part.c_str() + qpos + 2, nullptr);
             part = part.substr(0, semi);
         }
-        // Trim whitespace.
         size_t b = part.find_first_not_of(" \t");
         size_t e = part.find_last_not_of(" \t");
         if (b == std::string::npos) continue;
@@ -66,7 +65,7 @@ std::string resolveCatalogLocale(const std::string& acceptLanguage) {
         for (const auto& loc : locales) {
             if (toLower(loc) == lower) return loc;
         }
-        // Primary-subtag match: "de-AT" → "de"; also lets bare "pt" reach "pt-BR".
+        // Primary-subtag match: "de-AT" to "de"; also lets bare "pt" reach "pt-BR".
         const std::string primary = lower.substr(0, lower.find('-'));
         for (const auto& loc : locales) {
             const std::string locPrimary = toLower(loc.substr(0, loc.find('-')));
@@ -144,7 +143,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     if (!jsonParse(langJson, lang)) lang = Json::object();
     if (!jsonParse(enJson, en)) en = Json::object();
 
-    // Feature slugs, modes, and requires codes below are PROTOCOL CONSTANTS —
+    // Feature slugs, modes, and requires codes below are PROTOCOL CONSTANTS,
     // never localized (docs/contract.md localization boundary rule).
     JsonOut xboxFeatures;
     xboxFeatures["rumble"] = featureJson(true);
@@ -153,8 +152,8 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     xboxFeatures["lightbar"] = featureJson(false);
     xboxFeatures["touchpad"] = featureJson(false);
 
-    // The DS4 touchpad renders the "ds4" pad mode (the descriptor touchpadMode value);
-    // "mouse" is host injection and lives under hostFeatures.mouseControl, not here.
+    // The DS4 touchpad renders the "ds4" pad mode; "mouse" is host injection and
+    // lives under hostFeatures.mouseControl, not here.
     JsonOut ds4Features;
     ds4Features["rumble"] = featureJson(true);
     ds4Features["analogTriggers"] = featureJson(true);
@@ -172,10 +171,10 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     types.push_back(typeJson(1, "ds4", lang, en, serverVersion, std::move(ds4Features)));
     j["controllerTypes"] = std::move(types);
 
-    // hostFeatures: what the HOST can be driven to do, independent of any slot. Slugs
-    // and mode values are protocol constants (never localized). mouseControl.modes
-    // enumerates the valid descriptor touchpadMode values; rumble (RECEIVE) and
-    // keyboardControl (SEND) let the client gate those host paths instead of assuming.
+    // What the HOST can be driven to do, independent of any slot. Slugs and mode
+    // values are protocol constants. mouseControl.modes enumerates the valid
+    // descriptor touchpadMode values; rumble (RECEIVE) and keyboardControl (SEND)
+    // let the client gate those host paths.
     JsonOut mouseControl;
     mouseControl["supported"] = traits.mouseControlSupported;
     mouseControl["modes"] = JsonOut::array({"off", "ds4", "mouse"});
@@ -192,9 +191,9 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
 }
 
 std::string buildHostBlockJson(const CatalogBackendTraits& traits, bool backendAvailable) {
-    // `available` is the bus-up proxy (backend can accept controllers), NOT a per-feature
-    // delivery probe — enough to surface "present but driver down" pre-bind. catalog is
-    // always served by this server, so its presence is unconditionally true.
+    // `available` is the bus-up proxy, NOT a per-feature delivery probe; enough
+    // to surface "present but driver down" pre-bind. catalog is always served, so
+    // its presence is unconditionally true.
     const bool mouseLive = backendAvailable && traits.mouseControlSupported;
     const bool rumbleLive = backendAvailable && traits.rumbleSupported;
 

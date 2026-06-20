@@ -7,14 +7,14 @@
 #include "test_util.h"
 
 static void test_beacon_exact_shape() {
-    TEST("buildDiscoveryBeacon — exact JSON shape and field order");
+    TEST("buildDiscoveryBeacon: exact JSON shape and field order");
     std::string b = buildDiscoveryBeacon("MyPC", 9876, 9878, 9877, "abc123");
     EXPECT_EQ(b, std::string(R"({"service":"satellite","name":"MyPC","udpPort":9876,)"
                              R"("pairPort":9878,"httpPort":9877,"machineId":"abc123"})"));
 }
 
 static void test_beacon_substitutes_fields() {
-    TEST("buildDiscoveryBeacon — substitutes name/ports/machineId");
+    TEST("buildDiscoveryBeacon: substitutes name/ports/machineId");
     std::string b = buildDiscoveryBeacon("host-2", 1, 2, 3, "deadbeef");
     EXPECT(b.find(R"("name":"host-2")") != std::string::npos);
     EXPECT(b.find(R"("udpPort":1,)") != std::string::npos);

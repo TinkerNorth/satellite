@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Hot loop is allocation-free and single-lock per gamepad packet — keep it that way.
+// Hot loop is allocation-free and single-lock per gamepad packet; keep it so.
 #include "receiver.h"
 #include "inner_dispatch.h"
 #include "crypto.h"
@@ -21,12 +21,10 @@ static void reaperLoop(SessionService& svc) {
 
 void receiverThread(SessionService& svc, ClientAdapter& client) {
 #ifdef _WIN32
-    // Register with MMCSS (Multimedia Class Scheduler) under the "Games" task —
-    // the OS-sanctioned low-latency scheduling class. It boosts this thread
-    // while registered and, unlike a hand-set TIME_CRITICAL priority, lets the
-    // scheduler manage it so it can't starve the rest of the system. Fall back
-    // to TIME_CRITICAL only if MMCSS is unavailable (service disabled or the
-    // "Games" task profile missing). Reverted at thread exit.
+    // Register with MMCSS under the "Games" task, the OS-sanctioned low-latency
+    // scheduling class. Unlike a hand-set TIME_CRITICAL priority, the scheduler
+    // manages it so it can't starve the rest of the system. Fall back to
+    // TIME_CRITICAL only if MMCSS is unavailable. Reverted at thread exit.
     DWORD mmcssTaskIndex = 0;
     HANDLE mmcssHandle = AvSetMmThreadCharacteristicsW(L"Games", &mmcssTaskIndex);
     if (mmcssHandle == nullptr) {
@@ -49,7 +47,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET) {
             if (!bindErrorLogged) {
-                logMsg(LogLevel::ERR, "receiver", "Failed to create UDP socket — retrying");
+                logMsg(LogLevel::ERR, "receiver", "Failed to create UDP socket; retrying");
                 bindErrorLogged = true;
             }
             netSleepMs(1000);
@@ -65,7 +63,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
             if (!bindErrorLogged) {
                 logMsg(LogLevel::ERR, "receiver",
-                       "Failed to bind UDP port " + std::to_string(port) + " — retrying");
+                       "Failed to bind UDP port " + std::to_string(port) + "; retrying");
                 bindErrorLogged = true;
             }
             closesocket(sock);
@@ -130,8 +128,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                 continue;
             }
 
-            // In-place decrypt (plaintext = ctLen - 16 bytes, fits the
-            // ciphertext span): libsodium chacha20-poly1305 supports `m == c`
+            // In-place decrypt: libsodium chacha20-poly1305 supports `m == c`
             // overlap, saving a second 256-byte stack buffer.
             uint8_t* ciphertext = buf + HEADER_SIZE;
             auto ctLen = static_cast<size_t>(n - HEADER_SIZE);
@@ -143,7 +140,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             }
             uint8_t* plaintext = ciphertext; // alias after in-place decrypt
 
-            // Sender address as uint32 (network byte order) — no inet_ntop, no
+            // Sender address as uint32 (network byte order): no inet_ntop, no
             // std::string alloc on the hot path. SessionService refreshes the
             // human-readable cache only when this value changes.
             const uint32_t senderIPv4 = sender.sin_addr.s_addr;
@@ -156,8 +153,8 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
             // Fast path: MSG_GAMEPAD_DATA hits the fused single-lock entry.
-            // Every other kind takes the cold two-lock path — sub-Hz, so the
-            // extra acquire is invisible.
+            // Every other kind takes the cold two-lock path (sub-Hz, so the
+            // extra acquire is invisible).
             DispatchResult dr;
             if (msgType == MSG_GAMEPAD_DATA && msgLen >= 13) {
                 uint8_t ctrlIdx = payload[0];

@@ -9,7 +9,7 @@
 using namespace satellite;
 
 static void test_parse_tolerant() {
-    TEST("jsonParse — valid object succeeds, malformed/empty/non-object discard");
+    TEST("jsonParse: valid object succeeds, malformed/empty/non-object discard");
     Json j;
     EXPECT(jsonParse(R"({"a":1})", j));
     EXPECT(j.is_object());
@@ -23,7 +23,7 @@ static void test_parse_tolerant() {
 }
 
 static void test_typed_accessors_present() {
-    TEST("jsonStr/jsonInt/jsonBool — extract present, correctly-typed values");
+    TEST("jsonStr/jsonInt/jsonBool: extract present, correctly-typed values");
     Json j = Json::parse(R"({"s":"hi","n":42,"b":true})");
     EXPECT_EQ(jsonStr(j, "s"), std::string("hi"));
     EXPECT_EQ(jsonInt(j, "n"), 42L);
@@ -31,7 +31,7 @@ static void test_typed_accessors_present() {
 }
 
 static void test_typed_accessors_fallback() {
-    TEST("jsonStr/jsonInt/jsonBool — absent or wrong-typed yields the fallback");
+    TEST("jsonStr/jsonInt/jsonBool: absent or wrong-typed yields the fallback");
     Json j = Json::parse(R"({"s":"hi","n":42,"b":true})");
     EXPECT_EQ(jsonStr(j, "missing", "def"), std::string("def"));
     EXPECT_EQ(jsonInt(j, "missing", -1), -1L);
@@ -43,7 +43,7 @@ static void test_typed_accessors_fallback() {
 }
 
 static void test_try_accessors() {
-    TEST("jsonTryInt/jsonTryBool/jsonTryI64 — report presence, distinguish 0/false from absent");
+    TEST("jsonTryInt/jsonTryBool/jsonTryI64: report presence, distinguish 0/false from absent");
     Json j = Json::parse(R"({"n":0,"b":false,"big":4294967296,"s":"x"})");
     long n = -99;
     EXPECT(jsonTryInt(j, "n", n));
@@ -62,7 +62,7 @@ static void test_try_accessors() {
 }
 
 static void test_object_descend() {
-    TEST("jsonObject — returns the nested object, or an empty object when absent/not-object");
+    TEST("jsonObject: returns the nested object, or an empty object when absent/not-object");
     Json j = Json::parse(R"({"caps":{"rumble":true},"x":5})");
     Json caps = jsonObject(j, "caps");
     EXPECT(jsonBool(caps, "rumble"));
@@ -72,7 +72,7 @@ static void test_object_descend() {
 }
 
 static void test_dump_is_ordered_and_compact() {
-    TEST("jsonDump — preserves insertion order, compact (no spaces)");
+    TEST("jsonDump: preserves insertion order, compact (no spaces)");
     JsonOut j;
     j["z"] = 1;
     j["a"] = 2;
@@ -81,7 +81,7 @@ static void test_dump_is_ordered_and_compact() {
 }
 
 static void test_dump_escaping() {
-    TEST("jsonDump — escapes quotes/backslash/newline/control, keeps forward slash + UTF-8");
+    TEST("jsonDump: escapes quotes/backslash/newline/control, keeps forward slash + UTF-8");
     JsonOut j;
     j["q"] = "a\"b";
     j["bs"] = "a\\b";
@@ -101,7 +101,7 @@ static void test_dump_escaping() {
 }
 
 static void test_dump_invalid_utf8_does_not_throw() {
-    TEST("jsonDump — invalid UTF-8 degrades to U+FFFD instead of throwing");
+    TEST("jsonDump: invalid UTF-8 degrades to U+FFFD instead of throwing");
     JsonOut j;
     j["name"] = std::string("bad\xff\xfe");
     std::string s;
@@ -116,7 +116,7 @@ static void test_dump_invalid_utf8_does_not_throw() {
 }
 
 static void test_dump_pretty() {
-    TEST("jsonDumpPretty — indented, newline-separated");
+    TEST("jsonDumpPretty: indented, newline-separated");
     JsonOut j;
     j["a"] = 1;
     const std::string s = jsonDumpPretty(j);

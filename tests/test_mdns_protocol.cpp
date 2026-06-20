@@ -237,7 +237,7 @@ static void writeQueryHeader(uint8_t* buf, uint16_t id, uint16_t qd, uint16_t an
 
 // Append a DNS answer record to `buf` at `pos`; returns the new pos. Builds the
 // Known-Answer list (RFC 6762 §7.1). `rdata` may be null for a zero-length
-// record — the parser only keys on name/type/ttl.
+// record; the parser only keys on name/type/ttl.
 static size_t appendAnswer(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
                            uint16_t rtype, uint16_t rclass, uint32_t ttl, const uint8_t* rdata,
                            uint16_t rdlen) {
@@ -702,7 +702,7 @@ static void test_encodeAnnouncement_normalTtlsNeverZero() {
     const uint8_t ip[4] = {10, 0, 0, 8};
     mdns::ResponseInputs in = sampleInputs();
     in.ipv4 = ip;
-    in.goodbye = true; // must be ignored — an announcement is not a retraction
+    in.goodbye = true; // must be ignored; an announcement is not a retraction
     const size_t n = mdns::encodeAnnouncement(buf, sizeof(buf), in);
     mdns::Header h{};
     std::vector<Rr> rrs;
@@ -719,7 +719,7 @@ static void test_encodeAnnouncement_normalTtlsNeverZero() {
 static void test_encodeProbeQuery_shape() {
     TEST("encodeProbeQuery emits one ANY question for the instance FQDN with the QU bit set");
     uint8_t buf[768];
-    mdns::ResponseInputs in = sampleInputs(); // no A — SRV + TXT in the authority section
+    mdns::ResponseInputs in = sampleInputs(); // no A; SRV + TXT in the authority section
     const size_t n = mdns::encodeProbeQuery(buf, sizeof(buf), in);
     EXPECT(n > 12u);
     mdns::Header h{};
@@ -763,8 +763,8 @@ static void test_encodeProbeQuery_authoritySectionHoldsProposedRecords() {
         if (r.type == mdns::TYPE_TXT) sawTxt = true;
         if (r.type == mdns::TYPE_A) sawA = true;
         if (r.type == mdns::TYPE_PTR) sawPtr = true;
-        // Authority records carry class IN with the cache-flush bit clear —
-        // the parser masks the bit off, so we just confirm the class is IN.
+        // Authority records carry class IN with the cache-flush bit clear; the
+        // parser masks the bit off, so we just confirm the class is IN.
         EXPECT_EQ(r.cls, mdns::CLASS_IN);
     }
     EXPECT(sawSrv && sawTxt && sawA);
@@ -818,7 +818,7 @@ static void test_parsePacket_surfacesAuthorityRecords() {
     TEST("parsePacket(6-arg) surfaces an inbound probe's authority-section records");
     uint8_t buf[512];
     writeQueryHeader(buf, 0, /*qd=*/1, /*an=*/0);
-    // NSCOUNT lives at bytes 8-9 — writeQueryHeader zeroes it; set it to 1.
+    // NSCOUNT lives at bytes 8-9; writeQueryHeader zeroes it, so set it to 1.
     buf[8] = 0x00;
     buf[9] = 0x01;
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "satellite-host._satellite._udp.local.",
@@ -856,7 +856,7 @@ static void test_parsePacket_authorityAfterKnownAnswers() {
     const uint8_t ka[4] = {1, 2, 3, 4};
     pos = appendAnswer(buf, sizeof(buf), pos, "_satellite._udp.local.", mdns::TYPE_PTR,
                        mdns::CLASS_IN, 4000, ka, 4);
-    // Then the authority record — must still be reached and surfaced.
+    // Then the authority record, which must still be reached and surfaced.
     const uint8_t a4[4] = {172, 16, 9, 9};
     pos = appendAuthority(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A,
                           mdns::CLASS_IN, 4500, a4, 4);
@@ -888,7 +888,7 @@ static void test_parsePacket_authorityRejectsRdlenOverrun() {
     buf[pos++] = 0x11;
     buf[pos++] = 0x94; // ttl 4500
     buf[pos++] = 0xFF;
-    buf[pos++] = 0xFF; // rdlen 65535 — wildly past the packet
+    buf[pos++] = 0xFF; // rdlen 65535, wildly past the packet
     buf[pos++] = 0x0A;
     buf[pos++] = 0x00; // only 2 rdata bytes present
     mdns::Header h{};
@@ -1035,7 +1035,7 @@ static void test_compareRecordSets_sortsBeforeComparing() {
 
 static void test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs() {
     TEST("compareRecordSets stops at the first differing record in sorted order");
-    // Both sets share an identical A record (sorts first — type 1) and differ
+    // Both sets share an identical A record (sorts first, type 1) and differ
     // only in the TXT (type 16, sorts second). The TXT difference decides.
     mdns::ProbeRecord aRec = makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 5});
     std::vector<mdns::ProbeRecord> ours = {
@@ -1221,7 +1221,7 @@ static void test_parsePacket_cacheFlushMaskedOffKnownAnswer() {
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_PTR,
                                 mdns::CLASS_IN);
     const uint8_t a4[4] = {10, 0, 0, 1};
-    // Class carries the cache-flush bit set — the parser must strip it.
+    // Class carries the cache-flush bit set; the parser must strip it.
     pos = appendAnswer(buf, sizeof(buf), pos, "satellite-host.local.", mdns::TYPE_A,
                        mdns::CLASS_IN | mdns::CACHE_FLUSH_BIT, 4500, a4, 4);
     mdns::Header h{};
@@ -1256,7 +1256,7 @@ static void test_parsePacket_rejectsTruncatedAnswerHeader() {
                                 mdns::CLASS_IN);
     // Write a valid answer name, then truncate before type/class/ttl/rdlen.
     pos += mdns::writeDnsName(buf + pos, sizeof(buf) - pos, "satellite-host.local.");
-    buf[pos++] = 0x00; // a couple of stray bytes — far short of the 10-byte fixed block
+    buf[pos++] = 0x00; // a couple of stray bytes, far short of the 10-byte fixed block
     buf[pos++] = 0x01;
     mdns::Header h{};
     std::vector<mdns::Question> qs;
@@ -1280,7 +1280,7 @@ static void test_parsePacket_rejectsAnswerRdlenOverrun() {
     buf[pos++] = 0x11;
     buf[pos++] = 0x94; // ttl 4500
     buf[pos++] = 0xFF;
-    buf[pos++] = 0xFF; // rdlen 65535 — wildly past the packet
+    buf[pos++] = 0xFF; // rdlen 65535, wildly past the packet
     buf[pos++] = 0x0A;
     buf[pos++] = 0x00; // only 2 rdata bytes actually present
     mdns::Header h{};
@@ -1310,7 +1310,7 @@ static void test_parsePacket_rejectsAnswerCompressionLoop() {
     writeQueryHeader(buf, 1, /*qd=*/1, /*an=*/1);
     size_t pos = appendQuestion(buf, sizeof(buf), 12, "_satellite._udp.local.", mdns::TYPE_PTR,
                                 mdns::CLASS_IN);
-    // Answer name is a pointer to itself — readDnsName must reject it.
+    // Answer name is a pointer to itself; readDnsName must reject it.
     buf[pos] = 0xC0;
     buf[pos + 1] = static_cast<uint8_t>(pos & 0xFF);
     pos += 2;
@@ -1481,7 +1481,7 @@ static void test_knownAnswer_endToEnd_staleTtlStillSent() {
     uint8_t rdata[64];
     const size_t rdlen =
         mdns::writeDnsName(rdata, sizeof(rdata), "satellite-host._satellite._udp.local.");
-    // TTL below half of TTL_SERVICE — the querier's copy is stale.
+    // TTL below half of TTL_SERVICE; the querier's copy is stale.
     qpos = appendAnswer(qbuf, sizeof(qbuf), qpos, "_satellite._udp.local.", mdns::TYPE_PTR,
                         mdns::CLASS_IN, (mdns::TTL_SERVICE / 2) - 1, rdata,
                         static_cast<uint16_t>(rdlen));
@@ -1499,7 +1499,7 @@ static void test_knownAnswer_endToEnd_staleTtlStillSent() {
     mdns::Header rh{};
     std::vector<Rr> rrs;
     EXPECT(parseResponseRecords(rbuf, rn, rh, rrs));
-    EXPECT(findRr(rrs, mdns::TYPE_PTR) != nullptr); // sent — querier's copy was stale
+    EXPECT(findRr(rrs, mdns::TYPE_PTR) != nullptr); // sent; querier's copy was stale
 }
 
 int main() {

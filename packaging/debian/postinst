@@ -1,5 +1,5 @@
 #!/bin/sh
-# postinst — runs after files are unpacked into the filesystem.
+# postinst: runs after files are unpacked into the filesystem.
 #
 # Wires up the kernel-side bits the dpkg files alone can't activate:
 #   - reloads udev so the rule applied to /dev/uinput takes effect now

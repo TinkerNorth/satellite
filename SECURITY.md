@@ -1,12 +1,12 @@
-# Security policy — TinkerNorth
+# Security policy: TinkerNorth
 
 This file covers all four TinkerNorth repositories that ship the
 wireless-gamepad product end-to-end:
 
-- [`satellite`](https://github.com/TinkerNorth/satellite) — server (Windows / Linux / macOS)
-- [`dish-android`](https://github.com/TinkerNorth/dish-android) — Android client
-- [`dish-linux`](https://github.com/TinkerNorth/dish-linux) — Linux client (Qt6 / SDL2)
-- [`dish-mac`](https://github.com/TinkerNorth/dish-mac) — macOS client (SwiftUI)
+- [`satellite`](https://github.com/TinkerNorth/satellite): server (Windows / Linux / macOS)
+- [`dish-android`](https://github.com/TinkerNorth/dish-android): Android client
+- [`dish-linux`](https://github.com/TinkerNorth/dish-linux): Linux client (Qt6 / SDL2)
+- [`dish-mac`](https://github.com/TinkerNorth/dish-mac): macOS client (SwiftUI)
 
 Each repo has its own `CONTRIBUTING.md#security` section with
 ecosystem-specific local commands; this file is the single source of
@@ -22,16 +22,16 @@ artifact**.
 
 Use one of:
 
-1. **GitHub private vulnerability reporting** — open the repo, click
+1. **GitHub private vulnerability reporting**: open the repo, click
    *Security → Report a vulnerability*. This is preferred because it
    creates a tracked advisory and a private discussion thread.
-2. **Email** — `security@tinkernorth.invalid` (PGP key on request).
+2. **Email**: `security@tinkernorth.invalid` (PGP key on request).
    Include the repo, version (commit SHA or release tag), reproduction
    steps, and impact.
 
-Please do **not** test exploits against infrastructure you don't own.
+Please do not test exploits against infrastructure you don't own.
 The on-LAN threat model already covers an attacker with packet-injection
-ability on the local network — that's the documented design boundary,
+ability on the local network; that's the documented design boundary,
 not a bug.
 
 ### Response SLA
@@ -39,7 +39,7 @@ not a bug.
 | Severity | Triage acknowledgement | Initial assessment | Fix target |
 |---|---|---|---|
 | Critical (CVSS >= 9.0) | 1 business day | 3 business days | 14 days, coordinated disclosure |
-| High (CVSS 7.0–8.9)    | 2 business days | 5 business days | 30 days |
+| High (CVSS 7.0-8.9)    | 2 business days | 5 business days | 30 days |
 | Medium / Low           | 5 business days | 10 business days | next minor release |
 
 If we miss the SLA, you may publish 90 days after the original report
@@ -59,8 +59,8 @@ Out of scope:
 - Anything that requires the attacker to already have local privileges
   on the user's PC (root, Administrator, ability to drop binaries in
   `%APPDATA%`, etc.).
-- The vendored ViGEmBus driver itself — file with [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus).
-- DoS via raw network flooding — UDP without rate-limit is a known
+- The vendored ViGEmBus driver itself; file with [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus).
+- DoS via raw network flooding. UDP without rate-limit is a known
   trade-off for hot-path latency; mitigations belong in the network
   fabric, not the protocol.
 
@@ -85,21 +85,22 @@ the previous minor only receives backports for high/critical fixes.
 The `satellite` server exposes two HTTP surfaces with deliberately
 different trust models:
 
-- **Admin API / web UI** — plain HTTP, bound to `127.0.0.1`. There is no
+- **Admin API / web UI**: plain HTTP, bound to `127.0.0.1`. There is no
   authentication because loopback *is* the trust boundary. Two
   browser-borne attacks can still reach a loopback port, so an origin
   guard runs before every route:
-  - **DNS rebinding** — a page on `evil.com` whose A record is flipped to
+  - **DNS rebinding**: a page on `evil.com` whose A record is flipped to
     `127.0.0.1` can script requests at us, but the browser still sends
-    `Host: evil.com`. We reject any request whose `Host` is not loopback.
-  - **CSRF** — a page can fire a no-cors cross-site `POST` straight at
+    `Host: evil.com`. We reject any request whose `Host` is present and
+    not loopback.
+  - **CSRF**: a page can fire a no-cors cross-site `POST` straight at
     `http://127.0.0.1:<port>` (loopback `Host`, so the check above
     passes). The browser attaches `Origin: http://evil.com` to such a
     write, so we reject state-changing methods whose `Origin` is present
     and non-loopback. Same-origin dashboard requests carry a loopback (or
     absent) `Origin` and pass untouched.
 
-- **Client API** — HTTPS (self-signed), bound to `0.0.0.0` and therefore
+- **Client API**: HTTPS (self-signed), bound to `0.0.0.0` and therefore
   LAN-reachable. Connection routes require a paired `deviceId`; pairing
   itself is PIN-gated.
 
@@ -107,7 +108,7 @@ different trust models:
 
 PINs gate the LAN-facing pairing flow and are hardened accordingly:
 
-- PINs and identity tokens are drawn from libsodium's CSPRNG — never a
+- PINs and identity tokens are drawn from libsodium's CSPRNG, never a
   deterministic PRNG such as `std::mt19937`.
 - PIN comparison is constant-time (`sodium_memcmp`) so a wrong guess
   cannot leak, via timing, how many leading digits matched.
@@ -125,32 +126,32 @@ Each repo runs the same shape of gates:
 
 **On every PR** (blocking):
 
-- Action-pin lint — every `uses:` line must reference a 40-char SHA.
-- Allowlist expiry — `.security/allowlist.yaml` entries must be unexpired.
-- Dependency review — GitHub advisory DB (PR-only).
-- OSV-Scanner — vendored components + manifest deps; ecosystem-specific
+- Action-pin lint: every `uses:` line must reference a 40-char SHA.
+- Allowlist expiry: `.security/allowlist.yaml` entries must be unexpired.
+- Dependency review: GitHub advisory DB (PR-only).
+- OSV-Scanner: vendored components + manifest deps; ecosystem-specific
   scope (see each repo's `security.yml`).
-- Gitleaks — secret scanning over the worktree.
-- CodeQL — `cpp` for `satellite` / `dish-linux`, `swift` for `dish-mac`,
+- Gitleaks: secret scanning over the worktree.
+- CodeQL: `cpp` for `satellite` / `dish-linux`, `swift` for `dish-mac`,
   `java-kotlin` + `cpp` for `dish-android`.
 - (`dish-android` only) OWASP Dependency-Check
-  (`./gradlew dependencyCheckAnalyze`) — fails on CVSS >= 7.0.
+  (`./gradlew dependencyCheckAnalyze`), fails on CVSS >= 7.0.
 
 **On every tagged release** (also blocking):
 
 - Re-run of every PR-time gate against the tagged commit.
-- Required-secrets gate — refuses to publish if the platform signing
+- Required-secrets gate: refuses to publish if the platform signing
   secret is missing for a tag (Windows Authenticode, Apple Developer ID
   + notarization, Android keystore). `workflow_dispatch` runs against
   feature branches still produce `-unsigned` artifacts for testing the
   pipeline.
-- Artifact-level vulnerability scan — Anchore Grype, fails on
+- Artifact-level vulnerability scan: Anchore Grype, fails on
   CRITICAL/HIGH.
-- SBOM generation — Syft, both SPDX-JSON and CycloneDX-JSON.
+- SBOM generation: Syft, both SPDX-JSON and CycloneDX-JSON.
 - `SHA256SUMS` over every artifact + its signatures + the SBOMs.
-- Cosign keyless signing — every artifact and `SHA256SUMS` get a `.sig`
+- Cosign keyless signing: every artifact and `SHA256SUMS` get a `.sig`
   + `.crt`, anchored in the Sigstore transparency log.
-- SLSA L3 build provenance — `slsa-framework/slsa-github-generator`
+- SLSA L3 build provenance: `slsa-framework/slsa-github-generator`
   emits `<repo>.intoto.jsonl`.
 
 The result: a known-vulnerable dep, a missing signature, or a tampered
@@ -161,8 +162,8 @@ Release page.
 
 ## Verifying a release artifact (consumer recipe)
 
-This recipe works the same way for every release, every repo, every
-platform — only the artifact filenames change.
+This recipe works the same way for every release, repo, and platform;
+only the artifact filenames change.
 
 ### 0) Pre-requisites
 
@@ -222,7 +223,7 @@ cosign verify-blob \
 ```
 
 Output ends with `Verified OK`. The `--certificate-identity-regexp`
-binds the signature to a specific workflow path on `TinkerNorth/<repo>` —
+binds the signature to a specific workflow path on `TinkerNorth/<repo>`;
 substitute the actual GitHub organisation. A match means the signature
 came from a tagged-release run of `release.yml` on the public commit
 that produced these artifacts; the Sigstore transparency log
@@ -282,12 +283,12 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
   We feed OSV-Scanner a synthetic `osv-scanner.toml` derived from
   [`lib/VENDORED.md`](lib/VENDORED.md), and the
   `vendored-freshness` CI job fails if any `Last-vendored:` date is
-  more than 90 days old. This is best-effort, not exhaustive — file an
+  more than 90 days old. This is best-effort, not exhaustive; file an
   advisory if you spot a vendored component that's missing from
   `VENDORED.md`.
 - **macOS satellite is a stub.** No signed DriverKit equivalent of
   ViGEmBus exists, so the macOS server build runs the protocol stack
-  but rejects controller-add requests with `ACK_ERR_VIGEM_UNAVAIL`. The
+  but applies every controller descriptor as `backendUnavailable`. The
   artifact name (`satellite-macos-stub-...`) reflects this. Don't open
   a vulnerability report for the absence of virtual-gamepad creation
-  on macOS — it's a documented platform gap.
+  on macOS; it's a documented platform gap.
