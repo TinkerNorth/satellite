@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Custom JSON parser by design: the project avoids a JSON library, but the
-// shallow key-find helpers used elsewhere mis-match because a release body can
-// contain arbitrary `"key":"value"` substrings. This is a real (tolerant)
-// recursive-descent parser narrowed to the release subset.
+// Parses the GitHub Releases API subset we consume (tolerant: unknown keys are
+// ignored, missing/null fields fall back to struct defaults). Backed by
+// nlohmann/json via core/json.h.
 #pragma once
 
 #include <cstdint>

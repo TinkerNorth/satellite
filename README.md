@@ -603,7 +603,7 @@ ctest --test-dir build --output-on-failure
 | `session_service` | Declarative session upsert/converge, transactional replug, serial round-robin + quarantine, epoch/bitmap, close-notify ordering, liveness grace + reap, host-feature grants, data streams |
 | `receiver` | Inner-message length guards, wire decode, deleted-opcode drop |
 | `test_catalog` | Catalog JSON, Accept-Language resolution, ETag, locale completeness gate |
-| `test_json_mini` | Request-body JSON extraction helpers |
+| `test_json` | Shared nlohmann/json helpers (tolerant accessors, ordered output) |
 | `pairing` | Path-B pairing request registry lifecycle |
 | `mdns_protocol` / `test_discovery` / `test_machine_id` | Discovery + identity |
 | `test_codecs` / `test_ipv4_util` | Pure codecs (touchpad pack, IPv4 fast path) |
@@ -621,7 +621,8 @@ ctest --test-dir build --output-on-failure
 │   │   ├── ports.h             # Outbound port interfaces (hexagonal)
 │   │   ├── session_service.*   # Declarative session/controller converge
 │   │   ├── catalog.*           # /api/catalog builder + locale resolution
-│   │   ├── json_mini.h         # Dependency-free JSON extraction helpers
+│   │   ├── json.h              # Shared nlohmann/json facade (build + parse)
+│   │   ├── config_json.h       # Portable Config (de)serialization
 │   │   └── update_service.*    # OTA update state machine
 │   ├── net/                    # Shared transport layer (all platforms)
 │   │   ├── receiver.cpp        # UDP recv/decrypt hot loop

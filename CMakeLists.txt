@@ -39,6 +39,12 @@ if(WIN32)
     add_compile_definitions(NOMINMAX)
 endif()
 
+# Vendored single-header libraries (nlohmann/json, cpp-httplib) under lib/ are
+# consumed by the core, the net layer, and the test binaries alike. Expose lib/
+# globally as SYSTEM so their internal warnings stay out of -Wall/-Wextra//W4 and
+# every target (including the pure-core tests) can include them.
+include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+
 # ── Source lists ─────────────────────────────────────────────────────────────
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
@@ -713,7 +719,7 @@ satellite_add_pure_test(test_machine_id tests/test_machine_id.cpp)
 satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
 satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
-satellite_add_pure_test(test_json_mini tests/test_json_mini.cpp)
+satellite_add_pure_test(test_json tests/test_json.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test

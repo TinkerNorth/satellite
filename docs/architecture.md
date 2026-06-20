@@ -297,7 +297,7 @@ below are server-internal.
 1. `clientAuthed()` — resolve the paired device by `X-Device-Id`, COPY the
    `PairedDevice` by value under `g_configMtx` (never hold a pointer across
    the unlock), verify `X-Hmac-Proof` against the pairing key
-2. Parse the full descriptor set (`core/json_mini.h` helpers)
+2. Parse the full descriptor set (`core/json.h` — nlohmann/json)
 3. `svc.upsertSession(...)` — converges topology, rotates token/salt/key,
    derives the session key via the injected HKDF, returns applied state
 4. Serialize per-controller results + host-feature grants

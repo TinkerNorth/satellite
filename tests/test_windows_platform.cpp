@@ -116,60 +116,28 @@ static bool fileExists(const std::string& p) {
     return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-static void testJsonEscape() {
-    TEST("jsonEscape — passthrough of plain ASCII");
-    EXPECT_EQ(jsonEscape("hello"), std::string("hello"));
+// Config (de)serialization moved to nlohmann/json (core/config_json.h); the
+// JSON library is unit-tested by test_json. What this suite must still pin is
+// that special characters in persisted strings survive a save/load round-trip
+// through the public config API.
+static void testConfigEscapingRoundTrip() {
+    ConfigFileSnapshot snap;
 
-    TEST("jsonEscape — escapes double-quote");
-    EXPECT_EQ(jsonEscape("a\"b"), std::string("a\\\"b"));
+    Config out;
+    out.networkInterface = "Eth \"quoted\" \\ backslash";
+    PairedDevice d;
+    d.id = "dev-special";
+    d.name = std::string("name\twith\ncontrol\x01 and \"quotes\"", 30);
+    d.sharedKeyHex = "00ff";
+    out.pairedDevices.push_back(d);
+    saveConfig(out);
 
-    TEST("jsonEscape — escapes backslash");
-    EXPECT_EQ(jsonEscape("a\\b"), std::string("a\\\\b"));
-
-    TEST("jsonEscape — escapes newline");
-    EXPECT_EQ(jsonEscape("a\nb"), std::string("a\\nb"));
-
-    TEST("jsonEscape — handles empty string");
-    EXPECT_EQ(jsonEscape(""), std::string(""));
-
-    TEST("jsonEscape — combined special chars");
-    EXPECT_EQ(jsonEscape("\"\\\n"), std::string("\\\"\\\\\\n"));
-
-    // C0 control bytes other than \n must become \uXXXX escapes — a raw \r or
-    // \t in a device name would otherwise produce invalid JSON.
-    TEST("jsonEscape — escapes carriage return as \\u000d");
-    EXPECT_EQ(jsonEscape("a\rb"), std::string("a\\u000db"));
-
-    TEST("jsonEscape — escapes tab as \\u0009");
-    EXPECT_EQ(jsonEscape("a\tb"), std::string("a\\u0009b"));
-
-    TEST("jsonEscape — escapes NUL as \\u0000");
-    EXPECT_EQ(jsonEscape(std::string("a\0b", 3)), std::string("a\\u0000b"));
-
-    TEST("jsonEscape — escapes a high C0 control byte (0x1f)");
-    EXPECT_EQ(jsonEscape(std::string("\x1f")), std::string("\\u001f"));
-
-    TEST("jsonEscape — 0x20 (space) is not escaped");
-    EXPECT_EQ(jsonEscape(" "), std::string(" "));
-}
-
-static void testJsonGetString() {
-    TEST("jsonGetString — extracts simple value");
-    std::string j = R"({"name":"alice","age":30})";
-    EXPECT_EQ(jsonGetString(j, "name"), std::string("alice"));
-
-    TEST("jsonGetString — handles whitespace around colon");
-    std::string j2 = R"({ "name" : "bob" })";
-    EXPECT_EQ(jsonGetString(j2, "name"), std::string("bob"));
-
-    TEST("jsonGetString — returns empty when key absent");
-    EXPECT_EQ(jsonGetString(R"({"a":"x"})", "missing"), std::string(""));
-
-    TEST("jsonGetString — empty input returns empty");
-    EXPECT_EQ(jsonGetString("", "any"), std::string(""));
-
-    TEST("jsonGetString — handles empty value");
-    EXPECT_EQ(jsonGetString(R"({"name":""})", "name"), std::string(""));
+    Config in = loadConfig();
+    TEST("config round-trip — quotes/backslash in networkInterface survive");
+    EXPECT_EQ(in.networkInterface, out.networkInterface);
+    TEST("config round-trip — quotes/backslash/control in device name survive");
+    EXPECT_EQ(in.pairedDevices.size(), size_t{1});
+    if (in.pairedDevices.size() == 1) EXPECT_EQ(in.pairedDevices[0].name, d.name);
 }
 
 static void testConfigPath() {
@@ -568,8 +536,7 @@ int main() {
         return 1;
     }
 
-    testJsonEscape();
-    testJsonGetString();
+    testConfigEscapingRoundTrip();
     testConfigPath();
     testConfigRoundTrip();
     testAtomicWriteFile();

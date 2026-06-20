@@ -5,11 +5,12 @@
 // supported locale (mirror of Android's MissingTranslation lint), while
 // feature/mode slugs stay machine-readable protocol constants.
 #include "../src/core/catalog.h"
-#include "../src/core/json_mini.h"
+#include "../src/core/json.h"
 
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -52,6 +53,23 @@ static std::string readFileAll(const std::string& path) {
 
 static std::string langPath(const std::string& locale) {
     return std::string(WEB_LANG_DIR) + "/" + locale + ".json";
+}
+
+// Re-parse the catalog's controllerTypes array, preserving field order
+// (ordered_json) so the literal substring assertions below still hold, and
+// surface each element's numeric `id` alongside its serialized form.
+static std::vector<std::string> controllerTypeElems(const std::string& json,
+                                                    std::vector<long>& ids) {
+    std::vector<std::string> out;
+    ids.clear();
+    nlohmann::ordered_json p = nlohmann::ordered_json::parse(json, nullptr, /*exceptions=*/false);
+    if (!p.is_discarded() && p.contains("controllerTypes") && p["controllerTypes"].is_array()) {
+        for (const auto& t : p["controllerTypes"]) {
+            out.push_back(t.dump());
+            ids.push_back(t.value("id", -1L));
+        }
+    }
+    return out;
 }
 
 static void test_resolveLocale_exactMatch() {
@@ -113,15 +131,13 @@ static void test_catalogJson_structure() {
     EXPECT(json.find("\"protocolVersion\":1") != std::string::npos);
 
     // Catalog ids ARE the wire enum values (0 = xbox360, 1 = ds4).
-    auto types = jsonGetArrayObjects(json, "controllerTypes");
+    std::vector<long> ids;
+    auto types = controllerTypeElems(json, ids);
     EXPECT_EQ(types.size(), size_t{2});
     if (types.size() == 2) {
-        long id = -1;
-        EXPECT(jsonGetIntKeyed(types[0], "id", &id));
-        EXPECT_EQ(id, 0L);
+        EXPECT_EQ(ids[0], 0L);
         EXPECT(types[0].find("\"slug\":\"xbox360\"") != std::string::npos);
-        EXPECT(jsonGetIntKeyed(types[1], "id", &id));
-        EXPECT_EQ(id, 1L);
+        EXPECT_EQ(ids[1], 1L);
         EXPECT(types[1].find("\"slug\":\"ds4\"") != std::string::npos);
         // Image hrefs are served by the satellite itself (offline-capable).
         EXPECT(types[0].find("/api/catalog/images/xbox360") != std::string::npos);
@@ -152,7 +168,8 @@ static void test_catalogJson_inertBackend() {
     EXPECT(json.find("\"mouseControl\":{\"supported\":false") != std::string::npos);
     // An inert backend returns no rumble either (RECEIVE host feature gated off).
     EXPECT(json.find("\"rumble\":{\"supported\":false}") != std::string::npos);
-    auto types = jsonGetArrayObjects(json, "controllerTypes");
+    std::vector<long> ids;
+    auto types = controllerTypeElems(json, ids);
     EXPECT_EQ(types.size(), size_t{2});
     if (types.size() == 2) {
         EXPECT(types[1].find("\"motion\":{\"supported\":false}") != std::string::npos);

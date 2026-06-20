@@ -9,7 +9,7 @@
 #include "session_crypto.h"
 #include "core/catalog.h"
 #include "core/gamepad_backend.h"
-#include "core/json_mini.h"
+#include "core/json.h"
 #include "core/session_service.h"
 #include "core/update_service.h"
 #include "core/update_types.h"
@@ -21,30 +21,41 @@
 
 #include <sodium.h>
 
-using satellite::jsonGetArrayObjects;
-using satellite::jsonGetBoolKeyed;
-using satellite::jsonGetIntKeyed;
-using satellite::jsonGetObject;
+using satellite::Json;
+using satellite::jsonBool;
+using satellite::jsonDump;
+using satellite::jsonInt;
+using satellite::jsonObject;
+using satellite::JsonOut;
+using satellite::jsonParse;
+using satellite::jsonStr;
+using satellite::jsonTryBool;
+using satellite::jsonTryInt;
+
+// Parse a request body into a JSON object, tolerating malformed/empty input by
+// returning an empty object — accessors then fall back to defaults, preserving
+// the lenient behavior of the pre-nlohmann request parsing.
+static Json parseBody(const std::string& body) {
+    Json j;
+    if (!jsonParse(body, j) || !j.is_object()) return Json::object();
+    return j;
+}
 
 // Web UI keys all backend-status copy off (id, errorCode).
-static std::string buildBackendJson(const BackendStatus& s) {
-    std::string json = "{\"id\":\"";
-    json += s.id;
-    json += "\",\"supported\":";
-    json += s.supported ? "true" : "false";
-    json += ",\"available\":";
-    json += s.available ? "true" : "false";
-    json += ",\"errorCode\":";
+static JsonOut backendJsonObj(const BackendStatus& s) {
+    JsonOut j;
+    j["id"] = s.id;
+    j["supported"] = s.supported;
+    j["available"] = s.available;
     if (s.errorCode == nullptr) {
-        json += "null";
+        j["errorCode"] = nullptr;
     } else {
-        json += "\"";
-        json += s.errorCode;
-        json += "\"";
+        j["errorCode"] = std::string(s.errorCode);
     }
-    json += "}";
-    return json;
+    return j;
 }
+
+static std::string buildBackendJson(const BackendStatus& s) { return jsonDump(backendJsonObj(s)); }
 
 static std::string buildBackendJson() { return buildBackendJson(probeBackend()); }
 
@@ -86,17 +97,16 @@ static std::string buildCapabilitiesJson() {
     // they can't each re-probe and race a driver unplug mid-build.
     BackendStatus s = probeBackend();
     satellite::CatalogBackendTraits traits = catalogBackendTraits(s);
-    std::string json = "{\"protocolVersion\":" + std::to_string(PROTOCOL_VERSION);
-    json += ",\"serverVersion\":\"";
-    json += SATELLITE_VERSION;
-    json += "\",\"maxControllers\":" + std::to_string(MAX_BACKEND_CONTROLLERS);
-    json += ",\"backend\":" + buildBackendJson(s);
-    json += ",\"motion\":{\"available\":";
-    json += (s.available && traits.ds4MotionSupported) ? "true" : "false";
-    json += "}";
-    json += ",\"host\":" + satellite::buildHostBlockJson(traits, s.available);
-    json += "}";
-    return json;
+    JsonOut j;
+    j["protocolVersion"] = PROTOCOL_VERSION;
+    j["serverVersion"] = SATELLITE_VERSION;
+    j["maxControllers"] = MAX_BACKEND_CONTROLLERS;
+    j["backend"] = backendJsonObj(s);
+    JsonOut motion;
+    motion["available"] = (s.available && traits.ds4MotionSupported);
+    j["motion"] = std::move(motion);
+    j["host"] = JsonOut::parse(satellite::buildHostBlockJson(traits, s.available));
+    return jsonDump(j);
 }
 
 static std::string readFile(const std::string& path) {
@@ -107,45 +117,41 @@ static std::string readFile(const std::string& path) {
 
 // Keys must stay in sync with the web/ JS that consumes them.
 static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
-    std::string json = "{";
-    json += "\"state\":\"" + std::string(updateStateName(s.state)) + "\"";
-    json += ",\"currentVersion\":\"" + jsonEscape(s.currentVersion) + "\"";
-    json += ",\"platformId\":\"" + jsonEscape(s.platformId) + "\"";
-    json += ",\"channel\":\"" + jsonEscape(s.channel) + "\"";
-    json += ",\"autoCheck\":" + std::string(s.autoCheck ? "true" : "false");
-    json += ",\"autoDownload\":" + std::string(s.autoDownload ? "true" : "false");
-    json += ",\"autoInstall\":" + std::string(s.autoInstall ? "true" : "false");
-    json += ",\"lastCheckEpoch\":" + std::to_string(s.lastCheckEpoch);
-    json += ",\"bytesDownloaded\":" + std::to_string(s.bytesDownloaded);
-    json += ",\"totalBytes\":" + std::to_string(s.totalBytes);
-    json += ",\"message\":\"" + jsonEscape(s.message) + "\"";
-    json += ",\"failedPhase\":\"" + std::string(updateStateName(s.failedPhase)) + "\"";
-    json += ",\"info\":{";
-    json += "\"available\":" + std::string(s.info.available ? "true" : "false");
-    json += ",\"version\":\"" + jsonEscape(s.info.version) + "\"";
-    json += ",\"channel\":\"" + jsonEscape(s.info.channel) + "\"";
-    json += ",\"assetName\":\"" + jsonEscape(s.info.assetName) + "\"";
-    json += ",\"assetSize\":" + std::to_string(s.info.assetSize);
-    json += ",\"assetSha256\":\"" + jsonEscape(s.info.assetSha256) + "\"";
-    json += ",\"htmlUrl\":\"" + jsonEscape(s.info.htmlUrl) + "\"";
-    json += ",\"publishedAtEpoch\":" + std::to_string(s.info.publishedAtEpoch);
-    json += ",\"installMethod\":\"" +
-            std::string(s.info.installMethod == InstallMethod::SelfInstall ? "self" : "manual") +
-            "\"";
-    json += ",\"manualInstruction\":\"" + jsonEscape(s.info.manualInstruction) + "\"";
-    json += ",\"releaseNotes\":\"" + jsonEscape(s.info.releaseNotes) + "\"";
-    json += "}}";
-    return json;
+    JsonOut j;
+    j["state"] = updateStateName(s.state);
+    j["currentVersion"] = s.currentVersion;
+    j["platformId"] = s.platformId;
+    j["channel"] = s.channel;
+    j["autoCheck"] = s.autoCheck;
+    j["autoDownload"] = s.autoDownload;
+    j["autoInstall"] = s.autoInstall;
+    j["lastCheckEpoch"] = s.lastCheckEpoch;
+    j["bytesDownloaded"] = s.bytesDownloaded;
+    j["totalBytes"] = s.totalBytes;
+    j["message"] = s.message;
+    j["failedPhase"] = updateStateName(s.failedPhase);
+    JsonOut info;
+    info["available"] = s.info.available;
+    info["version"] = s.info.version;
+    info["channel"] = s.info.channel;
+    info["assetName"] = s.info.assetName;
+    info["assetSize"] = s.info.assetSize;
+    info["assetSha256"] = s.info.assetSha256;
+    info["htmlUrl"] = s.info.htmlUrl;
+    info["publishedAtEpoch"] = s.info.publishedAtEpoch;
+    info["installMethod"] = s.info.installMethod == InstallMethod::SelfInstall ? "self" : "manual";
+    info["manualInstruction"] = s.info.manualInstruction;
+    info["releaseNotes"] = s.info.releaseNotes;
+    j["info"] = std::move(info);
+    return jsonDump(j);
 }
 
-static std::string boolStr(bool v) { return v ? "true" : "false"; }
-
-static std::string capsJson(uint16_t caps) {
-    std::string j = "{\"rumble\":" + boolStr((caps & CAP_RUMBLE) != 0);
-    j += ",\"motion\":" + boolStr((caps & CAP_MOTION) != 0);
-    j += ",\"analogTriggers\":" + boolStr((caps & CAP_ANALOG_TRIGGERS) != 0);
-    j += ",\"lightbar\":" + boolStr((caps & CAP_LIGHTBAR) != 0);
-    j += "}";
+static JsonOut capsJsonObj(uint16_t caps) {
+    JsonOut j;
+    j["rumble"] = (caps & CAP_RUMBLE) != 0;
+    j["motion"] = (caps & CAP_MOTION) != 0;
+    j["analogTriggers"] = (caps & CAP_ANALOG_TRIGGERS) != 0;
+    j["lightbar"] = (caps & CAP_LIGHTBAR) != 0;
     return j;
 }
 
@@ -154,116 +160,119 @@ static std::string capsJson(uint16_t caps) {
 // `connectedAtEpoch` is steady-clock seconds (boot-relative), not Unix epoch.
 static std::string buildConnectionsJson(const SessionService& svc) {
     auto snap = svc.getConnectionsSnapshot();
-    std::string json = "{\"connections\":[";
-    bool first = true;
+    JsonOut connections = JsonOut::array();
     for (const auto& cs : snap.connections) {
-        if (!first) json += ",";
-        first = false;
-
-        json += "{\"connectionId\":\"" + jsonEscape(cs.connectionId) + "\"";
-        json += ",\"deviceId\":\"" + jsonEscape(cs.deviceId) + "\",\"deviceName\":\"" +
-                jsonEscape(cs.deviceName) + "\",\"senderIP\":\"" + jsonEscape(cs.clientIP) + "\"";
-
-        json += ",\"connectedAtEpoch\":" + std::to_string(cs.connectedAtEpoch);
-        json += ",\"epoch\":" + std::to_string(cs.epoch);
-        json += ",\"mouseControlGranted\":" + boolStr(cs.mouseControlGranted);
+        JsonOut c;
+        c["connectionId"] = cs.connectionId;
+        c["deviceId"] = cs.deviceId;
+        c["deviceName"] = cs.deviceName;
+        c["senderIP"] = cs.clientIP;
+        c["connectedAtEpoch"] = cs.connectedAtEpoch;
+        c["epoch"] = cs.epoch;
+        c["mouseControlGranted"] = cs.mouseControlGranted;
         // Active or NotResponding here; /api/devices covers the Paired (offline) case.
-        json += ",\"state\":\"" + std::string(deviceLinkStateName(cs.linkState)) + "\"";
+        c["state"] = deviceLinkStateName(cs.linkState);
 
-        json += ",\"controllers\":[";
-        bool cfirst = true;
+        JsonOut controllers = JsonOut::array();
         for (const auto& ctrl : cs.controllers) {
-            if (!cfirst) json += ",";
-            cfirst = false;
             // Only Live/Detached are surfaced today; transient states aren't yet
             // threaded through SessionService. See ControllerState in core/types.h.
             const char* ctrlState = ctrl.active ? controllerStateName(ControllerState::Live)
                                                 : controllerStateName(ControllerState::Detached);
-            json += "{\"controllerIndex\":" + std::to_string(ctrl.index) +
-                    ",\"serialNo\":" + std::to_string(ctrl.serial) +
-                    ",\"pluggedIn\":" + boolStr(ctrl.pluggedIn) + ",\"state\":\"" +
-                    std::string(ctrlState) + "\"" + ",\"controllerType\":\"" +
-                    controllerTypeName(ctrl.controllerType) + "\",\"controllerTypeLabel\":\"" +
-                    controllerTypeLabel(ctrl.controllerType) + "\",\"touchpadMode\":\"" +
-                    touchpadModeName(ctrl.touchpadMode) + "\"";
+            JsonOut o;
+            o["controllerIndex"] = ctrl.index;
+            o["serialNo"] = ctrl.serial;
+            o["pluggedIn"] = ctrl.pluggedIn;
+            o["state"] = ctrlState;
+            o["controllerType"] = controllerTypeName(ctrl.controllerType);
+            o["controllerTypeLabel"] = controllerTypeLabel(ctrl.controllerType);
+            o["touchpadMode"] = touchpadModeName(ctrl.touchpadMode);
             if (ctrl.batteryKnown) {
-                json += ",\"battery\":{";
+                JsonOut battery;
                 if (ctrl.batteryLevel == BATTERY_LEVEL_UNKNOWN) {
-                    json += "\"level\":null";
+                    battery["level"] = nullptr;
                 } else {
-                    json += "\"level\":" + std::to_string(ctrl.batteryLevel);
+                    battery["level"] = ctrl.batteryLevel;
                 }
-                json +=
-                    ",\"status\":\"" + std::string(batteryStatusName(ctrl.batteryStatus)) + "\"}";
+                battery["status"] = batteryStatusName(ctrl.batteryStatus);
+                o["battery"] = std::move(battery);
             } else {
-                json += ",\"battery\":null";
+                o["battery"] = nullptr;
             }
-            json += ",\"motionCapable\":" + boolStr(ctrl.motionCapable);
-            json += ",\"motionActive\":" + boolStr(ctrl.motionActive);
-            json += ",\"motionSink\":" + boolStr(ctrl.motionSink);
+            o["motionCapable"] = ctrl.motionCapable;
+            o["motionActive"] = ctrl.motionActive;
+            o["motionSink"] = ctrl.motionSink;
             // Backend has an IMU surface for this controller type; UI warns when
             // motionCapable but not this (motion has nowhere to land, e.g. Xbox pad).
-            json += ",\"motionSinkSupportedForType\":" + boolStr(ctrl.motionSinkSupportedForType);
+            o["motionSinkSupportedForType"] = ctrl.motionSinkSupportedForType;
             // IMU sink was created at plug-in; false flags a kernel-level failure
             // (uinput perms, kernel too old) vs. just "no game subscribed".
-            json += ",\"motionBackendOk\":" + boolStr(ctrl.motionBackendOk);
-            json += ",\"touchpadActive\":" + boolStr(ctrl.touchpadActive);
-            json += ",\"lightbarCapable\":" + boolStr(ctrl.lightbarCapable);
+            o["motionBackendOk"] = ctrl.motionBackendOk;
+            o["touchpadActive"] = ctrl.touchpadActive;
+            o["lightbarCapable"] = ctrl.lightbarCapable;
             if (ctrl.lightbarKnown) {
                 char rgb[8];
                 snprintf(rgb, sizeof(rgb), "#%02x%02x%02x", ctrl.lightbarR, ctrl.lightbarG,
                          ctrl.lightbarB);
-                json += ",\"lightbar\":\"" + std::string(rgb) + "\"";
+                o["lightbar"] = std::string(rgb);
             } else {
-                json += ",\"lightbar\":null";
+                o["lightbar"] = nullptr;
             }
-            json += "}";
+            controllers.push_back(std::move(o));
         }
-        json += "],\"activeControllerCount\":" + std::to_string(cs.activeControllerCount) + "}";
+        c["controllers"] = std::move(controllers);
+        c["activeControllerCount"] = cs.activeControllerCount;
+        connections.push_back(std::move(c));
     }
-    json += "],\"totalControllers\":" + std::to_string(snap.totalControllers) +
-            ",\"maxControllers\":" + std::to_string(snap.maxControllers) +
-            ",\"backendAvailable\":" + boolStr(snap.backendAvailable) + "}";
-    return json;
+    JsonOut j;
+    j["connections"] = std::move(connections);
+    j["totalControllers"] = snap.totalControllers;
+    j["maxControllers"] = snap.maxControllers;
+    j["backendAvailable"] = snap.backendAvailable;
+    return jsonDump(j);
 }
 
 // Paired devices + their live link state — `state` is paired | active |
 // notResponding. Shared by the admin route and the SSE devices event.
 static std::string buildDevicesJson(const SessionService& svc) {
-    std::string json = "[";
+    JsonOut arr = JsonOut::array();
     std::lock_guard<std::mutex> lk(g_configMtx);
-    for (size_t i = 0; i < g_config.pairedDevices.size(); i++) {
-        const auto& d = g_config.pairedDevices[i];
+    for (const auto& d : g_config.pairedDevices) {
         DeviceLinkState s = svc.linkStateForDevice(d.id);
-        json += "{\"id\":\"" + jsonEscape(d.id) + "\",\"name\":\"" + jsonEscape(d.name) +
-                "\",\"lastIP\":\"" + jsonEscape(d.lastIP) + "\",\"pairedAt\":\"" +
-                jsonEscape(d.pairedAt) + "\",\"state\":\"" + deviceLinkStateName(s) + "\"}";
-        if (i + 1 < g_config.pairedDevices.size()) json += ",";
+        JsonOut o;
+        o["id"] = d.id;
+        o["name"] = d.name;
+        o["lastIP"] = d.lastIP;
+        o["pairedAt"] = d.pairedAt;
+        o["state"] = deviceLinkStateName(s);
+        arr.push_back(std::move(o));
     }
-    json += "]";
-    return json;
+    return jsonDump(arr);
 }
 
 static std::string buildPinJson() {
     PinSnapshot s = pinSnapshot();
-    return std::string("{\"state\":\"") + pinStateName(s.state) + "\",\"currentPin\":\"" +
-           s.currentPin + "\",\"previousPin\":\"" + s.previousPin +
-           "\",\"secondsRemaining\":" + std::to_string(s.secondsRemaining) + "}";
+    JsonOut j;
+    j["state"] = pinStateName(s.state);
+    j["currentPin"] = s.currentPin;
+    j["previousPin"] = s.previousPin;
+    j["secondsRemaining"] = s.secondsRemaining;
+    return jsonDump(j);
 }
 
 static std::string buildPairRequestsJson() {
     auto reqs = pendingPairRequests();
-    std::string json = "[";
-    for (size_t i = 0; i < reqs.size(); i++) {
-        const auto& r = reqs[i];
-        if (i) json += ",";
-        json += "{\"deviceId\":\"" + jsonEscape(r.deviceId) + "\",\"deviceName\":\"" +
-                jsonEscape(r.deviceName) + "\",\"clientIP\":\"" + jsonEscape(r.clientIP) +
-                "\",\"pin\":\"" + jsonEscape(r.pin) +
-                "\",\"secondsRemaining\":" + std::to_string(r.secondsRemaining) + "}";
+    JsonOut arr = JsonOut::array();
+    for (const auto& r : reqs) {
+        JsonOut o;
+        o["deviceId"] = r.deviceId;
+        o["deviceName"] = r.deviceName;
+        o["clientIP"] = r.clientIP;
+        o["pin"] = r.pin;
+        o["secondsRemaining"] = r.secondsRemaining;
+        arr.push_back(std::move(o));
     }
-    json += "]";
-    return json;
+    return jsonDump(arr);
 }
 
 // ── Client auth (HTTPS surface) ──────────────────────────────────────────────
@@ -278,7 +287,7 @@ static std::string headerOrBody(const httplib::Request& req, const char* header,
                                 const char* bodyKey) {
     auto hdr = req.headers.find(header);
     if (hdr != req.headers.end() && !hdr->second.empty()) return hdr->second;
-    if (!req.body.empty()) return jsonGetString(req.body, bodyKey);
+    if (!req.body.empty()) return jsonStr(parseBody(req.body), bodyKey);
     return "";
 }
 
@@ -317,18 +326,21 @@ static bool clientAuthed(const httplib::Request& req, httplib::Response& res, Cl
                (out.deviceId.empty() ? ", no deviceId supplied" : ", deviceId " + out.deviceId) +
                ")");
     res.status = 401;
-    res.set_content(std::string(R"({"error":"unauthorized","code":")") + code + R"("})",
-                    "application/json");
+    JsonOut err;
+    err["error"] = "unauthorized";
+    err["code"] = code;
+    res.set_content(jsonDump(err), "application/json");
     return false;
 }
 
 static bool protocolVersionOk(const std::string& body, httplib::Response& res) {
     long pv = PROTOCOL_VERSION;
-    if (jsonGetIntKeyed(body, "protocolVersion", &pv) && pv != PROTOCOL_VERSION) {
+    if (jsonTryInt(parseBody(body), "protocolVersion", pv) && pv != PROTOCOL_VERSION) {
         res.status = 409;
-        res.set_content("{\"error\":\"protocol version unsupported\",\"supported\":" +
-                            std::to_string(PROTOCOL_VERSION) + "}",
-                        "application/json");
+        JsonOut err;
+        err["error"] = "protocol version unsupported";
+        err["supported"] = PROTOCOL_VERSION;
+        res.set_content(jsonDump(err), "application/json");
         return false;
     }
     return true;
@@ -339,33 +351,28 @@ static bool protocolVersionOk(const std::string& body, httplib::Response& res) {
 // One ControllerDescriptor from its JSON object. `type` is REQUIRED — a
 // descriptor without it would force a server-side default type, which is
 // exactly the default-then-correct bug class this contract removes.
-static bool parseDescriptorObject(const std::string& obj, bool requireIdx,
-                                  ControllerDescriptor& d) {
+static bool parseDescriptorObject(const Json& obj, bool requireIdx, ControllerDescriptor& d) {
     long idx = 0;
-    if (jsonGetIntKeyed(obj, "ctrlIdx", &idx)) {
+    if (jsonTryInt(obj, "ctrlIdx", idx)) {
         if (idx < 0) return false;
         d.ctrlIdx = idx > 255 ? 255 : static_cast<uint8_t>(idx);
     } else if (requireIdx) {
         return false;
     }
     long type = 0;
-    if (!jsonGetIntKeyed(obj, "type", &type) || type < 0) return false;
+    if (!jsonTryInt(obj, "type", type) || type < 0) return false;
     // Out-of-range values pass through; the service reports invalidType per
     // controller rather than failing the whole request.
     d.type = type > 255 ? 255 : static_cast<uint8_t>(type);
 
     d.caps = 0;
-    const std::string caps = jsonGetObject(obj, "caps");
-    bool b = false;
-    if (jsonGetBoolKeyed(caps, "rumble", &b) && b) d.caps |= CAP_RUMBLE;
-    b = false;
-    if (jsonGetBoolKeyed(caps, "motion", &b) && b) d.caps |= CAP_MOTION;
-    b = false;
-    if (jsonGetBoolKeyed(caps, "analogTriggers", &b) && b) d.caps |= CAP_ANALOG_TRIGGERS;
-    b = false;
-    if (jsonGetBoolKeyed(caps, "lightbar", &b) && b) d.caps |= CAP_LIGHTBAR;
+    const Json caps = jsonObject(obj, "caps");
+    if (jsonBool(caps, "rumble")) d.caps |= CAP_RUMBLE;
+    if (jsonBool(caps, "motion")) d.caps |= CAP_MOTION;
+    if (jsonBool(caps, "analogTriggers")) d.caps |= CAP_ANALOG_TRIGGERS;
+    if (jsonBool(caps, "lightbar")) d.caps |= CAP_LIGHTBAR;
 
-    const std::string mode = jsonGetString(obj, "touchpadMode");
+    const std::string mode = jsonStr(obj, "touchpadMode");
     if (mode == "ds4") {
         d.touchpadMode = TOUCHPAD_MODE_DS4;
     } else if (mode == "mouse") {
@@ -376,10 +383,11 @@ static bool parseDescriptorObject(const std::string& obj, bool requireIdx,
     return true;
 }
 
-static bool parseControllerDescriptors(const std::string& body,
-                                       std::vector<ControllerDescriptor>& out) {
-    auto objs = jsonGetArrayObjects(body, "controllers");
-    for (const auto& obj : objs) {
+static bool parseControllerDescriptors(const Json& body, std::vector<ControllerDescriptor>& out) {
+    auto it = body.find("controllers");
+    if (it == body.end() || !it->is_array()) return true; // absent → no descriptors
+    for (const auto& obj : *it) {
+        if (!obj.is_object()) continue; // ignore non-object array entries, as before
         ControllerDescriptor d;
         if (!parseDescriptorObject(obj, /*requireIdx=*/true, d)) return false;
         out.push_back(d);
@@ -389,19 +397,22 @@ static bool parseControllerDescriptors(const std::string& body,
 
 // ── Session response builders ────────────────────────────────────────────────
 
-static std::string controllerApplyJson(const ControllerApplyResult& r) {
-    std::string j = "{\"ctrlIdx\":" + std::to_string(r.ctrlIdx);
-    j += ",\"result\":\"" + std::string(applyResultName(r.result)) + "\"";
-    j += ",\"appliedType\":" + std::to_string(r.appliedType);
-    j += ",\"motion\":{\"sinkSupportedForType\":" + boolStr(r.motionSinkSupportedForType);
-    j += ",\"backendOk\":" + boolStr(r.motionBackendOk) + "}}";
+static JsonOut controllerApplyObj(const ControllerApplyResult& r) {
+    JsonOut j;
+    j["ctrlIdx"] = r.ctrlIdx;
+    j["result"] = applyResultName(r.result);
+    j["appliedType"] = r.appliedType;
+    JsonOut motion;
+    motion["sinkSupportedForType"] = r.motionSinkSupportedForType;
+    motion["backendOk"] = r.motionBackendOk;
+    j["motion"] = std::move(motion);
     return j;
 }
 
-static std::string mouseControlJson(bool granted, const std::string& denyReason) {
-    std::string j = "{\"granted\":" + boolStr(granted);
-    if (!granted && !denyReason.empty()) j += ",\"reason\":\"" + jsonEscape(denyReason) + "\"";
-    j += "}";
+static JsonOut mouseControlObj(bool granted, const std::string& denyReason) {
+    JsonOut j;
+    j["granted"] = granted;
+    if (!granted && !denyReason.empty()) j["reason"] = denyReason;
     return j;
 }
 
@@ -409,43 +420,48 @@ static std::string buildUpsertResponseJson(const SessionUpsertResult& r) {
     char tokenHex[9];
     snprintf(tokenHex, sizeof(tokenHex), "%08x", r.token);
 
-    std::string json = "{\"connectionId\":\"" + jsonEscape(r.connectionId) + "\"";
-    json += ",\"token\":\"";
-    json += tokenHex;
-    json += "\",\"sessionSalt\":\"" + hexEncode(r.sessionSalt, SESSION_SALT_SIZE) + "\"";
-    json += ",\"epoch\":" + std::to_string(r.epoch);
-    json += ",\"maxControllers\":" + std::to_string(r.maxControllers);
-    json += ",\"protocolVersion\":" + std::to_string(PROTOCOL_VERSION);
-    json += ",\"controllers\":[";
-    for (size_t i = 0; i < r.controllers.size(); i++) {
-        if (i) json += ",";
-        json += controllerApplyJson(r.controllers[i]);
-    }
-    json += "],\"hostFeatures\":{\"mouseControl\":" +
-            mouseControlJson(r.mouseControlGranted, r.mouseControlDenyReason) + "}}";
-    return json;
+    JsonOut j;
+    j["connectionId"] = r.connectionId;
+    j["token"] = std::string(tokenHex);
+    j["sessionSalt"] = hexEncode(r.sessionSalt, SESSION_SALT_SIZE);
+    j["epoch"] = r.epoch;
+    j["maxControllers"] = r.maxControllers;
+    j["protocolVersion"] = PROTOCOL_VERSION;
+    JsonOut controllers = JsonOut::array();
+    for (const auto& c : r.controllers) controllers.push_back(controllerApplyObj(c));
+    j["controllers"] = std::move(controllers);
+    JsonOut hostFeatures;
+    hostFeatures["mouseControl"] = mouseControlObj(r.mouseControlGranted, r.mouseControlDenyReason);
+    j["hostFeatures"] = std::move(hostFeatures);
+    return jsonDump(j);
 }
 
 static std::string buildSessionViewJson(const SessionService::SessionView& v) {
-    std::string json = "{\"connectionId\":\"" + jsonEscape(v.connectionId) + "\"";
-    json += ",\"deviceId\":\"" + jsonEscape(v.deviceId) + "\"";
-    json += ",\"epoch\":" + std::to_string(v.epoch);
-    json += ",\"protocolVersion\":" + std::to_string(PROTOCOL_VERSION);
-    json += ",\"maxControllers\":" + std::to_string(MAX_BACKEND_CONTROLLERS);
-    json += ",\"controllers\":[";
-    for (size_t i = 0; i < v.controllers.size(); i++) {
-        const auto& c = v.controllers[i];
-        if (i) json += ",";
-        json += "{\"ctrlIdx\":" + std::to_string(c.ctrlIdx) + ",\"active\":true";
-        json += ",\"appliedType\":" + std::to_string(c.appliedType);
-        json += ",\"caps\":" + capsJson(c.caps);
-        json += ",\"touchpadMode\":\"" + std::string(touchpadModeName(c.touchpadMode)) + "\"";
-        json += ",\"motion\":{\"sinkSupportedForType\":" + boolStr(c.motionSinkSupportedForType);
-        json += ",\"backendOk\":" + boolStr(c.motionBackendOk) + "}}";
+    JsonOut j;
+    j["connectionId"] = v.connectionId;
+    j["deviceId"] = v.deviceId;
+    j["epoch"] = v.epoch;
+    j["protocolVersion"] = PROTOCOL_VERSION;
+    j["maxControllers"] = MAX_BACKEND_CONTROLLERS;
+    JsonOut controllers = JsonOut::array();
+    for (const auto& c : v.controllers) {
+        JsonOut o;
+        o["ctrlIdx"] = c.ctrlIdx;
+        o["active"] = true;
+        o["appliedType"] = c.appliedType;
+        o["caps"] = capsJsonObj(c.caps);
+        o["touchpadMode"] = touchpadModeName(c.touchpadMode);
+        JsonOut motion;
+        motion["sinkSupportedForType"] = c.motionSinkSupportedForType;
+        motion["backendOk"] = c.motionBackendOk;
+        o["motion"] = std::move(motion);
+        controllers.push_back(std::move(o));
     }
-    json += "],\"hostFeatures\":{\"mouseControl\":" + mouseControlJson(v.mouseControlGranted, "") +
-            "}}";
-    return json;
+    j["controllers"] = std::move(controllers);
+    JsonOut hostFeatures;
+    hostFeatures["mouseControl"] = mouseControlObj(v.mouseControlGranted, "");
+    j["hostFeatures"] = std::move(hostFeatures);
+    return jsonDump(j);
 }
 
 // ── Client session routes ────────────────────────────────────────────────────
@@ -464,11 +480,12 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
     if (!clientAuthed(req, res, auth)) return;
     if (!protocolVersionOk(req.body, res)) return;
 
-    std::string deviceName = jsonGetString(req.body, "deviceName");
+    Json body = parseBody(req.body);
+    std::string deviceName = jsonStr(body, "deviceName");
     if (deviceName.empty()) deviceName = auth.device.name;
 
     std::vector<ControllerDescriptor> descriptors;
-    if (!parseControllerDescriptors(req.body, descriptors)) {
+    if (!parseControllerDescriptors(body, descriptors)) {
         logMsg(LogLevel::WARN, "client",
                "PUT /api/connections: malformed controllers array (ctrlIdx and type are "
                "required) from " +
@@ -479,15 +496,15 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
         return;
     }
 
-    bool mouseRequested = false;
-    const std::string hostFeatures = jsonGetObject(req.body, "hostFeatures");
-    if (!hostFeatures.empty()) jsonGetBoolKeyed(hostFeatures, "mouseControl", &mouseRequested);
+    bool mouseRequested = jsonBool(jsonObject(body, "hostFeatures"), "mouseControl");
 
     auto result = svc.upsertSession(auth.deviceId, deviceName, req.remote_addr, auth.pairingKey,
                                     descriptors, mouseRequested);
     if (!result.ok) {
         res.status = 500;
-        res.set_content("{\"error\":\"" + jsonEscape(result.error) + "\"}", "application/json");
+        JsonOut err;
+        err["error"] = result.error;
+        res.set_content(jsonDump(err), "application/json");
         return;
     }
 
@@ -519,12 +536,13 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
 // anyone who learned a deviceId let any LAN actor exfiltrate it.
 // Always 200 on the PIN paths; the sender classifies on `ok`/`pending`.
 static void pairRoute(SessionService& svc, const httplib::Request& req, httplib::Response& res) {
-    auto deviceId = jsonGetString(req.body, "deviceId");
-    auto deviceName = jsonGetString(req.body, "deviceName");
-    auto pin = jsonGetString(req.body, "pin");               // server-shown PIN (Path A)
-    auto clientPin = jsonGetString(req.body, "clientPin");   // dish-shown PIN (Path B)
-    auto clientPkHex = jsonGetString(req.body, "publicKey"); // client's X25519 public key
-    auto hmacProof = jsonGetString(req.body, "hmacProof");   // key-rotation proof
+    Json body = parseBody(req.body);
+    auto deviceId = jsonStr(body, "deviceId");
+    auto deviceName = jsonStr(body, "deviceName");
+    auto pin = jsonStr(body, "pin");               // server-shown PIN (Path A)
+    auto clientPin = jsonStr(body, "clientPin");   // dish-shown PIN (Path B)
+    auto clientPkHex = jsonStr(body, "publicKey"); // client's X25519 public key
+    auto hmacProof = jsonStr(body, "hmacProof");   // key-rotation proof
     const std::string clientIP = req.remote_addr;
 
     if (deviceId.empty()) {
@@ -558,9 +576,12 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
             svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
             logMsg(LogLevel::INFO, "pairing",
                    "Rotated pairing key for " + deviceId + " (" + clientIP + ")");
-            res.set_content(R"({"ok":true,"message":"key rotated","sharedKey":")" + newKeyHex +
-                                R"(","protocolVersion":)" + std::to_string(PROTOCOL_VERSION) + "}",
-                            "application/json");
+            JsonOut ok;
+            ok["ok"] = true;
+            ok["message"] = "key rotated";
+            ok["sharedKey"] = newKeyHex;
+            ok["protocolVersion"] = PROTOCOL_VERSION;
+            res.set_content(jsonDump(ok), "application/json");
             return;
         }
         logMsg(LogLevel::WARN, "pairing",
@@ -593,17 +614,16 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
         sodium_memzero(serverSk, 32);
         logMsg(LogLevel::INFO, "pairing",
                "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
+        JsonOut ok;
+        ok["ok"] = true;
+        ok["message"] = "paired successfully";
         if (outcome == PairingKeyOutcome::Derived) {
-            res.set_content(R"({"ok":true,"message":"paired successfully","serverPublicKey":")" +
-                                serverPkHex + R"(","protocolVersion":)" +
-                                std::to_string(PROTOCOL_VERSION) + "}",
-                            "application/json");
+            ok["serverPublicKey"] = serverPkHex;
         } else {
-            res.set_content(R"({"ok":true,"message":"paired successfully","sharedKey":")" +
-                                sharedKeyHex + R"(","protocolVersion":)" +
-                                std::to_string(PROTOCOL_VERSION) + "}",
-                            "application/json");
+            ok["sharedKey"] = sharedKeyHex;
         }
+        ok["protocolVersion"] = PROTOCOL_VERSION;
+        res.set_content(jsonDump(ok), "application/json");
         return;
     }
 
@@ -759,7 +779,7 @@ void adminHttpThread(SessionService& svc) {
             ia.s_addr = ipRaw;
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
-        std::string backendJson = buildBackendJson();
+        JsonOut backend = backendJsonObj(probeBackend());
         bool backendUp = svc.isBackendAvailable();
         int udpPort, webPort;
         bool autoStart, broadcast;
@@ -770,15 +790,18 @@ void adminHttpThread(SessionService& svc) {
             autoStart = g_config.autoStart;
             broadcast = g_config.discoveryBroadcastEnabled;
         }
-        char json[1024];
-        snprintf(
-            json, sizeof(json),
-            R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,"webPort":%d,"autoStart":%s,"discoveryBroadcastEnabled":%s,"mdnsResponderActive":%s,"backendAvailable":%s,"backend":%s})",
-            g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
-            senderIP, udpPort, webPort, autoStart ? "true" : "false", broadcast ? "true" : "false",
-            g_mdnsResponderActive.load() ? "true" : "false", backendUp ? "true" : "false",
-            backendJson.c_str());
-        res.set_content(json, "application/json");
+        JsonOut j;
+        j["listening"] = g_listening.load();
+        j["packets"] = static_cast<uint64_t>(g_packetCount.load());
+        j["senderIP"] = senderIP;
+        j["udpPort"] = udpPort;
+        j["webPort"] = webPort;
+        j["autoStart"] = autoStart;
+        j["discoveryBroadcastEnabled"] = broadcast;
+        j["mdnsResponderActive"] = g_mdnsResponderActive.load();
+        j["backendAvailable"] = backendUp;
+        j["backend"] = std::move(backend);
+        res.set_content(jsonDump(j), "application/json");
     });
 
     g_httpServer.Get("/api/netinfo", [](const httplib::Request&, httplib::Response& res) {
@@ -814,26 +837,27 @@ void adminHttpThread(SessionService& svc) {
         res.set_content(buildNetworkInfoJson(info), "application/json");
     });
 
-    g_httpServer.Post(
-        "/api/network/allow-public", [](const httplib::Request&, httplib::Response& res) {
-            bool ok = allowPublicFirewall();
-            if (ok) {
-                std::lock_guard<std::mutex> lk(g_configMtx);
-                g_config.allowPublicNetwork = true;
-                saveConfig(g_config);
-            }
-            std::string resp = std::string("{\"ok\":") + (ok ? "true" : "false") + "}";
-            res.set_content(resp, "application/json");
-        });
+    g_httpServer.Post("/api/network/allow-public",
+                      [](const httplib::Request&, httplib::Response& res) {
+                          bool ok = allowPublicFirewall();
+                          if (ok) {
+                              std::lock_guard<std::mutex> lk(g_configMtx);
+                              g_config.allowPublicNetwork = true;
+                              saveConfig(g_config);
+                          }
+                          JsonOut resp;
+                          resp["ok"] = ok;
+                          res.set_content(jsonDump(resp), "application/json");
+                      });
 
     g_httpServer.Post("/api/config", [](const httplib::Request& req, httplib::Response& res) {
-        const std::string& body = req.body;
+        Json body = parseBody(req.body);
         bool portRejected = false;
         std::lock_guard<std::mutex> lk(g_configMtx);
 
         // Out-of-range ports are rejected, not clamped; the response echoes the effective port.
         long port = 0;
-        if (jsonGetIntKeyed(body, "udpPort", &port)) {
+        if (jsonTryInt(body, "udpPort", port)) {
             if (port >= 1024 && port <= 65535) {
                 g_config.udpPort = static_cast<int>(port);
             } else {
@@ -843,19 +867,19 @@ void adminHttpThread(SessionService& svc) {
 
         // Applied only when present, so a partial POST leaves the stored value untouched.
         bool autoStartVal = false;
-        if (jsonGetBoolKeyed(body, "autoStart", &autoStartVal)) {
+        if (jsonTryBool(body, "autoStart", autoStartVal)) {
             g_config.autoStart = autoStartVal;
             setAutoStart(g_config.autoStart);
         }
 
         // Applied only when present so a partial POST can't silently flip discovery off.
         bool broadcastVal = false;
-        if (jsonGetBoolKeyed(body, "discoveryBroadcastEnabled", &broadcastVal)) {
+        if (jsonTryBool(body, "discoveryBroadcastEnabled", broadcastVal)) {
             g_config.discoveryBroadcastEnabled = broadcastVal;
         }
 
-        if (body.find("\"networkInterface\"") != std::string::npos) {
-            g_config.networkInterface = jsonGetString(body, "networkInterface");
+        if (body.contains("networkInterface")) {
+            g_config.networkInterface = jsonStr(body, "networkInterface");
         }
 
         saveConfig(g_config);
@@ -864,18 +888,18 @@ void adminHttpThread(SessionService& svc) {
                    std::string(g_config.autoStart ? "true" : "false") + " broadcast=" +
                    std::string(g_config.discoveryBroadcastEnabled ? "true" : "false") +
                    (portRejected ? " (udpPort out of range — ignored)" : ""));
-        std::string resp = "{\"ok\":true,\"udpPort\":" + std::to_string(g_config.udpPort) +
-                           ",\"udpPortRejected\":" + (portRejected ? "true" : "false") + "}";
-        res.set_content(resp, "application/json");
+        JsonOut resp;
+        resp["ok"] = true;
+        resp["udpPort"] = g_config.udpPort;
+        resp["udpPortRejected"] = portRejected;
+        res.set_content(jsonDump(resp), "application/json");
     });
 
     g_httpServer.Get("/api/version", [](const httplib::Request&, httplib::Response& res) {
-        std::string json = "{\"version\":\"";
-        json += SATELLITE_VERSION;
-        json += "\",\"platformId\":\"";
-        json += g_updateService ? g_updateService->snapshot().platformId : "unknown";
-        json += "\"}";
-        res.set_content(json, "application/json");
+        JsonOut j;
+        j["version"] = SATELLITE_VERSION;
+        j["platformId"] = g_updateService ? g_updateService->snapshot().platformId : "unknown";
+        res.set_content(jsonDump(j), "application/json");
     });
 
     g_httpServer.Get("/api/updates/status", [](const httplib::Request&, httplib::Response& res) {
@@ -923,7 +947,7 @@ void adminHttpThread(SessionService& svc) {
     });
 
     g_httpServer.Post("/api/updates/skip", [](const httplib::Request& req, httplib::Response& res) {
-        std::string v = jsonGetString(req.body, "version");
+        std::string v = jsonStr(parseBody(req.body), "version");
         if (v.empty() || !g_updateService) {
             res.status = 400;
             res.set_content(R"({"error":"missing version"})", "application/json");
@@ -945,16 +969,12 @@ void adminHttpThread(SessionService& svc) {
             res.set_content(R"({"error":"updater not initialized"})", "application/json");
             return;
         }
-        std::string channel = jsonGetString(req.body, "channel");
+        Json body = parseBody(req.body);
+        std::string channel = jsonStr(body, "channel");
         if (channel.empty()) channel = UPDATE_CHANNEL_STABLE;
-        auto findBool = [&](const std::string& key) -> bool {
-            bool v = false;
-            jsonGetBoolKeyed(req.body, key, &v);
-            return v;
-        };
-        bool autoCheck = findBool("autoCheck");
-        bool autoDownload = findBool("autoDownload");
-        bool autoInstall = findBool("autoInstall");
+        bool autoCheck = jsonBool(body, "autoCheck");
+        bool autoDownload = jsonBool(body, "autoDownload");
+        bool autoInstall = jsonBool(body, "autoInstall");
         g_updateService->updatePreferences(channel, autoCheck, autoDownload, autoInstall);
         logMsg(LogLevel::INFO, "web",
                "Update prefs: channel=" + channel + " autoCheck=" + (autoCheck ? "true" : "false") +
@@ -976,9 +996,9 @@ void adminHttpThread(SessionService& svc) {
     });
 
     g_httpServer.Post("/api/pair/respond", [](const httplib::Request& req, httplib::Response& res) {
-        auto deviceId = jsonGetString(req.body, "deviceId");
-        bool accept = false;
-        jsonGetBoolKeyed(req.body, "accept", &accept);
+        Json body = parseBody(req.body);
+        auto deviceId = jsonStr(body, "deviceId");
+        bool accept = jsonBool(body, "accept");
         if (deviceId.empty()) {
             res.status = 400;
             res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
@@ -1029,8 +1049,10 @@ void adminHttpThread(SessionService& svc) {
             }
             logMsg(LogLevel::INFO, "pairing",
                    "Unpaired device " + deviceId + (closed > 0 ? " (live session closed)" : ""));
-            res.set_content("{\"ok\":true,\"sessionsClosed\":" + std::to_string(closed) + "}",
-                            "application/json");
+            JsonOut ok;
+            ok["ok"] = true;
+            ok["sessionsClosed"] = closed;
+            res.set_content(jsonDump(ok), "application/json");
         });
 
     g_httpServer.Get("/api/server/capabilities",
@@ -1047,26 +1069,27 @@ void adminHttpThread(SessionService& svc) {
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
         uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed);
-        char json[1536];
-        std::string backendJson = buildBackendJson();
+        JsonOut backend = backendJsonObj(probeBackend());
         bool backendUp = svc.isBackendAvailable();
         int udpPort;
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
             udpPort = g_config.udpPort;
         }
-        snprintf(json, sizeof(json),
-                 R"({"listening":%s,"packets":%llu,"submitOk":%llu,"submitFail":%llu,)"
-                 R"("lastLoopUs":%llu,"maxLoopUs":%llu,"senderIP":"%s","udpPort":%d,)"
-                 R"("decryptFail":%llu,"replayDrop":%llu,)"
-                 R"("backendAvailable":%s,"backend":%s})",
-                 g_listening.load() ? "true" : "false", (unsigned long long)g_packetCount.load(),
-                 (unsigned long long)g_submitOk.load(), (unsigned long long)g_submitFail.load(),
-                 (unsigned long long)g_lastLoopUs.load(), (unsigned long long)maxUs, senderIP,
-                 udpPort, (unsigned long long)g_decryptFail.load(),
-                 (unsigned long long)g_replayDrop.load(), backendUp ? "true" : "false",
-                 backendJson.c_str());
-        res.set_content(json, "application/json");
+        JsonOut j;
+        j["listening"] = g_listening.load();
+        j["packets"] = static_cast<uint64_t>(g_packetCount.load());
+        j["submitOk"] = static_cast<uint64_t>(g_submitOk.load());
+        j["submitFail"] = static_cast<uint64_t>(g_submitFail.load());
+        j["lastLoopUs"] = static_cast<uint64_t>(g_lastLoopUs.load());
+        j["maxLoopUs"] = maxUs;
+        j["senderIP"] = senderIP;
+        j["udpPort"] = udpPort;
+        j["decryptFail"] = static_cast<uint64_t>(g_decryptFail.load());
+        j["replayDrop"] = static_cast<uint64_t>(g_replayDrop.load());
+        j["backendAvailable"] = backendUp;
+        j["backend"] = std::move(backend);
+        res.set_content(jsonDump(j), "application/json");
     });
 
     g_httpServer.Get("/api/connections", [&svc](const httplib::Request&, httplib::Response& res) {
@@ -1085,8 +1108,10 @@ void adminHttpThread(SessionService& svc) {
                 res.set_content(R"({"error":"connection not found"})", "application/json");
                 return;
             }
-            res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
-                            "application/json");
+            JsonOut ok;
+            ok["ok"] = true;
+            ok["controllersRemoved"] = removed;
+            res.set_content(jsonDump(ok), "application/json");
         });
 
     g_httpServer.Get("/api/logs", [](const httplib::Request& req, httplib::Response& res) {
@@ -1100,18 +1125,13 @@ void adminHttpThread(SessionService& svc) {
         int count = static_cast<int>(std::min(g_logSeq, static_cast<uint64_t>(LOG_RING_SIZE)));
         uint64_t oldestSeq = g_logSeq - count;
 
-        std::string json = "{\"seq\":" + std::to_string(g_logSeq) + ",\"entries\":[";
-        bool first = true;
-
+        JsonOut entries = JsonOut::array();
         for (int i = 0; i < count; i++) {
             uint64_t entrySeq = oldestSeq + i;
             if (entrySeq <= since) continue;
 
             int idx = (g_logHead - count + i + LOG_RING_SIZE) % LOG_RING_SIZE;
             const auto& e = g_logRing[idx];
-
-            if (!first) json += ",";
-            first = false;
 
             auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 e.timestamp.time_since_epoch())
@@ -1120,12 +1140,18 @@ void adminHttpThread(SessionService& svc) {
                               : (e.level == LogLevel::WARN) ? "warn"
                                                             : "info";
 
-            json += "{\"seq\":" + std::to_string(entrySeq) + ",\"ts\":" + std::to_string(epoch_ms) +
-                    ",\"level\":\"" + lvl + "\",\"source\":\"" + jsonEscape(e.source) +
-                    "\",\"message\":\"" + jsonEscape(e.message) + "\"}";
+            JsonOut o;
+            o["seq"] = entrySeq;
+            o["ts"] = static_cast<int64_t>(epoch_ms);
+            o["level"] = lvl;
+            o["source"] = e.source;
+            o["message"] = e.message;
+            entries.push_back(std::move(o));
         }
-        json += "]}";
-        res.set_content(json, "application/json");
+        JsonOut j;
+        j["seq"] = g_logSeq;
+        j["entries"] = std::move(entries);
+        res.set_content(jsonDump(j), "application/json");
     });
 
     // SSE: one stream multiplexes status/connections/devices/update/pin/
@@ -1133,87 +1159,86 @@ void adminHttpThread(SessionService& svc) {
     g_httpServer.Get("/api/events", [&svc](const httplib::Request&, httplib::Response& res) {
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
-        res.set_chunked_content_provider("text/event-stream", [&svc](size_t /*offset*/,
-                                                                     httplib::DataSink& sink) {
-            while (g_appRunning) {
-                char senderIP[INET_ADDRSTRLEN] = "none";
-                uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
-                if (ipRaw != 0) {
-                    in_addr ia;
-                    ia.s_addr = ipRaw;
-                    inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
-                }
+        res.set_chunked_content_provider(
+            "text/event-stream", [&svc](size_t /*offset*/, httplib::DataSink& sink) {
+                while (g_appRunning) {
+                    char senderIP[INET_ADDRSTRLEN] = "none";
+                    uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);
+                    if (ipRaw != 0) {
+                        in_addr ia;
+                        ia.s_addr = ipRaw;
+                        inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
+                    }
 
-                std::string connJson = buildConnectionsJson(svc);
-                std::string devicesJson = buildDevicesJson(svc);
+                    std::string connJson = buildConnectionsJson(svc);
+                    std::string devicesJson = buildDevicesJson(svc);
 
-                uint64_t logSeqNow;
-                {
-                    std::lock_guard<std::mutex> lk2(g_logMtx);
-                    logSeqNow = g_logSeq;
-                }
+                    uint64_t logSeqNow;
+                    {
+                        std::lock_guard<std::mutex> lk2(g_logMtx);
+                        logSeqNow = g_logSeq;
+                    }
 
-                bool backendUp = svc.isBackendAvailable();
-                std::string backendJson = buildBackendJson();
-                int udpPort;
-                bool autoStart;
-                {
-                    std::lock_guard<std::mutex> lk(g_configMtx);
-                    udpPort = g_config.udpPort;
-                    autoStart = g_config.autoStart;
-                }
-                char statusBuf[1536];
-                snprintf(statusBuf, sizeof(statusBuf),
-                         R"({"listening":%s,"packets":%llu,"senderIP":"%s","udpPort":%d,)"
-                         R"("autoStart":%s,"backendAvailable":%s,"backend":%s,)"
-                         R"("submitOk":%llu,"submitFail":%llu,)"
-                         R"("lastLoopUs":%llu,"decryptFail":%llu,"replayDrop":%llu,)"
-                         R"("logSeq":%llu})",
-                         g_listening.load() ? "true" : "false",
-                         (unsigned long long)g_packetCount.load(), senderIP, udpPort,
-                         autoStart ? "true" : "false", backendUp ? "true" : "false",
-                         backendJson.c_str(), (unsigned long long)g_submitOk.load(),
-                         (unsigned long long)g_submitFail.load(),
-                         (unsigned long long)g_lastLoopUs.load(),
-                         (unsigned long long)g_decryptFail.load(),
-                         (unsigned long long)g_replayDrop.load(), (unsigned long long)logSeqNow);
+                    bool backendUp = svc.isBackendAvailable();
+                    JsonOut backend = backendJsonObj(probeBackend());
+                    int udpPort;
+                    bool autoStart;
+                    {
+                        std::lock_guard<std::mutex> lk(g_configMtx);
+                        udpPort = g_config.udpPort;
+                        autoStart = g_config.autoStart;
+                    }
+                    JsonOut status;
+                    status["listening"] = g_listening.load();
+                    status["packets"] = static_cast<uint64_t>(g_packetCount.load());
+                    status["senderIP"] = senderIP;
+                    status["udpPort"] = udpPort;
+                    status["autoStart"] = autoStart;
+                    status["backendAvailable"] = backendUp;
+                    status["backend"] = std::move(backend);
+                    status["submitOk"] = static_cast<uint64_t>(g_submitOk.load());
+                    status["submitFail"] = static_cast<uint64_t>(g_submitFail.load());
+                    status["lastLoopUs"] = static_cast<uint64_t>(g_lastLoopUs.load());
+                    status["decryptFail"] = static_cast<uint64_t>(g_decryptFail.load());
+                    status["replayDrop"] = static_cast<uint64_t>(g_replayDrop.load());
+                    status["logSeq"] = logSeqNow;
 
-                std::string event = "event: status\ndata: ";
-                event += statusBuf;
-                event += "\n\n";
-
-                event += "event: connections\ndata: ";
-                event += connJson;
-                event += "\n\n";
-
-                // The dashboard renders one device-centric list, so it needs
-                // the paired set on every tick, not just the live connections.
-                event += "event: devices\ndata: ";
-                event += devicesJson;
-                event += "\n\n";
-
-                if (g_updateService) {
-                    event += "event: update\ndata: ";
-                    event += buildUpdateJson(g_updateService->snapshot());
+                    std::string event = "event: status\ndata: ";
+                    event += jsonDump(status);
                     event += "\n\n";
+
+                    event += "event: connections\ndata: ";
+                    event += connJson;
+                    event += "\n\n";
+
+                    // The dashboard renders one device-centric list, so it needs
+                    // the paired set on every tick, not just the live connections.
+                    event += "event: devices\ndata: ";
+                    event += devicesJson;
+                    event += "\n\n";
+
+                    if (g_updateService) {
+                        event += "event: update\ndata: ";
+                        event += buildUpdateJson(g_updateService->snapshot());
+                        event += "\n\n";
+                    }
+
+                    // Pushed each tick so the countdown ticks and a fresh tab sees
+                    // current state without a parallel /api/pin/status poll.
+                    event += "event: pin\ndata: ";
+                    event += buildPinJson();
+                    event += "\n\n";
+
+                    // Pushed each tick so the accept/deny panel appears the instant a dish asks.
+                    event += "event: pairRequests\ndata: ";
+                    event += buildPairRequestsJson();
+                    event += "\n\n";
+
+                    if (!sink.write(event.c_str(), event.size())) return false;
+                    for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);
                 }
-
-                // Pushed each tick so the countdown ticks and a fresh tab sees
-                // current state without a parallel /api/pin/status poll.
-                event += "event: pin\ndata: ";
-                event += buildPinJson();
-                event += "\n\n";
-
-                // Pushed each tick so the accept/deny panel appears the instant a dish asks.
-                event += "event: pairRequests\ndata: ";
-                event += buildPairRequestsJson();
-                event += "\n\n";
-
-                if (!sink.write(event.c_str(), event.size())) return false;
-                for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);
-            }
-            return false;
-        });
+                return false;
+            });
     });
 
     int webPort;
@@ -1258,13 +1283,17 @@ void clientApiThread(SessionService& svc) {
         std::string keyHex;
         PairRequestState st = pollPairRequest(deviceId, keyHex);
         if (st == PairRequestState::Approved) {
-            res.set_content(R"({"ok":true,"status":"approved","sharedKey":")" + keyHex + R"("})",
-                            "application/json");
+            JsonOut ok;
+            ok["ok"] = true;
+            ok["status"] = "approved";
+            ok["sharedKey"] = keyHex;
+            res.set_content(jsonDump(ok), "application/json");
             return;
         }
-        res.set_content(std::string(R"({"ok":false,"status":")") + pairRequestStateName(st) +
-                            R"("})",
-                        "application/json");
+        JsonOut r;
+        r["ok"] = false;
+        r["status"] = pairRequestStateName(st);
+        res.set_content(jsonDump(r), "application/json");
     });
 
     // DELETE /api/pair — client self-unpair (closes any live session first).
@@ -1304,8 +1333,10 @@ void clientApiThread(SessionService& svc) {
                 res.set_content(R"({"error":"connection not found"})", "application/json");
                 return;
             }
-            res.set_content("{\"ok\":true,\"controllersRemoved\":" + std::to_string(removed) + "}",
-                            "application/json");
+            JsonOut ok;
+            ok["ok"] = true;
+            ok["controllersRemoved"] = removed;
+            res.set_content(jsonDump(ok), "application/json");
         });
 
     // PUT /api/connections/:id/controllers/:idx — standalone single-descriptor
@@ -1316,7 +1347,7 @@ void clientApiThread(SessionService& svc) {
         if (!clientAuthed(req, res, auth)) return;
         if (!protocolVersionOk(req.body, res)) return;
         ControllerDescriptor d;
-        if (!parseDescriptorObject(req.body, /*requireIdx=*/false, d)) {
+        if (!parseDescriptorObject(parseBody(req.body), /*requireIdx=*/false, d)) {
             res.status = 400;
             res.set_content(R"({"error":"descriptor requires type"})", "application/json");
             return;
@@ -1330,9 +1361,10 @@ void clientApiThread(SessionService& svc) {
             res.set_content(R"({"error":"connection not found"})", "application/json");
             return;
         }
-        res.set_content("{\"epoch\":" + std::to_string(epoch) +
-                            ",\"controller\":" + controllerApplyJson(ar) + "}",
-                        "application/json");
+        JsonOut j;
+        j["epoch"] = epoch;
+        j["controller"] = controllerApplyObj(ar);
+        res.set_content(jsonDump(j), "application/json");
     });
 
     // DELETE /api/connections/:id/controllers/:idx — removes the SLOT only;
@@ -1349,8 +1381,10 @@ void clientApiThread(SessionService& svc) {
             res.set_content(R"({"error":"connection not found"})", "application/json");
             return;
         }
-        res.set_content("{\"ok\":true,\"epoch\":" + std::to_string(epoch) + "}",
-                        "application/json");
+        JsonOut ok;
+        ok["ok"] = true;
+        ok["epoch"] = epoch;
+        res.set_content(jsonDump(ok), "application/json");
     });
 
     // No auth on the read-only info surface: the client UI renders BEFORE pairing.
