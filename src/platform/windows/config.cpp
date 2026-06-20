@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "config.h"
 
-#include "core/config_json.h"
-
 // SHGetKnownFolderPath (FOLDERID_*) supersedes the deprecated SHGetFolderPath
 // (CSIDL_*). Converted to narrow at the boundary; config paths are ASCII.
 std::string configPath() {
@@ -21,15 +19,6 @@ std::string configPath() {
         return s;
     }
     return "config.json";
-}
-
-Config loadConfig() {
-    Config cfg;
-    std::ifstream f(configPath());
-    if (!f.is_open()) return cfg;
-    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    satellite::parseConfigInto(content, cfg);
-    return cfg;
 }
 
 static std::wstring toWidePath(const std::string& s) {
@@ -74,10 +63,6 @@ bool atomicWriteFile(const std::string& path, const std::string& bytes) {
         return false;
     }
     return true;
-}
-
-void saveConfig(const Config& cfg) {
-    atomicWriteFile(configPath(), satellite::serializeConfig(cfg));
 }
 
 // Value name must match the literal Inno Setup writes ({#MyAppName}); keep its

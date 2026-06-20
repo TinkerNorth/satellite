@@ -83,6 +83,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/main.cpp
     src/platform/windows/globals.cpp
     src/platform/windows/config.cpp
+    src/core/config_io.cpp
     src/platform/windows/crypto.cpp
     src/platform/windows/tray.cpp
     src/platform/windows/toast.cpp
@@ -99,6 +100,8 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/main.mm
     src/platform/macos/globals.cpp
     src/platform/macos/config.cpp
+    src/platform/posix/config_posix.cpp
+    src/core/config_io.cpp
     src/platform/macos/crypto.cpp
     src/platform/macos/tray.mm
     src/platform/macos/gamepad_backend.cpp
@@ -110,6 +113,8 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/main.cpp
     src/platform/linux/globals.cpp
     src/platform/linux/config.cpp
+    src/platform/posix/config_posix.cpp
+    src/core/config_io.cpp
     src/platform/linux/crypto.cpp
     src/platform/linux/gamepad_backend.cpp
     src/platform/linux/gamepad_adapter.cpp
@@ -286,6 +291,7 @@ elseif(APPLE)
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
     )
     # Vendored third-party headers (cpp-httplib) — SYSTEM suppresses upstream
     # deprecation warnings we can't fix.
@@ -383,6 +389,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
     )
     # Vendored third-party headers (cpp-httplib) — SYSTEM suppresses upstream
     # deprecation warnings we can't fix.
@@ -720,6 +727,7 @@ satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
 satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
 satellite_add_pure_test(test_json tests/test_json.cpp)
+satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
@@ -743,6 +751,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(test_linux_platform
         tests/test_linux_platform.cpp
         src/platform/linux/config.cpp
+        src/platform/posix/config_posix.cpp
+        src/core/config_io.cpp
         src/platform/linux/globals.cpp
         src/platform/linux/gamepad_adapter.cpp
         ${SATELLITE_CORE_SOURCES}
@@ -750,6 +760,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_include_directories(test_linux_platform PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
     )
     target_include_directories(test_linux_platform SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
@@ -780,6 +791,7 @@ if(WIN32)
     add_executable(test_windows_platform
         tests/test_windows_platform.cpp
         src/platform/windows/config.cpp
+        src/core/config_io.cpp
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
         src/net/session_crypto.cpp
