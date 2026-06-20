@@ -18,6 +18,7 @@
 #include "core/network_info.h"
 #include "local_iface.h"
 #include "mdns_protocol.h"
+#include "origin_guard.h"
 
 #include <sodium.h>
 
@@ -710,34 +711,18 @@ static void catalogImageRoute(const httplib::Request& req, httplib::Response& re
 
 // Admin server — web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 
-// Origin guard closing the two browser-borne attacks that cross the loopback
-// trust boundary: DNS rebinding (reject non-loopback Host) and CSRF (reject
-// writes whose Origin is present and non-loopback). See SECURITY.md.
-static bool isLoopbackHostValue(const std::string& v) {
-    // Strip an optional :port, and surrounding [] for IPv6 literals.
-    std::string h = v.substr(0, v.rfind(':') == std::string::npos ? v.size() : v.rfind(':'));
-    if (!h.empty() && h.front() == '[' && h.back() == ']') h = h.substr(1, h.size() - 2);
-    return h == "127.0.0.1" || h == "localhost" || h == "::1";
-}
-static bool isLoopbackOrigin(const std::string& origin) {
-    // origin is like "http://127.0.0.1:8080" — match the host segment.
-    auto schemeEnd = origin.find("//");
-    if (schemeEnd == std::string::npos) return false;
-    return isLoopbackHostValue(origin.substr(schemeEnd + 2));
-}
-
 void adminHttpThread(SessionService& svc) {
     // Reject cross-origin / rebound requests before any route runs.
     g_httpServer.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
         auto host = req.get_header_value("Host");
-        if (!host.empty() && !isLoopbackHostValue(host)) {
+        if (!host.empty() && !satellite::isLoopbackHost(host)) {
             res.status = 403;
             res.set_content(R"({"error":"forbidden host"})", "application/json");
             return httplib::Server::HandlerResponse::Handled;
         }
         if (req.method != "GET" && req.method != "HEAD" && req.method != "OPTIONS") {
             auto origin = req.get_header_value("Origin");
-            if (!origin.empty() && !isLoopbackOrigin(origin)) {
+            if (!origin.empty() && !satellite::isLoopbackOrigin(origin)) {
                 res.status = 403;
                 res.set_content(R"({"error":"cross-site request blocked"})", "application/json");
                 return httplib::Server::HandlerResponse::Handled;
