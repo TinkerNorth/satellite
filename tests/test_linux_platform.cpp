@@ -13,36 +13,7 @@
 #include <sstream>
 #include <string>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
-
-#define EXPECT_EQ(a, b)                                                                            \
-    do {                                                                                           \
-        auto _a = (a);                                                                             \
-        auto _b = (b);                                                                             \
-        if (_a == _b) {                                                                            \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #a << " == " << #b << "  (got " << _a << " vs " << _b << ")\n";   \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 // Per-test tmp dir as XDG_CONFIG_HOME, removed on teardown: isolates tests from
 // the real user config and from each other.
