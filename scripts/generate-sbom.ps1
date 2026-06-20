@@ -4,15 +4,15 @@
 
 .DESCRIPTION
     Emits dist\satellite-sbom.cdx.json describing the runtime supply
-    chain of the shipped binary -- vendored libsodium, ViGEmBus,
-    OpenSSL (statically linked from MSYS2), cpp-httplib, etc.
+    chain of the shipped binary: vendored libsodium, ViGEmBus, OpenSSL
+    (statically linked from MSYS2), cpp-httplib, etc.
 
     Prefers `syft` if present (it can scan the .exe and emit a
     deterministic SBOM). Falls back to a hand-rolled minimal CycloneDX
-    document built from /VERSION + redist/SHA256SUMS + lib/* paths --
-    enough to satisfy "did you ship an SBOM?" without external tooling.
+    document built from /VERSION + redist/SHA256SUMS + lib/* paths,
+    enough to ship an SBOM without external tooling.
 
-    Tools we'd reach for if you want to upgrade later:
+    Tools to reach for to upgrade later:
       * syft           (CycloneDX & SPDX, scans binaries)
       * cyclonedx-cli  (validation, merging, signing)
       * grype          (vuln scan against the SBOM)
@@ -38,7 +38,7 @@ try {
         return
     }
 
-    Write-Host "[sbom] syft not found -- emitting hand-rolled CycloneDX minimum"
+    Write-Host "[sbom] syft not found; emitting hand-rolled CycloneDX minimum"
 
     # Hand-roll a minimal CycloneDX 1.5 document. Components come from
     # the vendored prereq files we know about. Add new dependencies

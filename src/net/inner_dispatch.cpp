@@ -28,14 +28,12 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         svc.handleHeartbeat(token);
         break;
 
-        // Topology mutation is REST-only: the registration opcodes (0x0004 ADD,
-        // 0x0005 REMOVE, 0x0008 TYPE, 0x000E CAPS) no longer exist, so anything
-        // carrying them falls through to the default drop below.
+        // Topology mutation is REST-only: the old registration opcodes no longer
+        // exist, so anything carrying them falls through to the default drop.
 
     case MSG_MOTION: {
-        // ctrlIdx(1) + MOTION_WIRE_PAYLOAD_BYTES(16) = 17 bytes. decodeMotionReport
-        // does explicit LE shifts (not a struct memcpy) so the wire stays
-        // byte-order-independent against MotionReport layout changes.
+        // ctrlIdx(1) + MOTION_WIRE_PAYLOAD_BYTES(16) = 17 bytes. Explicit LE
+        // shifts (not a struct memcpy) keep the wire byte-order-independent.
         if (msgLen < 1 + MOTION_WIRE_PAYLOAD_BYTES) break;
         uint8_t ctrlIdx = payload[0];
         MotionReport report = decodeMotionReport(payload + 1);
@@ -54,8 +52,7 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
     }
     case MSG_TOUCHPAD: {
         // ctrlIdx(1) + TOUCHPAD_WIRE_PAYLOAD_BYTES(15) = 16 bytes; explicit LE
-        // decode like MOTION. Trailing 4 bytes carry eventTimeMs, used by
-        // mouse-mode time-scaling to fix the first-touch jump.
+        // decode like MOTION.
         if (msgLen < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES) break;
         uint8_t ctrlIdx = payload[0];
         TouchpadReport report = decodeTouchpadReport(payload + 1);

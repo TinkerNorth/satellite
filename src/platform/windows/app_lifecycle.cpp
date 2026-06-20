@@ -32,7 +32,7 @@ constexpr const char* kRunKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\R
 // collides); changing it needs a migration step.
 constexpr const char* kRunValueName = "Satellite";
 
-// Retention cap -- a leaky build can drop a 5-20MB .dmp per minute.
+// Retention cap: a leaky build can drop a 5-20MB .dmp per minute.
 constexpr size_t kMaxDumpFiles = 10;
 
 // Rolls on size or date change, whichever trips first.
@@ -291,16 +291,16 @@ std::string dumpDir() { return ensureSubdir(L"dumps"); }
 std::string logDir() { return ensureSubdir(L"logs"); }
 
 bool acquireSingleInstance(const char* appTitle) {
-    // Local\ namespace = per-session, so RDP sessions / fast user switching get
-    // independent instances (what a tray app wants).
+    // Local\ namespace = per-session, so RDP sessions/fast user switching get
+    // independent instances.
     g_singletonMutex = CreateMutexA(nullptr, FALSE, kSingletonMutex);
-    if (g_singletonMutex == nullptr) return true; // best-effort -- don't block startup
+    if (g_singletonMutex == nullptr) return true; // best-effort; don't block startup
 
     DWORD err = GetLastError();
     if (err != ERROR_ALREADY_EXISTS) return true; // we won the race
 
     // Nudge the existing instance's tray window so a second double-click isn't
-    // met with silence. WM_USER+100 -- tray.cpp can ignore it safely.
+    // met with silence. tray.cpp can ignore WM_USER+100 safely.
     HWND existing = FindWindowExA(HWND_MESSAGE, nullptr, "ControllerForwardTray", appTitle);
     if (existing != nullptr) { PostMessageA(existing, WM_USER + 100, 0, 0); }
     return false;
@@ -357,7 +357,7 @@ void applyRuntimeMitigations() {
     SPMP set = reinterpret_cast<SPMP>(GetProcAddress(k32, "SetProcessMitigationPolicy"));
     if (!set) return;
 
-    // ProcessImageLoadPolicy (4): refuse remote / low-IL image loads (stops the
+    // ProcessImageLoadPolicy (4): refuse remote/low-IL image loads (stops the
     // "drop DLL in UNC share + LoadLibrary" attack); prefer System32.
     struct ImageLoad {
         DWORD flags;
@@ -366,7 +366,7 @@ void applyRuntimeMitigations() {
         0x1 /*NoRemoteImages*/ | 0x2 /*NoLowMandatoryLabelImages*/ | 0x4 /*PreferSystem32Images*/;
     set(4, &il, sizeof(il));
 
-    // ProcessExtensionPointDisablePolicy (5): block legacy AppInit_DLLs / IME
+    // ProcessExtensionPointDisablePolicy (5): block legacy AppInit_DLLs/IME
     // extension-point injection (we host no extensions).
     struct ExtPoint {
         DWORD flags;
@@ -376,9 +376,9 @@ void applyRuntimeMitigations() {
 
     // ProcessSignaturePolicy (8) and ProcessDynamicCodePolicy (2) are
     // deliberately NOT enabled: signature policy silently exits at LoadLibrary
-    // time on OEM cross-signed driver shims / AV hooks; dynamic-code policy
-    // crashes us when third-party hook DLLs (Discord overlay, RTSS) trampoline.
-    // We have to coexist with unsigned in-process tooling.
+    // time on OEM cross-signed driver shims/AV hooks; dynamic-code policy crashes
+    // us when third-party hook DLLs (Discord overlay, RTSS) trampoline. We must
+    // coexist with unsigned in-process tooling.
 }
 
 static std::string stripQuotes(const std::string& s) {

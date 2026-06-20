@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// The ONLY place that mutates connection/controller state. All adapters (UDP,
-// HTTP) call in; all platform concerns are behind the port interfaces.
+// The ONLY place that mutates connection/controller state. All adapters call
+// in; all platform concerns are behind the port interfaces.
 //
 // Sessions are declarative: PUT /api/connections upserts the full desired
 // topology for a deviceId and this service converges the backend to it,
@@ -27,10 +27,9 @@ class SessionService {
 
     // Declarative session upsert, keyed on deviceId. Creates the row on first
     // contact; afterwards rotates token/salt/sessionKey in place (connectionId
-    // stays stable) and converges the controller set to `descriptors`:
-    // missing slots are unplugged, new slots plugged, type-family changes
-    // transactionally replugged. Per-controller failures ride in the result,
-    // never abort the session.
+    // stays stable) and converges the controller set to `descriptors`. Missing
+    // slots unplugged, new slots plugged, type-family changes transactionally
+    // replugged. Per-controller failures ride in the result, never abort.
     SessionUpsertResult upsertSession(const std::string& deviceId, const std::string& deviceName,
                                       const std::string& clientIP,
                                       const uint8_t pairingKey[CRYPTO_KEY_SIZE],
@@ -43,14 +42,14 @@ class SessionService {
                          const ControllerDescriptor& desc, ControllerApplyResult& outResult,
                          uint16_t& outEpoch);
 
-    // Removes the SLOT only; the session lives on (zero-controller sessions
-    // are valid). Idempotent — removing an inactive slot succeeds. False when
-    // connectionId doesn't exist or isn't owned by deviceId.
+    // Removes the SLOT only; the session lives on (zero-controller sessions are
+    // valid). Idempotent. False when connectionId doesn't exist or isn't owned
+    // by deviceId.
     bool removeController(const std::string& connectionId, const std::string& deviceId,
                           uint8_t ctrlIdx, uint16_t& outEpoch);
 
     // Applied state for the reconcile endpoint (GET /api/connections/{id}),
-    // scoped to the owning device. `deviceId` empty = admin scope (any owner).
+    // scoped to the owning device. `deviceId` empty: admin scope (any owner).
     struct SessionView {
         bool found = false;
         std::string connectionId;
@@ -70,9 +69,9 @@ class SessionService {
     SessionView getSessionView(const std::string& connectionId, const std::string& deviceId) const;
 
     // Close by connectionId. `reason` is broadcast via close-notify 0x000F
-    // BEFORE teardown when `notify` (admin kick / unpair); a client closing
-    // its own session passes notify=false. Returns controllers removed, -1
-    // when not found (or owned by another device when deviceId non-empty).
+    // BEFORE teardown when `notify`; a client closing its own session passes
+    // notify=false. Returns controllers removed, -1 when not found (or owned by
+    // another device when deviceId non-empty).
     int closeSessionById(const std::string& connectionId, const std::string& deviceId,
                          uint8_t reason, bool notify);
 
@@ -91,38 +90,33 @@ class SessionService {
     // Sends the enriched heartbeat ACK (status + epoch + bitmap).
     void handleHeartbeat(uint32_t token);
 
-    // Rumble fired by the backend's notification thread. Resolves serial →
+    // Rumble fired by the backend's notification thread. Resolves serial to
     // controller, coalesces against last forwarded state, sends only unique
-    // updates. `wireDurationMs` stamps a duration the dish can't otherwise
-    // invent (Linux uinput "play" events have none); the 500 ms default matches
-    // the dish-side rumble heartbeat that refreshes the actuator.
+    // updates. `wireDurationMs` stamps a duration the dish can't invent (Linux
+    // uinput "play" events have none); the 500 ms default matches the dish-side
+    // rumble heartbeat that refreshes the actuator.
     void handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
                                  uint16_t wireDurationMs = 500);
 
-    // IMU sample (MSG_MOTION). Caches Controller.lastMotion for the web UI and
-    // forwards via submitMotion when active. Returns whether the backend
-    // accepted it (always false today for Xbox 360 / uinput — no motion
-    // surface). False is NOT an error; senders keep streaming.
+    // IMU sample (MSG_MOTION). Caches for the web UI and forwards via
+    // submitMotion when active. Returns whether the backend accepted it. False
+    // is NOT an error; senders keep streaming.
     bool handleMotionData(uint32_t token, uint8_t ctrlIdx, const MotionReport& report);
 
     // Battery update (MSG_BATTERY). Caches the value and forwards via
-    // submitBattery on platforms with a battery channel (Windows DS4). Returns
-    // true if (token, ctrlIdx) resolved to an active controller.
+    // submitBattery on platforms with a battery channel. Returns true if
+    // (token, ctrlIdx) resolved to an active controller.
     bool handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx, const BatteryReport& report);
 
     // Touchpad sample (MSG_TOUCHPAD). Always caches, then routes per the
-    // CONTROLLER's touchpadMode: DS4 → submitTouchpad, MOUSE → finger-0 delta →
-    // submitRelativeMouse (gated on the session's mouseControl grant — streams
-    // for ungranted features are dropped), OFF → cache only. Returns whether
-    // the routed sink accepted it. False is NOT an error; senders keep streaming.
+    // controller's touchpadMode: DS4 to submitTouchpad, MOUSE to finger-0 delta
+    // then submitRelativeMouse (gated on the mouseControl grant), OFF to cache
+    // only. Returns whether the routed sink accepted it. False is NOT an error.
     bool handleTouchpadData(uint32_t token, uint8_t ctrlIdx, const TouchpadReport& report);
 
-    // Lightbar change from the backend's dedicated callback (independent of
-    // rumble). Resolves serial → controller, coalesces, sends only unique
-    // updates. Called from the backend's notification thread.
+    // Lightbar change from the backend's dedicated callback. Resolves serial to
+    // controller, coalesces, sends only unique updates.
     void handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b);
-
-    // Pre-decrypt helpers (called under lock briefly).
 
     // Look up a connection's key + last counter; false if token not found.
     bool getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
@@ -144,8 +138,6 @@ class SessionService {
                                     uint16_t clientPort, uint8_t ctrlIdx,
                                     const GamepadReport& report);
 
-    // Query.
-
     // Thread-safe snapshot of all connections for JSON serialization.
     struct ConnectionSnapshot {
         std::string connectionId;
@@ -164,35 +156,31 @@ class SessionService {
             uint8_t index;
             uint32_t serial;
             bool active;
-            // Adapter truth — a virtual device exists on this serial right now
-            // (not inferred from serial > 0).
+            // Adapter truth, not inferred from serial > 0.
             bool pluggedIn;
             uint8_t controllerType;
             uint8_t touchpadMode;
-            // Most recent MSG_BATTERY. level/status unspecified until batteryKnown.
+            // level/status unspecified until batteryKnown.
             bool batteryKnown;
             uint8_t batteryLevel;  // 0..100, or BATTERY_LEVEL_UNKNOWN
             uint8_t batteryStatus; // BATTERY_STATUS_*
-            // motionCapable = the CAP_MOTION bit the dish advertised.
-            // motionActive = at least one MSG_MOTION decoded. motionSink = motion
-            // is also reaching the virtual device's IMU surface (false = cached
-            // only: Xbox, old ViGEmBus, or macOS).
+            // motionCapable: CAP_MOTION advertised. motionActive: a MSG_MOTION
+            // decoded. motionSink: motion also reaching the IMU surface (false =
+            // cached only: Xbox, old ViGEmBus, or macOS).
             bool motionCapable;
             bool motionActive;
             bool motionSink;
-            // Backend has an IMU surface for the chosen type (DS4 yes, Xbox/macOS
-            // no). Lets the UI warn that an Xbox-typed slot can never sink motion.
+            // Backend has an IMU surface for the chosen type. Lets the UI warn
+            // that an Xbox-typed slot can never sink motion.
             bool motionSinkSupportedForType;
             // Per-serial IMU sink created at plug-in. False distinguishes "kernel
-            // rejected the motion node" from "no game subscribed yet"
-            // (motionSink == false). Meaningful on Linux; true elsewhere.
+            // rejected the motion node" from "no game subscribed yet". Meaningful
+            // on Linux; true elsewhere.
             bool motionBackendOk;
-            // At least one MSG_TOUCHPAD decoded; routing is the per-controller
-            // touchpadMode above.
             bool touchpadActive;
-            // lightbarCapable = the CAP_LIGHTBAR bit and the receiver's gate for
-            // emitting MSG_LIGHTBAR. lightbarKnown once a colour is set; r/g/b
-            // hold the latest (0,0,0 until known).
+            // lightbarCapable: the CAP_LIGHTBAR bit and the gate for emitting
+            // MSG_LIGHTBAR. lightbarKnown once a colour is set; r/g/b hold the
+            // latest (0,0,0 until known).
             bool lightbarCapable;
             bool lightbarKnown;
             uint8_t lightbarR;
@@ -214,8 +202,8 @@ class SessionService {
     // Per-paired-device link state (server's view): Paired when no live
     // connection, NotResponding when the live connection's last packet is past
     // the stalling threshold but not yet reaped, else Active. Linking is never
-    // returned — the PUT /api/connections handshake is synchronous, so the
-    // connection is either absent (Paired) or already present (Active).
+    // returned: the PUT handshake is synchronous, so the connection is either
+    // absent (Paired) or present (Active).
     DeviceLinkState linkStateForDevice(const std::string& deviceId) const;
 
     // Remove timed-out connections (the REST-open grace window is honoured).
@@ -228,8 +216,7 @@ class SessionService {
 
 #ifdef SATELLITE_BUILD_TESTS
     // Test seam: shift a connection's liveness clocks backwards so the
-    // reap/grace/stall paths are testable without real sleeps. Elided from
-    // production builds (macro set only on test targets).
+    // reap/grace/stall paths are testable without real sleeps.
     void backdateForTest(uint32_t token, int lastPacketSecondsAgo, int graceSecondsAgo);
 #endif
 
@@ -243,11 +230,11 @@ class SessionService {
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
     // A serial whose unplug could not be confirmed is quarantined (never
-    // reallocated) until the backend bus closes — a zombie target on it would
+    // reallocated) until the backend bus closes; a zombie target on it would
     // poison the next plug. Cleared whenever the bus is (re)opened from idle.
     bool serialQuarantined_[MAX_BACKEND_CONTROLLERS] = {};
-    // Round-robin scan start so a just-freed serial isn't instantly reused
-    // while its PnP removal may still be in flight.
+    // Round-robin scan start so a just-freed serial isn't reused while its PnP
+    // removal may still be in flight.
     uint32_t serialScanStart_ = 0;
 
     // Helpers below assume the caller holds mtx_.

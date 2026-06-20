@@ -108,12 +108,9 @@ bool submitReport(HANDLE bus, ULONG serial, const XUSB_REPORT& rpt) {
     return ok;
 }
 
-// Per-slot synchronous submit helpers. Caller-owned submit struct + per-slot
-// persistent event keep the hot path to one memcpy and no CreateEvent/Close
-// pair. Sync (GetOverlappedResult bWait=TRUE) is mandatory: fire-and-forget here
-// made the dish report "no input reaching the game" with no driver-side error
-// (the kernel seems not to reliably signal the user event on sync-success
-// completion for ViGEmBus IOCTLs).
+// Sync (GetOverlappedResult bWait=TRUE) is mandatory: fire-and-forget made the
+// dish report "no input reaching the game" with no driver error (the kernel
+// doesn't reliably signal the user event on sync-success ViGEmBus completions).
 static bool issueOverlappedSync(HANDLE bus, DWORD ioctl, void* inBuf, DWORD inSize, HANDLE event) {
     OVERLAPPED ov{};
     ov.hEvent = event;
@@ -141,24 +138,21 @@ bool submitDs4ExSync(HANDLE bus, ULONG serial, DS4_SUBMIT_REPORT_EX& sr, HANDLE 
                      const DS4_REPORT_EX& rpt) {
     DS4_SUBMIT_REPORT_EX_INIT(&sr, serial);
     sr.Report = rpt;
-    // Upstream ViGEmBus has no separate "_EX" submit IOCTL: vigem_target_ds4_update_ex
-    // submits the extended report through the SAME IOCTL_DS4_SUBMIT_REPORT and the
-    // driver dispatches basic vs extended by the buffer size (sr.Size, = 71 packed).
+    // No separate "_EX" submit IOCTL: the extended report goes through the same
+    // IOCTL_DS4_SUBMIT_REPORT and the driver dispatches basic vs extended by
+    // buffer size (sr.Size, = 71 packed).
     OVERLAPPED ov{};
     ov.hEvent = event;
     ResetEvent(event);
     DWORD xfr = 0;
     DeviceIoControl(bus, IOCTL_DS4_SUBMIT_REPORT, &sr, sr.Size, nullptr, 0, &xfr, &ov);
     const BOOL ok = GetOverlappedResult(bus, &ov, &xfr, TRUE);
-    // Interpret the completion per ViGEmClient's criterion (see ds4ExSubmitLanded):
-    // most non-signalling completions still delivered the report.
     return ds4ExSubmitLanded(ok != 0, ok ? 0u : GetLastError());
 }
 
-// Observable: true iff the driver accepted the unplug. PnP teardown is still
-// asynchronous (there is no unplug analog of IOCTL_VIGEM_WAIT_DEVICE_READY),
-// but a refused IOCTL means the target is in an unknown state and the caller
-// must quarantine the serial rather than reuse it.
+// True iff the driver accepted the unplug. A refused IOCTL leaves the target in
+// an unknown state, so the caller must quarantine the serial. PnP teardown is
+// still asynchronous (no unplug analog of IOCTL_VIGEM_WAIT_DEVICE_READY).
 bool unplugTarget(HANDLE bus, ULONG serial) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -171,9 +165,8 @@ bool unplugTarget(HANDLE bus, ULONG serial) {
     return ok;
 }
 
-// "Post one buffer, wait until the driver has data." Waits on the IO completion
-// event or the cancel event; on cancel, CancelIoEx so the OVERLAPPED can be
-// reclaimed safely.
+// Waits on the IO completion event or the cancel event; on cancel, CancelIoEx
+// so the OVERLAPPED can be reclaimed safely.
 namespace {
 
 template <typename Notification, ULONG IoctlCode>
@@ -200,9 +193,9 @@ bool waitNotificationImpl(HANDLE bus, ULONG serial, HANDLE cancel, Notification&
     DWORD waitCount = (cancel != nullptr) ? 2 : 1;
     DWORD which = WaitForMultipleObjects(waitCount, waits, FALSE, INFINITE);
     if (which != WAIT_OBJECT_0) {
-        // Cancel signalled (or a wait failure) — unwind the pending IOCTL.
+        // Cancel signalled (or wait failure): unwind the pending IOCTL, then
+        // drain the OVERLAPPED so its event can be freed safely.
         CancelIoEx(bus, &ov);
-        // Drain the OVERLAPPED so we can free its event safely.
         GetOverlappedResult(bus, &ov, &xfr, TRUE);
         CloseHandle(ov.hEvent);
         return false;

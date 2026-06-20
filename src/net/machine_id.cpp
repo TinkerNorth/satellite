@@ -12,7 +12,7 @@ namespace {
 std::mutex g_machineIdMtx;
 std::string g_machineId;
 
-// Beside the config file, like tls.cpp's cert — per-install identity that must
+// Beside the config file, like tls.cpp's cert: per-install identity that must
 // survive restarts.
 std::string machineIdPath() {
     std::string p = configPath();

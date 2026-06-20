@@ -1,15 +1,7 @@
-// ── updates.js — OTA update UI flows ──────────────────────────────────────
-//
-// Single source of truth for the "update available / downloading / ready"
-// experience. Listens to the SSE "update" event the server broadcasts each
-// tick, renders the banner state across both dashboard + settings, owns
-// the restart-confirmation modal.
-//
-// The banner template (#tpl-update-banner) is cloned into two slots:
-//   #dashboard-update-slot  — top of /dashboard, banner-style alert
-//   #settings-update-slot   — bottom of the Updates section in /settings
-// Each slot keeps its own banner element. State is held centrally in
-// updatesState and pushed to both renderers on every change.
+// Renders the update banner across dashboard + settings from the SSE "update"
+// event, and owns the restart-confirmation modal. The #tpl-update-banner
+// template is cloned into #dashboard-update-slot and #settings-update-slot;
+// state lives in updatesState and is pushed to both renderers on change.
 
 const UPDATE_STATE_IDLE        = 'idle';
 const UPDATE_STATE_CHECKING    = 'checking';
@@ -21,9 +13,9 @@ const UPDATE_STATE_DOWNLOADED  = 'downloaded';
 const UPDATE_STATE_INSTALLING  = 'installing';
 const UPDATE_STATE_ERROR       = 'error';
 
-let updatesState = null; // last snapshot pushed by SSE / fetch
+let updatesState = null;
 
-// ── Snapshot fetch (used on page mount; SSE takes over thereafter) ────────
+// Snapshot fetch on page mount; SSE takes over thereafter.
 async function updatesFetch() {
   try {
     const r = await fetch('/api/updates/status');
@@ -37,15 +29,11 @@ async function updatesFetch() {
   }
 }
 
-// ── SSE event handler ─────────────────────────────────────────────────────
-// dashboard.js (which owns the EventSource) calls this on every "update"
-// frame. We just store + re-render.
 function updatesHandleSSE(snapshot) {
   updatesState = snapshot;
   updatesRenderAll();
 }
 
-// ── Banner mount/render ───────────────────────────────────────────────────
 function updatesMount(slotId) {
   const slot = document.getElementById(slotId);
   if (!slot) return null;
@@ -53,8 +41,8 @@ function updatesMount(slotId) {
     const tpl = document.getElementById('tpl-update-banner');
     if (!tpl) return null;
     const node = tpl.content.firstElementChild.cloneNode(true);
-    // De-dupe IDs by suffixing with the slot id so dashboard + settings
-    // banners don't collide on document.getElementById.
+    // Suffix IDs with the slot id so dashboard + settings banners don't
+    // collide on getElementById.
     const suffix = '-' + slotId;
     ['update-banner', 'update-banner-title', 'update-banner-detail',
      'update-banner-progress', 'update-banner-progress-fill',
@@ -82,13 +70,11 @@ function updatesRender(slotId) {
     UPDATE_STATE_VERIFYING, UPDATE_STATE_DOWNLOADED,
     UPDATE_STATE_INSTALLING, UPDATE_STATE_ERROR,
   ]);
-  // On the settings page, also show the "checking…" and "up-to-date" states
-  // so the user sees feedback from clicking "Check for Updates".
+  // Settings also shows "checking" and "up-to-date" so the user sees feedback
+  // from clicking "Check for Updates".
   const onSettings = slotId === 'settings-update-slot';
-  // A failed background check (network down, GitHub unreachable, rate-limit)
-  // is noise on the dashboard — the user didn't initiate it and can't act on
-  // it from there. Keep it on settings where it belongs next to the "Check
-  // for Updates" button.
+  // A failed background check is noise on the dashboard (the user didn't start
+  // it and can't act on it there); keep it on settings.
   const isCheckError = s.state === UPDATE_STATE_ERROR &&
                        s.failedPhase === UPDATE_STATE_CHECKING;
   const visible = (showWhen.has(s.state) && !(isCheckError && !onSettings)) ||
@@ -180,13 +166,8 @@ function updatesRender(slotId) {
   }
 }
 
-// ── Settings-page field bindings ──────────────────────────────────────────
-// Mirror /api/updates/status into the read-only info rows on every tick.
-// Form controls (channel + auto* toggles) are only seeded once per page
-// mount — otherwise a 1 Hz SSE re-render would overwrite the user's
-// in-progress edits the moment they blur a field. updatesSeedFormOnce
-// does that one-shot seeding; updatesRenderSettingsFields just refreshes
-// the timestamps and resets disabled-flags between dependent toggles.
+// Form controls (channel + auto* toggles) are seeded once per page mount,
+// otherwise a 1 Hz SSE re-render would clobber the user's in-progress edits.
 let savedPrefs = null;
 let formSeeded = false;
 
@@ -197,7 +178,7 @@ function updatesSeedFormOnce() {
   const ac = document.getElementById('settings-autoCheck');
   const ad = document.getElementById('settings-autoDownload');
   const ai = document.getElementById('settings-autoInstall');
-  if (!ch || !ac || !ad || !ai) return; // settings page not mounted yet
+  if (!ch || !ac || !ad || !ai) return;
   ch.value = s.channel || 'stable';
   ac.checked = !!s.autoCheck;
   ad.checked = !!s.autoDownload;
@@ -239,10 +220,9 @@ function updatesCheckPrefsDirty() {
   if (btn) btn.disabled = !dirty;
 }
 
-// ── Imperative actions (called from buttons + tray-equivalents) ───────────
 async function updatesCheck() {
   await apiPost('/api/updates/check');
-  // SSE will deliver the new snapshot; render an optimistic "Checking…" right away.
+  // SSE delivers the real snapshot; show an optimistic "Checking" meanwhile.
   if (updatesState) {
     updatesState = { ...updatesState, state: UPDATE_STATE_CHECKING };
     updatesRenderAll();
@@ -288,17 +268,15 @@ function updatesResetForm() {
   savedPrefs = null;
 }
 
-// ── Restart-confirmation modal ────────────────────────────────────────────
 function updatesPromptRestart() {
   if (!updatesState || !updatesState.info) return;
-  // Replace the modal body in-place so the version is interpolated by the
-  // i18n catalog (rather than spliced into hard-coded English markup).
+  // Set the body via the i18n catalog so the version is interpolated rather
+  // than spliced into hard-coded English markup.
   const body = document.getElementById('restart-modal-body');
   if (body) body.textContent = t('modal.restart.body', ['v' + updatesState.info.version]);
   const verEl = document.getElementById('restart-modal-version');
   if (verEl) verEl.textContent = 'v' + updatesState.info.version;
   const warning = document.getElementById('restart-modal-warning');
-  // Surface a connection-loss warning if anyone's currently paired & active.
   warning.style.display = (window.__activeConnectionCount || 0) > 0 ? 'block' : 'none';
   document.getElementById('restart-modal').style.display = 'flex';
 }
@@ -307,7 +285,6 @@ function updatesCloseRestartModal() {
   document.getElementById('restart-modal').style.display = 'none';
 }
 
-// Wire modal buttons once on DOMContentLoaded.
 document.addEventListener('DOMContentLoaded', () => {
   const confirm = document.getElementById('restart-modal-confirm');
   const cancel = document.getElementById('restart-modal-cancel');
@@ -316,18 +293,14 @@ document.addEventListener('DOMContentLoaded', () => {
     await updatesInstall();
   });
   if (cancel) cancel.addEventListener('click', updatesCloseRestartModal);
-  // Lazy initial fetch — once /api/auth/status resolves and the route
-  // settles, updatesFetch() pulls the current state. The route() function
-  // in common.js fires DOMContentLoaded too, so order doesn't matter.
   setTimeout(updatesFetch, 100);
 
-  // Wire pref-dirty change listeners.
   ['settings-channel', 'settings-autoCheck', 'settings-autoDownload',
    'settings-autoInstall'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('change', () => {
-      // When the user toggles auto-check off, auto-download/install become moot.
+      // Auto-check off makes auto-download/install moot, so disable them.
       const ac = document.getElementById('settings-autoCheck');
       const ad = document.getElementById('settings-autoDownload');
       const ai = document.getElementById('settings-autoInstall');
@@ -338,7 +311,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ── Tiny helpers (kept local to avoid mutating common.js) ─────────────────
 function makeBtn(cls, label, fn) {
   const b = document.createElement('button');
   b.className = 'btn ' + cls;
@@ -367,10 +339,8 @@ function formatRelativeEpoch(epoch) {
   if (ageSec < 86400) return t('updates.time.hours-ago',   [Math.floor(ageSec / 3600)]);
   return                     t('updates.time.days-ago',    [Math.floor(ageSec / 86400)]);
 }
-// Title for the Error banner. The server sets `failedPhase` to the phase
-// the updater was running when it tripped — distinguishing "couldn't even
-// reach the update server" from "download/verify/install failed" so the
-// banner doesn't imply an install was attempted when only the check ran.
+// failedPhase distinguishes a failed check from a failed download/verify/
+// install so the banner doesn't imply an install was attempted.
 function updateErrorTitle(failedPhase) {
   switch (failedPhase) {
     case UPDATE_STATE_CHECKING:    return t('updates.error.checking');

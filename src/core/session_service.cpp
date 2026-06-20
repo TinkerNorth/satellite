@@ -8,9 +8,9 @@
 #include <cstdio>
 #include <cstring>
 
-// Token/salt/id generation uses std::random rather than libsodium to keep the
-// core libsodium-free. These values need uniqueness, not secrecy — session
-// security rests on the pairing key feeding the injected KeyDeriver.
+// std::random not libsodium, to keep the core libsodium-free. These values need
+// uniqueness, not secrecy: session security rests on the pairing key feeding the
+// injected KeyDeriver.
 #include <random>
 
 using satellite::formatIPv4Nbo;
@@ -26,9 +26,8 @@ static uint32_t makeRandomToken() {
 SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
                                KeyDeriver keyDeriver)
     : backend_(backend), client_(client), log_(log), keyDeriver_(std::move(keyDeriver)) {
-    // The `this`-capturing lambdas are safe: SessionService outlives the adapter
-    // (composition root tears adapters down last) and the adapter joins its
-    // notification workers before the callbacks could fire.
+    // The `this`-capturing lambdas are safe: SessionService outlives the adapter,
+    // and the adapter joins its notification workers before the callbacks fire.
     backend_.setRumbleCallback(
         [this](uint32_t serial, const RumbleReport& r) { handleRumbleFromBackend(serial, r); });
     backend_.setLightbarCallback([this](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
@@ -67,7 +66,7 @@ bool SessionService::unplugAndRelease(uint32_t serial) {
     quarantineSerial(serial);
     log_.logMsg(LogLevel::WARN, "service",
                 "Unplug of serial " + std::to_string(serial) +
-                    " unconfirmed — serial quarantined until the bus closes");
+                    " unconfirmed; serial quarantined until the bus closes");
     return false;
 }
 
@@ -84,8 +83,8 @@ void SessionService::teardownConnection(Connection& conn) {
 }
 
 uint32_t SessionService::allocateSerial() {
-    // Round-robin scan start so a just-freed serial isn't immediately re-plugged
-    // while its asynchronous PnP removal may still be in flight.
+    // Round-robin scan start so a just-freed serial isn't re-plugged while its
+    // async PnP removal may still be in flight.
     for (size_t step = 0; step < MAX_BACKEND_CONTROLLERS; step++) {
         size_t i = (serialScanStart_ + step) % MAX_BACKEND_CONTROLLERS;
         if (!serialInUse_[i] && !serialQuarantined_[i]) {
@@ -141,17 +140,17 @@ void SessionService::deriveSessionKeyLocked(Connection& conn,
 
 void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lastReport = GamepadReport{};
-    // Clear rumble/lightbar coalesce state: a (re)plugged controller is a fresh
-    // actuator, so the next rumble/colour must not be suppressed as "same as last".
+    // A (re)plugged controller is a fresh actuator, so the next rumble/colour
+    // must not be suppressed as "same as last".
     ctrl.lastRumble = RumbleReport{};
     ctrl.lastRumbleValid = false;
     ctrl.lightbarR = 0;
     ctrl.lightbarG = 0;
     ctrl.lightbarB = 0;
     ctrl.lastLightbarValid = false;
-    // Sender→satellite caches too: Controller structs persist across
-    // remove/re-add, so stale samples would show phantom "active" state and a
-    // MOUSE first sample would delta against a pre-readd finger (cursor jump).
+    // Controller structs persist across remove/re-add, so stale samples would
+    // show phantom "active" state and a MOUSE first sample would delta against a
+    // pre-readd finger (cursor jump).
     ctrl.lastMotion = MotionReport{};
     ctrl.lastMotionValid = false;
     ctrl.motionSinkActive = false;
@@ -219,8 +218,8 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
     if (!ctrl.active) {
         if (!backend_.isBusOpen()) {
             if (backend_.ensureBusOpen()) {
-                // Reopening from idle means every old target is gone; serials
-                // quarantined behind unconfirmed unplugs are clean again.
+                // Reopening from idle means every old target is gone, so
+                // quarantined serials are clean again.
                 std::memset(serialQuarantined_, 0, sizeof(serialQuarantined_));
                 log_.logMsg(LogLevel::INFO, "service", "Backend bus opened on demand");
             }
@@ -278,29 +277,27 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
 
         uint32_t fresh = allocateSerial();
         if (fresh != 0) {
-            // Transactional replug: plug the NEW target on a FRESH serial,
-            // only then retire the old one. A plug failure leaves the old
-            // pad (and its type) untouched.
+            // Transactional replug: plug the NEW target on a FRESH serial, only
+            // then retire the old one. A plug failure leaves the old pad untouched.
             bool plugOk = wantDS4 ? backend_.pluginDeviceDS4(fresh) : backend_.pluginDevice(fresh);
             if (!plugOk) {
                 releaseSerial(fresh);
-                // The applied set didn't change, but bump the epoch anyway so a
-                // client whose PUT response was lost still reconciles to the
-                // truth instead of believing the switch landed.
+                // Bump the epoch anyway so a client whose PUT response was lost
+                // still reconciles instead of believing the switch landed.
                 conn.epoch++;
                 out.result = APPLY_ERR_REPLUG_FAIL;
                 out.appliedType = ctrl.controllerType;
                 fillMotionFlags(backend_, ctrl, out);
                 log_.logMsg(LogLevel::ERR, "service",
                             "Failed to replug controller #" + std::to_string(desc.ctrlIdx) +
-                                " as " + controllerTypeLabel(desc.type) + " — keeping existing " +
+                                " as " + controllerTypeLabel(desc.type) + "; keeping existing " +
                                 controllerTypeLabel(ctrl.controllerType));
                 return;
             }
             unplugAndRelease(ctrl.serialNo);
             ctrl.serialNo = fresh;
         } else {
-            // 16/16 serials in use — fall back to unplug-first on the same serial.
+            // 16/16 serials in use: fall back to unplug-first on the same serial.
             uint32_t serial = ctrl.serialNo;
             if (!unplugAndRelease(serial)) {
                 // Old target unconfirmed-dead and quarantined; the slot is lost.
@@ -312,7 +309,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
                 out.appliedType = desc.type;
                 log_.logMsg(LogLevel::ERR, "service",
                             "Replug fallback failed to unplug controller #" +
-                                std::to_string(desc.ctrlIdx) + " — slot lost");
+                                std::to_string(desc.ctrlIdx) + "; slot lost");
                 return;
             }
             serialInUse_[serial - 1] = true; // reclaim the slot we just released
@@ -328,7 +325,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
                 out.appliedType = desc.type;
                 log_.logMsg(LogLevel::ERR, "service",
                             "Replug fallback plug failed for controller #" +
-                                std::to_string(desc.ctrlIdx) + " — slot lost");
+                                std::to_string(desc.ctrlIdx) + "; slot lost");
                 return;
             }
         }
@@ -348,7 +345,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         return;
     }
 
-    // Same family — converge caps/mode/type in place; no replug, no epoch bump
+    // Same family: converge caps/mode/type in place. No replug, no epoch bump
     // (the applied topology is unchanged).
     ctrl.controllerType = desc.type;
     ctrl.caps = desc.caps;
@@ -364,8 +361,8 @@ SessionUpsertResult SessionService::upsertSession(
     std::lock_guard<std::mutex> lk(mtx_);
     SessionUpsertResult res;
 
-    // Dedup on ctrlIdx, last write wins, preserving first-seen order — the
-    // converge below must be deterministic for a malformed duplicate-idx body.
+    // Dedup on ctrlIdx, last write wins, preserving first-seen order so the
+    // converge below is deterministic for a malformed duplicate-idx body.
     std::vector<ControllerDescriptor> deduped;
     for (const auto& d : descriptors) {
         bool replaced = false;
@@ -399,9 +396,8 @@ SessionUpsertResult SessionService::upsertSession(
         log_.logMsg(LogLevel::INFO, "service",
                     "Session created for " + deviceName + " (" + conn->connectionId + ")");
     } else {
-        // Same device re-PUTting (reconnect or key-cloned twin): tell the old
-        // token best-effort, then rotate token/key in place. The row and its
-        // pads survive — no unplug/replug churn by construction.
+        // Same device re-PUTting: tell the old token best-effort, then rotate
+        // token/key in place. The row and its pads survive, no unplug/replug churn.
         client_.sendSessionClose(*conn, CLOSE_REASON_REPLACED);
         client_.removeClientAddr(conn->token);
         uint32_t newToken = generateUniqueToken();
@@ -416,8 +412,8 @@ SessionUpsertResult SessionService::upsertSession(
 
     conn->deviceName = deviceName;
     conn->clientIP = clientIP;
-    // Seed the numeric IPv4 cache so the first packet's "address changed?" check
-    // has something to compare. Failure (0) is non-fatal — the next V4 update fills it.
+    // Seed the numeric IPv4 cache for the first packet's "address changed?"
+    // check. Failure (0) is non-fatal; the next V4 update fills it.
     conn->clientIPv4 = parseIPv4Nbo(clientIP);
     for (size_t i = 0; i < SESSION_SALT_SIZE; i += 4) {
         uint32_t r = makeRandomToken();
@@ -435,8 +431,8 @@ SessionUpsertResult SessionService::upsertSession(
         res.mouseControlDenyReason = HOST_FEATURE_DENY_NOT_SUPPORTED;
     }
 
-    // Converge to the desired set: retire slots absent from it first (freeing
-    // serials for newcomers), then apply each descriptor.
+    // Converge to the desired set: retire absent slots first (freeing serials
+    // for newcomers), then apply each descriptor.
     bool desired[MAX_CONTROLLERS_PER_CONN] = {};
     for (const auto& d : deduped) {
         if (d.ctrlIdx < MAX_CONTROLLERS_PER_CONN) desired[d.ctrlIdx] = true;
@@ -556,7 +552,7 @@ int SessionService::closeSessionsForDevice(const std::string& deviceId, uint8_t 
 
 void SessionService::closeAllSessions(uint8_t reason) {
     std::lock_guard<std::mutex> lk(mtx_);
-    // Notify everyone BEFORE any teardown so the notify rides the still-valid
+    // Notify everyone BEFORE teardown so the notify rides the still-valid
     // session keys and addresses.
     for (auto& [tok, conn] : connections_) { client_.sendSessionClose(conn, reason); }
     for (auto& [tok, conn] : connections_) { teardownConnection(conn); }
@@ -595,14 +591,14 @@ void SessionService::handleHeartbeat(uint32_t token) {
 
 void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
                                              uint16_t wireDurationMs) {
-    // try_to_lock, NEVER block: unplug paths join this notification worker
-    // while holding mtx_, so a blocking acquire here deadlocks. A dropped
-    // frame self-heals — rumble is coalesced and re-notified.
+    // try_to_lock, NEVER block: unplug paths join this notification worker while
+    // holding mtx_, so a blocking acquire here deadlocks. A dropped frame
+    // self-heals (rumble is coalesced and re-notified).
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
-    // Linear serial→controller scan: bounded by the 16-controller cap; not
-    // worth a reverse index that must track allocateSerial/releaseSerial.
+    // Linear scan, bounded by the 16-controller cap; not worth a reverse index
+    // that must track allocateSerial/releaseSerial.
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     for (auto& [tok, conn] : connections_) {
@@ -615,12 +611,12 @@ void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport
         }
         if (foundConn) break;
     }
-    // Stray event from a just-unplugged controller's worker — drop.
+    // Stray event from a just-unplugged controller's worker.
     if (!foundConn || !foundCtrl) return;
 
-    // Coalesce identical back-to-back updates (games hold both motors steady
-    // across many frames). wireDurationMs is excluded so the caller can bump
-    // the refresh deadline without forcing a packet.
+    // Coalesce identical back-to-back updates (games hold the motors steady
+    // across many frames). wireDurationMs is excluded so the caller can bump the
+    // refresh deadline without forcing a packet.
     auto sameAs = [](const RumbleReport& a, const RumbleReport& b) {
         return a.strongMagnitude == b.strongMagnitude && a.weakMagnitude == b.weakMagnitude;
     };
@@ -651,8 +647,7 @@ bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const Mot
     // Deliberately do NOT gate on ctrl.motionCapable() (CAP_MOTION): the
     // protocol says motion is best-effort and the receiver MUST accept
     // MSG_MOTION even from a dish that never advertised the cap. A backend
-    // without an IMU surface returning false is not an error. The return value
-    // (surfaced as `motionSink`) records whether the sample reached the device.
+    // without an IMU surface returning false is not an error.
     const bool delivered = backend_.submitMotion(ctrl.serialNo, report);
     ctrl.motionSinkActive = delivered;
     return delivered;
@@ -669,7 +664,7 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
     Controller& ctrl = conn.controllers[ctrlIdx];
     if (!ctrl.active) return false;
 
-    // Capture the previous sample BEFORE overwriting — relative-mouse mode needs
+    // Capture the previous sample BEFORE overwriting: relative-mouse mode needs
     // the finger-0 delta between consecutive frames.
     const TouchpadReport prev = ctrl.lastTouchpad;
     const bool prevValid = ctrl.lastTouchpadValid;
@@ -688,10 +683,10 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         if (!conn.mouseControlGranted) return false;
 
         // Delta only while finger 0 is down across both frames AND the
-        // trackingId matches — a lifted finger compacts the survivor into
-        // slot 0 with a new id; without the check the cursor teleports.
-        // Scale by REFERENCE_MS/dt so velocity is dt-independent (Android's
-        // first MOVE lands ~16 ms late → visible first-touch jump otherwise).
+        // trackingId matches: a lifted finger compacts the survivor into slot 0
+        // with a new id, and without the check the cursor teleports. Scale by
+        // REFERENCE_MS/dt so velocity is dt-independent (Android's first MOVE
+        // lands ~16 ms late, otherwise a visible first-touch jump).
         int dx = 0;
         int dy = 0;
         const bool continuous = prevValid && prev.finger0.active && report.finger0.active &&
@@ -734,8 +729,8 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
 
     case TOUCHPAD_MODE_DS4:
     default:
-        // Pass through to the virtual DS4 touchpad. A false from the default
-        // impl (Xbox pad / inert backend) is not an error — cached above.
+        // A false from the default impl (Xbox pad / inert backend) is not an
+        // error; cached above.
         return backend_.submitTouchpad(ctrl.serialNo, report);
     }
 }
@@ -770,8 +765,7 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
     foundCtrl->lightbarB = b;
     foundCtrl->lastLightbarValid = true;
 
-    // Emit only to senders that advertised CAP_LIGHTBAR (an addressable RGB
-    // LED); others would just drop it. Cached above regardless for the web UI.
+    // Emit only to senders that advertised CAP_LIGHTBAR; others would drop it.
     if (foundCtrl->lightbarCapable()) {
         client_.sendLightbar(*foundConn, foundCtrl->index, r, g, b);
     }
@@ -887,9 +881,8 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
         cs.epoch = conn.epoch;
         cs.activeControllerCount = conn.activeControllerCount;
         cs.mouseControlGranted = conn.mouseControlGranted;
-        // An existing connection is at least Active; escalates to NotResponding
-        // once the stalling window lapses without packets. The REST-open grace
-        // window counts as liveness so a fresh PUT doesn't flash "not responding".
+        // The REST-open grace window counts as liveness so a fresh PUT doesn't
+        // flash "not responding".
         const bool inGrace = now < conn.graceUntil;
         cs.linkState = (!inGrace && now - conn.lastPacketTime > stallThreshold)
                            ? DeviceLinkState::NotResponding
@@ -948,7 +941,6 @@ DeviceLinkState SessionService::linkStateForDevice(const std::string& deviceId) 
                    ? DeviceLinkState::NotResponding
                    : DeviceLinkState::Active;
     }
-    // No live connection; caller already knows the device is paired, so Paired.
     return DeviceLinkState::Paired;
 }
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Self-signed TLS cert generation (OpenSSL 3.0+, EVP_RSA_gen). The client API
-// server is HTTPS-only; with no CA on a LAN we generate a self-signed pair on
-// first run and persist it beside the config file for a stable identity.
+// Self-signed TLS cert generation (OpenSSL 3.0+). With no CA on a LAN we
+// generate a self-signed pair on first run and persist it beside the config
+// file for a stable identity.
 #include "tls.h"
 #include "config.h" // configPath()
 

@@ -23,6 +23,11 @@ paths = [
     # sometimes flag as base64-encoded secrets.
     '''lib/libsodium/.*''',
     '''lib/httplib\.h''',
+    # Config/platform unit tests build PairedDevice fixtures with fake
+    # sharedKeyHex values (no real key material).
+    '''tests/test_config_json\.cpp''',
+    '''tests/test_linux_platform\.cpp''',
+    '''tests/test_windows_platform\.cpp''',
 ]
 
 regexes = [

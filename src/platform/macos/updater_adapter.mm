@@ -362,7 +362,7 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
     @autoreleasepool {
         std::string bundle = currentAppBundle();
         if (bundle.empty()) {
-            outError = "Running outside an .app bundle — in-place update not supported";
+            outError = "Running outside an .app bundle; in-place update not supported";
             return false;
         }
 

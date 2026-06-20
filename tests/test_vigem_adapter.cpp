@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Pins the ViGEm adapter submit path against the regression that broke
 // PlayStation input: a fire-and-forget submit returned "success" the instant
-// the IOCTL queued, so the DS4 EX→basic fallback never saw the driver reject
+// the IOCTL queued, so the DS4 EX-to-basic fallback never saw the driver reject
 // DS4_SUBMIT_REPORT_EX and every PS frame was silently dropped. Submits must go
 // through the SYNCHRONOUS helpers so the rejection stays observable. The fake
 // driver layer below stands in for vigem.cpp so this links without real IOCTLs.
@@ -12,36 +12,7 @@
 #include <iostream>
 #include <string>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
-
-#define EXPECT_EQ(a, b)                                                                            \
-    do {                                                                                           \
-        auto _a = (a);                                                                             \
-        auto _b = (b);                                                                             \
-        if (_a == _b) {                                                                            \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #a << " == " << #b << "  (got " << _a << " vs " << _b << ")\n";   \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 // Records what the adapter asks the driver to do and lets each test pin the
 // accept/reject verdict. Single-threaded except waitNext*Notification, which the
@@ -145,9 +116,9 @@ static void test_ds4_plugin_probes_ex_and_reports_sink_ok() {
 
 // The fix: when the driver rejects the DS4 EX report, the adapter must observe
 // that (only possible with a synchronous submit), latch EX off, fall back to
-// the basic DS4 report so input still reaches the pad — and report the IMU
-// sink as unavailable. Pre-fix this never happened and PlayStation input was
-// dead while the sink flag lied "ok".
+// the basic DS4 report so input still reaches the pad, and report the IMU sink
+// as unavailable. Pre-fix this never happened and PlayStation input was dead
+// while the sink flag lied "ok".
 static void test_ds4_ex_rejected_falls_back_and_reports_no_sink() {
     TEST("DS4 EX rejected → falls back to basic, latches EX off, motionBackendOk false");
     fake::g.reset();
@@ -164,7 +135,7 @@ static void test_ds4_ex_rejected_falls_back_and_reports_no_sink() {
     EXPECT(!a.motionBackendOk(1));
 
     // Subsequent gamepad frames go straight to basic (EX latched off) and still
-    // apply — input is never silently dropped.
+    // apply; input is never silently dropped.
     fake::g.resetCounts();
     GamepadReport rpt{};
     rpt.wButtons = 0x1000; // A
@@ -201,7 +172,7 @@ static void test_motion_backend_ok_nonds4_and_unplugged() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDevice(2)); // X360 target — no IMU surface
+    EXPECT(a.pluginDevice(2)); // X360 target, no IMU surface
     EXPECT(!a.motionBackendOk(2));
 
     EXPECT(a.motionBackendOk(1)); // valid serial, never plugged
@@ -256,10 +227,10 @@ static void test_xusb_to_ds4_conversion_maps_input() {
     EXPECT(a.pluginDeviceDS4(1));
 
     GamepadReport rpt{};
-    rpt.wButtons = 0x1000;   // A  → Cross
+    rpt.wButtons = 0x1000;   // A -> Cross
     rpt.bRightTrigger = 255; // full right trigger
-    rpt.sThumbLX = 32767;    // full right  → 255
-    rpt.sThumbLY = 32767;    // full up     → 0 (DS4 Y is inverted)
+    rpt.sThumbLX = 32767;    // full right -> 255
+    rpt.sThumbLY = 32767;    // full up -> 0 (DS4 Y is inverted)
     EXPECT(a.submitDS4Report(1, rpt));
 
     const DS4_REPORT_EX& ex = fake::g.lastDs4Ex;
@@ -270,8 +241,7 @@ static void test_xusb_to_ds4_conversion_maps_input() {
     a.closeBus();
 }
 
-// ── DS4 extended-report submit policy (the 50→1784→259 regression) ──────────
-//
+// DS4 extended-report submit policy (the 50/1784/259 regression).
 // ds4ExSubmitLanded decides whether an EX submit reached the device from the
 // GetOverlappedResult outcome. The driver routinely completes this IOCTL with a
 // benign non-zero status (259 etc.) yet still applies the report, so only
@@ -286,22 +256,22 @@ static void test_ds4ExSubmitLanded_overlapped_success_always_lands() {
 static void test_ds4ExSubmitLanded_benign_failures_still_land() {
     TEST("ds4ExSubmitLanded: benign completion statuses still delivered the report");
     EXPECT(ds4ExSubmitLanded(false, 0));
-    EXPECT(ds4ExSubmitLanded(false, ERROR_NO_MORE_ITEMS)); // 259 — the one that derailed us
+    EXPECT(ds4ExSubmitLanded(false, ERROR_NO_MORE_ITEMS)); // 259, the one that derailed us
     EXPECT(ds4ExSubmitLanded(false, ERROR_IO_PENDING));    // 997
     EXPECT(ds4ExSubmitLanded(false, ERROR_OPERATION_ABORTED));
 }
 
 static void test_ds4ExSubmitLanded_real_failures_do_not_land() {
     TEST("ds4ExSubmitLanded: ACCESS_DENIED and wrong-size rejects are true misses");
-    EXPECT(!ds4ExSubmitLanded(false, ERROR_ACCESS_DENIED));       // 5  — target gone
-    EXPECT(!ds4ExSubmitLanded(false, ERROR_INVALID_PARAMETER));   // 87 — pre-1.17 wrong size
-    EXPECT(!ds4ExSubmitLanded(false, ERROR_INVALID_USER_BUFFER)); // 1784 — 1.21 wrong size
+    EXPECT(!ds4ExSubmitLanded(false, ERROR_ACCESS_DENIED));       // 5: target gone
+    EXPECT(!ds4ExSubmitLanded(false, ERROR_INVALID_PARAMETER));   // 87: pre-1.17 wrong size
+    EXPECT(!ds4ExSubmitLanded(false, ERROR_INVALID_USER_BUFFER)); // 1784: 1.21 wrong size
 }
 
 // The extended submit struct must be 71 bytes (packed) so the driver routes it
 // to the EX path; a different size is rejected (the INVALID_USER_BUFFER bug). The
 // EX report itself is the 63-byte DS4 USB input report. EX and basic submits ride
-// the SAME IOCTL, distinguished only by size — so the two must differ.
+// the same IOCTL, distinguished only by size, so the two must differ.
 static void test_ds4_ex_struct_abi() {
     TEST("DS4 EX ABI: EX submit is 71 bytes, EX report is 63, distinct from basic submit");
     EXPECT_EQ(sizeof(DS4_REPORT_EX), (size_t)63);
@@ -366,7 +336,7 @@ static void test_motion_submit_rejected_for_xbox_and_unplugged() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDevice(2)); // Xbox target — no IMU surface
+    EXPECT(a.pluginDevice(2)); // Xbox target, no IMU surface
 
     MotionReport m{};
     EXPECT(!a.submitMotion(2, m)); // Xbox slot

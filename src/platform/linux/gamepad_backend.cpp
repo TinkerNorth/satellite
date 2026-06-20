@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Linux uinput probe. "module not loaded" vs "not built into the kernel" both
-// surface as DEVICE_MISSING — the web UI's `modprobe uinput` copy covers both.
+// "module not loaded" and "not built into the kernel" both surface as
+// DEVICE_MISSING; the web UI's `modprobe uinput` copy covers both.
 #include "core/gamepad_backend.h"
 
 #include <sys/stat.h>

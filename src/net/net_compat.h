@@ -2,7 +2,7 @@
 
 // Winsock/BSD-sockets compatibility shim (header-only) for src/net/.
 // On Windows this header MUST be included before <windows.h> so <winsock2.h> is
-// seen first — otherwise <windows.h> auto-pulls winsock1.
+// seen first; otherwise <windows.h> auto-pulls winsock1.
 #pragma once
 
 #ifdef _WIN32
