@@ -176,6 +176,15 @@ std::string featureJson(bool supported, const std::string& requires_ = "") {
     return j;
 }
 
+// featureJson + an explicit `modes` array (pre-built JSON of protocol-constant slugs):
+// the client reads offered modes rather than inferring them from the type id.
+std::string featureJsonModes(bool supported, const std::string& modesJson) {
+    std::string j = std::string("{\"supported\":") + (supported ? "true" : "false");
+    if (supported && !modesJson.empty()) j += ",\"modes\":" + modesJson;
+    j += "}";
+    return j;
+}
+
 std::string typeJson(int id, const std::string& slug, const std::string& langJson,
                      const std::string& enJson, const std::string& serverVersion,
                      const std::string& featuresJson) {
@@ -203,11 +212,13 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         "{\"rumble\":" + featureJson(true) + ",\"analogTriggers\":" + featureJson(true) +
         ",\"motion\":" + featureJson(false) + ",\"lightbar\":" + featureJson(false) +
         ",\"touchpad\":" + featureJson(false) + "}";
+    // The DS4 touchpad renders the "ds4" pad mode (the descriptor touchpadMode value);
+    // "mouse" is host injection and lives under hostFeatures.mouseControl, not here.
     std::string ds4Features =
         "{\"rumble\":" + featureJson(true) + ",\"analogTriggers\":" + featureJson(true) +
         ",\"motion\":" + featureJson(traits.ds4MotionSupported, traits.ds4MotionRequires) +
         ",\"lightbar\":" + featureJson(traits.ds4LightbarSupported) +
-        ",\"touchpad\":" + featureJson(traits.ds4TouchpadSupported) + "}";
+        ",\"touchpad\":" + featureJsonModes(traits.ds4TouchpadSupported, "[\"ds4\"]") + "}";
 
     std::string json = "{\"locale\":\"" + jsonEscapeMini(locale) + "\"";
     json += ",\"protocolVersion\":1";
@@ -217,11 +228,44 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     json += ",";
     json += typeJson(1, "ds4", langJson, enJson, serverVersion, ds4Features);
     json += "]";
+    // hostFeatures: what the HOST can be driven to do, independent of any slot. Slugs
+    // and mode values are protocol constants (never localized). mouseControl.modes
+    // enumerates the valid descriptor touchpadMode values; rumble (RECEIVE) and
+    // keyboardControl (SEND) let the client gate those host paths instead of assuming.
     json += ",\"hostFeatures\":{\"mouseControl\":{\"supported\":";
     json += traits.mouseControlSupported ? "true" : "false";
-    json += ",\"modes\":[\"off\",\"ds4\",\"mouse\"]}}";
+    json += ",\"modes\":[\"off\",\"ds4\",\"mouse\"]}";
+    json += ",\"keyboardControl\":{\"supported\":";
+    json += traits.keyboardControlSupported ? "true" : "false";
+    json += "}";
+    json += ",\"rumble\":{\"supported\":";
+    json += traits.rumbleSupported ? "true" : "false";
+    json += "}}";
     json += "}";
     return json;
+}
+
+std::string buildHostBlockJson(const CatalogBackendTraits& traits, bool backendAvailable) {
+    // `available` is the bus-up proxy (backend can accept controllers), NOT a per-feature
+    // delivery probe — enough to surface "present but driver down" pre-bind. catalog is
+    // always served by this server, so its presence is unconditionally true.
+    const bool mouseLive = backendAvailable && traits.mouseControlSupported;
+    const bool rumbleLive = backendAvailable && traits.rumbleSupported;
+    std::string j = "{\"catalog\":{\"supported\":true}";
+    j += ",\"mouseControl\":{\"supported\":";
+    j += traits.mouseControlSupported ? "true" : "false";
+    j += ",\"available\":";
+    j += mouseLive ? "true" : "false";
+    j += "}";
+    j += ",\"keyboardControl\":{\"supported\":";
+    j += traits.keyboardControlSupported ? "true" : "false";
+    j += "}";
+    j += ",\"rumble\":{\"supported\":";
+    j += traits.rumbleSupported ? "true" : "false";
+    j += ",\"available\":";
+    j += rumbleLive ? "true" : "false";
+    j += "}}";
+    return j;
 }
 
 } // namespace satellite

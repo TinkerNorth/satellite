@@ -27,8 +27,7 @@ using satellite::jsonGetIntKeyed;
 using satellite::jsonGetObject;
 
 // Web UI keys all backend-status copy off (id, errorCode).
-static std::string buildBackendJson() {
-    BackendStatus s = probeBackend();
+static std::string buildBackendJson(const BackendStatus& s) {
     std::string json = "{\"id\":\"";
     json += s.id;
     json += "\",\"supported\":";
@@ -47,11 +46,12 @@ static std::string buildBackendJson() {
     return json;
 }
 
+static std::string buildBackendJson() { return buildBackendJson(probeBackend()); }
+
 // Static facts about the backend that shape the catalog — keyed off the
 // backend's identity, not its live health (the catalog only changes on
 // server upgrade; live health is /api/server/capabilities).
-static satellite::CatalogBackendTraits catalogBackendTraits() {
-    BackendStatus s = probeBackend();
+static satellite::CatalogBackendTraits catalogBackendTraits(const BackendStatus& s) {
     satellite::CatalogBackendTraits t;
     const std::string id = s.id;
     if (id == BACKEND_ID_VIGEM) {
@@ -60,28 +60,42 @@ static satellite::CatalogBackendTraits catalogBackendTraits() {
         t.ds4TouchpadSupported = true;
         t.ds4LightbarSupported = true;
         t.mouseControlSupported = true;
+        // Every emulated pad on a live bus reports rumble back to the client.
+        t.rumbleSupported = true;
     } else if (id == BACKEND_ID_UINPUT) {
         t.ds4MotionSupported = true;
         t.ds4TouchpadSupported = true;
         t.ds4LightbarSupported = true;
         t.mouseControlSupported = true;
+        t.rumbleSupported = true;
     }
+    // keyboardControlSupported stays false on every backend: the host has no keystroke
+    // injection path yet. The field is published so the client gates on it (and stays
+    // unoffered) instead of hardwiring the assumption; flip it when injection lands.
     return t;
+}
+
+static satellite::CatalogBackendTraits catalogBackendTraits() {
+    return catalogBackendTraits(probeBackend());
 }
 
 // GET /api/server/capabilities — CURRENT dynamic state (contract.md layer 2;
 // the static what-exists layer is /api/catalog).
 static std::string buildCapabilitiesJson() {
+    // Probe ONCE and thread it: backend/motion/host must agree within one response, so
+    // they can't each re-probe and race a driver unplug mid-build.
     BackendStatus s = probeBackend();
-    satellite::CatalogBackendTraits traits = catalogBackendTraits();
+    satellite::CatalogBackendTraits traits = catalogBackendTraits(s);
     std::string json = "{\"protocolVersion\":" + std::to_string(PROTOCOL_VERSION);
     json += ",\"serverVersion\":\"";
     json += SATELLITE_VERSION;
     json += "\",\"maxControllers\":" + std::to_string(MAX_BACKEND_CONTROLLERS);
-    json += ",\"backend\":" + buildBackendJson();
+    json += ",\"backend\":" + buildBackendJson(s);
     json += ",\"motion\":{\"available\":";
     json += (s.available && traits.ds4MotionSupported) ? "true" : "false";
-    json += "}}";
+    json += "}";
+    json += ",\"host\":" + satellite::buildHostBlockJson(traits, s.available);
+    json += "}";
     return json;
 }
 

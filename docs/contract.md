@@ -244,13 +244,31 @@ caller's own session.
   "serverVersion": "1.6.0",
   "maxControllers": 16,
   "backend": { "id": "vigem", "supported": true, "available": true, "errorCode": null },
-  "motion": { "available": true }
+  "motion": { "available": true },
+  "host": {
+    "catalog": { "supported": true },
+    "mouseControl": { "supported": true, "available": true },
+    "keyboardControl": { "supported": false },
+    "rumble": { "supported": true, "available": true }
+  }
 }
 ```
 
 `motion.available` reflects the motion backend right now (e.g. ViGEmBus new enough for
 the DS4 EX report). `backend.errorCode` ∈ `DRIVER_MISSING`, `BUS_OPEN_FAILED`,
 `MODULE_NOT_LOADED`, `DEVICE_MISSING`, `PERMISSION_DENIED`, or null.
+
+`host` is the receiver's OWN capability inventory, readable before pairing or any
+catalog round-trip so a client reflects the real receiver instead of an optimistic
+default. Each entry's `supported` is the static fact (mirrors the catalog
+`hostFeatures` / per-type features); `available` is a coarse runtime read — the
+backend is up enough to accept controllers (bus open), NOT a per-feature delivery
+probe — so a client can show a feature present-but-currently-down (e.g. driver
+missing). `catalog.supported` is the presence signal: a server emitting `host` always
+sets it true, so a client treats its absence as "older satellite — fall back to the
+default". The block is additive: an older server omits it and the client degrades
+gracefully. (`host.rumble` is the host return-channel; the per-type `rumble` feature
+is a different layer — whether the emulated pad has a motor.)
 
 ### `GET /api/catalog` — STATIC per server version, localized
 
@@ -291,12 +309,14 @@ to present it (static, localized) → **capabilities** = what is true right now
         "analogTriggers": { "supported": true },
         "motion": { "supported": true, "requires": "vigembus>=1.17" },
         "lightbar": { "supported": true },
-        "touchpad": { "supported": true }
+        "touchpad": { "supported": true, "modes": ["ds4"] }
       }
     }
   ],
   "hostFeatures": {
-    "mouseControl": { "supported": true, "modes": ["off", "ds4", "mouse"] }
+    "mouseControl": { "supported": true, "modes": ["off", "ds4", "mouse"] },
+    "keyboardControl": { "supported": false },
+    "rumble": { "supported": true }
   }
 }
 ```
@@ -304,10 +324,19 @@ to present it (static, localized) → **capabilities** = what is true right now
 - `controllerTypes[].id` is the wire enum value used as descriptor `type`. The client
   renders its "Emulate" picker from this list instead of hardcoding the enum.
 - `requires` is a structured code (`"vigembus>=1.17"`), not prose.
+- A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
+  the client reads the offered modes rather than inferring them from the type id. The
+  DS4 `touchpad` advertises `["ds4"]` (its pad-render mode); the relative-mouse path is
+  host injection and lives under `hostFeatures.mouseControl`, not the type. A type with
+  a touchpad but no `ds4` mode therefore gates the pad off while keeping host mouse.
+  Absent `modes` = a pre-modes catalog; the client falls back to its prior assumption.
 - `hostFeatures` is PURE capability data: what the HOST can be driven to do,
-  independent of any controller slot. v1 inventory: `mouseControl` (the touchpad
-  relative-mouse path; `modes` enumerates valid descriptor `touchpadMode` values).
-  Future slugs when implemented: `keyboardControl`, `mediaKeys`, …
+  independent of any controller slot. Inventory: `mouseControl` (the touchpad
+  relative-mouse path; `modes` enumerates valid descriptor `touchpadMode` values),
+  `keyboardControl` (host keystroke injection, SEND), and `rumble` (the host streams
+  feedback back to the client, RECEIVE). A feature the backend cannot do reports
+  `supported: false` (e.g. `keyboardControl` until an injection backend ships) and the
+  client leaves it unoffered. Future slugs when implemented: `mediaKeys`, …
 - Scope: the catalog describes what the SATELLITE can create or do on the host. Which
   physical pads the client can read stays client-side knowledge.
 
