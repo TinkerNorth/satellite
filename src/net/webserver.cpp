@@ -38,9 +38,6 @@ using satellite::jsonTryBool;
 using satellite::jsonTryInt;
 using satellite::StatusFields;
 
-// Parse a request body into a JSON object, tolerating malformed/empty input by
-// returning an empty object — accessors then fall back to defaults, preserving
-// the lenient behavior of the pre-nlohmann request parsing.
 static Json parseBody(const std::string& body) {
     Json j;
     if (!jsonParse(body, j) || !j.is_object()) return Json::object();

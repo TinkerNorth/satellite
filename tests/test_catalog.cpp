@@ -26,9 +26,6 @@ static std::string langPath(const std::string& locale) {
     return std::string(WEB_LANG_DIR) + "/" + locale + ".json";
 }
 
-// Re-parse the catalog's controllerTypes array, preserving field order
-// (ordered_json) so the literal substring assertions below still hold, and
-// surface each element's numeric `id` alongside its serialized form.
 static std::vector<std::string> controllerTypeElems(const std::string& json,
                                                     std::vector<long>& ids) {
     std::vector<std::string> out;

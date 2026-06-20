@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-
-// Portable (de)serialization of the persisted Config, shared by every platform's
-// config.cpp so the on-disk schema stays identical across Windows/macOS/Linux.
-// The platform layer owns only path resolution and the atomic write.
 #pragma once
 
 #include "core/json.h"
@@ -12,9 +8,6 @@
 
 namespace satellite {
 
-// Pretty-printed config.json body (trailing newline for a tidy POSIX file).
-// Field order mirrors the historical hand-written layout so diffs of an
-// upgraded config stay minimal.
 inline std::string serializeConfig(const Config& cfg) {
     JsonOut j;
     j["udpPort"] = cfg.udpPort;
@@ -41,16 +34,13 @@ inline std::string serializeConfig(const Config& cfg) {
         o["name"] = d.name;
         o["lastIP"] = d.lastIP;
         o["pairedAt"] = d.pairedAt;
-        o["sharedKey"] = d.sharedKeyHex; // on-disk key name predates the *Hex suffix
+        o["sharedKey"] = d.sharedKeyHex;
         devices.push_back(std::move(o));
     }
     j["pairedDevices"] = std::move(devices);
     return jsonDumpPretty(j) + "\n";
 }
 
-// Tolerant in-place load: only present, correctly-typed keys overwrite `cfg`, so
-// an older/partial config keeps the struct defaults for keys it never wrote
-// (matches the pre-nlohmann behavior the OTA/discovery defaults depend on).
 inline void parseConfigInto(const std::string& text, Config& cfg) {
     Json j;
     if (!jsonParse(text, j) || !j.is_object()) return;

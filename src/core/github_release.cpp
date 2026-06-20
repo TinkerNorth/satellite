@@ -21,7 +21,6 @@ GitHubAsset readAsset(const Json& a) {
     GitHubAsset out;
     out.name = jsonStr(a, "name");
     out.browserUrl = jsonStr(a, "browser_download_url");
-    // GitHub's "size" is an integer; tolerate any numeric form.
     if (auto it = a.find("size"); it != a.end() && it->is_number()) {
         out.size = it->get<uint64_t>();
     }
@@ -29,8 +28,6 @@ GitHubAsset readAsset(const Json& a) {
     return out;
 }
 
-// Tolerant by design: every field falls back to its struct default when absent
-// or null (a release "name"/"body"/"published_at" is null when unset in the UI).
 GitHubRelease readRelease(const Json& r) {
     GitHubRelease out;
     out.tagName = jsonStr(r, "tag_name");

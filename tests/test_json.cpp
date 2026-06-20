@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-
-// core/json — the shared nlohmann/json facade: tolerant typed accessors used by
-// request-body and config parsing, plus the ordered, UTF-8-safe serializer used
-// by every response builder.
 #include "../src/core/json.h"
 
 #include <iostream>
@@ -20,9 +16,9 @@ static void test_parse_tolerant() {
     Json bad;
     EXPECT(!jsonParse("not json", bad));
     EXPECT(!jsonParse("", bad));
-    EXPECT(!jsonParse("{\"a\":", bad)); // truncated
+    EXPECT(!jsonParse("{\"a\":", bad));
     Json arr;
-    EXPECT(jsonParse("[1,2,3]", arr)); // valid JSON, just not an object
+    EXPECT(jsonParse("[1,2,3]", arr));
     EXPECT(arr.is_array());
 }
 
@@ -37,12 +33,10 @@ static void test_typed_accessors_present() {
 static void test_typed_accessors_fallback() {
     TEST("jsonStr/jsonInt/jsonBool — absent or wrong-typed yields the fallback");
     Json j = Json::parse(R"({"s":"hi","n":42,"b":true})");
-    // Absent keys fall back.
     EXPECT_EQ(jsonStr(j, "missing", "def"), std::string("def"));
     EXPECT_EQ(jsonInt(j, "missing", -1), -1L);
     EXPECT(!jsonBool(j, "missing"));
     EXPECT(jsonBool(j, "missing", true));
-    // Wrong-typed values fall back (never throw): "s" is a string, not int/bool.
     EXPECT_EQ(jsonInt(j, "s", 7), 7L);
     EXPECT(!jsonBool(j, "n"));
     EXPECT_EQ(jsonStr(j, "n", "x"), std::string("x"));
@@ -53,18 +47,17 @@ static void test_try_accessors() {
     Json j = Json::parse(R"({"n":0,"b":false,"big":4294967296,"s":"x"})");
     long n = -99;
     EXPECT(jsonTryInt(j, "n", n));
-    EXPECT_EQ(n, 0L); // present-and-zero is still "present"
+    EXPECT_EQ(n, 0L);
     bool b = true;
     EXPECT(jsonTryBool(j, "b", b));
     EXPECT(!b);
     int64_t big = 0;
     EXPECT(jsonTryI64(j, "big", big));
-    EXPECT_EQ(big, (int64_t)4294967296LL); // 64-bit, not truncated to 32
-    // Absent / wrong-type report false and leave the out-param untouched.
+    EXPECT_EQ(big, (int64_t)4294967296LL);
     long untouched = 123;
     EXPECT(!jsonTryInt(j, "missing", untouched));
     EXPECT_EQ(untouched, 123L);
-    EXPECT(!jsonTryInt(j, "s", untouched)); // present but a string
+    EXPECT(!jsonTryInt(j, "s", untouched));
     EXPECT_EQ(untouched, 123L);
 }
 
@@ -75,7 +68,7 @@ static void test_object_descend() {
     EXPECT(jsonBool(caps, "rumble"));
     EXPECT(jsonObject(j, "missing").is_object());
     EXPECT(jsonObject(j, "missing").empty());
-    EXPECT(jsonObject(j, "x").empty()); // "x" is a number, not an object
+    EXPECT(jsonObject(j, "x").empty());
 }
 
 static void test_dump_is_ordered_and_compact() {
@@ -96,21 +89,21 @@ static void test_dump_escaping() {
     j["ctrl"] = std::string("a\x01"
                             "b");
     j["url"] = "/api/catalog/images/ds4";
-    j["utf8"] = "übersetzt"; // non-ASCII stays raw UTF-8 (ensure_ascii=false)
+    j["utf8"] = "übersetzt";
     const std::string s = jsonDump(j);
     EXPECT(s.find("\"q\":\"a\\\"b\"") != std::string::npos);
     EXPECT(s.find("\"bs\":\"a\\\\b\"") != std::string::npos);
     EXPECT(s.find("\"nl\":\"a\\nb\"") != std::string::npos);
     EXPECT(s.find("\"ctrl\":\"a\\u0001b\"") != std::string::npos);
-    EXPECT(s.find("/api/catalog/images/ds4") != std::string::npos); // '/' not escaped
+    EXPECT(s.find("/api/catalog/images/ds4") != std::string::npos);
     EXPECT(s.find("\xC3\xBC"
-                  "bersetzt") != std::string::npos); // ü kept as UTF-8
+                  "bersetzt") != std::string::npos);
 }
 
 static void test_dump_invalid_utf8_does_not_throw() {
     TEST("jsonDump — invalid UTF-8 degrades to U+FFFD instead of throwing");
     JsonOut j;
-    j["name"] = std::string("bad\xff\xfe"); // lone high bytes — not valid UTF-8
+    j["name"] = std::string("bad\xff\xfe");
     std::string s;
     bool threw = false;
     try {
@@ -118,7 +111,6 @@ static void test_dump_invalid_utf8_does_not_throw() {
     } catch (...) { threw = true; }
     EXPECT(!threw);
     EXPECT(!s.empty());
-    // The result is still parseable JSON.
     Json round;
     EXPECT(jsonParse(s, round));
 }

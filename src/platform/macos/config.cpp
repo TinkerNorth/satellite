@@ -20,8 +20,6 @@ static std::string appSupportDir() {
 
 std::string configPath() { return appSupportDir() + "/config.json"; }
 
-// XML entity escaping for the launchd plist below — a path with '&' or '<' would
-// otherwise produce a malformed plist.
 static std::string xmlEscape(const std::string& s) {
     std::string out;
     out.reserve(s.size());

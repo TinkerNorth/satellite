@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-
-// Parses the GitHub Releases API subset we consume (tolerant: unknown keys are
-// ignored, missing/null fields fall back to struct defaults). Backed by
-// nlohmann/json via core/json.h.
 #pragma once
 
 #include <cstdint>

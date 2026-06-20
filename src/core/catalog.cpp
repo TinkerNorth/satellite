@@ -17,8 +17,6 @@ std::string toLower(const std::string& s) {
     return out;
 }
 
-// Localized lookup against already-parsed catalogs: locale value if present and
-// non-empty, then English, then the key itself as a visible missing-string marker.
 std::string catalogStringFrom(const Json& lang, const Json& en, const std::string& key) {
     std::string v = jsonStr(lang, key.c_str());
     if (!v.empty()) return v;
@@ -113,8 +111,6 @@ JsonOut featureJson(bool supported, const std::string& requires_ = "") {
     return j;
 }
 
-// featureJson + an explicit `modes` array of protocol-constant slugs: the client
-// reads offered modes rather than inferring them from the type id.
 JsonOut featureJsonModes(bool supported, JsonOut modes) {
     JsonOut j;
     j["supported"] = supported;
