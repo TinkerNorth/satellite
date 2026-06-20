@@ -60,8 +60,8 @@ struct UpdateInfo {
     std::string assetName;
     std::string assetUrl;
     uint64_t assetSize = 0;
-    std::string assetSha256;      // hex; "" if SHA256SUMS missing/skipped
-    std::string releaseNotes;     // truncated markdown body (<= 8 KB)
+    std::string assetSha256;  // hex; "" if SHA256SUMS missing/skipped
+    std::string releaseNotes; // truncated markdown body (<= 8 KB)
     std::string htmlUrl;
     int64_t publishedAtEpoch = 0; // unix seconds
     InstallMethod installMethod = InstallMethod::SelfInstall;
