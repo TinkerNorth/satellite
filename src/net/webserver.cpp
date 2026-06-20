@@ -19,9 +19,13 @@
 #include "local_iface.h"
 #include "mdns_protocol.h"
 #include "origin_guard.h"
+#include "status_json.h"
 
 #include <sodium.h>
 
+using satellite::buildDebugJson;
+using satellite::buildSseStatusObject;
+using satellite::buildStatusJson;
 using satellite::Json;
 using satellite::jsonBool;
 using satellite::jsonDump;
@@ -32,6 +36,7 @@ using satellite::jsonParse;
 using satellite::jsonStr;
 using satellite::jsonTryBool;
 using satellite::jsonTryInt;
+using satellite::StatusFields;
 
 // Parse a request body into a JSON object, tolerating malformed/empty input by
 // returning an empty object — accessors then fall back to defaults, preserving
@@ -764,29 +769,21 @@ void adminHttpThread(SessionService& svc) {
             ia.s_addr = ipRaw;
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
-        JsonOut backend = backendJsonObj(probeBackend());
-        bool backendUp = svc.isBackendAvailable();
-        int udpPort, webPort;
-        bool autoStart, broadcast;
+        StatusFields f;
+        f.backend = backendJsonObj(probeBackend());
+        f.backendAvailable = svc.isBackendAvailable();
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
-            udpPort = g_config.udpPort;
-            webPort = g_config.webPort;
-            autoStart = g_config.autoStart;
-            broadcast = g_config.discoveryBroadcastEnabled;
+            f.udpPort = g_config.udpPort;
+            f.webPort = g_config.webPort;
+            f.autoStart = g_config.autoStart;
+            f.discoveryBroadcastEnabled = g_config.discoveryBroadcastEnabled;
         }
-        JsonOut j;
-        j["listening"] = g_listening.load();
-        j["packets"] = static_cast<uint64_t>(g_packetCount.load());
-        j["senderIP"] = senderIP;
-        j["udpPort"] = udpPort;
-        j["webPort"] = webPort;
-        j["autoStart"] = autoStart;
-        j["discoveryBroadcastEnabled"] = broadcast;
-        j["mdnsResponderActive"] = g_mdnsResponderActive.load();
-        j["backendAvailable"] = backendUp;
-        j["backend"] = std::move(backend);
-        res.set_content(jsonDump(j), "application/json");
+        f.listening = g_listening.load();
+        f.packets = static_cast<uint64_t>(g_packetCount.load());
+        f.senderIP = senderIP;
+        f.mdnsResponderActive = g_mdnsResponderActive.load();
+        res.set_content(buildStatusJson(f), "application/json");
     });
 
     g_httpServer.Get("/api/netinfo", [](const httplib::Request&, httplib::Response& res) {
@@ -1054,27 +1051,23 @@ void adminHttpThread(SessionService& svc) {
             inet_ntop(AF_INET, &ia, senderIP, sizeof(senderIP));
         }
         uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed);
-        JsonOut backend = backendJsonObj(probeBackend());
-        bool backendUp = svc.isBackendAvailable();
-        int udpPort;
+        StatusFields f;
+        f.backend = backendJsonObj(probeBackend());
+        f.backendAvailable = svc.isBackendAvailable();
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
-            udpPort = g_config.udpPort;
+            f.udpPort = g_config.udpPort;
         }
-        JsonOut j;
-        j["listening"] = g_listening.load();
-        j["packets"] = static_cast<uint64_t>(g_packetCount.load());
-        j["submitOk"] = static_cast<uint64_t>(g_submitOk.load());
-        j["submitFail"] = static_cast<uint64_t>(g_submitFail.load());
-        j["lastLoopUs"] = static_cast<uint64_t>(g_lastLoopUs.load());
-        j["maxLoopUs"] = maxUs;
-        j["senderIP"] = senderIP;
-        j["udpPort"] = udpPort;
-        j["decryptFail"] = static_cast<uint64_t>(g_decryptFail.load());
-        j["replayDrop"] = static_cast<uint64_t>(g_replayDrop.load());
-        j["backendAvailable"] = backendUp;
-        j["backend"] = std::move(backend);
-        res.set_content(jsonDump(j), "application/json");
+        f.listening = g_listening.load();
+        f.packets = static_cast<uint64_t>(g_packetCount.load());
+        f.submitOk = static_cast<uint64_t>(g_submitOk.load());
+        f.submitFail = static_cast<uint64_t>(g_submitFail.load());
+        f.lastLoopUs = static_cast<uint64_t>(g_lastLoopUs.load());
+        f.maxLoopUs = maxUs;
+        f.senderIP = senderIP;
+        f.decryptFail = static_cast<uint64_t>(g_decryptFail.load());
+        f.replayDrop = static_cast<uint64_t>(g_replayDrop.load());
+        res.set_content(buildDebugJson(f), "application/json");
     });
 
     g_httpServer.Get("/api/connections", [&svc](const httplib::Request&, httplib::Response& res) {
@@ -1164,32 +1157,26 @@ void adminHttpThread(SessionService& svc) {
                         logSeqNow = g_logSeq;
                     }
 
-                    bool backendUp = svc.isBackendAvailable();
-                    JsonOut backend = backendJsonObj(probeBackend());
-                    int udpPort;
-                    bool autoStart;
+                    StatusFields f;
+                    f.backendAvailable = svc.isBackendAvailable();
+                    f.backend = backendJsonObj(probeBackend());
                     {
                         std::lock_guard<std::mutex> lk(g_configMtx);
-                        udpPort = g_config.udpPort;
-                        autoStart = g_config.autoStart;
+                        f.udpPort = g_config.udpPort;
+                        f.autoStart = g_config.autoStart;
                     }
-                    JsonOut status;
-                    status["listening"] = g_listening.load();
-                    status["packets"] = static_cast<uint64_t>(g_packetCount.load());
-                    status["senderIP"] = senderIP;
-                    status["udpPort"] = udpPort;
-                    status["autoStart"] = autoStart;
-                    status["backendAvailable"] = backendUp;
-                    status["backend"] = std::move(backend);
-                    status["submitOk"] = static_cast<uint64_t>(g_submitOk.load());
-                    status["submitFail"] = static_cast<uint64_t>(g_submitFail.load());
-                    status["lastLoopUs"] = static_cast<uint64_t>(g_lastLoopUs.load());
-                    status["decryptFail"] = static_cast<uint64_t>(g_decryptFail.load());
-                    status["replayDrop"] = static_cast<uint64_t>(g_replayDrop.load());
-                    status["logSeq"] = logSeqNow;
+                    f.listening = g_listening.load();
+                    f.packets = static_cast<uint64_t>(g_packetCount.load());
+                    f.senderIP = senderIP;
+                    f.submitOk = static_cast<uint64_t>(g_submitOk.load());
+                    f.submitFail = static_cast<uint64_t>(g_submitFail.load());
+                    f.lastLoopUs = static_cast<uint64_t>(g_lastLoopUs.load());
+                    f.decryptFail = static_cast<uint64_t>(g_decryptFail.load());
+                    f.replayDrop = static_cast<uint64_t>(g_replayDrop.load());
+                    f.logSeq = logSeqNow;
 
                     std::string event = "event: status\ndata: ";
-                    event += jsonDump(status);
+                    event += jsonDump(buildSseStatusObject(f));
                     event += "\n\n";
 
                     event += "event: connections\ndata: ";
