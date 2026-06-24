@@ -12,8 +12,10 @@ on:
 # Builds release artifacts on all three target platforms in parallel:
 #
 #   * Windows: builds satellite.exe under MSVC + vcpkg (hardened: CFG + CET +
-#     Spectre), then runs Inno Setup to produce SatelliteSetup.exe. Code-signed
-#     if WIN_SIGN_CERT_BASE64 + WIN_SIGN_PASSWORD are set.
+#     Spectre), then runs Inno Setup to produce SatelliteSetup.exe. Both the
+#     exe and the installer are Authenticode-signed via Azure Artifact
+#     Signing (keyless OIDC) when the AZURE_* secrets are set — see
+#     docs/code-signing.md for the one-time onboarding.
 #   * macOS:   builds the *stub* satellite.app (no virtual gamepad — see
 #     README "How it works"). Codesigned + notarized if Developer ID secrets
 #     are set.
@@ -32,6 +34,8 @@ on:
 #   anchore/scan-action             @ v7.4.0  → e1165082ffb1fe366ebaf02d8526e7c4989ea9d2
 #   github/codeql-action            @ v4.35.4 → 68bde559dea0fdcac2102bfdf6230c5f70eb485e
 #   softprops/action-gh-release     @ v3.0.0  → b4309332981a82ec1c5618f44dd2e27cc8bfbfda
+#   azure/login                     @ v2.3.0  → a457da9ea143d694b1b9c7c869ebb04ebe844ef5
+#   azure/artifact-signing-action   @ v2.0.0  → c7ab2a863ab5f9a846ddb8265964877ef296ee82
 #   slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml
 #                                   @ v2.1.0  → f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
 #
@@ -77,8 +81,12 @@ jobs:
     steps:
       - name: Verify required signing secrets are present for tagged releases
         env:
-          WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
-          WIN_SIGN_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_SIGN_ENDPOINT: ${{ secrets.AZURE_SIGN_ENDPOINT }}
+          AZURE_SIGN_ACCOUNT: ${{ secrets.AZURE_SIGN_ACCOUNT }}
+          AZURE_SIGN_PROFILE: ${{ secrets.AZURE_SIGN_PROFILE }}
           DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
           DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -102,8 +110,12 @@ jobs:
               ;;
           esac
           missing=()
-          [ -z "${WIN_SIGN_CERT_BASE64:-}" ] && missing+=("WIN_SIGN_CERT_BASE64")
-          [ -z "${WIN_SIGN_PASSWORD:-}" ] && missing+=("WIN_SIGN_PASSWORD")
+          [ -z "${AZURE_TENANT_ID:-}" ] && missing+=("AZURE_TENANT_ID")
+          [ -z "${AZURE_CLIENT_ID:-}" ] && missing+=("AZURE_CLIENT_ID")
+          [ -z "${AZURE_SUBSCRIPTION_ID:-}" ] && missing+=("AZURE_SUBSCRIPTION_ID")
+          [ -z "${AZURE_SIGN_ENDPOINT:-}" ] && missing+=("AZURE_SIGN_ENDPOINT")
+          [ -z "${AZURE_SIGN_ACCOUNT:-}" ] && missing+=("AZURE_SIGN_ACCOUNT")
+          [ -z "${AZURE_SIGN_PROFILE:-}" ] && missing+=("AZURE_SIGN_PROFILE")
           [ -z "${DEVELOPER_ID_APPLICATION_CERT_BASE64:-}" ] && missing+=("DEVELOPER_ID_APPLICATION_CERT_BASE64")
           [ -z "${DEVELOPER_ID_PASSWORD:-}" ] && missing+=("DEVELOPER_ID_PASSWORD")
           [ -z "${APPLE_ID:-}" ] && missing+=("APPLE_ID")
@@ -123,8 +135,9 @@ jobs:
     name: Build Windows
     needs: [gates, required-secrets]
     runs-on: windows-latest
+    environment: release
     env:
-      WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
+      AZURE_SIGN_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
     defaults:
       run:
         shell: bash
@@ -148,6 +161,26 @@ jobs:
           cmake --build build-msvc --config Release
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
 
+      - name: Azure login (OIDC, if signing configured)
+        if: ${{ env.AZURE_SIGN_CLIENT_ID != '' }}
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign satellite.exe (Azure Artifact Signing)
+        if: ${{ env.AZURE_SIGN_CLIENT_ID != '' }}
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGN_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGN_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGN_PROFILE }}
+          files: ${{ github.workspace }}\satellite.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       # installer.iss bundles the ViGEmBus driver from redist/, which is not
       # committed -- fetch + hash-verify it first (the documented
       # `pwsh scripts/fetch-redist.ps1 ; iscc installer.iss` recipe).
@@ -167,28 +200,35 @@ jobs:
             throw "iscc did not produce dist/SatelliteSetup.exe"
           }
 
-      - name: Sign installer (if cert configured)
-        if: ${{ env.WIN_SIGN_CERT_BASE64 != '' }}
-        env:
-          WIN_SIGN_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
+      - name: Sign installer (Azure Artifact Signing)
+        if: ${{ env.AZURE_SIGN_CLIENT_ID != '' }}
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGN_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGN_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGN_PROFILE }}
+          files: ${{ github.workspace }}\dist\SatelliteSetup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Authenticode signatures
+        if: ${{ env.AZURE_SIGN_CLIENT_ID != '' }}
         shell: pwsh
         run: |
-          $cert = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
-          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WIN_SIGN_CERT_BASE64))
-          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.0.*\x64\signtool.exe" |
-            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
-            Select-Object -First 1
-          if ($null -eq $signtool) { throw "signtool.exe not found under Windows Kits" }
-          & $signtool.FullName sign /f $cert /p $env:WIN_SIGN_PASSWORD `
-            /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
-            dist/SatelliteSetup.exe
+          foreach ($f in @("satellite.exe", "dist/SatelliteSetup.exe")) {
+            $sig = Get-AuthenticodeSignature $f
+            $sig | Format-List Path, Status, StatusMessage
+            if ($sig.Status -ne 'Valid') { throw "$f Authenticode status is $($sig.Status), expected Valid" }
+            if ($null -eq $sig.TimeStamperCertificate) { throw "$f is signed but not timestamped" }
+          }
 
       - name: Stage
         shell: bash
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           suffix=""
-          if [ -z "${WIN_SIGN_CERT_BASE64:-}" ]; then
+          if [ -z "${AZURE_SIGN_CLIENT_ID:-}" ]; then
             suffix="-unsigned"
           fi
           mkdir -p stage
