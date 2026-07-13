@@ -768,6 +768,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(test_uinput_smoke
         tests/test_uinput_smoke.cpp
         src/platform/linux/config.cpp
+        src/platform/posix/config_posix.cpp
+        src/core/config_io.cpp
         src/platform/linux/globals.cpp
         src/platform/linux/gamepad_adapter.cpp
         src/platform/linux/gamepad_backend.cpp
@@ -776,6 +778,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_include_directories(test_uinput_smoke PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
     )
     target_include_directories(test_uinput_smoke SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
