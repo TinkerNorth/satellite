@@ -91,12 +91,11 @@ std::string randomHex(int bytes) {
 
 std::string randomDigits(int n) {
     std::string out;
-    // randombytes_uniform is rejection-sampled — no modulo bias (unlike % 10).
+    // randombytes_uniform is rejection-sampled: no modulo bias (unlike % 10).
     for (int i = 0; i < n; i++) out += static_cast<char>('0' + randombytes_uniform(10));
     return out;
 }
 
-// PIN state machine surfaced to the dashboard; see PinState in core/types.h.
 static std::mutex g_pinMtx;
 static std::string g_currentPin;
 static std::string g_previousPin;
@@ -133,8 +132,8 @@ static void rotatePinsIfDueLocked() {
 bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     rotatePinsIfDueLocked();
-    // Constant-time compare so a wrong guess can't leak (via timing) how many
-    // leading digits matched. sodium_memcmp needs equal lengths — gate on size.
+    // Constant-time compare so timing can't leak how many leading digits
+    // matched. sodium_memcmp needs equal lengths, so gate on size first.
     auto matches = [&](const std::string& candidate) {
         return !candidate.empty() && pin.size() == candidate.size() &&
                sodium_memcmp(pin.data(), candidate.data(), candidate.size()) == 0;

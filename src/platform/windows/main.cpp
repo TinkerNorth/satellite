@@ -13,13 +13,11 @@
 #include "app_lifecycle.h"
 #include "shell_integration.h"
 
-// Adapters (outbound ports)
 #include "vigem_adapter.h"
 #include "updater_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 
-// Domain services
 #include "core/session_service.h"
 #include "core/update_service.h"
 
@@ -88,15 +86,15 @@ void addrChangeWatcherThread() {
 } // namespace
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
-    // Pre-init hardening — must run before any LoadLibrary / file I/O.
+    // Pre-init hardening: must run before any LoadLibrary/file I/O.
     lifecycle::hardenDllSearchPath();
     lifecycle::applyRuntimeMitigations();
     lifecycle::installCrashHandler();
     lifecycle::registerForRestart();
 
-    // Protocol activation: a toast button launched us with a `satellite-pair:`
-    // URI. Forward it to the already-running instance (which holds the pairing
-    // registry) and exit — a deep link must never start a second copy.
+    // A toast button launched us with a satellite-pair: URI. Forward it to the
+    // already-running instance (which holds the pairing registry) and exit; a
+    // deep link must never start a second copy.
     {
         std::string cmd = lpCmdLine != nullptr ? lpCmdLine : "";
         auto at = cmd.find("satellite-pair:");
@@ -175,8 +173,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // before the user can report a crash.
     lifecycle::startFileLogger();
 
-    // Composition root: wire adapters → service. Session keys are derived via
-    // HKDF (net/session_crypto) — injected so the core stays libsodium-free.
+    // Session keys are derived via HKDF (net/session_crypto), injected so the
+    // core stays libsodium-free.
     ViGEmAdapter vigemAdapter;
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
@@ -190,8 +188,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         std::lock_guard<std::mutex> lk(g_configMtx);
         saveConfig(g_config);
     });
-    // Toast once when an update first appears. Edge-triggered on the
-    // →UpdateAvailable transition so an open settings page doesn't spam.
+    // Toast once when an update first appears. Edge-triggered on the transition
+    // to UpdateAvailable so an open settings page doesn't spam.
     {
         // `static` is load-bearing: the callback captures this by reference and
         // outlives the block (fires from the updater worker until stop() at

@@ -1,29 +1,7 @@
-// ── loaders.js — Three indeterminate progress indicators ─────────────────────
-//
-// Ported verbatim from the design spec in
-// `app-icon/project/app-essentials.jsx` (sections `LoaderSpinner`,
-// `LoaderDots`, `LoaderBar`). Proportions (stroke width, dasharray ratio,
-// dot radius, slider width, timings) are pixel-faithful to the spec; the
-// color is the satellite brand's `--primary` rather than the spec's
-// hard-coded `#8FCFE3` so loaders match the rest of the dashboard.
-//
-// SMIL (`<animate>` / `<animateTransform>`) is used directly — that's what
-// the spec ships and modern browsers parse inline SVG SMIL natively. No
-// animation library, no JS-driven RAF loop.
-//
-// Each function returns an HTML string so it can be dropped into a button
-// or container via `innerHTML +=` / template-literal interpolation. Callers
-// that need a Node can wrap the string with `document.createRange()
-// .createContextualFragment(html).firstElementChild`.
-//
-// Use:
-//   · spinnerSVG() — default. Short, bounded waits (network calls, scans).
-//   · dotsSVG()    — "thinking" states (not used on the dashboard today).
-//   · barSVG()     — whole-pane / area-level loading (SSE reconnect bar).
+// Loaders ported from the design spec (app-icon/project/app-essentials.jsx).
+// SMIL is used directly so there's no animation library or RAF loop. Each
+// function returns an HTML string for innerHTML / template interpolation.
 
-// Indeterminate spinner — partial arc rotating.
-// 64×64 design canvas: stroke 6u, dasharray "50 88" → arc covers ~36% of the
-// ring. 1.2s linear rotation.
 function spinnerSVG(size) {
   const s = (typeof size === 'number') ? size : 16;
   return (
@@ -38,10 +16,6 @@ function spinnerSVG(size) {
   );
 }
 
-// Three pulsing dots — opacity 0.25↔1 and r 4↔6 on a 1.2s cycle, staggered
-// by 0.18s per dot. Kept for parity with the spec; the dashboard does not
-// surface a "thinking" state today, but the loader is exported so any
-// future caller can use it without re-implementing the SMIL.
 function dotsSVG(size) {
   const s = (typeof size === 'number') ? size : 16;
   let dots = '';
@@ -60,9 +34,6 @@ function dotsSVG(size) {
   );
 }
 
-// Indeterminate horizontal bar — 80u-wide slider on a 240u track, 1.4s
-// linear cycle (`x` runs -80 → 240 so the slider enters and exits cleanly).
-// Track opacity 0.22 to match the spec.
 function barSVG(width) {
   const w = (typeof width === 'number') ? width : 240;
   const h = w * (16 / 240);

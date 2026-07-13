@@ -1,6 +1,3 @@
-// ── common.js — Shared utilities: loading overlay, fetch helpers, routing ────
-
-// ── Loading overlay ─────────────────────────────────────────────────────────
 function showLoading() {
   document.getElementById('loading-overlay').classList.add('active');
 }
@@ -9,7 +6,6 @@ function hideLoading() {
   document.getElementById('loading-overlay').classList.remove('active');
 }
 
-// ── Fetch wrapper with loading state ────────────────────────────────────────
 async function api(url, opts = {}) {
   showLoading();
   try {
@@ -31,16 +27,13 @@ async function apiPost(url, body = {}) {
   });
 }
 
-// ── Offline detection & reconnection ────────────────────────────────────────
 let offlinePollingTimer = null;
 let isOffline = false;
-// Remember the last path the user was on before going offline
 let lastPathBeforeOffline = null;
 
 function showOffline() {
   if (isOffline) return;
   isOffline = true;
-  // Stop any active SSE connections
   if (typeof stopSSE === 'function') stopSSE();
   lastPathBeforeOffline = window.location.pathname;
   showView('view-offline');
@@ -53,7 +46,6 @@ function startOfflinePolling() {
     try {
       const r = await fetch('/api/status', { signal: AbortSignal.timeout(3000) });
       if (r.ok) {
-        // Server is back — stop polling and restore the previous view
         stopOfflinePolling();
         isOffline = false;
         const restorePath = lastPathBeforeOffline || '/dashboard';
@@ -61,9 +53,7 @@ function startOfflinePolling() {
         window.history.replaceState({}, '', restorePath);
         route();
       }
-    } catch (e) {
-      // Still offline — keep polling
-    }
+    } catch (e) { /* still offline; keep polling */ }
   }, 3000);
 }
 
@@ -74,7 +64,6 @@ function stopOfflinePolling() {
   }
 }
 
-// ── Routing ─────────────────────────────────────────────────────────────────
 function navigate(path) {
   window.history.pushState({}, '', path);
   route();
@@ -118,8 +107,6 @@ function wireDonatePill() {
   }
 }
 
-// The admin UI is bound to localhost and has no authentication — routing is a
-// straight path → view switch.
 function route() {
   const path = window.location.pathname;
 
@@ -142,7 +129,6 @@ function route() {
   }
 }
 
-// ── HTML escape ─────────────────────────────────────────────────────────────
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -218,12 +204,8 @@ function renderNetInfoPanel(containerId, d) {
   el.innerHTML = html;
 }
 
-// ── Init ────────────────────────────────────────────────────────────────────
-// Defer route() until the i18n catalog is in hand so the init functions
-// (initDashboard / initSettings / initDebug / initLogs) see translated
-// strings on first paint rather than raw keys. If the i18n shim isn't on
-// the page (defensive — it always is via index.html), fall through to the
-// plain DOMContentLoaded path so we don't deadlock on boot.
+// Defer route() until the i18n catalog is loaded so init functions see
+// translated strings on first paint, not raw keys.
 function bootRoute() {
   if (window.i18n && typeof window.i18n.ready === 'function') {
     window.i18n.ready().then(route);

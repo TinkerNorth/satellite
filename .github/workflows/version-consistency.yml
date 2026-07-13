@@ -2,18 +2,16 @@ name: version-consistency
 
 # Fail the build if the three version sources of truth drift apart.
 #
-# /VERSION                — read by CMake (MACOSX_BUNDLE_*, CPACK_PACKAGE_*)
-#                            and by installer.iss at preprocess time.
-# src/core/version.h      — read by C++ and by satellite.rc (via the windres
-#                            preprocessor). Defines SATELLITE_VERSION_STRING /
-#                            SATELLITE_VERSION_MAJOR / _MINOR / _PATCH.
-# installer.iss           — auto-derives MyAppVersion from /VERSION via Inno
-#                            Setup's #FileOpen / #FileRead, so it's already
-#                            covered transitively — we just sanity-check the
-#                            Inno preprocessor line stayed in place.
+# /VERSION            read by CMake (MACOSX_BUNDLE_*, CPACK_PACKAGE_*) and by
+#                     installer.iss at preprocess time.
+# src/core/version.h  read by C++ and by satellite.rc (via the windres
+#                     preprocessor). Defines SATELLITE_VERSION_STRING /
+#                     SATELLITE_VERSION_MAJOR / _MINOR / _PATCH.
+# installer.iss       auto-derives MyAppVersion from /VERSION via Inno Setup's
+#                     #FileOpen / #FileRead, so it's covered transitively; we
+#                     just sanity-check the Inno preprocessor line stayed put.
 #
-# This is a tiny PR-time gate, not a full re-build. We're checking text
-# consistency, not behavior.
+# A PR-time text-consistency gate, not a full re-build.
 
 on:
   pull_request:
@@ -46,7 +44,7 @@ jobs:
           set -euo pipefail
 
           if [ ! -f VERSION ]; then
-            echo "::error::/VERSION is missing — it's the authoritative version string."
+            echo "::error::/VERSION is missing; it's the authoritative version string."
             exit 1
           fi
           ver=$(tr -d '[:space:]' < VERSION)
@@ -82,11 +80,11 @@ jobs:
           # via the Inno preprocessor (rather than a hard-coded literal that
           # would silently outrun the rest of the world).
           if ! grep -q 'FileOpen(SourcePath + "VERSION")' installer.iss; then
-            echo "::error::installer.iss is not reading /VERSION at preprocess time — see the #define MyAppVersion block."
+            echo "::error::installer.iss is not reading /VERSION at preprocess time; see the #define MyAppVersion block."
             fail=1
           fi
           if grep -E '^#define[[:space:]]+MyAppVersion[[:space:]]+"[0-9]' installer.iss >/dev/null; then
-            echo "::error::installer.iss has a hard-coded MyAppVersion literal — should derive from /VERSION."
+            echo "::error::installer.iss has a hard-coded MyAppVersion literal; should derive from /VERSION."
             fail=1
           fi
 

@@ -53,8 +53,7 @@ std::wstring toWide(const std::string& s) {
     return w;
 }
 
-// Escape the five XML entities so a device name can't break the document or
-// inject markup.
+// A device name must not break the document or inject markup.
 std::wstring xmlEscape(const std::wstring& s) {
     std::wstring out;
     out.reserve(s.size());
@@ -90,7 +89,7 @@ bool showActionablePairToast(const std::string& deviceId, const std::string& dev
         xmlEscape(toWide(deviceName.empty() ? std::string("A device") : deviceName));
     const std::wstring ip = xmlEscape(toWide(clientIP));
     const std::wstring wpin = xmlEscape(toWide(pin));
-    const std::wstring wid = toWide(deviceId); // 32 hex chars — no escaping needed
+    const std::wstring wid = toWide(deviceId); // 32 hex chars, no escaping needed
 
     // Body shows the PIN so the operator confirms it by sight before accepting.
     const std::wstring xml = L"<toast activationType=\"protocol\" launch=\"satellite-pair:open\">"
@@ -186,7 +185,7 @@ void handlePairProtocolUri(const std::string& uri) {
     if (uri.rfind(scheme, 0) != 0) return;
     std::string rest = uri.substr(scheme.size()); // "accept/<id>", "reject/<id>", or "open"
     const auto slash = rest.find('/');
-    if (slash == std::string::npos) return; // e.g. the body "open" — nothing to do
+    if (slash == std::string::npos) return; // e.g. the body "open"
     const std::string action = rest.substr(0, slash);
     std::string deviceId = rest.substr(slash + 1);
     while (!deviceId.empty() && (deviceId.back() == '/' || deviceId.back() == ' ' ||

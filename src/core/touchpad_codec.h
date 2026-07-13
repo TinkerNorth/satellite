@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// The MSG_TOUCHPAD wire coordinate is a centre-origin, resolution-independent
-// int16 (-32768 = pad left/top edge, 0 = centre, +32767 = right/bottom edge,
-// +x = right, +y = down). Each backend scales it into its device's space.
+// MSG_TOUCHPAD wire coordinate: centre-origin, resolution-independent int16
+// (-32768 = left/top edge, 0 = centre, +32767 = right/bottom; +x right, +y down).
 #pragma once
 
 #include "types.h"
@@ -10,13 +9,11 @@
 #include <array>
 #include <cstdint>
 
-// DS4 hardware touchpad resolution (native units; packed 12-bit). DualSense is
-// physically larger but DS4 emulation uses the DS4 figures.
+// DS4 hardware touchpad resolution. DualSense is larger but DS4 emulation uses
+// the DS4 figures.
 inline const int DS4_TOUCHPAD_RES_X = 1920;
 inline const int DS4_TOUCHPAD_RES_Y = 943;
 
-// Map a centre-origin wire coordinate (-32768..32767) to a 0-based device
-// coordinate in [0, res-1]. Saturating: out-of-range clamps to the edge.
 inline int touchpadWireToRange(int16_t v, int res) {
     if (res <= 1) return 0;
     const int u = static_cast<int>(v) + 32768; // 0..65535
@@ -26,11 +23,9 @@ inline int touchpadWireToRange(int16_t v, int res) {
     return static_cast<int>(scaled);
 }
 
-// Encode one finger into the DS4_TOUCH slot layout (bIsUpTrackingNumN +
-// bTouchDataN[3]):
-//   [0] tracking byte: bit7 = finger lifted, bits0..6 = tracking id
-//   [1..3] two packed 12-bit coordinates (x then y), DS4 native packing
-// Plain array so the layout is unit-testable without the ViGEm headers.
+// DS4_TOUCH slot layout: [0] = bit7 finger lifted, bits0..6 tracking id;
+// [1..3] two packed 12-bit coords (x then y). Plain array so it's testable
+// without the ViGEm headers.
 inline std::array<uint8_t, 4> ds4PackTouchFinger(const TouchpadFinger& f, uint8_t trackingId) {
     const int x = touchpadWireToRange(f.x, DS4_TOUCHPAD_RES_X);
     const int y = touchpadWireToRange(f.y, DS4_TOUCHPAD_RES_Y);

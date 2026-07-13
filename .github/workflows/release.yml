@@ -14,7 +14,7 @@ on:
 #   * Windows: builds satellite.exe under MSVC + vcpkg (hardened: CFG + CET +
 #     Spectre), then runs Inno Setup to produce SatelliteSetup.exe. Code-signed
 #     if WIN_SIGN_CERT_BASE64 + WIN_SIGN_PASSWORD are set.
-#   * macOS:   builds the *stub* satellite.app (no virtual gamepad — see
+#   * macOS:   builds the *stub* satellite.app (no virtual gamepad; see
 #     README "How it works"). Codesigned + notarized if Developer ID secrets
 #     are set.
 #   * Linux:   builds satellite, packages as .deb and AppImage.
@@ -36,8 +36,8 @@ on:
 #                                   @ v2.1.0  → f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
 #
 # cosign is installed directly from the upstream sigstore/cosign release
-# (see the harden job's env block) rather than via cosign-installer
-# action — keeps the supply-chain surface minimal.
+# (see the harden job's env block) rather than via the cosign-installer
+# action, to keep the supply-chain surface minimal.
 
 permissions:
   contents: write
@@ -92,12 +92,12 @@ jobs:
           # -unsigned artifacts so the pipeline itself is testable without
           # rotating real keys.
           if [ "${{ github.ref_type }}" != "tag" ] || [ "${{ startsWith(github.ref, 'refs/tags/v') }}" != "true" ]; then
-            echo "::notice::Non-tag release run — unsigned fallback permitted."
+            echo "::notice::Non-tag release run; unsigned fallback permitted."
             exit 0
           fi
           case "$GITHUB_REF_NAME" in
             *-*)
-              echo "::warning::Prerelease tag ${GITHUB_REF_NAME} — signing secrets not enforced; unsigned artifacts carry an -unsigned suffix."
+              echo "::warning::Prerelease tag ${GITHUB_REF_NAME}: signing secrets not enforced; unsigned artifacts carry an -unsigned suffix."
               exit 0
               ;;
           esac
@@ -229,7 +229,7 @@ jobs:
         run: |
           if [ -z "${CERT_B64}" ]; then
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Developer ID cert not configured — satellite.app will be uploaded unsigned."
+            echo "::warning::Developer ID cert not configured; satellite.app will be uploaded unsigned."
             exit 0
           fi
           KEYCHAIN="${RUNNER_TEMP}/build.keychain-db"
@@ -267,7 +267,7 @@ jobs:
           brew install --quiet create-dmg
           mkdir -p stage
           # `create-dmg` produces a single mountable disk image with the
-          # bundle pre-placed and a /Applications symlink — the standard
+          # bundle pre-placed and a /Applications symlink: the standard
           # drag-to-Applications experience. The .app inside is already
           # codesigned + notarized + stapled (see the `sign` step above),
           # so the DMG itself only needs to wrap it; Gatekeeper checks
@@ -334,9 +334,9 @@ jobs:
       # Build .deb and .rpm together via CPack. CMakeLists.txt sets
       # CPACK_GENERATOR="DEB;RPM"; the resulting filenames match the
       # historical SatelliteSetup-vX.Y.Z layout: satellite_X.Y.Z_amd64.deb
-      # and satellite-X.Y.Z-1.x86_64.rpm. The old ad-hoc dpkg-deb path is
-      # gone — CPack drives the udev rule + modules-load.d entry + post-
-      # install scriptlet, keeping both formats in lockstep.
+      # and satellite-X.Y.Z-1.x86_64.rpm. CPack drives the udev rule +
+      # modules-load.d entry + post-install scriptlet, keeping both formats
+      # in lockstep.
       - name: Build .deb + .rpm (CPack)
         run: |
           mkdir -p stage
@@ -466,7 +466,7 @@ jobs:
           if [ "${COSIGN_SHA256}" != "TODO_REPLACE_WITH_UPSTREAM_SHA256" ]; then
             echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
           else
-            echo "::warning::COSIGN_SHA256 is unset — replace with the upstream SHA-256 to enforce binary integrity."
+            echo "::warning::COSIGN_SHA256 is unset; replace with the upstream SHA-256 to enforce binary integrity."
           fi
           chmod +x /tmp/cosign
           sudo mv /tmp/cosign /usr/local/bin/cosign
@@ -580,8 +580,8 @@ jobs:
   # apt-publish: regenerate the APT repository at
   # https://tinkernorth.github.io/satellite/debian and commit to
   # gh-pages. Skipped entirely if the GPG signing secret isn't set
-  # (e.g. workflow_dispatch from a fork) — repo metadata that isn't
-  # signed is worse than no repo at all.
+  # (e.g. workflow_dispatch from a fork): unsigned repo metadata is worse
+  # than no repo at all.
   # ─────────────────────────────────────────────────────────────────────
   apt-publish:
     name: Publish APT repository (gh-pages)
@@ -605,7 +605,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
-            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set — skipping APT repo publish."
+            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set; skipping APT repo publish."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -642,8 +642,8 @@ jobs:
             git clone --branch gh-pages --depth 1 \
               "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" pages
           else
-            # First publish — initialize the orphan gh-pages branch with
-            # the landing page and gpg.key already in place.
+            # First publish: initialize the orphan gh-pages branch with the
+            # landing page and gpg.key already in place.
             git clone --depth 1 \
               "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" pages
             git -C pages checkout --orphan gh-pages
@@ -712,7 +712,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
-            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set — skipping DNF repo publish."
+            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set; skipping DNF repo publish."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"

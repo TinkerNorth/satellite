@@ -19,8 +19,8 @@ void ClientAdapter::updateClientAddr(uint32_t token, const std::string& ip, uint
 }
 
 void ClientAdapter::updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) {
-    // ipv4NetworkOrder is already network byte order, so drop it straight in;
-    // avoids the string overload's heap allocation on the hot receive path.
+    // Already network byte order, so drop it straight in; avoids the string
+    // overload's heap allocation on the hot receive path.
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);

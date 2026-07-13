@@ -2,8 +2,8 @@ name: CodeQL
 
 # Source-level static analysis for satellite (C++ only).
 #
-# `cpp` covers all three platform builds — the matrix below picks the
-# Linux build because it's the cheapest and exercises the full set of
+# `cpp` covers all three platform builds. The matrix below picks the Linux
+# build because it's the cheapest and exercises the full set of
 # core/net/adapters/platform sources via the Linux platform target.
 #
 # Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
@@ -59,7 +59,7 @@ jobs:
       - name: Build (Release, tray enabled)
         # Standard private-repo runners are 2 vCPU / 7 GB. An unbounded `-j`
         # reads the host core count (not the cgroup cap) and oversubscribes,
-        # and CodeQL's extractor multiplies per-compile memory — together they
+        # and CodeQL's extractor multiplies per-compile memory; together they
         # OOM-reclaim the runner (SIGTERM / exit 143). Pin `-j 2` and build only
         # the `satellite` target: it already compiles every core/net/adapters/
         # platform source CodeQL needs to analyze, while skipping the test
@@ -71,8 +71,8 @@ jobs:
       - name: Perform CodeQL analysis
         # SARIF upload requires GitHub Advanced Security on private repos.
         # `continue-on-error` keeps the analysis running and surfacing
-        # findings in the logs while GHAS enablement is still pending —
-        # see HANDOFF.md item 5.
+        # findings in the logs while GHAS enablement is still pending
+        # (see HANDOFF.md item 5).
         continue-on-error: true
         uses: github/codeql-action/analyze@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
         with:

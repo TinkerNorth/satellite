@@ -31,6 +31,17 @@ the 90-day freshness window.
 - Notes: vendored as a single header. No local modifications. Used by
   `src/net/webserver.cpp` only.
 
+## nlohmann/json (`lib/nlohmann/json.hpp`)
+
+- Component: nlohmann/json
+- Upstream: https://github.com/nlohmann/json
+- Pinned-commit: v3.11.3
+- Last-vendored: 2026-06-19
+- License: MIT
+- Notes: vendored as the single-header amalgamation. No local modifications.
+  Used project-wide via `src/core/json.h` for response building and request /
+  config / GitHub-API parsing.
+
 ## libsodium (`lib/libsodium/`)
 
 - Component: jedisct1/libsodium

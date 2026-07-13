@@ -72,7 +72,7 @@ static SatelliteTrayTarget* g_target = nil;
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    // Updater — label tracks state. Disabled while in flight.
+    // Label tracks state. Disabled while in flight.
     NSString* updateTitle = @"Check for Updates…";
     BOOL updateEnabled = (g_updateService != nullptr);
     if (g_updateService) {
@@ -116,9 +116,8 @@ static SatelliteTrayTarget* g_target = nil;
     return YES;
 }
 
-// Clicking the notification opens the Accept/Reject alert. The alert shows the
-// dish's PIN so the operator can confirm it matches the device — that visual
-// match is the auth (see net/pairing.h).
+// The Accept/Reject alert shows the dish's PIN so the operator confirms it
+// matches the device; that visual match is the auth (see net/pairing.h).
 - (void)userNotificationCenter:(NSUserNotificationCenter*)center
        didActivateNotification:(NSUserNotification*)notification {
     [center removeDeliveredNotification:notification];

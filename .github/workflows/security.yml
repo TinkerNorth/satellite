@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f lib/VENDORED.md ]; then
-            echo "::error::lib/VENDORED.md is missing — vendored components must be inventoried."
+            echo "::error::lib/VENDORED.md is missing; vendored components must be inventoried."
             exit 1
           fi
           # Each component block must contain a `Last-vendored: YYYY-MM-DD` line.

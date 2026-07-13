@@ -6,7 +6,7 @@
 #include "core/version.h"
 
 #include <curl/curl.h>
-#include <sodium.h> // crypto_hash_sha256 — already linked
+#include <sodium.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -21,9 +21,6 @@
 #include <unistd.h>
 
 namespace {
-
-// libcurl is linked directly (not dlopen'd): every desktop distro ships it as a
-// base package.
 
 struct CurlWriteCtx {
     std::string* str = nullptr;
@@ -54,7 +51,7 @@ struct ProgressCtx {
 
 int xferInfoCb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* ctx = static_cast<ProgressCtx*>(clientp);
-    if (ctx->cancel && ctx->cancel->load()) return 1; // abort
+    if (ctx->cancel && ctx->cancel->load()) return 1;
     if (ctx->cb) ctx->cb(static_cast<uint64_t>(dlnow), static_cast<uint64_t>(dltotal));
     return 0;
 }
@@ -81,7 +78,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeStringCb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &ctx);
-    // TLS verification ON — explicit for the security-sensitive updater path.
+    // Explicit TLS verification for the security-sensitive updater path.
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
 
@@ -236,14 +233,13 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
 } // namespace
 
 LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const {
-    // AppImage runtime guarantees $APPIMAGE — most reliable, check first.
+    // AppImage runtime guarantees $APPIMAGE; most reliable, check first.
     if (const char* env = std::getenv("APPIMAGE"); env != nullptr && env[0] != '\0') {
         struct stat st;
         if (stat(env, &st) == 0) return InstallType::AppImage;
     }
 
-    // Otherwise key off filesystem artefacts rather than spawning dpkg/rpm/pacman
-    // (slow, not always present).
+    // Key off filesystem artefacts rather than spawning dpkg/rpm/pacman.
     char buf[PATH_MAX];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n > 0) {
@@ -258,8 +254,7 @@ LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const 
         }
 
         if (p == "/usr/bin/satellite" || p == "/usr/local/bin/satellite") {
-            // Discriminate dpkg vs rpm by which package DB exists (both can
-            // coexist, but only one installed this binary).
+            // Discriminate dpkg vs rpm by which package DB exists.
             const bool hasDpkg = (stat("/var/lib/dpkg/status", &st) == 0);
             const bool hasRpm = (stat("/var/lib/rpm", &st) == 0);
             if (hasRpm && !hasDpkg) return InstallType::Rpm;
@@ -361,8 +356,7 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
             return false;
         }
         method = InstallMethod::Manual;
-        // Correct for both APT-repo users and local `dpkg -i` users once they've
-        // added the repo (per the install instructions site).
+        // Correct once the APT repo is added (per the install instructions).
         manual = "sudo apt update && sudo apt install --only-upgrade satellite";
         break;
     case InstallType::Rpm:
@@ -374,9 +368,8 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         manual = "sudo dnf upgrade --refresh satellite";
         break;
     case InstallType::Aur:
-        // The AUR -bin package wraps the AppImage; we surface its metadata only
-        // for release notes (never download it) and tell the user to use their
-        // AUR helper.
+        // AUR -bin wraps the AppImage; surface metadata for release notes only,
+        // never download it; user upgrades via their AUR helper.
         if (!pickAppImageAsset(pick, asset)) {
             outError = "No AppImage asset in release " + pick.tagName;
             return false;
@@ -426,7 +419,6 @@ bool LinuxUpdaterAdapter::downloadArtifact(
         const char* home = std::getenv("HOME");
         dir = std::string(home ? home : "/tmp") + "/.cache/satellite/updates";
     }
-    // Best-effort `mkdir -p`.
     for (size_t i = 1; i < dir.size(); i++) {
         if (dir[i] == '/') {
             dir[i] = '\0';
@@ -460,7 +452,7 @@ bool LinuxUpdaterAdapter::verifyArtifact(const std::string& localPath, const Upd
 bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
                                       std::string& outError) {
     if (info.installMethod == InstallMethod::Manual) {
-        // Nothing to do: the UI surfaces manualInstruction and hides "Install".
+        // UI surfaces manualInstruction and hides "Install"; nothing to do here.
         return true;
     }
     if (installType_ != InstallType::AppImage) {
@@ -510,7 +502,6 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
     ::fchmod(fd, 0700);
     ::close(fd);
 
-    // Fork+exec the helper, then signal a clean shutdown.
     pid_t child = fork();
     if (child < 0) {
         outError = std::string("fork failed: ") + std::strerror(errno);

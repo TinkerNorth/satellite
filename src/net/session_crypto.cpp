@@ -27,7 +27,7 @@ int hexNibbleAt(char c) {
 void deriveSessionKey(const uint8_t pairingKey[CRYPTO_KEY_SIZE],
                       const uint8_t sessionSalt[SESSION_SALT_SIZE], uint32_t token,
                       uint8_t outSessionKey[CRYPTO_KEY_SIZE]) {
-    // RFC 5869: PRK = HMAC(salt, IKM); OKM(32) = T1 = HMAC(PRK, info || 0x01).
+    // RFC 5869: PRK = HMAC(salt, IKM); OKM(32) = T1 = HMAC(PRK, info | 0x01).
     uint8_t prk[crypto_auth_hmacsha256_BYTES];
     hmacSha256(sessionSalt, SESSION_SALT_SIZE, pairingKey, CRYPTO_KEY_SIZE, prk);
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Only AppImage self-installs (swap-and-re-exec); deb/rpm/aur are Manual because
 // self-replacing would break the package manager's bookkeeping. Install type is
-// detected at construction and drives platformId(). See docs/architecture.md.
+// detected at construction and drives platformId().
 #pragma once
 
 #include "core/ports.h"

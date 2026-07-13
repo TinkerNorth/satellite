@@ -36,7 +36,7 @@ size_t writeDnsName(uint8_t* out, size_t outCap, const std::string& dottedName) 
         if (j == std::string::npos) j = dottedName.size();
         const size_t labelLen = j - i;
         if (labelLen > 63) return 0; // RFC 1035 hard limit
-        if (labelLen == 0) break;    // trailing dot — write terminator and stop
+        if (labelLen == 0) break;    // trailing dot: write terminator and stop
         if (pos + 1 + labelLen > outCap) return 0;
         out[pos++] = static_cast<uint8_t>(labelLen);
         std::memcpy(out + pos, dottedName.data() + i, labelLen);
@@ -52,9 +52,9 @@ size_t readDnsName(const uint8_t* packet, size_t packetLen, size_t offset, std::
     outName.clear();
     if (packet == nullptr) return 0;
     size_t pos = offset;
-    size_t consumedBeforeJump = 0; // bytes consumed at the call site (before any compression jump)
+    size_t consumedBeforeJump = 0; // bytes consumed before any compression jump
     bool jumped = false;
-    int safety = 64; // labels per name — hard cap so a malformed compression loop can't hang us
+    int safety = 64; // hard cap so a malformed compression loop can't hang us
 
     while (safety-- > 0) {
         if (pos >= packetLen) return 0;
@@ -69,7 +69,7 @@ size_t readDnsName(const uint8_t* packet, size_t packetLen, size_t offset, std::
             return consumedBeforeJump;
         }
         if ((b & 0xC0) == 0xC0) {
-            // Compression pointer — 2 bytes total, target is the low 14 bits.
+            // Compression pointer: 2 bytes total, target is the low 14 bits.
             if (pos + 1 >= packetLen) return 0;
             const uint16_t target =
                 (static_cast<uint16_t>(b & 0x3F) << 8) | static_cast<uint16_t>(packet[pos + 1]);
@@ -153,17 +153,16 @@ bool parseAnswerSection(const uint8_t* data, size_t len, uint16_t count,
         const uint16_t rdlen = readBE16(data + pos + 8);
         pos += 10;
         if (pos + rdlen > len) return false; // rdata overruns the packet
-        pos += rdlen;                        // skip rdata — identity is name+type
+        pos += rdlen;                        // skip rdata; identity is name+type
         knownAnswers.push_back(std::move(a));
     }
     return true;
 }
 
-// Rewrite raw on-wire rdata into the canonical form RFC 6762 §8.2 requires for
-// the tiebreak: embedded DNS names decompressed. SRV (name at rdata offset 6,
-// after priority/weight/port) and PTR (a bare name) are expanded against the
-// whole packet; A/TXT and any other type are copied verbatim (already name-free).
-// Returns false if an embedded name fails to decode.
+// Rewrite raw on-wire rdata into the canonical form RFC 6762 §8.2 tiebreak
+// requires: embedded DNS names decompressed. SRV (name after
+// priority/weight/port) and PTR (a bare name) are expanded against the whole
+// packet; A/TXT and others are copied verbatim. False if a name fails to decode.
 bool canonicalizeAuthorityRdata(const uint8_t* data, size_t len, uint16_t type, size_t rdataStart,
                                 uint16_t rdlen, std::vector<uint8_t>& out) {
     out.clear();
@@ -190,7 +189,7 @@ bool canonicalizeAuthorityRdata(const uint8_t* data, size_t len, uint16_t type, 
         out.insert(out.end(), nameBuf, nameBuf + n);
         return true;
     }
-    // A, TXT, and anything else: rdata is already name-free → copy verbatim.
+    // A, TXT, and anything else: rdata is already name-free, copy verbatim.
     out.insert(out.end(), data + rdataStart, data + rdataStart + rdlen);
     return true;
 }
@@ -215,7 +214,7 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Qu
     // Answer section precedes authority on the wire; walk it to reach authority.
     if (!parseAnswerSection(data, len, header.anCount, knownAnswers, pos)) return false;
 
-    // Authority section — a probe's proposed unique records (RFC 6762 §8.1):
+    // Authority section: a probe's proposed unique records (RFC 6762 §8.1):
     // name + type(2) + class(2) + ttl(4) + rdlength(2) + rdata. rdata IS
     // retained, canonicalised (names uncompressed) for the §8.2 tiebreak.
     for (uint16_t i = 0; i < header.nsCount; ++i) {
@@ -241,8 +240,8 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Qu
 
 bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std::string& recordName,
                              uint16_t recordType, uint32_t ourTtl) {
-    // Case-insensitive name compare — DNS labels are case-insensitive
-    // (RFC 1035 §2.3.3); Bonjour/Avahi may capitalise differently.
+    // DNS labels are case-insensitive (RFC 1035 §2.3.3); Bonjour/Avahi may
+    // capitalise differently.
     auto nameEqual = [](const std::string& x, const std::string& y) {
         if (x.size() != y.size()) return false;
         for (size_t i = 0; i < x.size(); ++i) {
@@ -255,9 +254,8 @@ bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std:
     for (const auto& a : knownAnswers) {
         if (a.type != recordType) continue;
         if (!nameEqual(a.name, recordName)) continue;
-        // RFC 6762 §7.1: suppress only if the querier's copy is at least
-        // half as fresh as ours. A querier reporting a near-expired TTL
-        // still wants the record refreshed. Compare without overflow.
+        // RFC 6762 §7.1: suppress only if the querier's copy is at least half as
+        // fresh as ours. A near-expired TTL still wants the record refreshed.
         if (a.ttl >= ourTtl / 2) return true;
     }
     return false;
@@ -265,8 +263,8 @@ bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std:
 
 bool questionMatchesService(const Question& question) {
     if (question.type != TYPE_PTR && question.type != TYPE_ANY) return false;
-    // Case-insensitive compare against SERVICE_TYPE_DOMAIN — DNS labels are
-    // case-insensitive, and Bonjour/Avahi sometimes capitalise differently.
+    // DNS labels are case-insensitive, and Bonjour/Avahi sometimes capitalise
+    // differently.
     const std::string& a = question.name;
     const char* b = SERVICE_TYPE_DOMAIN;
     size_t i = 0;
@@ -413,7 +411,7 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
 }
 
 size_t encodeAnnouncement(uint8_t* out, size_t outCap, const ResponseInputs& inputs) {
-    // RFC 6762 §8.3 — wire-identical to a query response with txId 0 and no
+    // RFC 6762 §8.3: wire-identical to a query response with txId 0 and no
     // suppression. Reuse encodeResponse so the paths can't diverge.
     ResponseInputs ann = inputs;
     ann.goodbye = false;
@@ -425,7 +423,7 @@ size_t encodeAnnouncement(uint8_t* out, size_t outCap, const ResponseInputs& inp
 }
 
 // Write one authority-section RR (RFC 6762 §8.1 probe): header + rdata, then
-// finalise rdlength. `cls` is verbatim — a probe carries IN, cache-flush clear.
+// finalise rdlength. `cls` is verbatim: a probe carries IN, cache-flush clear.
 namespace {
 bool writeAuthorityRecord(uint8_t* out, size_t outCap, size_t& pos, const std::string& name,
                           uint16_t type, uint16_t cls, uint32_t ttl, const uint8_t* rdata,
@@ -441,7 +439,7 @@ bool writeAuthorityRecord(uint8_t* out, size_t outCap, size_t& pos, const std::s
 } // namespace
 
 size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& inputs) {
-    // RFC 6762 §8.1 — a probe is a query with one ANY question for the claimed
+    // RFC 6762 §8.1: a probe is a query with one ANY question for the claimed
     // name plus the proposed unique records in the authority section (for the
     // §8.2 tiebreak). Proposed set: SRV + TXT, +A when an IPv4 is known.
     if (out == nullptr || outCap < 12) return 0;
@@ -450,34 +448,34 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     const std::string hostFqdn = inputs.hostName + ".local.";
 
     const std::vector<ProbeRecord> proposed = buildProposedRecords(inputs);
-    if (proposed.empty()) return 0; // SRV + TXT are always present — defensive
+    if (proposed.empty()) return 0; // SRV + TXT are always present; defensive
 
     size_t pos = 0;
-    putBE16(out + pos, 0); // transaction ID — 0 for mDNS
+    putBE16(out + pos, 0); // transaction ID: 0 for mDNS
     pos += 2;
-    putBE16(out + pos, 0); // flags — a plain query (QR=0)
+    putBE16(out + pos, 0); // flags: a plain query (QR=0)
     pos += 2;
-    putBE16(out + pos, 1); // QDCOUNT — the single ANY question
+    putBE16(out + pos, 1); // QDCOUNT: the single ANY question
     pos += 2;
     putBE16(out + pos, 0); // ANCOUNT
     pos += 2;
-    putBE16(out + pos, static_cast<uint16_t>(proposed.size())); // NSCOUNT — proposed records
+    putBE16(out + pos, static_cast<uint16_t>(proposed.size())); // NSCOUNT: proposed records
     pos += 2;
     putBE16(out + pos, 0); // ARCOUNT
     pos += 2;
 
     // Question: instance FQDN, type ANY, QU bit set (CACHE_FLUSH_BIT in a
-    // question's class) — §8.1 probe questions SHOULD be QU.
+    // question's class); §8.1 probe questions SHOULD be QU.
     const size_t qn = writeDnsName(out + pos, outCap - pos, instanceFqdn);
     if (qn == 0) return 0;
     pos += qn;
     if (pos + 4 > outCap) return 0;
     putBE16(out + pos, TYPE_ANY);                       // everything held under this name
-    putBE16(out + pos + 2, CLASS_IN | CACHE_FLUSH_BIT); // QU bit set → unicast response
+    putBE16(out + pos + 2, CLASS_IN | CACHE_FLUSH_BIT); // QU bit set: unicast response
     pos += 4;
 
-    // Authority: proposed records, class IN with cache-flush bit CLEAR — that
-    // bit is a response-side directive, meaningless in a query's authority.
+    // Authority: proposed records, class IN with cache-flush bit CLEAR; that bit
+    // is a response-side directive, meaningless in a query's authority.
     for (const auto& r : proposed) {
         if (!writeAuthorityRecord(out, outCap, pos, r.name, r.type, CLASS_IN, r.ttl, r.rdata.data(),
                                   r.rdata.size()))
@@ -533,7 +531,7 @@ std::vector<ProbeRecord> buildProposedRecords(const ResponseInputs& inputs) {
         }
         recs.push_back(std::move(txt));
     }
-    // A: 4 raw address bytes — only when the host owns a usable IPv4.
+    // A: 4 raw address bytes, only when the host owns a usable IPv4.
     if (inputs.ipv4 != nullptr) {
         ProbeRecord a;
         a.name = hostFqdn;

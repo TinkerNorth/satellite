@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-apt-repo.sh — regenerate the APT repository tree under a given
+# build-apt-repo.sh: regenerate the APT repository tree under a given
 # pages directory, then GPG-sign the result.
 #
 # The repo layout we produce (rooted at $PAGES_DIR):
@@ -27,7 +27,7 @@ COMPONENT="main"
 ARCH="amd64"
 ORIGIN="${SATELLITE_APT_ORIGIN:-TinkerNorth}"
 LABEL="${SATELLITE_APT_LABEL:-Satellite}"
-DESCRIPTION="Satellite — Linux package repository"
+DESCRIPTION="Satellite Linux package repository"
 
 if [ -z "$PAGES_DIR" ] || [ -z "$STAGING_DIR" ]; then
     echo "Usage: $0 <pages-dir> <release-staging-dir>" >&2
@@ -38,7 +38,7 @@ if [ -z "${GPG_KEY_ID:-}" ]; then
     exit 2
 fi
 if ! command -v apt-ftparchive >/dev/null 2>&1; then
-    echo "apt-ftparchive not found — install apt-utils." >&2
+    echo "apt-ftparchive not found; install apt-utils." >&2
     exit 2
 fi
 
