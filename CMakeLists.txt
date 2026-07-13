@@ -758,6 +758,42 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME linux_platform COMMAND test_linux_platform)
+
+    # Real-kernel uinput smoke test: plugs virtual pads through the production
+    # adapter and reads them back from /dev/input as a game would, including
+    # the FF_RUMBLE upload → rumble-callback round trip. Needs a writable
+    # /dev/uinput plus permission to open the created event nodes; exits 77
+    # when either is missing so ctest reports "skipped" (CI runs it via sudo
+    # after `modprobe uinput`, dev machines without the module skip cleanly).
+    add_executable(test_uinput_smoke
+        tests/test_uinput_smoke.cpp
+        src/platform/linux/config.cpp
+        src/platform/posix/config_posix.cpp
+        src/core/config_io.cpp
+        src/platform/linux/globals.cpp
+        src/platform/linux/gamepad_adapter.cpp
+        src/platform/linux/gamepad_backend.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    target_include_directories(test_uinput_smoke PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
+    )
+    target_include_directories(test_uinput_smoke SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+    target_compile_definitions(test_uinput_smoke PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+    )
+    target_compile_options(test_uinput_smoke PRIVATE -O2 -Wall -Wextra)
+    target_link_libraries(test_uinput_smoke PRIVATE Threads::Threads)
+    set_target_properties(test_uinput_smoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME uinput_smoke COMMAND test_uinput_smoke)
+    set_tests_properties(uinput_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # Exercises the Windows-only adapters that don't need a desktop session,

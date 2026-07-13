@@ -4,6 +4,7 @@
 #include "config.h"
 #include "crypto.h"
 #include "gamepad_adapter.h"
+#include "netlink_rejoin.h"
 #include "tray.h"
 #include "updater_adapter.h"
 
@@ -20,16 +21,71 @@
 #include "core/session_service.h"
 #include "core/update_service.h"
 
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 #ifdef SATELLITE_HAS_TRAY
 #include <glib-unix.h>
 #include <gtk/gtk.h>
 #endif
+
+// Force an mDNS multicast rejoin whenever the kernel reports address or link
+// churn (suspend/resume, DHCP renew, cable replug). Linux counterpart of the
+// Windows NotifyAddrChange + WM_POWERBROADCAST triggers: without it, a host
+// whose interface bounced across sleep/wake but kept the same DHCP lease holds
+// a dead multicast membership forever — the responder's periodic sweep only
+// rejoins when the bound IP actually changed. A wake that renegotiates the
+// link always emits RTM_NEWLINK/RTM_NEWADDR even when the address is reused.
+static void netlinkWatcherThread() {
+    using namespace std::chrono;
+    auto lastSignal = steady_clock::time_point{};
+    while (g_appRunning.load(std::memory_order_relaxed)) {
+        const int fd = ::socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+        if (fd < 0) {
+            std::this_thread::sleep_for(seconds(2));
+            continue;
+        }
+        struct sockaddr_nl addr{};
+        addr.nl_family = AF_NETLINK;
+        addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR;
+        if (::bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+            ::close(fd);
+            std::this_thread::sleep_for(seconds(2));
+            continue;
+        }
+        while (g_appRunning.load(std::memory_order_relaxed)) {
+            struct pollfd pfd{fd, POLLIN, 0};
+            const int rc = ::poll(&pfd, 1, 500);
+            if (rc < 0) {
+                if (errno == EINTR) continue;
+                break; // rebuild the socket
+            }
+            if (rc == 0) continue;
+            alignas(4) char buf[8192];
+            const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+            if (n <= 0) break; // ENOBUFS after an event storm: rebuild and resync
+            if (!netwatch::batchWantsRejoin(buf, static_cast<size_t>(n))) continue;
+            // Collapse the NEWLINK/NEWADDR burst a single reconfiguration
+            // emits; the responder does a full announce per forced rejoin.
+            const auto now = steady_clock::now();
+            if (lastSignal != steady_clock::time_point{} && now - lastSignal < seconds(2)) {
+                continue;
+            }
+            lastSignal = now;
+            requestMdnsRejoin();
+        }
+        ::close(fd);
+    }
+}
 
 // Block SIGINT/SIGTERM so the headless loop can sigwait them on the main thread
 // rather than default-terminating during a worker's blocking syscall (recvfrom,
@@ -111,6 +167,7 @@ int main(int argc, const char* argv[]) {
     std::thread clientTh(clientApiThread, std::ref(svc));
     std::thread discTh(discoveryThread);
     std::thread mdnsTh(mdnsResponderThread);
+    std::thread netlinkTh(netlinkWatcherThread);
 
     std::fprintf(stderr, "%s running; web UI at http://localhost:%d\n", APP_TITLE,
                  g_config.webPort);
@@ -155,6 +212,7 @@ int main(int argc, const char* argv[]) {
     clientTh.join();
     discTh.join();
     mdnsTh.join();
+    netlinkTh.join();
 
     svc.closeAllSessions();
     saveConfig(g_config);
