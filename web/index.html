@@ -6,20 +6,17 @@
   <title>Satellite</title>
   <link rel="icon" type="image/png" href="icon.png">
   <link rel="stylesheet" href="style.css">
-  <!-- i18n shim must load before any other script so t() is defined globally
-       before dashboard / settings / updates / debug / logs code runs. -->
+  <!-- i18n shim must load first so t() is defined before other scripts run. -->
   <script src="i18n.js"></script>
 </head>
 <body>
 
-  <!-- ── Loading overlay ── -->
   <div id="loading-overlay" class="loading-overlay">
     <div class="loading-icon">
       <img src="icon.png" alt="" class="loading-favicon">
     </div>
   </div>
 
-  <!-- ── Server offline ── -->
   <div class="card" id="view-offline" style="display:none">
     <div class="offline-content">
       <div class="offline-icon"><img src="img/icons/satellite-master.svg" alt="Satellite" class="brand-icon brand-icon-lg"></div>
@@ -32,10 +29,6 @@
     </div>
   </div>
 
-  <!-- ── Update banner (shared across dashboard + settings) ── -->
-  <!-- Single source of truth for the "update available / downloading / ready"
-       prompt. Inserted at the top of dashboard + settings via JS so a freshly-
-       opened tab doesn't have to wait for SSE. -->
   <template id="tpl-update-banner">
     <div class="update-banner" id="update-banner" style="display:none">
       <div class="update-banner-icon"><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"></div>
@@ -47,17 +40,14 @@
           <div class="update-banner-progress-text" id="update-banner-progress-text">0%</div>
         </div>
       </div>
-      <div class="update-banner-actions" id="update-banner-actions">
-        <!-- Buttons re-rendered by updates.js per state. -->
-      </div>
+      <div class="update-banner-actions" id="update-banner-actions"></div>
     </div>
   </template>
 
-  <!-- ── Restart-to-install confirmation modal ── -->
   <div class="modal-overlay" id="restart-modal" style="display:none">
     <div class="modal-card">
       <h2 class="section-title"><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"> <span data-i18n="modal.restart.title">Restart to Install</span></h2>
-      <p class="modal-body" id="restart-modal-body">Satellite will close and the new version <span id="restart-modal-version" class="modal-version">—</span> will be installed in the background. The receiver will reconnect automatically when the new version launches.</p>
+      <p class="modal-body" id="restart-modal-body">Satellite will close and install version <span id="restart-modal-version" class="modal-version">—</span>. It will reconnect automatically when the new version launches.</p>
       <p class="modal-warning" id="restart-modal-warning" data-i18n="modal.restart.warning" style="display:none">Active connections will be dropped during the restart.</p>
       <div class="btn-row">
         <button class="btn btn-start" id="restart-modal-confirm" data-i18n="modal.restart.confirm">Restart &amp; Install</button>
@@ -66,10 +56,9 @@
     </div>
   </div>
 
-  <!-- ── Dashboard ── -->
   <div class="card" id="view-dashboard" style="display:none">
     <div class="header-row">
-      <h1><img src="icon.png" alt="" class="brand-logo"> <span data-i18n="header.satellite">Satellite</span> <span class="badge" id="pair-badge" style="display:none;background:#F5A623;color:#06121f;cursor:pointer" title="Pending pairing requests — click to review">0</span></h1>
+      <h1><img src="icon.png" alt="" class="brand-logo"> <span data-i18n="header.satellite">Satellite</span> <span class="badge" id="pair-badge" style="display:none;background:#F5A623;color:#06121f;cursor:pointer" title="Pending pairing requests. Click to review.">0</span></h1>
       <div style="display:flex;gap:8px">
         <button class="btn-icon" onclick="navigate('/settings')" data-i18n-attr="title:header.settings" title="Settings"><img src="img/icons/gear.svg" alt="Settings" class="emoji-icon"></button>
         <button class="btn-icon" onclick="navigate('/logs')" data-i18n-attr="title:header.logs" title="Logs"><img src="img/icons/clipboard_lines.svg" alt="Logs" class="emoji-icon"></button>
@@ -78,20 +67,10 @@
       </div>
     </div>
 
-    <!-- SSE-reconnect bar — shown only while the EventSource is mid-reconnect.
-         Mirrors the design spec's "bar = whole-pane loading" rule: a brief
-         indeterminate bar at the top of the dashboard while we re-establish
-         the live stream, rather than the entire view dropping to the offline
-         placeholder. Filled by barSVG() in loaders.js; toggled by
-         dashboard.js. -->
     <div id="dashboard-sse-reconnect" class="sse-reconnect-bar" hidden></div>
 
-    <!-- Update banner mount point. updates.js clones #tpl-update-banner here. -->
     <div id="dashboard-update-slot"></div>
 
-    <!-- Inline failure feedback for dashboard mutating actions (disconnect,
-         remove device, touchpad-mode change). Shown via showDashError() in
-         dashboard.js; hidden by default. -->
     <div class="dash-notice" id="dash-net-notice" role="alert"></div>
     <div class="dash-notice" id="dash-notice" role="alert">
       <span class="dash-notice-text" id="dash-notice-text"></span>
@@ -113,8 +92,6 @@
       </div>
     </div>
 
-    <!-- One device-centric list: every paired device is exactly one row, its
-         live-connection state rides as a chip (paired / active / notResponding). -->
     <div class="section">
       <h2 class="section-title"><img src="img/icons/satellite-broadcasting-animated.svg" alt="" class="emoji-icon section-glyph" id="connections-section-glyph"> <span data-i18n="devices.section.title">Devices</span></h2>
       <div id="device-list" class="device-list">
@@ -151,7 +128,6 @@
     </div>
   </div>
 
-  <!-- ── Settings ── -->
   <div class="card" id="view-settings" style="display:none">
     <div class="header-row">
       <h1><img src="img/icons/gear.svg" alt="" class="emoji-icon"> <span data-i18n="header.settings">Settings</span></h1>
@@ -166,15 +142,12 @@
         <label data-i18n="settings.udp-port.label">UDP Port</label>
         <input type="number" id="settings-udpPort" min="1024" max="65535" value="9876">
       </div>
-      <!-- Range-validation feedback for the UDP port field. Empty/hidden
-           unless settingsSave() rejects an out-of-range value. -->
       <p class="error-msg" id="settings-udpPort-error"></p>
       <div class="toggle-row">
         <span id="settings-autoStart-label" data-i18n="settings.autostart.windows">Start with Windows</span>
         <label class="switch"><input type="checkbox" id="settings-autoStart"><span class="slider"></span></label>
       </div>
 
-      <!-- ── Discovery (Task 1.6 — mDNS / Bonjour + legacy beacon) ── -->
       <h2 class="section-title section-title-spaced" data-i18n="settings.discovery.title">Discovery</h2>
       <div class="stat">
         <span class="label" data-i18n="settings.discovery.mdns-label">mDNS / Bonjour responder</span>
@@ -185,16 +158,14 @@
         <label class="switch"><input type="checkbox" id="settings-discoveryBroadcast"><span class="slider"></span></label>
       </div>
       <p class="hint" data-i18n="settings.discovery.hint">mDNS / Bonjour is the modern discovery path and works on
-        subnets that drop broadcast. The legacy UDP broadcast beacon stays on as
-        a fallback for senders that predate the mDNS responder — turn it off
+        subnets that drop broadcast. The legacy UDP beacon stays on as
+        a fallback for senders that predate the mDNS responder. Turn it off
         only on a network where every sender supports mDNS.</p>
 
       <div class="btn-row">
         <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" data-i18n="settings.save" disabled>Save Config</button>
         <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" data-i18n="settings.undo" disabled>Undo</button>
       </div>
-      <!-- Save result line — error in red, transient confirmation otherwise.
-           Set by settingsSave(); empty until a save is attempted. -->
       <p class="settings-save-status" id="settings-save-status" role="status"></p>
     </div>
 
@@ -210,7 +181,6 @@
       <p class="hint" data-i18n="netinfo.hint">Ports and addresses this PC uses on the LAN. Only the UDP input port is configurable; the rest are shown for reference.</p>
     </div>
 
-    <!-- ── Updates ── -->
     <div class="section">
       <h2 class="section-title" data-i18n="settings.updates.title">Updates</h2>
       <div class="stat">
@@ -252,12 +222,10 @@
         <button class="btn btn-save" id="settings-btnUpdatePrefs" onclick="updatesSavePrefs()" data-i18n="settings.updates.save-prefs" disabled>Save Prefs</button>
       </div>
 
-      <!-- Settings-page mirror of the update banner (re-uses the template). -->
       <div id="settings-update-slot" class="settings-update-slot"></div>
     </div>
   </div>
 
-  <!-- ── Debug ── -->
   <div class="card card-wide" id="view-debug" style="display:none">
     <div class="header-row">
       <h1><img src="img/icons/microscope.svg" alt="" class="emoji-icon"> <span data-i18n="header.debug-title">Debug Telemetry</span></h1>
@@ -267,7 +235,6 @@
       </div>
     </div>
 
-    <!-- Live pipeline flow -->
     <div class="debug-pipeline">
       <div class="pipe-stage" id="pipe-udp">
         <div class="pipe-icon"><img src="img/icons/dish.svg" alt="Dish" class="brand-icon"></div>
@@ -288,7 +255,6 @@
       </div>
     </div>
 
-    <!-- Stats grid -->
     <div class="debug-grid">
       <div class="debug-stat">
         <span class="debug-stat-label" data-i18n="debug.stats.packets-received">Packets Received</span>
@@ -340,7 +306,6 @@
       </div>
     </div>
 
-    <!-- Rate history sparkline (text-based) -->
     <div class="section">
       <h2 class="section-title" data-i18n="debug.chart.title">Packet Rate History</h2>
       <div class="debug-chart" id="d-chart"></div>
@@ -348,7 +313,6 @@
     </div>
   </div>
 
-  <!-- ── Logs ── -->
   <div class="card card-wide" id="view-logs" style="display:none">
     <div class="header-row">
       <h1><img src="img/icons/clipboard_lines.svg" alt="" class="emoji-icon"> <span data-i18n="header.logs-title">System Logs</span></h1>
@@ -478,7 +442,7 @@
         </details>
         <details>
           <summary data-i18n="donate.faq.which.q">Which platform should I use?</summary>
-          <p data-i18n="donate.faq.which.a">GitHub Sponsors if you can — it takes 0% platform fees on individual sponsorships and makes recurring support trivial. Ko-fi is great for one-off tips. Buy Me a Coffee works well if you'd rather pay with Apple/Google Pay and don't have a GitHub account.</p>
+          <p data-i18n="donate.faq.which.a">GitHub Sponsors if you can. It takes 0% platform fees on individual sponsorships and makes recurring support easy. Ko-fi is good for one-off tips. Buy Me a Coffee works if you'd rather pay with Apple or Google Pay and don't have a GitHub account.</p>
         </details>
         <details>
           <summary data-i18n="donate.faq.perks.q">Do sponsors get anything special?</summary>
@@ -497,7 +461,7 @@
         <li data-i18n-html="donate.other.star"><strong>Star</strong> the <a href="https://github.com/TinkerNorth/satellite" rel="noopener noreferrer" target="_blank">Satellite repo</a> and the <a href="https://github.com/TinkerNorth/dish-android" rel="noopener noreferrer" target="_blank">Dish for Android repo</a> on GitHub. It genuinely moves the needle for discovery.</li>
         <li data-i18n-html="donate.other.bugs"><strong>File good bug reports.</strong> A reproducible issue is worth ten "doesn't work" threads.</li>
         <li data-i18n-html="donate.other.tell"><strong>Tell a friend.</strong> A single post or short video is worth a lot.</li>
-        <li data-i18n-html="donate.other.contribute"><strong>Contribute.</strong> Pull requests are welcome on every repo — see CONTRIBUTING.md. Translations are particularly easy to land.</li>
+        <li data-i18n-html="donate.other.contribute"><strong>Contribute.</strong> Pull requests are welcome on every repo. See CONTRIBUTING.md. Translations are especially easy to land.</li>
       </ul>
     </div>
 

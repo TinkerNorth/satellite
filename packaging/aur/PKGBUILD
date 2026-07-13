@@ -1,6 +1,6 @@
 # Maintainer: TinkerNorth <https://github.com/TinkerNorth/satellite>
 #
-# satellite-bin — Arch User Repository package that re-bundles the
+# satellite-bin: Arch User Repository package that re-bundles the
 # upstream signed AppImage. Build it locally with `makepkg -si`, or
 # install via an AUR helper:
 #
@@ -46,7 +46,7 @@ source_x86_64=(
     "70-satellite-uinput.rules::https://raw.githubusercontent.com/TinkerNorth/satellite/v${pkgver}/packaging/debian/70-satellite-uinput.rules"
 )
 # SHA-256 placeholders (REPLACE_BEFORE_PUBLISH). Bump these in lockstep
-# with pkgver — the value for the AppImage comes from the release's
+# with pkgver; the value for the AppImage comes from the release's
 # SHA256SUMS asset; the .desktop and udev rule are inlined here for the
 # packaging/aur/sync.sh helper to regenerate.
 sha256sums_x86_64=(
@@ -64,7 +64,7 @@ package() {
     install -dm755 "${pkgdir}/usr/bin"
     cat > "${pkgdir}/usr/bin/satellite" <<'SHIM'
 #!/bin/sh
-# Shim added by the satellite-bin AUR package — forwards to the AppImage
+# Shim added by the satellite-bin AUR package; forwards to the AppImage
 # bundled under /opt/satellite. The AppImage's own .desktop / icon /
 # updater detection all key off $APPIMAGE which appimage-run-from-bin
 # sets correctly.

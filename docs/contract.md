@@ -29,33 +29,33 @@ There is no client-facing TCP pairing port and no client-facing HTTP API on 9877
 
 ## Identity
 
-- **Satellite identity (as seen by clients): `machineId` only** — the stable id the
+- **Satellite identity (as seen by clients): `machineId` only.** The stable id the
   satellite broadcasts in mDNS TXT / beacon. Clients MUST key remembered satellites on
   machineId alone, never on ip/port.
-- **Client identity: `deviceId`** — a stable per-install UUID. Pairing plus `hmacProof`
+- **Client identity: `deviceId`.** A stable per-install UUID. Pairing plus `hmacProof`
   (below) make it more than a bearer id.
 
-## Pairing — PairedDevice (trust relationship)
+## Pairing: PairedDevice (trust relationship)
 
 A PairedDevice is `{deviceId, deviceName, pairingKey}` persisted on the satellite.
 The 32-byte `pairingKey` is minted by the server and handed to the client exactly once
 over TLS.
 
-### Create — `POST /api/pair`
+### Create: `POST /api/pair`
 
 Two paths, both PIN-gated. **There is no PIN-free path: a request for an
 already-paired deviceId without a valid `hmacProof` is rejected** (the historical
 "already paired → hand back the key" short-circuit allowed any LAN actor who learned a
 deviceId to exfiltrate the key, and is deleted).
 
-Path A — operator PIN (server-generated, typed into the client):
+Path A, operator PIN (server-generated, typed into the client):
 
 ```json
 { "deviceId": "...", "deviceName": "...", "pin": "1234", "protocolVersion": 1 }
 → 200 { "ok": true, "message": "paired successfully", "sharedKey": "<64-hex>", "protocolVersion": 1 }
 ```
 
-Path B — client PIN (client-shown, operator approves on the satellite):
+Path B, client PIN (client-shown, operator approves on the satellite):
 
 ```json
 { "deviceId": "...", "deviceName": "...", "clientPin": "5678", "protocolVersion": 1 }
@@ -64,12 +64,12 @@ Path B — client PIN (client-shown, operator approves on the satellite):
 
 The client then polls until the operator acts.
 
-### Read — `GET /api/pair/status?deviceId=...`
+### Read: `GET /api/pair/status?deviceId=...`
 
 Path-B poll. Responses: `{"ok":true,"status":"approved","sharedKey":"<64-hex>"}` exactly
 once (the staged key is single-use), else `{"ok":false,"status":"pending"|"denied"|"none"}`.
 
-### Update (key rotation / re-pair) — `POST /api/pair` with `hmacProof`
+### Update (key rotation / re-pair): `POST /api/pair` with `hmacProof`
 
 ```json
 { "deviceId": "...", "deviceName": "...", "hmacProof": "<64-hex>", "protocolVersion": 1 }
@@ -97,8 +97,8 @@ hmacProof = hex( HMAC-SHA256( key = pairingKey, message = "satellite-proof:" + d
 ```
 
 (libsodium `crypto_auth_hmacsha256`.) Sent on every authenticated REST call, in the
-`X-Hmac-Proof` header (alongside `X-Device-Id`) or the JSON body field `hmacProof` —
-header wins when both are present. TLS keeps it confidential; its purpose is proof of
+`X-Hmac-Proof` header (alongside `X-Device-Id`) or the JSON body field `hmacProof`
+(header wins when both are present). TLS keeps it confidential; its purpose is proof of
 key possession, so a client whose key diverged from the server's fails **at REST time**
 with 401 instead of producing a silently-undecryptable UDP session.
 
@@ -114,10 +114,10 @@ Either code is terminal: the client MUST stop retrying and surface "re-pair need
 ## Session (connection)
 
 At most one session per deviceId, enforced by construction (the session row is keyed on
-deviceId). **Zero-controller sessions are valid** — a user sitting in menus is connected
+deviceId). **Zero-controller sessions are valid:** a user sitting in menus is connected
 with no pads.
 
-### Create + Update — `PUT /api/connections` (idempotent upsert keyed on deviceId)
+### Create + Update: `PUT /api/connections` (idempotent upsert keyed on deviceId)
 
 Connect and declare the full topology in ONE call; re-PUT converges. The connection row
 never churns: `connectionId` is stable across reconnects, `token` rotates per PUT.
@@ -146,7 +146,7 @@ Request:
   from the array are unplugged. An empty array (or absent key) means "zero controllers".
 - `type` is a catalog id (see Catalog). `touchpadMode` ∈ `"ds4" | "mouse" | "off"`.
 - `hostFeatures` is the requested set; absent = `{}`. Requests are client-owned desired
-  state; grants are server policy — different fields, not a two-master conflict.
+  state; grants are server policy. Different fields, not a two-master conflict.
 
 Response (200):
 
@@ -187,11 +187,11 @@ Descriptor rules:
 
 - **ControllerDescriptor is always sent WHOLE.** A rumble/motion/touchpad toggle is a
   re-send of the descriptor with one field changed; the server converges (replug only
-  on a type-family change — Xbox ↔ DS4).
+  on a type-family change, Xbox ↔ DS4).
 - **Single-writer: descriptor fields are client-owned.** The admin UI displays them but
   never sets them. Admin intent is session-level (kick) or trust-level (unpair) only.
 
-### Read — `GET /api/connections/{connectionId}`
+### Read: `GET /api/connections/{connectionId}`
 
 Client-scoped to its OWN session (`X-Device-Id` + `X-Hmac-Proof`; 404 for someone
 else's id). This is the **reconcile endpoint**: applied descriptors, epoch, liveness.
@@ -213,10 +213,10 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
 }
 ```
 
-### Delete — `DELETE /api/connections/{connectionId}`
+### Delete: `DELETE /api/connections/{connectionId}`
 
 - From the client (authed): graceful close. No notify (the closer already knows).
-- From the admin API (loopback): **kick** — close-notify reason `kicked` first.
+- From the admin API (loopback): **kick**, close-notify reason `kicked` first.
   Transient by design: a retrying client may re-PUT and reconnect. To keep a device
   out, unpair it.
 
@@ -228,15 +228,15 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
   descriptor (same JSON as one `controllers[]` element, `ctrlIdx` in the path wins).
   Converges exactly like the session PUT; response is that one controller's apply
   result plus the session `epoch`.
-- Delete: **`DELETE /api/connections/{id}/controllers/{ctrlIdx}`** — removes the SLOT
+- Delete: **`DELETE /api/connections/{id}/controllers/{ctrlIdx}`** removes the SLOT
   only; the session lives on. Deleting the SESSION is what closes the connection.
 
 Both standalone routes are authed (`X-Device-Id` + `X-Hmac-Proof`) and scoped to the
 caller's own session.
 
-## ServerInfo & Catalog (read-only; unauthenticated on 9443 — the UI renders BEFORE pairing)
+## ServerInfo & Catalog (read-only; unauthenticated on 9443, so the UI renders BEFORE pairing)
 
-### `GET /api/server/capabilities` — current DYNAMIC state
+### `GET /api/server/capabilities`: current DYNAMIC state
 
 ```json
 {
@@ -261,16 +261,16 @@ the DS4 EX report). `backend.errorCode` ∈ `DRIVER_MISSING`, `BUS_OPEN_FAILED`,
 `host` is the receiver's OWN capability inventory, readable before pairing or any
 catalog round-trip so a client reflects the real receiver instead of an optimistic
 default. Each entry's `supported` is the static fact (mirrors the catalog
-`hostFeatures` / per-type features); `available` is a coarse runtime read — the
+`hostFeatures` / per-type features); `available` is a coarse runtime read. It means the
 backend is up enough to accept controllers (bus open), NOT a per-feature delivery
-probe — so a client can show a feature present-but-currently-down (e.g. driver
+probe, so a client can show a feature present-but-currently-down (e.g. driver
 missing). `catalog.supported` is the presence signal: a server emitting `host` always
-sets it true, so a client treats its absence as "older satellite — fall back to the
+sets it true, so a client treats its absence as "older satellite, fall back to the
 default". The block is additive: an older server omits it and the client degrades
 gracefully. (`host.rumble` is the host return-channel; the per-type `rumble` feature
-is a different layer — whether the emulated pad has a motor.)
+is a different layer, whether the emulated pad has a motor.)
 
-### `GET /api/catalog` — STATIC per server version, localized
+### `GET /api/catalog`: STATIC per server version, localized
 
 Three-layer rule (a field lives in exactly one layer): **catalog** = what exists & how
 to present it (static, localized) → **capabilities** = what is true right now
@@ -340,7 +340,7 @@ to present it (static, localized) → **capabilities** = what is true right now
 - Scope: the catalog describes what the SATELLITE can create or do on the host. Which
   physical pads the client can read stays client-side knowledge.
 
-**Localization boundary rule** — translate only what the client merely DISPLAYS:
+**Localization boundary rule:** translate only what the client merely DISPLAYS.
 
 - Localized: controller-type `name` / `shortName` / `description` (+ images). These are
   server-owned emulation targets; new types must render on old apps from
@@ -348,7 +348,7 @@ to present it (static, localized) → **capabilities** = what is true right now
 - NEVER localized (protocol constants): feature slugs (`rumble`, `motion`, …),
   host-feature slugs, touchpad modes, `requires` codes, denial reasons, apply results.
   A client can only offer what it has code for and carries its own translations.
-- Consequently: an unknown feature/hostFeature slug is simply NOT OFFERED (ignored
+- Consequently: an unknown feature/hostFeature slug is NOT OFFERED (ignored
   gracefully, never an error); an unknown controller-TYPE id/slug DOES render, from
   server-provided name/description/image. Clients never show blank UI for a type newer
   than the app.
@@ -361,7 +361,7 @@ response echoes the resolved `locale`. Locale set is kept in lockstep with dish-
 **Caching**: `ETag = "<serverVersion>+<locale>"`; `If-None-Match` → 304. Content changes
 only on server upgrade, so a client fetches once per satellite version per language.
 
-### `GET /api/catalog/images/{slug}` — SVG, ETag'd
+### `GET /api/catalog/images/{slug}`: SVG, ETag'd
 
 Theme-neutral SVG served by the satellite itself (works fully offline). `ETag =
 "<serverVersion>"`, `If-None-Match` → 304. 404 for unknown slugs.
@@ -402,7 +402,7 @@ inner plaintext  : msgType(2 BE) | msgLen(2 BE) | payload
 - Replay guard (receiver side, per direction): drop when `counter <= lastCounter`
   (first packet exempt while `lastCounter == 0`).
 - **Counter exhaustion is impossible to wrap**: a counter can never go backwards, so a
-  session that exhausts the 2^32 space simply goes silent and self-heals via re-PUT
+  session that exhausts the 2^32 space goes silent and self-heals via re-PUT
   (fresh token, salt, key). Clients SHOULD proactively re-PUT when their send counter
   crosses 0xF0000000.
 
@@ -428,12 +428,12 @@ Down (server → client):
 | 0x000F | SESSION_CLOSE | reason(1: 0 shutdown, 1 kicked, 2 replaced, 3 unpaired) |
 
 Opcodes 0x0004 (ADD), 0x0005 (REMOVE), 0x0006 (ACK), 0x0007 (SERVER_STATUS) and
-0x0008 (TYPE), 0x000E (CAPS_UPDATE) are **deleted** — topology mutation is REST-only,
+0x0008 (TYPE), 0x000E (CAPS_UPDATE) are **deleted**: topology mutation is REST-only,
 and server status rides in every heartbeat ack.
 
 Corrected stream semantics (errors in the former docs, preserved here):
 
-- INPUT frames are full-state snapshots per packet — loss-safe by construction. Never
+- INPUT frames are full-state snapshots per packet, loss-safe by construction. Never
   delta-encode them.
 - Heartbeat cadence is **2000 ms** (not 250 ms), dead at 5 misses, "not responding"
   display state at 2 misses. Heartbeats stay UDP: their job is proving the DATA path
@@ -442,9 +442,9 @@ Corrected stream semantics (errors in the former docs, preserved here):
   duration; refresh arrives before expiry). Stop = magnitudes 0,0.
 - MOTION scale: gyro ±2000 deg/s, accel ±4 g over int16; right-handed frame, +X right,
   +Y up, +Z toward player. Senders apply the rotation; receivers do not.
-- Telemetry streams stay lossy/incremental by design — do NOT add reliability layers.
+- Telemetry streams stay lossy/incremental by design; do NOT add reliability layers.
 
-### Enriched heartbeat ack — the reconcile loop
+### Enriched heartbeat ack: the reconcile loop
 
 Every 0x0003 carries the session `epoch` (u16, wraps) and a 16-bit bitmap of active
 controller indices. The client compares both against its last-known applied state
@@ -454,16 +454,16 @@ of a sibling, kick racing a packet) are therefore SELF-HEALING within one heartb
 (≤2 s) without REST polling. `epoch` increments on every applied-topology change
 regardless of initiator.
 
-### Session-close notify 0x000F — best-effort only
+### Session-close notify 0x000F: best-effort only
 
 Sent encrypted with the session key BEFORE teardown on: server shutdown (broadcast,
 reason `shutdown`), admin kick (`kicked`), session replacement by a new PUT
 (`replaced`, to the OLD token), and unpair of a device with a live session
-(`unpaired`). Best-effort ONLY — the reliable truth is ack silence → heartbeat death →
+(`unpaired`). Best-effort ONLY: the reliable truth is ack silence → heartbeat death →
 REST PUT → status code (401 unpaired / 503 shutting down).
 
 **Security rule for server → client control signals**: they exist ONLY while the
-session (and its key) exists, because they must be authenticated — an unauthenticated
+session (and its key) exists, because they must be authenticated: an unauthenticated
 "you're unpaired" datagram would be a trivially spoofable DoS. After teardown, silence
 plus REST reason codes are the only safe channel; "unpaired" therefore CANNOT be
 pushed to an un-keyed client and surfaces as 401 on the next REST contact.
@@ -486,14 +486,14 @@ server drops streams for ungranted features.
   the session's pads (epoch/bitmap of other sessions unaffected).
 - HTTPS requests do NOT refresh UDP liveness (they prove the wrong path).
 
-## Admin API (loopback 9877, no auth — operator surface)
+## Admin API (loopback 9877, no auth, operator surface)
 
 | Route | Purpose |
 |-------|---------|
 | `GET /api/devices` | Paired devices with link state (`paired` / `active` / `notResponding`) |
 | `DELETE /api/devices/{deviceId}` | Unpair; closes any live session (notify `unpaired`) |
 | `GET /api/connections` | Live sessions + per-controller truth (`pluggedIn` reflects the adapter, not `serialNo > 0`) |
-| `DELETE /api/connections/{connectionId}` | Kick (notify `kicked`); transient — client may reconnect |
+| `DELETE /api/connections/{connectionId}` | Kick (notify `kicked`); transient, client may reconnect |
 
 The admin surface never sets descriptor fields (single-writer rule). The former
 `POST /api/devices/touchpad-mode` (both surfaces) and `POST /api/devices/remove` are
@@ -509,9 +509,9 @@ response. A server MUST reject a major version it doesn't speak with 409
 ## Error model
 
 - 400 malformed request (missing/invalid fields).
-- 401 `{"error":"unauthorized","code":"NOT_PAIRED"|"BAD_PROOF"}` — terminal; re-pair.
+- 401 `{"error":"unauthorized","code":"NOT_PAIRED"|"BAD_PROOF"}`: terminal; re-pair.
 - 404 unknown resource (or a session that isn't yours).
 - 409 protocol version mismatch.
-- 503 shutting down — retry later.
+- 503 shutting down; retry later.
 - Per-controller failures are 200s with per-controller result codes (partial success
   is normal, not an error).

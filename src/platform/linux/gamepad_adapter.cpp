@@ -2,7 +2,7 @@
 #include "gamepad_adapter.h"
 
 #include "core/touchpad_codec.h"
-#include "core/types.h" // LogLevel for sysfs-proxy arrival traces
+#include "core/types.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -53,9 +53,9 @@ bool setupAbs(int fd, uint16_t code, int32_t min, int32_t max, int32_t flat, int
     return ::ioctl(fd, UI_ABS_SETUP, &abs) == 0;
 }
 
-// Axis with resolution. For INPUT_PROP_ACCELEROMETER the kernel ABI defines it
-// as units/g (ABS_X/Y/Z) and units/(deg/s) (ABS_RX/RY/RZ) so consumers can
-// convert raw int16 wire values back to physical units.
+// For INPUT_PROP_ACCELEROMETER the kernel ABI reads resolution as units/g
+// (ABS_X/Y/Z) and units/(deg/s) (ABS_RX/RY/RZ), letting consumers convert raw
+// int16 wire values back to physical units.
 bool setupAbsRes(int fd, uint16_t code, int32_t min, int32_t max, int32_t resolution) {
     struct uinput_abs_setup abs{};
     abs.code = code;
@@ -143,7 +143,7 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
         if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
     }
 
-    // Per-axis absinfo (range/flat/fuzz) matches xpad driver defaults.
+    // range/flat/fuzz matches xpad driver defaults.
     if (!setupAbs(fd, ABS_X, -32768, 32767, 128, 16)) goto fail;
     if (!setupAbs(fd, ABS_Y, -32768, 32767, 128, 16)) goto fail;
     if (!setupAbs(fd, ABS_RX, -32768, 32767, 128, 16)) goto fail;
@@ -182,7 +182,7 @@ int GamepadAdapter::openMotionUinputDevice(uint32_t serial) {
     if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
     // INPUT_PROP_ACCELEROMETER marks ABS_X/Y/Z + RX/RY/RZ as accel+gyro, not
-    // stick axes — same convention as hid-playstation's DualSense motion node.
+    // stick axes; same convention as hid-playstation's DualSense motion node.
     if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_ACCELEROMETER) < 0) goto fail;
 
     for (int ax : {ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ}) {
@@ -338,7 +338,7 @@ bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
 bool GamepadAdapter::unplugDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = devices_.find(serial);
-    if (it == devices_.end()) return true; // never plugged ⇒ already gone
+    if (it == devices_.end()) return true; // never plugged, already gone
     stopReader(serial);                    // joins reader thread; safe to take the fd after
     it = devices_.find(serial);
     if (it == devices_.end()) return true; // defensive: stopReader doesn't erase
@@ -399,7 +399,7 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
     int fd = it->second.fd;
 
     bool ok = true;
-    // XUSB Y is positive-up; evdev Y is positive-down — invert.
+    // XUSB Y is positive-up; evdev Y is positive-down, so invert.
     ok &= emit(fd, EV_ABS, ABS_X, report.sThumbLX);
     ok &= emit(fd, EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
     ok &= emit(fd, EV_ABS, ABS_RX, report.sThumbRX);
@@ -448,8 +448,8 @@ bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     if (it == devices_.end() || it->second.motionFd < 0) return false;
     int fd = it->second.motionFd;
 
-    // Gyro -> ABS_RX/RY/RZ, accel -> ABS_X/Y/Z. Raw int16 wire values emitted
-    // verbatim; the node's absinfo.resolution carries the units (see openMotionUinputDevice).
+    // Raw int16 wire values emitted verbatim; the node's absinfo.resolution
+    // carries the units (see openMotionUinputDevice).
     bool ok = true;
     ok &= emit(fd, EV_ABS, ABS_RX, report.gyroX);
     ok &= emit(fd, EV_ABS, ABS_RY, report.gyroY);
@@ -541,15 +541,12 @@ bool GamepadAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
     return ok;
 }
 
-// Battery + lightbar sysfs proxy: uinput has no native channel for either (no
-// UI_SET_BATTERY ioctl; EV_LED is single-bit and can't carry an RGB triple), so
-// rather than drop them we mirror each update to /tmp/satellite/controller<serial>/
-// for operator userspace (OBS overlays, LED daemons, status bars). SessionService
-// still caches the latest sample, so the web UI is unchanged.
+// uinput has no battery or RGB channel (no UI_SET_BATTERY; EV_LED is single-bit),
+// so mirror each update to /tmp/satellite/controller<serial>/ for operator
+// userspace (OBS overlays, LED daemons). SessionService still caches the sample.
 
 std::string GamepadAdapter::sysfsProxyDir() {
-    // SATELLITE_SYSFS_PROXY_DIR lets tests redirect to a hermetic temp dir;
-    // the daemon uses the stable /tmp default for operator tooling.
+    // SATELLITE_SYSFS_PROXY_DIR lets tests redirect to a hermetic temp dir.
     if (const char* env = std::getenv("SATELLITE_SYSFS_PROXY_DIR")) {
         if (env[0] != '\0') return std::string(env);
     }
@@ -559,7 +556,6 @@ std::string GamepadAdapter::sysfsProxyDir() {
 bool GamepadAdapter::writeSysfsProxyFile(uint32_t serial, const char* leaf,
                                          const std::string& contents) {
     const std::string base = sysfsProxyDir();
-    // mkdir is non-recursive: base then per-controller dir. EEXIST is fine.
     if (::mkdir(base.c_str(), 0755) != 0 && errno != EEXIST) return false;
     char ctrlDir[64];
     std::snprintf(ctrlDir, sizeof(ctrlDir), "/controller%u", serial);
@@ -567,8 +563,8 @@ bool GamepadAdapter::writeSysfsProxyFile(uint32_t serial, const char* leaf,
     if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) return false;
 
     const std::string path = dir + "/" + leaf;
-    // Plain O_TRUNC write (no write-then-rename): pure telemetry, so a torn read
-    // yields stale text, not corruption, and we avoid leaving rename-tmps on crash.
+    // Plain O_TRUNC (no rename): telemetry only, so a torn read yields stale
+    // text, not corruption, and no rename-tmps leak on crash.
     int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return false;
     ssize_t want = static_cast<ssize_t>(contents.size());
@@ -578,8 +574,8 @@ bool GamepadAdapter::writeSysfsProxyFile(uint32_t serial, const char* leaf,
 }
 
 bool GamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
-    // "key=value" lines (shell `source`-able). Values mirror the wire encoding:
-    // level 0..100 or 255 unknown; status 0..4 per BATTERY_STATUS_*.
+    // "key=value" lines mirror the wire encoding: level 0..100 or 255 unknown;
+    // status 0..4 per BATTERY_STATUS_*.
     char buf[64];
     int n =
         std::snprintf(buf, sizeof(buf), "level=%u\nstatus=%u\n",
@@ -596,7 +592,6 @@ bool GamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report)
 }
 
 #ifdef SATELLITE_BUILD_TESTS
-// Test-only synthetic entrypoint (see header rationale).
 void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
     LightbarCallback cb;
     {
@@ -608,14 +603,11 @@ void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g
 #endif
 
 void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
-    // Wrap the sink so every fired colour also lands in the sysfs-proxy file.
-    // Rarely fires on uinput (no RGB readback) but keeps parity with ViGEm and
-    // gives a future bridge the file mirroring for free.
+    // Rarely fires on uinput (no RGB readback) but keeps parity with ViGEm.
     std::lock_guard<std::mutex> lk(mtx_);
     LightbarCallback inner = std::move(cb);
     lightbarCb_ = [inner](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         char buf[16];
-        // RRGGBB (no leading #) so shell consumers can prepend as needed.
         std::snprintf(buf, sizeof(buf), "%02X%02X%02X\n", r, g, b);
         bool ok = writeSysfsProxyFile(serial, "lightbar", std::string(buf));
 
@@ -664,7 +656,7 @@ void GamepadAdapter::stopReader(uint32_t serial) {
     dev.wakePipeRead = -1;
     std::thread th = std::move(dev.readerThread);
     if (wakeWrite >= 0) {
-        // One byte is enough — the reader's poll wakes immediately and exits.
+        // One byte wakes the reader's poll, which then exits.
         const char b = 0;
         (void)::write(wakeWrite, &b, 1);
     }

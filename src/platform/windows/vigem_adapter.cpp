@@ -33,7 +33,7 @@ bool ViGEmAdapter::ensureBusOpen() {
 }
 
 void ViGEmAdapter::closeBus() {
-    // Stop notification workers first -- they hold pending IOCTLs on busHandle_.
+    // Stop notification workers first: they hold pending IOCTLs on busHandle_.
     std::vector<uint32_t> serials;
     {
         std::lock_guard<std::mutex> lk(busMtx_);
@@ -105,7 +105,7 @@ bool ViGEmAdapter::unplugDevice(uint32_t serial) {
     std::lock_guard<std::mutex> lk(busMtx_);
     IoSlot& slot = io_[serial];
 
-    // A closed bus has no live targets — the device is gone by definition.
+    // A closed bus has no live targets; the device is gone by definition.
     if (busHandle_ == INVALID_HANDLE_VALUE) {
         slot.plugged.store(false, std::memory_order_release);
         slot.isDS4 = false;
@@ -283,11 +283,10 @@ bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
 }
 
 // DS4 HID battery byte: bit 4 (0x10) = cable connected, low nibble = level
-// (host capacity ~ nibble*10). Nibble 11 + cable bit is the DS4 "fully charged"
-// sentinel.
+// (capacity ~ nibble*10). Nibble 11 + cable bit is the "fully charged" sentinel.
 static uint8_t ds4BatteryByte(const BatteryReport& report) {
     int nibble = (report.level == BATTERY_LEVEL_UNKNOWN)
-                     ? 5 // unknown -> mid-scale so the host still shows something
+                     ? 5 // mid-scale so the host still shows something
                      : static_cast<int>(report.level) / 10;
     if (nibble > 10) nibble = 10;
 
@@ -297,7 +296,7 @@ static uint8_t ds4BatteryByte(const BatteryReport& report) {
     case BATTERY_STATUS_FULL:
     case BATTERY_STATUS_WIRED:
         return static_cast<uint8_t>(0x10 | 11);
-    default: // discharging / unknown -- running on battery, no cable bit
+    default: // discharging/unknown: on battery, no cable bit
         return static_cast<uint8_t>(nibble);
     }
 }
@@ -378,7 +377,7 @@ bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
         inputs[n].mi.dwFlags = leftButton ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
         ++n;
     }
-    if (n == 0) return true; // idle frame -- nothing to inject, still "handled"
+    if (n == 0) return true; // idle frame: nothing to inject, still "handled"
     return SendInput(static_cast<UINT>(n), inputs, sizeof(INPUT)) == static_cast<UINT>(n);
 }
 
@@ -386,11 +385,9 @@ bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {
     return controllerTypeUsesDS4(controllerType);
 }
 
-// True iff the backend can land IMU samples for `serial`. Motion rides only the
-// DS4 EX report, so true requires a plugged DS4 slot whose EX submit was
-// accepted (ds4.exSupported, latched by the probe in pluginDeviceDS4). X360 has
-// no IMU surface; unplugged/unknown reads true (matches the Linux adapter: false
-// would surface a phantom "broken backend" badge).
+// Motion rides only the DS4 EX report, so true requires a plugged DS4 slot whose
+// EX submit was accepted. X360 has no IMU surface; unplugged/unknown reads true
+// (false would surface a phantom "broken backend" badge).
 bool ViGEmAdapter::motionBackendOk(uint32_t serial) const {
     if (!isValidSerial(serial)) return true;
     std::lock_guard<std::mutex> lk(busMtx_);
@@ -423,9 +420,9 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
             return true;
         }
         // EX rejected (ViGEmBus < 1.17): latch EX off and fall through to basic
-        // so buttons/sticks keep working (no IMU). The sync submit is what makes
-        // this observable -- fire-and-forget returns success on ERROR_IO_PENDING,
-        // so the rejection would be missed and PlayStation input would die here.
+        // so buttons/sticks keep working (no IMU). The sync submit makes this
+        // observable; fire-and-forget returns success on ERROR_IO_PENDING, so
+        // the rejection would be missed and PlayStation input would die here.
         st.exSupported = false;
     }
 

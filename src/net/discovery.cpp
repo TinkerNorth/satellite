@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Legacy UDP broadcast beacon — fallback for senders that predate the mDNS
-// responder (net/mdns_responder.cpp). Toggleable at runtime; slated for
-// removal in 2027.
+// Legacy UDP broadcast beacon, fallback for senders that predate the mDNS
+// responder. Toggleable at runtime; slated for removal in 2027.
 #include "discovery.h"
 #include "config.h"
 #include "discovery_beacon.h"
@@ -25,7 +24,7 @@ void discoveryThread() {
     netGetHostname(hostname, sizeof(hostname));
 
     // Stable per-install id: outlives DHCP lease changes, so the dish keys its
-    // remembered-satellite entry on this instead of the (mutable) IP.
+    // remembered-satellite entry on this instead of the mutable IP.
     const std::string machineId = ensureMachineId();
 
     sockaddr_in dest{};
@@ -33,10 +32,10 @@ void discoveryThread() {
     dest.sin_addr.s_addr = INADDR_BROADCAST;
 
     // Thread runs for the process lifetime even when disabled, so flipping the
-    // config flag hot-resumes broadcasting. `announced` logs each transition once.
+    // config flag hot-resumes broadcasting.
     bool announced = false;
     while (g_appRunning) {
-        // Snapshot under g_configMtx — the webserver mutates these from
+        // Snapshot under g_configMtx; the webserver mutates these from
         // POST /api/config under the same lock.
         bool enabled = false;
         int discPort = 0, udpPort = 0;
@@ -49,15 +48,14 @@ void discoveryThread() {
         if (enabled != announced) {
             logMsg(LogLevel::INFO, "discovery",
                    enabled ? "Legacy UDP broadcast beacon enabled"
-                           : "Legacy UDP broadcast beacon disabled — mDNS responder still active");
+                           : "Legacy UDP broadcast beacon disabled; mDNS responder still active");
             announced = enabled;
         }
 
         if (enabled) {
             dest.sin_port = htons((uint16_t)discPort);
 
-            // pairPort / httpPort both carry the single HTTPS client API port;
-            // the admin web port is localhost-only and never reachable here.
+            // pairPort / httpPort both carry the single HTTPS client API port.
             const std::string beacon = buildDiscoveryBeacon(hostname, udpPort, DEFAULT_CLIENT_PORT,
                                                             DEFAULT_CLIENT_PORT, machineId);
 

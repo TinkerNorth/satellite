@@ -21,7 +21,7 @@ BackendStatus probeBackend() {
 
     if (!isViGEmDeviceInterfacePresent()) {
         status.available = false;
-        status.errorCode = "DRIVER_MISSING"; // interface not enumerable
+        status.errorCode = "DRIVER_MISSING";
         return status;
     }
 

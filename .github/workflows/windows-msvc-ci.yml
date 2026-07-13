@@ -8,7 +8,7 @@ name: Windows MSVC CI
 # Dependencies come from vcpkg's x64-windows-static triplet so their CRT linkage
 # matches the app's /MT (MSVC_RUNTIME_LIBRARY MultiThreaded in CMakeLists.txt).
 #
-# This job does NOT publish — it proves the hardened build stays green. Promoting
+# This job does NOT publish; it proves the hardened build stays green. Promoting
 # it to the shipping artifact is a one-job swap in release.yml's `windows` job.
 #
 # Pin map (matches windows-ci.yml):
@@ -34,10 +34,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       # windows-latest ships VS (MSVC + Spectre-mitigated libs) and a vcpkg
-      # checkout at VCPKG_INSTALLATION_ROOT — the same image release.yml builds
+      # checkout at VCPKG_INSTALLATION_ROOT, the same image release.yml builds
       # on. The configure step's vcpkg toolchain auto-installs libsodium +
-      # openssl (static) from vcpkg.json — the first run builds OpenSSL from
-      # source (several minutes); add vcpkg binary caching later if that
+      # openssl (static) from vcpkg.json; the first run builds OpenSSL from
+      # source (several minutes). Add vcpkg binary caching later if that
       # wall-time matters.
       - name: Configure (MSVC + vcpkg static, hardened release)
         shell: pwsh
@@ -61,7 +61,7 @@ jobs:
           Get-Item satellite.exe | Format-List Name, Length, LastWriteTime
 
       # Best-effort proof the CFG + CET bits actually landed in the PE header.
-      # Informational only — never fails the build (dumpbin location varies).
+      # Informational only; never fails the build (dumpbin location varies).
       - name: Confirm CFG / CET bits (informational)
         shell: pwsh
         continue-on-error: true
@@ -70,7 +70,7 @@ jobs:
             "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe", `
             "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
             Select-Object -First 1
-          if ($null -eq $dumpbin) { Write-Host "dumpbin not found — skipping check"; exit 0 }
+          if ($null -eq $dumpbin) { Write-Host "dumpbin not found; skipping check"; exit 0 }
           & $dumpbin.FullName /headers /loadconfig satellite.exe |
             Select-String -Pattern 'Guard|CET|Control Flow|cfInstrumented|Shadow'
 

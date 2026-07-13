@@ -61,7 +61,7 @@ bool confirmPairing(const std::string& deviceId) {
     if (!acceptPairRequestConfirmed(deviceId, keyHex, name, ip)) {
         logMsg(LogLevel::WARN, "pairing",
                "Accept for " + deviceId +
-                   " did nothing — the request already expired or was withdrawn; ask the device "
+                   " did nothing; the request already expired or was withdrawn. Ask the device "
                    "to tap Pair again");
         return false;
     }

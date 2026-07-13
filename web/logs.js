@@ -1,14 +1,12 @@
-// ── logs.js — System log viewer ──────────────────────────────────────────────
 let _logTimer = null;
-let _logSeq = 0;       // highest seq we've received
-let _logEntries = [];   // all entries we have locally
+let _logSeq = 0;
+let _logEntries = [];
 
 function initLogs() {
   _logSeq = 0;
   _logEntries = [];
   document.getElementById('log-entries').innerHTML = '<p class="hint">' + esc(t('logs.loading')) + '</p>';
 
-  // Wire up filter checkboxes and search
   ['log-show-info', 'log-show-warn', 'log-show-error'].forEach(id => {
     document.getElementById(id).onchange = renderLogs;
   });
@@ -31,7 +29,6 @@ async function fetchLogs() {
       for (const e of data.entries) {
         _logEntries.push(e);
       }
-      // Trim to last 500 locally
       if (_logEntries.length > 500) {
         _logEntries = _logEntries.slice(_logEntries.length - 500);
       }
@@ -83,7 +80,7 @@ function renderLogs() {
   }
 }
 
-// Stop polling when leaving the page
+// Stop polling when leaving the page.
 const _origShowView = showView;
 showView = function(id) {
   if (id !== 'view-logs' && _logTimer) {

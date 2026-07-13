@@ -4,13 +4,13 @@
 
 .DESCRIPTION
     The Inno Setup installer (installer.iss) ships a copy of the ViGEmBus
-    driver installer as a prerequisite. We do not commit that ~6 MB binary
-    to git -- instead, this script fetches it on demand and verifies its
-    SHA-256 against the pinned hash in redist/SHA256SUMS before letting
-    iscc consume it.
+    driver installer as a prerequisite. That ~6 MB binary is not committed
+    to git; this script fetches it on demand and verifies its SHA-256
+    against the pinned hash in redist/SHA256SUMS before letting iscc
+    consume it.
 
-    Idempotent -- safe to re-run. If the file already exists with the
-    expected hash, nothing is downloaded.
+    Idempotent. If the file already exists with the expected hash, nothing
+    is downloaded.
 
 .PARAMETER Force
     Re-download even if the existing file matches the pinned hash.
@@ -26,7 +26,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# --- Pinned redistributables -----------------------------------------------
 # To bump: update the URL/filename below, run this script with -Force, then
 # replace the matching line in redist/SHA256SUMS with the new hash.
 $Redistributables = @(
@@ -37,7 +36,6 @@ $Redistributables = @(
     }
 )
 
-# --- Resolve paths ---------------------------------------------------------
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RedistDir = Join-Path $RepoRoot 'redist'
 $SumFile = Join-Path $RedistDir 'SHA256SUMS'
@@ -49,7 +47,7 @@ if (-not (Test-Path $SumFile)) {
     Write-Error "Pinned hash file not found: $SumFile"
 }
 
-# --- Parse SHA256SUMS (sha256sum binary-mode format: <hash> *<filename>) ---
+# Parse SHA256SUMS (sha256sum binary-mode format: <hash> *<filename>).
 $ExpectedHashes = @{}
 foreach ($Line in Get-Content $SumFile) {
     $Trimmed = $Line.Trim()
@@ -61,7 +59,6 @@ foreach ($Line in Get-Content $SumFile) {
     }
 }
 
-# --- Process each redistributable ------------------------------------------
 $AnyDownloaded = $false
 foreach ($Item in $Redistributables) {
     $Path = Join-Path $RedistDir $Item.Filename
@@ -73,10 +70,10 @@ foreach ($Item in $Redistributables) {
     if ((Test-Path $Path) -and -not $Force) {
         $Actual = (Get-FileHash $Path -Algorithm SHA256).Hash.ToLower()
         if ($Actual -eq $Expected) {
-            Write-Host "[OK]   $($Item.Name) -- already current ($($Item.Filename))"
+            Write-Host "[OK]   $($Item.Name): already current ($($Item.Filename))"
             continue
         }
-        Write-Host "[WARN] $($Item.Filename) hash mismatch -- will re-download"
+        Write-Host "[WARN] $($Item.Filename) hash mismatch; will re-download"
         Remove-Item $Path
     }
 

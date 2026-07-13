@@ -28,7 +28,7 @@ std::function<void(const std::string&)> g_onNewRequest;
 // forgotten prompt shouldn't linger.
 constexpr auto kPairTtl = std::chrono::minutes(5);
 // Cap so a flood of unknown devices can't push the operator's real request
-// off-screen. Oldest evicted first.
+// off-screen.
 constexpr size_t kMaxPending = 8;
 
 bool isExpired(const PendingPair& p) {
@@ -77,7 +77,7 @@ void submitPairRequest(const std::string& deviceId, const std::string& deviceNam
         pruneLocked();
 
         if (auto* existing = findLocked(deviceId)) {
-            // Re-tap refreshes PIN + timer in place — never two rows for one phone.
+            // Re-tap refreshes PIN + timer in place, never two rows for one phone.
             existing->deviceName = deviceName;
             existing->clientIP = clientIP;
             existing->clientPin = clientPin;
@@ -118,8 +118,8 @@ PairRequestState pollPairRequest(const std::string& deviceId, std::string& outSh
 
     if (p->state == PairRequestState::Approved) {
         outSharedKeyHex = p->keyHex;
-        // Single-use: hand back the key once and forget, so a replayed poll
-        // can't re-read it and a later id reuse starts clean.
+        // Single-use: hand back the key once and forget, so a replayed poll can't
+        // re-read it and a later id reuse starts clean.
         eraseLocked(deviceId);
         return PairRequestState::Approved;
     }

@@ -1,13 +1,10 @@
-// ── debug.js — Real-time debug telemetry page ──────────────────────────────
-
 let debugTimer = null;
 let prevSnap = null;
 let prevTime = null;
 const rateHistory = [];
 const MAX_HISTORY = 60;
 
-// Pull theme tokens from CSS custom properties so chart-bar colors stay in
-// sync with style.css. See web/style.css :root and DESIGN.md.
+// Pull theme tokens from CSS so chart-bar colors track style.css.
 function themeColor(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -36,10 +33,9 @@ async function pollDebug() {
     const d = await r.json();
     const now = performance.now();
 
-    // ── Calculate rates from deltas ──
     let pps = 0, submitRate = 0;
     if (prevSnap && prevTime) {
-      const dt = (now - prevTime) / 1000; // seconds
+      const dt = (now - prevTime) / 1000;
       if (dt > 0) {
         pps = Math.round((d.packets - prevSnap.packets) / dt);
         submitRate = Math.round((d.submitOk - prevSnap.submitOk) / dt);
@@ -48,13 +44,11 @@ async function pollDebug() {
     prevSnap = d;
     prevTime = now;
 
-    // ── Update pipeline ──
     document.getElementById('d-pps').textContent = pps + ' pps';
     document.getElementById('d-submit-rate').textContent = submitRate + ' pps';
     document.getElementById('d-status').textContent =
       d.listening ? t('debug.status.active') : t('debug.status.stopped');
 
-    // Pipeline coloring (reflects backend availability)
     const udp     = document.getElementById('pipe-udp');
     const backend = document.getElementById('pipe-backend');
     const sys     = document.getElementById('pipe-system');
@@ -62,7 +56,6 @@ async function pollDebug() {
     const a2      = document.getElementById('pipe-arrow-2');
     const backendUp = d.backendAvailable;
 
-    // Driver-neutral pipeline label sourced from BACKEND_COPY when present.
     const beLabelEl = document.getElementById('pipe-backend-label');
     if (beLabelEl && d.backend && typeof BACKEND_COPY === 'object') {
       const copy = BACKEND_COPY[d.backend.id];
@@ -89,7 +82,6 @@ async function pollDebug() {
       a2.className      = 'pipe-arrow';
     }
 
-    // ── Update stats ──
     document.getElementById('d-packets').textContent = d.packets.toLocaleString();
     document.getElementById('d-submit-ok').textContent = d.submitOk.toLocaleString();
     document.getElementById('d-submit-fail').textContent = d.submitFail.toLocaleString();
@@ -107,17 +99,14 @@ async function pollDebug() {
     const httpEl = document.getElementById('d-http-port');
     if (httpEl) httpEl.textContent = d.webPort || location.port || '—';
 
-    // ── Crypto stats ──
     const dfEl = document.getElementById('d-decrypt-fail');
     if (dfEl) dfEl.textContent = (d.decryptFail || 0).toLocaleString();
     const rdEl = document.getElementById('d-replay-drop');
     if (rdEl) rdEl.textContent = (d.replayDrop || 0).toLocaleString();
 
-    // Color decrypt failures
     if (dfEl) dfEl.className = 'debug-stat-value' + ((d.decryptFail || 0) > 0 ? ' debug-err' : ' debug-ok');
     if (rdEl) rdEl.className = 'debug-stat-value' + ((d.replayDrop || 0) > 0 ? ' debug-warn' : ' debug-ok');
 
-    // ── Backend status (single row, hidden on macOS / unsupported) ──
     const beRow   = document.getElementById('d-backend-row');
     const beLabel = document.getElementById('d-backend-label');
     const beVal   = document.getElementById('d-backend-value');
@@ -140,13 +129,11 @@ async function pollDebug() {
       }
     }
 
-    // Color the loop time
     const loopEl = document.getElementById('d-last-loop');
     if (d.lastLoopUs > 1000) loopEl.className = 'debug-stat-value debug-err';
     else if (d.lastLoopUs > 500) loopEl.className = 'debug-stat-value debug-warn';
     else loopEl.className = 'debug-stat-value debug-ok';
 
-    // ── Rate history chart ──
     rateHistory.push(pps);
     if (rateHistory.length > MAX_HISTORY) rateHistory.shift();
     renderChart();
@@ -157,7 +144,7 @@ function renderChart() {
   const chart = document.getElementById('d-chart');
   if (!chart || rateHistory.length === 0) return;
   const max = Math.max(...rateHistory, 1);
-  const barH = 60; // max bar height in px
+  const barH = 60;
   const bars = rateHistory.map(v => {
     const h = Math.max(1, Math.round((v / max) * barH));
     const pct = v / max;

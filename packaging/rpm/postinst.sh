@@ -1,12 +1,11 @@
 #!/bin/sh
-# RPM %post scriptlet — runs after files are unpacked into the filesystem.
+# RPM %post scriptlet: runs after files are unpacked into the filesystem.
 #
 # Mirrors packaging/debian/postinst: reload udev so the bundled
 # 70-satellite-uinput.rules takes effect, load the uinput module so the
 # device node exists in this session, and best-effort-add SUDO_USER to
-# the `input` group. RPM doesn't pass a state argument the way dpkg does
-# (it passes 1=install, 2=upgrade) but we want the same behavior either
-# way.
+# the `input` group. RPM passes 1=install, 2=upgrade rather than dpkg's
+# state argument, but we want the same behavior either way.
 set -e
 
 if command -v udevadm >/dev/null 2>&1; then

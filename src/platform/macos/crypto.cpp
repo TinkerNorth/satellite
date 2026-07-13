@@ -44,7 +44,7 @@ static std::vector<uint8_t> base64Decode(const std::string& s) {
 }
 
 std::string sha256hex(const std::string& input) {
-    uint8_t hash[crypto_hash_sha256_BYTES]; // 32
+    uint8_t hash[crypto_hash_sha256_BYTES];
     crypto_hash_sha256(hash, reinterpret_cast<const uint8_t*>(input.data()), input.size());
     char hex[65];
     for (int i = 0; i < 32; i++) (void)snprintf(hex + i * 2, 3, "%02x", hash[i]);
@@ -52,13 +52,11 @@ std::string sha256hex(const std::string& input) {
     return std::string(hex);
 }
 
-// Local keyfile replaces DPAPI: 0600 file next to the config, the practical
-// equivalent of DPAPI's user-scoped key. Keychain would be stronger but adds
-// much more surface.
-static constexpr size_t LOCAL_KEY_LEN = crypto_secretbox_KEYBYTES; // 32
+// Local 0600 keyfile next to the config replaces DPAPI's user-scoped key.
+// Keychain would be stronger but adds much more surface.
+static constexpr size_t LOCAL_KEY_LEN = crypto_secretbox_KEYBYTES;
 
 static std::string localKeyPath() {
-    // configPath() lives in the same dir; strip the trailing filename.
     std::string p = configPath();
     auto pos = p.find_last_of('/');
     std::string dir = (pos != std::string::npos) ? p.substr(0, pos) : ".";
@@ -89,7 +87,7 @@ static bool getOrCreateLocalKey(uint8_t out[LOCAL_KEY_LEN]) {
     return writeLocalKey(out);
 }
 
-// DPAPI equivalent: libsodium secretbox, base64-encoded (nonce ‖ ciphertext).
+// libsodium secretbox, base64-encoded (nonce || ciphertext).
 std::string dpapiEncrypt(const std::string& plaintext) {
     uint8_t key[LOCAL_KEY_LEN];
     if (!getOrCreateLocalKey(key)) return "";
@@ -156,12 +154,11 @@ std::string randomDigits(int n) {
     return out;
 }
 
-// PIN state machine surfaced to the dashboard; see PinState in core/types.h.
 static std::mutex g_pinMtx;
 static std::string g_currentPin;
 static std::string g_previousPin;
 static std::chrono::steady_clock::time_point g_pinRotateAt;
-static std::chrono::steady_clock::time_point g_pinPairedAt; // default-constructed = "never"
+static std::chrono::steady_clock::time_point g_pinPairedAt;
 static bool g_pinPairedValid = false;
 static int g_pinFailCount = 0;
 static constexpr int PIN_PAIRED_HOLD_SEC = 5;
@@ -193,8 +190,8 @@ static void rotatePinsIfDueLocked() {
 bool verifyPin(const std::string& pin) {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     rotatePinsIfDueLocked();
-    // Constant-time compare so a wrong guess can't leak (via timing) how many
-    // leading digits matched. sodium_memcmp needs equal lengths — gate on size.
+    // Constant-time compare so timing can't leak how many leading digits
+    // matched. sodium_memcmp needs equal lengths, so gate on size first.
     auto matches = [&](const std::string& candidate) {
         return !candidate.empty() && pin.size() == candidate.size() &&
                sodium_memcmp(pin.data(), candidate.data(), candidate.size()) == 0;
@@ -220,8 +217,7 @@ PinSnapshot pinSnapshot() {
     s.previousPin = g_previousPin;
     const auto rem = std::chrono::duration_cast<std::chrono::seconds>(g_pinRotateAt - now).count();
     s.secondsRemaining = rem < 0 ? 0 : static_cast<int>(rem);
-    // Flash PinPaired briefly after a successful pair so the dashboard can
-    // show "Paired!" without sticking on it.
+    // Flash PinPaired briefly after a pair so the dashboard doesn't stick on it.
     s.state = (g_pinPairedValid && now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC))
                   ? PinState::PinPaired
                   : PinState::PinActive;

@@ -3,7 +3,7 @@
 // Crypto + persistence side of pairing acceptance: mints the session key and
 // writes the PairedDevice. Shared by the HTTPS dashboard route AND the native
 // tray prompts so "accept a pairing" persists identically either way.
-// (net/pairing.cpp is the pure, testable request registry.)
+// (net/pairing.cpp is the pure request registry.)
 #pragma once
 
 #include <string>

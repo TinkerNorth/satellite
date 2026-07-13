@@ -28,8 +28,6 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
-// ---- Mock ports --------------------------------------------------------------
-
 struct MockUpdater : IUpdaterPort {
     // Fetch knobs.
     bool fetchOk = true;
@@ -104,8 +102,6 @@ struct MockLog : ILogPort {
     void logMsg(LogLevel, const std::string&, const std::string&) override {}
 };
 
-// ---- Helpers -----------------------------------------------------------------
-
 static bool waitForState(UpdateService& svc, UpdateState want, int timeoutMs = 3000) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -115,10 +111,8 @@ static bool waitForState(UpdateService& svc, UpdateState want, int timeoutMs = 3
     return false;
 }
 
-// ---- versionStrictlyNewer (pure, static) ------------------------------------
-
 static void test_semver_compare() {
-    TEST("versionStrictlyNewer — numeric core comparison");
+    TEST("versionStrictlyNewer: numeric core comparison");
     EXPECT(UpdateService::versionStrictlyNewer("1.0.1", "1.0.0"));
     EXPECT(UpdateService::versionStrictlyNewer("1.1.0", "1.0.9"));
     EXPECT(UpdateService::versionStrictlyNewer("2.0.0", "1.9.9"));
@@ -128,7 +122,7 @@ static void test_semver_compare() {
 }
 
 static void test_semver_prerelease() {
-    TEST("versionStrictlyNewer — a release outranks the same-core prerelease");
+    TEST("versionStrictlyNewer: a release outranks the same-core prerelease");
     EXPECT(UpdateService::versionStrictlyNewer("1.2.0", "1.2.0-rc.1"));
     EXPECT(!UpdateService::versionStrictlyNewer("1.2.0-rc.1", "1.2.0"));
     EXPECT(UpdateService::versionStrictlyNewer("1.2.0-rc.2", "1.2.0-rc.1"));
@@ -136,17 +130,15 @@ static void test_semver_prerelease() {
 }
 
 static void test_semver_malformed() {
-    TEST("versionStrictlyNewer — unparseable components treated as 0");
+    TEST("versionStrictlyNewer: unparseable components treated as 0");
     EXPECT(!UpdateService::versionStrictlyNewer("", ""));
     EXPECT(!UpdateService::versionStrictlyNewer("abc", "x.y.z"));
     EXPECT(UpdateService::versionStrictlyNewer("1", "0"));
     EXPECT(UpdateService::versionStrictlyNewer("1.0.0", "")); // "" parses to 0.0.0
 }
 
-// ---- check flow --------------------------------------------------------------
-
 static void test_check_finds_update() {
-    TEST("check — newer release transitions to UpdateAvailable with populated info");
+    TEST("check: newer release transitions to UpdateAvailable with populated info");
     MockUpdater up;
     MockLog log;
     Config cfg;
@@ -162,7 +154,7 @@ static void test_check_finds_update() {
 }
 
 static void test_check_up_to_date() {
-    TEST("check — a non-newer release transitions to UpToDate");
+    TEST("check: a non-newer release transitions to UpToDate");
     MockUpdater up;
     up.fetchVersion = "0.0.1";
     MockLog log;
@@ -176,7 +168,7 @@ static void test_check_up_to_date() {
 }
 
 static void test_check_network_error() {
-    TEST("check — fetch failure transitions to Error with failedPhase=Checking");
+    TEST("check: fetch failure transitions to Error with failedPhase=Checking");
     MockUpdater up;
     up.fetchOk = false;
     up.fetchError = "no network";
@@ -193,7 +185,7 @@ static void test_check_network_error() {
 }
 
 static void test_check_skip_version_suppresses() {
-    TEST("check — skipVersion at/above the found version suppresses the notification");
+    TEST("check: skipVersion at/above the found version suppresses the notification");
     MockUpdater up;
     up.fetchVersion = "99.0.0";
     MockLog log;
@@ -207,10 +199,8 @@ static void test_check_skip_version_suppresses() {
     EXPECT(!svc.snapshot().info.available);
 }
 
-// ---- download / verify / install --------------------------------------------
-
 static void test_full_install_flow() {
-    TEST("download→verify→install — happy path reaches Installing");
+    TEST("download→verify→install: happy path reaches Installing");
     MockUpdater up;
     MockLog log;
     Config cfg;
@@ -226,7 +216,7 @@ static void test_full_install_flow() {
 }
 
 static void test_download_failure() {
-    TEST("download — failure transitions to Error with failedPhase=Downloading");
+    TEST("download: failure transitions to Error with failedPhase=Downloading");
     MockUpdater up;
     up.downloadOk = false;
     MockLog log;
@@ -242,7 +232,7 @@ static void test_download_failure() {
 }
 
 static void test_verify_failure() {
-    TEST("verify — checksum failure transitions to Error with failedPhase=Verifying");
+    TEST("verify: checksum failure transitions to Error with failedPhase=Verifying");
     MockUpdater up;
     up.verifyOk = false;
     MockLog log;
@@ -258,7 +248,7 @@ static void test_verify_failure() {
 }
 
 static void test_cancel_in_flight() {
-    TEST("cancelInFlight — aborts an in-progress download into Error");
+    TEST("cancelInFlight: aborts an in-progress download into Error");
     MockUpdater up;
     up.blockDownloadUntilCancel = true;
     MockLog log;
@@ -276,7 +266,7 @@ static void test_cancel_in_flight() {
 }
 
 static void test_manual_method_does_not_download() {
-    TEST("requestDownload — Manual install method is ignored (no SelfInstall download)");
+    TEST("requestDownload: Manual install method is ignored (no SelfInstall download)");
     MockUpdater up;
     up.method = InstallMethod::Manual;
     MockLog log;
@@ -293,7 +283,7 @@ static void test_manual_method_does_not_download() {
 }
 
 static void test_auto_download_and_install_chain() {
-    TEST("auto flags — check chains straight through to Installing");
+    TEST("auto flags: check chains straight through to Installing");
     MockUpdater up;
     MockLog log;
     Config cfg;
@@ -306,10 +296,8 @@ static void test_auto_download_and_install_chain() {
     EXPECT(waitForState(svc, UpdateState::Installing));
 }
 
-// ---- preference mutations + persist callback --------------------------------
-
 static void test_update_preferences_persists() {
-    TEST("updatePreferences — writes config, clamps bad channel, fires persist callback");
+    TEST("updatePreferences: writes config, clamps bad channel, fires persist callback");
     MockUpdater up;
     MockLog log;
     Config cfg;
@@ -328,7 +316,7 @@ static void test_update_preferences_persists() {
 }
 
 static void test_skip_version_clears_available() {
-    TEST("skipVersion — matching the available version clears back to Idle + persists");
+    TEST("skipVersion: matching the available version clears back to Idle + persists");
     MockUpdater up;
     MockLog log;
     Config cfg;
@@ -347,7 +335,7 @@ static void test_skip_version_clears_available() {
 }
 
 static void test_dismiss_clears_available() {
-    TEST("dismiss — records lastSeenVersion and drops UpdateAvailable to Idle");
+    TEST("dismiss: records lastSeenVersion and drops UpdateAvailable to Idle");
     MockUpdater up;
     MockLog log;
     Config cfg;

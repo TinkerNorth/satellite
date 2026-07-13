@@ -1,10 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
-# ── Single-source-of-truth version ───────────────────────────────────────────
 # /VERSION is the authoritative version string. src/core/version.h mirrors
-# the same value as preprocessor macros (so satellite.rc and C++ both see
-# it without a generated header). The version-consistency CI gate fails
-# if these drift.
+# the same value as preprocessor macros so satellite.rc and C++ both see it
+# without a generated header. The version-consistency CI gate fails if these
+# drift.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SATELLITE_VERSION_FILE LIMIT_COUNT 1)
 string(STRIP "${SATELLITE_VERSION_FILE}" SATELLITE_VERSION_FILE)
 
@@ -39,7 +38,11 @@ if(WIN32)
     add_compile_definitions(NOMINMAX)
 endif()
 
-# ── Source lists ─────────────────────────────────────────────────────────────
+# Vendored single-header libraries (nlohmann/json, cpp-httplib) under lib/.
+# SYSTEM keeps their internal warnings out of -Wall/-Wextra//W4, and every
+# target (including pure-core tests) can include them.
+include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
@@ -49,7 +52,7 @@ set(SATELLITE_CORE_SOURCES
     src/core/network_info.cpp
 )
 
-# Currently-shared infrastructure (will be ported to POSIX in Stage 3).
+# Currently-shared infrastructure (to be ported to POSIX in Stage 3).
 set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
     src/net/inner_dispatch.cpp
@@ -77,6 +80,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/main.cpp
     src/platform/windows/globals.cpp
     src/platform/windows/config.cpp
+    src/core/config_io.cpp
     src/platform/windows/crypto.cpp
     src/platform/windows/tray.cpp
     src/platform/windows/toast.cpp
@@ -93,6 +97,8 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/main.mm
     src/platform/macos/globals.cpp
     src/platform/macos/config.cpp
+    src/platform/posix/config_posix.cpp
+    src/core/config_io.cpp
     src/platform/macos/crypto.cpp
     src/platform/macos/tray.mm
     src/platform/macos/gamepad_backend.cpp
@@ -104,6 +110,8 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/main.cpp
     src/platform/linux/globals.cpp
     src/platform/linux/config.cpp
+    src/platform/posix/config_posix.cpp
+    src/core/config_io.cpp
     src/platform/linux/crypto.cpp
     src/platform/linux/gamepad_backend.cpp
     src/platform/linux/gamepad_adapter.cpp
@@ -111,9 +119,7 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/updater_adapter.cpp
 )
 
-# ── Platform-specific target ─────────────────────────────────────────────────
 if(WIN32)
-    # Resource file (icon + manifest + version info).
     set(SATELLITE_RC ${CMAKE_CURRENT_SOURCE_DIR}/satellite.rc)
 
     configure_file(
@@ -129,17 +135,16 @@ if(WIN32)
         ${SATELLITE_RC}
     )
 
-    # Platform-specific headers (crypto.h, config.h, vigem.h, tray.h, globals.h)
-    # are resolved via bare includes — add the windows platform dir to the
-    # search path so net/*.cpp and adapters/*.cpp stay OS-agnostic.
+    # Platform headers (crypto.h, config.h, vigem.h, tray.h, globals.h) are
+    # resolved via bare includes; add the windows platform dir to the search
+    # path so net/*.cpp and adapters/*.cpp stay OS-agnostic.
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
         ${CMAKE_CURRENT_BINARY_DIR}/generated
     )
-    # Vendored third-party headers go in as SYSTEM so the compiler suppresses
-    # warnings emitted from inside them — cpp-httplib uses its own deprecated
-    # APIs internally, and we don't control that upstream code.
+    # SYSTEM suppresses warnings from inside vendored headers (cpp-httplib uses
+    # its own deprecated APIs, which we don't control).
     target_include_directories(satellite SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
         ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
@@ -191,16 +196,15 @@ if(WIN32)
         shlwapi
     )
 
-    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    # OpenSSL: the client API server speaks HTTPS (cpp-httplib SSLServer).
     # Provide via vcpkg, or set -DOPENSSL_ROOT_DIR=<prefix>.
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     # libsodium: MinGW links the vendored prebuilt static archive; MSVC pulls an
     # ABI-matching static build from vcpkg (x64-windows-static → /MT, matching
-    # MSVC_RUNTIME_LIBRARY below). The vendored .a is the only thing that forces
-    # a toolchain — the vcpkg path is what makes the hardened MSVC build (CFG/CET)
-    # achievable without re-vendoring libsodium for MSVC by hand.
+    # MSVC_RUNTIME_LIBRARY below). The vcpkg path is what makes the hardened MSVC
+    # build (CFG/CET) achievable without re-vendoring libsodium for MSVC by hand.
     if(MINGW)
         target_include_directories(satellite SYSTEM PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
@@ -213,8 +217,8 @@ if(WIN32)
     endif()
 
     # Exploit-mitigation flags. CMake is the single source of truth for the
-    # build (build-satellite.bat is now a thin wrapper that just drives CMake),
-    # so these flags apply to every Windows build path.
+    # build (build-satellite.bat just drives CMake), so these apply to every
+    # Windows build path.
     if(MINGW)
         target_compile_options(satellite PRIVATE
             -O2 -Wall -Wextra
@@ -244,10 +248,9 @@ if(WIN32)
             /GUARD:CF
             /CETCOMPAT         # Win11 hardware shadow stack
             # satellite.rc already embeds satellite.manifest as RT_MANIFEST id 1
-            # (the cross-toolchain source of truth windres also consumes). MSVC's
-            # linker generates and embeds its own manifest by default, which
-            # collides with it — CVT1100 "duplicate resource". Suppress the
-            # linker copy so the .rc stays the single manifest source.
+            # (windres consumes the same source). MSVC's linker embeds its own
+            # manifest by default, which collides (CVT1100 "duplicate resource").
+            # Suppress the linker copy so the .rc stays the single manifest source.
             /MANIFEST:NO
         )
         set_target_properties(satellite PROPERTIES
@@ -280,9 +283,9 @@ elseif(APPLE)
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
     )
-    # Vendored third-party headers (cpp-httplib) — SYSTEM suppresses upstream
-    # deprecation warnings we can't fix.
+    # SYSTEM suppresses upstream deprecation warnings from cpp-httplib.
     target_include_directories(satellite SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
@@ -325,7 +328,7 @@ elseif(APPLE)
         target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARY})
     endif()
 
-    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    # OpenSSL: the client API server speaks HTTPS (cpp-httplib SSLServer).
     # Apple ships no OpenSSL development headers; use the Homebrew keg.
     if(NOT OPENSSL_ROOT_DIR)
         execute_process(COMMAND brew --prefix openssl@3
@@ -337,7 +340,6 @@ elseif(APPLE)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
-    # Cocoa frameworks for menu-bar tray + app lifecycle.
     target_link_libraries(satellite PRIVATE
         "-framework AppKit"
         "-framework Foundation"
@@ -345,8 +347,8 @@ elseif(APPLE)
 
     target_compile_options(satellite PRIVATE -O2 -Wall -Wextra -Wno-deprecated-declarations)
 
-    # Keep the MACOSX_BUNDLE wrapper but drop the .app binary next to the
-    # source tree, matching the Windows build's output convention.
+    # Keep the MACOSX_BUNDLE wrapper but drop the .app next to the source tree,
+    # matching the Windows build's output convention.
     set_target_properties(satellite PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         MACOSX_BUNDLE_BUNDLE_NAME "Satellite"
@@ -355,8 +357,8 @@ elseif(APPLE)
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${SATELLITE_VERSION}"
     )
 
-    # Copy the web UI into the .app bundle's Resources directory after build,
-    # so the server can serve it from <bundle>/Contents/Resources/web.
+    # Copy the web UI into the .app so the server can serve it from
+    # <bundle>/Contents/Resources/web.
     add_custom_command(TARGET satellite POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf
             "$<TARGET_BUNDLE_CONTENT_DIR:satellite>/Resources/web"
@@ -377,9 +379,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
     )
-    # Vendored third-party headers (cpp-httplib) — SYSTEM suppresses upstream
-    # deprecation warnings we can't fix.
+    # SYSTEM suppresses upstream deprecation warnings from cpp-httplib.
     target_include_directories(satellite SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
@@ -421,7 +423,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_libraries(satellite PRIVATE ${SODIUM_LIBRARY})
     endif()
 
-    # OpenSSL — the client API server speaks HTTPS (cpp-httplib SSLServer).
+    # OpenSSL: the client API server speaks HTTPS (cpp-httplib SSLServer).
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
@@ -453,7 +455,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(PkgConfig_FOUND)
         pkg_check_modules(APPINDICATOR QUIET ayatana-appindicator3-0.1)
         if(NOT APPINDICATOR_FOUND)
-            # Fall back to the older Canonical name still shipped on some boxes.
             pkg_check_modules(APPINDICATOR QUIET appindicator3-0.1)
         endif()
         if(APPINDICATOR_FOUND)
@@ -495,7 +496,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
-    # ── Install rules (drives `make install` and CPack DEB staging) ─────────
+    # Install rules (drives `make install` and CPack DEB staging).
     include(GNUInstallDirs)
     set(SATELLITE_PKG_DIR  "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian")
 
@@ -512,11 +513,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES   ${SATELLITE_PKG_DIR}/copyright
             DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
-    # ── CPack: build .deb (DEB generator) and/or .rpm (RPM generator).
-    # On a Debian/Ubuntu host: `cpack -G DEB` (needs dpkg-dev for shlibdeps).
-    # On any Linux host:       `cpack -G RPM` (needs rpmbuild). Ubuntu's
-    #                          rpm package ships rpmbuild too, so the release
-    #                          workflow builds both from one job.
+    # CPack: build .deb (DEB generator) and/or .rpm (RPM generator).
+    # Debian/Ubuntu host: `cpack -G DEB` (needs dpkg-dev for shlibdeps).
+    # Any Linux host: `cpack -G RPM` (needs rpmbuild). Ubuntu's rpm package
+    # ships rpmbuild too, so the release workflow builds both from one job.
     set(CPACK_GENERATOR "DEB;RPM")
     set(SATELLITE_RPM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm")
     set(CPACK_PACKAGE_NAME                  "satellite")
@@ -538,14 +538,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${SATELLITE_PKG_DIR}/postinst;${SATELLITE_PKG_DIR}/postrm")
 
-    # File-name in the form `satellite_1.0.0_amd64.deb`.
     set(CPACK_DEBIAN_FILE_NAME              DEB-DEFAULT)
 
-    # ── RPM-specific settings ───────────────────────────────────────────────
-    # CPack/RPM autoreq picks up shared-library dependencies from the binary
-    # automatically, so we don't enumerate them. Sectioning mirrors Fedora's
-    # standard "Games" group ordering. Architecture is auto-derived from
-    # CPACK_RPM_PACKAGE_ARCHITECTURE / uname -m.
+    # CPack/RPM autoreq picks up shared-library dependencies from the binary, so
+    # we don't enumerate them. Group mirrors Fedora's "Games" ordering.
+    # Architecture is auto-derived from CPACK_RPM_PACKAGE_ARCHITECTURE / uname -m.
     set(CPACK_RPM_PACKAGE_NAME              "satellite")
     set(CPACK_RPM_PACKAGE_LICENSE           "LGPLv3+")
     set(CPACK_RPM_PACKAGE_GROUP             "Amusements/Games")
@@ -554,15 +551,14 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_RPM_PACKAGE_SUMMARY           "${CPACK_PACKAGE_DESCRIPTION_SUMMARY}")
     set(CPACK_RPM_PACKAGE_DESCRIPTION       "${CPACK_PACKAGE_DESCRIPTION}")
     set(CPACK_RPM_PACKAGE_AUTOREQ           ON)
-    # Wire the post-install / post-uninstall scriptlets that match the
-    # behavior of the Debian postinst / postrm (udev reload, modprobe
+    # Scriptlets match the Debian postinst / postrm (udev reload, modprobe
     # uinput, best-effort input-group membership).
     set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE
         "${SATELLITE_RPM_DIR}/postinst.sh")
     set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE
         "${SATELLITE_RPM_DIR}/postuninst.sh")
-    # Files our package owns that overlap with system-managed dirs need to
-    # be carved out, otherwise rpmbuild refuses to claim ownership.
+    # Carve out files that overlap system-managed dirs, otherwise rpmbuild
+    # refuses to claim ownership.
     set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION
         "/lib/udev"
         "/lib/udev/rules.d"
@@ -570,7 +566,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "/usr/share/applications"
         "/usr/share/pixmaps"
         "/usr/share/satellite")
-    # File-name in the form `satellite-1.0.0-1.x86_64.rpm`.
     set(CPACK_RPM_FILE_NAME                 RPM-DEFAULT)
 
     include(CPack)
@@ -579,10 +574,10 @@ else()
     message(STATUS "satellite: unsupported platform; configuring tests only.")
 endif()
 
-# ── Link-Time Optimization (IPO/LTO) for the shipped binary ──────────────────
+# Link-Time Optimization (IPO/LTO) for the shipped binary.
 # Cross-TU inlining across the hot path (receiver → session_service →
 # vigem_adapter → vigem). check_ipo_supported gates it so a toolchain that can't
-# do LTO degrades gracefully instead of failing configure. Release-only — the
+# do LTO degrades gracefully instead of failing configure. Release-only: the
 # test executables stay non-LTO for fast, debuggable builds. MSVC maps this to
 # /GL + /LTCG (which also strengthens /guard:cf); GCC/Clang to -flto.
 if(TARGET satellite)
@@ -595,11 +590,11 @@ if(TARGET satellite)
         set_target_properties(satellite PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         message(STATUS "satellite: LTO/IPO enabled for Release builds.")
     else()
-        message(STATUS "satellite: LTO/IPO unavailable — ${SATELLITE_IPO_MSG}")
+        message(STATUS "satellite: LTO/IPO unavailable: ${SATELLITE_IPO_MSG}")
     endif()
 endif()
 
-# ── Tests (portable — core-only) ─────────────────────────────────────────────
+# Tests (portable, core-only).
 enable_testing()
 
 add_executable(test_session_service
@@ -624,7 +619,6 @@ set_target_properties(test_session_service PROPERTIES
 
 add_test(NAME session_service COMMAND test_session_service)
 
-# ── Receiver inner-message dispatch tests (portable — no networking) ─────────
 # Exercises net/inner_dispatch.cpp: the per-message length guards that reject
 # truncated / oversized wire payloads before a decoder reads out of bounds.
 # inner_dispatch.cpp is socket-free, so this builds cleanly on every platform.
@@ -646,7 +640,6 @@ set_target_properties(test_receiver PROPERTIES
 )
 add_test(NAME receiver COMMAND test_receiver)
 
-# ── mDNS protocol tests (portable — no networking) ───────────────────────────
 add_executable(test_mdns_protocol
     tests/test_mdns_protocol.cpp
     src/net/mdns_protocol.cpp
@@ -664,11 +657,10 @@ set_target_properties(test_mdns_protocol PROPERTIES
 )
 add_test(NAME mdns_protocol COMMAND test_mdns_protocol)
 
-# ── Pairing-request registry tests (portable — no networking, no sodium) ─────
 # Exercises net/pairing.cpp: the Path-B (dish shows PIN, operator accepts)
-# request lifecycle — submit, poll, PIN-matched accept, single-use key
-# handback, deny, and refresh-in-place. Deliberately crypto-free, so it builds
-# on every platform without libsodium.
+# request lifecycle: submit, poll, PIN-matched accept, single-use key handback,
+# deny, and refresh-in-place. Crypto-free, so it builds on every platform
+# without libsodium.
 add_executable(test_pairing
     tests/test_pairing.cpp
     src/net/pairing.cpp
@@ -686,7 +678,6 @@ set_target_properties(test_pairing PROPERTIES
 )
 add_test(NAME pairing COMMAND test_pairing)
 
-# ── Portable pure-logic suites (header-only or single-TU, no networking) ─────
 # Each pairs a pure unit (codec / parser / predicate) with its own test binary,
 # mirroring the "pure core, separate from I/O" split the app itself uses.
 function(satellite_add_pure_test name)
@@ -713,8 +704,11 @@ satellite_add_pure_test(test_machine_id tests/test_machine_id.cpp)
 satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
 satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
-satellite_add_pure_test(test_json_mini tests/test_json_mini.cpp)
+satellite_add_pure_test(test_json tests/test_json.cpp)
+satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
+satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
+satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
 
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
 # at the real web/lang catalogs so every controller-type string is asserted
@@ -729,7 +723,6 @@ target_compile_definitions(test_catalog PRIVATE
 find_package(Threads REQUIRED)
 target_link_libraries(test_update_service PRIVATE Threads::Threads)
 
-# ── Linux platform tests ────────────────────────────────────────────────────
 # Exercises the Linux-only adapters that don't need root/uinput/D-Bus:
 # JSON helpers, config persistence, XDG autostart .desktop file handling,
 # and path utilities.
@@ -737,6 +730,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(test_linux_platform
         tests/test_linux_platform.cpp
         src/platform/linux/config.cpp
+        src/platform/posix/config_posix.cpp
+        src/core/config_io.cpp
         src/platform/linux/globals.cpp
         src/platform/linux/gamepad_adapter.cpp
         ${SATELLITE_CORE_SOURCES}
@@ -744,12 +739,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_include_directories(test_linux_platform PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
     )
     target_include_directories(test_linux_platform SYSTEM PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib
     )
     # SATELLITE_BUILD_TESTS gates test-only seams (e.g. the synthetic
-    # invokeLightbarForTest entrypoint) — the symbol is elided from
+    # invokeLightbarForTest entrypoint); the symbol is elided from
     # production builds, which don't define this macro.
     target_compile_definitions(test_linux_platform PRIVATE
         CPPHTTPLIB_NO_EXCEPTIONS
@@ -764,7 +760,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME linux_platform COMMAND test_linux_platform)
 endif()
 
-# ── Windows platform tests ──────────────────────────────────────────────────
 # Exercises the Windows-only adapters that don't need a desktop session,
 # ViGEm bus driver, or paired client: JSON helpers, config persistence,
 # HKCU\...\Run autostart, and path utilities. Both APPDATA config and
@@ -774,6 +769,7 @@ if(WIN32)
     add_executable(test_windows_platform
         tests/test_windows_platform.cpp
         src/platform/windows/config.cpp
+        src/core/config_io.cpp
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
         src/net/session_crypto.cpp
@@ -820,12 +816,11 @@ if(WIN32)
     add_test(NAME windows_platform COMMAND test_windows_platform)
 endif()
 
-# ── ViGEm adapter submit-path tests ─────────────────────────────────────────
 # Links the real vigem_adapter.cpp against an in-test fake ViGEmBus driver
 # layer (the free functions from vigem.cpp) so the submit IO path can be
 # exercised without the driver. Pins that submits use the SYNCHRONOUS helpers
 # (never fire-and-forget) and that a DS4 EX rejection falls back to the basic
-# DS4 report — the regression that silently killed PlayStation input.
+# DS4 report (the regression that silently killed PlayStation input).
 if(WIN32)
     add_executable(test_vigem_adapter
         tests/test_vigem_adapter.cpp

@@ -1,17 +1,7 @@
-// ── dashboard.js — Main dashboard with SSE real-time updates ─────────────────
-
 let eventSource = null;
 
-// ── In-button loader helpers ───────────────────────────────────────────────
-// Each non-atomic action on the dashboard (Accept pairing, Disconnect, Remove,
-// Touchpad mode) flips its trigger into a "working" state while the fetch is
-// in flight: button disabled, content replaced with spinner + label. The
-// caller saves the original innerHTML, runs the request, then restores it.
-// Kept inline so the two-stage pattern stays readable next to the call sites.
-
-// Replace a button's contents with `<spinner> <label>` and disable it.
-// Returns a restorer; call it (with no args) once the request settles to
-// put the original markup back.
+// Disable a button and swap its contents for a spinner (+ optional label).
+// Returns a restorer to call once the request settles.
 function setButtonLoading(btn, label) {
   if (!btn) return function () {};
   const prevHTML     = btn.innerHTML;
@@ -19,13 +9,11 @@ function setButtonLoading(btn, label) {
   const prevAria     = btn.getAttribute('aria-busy');
   btn.disabled = true;
   btn.setAttribute('aria-busy', 'true');
-  // Sizing: 12px for icon-only buttons (fits inside the 32×32 .btn-icon),
-  // 14px for text buttons so the spinner reads alongside the button label.
+  // 12px fits inside the 32x32 .btn-icon; 14px reads next to a text label.
   const size = btn.classList.contains('btn-icon') ? 12 : 14;
   if (label) {
     btn.innerHTML = '<span class="btn-with-loader">' + spinnerSVG(size) + '<span>' + esc(label) + '</span></span>';
   } else {
-    // Icon button — just swap the glyph for the spinner.
     btn.innerHTML = '<span class="btn-with-loader">' + spinnerSVG(size) + '</span>';
   }
   return function restore() {
@@ -36,19 +24,9 @@ function setButtonLoading(btn, label) {
   };
 }
 
-// ── Connection-state nomenclature (mirrors core/types.h) ───────────────────
-// The server now stamps a lowercase `state` string onto each row in
-// /api/connections, /api/devices, and per-controller in /api/connections, and
-// pushes a `pin` SSE event. These tables map those wire strings onto the
-// user-facing chip text. Keeping all copy in one place means swapping a chip
-// label is a one-line change here, not a grep across the dashboard.
-
-// DeviceLinkState → row chip (paired-devices section).
-// "linking" is enumerated server-side but is currently never surfaced —
-// /api/connections handshake is synchronous, so a device is either Paired
-// (no live conn) or Active (live). The label is here for forward-compat.
-// Resolved lazily through t() so the active-locale catalog is used. The chip
-// vocabulary mirrors dish-android's chip_status_* keys for cross-app consistency.
+// Map the server's wire `state` strings (mirrors core/types.h) to chip text.
+// "linking" is never surfaced today (the handshake is synchronous) but is kept
+// for forward-compat.
 function deviceLinkStateLabel(key) {
   switch (key) {
     case 'linking':       return t('device.state.connecting');
@@ -59,12 +37,6 @@ function deviceLinkStateLabel(key) {
   }
 }
 
-// DeviceLinkState → v6 brand dish glyph next to the chip. Mirrors the
-// "dish" iconography family in img/icons/ (dish.svg, dish-connected.svg,
-// dish-receiving-animated.svg, dish-disabled.svg, dish-off.svg). The dish
-// reads as "the sender" — i.e. the remote Dish client — so the receiving
-// state animates the inbound-signal arcs and the not-responding state uses
-// the slash variant.
 const DEVICE_LINK_STATE_ICON = {
   paired:        'dish.svg',
   linking:       'dish-scanning-animated.svg',
@@ -72,11 +44,8 @@ const DEVICE_LINK_STATE_ICON = {
   notResponding: 'dish-off.svg',
 };
 
-// ControllerState → per-controller tag (virtual-controllers section).
-// Today the server only ever stamps "live" or "detached"; the transient
-// states (registering, allocating) and the "failed" case are enumerated for
-// when the SessionService starts threading them through. Lookup goes through
-// t() so the active locale catalog wins.
+// The server only stamps "live" or "detached" today; the transient and
+// "failed" cases are enumerated for when SessionService threads them through.
 function controllerStateLabel(key) {
   switch (key) {
     case 'source':       return t('controller.state.detected');
@@ -90,13 +59,9 @@ function controllerStateLabel(key) {
   }
 }
 
-// ── Backend copy table ──────────────────────────────────────────────────────
-// Keyed by (backend.id, errorCode). The C++ server emits structured status;
-// this table owns every user-facing string. Adding a new error code on the
-// server falls back to a generic message until a matching entry is added here.
-//
-// Resolved via t() so each backend lookup uses the active locale catalog. The
-// commands + URLs stay verbatim (they're literal shell snippets, not copy).
+// Keyed by (backend.id, errorCode); a new server error code falls back to a
+// generic message until an entry is added here. Commands and URLs stay
+// verbatim (literal shell snippets, not copy).
 function backendCopy(backendId) {
   if (backendId === 'vigem') {
     return {
@@ -162,9 +127,8 @@ function backendCopy(backendId) {
   return {};
 }
 
-// Compat shim — debug.js dips into BACKEND_COPY[id] for pipeline labels +
-// error titles. Keep a Proxy-like accessor that yields the live, localised
-// copy on demand, so the debug page doesn't have to learn about backendCopy().
+// Compat shim: debug.js indexes BACKEND_COPY[id] for pipeline labels + error
+// titles. This Proxy yields live localised copy on demand.
 const BACKEND_COPY = new Proxy({}, {
   get(_, backendId) {
     if (typeof backendId !== 'string') return undefined;
@@ -172,15 +136,11 @@ const BACKEND_COPY = new Proxy({}, {
   },
 });
 
-// ── Per-controller motion (IMU) copy ────────────────────────────────────────
-// Task 1.1 — gyro/accelerometer. Four states, derived from the controller's
-// motionCapable / motionActive / motionSink flags in /api/connections. Like
-// BACKEND_COPY above, this table owns every user-facing motion string.
-//   na     — controller has no IMU (e.g. an Xbox pad): motion not available
-//   ready  — IMU present + advertised, but no motion packet received yet
-//   on     — motion streaming AND reaching the OS-level virtual gamepad
-//   nosink — motion streaming, but the virtual device exposes no IMU surface
-//            to deliver it to (Xbox-typed device, old ViGEmBus, or macOS)
+// Motion (IMU) states derived from motionCapable/motionActive/motionSink:
+//   na     no IMU (e.g. Xbox pad)
+//   ready  IMU present + advertised, no packet yet
+//   on     streaming and reaching the virtual gamepad
+//   nosink streaming, but the virtual device has no IMU surface to receive it
 function motionCopy(id) {
   switch (id) {
     case 'ready':
@@ -195,16 +155,14 @@ function motionCopy(id) {
   }
 }
 
-// Resolve a controller's motion state id from the /api/connections flags.
 function motionStateId(ctrl) {
   if (!ctrl.motionCapable) return 'na';
   if (!ctrl.motionActive) return 'ready';
   return ctrl.motionSink ? 'on' : 'nosink';
 }
 
-// Map a battery (status, level) to its glyph in img/icons/. Status drives the
-// charging icons; otherwise the level picks a rung of the charge ladder. This
-// mirrors the percent → file table in the battery asset USAGE.md.
+// Status drives the charging icons; otherwise level picks a rung of the
+// charge ladder (mirrors the battery asset USAGE.md).
 function batteryIconFile(b, lvl) {
   if (b.status === 'charging') return 'battery-charging-animated.svg';
   if (b.status === 'wired')    return 'battery-charging.svg';
@@ -218,12 +176,8 @@ function batteryIconFile(b, lvl) {
   return 'battery-critical.svg';
 }
 
-// ── Per-controller battery chip ─────────────────────────────────────────────
-// Task 1.2 — battery level reporting. Derived from `ctrl.battery` in
-// /api/connections: either { level: 0..100 | null, status: "..." } or null.
-// The sender forwards the controller's own battery, or — when the controller
-// is wired/USB — the host machine's battery (laptop %, or 100% on a desktop).
-// Returns { cls, text, title, icon }, mirroring MOTION_COPY's shape.
+// Derived from ctrl.battery ({ level: 0..100|null, status } or null). A wired
+// controller falls back to the host machine's battery (100% on a desktop).
 function batteryChip(ctrl) {
   const b = ctrl.battery;
   if (!b) {
@@ -271,19 +225,15 @@ function batteryChip(ctrl) {
   return { cls, text, title, icon: batteryIconFile(b, lvl) };
 }
 
-// Per-controller touchpad chip — derived from the controller's `touchpadActive`
-// flag, its `controllerType`, and its own `touchpadMode` (per-controller —
-// the descriptor field, client-owned; the dashboard only mirrors it).
-// Mirrors MOTION_COPY's { cls, text, title } shape.
+// Derived from touchpadActive, controllerType, and touchpadMode (client-owned;
+// the dashboard only mirrors it).
 function touchpadChip(ctrl) {
   const mode = ctrl.touchpadMode || 'ds4';
   if (mode === 'off') {
     return { cls: 'touchpad-off', text: t('touchpad.off.text'), title: t('touchpad.off.title') };
   }
-  // "Pad" mode forwards into the virtual DualShock 4 touchpad surface — but
-  // that surface only exists on a PlayStation-typed virtual controller. For
-  // any other controller type the samples have nowhere to land, so flag the
-  // mismatch instead of pretending the touchpad routes.
+  // "Pad" mode needs the virtual DualShock 4 touchpad surface, which only
+  // exists on a PlayStation-typed controller; flag the mismatch otherwise.
   if (mode === 'ds4' && (ctrl.controllerType || 'xbox') !== 'playstation') {
     return { cls: 'touchpad-nosurface', text: t('touchpad.nosurface.text'), title: t('touchpad.nosurface.title') };
   }
@@ -297,19 +247,14 @@ function touchpadChip(ctrl) {
            title: t('touchpad.on.title', [destLabel]) };
 }
 
-// ── Per-controller lightbar chip (Task 1.4) ─────────────────────────────────
-// The host game's lightbar colour, returned to a DualSense / DS4. Derived from
-// `ctrl.lightbarCapable` (the CAP_LIGHTBAR bit the sender advertised — also the
-// gate the receiver uses to decide whether to emit MSG_LIGHTBAR) and
-// `ctrl.lightbar` (the most recent "#rrggbb" colour, or null until the game
-// sets one). Mirrors MOTION_COPY's { cls, text, title } shape, plus `swatch`:
-// a validated CSS colour shown as a small square, or null when there is none.
+// Derived from ctrl.lightbarCapable (CAP_LIGHTBAR) and ctrl.lightbar (latest
+// "#rrggbb", or null). `swatch` is a validated colour or null.
 function lightbarChip(ctrl) {
   if (!ctrl.lightbarCapable) {
     return { cls: 'lightbar-na', text: t('lightbar.na.text'), swatch: null,
              title: t('lightbar.na.title') };
   }
-  // Only ever trust a strict #rrggbb string into the swatch's style attribute.
+  // Only trust a strict #rrggbb string into the swatch's style attribute.
   const raw = (typeof ctrl.lightbar === 'string') ? ctrl.lightbar : null;
   const colour = (raw && /^#[0-9a-f]{6}$/i.test(raw)) ? raw : null;
   if (!colour) {
@@ -320,19 +265,14 @@ function lightbarChip(ctrl) {
            title: t('lightbar.on.title', [colour.toUpperCase()]) };
 }
 
-// ── Inline failure feedback ─────────────────────────────────────────────────
-// Surface a dashboard action failure (disconnect, remove device, touchpad-mode
-// change) in the shared #dash-notice strip. Consistent with how the Updates
-// section flags errors — a visible inline message rather than a silent no-op.
 let dashNoticeTimer = null;
 function showDashError(msg) {
   const el = document.getElementById('dash-notice');
   const txt = document.getElementById('dash-notice-text');
   if (!el || !txt) return;
-  txt.textContent = msg;          // textContent — caller strings are not trusted
+  txt.textContent = msg;          // textContent: caller strings are untrusted
   el.classList.add('show');
   if (dashNoticeTimer) clearTimeout(dashNoticeTimer);
-  // Auto-dismiss after 8s; the close button clears it sooner.
   dashNoticeTimer = setTimeout(hideDashError, 8000);
 }
 function hideDashError() {
@@ -341,16 +281,14 @@ function hideDashError() {
   if (dashNoticeTimer) { clearTimeout(dashNoticeTimer); dashNoticeTimer = null; }
 }
 
-// Pull a human-readable reason out of an apiPost() result for showDashError().
 function apiErrorText(res, fallback) {
-  if (res && res.status === 0) return fallback + ' — ' + t('connections.err.server-unreachable') + '.';
+  if (res && res.status === 0) return fallback + ': ' + t('connections.err.server-unreachable') + '.';
   const detail = (res && res.data && res.data.error) ? res.data.error : null;
-  return detail ? fallback + ' — ' + detail + '.' : fallback + '.';
+  return detail ? fallback + ': ' + detail + '.' : fallback + '.';
 }
 
-// Guards one-time listener wiring — initDashboard() runs on every nav back to
-// /dashboard, but the elements it binds (#dash-notice-close, #device-list,
-// #device-list) are static, so their listeners must attach exactly once.
+// initDashboard() runs on every nav to /dashboard, but the elements it binds
+// are static, so attach their listeners exactly once.
 let dashboardListenersWired = false;
 
 function initDashboard() {
@@ -399,12 +337,8 @@ async function dashRenderNetWarning() {
   }
 }
 
-// ── SSE-reconnect bar ──────────────────────────────────────────────────────
-// Mounted in #dashboard-sse-reconnect inside index.html. Drawn with the bar
-// loader (whole-pane / area-level wait, per the design spec) so the user
-// sees the live stream is mid-reconnect rather than the dashboard silently
-// going stale. The bar mounts lazily on first need; once mounted, we just
-// flip `hidden` on the wrapper.
+// Shows the bar loader while the live stream reconnects, so the dashboard
+// doesn't silently go stale. Mounts lazily on first need.
 function setSseReconnecting(on) {
   const slot = document.getElementById('dashboard-sse-reconnect');
   if (!slot) return;
@@ -416,13 +350,11 @@ function setSseReconnecting(on) {
   }
 }
 
-// ── SSE (replaces polling) ──────────────────────────────────────────────────
 function startSSE() {
   stopSSE();
   eventSource = new EventSource('/api/events');
 
-  // Any successful event delivery means the stream is healthy again — clear
-  // the reconnect bar if it was shown by a prior onerror.
+  // Any successful delivery means the stream recovered; clear the bar.
   const onAnyMessage = () => setSseReconnecting(false);
 
   eventSource.addEventListener('status', (e) => {
@@ -440,13 +372,11 @@ function startSSE() {
       g_lastConnections = d;
       updateConnections(d);
       renderDeviceList();
-      // Capture active-connection count for the restart-confirmation modal.
       window.__activeConnectionCount = (d.connections || []).length;
     } catch (err) { /* ignore */ }
   });
 
-  // Paired set + link state, pushed each tick — the device-centric list needs
-  // both this and `connections` to render one row per device.
+  // The device list needs both this and `connections` to render one row each.
   eventSource.addEventListener('devices', (e) => {
     onAnyMessage();
     try {
@@ -463,9 +393,6 @@ function startSSE() {
     } catch (err) { /* ignore */ }
   });
 
-  // PIN state — { state: "idle|active|expired|paired", secondsRemaining }.
-  // Drives the "Expires in m:ss" countdown on the PIN panel and the brief
-  // "Paired!" flash after a successful verifyPin().
   eventSource.addEventListener('pin', (e) => {
     onAnyMessage();
     try {
@@ -474,8 +401,6 @@ function startSSE() {
     } catch (err) { /* ignore */ }
   });
 
-  // Reverse-pairing requests — array of { deviceId, deviceName, clientIP,
-  // secondsRemaining }. Drives the accept/deny panel; an empty array hides it.
   eventSource.addEventListener('pairRequests', (e) => {
     onAnyMessage();
     try {
@@ -486,33 +411,23 @@ function startSSE() {
 
   eventSource.onerror = () => {
     stopSSE();
-    // Check if server is truly unreachable vs just a transient SSE glitch
+    // Distinguish a transient SSE glitch from a truly unreachable server.
     fetch('/api/status', { signal: AbortSignal.timeout(3000) })
       .then(r => {
         if (r.ok) {
-          // Server is still up, just SSE dropped — reconnect. Surface the
-          // bar loader at the top of the dashboard for the gap so the user
-          // can see the live stream is mid-recovery rather than the page
-          // silently going stale.
           setSseReconnecting(true);
           setTimeout(startSSE, 2000);
         } else {
-          // Truly offline — the offline view takes over the whole card,
-          // so any reconnect bar that was on screen is now hidden by the
-          // showView() swap. Clear the flag so it doesn't briefly flash
-          // when we come back online.
           setSseReconnecting(false);
           showOffline();
         }
       })
       .catch(() => {
-        // Server unreachable
         setSseReconnecting(false);
         showOffline();
       });
   };
 
-  // Also do an initial fetch
   poll();
 }
 
@@ -526,10 +441,8 @@ function updateStatus(d) {
   }
 }
 
-// Replace an element's markup only when it changed. The controller list
-// re-renders on every SSE `connections` tick, but its contents change far
-// less often — skipping no-op writes keeps the SMIL-animated charging-battery
-// icon from restarting its loop on each tick.
+// Write markup only when it changed, else the SMIL charging-battery icon
+// restarts its loop on every SSE tick.
 function setHTML(el, html) {
   if (el.__html === html) return;
   el.__html = html;
@@ -546,13 +459,10 @@ function updateConnections(d) {
     return;
   }
 
-  // ── Virtual controllers list (per-device ViGEm state) ──
   if (ctrlEl) {
     const allCtrls = [];
     d.connections.forEach(c => {
       c.controllers.forEach(ctrl => {
-        // touchpadMode is per-controller (rides the descriptor); the owning
-        // connection contributes only identity + link state.
         allCtrls.push({ ...ctrl, deviceName: c.deviceName, connectionId: c.connectionId,
                         connState: c.state || 'active' });
       });
@@ -561,8 +471,8 @@ function updateConnections(d) {
       setHTML(ctrlEl, '<p class="hint">' + esc(t('controllers.empty')) + '</p>');
     } else {
       setHTML(ctrlEl, allCtrls.map(ctrl => {
-        // pluggedIn is adapter truth (a virtual device exists right now), not
-        // an inference from the serial number.
+        // pluggedIn is adapter truth (a virtual device exists now), not an
+        // inference from the serial number.
         const ok = ctrl.pluggedIn;
         const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
@@ -570,15 +480,14 @@ function updateConnections(d) {
         const bat = batteryChip(ctrl);
         const tp = touchpadChip(ctrl);
         const lb = lightbarChip(ctrl);
-        // Per-controller pipeline state — falls back to "Mounted" for an
-        // active controller and "Blocked" for an inactive one (the server
-        // only stamps live/detached today; see ControllerState in types.h).
+        // Falls back to live/failed since the server only stamps live/detached
+        // today (see ControllerState in types.h).
         const stateKey = ctrl.state || (ok ? 'live' : 'failed');
         const stateText = controllerStateLabel(stateKey);
         const ctrlHeading = t('controllers.controller-num', [ctrl.controllerIndex]);
         const serialLabel = t('controllers.serial');
-        // A pad owned by a stalling connection is about to die with it —
-        // tag the row so it can't masquerade as a healthy duplicate.
+        // A pad on a stalling connection is about to die with it; tag the row
+        // so it can't masquerade as a healthy duplicate.
         const staleTag = ctrl.connState === 'notResponding'
           ? ` <span class="device-state state-notResponding">${esc(deviceLinkStateLabel('notResponding'))}</span>`
           : '';
@@ -611,19 +520,13 @@ async function poll() {
     const d = await r.json();
     updateStatus(d);
   } catch (e) {
-    // Server unreachable during poll
     showOffline();
     return;
   }
   checkBackendStatus();
 }
 
-// ── Connections ─────────────────────────────────────────────────────────────
 async function disconnectConn(connId, btn) {
-  // Per-row disconnect — DELETE /api/connections/<token> is ~0.5s. Replace
-  // the close-X glyph with a spinner inside the button while we wait so the
-  // user gets immediate feedback the request is in flight; the row itself
-  // disappears when the SSE `connections` tick arrives.
   const restore = setButtonLoading(btn);
   try {
     const res = await api('/api/connections/' + encodeURIComponent(connId),
@@ -634,21 +537,14 @@ async function disconnectConn(connId, btn) {
       return;
     }
     hideDashError();
-    // Do NOT restore() on success — the row is about to be removed by the
-    // SSE `connections` tick, so the original glyph would briefly flash back
-    // before the row vanishes. Leaving the spinner running is fine: the
-    // node is on its way out within ~500ms.
+    // Don't restore() on success: the SSE `connections` tick removes the row,
+    // and restoring would flash the glyph back first.
   } catch (e) {
     restore();
   }
 }
 
 
-// ── PIN ─────────────────────────────────────────────────────────────────────
-// Render the rotating current/previous PIN pair into the dashboard panel,
-// driven by the SSE `pin` stream each tick. The hint line carries the
-// rotation countdown / "Paired!" flash so the transient states don't
-// overwrite the PINs themselves.
 function updatePinPanel(s) {
   const cur = document.getElementById('pin-current');
   const prev = document.getElementById('pin-previous');
@@ -666,16 +562,13 @@ function updatePinPanel(s) {
   hint.textContent = t('pin.hint.active', [mm + ':' + ss]);
 }
 
-// ── Reverse-direction pairing (the dish shows a PIN; the operator accepts) ───
-// Render one row per in-flight request showing the PIN the device sent; the
-// operator compares it against the device's screen and clicks Accept/Reject,
-// mirroring the native prompt.
+// One row per in-flight request; the operator compares the PIN against the
+// device's screen and accepts/denies.
 function updatePairRequests(list) {
   const section = document.getElementById('pair-request-section');
   const el = document.getElementById('pair-request-list');
   const reqs = Array.isArray(list) ? list : [];
 
-  // Header marker — shows the pending count and jumps to the panel on click.
   const badge = document.getElementById('pair-badge');
   if (badge) {
     badge.textContent = String(reqs.length);
@@ -712,7 +605,6 @@ function updatePairRequests(list) {
   }).join('');
 }
 
-// Delegated click handler for the pairing-request list.
 function handlePairRequestClick(e) {
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
@@ -725,25 +617,22 @@ async function respondPairRequest(deviceId, accept, btn) {
   const restore = setButtonLoading(btn, accept ? t('pairreq.accepting') : null);
   try {
     const res = await apiPost('/api/pair/respond', { deviceId, accept });
-    // An expired/raced request comes back HTTP-200 with ok:false, so check both layers.
+    // An expired/raced request returns HTTP 200 with ok:false; check both.
     if (!res.ok || (res.data && res.data.ok === false)) {
       showDashError(apiErrorText(res, accept ? t('pairreq.err.accept') : t('pairreq.err.deny')));
       restore();
       return;
     }
     hideDashError();
-    // Leave the spinner — the SSE pairRequests tick drops this row within ~1s.
+    // Leave the spinner; the SSE pairRequests tick drops this row within ~1s.
   } catch (e) {
     restore();
   }
 }
 
-// ── Devices (one device-centric list) ───────────────────────────────────────
-// Every paired device is exactly one row; its live session (when any) rides as
-// a state chip + meta on the SAME row instead of a parallel "Connections"
-// section, so one healthy phone can never legitimately occupy multiple rows.
-// Fed by the SSE `devices` + `connections` events; loadDevices() seeds the
-// first paint before the stream connects.
+// One row per paired device; its live session rides as a chip on the same row
+// so one phone can't occupy multiple rows. Fed by the SSE devices +
+// connections events; loadDevices() seeds the first paint.
 let g_lastDevices = null;
 let g_lastConnections = null;
 
@@ -761,8 +650,6 @@ function renderDeviceList() {
   const disconnectLb = t('connections.disconnect');
   setHTML(el, devs.map(d => {
     const conn = conns.find(c => c.deviceId === d.id) || null;
-    // The /api/devices state already folds in liveness (paired when offline,
-    // active/notResponding when a session exists).
     const stateKey = d.state || 'paired';
     const stateText = deviceLinkStateLabel(stateKey);
     const stateIcon = DEVICE_LINK_STATE_ICON[stateKey] || DEVICE_LINK_STATE_ICON.paired;
@@ -775,8 +662,7 @@ function renderDeviceList() {
     } else {
       meta = `${esc(d.lastIP)} · ${esc(d.pairedAt)}`;
     }
-    // Kick (session-scoped, transient — the dish may reconnect) only renders
-    // for a live session; unpair (trust-scoped) always.
+    // Kick only renders for a live session; unpair always.
     const kickBtn = conn
       ? `<button class="btn-icon" type="button" data-act="disconnect" data-conn-id="${esc(conn.connectionId)}" title="${esc(disconnectLb)}"><img src="img/icons/close_x.svg" alt="${esc(disconnectLb)}" class="emoji-icon"></button>`
       : '';
@@ -795,7 +681,7 @@ function renderDeviceList() {
   }).join(''));
 }
 
-// First-paint seed before the SSE stream connects (and refresh after unpair).
+// First-paint seed before SSE connects, and refresh after unpair.
 async function loadDevices() {
   try {
     const r = await fetch('/api/devices');
@@ -805,9 +691,8 @@ async function loadDevices() {
   } catch (e) { /* ignore */ }
 }
 
-// Single delegated click handler for the device list — keeps device ids and
-// connection ids out of inline onclick= JS-string contexts (see esc() note:
-// it is an HTML escaper, not a JS-string escaper).
+// Delegated handler keeps ids out of inline onclick= JS-string contexts;
+// esc() is an HTML escaper, not a JS-string escaper.
 function handleDeviceListClick(e) {
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
@@ -819,9 +704,7 @@ function handleDeviceListClick(e) {
 }
 
 async function removeDevice(id, btn) {
-  // DELETE /api/devices/<id> unpairs AND closes any live session (the server
-  // sends the close-notify first). Swap the glyph for the spinner inside the
-  // icon button, then let the re-render replace the row.
+  // DELETE /api/devices/<id> unpairs and closes any live session.
   const restore = setButtonLoading(btn);
   try {
     const res = await api('/api/devices/' + encodeURIComponent(id), { method: 'DELETE' });
@@ -831,8 +714,7 @@ async function removeDevice(id, btn) {
       return;
     }
     hideDashError();
-    // Don't restore() — loadDevices() rebuilds the list, which removes this
-    // button entirely. Restoring would just flash the glyph back.
+    // Don't restore(); loadDevices() rebuilds the list and removes this button.
     loadDevices();
   } catch (e) {
     restore();

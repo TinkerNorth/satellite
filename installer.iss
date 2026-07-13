@@ -1,40 +1,35 @@
 ; ============================================================================
-;  Satellite -- Inno Setup Installer Script
+;  Satellite Inno Setup Installer Script
 ;  Requires: Inno Setup 6.2+ (https://jrsoftware.org/isinfo.php)
 ;
 ;  Build:  pwsh scripts/fetch-redist.ps1 ; iscc installer.iss
 ;  Output: dist\SatelliteSetup.exe
 ;
-;  PRODUCTION CHECKLIST
-;  --------------------
-;  This script intentionally goes beyond the minimum to be a "top-tier"
-;  Windows installer. Highlights:
-;
+;  Notes:
 ;    * Authenticode signing wired in via SignTool=signtool (define a
-;      signtool program with `iscc /Ssigntool=...` or your CI) -- see
-;      scripts/sign.ps1 for the canonical recipe and the registration
-;      line below.
+;      signtool program with `iscc /Ssigntool=...` or your CI); see
+;      scripts/sign.ps1 for the recipe and the registration line below.
 ;    * Restart Manager: if satellite.exe is running, it gets closed
 ;      cleanly (WM_QUERYENDSESSION) instead of taskkill /F so config
 ;      writes survive an in-place upgrade.
 ;    * AppMutex prevents two installers from racing each other.
 ;    * SetupLogging=yes preserves logs under %TEMP% so failed installs
 ;      can be diagnosed remotely.
-;    * Autostart is OPT-IN (Flags: unchecked) -- users have to actively
-;      choose to add the app to startup, matching modern Windows UX.
-;    * OTA upgrades PRESERVE the user's last autostart / desktop-icon
+;    * Autostart is OPT-IN (Flags: unchecked): users actively choose to
+;      add the app to startup.
+;    * OTA upgrades preserve the user's last autostart / desktop-icon
 ;      choices via GetPreviousData, instead of clobbering them.
-;    * Firewall rules apply to BOTH private and domain profiles (public
-;      is intentionally excluded for safety).
-;    * Per-machine install only (PrivilegesRequired=admin) -- gates
+;    * Firewall rules apply to private and domain profiles (public is
+;      excluded).
+;    * Per-machine install only (PrivilegesRequired=admin): gates
 ;      ViGEmBus + firewall behind one UAC consent at install time, then
 ;      the app itself runs asInvoker (see satellite.manifest).
 ;
 ;  ViGEmBus 1.22.0 (final upstream release, repo archived 2023-11) is
-;  bundled as a prerequisite. It creates the virtual gamepads and --
-;  from v1.17 on, so v1.22.0 included -- carries controller motion
-;  (gyro / accelerometer) to games via the DualShock 4 extended report.
-;  An older ViGEmBus is therefore upgraded, not kept.
+;  bundled as a prerequisite. It creates the virtual gamepads and (from
+;  v1.17 on, so v1.22.0 included) carries controller motion (gyro /
+;  accelerometer) to games via the DualShock 4 extended report. An older
+;  ViGEmBus is therefore upgraded, not kept.
 ;
 ;  Switches:
 ;    /VIGEM=auto      (default)  install only if missing or older
@@ -46,8 +41,8 @@
 ; ============================================================================
 
 #define MyAppName "Satellite"
-; Read the authoritative version from the /VERSION file at preprocess time.
-; Single source of truth shared with CMake + src/core/version.h.
+; Read the authoritative version from /VERSION at preprocess time. Single
+; source of truth shared with CMake + src/core/version.h.
 #ifndef MyAppVersion
 #define VersionFile FileOpen(SourcePath + "VERSION")
 #define MyAppVersion Trim(FileRead(VersionFile))
@@ -64,7 +59,7 @@
 #define ViGEmBusInstaller "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 
 [Setup]
-; Stable AppId -- never change this without a migration plan; it's how
+; Stable AppId: never change this without a migration plan; it's how
 ; Windows recognises in-place upgrades.
 AppId={{B8F3A2E1-7D4C-4E5F-9A1B-3C6D8E0F2A4B}
 AppName={#MyAppName}
@@ -91,17 +86,15 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 
-; Privileges & target. We require admin to write to Program Files, add
-; firewall rules, and install ViGEmBus -- but the installed binary runs
-; asInvoker (see satellite.manifest). One UAC prompt at install,
-; zero UAC at runtime.
+; Admin is required to write to Program Files, add firewall rules, and
+; install ViGEmBus, but the installed binary runs asInvoker (see
+; satellite.manifest). One UAC prompt at install, none at runtime.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 
 ; Embed version info into SatelliteSetup.exe (Properties > Details).
-; Improves AV reputation and makes the bootstrapper self-identifying.
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoCopyright={#MyAppCopyright}
@@ -109,23 +102,20 @@ VersionInfoDescription={#MyAppName} Setup
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 
-; ── Restart Manager + AppMutex ────────────────────────────────────────────
-; If satellite.exe is running, ask the OS Restart Manager to close it
-; gracefully (sends WM_QUERYENDSESSION -- tray.cpp returns TRUE and
-; saves config on WM_ENDSESSION). RestartApplications=yes brings the
-; app back up after install finishes; this replaces our previous
-; hand-rolled /OTA relaunch.
+; Restart Manager: if satellite.exe is running, ask the OS to close it
+; gracefully (sends WM_QUERYENDSESSION; tray.cpp returns TRUE and saves
+; config on WM_ENDSESSION). RestartApplications=yes brings the app back up
+; after install finishes, replacing the hand-rolled /OTA relaunch.
 CloseApplications=yes
 CloseApplicationsFilter=*.exe,*.dll
 RestartApplications=yes
-; AppMutex prevents two installer instances from racing. Must match
-; nothing the app itself holds -- the app's runtime singleton uses
-; "Local\TinkerNorth.Satellite.Singleton.v1" (see app_lifecycle.cpp).
-; This one is the installer's own coordinator.
+; AppMutex prevents two installer instances from racing. Must match nothing
+; the app itself holds: the app's runtime singleton uses
+; "Local\TinkerNorth.Satellite.Singleton.v1" (see app_lifecycle.cpp). This
+; one is the installer's own coordinator.
 AppMutex=Global\TinkerNorth.Satellite.Installer.v1
 
 ; Log every install/uninstall to %TEMP%\Setup Log YYYY-MM-DD #NNN.txt.
-; Free, invaluable when a user reports "it failed."
 SetupLogging=yes
 
 ; PrivilegesRequired=admin combined with the HKCU autostart entry would
@@ -138,14 +128,12 @@ SetupLogging=yes
 ;       covered by (a).
 UsedUserAreasWarning=no
 
-; ── Code signing (Authenticode) ──────────────────────────────────────────
-; Activated only when iscc is invoked with /Ssigntool=... defining the
-; named tool. Example:
+; Code signing (Authenticode). Activated only when iscc is invoked with
+; /Ssigntool=... defining the named tool. Example:
 ;   iscc /Ssigntool=$qsigntool sign /a /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $f$q installer.iss
-; scripts/sign.ps1 wraps that and is the canonical entry point.
-; If $signtool is not defined at iscc-time, the SignTool= line below
-; is treated as documentation -- the installer is built unsigned (which
-; SmartScreen will warn about, as it should).
+; scripts/sign.ps1 wraps that. If $signtool is not defined at iscc-time, the
+; SignTool= line below is treated as documentation and the installer is built
+; unsigned (which SmartScreen will warn about).
 ;SignTool=signtool
 ;SignedUninstaller=yes
 
@@ -158,14 +146,12 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 
 [Components]
 Name: "main";  Description: "Satellite (required)"; Types: full custom; Flags: fixed
-Name: "vigem"; Description: "ViGEmBus driver -- virtual gamepads, rumble and controller motion (gyro/accelerometer)"; Types: full
+Name: "vigem"; Description: "ViGEmBus driver: virtual gamepads, rumble and controller motion (gyro/accelerometer)"; Types: full
 
 [Tasks]
-; Autostart is opt-IN. Modern Windows convention is that users actively
-; choose to add things to startup -- matches the Settings > Apps > Startup
-; mental model and avoids surprising people who'd uninstall on the spot
-; otherwise. ShouldShowAutostartTask hides the task on the OTA path so
-; the user's prior choice (stored via SetPreviousData) is preserved.
+; Autostart is opt-in, matching the Settings > Apps > Startup model.
+; ShouldShowAutostartTask hides the task on the OTA path so the user's prior
+; choice (stored via SetPreviousData) is preserved.
 Name: "autostart"; Description: "Start {#MyAppName} automatically when I sign in"; GroupDescription: "Startup:"; Flags: unchecked; Check: ShouldShowAutostartTask
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Check: ShouldShowDesktopIconTask
 
@@ -176,7 +162,7 @@ Source: "web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs creat
 ; the user open them from the Start Menu without internet.
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion; Components: main
-; ViGEmBus prerequisite -- only extracted when we'll actually run it (see ShouldRunViGEm).
+; ViGEmBus prerequisite: only extracted when we'll run it (see ShouldRunViGEm).
 Source: "redist\{#ViGEmBusInstaller}"; DestDir: "{tmp}"; Flags: deleteafterinstall; Components: vigem; Check: ShouldRunViGEm
 
 [Dirs]
@@ -188,25 +174,24 @@ Name: "{localappdata}\TinkerNorth\Satellite\dumps"; Flags: uninsneveruninstall
 Name: "{localappdata}\TinkerNorth\Satellite\logs";  Flags: uninsneveruninstall
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Start {#MyAppName} (system tray app -- web UI at http://localhost:9877)"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Start {#MyAppName} (system tray app, web UI at http://localhost:9877)"
 Name: "{group}\{#MyAppName} Web UI"; Filename: "http://localhost:9877"; Comment: "Open the Satellite web UI in your default browser"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Start {#MyAppName} (system tray app -- web UI at http://localhost:9877)"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Start {#MyAppName} (system tray app, web UI at http://localhost:9877)"; Tasks: desktopicon
 
 [Registry]
 ; Autostart entry. Quoted path mitigates the classic C:\Program.exe
 ; planting attack. Value name "Satellite" matches the constant in
-; src/platform/windows/config.cpp::kRunValueName -- if you change one,
+; src/platform/windows/config.cpp::kRunValueName: if you change one,
 ; change the other (and add a migration). uninsdeletevalue cleans it
 ; up on uninstall; the app's setAutoStart(false) cleans it up on
 ; user opt-out.
 Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-; Firewall rules apply to private + domain profiles. Public is
-; deliberately excluded -- you don't want your LAN-discovery beacon
-; broadcasting on coffee-shop Wi-Fi. Add-then-delete pattern keeps the
-; rule list idempotent across upgrades.
+; Firewall rules apply to private + domain profiles. Public is excluded so
+; the LAN-discovery beacon doesn't broadcast on untrusted Wi-Fi. The
+; add-then-delete pattern keeps the rule list idempotent across upgrades.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite HTTP"""; Flags: runhidden; StatusMsg: "Resetting firewall (HTTP)..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite HTTP"" dir=in action=allow protocol=TCP localport=9877 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (HTTP)..."
 
@@ -227,11 +212,10 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""S
 
 ; Interactive install: normal "Launch Satellite?" tickbox on the finish page.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: shellexec nowait postinstall skipifsilent
-; Restart Manager handles the OTA relaunch automatically (we closed
-; the app via RM at the start of the install, and RestartApplications=yes
-; brings it back). The legacy /OTA explicit-relaunch path is no longer
-; needed but we keep the switch parsing so older binaries that pass it
-; aren't broken.
+; Restart Manager handles the OTA relaunch automatically (we closed the app
+; via RM at the start of the install, and RestartApplications=yes brings it
+; back). The legacy /OTA explicit-relaunch path is kept only so older
+; binaries that pass the switch aren't broken.
 
 [UninstallRun]
 ; Best-effort graceful shutdown first (WM_CLOSE via taskkill), then
@@ -247,29 +231,24 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; RunOnceId: "FwDisc"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite mDNS"""; Flags: runhidden; RunOnceId: "FwMDNS"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Client TLS"""; Flags: runhidden; RunOnceId: "FwClientTLS"
-; NOTE: we deliberately do NOT uninstall ViGEmBus here. Other apps
-; (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.) share the driver and
-; would silently break. Users who want to remove it can opt in via
-; the wizard's confirmation dialog (see CurUninstallStepChanged).
+; Do NOT uninstall ViGEmBus here. Other apps (DS4Windows, BetterJoy,
+; MoonDeck-Buddy, etc.) share the driver and would break. Users who want to
+; remove it can opt in via the wizard's confirmation dialog (see
+; CurUninstallStepChanged).
 
 [UninstallDelete]
 ; Don't leave behind empty %APPDATA% / %LOCALAPPDATA% trees. Logs and
-; dumps under LocalAppData stick around (uninsneveruninstall on [Dirs])
-; so a user reinstalling after a crash still has the dump file --
-; deliberate.
+; dumps under LocalAppData stick around (uninsneveruninstall on [Dirs]) so
+; a user reinstalling after a crash still has the dump file.
 Type: files;          Name: "{userappdata}\satellite\config.json"
 Type: dirifempty;     Name: "{userappdata}\satellite"
 
 [Code]
-// ============================================================================
-//  OTA relaunch flag (legacy -- kept for backwards-compatibility)
-//
-//  When a pre-Restart-Manager satellite.exe applies an in-app update,
-//  it spawns this installer with `/VERYSILENT /OTA`. RM handles the
-//  relaunch on modern builds, but the switch is still recognised so
-//  rolling out a new installer onto an old binary doesn't strand the
-//  user without a relaunch.
-// ============================================================================
+// OTA relaunch flag (legacy, kept for backwards-compatibility).
+// A pre-Restart-Manager satellite.exe spawns this installer with
+// `/VERYSILENT /OTA`. RM handles the relaunch on modern builds, but the
+// switch is still recognised so rolling out a new installer onto an old
+// binary doesn't strand the user without a relaunch.
 
 function WantsOTARelaunch: Boolean;
 var
@@ -286,24 +265,17 @@ begin
     end;
 end;
 
-// ============================================================================
-//  Previous-install awareness
-//
-//  When the user upgrades (whether via OTA or by re-running the
-//  installer manually), we want the "Start with Windows" and "Desktop
-//  icon" toggles to PRESERVE the prior choice instead of resetting to
-//  the default (unchecked). Inno Setup gives us two complementary
-//  hooks:
-//
-//   1. RegisterPreviousData lets us write any string into the
-//      installer's metadata under the AppId, persisted across runs.
+// Previous-install awareness.
+// On upgrade (OTA or manual re-run), the "Start with Windows" and "Desktop
+// icon" toggles preserve the prior choice instead of resetting to the
+// unchecked default. Inno Setup gives two hooks:
+//   1. RegisterPreviousData writes a string into the installer's metadata
+//      under the AppId, persisted across runs.
 //   2. GetPreviousData reads it back at the start of the next install.
-//
-//  We use them to remember which optional tasks the user enabled, then
-//  hide those tasks from the Tasks page on upgrade (so they don't get
-//  silently reset by the Flags: unchecked default). The user can still
-//  toggle them from the app's UI / Programs & Features afterwards.
-// ============================================================================
+// They remember which optional tasks the user enabled, then those tasks are
+// hidden from the Tasks page on upgrade so the Flags: unchecked default
+// doesn't silently reset them. The user can still toggle them from the app's
+// UI / Programs & Features.
 
 var
     PreviousAutostart: Boolean;
@@ -331,19 +303,15 @@ begin
         IntToStr(Ord(WizardIsTaskSelected('desktopicon') or PreviousDesktopIcon)));
 end;
 
-// ============================================================================
-//  ViGEmBus prerequisite handling
-//
-//  Auto-detect logic at wizard start:
+// ViGEmBus prerequisite handling.
+// Auto-detect logic at wizard start:
 //    detected == bundled    -> skip
 //    detected <  bundled    -> upgrade
 //    detected >  bundled    -> keep user's (do not downgrade)
 //    detected == ''         -> install bundled
-//
-//  /VIGEM=skip and /VIGEM=bundled override the auto-decision. The user
-//  can also uncheck the "ViGEmBus driver" component on the Components
-//  page, which is equivalent to /VIGEM=skip for that run.
-// ============================================================================
+// /VIGEM=skip and /VIGEM=bundled override the auto-decision. Unchecking the
+// "ViGEmBus driver" component on the Components page is equivalent to
+// /VIGEM=skip for that run.
 
 const
     NefariusRegKey = 'SOFTWARE\Nefarius Software Solutions\ViGEm Bus Driver';
@@ -375,8 +343,8 @@ var
     V, SysPath: String;
 begin
     Result := '';
-    // The driver file is the source of truth -- registry remnants from
-    // a half-uninstalled ViGEmBus must not mask a missing driver.
+    // The driver file is the source of truth: registry remnants from a
+    // half-uninstalled ViGEmBus must not mask a missing driver.
     SysPath := ExpandConstant('{sys}\drivers\ViGEmBus.sys');
     if not FileExists(SysPath) then
         Exit;
@@ -409,7 +377,7 @@ begin
         Result := True;
         Exit;
     end;
-    // 'auto' -- install only if missing or older than bundled
+    // 'auto': install only if missing or older than bundled
     if DetectedVigemVersion = '' then begin
         Result := True;
         Exit;
@@ -428,22 +396,22 @@ begin
             + ' motion (gyro / accelerometer) to your games.' + #13#10;
 
     if DetectedVigemVersion = '' then
-        Detail := 'Not detected here -- the bundled v' + '{#ViGEmBusVersion}' + ' will be installed.'
+        Detail := 'Not detected here. The bundled v' + '{#ViGEmBusVersion}' + ' will be installed.'
     else begin
         Cmp := CompareVigemVersion(DetectedVigemVersion, '{#ViGEmBusVersion}');
         if Cmp < 0 then
-            Detail := 'v' + DetectedVigemVersion + ' detected -- will upgrade to v' + '{#ViGEmBusVersion}' + ' (older builds cannot pass controller motion).'
+            Detail := 'v' + DetectedVigemVersion + ' detected. Will upgrade to v' + '{#ViGEmBusVersion}' + ' (older builds cannot pass controller motion).'
         else if Cmp = 0 then
-            Detail := 'v' + DetectedVigemVersion + ' already installed -- will skip.'
+            Detail := 'v' + DetectedVigemVersion + ' already installed. Will skip.'
         else
-            Detail := 'v' + DetectedVigemVersion + ' detected, newer than the bundled v' + '{#ViGEmBusVersion}' + ' -- keeping yours.';
+            Detail := 'v' + DetectedVigemVersion + ' detected, newer than the bundled v' + '{#ViGEmBusVersion}' + '. Keeping yours.';
     end;
     Result := Result + Detail;
 
     if VigemMode = 'skip' then
-        Result := Result + #13#10 + 'Override active: /VIGEM=skip -- the driver will not be touched.'
+        Result := Result + #13#10 + 'Override active: /VIGEM=skip. The driver will not be touched.'
     else if VigemMode = 'bundled' then
-        Result := Result + #13#10 + 'Override active: /VIGEM=bundled -- the bundled installer runs regardless of version.'
+        Result := Result + #13#10 + 'Override active: /VIGEM=bundled. The bundled installer runs regardless of version.'
     else
         Result := Result + #13#10 + 'Default: install or upgrade as above. To skip, uncheck the component above or pass /VIGEM=skip.';
 end;
@@ -452,8 +420,8 @@ function InitializeSetup: Boolean;
 var
     Existing: String;
 begin
-    // Detect prior install via the same AppId so we can hide the
-    // task page knobs on upgrade -- see ShouldShow*Task.
+    // Detect prior install via the same AppId so we can hide the task page
+    // knobs on upgrade (see ShouldShow*Task).
     Existing := '';
     RegQueryStringValue(HKEY_LOCAL_MACHINE,
         'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1',
@@ -556,18 +524,13 @@ begin
     Result := RebootNeeded;
 end;
 
-// ============================================================================
-//  Uninstall: optional ViGEmBus removal
-//
-//  ViGEmBus is intentionally an opt-in choice on uninstall: many apps
-//  (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.) share the driver, and
-//  a default-yes here would silently break them.
-//
+// Uninstall: optional ViGEmBus removal.
+// Opt-in on uninstall: many apps (DS4Windows, BetterJoy, MoonDeck-Buddy,
+// etc.) share the driver, and a default-yes would break them.
 //    /REMOVEVIGEM=auto  (default)  prompt the user, default No;
 //                                  silent uninstalls do not remove the driver
 //    /REMOVEVIGEM=yes              uninstall ViGEmBus
 //    /REMOVEVIGEM=no               leave the driver in place
-// ============================================================================
 
 const
     UninstallKeyRoot = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall';
@@ -683,7 +646,7 @@ begin
             'Other apps (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.) commonly ' +
             'share this driver. Removing it will break them until they ' +
             'reinstall it themselves.' + #13#10 + #13#10 +
-            'Click No if you''re unsure -- you can always remove ViGEmBus later ' +
+            'Click No if you''re unsure. You can always remove ViGEmBus later ' +
             'from Settings > Apps.',
             mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Satellite pre-commit hook: runs clang-format (autofix) on staged C/C++ and
-# Objective-C++ files. Gracefully skips if clang-format is missing so devs who
-# haven't run setup-hooks.sh or installed the tool yet aren't blocked — CI
-# enforces the same check in --Werror mode.
+# Objective-C++ files. Skips if clang-format is missing so devs who haven't run
+# setup-hooks.sh or installed the tool yet aren't blocked; CI enforces the same
+# check in --Werror mode.
 set -euo pipefail
 
 # Collect staged source files (added / copied / modified), NUL-separated to
@@ -16,7 +16,6 @@ fi
 
 format_ok=1
 
-# ── clang-format ─────────────────────────────────────────────────────────
 if command -v clang-format >/dev/null 2>&1; then
     echo "▶ clang-format (staged files)"
     echo "$staged" | while IFS= read -r file; do
@@ -24,11 +23,11 @@ if command -v clang-format >/dev/null 2>&1; then
         git add "$file"
     done
 else
-    echo "⚠  clang-format not installed — skipping (brew install clang-format)"
+    echo "⚠  clang-format not installed; skipping (brew install clang-format)"
 fi
 
 if [ "$format_ok" -eq 0 ]; then
     echo
-    echo "✗ pre-commit failed — fix the issues above and re-stage."
+    echo "✗ pre-commit failed; fix the issues above and re-stage."
     exit 1
 fi

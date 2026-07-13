@@ -5,20 +5,20 @@ REM
 REM  Installs everything needed to build satellite.exe, run the unit tests,
 REM  build the Inno Setup installer, and run the documented code-quality tools.
 REM
-REM    [1] MSYS2 + mingw-w64-ucrt-x86_64-gcc        -- g++ and windres
-REM    [2] mingw-w64-ucrt-x86_64-openssl            -- OpenSSL (HTTPS client API)
+REM    [1] MSYS2 + mingw-w64-ucrt-x86_64-gcc:       g++ and windres
+REM    [2] mingw-w64-ucrt-x86_64-openssl:           OpenSSL (HTTPS client API)
 REM        (required for build-satellite.bat and build-tests.bat)
-REM    [3] Inno Setup                               -- iscc (installer.iss)
-REM    [4] LLVM                                     -- clang-format, clang-tidy
-REM    [5] Cppcheck                                 -- static analysis
+REM    [3] Inno Setup:                              iscc (installer.iss)
+REM    [4] LLVM:                                    clang-format, clang-tidy
+REM    [5] Cppcheck:                                static analysis
 REM
 REM  NOT installed (runtime-only): ViGEmBus driver. Grab it from
-REM  https://github.com/nefarius/ViGEmBus/releases when you want to actually
-REM  run the receiver and inject a virtual Xbox 360 controller.
+REM  https://github.com/nefarius/ViGEmBus/releases to run the receiver and
+REM  inject a virtual Xbox 360 controller.
 REM
 REM  Requires: winget (ships with Windows 11; in the Microsoft Store as
-REM  "App Installer" otherwise). Some installers will trigger a UAC prompt --
-REM  approve them when asked.
+REM  "App Installer" otherwise). Some installers trigger a UAC prompt; approve
+REM  them when asked.
 REM ============================================================================
 
 setlocal
@@ -106,6 +106,6 @@ echo   3. Build:   build-satellite.bat
 echo   4. Test:    build-tests.bat
 echo.
 echo Runtime dependency NOT installed (intentionally):
-echo   ViGEmBus -- https://github.com/nefarius/ViGEmBus/releases
+echo   ViGEmBus: https://github.com/nefarius/ViGEmBus/releases
 
 endlocal

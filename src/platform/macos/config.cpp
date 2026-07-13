@@ -1,60 +1,14 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "config.h"
 
-#include <fcntl.h>
+#include "config_posix.h"
+
 #include <mach-o/dyld.h>
-#include <pwd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <cerrno>
 #include <climits>
-#include <sstream>
-
-// Control bytes (< 0x20) other than \n are \uXXXX-escaped: a raw \r or \t in a
-// device name would be invalid JSON and corrupt the config file.
-std::string jsonEscape(const std::string& s) {
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    for (char ch : s) {
-        unsigned char c = static_cast<unsigned char>(ch);
-        if (c == '"') {
-            out += "\\\"";
-        } else if (c == '\\') {
-            out += "\\\\";
-        } else if (c == '\n') {
-            out += "\\n";
-        } else if (c < 0x20) {
-            out += "\\u00";
-            out += kHex[(c >> 4) & 0xF];
-            out += kHex[c & 0xF];
-        } else {
-            out += ch;
-        }
-    }
-    return out;
-}
-
-std::string jsonGetString(const std::string& json, const std::string& key) {
-    std::string needle = "\"" + key + "\"";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos) return "";
-    auto colon = json.find(':', pos + needle.size());
-    if (colon == std::string::npos) return "";
-    auto q1 = json.find('"', colon + 1);
-    if (q1 == std::string::npos) return "";
-    auto q2 = json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return "";
-    return json.substr(q1 + 1, q2 - q1 - 1);
-}
-
-static std::string homeDir() {
-    const char* h = getenv("HOME");
-    if (h != nullptr && *h != 0) return h;
-    struct passwd* pw = getpwuid(getuid());
-    return (pw != nullptr && pw->pw_dir != nullptr) ? pw->pw_dir : "/tmp";
-}
 
 static std::string appSupportDir() {
     std::string dir = homeDir() + "/Library/Application Support/satellite";
@@ -66,153 +20,31 @@ static std::string appSupportDir() {
 
 std::string configPath() { return appSupportDir() + "/config.json"; }
 
-Config loadConfig() {
-    Config cfg;
-    std::ifstream f(configPath());
-    if (!f.is_open()) return cfg;
-    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-
-    auto getInt = [&](const char* key) -> int {
-        auto pos = content.find(std::string("\"") + key + "\"");
-        if (pos == std::string::npos) return -1;
-        auto colon = content.find(':', pos);
-        if (colon == std::string::npos) return -1;
-        return atoi(content.c_str() + colon + 1);
-    };
-    auto getBool = [&](const char* key) -> bool {
-        auto pos = content.find(std::string("\"") + key + "\"");
-        if (pos == std::string::npos) return false;
-        auto colon = content.find(':', pos);
-        if (colon == std::string::npos) return false;
-        auto rest = content.substr(colon + 1, 10);
-        return rest.find("true") != std::string::npos;
-    };
-    auto getBoolOpt = [&](const char* key, bool* out) {
-        auto pos = content.find(std::string("\"") + key + "\"");
-        if (pos == std::string::npos) return;
-        *out = getBool(key);
-    };
-    auto getInt64 = [&](const char* key) -> int64_t {
-        auto pos = content.find(std::string("\"") + key + "\"");
-        if (pos == std::string::npos) return -1;
-        auto colon = content.find(':', pos);
-        if (colon == std::string::npos) return -1;
-        return strtoll(content.c_str() + colon + 1, nullptr, 10);
-    };
-
-    int v = 0;
-    v = getInt("udpPort");
-    if (v > 0) cfg.udpPort = v;
-    v = getInt("webPort");
-    if (v > 0) cfg.webPort = v;
-    v = getInt("pairPort");
-    if (v > 0) cfg.pairPort = v;
-    v = getInt("discPort");
-    if (v > 0) cfg.discPort = v;
-    // Absent on pre-1.6 configs; default (true) keeps the broadcast beacon on so
-    // discovery doesn't silently regress.
-    getBoolOpt("discoveryBroadcastEnabled", &cfg.discoveryBroadcastEnabled);
-    cfg.autoStart = getBool("autoStart");
-
-    // OTA update preferences (see core/update_service.h).
-    std::string ch = jsonGetString(content, "updateChannel");
-    if (!ch.empty()) cfg.updateChannel = ch;
-    getBoolOpt("autoCheck", &cfg.autoCheck);
-    getBoolOpt("autoDownload", &cfg.autoDownload);
-    getBoolOpt("autoInstall", &cfg.autoInstall);
-    int iv = getInt("updateCheckIntervalHours");
-    if (iv > 0) cfg.updateCheckIntervalHours = iv;
-    int64_t le = getInt64("lastCheckEpoch");
-    if (le >= 0) cfg.lastCheckEpoch = le;
-    cfg.lastSeenVersion = jsonGetString(content, "lastSeenVersion");
-    cfg.skipVersion = jsonGetString(content, "skipVersion");
-    cfg.networkInterface = jsonGetString(content, "networkInterface");
-    cfg.allowPublicNetwork = getBool("allowPublicNetwork");
-
-    auto arrStart = content.find("\"pairedDevices\"");
-    if (arrStart != std::string::npos) {
-        auto bracket = content.find('[', arrStart);
-        auto bracketEnd = content.find(']', bracket);
-        if (bracket != std::string::npos && bracketEnd != std::string::npos) {
-            std::string arr = content.substr(bracket, bracketEnd - bracket + 1);
-            size_t pos = 0;
-            while (true) {
-                auto objStart = arr.find('{', pos);
-                if (objStart == std::string::npos) break;
-                auto objEnd = arr.find('}', objStart);
-                if (objEnd == std::string::npos) break;
-                std::string obj = arr.substr(objStart, objEnd - objStart + 1);
-                PairedDevice dev;
-                dev.id = jsonGetString(obj, "id");
-                dev.name = jsonGetString(obj, "name");
-                dev.lastIP = jsonGetString(obj, "lastIP");
-                dev.pairedAt = jsonGetString(obj, "pairedAt");
-                dev.sharedKeyHex = jsonGetString(obj, "sharedKey");
-                if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
-                pos = objEnd + 1;
-            }
-        }
-    }
-    return cfg;
-}
-
-bool atomicWriteFile(const std::string& path, const std::string& bytes) {
-    std::string tmp = path + ".tmp";
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return false;
-
-    bool ok = true;
-    size_t off = 0;
-    while (off < bytes.size()) {
-        ssize_t n = ::write(fd, bytes.data() + off, bytes.size() - off);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            ok = false;
+static std::string xmlEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+        case '&':
+            out += "&amp;";
             break;
+        case '<':
+            out += "&lt;";
+            break;
+        case '>':
+            out += "&gt;";
+            break;
+        case '"':
+            out += "&quot;";
+            break;
+        case '\'':
+            out += "&apos;";
+            break;
+        default:
+            out += c;
         }
-        off += static_cast<size_t>(n);
     }
-    if (ok) ok = ::fsync(fd) == 0;
-    if (::close(fd) != 0) ok = false;
-
-    if (!ok || ::rename(tmp.c_str(), path.c_str()) != 0) {
-        ::unlink(tmp.c_str());
-        return false;
-    }
-    return true;
-}
-
-void saveConfig(const Config& cfg) {
-    std::ostringstream f;
-    f << "{\n"
-      << "  \"udpPort\": " << cfg.udpPort << ",\n"
-      << "  \"webPort\": " << cfg.webPort << ",\n"
-      << "  \"pairPort\": " << cfg.pairPort << ",\n"
-      << "  \"discPort\": " << cfg.discPort << ",\n"
-      << "  \"discoveryBroadcastEnabled\": " << (cfg.discoveryBroadcastEnabled ? "true" : "false")
-      << ",\n"
-      << "  \"autoStart\": " << (cfg.autoStart ? "true" : "false") << ",\n"
-      << "  \"updateChannel\": \"" << jsonEscape(cfg.updateChannel) << "\",\n"
-      << "  \"autoCheck\": " << (cfg.autoCheck ? "true" : "false") << ",\n"
-      << "  \"autoDownload\": " << (cfg.autoDownload ? "true" : "false") << ",\n"
-      << "  \"autoInstall\": " << (cfg.autoInstall ? "true" : "false") << ",\n"
-      << "  \"updateCheckIntervalHours\": " << cfg.updateCheckIntervalHours << ",\n"
-      << "  \"lastCheckEpoch\": " << cfg.lastCheckEpoch << ",\n"
-      << "  \"lastSeenVersion\": \"" << jsonEscape(cfg.lastSeenVersion) << "\",\n"
-      << "  \"skipVersion\": \"" << jsonEscape(cfg.skipVersion) << "\",\n"
-      << "  \"networkInterface\": \"" << jsonEscape(cfg.networkInterface) << "\",\n"
-      << "  \"allowPublicNetwork\": " << (cfg.allowPublicNetwork ? "true" : "false") << ",\n"
-      << "  \"pairedDevices\": [\n";
-    for (size_t i = 0; i < cfg.pairedDevices.size(); i++) {
-        const auto& d = cfg.pairedDevices[i];
-        f << "    {\"id\":\"" << jsonEscape(d.id) << "\",\"name\":\"" << jsonEscape(d.name)
-          << "\",\"lastIP\":\"" << jsonEscape(d.lastIP) << "\",\"pairedAt\":\""
-          << jsonEscape(d.pairedAt) << "\",\"sharedKey\":\"" << jsonEscape(d.sharedKeyHex) << "\"}";
-        if (i + 1 < cfg.pairedDevices.size()) f << ",";
-        f << "\n";
-    }
-    f << "  ]\n}\n";
-    atomicWriteFile(configPath(), f.str());
+    return out;
 }
 
 static std::string launchAgentPath() {
@@ -235,7 +67,7 @@ void setAutoStart(bool enable) {
           << "  <key>Label</key><string>com.tinkernorth.satellite</string>\n"
           << "  <key>ProgramArguments</key>\n"
           << "  <array>\n"
-          << "    <string>" << jsonEscape(exe) << "</string>\n"
+          << "    <string>" << xmlEscape(exe) << "</string>\n"
           << "  </array>\n"
           << "  <key>RunAtLoad</key><true/>\n"
           << "  <key>KeepAlive</key><false/>\n"
@@ -265,14 +97,4 @@ std::string getExeDir() {
     std::string path(p);
     auto pos = path.find_last_of('/');
     return (pos != std::string::npos) ? path.substr(0, pos) : ".";
-}
-
-std::string getCurrentDate() {
-    auto now = std::chrono::system_clock::now();
-    auto t = std::chrono::system_clock::to_time_t(now);
-    char buf[32];
-    struct tm tm{};
-    localtime_r(&t, &tm);
-    strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
-    return buf;
 }

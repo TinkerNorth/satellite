@@ -2,8 +2,8 @@
 
 // Deliberately winsock-free so the portable test target links without ws2_32.
 // Both helpers use NETWORK byte order, matching sockaddr_in::sin_addr::s_addr,
-// so the uint32 from recvfrom passes straight through. On the hot path (one
-// call per UDP packet at ~250 Hz) so kept tiny and allocation-free.
+// so the uint32 from recvfrom passes straight through. Hot path (one call per
+// UDP packet), so kept tiny and allocation-free.
 #pragma once
 
 #include <cstdint>
@@ -13,8 +13,8 @@
 namespace satellite {
 
 // Parse "a.b.c.d" into NETWORK-byte-order uint32; 0 on any malformed input.
-// 0 is ambiguous with "0.0.0.0" but that's not a meaningful sender IP — the
-// connection just reads as "address unknown until next packet" until refreshed.
+// 0 is ambiguous with "0.0.0.0" but that's not a meaningful sender IP; the
+// connection reads as "address unknown" until the next packet refreshes it.
 inline uint32_t parseIPv4Nbo(const std::string& s) {
     uint8_t parts[4] = {0, 0, 0, 0};
     int idx = 0;
@@ -42,8 +42,8 @@ inline uint32_t parseIPv4Nbo(const std::string& s) {
            (static_cast<uint32_t>(parts[2]) << 16) | (static_cast<uint32_t>(parts[3]) << 24);
 }
 
-// Format a NETWORK-byte-order uint32 as "a.b.c.d". <=15 chars, so SSO means
-// no heap touch in steady state.
+// Format a NETWORK-byte-order uint32 as "a.b.c.d". <=15 chars, so SSO means no
+// heap touch.
 inline std::string formatIPv4Nbo(uint32_t nbo) {
     const uint8_t a = static_cast<uint8_t>(nbo & 0xFF);
     const uint8_t b = static_cast<uint8_t>((nbo >> 8) & 0xFF);

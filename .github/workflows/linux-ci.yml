@@ -107,7 +107,7 @@ jobs:
   reproducibility:
     name: Build reproducibility (advisory)
     runs-on: ubuntu-24.04
-    # Advisory only — the upstream goal is bit-identical Release builds
+    # Advisory only: the upstream goal is bit-identical Release builds
     # but the toolchain doesn't guarantee that yet. Surface drift in the
     # job summary; do not block the PR. See SECURITY_HARDENING_PROMPT.md
     # section A.5.

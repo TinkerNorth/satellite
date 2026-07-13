@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// OTA update orchestrator. Owns the one and only UpdateState transition and
-// drives an IUpdaterPort for IO. Persists prefs via a callback + shared Config&,
-// not a port: config is infrastructure the adapters own, not domain state.
+// OTA update orchestrator. Owns the UpdateState transition and drives an
+// IUpdaterPort for IO. Persists prefs via a callback + shared Config&, not a
+// port: config is infrastructure the adapters own, not domain state.
 //
 // Thread model: request*() are non-blocking and enqueue onto one worker thread
-// (start/stop own it) that runs fetch/download/verify/apply. A second timer
-// thread polls each minute for the auto-check interval. All state is serialized
-// under one mutex; the SSE callback fires outside the lock.
+// that runs fetch/download/verify/apply. A second timer thread polls each minute
+// for the auto-check interval. State is serialized under one mutex; the SSE
+// callback fires outside the lock.
 #pragma once
 
 #include "core/ports.h"
@@ -44,7 +44,7 @@ class UpdateService {
     void stop();
 
     // Non-blocking; each enqueues one job. A duplicate of an in-flight job is
-    // dropped (one line logged) — there is no queue depth.
+    // dropped; there is no queue depth.
     void requestCheck(bool userInitiated);
     void requestDownload();
     void requestInstall();
@@ -52,8 +52,7 @@ class UpdateService {
 
     UpdateStatusSnapshot snapshot() const;
 
-    // Single sink for status snapshots, called after every state transition
-    // (webserver pushes SSE events).
+    // Single sink for status snapshots, called after every state transition.
     void setStatusCallback(StatusCallback cb);
     void setPersistCallback(PersistCallback cb);
 
@@ -66,8 +65,7 @@ class UpdateService {
     void updatePreferences(const std::string& channel, bool autoCheck, bool autoDownload,
                            bool autoInstall);
 
-    // Public so the semver rule that gates "is there an update" is unit-testable
-    // without driving the whole worker thread. Pure: true iff `a` > `b`.
+    // Public so the gate rule is unit-testable without the worker thread.
     static bool versionStrictlyNewer(const std::string& a, const std::string& b);
 
   private:
@@ -88,15 +86,14 @@ class UpdateService {
 
     IUpdaterPort& updater_;
     ILogPort& log_;
-    Config& config_;        // shared with the rest of the app
+    Config& config_;
     std::mutex& configMtx_; // protects config_ (held by webserver too)
 
-    // cv_ wakes the worker for any pending job.
     mutable std::mutex mtx_;
     std::condition_variable cv_;
-    // Separate cv so stop() interrupts the timer's interval sleep at once,
-    // instead of waiting out the current 1 s slice (slow app shutdown + slow
-    // tests). The timer never contends on mtx_, so it gets its own mutex.
+    // Separate cv so stop() interrupts the timer's interval sleep at once
+    // instead of waiting out the current 1 s slice. The timer never contends on
+    // mtx_, so it gets its own mutex.
     std::mutex timerMtx_;
     std::condition_variable timerCv_;
     UpdateState state_ = UpdateState::Idle;
@@ -108,7 +105,6 @@ class UpdateService {
     std::string downloadedPath_;
     bool userInitiatedCheck_ = false;
 
-    // Set by request*(), consumed by the worker.
     bool pendingCheck_ = false;
     bool pendingDownload_ = false;
     bool pendingInstall_ = false;
@@ -119,7 +115,6 @@ class UpdateService {
     std::thread timerTh_;
     bool started_ = false;
 
-    // Set under mtx_, fired without it.
     StatusCallback statusCb_;
     PersistCallback persistCb_;
 };

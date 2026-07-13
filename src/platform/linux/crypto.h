@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Mirrors the Windows crypto.h API surface so files under src/net/ compile
-// unchanged; Linux backs DPAPI+BCrypt's role with libsodium + a per-user
-// keyfile in the XDG config dir.
+// Mirrors the Windows crypto.h API surface so src/net/ compiles unchanged;
+// Linux backs DPAPI+BCrypt with libsodium + a per-user keyfile in the XDG config dir.
 #pragma once
 #include "globals.h"
 
@@ -9,8 +8,6 @@
 
 std::string sha256hex(const std::string& input);
 
-// Encrypt/decrypt arbitrary-length plaintext for local persistence
-// (libsodium secretbox + local keyfile; DPAPI on Windows).
 std::string dpapiEncrypt(const std::string& plaintext);
 std::string dpapiDecrypt(const std::string& encoded);
 

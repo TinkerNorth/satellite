@@ -14,8 +14,7 @@ std::string randomDigits(int n);
 
 bool verifyPin(const std::string& pin);
 
-// secondsRemaining counts down to the next PIN rotation; previousPin is empty
-// until the first rotation (and after a pair/burn reset).
+// previousPin is empty until the first rotation (and after a pair/burn reset).
 struct PinSnapshot {
     PinState state = PinState::PinActive;
     std::string currentPin;

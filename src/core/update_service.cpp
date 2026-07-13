@@ -237,8 +237,7 @@ void UpdateService::timerLoop() {
     }
 }
 
-// Builds a snapshot + copies the callback under the lock, then drops it and
-// fires. Callers must NOT hold mtx_.
+// Callers must NOT hold mtx_.
 void UpdateService::fireBroadcast() {
     UpdateStatusSnapshot snap;
     StatusCallback cb;

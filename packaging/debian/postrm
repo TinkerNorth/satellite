@@ -1,10 +1,10 @@
 #!/bin/sh
-# postrm — runs after files are removed from the filesystem.
+# postrm: runs after files are removed from the filesystem.
 #
 # dpkg removes /usr/lib/udev/rules.d/70-satellite-uinput.rules and
 # /usr/lib/modules-load.d/satellite.conf for us; we just need to ask
 # udev to drop the rule from its in-memory state. We do *not* remove
-# users from the `input` group — other tools (joystick devices,
+# users from the `input` group; other tools (joystick devices,
 # barcode scanners, accessibility software) rely on it.
 set -e
 

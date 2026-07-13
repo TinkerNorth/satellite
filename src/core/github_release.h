@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-
-// Custom JSON parser by design: the project avoids a JSON library, but the
-// shallow key-find helpers used elsewhere mis-match because a release body can
-// contain arbitrary `"key":"value"` substrings. This is a real (tolerant)
-// recursive-descent parser narrowed to the release subset.
 #pragma once
 
 #include <cstdint>
@@ -11,7 +6,7 @@
 #include <vector>
 
 struct GitHubAsset {
-    std::string name;       // e.g. "SatelliteSetup-v1.2.3.exe"
+    std::string name;
     std::string browserUrl; // direct .exe / .zip / .deb / .AppImage URL
     uint64_t size = 0;
     std::string contentType;
@@ -19,28 +14,27 @@ struct GitHubAsset {
 
 struct GitHubRelease {
     std::string tagName; // "v1.2.3" (with the leading v)
-    std::string name;    // release title (often same as tag)
+    std::string name;
     bool prerelease = false;
     bool draft = false;
-    std::string publishedAt; // ISO-8601 timestamp string
+    std::string publishedAt; // ISO-8601
     std::string body;        // markdown release notes
-    std::string htmlUrl;     // browser link to the release page
+    std::string htmlUrl;
     std::vector<GitHubAsset> assets;
 };
 
-// Parse GET .../releases/latest. False means the JSON was too malformed to
-// extract any field.
+// Parse GET .../releases/latest. False if too malformed to extract any field.
 bool parseGitHubRelease(const std::string& json, GitHubRelease& out);
 
 // Parse GET .../releases (a JSON array). Same return semantics.
 bool parseGitHubReleaseList(const std::string& json, std::vector<GitHubRelease>& out);
 
-// "v1.2.3" → "1.2.3"; input unchanged if it doesn't start with v/V.
+// "v1.2.3" to "1.2.3"; input unchanged if it doesn't start with v/V.
 std::string stripTagPrefix(const std::string& tag);
 
-// ISO-8601 "2026-05-13T12:34:56Z" → unix epoch seconds; 0 on parse failure.
+// ISO-8601 to unix epoch seconds; 0 on parse failure.
 int64_t isoToEpoch(const std::string& iso);
 
-// Returns the lowercase 64-char digest for `filename` from a SHA256SUMS body,
-// or "" if absent. Tolerates `*` binary-mode markers and surrounding whitespace.
+// Lowercase 64-char digest for `filename` from a SHA256SUMS body, or "" if
+// absent. Tolerates `*` binary-mode markers and surrounding whitespace.
 std::string lookupSha256(const std::string& sha256sumsBody, const std::string& filename);

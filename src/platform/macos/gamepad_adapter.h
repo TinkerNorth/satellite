@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// IGamepadPort stub: macOS has no virtual gamepad bus, so the bus reports
-// unavailable and plug-in/submit are refused. SessionService still runs
-// end-to-end (pairing, discovery, auth, telemetry); clients learn no
-// controllers can attach via the backendUnavailable apply result.
+// Stub: macOS has no virtual gamepad bus, so the bus reports unavailable and
+// plug-in/submit are refused. SessionService still runs end-to-end; clients
+// learn no controllers can attach via the backendUnavailable apply result.
 #pragma once
 
 #include "core/ports.h"

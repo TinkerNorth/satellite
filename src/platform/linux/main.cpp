@@ -33,7 +33,7 @@
 
 // Block SIGINT/SIGTERM so the headless loop can sigwait them on the main thread
 // rather than default-terminating during a worker's blocking syscall (recvfrom,
-// accept). SIGPIPE is blocked too — it fires on httplib mid-write disconnects.
+// accept). SIGPIPE is blocked too; it fires on httplib mid-write disconnects.
 static void installHeadlessSignalHandling(sigset_t& set) {
     sigemptyset(&set);
     sigaddset(&set, SIGINT);
@@ -112,7 +112,7 @@ int main(int argc, const char* argv[]) {
     std::thread discTh(discoveryThread);
     std::thread mdnsTh(mdnsResponderThread);
 
-    std::fprintf(stderr, "%s running — web UI at http://localhost:%d\n", APP_TITLE,
+    std::fprintf(stderr, "%s running; web UI at http://localhost:%d\n", APP_TITLE,
                  g_config.webPort);
 
     // Tray-driven GTK loop; falls back to the headless sigwait loop with no

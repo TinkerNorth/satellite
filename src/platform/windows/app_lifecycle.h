@@ -5,10 +5,10 @@
 
 namespace lifecycle {
 
-// %LOCALAPPDATA%\TinkerNorth\Satellite\dumps -- created on demand.
+// %LOCALAPPDATA%\TinkerNorth\Satellite\dumps, created on demand.
 std::string dumpDir();
 
-// %LOCALAPPDATA%\TinkerNorth\Satellite\logs -- created on demand.
+// %LOCALAPPDATA%\TinkerNorth\Satellite\logs, created on demand.
 std::string logDir();
 
 // True if we are the first instance. False if another is already running, in

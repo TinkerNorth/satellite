@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Callers MUST have called CoInitializeEx (any apartment) before
-// refreshJumpList -- jump lists and shortcut-property writes go through
-// CoCreateInstance. main.cpp does this at startup.
+// Callers MUST have called CoInitializeEx before refreshJumpList: jump lists
+// and shortcut-property writes go through CoCreateInstance.
 #include "shell_integration.h"
 
 #include "config.h"
@@ -31,8 +30,7 @@ std::wstring toWide(const std::string& s) {
     return w;
 }
 
-// Inlined rather than shared from app_lifecycle: shell_integration is the
-// lower layer.
+// Inlined rather than shared from app_lifecycle: shell_integration is the lower layer.
 std::wstring exePathWide() {
     wchar_t buf[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
@@ -40,8 +38,7 @@ std::wstring exePathWide() {
     return std::wstring(buf, n);
 }
 
-// Build one jump-list task stamped with the AUMID. nullptr on failure;
-// caller must Release().
+// Caller must Release(). nullptr on failure.
 IShellLinkW* makeShellLink(const std::wstring& target, const std::wstring& args,
                            const std::wstring& title, const std::wstring& description,
                            const std::wstring& iconPath, int iconIndex) {
@@ -55,8 +52,8 @@ IShellLinkW* makeShellLink(const std::wstring& target, const std::wstring& args,
     link->SetDescription(description.c_str());
     if (!iconPath.empty()) link->SetIconLocation(iconPath.c_str(), iconIndex);
 
-    // Mandatory: jump-list user tasks without System.Title don't render. AUMID
-    // stamp groups even out-of-context launches (Win+R).
+    // Jump-list user tasks without System.Title don't render. AUMID stamp groups
+    // even out-of-context launches (Win+R).
     IPropertyStore* props = nullptr;
     if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props))) && props) {
         PROPVARIANT pv{};
@@ -125,8 +122,8 @@ bool refreshJumpList() {
     wchar_t urlBuf[64];
     StringCchPrintfW(urlBuf, 64, L"http://localhost:%d", webPort);
 
-    // Open Web UI via explorer.exe so the URL opens in the default browser
-    // (SetPath requires an .exe, so we can't point straight at the URL).
+    // Via explorer.exe because SetPath requires an .exe, not a URL; this opens
+    // the default browser.
     wchar_t explorerExe[MAX_PATH];
     GetWindowsDirectoryW(explorerExe, MAX_PATH);
     StringCchCatW(explorerExe, MAX_PATH, L"\\explorer.exe");
@@ -138,8 +135,7 @@ bool refreshJumpList() {
         openUi->Release();
     }
 
-    // Open Logs Folder. Path resolved at runtime so it tracks the user's
-    // actual %LOCALAPPDATA% (matters for roaming profiles).
+    // Resolve at runtime so it tracks the actual %LOCALAPPDATA% (roaming profiles).
     PWSTR localAppData = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
         std::wstring logsDir = std::wstring(localAppData) + L"\\TinkerNorth\\Satellite\\logs";
@@ -152,9 +148,8 @@ bool refreshJumpList() {
         }
     }
 
-    // Check for Updates. Launches a second satellite.exe with --check-updates;
-    // the singleton mutex (acquireSingleInstance) routes it to the running
-    // instance's second-instance handler.
+    // Launches a second satellite.exe with --check-updates; the singleton mutex
+    // routes it to the running instance's second-instance handler.
     IShellLinkW* checkUpdates =
         makeShellLink(exe, L"--check-updates", L"Check for Updates",
                       L"Look for a newer Satellite release on GitHub", exe, 0);

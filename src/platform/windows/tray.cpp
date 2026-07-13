@@ -27,7 +27,7 @@ static std::wstring g_lastTooltip;   // remember last text so we don't churn NIM
 // (re)created. Identifier is initialised lazily on first add.
 static UINT g_taskbarCreatedMsg = 0;
 
-// index → deviceId for tray-menu pairing items. GUI-thread only; no lock.
+// index to deviceId for tray-menu pairing items. GUI-thread only; no lock.
 static std::vector<std::string> g_menuPairIds;
 
 // Requests arrive on the HTTP thread but the WinRT toast (+ COM) must run on the
@@ -94,8 +94,8 @@ static void registerTrayIcon(HWND hwnd) {
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
 
     // NIF_GUID add can fail when the GUID is still registered to a stale exe
-    // path (Explorer won't remap silently). Delete + retry; if that also fails
-    // (corrupt tray cache, Win7), drop NIF_GUID and lose cross-install identity.
+    // path (Explorer won't remap silently). Delete + retry; if that also fails,
+    // drop NIF_GUID and lose cross-install identity.
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) {
         NOTIFYICONDATAW del{};
         del.cbSize = sizeof(del);
@@ -146,8 +146,7 @@ void showTrayMenu(HWND hwnd) {
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
 
-    // Pending pairing requests at the top; the id→deviceId map is snapshotted so
-    // WM_COMMAND can resolve the click.
+    // Snapshot the index-to-deviceId map so WM_COMMAND can resolve the click.
     auto pairReqs = pendingPairRequests();
     g_menuPairIds.clear();
     for (size_t i = 0; i < pairReqs.size(); i++) {
@@ -164,8 +163,7 @@ void showTrayMenu(HWND hwnd) {
     AppendMenuW(menu, MF_STRING, IDM_DONATE, L"Donate");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    // Rebuilt each open so the label reflects current update state. Disabled
-    // fallback when the updater isn't wired keeps the menu shape stable.
+    // Rebuilt each open so the label reflects current update state.
     if (g_updateService) {
         UpdateStatusSnapshot snap = g_updateService->snapshot();
         if (snap.state == UpdateState::Downloaded && snap.info.available) {
@@ -241,7 +239,7 @@ static void showPairingDialogWindows(HWND hwnd, const std::string& deviceId) {
     cfg.cbSize = sizeof(cfg);
     cfg.hwndParent = hwnd;
     cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
-    cfg.pszWindowTitle = L"Satellite — pairing request";
+    cfg.pszWindowTitle = L"Satellite: pairing request";
     cfg.pszMainIcon = TD_INFORMATION_ICON;
     cfg.pszMainInstruction = wInstr.c_str();
     cfg.pszContent = wContent.c_str();
@@ -260,7 +258,7 @@ static void showPairingDialogWindows(HWND hwnd, const std::string& deviceId) {
     } else if (pressed == kReject) {
         declinePairing(deviceId);
     }
-    // Esc / cancel: leave it pending — the dashboard or the TTL handles it.
+    // Esc/cancel: leave it pending; the dashboard or the TTL handles it.
 }
 
 // pairing.cpp listener (registered from main). Fires on the HTTP thread; the
@@ -284,8 +282,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
     case WM_TRAYICON: {
-        // v4: event is LOWORD(lp), not the whole lp (v3) -- comparing the whole
-        // lp against WM_LBUTTONDBLCLK never matches under v4.
+        // v4: event is LOWORD(lp), not the whole lp (v3); comparing the whole lp
+        // against WM_LBUTTONDBLCLK never matches under v4.
         UINT event = LOWORD(lp);
         if (event == WM_LBUTTONDBLCLK || event == NIN_KEYSELECT) {
             openUrl(webUiUrl().c_str());
@@ -302,7 +300,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 for (const auto& id : todo) showPairingDialogWindows(hwnd, id);
                 return 0;
             }
-            // Else: staged update → settings page; otherwise the dashboard.
+            // Else: staged update goes to settings; otherwise the dashboard.
             if (g_updateService) {
                 UpdateStatusSnapshot s = g_updateService->snapshot();
                 if (s.info.available) {

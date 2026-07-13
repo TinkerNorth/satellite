@@ -1,9 +1,9 @@
-# Arch User Repository — `satellite-bin`
+# Arch User Repository: `satellite-bin`
 
 This directory holds the [PKGBUILD](PKGBUILD) and [.SRCINFO](.SRCINFO)
 files that mirror Satellite to the [AUR](https://aur.archlinux.org/) as
 the `satellite-bin` package. The AUR repository itself is a separate
-git remote — the files here are the source of truth, and a release-time
+git remote: the files here are the source of truth, and a release-time
 job syncs them across.
 
 ## How users install
@@ -29,7 +29,7 @@ trying to swap the binary itself.
 ## How maintainers bump it
 
 The `release.yml` workflow regenerates the SHA-256 sums on tag, but does
-**not** push to the AUR — AUR pushes require a per-maintainer SSH key
+**not** push to the AUR: AUR pushes require a per-maintainer SSH key
 which we don't want sitting in CI secrets. After a release publishes:
 
 1. Pull the freshly-tagged files:

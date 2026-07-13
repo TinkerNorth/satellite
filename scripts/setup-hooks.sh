@@ -1,7 +1,7 @@
 #!/bin/bash
 # Point this repo's git hooks at the tracked .githooks/ directory so the
 # pre-commit lint/format checks run for every contributor after a single
-# one-time setup. Idempotent — safe to re-run.
+# one-time setup. Idempotent, safe to re-run.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

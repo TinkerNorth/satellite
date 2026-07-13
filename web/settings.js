@@ -1,5 +1,3 @@
-// ── settings.js — Server configuration page ─────────────────────────────────
-
 let settingsSavedConfig = { udpPort: 9876, autoStart: false, discoveryBroadcast: true };
 
 function settingsCheckDirty() {
@@ -12,8 +10,8 @@ function settingsCheckDirty() {
     curBroadcast !== settingsSavedConfig.discoveryBroadcast;
   document.getElementById('settings-btnSave').disabled = !dirty;
   document.getElementById('settings-btnUndo').disabled = !dirty;
-  // Editing the form clears any stale validation / save-result message so a
-  // previous error doesn't linger over freshly-changed values.
+  // Editing clears stale validation/save messages so a prior error doesn't
+  // linger over freshly-changed values.
   if (dirty) {
     settingsSetPortError('');
     settingsSetSaveStatus('', false);
@@ -30,7 +28,6 @@ function settingsUndo() {
   settingsCheckDirty();
 }
 
-// Clear or set the inline status lines under the form.
 function settingsSetPortError(msg) {
   const el = document.getElementById('settings-udpPort-error');
   if (el) el.textContent = msg || '';
@@ -47,10 +44,9 @@ async function settingsSave() {
   const auto = document.getElementById('settings-autoStart').checked;
   const broadcast = document.getElementById('settings-discoveryBroadcast').checked;
 
-  // Client-side range check. The server silently clamps/ignores a port
-  // outside 1024–65535 and still returns {"ok":true}, so without this the
-  // user gets no feedback that their value was rejected. Mirrors the
-  // <input min/max> and the server's own accepted range.
+  // Client-side range check: the server silently clamps a port outside
+  // 1024-65535 and still returns ok:true, so without this the user gets no
+  // feedback that their value was rejected.
   settingsSetSaveStatus('', false);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
     settingsSetPortError(t('settings.udp-port.error'));
@@ -64,9 +60,8 @@ async function settingsSave() {
     discoveryBroadcastEnabled: broadcast,
   });
 
-  // Only commit saved-state when the server confirmed the write. A failed
-  // POST previously still cleared the dirty flag, making a failure look
-  // like a success.
+  // Only commit saved-state when the server confirmed the write, else a
+  // failed POST would clear the dirty flag and look like a success.
   if (!res.ok) {
     settingsSetSaveStatus(
       res.status === 0
@@ -76,9 +71,8 @@ async function settingsSave() {
     return;
   }
 
-  // Reflect the server's effective value — the server owns the accepted
-  // range, so re-seed the field from its response rather than assuming our
-  // request stuck verbatim. `udpPort` is echoed by POST /api/config.
+  // The server owns the accepted range, so re-seed the field from its echoed
+  // udpPort rather than assuming our request stuck verbatim.
   const effectivePort = (res.data && typeof res.data.udpPort === 'number')
     ? res.data.udpPort : port;
   settingsSavedConfig.udpPort = effectivePort;
@@ -87,9 +81,8 @@ async function settingsSave() {
   document.getElementById('settings-udpPort').value = effectivePort;
   settingsCheckDirty();
 
-  // The client range-checks before POST, so this should not fire from the
-  // web UI — but if the server reports it rejected the port, say so rather
-  // than claiming success with a value that didn't take.
+  // If the server reports it rejected the port, say so rather than claiming
+  // success with a value that didn't take.
   if (res.data && res.data.udpPortRejected) {
     settingsSetPortError(t('settings.udp-port.rejected', [effectivePort]));
     return;
@@ -98,9 +91,8 @@ async function settingsSave() {
   initNetworkSettings();
 }
 
-// Render the read-only mDNS responder state. Active is the healthy path;
-// Inactive means the responder couldn't bind 5353 — discovery then relies on
-// the legacy broadcast beacon, so it's flagged with the warning colour.
+// Inactive means the responder couldn't bind 5353, so discovery falls back to
+// the legacy beacon; flag it with the warning colour.
 function settingsRenderMdnsStatus(active) {
   const el = document.getElementById('settings-mdns-status');
   if (!el) return;
@@ -109,17 +101,16 @@ function settingsRenderMdnsStatus(active) {
 }
 
 async function initSettings() {
-  // Force the updates form to re-seed from the next snapshot — handles the
-  // case where prefs were changed in another tab while we were on /dashboard.
+  // Re-seed the updates form from the next snapshot in case prefs changed in
+  // another tab while we were on /dashboard.
   if (typeof updatesResetForm === 'function') updatesResetForm();
 
-  // Load current config from server
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
     settingsSavedConfig.udpPort = d.udpPort;
     settingsSavedConfig.autoStart = d.autoStart;
-    // Absent key (pre-1.6 server) → treat as on, matching the config default.
+    // Absent key (pre-1.6 server) defaults to on, matching the config default.
     settingsSavedConfig.discoveryBroadcast = d.discoveryBroadcastEnabled !== false;
     document.getElementById('settings-udpPort').value = d.udpPort;
     document.getElementById('settings-autoStart').checked = d.autoStart;
@@ -137,7 +128,7 @@ async function initSettings() {
   if (auto) auto.addEventListener('change', settingsCheckDirty);
   if (broadcast) broadcast.addEventListener('change', settingsCheckDirty);
 
-  // Adapt the autostart label per OS — "Start with Windows" reads odd on Mac/Linux.
+  // "Start with Windows" reads odd on Mac/Linux, so adapt the label per OS.
   try {
     const vr = await fetch('/api/version');
     if (vr.ok) {
@@ -155,7 +146,6 @@ async function initSettings() {
     }
   } catch (e) { /* ignore */ }
 
-  // Pull update state and prefs. updates.js renders both the banner + form.
   if (typeof updatesFetch === 'function') updatesFetch();
 
   initNetworkSettings();
@@ -176,7 +166,7 @@ function settingsRenderInterfaceOptions(d) {
   if (Array.isArray(d.interfaces)) {
     for (const f of d.interfaces) {
       const tag = f.physical ? '' : ' ' + t('netinfo.virtual');
-      const label = (f.name || '') + ' — ' + (f.ip || '') + tag;
+      const label = (f.name || '') + ': ' + (f.ip || '') + tag;
       html += '<option value="' + esc(f.name) + '">' + esc(label) + '</option>';
     }
   }

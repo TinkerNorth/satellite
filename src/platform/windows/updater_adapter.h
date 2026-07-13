@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// IUpdaterPort for Windows: WinHTTP to GitHub, BCrypt SHA-256, ShellExecuteEx
-// to run the Inno installer. An /OTA install auto-relaunches satellite.exe at
-// the end even in silent mode (see installer.iss WantsOTARelaunch).
+// An /OTA install auto-relaunches satellite.exe even in silent mode
+// (see installer.iss WantsOTARelaunch).
 #pragma once
 
 #include "core/ports.h"

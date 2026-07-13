@@ -31,9 +31,9 @@ class ClientAdapter : public IClientPort {
     SOCKET sock_ = INVALID_SOCKET;
     std::mutex addrMtx_;
     std::unordered_map<uint32_t, sockaddr_in> addrs_;
-    // Per-token server→client send counter (nonce material). Counters and the
-    // session key rotate together: a fresh token starts at 0 here and the
-    // first send goes out as counter 1.
+    // Per-token server-to-client send counter (nonce material). Counters and the
+    // session key rotate together: a fresh token starts at 0 here and the first
+    // send goes out as counter 1.
     std::unordered_map<uint32_t, uint32_t> txCounters_;
 
     void sendEncryptedPacket(const Connection& conn, const uint8_t* inner, size_t innerLen);

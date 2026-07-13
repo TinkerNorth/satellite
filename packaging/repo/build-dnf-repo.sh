@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-dnf-repo.sh — regenerate the DNF / YUM repository tree under a given
+# build-dnf-repo.sh: regenerate the DNF / YUM repository tree under a given
 # pages directory, then GPG-sign the result.
 #
 # Layout under $PAGES_DIR:
@@ -33,7 +33,7 @@ if [ -z "${GPG_KEY_ID:-}" ] || [ -z "${REPO_BASE_URL:-}" ]; then
     exit 2
 fi
 if ! command -v createrepo_c >/dev/null 2>&1; then
-    echo "createrepo_c not found — install it (apt: createrepo-c)." >&2
+    echo "createrepo_c not found; install it (apt: createrepo-c)." >&2
     exit 2
 fi
 
@@ -52,7 +52,7 @@ else
     done
 fi
 
-# ── 2. Regenerate metadata from scratch — cheap for our scale ───────────────
+# Regenerate metadata from scratch (cheap at our scale).
 createrepo_c --update --no-database "$repo_dir"
 
 # ── 3. Sign repomd.xml ──────────────────────────────────────────────────────

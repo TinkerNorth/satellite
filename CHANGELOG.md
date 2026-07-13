@@ -3,7 +3,7 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased — control-plane rewrite (protocol 1)
+## Unreleased: control-plane rewrite (protocol 1)
 
 Clean-break rewrite of the client ↔ server control plane. Nothing of the old
 wire had shipped; there are no legacy paths and no dual-protocol support.
@@ -20,7 +20,7 @@ wire had shipped; there are no legacy paths and no dual-protocol support.
   0x0006 ACK / 0x0007 SERVER_STATUS / 0x0008 TYPE / 0x000E CAPS_UPDATE and
   all ACK machinery. UDP can no longer mutate topology.
 - Heartbeat ack 0x0003 enriched: backend status + session `epoch` +
-  active-controller bitmap — involuntary server-side topology changes
+  active-controller bitmap, so involuntary server-side topology changes
   self-heal within one heartbeat (client GETs + re-PUTs).
 - New best-effort session-close notify 0x000F (reasons: shutdown, kicked,
   replaced, unpaired), sent encrypted before teardown.
@@ -28,12 +28,12 @@ wire had shipped; there are no legacy paths and no dual-protocol support.
   token)`; nonce carries a direction byte; counters restart per session.
   Fixes cross-session and downstream nonce reuse on the long-lived key.
 - Every authenticated REST call requires `hmacProof =
-  HMAC-SHA256(pairingKey, "satellite-proof:" + deviceId)` — a diverged key
+  HMAC-SHA256(pairingKey, "satellite-proof:" + deviceId)`. A diverged key
   now fails at REST time with a terminal 401 instead of silent UDP churn.
 - Deleted the PIN-free already-paired re-pair short-circuit (key
   exfiltration by any LAN actor knowing a deviceId). Re-pair requires a
   fresh PIN or hmacProof of the current key (key rotation).
-- New `DELETE /api/pair` (client self-unpair). Unpair — admin or self —
+- New `DELETE /api/pair` (client self-unpair). Unpair (admin or self)
   closes any live session for the device.
 - New read-only `GET /api/catalog` (+ `/api/catalog/images/{slug}`):
   localized controller-type catalog (en, es, fr, de, bs, pt-BR) +
@@ -63,7 +63,7 @@ wire had shipped; there are no legacy paths and no dual-protocol support.
 - Fixed a deadlock between unplug and the backend's rumble/lightbar
   notification workers: unplug joins the worker while holding the session
   lock, so the backend→service callbacks now take it with try_lock and drop
-  the frame when contended (safe — both streams are coalesced and
+  the frame when contended (safe: both streams are coalesced and
   re-notified, so a dropped frame self-heals).
 - `PairedDevice` is copied by value under the config lock in every client
   route (fixes a use-after-unlock).

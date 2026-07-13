@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Mirrors the Windows crypto.h API surface so files under src/net/ compile
-// unchanged. Windows uses DPAPI + BCrypt; macOS uses libsodium primitives
-// backed by a per-user keyfile in the app-support directory (no Keychain yet).
+// Mirrors the Windows crypto.h API surface so src/net/ compiles unchanged;
+// macOS backs DPAPI+BCrypt with libsodium + a keyfile in app-support (no Keychain yet).
 #pragma once
 #include "globals.h"
 
@@ -9,8 +8,7 @@
 
 std::string sha256hex(const std::string& input);
 
-// dpapi* names kept for cross-platform parity; macOS backs these with libsodium
-// secretbox + local keyfile rather than DPAPI.
+// dpapi* names kept for cross-platform parity; macOS uses libsodium secretbox.
 std::string dpapiEncrypt(const std::string& plaintext);
 std::string dpapiDecrypt(const std::string& encoded);
 
@@ -19,9 +17,7 @@ std::string randomDigits(int n);
 
 bool verifyPin(const std::string& pin);
 
-// secondsRemaining lets the dashboard render a "New PIN in m:ss" countdown
-// without a separate rotateAtEpoch field; previousPin is empty until the
-// first rotation (and after a pair/burn reset).
+// previousPin is empty until the first rotation (and after a pair/burn reset).
 struct PinSnapshot {
     PinState state = PinState::PinActive;
     std::string currentPin;

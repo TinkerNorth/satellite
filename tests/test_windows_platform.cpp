@@ -15,36 +15,7 @@
 #include <sstream>
 #include <string>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
-
-#define EXPECT_EQ(a, b)                                                                            \
-    do {                                                                                           \
-        auto _a = (a);                                                                             \
-        auto _b = (b);                                                                             \
-        if (_a == _b) {                                                                            \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #a << " == " << #b << "  (got " << _a << " vs " << _b << ")\n";   \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 // Captures any existing HKCU Run-key value for APP_NAME so the registry tests
 // can flip it freely and put it back afterwards.
@@ -116,64 +87,32 @@ static bool fileExists(const std::string& p) {
     return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-static void testJsonEscape() {
-    TEST("jsonEscape — passthrough of plain ASCII");
-    EXPECT_EQ(jsonEscape("hello"), std::string("hello"));
+// Config (de)serialization moved to nlohmann/json (core/config_json.h); the
+// JSON library is unit-tested by test_json. What this suite must still pin is
+// that special characters in persisted strings survive a save/load round-trip
+// through the public config API.
+static void testConfigEscapingRoundTrip() {
+    ConfigFileSnapshot snap;
 
-    TEST("jsonEscape — escapes double-quote");
-    EXPECT_EQ(jsonEscape("a\"b"), std::string("a\\\"b"));
+    Config out;
+    out.networkInterface = "Eth \"quoted\" \\ backslash";
+    PairedDevice d;
+    d.id = "dev-special";
+    d.name = std::string("name\twith\ncontrol\x01 and \"quotes\"", 30);
+    d.sharedKeyHex = "00ff";
+    out.pairedDevices.push_back(d);
+    saveConfig(out);
 
-    TEST("jsonEscape — escapes backslash");
-    EXPECT_EQ(jsonEscape("a\\b"), std::string("a\\\\b"));
-
-    TEST("jsonEscape — escapes newline");
-    EXPECT_EQ(jsonEscape("a\nb"), std::string("a\\nb"));
-
-    TEST("jsonEscape — handles empty string");
-    EXPECT_EQ(jsonEscape(""), std::string(""));
-
-    TEST("jsonEscape — combined special chars");
-    EXPECT_EQ(jsonEscape("\"\\\n"), std::string("\\\"\\\\\\n"));
-
-    // C0 control bytes other than \n must become \uXXXX escapes — a raw \r or
-    // \t in a device name would otherwise produce invalid JSON.
-    TEST("jsonEscape — escapes carriage return as \\u000d");
-    EXPECT_EQ(jsonEscape("a\rb"), std::string("a\\u000db"));
-
-    TEST("jsonEscape — escapes tab as \\u0009");
-    EXPECT_EQ(jsonEscape("a\tb"), std::string("a\\u0009b"));
-
-    TEST("jsonEscape — escapes NUL as \\u0000");
-    EXPECT_EQ(jsonEscape(std::string("a\0b", 3)), std::string("a\\u0000b"));
-
-    TEST("jsonEscape — escapes a high C0 control byte (0x1f)");
-    EXPECT_EQ(jsonEscape(std::string("\x1f")), std::string("\\u001f"));
-
-    TEST("jsonEscape — 0x20 (space) is not escaped");
-    EXPECT_EQ(jsonEscape(" "), std::string(" "));
-}
-
-static void testJsonGetString() {
-    TEST("jsonGetString — extracts simple value");
-    std::string j = R"({"name":"alice","age":30})";
-    EXPECT_EQ(jsonGetString(j, "name"), std::string("alice"));
-
-    TEST("jsonGetString — handles whitespace around colon");
-    std::string j2 = R"({ "name" : "bob" })";
-    EXPECT_EQ(jsonGetString(j2, "name"), std::string("bob"));
-
-    TEST("jsonGetString — returns empty when key absent");
-    EXPECT_EQ(jsonGetString(R"({"a":"x"})", "missing"), std::string(""));
-
-    TEST("jsonGetString — empty input returns empty");
-    EXPECT_EQ(jsonGetString("", "any"), std::string(""));
-
-    TEST("jsonGetString — handles empty value");
-    EXPECT_EQ(jsonGetString(R"({"name":""})", "name"), std::string(""));
+    Config in = loadConfig();
+    TEST("config round-trip: quotes/backslash in networkInterface survive");
+    EXPECT_EQ(in.networkInterface, out.networkInterface);
+    TEST("config round-trip: quotes/backslash/control in device name survive");
+    EXPECT_EQ(in.pairedDevices.size(), size_t{1});
+    if (in.pairedDevices.size() == 1) EXPECT_EQ(in.pairedDevices[0].name, d.name);
 }
 
 static void testConfigPath() {
-    TEST("configPath — lives under satellite\\config.json");
+    TEST("configPath: lives under satellite\\config.json");
     std::string p = configPath();
     EXPECT(p.find("\\satellite\\config.json") != std::string::npos);
 }
@@ -199,27 +138,27 @@ static void testConfigRoundTrip() {
 
     saveConfig(out);
 
-    TEST("saveConfig — writes file");
+    TEST("saveConfig: writes file");
     EXPECT(fileExists(configPath()));
 
-    TEST("saveConfig — leaves no .tmp sibling behind");
+    TEST("saveConfig: leaves no .tmp sibling behind");
     EXPECT(!fileExists(configPath() + ".tmp"));
 
     Config in = loadConfig();
-    TEST("loadConfig — round-trips ports");
+    TEST("loadConfig: round-trips ports");
     EXPECT_EQ(in.udpPort, out.udpPort);
     EXPECT_EQ(in.webPort, out.webPort);
     EXPECT_EQ(in.pairPort, out.pairPort);
     EXPECT_EQ(in.discPort, out.discPort);
 
-    TEST("loadConfig — round-trips autoStart");
+    TEST("loadConfig: round-trips autoStart");
     EXPECT_EQ(in.autoStart, true);
 
-    TEST("loadConfig — round-trips networkInterface and allowPublicNetwork");
+    TEST("loadConfig: round-trips networkInterface and allowPublicNetwork");
     EXPECT_EQ(in.networkInterface, std::string("Ethernet 2"));
     EXPECT_EQ(in.allowPublicNetwork, true);
 
-    TEST("loadConfig — round-trips paired devices");
+    TEST("loadConfig: round-trips paired devices");
     EXPECT_EQ(in.pairedDevices.size(), size_t{1});
     if (in.pairedDevices.size() == 1) {
         EXPECT_EQ(in.pairedDevices[0].id, std::string("device-1"));
@@ -240,7 +179,7 @@ static void testDiscoveryBroadcastConfig() {
         out.discoveryBroadcastEnabled = true;
         saveConfig(out);
         Config in = loadConfig();
-        TEST("loadConfig — discoveryBroadcastEnabled round-trips true");
+        TEST("loadConfig: discoveryBroadcastEnabled round-trips true");
         EXPECT_EQ(in.discoveryBroadcastEnabled, true);
     }
     {
@@ -248,7 +187,7 @@ static void testDiscoveryBroadcastConfig() {
         out.discoveryBroadcastEnabled = false;
         saveConfig(out);
         Config in = loadConfig();
-        TEST("loadConfig — discoveryBroadcastEnabled round-trips false");
+        TEST("loadConfig: discoveryBroadcastEnabled round-trips false");
         EXPECT_EQ(in.discoveryBroadcastEnabled, false);
     }
     {
@@ -257,10 +196,10 @@ static void testDiscoveryBroadcastConfig() {
         f << "{\r\n  \"udpPort\": 9876,\r\n  \"pairedDevices\": []\r\n}\r\n";
         f.close();
         Config in = loadConfig();
-        TEST("loadConfig — absent discoveryBroadcastEnabled key defaults to true");
+        TEST("loadConfig: absent discoveryBroadcastEnabled key defaults to true");
         EXPECT_EQ(in.discoveryBroadcastEnabled, true);
 
-        TEST("loadConfig — absent networkInterface/allowPublicNetwork keep defaults");
+        TEST("loadConfig: absent networkInterface/allowPublicNetwork keep defaults");
         EXPECT_EQ(in.networkInterface, std::string(""));
         EXPECT_EQ(in.allowPublicNetwork, false);
     }
@@ -270,12 +209,12 @@ static void testAutoStartEnable() {
     AutoStartSnapshot snap;
     setAutoStart(false);
 
-    TEST("getAutoStart — false on a clean profile");
+    TEST("getAutoStart: false on a clean profile");
     EXPECT_EQ(getAutoStart(), false);
 
     setAutoStart(true);
 
-    TEST("getAutoStart — true after enable");
+    TEST("getAutoStart: true after enable");
     EXPECT_EQ(getAutoStart(), true);
 }
 
@@ -286,7 +225,7 @@ static void testAutoStartDisable() {
 
     setAutoStart(false);
 
-    TEST("getAutoStart — false after disable");
+    TEST("getAutoStart: false after disable");
     EXPECT_EQ(getAutoStart(), false);
 }
 
@@ -294,22 +233,22 @@ static void testAutoStartIdempotent() {
     AutoStartSnapshot snap;
     setAutoStart(false);
 
-    TEST("setAutoStart(false) — no-op when not previously enabled");
+    TEST("setAutoStart(false): no-op when not previously enabled");
     setAutoStart(false);
     EXPECT_EQ(getAutoStart(), false);
 
-    TEST("setAutoStart(true) twice — still enabled");
+    TEST("setAutoStart(true) twice: still enabled");
     setAutoStart(true);
     setAutoStart(true);
     EXPECT_EQ(getAutoStart(), true);
 }
 
 static void testGetExeDir() {
-    TEST("getExeDir — returns a non-empty path");
+    TEST("getExeDir: returns a non-empty path");
     std::string d = getExeDir();
     EXPECT(!d.empty());
 
-    TEST("getExeDir — directory exists");
+    TEST("getExeDir: directory exists");
     if (!d.empty() && d != ".") {
         DWORD attrs = GetFileAttributesA(d.c_str());
         EXPECT(attrs != INVALID_FILE_ATTRIBUTES);
@@ -318,7 +257,7 @@ static void testGetExeDir() {
 }
 
 static void testGetCurrentDate() {
-    TEST("getCurrentDate — returns YYYY-MM-DD");
+    TEST("getCurrentDate: returns YYYY-MM-DD");
     std::string s = getCurrentDate();
     EXPECT_EQ(s.size(), size_t{10});
     if (s.size() == 10) {
@@ -328,11 +267,11 @@ static void testGetCurrentDate() {
 }
 
 static void testHexCodec() {
-    TEST("hexEncode — known vector");
+    TEST("hexEncode: known vector");
     const uint8_t in[] = {0x00, 0x0f, 0xa5, 0xff};
     EXPECT_EQ(hexEncode(in, sizeof(in)), std::string("000fa5ff"));
 
-    TEST("hexDecode — roundtrip of hexEncode");
+    TEST("hexDecode: roundtrip of hexEncode");
     uint8_t out[4] = {0};
     EXPECT(hexDecode("000fa5ff", out, sizeof(out)));
     EXPECT_EQ((int)out[0], 0x00);
@@ -340,26 +279,26 @@ static void testHexCodec() {
     EXPECT_EQ((int)out[2], 0xa5);
     EXPECT_EQ((int)out[3], 0xff);
 
-    TEST("hexDecode — uppercase accepted");
+    TEST("hexDecode: uppercase accepted");
     uint8_t up[2] = {0};
     EXPECT(hexDecode("A5FF", up, sizeof(up)));
     EXPECT_EQ((int)up[0], 0xa5);
     EXPECT_EQ((int)up[1], 0xff);
 
-    TEST("hexDecode — wrong length rejected");
+    TEST("hexDecode: wrong length rejected");
     uint8_t two[2] = {0};
     EXPECT(!hexDecode("abc", two, sizeof(two)));
 
-    TEST("hexDecode — non-hex rejected");
+    TEST("hexDecode: non-hex rejected");
     uint8_t two2[2] = {0};
     EXPECT(!hexDecode("zz00", two2, sizeof(two2)));
 
-    TEST("sha256hex — empty-string vector");
+    TEST("sha256hex: empty-string vector");
     EXPECT_EQ(sha256hex(""),
               std::string("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
 }
 
-// ── Session crypto (net/session_crypto): HKDF derivation + hmacProof ─────────
+// Session crypto (net/session_crypto): HKDF derivation + hmacProof.
 
 static const uint8_t SC_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
                                                 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
@@ -368,20 +307,20 @@ static const uint8_t SC_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,  
 static void testSessionKeyDerivation() {
     const uint8_t salt[SESSION_SALT_SIZE] = {0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18};
 
-    TEST("deriveSessionKey — deterministic for fixed inputs");
+    TEST("deriveSessionKey: deterministic for fixed inputs");
     uint8_t k1[CRYPTO_KEY_SIZE], k2[CRYPTO_KEY_SIZE];
     deriveSessionKey(SC_KEY, salt, 0x12345678, k1);
     deriveSessionKey(SC_KEY, salt, 0x12345678, k2);
     EXPECT(std::memcmp(k1, k2, CRYPTO_KEY_SIZE) == 0);
 
-    TEST("deriveSessionKey — never the raw pairing key");
+    TEST("deriveSessionKey: never the raw pairing key");
     EXPECT(std::memcmp(k1, SC_KEY, CRYPTO_KEY_SIZE) != 0);
 
-    TEST("deriveSessionKey — token changes the key");
+    TEST("deriveSessionKey: token changes the key");
     deriveSessionKey(SC_KEY, salt, 0x12345679, k2);
     EXPECT(std::memcmp(k1, k2, CRYPTO_KEY_SIZE) != 0);
 
-    TEST("deriveSessionKey — salt changes the key");
+    TEST("deriveSessionKey: salt changes the key");
     uint8_t salt2[SESSION_SALT_SIZE] = {0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x19};
     deriveSessionKey(SC_KEY, salt2, 0x12345678, k2);
     EXPECT(std::memcmp(k1, k2, CRYPTO_KEY_SIZE) != 0);
@@ -389,41 +328,41 @@ static void testSessionKeyDerivation() {
     // Pinned vector: independently computed RFC 5869 HKDF-SHA256 with
     // ikm = 01..20, salt = a1b2c3d4e5f60718, info = "satellite-session-v1" ||
     // 12345678. Any drift here is a cross-end break (dish derives the same).
-    TEST("deriveSessionKey — pinned interop vector");
+    TEST("deriveSessionKey: pinned interop vector");
     EXPECT_EQ(hexEncode(k1, CRYPTO_KEY_SIZE),
               std::string("946f704cf07e2dde5e9995a70d3d103753b4687a7ed9656bc6481b06065a8584"));
 }
 
 static void testHmacProof() {
-    TEST("computeHmacProof — 64 hex chars, deterministic");
+    TEST("computeHmacProof: 64 hex chars, deterministic");
     std::string p1 = computeHmacProof(SC_KEY, "device-1");
     std::string p2 = computeHmacProof(SC_KEY, "device-1");
     EXPECT_EQ(p1.size(), size_t{64});
     EXPECT_EQ(p1, p2);
 
-    TEST("computeHmacProof — device-bound");
+    TEST("computeHmacProof: device-bound");
     EXPECT(computeHmacProof(SC_KEY, "device-2") != p1);
 
-    TEST("verifyHmacProof — accepts the matching proof");
+    TEST("verifyHmacProof: accepts the matching proof");
     EXPECT(verifyHmacProof(SC_KEY, "device-1", p1));
 
-    TEST("verifyHmacProof — rejects a diverged key");
+    TEST("verifyHmacProof: rejects a diverged key");
     uint8_t other[CRYPTO_KEY_SIZE];
     std::memcpy(other, SC_KEY, CRYPTO_KEY_SIZE);
     other[0] ^= 0xFF;
     EXPECT(!verifyHmacProof(other, "device-1", p1));
 
-    TEST("verifyHmacProof — rejects the wrong device id");
+    TEST("verifyHmacProof: rejects the wrong device id");
     EXPECT(!verifyHmacProof(SC_KEY, "device-2", p1));
 
-    TEST("verifyHmacProof — rejects malformed hex");
+    TEST("verifyHmacProof: rejects malformed hex");
     EXPECT(!verifyHmacProof(SC_KEY, "device-1", ""));
     EXPECT(!verifyHmacProof(SC_KEY, "device-1", "abc"));
     std::string bad = p1;
     bad[0] = 'z';
     EXPECT(!verifyHmacProof(SC_KEY, "device-1", bad));
 
-    TEST("verifyHmacProof — pinned interop vector");
+    TEST("verifyHmacProof: pinned interop vector");
     // Independently computed HMAC-SHA256(key=01..20, "satellite-proof:device-1").
     EXPECT_EQ(computeHmacProof(SC_KEY, "device-1"),
               std::string("05a035a10c55fdfe254c9df5df55a614ac128b123a5de225ea33b41f1d4eedde"));
@@ -435,7 +374,7 @@ static void testPacketAeadDirections() {
     uint8_t ct[64];
     unsigned long long ctLen = 0;
 
-    TEST("packet AEAD — roundtrip with matching direction");
+    TEST("packet AEAD: roundtrip with matching direction");
     EXPECT(encryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 1, 0xAABBCCDD, plain, sizeof(plain), ct,
                          &ctLen));
     uint8_t pt[64];
@@ -445,19 +384,19 @@ static void testPacketAeadDirections() {
     EXPECT_EQ((size_t)ptLen, sizeof(plain));
     EXPECT(std::memcmp(pt, plain, sizeof(plain)) == 0);
 
-    TEST("packet AEAD — direction mismatch fails authentication");
+    TEST("packet AEAD: direction mismatch fails authentication");
     EXPECT(!decryptPacket(key, CRYPTO_DIR_SERVER_TO_CLIENT, 1, 0xAABBCCDD, ct, (size_t)ctLen, pt,
                           &ptLen));
 
-    TEST("packet AEAD — counter mismatch fails authentication");
+    TEST("packet AEAD: counter mismatch fails authentication");
     EXPECT(!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 2, 0xAABBCCDD, ct, (size_t)ctLen, pt,
                           &ptLen));
 
-    TEST("packet AEAD — token (AAD) mismatch fails authentication");
+    TEST("packet AEAD: token (AAD) mismatch fails authentication");
     EXPECT(!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 1, 0xAABBCCDE, ct, (size_t)ctLen, pt,
                           &ptLen));
 
-    TEST("packet AEAD — same (counter, key) in the two directions yields distinct ciphertext");
+    TEST("packet AEAD: same (counter, key) in the two directions yields distinct ciphertext");
     uint8_t ct2[64];
     unsigned long long ct2Len = 0;
     EXPECT(encryptPacket(key, CRYPTO_DIR_SERVER_TO_CLIENT, 1, 0xAABBCCDD, plain, sizeof(plain), ct2,
@@ -482,25 +421,25 @@ static void testAtomicWriteFile() {
     DeleteFileA(path.c_str());
     DeleteFileA(tmpPath.c_str());
 
-    TEST("atomicWriteFile — writes the exact bytes");
+    TEST("atomicWriteFile: writes the exact bytes");
     EXPECT(atomicWriteFile(path, "hello world"));
     EXPECT(fileExists(path));
     EXPECT_EQ(readFileBytes(path), std::string("hello world"));
 
-    TEST("atomicWriteFile — leaves no .tmp behind");
+    TEST("atomicWriteFile: leaves no .tmp behind");
     EXPECT(!fileExists(tmpPath));
 
-    TEST("atomicWriteFile — replaces existing content");
+    TEST("atomicWriteFile: replaces existing content");
     EXPECT(atomicWriteFile(path, "second write, shorter-then-longer payload"));
     EXPECT_EQ(readFileBytes(path), std::string("second write, shorter-then-longer payload"));
     EXPECT(!fileExists(tmpPath));
 
-    TEST("atomicWriteFile — preserves embedded NULs and newlines");
+    TEST("atomicWriteFile: preserves embedded NULs and newlines");
     std::string payload("a\0b\r\nc", 6);
     EXPECT(atomicWriteFile(path, payload));
     EXPECT_EQ(readFileBytes(path), payload);
 
-    TEST("atomicWriteFile — handles empty content");
+    TEST("atomicWriteFile: handles empty content");
     EXPECT(atomicWriteFile(path, ""));
     EXPECT(fileExists(path));
     EXPECT_EQ(readFileBytes(path), std::string(""));
@@ -517,42 +456,42 @@ static void testResolvePairingSharedKey() {
     generateKeyPair(clientPk, clientSk);
     std::string clientPkHex = hexEncode(clientPk, 32);
 
-    TEST("resolvePairingSharedKey — valid client key derives an ECDH key");
+    TEST("resolvePairingSharedKey: valid client key derives an ECDH key");
     std::string k1;
     PairingKeyOutcome o1 = resolvePairingSharedKey(clientPkHex, serverPk, serverSk, k1);
     EXPECT(o1 == PairingKeyOutcome::Derived);
     EXPECT_EQ(k1.size(), size_t{64});
 
-    TEST("resolvePairingSharedKey — derivation is deterministic for fixed inputs");
+    TEST("resolvePairingSharedKey: derivation is deterministic for fixed inputs");
     std::string k1b;
     PairingKeyOutcome o1b = resolvePairingSharedKey(clientPkHex, serverPk, serverSk, k1b);
     EXPECT(o1b == PairingKeyOutcome::Derived);
     EXPECT_EQ(k1, k1b);
 
-    TEST("resolvePairingSharedKey — empty client key mints a random key");
+    TEST("resolvePairingSharedKey: empty client key mints a random key");
     std::string k2;
     PairingKeyOutcome o2 = resolvePairingSharedKey("", serverPk, serverSk, k2);
     EXPECT(o2 == PairingKeyOutcome::Random);
     EXPECT_EQ(k2.size(), size_t{64});
 
-    TEST("resolvePairingSharedKey — random keys differ across calls");
+    TEST("resolvePairingSharedKey: random keys differ across calls");
     std::string k2b;
     resolvePairingSharedKey("", serverPk, serverSk, k2b);
     EXPECT(k2 != k2b);
 
-    TEST("resolvePairingSharedKey — malformed hex is rejected, not silently randomized");
+    TEST("resolvePairingSharedKey: malformed hex is rejected, not silently randomized");
     std::string k3 = "sentinel";
     PairingKeyOutcome o3 = resolvePairingSharedKey("zzzz", serverPk, serverSk, k3);
     EXPECT(o3 == PairingKeyOutcome::InvalidClientKey);
     EXPECT(k3.empty());
 
-    TEST("resolvePairingSharedKey — wrong-length client key is rejected");
+    TEST("resolvePairingSharedKey: wrong-length client key is rejected");
     std::string k4;
     PairingKeyOutcome o4 = resolvePairingSharedKey("abcd", serverPk, serverSk, k4);
     EXPECT(o4 == PairingKeyOutcome::InvalidClientKey);
     EXPECT(k4.empty());
 
-    TEST("resolvePairingSharedKey — low-order (all-zero) client key is rejected");
+    TEST("resolvePairingSharedKey: low-order (all-zero) client key is rejected");
     std::string allZero(64, '0');
     std::string k5 = "sentinel";
     PairingKeyOutcome o5 = resolvePairingSharedKey(allZero, serverPk, serverSk, k5);
@@ -568,8 +507,7 @@ int main() {
         return 1;
     }
 
-    testJsonEscape();
-    testJsonGetString();
+    testConfigEscapingRoundTrip();
     testConfigPath();
     testConfigRoundTrip();
     testAtomicWriteFile();

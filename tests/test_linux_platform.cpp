@@ -13,36 +13,7 @@
 #include <sstream>
 #include <string>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
-
-#define EXPECT_EQ(a, b)                                                                            \
-    do {                                                                                           \
-        auto _a = (a);                                                                             \
-        auto _b = (b);                                                                             \
-        if (_a == _b) {                                                                            \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #a << " == " << #b << "  (got " << _a << " vs " << _b << ")\n";   \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 // Per-test tmp dir as XDG_CONFIG_HOME, removed on teardown: isolates tests from
 // the real user config and from each other.
@@ -75,70 +46,38 @@ static std::string slurp(const std::string& p) {
     return ss.str();
 }
 
-static void testJsonEscape() {
-    TEST("jsonEscape — passthrough of plain ASCII");
-    EXPECT_EQ(jsonEscape("hello"), std::string("hello"));
+// Config (de)serialization moved to nlohmann/json (core/config_json.h); the
+// JSON library is unit-tested by test_json. What this suite must still pin is
+// that special characters in persisted strings survive a save/load round-trip
+// through the public config API.
+static void testConfigEscapingRoundTrip() {
+    TempXdg tmp;
 
-    TEST("jsonEscape — escapes double-quote");
-    EXPECT_EQ(jsonEscape("a\"b"), std::string("a\\\"b"));
+    Config out;
+    out.networkInterface = "Eth \"quoted\" \\ backslash";
+    PairedDevice d;
+    d.id = "dev-special";
+    d.name = std::string("name\twith\ncontrol\x01 and \"quotes\"", 30);
+    d.sharedKeyHex = "00ff";
+    out.pairedDevices.push_back(d);
+    saveConfig(out);
 
-    TEST("jsonEscape — escapes backslash");
-    EXPECT_EQ(jsonEscape("a\\b"), std::string("a\\\\b"));
-
-    TEST("jsonEscape — escapes newline");
-    EXPECT_EQ(jsonEscape("a\nb"), std::string("a\\nb"));
-
-    TEST("jsonEscape — handles empty string");
-    EXPECT_EQ(jsonEscape(""), std::string(""));
-
-    TEST("jsonEscape — combined special chars");
-    EXPECT_EQ(jsonEscape("\"\\\n"), std::string("\\\"\\\\\\n"));
-
-    // C0 control bytes other than \n must become \uXXXX escapes — a raw \r or
-    // \t in a device name would otherwise produce invalid JSON.
-    TEST("jsonEscape — escapes carriage return as \\u000d");
-    EXPECT_EQ(jsonEscape("a\rb"), std::string("a\\u000db"));
-
-    TEST("jsonEscape — escapes tab as \\u0009");
-    EXPECT_EQ(jsonEscape("a\tb"), std::string("a\\u0009b"));
-
-    TEST("jsonEscape — escapes NUL as \\u0000");
-    EXPECT_EQ(jsonEscape(std::string("a\0b", 3)), std::string("a\\u0000b"));
-
-    TEST("jsonEscape — escapes a high C0 control byte (0x1f)");
-    EXPECT_EQ(jsonEscape(std::string("\x1f")), std::string("\\u001f"));
-
-    TEST("jsonEscape — 0x20 (space) is not escaped");
-    EXPECT_EQ(jsonEscape(" "), std::string(" "));
-}
-
-static void testJsonGetString() {
-    TEST("jsonGetString — extracts simple value");
-    std::string j = R"({"name":"alice","age":30})";
-    EXPECT_EQ(jsonGetString(j, "name"), std::string("alice"));
-
-    TEST("jsonGetString — handles whitespace around colon");
-    std::string j2 = R"({ "name" : "bob" })";
-    EXPECT_EQ(jsonGetString(j2, "name"), std::string("bob"));
-
-    TEST("jsonGetString — returns empty when key absent");
-    EXPECT_EQ(jsonGetString(R"({"a":"x"})", "missing"), std::string(""));
-
-    TEST("jsonGetString — empty input returns empty");
-    EXPECT_EQ(jsonGetString("", "any"), std::string(""));
-
-    TEST("jsonGetString — handles empty value");
-    EXPECT_EQ(jsonGetString(R"({"name":""})", "name"), std::string(""));
+    Config in = loadConfig();
+    TEST("config round-trip: quotes/backslash in networkInterface survive");
+    EXPECT_EQ(in.networkInterface, out.networkInterface);
+    TEST("config round-trip: quotes/backslash/control in device name survive");
+    EXPECT_EQ(in.pairedDevices.size(), size_t{1});
+    if (in.pairedDevices.size() == 1) EXPECT_EQ(in.pairedDevices[0].name, d.name);
 }
 
 static void testConfigPath() {
     TempXdg tmp;
-    TEST("configPath — lives under XDG_CONFIG_HOME/satellite");
+    TEST("configPath: lives under XDG_CONFIG_HOME/satellite");
     std::string p = configPath();
     EXPECT(p.find(tmp.path) == 0);
     EXPECT(p.find("/satellite/config.json") != std::string::npos);
 
-    TEST("configPath — creates parent dirs");
+    TEST("configPath: creates parent dirs");
     EXPECT(fileExists(tmp.path + "/satellite"));
 }
 
@@ -147,25 +86,25 @@ static void testAtomicWriteFile() {
     std::string path = tmp.path + "/atomic_test.json";
     std::string tmpPath = path + ".tmp";
 
-    TEST("atomicWriteFile — writes the exact bytes");
+    TEST("atomicWriteFile: writes the exact bytes");
     EXPECT(atomicWriteFile(path, "hello world"));
     EXPECT(fileExists(path));
     EXPECT_EQ(slurp(path), std::string("hello world"));
 
-    TEST("atomicWriteFile — leaves no .tmp behind");
+    TEST("atomicWriteFile: leaves no .tmp behind");
     EXPECT(!fileExists(tmpPath));
 
-    TEST("atomicWriteFile — replaces existing content");
+    TEST("atomicWriteFile: replaces existing content");
     EXPECT(atomicWriteFile(path, "second payload, a different length"));
     EXPECT_EQ(slurp(path), std::string("second payload, a different length"));
     EXPECT(!fileExists(tmpPath));
 
-    TEST("atomicWriteFile — preserves embedded NULs and newlines");
+    TEST("atomicWriteFile: preserves embedded NULs and newlines");
     std::string payload("a\0b\nc", 5);
     EXPECT(atomicWriteFile(path, payload));
     EXPECT_EQ(slurp(path), payload);
 
-    TEST("atomicWriteFile — handles empty content");
+    TEST("atomicWriteFile: handles empty content");
     EXPECT(atomicWriteFile(path, ""));
     EXPECT(fileExists(path));
     EXPECT_EQ(slurp(path), std::string(""));
@@ -192,27 +131,27 @@ static void testConfigRoundTrip() {
 
     saveConfig(out);
 
-    TEST("saveConfig — writes file");
+    TEST("saveConfig: writes file");
     EXPECT(fileExists(configPath()));
 
-    TEST("saveConfig — leaves no .tmp sibling behind");
+    TEST("saveConfig: leaves no .tmp sibling behind");
     EXPECT(!fileExists(configPath() + ".tmp"));
 
     Config in = loadConfig();
-    TEST("loadConfig — round-trips ports");
+    TEST("loadConfig: round-trips ports");
     EXPECT_EQ(in.udpPort, out.udpPort);
     EXPECT_EQ(in.webPort, out.webPort);
     EXPECT_EQ(in.pairPort, out.pairPort);
     EXPECT_EQ(in.discPort, out.discPort);
 
-    TEST("loadConfig — round-trips autoStart");
+    TEST("loadConfig: round-trips autoStart");
     EXPECT_EQ(in.autoStart, true);
 
-    TEST("loadConfig — round-trips networkInterface and allowPublicNetwork");
+    TEST("loadConfig: round-trips networkInterface and allowPublicNetwork");
     EXPECT_EQ(in.networkInterface, std::string("Ethernet 2"));
     EXPECT_EQ(in.allowPublicNetwork, true);
 
-    TEST("loadConfig — round-trips paired devices");
+    TEST("loadConfig: round-trips paired devices");
     EXPECT_EQ(in.pairedDevices.size(), size_t{1});
     if (in.pairedDevices.size() == 1) {
         EXPECT_EQ(in.pairedDevices[0].id, std::string("device-1"));
@@ -232,7 +171,7 @@ static void testDiscoveryBroadcastConfig() {
         out.discoveryBroadcastEnabled = true;
         saveConfig(out);
         Config in = loadConfig();
-        TEST("loadConfig — discoveryBroadcastEnabled round-trips true");
+        TEST("loadConfig: discoveryBroadcastEnabled round-trips true");
         EXPECT_EQ(in.discoveryBroadcastEnabled, true);
     }
     {
@@ -241,7 +180,7 @@ static void testDiscoveryBroadcastConfig() {
         out.discoveryBroadcastEnabled = false;
         saveConfig(out);
         Config in = loadConfig();
-        TEST("loadConfig — discoveryBroadcastEnabled round-trips false");
+        TEST("loadConfig: discoveryBroadcastEnabled round-trips false");
         EXPECT_EQ(in.discoveryBroadcastEnabled, false);
     }
     {
@@ -251,10 +190,10 @@ static void testDiscoveryBroadcastConfig() {
         f << "{\n  \"udpPort\": 9876,\n  \"pairedDevices\": []\n}\n";
         f.close();
         Config in = loadConfig();
-        TEST("loadConfig — absent discoveryBroadcastEnabled key defaults to true");
+        TEST("loadConfig: absent discoveryBroadcastEnabled key defaults to true");
         EXPECT_EQ(in.discoveryBroadcastEnabled, true);
 
-        TEST("loadConfig — absent networkInterface/allowPublicNetwork keep defaults");
+        TEST("loadConfig: absent networkInterface/allowPublicNetwork keep defaults");
         EXPECT_EQ(in.networkInterface, std::string(""));
         EXPECT_EQ(in.allowPublicNetwork, false);
     }
@@ -262,13 +201,13 @@ static void testDiscoveryBroadcastConfig() {
 
 static void testLoadConfigMissingFile() {
     TempXdg tmp;
-    TEST("loadConfig — returns defaults when file missing");
+    TEST("loadConfig: returns defaults when file missing");
     Config c = loadConfig();
     EXPECT(c.udpPort > 0);
     EXPECT(c.webPort > 0);
     EXPECT_EQ(c.autoStart, false);
     EXPECT_EQ(c.pairedDevices.size(), size_t{0});
-    // Missing file yields struct defaults — the legacy beacon stays on.
+    // Missing file yields struct defaults; the legacy beacon stays on.
     EXPECT_EQ(c.discoveryBroadcastEnabled, true);
 }
 
@@ -276,30 +215,30 @@ static void testAutoStartEnable() {
     TempXdg tmp;
     std::string desktop = tmp.path + "/autostart/satellite.desktop";
 
-    TEST("getAutoStart — false on a clean profile");
+    TEST("getAutoStart: false on a clean profile");
     EXPECT_EQ(getAutoStart(), false);
 
     setAutoStart(true);
 
-    TEST("setAutoStart(true) — creates the .desktop file");
+    TEST("setAutoStart(true): creates the .desktop file");
     EXPECT(fileExists(desktop));
 
-    TEST("getAutoStart — true after enable");
+    TEST("getAutoStart: true after enable");
     EXPECT_EQ(getAutoStart(), true);
 
     std::string body = slurp(desktop);
-    TEST("setAutoStart(true) — file is a Desktop Entry");
+    TEST("setAutoStart(true): file is a Desktop Entry");
     EXPECT(body.find("[Desktop Entry]") != std::string::npos);
     EXPECT(body.find("Type=Application") != std::string::npos);
 
-    TEST("setAutoStart(true) — Exec line points at the satellite binary");
+    TEST("setAutoStart(true): Exec line points at the satellite binary");
     EXPECT(body.find("Exec=") != std::string::npos);
     EXPECT(body.find("/satellite") != std::string::npos);
 
-    TEST("setAutoStart(true) — Name is APP_TITLE");
+    TEST("setAutoStart(true): Name is APP_TITLE");
     EXPECT(body.find(std::string("Name=") + APP_TITLE) != std::string::npos);
 
-    TEST("setAutoStart(true) — opts into GNOME autostart");
+    TEST("setAutoStart(true): opts into GNOME autostart");
     EXPECT(body.find("X-GNOME-Autostart-enabled=true") != std::string::npos);
 }
 
@@ -312,32 +251,32 @@ static void testAutoStartDisable() {
 
     setAutoStart(false);
 
-    TEST("setAutoStart(false) — removes the .desktop file");
+    TEST("setAutoStart(false): removes the .desktop file");
     EXPECT(!fileExists(desktop));
 
-    TEST("getAutoStart — false after disable");
+    TEST("getAutoStart: false after disable");
     EXPECT_EQ(getAutoStart(), false);
 }
 
 static void testAutoStartIdempotent() {
     TempXdg tmp;
-    TEST("setAutoStart(false) — no-op when not previously enabled");
+    TEST("setAutoStart(false): no-op when not previously enabled");
     setAutoStart(false);
     EXPECT_EQ(getAutoStart(), false);
 
-    TEST("setAutoStart(true) twice — still enabled");
+    TEST("setAutoStart(true) twice: still enabled");
     setAutoStart(true);
     setAutoStart(true);
     EXPECT_EQ(getAutoStart(), true);
 }
 
 static void testGetExeDir() {
-    TEST("getExeDir — returns an absolute path");
+    TEST("getExeDir: returns an absolute path");
     std::string d = getExeDir();
     EXPECT(!d.empty());
     EXPECT(d[0] == '/' || d == ".");
 
-    TEST("getExeDir — directory exists");
+    TEST("getExeDir: directory exists");
     if (d != ".") {
         struct stat st;
         EXPECT(stat(d.c_str(), &st) == 0);
@@ -346,7 +285,7 @@ static void testGetExeDir() {
 }
 
 static void testGetCurrentDate() {
-    TEST("getCurrentDate — returns YYYY-MM-DD");
+    TEST("getCurrentDate: returns YYYY-MM-DD");
     std::string s = getCurrentDate();
     EXPECT_EQ(s.size(), size_t{10});
     if (s.size() == 10) {
@@ -384,15 +323,15 @@ static void testSubmitBatteryWritesProxyFile() {
     r.status = BATTERY_STATUS_DISCHARGING;
     bool ok = adapter.submitBattery(/*serial=*/7, r);
 
-    TEST("submitBattery — returns true on successful proxy write");
+    TEST("submitBattery: returns true on successful proxy write");
     EXPECT(ok);
 
     std::string path = tmp.path + "/controller7/battery";
-    TEST("submitBattery — creates per-controller battery file");
+    TEST("submitBattery: creates per-controller battery file");
     EXPECT(fileExists(path));
 
     std::string body = slurp(path);
-    TEST("submitBattery — file contains wire-encoded level + status");
+    TEST("submitBattery: file contains wire-encoded level + status");
     EXPECT(body.find("level=73") != std::string::npos);
     EXPECT(body.find("status=1") != std::string::npos);
 }
@@ -406,7 +345,7 @@ static void testSubmitBatteryUnknownLevel() {
     r.status = BATTERY_STATUS_UNKNOWN;
     bool ok = adapter.submitBattery(/*serial=*/3, r);
 
-    TEST("submitBattery — accepts BATTERY_LEVEL_UNKNOWN sentinel");
+    TEST("submitBattery: accepts BATTERY_LEVEL_UNKNOWN sentinel");
     EXPECT(ok);
     std::string body = slurp(tmp.path + "/controller3/battery");
     EXPECT(body.find("level=255") != std::string::npos);
@@ -428,14 +367,14 @@ static void testSetLightbarCallbackWritesProxyFile() {
         gotB = b;
     });
 
-    // Install alone must not synthesize an invocation — nothing drives the sink
+    // Install alone must not synthesize an invocation; nothing drives the sink
     // until a colour change actually fires.
-    TEST("setLightbarCallback — install does not synchronously invoke inner sink");
+    TEST("setLightbarCallback: install does not synchronously invoke inner sink");
     EXPECT_EQ(innerCalls, 0);
 
     adapter.invokeLightbarForTest(/*serial=*/5, 0xFF, 0x80, 0xC0);
 
-    TEST("setLightbarCallback — wrapper forwards to inner sink");
+    TEST("setLightbarCallback: wrapper forwards to inner sink");
     EXPECT_EQ(innerCalls, 1);
     EXPECT_EQ(gotSerial, uint32_t{5});
     EXPECT_EQ(int(gotR), 0xFF);
@@ -443,7 +382,7 @@ static void testSetLightbarCallbackWritesProxyFile() {
     EXPECT_EQ(int(gotB), 0xC0);
 
     std::string path = tmp.path + "/controller5/lightbar";
-    TEST("setLightbarCallback — wrapper writes RRGGBB to per-controller lightbar file");
+    TEST("setLightbarCallback: wrapper writes RRGGBB to per-controller lightbar file");
     EXPECT(fileExists(path));
     std::string body = slurp(path);
     EXPECT_EQ(body, std::string("FF80C0\n"));
@@ -451,15 +390,14 @@ static void testSetLightbarCallbackWritesProxyFile() {
 
 static void testSysfsProxyDirEnvOverride() {
     TempProxyDir tmp;
-    TEST("sysfsProxyDir — honours SATELLITE_SYSFS_PROXY_DIR override");
+    TEST("sysfsProxyDir: honours SATELLITE_SYSFS_PROXY_DIR override");
     EXPECT_EQ(GamepadAdapter::sysfsProxyDir(), tmp.path);
 }
 
 int main() {
     std::cout << "Running Linux platform tests...\n\n";
 
-    testJsonEscape();
-    testJsonGetString();
+    testConfigEscapingRoundTrip();
     testConfigPath();
     testAtomicWriteFile();
     testConfigRoundTrip();

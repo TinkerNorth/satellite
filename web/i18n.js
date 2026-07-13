@@ -1,4 +1,4 @@
-// ── i18n.js — Lightweight browser-side i18n for the satellite admin UI ──────
+// i18n.js: browser-side i18n for the satellite admin UI.
 //
 // Loads a JSON catalog from /lang/<locale>.json and exposes a synchronous
 // `t(key, params)` lookup. No npm deps, no fetch-after-paint flash: callers
@@ -15,7 +15,7 @@
 //
 // Locale resolution:
 //   1. ?lang=fr query-string override (testing)
-//   2. navigator.language (and navigator.languages[]) — match either the
+//   2. navigator.language (and navigator.languages[]): match either the
 //      full BCP-47 tag (pt-BR) or just the language subtag (pt)
 //   3. fall back to 'en'
 
@@ -69,8 +69,8 @@
     return FALLBACK_LOCALE;
   }
 
-  // Fetch a catalog. Returns {} on any failure — the caller decides what
-  // to do (we fall through to the next locale or just leave keys verbatim).
+  // Fetch a catalog. Returns {} on any failure; the caller falls through to
+  // the next locale or leaves keys verbatim.
   async function loadCatalog(locale) {
     try {
       const r = await fetch('/lang/' + locale + '.json', { cache: 'no-cache' });
@@ -89,7 +89,7 @@
     out = out.replace(/\{(\w+)\}/g, function (_, k) {
       return (k in params) ? String(params[k]) : '{' + k + '}';
     });
-    // %1$s / %1$d / %2$s — params can be an array OR positional args 1,2,3,…
+    // %1$s / %1$d / %2$s: params can be an array OR positional args 1,2,3
     out = out.replace(/%(\d+)\$[sd]/g, function (_, idx) {
       const i = parseInt(idx, 10);
       if (Array.isArray(params)) {
@@ -146,8 +146,8 @@
     }
   }
 
-  // Boot — kick off catalog load immediately; resolve before DOMContentLoaded
-  // when possible so the static-DOM walker can run synchronously on first paint.
+  // Kick off catalog load immediately; resolve before DOMContentLoaded when
+  // possible so the static-DOM walker can run synchronously on first paint.
   const bootPromise = (async function boot() {
     activeLocale = detectLocale();
     document.documentElement.setAttribute('lang', activeLocale);
@@ -165,8 +165,7 @@
     try { document.dispatchEvent(new CustomEvent('i18n:ready')); } catch (e) {}
   })();
 
-  // Walk on DOMContentLoaded (after catalog has loaded). Both events race —
-  // whichever happens last triggers the walker.
+  // Both events race; whichever happens last triggers the walker.
   function maybeWalk() {
     if (ready && document.readyState !== 'loading') applyStaticDOM(document);
   }
