@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../src/platform/linux/config.h"
 #include "../src/platform/linux/gamepad_adapter.h"
+#include "../src/platform/linux/netlink_rejoin.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -394,6 +395,67 @@ static void testSysfsProxyDirEnvOverride() {
     EXPECT_EQ(GamepadAdapter::sysfsProxyDir(), tmp.path);
 }
 
+// Builds one netlink message of `type` with a zeroed payload of `payloadLen`
+// bytes at `out`, returning the aligned length consumed. Mirrors how the
+// kernel packs multi-message batches (each header 4-byte aligned).
+static size_t putNlMsg(char* out, uint16_t type, size_t payloadLen) {
+    auto* nh = reinterpret_cast<struct nlmsghdr*>(out);
+    std::memset(out, 0, NLMSG_SPACE(payloadLen));
+    nh->nlmsg_len = NLMSG_LENGTH(payloadLen);
+    nh->nlmsg_type = type;
+    return NLMSG_SPACE(payloadLen);
+}
+
+static void testNetlinkBatchWantsRejoin() {
+    alignas(4) char buf[512];
+
+    TEST("batchWantsRejoin — RTM_NEWADDR triggers a rejoin");
+    size_t len = putNlMsg(buf, RTM_NEWADDR, sizeof(struct ifaddrmsg));
+    EXPECT(netwatch::batchWantsRejoin(buf, len));
+
+    TEST("batchWantsRejoin — RTM_DELADDR triggers a rejoin");
+    len = putNlMsg(buf, RTM_DELADDR, sizeof(struct ifaddrmsg));
+    EXPECT(netwatch::batchWantsRejoin(buf, len));
+
+    TEST("batchWantsRejoin — RTM_NEWLINK triggers a rejoin");
+    len = putNlMsg(buf, RTM_NEWLINK, sizeof(struct ifinfomsg));
+    EXPECT(netwatch::batchWantsRejoin(buf, len));
+
+    TEST("batchWantsRejoin — RTM_DELLINK triggers a rejoin");
+    len = putNlMsg(buf, RTM_DELLINK, sizeof(struct ifinfomsg));
+    EXPECT(netwatch::batchWantsRejoin(buf, len));
+
+    TEST("batchWantsRejoin — unrelated message type is ignored");
+    len = putNlMsg(buf, RTM_NEWROUTE, sizeof(struct rtmsg));
+    EXPECT(!netwatch::batchWantsRejoin(buf, len));
+
+    TEST("batchWantsRejoin — relevant message later in a batch is found");
+    len = putNlMsg(buf, RTM_NEWROUTE, sizeof(struct rtmsg));
+    len += putNlMsg(buf + len, RTM_NEWADDR, sizeof(struct ifaddrmsg));
+    EXPECT(netwatch::batchWantsRejoin(buf, len));
+
+    TEST("batchWantsRejoin — NLMSG_DONE stops the scan");
+    len = putNlMsg(buf, NLMSG_DONE, 0);
+    len += putNlMsg(buf + len, RTM_NEWADDR, sizeof(struct ifaddrmsg));
+    EXPECT(!netwatch::batchWantsRejoin(buf, len));
+
+    TEST("batchWantsRejoin — empty buffer is ignored");
+    EXPECT(!netwatch::batchWantsRejoin(buf, 0));
+
+    TEST("batchWantsRejoin — null buffer is ignored");
+    EXPECT(!netwatch::batchWantsRejoin(nullptr, 64));
+
+    TEST("batchWantsRejoin — truncated header is ignored");
+    len = putNlMsg(buf, RTM_NEWADDR, sizeof(struct ifaddrmsg));
+    EXPECT(!netwatch::batchWantsRejoin(buf, sizeof(struct nlmsghdr) - 1));
+
+    TEST("batchWantsRejoin — nlmsg_len overrunning the buffer is rejected");
+    len = putNlMsg(buf, RTM_NEWADDR, sizeof(struct ifaddrmsg));
+    auto* nh = reinterpret_cast<struct nlmsghdr*>(buf);
+    nh->nlmsg_len = static_cast<uint32_t>(len + 64);
+    EXPECT(!netwatch::batchWantsRejoin(buf, len));
+}
+
 int main() {
     std::cout << "Running Linux platform tests...\n\n";
 
@@ -412,6 +474,7 @@ int main() {
     testSubmitBatteryUnknownLevel();
     testSetLightbarCallbackWritesProxyFile();
     testSysfsProxyDirEnvOverride();
+    testNetlinkBatchWantsRejoin();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

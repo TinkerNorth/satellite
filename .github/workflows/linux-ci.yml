@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config \
-            libsodium-dev libcurl4-openssl-dev \
+            libsodium-dev libssl-dev libcurl4-openssl-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev
 
       # Ubuntu 24.04 ships clang-format 18 by default, which disagrees with
@@ -65,6 +65,15 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure
 
+      # The unprivileged ctest pass above skips uinput_smoke (it cannot open
+      # the event nodes it creates). This lane runs the binary directly as
+      # root so a skip — module missing, node never appearing — fails loudly
+      # instead of masquerading as coverage.
+      - name: uinput smoke test (real kernel, as root)
+        run: |
+          sudo modprobe uinput
+          sudo ./test_uinput_smoke
+
       - name: Verify binary links against AppIndicator
         run: |
           test -x satellite
@@ -89,7 +98,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libsodium-dev libcurl4-openssl-dev
+            build-essential cmake pkg-config libsodium-dev libssl-dev \
+            libcurl4-openssl-dev
 
       - name: Configure (Release, no tray) and confirm tray is disabled
         run: |
@@ -120,7 +130,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libsodium-dev libcurl4-openssl-dev \
+            build-essential cmake pkg-config libsodium-dev libssl-dev \
+            libcurl4-openssl-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev diffoscope
 
       - name: Build twice and diff
