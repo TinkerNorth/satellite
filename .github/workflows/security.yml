@@ -7,7 +7,7 @@ name: Security
 # gitleaks). CodeQL lives in codeql.yml because it has its own matrix.
 #
 # Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
-#   actions/checkout @ v4.2.2 → 11bd71901bbe5b1630ceea73d27597364c9af683
+#   actions/checkout @ v7.0.0 → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
 on:
   push:
