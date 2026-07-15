@@ -284,9 +284,14 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
   more than 90 days old. This is best-effort, not exhaustive; file an
   advisory if you spot a vendored component that's missing from
   `VENDORED.md`.
-- **macOS satellite is a stub.** No signed DriverKit equivalent of
-  ViGEmBus exists, so the macOS server build runs the protocol stack
-  but applies every controller descriptor as `backendUnavailable`. The
-  artifact name (`satellite-macos-stub-...`) reflects this. Don't open
-  a vulnerability report for the absence of virtual-gamepad creation
-  on macOS; it's a documented platform gap.
+- **macOS virtual pads are entitlement-gated.** The macOS backend
+  synthesizes virtual DualShock 4 controllers via `IOHIDUserDevice`,
+  which requires the `com.apple.developer.hid.virtual.device`
+  entitlement. Production (signed) builds carry it; CI artifacts and
+  local unentitled builds detect the missing entitlement at runtime
+  and fall back to the historical inert backend: the protocol stack
+  runs, but every controller descriptor applies as
+  `backendUnavailable`. The CI artifact name
+  (`satellite-macos-stub-...`) reflects that fallback. Don't open a
+  vulnerability report for the absence of virtual-gamepad creation in
+  an unentitled build; it's the documented, probe-enforced fallback.

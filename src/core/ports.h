@@ -11,7 +11,8 @@
 #include <functional>
 
 // Virtual gamepad synthesis. Windows: ViGEmAdapter (ViGEmBus). Linux:
-// GamepadAdapter (/dev/uinput). macOS: no backend, isBusOpen() always false.
+// GamepadAdapter (/dev/uinput). macOS: MacHidGamepadAdapter (IOHIDUserDevice;
+// inert without the HID virtual-device entitlement, isBusOpen() then false).
 //
 // Rumble flow: the game on the receiver host writes the virtual device's rumble
 // channel; the adapter delivers those to the single sink registered via

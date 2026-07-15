@@ -44,7 +44,7 @@ The return path carries rumble the other direction. When a game on the receiver 
 ### Receiver machine
 - **Windows 10/11** with the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) installed. The `SatelliteSetup.exe` installer bundles ViGEmBus 1.22.0 and installs it for you if it's missing (see [Installation](#installation)). Or:
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup). Or:
-- **macOS** for development and web-UI testing only. Controller injection is unavailable, so controller descriptors apply as `backendUnavailable`.
+- **macOS 10.15+** with a build carrying the `com.apple.developer.hid.virtual.device` entitlement (production builds): controllers are synthesized as virtual DualShock 4 pads via `IOHIDUserDevice`. Unentitled builds (CI artifacts, local compiles) run as development/web-UI servers only; controller descriptors apply as `backendUnavailable`.
 
 ### Client (sender) device
 - **dish-android**: an Android phone running the Dish app (Bluetooth/USB controllers, touch overlay, motion). Other Dish clients implement the same contract ([`docs/contract.md`](docs/contract.md)).
@@ -121,12 +121,16 @@ build-satellite.bat
 
 ### macOS
 
-Virtual-gamepad injection is not available on macOS, since there is no signed
-DriverKit equivalent of ViGEmBus. The macOS build produces a server that
-still pairs, authenticates, serves the web UI, and reports status to clients,
-but applies every controller descriptor as `backendUnavailable`. It is useful
-for development, protocol testing, and running the web dashboard from a Mac.
-It is not a drop-in receiver for game input.
+macOS receivers synthesize virtual DualShock 4 controllers through
+`IOHIDUserDevice` (macOS 10.15+). Creating the kernel HID device requires the
+`com.apple.developer.hid.virtual.device` entitlement, which production
+(signed) builds carry. A locally-compiled or CI build is unentitled: the
+runtime probe detects that and the server falls back to the historical inert
+backend — it still pairs, authenticates, serves the web UI, and reports
+status to clients, but applies every controller descriptor as
+`backendUnavailable`. Unentitled builds are useful for development, protocol
+testing, and running the web dashboard from a Mac; they are not receivers for
+game input. See `docs/architecture.md` → "macOS backend" for the design.
 
 Prerequisites:
 
@@ -436,7 +440,7 @@ the matching physical controller (or, on dish-android, the phone itself).
 |---|---|---|
 | Windows | ViGEmBus | `IOCTL_XUSB_REQUEST_NOTIFICATION` (X360) / `IOCTL_DS4_REQUEST_NOTIFICATION` (DS4), long-running async I/O. One worker thread per plugged virtual device blocks on the IOCTL until the driver completes it with the new motor/lightbar values. |
 | Linux | uinput | `EV_FF` events on the device fd. Game uploads an `FF_RUMBLE` effect via `UI_FF_UPLOAD`, kernel hands us the descriptor, then sends an `EV_FF` event when the game presses play/stop. One reader thread per plugged device. |
-| macOS | (none) | No virtual gamepad backend, so no rumble events to forward. The macOS `IGamepadPort` accepts the callback registration so the SessionService composes uniformly, but it's never invoked. |
+| macOS | IOHIDUserDevice | The game writes DS4 output report `0x05`; the kernel delivers it to the device's set-report block on a per-device dispatch queue. The adapter parses motors + lightbar RGB (valid-flag gated) and fans out to the rumble and lightbar callbacks. Entitled builds only: an unentitled build has no virtual pads, so no rumble events exist to forward. |
 
 ### Wire format
 
@@ -522,9 +526,12 @@ back-to-back colours, and, for a `CAP_LIGHTBAR` dish, calls
 regardless of the capability, so the web dashboard's per-controller lightbar
 swatch stays live for every controller type.
 
-The Linux uinput and (inert) macOS backends have no host-driven lightbar
-channel, so they never emit `MSG_LIGHTBAR`. Lightbar emission is a
-Windows / ViGEm-DS4 feature today.
+On macOS, the same DS4 output report `0x05` that carries the motors also
+carries the lightbar colour; the IOHIDUserDevice set-report path fans it out
+to the lightbar callback when the report's colour-valid flag is set (entitled
+builds only). The Linux uinput backend has no host-driven lightbar channel
+(EV_LED is single-bit), so it never emits `MSG_LIGHTBAR`. Lightbar emission
+is a Windows / ViGEm-DS4 and macOS / IOHID-DS4 feature today.
 
 ### Per-dish actuator behaviour
 

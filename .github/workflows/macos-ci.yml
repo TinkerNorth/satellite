@@ -46,6 +46,12 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j
 
+      # Runs every suite, including test_macos_ds4_report (pure DS4 codec)
+      # and mac_hid_smoke. The smoke test needs the
+      # com.apple.developer.hid.virtual.device entitlement to create real
+      # kernel devices; GitHub runners are unentitled, so it asserts the
+      # probe-fallback contract and then exits 77, which SKIP_RETURN_CODE
+      # maps to "Skipped" (never a failure, never a silent pass).
       - name: Run tests
         working-directory: build
         run: ctest --output-on-failure
@@ -55,11 +61,13 @@ jobs:
           test -x satellite.app/Contents/MacOS/satellite
           test -f satellite.app/Contents/Resources/web/index.html
 
-      # The macOS build is a *stub*: it serves the web UI, pairs, and
-      # authenticates but cannot synthesize virtual gamepads (no signed
-      # DriverKit equivalent of ViGEmBus). The artifact name reflects that
+      # CI builds are UNENTITLED: the IOHIDUserDevice backend requires the
+      # com.apple.developer.hid.virtual.device entitlement (production,
+      # signed builds), so this artifact's runtime probe falls back to the
+      # inert backend — it serves the web UI, pairs, and authenticates but
+      # cannot synthesize virtual gamepads. The artifact name reflects that
       # so a user downloading it from a CI run isn't surprised by
-      # ACK_ERR_VIGEM_UNAVAIL responses to controller-add requests.
+      # backendUnavailable responses to controller descriptors.
       - name: Upload .app artifact (stub, no virtual gamepad)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

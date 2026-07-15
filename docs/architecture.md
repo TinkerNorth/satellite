@@ -147,6 +147,7 @@ and a thin I/O shell, so the format is unit-testable without a socket or driver:
 | `net/discovery_beacon.h` (`buildDiscoveryBeacon`) | `net/discovery.cpp` (broadcast loop) |
 | `net/machine_id.h` (`isValidMachineId`)    | `net/machine_id.cpp` (file + RNG)  |
 | `vigem_submit_policy.h` (`ds4ExSubmitLanded`) | `vigem.cpp` (`DeviceIoControl`)  |
+| `platform/macos/ds4_report.h` (DS4 v2 pack/parse/descriptor) | `platform/macos/mac_hid_gamepad_adapter.cpp` (IOHIDUserDevice) |
 
 When adding a wire format, follow this split: put the byte-shaping in a pure
 function and give it a `tests/test_*.cpp` suite.
@@ -326,6 +327,75 @@ Lock contention is negligible with ≤ 16 connections and ≤ 16 controllers.
 
 The ViGEm bus handle is owned by `ViGEmAdapter` (with its own mutex).
 Report submission (`DeviceIoControl`) is thread-safe per target.
+
+## macOS backend: virtual DualShock 4 via IOHIDUserDevice
+
+The macOS backend publishes each plugged slot as a kernel HID device
+carrying a DualShock 4 v2 identity (VID 0x054C / PID 0x09CC). macOS's
+native DS4 support and GameController.framework adopt it like real
+hardware, so games get sticks/buttons/triggers plus rumble, lightbar,
+touchpad, and motion with no per-game integration.
+
+### Pure/IO split
+
+- `src/platform/macos/ds4_report.h` — IOKit-free: the HID report
+  descriptor bytes, input-report packing (reusing the core
+  `ds4PackTouchFinger` 12-bit touch codec and the Windows XUSB→DS4
+  button/stick mapping byte-for-byte), output-report parsing (rumble
+  motors + lightbar RGB, gated by the report's valid flags), and the
+  calibration / firmware / pairing feature blobs. The calibration blob
+  is chosen so consumers' scaling math is the identity: wire
+  `MotionReport` values pass through unscaled (the wire full-scale
+  convention equals the DS4's raw sensor scale). Tested by
+  `tests/test_macos_ds4_report.cpp` with no kernel or entitlement.
+- `src/platform/macos/mac_hid_gamepad_adapter.{h,cpp}` — the IOKit
+  shell: device lifecycle (`IOHIDUserDeviceCreateWithProperties` →
+  activate → cancel + confirmed teardown), one serial dispatch queue
+  per device, set-report → rumble/lightbar callback fan-out, get-report
+  → feature-blob table. A DriverKit dext transport could replace this
+  file without touching the pure layer.
+
+### Entitlement story and fallback
+
+Creating the kernel device requires the
+`com.apple.developer.hid.virtual.device` entitlement (production
+builds carry it). `probeBackend()` derives its answer from a one-shot
+runtime probe — a minimal vendor-page device create, cached for the
+process lifetime — through the pure `macHidBackendStatus` seam:
+
+- entitled → backend id `machid`, `supported`/`available` true;
+- unentitled, or an SDK without the IOHIDUserDevice header at compile
+  time → **exactly** the historical stub values (`none`, unsupported,
+  unavailable): the web UI hides the backend panel and controller
+  descriptors apply as `backendUnavailable`, byte-identical to the
+  pre-backend macOS build.
+
+CI runners and dev machines are unentitled and take the fallback path;
+`tests/test_mac_hid_smoke.cpp` asserts the fallback contract and the
+callback fan-out first, then exits 77 (ctest reports "skipped") when it
+cannot create real devices, mirroring the uinput smoke.
+
+### Slot identity
+
+Both `pluginDevice` (Xbox slot) and `pluginDeviceDS4` publish the same
+DS4 hardware identity: macOS adopts no XUSB-shaped HID device, and the
+DS4 is the one identity the whole mac game stack recognises. The slot
+keeps its declared family to gate motion/touchpad/battery routing and
+`motionBackendOk` exactly like the ViGEm and uinput adapters, and
+`appliedType` semantics in `SessionService` are untouched.
+
+### Locking
+
+Unlike ViGEm (which drops its lock for the submit IOCTL), submits run
+entirely under the adapter mutex: a slot's `IOHIDUserDeviceRef` is only
+ever used while the slot is still in the map, so teardown can never
+release a ref under an in-flight submit. Teardown removes the slot from
+the map under the lock, then cancels the device and waits for its
+cancel handler OUTSIDE the lock (the set-report block takes the mutex
+briefly to snapshot callbacks — waiting while holding it would
+deadlock); an unconfirmed cancel returns false so `SessionService`
+quarantines the serial. The full protocol is documented in
+`mac_hid_gamepad_adapter.h`.
 
 ## Logging Infrastructure
 
