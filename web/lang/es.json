@@ -72,6 +72,13 @@
   "backend.uinput.err.permission-denied.step2": "Recarga udev",
   "backend.uinput.err.permission-denied.step3": "Añádete al grupo input",
   "backend.uinput.err.permission-denied.step4": "Cierra la sesión y vuelve a entrar para que se aplique el cambio de grupo, luego actualiza esta página",
+
+  "backend.machid.title": "Backend IOHIDUserDevice",
+  "backend.machid.pipeline-label": "Envío a IOHID",
+  "backend.machid.flow-label": "IOHIDUserDevice",
+  "backend.machid.status.active": "Activo (mandos conectados)",
+  "backend.machid.status.idle": "Listo (inactivo, sin mandos)",
+  "backend.machid.status.unknown": "HID virtual disponible",
   "pin.section.title": "Emparejamiento de dispositivo",
   "pin.current": "PIN actual",
   "pin.previous": "PIN anterior",

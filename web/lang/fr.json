@@ -72,6 +72,13 @@
   "backend.uinput.err.permission-denied.step2": "Rechargez udev",
   "backend.uinput.err.permission-denied.step3": "Ajoutez-vous au groupe input",
   "backend.uinput.err.permission-denied.step4": "Déconnectez-vous puis reconnectez-vous pour que le changement de groupe prenne effet, puis actualisez cette page",
+
+  "backend.machid.title": "Backend IOHIDUserDevice",
+  "backend.machid.pipeline-label": "Envoi IOHID",
+  "backend.machid.flow-label": "IOHIDUserDevice",
+  "backend.machid.status.active": "Actif (manettes branchées)",
+  "backend.machid.status.idle": "Prêt (inactif, aucune manette)",
+  "backend.machid.status.unknown": "HID virtuel disponible",
   "pin.section.title": "Appairage d’appareil",
   "pin.current": "PIN actuel",
   "pin.previous": "PIN précédent",

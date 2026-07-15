@@ -82,6 +82,16 @@ static satellite::CatalogBackendTraits catalogBackendTraits(const BackendStatus&
         t.ds4LightbarSupported = true;
         t.mouseControlSupported = true;
         t.rumbleSupported = true;
+    } else if (id == BACKEND_ID_MAC_HID) {
+        // Virtual DS4 via IOHIDUserDevice: motion, touchpad, and lightbar all
+        // ride the DS4 report set (no driver-version gate, hence no requires
+        // code), and rumble+lightbar return through set-report. macOS has no
+        // host pointer-injection path yet, so mouseControl stays unsupported
+        // (matches IGamepadPort::supportsRelativeMouse() on the adapter).
+        t.ds4MotionSupported = true;
+        t.ds4TouchpadSupported = true;
+        t.ds4LightbarSupported = true;
+        t.rumbleSupported = true;
     }
     // keyboardControlSupported stays false on every backend: the host has no keystroke
     // injection path yet. The field is published so the client gates on it (and stays

@@ -58,3 +58,7 @@ Desktop.ini
 # Vendored libraries (tracked; do NOT ignore lib/)
 # lib/httplib.h is intentionally committed
 
+
+# macOS pure/smoke test binaries (CMake RUNTIME_OUTPUT_DIRECTORY)
+/test_macos_ds4_report
+/test_mac_hid_smoke
