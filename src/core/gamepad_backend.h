@@ -6,14 +6,16 @@
 #pragma once
 
 // Stable identifiers exposed in the JSON API. Web UI matches on these.
-inline const char* BACKEND_ID_VIGEM = "vigem";   // Windows / ViGEmBus
-inline const char* BACKEND_ID_UINPUT = "uinput"; // Linux / /dev/uinput
-inline const char* BACKEND_ID_NONE = "none";     // macOS / unsupported
+inline const char* BACKEND_ID_VIGEM = "vigem";    // Windows / ViGEmBus
+inline const char* BACKEND_ID_UINPUT = "uinput";  // Linux / /dev/uinput
+inline const char* BACKEND_ID_MAC_HID = "machid"; // macOS / IOHIDUserDevice (entitled)
+inline const char* BACKEND_ID_NONE = "none";      // unentitled macOS / unsupported
 
 // Per-backend error codes. Null means the backend is available.
 //
 //   vigem:   "DRIVER_MISSING", "BUS_OPEN_FAILED"
 //   uinput:  "MODULE_NOT_LOADED", "DEVICE_MISSING", "PERMISSION_DENIED"
+//   machid:  no codes (an unentitled probe reports the `none` stub instead)
 //   none:    no codes (the panel is hidden when supported == false)
 //
 // Adding a code is a server change only; the web UI falls back to a generic

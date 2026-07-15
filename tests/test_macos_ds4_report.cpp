@@ -7,6 +7,8 @@
 // bare CI runner with no entitlement.
 #include "../src/core/touchpad_codec.h"
 #include "../src/platform/macos/ds4_report.h"
+// IOKit-free by design: only the pure probe-status seam is used from it.
+#include "../src/platform/macos/mac_hid_gamepad_adapter.h"
 
 #include <cstdint>
 #include <cstring>
@@ -394,6 +396,25 @@ static void test_feature_reports() {
     EXPECT_EQ(std::string(serialStr), std::string("02:53:41:54:00:0c"));
 }
 
+static void test_probe_status_seam() {
+    TEST("probe seam: entitled -> machid backend; unentitled -> the exact legacy stub");
+    const BackendStatus on = macHidBackendStatus(true);
+    EXPECT_EQ(std::string(on.id), std::string(BACKEND_ID_MAC_HID));
+    EXPECT_EQ(std::string(on.id), std::string("machid")); // wire constant, web UI keys on it
+    EXPECT(on.supported);
+    EXPECT(on.available);
+    EXPECT(on.errorCode == nullptr);
+
+    // The unentitled branch must stay byte-identical to the pre-backend stub
+    // (platform/macos/gamepad_backend.cpp before this backend existed).
+    const BackendStatus off = macHidBackendStatus(false);
+    EXPECT_EQ(std::string(off.id), std::string(BACKEND_ID_NONE));
+    EXPECT_EQ(std::string(off.id), std::string("none"));
+    EXPECT(!off.supported);
+    EXPECT(!off.available);
+    EXPECT(off.errorCode == nullptr);
+}
+
 int main() {
     std::cout << "Running macOS DS4 report codec tests...\n\n";
     test_descriptor_shape();
@@ -411,6 +432,7 @@ int main() {
     test_output_parse_rejects();
     test_rumble_scaling();
     test_feature_reports();
+    test_probe_status_seam();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

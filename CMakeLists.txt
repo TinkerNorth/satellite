@@ -102,6 +102,7 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/crypto.cpp
     src/platform/macos/tray.mm
     src/platform/macos/gamepad_backend.cpp
+    src/platform/macos/mac_hid_gamepad_adapter.cpp
     src/platform/macos/updater_adapter.mm
 )
 
@@ -343,6 +344,9 @@ elseif(APPLE)
     target_link_libraries(satellite PRIVATE
         "-framework AppKit"
         "-framework Foundation"
+        # Virtual-DS4 backend: IOHIDUserDevice + CF property dictionaries.
+        "-framework IOKit"
+        "-framework CoreFoundation"
     )
 
     target_compile_options(satellite PRIVATE -O2 -Wall -Wextra -Wno-deprecated-declarations)
@@ -801,6 +805,37 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     add_test(NAME uinput_smoke COMMAND test_uinput_smoke)
     set_tests_properties(uinput_smoke PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+# Real-kernel IOHIDUserDevice smoke test: drives the production macOS adapter.
+# The probe-fallback contract and the rumble/lightbar callback fan-out run on
+# ANY Mac; actual kernel-device creation additionally needs the
+# com.apple.developer.hid.virtual.device entitlement, so an unentitled process
+# (CI runners, dev machines) exits 77 after the fallback assertions — wired to
+# SKIP_RETURN_CODE so ctest reports "skipped", never a silent pass (mirrors
+# the uinput smoke above).
+if(APPLE)
+    add_executable(test_mac_hid_smoke
+        tests/test_mac_hid_smoke.cpp
+        src/platform/macos/mac_hid_gamepad_adapter.cpp
+        src/platform/macos/gamepad_backend.cpp
+    )
+    target_include_directories(test_mac_hid_smoke PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos
+    )
+    # Gates the injectOutputReportForTest seam, like the linux platform suite.
+    target_compile_definitions(test_mac_hid_smoke PRIVATE SATELLITE_BUILD_TESTS)
+    target_compile_options(test_mac_hid_smoke PRIVATE -O2 -Wall -Wextra)
+    target_link_libraries(test_mac_hid_smoke PRIVATE
+        "-framework IOKit"
+        "-framework CoreFoundation"
+    )
+    set_target_properties(test_mac_hid_smoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME mac_hid_smoke COMMAND test_mac_hid_smoke)
+    set_tests_properties(mac_hid_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # Exercises the Windows-only adapters that don't need a desktop session,

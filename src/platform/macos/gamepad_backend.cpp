@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// No virtual-gamepad bus driver ships for macOS, so the probe always reports
-// unsupported. The web UI hides the backend panel on supported=false.
+// Entitled (production) builds publish virtual DualShock 4 pads through
+// IOHIDUserDevice and report the `machid` backend. Unentitled processes (dev
+// machines, CI runners) and SDKs without the header fall back to exactly the
+// historical stub values: id `none`, unsupported, unavailable — the web UI
+// hides the backend panel and controller descriptors apply as
+// backendUnavailable, byte-identical to the pre-backend macOS build.
 #include "core/gamepad_backend.h"
 
+#include "mac_hid_gamepad_adapter.h"
+
 BackendStatus probeBackend() {
-    BackendStatus status;
-    status.id = BACKEND_ID_NONE;
-    status.supported = false;
-    status.available = false;
-    status.errorCode = nullptr;
-    return status;
+    return macHidBackendStatus(MacHidGamepadAdapter::runtimeAvailable());
 }
