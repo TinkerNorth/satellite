@@ -710,6 +710,13 @@ satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/n
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
 
+# macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,
+# input packing, output parsing, feature blobs, and the probe-status seam.
+# Pure/IOKit-free, but APPLE-gated: it exercises macOS platform headers.
+if(APPLE)
+    satellite_add_pure_test(test_macos_ds4_report tests/test_macos_ds4_report.cpp)
+endif()
+
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
 # at the real web/lang catalogs so every controller-type string is asserted
 # present in every supported locale (mirror of Android's MissingTranslation).
