@@ -57,6 +57,9 @@ set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
     src/net/inner_dispatch.cpp
     src/net/webserver.cpp
+    src/net/routes_common.cpp
+    src/net/routes_admin.cpp
+    src/net/routes_client.cpp
     src/net/tls.cpp
     src/net/machine_id.cpp
     src/net/pairing.cpp
