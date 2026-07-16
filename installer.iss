@@ -198,8 +198,10 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""S
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite UDP"""; Flags: runhidden; StatusMsg: "Resetting firewall (UDP)..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite UDP"" dir=in action=allow protocol=UDP localport=9876 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (UDP)..."
 
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Pairing"""; Flags: runhidden; StatusMsg: "Resetting firewall (Pairing)..."
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite Pairing"" dir=in action=allow protocol=TCP localport=9878 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (Pairing)..."
+; Protocol-0's plaintext pairing listener (TCP 9878) is gone — pairing rides
+; the HTTPS client API (9443) — so no rule is ADDED for it anymore. The delete
+; stays: upgrades over pre-protocol-1 installs must close the stale hole.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Pairing"""; Flags: runhidden; StatusMsg: "Removing stale pairing firewall rule..."
 
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite Discovery"""; Flags: runhidden; StatusMsg: "Resetting firewall (Discovery)..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite Discovery"" dir=in action=allow protocol=UDP localport=9879 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (Discovery)..."

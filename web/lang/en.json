@@ -325,7 +325,6 @@
   "netinfo.hint": "Ports and addresses this PC uses on the LAN. Only the UDP input port is configurable; the rest are shown for reference.",
   "netinfo.port.udp": "UDP Input Port",
   "netinfo.port.web": "Admin UI Port",
-  "netinfo.port.pair": "Pairing Port",
   "netinfo.port.client": "Client API Port (HTTPS)",
   "netinfo.port.discovery": "Discovery Beacon Port",
   "netinfo.port.mdns": "mDNS / DNS Port",

@@ -300,7 +300,6 @@
   "netinfo.hint": "Ports et adresses utilisés par ce PC sur le réseau local. Seul le port d’entrée UDP est configurable ; les autres sont affichés à titre indicatif.",
   "netinfo.port.udp": "Port d’entrée UDP",
   "netinfo.port.web": "Port de l’interface d’administration",
-  "netinfo.port.pair": "Port d’appairage",
   "netinfo.port.client": "Port de l’API client (HTTPS)",
   "netinfo.port.discovery": "Port de la balise de découverte",
   "netinfo.port.mdns": "Port mDNS / DNS",

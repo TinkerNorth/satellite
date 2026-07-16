@@ -197,7 +197,6 @@ function renderNetInfoPanel(containerId, d) {
   }
   html += netInfoRow(t('netinfo.port.udp'), port(p.udp));
   html += netInfoRow(t('netinfo.port.web'), port(p.web));
-  html += netInfoRow(t('netinfo.port.pair'), port(p.pair));
   html += netInfoRow(t('netinfo.port.client'), port(p.client));
   html += netInfoRow(t('netinfo.port.discovery'), port(p.discovery));
   html += netInfoRow(t('netinfo.port.mdns'), port(p.mdns));

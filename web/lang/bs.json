@@ -300,7 +300,6 @@
   "netinfo.hint": "Portovi i adrese koje ovaj računar koristi na LAN-u. Samo UDP ulazni port se može podešavati; ostali su prikazani radi informacije.",
   "netinfo.port.udp": "UDP ulazni port",
   "netinfo.port.web": "Port admin sučelja",
-  "netinfo.port.pair": "Port za uparivanje",
   "netinfo.port.client": "Port klijent API-ja (HTTPS)",
   "netinfo.port.discovery": "Port signala otkrivanja",
   "netinfo.port.mdns": "mDNS / DNS port",

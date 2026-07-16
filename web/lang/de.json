@@ -325,7 +325,6 @@
   "netinfo.hint": "Ports und Adressen, die dieser PC im LAN verwendet. Nur der UDP-Eingangsport ist konfigurierbar; die übrigen werden zur Information angezeigt.",
   "netinfo.port.udp": "UDP-Eingangsport",
   "netinfo.port.web": "Admin-UI-Port",
-  "netinfo.port.pair": "Kopplungsport",
   "netinfo.port.client": "Client-API-Port (HTTPS)",
   "netinfo.port.discovery": "Erkennungs-Beacon-Port",
   "netinfo.port.mdns": "mDNS-/DNS-Port",

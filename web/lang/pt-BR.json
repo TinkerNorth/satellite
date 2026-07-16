@@ -300,7 +300,6 @@
   "netinfo.hint": "Portas e endereços que este PC usa na LAN. Apenas a porta de entrada UDP é configurável; as demais são exibidas para referência.",
   "netinfo.port.udp": "Porta de entrada UDP",
   "netinfo.port.web": "Porta da interface de administração",
-  "netinfo.port.pair": "Porta de pareamento",
   "netinfo.port.client": "Porta da API do cliente (HTTPS)",
   "netinfo.port.discovery": "Porta do beacon de descoberta",
   "netinfo.port.mdns": "Porta mDNS / DNS",

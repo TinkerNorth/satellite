@@ -66,7 +66,6 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
 static void onQuit(GtkMenuItem*, gpointer) {
     g_appRunning = false;
     g_httpServer.stop();
-    if (g_pairSock != INVALID_SOCKET) closesocket(g_pairSock);
     gtk_main_quit();
 }
 

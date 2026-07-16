@@ -76,9 +76,11 @@ std::string buildNetworkInfoJson(const NetworkInfo& info) {
     j["category"] = info.category;
     j["selected"] = info.selected;
     j["allowPublic"] = info.allowPublic;
-    j["ports"] = {{"udp", info.udpPort},       {"web", info.webPort},
-                  {"pair", info.pairPort},     {"discovery", info.discPort},
-                  {"client", info.clientPort}, {"mdns", info.mdnsPort}};
+    j["ports"] = {{"udp", info.udpPort},
+                  {"web", info.webPort},
+                  {"discovery", info.discPort},
+                  {"client", info.clientPort},
+                  {"mdns", info.mdnsPort}};
     j["firewall"] = {{"supported", info.firewallSupported}, {"state", info.firewallState}};
     satellite::JsonOut ifaces = satellite::JsonOut::array();
     for (const auto& f : info.interfaces) ifaces.push_back(interfaceJson(f));

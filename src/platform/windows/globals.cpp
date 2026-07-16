@@ -15,7 +15,6 @@ std::atomic<uint32_t> g_senderIP{0};
 HWND g_hwnd = nullptr;
 httplib::Server g_httpServer;
 httplib::Server* g_clientServer = nullptr;
-SOCKET g_pairSock = INVALID_SOCKET;
 std::string g_webDir;
 UpdateService* g_updateService = nullptr;
 

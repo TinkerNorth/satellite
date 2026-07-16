@@ -117,7 +117,6 @@ static void testConfigRoundTrip() {
     Config out;
     out.udpPort = 12345;
     out.webPort = 23456;
-    out.pairPort = 34567;
     out.discPort = 45678;
     out.autoStart = true;
     out.networkInterface = "Ethernet 2";
@@ -142,7 +141,6 @@ static void testConfigRoundTrip() {
     TEST("loadConfig: round-trips ports");
     EXPECT_EQ(in.udpPort, out.udpPort);
     EXPECT_EQ(in.webPort, out.webPort);
-    EXPECT_EQ(in.pairPort, out.pairPort);
     EXPECT_EQ(in.discPort, out.discPort);
 
     TEST("loadConfig: round-trips autoStart");

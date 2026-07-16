@@ -785,7 +785,6 @@ void adminHttpThread(SessionService& svc) {
             std::lock_guard<std::mutex> lk(g_configMtx);
             info.udpPort = g_config.udpPort;
             info.webPort = g_config.webPort;
-            info.pairPort = g_config.pairPort;
             info.discPort = g_config.discPort;
             selected = g_config.networkInterface;
             info.allowPublic = g_config.allowPublicNetwork;
