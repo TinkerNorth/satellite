@@ -1118,3 +1118,69 @@ if(WIN32)
     )
     add_test(NAME vigem_adapter COMMAND test_vigem_adapter)
 endif()
+
+# Robustness fuzzing (opt-in, D-series fuzz harness): drives the receiver's
+# decrypt -> inner_dispatch pipeline (net/session_crypto + net/inner_dispatch
+# + core SessionService) with attacker-controlled datagram bytes, asserting
+# "malformed datagrams never crash or read out of bounds". Clang-only. When
+# the toolchain ships the libFuzzer runtime the target is a real fuzzer
+# (ASan+UBSan+fuzzer); where it doesn't (e.g. Apple Command Line Tools) it
+# degrades to a corpus-replay + deterministic-sweep driver under the same
+# sanitizers, so the harness still executes everywhere. The linux lane runs
+# the libFuzzer build bounded (see .github/workflows/linux-ci.yml).
+option(SATELLITE_FUZZ
+    "Build the decrypt->dispatch fuzz harness (clang; libFuzzer when available)" OFF)
+if(SATELLITE_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "SATELLITE_FUZZ requires clang (libFuzzer/sanitizer flags); "
+            "configure with CC=clang CXX=clang++.")
+    endif()
+
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
+    check_cxx_source_compiles(
+        "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long) { return 0; }"
+        SATELLITE_HAVE_LIBFUZZER)
+    unset(CMAKE_REQUIRED_FLAGS)
+
+    add_executable(fuzz_receiver_dispatch
+        tests/fuzz/fuzz_receiver_dispatch.cpp
+        src/net/inner_dispatch.cpp
+        src/net/session_crypto.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    target_include_directories(fuzz_receiver_dispatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    satellite_link_sodium(fuzz_receiver_dispatch)
+    if(SATELLITE_HAVE_LIBFUZZER)
+        target_compile_options(fuzz_receiver_dispatch PRIVATE
+            -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_receiver_dispatch PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    else()
+        message(STATUS "satellite: libFuzzer runtime unavailable; building the "
+                       "standalone corpus-replay fuzz driver (ASan/UBSan).")
+        target_compile_definitions(fuzz_receiver_dispatch PRIVATE
+            SATELLITE_FUZZ_STANDALONE)
+        target_compile_options(fuzz_receiver_dispatch PRIVATE
+            -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined)
+        target_link_options(fuzz_receiver_dispatch PRIVATE
+            -fsanitize=address,undefined)
+    endif()
+    set_target_properties(fuzz_receiver_dispatch PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    # Corpus regression rides ctest whenever the harness is configured:
+    # libFuzzer's -runs=0 executes each seed exactly once; the standalone
+    # driver replays the corpus and then its deterministic sweep.
+    if(SATELLITE_HAVE_LIBFUZZER)
+        add_test(NAME fuzz_receiver_dispatch_corpus COMMAND fuzz_receiver_dispatch
+            -runs=0 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/corpus)
+    else()
+        add_test(NAME fuzz_receiver_dispatch_corpus COMMAND fuzz_receiver_dispatch
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/corpus)
+    endif()
+endif()

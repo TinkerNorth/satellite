@@ -119,6 +119,44 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure
 
+  fuzz:
+    name: Fuzz smoke (decrypt->dispatch robustness, bounded)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install dependencies (clang + libFuzzer runtime)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-rt-18-dev \
+            libsodium-dev libssl-dev libcurl4-openssl-dev
+
+      - name: Configure (clang, SATELLITE_FUZZ=ON)
+        run: |
+          CC=clang CXX=clang++ cmake -S . -B build-fuzz \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSATELLITE_FUZZ=ON
+          # The lane exists to run the REAL fuzzer; fail loudly if configure
+          # fell back to the standalone driver instead of libFuzzer.
+          grep -q "^SATELLITE_HAVE_LIBFUZZER:INTERNAL=1$" build-fuzz/CMakeCache.txt \
+            || (echo "libFuzzer runtime not detected on the CI toolchain" && exit 1)
+
+      - name: Build fuzz target
+        run: cmake --build build-fuzz --target fuzz_receiver_dispatch -j
+
+      - name: Corpus regression (each committed seed exactly once)
+        run: ./fuzz_receiver_dispatch -runs=0 tests/fuzz/corpus
+
+      # Short bounded run so the lane gates on "malformed datagrams never
+      # crash or read out of bounds" without meaningful CI time. New inputs
+      # go to a scratch dir; the committed seeds stay read-only.
+      - name: Bounded fuzz (10 s wall clock)
+        run: |
+          mkdir -p /tmp/fuzz-corpus
+          ./fuzz_receiver_dispatch -max_total_time=10 -timeout=5 -rss_limit_mb=2048 \
+            /tmp/fuzz-corpus tests/fuzz/corpus
+
   reproducibility:
     name: Build reproducibility (advisory)
     runs-on: ubuntu-24.04

@@ -64,6 +64,12 @@ Desktop.ini
 /test_mac_hid_smoke
 /test_macos_platform
 
+# Fuzz harness binary + libFuzzer findings (SATELLITE_FUZZ=ON)
+/fuzz_receiver_dispatch
+/crash-*
+/oom-*
+/timeout-*
+
 # Remaining test binaries (CMake RUNTIME_OUTPUT_DIRECTORY = source root;
 # Windows builds emit .exe, already covered above)
 /test_catalog
