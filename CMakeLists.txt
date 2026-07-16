@@ -66,6 +66,7 @@ set(SATELLITE_NET_SOURCES
     src/net/pairing_keys.cpp
     src/net/pairing_service.cpp
     src/net/session_crypto.cpp
+    src/net/pin_rotation.cpp
     src/net/discovery.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
@@ -102,7 +103,7 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/config.cpp
     src/platform/posix/config_posix.cpp
     src/core/config_io.cpp
-    src/platform/macos/crypto.cpp
+    src/platform/posix/crypto_posix.cpp
     src/platform/macos/tray.mm
     src/platform/macos/gamepad_backend.cpp
     src/platform/macos/mac_hid_gamepad_adapter.cpp
@@ -116,7 +117,7 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/config.cpp
     src/platform/posix/config_posix.cpp
     src/core/config_io.cpp
-    src/platform/linux/crypto.cpp
+    src/platform/posix/crypto_posix.cpp
     src/platform/linux/gamepad_backend.cpp
     src/platform/linux/gamepad_adapter.cpp
     src/platform/linux/tray.cpp
@@ -782,6 +783,7 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/net/pairing_keys.cpp
         src/net/pairing_service.cpp
         src/net/session_crypto.cpp
+        src/net/pin_rotation.cpp
         src/net/local_iface.cpp
         src/core/config_io.cpp
         ${SATELLITE_CORE_SOURCES}
@@ -791,7 +793,7 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             src/platform/macos/config.cpp
             src/platform/posix/config_posix.cpp
             src/platform/macos/globals.cpp
-            src/platform/macos/crypto.cpp
+            src/platform/posix/crypto_posix.cpp
             src/platform/macos/gamepad_backend.cpp
             src/platform/macos/mac_hid_gamepad_adapter.cpp
         )
@@ -802,7 +804,7 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             src/platform/linux/config.cpp
             src/platform/posix/config_posix.cpp
             src/platform/linux/globals.cpp
-            src/platform/linux/crypto.cpp
+            src/platform/posix/crypto_posix.cpp
             src/platform/linux/gamepad_backend.cpp
             src/platform/linux/gamepad_adapter.cpp
         )
@@ -955,7 +957,8 @@ if(APPLE)
         src/platform/posix/config_posix.cpp
         src/core/config_io.cpp
         src/platform/macos/globals.cpp
-        src/platform/macos/crypto.cpp
+        src/platform/posix/crypto_posix.cpp
+        src/net/pin_rotation.cpp
     )
     target_include_directories(test_macos_platform PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -1024,6 +1027,7 @@ if(WIN32)
         src/core/config_io.cpp
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
+        src/net/pin_rotation.cpp
         src/net/pairing_keys.cpp
         ${SATELLITE_CORE_SOURCES}
     )
