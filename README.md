@@ -90,8 +90,9 @@ the uninstaller from the Start Menu. The uninstaller will:
 
 - Stop `satellite.exe` if it's running.
 - Remove the Windows Firewall rules the installer added (UDP input 9876,
-  pairing 9878, discovery 9879, mDNS 5353, HTTPS client API 9443, and the
-  admin HTTP rule on 9877).
+  discovery 9879, mDNS 5353, HTTPS client API 9443, and the admin HTTP
+  rule on 9877) — plus the stale "Satellite Pairing" rule (TCP 9878) if a
+  pre-protocol-1 install left one behind.
 - Delete the program files, Start Menu and Desktop shortcuts, and the
   HKCU "Run at login" registry entry.
 - Ask whether to also uninstall the ViGEmBus driver. The default is
@@ -414,14 +415,21 @@ The `version-consistency` CI gate fails if the two diverge.
 
 ## Architecture
 
-The receiver runs four main threads:
+The receiver runs six long-lived threads on every platform:
 
 | Thread       | Role                                                        |
 |--------------|-------------------------------------------------------------|
-| **Main**     | Win32 message loop, system tray icon                        |
-| **Receiver** | UDP socket → ViGEmBus `DeviceIoControl` (the hot path); spawns the reaper |
+| **Main**     | Platform UI loop (tray icon, native pairing prompts); a headless signal wait on Linux without a tray |
+| **Receiver** | UDP input socket → decrypt → gamepad-backend submit (the hot path); spawns the session reaper |
 | **Client API** | HTTPS 9443 ([cpp-httplib](https://github.com/yhirose/cpp-httplib)): pairing, sessions, catalog |
 | **Admin HTTP** | Loopback 9877: web UI, admin API, SSE                     |
+| **Discovery beacon** | Legacy UDP broadcast on 9879 for senders that predate the mDNS responder (toggleable; slated for removal in 2027) |
+| **mDNS responder** | Advertises `_satellite._udp.local.` on 5353           |
+
+Platforms add small helpers on top: a netlink interface watcher on Linux, an
+address-change watcher and the tray tooltip ticker on Windows. The updater
+and the per-device rumble listeners (see below) run on their own worker
+threads.
 
 ## Why UDP?
 
