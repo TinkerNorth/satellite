@@ -79,6 +79,8 @@ Desktop.ini
 /test_network_info
 /test_origin_guard
 /test_pairing
+/test_routes_admin
+/test_routes_client
 /test_semver
 /test_session_crypto
 /test_status_json

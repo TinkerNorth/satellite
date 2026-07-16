@@ -767,6 +767,95 @@ if(APPLE)
     satellite_add_pure_test(test_macos_ds4_report tests/test_macos_ds4_report.cpp)
 endif()
 
+# In-process route tests (D10 payoff): registerAdminRoutes/registerClientRoutes
+# put the PRODUCTION route tables on a loopback httplib::Server and the suites
+# drive them with httplib::Client — auth machine codes, the 409 version gate,
+# both pairing paths, session CRUD, the admin guard, and SSE presence. They
+# link the real net/pairing/session layers against the per-OS platform
+# adapters (config/crypto/globals/backend); only the gamepad bus is a stub
+# inside the test. Gated to the lanes whose platform sources are desktop-free
+# (the Windows list would drag tray/toast/COM surface into a test binary).
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SATELLITE_ROUTE_TEST_COMMON_SOURCES
+        src/net/routes_common.cpp
+        src/net/pairing.cpp
+        src/net/pairing_keys.cpp
+        src/net/pairing_service.cpp
+        src/net/session_crypto.cpp
+        src/net/local_iface.cpp
+        src/core/config_io.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    if(APPLE)
+        set(SATELLITE_ROUTE_TEST_PLATFORM_SOURCES
+            src/platform/macos/config.cpp
+            src/platform/posix/config_posix.cpp
+            src/platform/macos/globals.cpp
+            src/platform/macos/crypto.cpp
+            src/platform/macos/gamepad_backend.cpp
+            src/platform/macos/mac_hid_gamepad_adapter.cpp
+        )
+        set(SATELLITE_ROUTE_TEST_PLATFORM_DIR
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos)
+    else()
+        set(SATELLITE_ROUTE_TEST_PLATFORM_SOURCES
+            src/platform/linux/config.cpp
+            src/platform/posix/config_posix.cpp
+            src/platform/linux/globals.cpp
+            src/platform/linux/crypto.cpp
+            src/platform/linux/gamepad_backend.cpp
+            src/platform/linux/gamepad_adapter.cpp
+        )
+        set(SATELLITE_ROUTE_TEST_PLATFORM_DIR
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux)
+    endif()
+
+    function(satellite_add_route_test name routes_src test_src)
+        add_executable(${name}
+            ${test_src}
+            ${routes_src}
+            ${SATELLITE_ROUTE_TEST_COMMON_SOURCES}
+            ${SATELLITE_ROUTE_TEST_PLATFORM_SOURCES}
+        )
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${SATELLITE_ROUTE_TEST_PLATFORM_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
+        )
+        target_include_directories(${name} SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        )
+        # No CPPHTTPLIB_OPENSSL_SUPPORT: the tests exercise the route table on
+        # a plain loopback server (TLS wrapping stays webserver.cpp's job).
+        # SATELLITE_BUILD_TESTS keeps setAutoStart hermetic (launchctl /
+        # desktop registration elided, same seam as the platform suites).
+        target_compile_definitions(${name} PRIVATE
+            CPPHTTPLIB_NO_EXCEPTIONS
+            SATELLITE_BUILD_TESTS
+        )
+        target_compile_options(${name} PRIVATE -O2 -Wall -Wextra)
+        satellite_link_sodium(${name})
+        find_package(Threads REQUIRED)
+        target_link_libraries(${name} PRIVATE Threads::Threads)
+        if(APPLE)
+            # probeBackend -> MacHidGamepadAdapter (IOHIDUserDevice probe).
+            target_link_libraries(${name} PRIVATE
+                "-framework IOKit"
+                "-framework CoreFoundation"
+            )
+        endif()
+        set_target_properties(${name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
+    satellite_add_route_test(test_routes_client
+        src/net/routes_client.cpp tests/test_routes_client.cpp)
+    satellite_add_route_test(test_routes_admin
+        src/net/routes_admin.cpp tests/test_routes_admin.cpp)
+endif()
+
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
 # at the real web/lang catalogs so every controller-type string is asserted
 # present in every supported locale (mirror of Android's MissingTranslation).
