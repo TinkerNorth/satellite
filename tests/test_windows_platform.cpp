@@ -6,7 +6,6 @@
 #include "../src/platform/windows/config.h"
 #include "../src/platform/windows/crypto.h"
 #include "../src/net/pairing_keys.h"
-#include "../src/net/session_crypto.h"
 
 #include <cstdint>
 #include <cstring>
@@ -298,112 +297,9 @@ static void testHexCodec() {
               std::string("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
 }
 
-// Session crypto (net/session_crypto): HKDF derivation + hmacProof.
-
-static const uint8_t SC_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
-                                                12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                                                23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
-
-static void testSessionKeyDerivation() {
-    const uint8_t salt[SESSION_SALT_SIZE] = {0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18};
-
-    TEST("deriveSessionKey: deterministic for fixed inputs");
-    uint8_t k1[CRYPTO_KEY_SIZE], k2[CRYPTO_KEY_SIZE];
-    deriveSessionKey(SC_KEY, salt, 0x12345678, k1);
-    deriveSessionKey(SC_KEY, salt, 0x12345678, k2);
-    EXPECT(std::memcmp(k1, k2, CRYPTO_KEY_SIZE) == 0);
-
-    TEST("deriveSessionKey: never the raw pairing key");
-    EXPECT(std::memcmp(k1, SC_KEY, CRYPTO_KEY_SIZE) != 0);
-
-    TEST("deriveSessionKey: token changes the key");
-    deriveSessionKey(SC_KEY, salt, 0x12345679, k2);
-    EXPECT(std::memcmp(k1, k2, CRYPTO_KEY_SIZE) != 0);
-
-    TEST("deriveSessionKey: salt changes the key");
-    uint8_t salt2[SESSION_SALT_SIZE] = {0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x19};
-    deriveSessionKey(SC_KEY, salt2, 0x12345678, k2);
-    EXPECT(std::memcmp(k1, k2, CRYPTO_KEY_SIZE) != 0);
-
-    // Pinned vector: independently computed RFC 5869 HKDF-SHA256 with
-    // ikm = 01..20, salt = a1b2c3d4e5f60718, info = "satellite-session-v1" ||
-    // 12345678. Any drift here is a cross-end break (dish derives the same).
-    TEST("deriveSessionKey: pinned interop vector");
-    EXPECT_EQ(hexEncode(k1, CRYPTO_KEY_SIZE),
-              std::string("946f704cf07e2dde5e9995a70d3d103753b4687a7ed9656bc6481b06065a8584"));
-}
-
-static void testHmacProof() {
-    TEST("computeHmacProof: 64 hex chars, deterministic");
-    std::string p1 = computeHmacProof(SC_KEY, "device-1");
-    std::string p2 = computeHmacProof(SC_KEY, "device-1");
-    EXPECT_EQ(p1.size(), size_t{64});
-    EXPECT_EQ(p1, p2);
-
-    TEST("computeHmacProof: device-bound");
-    EXPECT(computeHmacProof(SC_KEY, "device-2") != p1);
-
-    TEST("verifyHmacProof: accepts the matching proof");
-    EXPECT(verifyHmacProof(SC_KEY, "device-1", p1));
-
-    TEST("verifyHmacProof: rejects a diverged key");
-    uint8_t other[CRYPTO_KEY_SIZE];
-    std::memcpy(other, SC_KEY, CRYPTO_KEY_SIZE);
-    other[0] ^= 0xFF;
-    EXPECT(!verifyHmacProof(other, "device-1", p1));
-
-    TEST("verifyHmacProof: rejects the wrong device id");
-    EXPECT(!verifyHmacProof(SC_KEY, "device-2", p1));
-
-    TEST("verifyHmacProof: rejects malformed hex");
-    EXPECT(!verifyHmacProof(SC_KEY, "device-1", ""));
-    EXPECT(!verifyHmacProof(SC_KEY, "device-1", "abc"));
-    std::string bad = p1;
-    bad[0] = 'z';
-    EXPECT(!verifyHmacProof(SC_KEY, "device-1", bad));
-
-    TEST("verifyHmacProof: pinned interop vector");
-    // Independently computed HMAC-SHA256(key=01..20, "satellite-proof:device-1").
-    EXPECT_EQ(computeHmacProof(SC_KEY, "device-1"),
-              std::string("05a035a10c55fdfe254c9df5df55a614ac128b123a5de225ea33b41f1d4eedde"));
-}
-
-static void testPacketAeadDirections() {
-    const uint8_t key[CRYPTO_KEY_SIZE] = {9, 9, 9};
-    const uint8_t plain[] = {0x00, 0x02, 0x00, 0x00}; // a heartbeat inner
-    uint8_t ct[64];
-    unsigned long long ctLen = 0;
-
-    TEST("packet AEAD: roundtrip with matching direction");
-    EXPECT(encryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 1, 0xAABBCCDD, plain, sizeof(plain), ct,
-                         &ctLen));
-    uint8_t pt[64];
-    unsigned long long ptLen = 0;
-    EXPECT(decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 1, 0xAABBCCDD, ct, (size_t)ctLen, pt,
-                         &ptLen));
-    EXPECT_EQ((size_t)ptLen, sizeof(plain));
-    EXPECT(std::memcmp(pt, plain, sizeof(plain)) == 0);
-
-    TEST("packet AEAD: direction mismatch fails authentication");
-    EXPECT(!decryptPacket(key, CRYPTO_DIR_SERVER_TO_CLIENT, 1, 0xAABBCCDD, ct, (size_t)ctLen, pt,
-                          &ptLen));
-
-    TEST("packet AEAD: counter mismatch fails authentication");
-    EXPECT(!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 2, 0xAABBCCDD, ct, (size_t)ctLen, pt,
-                          &ptLen));
-
-    TEST("packet AEAD: token (AAD) mismatch fails authentication");
-    EXPECT(!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 1, 0xAABBCCDE, ct, (size_t)ctLen, pt,
-                          &ptLen));
-
-    TEST("packet AEAD: same (counter, key) in the two directions yields distinct ciphertext");
-    uint8_t ct2[64];
-    unsigned long long ct2Len = 0;
-    EXPECT(encryptPacket(key, CRYPTO_DIR_SERVER_TO_CLIENT, 1, 0xAABBCCDD, plain, sizeof(plain), ct2,
-                         &ct2Len));
-    EXPECT_EQ(ctLen, ct2Len);
-    EXPECT(std::memcmp(ct, ct2, (size_t)ctLen) != 0);
-}
+// The session-crypto interop vectors (HKDF, HMAC proof, AEAD bindings) live in
+// tests/test_session_crypto.cpp, which runs on every CI lane. This suite keeps
+// only the Windows-specific surfaces.
 
 static std::string readFileBytes(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
@@ -518,9 +414,6 @@ int main() {
     testGetExeDir();
     testGetCurrentDate();
     testHexCodec();
-    testSessionKeyDerivation();
-    testHmacProof();
-    testPacketAeadDirections();
     testResolvePairingSharedKey();
 
     std::cout << "\n=== Test Results ===\n";

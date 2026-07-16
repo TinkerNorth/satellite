@@ -699,6 +699,35 @@ function(satellite_add_pure_test name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+# Links libsodium into a test target, replicating whichever resolution the
+# platform uses for the satellite binary: the vendored prebuilt archive on
+# MinGW, vcpkg's config package on MSVC, pkg-config (with the find_path /
+# find_library fallback) on Linux/macOS. The POSIX branches reuse the
+# SODIUM_* variables the satellite block above already resolved.
+function(satellite_link_sodium name)
+    if(MINGW)
+        target_include_directories(${name} SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
+        target_link_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib)
+        target_link_libraries(${name} PRIVATE sodium)
+    elseif(MSVC)
+        find_package(unofficial-sodium CONFIG REQUIRED)
+        target_link_libraries(${name} PRIVATE unofficial-sodium::sodium)
+    elseif(SODIUM_FOUND)
+        target_include_directories(${name} SYSTEM PRIVATE ${SODIUM_INCLUDE_DIRS})
+        target_link_directories(${name} PRIVATE ${SODIUM_LIBRARY_DIRS})
+        target_link_libraries(${name} PRIVATE ${SODIUM_LIBRARIES})
+    elseif(SODIUM_INCLUDE_DIR AND SODIUM_LIBRARY)
+        target_include_directories(${name} SYSTEM PRIVATE ${SODIUM_INCLUDE_DIR})
+        target_link_libraries(${name} PRIVATE ${SODIUM_LIBRARY})
+    else()
+        message(FATAL_ERROR
+            "libsodium not resolved for ${name}; install libsodium (dev headers) "
+            "or set -DSODIUM_ROOT=<prefix>.")
+    endif()
+endfunction()
+
 satellite_add_pure_test(test_ipv4_util tests/test_ipv4_util.cpp)
 satellite_add_pure_test(test_semver tests/test_semver.cpp)
 satellite_add_pure_test(test_mdns_rejoin tests/test_mdns_rejoin.cpp)
@@ -713,6 +742,20 @@ satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
+
+# Portable session-crypto interop suite (net/session_crypto.cpp): the pinned
+# RFC 5869 HKDF vector, the HMAC-proof vector, and the AEAD direction/counter/
+# AAD bindings run on EVERY lane (Linux, MinGW, MSVC, macOS), so a cross-end
+# crypto drift fails all CIs, not just Windows. Gated on the three platforms
+# that have a libsodium recipe; an unsupported host still configures the
+# sodium-free tests above.
+if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    satellite_add_pure_test(test_session_crypto
+        tests/test_session_crypto.cpp
+        src/net/session_crypto.cpp
+    )
+    satellite_link_sodium(test_session_crypto)
+endif()
 
 # macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,
 # input packing, output parsing, feature blobs, and the probe-status seam.
@@ -850,7 +893,6 @@ if(WIN32)
         src/core/config_io.cpp
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
-        src/net/session_crypto.cpp
         src/net/pairing_keys.cpp
         ${SATELLITE_CORE_SOURCES}
     )
