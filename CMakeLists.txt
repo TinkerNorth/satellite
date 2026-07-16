@@ -850,6 +850,45 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(uinput_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
+# Exercises the macOS-only adapters that don't need an entitled process or a
+# desktop session: config persistence under ~/Library/Application Support,
+# LaunchAgent autostart plist handling, the keyfile-backed dpapi* keystore,
+# path utilities, and PIN rotation semantics. HOME is redirected into a
+# per-test tmpdir by the harness, and launchctl registration is compiled out
+# under SATELLITE_BUILD_TESTS, so the suite never touches real user state.
+if(APPLE)
+    add_executable(test_macos_platform
+        tests/test_macos_platform.cpp
+        src/platform/macos/config.cpp
+        src/platform/posix/config_posix.cpp
+        src/core/config_io.cpp
+        src/platform/macos/globals.cpp
+        src/platform/macos/crypto.cpp
+    )
+    target_include_directories(test_macos_platform PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
+    )
+    target_include_directories(test_macos_platform SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+    # SATELLITE_BUILD_TESTS gates the backdatePinClockForTest seam and elides
+    # launchctl registration (see the linux platform suite for the pattern).
+    target_compile_definitions(test_macos_platform PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+    )
+    target_compile_options(test_macos_platform PRIVATE -O2 -Wall -Wextra)
+    satellite_link_sodium(test_macos_platform)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_macos_platform PRIVATE Threads::Threads)
+    set_target_properties(test_macos_platform PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME macos_platform COMMAND test_macos_platform)
+endif()
+
 # Real-kernel IOHIDUserDevice smoke test: drives the production macOS adapter.
 # The probe-fallback contract and the rumble/lightbar callback fan-out run on
 # ANY Mac; actual kernel-device creation additionally needs the

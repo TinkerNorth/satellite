@@ -26,6 +26,13 @@ struct PinSnapshot {
 };
 PinSnapshot pinSnapshot();
 
+#ifdef SATELLITE_BUILD_TESTS
+// Test seam: shift the PIN rotation/paired-flash clocks backwards (as if
+// `seconds` had elapsed) so rotation-due and validity-window paths are
+// testable without real sleeps. Mirrors SessionService::backdateForTest.
+void backdatePinClockForTest(int seconds);
+#endif
+
 std::string hexEncode(const uint8_t* data, size_t len);
 bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen);
 

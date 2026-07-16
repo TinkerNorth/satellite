@@ -208,6 +208,14 @@ bool verifyPin(const std::string& pin) {
     return false;
 }
 
+#ifdef SATELLITE_BUILD_TESTS
+void backdatePinClockForTest(int seconds) {
+    std::lock_guard<std::mutex> lk(g_pinMtx);
+    g_pinRotateAt -= std::chrono::seconds(seconds);
+    g_pinPairedAt -= std::chrono::seconds(seconds);
+}
+#endif
+
 PinSnapshot pinSnapshot() {
     std::lock_guard<std::mutex> lk(g_pinMtx);
     rotatePinsIfDueLocked();
