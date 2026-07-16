@@ -55,6 +55,11 @@ jobs:
           FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
           echo "$FILES" | xargs clang-format --dry-run --Werror
 
+      # Compiler-independent architecture gate: src/core stays std+intra-core+
+      # nlohmann-only, and net/adapters never name a platform/<os>/ path.
+      - name: Core purity gate
+        run: bash scripts/check_core_purity.sh
+
       - name: Configure (Release, tray enabled)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
