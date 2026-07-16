@@ -759,6 +759,16 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/net/session_crypto.cpp
     )
     satellite_link_sodium(test_session_crypto)
+
+    # Portable PIN-rotation + shared-crypto-helper suite (net/pin_rotation.cpp,
+    # the D11 hoist): runs on every lane so no platform can drift its own copy
+    # again. SATELLITE_BUILD_TESTS gates the backdatePinClockForTest seam.
+    satellite_add_pure_test(test_pin_rotation
+        tests/test_pin_rotation.cpp
+        src/net/pin_rotation.cpp
+    )
+    target_compile_definitions(test_pin_rotation PRIVATE SATELLITE_BUILD_TESTS)
+    satellite_link_sodium(test_pin_rotation)
 endif()
 
 # macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,

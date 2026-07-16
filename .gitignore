@@ -79,6 +79,7 @@ Desktop.ini
 /test_network_info
 /test_origin_guard
 /test_pairing
+/test_pin_rotation
 /test_routes_admin
 /test_routes_client
 /test_semver
