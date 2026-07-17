@@ -61,8 +61,12 @@ jobs:
       - name: Core purity gate
         run: bash scripts/check_core_purity.sh
 
+      # Warnings-as-errors on CI only (not hardcoded in CMakeLists): local
+      # builds stay friendly, and warning churn from new compiler releases
+      # is contained to a visible CI failure instead of silently piling up
+      # in green-job logs.
       - name: Configure (Release, tray enabled)
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
       # Bare `-j` is unlimited parallelism for Makefiles; on hosted runners
       # that oversubscribes memory and the VM OOM-reclaims the job
@@ -113,7 +117,8 @@ jobs:
 
       - name: Configure (Release, no tray) and confirm tray is disabled
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release 2>&1 | tee cmake-configure.log
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON 2>&1 | tee cmake-configure.log
           grep -q 'libayatana-appindicator not found' cmake-configure.log \
             || (echo "expected headless fallback message in cmake output" && exit 1)
 

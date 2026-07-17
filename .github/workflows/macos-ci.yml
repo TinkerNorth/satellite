@@ -41,8 +41,9 @@ jobs:
           FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
           echo "$FILES" | xargs clang-format --dry-run --Werror
 
+      # Warnings-as-errors on CI only — see linux-ci.yml's note.
       - name: Configure (Release)
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
       # Bare `-j` is unlimited parallelism; macOS runners swap instead of
       # OOM-killing, which shows up as a multi-hour hang — bound to the
