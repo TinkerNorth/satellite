@@ -24,10 +24,12 @@ paths = [
     '''lib/libsodium/.*''',
     '''lib/httplib\.h''',
     # Config/platform unit tests build PairedDevice fixtures with fake
-    # sharedKeyHex values (no real key material).
+    # sharedKeyHex values and dummy keystore plaintexts (no real key
+    # material).
     '''tests/test_config_json\.cpp''',
     '''tests/test_linux_platform\.cpp''',
     '''tests/test_windows_platform\.cpp''',
+    '''tests/test_macos_platform\.cpp''',
 ]
 
 regexes = [
