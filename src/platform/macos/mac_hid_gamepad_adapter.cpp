@@ -362,6 +362,15 @@ bool MacHidGamepadAdapter::submitMotion(uint32_t serial, const MotionReport& rep
 bool MacHidGamepadAdapter::supportsMotionForType(uint8_t controllerType) const {
     // Backend-shape, not per-serial: only DS4-typed slots route motion,
     // matching the ViGEm and uinput adapters.
+    //
+    // Unentitled invariant (a constraint this TU cannot show): the historical
+    // stub inherited IGamepadPort's `false`, while this branch answers true
+    // for DS4 types even when no device can be created. The delta is
+    // unobservable today because every caller (core/session_service.cpp)
+    // gates on `ctrl.active`, and no controller can activate while
+    // ensureBusOpen() fails — which it always does unentitled. If controllers
+    // ever become reachable without an open bus, re-check this method against
+    // the stub's inherited `false` before trusting the parity claim.
     return controllerTypeUsesDS4(controllerType);
 }
 
