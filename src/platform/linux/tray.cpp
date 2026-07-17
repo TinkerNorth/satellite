@@ -30,19 +30,23 @@ static guint g_pollSourceId = 0;
 static UpdateState g_lastUpdateState = UpdateState::Idle;
 static std::string g_lastUpdateVersion;
 
-static void onOpenUI(GtkMenuItem*, gpointer) {
-    char cmd[96];
-    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d >/dev/null 2>&1 &",
-                  g_config.webPort);
-    (void)std::system(cmd);
+// The trailing `&` backgrounds xdg-open, so the exit status only covers
+// spawning the shell itself — nonzero means the launch never happened
+// (fork failure), which deserves a trace when a menu click does nothing.
+// xdg-open's own output/failures are deliberately routed to /dev/null.
+static void openLocalUrl(const char* path) {
+    char cmd[128];
+    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d%s >/dev/null 2>&1 &",
+                  g_config.webPort, path);
+    if (std::system(cmd) != 0) {
+        std::fprintf(stderr, "satellite: tray failed to spawn xdg-open for %s\n",
+                     path[0] != '\0' ? path : "/");
+    }
 }
 
-static void onDonate(GtkMenuItem*, gpointer) {
-    char cmd[112];
-    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d/donate >/dev/null 2>&1 &",
-                  g_config.webPort);
-    (void)std::system(cmd);
-}
+static void onOpenUI(GtkMenuItem*, gpointer) { openLocalUrl(""); }
+
+static void onDonate(GtkMenuItem*, gpointer) { openLocalUrl("/donate"); }
 
 static void onUpdateClick(GtkMenuItem*, gpointer) {
     if (!g_updateService) return;
@@ -57,10 +61,7 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
     } else {
         g_updateService->requestCheck(/*userInitiated=*/true);
     }
-    char cmd[112];
-    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d/settings >/dev/null 2>&1 &",
-                  g_config.webPort);
-    (void)std::system(cmd);
+    openLocalUrl("/settings");
 }
 
 static void onQuit(GtkMenuItem*, gpointer) {
