@@ -500,8 +500,7 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
     script += "setsid \"$DST\" >/dev/null 2>&1 &\n";
     script += "rm -f -- \"$0\"\n";
 
-    // A short or failed write would leave a truncated script that is later
-    // executed — abort the update instead, and don't leave the stub behind.
+    // A truncated script would still get executed — abort rather than risk it.
     size_t off = 0;
     while (off < script.size()) {
         ssize_t n = ::write(fd, script.data() + off, script.size() - off);

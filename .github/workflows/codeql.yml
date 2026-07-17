@@ -54,8 +54,7 @@ jobs:
         uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
         with:
           languages: ${{ matrix.language }}
-          # This workflow drives its own cmake build below; leaving
-          # build-mode undefined makes the analyzer warn and fall back.
+          # We drive our own cmake build; without this CodeQL warns and falls back.
           build-mode: manual
           # Default + security-extended; surface error-severity findings.
           queries: security-extended,security-and-quality

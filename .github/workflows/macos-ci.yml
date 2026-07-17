@@ -45,9 +45,7 @@ jobs:
       - name: Configure (Release)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
-      # Bare `-j` is unlimited parallelism; macOS runners swap instead of
-      # OOM-killing, which shows up as a multi-hour hang — bound to the
-      # core count (see codeql.yml's build step note).
+      # Bound -j: bare `-j` makes macOS runners swap into a multi-hour hang.
       - name: Build
         run: cmake --build build --config Release -j "$(sysctl -n hw.ncpu)"
 

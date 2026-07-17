@@ -597,10 +597,7 @@ if(TARGET satellite)
     if(SATELLITE_IPO_OK)
         set_target_properties(satellite PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-            # CMake's IPO property emits bare `-flto`, whose link-time LTRANS
-            # phase runs serially (lto-wrapper warns about it on MinGW).
-            # Appending `-flto=auto` wins as the last flag and parallelizes
-            # the LTRANS jobs across the available cores.
+            # Bare -flto (CMake's IPO default) links serially; -flto=auto parallelizes LTRANS.
             target_link_options(satellite PRIVATE $<$<CONFIG:Release>:-flto=auto>)
         endif()
         message(STATUS "satellite: LTO/IPO enabled for Release builds.")

@@ -30,10 +30,7 @@ static guint g_pollSourceId = 0;
 static UpdateState g_lastUpdateState = UpdateState::Idle;
 static std::string g_lastUpdateVersion;
 
-// The trailing `&` backgrounds xdg-open, so the exit status only covers
-// spawning the shell itself — nonzero means the launch never happened
-// (fork failure), which deserves a trace when a menu click does nothing.
-// xdg-open's own output/failures are deliberately routed to /dev/null.
+// `&` backgrounds xdg-open, so system() only reports shell-spawn failure.
 static void openLocalUrl(const char* path) {
     char cmd[128];
     std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d%s >/dev/null 2>&1 &",
