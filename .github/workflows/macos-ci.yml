@@ -18,6 +18,7 @@ jobs:
   ci:
     name: Build, test, lint, format
     runs-on: macos-14
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -43,8 +44,11 @@ jobs:
       - name: Configure (Release)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
+      # Bare `-j` is unlimited parallelism; macOS runners swap instead of
+      # OOM-killing, which shows up as a multi-hour hang — bound to the
+      # core count (see codeql.yml's build step note).
       - name: Build
-        run: cmake --build build --config Release -j
+        run: cmake --build build --config Release -j "$(sysctl -n hw.ncpu)"
 
       # Runs every suite, including test_macos_ds4_report (pure DS4 codec)
       # and mac_hid_smoke. The smoke test needs the

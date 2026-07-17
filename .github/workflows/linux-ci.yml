@@ -18,6 +18,7 @@ jobs:
   ci:
     name: Build, test, lint, format
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -63,8 +64,11 @@ jobs:
       - name: Configure (Release, tray enabled)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
+      # Bare `-j` is unlimited parallelism for Makefiles; on hosted runners
+      # that oversubscribes memory and the VM OOM-reclaims the job
+      # (SIGTERM / exit 143) — see codeql.yml's build step note.
       - name: Build (tray enabled)
-        run: cmake --build build --config Release -j
+        run: cmake --build build --config Release -j "$(nproc)"
 
       - name: Run tests
         working-directory: build
@@ -95,6 +99,7 @@ jobs:
   headless:
     name: Verify headless fallback build
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -113,7 +118,7 @@ jobs:
             || (echo "expected headless fallback message in cmake output" && exit 1)
 
       - name: Build (headless)
-        run: cmake --build build --config Release -j
+        run: cmake --build build --config Release -j "$(nproc)"
 
       - name: Run tests
         working-directory: build
@@ -122,6 +127,7 @@ jobs:
   fuzz:
     name: Fuzz smoke (decrypt->dispatch robustness, bounded)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -143,7 +149,7 @@ jobs:
             || (echo "libFuzzer runtime not detected on the CI toolchain" && exit 1)
 
       - name: Build fuzz target
-        run: cmake --build build-fuzz --target fuzz_receiver_dispatch -j
+        run: cmake --build build-fuzz --target fuzz_receiver_dispatch -j "$(nproc)"
 
       - name: Corpus regression (each committed seed exactly once)
         run: ./fuzz_receiver_dispatch -runs=0 tests/fuzz/corpus
@@ -160,10 +166,18 @@ jobs:
   reproducibility:
     name: Build reproducibility (advisory)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # Advisory only: the upstream goal is bit-identical Release builds
     # but the toolchain doesn't guarantee that yet. Surface drift in the
     # job summary; do not block the PR. See SECURITY_HARDENING_PROMPT.md
     # section A.5.
+    #
+    # push-only: two full Release builds per run is not worth the
+    # wall-clock on every PR — and `continue-on-error` still renders the
+    # job as a red X in the PR checks list when drift trips it, which
+    # reads as a failure. The advisory signal matters on main, where
+    # releases are cut from.
+    if: github.event_name == 'push'
     continue-on-error: true
     steps:
       - name: Checkout
@@ -182,11 +196,11 @@ jobs:
         run: |
           set -euo pipefail
           cmake -S . -B build-A -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-A -j
+          cmake --build build-A -j "$(nproc)"
           mv satellite satellite-A
           rm -rf build-A
           cmake -S . -B build-B -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-B -j
+          cmake --build build-B -j "$(nproc)"
           mv satellite satellite-B
           {
             if cmp -s satellite-A satellite-B; then
