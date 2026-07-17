@@ -17,6 +17,10 @@
 #   its own copy and CMake picks the directory. Naming an OS directly defeats
 #   that seam and breaks the other two builds.
 #
+# Both gates scan *.h/*.hpp/*.cpp/*.mm and treat ObjC's `#import` exactly
+# like `#include` — a .mm file cannot smuggle a header past the gate by
+# spelling the directive differently.
+#
 # Plain bash 3.2 + grep/sed (BSD and GNU), no dependencies; runs locally and
 # as a cheap CI step:  bash scripts/check_core_purity.sh
 set -euo pipefail
@@ -68,7 +72,7 @@ for f in $(find src/core -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.cpp
         [ -n "$hit" ] || continue
         lineno="${hit%%:*}"
         line="${hit#*:}"
-        hdr="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]([^">]+)[">].*/\1/')"
+        hdr="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*#[[:space:]]*(include|import)[[:space:]]*[<"]([^">]+)[">].*/\2/')"
 
         if reason="$(is_forbidden_reason "$hdr")"; then
             report "$f" "$lineno" "$hdr" "$reason"
@@ -97,7 +101,7 @@ for f in $(find src/core -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.cpp
                 ;;
         esac
     done <<EOF
-$(grep -nE '^[[:space:]]*#[[:space:]]*include' "$f" || true)
+$(grep -nE '^[[:space:]]*#[[:space:]]*(include|import)' "$f" || true)
 EOF
 done
 
@@ -107,7 +111,7 @@ for f in $(find src/net src/adapters -type f \( -name '*.h' -o -name '*.hpp' -o 
         [ -n "$hit" ] || continue
         lineno="${hit%%:*}"
         line="${hit#*:}"
-        hdr="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]([^">]+)[">].*/\1/')"
+        hdr="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*#[[:space:]]*(include|import)[[:space:]]*[<"]([^">]+)[">].*/\2/')"
         case "$hdr" in
             platform/*|*/platform/*)
                 report "$f" "$lineno" "\"$hdr\"" \
@@ -115,7 +119,7 @@ for f in $(find src/net src/adapters -type f \( -name '*.h' -o -name '*.hpp' -o 
                 ;;
         esac
     done <<EOF
-$(grep -nE '^[[:space:]]*#[[:space:]]*include' "$f" || true)
+$(grep -nE '^[[:space:]]*#[[:space:]]*(include|import)' "$f" || true)
 EOF
 done
 
