@@ -643,9 +643,13 @@ ctest --test-dir build --output-on-failure
 │   ├── net/                    # Shared transport layer (all platforms)
 │   │   ├── receiver.cpp        # UDP recv/decrypt hot loop
 │   │   ├── inner_dispatch.cpp  # Inner-message parser + length guards
-│   │   ├── webserver.cpp       # HTTPS client API + loopback admin UI + SSE
+│   │   ├── webserver.cpp       # Server shells: HTTPS client API + loopback admin
+│   │   ├── routes_client.cpp   # Sender-facing routes: pairing, sessions, catalog
+│   │   ├── routes_admin.cpp    # Admin web UI routes + SSE
+│   │   ├── routes_common.cpp   # Helpers shared by both route tables
 │   │   ├── session_crypto.*    # HKDF session keys, hmacProof, packet AEAD
 │   │   ├── pairing*.{h,cpp}    # PIN pairing + Path-B request registry
+│   │   ├── pin_rotation.cpp    # Rotating pair PIN + shared crypto helpers
 │   │   └── discovery / mdns_*  # mDNS responder + legacy beacon
 │   ├── adapters/               # Portable adapters
 │   │   ├── client_adapter.*    # IClientPort: encrypted UDP downstream
@@ -653,7 +657,8 @@ ctest --test-dir build --output-on-failure
 │   └── platform/
 │       ├── windows/            # main, tray, config, ViGEm adapter (vigem*.{h,cpp})
 │       ├── linux/              # main, tray, config, uinput adapter
-│       └── macos/              # main, tray, config, inert gamepad stub
+│       ├── macos/              # main, tray, config, IOHIDUserDevice DS4 adapter
+│       └── posix/              # config/crypto shared by the linux + macos builds
 ├── tests/                      # Self-contained suites (no framework), one per area
 ├── docs/
 │   ├── contract.md             # THE client ↔ server protocol contract

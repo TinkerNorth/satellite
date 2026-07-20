@@ -346,7 +346,7 @@ static void testHexCodec() {
 }
 
 // Keystore parity: on macOS the dpapi* names are backed by a 0600 keyfile next
-// to the config plus libsodium secretbox (see crypto.cpp).
+// to the config plus libsodium secretbox (see platform/posix/crypto_posix.cpp).
 static void testDpapiKeystore() {
     TempHome tmp;
     const std::string secret = "0123456789abcdef0123456789abcdef";
@@ -401,9 +401,9 @@ static void testRandomHelpers() {
     EXPECT(d.find_first_not_of("0123456789") == std::string::npos);
 }
 
-// PIN rotation semantics (crypto.cpp): a 4-digit PIN rotates every 5 minutes;
-// the outgoing PIN stays valid as "previous" for one more period; a pair or a
-// burst of failures burns both. All time travel goes through the
+// PIN rotation semantics (net/pin_rotation.cpp): a 4-digit PIN rotates every
+// 5 minutes; the outgoing PIN stays valid as "previous" for one more period;
+// a pair or a burst of failures burns both. All time travel goes through the
 // backdatePinClockForTest seam.
 //
 // Collision note: a re-mint draws 4 random digits, so a fresh PIN can
