@@ -339,10 +339,12 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
     }
 
     // Path A: dish entered the operator's server-generated PIN.
-    if (!pin.empty() && verifyPin(pin)) {
+    if (!pin.empty()) {
         uint8_t serverPk[32], serverSk[32];
         generateKeyPair(serverPk, serverSk);
 
+        // Key resolved BEFORE the PIN: a successful verifyPin consumes and
+        // rotates the operator PIN, which a malformed key must not burn.
         std::string sharedKeyHex;
         PairingKeyOutcome outcome =
             resolvePairingSharedKey(clientPkHex, serverPk, serverSk, sharedKeyHex);
@@ -355,26 +357,29 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
             return;
         }
 
-        upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex);
-        // A re-pair invalidates the previous key; a session still keyed on it
-        // would churn undecryptably, so close it now.
-        svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
+        if (verifyPin(pin)) {
+            upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex);
+            // A re-pair invalidates the previous key; a session still keyed on
+            // it would churn undecryptably, so close it now.
+            svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
 
-        std::string serverPkHex = hexEncode(serverPk, 32);
-        sodium_memzero(serverSk, 32);
-        logMsg(LogLevel::INFO, "pairing",
-               "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
-        JsonOut ok;
-        ok["ok"] = true;
-        ok["message"] = "paired successfully";
-        if (outcome == PairingKeyOutcome::Derived) {
-            ok["serverPublicKey"] = serverPkHex;
-        } else {
-            ok["sharedKey"] = sharedKeyHex;
+            std::string serverPkHex = hexEncode(serverPk, 32);
+            sodium_memzero(serverSk, 32);
+            logMsg(LogLevel::INFO, "pairing",
+                   "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
+            JsonOut ok;
+            ok["ok"] = true;
+            ok["message"] = "paired successfully";
+            if (outcome == PairingKeyOutcome::Derived) {
+                ok["serverPublicKey"] = serverPkHex;
+            } else {
+                ok["sharedKey"] = sharedKeyHex;
+            }
+            ok["protocolVersion"] = PROTOCOL_VERSION;
+            res.set_content(jsonDump(ok), "application/json");
+            return;
         }
-        ok["protocolVersion"] = PROTOCOL_VERSION;
-        res.set_content(jsonDump(ok), "application/json");
-        return;
+        sodium_memzero(serverSk, 32);
     }
 
     // Path B: register the dish's request; it then polls /api/pair/status. The

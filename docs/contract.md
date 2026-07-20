@@ -83,8 +83,8 @@ pairing key is then derived on both ends instead of being transported:
 - On success the response carries `serverPublicKey` INSTEAD of `sharedKey`:
   the long-lived trust root itself never transits the wire.
 - An unusable `publicKey` (malformed hex, wrong length, low-order point) fails
-  the pair with `{"ok":false,"error":"invalid public key"}`; it is never
-  silently downgraded to a server-minted key.
+  the pair with `{"ok":false,"error":"invalid public key"}` without consuming
+  the operator PIN; it is never silently downgraded to a server-minted key.
 - Scope: honored on the operator-PIN path only. Path-B approval
   (`GET /api/pair/status`) and proof-based rotation always return `sharedKey`
   (a `publicKey` field is ignored there).

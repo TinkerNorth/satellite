@@ -450,6 +450,10 @@ int main() {
             EXPECT_EQ(jsonStr(j, "error"), std::string("invalid public key"));
         }
         EXPECT_EQ(storedKeyHex("dev-a-badkey"), std::string(""));
+
+        TEST("a rejected key does not consume the operator PIN (retry can succeed)");
+        EXPECT_EQ(pinSnapshot().currentPin, pin);
+        EXPECT(verifyPin(pin)); // still valid; consumed here by the assertion
     }
     {
         TEST("POST /api/pair with protocolVersion 2: 409 before any PIN check");
