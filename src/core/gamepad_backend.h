@@ -5,6 +5,8 @@
 // src/platform/<os>/gamepad_backend.cpp.
 #pragma once
 
+#include <cstring>
+
 // Stable identifiers exposed in the JSON API. Web UI matches on these.
 inline const char* BACKEND_ID_VIGEM = "vigem";    // Windows / ViGEmBus
 inline const char* BACKEND_ID_UINPUT = "uinput";  // Linux / /dev/uinput
@@ -33,7 +35,7 @@ BackendStatus probeBackend();
 
 // Which TOUCHPAD_MODE_* values this server can honour. Clients query via GET
 // /api/server/capabilities so their mode-picker disables modes the host can't
-// deliver (macOS has no gamepad bus, so Pad and Mouse both no-op).
+// deliver.
 //   Pad:   needs a backend carrying a DS4 touchpad surface.
 //   Mouse: needs host-global pointer injection.
 //   Off:   always true; the receiver just drops the samples.
@@ -44,12 +46,14 @@ struct TouchpadCapabilities {
 };
 
 // Inline + parameterised so tests can pin behaviour without the platform
-// probeBackend(). Pad+mouse are tied to having any gamepad backend:
-// ViGEm/uinput ship both; macOS ships neither.
+// probeBackend(). Every DS4-capable backend carries the touchpad surface;
+// only vigem/uinput also inject a host pointer (machid's adapter never
+// overrides submitRelativeMouse).
 inline TouchpadCapabilities deriveTouchpadCapabilities(const BackendStatus& s) {
     TouchpadCapabilities caps;
     caps.padSupported = s.supported;
-    caps.mouseSupported = s.supported;
+    caps.mouseSupported = s.supported && (std::strcmp(s.id, BACKEND_ID_VIGEM) == 0 ||
+                                          std::strcmp(s.id, BACKEND_ID_UINPUT) == 0);
     caps.offSupported = true;
     return caps;
 }

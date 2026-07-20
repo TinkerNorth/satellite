@@ -448,6 +448,30 @@ static void test_probe_status_seam() {
     EXPECT(off.errorCode == nullptr);
 }
 
+static void test_touchpad_capabilities() {
+    TEST("touchpad caps: machid serves the DS4 pad surface but no host mouse");
+    const TouchpadCapabilities on = deriveTouchpadCapabilities(macHidBackendStatus(true));
+    EXPECT(on.padSupported);
+    EXPECT(!on.mouseSupported); // MacHidGamepadAdapter never overrides submitRelativeMouse
+    EXPECT(on.offSupported);
+
+    TEST("touchpad caps: unentitled stub supports off only");
+    const TouchpadCapabilities off = deriveTouchpadCapabilities(macHidBackendStatus(false));
+    EXPECT(!off.padSupported);
+    EXPECT(!off.mouseSupported);
+    EXPECT(off.offSupported);
+
+    TEST("touchpad caps: vigem/uinput keep pad + mouse");
+    BackendStatus other;
+    other.supported = other.available = true;
+    other.id = BACKEND_ID_VIGEM;
+    EXPECT(deriveTouchpadCapabilities(other).padSupported);
+    EXPECT(deriveTouchpadCapabilities(other).mouseSupported);
+    other.id = BACKEND_ID_UINPUT;
+    EXPECT(deriveTouchpadCapabilities(other).padSupported);
+    EXPECT(deriveTouchpadCapabilities(other).mouseSupported);
+}
+
 int main() {
     std::cout << "Running macOS DS4 report codec tests...\n\n";
     test_descriptor_shape();
@@ -467,6 +491,7 @@ int main() {
     test_feature_reports();
     test_calibration_usb_consumer_parse();
     test_probe_status_seam();
+    test_touchpad_capabilities();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
