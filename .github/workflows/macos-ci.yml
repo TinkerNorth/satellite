@@ -27,7 +27,16 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install cmake pkg-config libsodium clang-format
+          brew install cmake pkg-config libsodium
+
+      # Same pin as linux-ci.yml: a floating brew clang-format diverges from
+      # the Linux lane on every LLVM bump. venv instead of pipx — the macOS
+      # runner image doesn't guarantee pipx.
+      - name: Install clang-format (pinned)
+        run: |
+          python3 -m venv "$HOME/.clang-format-venv"
+          "$HOME/.clang-format-venv/bin/pip" install clang-format==22.1.4
+          echo "$HOME/.clang-format-venv/bin" >> "$GITHUB_PATH"
 
       - name: Tool versions
         run: |
