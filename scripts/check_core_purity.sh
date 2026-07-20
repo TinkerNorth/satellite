@@ -50,7 +50,7 @@ is_forbidden_reason() {
     local hdr="$1"
     case "$(printf '%s' "$hdr" | tr '[:upper:]' '[:lower:]')" in
         *httplib*)               echo "httplib must never be visible to core (webserver shell only)" ;;
-        iokit/*|*coreforward*)   echo "IOKit is macOS platform surface" ;;
+        iokit/*|*corefoundation*) echo "IOKit/CoreFoundation are macOS platform surface" ;;
         windows.h|*winsock*|ws2tcpip.h|wincrypt.h|winhttp.h) echo "Win32 headers are platform surface" ;;
         *vigem*)                 echo "ViGEm belongs to the Windows backend" ;;
         sodium.h|*openssl*)      echo "crypto libraries stay out of core (net/session_crypto owns them)" ;;
