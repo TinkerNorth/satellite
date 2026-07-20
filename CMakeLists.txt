@@ -110,6 +110,15 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/updater_adapter.mm
 )
 
+# IOKit/HID APIs the adapter uses are deprecation-prone across SDKs; the app
+# target suppresses target-wide, so every test target compiling this TU needs
+# the same or the warnings-as-errors macOS lane breaks. Source-scoped: it
+# applies wherever the TU is compiled without loosening whole targets.
+if(APPLE)
+    set_source_files_properties(src/platform/macos/mac_hid_gamepad_adapter.cpp
+        PROPERTIES COMPILE_OPTIONS -Wno-deprecated-declarations)
+endif()
+
 # Linux-only infrastructure.
 set(SATELLITE_LINUX_SOURCES
     src/platform/linux/main.cpp
