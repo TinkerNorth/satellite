@@ -33,7 +33,10 @@
 #include "net/inner_dispatch.h"
 #include "net/session_crypto.h"
 
+#include <sodium.h>
+
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -107,6 +110,9 @@ void openSession() {
 
 void initOnce() {
     if (g_svc != nullptr) return;
+    // AEAD behavior is undefined before sodium_init (production calls it at
+    // startup; the harness must too).
+    if (sodium_init() < 0) abort();
     static SessionService svc(g_gamepad, g_client, g_log, deriveSessionKey);
     g_svc = &svc;
     openSession();
@@ -225,6 +231,10 @@ static int runOneFile(const std::string& path) {
 }
 
 int main(int argc, char** argv) {
+    if (sodium_init() < 0) {
+        std::fprintf(stderr, "sodium_init failed\n");
+        return 1;
+    }
     int replayed = 0;
     for (int i = 1; i < argc; i++) {
         DIR* dir = opendir(argv[i]);
