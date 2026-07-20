@@ -90,9 +90,10 @@ the uninstaller from the Start Menu. The uninstaller will:
 
 - Stop `satellite.exe` if it's running.
 - Remove the Windows Firewall rules the installer added (UDP input 9876,
-  discovery 9879, mDNS 5353, HTTPS client API 9443, and the admin HTTP
-  rule on 9877) — plus the stale "Satellite Pairing" rule (TCP 9878) if a
-  pre-protocol-1 install left one behind.
+  discovery 9879, mDNS 5353, HTTPS client API 9443) — plus the stale
+  "Satellite HTTP" (TCP 9877; the admin server binds loopback, so no rule
+  is added anymore) and "Satellite Pairing" (TCP 9878) rules if an older
+  install left them behind.
 - Delete the program files, Start Menu and Desktop shortcuts, and the
   HKCU "Run at login" registry entry.
 - Ask whether to also uninstall the ViGEmBus driver. The default is

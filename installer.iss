@@ -192,8 +192,11 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 ; Firewall rules apply to private + domain profiles. Public is excluded so
 ; the LAN-discovery beacon doesn't broadcast on untrusted Wi-Fi. The
 ; add-then-delete pattern keeps the rule list idempotent across upgrades.
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite HTTP"""; Flags: runhidden; StatusMsg: "Resetting firewall (HTTP)..."
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite HTTP"" dir=in action=allow protocol=TCP localport=9877 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (HTTP)..."
+
+; The admin web UI (TCP 9877) binds loopback only (webserver.cpp), so no
+; inbound rule is ADDED. The delete stays: upgrades must drop the allow rule
+; older installers created.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite HTTP"""; Flags: runhidden; StatusMsg: "Removing stale HTTP firewall rule..."
 
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Satellite UDP"""; Flags: runhidden; StatusMsg: "Resetting firewall (UDP)..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Satellite UDP"" dir=in action=allow protocol=UDP localport=9876 program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden; StatusMsg: "Configuring firewall (UDP)..."
