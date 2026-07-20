@@ -112,7 +112,36 @@ struct MacHidGamepadAdapter::Slot {
     uint8_t buf[DS4V2_INPUT_REPORT_BYTES] = {};
 };
 
-MacHidGamepadAdapter::MacHidGamepadAdapter() = default;
+// Everything a kernel set-report block may touch, shared so the block can
+// capture it weakly (see the header's locking protocol): a quarantined
+// device outlives the adapter, and its late blocks must no-op.
+struct MacHidGamepadAdapter::CallbackHub {
+    std::mutex mtx;
+    RumbleCallback rumbleCb;
+    LightbarCallback lightbarCb;
+
+    // Runs on a slot's dispatch queue (or a test thread). Parses the DS4
+    // output report and fans it out to the two sinks, honoring the report's
+    // valid flags so a colour-only write cannot zero the motors with stale
+    // bytes. Callbacks are snapshotted under mtx and invoked with the lock
+    // dropped.
+    void dispatchOutputReport(uint32_t serial, uint32_t reportId, const uint8_t* data, size_t len) {
+        const Ds4OutputReport out = ds4ParseOutputReport(reportId, data, len);
+        if (!out.valid) return;
+
+        RumbleCallback rcb;
+        LightbarCallback lcb;
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            rcb = rumbleCb;
+            lcb = lightbarCb;
+        }
+        if (out.rumbleValid && rcb) rcb(serial, ds4RumbleFromOutput(out));
+        if (out.lightbarValid && lcb) lcb(serial, out.r, out.g, out.b);
+    }
+};
+
+MacHidGamepadAdapter::MacHidGamepadAdapter() : hub_(std::make_shared<CallbackHub>()) {}
 
 MacHidGamepadAdapter::~MacHidGamepadAdapter() { closeBus(); }
 
@@ -217,15 +246,18 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
 
     // Output reports (rumble + lightbar) from whatever game adopted the pad.
     // Registered before activation per the IOHIDUserDevice contract. The block
-    // outlives this scope (copied by the API) but never outlives the adapter:
-    // teardown waits for the cancel handler before the Slot is freed, and the
-    // adapter's own destructor runs closeBus() first.
+    // (copied by the API) captures the hub weakly, never `this`: on the
+    // cancel-timeout quarantine path the device outlives the adapter, and a
+    // late invocation must degrade to a no-op.
+    std::weak_ptr<CallbackHub> weakHub = hub_;
     IOHIDUserDeviceRegisterSetReportBlock(dev, ^IOReturn(IOHIDReportType type, uint32_t reportID,
                                                          const uint8_t* report,
                                                          CFIndex reportLength) {
       if (type != kIOHIDReportTypeOutput || report == nullptr || reportLength <= 0)
           return kIOReturnUnsupported;
-      handleOutputReport(serial, reportID, report, static_cast<size_t>(reportLength));
+      std::shared_ptr<CallbackHub> hub = weakHub.lock();
+      if (hub == nullptr) return kIOReturnUnsupported;
+      hub->dispatchOutputReport(serial, reportID, report, static_cast<size_t>(reportLength));
       return kIOReturnSuccess;
     });
 
@@ -417,33 +449,18 @@ bool MacHidGamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport&
 }
 
 void MacHidGamepadAdapter::setRumbleCallback(RumbleCallback cb) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    rumbleCb_ = std::move(cb);
+    std::lock_guard<std::mutex> lk(hub_->mtx);
+    hub_->rumbleCb = std::move(cb);
 }
 
 void MacHidGamepadAdapter::setLightbarCallback(LightbarCallback cb) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    lightbarCb_ = std::move(cb);
+    std::lock_guard<std::mutex> lk(hub_->mtx);
+    hub_->lightbarCb = std::move(cb);
 }
 
-// Runs on a slot's dispatch queue (or a test thread). Parses the DS4 output
-// report and fans it out to the two sinks, honoring the report's valid flags
-// so a colour-only write cannot zero the motors with stale bytes. Callbacks
-// are snapshotted under mtx_ and invoked with the lock dropped.
 void MacHidGamepadAdapter::handleOutputReport(uint32_t serial, uint32_t reportId,
                                               const uint8_t* data, size_t len) {
-    const Ds4OutputReport out = ds4ParseOutputReport(reportId, data, len);
-    if (!out.valid) return;
-
-    RumbleCallback rcb;
-    LightbarCallback lcb;
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        rcb = rumbleCb_;
-        lcb = lightbarCb_;
-    }
-    if (out.rumbleValid && rcb) rcb(serial, ds4RumbleFromOutput(out));
-    if (out.lightbarValid && lcb) lcb(serial, out.r, out.g, out.b);
+    hub_->dispatchOutputReport(serial, reportId, data, len);
 }
 
 #ifdef SATELLITE_BUILD_TESTS
@@ -451,6 +468,8 @@ void MacHidGamepadAdapter::injectOutputReportForTest(uint32_t serial, const uint
                                                      size_t len) {
     handleOutputReport(serial, DS4V2_OUTPUT_REPORT_ID, data, len);
 }
+
+std::weak_ptr<void> MacHidGamepadAdapter::callbackHubForTest() const { return hub_; }
 #endif
 
 #else // !SATELLITE_HAS_IOHIDUSERDEVICE
@@ -461,6 +480,7 @@ void MacHidGamepadAdapter::injectOutputReportForTest(uint32_t serial, const uint
 // attach via the backendUnavailable apply result.
 
 struct MacHidGamepadAdapter::Slot {};
+struct MacHidGamepadAdapter::CallbackHub {};
 
 MacHidGamepadAdapter::MacHidGamepadAdapter() = default;
 MacHidGamepadAdapter::~MacHidGamepadAdapter() = default;
@@ -488,6 +508,7 @@ void MacHidGamepadAdapter::handleOutputReport(uint32_t, uint32_t, const uint8_t*
 
 #ifdef SATELLITE_BUILD_TESTS
 void MacHidGamepadAdapter::injectOutputReportForTest(uint32_t, const uint8_t*, size_t) {}
+std::weak_ptr<void> MacHidGamepadAdapter::callbackHubForTest() const { return {}; }
 #endif
 
 #endif // SATELLITE_HAS_IOHIDUSERDEVICE

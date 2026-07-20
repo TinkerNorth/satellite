@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -111,8 +112,12 @@ int main() {
     // Layer 1b: output-report fan-out through the production adapter. The
     // kernel only delivers set-reports on entitled hosts, so the test seam
     // injects the exact bytes a DS4-adopting game would write.
+    std::weak_ptr<void> hubToken;
     {
         MacHidGamepadAdapter adapter;
+        TEST("callback hub is live while the adapter exists");
+        hubToken = adapter.callbackHubForTest();
+        EXPECT(!hubToken.expired());
         std::atomic<bool> rumbleSeen{false};
         std::atomic<bool> lightbarSeen{false};
         std::atomic<uint16_t> strong{0};
@@ -158,6 +163,11 @@ int main() {
         EXPECT(!rumbleSeen.load(std::memory_order_acquire));
         EXPECT_EQ(rgb.load(std::memory_order_acquire), 0x090807u);
     }
+    // The kernel blocks hold this token weakly (never `this`), so a
+    // quarantined device's late set-report locks null and no-ops instead of
+    // dereferencing a destroyed adapter.
+    TEST("callback hub expires with the adapter (late kernel block no-ops)");
+    EXPECT(hubToken.expired());
 #endif
 
     if (!available) {

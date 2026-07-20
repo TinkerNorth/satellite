@@ -22,23 +22,28 @@
 // semantics in SessionService are untouched.
 //
 // Locking protocol (mirrors vigem_adapter.h / linux gamepad_adapter.h):
-//   - mtx_ guards busOpen_, the slot map, per-slot pack state, and both
-//     callback fields.
+//   - mtx_ guards busOpen_, the slot map, and per-slot pack state.
+//   - The rumble/lightbar callbacks live in a shared CallbackHub with its own
+//     mutex; kernel blocks capture the hub WEAKLY and never `this`. A
+//     cancel-timeout quarantine leaks the device (and its blocks) past
+//     adapter destruction, so a late set-report must find an expired hub and
+//     no-op instead of touching a destroyed adapter.
 //   - Submits run entirely under mtx_ (fold state, pack, HandleReport). A
 //     slot's IOHIDUserDeviceRef is therefore only ever used while it is still
 //     in the map, so teardown can never release a ref out from under an
 //     in-flight submit.
 //   - The set-report block (rumble/lightbar, on the slot's dispatch queue)
-//     takes mtx_ only to snapshot the callbacks, then invokes them with the
-//     lock DROPPED, so a callback can re-enter the adapter without deadlock.
+//     takes the hub mutex only to snapshot the callbacks, then invokes them
+//     with the lock DROPPED, so a callback can re-enter the adapter without
+//     deadlock.
 //   - Teardown removes the slot from the map under mtx_, then cancels the
 //     device and waits for its cancel handler OUTSIDE mtx_ (same "never join
 //     while holding the lock" doctrine as stopReader/stopNotificationWorker):
-//     an in-flight block contending for mtx_ can finish, and after the cancel
-//     handler fires no further block runs, making the CFRelease safe. An
-//     unconfirmed cancel (timeout) returns false from unplugDevice so
-//     SessionService quarantines the serial; the ref is deliberately leaked
-//     rather than freed under a possibly-live callback.
+//     an in-flight block contending for the hub mutex can finish, and after
+//     the cancel handler fires no further block runs, making the CFRelease
+//     safe. An unconfirmed cancel (timeout) returns false from unplugDevice
+//     so SessionService quarantines the serial; the ref is deliberately
+//     leaked rather than freed under a possibly-live callback.
 #pragma once
 
 #include "core/gamepad_backend.h"
@@ -120,10 +125,15 @@ class MacHidGamepadAdapter : public IGamepadPort {
     // 0x05), since firing the real kernel path needs an entitled host plus a
     // running game. Thread-safe; mirrors invokeLightbarForTest on Linux.
     void injectOutputReportForTest(uint32_t serial, const uint8_t* data, size_t len);
+
+    // The liveness token the kernel blocks capture weakly; tests pin that it
+    // expires with the adapter (a quarantined device's late block no-ops).
+    std::weak_ptr<void> callbackHubForTest() const;
 #endif
 
   private:
-    struct Slot; // IOKit members live in the .cpp; header stays IOKit-free
+    struct Slot;        // IOKit members live in the .cpp; header stays IOKit-free
+    struct CallbackHub; // rumble/lightbar sinks + their mutex; blocks hold it weakly
 
     bool plugCommon(uint32_t serial, bool isDS4);
     bool submitLocked(Slot& slot); // pack + HandleReport; caller holds mtx_
@@ -132,6 +142,5 @@ class MacHidGamepadAdapter : public IGamepadPort {
     mutable std::mutex mtx_;
     bool busOpen_ = false;
     std::unordered_map<uint32_t, std::unique_ptr<Slot>> slots_;
-    RumbleCallback rumbleCb_;
-    LightbarCallback lightbarCb_;
+    std::shared_ptr<CallbackHub> hub_;
 };
