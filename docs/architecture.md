@@ -344,9 +344,11 @@ touchpad, and motion with no per-game integration.
   button/stick mapping byte-for-byte), output-report parsing (rumble
   motors + lightbar RGB, gated by the report's valid flags), and the
   calibration / firmware / pairing feature blobs. The calibration blob
-  is chosen so consumers' scaling math is the identity: wire
-  `MotionReport` values pass through unscaled (the wire full-scale
-  convention equals the DS4's raw sensor scale). Tested by
+  uses the USB report-0x02 layout (gyro extremes interleaved per axis,
+  not the Bluetooth grouped order) and is chosen so consumers' scaling
+  math is the identity: wire `MotionReport` values pass through
+  unscaled (the wire full-scale convention equals the DS4's raw sensor
+  scale). Tested by
   `tests/test_macos_ds4_report.cpp` with no kernel or entitlement.
 - `src/platform/macos/mac_hid_gamepad_adapter.{h,cpp}` — the IOKit
   shell: device lifecycle (`IOHIDUserDeviceCreateWithProperties` →

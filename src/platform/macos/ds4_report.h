@@ -362,8 +362,10 @@ inline RumbleReport ds4RumbleFromOutput(const Ds4OutputReport& o) {
 // DS4 drivers (GameController.framework included) probe these on adoption.
 // All blobs carry the report id at [0] and are returned verbatim.
 
-// 0x02: IMU calibration, USB field order (bias trios, then plus/minus trios
-// grouped plus-first, then gyro speed pair, then accel plus/minus pairs).
+// 0x02: IMU calibration, USB report layout: bias trios, then the gyro
+// extremes INTERLEAVED per axis (grouped plus-first is the Bluetooth report
+// 0x05 layout — hid-sony/SDL/DS4Windows all branch on transport, and this
+// device advertises USB), then gyro speed pair, then accel plus/minus pairs.
 // Values are chosen so the standard calibration math (hid-sony lineage) is the
 // IDENTITY on our raw values:
 //   gyro:  speed_2x = 540+540; denom = plus-minus = 17694 = 1080*32767/2000,
@@ -373,8 +375,9 @@ inline RumbleReport ds4RumbleFromOutput(const Ds4OutputReport& o) {
 inline const uint8_t DS4V2_FEATURE_CALIBRATION[DS4V2_FEATURE_CALIBRATION_BYTES] = {
     0x02,                               // report id
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // gyro pitch/yaw/roll bias = 0
-    0x8F, 0x22, 0x8F, 0x22, 0x8F, 0x22, // gyro pitch/yaw/roll plus  = +8847
-    0x71, 0xDD, 0x71, 0xDD, 0x71, 0xDD, // gyro pitch/yaw/roll minus = -8847
+    0x8F, 0x22, 0x71, 0xDD,             // gyro pitch plus/minus = +8847/-8847
+    0x8F, 0x22, 0x71, 0xDD,             // gyro yaw   plus/minus
+    0x8F, 0x22, 0x71, 0xDD,             // gyro roll  plus/minus
     0x1C, 0x02, 0x1C, 0x02,             // gyro speed plus/minus = 540 each
     0x00, 0x20, 0x00, 0xE0,             // accel X plus/minus = +8192/-8192
     0x00, 0x20, 0x00, 0xE0,             // accel Y plus/minus

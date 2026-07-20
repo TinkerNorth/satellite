@@ -376,6 +376,12 @@ static void test_feature_reports() {
     // gyro plus = +8847 LE, gyro speed = 540 LE, accel plus = +8192 LE.
     EXPECT_EQ(buf[7], (uint8_t)0x8F);
     EXPECT_EQ(buf[8], (uint8_t)0x22);
+    // USB interleave: pitch MINUS at [9], roll PLUS at [15]. These are the
+    // bytes that differ from the Bluetooth grouped order.
+    EXPECT_EQ(buf[9], (uint8_t)0x71);
+    EXPECT_EQ(buf[10], (uint8_t)0xDD);
+    EXPECT_EQ(buf[15], (uint8_t)0x8F);
+    EXPECT_EQ(buf[16], (uint8_t)0x22);
     EXPECT_EQ(buf[19], (uint8_t)0x1C);
     EXPECT_EQ(buf[20], (uint8_t)0x02);
     EXPECT_EQ(buf[23], (uint8_t)0x00);
@@ -394,6 +400,33 @@ static void test_feature_reports() {
     char serialStr[18];
     ds4SerialString(0x0C, serialStr);
     EXPECT_EQ(std::string(serialStr), std::string("02:53:41:54:00:0c"));
+}
+
+// The parse every USB hid-sony-lineage consumer applies to feature report
+// 0x02 (Linux hid-playstation dualshock4_get_calibration_data non-BT branch,
+// SDL SDL_hidapi_ps4 LoadCalibrationData USB branch, DS4Windows fromUSB):
+// gyro extremes per axis at [7..18], denominator = plus - minus.
+static void test_calibration_usb_consumer_parse() {
+    TEST("calibration: USB per-axis parse yields non-zero symmetric gyro denominators");
+    uint8_t buf[64];
+    EXPECT_EQ(ds4FeatureReport(0x02, 3, buf), (size_t)37);
+    auto le16 = [&buf](int off) {
+        return static_cast<int16_t>(static_cast<uint16_t>(buf[off]) |
+                                    (static_cast<uint16_t>(buf[off + 1]) << 8));
+    };
+    const int pitchDenom = le16(7) - le16(9);
+    const int yawDenom = le16(11) - le16(13);
+    const int rollDenom = le16(15) - le16(17);
+    // Zero here means division-by-zero/NaN or hid-sony's broken-clone
+    // rejection in real consumers.
+    EXPECT(pitchDenom != 0);
+    EXPECT(yawDenom != 0);
+    EXPECT(rollDenom != 0);
+    // A real DS4's gyro speed/range is symmetric across axes.
+    EXPECT_EQ(pitchDenom, yawDenom);
+    EXPECT_EQ(rollDenom, yawDenom);
+    // Identity constant from the blob comment: denom = 1080*32767/2000.
+    EXPECT_EQ(yawDenom, 17694);
 }
 
 static void test_probe_status_seam() {
@@ -432,6 +465,7 @@ int main() {
     test_output_parse_rejects();
     test_rumble_scaling();
     test_feature_reports();
+    test_calibration_usb_consumer_parse();
     test_probe_status_seam();
 
     std::cout << "\n=== Test Results ===\n";
