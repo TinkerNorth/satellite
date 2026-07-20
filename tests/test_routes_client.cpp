@@ -546,6 +546,23 @@ int main() {
         }
     }
     {
+        TEST("path B: poll after operator deny reads none (deny erases the request)");
+        auto res = cli.Post("/api/pair",
+                            R"({"deviceId":"dev-b-deny","deviceName":"B2","clientPin":"4185"})",
+                            "application/json");
+        EXPECT(res && res->status == 200);
+        EXPECT(declinePairing("dev-b-deny"));
+        auto poll = cli.Get("/api/pair/status?deviceId=dev-b-deny");
+        EXPECT(poll && poll->status == 200);
+        if (poll) {
+            Json j = parseJson(poll->body);
+            EXPECT_EQ(jsonBool(j, "ok"), false);
+            // Never "denied": PairRequestState::Denied is assigned nowhere.
+            EXPECT_EQ(jsonStr(j, "status"), std::string("none"));
+        }
+        EXPECT_EQ(storedKeyHex("dev-b-deny"), std::string(""));
+    }
+    {
         TEST("pair status without deviceId: 400");
         auto res = cli.Get("/api/pair/status");
         EXPECT(res && res->status == 400);

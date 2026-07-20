@@ -95,7 +95,9 @@ pairing key is then derived on both ends instead of being transported:
 ### Read: `GET /api/pair/status?deviceId=...`
 
 Path-B poll. Responses: `{"ok":true,"status":"approved","sharedKey":"<64-hex>"}` exactly
-once (the staged key is single-use), else `{"ok":false,"status":"pending"|"denied"|"none"}`.
+once (the staged key is single-use), else `{"ok":false,"status":"pending"|"none"}`.
+There is no `denied` status: an operator deny erases the pending request, so a denied
+client polls straight to `none` and must treat it as terminal for that attempt.
 
 ### Update (key rotation / re-pair): `POST /api/pair` with `hmacProof`
 
