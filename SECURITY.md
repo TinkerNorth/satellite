@@ -51,8 +51,13 @@ In scope:
 
 - All four repos in this directory.
 - Release artifacts attached to GitHub Releases for any of the four repos.
-- The wire protocol (`token(4) | counter(4) | ChaCha20-Poly1305`).
-- The pairing flow + HTTP/SSE web UI exposed by `satellite`.
+- The wire protocol (protocol 1; the single source of truth is
+  [`docs/contract.md`](docs/contract.md)): the HTTPS `:9443` control plane
+  (TOFU-pinned self-signed TLS, HMAC proof-of-key headers, declarative
+  session PUT) and the UDP `:9876` data plane (ChaCha20-Poly1305-IETF under
+  per-session HKDF keys, per-direction counters, replay guard).
+- The pairing flow (PIN paths A/B on `:9443`) + the loopback-only admin
+  HTTP/SSE web UI exposed by `satellite`.
 
 Out of scope:
 
@@ -70,7 +75,7 @@ Out of scope:
 
 | Repo | Supported | Notes |
 |---|---|---|
-| `satellite` | latest minor on `main`; previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS ships as a stub (no virtual gamepad) |
+| `satellite` | latest minor on `main`; previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS virtual pads require the virtual-HID entitlement (unentitled builds fall back to an inert backend) |
 | `dish-android` | latest minor on `main`; previous minor for 90 days | minSdk 24 |
 | `dish-linux` | latest minor on `main`; previous minor for 90 days | tracks the oldest LTS the release CI builds against |
 | `dish-mac` | latest minor on `main`; previous minor for 90 days | macOS 13+ |
@@ -100,9 +105,10 @@ different trust models:
     and non-loopback. Same-origin dashboard requests carry a loopback (or
     absent) `Origin` and pass untouched.
 
-- **Client API**: HTTPS (self-signed), bound to `0.0.0.0` and therefore
-  LAN-reachable. Connection routes require a paired `deviceId`; pairing
-  itself is PIN-gated.
+- **Client API**: HTTPS (self-signed; clients TOFU-pin the certificate),
+  bound to `0.0.0.0` and therefore LAN-reachable. Authenticated routes
+  require a paired `deviceId` plus a per-request HMAC proof of the pairing
+  key (`X-Device-Id` / `X-Hmac-Proof` headers); pairing itself is PIN-gated.
 
 ### PIN pairing
 
@@ -284,9 +290,14 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
   more than 90 days old. This is best-effort, not exhaustive; file an
   advisory if you spot a vendored component that's missing from
   `VENDORED.md`.
-- **macOS satellite is a stub.** No signed DriverKit equivalent of
-  ViGEmBus exists, so the macOS server build runs the protocol stack
-  but applies every controller descriptor as `backendUnavailable`. The
-  artifact name (`satellite-macos-stub-...`) reflects this. Don't open
-  a vulnerability report for the absence of virtual-gamepad creation
-  on macOS; it's a documented platform gap.
+- **macOS virtual pads are entitlement-gated.** The macOS backend
+  synthesizes virtual DualShock 4 controllers via `IOHIDUserDevice`,
+  which requires the `com.apple.developer.hid.virtual.device`
+  entitlement. Production (signed) builds carry it; CI artifacts and
+  local unentitled builds detect the missing entitlement at runtime
+  and fall back to the historical inert backend: the protocol stack
+  runs, but every controller descriptor applies as
+  `backendUnavailable`. The CI artifact name
+  (`satellite-macos-stub-...`) reflects that fallback. Don't open a
+  vulnerability report for the absence of virtual-gamepad creation in
+  an unentitled build; it's the documented, probe-enforced fallback.

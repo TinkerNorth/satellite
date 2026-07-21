@@ -93,6 +93,20 @@ function backendCopy(backendId) {
       },
     };
   }
+  if (backendId === 'machid') {
+    return {
+      title: t('backend.machid.title'),
+      pipelineLabel: t('backend.machid.pipeline-label'),
+      flowLabel: t('backend.machid.flow-label'),
+      statusActive: t('backend.machid.status.active'),
+      statusIdle: t('backend.machid.status.idle'),
+      statusUnknown: t('backend.machid.status.unknown'),
+      // No remediation table: an unentitled satellite reports the `none`
+      // backend (panel hidden) instead of machid-with-errorCode, so machid
+      // never surfaces in the unavailable panel.
+      errors: {},
+    };
+  }
   if (backendId === 'uinput') {
     return {
       title: t('backend.uinput.title'),

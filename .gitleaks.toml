@@ -24,7 +24,8 @@ paths = [
     '''lib/libsodium/.*''',
     '''lib/httplib\.h''',
     # Config/platform unit tests build PairedDevice fixtures with fake
-    # sharedKeyHex values (no real key material).
+    # sharedKeyHex values and dummy keystore plaintexts (no real key
+    # material).
     '''tests/test_config_json\.cpp''',
     '''tests/test_linux_platform\.cpp''',
     '''tests/test_windows_platform\.cpp''',
@@ -35,6 +36,10 @@ regexes = [
     # discovery/pairing/HTTP/streaming port numbers and the static AAD
     # token width are not secrets.
     '''9876|9877|9878|9879''',
+    # The macOS platform suite's keystore round-trip fixture (an obviously
+    # synthetic plaintext, tests/test_macos_platform.cpp) — scoped to the
+    # exact literal so any real key material in that file still flags.
+    '''0123456789abcdef0123456789abcdef''',
 ]
 
 # Suppress entries by commit SHA when a finding has been reviewed and

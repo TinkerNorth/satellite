@@ -23,7 +23,7 @@ inline const char* SATELLITE_VERSION = SATELLITE_VERSION_STRING;
 
 inline const int DEFAULT_UDP_PORT = 9876;
 inline const int DEFAULT_WEB_PORT = 9877;
-inline const int DEFAULT_PAIR_PORT = 9878;
+// 9878 was the protocol-0 plaintext pairing listener; deleted, never reuse.
 inline const int DEFAULT_DISC_PORT = 9879;
 // Sender-facing API (pairing + connections), HTTPS on 0.0.0.0: the only TCP
 // port a LAN sender connects to. The admin UI on DEFAULT_WEB_PORT is 127.0.0.1.
@@ -540,7 +540,6 @@ inline const int UPDATE_DEFAULT_CHECK_INTERVAL_HOURS = 24;
 struct Config {
     int udpPort = DEFAULT_UDP_PORT;
     int webPort = DEFAULT_WEB_PORT;
-    int pairPort = DEFAULT_PAIR_PORT;
     int discPort = DEFAULT_DISC_PORT;
     // Legacy UDP broadcast beacon, fallback for senders predating the mDNS
     // responder. Slated for removal in 2027. Absent in pre-1.6 configs = on.

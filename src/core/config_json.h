@@ -12,7 +12,6 @@ inline std::string serializeConfig(const Config& cfg) {
     JsonOut j;
     j["udpPort"] = cfg.udpPort;
     j["webPort"] = cfg.webPort;
-    j["pairPort"] = cfg.pairPort;
     j["discPort"] = cfg.discPort;
     j["discoveryBroadcastEnabled"] = cfg.discoveryBroadcastEnabled;
     j["autoStart"] = cfg.autoStart;
@@ -46,9 +45,11 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     if (!jsonParse(text, j) || !j.is_object()) return;
 
     long n = 0;
+    // A legacy "pairPort" key (protocol-0 remnant, dropped in protocol 1) may
+    // still be present in configs written by old builds; the jsonTry* accessors
+    // simply never look for it, so such files keep loading.
     if (jsonTryInt(j, "udpPort", n) && n > 0) cfg.udpPort = static_cast<int>(n);
     if (jsonTryInt(j, "webPort", n) && n > 0) cfg.webPort = static_cast<int>(n);
-    if (jsonTryInt(j, "pairPort", n) && n > 0) cfg.pairPort = static_cast<int>(n);
     if (jsonTryInt(j, "discPort", n) && n > 0) cfg.discPort = static_cast<int>(n);
 
     bool b = false;

@@ -64,10 +64,40 @@ Path B, client PIN (client-shown, operator approves on the satellite):
 
 The client then polls until the operator acts.
 
+### Optional extension: X25519 pair-key agreement (Path A)
+
+A Path-A request MAY additionally carry the client's X25519 public key; the
+pairing key is then derived on both ends instead of being transported:
+
+```json
+{ "deviceId": "...", "deviceName": "...", "pin": "1234", "publicKey": "<64-hex>", "protocolVersion": 1 }
+→ 200 { "ok": true, "message": "paired successfully", "serverPublicKey": "<64-hex>", "protocolVersion": 1 }
+```
+
+- Keypairs are libsodium `crypto_kx` (X25519). The server computes
+  `crypto_kx_server_session_keys(rx, tx, serverPk, serverSk, clientPk)` and
+  persists `rx` as the 32-byte `pairingKey`; the client computes
+  `crypto_kx_client_session_keys(rx, tx, clientPk, clientSk, serverPk)` from
+  the response's `serverPublicKey` and uses `tx` (client `tx` equals server
+  `rx` by construction).
+- On success the response carries `serverPublicKey` INSTEAD of `sharedKey`:
+  the long-lived trust root itself never transits the wire.
+- An unusable `publicKey` (malformed hex, wrong length, low-order point) fails
+  the pair with `{"ok":false,"error":"invalid public key"}` without consuming
+  the operator PIN; it is never silently downgraded to a server-minted key.
+- Scope: honored on the operator-PIN path only. Path-B approval
+  (`GET /api/pair/status`) and proof-based rotation always return `sharedKey`
+  (a `publicKey` field is ignored there).
+- Baseline unchanged: this extension is OPTIONAL and additive. Every shipping
+  client pairs via the server-minted `sharedKey` over TLS (above), and the
+  server serves exactly that whenever no `publicKey` is present.
+
 ### Read: `GET /api/pair/status?deviceId=...`
 
 Path-B poll. Responses: `{"ok":true,"status":"approved","sharedKey":"<64-hex>"}` exactly
-once (the staged key is single-use), else `{"ok":false,"status":"pending"|"denied"|"none"}`.
+once (the staged key is single-use), else `{"ok":false,"status":"pending"|"none"}`.
+There is no `denied` status: an operator deny erases the pending request, so a denied
+client polls straight to `none` and must treat it as terminal for that attempt.
 
 ### Update (key rotation / re-pair): `POST /api/pair` with `hmacProof`
 

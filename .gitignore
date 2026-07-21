@@ -58,3 +58,38 @@ Desktop.ini
 # Vendored libraries (tracked; do NOT ignore lib/)
 # lib/httplib.h is intentionally committed
 
+
+# macOS pure/smoke test binaries (CMake RUNTIME_OUTPUT_DIRECTORY)
+/test_macos_ds4_report
+/test_mac_hid_smoke
+/test_macos_platform
+
+# Fuzz harness binary + libFuzzer findings (SATELLITE_FUZZ=ON)
+/fuzz_receiver_dispatch
+/crash-*
+/oom-*
+/timeout-*
+
+# Remaining test binaries (CMake RUNTIME_OUTPUT_DIRECTORY = source root;
+# Windows builds emit .exe, already covered above)
+/test_catalog
+/test_codecs
+/test_config_json
+/test_discovery
+/test_firewall_status
+/test_github_release
+/test_ipv4_util
+/test_json
+/test_machine_id
+/test_mdns_rejoin
+/test_network_info
+/test_origin_guard
+/test_pairing
+/test_pin_rotation
+/test_routes_admin
+/test_routes_client
+/test_semver
+/test_session_crypto
+/test_status_json
+/test_uinput_smoke
+/test_update_service

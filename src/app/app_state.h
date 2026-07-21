@@ -49,7 +49,6 @@ extern std::atomic<uint64_t> g_replayDrop;
 // global) and null until that thread constructs it.
 extern httplib::Server g_httpServer;
 extern httplib::Server* g_clientServer;
-extern SOCKET g_pairSock;
 extern std::string g_webDir;
 
 // Owned by main.cpp per platform; null where the updater isn't wired.

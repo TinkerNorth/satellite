@@ -173,7 +173,7 @@ static void test_buildJson_empty() {
     NetworkInfo info;
     EXPECT_EQ(buildNetworkInfoJson(info),
               std::string("{\"lanIp\":\"\",\"device\":\"\",\"category\":\"\",\"selected\":\"\","
-                          "\"allowPublic\":false,\"ports\":{\"udp\":0,\"web\":0,\"pair\":0,"
+                          "\"allowPublic\":false,\"ports\":{\"udp\":0,\"web\":0,"
                           "\"discovery\":0,\"client\":0,\"mdns\":0},\"firewall\":{\"supported\":"
                           "false,\"state\":\"\"},\"interfaces\":[]}"));
 }
@@ -188,14 +188,13 @@ static void test_buildJson_topLevel() {
     info.allowPublic = true;
     info.udpPort = 9876;
     info.webPort = 9877;
-    info.pairPort = 9878;
     info.discPort = 9879;
     info.clientPort = 9443;
     info.mdnsPort = 5353;
     EXPECT_EQ(buildNetworkInfoJson(info),
               std::string("{\"lanIp\":\"10.0.0.5\",\"device\":\"Ethernet 2\",\"category\":"
                           "\"private\",\"selected\":\"Ethernet 2\",\"allowPublic\":true,\"ports\":{"
-                          "\"udp\":9876,\"web\":9877,\"pair\":9878,\"discovery\":9879,\"client\":"
+                          "\"udp\":9876,\"web\":9877,\"discovery\":9879,\"client\":"
                           "9443,\"mdns\":5353},\"firewall\":{\"supported\":false,\"state\":\"\"},"
                           "\"interfaces\":[]}"));
 }

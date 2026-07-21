@@ -14,7 +14,6 @@ static void test_full_round_trip() {
     Config in;
     in.udpPort = 11111;
     in.webPort = 22222;
-    in.pairPort = 33333;
     in.discPort = 44444;
     in.discoveryBroadcastEnabled = false;
     in.autoStart = true;
@@ -50,7 +49,6 @@ static void test_full_round_trip() {
 
     EXPECT_EQ(out.udpPort, in.udpPort);
     EXPECT_EQ(out.webPort, in.webPort);
-    EXPECT_EQ(out.pairPort, in.pairPort);
     EXPECT_EQ(out.discPort, in.discPort);
     EXPECT_EQ(out.discoveryBroadcastEnabled, in.discoveryBroadcastEnabled);
     EXPECT_EQ(out.autoStart, in.autoStart);
@@ -153,6 +151,41 @@ static void test_shared_key_on_disk_name() {
     }
 }
 
+// Configs written by pre-protocol-1 builds persisted a "pairPort" key (the
+// deleted plaintext pairing listener). The tolerant jsonTry* accessors never
+// look for it, so a legacy file must load with every other field intact and
+// the unknown key silently ignored — an upgrade must never eat user config.
+static void test_legacy_pair_port_key_ignored() {
+    TEST("legacy config containing the removed pairPort key still loads");
+    Config cfg;
+    parseConfigInto(R"({
+        "udpPort": 9876,
+        "webPort": 9877,
+        "pairPort": 9878,
+        "discPort": 9879,
+        "autoStart": true,
+        "networkInterface": "eth0",
+        "pairedDevices": [
+            {"id": "dev-legacy", "name": "Old Phone", "lastIP": "192.168.1.7",
+             "pairedAt": "2025-03-01", "sharedKey": "aa55aa55"}
+        ]
+    })",
+                    cfg);
+    EXPECT_EQ(cfg.udpPort, 9876);
+    EXPECT_EQ(cfg.webPort, 9877);
+    EXPECT_EQ(cfg.discPort, 9879);
+    EXPECT_EQ(cfg.autoStart, true);
+    EXPECT_EQ(cfg.networkInterface, std::string("eth0"));
+    EXPECT_EQ(cfg.pairedDevices.size(), (size_t)1);
+    if (!cfg.pairedDevices.empty()) {
+        EXPECT_EQ(cfg.pairedDevices[0].id, std::string("dev-legacy"));
+        EXPECT_EQ(cfg.pairedDevices[0].sharedKeyHex, std::string("aa55aa55"));
+    }
+
+    TEST("re-serializing a migrated legacy config drops the pairPort key");
+    EXPECT(serializeConfig(cfg).find("pairPort") == std::string::npos);
+}
+
 static void test_last_check_epoch_64bit() {
     TEST("lastCheckEpoch round-trips a value larger than 2^31 (not truncated)");
     Config in;
@@ -173,6 +206,7 @@ int main() {
     test_present_overrides_absent_keeps_default();
     test_paired_device_missing_id_skipped();
     test_shared_key_on_disk_name();
+    test_legacy_pair_port_key_ignored();
     test_last_check_epoch_64bit();
 
     std::cout << "config_json: " << g_pass << " passed, " << g_fail << " failed\n";

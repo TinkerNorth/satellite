@@ -49,8 +49,26 @@ static std::string xmlEscape(const std::string& s) {
 
 static std::string launchAgentPath() {
     std::string dir = homeDir() + "/Library/LaunchAgents";
+    // Create each level like appSupportDir() does: ~/Library always exists on
+    // a real profile, but a redirected $HOME (tests) starts empty.
+    mkdir((homeDir() + "/Library").c_str(), 0755);
     mkdir(dir.c_str(), 0755);
     return dir + "/com.tinkernorth.satellite.plist";
+}
+
+// Registers/unregisters the LaunchAgent with the user's launchd. Elided from
+// test builds: the platform suite redirects HOME into a tmpdir to exercise the
+// plist contract hermetically, and `launchctl load -w` would still mutate the
+// REAL launchd override database (keyed by label, not by path).
+static void launchctlSetLoaded(bool load, const std::string& plist) {
+#ifdef SATELLITE_BUILD_TESTS
+    (void)load;
+    (void)plist;
+#else
+    std::string cmd = std::string("/bin/launchctl ") + (load ? "load" : "unload") + " -w " + plist +
+                      " >/dev/null 2>&1";
+    (void)system(cmd.c_str());
+#endif
 }
 
 void setAutoStart(bool enable) {
@@ -74,11 +92,9 @@ void setAutoStart(bool enable) {
           << "</dict>\n"
           << "</plist>\n";
         f.close();
-        std::string cmd = "/bin/launchctl load -w " + plist + " >/dev/null 2>&1";
-        (void)system(cmd.c_str());
+        launchctlSetLoaded(true, plist);
     } else {
-        std::string cmd = "/bin/launchctl unload -w " + plist + " >/dev/null 2>&1";
-        (void)system(cmd.c_str());
+        launchctlSetLoaded(false, plist);
         unlink(plist.c_str());
     }
 }

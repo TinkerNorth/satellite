@@ -481,24 +481,38 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         outError = "mkstemps failed";
         return false;
     }
-    auto append = [&](const std::string& line) { ::write(fd, line.c_str(), line.size()); };
-    append("#!/bin/bash\n");
-    append("set -e\n");
-    append("PID=" + std::to_string(pid) + "\n");
-    append("SRC=\"" + localPath + "\"\n");
-    append("DST=\"" + currentPath + "\"\n");
-    append("for i in $(seq 1 60); do\n");
-    append("  if ! kill -0 \"$PID\" 2>/dev/null; then break; fi\n");
-    append("  sleep 0.5\n");
-    append("done\n");
+    std::string script;
+    script += "#!/bin/bash\n";
+    script += "set -e\n";
+    script += "PID=" + std::to_string(pid) + "\n";
+    script += "SRC=\"" + localPath + "\"\n";
+    script += "DST=\"" + currentPath + "\"\n";
+    script += "for i in $(seq 1 60); do\n";
+    script += "  if ! kill -0 \"$PID\" 2>/dev/null; then break; fi\n";
+    script += "  sleep 0.5\n";
+    script += "done\n";
     // Same-fs mv is atomic. Keep a .old copy so the user can roll back if the
     // new binary crashes on startup.
-    append("if [ -f \"$DST\" ]; then mv -f \"$DST\" \"$DST.old\" || true; fi\n");
-    append("mv -f \"$SRC\" \"$DST\"\n");
-    append("chmod +x \"$DST\"\n");
+    script += "if [ -f \"$DST\" ]; then mv -f \"$DST\" \"$DST.old\" || true; fi\n";
+    script += "mv -f \"$SRC\" \"$DST\"\n";
+    script += "chmod +x \"$DST\"\n";
     // setsid so the relaunched AppImage survives our exit.
-    append("setsid \"$DST\" >/dev/null 2>&1 &\n");
-    append("rm -f -- \"$0\"\n");
+    script += "setsid \"$DST\" >/dev/null 2>&1 &\n";
+    script += "rm -f -- \"$0\"\n";
+
+    // A truncated script would still get executed — abort rather than risk it.
+    size_t off = 0;
+    while (off < script.size()) {
+        ssize_t n = ::write(fd, script.data() + off, script.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            outError = std::string("helper script write failed: ") + std::strerror(errno);
+            ::close(fd);
+            ::unlink(helperPath);
+            return false;
+        }
+        off += static_cast<size_t>(n);
+    }
     ::fchmod(fd, 0700);
     ::close(fd);
 

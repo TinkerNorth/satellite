@@ -4,7 +4,7 @@
 #include "config.h"
 #include "crypto.h"
 #include "tray.h"
-#include "gamepad_adapter.h"
+#include "mac_hid_gamepad_adapter.h"
 #include "updater_adapter.h"
 
 #include "net/receiver.h"
@@ -43,10 +43,16 @@ int main(int argc, const char* argv[]) {
     (void)argv;
 
     @autoreleasepool {
-        // macOS lacks a signed DriverKit equivalent of ViGEmBus, so this build
-        // runs the protocol stack but cannot synthesize virtual gamepads.
-        fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
-                        "(controller descriptors will apply as backendUnavailable).\n");
+        // Virtual gamepads need the com.apple.developer.hid.virtual.device
+        // entitlement (production builds). Unentitled processes run the full
+        // protocol stack with the historical inert-backend behavior.
+        if (MacHidGamepadAdapter::runtimeAvailable()) {
+            fprintf(stderr, "[satellite] macOS virtual-DualShock-4 backend available "
+                            "(IOHIDUserDevice).\n");
+        } else {
+            fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
+                            "(controller descriptors will apply as backendUnavailable).\n");
+        }
 
         if (!netInit()) {
             fprintf(stderr, "Failed to initialize network subsystem\n");
@@ -61,7 +67,7 @@ int main(int argc, const char* argv[]) {
         g_config = loadConfig();
         g_config.autoStart = getAutoStart();
 
-        GamepadAdapter gamepadAdapter;
+        MacHidGamepadAdapter gamepadAdapter;
         ClientAdapter clientAdapter;
         LogAdapter logAdapter;
         SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey);

@@ -44,7 +44,7 @@ The return path carries rumble the other direction. When a game on the receiver 
 ### Receiver machine
 - **Windows 10/11** with the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) installed. The `SatelliteSetup.exe` installer bundles ViGEmBus 1.22.0 and installs it for you if it's missing (see [Installation](#installation)). Or:
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup). Or:
-- **macOS** for development and web-UI testing only. Controller injection is unavailable, so controller descriptors apply as `backendUnavailable`.
+- **macOS 10.15+** with a build carrying the `com.apple.developer.hid.virtual.device` entitlement (production builds): controllers are synthesized as virtual DualShock 4 pads via `IOHIDUserDevice`. Unentitled builds (CI artifacts, local compiles) run as development/web-UI servers only; controller descriptors apply as `backendUnavailable`.
 
 ### Client (sender) device
 - **dish-android**: an Android phone running the Dish app (Bluetooth/USB controllers, touch overlay, motion). Other Dish clients implement the same contract ([`docs/contract.md`](docs/contract.md)).
@@ -90,8 +90,10 @@ the uninstaller from the Start Menu. The uninstaller will:
 
 - Stop `satellite.exe` if it's running.
 - Remove the Windows Firewall rules the installer added (UDP input 9876,
-  pairing 9878, discovery 9879, mDNS 5353, HTTPS client API 9443, and the
-  admin HTTP rule on 9877).
+  discovery 9879, mDNS 5353, HTTPS client API 9443) — plus the stale
+  "Satellite HTTP" (TCP 9877; the admin server binds loopback, so no rule
+  is added anymore) and "Satellite Pairing" (TCP 9878) rules if an older
+  install left them behind.
 - Delete the program files, Start Menu and Desktop shortcuts, and the
   HKCU "Run at login" registry entry.
 - Ask whether to also uninstall the ViGEmBus driver. The default is
@@ -121,12 +123,16 @@ build-satellite.bat
 
 ### macOS
 
-Virtual-gamepad injection is not available on macOS, since there is no signed
-DriverKit equivalent of ViGEmBus. The macOS build produces a server that
-still pairs, authenticates, serves the web UI, and reports status to clients,
-but applies every controller descriptor as `backendUnavailable`. It is useful
-for development, protocol testing, and running the web dashboard from a Mac.
-It is not a drop-in receiver for game input.
+macOS receivers synthesize virtual DualShock 4 controllers through
+`IOHIDUserDevice` (macOS 10.15+). Creating the kernel HID device requires the
+`com.apple.developer.hid.virtual.device` entitlement, which production
+(signed) builds carry. A locally-compiled or CI build is unentitled: the
+runtime probe detects that and the server falls back to the historical inert
+backend — it still pairs, authenticates, serves the web UI, and reports
+status to clients, but applies every controller descriptor as
+`backendUnavailable`. Unentitled builds are useful for development, protocol
+testing, and running the web dashboard from a Mac; they are not receivers for
+game input. See `docs/architecture.md` → "macOS backend" for the design.
 
 Prerequisites:
 
@@ -410,14 +416,21 @@ The `version-consistency` CI gate fails if the two diverge.
 
 ## Architecture
 
-The receiver runs four main threads:
+The receiver runs six long-lived threads on every platform:
 
 | Thread       | Role                                                        |
 |--------------|-------------------------------------------------------------|
-| **Main**     | Win32 message loop, system tray icon                        |
-| **Receiver** | UDP socket → ViGEmBus `DeviceIoControl` (the hot path); spawns the reaper |
+| **Main**     | Platform UI loop (tray icon, native pairing prompts); a headless signal wait on Linux without a tray |
+| **Receiver** | UDP input socket → decrypt → gamepad-backend submit (the hot path); spawns the session reaper |
 | **Client API** | HTTPS 9443 ([cpp-httplib](https://github.com/yhirose/cpp-httplib)): pairing, sessions, catalog |
 | **Admin HTTP** | Loopback 9877: web UI, admin API, SSE                     |
+| **Discovery beacon** | Legacy UDP broadcast on 9879 for senders that predate the mDNS responder (toggleable; slated for removal in 2027) |
+| **mDNS responder** | Advertises `_satellite._udp.local.` on 5353           |
+
+Platforms add small helpers on top: a netlink interface watcher on Linux, an
+address-change watcher and the tray tooltip ticker on Windows. The updater
+and the per-device rumble listeners (see below) run on their own worker
+threads.
 
 ## Why UDP?
 
@@ -436,7 +449,7 @@ the matching physical controller (or, on dish-android, the phone itself).
 |---|---|---|
 | Windows | ViGEmBus | `IOCTL_XUSB_REQUEST_NOTIFICATION` (X360) / `IOCTL_DS4_REQUEST_NOTIFICATION` (DS4), long-running async I/O. One worker thread per plugged virtual device blocks on the IOCTL until the driver completes it with the new motor/lightbar values. |
 | Linux | uinput | `EV_FF` events on the device fd. Game uploads an `FF_RUMBLE` effect via `UI_FF_UPLOAD`, kernel hands us the descriptor, then sends an `EV_FF` event when the game presses play/stop. One reader thread per plugged device. |
-| macOS | (none) | No virtual gamepad backend, so no rumble events to forward. The macOS `IGamepadPort` accepts the callback registration so the SessionService composes uniformly, but it's never invoked. |
+| macOS | IOHIDUserDevice | The game writes DS4 output report `0x05`; the kernel delivers it to the device's set-report block on a per-device dispatch queue. The adapter parses motors + lightbar RGB (valid-flag gated) and fans out to the rumble and lightbar callbacks. Entitled builds only: an unentitled build has no virtual pads, so no rumble events exist to forward. |
 
 ### Wire format
 
@@ -522,9 +535,12 @@ back-to-back colours, and, for a `CAP_LIGHTBAR` dish, calls
 regardless of the capability, so the web dashboard's per-controller lightbar
 swatch stays live for every controller type.
 
-The Linux uinput and (inert) macOS backends have no host-driven lightbar
-channel, so they never emit `MSG_LIGHTBAR`. Lightbar emission is a
-Windows / ViGEm-DS4 feature today.
+On macOS, the same DS4 output report `0x05` that carries the motors also
+carries the lightbar colour; the IOHIDUserDevice set-report path fans it out
+to the lightbar callback when the report's colour-valid flag is set (entitled
+builds only). The Linux uinput backend has no host-driven lightbar channel
+(EV_LED is single-bit), so it never emits `MSG_LIGHTBAR`. Lightbar emission
+is a Windows / ViGEm-DS4 and macOS / IOHID-DS4 feature today.
 
 ### Per-dish actuator behaviour
 
@@ -627,9 +643,13 @@ ctest --test-dir build --output-on-failure
 │   ├── net/                    # Shared transport layer (all platforms)
 │   │   ├── receiver.cpp        # UDP recv/decrypt hot loop
 │   │   ├── inner_dispatch.cpp  # Inner-message parser + length guards
-│   │   ├── webserver.cpp       # HTTPS client API + loopback admin UI + SSE
+│   │   ├── webserver.cpp       # Server shells: HTTPS client API + loopback admin
+│   │   ├── routes_client.cpp   # Sender-facing routes: pairing, sessions, catalog
+│   │   ├── routes_admin.cpp    # Admin web UI routes + SSE
+│   │   ├── routes_common.cpp   # Helpers shared by both route tables
 │   │   ├── session_crypto.*    # HKDF session keys, hmacProof, packet AEAD
 │   │   ├── pairing*.{h,cpp}    # PIN pairing + Path-B request registry
+│   │   ├── pin_rotation.cpp    # Rotating pair PIN + shared crypto helpers
 │   │   └── discovery / mdns_*  # mDNS responder + legacy beacon
 │   ├── adapters/               # Portable adapters
 │   │   ├── client_adapter.*    # IClientPort: encrypted UDP downstream
@@ -637,7 +657,8 @@ ctest --test-dir build --output-on-failure
 │   └── platform/
 │       ├── windows/            # main, tray, config, ViGEm adapter (vigem*.{h,cpp})
 │       ├── linux/              # main, tray, config, uinput adapter
-│       └── macos/              # main, tray, config, inert gamepad stub
+│       ├── macos/              # main, tray, config, IOHIDUserDevice DS4 adapter
+│       └── posix/              # config/crypto shared by the linux + macos builds
 ├── tests/                      # Self-contained suites (no framework), one per area
 ├── docs/
 │   ├── contract.md             # THE client ↔ server protocol contract

@@ -20,6 +20,7 @@ jobs:
   ci:
     name: Build, test, lint, format
     runs-on: windows-latest
+    timeout-minutes: 45
 
     # Default to git-bash so the find / xargs / test pipelines match the
     # Linux and macOS workflows verbatim. Build / test steps explicitly

@@ -81,6 +81,13 @@
   "backend.uinput.err.permission-denied.step3": "Sich selbst zur Gruppe input hinzufügen",
   "backend.uinput.err.permission-denied.step4": "Ab- und wieder anmelden, damit die Gruppenänderung wirksam wird, dann diese Seite aktualisieren",
 
+  "backend.machid.title": "IOHIDUserDevice-Backend",
+  "backend.machid.pipeline-label": "IOHID Submit",
+  "backend.machid.flow-label": "IOHIDUserDevice",
+  "backend.machid.status.active": "Aktiv (Controller verbunden)",
+  "backend.machid.status.idle": "Bereit (inaktiv, keine Controller)",
+  "backend.machid.status.unknown": "Virtuelles HID verfügbar",
+
   "pin.section.title": "Geräte-Kopplung",
   "pin.current": "Aktuelle PIN",
   "pin.previous": "Vorherige PIN",
@@ -318,7 +325,6 @@
   "netinfo.hint": "Ports und Adressen, die dieser PC im LAN verwendet. Nur der UDP-Eingangsport ist konfigurierbar; die übrigen werden zur Information angezeigt.",
   "netinfo.port.udp": "UDP-Eingangsport",
   "netinfo.port.web": "Admin-UI-Port",
-  "netinfo.port.pair": "Kopplungsport",
   "netinfo.port.client": "Client-API-Port (HTTPS)",
   "netinfo.port.discovery": "Erkennungs-Beacon-Port",
   "netinfo.port.mdns": "mDNS-/DNS-Port",
