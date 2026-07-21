@@ -81,6 +81,13 @@
   "backend.uinput.err.permission-denied.step3": "Add yourself to the input group",
   "backend.uinput.err.permission-denied.step4": "Log out and back in for the group change to apply, then refresh this page",
 
+  "backend.machid.title": "IOHIDUserDevice Backend",
+  "backend.machid.pipeline-label": "IOHID Submit",
+  "backend.machid.flow-label": "IOHIDUserDevice",
+  "backend.machid.status.active": "Active (controllers plugged in)",
+  "backend.machid.status.idle": "Ready (idle, no controllers)",
+  "backend.machid.status.unknown": "Virtual HID available",
+
   "pin.section.title": "Device Pairing",
   "pin.current": "Current PIN",
   "pin.previous": "Previous PIN",
@@ -318,7 +325,6 @@
   "netinfo.hint": "Ports and addresses this PC uses on the LAN. Only the UDP input port is configurable; the rest are shown for reference.",
   "netinfo.port.udp": "UDP Input Port",
   "netinfo.port.web": "Admin UI Port",
-  "netinfo.port.pair": "Pairing Port",
   "netinfo.port.client": "Client API Port (HTTPS)",
   "netinfo.port.discovery": "Discovery Beacon Port",
   "netinfo.port.mdns": "mDNS / DNS Port",

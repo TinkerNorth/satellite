@@ -57,12 +57,16 @@ set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
     src/net/inner_dispatch.cpp
     src/net/webserver.cpp
+    src/net/routes_common.cpp
+    src/net/routes_admin.cpp
+    src/net/routes_client.cpp
     src/net/tls.cpp
     src/net/machine_id.cpp
     src/net/pairing.cpp
     src/net/pairing_keys.cpp
     src/net/pairing_service.cpp
     src/net/session_crypto.cpp
+    src/net/pin_rotation.cpp
     src/net/discovery.cpp
     src/net/mdns_protocol.cpp
     src/net/mdns_responder.cpp
@@ -99,11 +103,21 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/config.cpp
     src/platform/posix/config_posix.cpp
     src/core/config_io.cpp
-    src/platform/macos/crypto.cpp
+    src/platform/posix/crypto_posix.cpp
     src/platform/macos/tray.mm
     src/platform/macos/gamepad_backend.cpp
+    src/platform/macos/mac_hid_gamepad_adapter.cpp
     src/platform/macos/updater_adapter.mm
 )
+
+# IOKit/HID APIs the adapter uses are deprecation-prone across SDKs; the app
+# target suppresses target-wide, so every test target compiling this TU needs
+# the same or the warnings-as-errors macOS lane breaks. Source-scoped: it
+# applies wherever the TU is compiled without loosening whole targets.
+if(APPLE)
+    set_source_files_properties(src/platform/macos/mac_hid_gamepad_adapter.cpp
+        PROPERTIES COMPILE_OPTIONS -Wno-deprecated-declarations)
+endif()
 
 # Linux-only infrastructure.
 set(SATELLITE_LINUX_SOURCES
@@ -112,7 +126,7 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/config.cpp
     src/platform/posix/config_posix.cpp
     src/core/config_io.cpp
-    src/platform/linux/crypto.cpp
+    src/platform/posix/crypto_posix.cpp
     src/platform/linux/gamepad_backend.cpp
     src/platform/linux/gamepad_adapter.cpp
     src/platform/linux/tray.cpp
@@ -343,6 +357,9 @@ elseif(APPLE)
     target_link_libraries(satellite PRIVATE
         "-framework AppKit"
         "-framework Foundation"
+        # Virtual-DS4 backend: IOHIDUserDevice + CF property dictionaries.
+        "-framework IOKit"
+        "-framework CoreFoundation"
     )
 
     target_compile_options(satellite PRIVATE -O2 -Wall -Wextra -Wno-deprecated-declarations)
@@ -588,6 +605,10 @@ if(TARGET satellite)
     check_ipo_supported(RESULT SATELLITE_IPO_OK OUTPUT SATELLITE_IPO_MSG LANGUAGES CXX)
     if(SATELLITE_IPO_OK)
         set_target_properties(satellite PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            # Bare -flto (CMake's IPO default) links serially; -flto=auto parallelizes LTRANS.
+            target_link_options(satellite PRIVATE $<$<CONFIG:Release>:-flto=auto>)
+        endif()
         message(STATUS "satellite: LTO/IPO enabled for Release builds.")
     else()
         message(STATUS "satellite: LTO/IPO unavailable: ${SATELLITE_IPO_MSG}")
@@ -695,6 +716,35 @@ function(satellite_add_pure_test name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+# Links libsodium into a test target, replicating whichever resolution the
+# platform uses for the satellite binary: the vendored prebuilt archive on
+# MinGW, vcpkg's config package on MSVC, pkg-config (with the find_path /
+# find_library fallback) on Linux/macOS. The POSIX branches reuse the
+# SODIUM_* variables the satellite block above already resolved.
+function(satellite_link_sodium name)
+    if(MINGW)
+        target_include_directories(${name} SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
+        target_link_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib)
+        target_link_libraries(${name} PRIVATE sodium)
+    elseif(MSVC)
+        find_package(unofficial-sodium CONFIG REQUIRED)
+        target_link_libraries(${name} PRIVATE unofficial-sodium::sodium)
+    elseif(SODIUM_FOUND)
+        target_include_directories(${name} SYSTEM PRIVATE ${SODIUM_INCLUDE_DIRS})
+        target_link_directories(${name} PRIVATE ${SODIUM_LIBRARY_DIRS})
+        target_link_libraries(${name} PRIVATE ${SODIUM_LIBRARIES})
+    elseif(SODIUM_INCLUDE_DIR AND SODIUM_LIBRARY)
+        target_include_directories(${name} SYSTEM PRIVATE ${SODIUM_INCLUDE_DIR})
+        target_link_libraries(${name} PRIVATE ${SODIUM_LIBRARY})
+    else()
+        message(FATAL_ERROR
+            "libsodium not resolved for ${name}; install libsodium (dev headers) "
+            "or set -DSODIUM_ROOT=<prefix>.")
+    endif()
+endfunction()
+
 satellite_add_pure_test(test_ipv4_util tests/test_ipv4_util.cpp)
 satellite_add_pure_test(test_semver tests/test_semver.cpp)
 satellite_add_pure_test(test_mdns_rejoin tests/test_mdns_rejoin.cpp)
@@ -709,6 +759,127 @@ satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
+
+# Portable session-crypto interop suite (net/session_crypto.cpp): the pinned
+# RFC 5869 HKDF vector, the HMAC-proof vector, and the AEAD direction/counter/
+# AAD bindings run on EVERY lane (Linux, MinGW, MSVC, macOS), so a cross-end
+# crypto drift fails all CIs, not just Windows. Gated on the three platforms
+# that have a libsodium recipe; an unsupported host still configures the
+# sodium-free tests above.
+if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    satellite_add_pure_test(test_session_crypto
+        tests/test_session_crypto.cpp
+        src/net/session_crypto.cpp
+    )
+    satellite_link_sodium(test_session_crypto)
+
+    # Portable PIN-rotation + shared-crypto-helper suite (net/pin_rotation.cpp,
+    # the D11 hoist): runs on every lane so no platform can drift its own copy
+    # again. SATELLITE_BUILD_TESTS gates the backdatePinClockForTest seam.
+    satellite_add_pure_test(test_pin_rotation
+        tests/test_pin_rotation.cpp
+        src/net/pin_rotation.cpp
+    )
+    target_compile_definitions(test_pin_rotation PRIVATE SATELLITE_BUILD_TESTS)
+    satellite_link_sodium(test_pin_rotation)
+endif()
+
+# macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,
+# input packing, output parsing, feature blobs, and the probe-status seam.
+# Pure/IOKit-free, but APPLE-gated: it exercises macOS platform headers.
+if(APPLE)
+    satellite_add_pure_test(test_macos_ds4_report tests/test_macos_ds4_report.cpp)
+endif()
+
+# In-process route tests (D10 payoff): registerAdminRoutes/registerClientRoutes
+# put the PRODUCTION route tables on a loopback httplib::Server and the suites
+# drive them with httplib::Client — auth machine codes, the 409 version gate,
+# both pairing paths, session CRUD, the admin guard, and SSE presence. They
+# link the real net/pairing/session layers against the per-OS platform
+# adapters (config/crypto/globals/backend); only the gamepad bus is a stub
+# inside the test. Gated to the lanes whose platform sources are desktop-free
+# (the Windows list would drag tray/toast/COM surface into a test binary).
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SATELLITE_ROUTE_TEST_COMMON_SOURCES
+        src/net/routes_common.cpp
+        src/net/pairing.cpp
+        src/net/pairing_keys.cpp
+        src/net/pairing_service.cpp
+        src/net/session_crypto.cpp
+        src/net/pin_rotation.cpp
+        src/net/local_iface.cpp
+        src/core/config_io.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    if(APPLE)
+        set(SATELLITE_ROUTE_TEST_PLATFORM_SOURCES
+            src/platform/macos/config.cpp
+            src/platform/posix/config_posix.cpp
+            src/platform/macos/globals.cpp
+            src/platform/posix/crypto_posix.cpp
+            src/platform/macos/gamepad_backend.cpp
+            src/platform/macos/mac_hid_gamepad_adapter.cpp
+        )
+        set(SATELLITE_ROUTE_TEST_PLATFORM_DIR
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos)
+    else()
+        set(SATELLITE_ROUTE_TEST_PLATFORM_SOURCES
+            src/platform/linux/config.cpp
+            src/platform/posix/config_posix.cpp
+            src/platform/linux/globals.cpp
+            src/platform/posix/crypto_posix.cpp
+            src/platform/linux/gamepad_backend.cpp
+            src/platform/linux/gamepad_adapter.cpp
+        )
+        set(SATELLITE_ROUTE_TEST_PLATFORM_DIR
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux)
+    endif()
+
+    function(satellite_add_route_test name routes_src test_src)
+        add_executable(${name}
+            ${test_src}
+            ${routes_src}
+            ${SATELLITE_ROUTE_TEST_COMMON_SOURCES}
+            ${SATELLITE_ROUTE_TEST_PLATFORM_SOURCES}
+        )
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${SATELLITE_ROUTE_TEST_PLATFORM_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
+        )
+        target_include_directories(${name} SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        )
+        # No CPPHTTPLIB_OPENSSL_SUPPORT: the tests exercise the route table on
+        # a plain loopback server (TLS wrapping stays webserver.cpp's job).
+        # SATELLITE_BUILD_TESTS keeps setAutoStart hermetic (launchctl /
+        # desktop registration elided, same seam as the platform suites).
+        target_compile_definitions(${name} PRIVATE
+            CPPHTTPLIB_NO_EXCEPTIONS
+            SATELLITE_BUILD_TESTS
+        )
+        target_compile_options(${name} PRIVATE -O2 -Wall -Wextra)
+        satellite_link_sodium(${name})
+        find_package(Threads REQUIRED)
+        target_link_libraries(${name} PRIVATE Threads::Threads)
+        if(APPLE)
+            # probeBackend -> MacHidGamepadAdapter (IOHIDUserDevice probe).
+            target_link_libraries(${name} PRIVATE
+                "-framework IOKit"
+                "-framework CoreFoundation"
+            )
+        endif()
+        set_target_properties(${name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
+    satellite_add_route_test(test_routes_client
+        src/net/routes_client.cpp tests/test_routes_client.cpp)
+    satellite_add_route_test(test_routes_admin
+        src/net/routes_admin.cpp tests/test_routes_admin.cpp)
+endif()
 
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
 # at the real web/lang catalogs so every controller-type string is asserted
@@ -796,6 +967,77 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(uinput_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
+# Exercises the macOS-only adapters that don't need an entitled process or a
+# desktop session: config persistence under ~/Library/Application Support,
+# LaunchAgent autostart plist handling, the keyfile-backed dpapi* keystore,
+# path utilities, and PIN rotation semantics. HOME is redirected into a
+# per-test tmpdir by the harness, and launchctl registration is compiled out
+# under SATELLITE_BUILD_TESTS, so the suite never touches real user state.
+if(APPLE)
+    add_executable(test_macos_platform
+        tests/test_macos_platform.cpp
+        src/platform/macos/config.cpp
+        src/platform/posix/config_posix.cpp
+        src/core/config_io.cpp
+        src/platform/macos/globals.cpp
+        src/platform/posix/crypto_posix.cpp
+        src/net/pin_rotation.cpp
+    )
+    target_include_directories(test_macos_platform PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
+    )
+    target_include_directories(test_macos_platform SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+    # SATELLITE_BUILD_TESTS gates the backdatePinClockForTest seam and elides
+    # launchctl registration (see the linux platform suite for the pattern).
+    target_compile_definitions(test_macos_platform PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+    )
+    target_compile_options(test_macos_platform PRIVATE -O2 -Wall -Wextra)
+    satellite_link_sodium(test_macos_platform)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_macos_platform PRIVATE Threads::Threads)
+    set_target_properties(test_macos_platform PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME macos_platform COMMAND test_macos_platform)
+endif()
+
+# Real-kernel IOHIDUserDevice smoke test: drives the production macOS adapter.
+# The probe-fallback contract and the rumble/lightbar callback fan-out run on
+# ANY Mac; actual kernel-device creation additionally needs the
+# com.apple.developer.hid.virtual.device entitlement, so an unentitled process
+# (CI runners, dev machines) exits 77 after the fallback assertions — wired to
+# SKIP_RETURN_CODE so ctest reports "skipped", never a silent pass (mirrors
+# the uinput smoke above).
+if(APPLE)
+    add_executable(test_mac_hid_smoke
+        tests/test_mac_hid_smoke.cpp
+        src/platform/macos/mac_hid_gamepad_adapter.cpp
+        src/platform/macos/gamepad_backend.cpp
+    )
+    target_include_directories(test_mac_hid_smoke PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos
+    )
+    # Gates the injectOutputReportForTest seam, like the linux platform suite.
+    target_compile_definitions(test_mac_hid_smoke PRIVATE SATELLITE_BUILD_TESTS)
+    target_compile_options(test_mac_hid_smoke PRIVATE -O2 -Wall -Wextra)
+    target_link_libraries(test_mac_hid_smoke PRIVATE
+        "-framework IOKit"
+        "-framework CoreFoundation"
+    )
+    set_target_properties(test_mac_hid_smoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME mac_hid_smoke COMMAND test_mac_hid_smoke)
+    set_tests_properties(mac_hid_smoke PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 # Exercises the Windows-only adapters that don't need a desktop session,
 # ViGEm bus driver, or paired client: JSON helpers, config persistence,
 # HKCU\...\Run autostart, and path utilities. Both APPDATA config and
@@ -808,7 +1050,7 @@ if(WIN32)
         src/core/config_io.cpp
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
-        src/net/session_crypto.cpp
+        src/net/pin_rotation.cpp
         src/net/pairing_keys.cpp
         ${SATELLITE_CORE_SOURCES}
     )
@@ -888,4 +1130,70 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME vigem_adapter COMMAND test_vigem_adapter)
+endif()
+
+# Robustness fuzzing (opt-in, D-series fuzz harness): drives the receiver's
+# decrypt -> inner_dispatch pipeline (net/session_crypto + net/inner_dispatch
+# + core SessionService) with attacker-controlled datagram bytes, asserting
+# "malformed datagrams never crash or read out of bounds". Clang-only. When
+# the toolchain ships the libFuzzer runtime the target is a real fuzzer
+# (ASan+UBSan+fuzzer); where it doesn't (e.g. Apple Command Line Tools) it
+# degrades to a corpus-replay + deterministic-sweep driver under the same
+# sanitizers, so the harness still executes everywhere. The linux lane runs
+# the libFuzzer build bounded (see .github/workflows/linux-ci.yml).
+option(SATELLITE_FUZZ
+    "Build the decrypt->dispatch fuzz harness (clang; libFuzzer when available)" OFF)
+if(SATELLITE_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "SATELLITE_FUZZ requires clang (libFuzzer/sanitizer flags); "
+            "configure with CC=clang CXX=clang++.")
+    endif()
+
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
+    check_cxx_source_compiles(
+        "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long) { return 0; }"
+        SATELLITE_HAVE_LIBFUZZER)
+    unset(CMAKE_REQUIRED_FLAGS)
+
+    add_executable(fuzz_receiver_dispatch
+        tests/fuzz/fuzz_receiver_dispatch.cpp
+        src/net/inner_dispatch.cpp
+        src/net/session_crypto.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    target_include_directories(fuzz_receiver_dispatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    satellite_link_sodium(fuzz_receiver_dispatch)
+    if(SATELLITE_HAVE_LIBFUZZER)
+        target_compile_options(fuzz_receiver_dispatch PRIVATE
+            -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_receiver_dispatch PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    else()
+        message(STATUS "satellite: libFuzzer runtime unavailable; building the "
+                       "standalone corpus-replay fuzz driver (ASan/UBSan).")
+        target_compile_definitions(fuzz_receiver_dispatch PRIVATE
+            SATELLITE_FUZZ_STANDALONE)
+        target_compile_options(fuzz_receiver_dispatch PRIVATE
+            -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined)
+        target_link_options(fuzz_receiver_dispatch PRIVATE
+            -fsanitize=address,undefined)
+    endif()
+    set_target_properties(fuzz_receiver_dispatch PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    # Corpus regression rides ctest whenever the harness is configured:
+    # libFuzzer's -runs=0 executes each seed exactly once; the standalone
+    # driver replays the corpus and then its deterministic sweep.
+    if(SATELLITE_HAVE_LIBFUZZER)
+        add_test(NAME fuzz_receiver_dispatch_corpus COMMAND fuzz_receiver_dispatch
+            -runs=0 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/corpus)
+    else()
+        add_test(NAME fuzz_receiver_dispatch_corpus COMMAND fuzz_receiver_dispatch
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/corpus)
+    endif()
 endif()

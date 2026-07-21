@@ -656,9 +656,14 @@ void GamepadAdapter::stopReader(uint32_t serial) {
     dev.wakePipeRead = -1;
     std::thread th = std::move(dev.readerThread);
     if (wakeWrite >= 0) {
-        // One byte wakes the reader's poll, which then exits.
+        // EAGAIN: a wake byte is already queued, so the reader will still exit.
         const char b = 0;
-        (void)::write(wakeWrite, &b, 1);
+        ssize_t n;
+        do { n = ::write(wakeWrite, &b, 1); } while (n < 0 && errno == EINTR);
+        if (n < 0 && errno != EAGAIN) {
+            std::fprintf(stderr, "satellite: reader wake-pipe write failed for serial=%u: %s\n",
+                         serial, std::strerror(errno));
+        }
     }
     mtx_.unlock();
     if (th.joinable()) th.join();
