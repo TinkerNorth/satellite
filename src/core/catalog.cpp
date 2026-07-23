@@ -190,6 +190,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     j["locale"] = locale;
     j["protocolVersion"] = 1;
     j["serverVersion"] = serverVersion;
+    j["catalogVersion"] = kCatalogVersion;
     // Only the types this backend can materialize: a backend that can't host a
     // native identity omits it rather than advertise an unbuildable pad.
     JsonOut types = JsonOut::array();

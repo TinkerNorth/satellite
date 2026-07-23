@@ -101,6 +101,7 @@ static void test_catalogJson_structure() {
     EXPECT(json.find("\"locale\":\"en\"") != std::string::npos);
     EXPECT(json.find("\"serverVersion\":\"1.6.0\"") != std::string::npos);
     EXPECT(json.find("\"protocolVersion\":1") != std::string::npos);
+    EXPECT(json.find("\"catalogVersion\":2") != std::string::npos);
 
     // Catalog ids ARE the wire enum values (0 = xbox360, 1 = ds4).
     std::vector<long> ids;
@@ -309,7 +310,7 @@ static void test_catalogJson_goldenShape_uinput() {
     // whole body is deterministic and the full structure (order, ids, slugs, features,
     // emulates, hostFeatures) is pinned without coupling to localized copy.
     const std::string golden =
-        R"({"locale":"en","protocolVersion":1,"serverVersion":"1.6.0","controllerTypes":[)"
+        R"({"locale":"en","protocolVersion":1,"serverVersion":"1.6.0","catalogVersion":2,"controllerTypes":[)"
         R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
         R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]}},"emulates":{"sdlType":"ps4","usb":["054c:05c4"]}},)"
         R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
@@ -317,6 +318,22 @@ static void test_catalogJson_goldenShape_uinput() {
         R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";
     const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
     EXPECT_EQ(json, golden);
+}
+
+static void test_catalogVersion_present() {
+    TEST("buildCatalogJson: catalogVersion (schema version) is emitted for any backend");
+    const std::string enJson = readFileAll(langPath("en"));
+    CatalogBackendTraits full;
+    full.offersXbox = true;
+    full.offersDS4 = true;
+    full.offersDualSense = true;
+    full.offersSwitchPro = true;
+    EXPECT(buildCatalogJson("en", enJson, enJson, "1.6.0", full).find("\"catalogVersion\":2") !=
+           std::string::npos);
+    // Present even when the backend offers nothing: it versions the schema, not the offering.
+    CatalogBackendTraits inert;
+    EXPECT(buildCatalogJson("en", enJson, enJson, "1.6.0", inert).find("\"catalogVersion\":2") !=
+           std::string::npos);
 }
 
 // CI completeness gate: every controller-TYPE string present in all supported
@@ -377,6 +394,7 @@ int main() {
     test_emulatesNotLocalized();
     test_emulatesOnlyOnOfferedTypes();
     test_catalogJson_goldenShape_uinput();
+    test_catalogVersion_present();
     test_localeCompletenessGate();
     test_localizedCatalogsRenderLocalizedNames();
 

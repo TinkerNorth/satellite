@@ -11,6 +11,13 @@
 
 namespace satellite {
 
+// Catalog schema version, bumped when the /api/catalog payload shape evolves in a
+// way clients may branch on (distinct from protocolVersion / serverVersion). v2
+// offers up to four types per backend + per-type `emulates` hints; a response
+// WITHOUT this field is the legacy v1 catalog (xbox360 + ds4, no emulates). Additive
+// within protocolVersion 1: a client reads an absent field as 1.
+inline constexpr int kCatalogVersion = 2;
+
 // Locale set kept in lockstep with dish-android; index 0 is the fallback.
 inline const std::vector<std::string>& catalogLocales() {
     static const std::vector<std::string> locales = {"en", "es", "fr", "de", "bs", "pt-BR"};

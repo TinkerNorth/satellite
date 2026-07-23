@@ -311,6 +311,7 @@ to present it (static, localized) → **capabilities** = what is true right now
   "locale": "en",
   "protocolVersion": 1,
   "serverVersion": "1.6.0",
+  "catalogVersion": 2,
   "controllerTypes": [
     {
       "id": 0,
@@ -353,6 +354,12 @@ to present it (static, localized) → **capabilities** = what is true right now
 }
 ```
 
+- `catalogVersion` is the catalog SCHEMA version (integer), distinct from `protocolVersion`
+  (the wire protocol) and `serverVersion` (the build). It increments when the payload shape
+  evolves in a way a client may branch on: v2 offers up to four types per backend and adds
+  per-type `emulates`; a response OMITTING the field is the legacy **v1** catalog (xbox360 +
+  ds4, no emulates) — a client reads absent as 1. Additive within protocolVersion 1; a client
+  MAY substitute its own known representation for a recognized legacy version.
 - `controllerTypes[].id` is the wire enum value used as descriptor `type` (0 xbox360,
   1 ds4, 2 dualsense, 3 switchpro). The client renders its "Emulate" picker from this
   list instead of hardcoding the enum.
