@@ -497,8 +497,9 @@ struct Controller {
     uint32_t serialNo = 0; // backend serial (1..16), 0 = not plugged
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX;
-    GamepadIdentity identity = GamepadIdentity::Xbox; // hot-path cache of controllerIdentity(controllerType)
-    uint16_t caps = 0;                                // CAP_* word from the descriptor
+    GamepadIdentity identity =
+        GamepadIdentity::Xbox; // hot-path cache of controllerIdentity(controllerType)
+    uint16_t caps = 0;         // CAP_* word from the descriptor
     // MOUSE routing is gated on the connection's mouseControlGranted.
     uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }

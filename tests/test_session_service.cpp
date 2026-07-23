@@ -101,8 +101,10 @@ struct MockViGem : IGamepadPort {
     bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
         // Split the tally by identity so existing Xbox-vs-DS4 plug-count asserts
         // still read; DualSense/SwitchPro plugs are asserted via identityFor.
-        if (identity == GamepadIdentity::DS4) pluginDS4Calls++;
-        else pluginCalls++;
+        if (identity == GamepadIdentity::DS4)
+            pluginDS4Calls++;
+        else
+            pluginCalls++;
         lastIdentity = identity;
         identityBySerial[serial] = identity;
         pluggedSerials.push_back(serial);
@@ -122,8 +124,10 @@ struct MockViGem : IGamepadPort {
     bool submitReport(uint32_t serial, const GamepadReport& r) override {
         // Route the tally by the serial's plugged identity so "XUSB vs DS4"
         // stays observable under the unified submit.
-        if (identityFor(serial) == GamepadIdentity::DS4) submitDS4Calls++;
-        else submitCalls++;
+        if (identityFor(serial) == GamepadIdentity::DS4)
+            submitDS4Calls++;
+        else
+            submitCalls++;
         lastSubmittedReport = r;
         return submitReturnVal;
     }
@@ -1820,7 +1824,8 @@ static void test_controllerTypeHelpers() {
     EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_XBOX)), std::string("Xbox"));
     EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_PLAYSTATION)),
               std::string("PlayStation"));
-    EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_DUALSENSE)), std::string("DualSense"));
+    EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_DUALSENSE)),
+              std::string("DualSense"));
     EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_SWITCHPRO)),
               std::string("Switch Pro"));
     EXPECT_EQ(std::string(controllerTypeLabel(255)), std::string("Xbox"));

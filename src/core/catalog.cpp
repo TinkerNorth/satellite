@@ -94,7 +94,7 @@ const std::vector<std::string>& catalogStringKeys() {
         "catalog.type.xbox360.description",   "catalog.type.ds4.name",
         "catalog.type.ds4.shortName",         "catalog.type.ds4.description",
         "catalog.type.dualsense.name",        "catalog.type.dualsense.shortName",
-        "catalog.type.dualsense.description",  "catalog.type.switchpro.name",
+        "catalog.type.dualsense.description", "catalog.type.switchpro.name",
         "catalog.type.switchpro.shortName",   "catalog.type.switchpro.description",
     };
     return keys;

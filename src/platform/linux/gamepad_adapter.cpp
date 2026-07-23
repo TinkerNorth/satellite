@@ -41,8 +41,8 @@ constexpr int BUTTONS[] = {BTN_A,      BTN_B,     BTN_X,    BTN_Y,      BTN_TL, 
 // Switch Pro: 14 CONTIGUOUS evdev codes 0x130-0x13d so SDL's built-in Nintendo
 // mapping (which keys on js index = ascending-code position) lines up exactly.
 // Order + the submit remap were derived empirically from SDL's gamecontrollerdb.
-constexpr int SWITCH_BUTTONS[] = {BTN_A,   BTN_B,      BTN_C,     BTN_X,     BTN_Y,
-                                  BTN_Z,   BTN_TL,     BTN_TR,    BTN_TL2,   BTN_TR2,
+constexpr int SWITCH_BUTTONS[] = {BTN_A,      BTN_B,     BTN_C,    BTN_X,     BTN_Y,
+                                  BTN_Z,      BTN_TL,    BTN_TR,   BTN_TL2,   BTN_TR2,
                                   BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL};
 constexpr int SWITCH_TRIGGER_ON = 30; // ZL/ZR are digital; press past the XInput threshold.
 
@@ -373,9 +373,7 @@ bool GamepadAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
                          serial);
         }
     }
-    if (ds4Family) {
-        dev.touchFd = openTouchpadUinputDevice(serial);
-    }
+    if (ds4Family) { dev.touchFd = openTouchpadUinputDevice(serial); }
     startReader(serial, dev);
     return true;
 }
@@ -505,19 +503,19 @@ bool GamepadAdapter::submitSwitchLocked(int fd, const GamepadReport& report) {
     // Nintendo mapping (A/B + X/Y swapped; ZL/ZR digital from the triggers; capture
     // at js4 has no wire source).
     const uint16_t b = report.wButtons;
-    ok &= emit(fd, EV_KEY, BTN_A, (b & XUSB_B) ? 1 : 0);                            // js0  B
-    ok &= emit(fd, EV_KEY, BTN_B, (b & XUSB_A) ? 1 : 0);                            // js1  A
-    ok &= emit(fd, EV_KEY, BTN_C, (b & XUSB_X) ? 1 : 0);                            // js2  X
-    ok &= emit(fd, EV_KEY, BTN_X, (b & XUSB_Y) ? 1 : 0);                            // js3  Y
-    ok &= emit(fd, EV_KEY, BTN_Z, (b & XUSB_LB) ? 1 : 0);                           // js5  L
-    ok &= emit(fd, EV_KEY, BTN_TL, (b & XUSB_RB) ? 1 : 0);                          // js6  R
-    ok &= emit(fd, EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);    // js7  ZL
-    ok &= emit(fd, EV_KEY, BTN_TL2, report.bRightTrigger > SWITCH_TRIGGER_ON ? 1 : 0);  // js8  ZR
-    ok &= emit(fd, EV_KEY, BTN_TR2, (b & XUSB_BACK) ? 1 : 0);                       // js9  minus
-    ok &= emit(fd, EV_KEY, BTN_SELECT, (b & XUSB_START) ? 1 : 0);                   // js10 plus
-    ok &= emit(fd, EV_KEY, BTN_START, (b & XUSB_GUIDE) ? 1 : 0);                    // js11 home
-    ok &= emit(fd, EV_KEY, BTN_MODE, (b & XUSB_LS) ? 1 : 0);                        // js12 Lstick
-    ok &= emit(fd, EV_KEY, BTN_THUMBL, (b & XUSB_RS) ? 1 : 0);                      // js13 Rstick
+    ok &= emit(fd, EV_KEY, BTN_A, (b & XUSB_B) ? 1 : 0);                               // js0  B
+    ok &= emit(fd, EV_KEY, BTN_B, (b & XUSB_A) ? 1 : 0);                               // js1  A
+    ok &= emit(fd, EV_KEY, BTN_C, (b & XUSB_X) ? 1 : 0);                               // js2  X
+    ok &= emit(fd, EV_KEY, BTN_X, (b & XUSB_Y) ? 1 : 0);                               // js3  Y
+    ok &= emit(fd, EV_KEY, BTN_Z, (b & XUSB_LB) ? 1 : 0);                              // js5  L
+    ok &= emit(fd, EV_KEY, BTN_TL, (b & XUSB_RB) ? 1 : 0);                             // js6  R
+    ok &= emit(fd, EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);   // js7  ZL
+    ok &= emit(fd, EV_KEY, BTN_TL2, report.bRightTrigger > SWITCH_TRIGGER_ON ? 1 : 0); // js8  ZR
+    ok &= emit(fd, EV_KEY, BTN_TR2, (b & XUSB_BACK) ? 1 : 0);                          // js9  minus
+    ok &= emit(fd, EV_KEY, BTN_SELECT, (b & XUSB_START) ? 1 : 0);                      // js10 plus
+    ok &= emit(fd, EV_KEY, BTN_START, (b & XUSB_GUIDE) ? 1 : 0);                       // js11 home
+    ok &= emit(fd, EV_KEY, BTN_MODE, (b & XUSB_LS) ? 1 : 0);   // js12 Lstick
+    ok &= emit(fd, EV_KEY, BTN_THUMBL, (b & XUSB_RS) ? 1 : 0); // js13 Rstick
 
     ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
     return ok;
