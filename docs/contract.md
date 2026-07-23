@@ -325,7 +325,8 @@ to present it (static, localized) → **capabilities** = what is true right now
         "motion": { "supported": false },
         "lightbar": { "supported": false },
         "touchpad": { "supported": false }
-      }
+      },
+      "emulates": { "sdlType": "xbox360", "usb": ["045e:028e"] }
     },
     {
       "id": 1,
@@ -340,7 +341,8 @@ to present it (static, localized) → **capabilities** = what is true right now
         "motion": { "supported": true, "requires": "vigembus>=1.17" },
         "lightbar": { "supported": true },
         "touchpad": { "supported": true, "modes": ["ds4"] }
-      }
+      },
+      "emulates": { "sdlType": "ps4", "usb": ["054c:05c4"] }
     }
   ],
   "hostFeatures": {
@@ -360,6 +362,15 @@ to present it (static, localized) → **capabilities** = what is true right now
   DualSense pending its report codec). A type the server does not offer but a client
   requests anyway returns per-controller `invalidType`.
 - `requires` is a structured code (`"vigembus>=1.17"`), not prose.
+- `controllerTypes[].emulates` is an OPTIONAL physical-pad identity hint —
+  `{ "sdlType": …, "usb": [ "vid:pid", … ] }` — naming the physical controller this
+  virtual type is the natural default for (e.g. `ds4` ← a `ps4` pad / USB `054c:05c4`).
+  It lets a client later match a detected physical pad to a default emulation type with
+  NO protocol change: the mapping policy lives on the server, not in each client's
+  switch. `sdlType` mirrors the clients' `SDL_GameControllerType` vocabulary (`xbox360`,
+  `ps4`, `ps5`, `switchpro`); `usb` is lowercase `vendor:product`, an array so more
+  hardware revisions can be added later. Additive within protocolVersion 1; interim
+  clients IGNORE it and default to the first offered type. Rides only offered types.
 - A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
   the client reads the offered modes rather than inferring them from the type id. The
   DS4 `touchpad` advertises `["ds4"]` (its pad-render mode); the relative-mouse path is
@@ -382,7 +393,8 @@ to present it (static, localized) → **capabilities** = what is true right now
   server-owned emulation targets; new types must render on old apps from
   server-provided content.
 - NEVER localized (protocol constants): feature slugs (`rumble`, `motion`, …),
-  host-feature slugs, touchpad modes, `requires` codes, denial reasons, apply results.
+  host-feature slugs, touchpad modes, `requires` codes, `emulates` values (`sdlType` /
+  `usb`), denial reasons, apply results.
   A client can only offer what it has code for and carries its own translations.
 - Consequently: an unknown feature/hostFeature slug is NOT OFFERED (ignored
   gracefully, never an error); an unknown controller-TYPE id/slug DOES render, from

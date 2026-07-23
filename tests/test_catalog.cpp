@@ -134,6 +134,16 @@ static void test_catalogJson_structure() {
         EXPECT(types[3].find("\"analogTriggers\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[3].find("\"touchpad\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[3].find("\"motion\":{\"supported\":true}") != std::string::npos);
+        // emulates: physical-pad hint per offered type, protocol constants (ordered
+        // sdlType then usb). What a future client-side matcher keys a default off.
+        EXPECT(types[0].find("\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}") !=
+               std::string::npos);
+        EXPECT(types[1].find("\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\"]}") !=
+               std::string::npos);
+        EXPECT(types[2].find("\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0ce6\"]}") !=
+               std::string::npos);
+        EXPECT(types[3].find("\"emulates\":{\"sdlType\":\"switchpro\",\"usb\":[\"057e:2009\"]}") !=
+               std::string::npos);
     }
 
     // hostFeatures: pure capability data + machine-readable mode slugs.
@@ -159,6 +169,8 @@ static void test_catalogJson_inertBackend() {
     EXPECT_EQ(types.size(), size_t{0});
     EXPECT(json.find("\"controllerTypes\":[]") != std::string::npos);
     EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
+    // No offered types → no emulates hints anywhere (rides only offered types).
+    EXPECT(json.find("\"emulates\"") == std::string::npos);
 }
 
 static void test_hostBlock_liveBackend() {
@@ -244,6 +256,69 @@ static void test_imageSlugs_matchCatalogIds() {
     }
 }
 
+static void test_emulatesNotLocalized() {
+    TEST("buildCatalogJson: emulates hints are protocol constants, identical across locales");
+    CatalogBackendTraits traits;
+    traits.offersXbox = true;
+    traits.offersDS4 = true;
+    traits.offersDualSense = true;
+    traits.offersSwitchPro = true;
+    const std::string enJson = readFileAll(langPath("en"));
+    const std::string needles[] = {
+        "\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}",
+        "\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\"]}",
+        "\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0ce6\"]}",
+        "\"emulates\":{\"sdlType\":\"switchpro\",\"usb\":[\"057e:2009\"]}",
+    };
+    for (const auto& locale : catalogLocales()) {
+        const std::string langJson = readFileAll(langPath(locale));
+        const std::string json = buildCatalogJson(locale, langJson, enJson, "1.6.0", traits);
+        for (const auto& needle : needles) EXPECT(json.find(needle) != std::string::npos);
+    }
+}
+
+static void test_emulatesOnlyOnOfferedTypes() {
+    TEST("buildCatalogJson: emulates rides only offered types (ds4-only backend)");
+    CatalogBackendTraits traits; // machid/none-like: ds4 only
+    traits.offersDS4 = true;
+    traits.ds4TouchpadSupported = true;
+    const std::string enJson = readFileAll(langPath("en"));
+    const std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
+    EXPECT(json.find("\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\"]}") !=
+           std::string::npos);
+    EXPECT(json.find("\"sdlType\":\"xbox360\"") == std::string::npos);
+    EXPECT(json.find("\"sdlType\":\"ps5\"") == std::string::npos);
+    EXPECT(json.find("\"sdlType\":\"switchpro\"") == std::string::npos);
+}
+
+static void test_catalogJson_goldenShape_uinput() {
+    TEST("buildCatalogJson: uinput all-four golden shape (empty lang = deterministic body)");
+    // The real uinput trait set (routes_common.cpp): all four identities, ds4-like
+    // motion/touchpad/lightbar, host mouse + rumble, no motion requires code.
+    CatalogBackendTraits traits;
+    traits.ds4MotionSupported = true;
+    traits.ds4TouchpadSupported = true;
+    traits.ds4LightbarSupported = true;
+    traits.mouseControlSupported = true;
+    traits.rumbleSupported = true;
+    traits.offersXbox = true;
+    traits.offersDS4 = true;
+    traits.offersDualSense = true;
+    traits.offersSwitchPro = true;
+    // Empty lang → name/shortName/description resolve to their key markers, so the
+    // whole body is deterministic and the full structure (order, ids, slugs, features,
+    // emulates, hostFeatures) is pinned without coupling to localized copy.
+    const std::string golden =
+        R"({"locale":"en","protocolVersion":1,"serverVersion":"1.6.0","controllerTypes":[)"
+        R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
+        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]}},"emulates":{"sdlType":"ps4","usb":["054c:05c4"]}},)"
+        R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
+        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
+        R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";
+    const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
+    EXPECT_EQ(json, golden);
+}
+
 // CI completeness gate: every controller-TYPE string present in all supported
 // locales. Feature slugs/modes/requires codes are NOT in the lang files; they
 // are protocol constants and the structure test above pins them literal.
@@ -299,6 +374,9 @@ int main() {
     test_resolveLocale_malformedHeaders();
     test_catalogJson_escapesLocalizedStrings();
     test_imageSlugs_matchCatalogIds();
+    test_emulatesNotLocalized();
+    test_emulatesOnlyOnOfferedTypes();
+    test_catalogJson_goldenShape_uinput();
     test_localeCompletenessGate();
     test_localizedCatalogsRenderLocalizedNames();
 

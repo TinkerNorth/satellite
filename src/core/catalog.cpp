@@ -120,6 +120,30 @@ JsonOut featureJsonModes(bool supported, JsonOut modes) {
     return j;
 }
 
+// Physical-pad identity this virtual type is the natural default for. Carried
+// for a FUTURE client-side matcher: the physical->virtual mapping policy lives
+// here on the host, not in each client's switch. Current clients ignore it and
+// default to the first offered type. Protocol constants, never localized;
+// sdlType mirrors the clients' SDL_GameControllerType vocabulary, usb is
+// lowercase "vid:pid" (array admits more hardware revisions without a bump).
+JsonOut emulatesJson(const std::string& slug) {
+    JsonOut j;
+    if (slug == "xbox360") {
+        j["sdlType"] = "xbox360";
+        j["usb"] = JsonOut::array({"045e:028e"});
+    } else if (slug == "ds4") {
+        j["sdlType"] = "ps4";
+        j["usb"] = JsonOut::array({"054c:05c4"});
+    } else if (slug == "dualsense") {
+        j["sdlType"] = "ps5";
+        j["usb"] = JsonOut::array({"054c:0ce6"});
+    } else if (slug == "switchpro") {
+        j["sdlType"] = "switchpro";
+        j["usb"] = JsonOut::array({"057e:2009"});
+    }
+    return j;
+}
+
 JsonOut typeJson(int id, const std::string& slug, const Json& lang, const Json& en,
                  const std::string& serverVersion, JsonOut features) {
     const std::string base = "catalog.type." + slug + ".";
@@ -134,6 +158,9 @@ JsonOut typeJson(int id, const std::string& slug, const Json& lang, const Json& 
     image["etag"] = "\"" + serverVersion + "\"";
     j["image"] = std::move(image);
     j["features"] = std::move(features);
+    // Only offered types are built here, so emulates rides only offered types.
+    JsonOut emulates = emulatesJson(slug);
+    if (!emulates.empty()) j["emulates"] = std::move(emulates);
     return j;
 }
 
