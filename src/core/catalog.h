@@ -36,6 +36,13 @@ struct CatalogBackendTraits {
     // client gates instead of assuming.
     bool rumbleSupported = false;
     bool keyboardControlSupported = false;
+    // Which controller types this backend materializes. The catalog offering and
+    // the invalidType apply gate stay in lockstep with these (ViGEm has no
+    // DualSense/Switch target; macOS has no DualSense codec yet).
+    bool offersXbox = false;
+    bool offersDS4 = false;
+    bool offersDualSense = false;
+    bool offersSwitchPro = false;
 };
 
 // Localized string lookup: the locale's flat web/lang JSON first, then the `en`

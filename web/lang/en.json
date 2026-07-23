@@ -5,6 +5,12 @@
   "catalog.type.ds4.name": "DualShock 4",
   "catalog.type.ds4.shortName": "PlayStation",
   "catalog.type.ds4.description": "PlayStation controller with motion controls, touchpad and light bar.",
+  "catalog.type.dualsense.name": "DualSense",
+  "catalog.type.dualsense.shortName": "DualSense",
+  "catalog.type.dualsense.description": "PlayStation 5 controller with motion controls, touchpad and light bar.",
+  "catalog.type.switchpro.name": "Switch Pro Controller",
+  "catalog.type.switchpro.shortName": "Switch Pro",
+  "catalog.type.switchpro.description": "Nintendo controller with motion controls.",
   "_meta.note": "English source catalog. Keys prefixed by surface (dashboard/settings/debug/logs/updates/offline/modal/pin/backend/etc). Comments below each block trace dish-android source keys when present; entries marked 'review:' are web-only and need translator review.",
 
   "offline.title": "Server Unreachable",

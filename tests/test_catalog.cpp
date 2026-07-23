@@ -88,6 +88,10 @@ static void test_catalogJson_structure() {
     traits.ds4LightbarSupported = true;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
+    traits.offersXbox = true;
+    traits.offersDS4 = true;
+    traits.offersDualSense = true;
+    traits.offersSwitchPro = true;
 
     const std::string enJson = readFileAll(langPath("en"));
     EXPECT(!enJson.empty());
@@ -101,15 +105,21 @@ static void test_catalogJson_structure() {
     // Catalog ids ARE the wire enum values (0 = xbox360, 1 = ds4).
     std::vector<long> ids;
     auto types = controllerTypeElems(json, ids);
-    EXPECT_EQ(types.size(), size_t{2});
-    if (types.size() == 2) {
+    EXPECT_EQ(types.size(), size_t{4});
+    if (types.size() == 4) {
         EXPECT_EQ(ids[0], 0L);
         EXPECT(types[0].find("\"slug\":\"xbox360\"") != std::string::npos);
         EXPECT_EQ(ids[1], 1L);
         EXPECT(types[1].find("\"slug\":\"ds4\"") != std::string::npos);
+        EXPECT_EQ(ids[2], 2L);
+        EXPECT(types[2].find("\"slug\":\"dualsense\"") != std::string::npos);
+        EXPECT_EQ(ids[3], 3L);
+        EXPECT(types[3].find("\"slug\":\"switchpro\"") != std::string::npos);
         // Image hrefs are served by the satellite itself (offline-capable).
         EXPECT(types[0].find("/api/catalog/images/xbox360") != std::string::npos);
         EXPECT(types[1].find("/api/catalog/images/ds4") != std::string::npos);
+        EXPECT(types[2].find("/api/catalog/images/dualsense") != std::string::npos);
+        EXPECT(types[3].find("/api/catalog/images/switchpro") != std::string::npos);
         // Structured requires code on DS4 motion, never prose.
         EXPECT(types[1].find("\"requires\":\"vigembus>=1.17\"") != std::string::npos);
         // Xbox 360 has no motion/lightbar/touchpad.
@@ -117,6 +127,13 @@ static void test_catalogJson_structure() {
         // The DS4 touchpad advertises its pad mode explicitly (read, not inferred).
         EXPECT(types[1].find("\"touchpad\":{\"supported\":true,\"modes\":[\"ds4\"]}") !=
                std::string::npos);
+        // DualSense shares the DS4 feature surface (touchpad + pad mode).
+        EXPECT(types[2].find("\"touchpad\":{\"supported\":true,\"modes\":[\"ds4\"]}") !=
+               std::string::npos);
+        // Switch Pro: motion, but no analog triggers and no touchpad.
+        EXPECT(types[3].find("\"analogTriggers\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[3].find("\"touchpad\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[3].find("\"motion\":{\"supported\":true}") != std::string::npos);
     }
 
     // hostFeatures: pure capability data + machine-readable mode slugs.
@@ -129,22 +146,18 @@ static void test_catalogJson_structure() {
 }
 
 static void test_catalogJson_inertBackend() {
-    TEST("buildCatalogJson: inert backend (macOS): nothing supported, no requires");
-    CatalogBackendTraits traits; // all false
+    TEST("buildCatalogJson: a backend that offers nothing emits an empty type list");
+    CatalogBackendTraits traits; // all false, no offers
     const std::string enJson = readFileAll(langPath("en"));
     std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
     EXPECT(json.find("\"mouseControl\":{\"supported\":false") != std::string::npos);
     // An inert backend returns no rumble either (RECEIVE host feature gated off).
     EXPECT(json.find("\"rumble\":{\"supported\":false}") != std::string::npos);
+    // No offered identities → no pads to emulate advertised (never a fiction).
     std::vector<long> ids;
     auto types = controllerTypeElems(json, ids);
-    EXPECT_EQ(types.size(), size_t{2});
-    if (types.size() == 2) {
-        EXPECT(types[1].find("\"motion\":{\"supported\":false}") != std::string::npos);
-        EXPECT(types[1].find("requires") == std::string::npos);
-        // touchpad unsupported → no modes array emitted.
-        EXPECT(types[1].find("\"touchpad\":{\"supported\":false}") != std::string::npos);
-    }
+    EXPECT_EQ(types.size(), size_t{0});
+    EXPECT(json.find("\"controllerTypes\":[]") != std::string::npos);
     EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
 }
 
@@ -214,6 +227,7 @@ static void test_catalogJson_escapesLocalizedStrings() {
     const std::string lang = "{\"catalog.type.ds4.name\":\"D\\\"S\\\\4\"}";
     const std::string needle = "\"name\":\"D\\\"S\\\\4\"";
     CatalogBackendTraits traits;
+    traits.offersDS4 = true; // ds4 must be emitted to check its escaped name
     std::string json = buildCatalogJson("en", lang, lang, "1.6.0", traits);
     EXPECT(json.find(needle) != std::string::npos);
 }
@@ -221,10 +235,12 @@ static void test_catalogJson_escapesLocalizedStrings() {
 static void test_imageSlugs_matchCatalogIds() {
     TEST("catalogImageSlugs: slug order matches catalog ids (image route contract)");
     const auto& slugs = catalogImageSlugs();
-    EXPECT_EQ(slugs.size(), size_t{2});
-    if (slugs.size() == 2) {
-        EXPECT_EQ(slugs[0], std::string("xbox360")); // id 0
-        EXPECT_EQ(slugs[1], std::string("ds4"));     // id 1
+    EXPECT_EQ(slugs.size(), size_t{4});
+    if (slugs.size() == 4) {
+        EXPECT_EQ(slugs[0], std::string("xbox360"));   // id 0
+        EXPECT_EQ(slugs[1], std::string("ds4"));       // id 1
+        EXPECT_EQ(slugs[2], std::string("dualsense")); // id 2
+        EXPECT_EQ(slugs[3], std::string("switchpro")); // id 3
     }
 }
 

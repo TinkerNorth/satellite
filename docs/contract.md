@@ -217,7 +217,7 @@ Descriptor rules:
 
 - **ControllerDescriptor is always sent WHOLE.** A rumble/motion/touchpad toggle is a
   re-send of the descriptor with one field changed; the server converges (replug only
-  on a type-family change, Xbox ↔ DS4).
+  on a materialization-identity change, e.g. Xbox ↔ DS4 ↔ DualSense ↔ Switch Pro).
 - **Single-writer: descriptor fields are client-owned.** The admin UI displays them but
   never sets them. Admin intent is session-level (kick) or trust-level (unpair) only.
 
@@ -351,8 +351,14 @@ to present it (static, localized) → **capabilities** = what is true right now
 }
 ```
 
-- `controllerTypes[].id` is the wire enum value used as descriptor `type`. The client
-  renders its "Emulate" picker from this list instead of hardcoding the enum.
+- `controllerTypes[].id` is the wire enum value used as descriptor `type` (0 xbox360,
+  1 ds4, 2 dualsense, 3 switchpro). The client renders its "Emulate" picker from this
+  list instead of hardcoding the enum.
+- The offered set is per-backend — only identities the receiver can natively
+  materialize. Linux/uinput offers all four; Windows/ViGEm offers xbox360 + ds4 only
+  (no DualSense/Switch target); macOS/IOHIDUserDevice offers ds4 (drops the fake Xbox;
+  DualSense pending its report codec). A type the server does not offer but a client
+  requests anyway returns per-controller `invalidType`.
 - `requires` is a structured code (`"vigembus>=1.17"`), not prose.
 - A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
   the client reads the offered modes rather than inferring them from the type id. The

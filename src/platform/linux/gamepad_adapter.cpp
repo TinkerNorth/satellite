@@ -29,10 +29,22 @@ constexpr uint16_t XBOX_VID = 0x045e;
 constexpr uint16_t XBOX_PID = 0x028e;
 constexpr uint16_t DS4_VID = 0x054c;
 constexpr uint16_t DS4_PID = 0x05c4;
+constexpr uint16_t DUALSENSE_VID = 0x054c;
+constexpr uint16_t DUALSENSE_PID = 0x0ce6;
+constexpr uint16_t SWITCHPRO_VID = 0x057e;
+constexpr uint16_t SWITCHPRO_PID = 0x2009;
 
-// Buttons exposed on both profiles (evdev codes).
+// Buttons exposed on the Xbox/DS4/DualSense profiles (evdev codes).
 constexpr int BUTTONS[] = {BTN_A,      BTN_B,     BTN_X,    BTN_Y,      BTN_TL,    BTN_TR,
                            BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR};
+
+// Switch Pro: 14 CONTIGUOUS evdev codes 0x130-0x13d so SDL's built-in Nintendo
+// mapping (which keys on js index = ascending-code position) lines up exactly.
+// Order + the submit remap were derived empirically from SDL's gamecontrollerdb.
+constexpr int SWITCH_BUTTONS[] = {BTN_A,   BTN_B,      BTN_C,     BTN_X,     BTN_Y,
+                                  BTN_Z,   BTN_TL,     BTN_TR,    BTN_TL2,   BTN_TR2,
+                                  BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL};
+constexpr int SWITCH_TRIGGER_ON = 30; // ZL/ZR are digital; press past the XInput threshold.
 
 bool emit(int fd, uint16_t type, uint16_t code, int32_t value) {
     struct input_event ev{};
@@ -122,10 +134,11 @@ bool GamepadAdapter::isBusOpen() const {
     return busOpen_;
 }
 
-int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
+int GamepadAdapter::openUinputDevice(uint32_t serial, GamepadIdentity identity) {
     // O_RDWR (not O_WRONLY): the reader thread reads FF_UPLOAD/FF_ERASE/EV_FF back.
     int fd = ::open("/dev/uinput", O_RDWR | O_NONBLOCK);
     if (fd < 0) return -1;
+    const bool sw = identity == GamepadIdentity::SwitchPro;
 
     if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
     if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
@@ -135,12 +148,24 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
     if (::ioctl(fd, UI_SET_EVBIT, EV_FF) < 0) goto fail;
     if (::ioctl(fd, UI_SET_FFBIT, FF_RUMBLE) < 0) goto fail;
 
-    for (int btn : BUTTONS) {
-        if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
+    if (sw) {
+        for (int btn : SWITCH_BUTTONS) {
+            if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
+        }
+    } else {
+        for (int btn : BUTTONS) {
+            if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
+        }
     }
 
-    for (int ax : {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y}) {
+    for (int ax : {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_HAT0X, ABS_HAT0Y}) {
         if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
+    }
+    // Switch Pro's ZL/ZR are digital buttons, not analog axes.
+    if (!sw) {
+        for (int ax : {ABS_Z, ABS_RZ}) {
+            if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
+        }
     }
 
     // range/flat/fuzz matches xpad driver defaults.
@@ -148,20 +173,46 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, bool ds4) {
     if (!setupAbs(fd, ABS_Y, -32768, 32767, 128, 16)) goto fail;
     if (!setupAbs(fd, ABS_RX, -32768, 32767, 128, 16)) goto fail;
     if (!setupAbs(fd, ABS_RY, -32768, 32767, 128, 16)) goto fail;
-    if (!setupAbs(fd, ABS_Z, 0, 255, 0, 0)) goto fail;
-    if (!setupAbs(fd, ABS_RZ, 0, 255, 0, 0)) goto fail;
+    if (!sw) {
+        if (!setupAbs(fd, ABS_Z, 0, 255, 0, 0)) goto fail;
+        if (!setupAbs(fd, ABS_RZ, 0, 255, 0, 0)) goto fail;
+    }
     if (!setupAbs(fd, ABS_HAT0X, -1, 1, 0, 0)) goto fail;
     if (!setupAbs(fd, ABS_HAT0Y, -1, 1, 0, 0)) goto fail;
 
     {
         struct uinput_setup usetup{};
         usetup.id.bustype = BUS_USB;
-        usetup.id.vendor = ds4 ? DS4_VID : XBOX_VID;
-        usetup.id.product = ds4 ? DS4_PID : XBOX_PID;
-        usetup.id.version = ds4 ? 0x0100 : 0x0110;
-        // 16 effect slots, matching the in-tree xpad driver.
-        usetup.ff_effects_max = 16;
-        const char* name = ds4 ? "Satellite Virtual DualShock 4" : "Satellite Virtual Xbox 360 Pad";
+        // VID/PID + name pick the identity SDL2/Steam Input recognize; the evdev
+        // button/axis set is shared (they remap face buttons per their own DB).
+        const char* name;
+        switch (identity) {
+        case GamepadIdentity::DS4:
+            usetup.id.vendor = DS4_VID;
+            usetup.id.product = DS4_PID;
+            usetup.id.version = 0x0100;
+            name = "Satellite Virtual DualShock 4";
+            break;
+        case GamepadIdentity::DualSense:
+            usetup.id.vendor = DUALSENSE_VID;
+            usetup.id.product = DUALSENSE_PID;
+            usetup.id.version = 0x0100;
+            name = "Satellite Virtual DualSense";
+            break;
+        case GamepadIdentity::SwitchPro:
+            usetup.id.vendor = SWITCHPRO_VID;
+            usetup.id.product = SWITCHPRO_PID;
+            usetup.id.version = 0x0001;
+            name = "Satellite Virtual Switch Pro Controller";
+            break;
+        default:
+            usetup.id.vendor = XBOX_VID;
+            usetup.id.product = XBOX_PID;
+            usetup.id.version = 0x0110;
+            name = "Satellite Virtual Xbox 360 Pad";
+            break;
+        }
+        usetup.ff_effects_max = 16; // matches the in-tree xpad driver
         std::snprintf(usetup.name, sizeof(usetup.name), "%s #%u", name, serial);
         if (::ioctl(fd, UI_DEV_SETUP, &usetup) < 0) goto fail;
     }
@@ -295,42 +346,36 @@ fail:
     return -1;
 }
 
-bool GamepadAdapter::pluginDevice(uint32_t serial) {
+bool GamepadAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (!busOpen_) return false;
     if (devices_.count(serial)) return false;
-    int fd = openUinputDevice(serial, /*ds4=*/false);
+    int fd = openUinputDevice(serial, identity);
     if (fd < 0) return false;
     auto& dev = devices_[serial];
     dev.fd = fd;
-    dev.ds4 = false;
-    startReader(serial, dev);
-    return true;
-}
+    dev.identity = identity;
 
-bool GamepadAdapter::pluginDeviceDS4(uint32_t serial) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!busOpen_) return false;
-    if (devices_.count(serial)) return false;
-    int fd = openUinputDevice(serial, /*ds4=*/true);
-    if (fd < 0) return false;
-    auto& dev = devices_[serial];
-    dev.fd = fd;
-    dev.ds4 = true;
-    // DS4 IMU node. Best-effort: on failure the gamepad still works and
-    // motion is still cached by SessionService; only the evdev node is missing.
-    dev.motionFd = openMotionUinputDevice(serial);
-    if (dev.motionFd < 0) {
-        // Log so a too-old kernel / missing permission / exhausted /tmp doesn't
-        // silently look like "no game subscribed". Pairs with motionBackendOk().
-        std::fprintf(stderr,
-                     "satellite: failed to open DS4 motion uinput device for serial=%u; "
-                     "motion samples will be cached but not forwarded\n",
-                     serial);
+    // DS4/DualSense have an IMU + touchpad; Switch Pro has an IMU, no touchpad.
+    const bool ds4Family =
+        identity == GamepadIdentity::DS4 || identity == GamepadIdentity::DualSense;
+    const bool hasMotion = ds4Family || identity == GamepadIdentity::SwitchPro;
+    if (hasMotion) {
+        // Best-effort: on failure the gamepad still works and the sample is
+        // still cached by SessionService; only the evdev node is missing.
+        dev.motionFd = openMotionUinputDevice(serial);
+        if (dev.motionFd < 0) {
+            // Log so a too-old kernel / missing permission / exhausted /tmp
+            // doesn't look like "no game subscribed". Pairs with motionBackendOk().
+            std::fprintf(stderr,
+                         "satellite: failed to open motion uinput device for serial=%u; "
+                         "motion samples will be cached but not forwarded\n",
+                         serial);
+        }
     }
-    // DS4 touchpad node. Best-effort: on failure TOUCHPAD_MODE_DS4 has nowhere
-    // to land for this controller, but the sample is still cached for the web UI.
-    dev.touchFd = openTouchpadUinputDevice(serial);
+    if (ds4Family) {
+        dev.touchFd = openTouchpadUinputDevice(serial);
+    }
     startReader(serial, dev);
     return true;
 }
@@ -397,6 +442,7 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
     auto it = devices_.find(serial);
     if (it == devices_.end() || it->second.fd < 0) return false;
     int fd = it->second.fd;
+    if (it->second.identity == GamepadIdentity::SwitchPro) return submitSwitchLocked(fd, report);
 
     bool ok = true;
     // XUSB Y is positive-up; evdev Y is positive-down, so invert.
@@ -436,10 +482,45 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
     return ok;
 }
 
-bool GamepadAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report) {
-    // Same evdev codes as the Xbox path; SDL2/Steam Input identify it as a DS4
-    // via the DS4 VID/PID set at device creation and remap face buttons.
-    return submitReport(serial, report);
+bool GamepadAdapter::submitSwitchLocked(int fd, const GamepadReport& report) {
+    bool ok = true;
+    ok &= emit(fd, EV_ABS, ABS_X, report.sThumbLX);
+    ok &= emit(fd, EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
+    ok &= emit(fd, EV_ABS, ABS_RX, report.sThumbRX);
+    ok &= emit(fd, EV_ABS, ABS_RY, -clampS16(report.sThumbRY));
+
+    int32_t hatX = 0, hatY = 0;
+    if (report.wButtons & XUSB_DPAD_LEFT)
+        hatX = -1;
+    else if (report.wButtons & XUSB_DPAD_RIGHT)
+        hatX = 1;
+    if (report.wButtons & XUSB_DPAD_UP)
+        hatY = -1;
+    else if (report.wButtons & XUSB_DPAD_DOWN)
+        hatY = 1;
+    ok &= emit(fd, EV_ABS, ABS_HAT0X, hatX);
+    ok &= emit(fd, EV_ABS, ABS_HAT0Y, hatY);
+
+    // SWITCH_BUTTONS[i] is SDL js index i; the wire source per index follows SDL's
+    // Nintendo mapping (A/B + X/Y swapped; ZL/ZR digital from the triggers; capture
+    // at js4 has no wire source).
+    const uint16_t b = report.wButtons;
+    ok &= emit(fd, EV_KEY, BTN_A, (b & XUSB_B) ? 1 : 0);                            // js0  B
+    ok &= emit(fd, EV_KEY, BTN_B, (b & XUSB_A) ? 1 : 0);                            // js1  A
+    ok &= emit(fd, EV_KEY, BTN_C, (b & XUSB_X) ? 1 : 0);                            // js2  X
+    ok &= emit(fd, EV_KEY, BTN_X, (b & XUSB_Y) ? 1 : 0);                            // js3  Y
+    ok &= emit(fd, EV_KEY, BTN_Z, (b & XUSB_LB) ? 1 : 0);                           // js5  L
+    ok &= emit(fd, EV_KEY, BTN_TL, (b & XUSB_RB) ? 1 : 0);                          // js6  R
+    ok &= emit(fd, EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);    // js7  ZL
+    ok &= emit(fd, EV_KEY, BTN_TL2, report.bRightTrigger > SWITCH_TRIGGER_ON ? 1 : 0);  // js8  ZR
+    ok &= emit(fd, EV_KEY, BTN_TR2, (b & XUSB_BACK) ? 1 : 0);                       // js9  minus
+    ok &= emit(fd, EV_KEY, BTN_SELECT, (b & XUSB_START) ? 1 : 0);                   // js10 plus
+    ok &= emit(fd, EV_KEY, BTN_START, (b & XUSB_GUIDE) ? 1 : 0);                    // js11 home
+    ok &= emit(fd, EV_KEY, BTN_MODE, (b & XUSB_LS) ? 1 : 0);                        // js12 Lstick
+    ok &= emit(fd, EV_KEY, BTN_THUMBL, (b & XUSB_RS) ? 1 : 0);                      // js13 Rstick
+
+    ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
+    return ok;
 }
 
 bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
@@ -461,9 +542,17 @@ bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     return ok;
 }
 
+bool GamepadAdapter::supportsIdentity(GamepadIdentity identity) const {
+    // uinput can stamp any VID/PID; all four are wired (Switch Pro via a distinct
+    // evdev layout + submit remap, empirically fitted to SDL's Nintendo mapping).
+    return identity == GamepadIdentity::Xbox || identity == GamepadIdentity::DS4 ||
+           identity == GamepadIdentity::DualSense || identity == GamepadIdentity::SwitchPro;
+}
+
 bool GamepadAdapter::supportsMotionForType(uint8_t controllerType) const {
-    // Backend-shape, not per-serial: only the DS4 profile gets a motion node.
-    return controllerTypeUsesDS4(controllerType);
+    // Backend-shape, not per-serial: the motion-capable types get a motion node.
+    return supportsIdentity(controllerIdentity(controllerType)) &&
+           controllerTypeHasMotion(controllerType);
 }
 
 bool GamepadAdapter::motionBackendOk(uint32_t serial) const {
@@ -638,7 +727,7 @@ void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
     dev.readerRunning.store(true, std::memory_order_release);
     int devFd = dev.fd;
     int wakeFd = dev.wakePipeRead;
-    bool isDS4 = dev.ds4;
+    bool isDS4 = dev.identity == GamepadIdentity::DS4 || dev.identity == GamepadIdentity::DualSense;
     dev.readerThread = std::thread(
         [this, serial, devFd, wakeFd, isDS4] { readerLoop(serial, devFd, wakeFd, isDS4); });
 }

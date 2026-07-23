@@ -211,8 +211,10 @@ inline const int REST_LIVENESS_GRACE_SEC = 15;
 // Catalog ids (GET /api/catalog) and descriptor `type` values. Adding a type =
 // new id + catalog entry; clients render unknown ids from catalog strings.
 inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
-inline const uint8_t CONTROLLER_TYPE_PLAYSTATION = 1;
-inline const uint8_t CONTROLLER_TYPE_COUNT = 2;
+inline const uint8_t CONTROLLER_TYPE_PLAYSTATION = 1; // DualShock 4
+inline const uint8_t CONTROLLER_TYPE_DUALSENSE = 2;
+inline const uint8_t CONTROLLER_TYPE_SWITCHPRO = 3;
+inline const uint8_t CONTROLLER_TYPE_COUNT = 4;
 
 inline const char* controllerTypeName(uint8_t type) {
     switch (type) {
@@ -220,6 +222,10 @@ inline const char* controllerTypeName(uint8_t type) {
         return "xbox";
     case CONTROLLER_TYPE_PLAYSTATION:
         return "playstation";
+    case CONTROLLER_TYPE_DUALSENSE:
+        return "dualsense";
+    case CONTROLLER_TYPE_SWITCHPRO:
+        return "switchpro";
     default:
         return "xbox";
     }
@@ -231,12 +237,43 @@ inline const char* controllerTypeLabel(uint8_t type) {
         return "Xbox";
     case CONTROLLER_TYPE_PLAYSTATION:
         return "PlayStation";
+    case CONTROLLER_TYPE_DUALSENSE:
+        return "DualSense";
+    case CONTROLLER_TYPE_SWITCHPRO:
+        return "Switch Pro";
     default:
         return "Xbox";
     }
 }
 
-inline bool controllerTypeUsesDS4(uint8_t type) { return type == CONTROLLER_TYPE_PLAYSTATION; }
+// Materialization identity (VID/PID + HID family). Drives plug/submit selection
+// and the replug-on-identity-change gate; crossing identities needs a fresh
+// virtual device. Separate from the feature predicates below.
+enum class GamepadIdentity : uint8_t { Xbox = 0, DS4 = 1, DualSense = 2, SwitchPro = 3 };
+
+inline GamepadIdentity controllerIdentity(uint8_t type) {
+    switch (type) {
+    case CONTROLLER_TYPE_PLAYSTATION:
+        return GamepadIdentity::DS4;
+    case CONTROLLER_TYPE_DUALSENSE:
+        return GamepadIdentity::DualSense;
+    case CONTROLLER_TYPE_SWITCHPRO:
+        return GamepadIdentity::SwitchPro;
+    default:
+        return GamepadIdentity::Xbox;
+    }
+}
+
+// Feature surfaces, independent of identity: Switch Pro has an IMU but no
+// touchpad; Xbox has neither.
+inline bool controllerTypeHasMotion(uint8_t type) {
+    return type == CONTROLLER_TYPE_PLAYSTATION || type == CONTROLLER_TYPE_DUALSENSE ||
+           type == CONTROLLER_TYPE_SWITCHPRO;
+}
+
+inline bool controllerTypeHasTouchpad(uint8_t type) {
+    return type == CONTROLLER_TYPE_PLAYSTATION || type == CONTROLLER_TYPE_DUALSENSE;
+}
 
 // Binary-compatible with XUSB_REPORT / XINPUT_GAMEPAD.
 struct GamepadReport {
@@ -460,8 +497,8 @@ struct Controller {
     uint32_t serialNo = 0; // backend serial (1..16), 0 = not plugged
     bool active = false;
     uint8_t controllerType = CONTROLLER_TYPE_XBOX;
-    bool usesDS4 = false; // hot-path cache of controllerTypeUsesDS4(controllerType)
-    uint16_t caps = 0;    // CAP_* word from the descriptor
+    GamepadIdentity identity = GamepadIdentity::Xbox; // hot-path cache of controllerIdentity(controllerType)
+    uint16_t caps = 0;                                // CAP_* word from the descriptor
     // MOUSE routing is gated on the connection's mouseControlGranted.
     uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }

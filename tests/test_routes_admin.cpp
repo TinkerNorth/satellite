@@ -57,11 +57,10 @@ struct StubGamepad : IGamepadPort {
     bool ensureBusOpen() override { return true; }
     void closeBus() override {}
     bool isBusOpen() const override { return true; }
-    bool pluginDevice(uint32_t) override { return true; }
-    bool pluginDeviceDS4(uint32_t) override { return true; }
+    bool pluginDevice(uint32_t, GamepadIdentity) override { return true; }
+    bool supportsIdentity(GamepadIdentity) const override { return true; }
     bool unplugDevice(uint32_t) override { return true; }
     bool submitReport(uint32_t, const GamepadReport&) override { return true; }
-    bool submitDS4Report(uint32_t, const GamepadReport&) override { return true; }
     void setRumbleCallback(RumbleCallback) override {}
 };
 

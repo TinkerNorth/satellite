@@ -84,15 +84,18 @@ std::string catalogString(const std::string& langJson, const std::string& enJson
 }
 
 const std::vector<std::string>& catalogImageSlugs() {
-    static const std::vector<std::string> slugs = {"xbox360", "ds4"};
+    static const std::vector<std::string> slugs = {"xbox360", "ds4", "dualsense", "switchpro"};
     return slugs;
 }
 
 const std::vector<std::string>& catalogStringKeys() {
     static const std::vector<std::string> keys = {
-        "catalog.type.xbox360.name",        "catalog.type.xbox360.shortName",
-        "catalog.type.xbox360.description", "catalog.type.ds4.name",
-        "catalog.type.ds4.shortName",       "catalog.type.ds4.description",
+        "catalog.type.xbox360.name",          "catalog.type.xbox360.shortName",
+        "catalog.type.xbox360.description",   "catalog.type.ds4.name",
+        "catalog.type.ds4.shortName",         "catalog.type.ds4.description",
+        "catalog.type.dualsense.name",        "catalog.type.dualsense.shortName",
+        "catalog.type.dualsense.description",  "catalog.type.switchpro.name",
+        "catalog.type.switchpro.shortName",   "catalog.type.switchpro.description",
     };
     return keys;
 }
@@ -144,31 +147,50 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     if (!jsonParse(enJson, en)) en = Json::object();
 
     // Feature slugs, modes, and requires codes below are PROTOCOL CONSTANTS,
-    // never localized (docs/contract.md localization boundary rule).
-    JsonOut xboxFeatures;
-    xboxFeatures["rumble"] = featureJson(true);
-    xboxFeatures["analogTriggers"] = featureJson(true);
-    xboxFeatures["motion"] = featureJson(false);
-    xboxFeatures["lightbar"] = featureJson(false);
-    xboxFeatures["touchpad"] = featureJson(false);
-
-    // The DS4 touchpad renders the "ds4" pad mode; "mouse" is host injection and
-    // lives under hostFeatures.mouseControl, not here.
-    JsonOut ds4Features;
-    ds4Features["rumble"] = featureJson(true);
-    ds4Features["analogTriggers"] = featureJson(true);
-    ds4Features["motion"] = featureJson(traits.ds4MotionSupported, traits.ds4MotionRequires);
-    ds4Features["lightbar"] = featureJson(traits.ds4LightbarSupported);
-    ds4Features["touchpad"] =
-        featureJsonModes(traits.ds4TouchpadSupported, JsonOut::array({"ds4"}));
+    // never localized (docs/contract.md localization boundary rule). DualSense
+    // shares the DS4 feature surface; its touchpad renders the "ds4" pad mode.
+    auto ds4LikeFeatures = [&]() {
+        JsonOut f;
+        f["rumble"] = featureJson(true);
+        f["analogTriggers"] = featureJson(true);
+        f["motion"] = featureJson(traits.ds4MotionSupported, traits.ds4MotionRequires);
+        f["lightbar"] = featureJson(traits.ds4LightbarSupported);
+        f["touchpad"] = featureJsonModes(traits.ds4TouchpadSupported, JsonOut::array({"ds4"}));
+        return f;
+    };
 
     JsonOut j;
     j["locale"] = locale;
     j["protocolVersion"] = 1;
     j["serverVersion"] = serverVersion;
+    // Only the types this backend can materialize: a backend that can't host a
+    // native identity omits it rather than advertise an unbuildable pad.
     JsonOut types = JsonOut::array();
-    types.push_back(typeJson(0, "xbox360", lang, en, serverVersion, std::move(xboxFeatures)));
-    types.push_back(typeJson(1, "ds4", lang, en, serverVersion, std::move(ds4Features)));
+    if (traits.offersXbox) {
+        JsonOut xbox;
+        xbox["rumble"] = featureJson(true);
+        xbox["analogTriggers"] = featureJson(true);
+        xbox["motion"] = featureJson(false);
+        xbox["lightbar"] = featureJson(false);
+        xbox["touchpad"] = featureJson(false);
+        types.push_back(typeJson(0, "xbox360", lang, en, serverVersion, std::move(xbox)));
+    }
+    if (traits.offersDS4) {
+        types.push_back(typeJson(1, "ds4", lang, en, serverVersion, ds4LikeFeatures()));
+    }
+    if (traits.offersDualSense) {
+        types.push_back(typeJson(2, "dualsense", lang, en, serverVersion, ds4LikeFeatures()));
+    }
+    if (traits.offersSwitchPro) {
+        // Switch Pro: motion, no analog triggers, no touchpad, no light bar.
+        JsonOut sw;
+        sw["rumble"] = featureJson(true);
+        sw["analogTriggers"] = featureJson(false);
+        sw["motion"] = featureJson(traits.ds4MotionSupported);
+        sw["lightbar"] = featureJson(false);
+        sw["touchpad"] = featureJson(false);
+        types.push_back(typeJson(3, "switchpro", lang, en, serverVersion, std::move(sw)));
+    }
     j["controllerTypes"] = std::move(types);
 
     // What the HOST can be driven to do, independent of any slot. Slugs and mode
