@@ -40,7 +40,7 @@ struct State {
     void reset() { *this = State{}; }
 
     // Zero just the call counters, preserving the driver verdicts. Lets a test
-    // ignore the one-shot EX probe submit pluginDeviceDS4 now fires and assert
+    // ignore the one-shot EX probe submit a DS4 plug-in now fires and assert
     // purely on subsequent submit behaviour.
     void resetCounts() {
         pluginXboxCalls = pluginDs4Calls = unplugCalls = 0;
@@ -95,7 +95,7 @@ bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICAT
     return false;
 }
 
-// pluginDeviceDS4 fires a one-shot EX probe submit so EX capability is known
+// Plugging a DS4 slot fires a one-shot EX probe submit so EX capability is known
 // before the controller-add ACK is built. On a modern ViGEmBus the probe is
 // accepted, EX stays latched on, and motionBackendOk reports the IMU sink up.
 static void test_ds4_plugin_probes_ex_and_reports_sink_ok() {
@@ -104,7 +104,7 @@ static void test_ds4_plugin_probes_ex_and_reports_sink_ok() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDeviceDS4(1));
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4));
 
     // Exactly one EX submit happened at plug-in, with no basic fallback.
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
@@ -126,7 +126,7 @@ static void test_ds4_ex_rejected_falls_back_and_reports_no_sink() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDeviceDS4(1));
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4));
 
     // The plug-in probe already detected the EX rejection: one EX attempt, one
     // basic fallback, and the IMU-sink flag is honestly false.
@@ -139,7 +139,7 @@ static void test_ds4_ex_rejected_falls_back_and_reports_no_sink() {
     fake::g.resetCounts();
     GamepadReport rpt{};
     rpt.wButtons = 0x1000; // A
-    EXPECT(a.submitDS4Report(1, rpt));
+    EXPECT(a.submitReport(1, rpt));
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 0); // not retried
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 1);
     a.closeBus();
@@ -153,11 +153,11 @@ static void test_ds4_ex_accepted_uses_ex_path() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDeviceDS4(1));
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4));
     fake::g.resetCounts(); // ignore the plug-in probe
 
     GamepadReport rpt{};
-    EXPECT(a.submitDS4Report(1, rpt));
+    EXPECT(a.submitReport(1, rpt));
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 1);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
     a.closeBus();
@@ -172,7 +172,7 @@ static void test_motion_backend_ok_nonds4_and_unplugged() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDevice(2)); // X360 target, no IMU surface
+    EXPECT(a.pluginDevice(2, GamepadIdentity::Xbox)); // X360 target, no IMU surface
     EXPECT(!a.motionBackendOk(2));
 
     EXPECT(a.motionBackendOk(1)); // valid serial, never plugged
@@ -189,7 +189,7 @@ static void test_xbox_uses_synchronous_xusb_submit() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDevice(2));
+    EXPECT(a.pluginDevice(2, GamepadIdentity::Xbox));
 
     GamepadReport rpt{};
     EXPECT(a.submitReport(2, rpt));
@@ -208,8 +208,7 @@ static void test_submit_to_unplugged_serial_is_rejected() {
     EXPECT(a.ensureBusOpen());
 
     GamepadReport rpt{};
-    EXPECT(!a.submitDS4Report(3, rpt));
-    EXPECT(!a.submitReport(3, rpt));
+    EXPECT(!a.submitReport(3, rpt)); // unified submit rejects an unplugged serial
     EXPECT_EQ(fake::g.ds4ExSyncCalls, 0);
     EXPECT_EQ(fake::g.ds4BasicSyncCalls, 0);
     EXPECT_EQ(fake::g.xusbSyncCalls, 0);
@@ -224,14 +223,14 @@ static void test_xusb_to_ds4_conversion_maps_input() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDeviceDS4(1));
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4));
 
     GamepadReport rpt{};
     rpt.wButtons = 0x1000;   // A -> Cross
     rpt.bRightTrigger = 255; // full right trigger
     rpt.sThumbLX = 32767;    // full right -> 255
     rpt.sThumbLY = 32767;    // full up -> 0 (DS4 Y is inverted)
-    EXPECT(a.submitDS4Report(1, rpt));
+    EXPECT(a.submitReport(1, rpt));
 
     const DS4_REPORT_EX& ex = fake::g.lastDs4Ex;
     EXPECT((ex.Report.wButtons & DS4_BUTTON_CROSS) != 0);
@@ -290,7 +289,7 @@ static void test_motion_submit_lands_on_ex_when_supported() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDeviceDS4(1));
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4));
     fake::g.resetCounts(); // ignore the plug-in probe
 
     MotionReport m{};
@@ -320,7 +319,7 @@ static void test_motion_submit_not_delivered_when_ex_unsupported() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDeviceDS4(1)); // probe latches EX off
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4)); // probe latches EX off
     fake::g.resetCounts();
 
     MotionReport m{};
@@ -336,7 +335,7 @@ static void test_motion_submit_rejected_for_xbox_and_unplugged() {
 
     ViGEmAdapter a;
     EXPECT(a.ensureBusOpen());
-    EXPECT(a.pluginDevice(2)); // Xbox target, no IMU surface
+    EXPECT(a.pluginDevice(2, GamepadIdentity::Xbox)); // Xbox target, no IMU surface
 
     MotionReport m{};
     EXPECT(!a.submitMotion(2, m)); // Xbox slot

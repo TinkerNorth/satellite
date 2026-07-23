@@ -77,20 +77,44 @@ static HANDLE makeSlotEvent() {
     return CreateEventW(nullptr, /*manualReset=*/FALSE, /*initialState=*/TRUE, nullptr);
 }
 
-bool ViGEmAdapter::pluginDevice(uint32_t serial) {
+bool ViGEmAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
     if (!isValidSerial(serial)) return false;
+    const bool isDS4 = identity == GamepadIdentity::DS4;
     std::lock_guard<std::mutex> lk(busMtx_);
     if (busHandle_ == INVALID_HANDLE_VALUE) return false;
-    if (!pluginTarget(busHandle_, static_cast<unsigned long>(serial))) return false;
+
+    const unsigned long tgt = static_cast<unsigned long>(serial);
+    const bool ok = isDS4 ? pluginTargetDS4(busHandle_, tgt) : pluginTarget(busHandle_, tgt);
+    if (!ok) return false;
 
     IoSlot& slot = io_[serial];
     if (slot.event == nullptr) slot.event = makeSlotEvent();
-    slot.isDS4 = false;
+    slot.isDS4 = isDS4;
     slot.ds4 = {};
+
+    if (isDS4) {
+        // Centre the sticks (0x80) so the pad isn't a stuck corner pre-first-frame.
+        slot.ds4.report.Report.bThumbLX = 0x80;
+        slot.ds4.report.Report.bThumbLY = 0x80;
+        slot.ds4.report.Report.bThumbRX = 0x80;
+        slot.ds4.report.Report.bThumbRY = 0x80;
+        slot.ds4.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
+    }
     slot.plugged.store(true, std::memory_order_release);
 
-    startNotificationWorker(serial, /*isDS4=*/false);
+    // Probe the EX path now so motionBackendOk(serial) reflects real IMU-sink
+    // capability by the time the controller-add ACK is built (submitDS4Locked
+    // latches exSupported off if this ViGEmBus is too old). Best-effort.
+    if (isDS4) submitDS4Locked(serial);
+
+    startNotificationWorker(serial, isDS4);
     return true;
+}
+
+// ViGEmBus materializes only Xbox360Wired + DualShock4Wired targets; DualSense
+// and SwitchPro are impossible on this backend.
+bool ViGEmAdapter::supportsIdentity(GamepadIdentity identity) const {
+    return identity == GamepadIdentity::Xbox || identity == GamepadIdentity::DS4;
 }
 
 bool ViGEmAdapter::unplugDevice(uint32_t serial) {
@@ -135,17 +159,17 @@ bool ViGEmAdapter::isDevicePlugged(uint32_t serial) const {
 bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     if (!isValidSerial(serial)) return false;
 
-    // Hold the lock only to copy the handle + slot pointer, then drop it. The
-    // slot's buffer + event are persistent (closed only at closeBus), so they
-    // stay usable after the release.
+    // Route by the identity recorded at plug. DS4 folds into the running EX report
+    // and submits under the held lock; Xbox holds busMtx_ only to snapshot the
+    // handle + slot, then drops it for the IOCTL (buffer + event persist to closeBus).
     HANDLE bus;
     IoSlot* slot;
     {
         std::lock_guard<std::mutex> lk(busMtx_);
         if (busHandle_ == INVALID_HANDLE_VALUE) return false;
         slot = &io_[serial];
-        if (!slot->plugged.load(std::memory_order_acquire) || slot->isDS4 || slot->event == nullptr)
-            return false;
+        if (slot->isDS4) return submitDS4ReportLocked(serial, report);
+        if (!slot->plugged.load(std::memory_order_acquire) || slot->event == nullptr) return false;
         bus = busHandle_;
     }
 
@@ -155,38 +179,9 @@ bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     return submitXusbSync(bus, static_cast<unsigned long>(serial), slot->xsr, slot->event, &report);
 }
 
-bool ViGEmAdapter::pluginDeviceDS4(uint32_t serial) {
-    if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
-    if (!pluginTargetDS4(busHandle_, static_cast<unsigned long>(serial))) return false;
-
-    IoSlot& slot = io_[serial];
-    if (slot.event == nullptr) slot.event = makeSlotEvent();
-    slot.isDS4 = true;
-    slot.ds4 = {};
-
-    // Centre the sticks (0x80) so the pad isn't a stuck corner pre-first-frame.
-    slot.ds4.report.Report.bThumbLX = 0x80;
-    slot.ds4.report.Report.bThumbLY = 0x80;
-    slot.ds4.report.Report.bThumbRX = 0x80;
-    slot.ds4.report.Report.bThumbRY = 0x80;
-    slot.ds4.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
-    slot.plugged.store(true, std::memory_order_release);
-
-    // Probe the EX path now so motionBackendOk(serial) reflects real IMU-sink
-    // capability by the time the controller-add ACK is built (submitDS4Locked
-    // latches exSupported off if this ViGEmBus is too old). Best-effort.
-    submitDS4Locked(serial);
-
-    startNotificationWorker(serial, /*isDS4=*/true);
-    return true;
-}
-
-bool ViGEmAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report) {
-    if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+// Caller holds busMtx_. Folds `report` into the DS4 slot's running EX report and
+// submits it so any cached gyro/accel/touch rides along.
+bool ViGEmAdapter::submitDS4ReportLocked(uint32_t serial, const GamepadReport& report) {
     IoSlot& slot = io_[serial];
     if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
 
@@ -348,7 +343,7 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
     er.bTouchPacketsN = 1;
 
     // Trackpad click is bSpecial bit 1 (bit 0 = PS button). Cache it so
-    // submitDS4Report can re-apply it on plain gamepad frames.
+    // submitReport can re-apply it on plain gamepad frames.
     st.touchpadButton = report.buttonPressed;
     if (report.buttonPressed)
         er.bSpecial |= 0x02;
@@ -382,7 +377,8 @@ bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
 }
 
 bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {
-    return controllerTypeUsesDS4(controllerType);
+    return supportsIdentity(controllerIdentity(controllerType)) &&
+           controllerTypeHasMotion(controllerType);
 }
 
 // Motion rides only the DS4 EX report, so true requires a plugged DS4 slot whose

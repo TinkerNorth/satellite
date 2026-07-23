@@ -185,13 +185,12 @@ int main() {
         MacHidGamepadAdapter adapter;
         EXPECT(!adapter.ensureBusOpen());
         EXPECT(!adapter.isBusOpen());
-        EXPECT(!adapter.pluginDevice(1));
-        EXPECT(!adapter.pluginDeviceDS4(1));
+        EXPECT(!adapter.pluginDevice(1, GamepadIdentity::Xbox));
+        EXPECT(!adapter.pluginDevice(1, GamepadIdentity::DS4));
         EXPECT(adapter.unplugDevice(1)); // nothing existed to remove
         EXPECT(!adapter.isDevicePlugged(1));
         GamepadReport report;
         EXPECT(!adapter.submitReport(1, report));
-        EXPECT(!adapter.submitDS4Report(1, report));
         MotionReport motion;
         EXPECT(!adapter.submitMotion(1, motion));
         BatteryReport battery;
@@ -224,13 +223,13 @@ int main() {
     EXPECT(adapter.isBusOpen());
 
     TEST("DS4 slot publishes a kernel HID device with the DS4 v2 identity");
-    EXPECT(adapter.pluginDeviceDS4(kDs4Serial));
+    EXPECT(adapter.pluginDevice(kDs4Serial, GamepadIdentity::DS4));
     EXPECT(adapter.isDevicePlugged(kDs4Serial));
     EXPECT_EQ(countVirtualPads(kDs4Serial, 3000, 1), 1);
     EXPECT(adapter.motionBackendOk(kDs4Serial));
 
     TEST("Xbox-typed slot publishes too (same DS4 identity, different routing)");
-    EXPECT(adapter.pluginDevice(kXboxSerial));
+    EXPECT(adapter.pluginDevice(kXboxSerial, GamepadIdentity::Xbox));
     EXPECT_EQ(countVirtualPads(kXboxSerial, 3000, 1), 1);
     EXPECT(!adapter.motionBackendOk(kXboxSerial)); // no IMU routing for Xbox slots
 
@@ -238,7 +237,7 @@ int main() {
     GamepadReport report;
     report.wButtons = 0x1000; // A / Cross
     report.bLeftTrigger = 128;
-    EXPECT(adapter.submitDS4Report(kDs4Serial, report));
+    EXPECT(adapter.submitReport(kDs4Serial, report));
     EXPECT(adapter.submitReport(kXboxSerial, report));
     MotionReport motion;
     motion.gyroX = 100;
@@ -256,9 +255,14 @@ int main() {
     touch.eventTimeMs = 1;
     EXPECT(adapter.submitTouchpad(kDs4Serial, touch));
 
-    TEST("slot-family gates hold (wrong-typed submit refused)");
-    EXPECT(!adapter.submitDS4Report(kXboxSerial, report));
-    EXPECT(!adapter.submitReport(kDs4Serial, report));
+    TEST("unified submit packs per slot family; the family gate holds on DS4-only sinks");
+    // The unified submit has no "wrong-typed" variant anymore: both slots accept
+    // a gamepad report, each packed per the family recorded at plug.
+    EXPECT(adapter.submitReport(kXboxSerial, report));
+    EXPECT(adapter.submitReport(kDs4Serial, report));
+    // The family gate now lives on the DS4-only sinks: an Xbox-family slot has no
+    // touchpad surface and drops it (motion is gated the same way, checked above).
+    EXPECT(!adapter.submitTouchpad(kXboxSerial, touch));
 
     TEST("unplug removes the kernel devices");
     EXPECT(adapter.unplugDevice(kDs4Serial));

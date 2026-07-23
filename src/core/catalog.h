@@ -11,6 +11,13 @@
 
 namespace satellite {
 
+// Catalog schema version, bumped when the /api/catalog payload shape evolves in a
+// way clients may branch on (distinct from protocolVersion / serverVersion). v2
+// offers up to four types per backend + per-type `emulates` hints; a response
+// WITHOUT this field is the legacy v1 catalog (xbox360 + ds4, no emulates). Additive
+// within protocolVersion 1: a client reads an absent field as 1.
+inline constexpr int kCatalogVersion = 2;
+
 // Locale set kept in lockstep with dish-android; index 0 is the fallback.
 inline const std::vector<std::string>& catalogLocales() {
     static const std::vector<std::string> locales = {"en", "es", "fr", "de", "bs", "pt-BR"};
@@ -36,6 +43,13 @@ struct CatalogBackendTraits {
     // client gates instead of assuming.
     bool rumbleSupported = false;
     bool keyboardControlSupported = false;
+    // Which controller types this backend materializes. The catalog offering and
+    // the invalidType apply gate stay in lockstep with these (ViGEm has no
+    // DualSense/Switch target; macOS has no DualSense codec yet).
+    bool offersXbox = false;
+    bool offersDS4 = false;
+    bool offersDualSense = false;
+    bool offersSwitchPro = false;
 };
 
 // Localized string lookup: the locale's flat web/lang JSON first, then the `en`
