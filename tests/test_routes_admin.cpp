@@ -490,6 +490,8 @@ int main() {
                 if (c["controllers"].size() == 1) {
                     EXPECT_EQ(jsonStr(c["controllers"][0], "state"), std::string("live"));
                     EXPECT_EQ(jsonStr(c["controllers"][0], "controllerType"), std::string("xbox"));
+                    // Pins the divergence: wire says xbox, artwork says xbox360.
+                    EXPECT_EQ(jsonStr(c["controllers"][0], "catalogSlug"), std::string("xbox360"));
                 }
             }
             EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);

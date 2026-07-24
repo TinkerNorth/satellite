@@ -231,6 +231,23 @@ inline const char* controllerTypeName(uint8_t type) {
     }
 }
 
+// Catalog slug vocabulary (catalogImageSlugs) diverges from the wire names above;
+// dualsense/switchpro coincide by accident, not contract.
+inline const char* controllerTypeCatalogSlug(uint8_t type) {
+    switch (type) {
+    case CONTROLLER_TYPE_XBOX:
+        return "xbox360";
+    case CONTROLLER_TYPE_PLAYSTATION:
+        return "ds4";
+    case CONTROLLER_TYPE_DUALSENSE:
+        return "dualsense";
+    case CONTROLLER_TYPE_SWITCHPRO:
+        return "switchpro";
+    default:
+        return "xbox360";
+    }
+}
+
 inline const char* controllerTypeLabel(uint8_t type) {
     switch (type) {
     case CONTROLLER_TYPE_XBOX:

@@ -884,9 +884,11 @@ endif()
 # Catalog builder + the locale completeness gate: WEB_LANG_DIR points the test
 # at the real web/lang catalogs so every controller-type string is asserted
 # present in every supported locale (mirror of Android's MissingTranslation).
+# WEB_IMG_CATALOG_DIR does the same for the artwork gate.
 satellite_add_pure_test(test_catalog tests/test_catalog.cpp src/core/catalog.cpp)
 target_compile_definitions(test_catalog PRIVATE
     WEB_LANG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/lang"
+    WEB_IMG_CATALOG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/img/catalog"
 )
 
 # UpdateService spawns worker/timer threads, so this suite needs pthreads on

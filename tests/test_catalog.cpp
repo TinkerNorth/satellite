@@ -6,7 +6,10 @@
 // feature/mode slugs stay machine-readable protocol constants.
 #include "../src/core/catalog.h"
 #include "../src/core/json.h"
+#include "../src/core/types.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -257,6 +260,44 @@ static void test_imageSlugs_matchCatalogIds() {
     }
 }
 
+// Artwork half of the completeness gate: a new CONTROLLER_TYPE_* shipped without
+// an SVG is invisible until the dashboard renders a broken image.
+static void test_artworkCompletenessGate() {
+    TEST("art gate: every controller type has a catalog slug and a shipped SVG");
+    const auto& slugs = catalogImageSlugs();
+    for (uint8_t type = 0; type < CONTROLLER_TYPE_COUNT; ++type) {
+        const std::string slug = controllerTypeCatalogSlug(type);
+        if (std::find(slugs.begin(), slugs.end(), slug) == slugs.end()) {
+            g_fail++;
+            std::cerr << "  FAIL [art gate] type " << int(type) << " (" << controllerTypeName(type)
+                      << ") maps to slug \"" << slug << "\" absent from catalogImageSlugs()\n";
+            continue;
+        }
+        const std::string path = std::string(WEB_IMG_CATALOG_DIR) + "/" + slug + ".svg";
+        if (readFileAll(path).empty()) {
+            g_fail++;
+            std::cerr << "  FAIL [art gate] type " << int(type) << " (" << controllerTypeName(type)
+                      << ") missing artwork: " << path << "\n";
+        } else {
+            g_pass++;
+        }
+    }
+    // Unclaimed art is dead weight: the image route serves strictly from this list.
+    for (const auto& slug : slugs) {
+        bool claimed = false;
+        for (uint8_t type = 0; type < CONTROLLER_TYPE_COUNT; ++type) {
+            if (slug == controllerTypeCatalogSlug(type)) claimed = true;
+        }
+        if (!claimed) {
+            g_fail++;
+            std::cerr << "  FAIL [art gate] slug \"" << slug
+                      << "\" claimed by no controller type\n";
+        } else {
+            g_pass++;
+        }
+    }
+}
+
 static void test_emulatesNotLocalized() {
     TEST("buildCatalogJson: emulates hints are protocol constants, identical across locales");
     CatalogBackendTraits traits;
@@ -391,6 +432,7 @@ int main() {
     test_resolveLocale_malformedHeaders();
     test_catalogJson_escapesLocalizedStrings();
     test_imageSlugs_matchCatalogIds();
+    test_artworkCompletenessGate();
     test_emulatesNotLocalized();
     test_emulatesOnlyOnOfferedTypes();
     test_catalogJson_goldenShape_uinput();

@@ -488,8 +488,9 @@ function updateConnections(d) {
         // pluggedIn is adapter truth (a virtual device exists now), not an
         // inference from the serial number.
         const ok = ctrl.pluggedIn;
-        const ctrlType = ctrl.controllerType || 'xbox';
         const ctrlLabel = ctrl.controllerTypeLabel || 'Xbox';
+        // Server-resolved; deriving an asset path from the wire type drifts off the artwork.
+        const ctrlArt = ctrl.catalogSlug || 'xbox360';
         const m = motionCopy(motionStateId(ctrl));
         const bat = batteryChip(ctrl);
         const tp = touchpadChip(ctrl);
@@ -508,7 +509,8 @@ function updateConnections(d) {
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
-            <img class="ctrl-type-icon" src="img/ctrl-${esc(ctrlType)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}">
+            <img class="ctrl-type-icon" src="img/catalog/${esc(ctrlArt)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}"
+                 onerror="this.onerror=null;this.src='img/icons/gamepad_outline.svg'">
             <div class="ctrl-info">
               <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>
               <span class="ctrl-meta">${esc(ctrl.deviceName)} · ${esc(serialLabel)} ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
