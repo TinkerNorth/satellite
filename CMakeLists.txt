@@ -889,6 +889,7 @@ satellite_add_pure_test(test_catalog tests/test_catalog.cpp src/core/catalog.cpp
 target_compile_definitions(test_catalog PRIVATE
     WEB_LANG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/lang"
     WEB_IMG_CATALOG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/img/catalog"
+    WEB_IMG_ICONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/img/icons"
 )
 
 # UpdateService spawns worker/timer threads, so this suite needs pthreads on

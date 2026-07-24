@@ -509,7 +509,7 @@ function updateConnections(d) {
         return `
         <div class="ctrl-item">
           <div class="ctrl-row">
-            <img class="ctrl-type-icon" src="img/catalog/${esc(ctrlArt)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}"
+            <img class="ctrl-type-icon" src="img/icons/ctrl-${esc(ctrlArt)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}"
                  onerror="this.onerror=null;this.src='img/icons/gamepad_outline.svg'">
             <div class="ctrl-info">
               <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>

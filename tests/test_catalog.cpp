@@ -260,10 +260,10 @@ static void test_imageSlugs_matchCatalogIds() {
     }
 }
 
-// Artwork half of the completeness gate: a new CONTROLLER_TYPE_* shipped without
-// an SVG is invisible until the dashboard renders a broken image.
+// Artwork half of the completeness gate. Two consumers, two coloring contracts:
+// img/catalog is served to clients that tint it, img/icons is <img>-embedded here.
 static void test_artworkCompletenessGate() {
-    TEST("art gate: every controller type has a catalog slug and a shipped SVG");
+    TEST("art gate: every controller type has catalog art and a dashboard icon");
     const auto& slugs = catalogImageSlugs();
     for (uint8_t type = 0; type < CONTROLLER_TYPE_COUNT; ++type) {
         const std::string slug = controllerTypeCatalogSlug(type);
@@ -273,11 +273,26 @@ static void test_artworkCompletenessGate() {
                       << ") maps to slug \"" << slug << "\" absent from catalogImageSlugs()\n";
             continue;
         }
-        const std::string path = std::string(WEB_IMG_CATALOG_DIR) + "/" + slug + ".svg";
-        if (readFileAll(path).empty()) {
+        const std::string art = std::string(WEB_IMG_CATALOG_DIR) + "/" + slug + ".svg";
+        if (readFileAll(art).empty()) {
             g_fail++;
             std::cerr << "  FAIL [art gate] type " << int(type) << " (" << controllerTypeName(type)
-                      << ") missing artwork: " << path << "\n";
+                      << ") missing catalog artwork: " << art << "\n";
+        } else {
+            g_pass++;
+        }
+
+        const std::string icon = std::string(WEB_IMG_ICONS_DIR) + "/ctrl-" + slug + ".svg";
+        const std::string iconSvg = readFileAll(icon);
+        if (iconSvg.empty()) {
+            g_fail++;
+            std::cerr << "  FAIL [art gate] type " << int(type) << " (" << controllerTypeName(type)
+                      << ") missing dashboard icon: " << icon << "\n";
+        } else if (iconSvg.find("=\"currentColor\"") != std::string::npos) {
+            // An <img>-embedded SVG cannot inherit page color, so it would render black.
+            g_fail++;
+            std::cerr << "  FAIL [art gate] dashboard icon paints with currentColor: " << icon
+                      << "\n";
         } else {
             g_pass++;
         }
