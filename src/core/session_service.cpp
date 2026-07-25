@@ -204,7 +204,10 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
     Controller& ctrl = conn.controllers[desc.ctrlIdx];
     out.appliedType = ctrl.active ? ctrl.controllerType : desc.type;
 
-    if (desc.type >= CONTROLLER_TYPE_COUNT) {
+    if (desc.type >= CONTROLLER_TYPE_COUNT ||
+        !backend_.supportsIdentity(controllerIdentity(desc.type))) {
+        // Unknown id, or a valid type this backend can't materialize (e.g. a
+        // DualSense on ViGEm): reject per-controller, leave any live pad intact.
         out.result = APPLY_ERR_INVALID_TYPE;
         out.appliedType = ctrl.active ? ctrl.controllerType : CONTROLLER_TYPE_XBOX;
         fillMotionFlags(backend_, ctrl, out);
@@ -213,7 +216,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
 
     const uint8_t safeMode =
         (desc.touchpadMode < TOUCHPAD_MODE_COUNT) ? desc.touchpadMode : TOUCHPAD_MODE_OFF;
-    const bool wantDS4 = controllerTypeUsesDS4(desc.type);
+    const GamepadIdentity wantId = controllerIdentity(desc.type);
 
     if (!ctrl.active) {
         if (!backend_.isBusOpen()) {
@@ -236,7 +239,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
             out.result = APPLY_ERR_NO_SLOTS;
             return;
         }
-        bool plugOk = wantDS4 ? backend_.pluginDeviceDS4(serial) : backend_.pluginDevice(serial);
+        bool plugOk = backend_.pluginDevice(serial, wantId);
         if (!plugOk) {
             // The plug never created a target, so the serial is clean to reuse.
             releaseSerial(serial);
@@ -248,7 +251,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         ctrl.serialNo = serial;
         ctrl.active = true;
         ctrl.controllerType = desc.type;
-        ctrl.usesDS4 = wantDS4;
+        ctrl.identity = wantId;
         ctrl.caps = desc.caps;
         ctrl.touchpadMode = safeMode;
         resetControllerStreamState(ctrl);
@@ -265,7 +268,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
     }
 
     // Existing active slot.
-    if (wantDS4 != ctrl.usesDS4) {
+    if (wantId != ctrl.identity) {
         if (!backend_.isBusOpen()) {
             // Bus died under a live slot; nothing to converge onto.
             conn.epoch++;
@@ -279,7 +282,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         if (fresh != 0) {
             // Transactional replug: plug the NEW target on a FRESH serial, only
             // then retire the old one. A plug failure leaves the old pad untouched.
-            bool plugOk = wantDS4 ? backend_.pluginDeviceDS4(fresh) : backend_.pluginDevice(fresh);
+            bool plugOk = backend_.pluginDevice(fresh, wantId);
             if (!plugOk) {
                 releaseSerial(fresh);
                 // Bump the epoch anyway so a client whose PUT response was lost
@@ -313,8 +316,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
                 return;
             }
             serialInUse_[serial - 1] = true; // reclaim the slot we just released
-            bool plugOk =
-                wantDS4 ? backend_.pluginDeviceDS4(serial) : backend_.pluginDevice(serial);
+            bool plugOk = backend_.pluginDevice(serial, wantId);
             if (!plugOk) {
                 releaseSerial(serial);
                 ctrl.active = false;
@@ -331,7 +333,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         }
 
         ctrl.controllerType = desc.type;
-        ctrl.usesDS4 = wantDS4;
+        ctrl.identity = wantId;
         ctrl.caps = desc.caps;
         ctrl.touchpadMode = safeMode;
         resetControllerStreamState(ctrl);
@@ -345,7 +347,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         return;
     }
 
-    // Same family: converge caps/mode/type in place. No replug, no epoch bump
+    // Same identity: converge caps/mode/type in place. No replug, no epoch bump
     // (the applied topology is unchanged).
     ctrl.controllerType = desc.type;
     ctrl.caps = desc.caps;
@@ -573,9 +575,6 @@ bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
     if (!ctrl.active) return false;
 
     ctrl.lastReport = report;
-    if (controllerTypeUsesDS4(ctrl.controllerType)) {
-        return backend_.submitDS4Report(ctrl.serialNo, report);
-    }
     return backend_.submitReport(ctrl.serialNo, report);
 }
 
@@ -853,7 +852,6 @@ bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter
     if (!ctrl.active) return false;
 
     ctrl.lastReport = report;
-    if (ctrl.usesDS4) { return backend_.submitDS4Report(ctrl.serialNo, report); }
     return backend_.submitReport(ctrl.serialNo, report);
 }
 

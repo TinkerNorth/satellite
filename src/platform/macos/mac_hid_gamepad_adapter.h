@@ -101,12 +101,11 @@ class MacHidGamepadAdapter : public IGamepadPort {
     bool ensureBusOpen() override;
     void closeBus() override;
     bool isBusOpen() const override;
-    bool pluginDevice(uint32_t serial) override;
-    bool pluginDeviceDS4(uint32_t serial) override;
+    bool pluginDevice(uint32_t serial, GamepadIdentity identity) override;
+    bool supportsIdentity(GamepadIdentity identity) const override;
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
-    bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
 

@@ -140,7 +140,7 @@ int main() {
     EXPECT(adapter.isBusOpen());
 
     TEST("Xbox 360 pad plugs in");
-    EXPECT(adapter.pluginDevice(kXboxSerial));
+    EXPECT(adapter.pluginDevice(kXboxSerial, GamepadIdentity::Xbox));
     EXPECT(adapter.isDevicePlugged(kXboxSerial));
 
     const std::string xboxName = "Satellite Virtual Xbox 360 Pad #" + std::to_string(kXboxSerial);
@@ -204,7 +204,7 @@ int main() {
     ::close(evFd);
 
     TEST("DS4 pad plugs in with motion + touchpad nodes");
-    EXPECT(adapter.pluginDeviceDS4(kDs4Serial));
+    EXPECT(adapter.pluginDevice(kDs4Serial, GamepadIdentity::DS4));
     EXPECT(adapter.isDevicePlugged(kDs4Serial));
     const std::string ds4Name = "Satellite Virtual DualShock 4 #" + std::to_string(kDs4Serial);
     EXPECT(!findEventNodeByName(ds4Name, 3000).empty());
@@ -219,7 +219,7 @@ int main() {
     TEST("DS4 report / motion / touchpad submissions are accepted");
     GamepadReport ds4Report;
     ds4Report.wButtons = kXusbA;
-    EXPECT(adapter.submitDS4Report(kDs4Serial, ds4Report));
+    EXPECT(adapter.submitReport(kDs4Serial, ds4Report));
     MotionReport motion;
     motion.gyroX = 100;
     motion.accelZ = 8192;
