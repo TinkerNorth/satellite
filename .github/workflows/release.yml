@@ -79,6 +79,7 @@ jobs:
   required-secrets:
     name: Required release secrets gate
     needs: [gates]
+    timeout-minutes: 10
     runs-on: ubuntu-24.04
     outputs:
       signed: ${{ steps.check.outputs.signed }}
@@ -139,6 +140,7 @@ jobs:
   windows:
     name: Build Windows
     needs: [gates, required-secrets]
+    timeout-minutes: 60
     runs-on: windows-latest
     env:
       WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
@@ -162,7 +164,7 @@ jobs:
           $generator = ./scripts/windows-vs-generator.ps1
           $disp = ("${{ inputs.tag || github.ref_name }}") -replace '^v',''
           cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp"
-          cmake --build build-msvc --config Release
+          cmake --build build-msvc --config Release --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
 
       # installer.iss bundles the ViGEmBus driver from redist/, which is not
@@ -219,6 +221,7 @@ jobs:
   macos:
     name: Build macOS (stub)
     needs: [gates, required-secrets]
+    timeout-minutes: 30
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -233,7 +236,7 @@ jobs:
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
-          cmake --build build --config Release -j
+          cmake --build build --config Release --target satellite -j "$(sysctl -n hw.ncpu)"
 
       - name: Sign + notarize (if Developer ID configured)
         id: sign
@@ -320,6 +323,7 @@ jobs:
   linux:
     name: Build Linux
     needs: [gates, required-secrets]
+    timeout-minutes: 30
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -339,7 +343,7 @@ jobs:
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
-          cmake --build build --config Release -j
+          cmake --build build --config Release --target satellite -j "$(nproc)"
 
       - name: Stage version
         id: ver
@@ -398,6 +402,7 @@ jobs:
   harden:
     name: Harden artifacts (scan, SBOM, sign)
     needs: [windows, macos, linux]
+    timeout-minutes: 30
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -568,6 +573,7 @@ jobs:
   publish:
     name: Publish to GitHub Releases
     needs: [harden, provenance]
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     steps:
       - name: Download hardened bundle
@@ -603,6 +609,7 @@ jobs:
   apt-publish:
     name: Publish APT repository (gh-pages)
     needs: [publish]
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -710,6 +717,7 @@ jobs:
   rpm-publish:
     name: Publish DNF repository (gh-pages)
     needs: [publish, apt-publish]
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     permissions:
       contents: write
