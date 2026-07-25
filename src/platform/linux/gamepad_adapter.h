@@ -18,12 +18,11 @@ class GamepadAdapter : public IGamepadPort {
     bool ensureBusOpen() override;
     void closeBus() override;
     bool isBusOpen() const override;
-    bool pluginDevice(uint32_t serial) override;
-    bool pluginDeviceDS4(uint32_t serial) override;
+    bool pluginDevice(uint32_t serial, GamepadIdentity identity) override;
+    bool supportsIdentity(GamepadIdentity identity) const override;
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
-    bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
 
     // DS4 only; Xbox pads and devices whose motion node failed to open return
@@ -67,8 +66,8 @@ class GamepadAdapter : public IGamepadPort {
   private:
     struct Device {
         int fd = -1;
-        int motionFd = -1; // DS4 only; -1 for Xbox pads or on open failure
-        bool ds4 = false;
+        int motionFd = -1; // motion-capable types only; -1 for Xbox or on open failure
+        GamepadIdentity identity = GamepadIdentity::Xbox;
         std::thread readerThread;
         std::atomic<bool> readerRunning{false};
         // One-byte write wakes the reader's poll() at unplug.
@@ -90,7 +89,7 @@ class GamepadAdapter : public IGamepadPort {
         int32_t touchSlotId[2] = {-1, -1};
     };
 
-    int openUinputDevice(uint32_t serial, bool ds4);
+    int openUinputDevice(uint32_t serial, GamepadIdentity identity);
     int openMotionUinputDevice(uint32_t serial);
     int openTouchpadUinputDevice(uint32_t serial);
     int openRelMouseUinputDevice();
@@ -98,6 +97,10 @@ class GamepadAdapter : public IGamepadPort {
     void startReader(uint32_t serial, Device& dev); // caller holds mtx_
     void stopReader(uint32_t serial);               // caller holds mtx_
     void readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4);
+
+    // Switch Pro has a distinct evdev layout (Nintendo A/B + X/Y swap, ZL/ZR as
+    // buttons); caller holds mtx_.
+    bool submitSwitchLocked(int fd, const GamepadReport& report);
 
     mutable std::mutex mtx_;
     bool busOpen_ = false;

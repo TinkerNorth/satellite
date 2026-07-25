@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 88" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="DualSense">
+  <!-- Theme-neutral: strokes inherit currentColor so light/dark themes both render. -->
+  <path d="M34 16 C50 10 78 10 94 16 C105 20 116 42 119 60 C121 72 113 80 104 77 C96 74 92 63 84 59 C72 53 56 53 44 59 C36 63 32 74 24 77 C15 80 7 72 9 60 C12 42 23 20 34 16 Z"/>
+  <!-- Touchpad with the light bar hugging its edge (DualSense signature) -->
+  <rect x="48" y="18" width="32" height="18" rx="3"/>
+  <path d="M46 18 v18 M82 18 v18"/>
+  <circle cx="44" cy="50" r="9"/>
+  <circle cx="44" cy="50" r="3" fill="currentColor" stroke="none"/>
+  <circle cx="84" cy="50" r="9"/>
+  <circle cx="84" cy="50" r="3" fill="currentColor" stroke="none"/>
+  <g stroke="none" fill="currentColor">
+    <circle cx="101" cy="28" r="4"/>
+    <circle cx="111" cy="38" r="4"/>
+    <circle cx="91" cy="38" r="4"/>
+    <circle cx="101" cy="48" r="4"/>
+  </g>
+  <path d="M20 32 h6 v-6 h6 v6 h6 v6 h-6 v6 h-6 v-6 h-6 Z"/>
+</svg>

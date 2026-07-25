@@ -32,12 +32,11 @@ class ViGEmAdapter : public IGamepadPort {
     bool ensureBusOpen() override;
     void closeBus() override;
     bool isBusOpen() const override;
-    bool pluginDevice(uint32_t serial) override;
-    bool pluginDeviceDS4(uint32_t serial) override;
+    bool pluginDevice(uint32_t serial, GamepadIdentity identity) override;
+    bool supportsIdentity(GamepadIdentity identity) const override;
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
-    bool submitDS4Report(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
 
@@ -111,4 +110,8 @@ class ViGEmAdapter : public IGamepadPort {
     // On the first EX rejection (pre-1.17 ViGEmBus), latch exSupported off and
     // retry via basic DS4_REPORT so buttons/sticks still work. Caller holds busMtx_.
     bool submitDS4Locked(uint32_t serial);
+
+    // Fold a gamepad frame into the DS4 slot's EX report and submit it. Caller
+    // holds busMtx_; submitReport routes DS4 serials here.
+    bool submitDS4ReportLocked(uint32_t serial, const GamepadReport& report);
 };

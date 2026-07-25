@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 88" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Switch Pro Controller">
+  <!-- Theme-neutral: strokes inherit currentColor so light/dark themes both render. -->
+  <path d="M40 14 C52 10 76 10 88 14 C100 18 116 40 120 60 C122 73 112 80 103 76 C95 72 92 62 84 58 C72 52 56 52 44 58 C36 62 33 72 25 76 C16 80 6 73 8 60 C12 40 28 18 40 14 Z"/>
+  <!-- Offset sticks: left high, right low (Switch Pro layout) -->
+  <circle cx="38" cy="32" r="9"/>
+  <circle cx="38" cy="32" r="3" fill="currentColor" stroke="none"/>
+  <circle cx="88" cy="52" r="9"/>
+  <circle cx="88" cy="52" r="3" fill="currentColor" stroke="none"/>
+  <!-- D-pad (lower left) -->
+  <path d="M22 52 h6 v-6 h6 v6 h6 v6 h-6 v6 h-6 v-6 h-6 Z"/>
+  <!-- Face buttons (upper right, Nintendo positions) -->
+  <g stroke="none" fill="currentColor">
+    <circle cx="100" cy="24" r="3.5"/>
+    <circle cx="110" cy="34" r="3.5"/>
+    <circle cx="90" cy="34" r="3.5"/>
+    <circle cx="100" cy="44" r="3.5"/>
+  </g>
+  <!-- minus / plus -->
+  <path d="M58 22 h8"/>
+  <path d="M74 18 v8 M70 22 h8"/>
+</svg>

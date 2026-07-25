@@ -217,7 +217,7 @@ Descriptor rules:
 
 - **ControllerDescriptor is always sent WHOLE.** A rumble/motion/touchpad toggle is a
   re-send of the descriptor with one field changed; the server converges (replug only
-  on a type-family change, Xbox ↔ DS4).
+  on a materialization-identity change, e.g. Xbox ↔ DS4 ↔ DualSense ↔ Switch Pro).
 - **Single-writer: descriptor fields are client-owned.** The admin UI displays them but
   never sets them. Admin intent is session-level (kick) or trust-level (unpair) only.
 
@@ -311,6 +311,7 @@ to present it (static, localized) → **capabilities** = what is true right now
   "locale": "en",
   "protocolVersion": 1,
   "serverVersion": "1.6.0",
+  "catalogVersion": 2,
   "controllerTypes": [
     {
       "id": 0,
@@ -325,7 +326,8 @@ to present it (static, localized) → **capabilities** = what is true right now
         "motion": { "supported": false },
         "lightbar": { "supported": false },
         "touchpad": { "supported": false }
-      }
+      },
+      "emulates": { "sdlType": "xbox360", "usb": ["045e:028e"] }
     },
     {
       "id": 1,
@@ -340,7 +342,8 @@ to present it (static, localized) → **capabilities** = what is true right now
         "motion": { "supported": true, "requires": "vigembus>=1.17" },
         "lightbar": { "supported": true },
         "touchpad": { "supported": true, "modes": ["ds4"] }
-      }
+      },
+      "emulates": { "sdlType": "ps4", "usb": ["054c:05c4"] }
     }
   ],
   "hostFeatures": {
@@ -351,9 +354,30 @@ to present it (static, localized) → **capabilities** = what is true right now
 }
 ```
 
-- `controllerTypes[].id` is the wire enum value used as descriptor `type`. The client
-  renders its "Emulate" picker from this list instead of hardcoding the enum.
+- `catalogVersion` is the catalog SCHEMA version (integer), distinct from `protocolVersion`
+  (the wire protocol) and `serverVersion` (the build). It increments when the payload shape
+  evolves in a way a client may branch on: v2 offers up to four types per backend and adds
+  per-type `emulates`; a response OMITTING the field is the legacy **v1** catalog (xbox360 +
+  ds4, no emulates) — a client reads absent as 1. Additive within protocolVersion 1; a client
+  MAY substitute its own known representation for a recognized legacy version.
+- `controllerTypes[].id` is the wire enum value used as descriptor `type` (0 xbox360,
+  1 ds4, 2 dualsense, 3 switchpro). The client renders its "Emulate" picker from this
+  list instead of hardcoding the enum.
+- The offered set is per-backend — only identities the receiver can natively
+  materialize. Linux/uinput offers all four; Windows/ViGEm offers xbox360 + ds4 only
+  (no DualSense/Switch target); macOS/IOHIDUserDevice offers ds4 (drops the fake Xbox;
+  DualSense pending its report codec). A type the server does not offer but a client
+  requests anyway returns per-controller `invalidType`.
 - `requires` is a structured code (`"vigembus>=1.17"`), not prose.
+- `controllerTypes[].emulates` is an OPTIONAL physical-pad identity hint —
+  `{ "sdlType": …, "usb": [ "vid:pid", … ] }` — naming the physical controller this
+  virtual type is the natural default for (e.g. `ds4` ← a `ps4` pad / USB `054c:05c4`).
+  It lets a client later match a detected physical pad to a default emulation type with
+  NO protocol change: the mapping policy lives on the server, not in each client's
+  switch. `sdlType` mirrors the clients' `SDL_GameControllerType` vocabulary (`xbox360`,
+  `ps4`, `ps5`, `switchpro`); `usb` is lowercase `vendor:product`, an array so more
+  hardware revisions can be added later. Additive within protocolVersion 1; interim
+  clients IGNORE it and default to the first offered type. Rides only offered types.
 - A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
   the client reads the offered modes rather than inferring them from the type id. The
   DS4 `touchpad` advertises `["ds4"]` (its pad-render mode); the relative-mouse path is
@@ -376,7 +400,8 @@ to present it (static, localized) → **capabilities** = what is true right now
   server-owned emulation targets; new types must render on old apps from
   server-provided content.
 - NEVER localized (protocol constants): feature slugs (`rumble`, `motion`, …),
-  host-feature slugs, touchpad modes, `requires` codes, denial reasons, apply results.
+  host-feature slugs, touchpad modes, `requires` codes, `emulates` values (`sdlType` /
+  `usb`), denial reasons, apply results.
   A client can only offer what it has code for and carries its own translations.
 - Consequently: an unknown feature/hostFeature slug is NOT OFFERED (ignored
   gracefully, never an error); an unknown controller-TYPE id/slug DOES render, from

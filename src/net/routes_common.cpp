@@ -52,13 +52,20 @@ satellite::CatalogBackendTraits catalogBackendTraits(const BackendStatus& s) {
         t.mouseControlSupported = true;
         // Every emulated pad on a live bus reports rumble back to the client.
         t.rumbleSupported = true;
+        t.offersXbox = true;
+        t.offersDS4 = true; // ViGEmBus has only Xbox360Wired + DualShock4Wired targets
     } else if (id == BACKEND_ID_UINPUT) {
         t.ds4MotionSupported = true;
         t.ds4TouchpadSupported = true;
         t.ds4LightbarSupported = true;
         t.mouseControlSupported = true;
         t.rumbleSupported = true;
-    } else if (id == BACKEND_ID_MAC_HID) {
+        // uinput stamps any VID/PID: all four identities are wired + verified.
+        t.offersXbox = true;
+        t.offersDS4 = true;
+        t.offersDualSense = true;
+        t.offersSwitchPro = true;
+    } else if (id == BACKEND_ID_MAC_HID || id == BACKEND_ID_NONE) {
         // Virtual DS4 via IOHIDUserDevice: motion, touchpad, and lightbar all
         // ride the DS4 report set (no driver-version gate, hence no requires
         // code), and rumble+lightbar return through set-report. macOS has no
@@ -68,6 +75,10 @@ satellite::CatalogBackendTraits catalogBackendTraits(const BackendStatus& s) {
         t.ds4TouchpadSupported = true;
         t.ds4LightbarSupported = true;
         t.rumbleSupported = true;
+        // macOS offers DS4 (the fake Xbox is dropped); DualSense codec is a
+        // follow-up. NONE = unentitled mac: same static catalog, backend.available
+        // reports the runtime truth.
+        t.offersDS4 = true;
     }
     // keyboardControlSupported stays false on every backend: the host has no keystroke
     // injection path yet. The field is published so the client gates on it (and stays

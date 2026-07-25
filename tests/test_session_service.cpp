@@ -22,6 +22,12 @@
 
 #include "test_util.h"
 
+// A DS4/DualSense slot has a touchpad surface; Xbox and Switch Pro do not. The
+// mock mirrors that so a touchpad routed to a non-touchpad slot reads as dropped.
+static bool identityHasTouchpad(GamepadIdentity id) {
+    return id == GamepadIdentity::DS4 || id == GamepadIdentity::DualSense;
+}
+
 struct MockViGem : IGamepadPort {
     bool busOpen = false;
     bool ensureBusReturnVal = true;
@@ -69,6 +75,18 @@ struct MockViGem : IGamepadPort {
     RumbleCallback capturedRumbleCb;
     LightbarCallback capturedLightbarCb;
 
+    // Identity recorded per serial at plug (several tests assert which pad was
+    // plugged); lastIdentity is the most recent plug's.
+    std::unordered_map<uint32_t, GamepadIdentity> identityBySerial;
+    GamepadIdentity lastIdentity = GamepadIdentity::Xbox;
+    // Identities this backend refuses (empty = fully capable). A test inserts
+    // one to drive the APPLY_ERR_INVALID_TYPE path.
+    std::set<GamepadIdentity> unsupportedIdentities;
+    GamepadIdentity identityFor(uint32_t serial) const {
+        auto it = identityBySerial.find(serial);
+        return it != identityBySerial.end() ? it->second : GamepadIdentity::Xbox;
+    }
+
     bool ensureBusOpen() override {
         ensureBusCalls++;
         if (ensureBusReturnVal) busOpen = true;
@@ -80,17 +98,21 @@ struct MockViGem : IGamepadPort {
         pluggedSet.clear();
     }
     bool isBusOpen() const override { return busOpen; }
-    bool pluginDevice(uint32_t serial) override {
-        pluginCalls++;
+    bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
+        // Split the tally by identity so existing Xbox-vs-DS4 plug-count asserts
+        // still read; DualSense/SwitchPro plugs are asserted via identityFor.
+        if (identity == GamepadIdentity::DS4)
+            pluginDS4Calls++;
+        else
+            pluginCalls++;
+        lastIdentity = identity;
+        identityBySerial[serial] = identity;
         pluggedSerials.push_back(serial);
         if (pluginReturnVal) pluggedSet.insert(serial);
         return pluginReturnVal;
     }
-    bool pluginDeviceDS4(uint32_t serial) override {
-        pluginDS4Calls++;
-        pluggedSerials.push_back(serial);
-        if (pluginReturnVal) pluggedSet.insert(serial);
-        return pluginReturnVal;
+    bool supportsIdentity(GamepadIdentity identity) const override {
+        return unsupportedIdentities.count(identity) == 0;
     }
     bool unplugDevice(uint32_t serial) override {
         unplugCalls++;
@@ -99,13 +121,13 @@ struct MockViGem : IGamepadPort {
         return unplugReturnVal;
     }
     bool isDevicePlugged(uint32_t serial) const override { return pluggedSet.count(serial) != 0; }
-    bool submitReport(uint32_t, const GamepadReport& r) override {
-        submitCalls++;
-        lastSubmittedReport = r;
-        return submitReturnVal;
-    }
-    bool submitDS4Report(uint32_t, const GamepadReport& r) override {
-        submitDS4Calls++;
+    bool submitReport(uint32_t serial, const GamepadReport& r) override {
+        // Route the tally by the serial's plugged identity so "XUSB vs DS4"
+        // stays observable under the unified submit.
+        if (identityFor(serial) == GamepadIdentity::DS4)
+            submitDS4Calls++;
+        else
+            submitCalls++;
         lastSubmittedReport = r;
         return submitReturnVal;
     }
@@ -132,7 +154,9 @@ struct MockViGem : IGamepadPort {
         submitTouchpadCalls++;
         lastTouchpadSerial = serial;
         lastTouchpad = r;
-        return submitTouchpadReturnVal;
+        // Real backends land touchpad only on a DS4/DualSense surface; Xbox and
+        // Switch Pro slots have no touchpad node and drop it.
+        return submitTouchpadReturnVal && identityHasTouchpad(identityFor(serial));
     }
     bool submitRelativeMouse(int dx, int dy, bool leftButton) override {
         submitRelativeMouseCalls++;
@@ -150,10 +174,13 @@ struct MockViGem : IGamepadPort {
         if (capturedLightbarCb) capturedLightbarCb(serial, r, g, b);
     }
 
-    // Default mirrors real Windows/Linux: DS4 has an IMU sink, Xbox does not.
+    // Default mirrors real Windows/Linux: the motion-capable types
+    // (controllerTypeHasMotion) have an IMU sink, Xbox does not.
     std::unordered_map<uint8_t, bool> supportsMotionForTypeMap{
         {CONTROLLER_TYPE_XBOX, false},
         {CONTROLLER_TYPE_PLAYSTATION, true},
+        {CONTROLLER_TYPE_DUALSENSE, true},
+        {CONTROLLER_TYPE_SWITCHPRO, true},
     };
     bool supportsMotionForType(uint8_t controllerType) const override {
         auto it = supportsMotionForTypeMap.find(controllerType);
@@ -700,6 +727,113 @@ static void test_converge_sameDescriptorIsNoOp() {
     EXPECT_EQ(vigem.pluginCalls + vigem.pluginDS4Calls, plugs);
     EXPECT_EQ(vigem.unplugCalls, 0);
     EXPECT_EQ(r2.epoch, r1.epoch);
+}
+
+// N-way controller-type coverage: the identity model plugs each family under
+// its own materialization identity and gates motion/touchpad on the type.
+
+static void test_upsert_dualSensePlugsWithDualSenseIdentity() {
+    TEST("upsert: DualSense type plugs the DualSense identity; motion sink supported");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MOTION)});
+    EXPECT_EQ((int)r.controllers.size(), 1);
+    EXPECT_EQ((int)r.controllers[0].result, (int)APPLY_OK);
+    EXPECT_EQ((int)r.controllers[0].appliedType, (int)CONTROLLER_TYPE_DUALSENSE);
+    uint32_t serial = vigem.pluggedSerials.back();
+    EXPECT(vigem.identityFor(serial) == GamepadIdentity::DualSense);
+    EXPECT(vigem.lastIdentity == GamepadIdentity::DualSense);
+    EXPECT(r.controllers[0].motionSinkSupportedForType);
+}
+
+static void test_upsert_switchProPlugsMotionNoTouchpad() {
+    TEST("upsert: Switch Pro plugs the SwitchPro identity; motion supported, touchpad not landed");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_SWITCHPRO, CAP_MOTION, TOUCHPAD_MODE_DS4)});
+    EXPECT_EQ((int)r.controllers[0].result, (int)APPLY_OK);
+    EXPECT_EQ((int)r.controllers[0].appliedType, (int)CONTROLLER_TYPE_SWITCHPRO);
+    uint32_t serial = vigem.pluggedSerials.back();
+    EXPECT(vigem.identityFor(serial) == GamepadIdentity::SwitchPro);
+    EXPECT(r.controllers[0].motionSinkSupportedForType); // Switch Pro has an IMU
+    EXPECT(!controllerTypeHasTouchpad(CONTROLLER_TYPE_SWITCHPRO));
+
+    // A DS4-mode touchpad sample is offered to the backend but the SwitchPro
+    // identity has no touchpad surface, so it isn't landed (still cached).
+    TouchpadReport tr{};
+    tr.finger0.active = true;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, tr));
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT(snap.connections[0].controllers[0].touchpadActive);
+}
+
+static void test_converge_identityChangeReplugs_capsOnlyDoesNot() {
+    TEST("converge: DS4→DualSense replugs + bumps epoch; DS4 caps-only change does not");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    // Live DS4 (PlayStation) pad.
+    auto r1 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE)});
+    uint32_t ds4Serial = vigem.pluggedSerials.back();
+    EXPECT(vigem.identityFor(ds4Serial) == GamepadIdentity::DS4);
+    size_t plugsAfterFirst = vigem.pluggedSerials.size();
+
+    // Caps-only change within the DS4 identity: converge in place, no replug/bump.
+    auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE | CAP_MOTION)});
+    EXPECT_EQ(vigem.pluggedSerials.size(), plugsAfterFirst);
+    EXPECT_EQ(vigem.unplugCalls, 0);
+    EXPECT_EQ(r2.epoch, r1.epoch);
+
+    // DS4 → DualSense: identity changes → transactional replug onto a FRESH
+    // serial + epoch bump; the old DS4 target is retired after.
+    auto r3 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_RUMBLE | CAP_MOTION)});
+    EXPECT_EQ((int)r3.controllers[0].result, (int)APPLY_OK);
+    EXPECT_EQ((int)r3.controllers[0].appliedType, (int)CONTROLLER_TYPE_DUALSENSE);
+    EXPECT(r3.epoch != r2.epoch);
+    EXPECT_EQ(vigem.pluggedSerials.size(), plugsAfterFirst + 1);
+    uint32_t dualSenseSerial = vigem.pluggedSerials.back();
+    EXPECT(dualSenseSerial != ds4Serial);
+    EXPECT(vigem.identityFor(dualSenseSerial) == GamepadIdentity::DualSense);
+    EXPECT_EQ(vigem.unplugCalls, 1);
+    EXPECT_EQ(vigem.unpluggedSerials.back(), ds4Serial);
+}
+
+static void test_apply_unsupportedIdentityRejectedPriorPadIntact() {
+    TEST("apply: backend that can't materialize DualSense → invalidType, prior pad intact");
+    MockViGem vigem;
+    vigem.unsupportedIdentities.insert(GamepadIdentity::DualSense);
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    // A live DS4 pad (the DS4 identity IS supported).
+    auto r1 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION)});
+    EXPECT_EQ((int)r1.controllers[0].result, (int)APPLY_OK);
+    uint32_t ds4Serial = vigem.pluggedSerials.back();
+    size_t plugsBefore = vigem.pluggedSerials.size();
+    int unplugsBefore = vigem.unplugCalls;
+
+    // Asking for DualSense on this backend fails per-controller and leaves the
+    // existing pad untouched (no plug, no unplug, type/serial unchanged).
+    auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE)});
+    EXPECT_EQ((int)r2.controllers[0].result, (int)APPLY_ERR_INVALID_TYPE);
+    EXPECT_EQ((int)r2.controllers[0].appliedType, (int)CONTROLLER_TYPE_PLAYSTATION);
+    EXPECT_EQ(vigem.pluggedSerials.size(), plugsBefore);
+    EXPECT_EQ(vigem.unplugCalls, unplugsBefore);
+    EXPECT_EQ(svc.totalActiveControllers(), 1);
+    auto snap = svc.getConnectionsSnapshot();
+    EXPECT_EQ((int)snap.connections[0].controllers[0].controllerType,
+              (int)CONTROLLER_TYPE_PLAYSTATION);
+    EXPECT_EQ(snap.connections[0].controllers[0].serial, ds4Serial);
+    EXPECT(vigem.identityFor(ds4Serial) == GamepadIdentity::DS4);
 }
 
 static void test_epoch_bumpsOnTopologyChanges() {
@@ -1677,18 +1811,43 @@ static void test_concurrent_upsertCloseSnapshot() {
 }
 
 static void test_controllerTypeHelpers() {
-    TEST("controller type helpers: names, labels, families, clamping");
+    TEST("controller type helpers: names, labels, identities, feature surfaces");
+    EXPECT_EQ((int)CONTROLLER_TYPE_COUNT, 4);
+
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_XBOX)), std::string("xbox"));
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_PLAYSTATION)),
               std::string("playstation"));
+    EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_DUALSENSE)), std::string("dualsense"));
+    EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_SWITCHPRO)), std::string("switchpro"));
     EXPECT_EQ(std::string(controllerTypeName(255)), std::string("xbox"));
+
     EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_XBOX)), std::string("Xbox"));
     EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_PLAYSTATION)),
               std::string("PlayStation"));
-    EXPECT(!controllerTypeUsesDS4(CONTROLLER_TYPE_XBOX));
-    EXPECT(controllerTypeUsesDS4(CONTROLLER_TYPE_PLAYSTATION));
-    EXPECT(!controllerTypeUsesDS4(255));
-    EXPECT_EQ((int)CONTROLLER_TYPE_COUNT, 2);
+    EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_DUALSENSE)),
+              std::string("DualSense"));
+    EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_SWITCHPRO)),
+              std::string("Switch Pro"));
+    EXPECT_EQ(std::string(controllerTypeLabel(255)), std::string("Xbox"));
+
+    // Materialization identity per type (drives plug/submit selection + the
+    // replug-on-change gate). Unknown ids clamp to Xbox.
+    EXPECT(controllerIdentity(CONTROLLER_TYPE_XBOX) == GamepadIdentity::Xbox);
+    EXPECT(controllerIdentity(CONTROLLER_TYPE_PLAYSTATION) == GamepadIdentity::DS4);
+    EXPECT(controllerIdentity(CONTROLLER_TYPE_DUALSENSE) == GamepadIdentity::DualSense);
+    EXPECT(controllerIdentity(CONTROLLER_TYPE_SWITCHPRO) == GamepadIdentity::SwitchPro);
+    EXPECT(controllerIdentity(255) == GamepadIdentity::Xbox);
+
+    // Feature surfaces, independent of identity: Switch Pro has an IMU but no
+    // touchpad; Xbox has neither.
+    EXPECT(!controllerTypeHasMotion(CONTROLLER_TYPE_XBOX));
+    EXPECT(controllerTypeHasMotion(CONTROLLER_TYPE_PLAYSTATION));
+    EXPECT(controllerTypeHasMotion(CONTROLLER_TYPE_DUALSENSE));
+    EXPECT(controllerTypeHasMotion(CONTROLLER_TYPE_SWITCHPRO));
+    EXPECT(controllerTypeHasTouchpad(CONTROLLER_TYPE_PLAYSTATION));
+    EXPECT(controllerTypeHasTouchpad(CONTROLLER_TYPE_DUALSENSE));
+    EXPECT(!controllerTypeHasTouchpad(CONTROLLER_TYPE_XBOX));
+    EXPECT(!controllerTypeHasTouchpad(CONTROLLER_TYPE_SWITCHPRO));
 }
 
 static void test_applyResultNames() {
@@ -1754,6 +1913,11 @@ int main() {
     test_converge_fullBus_fallsBackToUnplugFirst();
     test_converge_capsAndModeChange_noReplug();
     test_converge_sameDescriptorIsNoOp();
+
+    test_upsert_dualSensePlugsWithDualSenseIdentity();
+    test_upsert_switchProPlugsMotionNoTouchpad();
+    test_converge_identityChangeReplugs_capsOnlyDoesNot();
+    test_apply_unsupportedIdentityRejectedPriorPadIntact();
 
     test_epoch_bumpsOnTopologyChanges();
     test_epoch_bumpsOnFailedReplug();

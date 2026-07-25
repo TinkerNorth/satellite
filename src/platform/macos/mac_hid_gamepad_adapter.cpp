@@ -292,14 +292,16 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     return true;
 }
 
-bool MacHidGamepadAdapter::pluginDevice(uint32_t serial) {
-    // Xbox-typed slot, same DS4 hardware identity (see the header's "slot
-    // identity" note): macOS adopts no XUSB-shaped HID device.
-    return plugCommon(serial, /*isDS4=*/false);
+bool MacHidGamepadAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
+    // macOS adopts no XUSB-shaped HID device, so an Xbox-typed slot publishes the
+    // same DS4 hardware identity; isDS4 only gates motion/touch/battery routing.
+    return plugCommon(serial, /*isDS4=*/identity != GamepadIdentity::Xbox);
 }
 
-bool MacHidGamepadAdapter::pluginDeviceDS4(uint32_t serial) {
-    return plugCommon(serial, /*isDS4=*/true);
+bool MacHidGamepadAdapter::supportsIdentity(GamepadIdentity identity) const {
+    // Entitled IOHIDUserDevice materializes Xbox (as DS4) and DS4. DualSense (own
+    // report codec) and Switch Pro (subcommand handshake) are not yet wired here.
+    return identity == GamepadIdentity::Xbox || identity == GamepadIdentity::DS4;
 }
 
 bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
@@ -368,15 +370,7 @@ bool MacHidGamepadAdapter::submitLocked(Slot& slot) {
 bool MacHidGamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = slots_.find(serial);
-    if (it == slots_.end() || it->second->isDS4) return false;
-    it->second->state.pad = report;
-    return submitLocked(*it->second);
-}
-
-bool MacHidGamepadAdapter::submitDS4Report(uint32_t serial, const GamepadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = slots_.find(serial);
-    if (it == slots_.end() || !it->second->isDS4) return false;
+    if (it == slots_.end()) return false;
     it->second->state.pad = report;
     return submitLocked(*it->second);
 }
@@ -392,18 +386,12 @@ bool MacHidGamepadAdapter::submitMotion(uint32_t serial, const MotionReport& rep
 }
 
 bool MacHidGamepadAdapter::supportsMotionForType(uint8_t controllerType) const {
-    // Backend-shape, not per-serial: only DS4-typed slots route motion,
-    // matching the ViGEm and uinput adapters.
-    //
-    // Unentitled invariant (a constraint this TU cannot show): the historical
-    // stub inherited IGamepadPort's `false`, while this branch answers true
-    // for DS4 types even when no device can be created. The delta is
-    // unobservable today because every caller (core/session_service.cpp)
-    // gates on `ctrl.active`, and no controller can activate while
-    // ensureBusOpen() fails — which it always does unentitled. If controllers
-    // ever become reachable without an open bus, re-check this method against
-    // the stub's inherited `false` before trusting the parity claim.
-    return controllerTypeUsesDS4(controllerType);
+    // Backend-shape, not per-serial: the motion-capable supported types route
+    // motion, matching the ViGEm and uinput adapters. (Unobservable unentitled:
+    // callers gate on ctrl.active, which needs an open bus that never opens
+    // without the entitlement.)
+    return supportsIdentity(controllerIdentity(controllerType)) &&
+           controllerTypeHasMotion(controllerType);
 }
 
 bool MacHidGamepadAdapter::motionBackendOk(uint32_t serial) const {
@@ -490,13 +478,12 @@ bool MacHidGamepadAdapter::ensureBusOpen() { return false; }
 void MacHidGamepadAdapter::closeBus() {}
 bool MacHidGamepadAdapter::isBusOpen() const { return false; }
 bool MacHidGamepadAdapter::plugCommon(uint32_t, bool) { return false; }
-bool MacHidGamepadAdapter::pluginDevice(uint32_t) { return false; }
-bool MacHidGamepadAdapter::pluginDeviceDS4(uint32_t) { return false; }
+bool MacHidGamepadAdapter::pluginDevice(uint32_t, GamepadIdentity) { return false; }
+bool MacHidGamepadAdapter::supportsIdentity(GamepadIdentity) const { return false; }
 bool MacHidGamepadAdapter::unplugDevice(uint32_t) { return true; } // nothing existed to remove
 bool MacHidGamepadAdapter::isDevicePlugged(uint32_t) const { return false; }
 bool MacHidGamepadAdapter::submitLocked(Slot&) { return false; }
 bool MacHidGamepadAdapter::submitReport(uint32_t, const GamepadReport&) { return false; }
-bool MacHidGamepadAdapter::submitDS4Report(uint32_t, const GamepadReport&) { return false; }
 bool MacHidGamepadAdapter::submitMotion(uint32_t, const MotionReport&) { return false; }
 bool MacHidGamepadAdapter::supportsMotionForType(uint8_t) const { return false; }
 bool MacHidGamepadAdapter::motionBackendOk(uint32_t) const { return true; }

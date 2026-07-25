@@ -26,8 +26,16 @@ class IGamepadPort {
     virtual void closeBus() = 0;
     virtual bool isBusOpen() const = 0;
 
-    virtual bool pluginDevice(uint32_t serial) = 0;    // virtual Xbox 360
-    virtual bool pluginDeviceDS4(uint32_t serial) = 0; // virtual DualShock 4
+    // Plug a virtual device of the given materialization identity. The adapter
+    // records the identity per serial so submitReport packs the right report.
+    virtual bool pluginDevice(uint32_t serial, GamepadIdentity identity) = 0;
+
+    // Can this backend materialize `identity`? Gates per-backend catalog offers
+    // and the invalidType apply result. Default = the two universally-emulable
+    // identities; adapters widen or narrow.
+    virtual bool supportsIdentity(GamepadIdentity identity) const {
+        return identity == GamepadIdentity::Xbox || identity == GamepadIdentity::DS4;
+    }
 
     // True iff the device is gone (or was never plugged). False means removal
     // was unconfirmed: the caller MUST quarantine the serial so a zombie target
@@ -38,8 +46,9 @@ class IGamepadPort {
     // Default mirrors the legacy inference for backends without slot state.
     virtual bool isDevicePlugged(uint32_t serial) const { return serial != 0; }
 
+    // Submit input for a plugged serial; the adapter packs per the identity it
+    // recorded at plug.
     virtual bool submitReport(uint32_t serial, const GamepadReport& report) = 0;
-    virtual bool submitDS4Report(uint32_t serial, const GamepadReport& report) = 0;
 
     // Rumble sink, invoked from a platform worker thread. Must stay callable
     // until the adapter is destroyed (SessionService outlives it).
@@ -51,8 +60,8 @@ class IGamepadPort {
 
     // Does this backend have an IMU surface for `controllerType`? CAP_MOTION is
     // what the sender streams; this is what the receiver can land. Default false;
-    // ViGEm/uinput override true only for PLAYSTATION. Surfaced as
-    // CtrlInfo::motionSinkSupportedForType.
+    // ViGEm/uinput override true for the motion-capable types
+    // (controllerTypeHasMotion). Surfaced as CtrlInfo::motionSinkSupportedForType.
     virtual bool supportsMotionForType(uint8_t /*controllerType*/) const { return false; }
 
     // True iff the per-serial IMU sink was created at plug-in. False means the
