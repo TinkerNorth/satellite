@@ -70,13 +70,23 @@ jobs:
       action_pin_lint_enabled: true
       allowlist_expiry_enabled: true
 
+  # ─────────────────────────────────────────────────────────────────────
+  # Signing-secret report. Advisory by default: missing secrets downgrade
+  # the release to -unsigned artifacts rather than failing it. Set the
+  # repository variable ENFORCE_RELEASE_SIGNING=true to restore the hard
+  # gate once the platform certificates exist.
+  # ─────────────────────────────────────────────────────────────────────
   required-secrets:
     name: Required release secrets gate
     needs: [gates]
     runs-on: ubuntu-24.04
+    outputs:
+      signed: ${{ steps.check.outputs.signed }}
     steps:
       - name: Verify required signing secrets are present for tagged releases
+        id: check
         env:
+          ENFORCE: ${{ vars.ENFORCE_RELEASE_SIGNING }}
           WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
           WIN_SIGN_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
           DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
@@ -87,33 +97,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Strict gate only fires for stable tagged releases. workflow_dispatch
-          # runs and prerelease tags (v*-alpha, v*-rc.1, ...) still produce
-          # -unsigned artifacts so the pipeline itself is testable without
-          # rotating real keys.
+          missing=()
+          for name in WIN_SIGN_CERT_BASE64 WIN_SIGN_PASSWORD \
+                      DEVELOPER_ID_APPLICATION_CERT_BASE64 DEVELOPER_ID_PASSWORD \
+                      APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            [ -n "${!name:-}" ] || missing+=("$name")
+          done
+
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::All platform signing secrets present; artifacts will be signed."
+            exit 0
+          fi
+
+          echo "signed=false" >> "$GITHUB_OUTPUT"
+
           if [ "${{ github.ref_type }}" != "tag" ] || [ "${{ startsWith(github.ref, 'refs/tags/v') }}" != "true" ]; then
-            echo "::notice::Non-tag release run; unsigned fallback permitted."
+            echo "::notice::Non-tag release run; unsigned fallback permitted. Missing: ${missing[*]}"
             exit 0
           fi
           case "$GITHUB_REF_NAME" in
             *-*)
-              echo "::warning::Prerelease tag ${GITHUB_REF_NAME}: signing secrets not enforced; unsigned artifacts carry an -unsigned suffix."
+              echo "::warning::Prerelease tag ${GITHUB_REF_NAME}: unsigned artifacts carry an -unsigned suffix. Missing: ${missing[*]}"
               exit 0
               ;;
           esac
-          missing=()
-          [ -z "${WIN_SIGN_CERT_BASE64:-}" ] && missing+=("WIN_SIGN_CERT_BASE64")
-          [ -z "${WIN_SIGN_PASSWORD:-}" ] && missing+=("WIN_SIGN_PASSWORD")
-          [ -z "${DEVELOPER_ID_APPLICATION_CERT_BASE64:-}" ] && missing+=("DEVELOPER_ID_APPLICATION_CERT_BASE64")
-          [ -z "${DEVELOPER_ID_PASSWORD:-}" ] && missing+=("DEVELOPER_ID_PASSWORD")
-          [ -z "${APPLE_ID:-}" ] && missing+=("APPLE_ID")
-          [ -z "${APPLE_TEAM_ID:-}" ] && missing+=("APPLE_TEAM_ID")
-          [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && missing+=("APPLE_APP_SPECIFIC_PASSWORD")
-          if [ "${#missing[@]}" -gt 0 ]; then
+
+          if [ "${ENFORCE:-}" = "true" ]; then
             echo "::error::Stable tagged release on $GITHUB_REF requires platform signing secrets, but the following are missing: ${missing[*]}"
-            echo "::error::Add the missing repository secrets and retry the release. Unsigned -unsigned artifacts are NOT permitted for stable tags."
+            echo "::error::Add the missing repository secrets, or unset the ENFORCE_RELEASE_SIGNING repository variable to allow -unsigned artifacts."
             exit 1
           fi
+
+          echo "::warning::Stable tag ${GITHUB_REF_NAME} is being released UNSIGNED; artifacts carry an -unsigned suffix. Missing: ${missing[*]}"
+          echo "::warning::Set the repository variable ENFORCE_RELEASE_SIGNING=true to make this a hard failure once signing certificates are available."
 
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform build jobs. Same as the previous release.yml shape but

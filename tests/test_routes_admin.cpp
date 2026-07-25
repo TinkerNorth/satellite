@@ -133,7 +133,7 @@ int main() {
     // ---- pre-routing guard (DNS rebind / CSRF) -------------------------------
     {
         TEST("non-loopback Host header: 403 before any route runs");
-        auto res = cli.Get("/api/status", {{"Host", "evil.example"}});
+        auto res = cli.Get("/api/status", httplib::Headers{{"Host", "evil.example"}});
         EXPECT(res && res->status == 403);
         if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "error"), std::string("forbidden host"));
     }
@@ -161,7 +161,7 @@ int main() {
     }
     {
         TEST("cross-site Origin on GET is allowed (reads are loopback-bound anyway)");
-        auto res = cli.Get("/api/status", {{"Origin", "http://evil.example"}});
+        auto res = cli.Get("/api/status", httplib::Headers{{"Origin", "http://evil.example"}});
         EXPECT(res && res->status == 200);
     }
 

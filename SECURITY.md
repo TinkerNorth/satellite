@@ -144,11 +144,15 @@ Each repo runs the same shape of gates:
 **On every tagged release** (also blocking):
 
 - Re-run of every PR-time gate against the tagged commit.
-- Required-secrets gate: refuses to publish if the platform signing
-  secret is missing for a tag (Windows Authenticode, Apple Developer ID
-  + notarization, Android keystore). `workflow_dispatch` runs against
-  feature branches still produce `-unsigned` artifacts for testing the
-  pipeline.
+- Required-secrets gate: reports which platform signing secrets are
+  missing for a tag (Windows Authenticode, Apple Developer ID +
+  notarization, Android keystore). It is **advisory by default** —
+  `satellite` currently ships without those certificates, so releases
+  degrade to `-unsigned` artifacts instead of failing, and authenticity
+  rests on cosign + SLSA provenance rather than an OS-vendor
+  certificate. Setting the repository variable
+  `ENFORCE_RELEASE_SIGNING=true` restores the hard failure for stable
+  tags once the certificates exist.
 - Artifact-level vulnerability scan: Anchore Grype, fails on
   CRITICAL/HIGH.
 - SBOM generation: Syft, both SPDX-JSON and CycloneDX-JSON.
