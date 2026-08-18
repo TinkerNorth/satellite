@@ -167,10 +167,10 @@ void showTrayMenu(HWND hwnd) {
     if (g_updateService) {
         UpdateStatusSnapshot snap = g_updateService->snapshot();
         if (snap.state == UpdateState::Downloaded && snap.info.available) {
-            std::wstring label = L"Install Update v" + toWide(snap.info.version);
+            std::wstring label = L"Install Update " + toWide(snap.info.version);
             AppendMenuW(menu, MF_STRING, IDM_INSTALL_UPDATE, label.c_str());
         } else if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
-            std::wstring label = L"Download Update v" + toWide(snap.info.version) + L"...";
+            std::wstring label = L"Download Update " + toWide(snap.info.version) + L"...";
             AppendMenuW(menu, MF_STRING, IDM_INSTALL_UPDATE, label.c_str());
         } else if (snap.state == UpdateState::Downloading || snap.state == UpdateState::Verifying) {
             AppendMenuW(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, L"Downloading update...");

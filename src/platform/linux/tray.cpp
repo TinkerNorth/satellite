@@ -74,9 +74,9 @@ static gboolean pollMenuState(gpointer) {
             std::string label;
             bool enabled = true;
             if (s.state == UpdateState::Downloaded && s.info.available) {
-                label = "Install Update v" + s.info.version;
+                label = "Install Update " + s.info.version;
             } else if (s.state == UpdateState::UpdateAvailable && s.info.available) {
-                label = "Download Update v" + s.info.version + "\xE2\x80\xA6";
+                label = "Download Update " + s.info.version + "\xE2\x80\xA6";
             } else if (s.state == UpdateState::Downloading || s.state == UpdateState::Verifying) {
                 label = "Downloading update\xE2\x80\xA6";
                 enabled = false;

@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["[0-9]*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -113,7 +113,7 @@ jobs:
 
           echo "signed=false" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.ref_type }}" != "tag" ] || [ "${{ startsWith(github.ref, 'refs/tags/v') }}" != "true" ]; then
+          if [ "${{ github.ref_type }}" != "tag" ] || ! [[ "$GITHUB_REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             echo "::notice::Non-tag release run; unsigned fallback permitted. Missing: ${missing[*]}"
             exit 0
           fi
@@ -354,7 +354,7 @@ jobs:
 
       # Build .deb and .rpm together via CPack. CMakeLists.txt sets
       # CPACK_GENERATOR="DEB;RPM"; the resulting filenames match the
-      # historical SatelliteSetup-vX.Y.Z layout: satellite_X.Y.Z_amd64.deb
+      # SatelliteSetup-X.Y.Z layout: satellite_X.Y.Z_amd64.deb
       # and satellite-X.Y.Z-1.x86_64.rpm. CPack drives the udev rule +
       # modules-load.d entry + post-install scriptlet, keeping both formats
       # in lockstep.
