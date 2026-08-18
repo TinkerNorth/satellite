@@ -193,7 +193,7 @@ codeql database analyze build-db --format=sarif-latest --output=codeql.sarif \
 
 Each GitHub Release ships:
 
-- the platform installer / binary (`SatelliteSetup-vX.Y.Z.exe`, `satellite-macos-stub-vX.Y.Z.zip`, `satellite_X.Y.Z_amd64.deb`, `satellite-X.Y.Z-x86_64.AppImage`)
+- the platform installer / binary (`SatelliteSetup-X.Y.Z.exe`, `satellite-macos-stub-X.Y.Z.zip`, `satellite_X.Y.Z_amd64.deb`, `satellite-X.Y.Z-x86_64.AppImage`)
 - per-artifact `*.sig` + `*.crt` (cosign keyless signature + certificate)
 - `SHA256SUMS` + `SHA256SUMS.sig` + `SHA256SUMS.crt`
 - `satellite.sbom.spdx.json` + `satellite.sbom.cdx.json` (Syft)
@@ -209,7 +209,7 @@ sha256sum -c SHA256SUMS
 cosign verify-blob \
   --certificate SHA256SUMS.crt \
   --signature   SHA256SUMS.sig \
-  --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   SHA256SUMS
 
@@ -217,8 +217,8 @@ cosign verify-blob \
 slsa-verifier verify-artifact \
   --provenance-path satellite.intoto.jsonl \
   --source-uri      github.com/TinkerNorth/satellite \
-  --source-tag      vX.Y.Z \
-  SatelliteSetup-vX.Y.Z.exe
+  --source-tag      X.Y.Z \
+  SatelliteSetup-X.Y.Z.exe
 ```
 
 Replace `TinkerNorth` with the GitHub org/owner. The exact recipe is also

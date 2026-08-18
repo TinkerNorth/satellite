@@ -13,7 +13,7 @@ struct GitHubAsset {
 };
 
 struct GitHubRelease {
-    std::string tagName; // "v1.2.3" (with the leading v)
+    std::string tagName; // "1.2.3" (legacy releases: "v1.2.3")
     std::string name;
     bool prerelease = false;
     bool draft = false;
@@ -29,7 +29,7 @@ bool parseGitHubRelease(const std::string& json, GitHubRelease& out);
 // Parse GET .../releases (a JSON array). Same return semantics.
 bool parseGitHubReleaseList(const std::string& json, std::vector<GitHubRelease>& out);
 
-// "v1.2.3" to "1.2.3"; input unchanged if it doesn't start with v/V.
+// Normalizes legacy "v1.2.3" tags to "1.2.3"; bare tags pass through unchanged.
 std::string stripTagPrefix(const std::string& tag);
 
 // ISO-8601 to unix epoch seconds; 0 on parse failure.

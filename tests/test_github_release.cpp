@@ -10,16 +10,16 @@
 static void test_parse_full_release() {
     TEST("parseGitHubRelease: extracts every field + nested assets");
     const std::string json = R"({
-      "tag_name": "v1.2.3",
+      "tag_name": "1.2.3",
       "name": "Release 1.2.3",
       "prerelease": false,
       "draft": false,
       "published_at": "2026-05-13T12:34:56Z",
       "body": "notes here",
-      "html_url": "https://github.com/x/y/releases/tag/v1.2.3",
+      "html_url": "https://github.com/x/y/releases/tag/1.2.3",
       "assets": [
-        {"name": "SatelliteSetup-v1.2.3.exe",
-         "browser_download_url": "https://example/SatelliteSetup-v1.2.3.exe",
+        {"name": "SatelliteSetup-1.2.3.exe",
+         "browser_download_url": "https://example/SatelliteSetup-1.2.3.exe",
          "size": 4096, "content_type": "application/octet-stream"},
         {"name": "SHA256SUMS", "browser_download_url": "https://example/SHA256SUMS",
          "size": 200, "content_type": "text/plain"}
@@ -27,25 +27,25 @@ static void test_parse_full_release() {
     })";
     GitHubRelease r;
     EXPECT(parseGitHubRelease(json, r));
-    EXPECT_EQ(r.tagName, std::string("v1.2.3"));
+    EXPECT_EQ(r.tagName, std::string("1.2.3"));
     EXPECT_EQ(r.name, std::string("Release 1.2.3"));
     EXPECT(!r.prerelease);
     EXPECT(!r.draft);
     EXPECT_EQ(r.publishedAt, std::string("2026-05-13T12:34:56Z"));
     EXPECT_EQ(r.body, std::string("notes here"));
     EXPECT_EQ(r.assets.size(), (size_t)2);
-    EXPECT_EQ(r.assets[0].name, std::string("SatelliteSetup-v1.2.3.exe"));
+    EXPECT_EQ(r.assets[0].name, std::string("SatelliteSetup-1.2.3.exe"));
     EXPECT_EQ(r.assets[0].size, (uint64_t)4096);
     EXPECT_EQ(r.assets[1].name, std::string("SHA256SUMS"));
 }
 
 static void test_parse_null_optional_fields() {
     TEST("parseGitHubRelease: tolerates null name/body/published_at");
-    const std::string json = R"({"tag_name":"v2.0.0","name":null,"body":null,
+    const std::string json = R"({"tag_name":"2.0.0","name":null,"body":null,
       "published_at":null,"prerelease":true,"assets":[]})";
     GitHubRelease r;
     EXPECT(parseGitHubRelease(json, r));
-    EXPECT_EQ(r.tagName, std::string("v2.0.0"));
+    EXPECT_EQ(r.tagName, std::string("2.0.0"));
     EXPECT(r.name.empty());
     EXPECT(r.body.empty());
     EXPECT(r.prerelease);
@@ -63,9 +63,10 @@ static void test_parse_malformed_returns_false() {
 static void test_parse_list() {
     TEST("parseGitHubReleaseList: array of releases, and empty array");
     std::vector<GitHubRelease> out;
-    EXPECT(parseGitHubReleaseList(R"([{"tag_name":"v1.0.0"},{"tag_name":"v1.1.0"}])", out));
+    EXPECT(parseGitHubReleaseList(R"([{"tag_name":"v0.2.2"},{"tag_name":"1.1.0"}])", out));
     EXPECT_EQ(out.size(), (size_t)2);
-    EXPECT_EQ(out[1].tagName, std::string("v1.1.0"));
+    EXPECT_EQ(out[0].tagName, std::string("v0.2.2"));
+    EXPECT_EQ(out[1].tagName, std::string("1.1.0"));
 
     std::vector<GitHubRelease> empty;
     EXPECT(parseGitHubReleaseList("[]", empty));

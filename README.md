@@ -354,7 +354,7 @@ API on a 24-hour cadence (configurable in **Settings → Updates**). When a
 newer release is published, the dashboard shows a banner with **Download**,
 **Remind Me Later**, and **Skip This Version** actions. The tray menu's
 *Check for Updates…* item reflects the same state and toggles to *Install
-Update vX.Y.Z* once the artifact has been fetched and verified.
+Update X.Y.Z* once the artifact has been fetched and verified.
 
 The full state machine (`idle → checking → update-available → downloading
 → verifying → downloaded → installing`) is described in
@@ -363,8 +363,8 @@ The full state machine (`idle → checking → update-available → downloading
 
 | Platform | HTTPS    | Artifact                       | Install method |
 |---|---|---|---|
-| Windows | WinHTTP | `SatelliteSetup-vX.Y.Z.exe`         | Inno Setup `/VERYSILENT /OTA` then auto-relaunch |
-| macOS   | NSURLSession | `satellite-macos-stub-vX.Y.Z.zip` | `ditto -xk` unpack + atomic bundle swap via helper, `open` relaunch |
+| Windows | WinHTTP | `SatelliteSetup-X.Y.Z.exe`         | Inno Setup `/VERYSILENT /OTA` then auto-relaunch |
+| macOS   | NSURLSession | `satellite-macos-stub-X.Y.Z.zip` | `ditto -xk` unpack + atomic bundle swap via helper, `open` relaunch |
 | Linux (AppImage) | libcurl | `satellite-X.Y.Z-x86_64.AppImage` | `chmod +x` + atomic mv over `$APPIMAGE`, `setsid` relaunch |
 | Linux (`.deb`) | libcurl | n/a (surfaces command) | `sudo apt upgrade satellite` (auto-pulled from our APT repo if added) |
 | Linux (`.rpm`) | libcurl | n/a (surfaces command) | `sudo dnf upgrade --refresh satellite` (auto-pulled from our DNF repo) |
@@ -377,8 +377,8 @@ in-app is tracked as a follow-up). Transit is HTTPS-pinned to `github.com`.
 
 ### Settings (web UI: `/settings` → Updates section)
 
-- **Channel**: *Stable* (only `vX.Y.Z` releases) or *Pre-release*
-  (includes `vX.Y.Z-rc.1`, `-beta.2`, etc.).
+- **Channel**: *Stable* (only `X.Y.Z` releases) or *Pre-release*
+  (includes `X.Y.Z-rc.1`, `-beta.2`, etc.).
 - **Check automatically**: runs the 24-hour timer thread (skip if disabled).
 - **Download in background**: auto-download an available update so it's
   ready to install on the next visit.

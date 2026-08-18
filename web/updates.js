@@ -198,7 +198,7 @@ function updatesSeedFormOnce() {
 function updatesRenderSettingsFields() {
   if (!updatesState) return;
   const s = updatesState;
-  setText('settings-version', 'v' + s.currentVersion);
+  setText('settings-version', s.currentVersion);
   setText('settings-platform', formatPlatformId(s.platformId));
   setText('settings-last-check', s.lastCheckEpoch ? formatRelativeEpoch(s.lastCheckEpoch) : t('settings.updates.never'));
   updatesSeedFormOnce();
@@ -273,9 +273,9 @@ function updatesPromptRestart() {
   // Set the body via the i18n catalog so the version is interpolated rather
   // than spliced into hard-coded English markup.
   const body = document.getElementById('restart-modal-body');
-  if (body) body.textContent = t('modal.restart.body', ['v' + updatesState.info.version]);
+  if (body) body.textContent = t('modal.restart.body', [updatesState.info.version]);
   const verEl = document.getElementById('restart-modal-version');
-  if (verEl) verEl.textContent = 'v' + updatesState.info.version;
+  if (verEl) verEl.textContent = updatesState.info.version;
   const warning = document.getElementById('restart-modal-warning');
   warning.style.display = (window.__activeConnectionCount || 0) > 0 ? 'block' : 'none';
   document.getElementById('restart-modal').style.display = 'flex';

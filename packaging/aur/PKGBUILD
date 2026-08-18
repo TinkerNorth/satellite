@@ -41,9 +41,9 @@ conflicts=('satellite')
 # Single x86_64 AppImage. Bump the URL and checksums in lockstep with pkgver.
 # The SHA256 comes from the SHA256SUMS asset attached to every release.
 source_x86_64=(
-    "satellite-${pkgver}-x86_64.AppImage::https://github.com/TinkerNorth/satellite/releases/download/v${pkgver}/satellite-${pkgver}-x86_64.AppImage"
-    "satellite.desktop::https://raw.githubusercontent.com/TinkerNorth/satellite/v${pkgver}/packaging/debian/satellite.desktop"
-    "70-satellite-uinput.rules::https://raw.githubusercontent.com/TinkerNorth/satellite/v${pkgver}/packaging/debian/70-satellite-uinput.rules"
+    "satellite-${pkgver}-x86_64.AppImage::https://github.com/TinkerNorth/satellite/releases/download/${pkgver}/satellite-${pkgver}-x86_64.AppImage"
+    "satellite.desktop::https://raw.githubusercontent.com/TinkerNorth/satellite/${pkgver}/packaging/debian/satellite.desktop"
+    "70-satellite-uinput.rules::https://raw.githubusercontent.com/TinkerNorth/satellite/${pkgver}/packaging/debian/70-satellite-uinput.rules"
 )
 # SHA-256 placeholders (REPLACE_BEFORE_PUBLISH). Bump these in lockstep
 # with pkgver; the value for the AppImage comes from the release's

@@ -80,7 +80,7 @@ Out of scope:
 | `dish-linux` | latest minor on `main`; previous minor for 90 days | tracks the oldest LTS the release CI builds against |
 | `dish-mac` | latest minor on `main`; previous minor for 90 days | macOS 13+ |
 
-Patch releases (`vX.Y.Z+1`) are issued on demand for the latest minor;
+Patch releases (`X.Y.Z+1`) are issued on demand for the latest minor;
 the previous minor only receives backports for high/critical fixes.
 
 ---
@@ -186,11 +186,12 @@ go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
 
 ### 1) Download every file from the Release
 
-For tag `vX.Y.Z` of `<repo>` (one of `satellite`, `dish-android`,
-`dish-linux`, `dish-mac`):
+For tag `X.Y.Z` of `<repo>` (one of `satellite`, `dish-android`,
+`dish-linux`, `dish-mac`; releases before satellite 1.0.0 used `vX.Y.Z`
+tags):
 
 ```bash
-gh release download vX.Y.Z -R TinkerNorth/<repo> -D ./release
+gh release download X.Y.Z -R TinkerNorth/<repo> -D ./release
 cd release
 ls
 ```
@@ -225,7 +226,7 @@ modified after release.
 cosign verify-blob \
   --certificate SHA256SUMS.crt \
   --signature   SHA256SUMS.sig \
-  --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   SHA256SUMS
 ```
@@ -245,7 +246,7 @@ for f in *.exe *.zip *.deb *.AppImage *.apk *.aab; do
   cosign verify-blob \
     --certificate "$f.crt" \
     --signature   "$f.sig" \
-    --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v.*$' \
+    --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
     "$f"
 done
@@ -257,7 +258,7 @@ done
 slsa-verifier verify-artifact \
   --provenance-path <repo>.intoto.jsonl \
   --source-uri      github.com/TinkerNorth/<repo> \
-  --source-tag      vX.Y.Z \
+  --source-tag      X.Y.Z \
   <artifact-filename>
 ```
 
