@@ -33,7 +33,7 @@ Tags:
   - vigem
   - xbox
 ReleaseNotes: |-
-  See https://github.com/TinkerNorth/satellite/releases/tag/v1.0.0
-ReleaseNotesUrl: https://github.com/TinkerNorth/satellite/releases/tag/v1.0.0
+  See https://github.com/TinkerNorth/satellite/releases/tag/1.0.0
+ReleaseNotesUrl: https://github.com/TinkerNorth/satellite/releases/tag/1.0.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

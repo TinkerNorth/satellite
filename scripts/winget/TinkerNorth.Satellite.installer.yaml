@@ -33,7 +33,7 @@ InstallerSwitches:
   Custom: /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/TinkerNorth/satellite/releases/download/v1.0.0/SatelliteSetup.exe
+    InstallerUrl: https://github.com/TinkerNorth/satellite/releases/download/1.0.0/SatelliteSetup-1.0.0.exe
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
     ProductCode: '{B8F3A2E1-7D4C-4E5F-9A1B-3C6D8E0F2A4B}_is1'
     AppsAndFeaturesEntries:

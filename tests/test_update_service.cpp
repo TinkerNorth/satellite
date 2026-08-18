@@ -53,7 +53,7 @@ struct MockUpdater : IUpdaterPort {
         }
         out.version = fetchVersion;
         out.channel = channel;
-        out.assetName = "SatelliteSetup-v" + fetchVersion + ".exe";
+        out.assetName = "SatelliteSetup-" + fetchVersion + ".exe";
         out.assetSize = assetSize;
         out.installMethod = method;
         return true;

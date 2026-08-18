@@ -94,11 +94,20 @@ const accent = themeColor('--primary');
 
 ## Outliers: illustration assets (intentional, never theme tokens)
 
-The controller illustrations carry their own baked-in fills and are not
-driven by the theme tokens above. Leave them alone when retheming.
+The controller artwork is vendored from Kenney's Input Prompts pack
+(<https://kenney.nl/assets/input-prompts>, CC0 1.0 — no attribution
+required; noted here so provenance stays on record), recolored per
+surface:
 
-- [web/img/ctrl-playstation.svg](web/img/ctrl-playstation.svg)
-- [web/img/ctrl-xbox.svg](web/img/ctrl-xbox.svg)
+- `web/img/icons/ctrl-*.svg` (dashboard): fill baked to the literal
+  accent `#8FCFE3`, because an `<img>`-embedded SVG cannot inherit page
+  color. The art gate in `test_catalog.cpp` rejects `currentColor` here.
+- `web/img/catalog/*.svg` (served by `GET /api/catalog/images/{slug}`):
+  fill is `currentColor` so clients theme them (the contract's
+  theme-neutral requirement).
+
+Neither set is driven by the theme tokens above; when retheming, update
+the baked accent in the dashboard copies by hand.
 
 ## Known follow-ups (out of scope for this PR)
 

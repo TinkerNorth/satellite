@@ -43,7 +43,7 @@ which we don't want sitting in CI secrets. After a release publishes:
 3. Pull the AppImage SHA-256 from the release's `SHA256SUMS` asset and
    replace the first `SKIP` in `sha256sums_x86_64`:
    ```bash
-   curl -fsSL "https://github.com/TinkerNorth/satellite/releases/download/v${VER}/SHA256SUMS" \
+   curl -fsSL "https://github.com/TinkerNorth/satellite/releases/download/${VER}/SHA256SUMS" \
      | grep "satellite-${VER}-x86_64.AppImage$" | cut -d' ' -f1
    ```
    (The `.desktop` and udev-rule SHA-256s can stay `SKIP` because they
@@ -60,7 +60,7 @@ which we don't want sitting in CI secrets. After a release publishes:
 6. Commit + push:
    ```bash
    git add PKGBUILD .SRCINFO
-   git commit -m "Update to v${VER}"
+   git commit -m "Update to ${VER}"
    git push
    ```
 

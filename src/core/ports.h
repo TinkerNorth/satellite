@@ -141,7 +141,7 @@ class ILogPort {
 
 // OTA update IO. All long-running methods are synchronous; UpdateService runs
 // them on a dedicated worker thread so the tray + http threads stay responsive.
-//   Windows: WinHTTP, SatelliteSetup-vX.Y.Z.exe, Inno /VERYSILENT, relaunch.
+//   Windows: WinHTTP, SatelliteSetup-X.Y.Z.exe, Inno /VERYSILENT, relaunch.
 //   macOS:   NSURLSession, .zip, atomic satellite.app swap, relaunch.
 //   Linux:   libcurl, .AppImage replace-in-place, or `apt upgrade` (Manual).
 class IUpdaterPort {
