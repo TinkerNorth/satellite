@@ -517,16 +517,34 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     include(GNUInstallDirs)
     set(SATELLITE_PKG_DIR  "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian")
 
+    # ON for Snap/Flatpak builds: skips the udev rule and modules-load.d
+    # entry, which are inert inside a sandbox prefix. Native .deb/.rpm/AUR
+    # builds leave this OFF so their postinst can wire up /dev/uinput.
+    option(SATELLITE_SANDBOXED
+           "Skip host-level udev/modules-load install (Snap/Flatpak builds)" OFF)
+
     install(TARGETS satellite RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     install(DIRECTORY web/  DESTINATION ${CMAKE_INSTALL_DATADIR}/satellite/web)
     install(FILES   ${SATELLITE_PKG_DIR}/satellite.desktop
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    # AppStream metainfo drives GNOME Software / KDE Discover / App Center
+    # listings. Basename must equal the component <id> inside the file, so
+    # never RENAME it here.
+    install(FILES   ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.tinkernorth.satellite.metainfo.xml
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
     install(FILES   web/icon.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps RENAME satellite.png)
-    install(FILES   ${SATELLITE_PKG_DIR}/70-satellite-uinput.rules
-            DESTINATION lib/udev/rules.d)
-    install(FILES   ${SATELLITE_PKG_DIR}/satellite-modules.conf
-            DESTINATION lib/modules-load.d RENAME satellite.conf)
+    # Snap and Flatpak builds must not stage host-level udev/modules-load
+    # files: they land inside the sandbox prefix where neither udev nor
+    # systemd ever reads them, so they are dead weight that also confuses
+    # packaging linters. The host rule stays the user's responsibility on
+    # those channels -- see docs/packaging.md.
+    if(NOT SATELLITE_SANDBOXED)
+        install(FILES   ${SATELLITE_PKG_DIR}/70-satellite-uinput.rules
+                DESTINATION lib/udev/rules.d)
+        install(FILES   ${SATELLITE_PKG_DIR}/satellite-modules.conf
+                DESTINATION lib/modules-load.d RENAME satellite.conf)
+    endif()
     install(FILES   ${SATELLITE_PKG_DIR}/copyright
             DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
@@ -581,6 +599,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "/lib/udev/rules.d"
         "/lib/modules-load.d"
         "/usr/share/applications"
+        "/usr/share/metainfo"
         "/usr/share/pixmaps"
         "/usr/share/satellite")
     set(CPACK_RPM_FILE_NAME                 RPM-DEFAULT)

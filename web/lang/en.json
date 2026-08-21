@@ -226,6 +226,7 @@
   "settings.updates.auto-check": "Check automatically",
   "settings.updates.auto-download": "Download in background",
   "settings.updates.auto-install": "Install & restart automatically",
+  "settings.updates.managed-externally": "Your package manager installs updates for this build. Satellite still checks for new versions and shows you the command to run.",
   "settings.updates.check": "Check for Updates",
   "settings.updates.save-prefs": "Save Prefs",
 
@@ -263,6 +264,8 @@
   "updates.platform.linux-deb": "Linux .deb (apt)",
   "updates.platform.linux-rpm": "Linux .rpm (dnf)",
   "updates.platform.linux-aur": "Arch (AUR)",
+  "updates.platform.linux-snap": "Linux Snap",
+  "updates.platform.linux-flatpak": "Linux Flatpak",
   "updates.platform.linux-portable": "Linux portable",
   "updates.platform.unknown": "unknown",
   "updates.time.just-now": "just now",

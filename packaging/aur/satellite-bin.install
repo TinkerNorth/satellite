@@ -1,0 +1,42 @@
+# Arch parity with the .deb postinst and the .rpm scriptlets: without these the
+# package installs a udev rule that never takes effect, and the user is left
+# with a receiver that cannot open /dev/uinput.
+
+_satellite_wire_uinput() {
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+        udevadm trigger --subsystem-match=misc --action=change || true
+    fi
+    # No-op where uinput is built into the kernel.
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe uinput || true
+    fi
+}
+
+post_install() {
+    _satellite_wire_uinput
+    cat <<'EOF'
+
+Satellite: the shipped udev rule tags /dev/uinput with `uaccess`, which grants
+the active seat user access automatically -- on most desktops nothing further
+is needed.
+
+For a background/autostart or non-seat session, add yourself to the `input`
+group as well, then log out and back in:
+
+    sudo gpasswd -a "$USER" input
+
+Then launch Satellite and open http://localhost:9877.
+
+EOF
+}
+
+post_upgrade() {
+    _satellite_wire_uinput
+}
+
+post_remove() {
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+    fi
+}

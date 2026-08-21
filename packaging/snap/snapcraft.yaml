@@ -1,0 +1,94 @@
+# Snap packaging for Satellite.
+#
+# SCOPE: sideloading only --
+#   snapcraft
+#   sudo snap install --dangerous ./satellite_1.0.0_amd64.snap
+#   sudo snap connect satellite:uinput
+#
+# This is deliberately NOT aimed at the Snap Store, for reasons that are
+# settled rather than speculative:
+#
+#   * `uinput` is a super-privileged interface. snapd's base declaration sets
+#     `allow-installation: false` on the plug, so a STORE-published snap that
+#     declares it cannot be installed at all until Canonical hand-signs a
+#     snap-declaration. Sideloading bypasses this: the install-time policy check
+#     only iterates slots, so --dangerous + `snap connect` works today.
+#   * Of every snap published in the store, three plug `uinput`; two belong to
+#     Canonical. Third-party auto-connection has been refused every time it has
+#     been requested since 2020, and the one recent third-party approval took
+#     ~99 days and covered manual connection only.
+#   * The interface grants AppArmor and device-cgroup access. It does NOT touch
+#     DAC. /dev/uinput is root:root 0600 by default, so a snap running as the
+#     desktop user is still refused by file permissions with the plug connected.
+#
+# That last point is the important one, and it drives the two app shapes below.
+# See docs/packaging.md.
+name: satellite
+base: core24
+version: '1.0.0'
+summary: Low-latency Xbox controller forwarding over the network
+description: |
+  Satellite receives gamepad input over your LAN and materialises it as a
+  virtual Xbox 360 controller on this machine via /dev/uinput. Pairing,
+  configuration and status live in a local web UI on http://localhost:9877.
+
+  After installing you must connect the uinput interface:
+
+    sudo snap connect satellite:uinput
+
+  Running as the tray app additionally requires host-side write access to
+  /dev/uinput, which a snap cannot configure for you:
+
+    echo 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"' \
+      | sudo tee /etc/udev/rules.d/70-satellite-uinput.rules
+    sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=misc
+license: LGPL-3.0-or-later
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+
+apps:
+  # Tray + web UI, running as the invoking user. This is the shape that matches
+  # the .deb and .rpm. It needs the host udev rule above; without it, gamepad
+  # creation fails even with `snap connect satellite:uinput` done.
+  satellite:
+    command: usr/bin/satellite
+    extensions: [gnome]
+    desktop: usr/share/applications/satellite.desktop
+    plugs: [network, network-bind, uinput]
+
+  # A `daemon:` app would run as root, and root owns /dev/uinput -- so it would
+  # work with no host udev rule at all. It is deliberately NOT defined here.
+  #
+  # src/net/webserver.cpp binds the admin API to 127.0.0.1 with no
+  # authentication, on the assumption that it runs as one user with that user's
+  # privileges. Promoting it to a root daemon would expose pairing, config and
+  # virtual-device creation to every local user, at root. That is a security
+  # regression, not a packaging detail; authenticate the admin API first if you
+  # ever want this shape.
+
+parts:
+  satellite:
+    plugin: cmake
+    source: .
+    cmake-parameters:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_PREFIX=/usr
+      # udev rules and modules-load.d entries are inert inside a snap: snapd
+      # reads neither from the squashfs.
+      - -DSATELLITE_SANDBOXED=ON
+    build-packages:
+      - pkg-config
+      - libsodium-dev
+      - libssl-dev
+      - libcurl4-openssl-dev
+      - libgtk-3-dev
+      - libayatana-appindicator3-dev
+      - libnotify-dev
+    stage-packages:
+      - libsodium23
+      - libcurl4
+      - libayatana-appindicator3-1
+      - libnotify4

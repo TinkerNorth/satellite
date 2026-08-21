@@ -183,8 +183,7 @@ function updatesSeedFormOnce() {
   ac.checked = !!s.autoCheck;
   ad.checked = !!s.autoDownload;
   ai.checked = !!s.autoInstall;
-  ad.disabled = !ac.checked;
-  ai.disabled = !ad.checked || ad.disabled;
+  updatesApplyToggleState();
   savedPrefs = {
     channel: s.channel || 'stable',
     autoCheck: !!s.autoCheck,
@@ -202,6 +201,7 @@ function updatesRenderSettingsFields() {
   setText('settings-platform', formatPlatformId(s.platformId));
   setText('settings-last-check', s.lastCheckEpoch ? formatRelativeEpoch(s.lastCheckEpoch) : t('settings.updates.never'));
   updatesSeedFormOnce();
+  updatesApplyToggleState();
 }
 
 function updatesCheckPrefsDirty() {
@@ -300,12 +300,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('change', () => {
-      // Auto-check off makes auto-download/install moot, so disable them.
-      const ac = document.getElementById('settings-autoCheck');
-      const ad = document.getElementById('settings-autoDownload');
-      const ai = document.getElementById('settings-autoInstall');
-      if (ad && ac) ad.disabled = !ac.checked;
-      if (ai && ad) ai.disabled = !ad.checked || ad.disabled;
+      updatesApplyToggleState();
       updatesCheckPrefsDirty();
     });
   });
@@ -350,6 +345,28 @@ function updateErrorTitle(failedPhase) {
     default:                       return t('updates.error.default');
   }
 }
+// Only these three can download and apply an update in place. Everywhere else
+// a package manager owns the binary, the server refuses to download
+// (UpdateService::requestDownload bails on InstallMethod::Manual), and
+// auto-download never arms -- so the two toggles below must not look live.
+function platformSelfInstalls(id) {
+  return id === 'windows' || id === 'macos' || id === 'linux-appimage';
+}
+
+// Auto-check off makes auto-download moot; auto-download off makes
+// auto-install moot; and neither means anything without self-install.
+function updatesApplyToggleState() {
+  const ac = document.getElementById('settings-autoCheck');
+  const ad = document.getElementById('settings-autoDownload');
+  const ai = document.getElementById('settings-autoInstall');
+  const note = document.getElementById('settings-update-managed');
+  if (!ac || !ad || !ai) return;
+  const selfInstall = platformSelfInstalls(updatesState && updatesState.platformId);
+  ad.disabled = !selfInstall || !ac.checked;
+  ai.disabled = !selfInstall || !ad.checked || ad.disabled;
+  if (note) note.style.display = selfInstall ? 'none' : '';
+}
+
 function formatPlatformId(id) {
   switch (id) {
     case 'windows':         return t('updates.platform.windows');
@@ -358,6 +375,8 @@ function formatPlatformId(id) {
     case 'linux-deb':       return t('updates.platform.linux-deb');
     case 'linux-rpm':       return t('updates.platform.linux-rpm');
     case 'linux-aur':       return t('updates.platform.linux-aur');
+    case 'linux-snap':      return t('updates.platform.linux-snap');
+    case 'linux-flatpak':   return t('updates.platform.linux-flatpak');
     case 'linux-portable':  return t('updates.platform.linux-portable');
     default:                return id || t('updates.platform.unknown');
   }
