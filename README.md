@@ -190,6 +190,13 @@ There are six install paths, in order of preference for desktop users:
 6. **Portable build**: works anywhere; you handle udev/group setup by
    hand (one-time).
 
+Flatpak and Snap manifests also live in [`packaging/`](packaging/), but they
+are sideload/self-host only — neither Flathub nor the Snap Store is a viable
+route for an app that needs `/dev/uinput`, and neither format can install the
+udev rule that grants it. They are worth using on Steam Deck, Bazzite and
+Nobara, where the host already carries that rule. See
+[`docs/packaging.md`](docs/packaging.md).
+
 #### Option A: APT repository (Debian / Ubuntu, recommended)
 
 To get satellite the same way as any other system package, updated
@@ -369,11 +376,21 @@ The full state machine (`idle → checking → update-available → downloading
 | Linux (`.deb`) | libcurl | n/a (surfaces command) | `sudo apt upgrade satellite` (auto-pulled from our APT repo if added) |
 | Linux (`.rpm`) | libcurl | n/a (surfaces command) | `sudo dnf upgrade --refresh satellite` (auto-pulled from our DNF repo) |
 | Linux (AUR)    | libcurl | n/a (surfaces command) | `yay -Syu satellite-bin` |
+| Linux (Snap)   | libcurl | n/a (surfaces command) | `sudo snap refresh satellite` |
+| Linux (Flatpak) | libcurl | n/a (surfaces command) | `flatpak update io.github.tinkernorth.satellite` |
 | Linux (portable) | libcurl | n/a (surfaces command) | Manual: `chmod +x` and replace the binary |
 
 Verification is SHA-256 against the `SHA256SUMS` asset published in every
 release (signed by cosign at release time; verifying the cosign signature
 in-app is tracked as a follow-up). Transit is HTTPS-pinned to `github.com`.
+
+**Only Windows, macOS and the Linux AppImage install updates themselves.**
+Every other channel is package-manager territory: Satellite checks for new
+versions and shows you the command, but never downloads or replaces anything —
+self-replacing would desync the package database, and for Snap and Flatpak the
+payload is mounted read-only. On those builds the *Download in background* and
+*Install & restart automatically* settings are disabled, because they could
+never fire.
 
 ### Settings (web UI: `/settings` → Updates section)
 
