@@ -233,7 +233,23 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
 } // namespace
 
 LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const {
-    // AppImage runtime guarantees $APPIMAGE; most reliable, check first.
+    // Sandboxed formats first: both mount the payload read-only, so misdetecting
+    // one as Portable would hand the user "replace the binary" advice for bytes
+    // that physically cannot be replaced.
+    //
+    // snapd exports $SNAP for strict and classic confinement alike.
+    if (const char* snap = std::getenv("SNAP"); snap != nullptr && snap[0] != '\0') {
+        return InstallType::Snap;
+    }
+    // /.flatpak-info is written by flatpak inside the sandbox. Preferred over
+    // $FLATPAK_ID, which a child process inherits and can therefore outlive the
+    // sandbox it describes.
+    {
+        struct stat st;
+        if (stat("/.flatpak-info", &st) == 0) return InstallType::Flatpak;
+    }
+
+    // AppImage runtime guarantees $APPIMAGE; most reliable of the rest.
     if (const char* env = std::getenv("APPIMAGE"); env != nullptr && env[0] != '\0') {
         struct stat st;
         if (stat(env, &st) == 0) return InstallType::AppImage;
@@ -286,6 +302,12 @@ LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)
         break;
     case InstallType::Aur:
         platformId_ = "linux-aur";
+        break;
+    case InstallType::Snap:
+        platformId_ = "linux-snap";
+        break;
+    case InstallType::Flatpak:
+        platformId_ = "linux-flatpak";
         break;
     case InstallType::Portable:
         platformId_ = "linux-portable";
@@ -377,6 +399,18 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         method = InstallMethod::Manual;
         manual = "yay -Syu satellite-bin   # or: paru -Syu satellite-bin";
         break;
+    case InstallType::Snap:
+    case InstallType::Flatpak:
+        // Read-only squashfs / OSTree checkout: never download, never self-install.
+        // An AppImage asset, when the release has one, supplies release metadata
+        // only -- its absence is not an error, because neither channel consumes
+        // GitHub assets at all.
+        (void)pickAppImageAsset(pick, asset);
+        method = InstallMethod::Manual;
+        manual = (installType_ == InstallType::Snap)
+                     ? "sudo snap refresh satellite"
+                     : "flatpak update io.github.tinkernorth.satellite";
+        break;
     case InstallType::Portable:
         if (pickAppImageAsset(pick, asset)) {
             method = InstallMethod::Manual;
@@ -398,7 +432,9 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
     out.assetName = asset.name;
     out.assetUrl = asset.browserUrl;
     out.assetSize = asset.size;
-    out.assetSha256 = fetchAssetDigest(pick, asset.name);
+    // Skip the SHA256SUMS round-trip when no asset was resolved (snap/flatpak
+    // with an assetless release): looking up "" can only ever miss.
+    out.assetSha256 = asset.name.empty() ? std::string() : fetchAssetDigest(pick, asset.name);
     out.releaseNotes = pick.body.size() > 8192 ? pick.body.substr(0, 8192) + "..." : pick.body;
     out.htmlUrl = pick.htmlUrl;
     out.publishedAtEpoch = isoToEpoch(pick.publishedAt);
