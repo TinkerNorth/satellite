@@ -930,3 +930,140 @@ jobs:
             git commit -m "Publish DNF repo: ${TAG}"
             git push origin gh-pages
           fi
+
+  # ─────────────────────────────────────────────────────────────────────
+  # arch-publish: build the satellite-bin pacman package from the in-tree
+  # PKGBUILD (against the assets the publish job just made public) and
+  # regenerate the signed pacman repository under
+  # https://tinkernorth.github.io/satellite/arch/x86_64.
+  #
+  # A self-hosted pacman repo, not the AUR: AUR registration is closed, and
+  # a binary repo is CI-automatable where AUR pushes need a personal SSH
+  # key. packaging/aur/ stays AUR-ready for if/when registration reopens.
+  # Chained after rpm-publish because both jobs push gh-pages.
+  # ─────────────────────────────────────────────────────────────────────
+  arch-publish:
+    name: Publish pacman repository (gh-pages)
+    needs: [publish, rpm-publish]
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    permissions:
+      contents: write
+    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Gate on GPG signing secret
+        id: gate
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
+            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set; skipping pacman repo publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install tooling
+        if: steps.gate.outputs.skip != 'true'
+        run: pacman -Syu --noconfirm git pacman-contrib
+
+      - name: Checkout main (for the PKGBUILD)
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          path: main
+
+      - name: Import signing key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format=long
+
+      # makepkg refuses to run as root, and the container runs as root:
+      # build as a throwaway user. updpkgsums re-downloads the sources from
+      # the release the publish job just flipped live, so the repo package
+      # is built from (and checksummed against) the published bytes, not a
+      # parallel local copy. -d skips dependency checks: a -bin package()
+      # only copies files, and the depends are runtime-only.
+      - name: Build satellite-bin package
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          useradd -m builder
+          builddir=/home/builder/satellite-bin
+          mkdir -p "$builddir"
+          cp main/packaging/aur/PKGBUILD main/packaging/aur/satellite-bin.install "$builddir/"
+          sed -i "s/^pkgver=.*/pkgver=${version}/; s/^pkgrel=.*/pkgrel=1/" "$builddir/PKGBUILD"
+          chown -R builder:builder "$builddir"
+          su builder -c "cd '$builddir' && updpkgsums && PACKAGER='satellite-release-bot <releases@tinkernorth.invalid>' makepkg -d --noconfirm"
+          ls -l "$builddir"/*.pkg.tar.zst
+
+      - name: Sign package
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          for pkg in /home/builder/satellite-bin/*.pkg.tar.zst; do
+            gpg --batch --yes --default-key "$GPG_KEY_ID" --detach-sign "$pkg"
+          done
+
+      - name: Check out gh-pages branch (rpm-publish has already touched it)
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --branch gh-pages --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" pages
+
+      # repo-add emits satellite.db / satellite.files as symlinks to the
+      # .tar.gz files; GitHub Pages does not serve symlinks, so replace each
+      # with a real copy before committing.
+      - name: Build pacman repo
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          repo_dir=pages/arch/x86_64
+          mkdir -p "$repo_dir"
+          cp /home/builder/satellite-bin/*.pkg.tar.zst /home/builder/satellite-bin/*.pkg.tar.zst.sig "$repo_dir/"
+          (
+            cd "$repo_dir"
+            repo-add --sign --key "$GPG_KEY_ID" satellite.db.tar.gz ./*.pkg.tar.zst
+            for link in $(find . -maxdepth 1 -type l); do
+              target="$(readlink -f "$link")"
+              rm "$link"
+              cp "$target" "$link"
+            done
+          )
+          ls -l "$repo_dir"
+
+      - name: Commit + push
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd pages
+          git config user.name  'satellite-release-bot'
+          git config user.email 'releases@tinkernorth.invalid'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No pacman-repo changes to commit"
+          else
+            git commit -m "Publish pacman repo: ${TAG}"
+            git push origin gh-pages
+          fi
