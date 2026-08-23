@@ -8,10 +8,10 @@
 
 #define SATELLITE_VERSION_MAJOR 1
 #define SATELLITE_VERSION_MINOR 0
-#define SATELLITE_VERSION_PATCH 0
+#define SATELLITE_VERSION_PATCH 1
 
 // Wire string (matches /VERSION).
-#define SATELLITE_VERSION_STRING "1.0.0"
+#define SATELLITE_VERSION_STRING "1.0.1"
 
 // Comma form for Win32 VS_VERSION_INFO; trailing zero is the unused build slot.
 #define SATELLITE_VERSION_COMMA 1, 0, 0, 0
