@@ -552,6 +552,34 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Debian/Ubuntu host: `cpack -G DEB` (needs dpkg-dev for shlibdeps).
     # Any Linux host: `cpack -G RPM` (needs rpmbuild). Ubuntu's rpm package
     # ships rpmbuild too, so the release workflow builds both from one job.
+    # lintian errors on a package without /usr/share/doc/<pkg>/changelog.gz
+    # and parses that file as a DEBIAN changelog, so generate the Debian-shaped
+    # one and point it at CHANGELOG.md. -n and the fixed date keep two builds
+    # of the same source byte-identical. Same mechanism as dish-linux.
+    find_program(SATELLITE_GZIP gzip)
+    if(SATELLITE_GZIP)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/packaging-src/changelog"
+"satellite (${SATELLITE_VERSION}) unstable; urgency=medium
+
+  * Release ${SATELLITE_VERSION}. See
+    https://github.com/TinkerNorth/satellite/blob/main/CHANGELOG.md
+
+ -- TinkerNorth <security@tinkernorth.com>  Thu, 01 Jan 2026 00:00:00 +0000
+")
+        set(_changelog_gz "${CMAKE_CURRENT_BINARY_DIR}/packaging-gz/changelog.gz")
+        add_custom_command(
+            OUTPUT "${_changelog_gz}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_CURRENT_BINARY_DIR}/packaging-gz"
+            COMMAND ${SATELLITE_GZIP} -9nc
+                    "${CMAKE_CURRENT_BINARY_DIR}/packaging-src/changelog"
+                    > "${_changelog_gz}"
+            DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/packaging-src/changelog"
+            VERBATIM)
+        add_custom_target(satellite_gz_changelog ALL DEPENDS "${_changelog_gz}")
+        install(FILES "${_changelog_gz}" DESTINATION "${CMAKE_INSTALL_DOCDIR}")
+    endif()
+
     set(CPACK_GENERATOR "DEB;RPM")
     set(SATELLITE_RPM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm")
     set(CPACK_PACKAGE_NAME                  "satellite")
@@ -559,16 +587,21 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_PACKAGE_VENDOR                "TinkerNorth")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY   "Low-latency Xbox controller forwarding over the network")
     set(CPACK_PACKAGE_HOMEPAGE_URL          "https://github.com/TinkerNorth/satellite")
-    set(CPACK_PACKAGE_CONTACT               "TinkerNorth <https://github.com/TinkerNorth/satellite>")
+    set(CPACK_PACKAGE_CONTACT               "TinkerNorth <security@tinkernorth.com>")
     set(CPACK_RESOURCE_FILE_LICENSE         "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
     set(CPACK_PACKAGE_DESCRIPTION
         "Captures physical Xbox controller input on one machine and injects\n it as a virtual Xbox 360 controller on another via /dev/uinput.\n Includes a system-tray icon and a web UI at http://localhost:9877\n for pairing, configuration, and status.")
 
-    set(CPACK_DEBIAN_PACKAGE_MAINTAINER     "TinkerNorth <https://github.com/TinkerNorth/satellite>")
-    set(CPACK_DEBIAN_PACKAGE_SECTION        "games")
+    # lintian rejects a URL where the Maintainer field wants an email.
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER     "TinkerNorth <security@tinkernorth.com>")
+    # utils, not games: lintian errors on a games section with no game inside.
+    set(CPACK_DEBIAN_PACKAGE_SECTION        "utils")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY       "optional")
     set(CPACK_DEBIAN_PACKAGE_HOMEPAGE       "${CPACK_PACKAGE_HOMEPAGE_URL}")
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS      ON)
+    # lintian errors on an unstripped /usr/bin/satellite; nothing ships debug
+    # symbols anyway.
+    set(CPACK_STRIP_FILES                   YES)
 
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${SATELLITE_PKG_DIR}/postinst;${SATELLITE_PKG_DIR}/postrm")
@@ -576,11 +609,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_DEBIAN_FILE_NAME              DEB-DEFAULT)
 
     # CPack/RPM autoreq picks up shared-library dependencies from the binary, so
-    # we don't enumerate them. Group mirrors Fedora's "Games" ordering.
+    # we don't enumerate them. Group mirrors the .deb's utils section.
     # Architecture is auto-derived from CPACK_RPM_PACKAGE_ARCHITECTURE / uname -m.
     set(CPACK_RPM_PACKAGE_NAME              "satellite")
     set(CPACK_RPM_PACKAGE_LICENSE           "LGPLv3+")
-    set(CPACK_RPM_PACKAGE_GROUP             "Amusements/Games")
+    set(CPACK_RPM_PACKAGE_GROUP             "Applications/System")
     set(CPACK_RPM_PACKAGE_URL               "${CPACK_PACKAGE_HOMEPAGE_URL}")
     set(CPACK_RPM_PACKAGE_VENDOR            "TinkerNorth")
     set(CPACK_RPM_PACKAGE_SUMMARY           "${CPACK_PACKAGE_DESCRIPTION_SUMMARY}")
