@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 TinkerNorth -->
+<!--
+  AppStream metainfo. Consumed by GNOME Software, KDE Discover, Ubuntu App
+  Center and Flathub. Installed to /usr/share/metainfo/ by CMake; the basename
+  MUST equal the <id> below, so rename both together or not at all.
+
+  metadata_license covers THIS FILE, not the program: it must come from
+  AppStream's permissive allowlist, which is why it is FSFAP and not the
+  project's LGPL-3.0-or-later (a copyleft value here is a hard validation
+  error). project_license carries the real license.
+-->
+<component type="desktop-application">
+  <id>io.github.tinkernorth.satellite</id>
+
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>LGPL-3.0-or-later</project_license>
+
+  <name>Satellite</name>
+  <summary>Forward a gamepad over your network</summary>
+
+  <developer id="io.github.tinkernorth">
+    <name>TinkerNorth</name>
+  </developer>
+
+  <description>
+    <p>
+      Satellite forwards Xbox controller input between machines on your local
+      network. It captures a physical controller attached to one machine and
+      injects it on another as a virtual Xbox 360 controller, so games and
+      launchers see an ordinary gamepad with no extra configuration.
+    </p>
+    <p>
+      A system tray icon keeps the service in reach, and a local web interface
+      handles pairing, configuration and live status. The companion Android
+      app, Dish, turns a phone or tablet into a controller that sends input to
+      the same host.
+    </p>
+    <p>
+      Satellite needs write access to the kernel uinput device to create
+      virtual controllers. The Debian and RPM packages configure this for you;
+      other install methods require a one-time udev rule and group change,
+      documented in the project README.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Virtual Xbox 360 gamepad created through the kernel uinput device</li>
+      <li>PIN based pairing with per-session encryption keys</li>
+      <li>Automatic discovery of hosts on the local network</li>
+      <li>Multiple controllers forwarded to a single host</li>
+      <li>Browser based setup, no desktop environment required</li>
+      <li>Force feedback relayed back to the sending device</li>
+    </ul>
+  </description>
+
+  <!--
+    Distro packaging ships /usr/share/applications/satellite.desktop, so that
+    is what this points at. A Flathub submission would require renaming the
+    desktop file to io.github.tinkernorth.satellite.desktop and updating this
+    tag to match; Flathub's linter rejects a bare name here.
+  -->
+  <launchable type="desktop-id">satellite.desktop</launchable>
+
+  <!-- Overrides Categories= in the desktop file. Keep the two in sync. -->
+  <categories>
+    <category>Game</category>
+    <category>Network</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>controller</keyword>
+    <keyword>gamepad</keyword>
+    <keyword>xbox</keyword>
+    <keyword>joystick</keyword>
+    <keyword>remote</keyword>
+    <keyword>streaming</keyword>
+    <keyword>uinput</keyword>
+  </keywords>
+
+  <url type="homepage">https://github.com/TinkerNorth/satellite</url>
+  <url type="bugtracker">https://github.com/TinkerNorth/satellite/issues</url>
+  <url type="vcs-browser">https://github.com/TinkerNorth/satellite</url>
+  <url type="contribute">https://github.com/TinkerNorth/satellite/blob/main/CONTRIBUTING.md</url>
+  <url type="help">https://github.com/TinkerNorth/satellite/blob/main/README.md</url>
+
+  <provides>
+    <binary>satellite</binary>
+  </provides>
+
+  <!--
+    Empty tag is meaningful: it asserts the component was reviewed for age
+    ratings and none apply. Relaying controller input is not user-generated
+    content, so no <content_attribute> belongs here.
+  -->
+  <content_rating type="oars-1.1" />
+
+  <!-- Sampled from web/img/satellite-icon.png (#8fcfe3); dark variant is the
+       same hue and saturation at 20% lightness. -->
+  <branding>
+    <color type="primary" scheme_preference="light">#8fcfe3</color>
+    <color type="primary" scheme_preference="dark">#144351</color>
+  </branding>
+
+  <!--
+    No <screenshots> block yet. Screenshot URLs must resolve over HTTPS or
+    networked validation fails, and none are published. Flathub requires at
+    least one; add them before any Flathub submission. See docs/packaging.md.
+  -->
+
+  <releases>
+    <release version="1.0.0" date="2026-08-18">
+      <description>
+        <p>First stable release.</p>
+        <ul>
+          <li>Rewritten control plane with declarative full-state topology</li>
+          <li>Per-session encryption keys derived from the pairing key</li>
+          <li>Localized controller catalog and host feature negotiation</li>
+        </ul>
+      </description>
+      <url type="details">https://github.com/TinkerNorth/satellite/releases/tag/1.0.0</url>
+    </release>
+    <release version="0.2.2" date="2026-07-25" />
+  </releases>
+</component>
