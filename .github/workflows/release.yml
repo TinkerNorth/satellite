@@ -680,6 +680,10 @@ jobs:
       base64-subjects: ${{ needs.harden.outputs.hashes }}
       provenance-name: satellite.intoto.jsonl
       upload-assets: false
+      # A SHA-pinned call cannot resolve the prebuilt builder's release, so
+      # the binary never downloads and the generator dies at exit 127; build
+      # it from source instead. 1.0.0 shipped with this flag for a reason.
+      compile-generator: true
 
   # ─────────────────────────────────────────────────────────────────────
   # publish: attach hardened bundle + SLSA provenance to the GitHub
