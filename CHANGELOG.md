@@ -3,7 +3,13 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased: control-plane rewrite (protocol 1)
+## 1.0.1
+
+No protocol changes. Packaging release: distro-native .deb/.rpm builds,
+install smoke tests, Windows installer round-trip in CI, a signed pacman
+repository beside the APT and DNF ones, and AppImage zsync self-updates.
+
+## 1.0.0: control-plane rewrite (protocol 1)
 
 Clean-break rewrite of the client ↔ server control plane. Nothing of the old
 wire had shipped; there are no legacy paths and no dual-protocol support.
