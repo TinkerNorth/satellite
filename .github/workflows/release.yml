@@ -2,6 +2,9 @@ name: Release
 
 on:
   push:
+    # Bare MAJOR.MINOR.PATCH tags: org convention for the product repos,
+    # because dish-android's pipeline requires bare tags. Every version
+    # consumer below still tolerates a legacy v prefix by stripping it.
     tags: ["[0-9]*"]
   workflow_dispatch:
     inputs:
@@ -12,37 +15,46 @@ on:
 # Builds release artifacts on all three target platforms in parallel:
 #
 #   * Windows: builds satellite.exe under MSVC + vcpkg (hardened: CFG + CET +
-#     Spectre), then runs Inno Setup to produce SatelliteSetup.exe. Code-signed
-#     if WIN_SIGN_CERT_BASE64 + WIN_SIGN_PASSWORD are set.
+#     Spectre), then runs Inno Setup to produce SatelliteSetup.exe, and proves
+#     the installer with a silent install/launch/repair/uninstall round-trip
+#     (driver skipped via /VIGEM=skip). Code-signed if WIN_SIGN_CERT_BASE64 +
+#     WIN_SIGN_PASSWORD are set.
 #   * macOS:   builds the *stub* satellite.app (no virtual gamepad; see
 #     README "How it works"). Codesigned + notarized if Developer ID secrets
 #     are set.
-#   * Linux:   builds satellite, packages as .deb and AppImage.
+#   * Linux:   packages .deb in a debian:trixie container and .rpm in a
+#     fedora:42 container, so each distro's own dependency scanner writes the
+#     Depends/Requires (a single Ubuntu-built package gets both wrong), plus
+#     an AppImage with zsync self-update metadata on the 22.04 glibc floor.
+#     The .deb and .rpm jobs install their own package and launch it before
+#     uploading; nothing else can catch a missing runtime dependency.
 #
 # Before any artifact is uploaded, the `gates` job re-runs every PR-time
-# check (action-pin lint, allowlist expiry, OSV-Scanner, gitleaks, CodeQL
-# wait) against the tagged commit. The `harden` job then scans, signs,
-# generates SBOMs, attests, and produces SHA256SUMS.
+# check (action-pin lint, allowlist expiry, OSV-Scanner, gitleaks) against
+# the tagged commit. The `harden` job (the shared _release_harden.yml) then
+# scans, signs, generates SBOMs, and produces SHA256SUMS.
+#
+# The release is uploaded as a DRAFT and flipped to published afterwards:
+# GitHub never points releases/latest at a draft, so the AppImage zsync
+# pattern and anyone scripting `releases/latest` see either the old release
+# or the complete new one, never a half-uploaded one.
+#
+# Prerelease tags (1.2.3-rc.1) publish marked as prerelease and skip the
+# APT/DNF repos; package managers never see them.
 #
 # Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
 #   actions/checkout                @ v7.0.0  → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 #   actions/upload-artifact         @ v7.0.1  → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
 #   actions/download-artifact       @ v8.0.1  → 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-#   anchore/sbom-action             @ v0.24.0 → e22c389904149dbc22b58101806040fa8d37a610
-#   anchore/scan-action             @ v7.4.0  → e1165082ffb1fe366ebaf02d8526e7c4989ea9d2
-#   github/codeql-action            @ v4.36.2 → 8aad20d150bbac5944a9f9d289da16a4b0d87c1e
-#   softprops/action-gh-release     @ v3.0.0  → b4309332981a82ec1c5618f44dd2e27cc8bfbfda
+#   softprops/action-gh-release     @ v3.0.2  → 3d0d9888cb7fd7b750713d6e236d1fcb99157228
 #   slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml
 #                                   @ v2.1.0  → f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
-#
-# cosign is installed directly from the upstream sigstore/cosign release
-# (see the harden job's env block) rather than via the cosign-installer
-# action, to keep the supply-chain surface minimal.
+#   (scan/SBOM/cosign pins live in _release_harden.yml)
 
+# Least privilege at the top; each job widens only what it needs. A workflow
+# grant is a ceiling for the jobs AND for any reusable workflow they call.
 permissions:
-  contents: write
-  id-token: write   # required for cosign keyless + SLSA OIDC
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -113,7 +125,7 @@ jobs:
 
           echo "signed=false" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.ref_type }}" != "tag" ] || ! [[ "$GITHUB_REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          if [ "${{ github.ref_type }}" != "tag" ] || ! [[ "$GITHUB_REF_NAME" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             echo "::notice::Non-tag release run; unsigned fallback permitted. Missing: ${missing[*]}"
             exit 0
           fi
@@ -134,8 +146,7 @@ jobs:
           echo "::warning::Set the repository variable ENFORCE_RELEASE_SIGNING=true to make this a hard failure once signing certificates are available."
 
   # ─────────────────────────────────────────────────────────────────────
-  # Per-platform build jobs. Same as the previous release.yml shape but
-  # with pinned action SHAs.
+  # Per-platform build jobs.
   # ─────────────────────────────────────────────────────────────────────
   windows:
     name: Build Windows
@@ -202,6 +213,14 @@ jobs:
             /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
             dist/SatelliteSetup.exe
 
+      # The same class of assertions dish-windows runs, against the artifact
+      # that is about to be published rather than a rebuild of it. The driver
+      # is skipped (/VIGEM=skip): a kernel driver install has no business
+      # succeeding-or-hanging inside a CI assertion.
+      - name: Installer silent round-trip + launch smoke (no UI)
+        shell: pwsh
+        run: ./scripts/test-installer-roundtrip.ps1 -Setup dist/SatelliteSetup.exe
+
       - name: Stage
         shell: bash
         run: |
@@ -215,7 +234,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows
+          name: build-windows
           path: stage/
 
   macos:
@@ -317,11 +336,249 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: macos
+          name: build-macos
           path: stage/
 
-  linux:
-    name: Build Linux
+  # =========================================================================
+  # .deb: built in a debian:trixie container so dpkg-shlibdeps computes the
+  # Depends against Debian's own sonames. The previous single-host build
+  # emitted Ubuntu `t64` package names in Depends, which resolve on no Debian
+  # release; CPACK_DEBIAN_PACKAGE_SHLIBDEPS reads the build host, so the
+  # build host has to be the target distro.
+  # =========================================================================
+  deb:
+    name: Build .deb (Debian 13)
+    needs: [gates, required-secrets]
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 30
+    # A container job's default shell is `sh`; every step here assumes bash.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build and packaging dependencies
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates \
+            build-essential cmake pkg-config \
+            libsodium-dev libssl-dev libcurl4-openssl-dev \
+            libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
+            dpkg-dev fakeroot file gzip lintian
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Build satellite
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
+          cmake --build build --config Release --target satellite -j "$(nproc)"
+
+      - name: Package (.deb via CPack)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cpack -G DEB -B "${RUNNER_TEMP}/cpack" --config build/CPackConfig.cmake
+          cp "${RUNNER_TEMP}"/cpack/satellite_*_amd64.deb dist/
+          ls -l dist/
+
+      - name: lintian
+        run: lintian --fail-on error --tag-display-limit 0 dist/*.deb
+
+      - name: Assert package contents and scriptlets
+        run: |
+          set -euo pipefail
+          contents="$(dpkg-deb -c dist/*.deb)"
+          for path in \
+            ./usr/bin/satellite \
+            ./usr/lib/udev/rules.d/70-satellite-uinput.rules \
+            ./usr/lib/modules-load.d/satellite.conf \
+            ./usr/share/applications/satellite.desktop \
+            ./usr/share/metainfo/io.github.tinkernorth.satellite.metainfo.xml \
+            ./usr/share/pixmaps/satellite.png
+          do
+            grep -qE " ${path}\$" <<<"${contents}" \
+              || { echo "::error::${path} missing from the .deb"; exit 1; }
+          done
+          grep -qE ' \./usr/share/satellite/web/' <<<"${contents}" \
+            || { echo "::error::web UI assets missing from the .deb"; exit 1; }
+          # Without the reload + modprobe a fresh install cannot open
+          # /dev/uinput until the next reboot.
+          extract="$(mktemp -d)"
+          dpkg-deb -e dist/*.deb "$extract"
+          grep -q 'udevadm control' "$extract/postinst" \
+            || { echo "::error::.deb postinst carries no udev reload"; exit 1; }
+          grep -q 'modprobe uinput' "$extract/postinst" \
+            || { echo "::error::.deb postinst carries no modprobe uinput"; exit 1; }
+
+      # Nothing else can stand in for this: unit tests, lints and a contents
+      # check all pass against a build tree, and a build tree is exactly what
+      # hides a missing runtime dependency.
+      - name: Install the package and launch it
+        run: |
+          set -euo pipefail
+          apt-get install -y ./dist/*.deb
+          if ldd /usr/bin/satellite | grep -i 'not found'; then
+            echo "::error::installed satellite has unresolved shared libraries"
+            exit 1
+          fi
+          # No display and no tray host here: satellite is built to run
+          # headless (fallback verified by linux-ci) and to exit 0 on SIGTERM.
+          set +e
+          satellite >/tmp/launch.log 2>&1 &
+          app=$!
+          sleep 10
+          started=0
+          kill -0 "$app" 2>/dev/null && started=1
+          if [ "$started" = 1 ]; then
+            kill -TERM "$app"
+            waited=0
+            while [ "$waited" -lt 15 ] && kill -0 "$app" 2>/dev/null; do
+              sleep 1
+              waited=$((waited + 1))
+            done
+            kill -0 "$app" 2>/dev/null && kill -KILL "$app"
+          fi
+          wait "$app"
+          rc=$?
+          set -e
+          cat /tmp/launch.log || true
+          if grep -qiE 'error while loading shared libraries|cannot open shared object' /tmp/launch.log; then
+            echo "::error::the installed package cannot load its shared libraries"
+            exit 1
+          fi
+          if [ "$started" != 1 ]; then
+            echo "::error::satellite exited on its own (${rc}) instead of staying up"
+            exit 1
+          fi
+          if [ "$rc" != 0 ]; then
+            echo "::error::satellite did not exit 0 on SIGTERM (got ${rc})"
+            exit 1
+          fi
+          echo "::notice::satellite came up headless, shut down on SIGTERM and exited 0"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  # =========================================================================
+  # .rpm: same reasoning in a fedora:42 container; rpmbuild's soname scanner
+  # writes the Requires against Fedora's packages.
+  # =========================================================================
+  rpm:
+    name: Build .rpm (Fedora)
+    needs: [gates, required-secrets]
+    runs-on: ubuntu-24.04
+    container: fedora:42
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build and packaging dependencies
+        run: |
+          set -eux
+          dnf -y install --setopt=install_weak_deps=False \
+            git-core ca-certificates \
+            gcc-c++ cmake make pkgconf-pkg-config rpm-build \
+            libsodium-devel openssl-devel libcurl-devel \
+            gtk3-devel libayatana-appindicator-gtk3-devel libnotify-devel \
+            gzip
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Build satellite
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
+          cmake --build build --config Release --target satellite -j "$(nproc)"
+
+      - name: Package (.rpm via CPack)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cpack -G RPM -B "${RUNNER_TEMP}/cpack" --config build/CPackConfig.cmake
+          cp "${RUNNER_TEMP}"/cpack/satellite-*.x86_64.rpm dist/
+          ls -l dist/
+
+      - name: Assert package contents and scriptlets
+        run: |
+          set -euo pipefail
+          rpm -qlp dist/*.rpm
+          rpm -qp --requires dist/*.rpm
+          rpm -qlp dist/*.rpm | grep -qx '/usr/lib/udev/rules.d/70-satellite-uinput.rules' \
+            || { echo "::error::udev rule missing or at the wrong path"; exit 1; }
+          rpm -qlp dist/*.rpm | grep -qx '/usr/lib/modules-load.d/satellite.conf' \
+            || { echo "::error::modules-load entry missing"; exit 1; }
+          rpm -qp --scripts dist/*.rpm | grep -q 'udevadm control' \
+            || { echo "::error::rpm carries no udev reload scriptlet"; exit 1; }
+          rpm -qp --scripts dist/*.rpm | grep -q 'modprobe uinput' \
+            || { echo "::error::rpm carries no modprobe uinput scriptlet"; exit 1; }
+
+      - name: Install the package and launch it
+        run: |
+          set -euo pipefail
+          dnf -y install ./dist/*.rpm
+          if ldd /usr/bin/satellite | grep -i 'not found'; then
+            echo "::error::installed satellite has unresolved shared libraries"
+            exit 1
+          fi
+          set +e
+          satellite >/tmp/launch.log 2>&1 &
+          app=$!
+          sleep 10
+          started=0
+          kill -0 "$app" 2>/dev/null && started=1
+          if [ "$started" = 1 ]; then
+            kill -TERM "$app"
+            waited=0
+            while [ "$waited" -lt 15 ] && kill -0 "$app" 2>/dev/null; do
+              sleep 1
+              waited=$((waited + 1))
+            done
+            kill -0 "$app" 2>/dev/null && kill -KILL "$app"
+          fi
+          wait "$app"
+          rc=$?
+          set -e
+          cat /tmp/launch.log || true
+          if grep -qiE 'error while loading shared libraries|cannot open shared object' /tmp/launch.log; then
+            echo "::error::the installed package cannot load its shared libraries"
+            exit 1
+          fi
+          if [ "$started" != 1 ]; then
+            echo "::error::satellite exited on its own (${rc}) instead of staying up"
+            exit 1
+          fi
+          if [ "$rc" != 0 ]; then
+            echo "::error::satellite did not exit 0 on SIGTERM (got ${rc})"
+            exit 1
+          fi
+          echo "::notice::satellite came up headless, shut down on SIGTERM and exited 0"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  # =========================================================================
+  # AppImage: every other distro. ubuntu-22.04 because an AppImage's floor is
+  # the glibc it linked against, and 22.04's 2.35 covers every supported
+  # desktop.
+  # =========================================================================
+  appimage:
+    name: Build AppImage
     needs: [gates, required-secrets]
     timeout-minutes: 30
     runs-on: ubuntu-22.04
@@ -335,9 +592,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config libsodium-dev libcurl4-openssl-dev \
-            libayatana-appindicator3-dev libgtk-3-dev \
-            file fakeroot rpm rsync wget
+            build-essential cmake pkg-config \
+            libsodium-dev libssl-dev libcurl4-openssl-dev \
+            libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
+            file wget
 
       - name: Build satellite
         run: |
@@ -352,199 +610,58 @@ jobs:
           echo "tag=${tag}"        >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}"  >> "$GITHUB_OUTPUT"
 
-      # Build .deb and .rpm together via CPack. CMakeLists.txt sets
-      # CPACK_GENERATOR="DEB;RPM"; the resulting filenames match the
-      # SatelliteSetup-X.Y.Z layout: satellite_X.Y.Z_amd64.deb
-      # and satellite-X.Y.Z-1.x86_64.rpm. CPack drives the udev rule +
-      # modules-load.d entry + post-install scriptlet, keeping both formats
-      # in lockstep.
-      - name: Build .deb + .rpm (CPack)
-        run: |
-          mkdir -p stage
-          cpack -G "DEB;RPM" -B "${RUNNER_TEMP}/cpack" --config build/CPackConfig.cmake
-          cp "${RUNNER_TEMP}/cpack"/satellite_*_amd64.deb stage/ || true
-          cp "${RUNNER_TEMP}/cpack"/satellite-*.x86_64.rpm stage/ || true
-          ls -l stage/
-
       - name: Build AppImage
         run: |
+          set -euo pipefail
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
           chmod +x linuxdeploy
           appdir="${RUNNER_TEMP}/Satellite.AppDir"
-          mkdir -p "${appdir}"
           mkdir -p "${appdir}/usr/share/applications" "${appdir}/usr/share/icons/hicolor/256x256/apps"
-          cat > "${appdir}/usr/share/applications/satellite.desktop" <<EOF
-          [Desktop Entry]
-          Type=Application
-          Name=Satellite
-          Exec=satellite
-          Icon=satellite
-          Categories=Game;Utility;
-          Terminal=false
-          EOF
           convert web/img/satellite-icon.png -resize 256x256 "${RUNNER_TEMP}/satellite.png"
-          ./linuxdeploy --appimage-extract-and-run --appdir "${appdir}" \
+          # Embed AppImageUpdate metadata so AppImageUpdate / Gear Lever can
+          # delta-update off the newest release; appimagetool emits the
+          # matching .zsync, and the draft-then-flip publish keeps `latest` atomic.
+          export LDAI_UPDATE_INFORMATION="gh-releases-zsync|TinkerNorth|satellite|latest|satellite-*-x86_64.AppImage.zsync"
+          mkdir -p stage
+          out="stage/satellite-${{ steps.ver.outputs.version }}-x86_64.AppImage"
+          OUTPUT="${out}" ./linuxdeploy --appimage-extract-and-run --appdir "${appdir}" \
             --executable satellite \
-            --desktop-file "${appdir}/usr/share/applications/satellite.desktop" \
+            --desktop-file packaging/debian/satellite.desktop \
             --icon-file "${RUNNER_TEMP}/satellite.png" \
-            --output appimage || true
-          mv Satellite*.AppImage "stage/satellite-${{ steps.ver.outputs.version }}-x86_64.AppImage" || true
+            --output appimage
+          # appimagetool drops the .zsync next to the AppImage or in the CWD
+          # depending on version; normalise into stage/.
+          if [ ! -f "${out}.zsync" ] && [ -f "$(basename "${out}").zsync" ]; then
+            mv "$(basename "${out}").zsync" "${out}.zsync"
+          fi
+          [ -f "${out}" ] || { echo "::error::linuxdeploy produced no AppImage"; exit 1; }
+          if [ ! -f "${out}.zsync" ]; then
+            echo "::warning::no .zsync emitted; AppImageUpdate delta updates unavailable for this build"
+          fi
+          ls -l stage/
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: linux
+          name: build-appimage
           path: stage/
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────
-  # harden: artifact-level vuln scan, SBOMs, checksums, cosign keyless
-  # signing. Runs after every per-platform build job.
+  # harden: the shared reusable (scan, SBOMs, SHA256SUMS, cosign keyless).
+  # Canonical copy of _release_harden.yml lives in this repo.
   # ─────────────────────────────────────────────────────────────────────
   harden:
-    name: Harden artifacts (scan, SBOM, sign)
-    needs: [windows, macos, linux]
-    timeout-minutes: 30
-    runs-on: ubuntu-24.04
+    name: Harden artifacts
+    needs: [windows, macos, deb, rpm, appimage]
     permissions:
       contents: read
-      actions: read
       id-token: write
       security-events: write
-    outputs:
-      hashes: ${{ steps.hashes.outputs.hashes }}
-    steps:
-      - name: Download all platform artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          path: artifacts
-
-      - name: Flatten layout
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release
-          find artifacts -type f -print0 \
-            | xargs -0 -I{} cp -v "{}" release/
-          ls -l release/
-
-      - name: Ignore CPE name collisions against first-party artifact names
-        shell: bash
-        run: |
-          cat > .grype.yaml <<'EOF'
-          ignore:
-            - package:
-                name: "(?i)^satellite(setup)?$"
-          EOF
-
-      # Anchore Grype: scan every binary in release/ for CVEs.
-      - name: Vulnerability scan (Grype)
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
-        id: grype
-        with:
-          path: release/
-          severity-cutoff: high
-          fail-build: true
-          only-fixed: false
-          add-cpes-if-none: true
-          output-format: sarif
-
-      - name: Upload Grype SARIF to code scanning
-        if: ${{ always() && steps.grype.outputs.sarif != '' }}
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
-        with:
-          sarif_file: ${{ steps.grype.outputs.sarif }}
-          category: release-grype
-
-      # Syft: produce SPDX + CycloneDX SBOMs for each artifact.
-      - name: Generate SBOMs (Syft)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: release/
-          format: spdx-json
-          output-file: release/satellite.sbom.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-
-      - name: Generate CycloneDX SBOM (Syft)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: release/
-          format: cyclonedx-json
-          output-file: release/satellite.sbom.cdx.json
-          upload-artifact: false
-          upload-release-assets: false
-
-      - name: Install cosign (upstream binary)
-        shell: bash
-        env:
-          COSIGN_VERSION: "2.4.1"
-          # Pin upstream SHA-256 of cosign-linux-amd64. Verify with:
-          #   gh release view v${COSIGN_VERSION} -R sigstore/cosign --json assets
-          COSIGN_SHA256: "8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b" # cosign-linux-amd64 v2.4.1
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/cosign \
-            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
-          if [ "${COSIGN_SHA256}" != "TODO_REPLACE_WITH_UPSTREAM_SHA256" ]; then
-            echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
-          else
-            echo "::warning::COSIGN_SHA256 is unset; replace with the upstream SHA-256 to enforce binary integrity."
-          fi
-          chmod +x /tmp/cosign
-          sudo mv /tmp/cosign /usr/local/bin/cosign
-          cosign version
-
-      - name: Generate SHA256SUMS
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd release
-          # `sha256sum --binary` produces deterministic, byte-mode digests.
-          # Sort so the file order is stable regardless of how artifacts
-          # arrived.
-          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -printf '%f\n' \
-            | LC_ALL=C sort \
-            | xargs -d '\n' sha256sum --binary > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Cosign-sign each artifact + SHA256SUMS (keyless)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          cd release
-          for f in *; do
-            case "$f" in
-              *.sig|*.crt|SHA256SUMS.sig|SHA256SUMS.crt) continue ;;
-            esac
-            cosign sign-blob --yes \
-              --output-signature "${f}.sig" \
-              --output-certificate "${f}.crt" \
-              "$f"
-          done
-          ls -l
-
-      - name: Compute base64 SHA256 hashes for SLSA provenance
-        id: hashes
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd release
-          # SLSA generic generator wants `<base64>  <name>` lines, base64-encoded.
-          h=$(find . -maxdepth 1 -type f ! -name '*.sig' ! -name '*.crt' \
-                  -printf '%f\n' \
-                | LC_ALL=C sort \
-                | xargs -d '\n' sha256sum \
-                | base64 -w0)
-          echo "hashes=${h}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload hardened bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-bundle
-          path: release/
-          retention-days: 14
+    uses: ./.github/workflows/_release_harden.yml
+    with:
+      artifact-pattern: build-*
+      product: satellite
+      grype-ignore-name-regex: "(?i)^satellite(setup)?$"
 
   # ─────────────────────────────────────────────────────────────────────
   # SLSA L3 provenance generation. The reusable workflow runs in its own
@@ -563,18 +680,20 @@ jobs:
       base64-subjects: ${{ needs.harden.outputs.hashes }}
       provenance-name: satellite.intoto.jsonl
       upload-assets: false
-      compile-generator: true
-      private-repository: true
 
   # ─────────────────────────────────────────────────────────────────────
   # publish: attach hardened bundle + SLSA provenance to the GitHub
-  # Release. This is the only job that touches the release page.
+  # Release. Uploaded as a draft and flipped to published once every asset
+  # is in place: atomic for the zsync pattern and anyone scripting
+  # releases/latest.
   # ─────────────────────────────────────────────────────────────────────
   publish:
     name: Publish to GitHub Releases
     needs: [harden, provenance]
     timeout-minutes: 15
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Download hardened bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -591,18 +710,32 @@ jobs:
       - name: Show what we're about to publish
         run: find release -type f -printf '%p\n'
 
-      - name: Upload to GitHub Releases
+      - name: Upload to GitHub Releases (as draft)
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           generate_release_notes: true
+          draft: true
           files: release/**/*
+          fail_on_unmatched_files: true
+
+      - name: Flip release from draft to published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false
+          draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          [ "$draft" = "false" ] || { echo "::error::release is still a draft"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────
   # apt-publish: regenerate the APT repository at
   # https://tinkernorth.github.io/satellite/debian and commit to
-  # gh-pages. Skipped entirely if the GPG signing secret isn't set
+  # gh-pages. Stable tags only; a prerelease must never reach package
+  # managers. Skipped entirely if the GPG signing secret isn't set
   # (e.g. workflow_dispatch from a fork): unsigned repo metadata is worse
   # than no repo at all.
   # ─────────────────────────────────────────────────────────────────────
@@ -613,7 +746,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    if: ${{ github.ref_type == 'tag' }}
+    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
     steps:
       - name: Checkout main (for build scripts)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -721,7 +854,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    if: ${{ github.ref_type == 'tag' }}
+    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
     steps:
       - name: Checkout main (for build scripts)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -796,5 +929,142 @@ jobs:
             echo "No DNF-repo changes to commit"
           else
             git commit -m "Publish DNF repo: ${TAG}"
+            git push origin gh-pages
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────
+  # arch-publish: build the satellite-bin pacman package from the in-tree
+  # PKGBUILD (against the assets the publish job just made public) and
+  # regenerate the signed pacman repository under
+  # https://tinkernorth.github.io/satellite/arch/x86_64.
+  #
+  # A self-hosted pacman repo, not the AUR: AUR registration is closed, and
+  # a binary repo is CI-automatable where AUR pushes need a personal SSH
+  # key. packaging/aur/ stays AUR-ready for if/when registration reopens.
+  # Chained after rpm-publish because both jobs push gh-pages.
+  # ─────────────────────────────────────────────────────────────────────
+  arch-publish:
+    name: Publish pacman repository (gh-pages)
+    needs: [publish, rpm-publish]
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    permissions:
+      contents: write
+    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Gate on GPG signing secret
+        id: gate
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
+            echo "::warning::GPG_PRIVATE_KEY / GPG_KEY_ID not set; skipping pacman repo publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install tooling
+        if: steps.gate.outputs.skip != 'true'
+        run: pacman -Syu --noconfirm git pacman-contrib
+
+      - name: Checkout main (for the PKGBUILD)
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          path: main
+
+      - name: Import signing key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format=long
+
+      # makepkg refuses to run as root, and the container runs as root:
+      # build as a throwaway user. updpkgsums re-downloads the sources from
+      # the release the publish job just flipped live, so the repo package
+      # is built from (and checksummed against) the published bytes, not a
+      # parallel local copy. -d skips dependency checks: a -bin package()
+      # only copies files, and the depends are runtime-only.
+      - name: Build satellite-bin package
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          useradd -m builder
+          builddir=/home/builder/satellite-bin
+          mkdir -p "$builddir"
+          cp main/packaging/aur/PKGBUILD main/packaging/aur/satellite-bin.install "$builddir/"
+          sed -i "s/^pkgver=.*/pkgver=${version}/; s/^pkgrel=.*/pkgrel=1/" "$builddir/PKGBUILD"
+          chown -R builder:builder "$builddir"
+          su builder -c "cd '$builddir' && updpkgsums && PACKAGER='satellite-release-bot <releases@tinkernorth.invalid>' makepkg -d --noconfirm"
+          ls -l "$builddir"/*.pkg.tar.zst
+
+      - name: Sign package
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          for pkg in /home/builder/satellite-bin/*.pkg.tar.zst; do
+            gpg --batch --yes --default-key "$GPG_KEY_ID" --detach-sign "$pkg"
+          done
+
+      - name: Check out gh-pages branch (rpm-publish has already touched it)
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --branch gh-pages --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" pages
+
+      # repo-add emits satellite.db / satellite.files as symlinks to the
+      # .tar.gz files; GitHub Pages does not serve symlinks, so replace each
+      # with a real copy before committing.
+      - name: Build pacman repo
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          repo_dir=pages/arch/x86_64
+          mkdir -p "$repo_dir"
+          cp /home/builder/satellite-bin/*.pkg.tar.zst /home/builder/satellite-bin/*.pkg.tar.zst.sig "$repo_dir/"
+          (
+            cd "$repo_dir"
+            repo-add --sign --key "$GPG_KEY_ID" satellite.db.tar.gz ./*.pkg.tar.zst
+            for link in $(find . -maxdepth 1 -type l); do
+              target="$(readlink -f "$link")"
+              rm "$link"
+              cp "$target" "$link"
+            done
+          )
+          ls -l "$repo_dir"
+
+      - name: Commit + push
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd pages
+          git config user.name  'satellite-release-bot'
+          git config user.email 'releases@tinkernorth.invalid'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No pacman-repo changes to commit"
+          else
+            git commit -m "Publish pacman repo: ${TAG}"
             git push origin gh-pages
           fi
