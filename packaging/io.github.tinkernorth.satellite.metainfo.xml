@@ -109,6 +109,17 @@
   -->
 
   <releases>
+    <release version="1.0.1" date="2026-08-23">
+      <description>
+        <p>Packaging release; no protocol changes.</p>
+        <ul>
+          <li>Native .deb and .rpm built on their target distros, so the dependency lists resolve on Debian and Fedora</li>
+          <li>Signed pacman repository joins the APT and DNF repositories</li>
+          <li>AppImage carries zsync metadata for delta self-updates</li>
+        </ul>
+      </description>
+      <url type="details">https://github.com/TinkerNorth/satellite/releases/tag/1.0.1</url>
+    </release>
     <release version="1.0.0" date="2026-08-18">
       <description>
         <p>First stable release.</p>
