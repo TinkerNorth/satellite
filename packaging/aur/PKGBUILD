@@ -21,6 +21,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="Low-latency Xbox controller forwarding over the network (receiver)"
 arch=('x86_64')
+install='satellite-bin.install'
 url="https://github.com/TinkerNorth/satellite"
 license=('LGPL-3.0-or-later')
 # Runtime dependencies the AppImage wrapper unwraps to. Most of these are
@@ -35,8 +36,10 @@ depends=(
 optdepends=(
     'xdg-utils: required to open the web UI from the tray menu'
 )
-provides=('satellite')
-conflicts=('satellite')
+# NOTE: deliberately no provides=/conflicts= on the bare name `satellite`.
+# An unrelated AUR package already owns it (a Himawari/DSCOVR wallpaper
+# fetcher), so claiming either would misrepresent this package and block
+# co-installation of software with nothing to do with us.
 
 # Single x86_64 AppImage. Bump the URL and checksums in lockstep with pkgver.
 # The SHA256 comes from the SHA256SUMS asset attached to every release.
@@ -45,14 +48,16 @@ source_x86_64=(
     "satellite.desktop::https://raw.githubusercontent.com/TinkerNorth/satellite/${pkgver}/packaging/debian/satellite.desktop"
     "70-satellite-uinput.rules::https://raw.githubusercontent.com/TinkerNorth/satellite/${pkgver}/packaging/debian/70-satellite-uinput.rules"
 )
-# SHA-256 placeholders (REPLACE_BEFORE_PUBLISH). Bump these in lockstep
-# with pkgver; the value for the AppImage comes from the release's
-# SHA256SUMS asset; the .desktop and udev rule are inlined here for the
-# packaging/aur/sync.sh helper to regenerate.
+# Real SHA-256 sums, in source_x86_64 order. SKIP is not acceptable here: the
+# whole premise of a -bin package is redistributing an upstream binary, and the
+# release ships cosign signatures and SLSA provenance -- verifying nothing on
+# the way in would throw that away. Regenerate on every pkgver bump with
+# `updpkgsums`, and cross-check the AppImage line against the release's
+# SHA256SUMS asset.
 sha256sums_x86_64=(
-    'SKIP'
-    'SKIP'
-    'SKIP'
+    '5e1b36a3e61ded22ac81beca78eaac2f6799ecb9e1c5d2894ba1f2455a97b911'
+    '0a8ecb170dfb20aa63eefc2b18720218127227f38cba9b2515569bb94ea4903d'
+    'ccc589f57a7d7e3e74edf98db932b5fd9be7ebba584f2e3636c4a4482018da7f'
 )
 
 package() {

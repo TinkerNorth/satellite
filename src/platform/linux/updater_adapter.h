@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Only AppImage self-installs (swap-and-re-exec); deb/rpm/aur are Manual because
-// self-replacing would break the package manager's bookkeeping. Install type is
-// detected at construction and drives platformId().
+// Only AppImage self-installs (swap-and-re-exec); deb/rpm/aur/snap/flatpak are
+// Manual because self-replacing would break the package manager's bookkeeping --
+// and for snap/flatpak it is physically impossible, since both mount the payload
+// read-only. Install type is detected at construction and drives platformId().
 #pragma once
 
 #include "core/ports.h"
@@ -29,7 +30,7 @@ class LinuxUpdaterAdapter : public IUpdaterPort {
     std::string platformId() const override { return platformId_; }
 
   private:
-    enum class InstallType { AppImage, Deb, Rpm, Aur, Portable };
+    enum class InstallType { AppImage, Deb, Rpm, Aur, Snap, Flatpak, Portable };
     InstallType detectInstallType() const;
 
     std::string owner_;

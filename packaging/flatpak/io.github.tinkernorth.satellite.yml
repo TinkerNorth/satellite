@@ -1,0 +1,94 @@
+# Flatpak manifest for Satellite.
+#
+# SCOPE: this targets a self-hosted Flatpak repo / sideloaded bundle, aimed at
+# Steam Deck, Bazzite and Nobara. It is NOT a Flathub submission -- see
+# docs/packaging.md for why that route is closed today.
+#
+# THE PERMISSION MODEL, stated plainly: --device=all bind-mounts /dev into the
+# sandbox, which grants VISIBILITY, not AUTHORITY. The host's own DAC/ACL on
+# /dev/uinput still decides whether open() succeeds, and a Flatpak cannot
+# install a udev rule or change group membership to fix that. So this manifest
+# works out of the box only where the host already grants uinput access --
+# which is exactly the case on SteamOS, Bazzite and Nobara, because Valve's
+# steam-devices ships:
+#   KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+# On stock Ubuntu/Fedora/Arch the user must install that rule by hand, and the
+# .deb/.rpm remain the better channel there.
+#
+# --device=input is NOT sufficient: it binds /dev/input only, and uinput was
+# deliberately excluded from that permission before it was merged.
+id: io.github.tinkernorth.satellite
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: satellite
+
+finish-args:
+  # /dev/uinput. No narrower permission exists; renders on the store listing
+  # as "can access hardware devices".
+  - --device=all
+  # UDP 9876 (input), UDP 5353 (mDNS responder), TCP 9443 (client API),
+  # TCP 127.0.0.1:9877 (web UI). --share=network keeps the app in the host
+  # network namespace, so multicast bind/join behaves natively.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Tray icon via libayatana-appindicator -> StatusNotifierItem.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=com.canonical.AppMenu.Registrar
+  - --talk-name=org.ayatana.indicator.application
+  # libnotify talks to the notification service directly, not via a portal.
+  - --talk-name=org.freedesktop.Notifications
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/*.a
+  - /lib/*.la
+  - /share/man
+
+modules:
+  # libayatana-appindicator is not in org.freedesktop.Platform. Flathub's
+  # shared-modules carries the maintained recipe -- including the libdbusmenu
+  # Launchpad tarball and the two patches it needs -- so it is vendored as a
+  # submodule rather than hand-copied here.
+  #   git submodule update --init packaging/flatpak/shared-modules
+  - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
+
+  - name: libsodium
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://download.libsodium.org/libsodium/releases/libsodium-1.0.20.tar.gz
+        # Verified against the published tarball.
+        sha256: ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19
+
+  - name: satellite
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      # Skips the udev rule + modules-load.d entry, which are inert inside
+      # /app -- neither udev nor systemd ever reads the sandbox prefix.
+      - -DSATELLITE_SANDBOXED=ON
+    post-install:
+      # Flatpak exports icons and .desktop files only when they are named after
+      # the app id, so both are renamed here rather than in-tree (the native
+      # packages keep the short names).
+      - install -Dm644 web/icon.png
+          ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
+      - mv ${FLATPAK_DEST}/share/applications/satellite.desktop
+           ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - desktop-file-edit --set-key=Icon --set-value=${FLATPAK_ID}
+          ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      # <launchable> must name the renamed desktop file or the sandbox listing
+      # loses its icon and launch action.
+      - sed -i 's|>satellite.desktop<|>'${FLATPAK_ID}'.desktop<|'
+          ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+      - install -Dm644 LICENSE ${FLATPAK_DEST}/share/licenses/${FLATPAK_ID}/LICENSE
+    sources:
+      - type: dir
+        path: ../..

@@ -1,6 +1,25 @@
-# Grant members of the `input` group read/write access to /dev/uinput.
-# Satellite synthesizes virtual Xbox 360 controllers via this device.
+# Grant access to /dev/uinput. Satellite synthesizes virtual Xbox 360
+# controllers through this device; without write access it cannot create
+# a gamepad at all.
+#
+# Two mechanisms, deliberately belt-and-braces:
+#
+#   TAG+="uaccess"    systemd-logind attaches a POSIX ACL granting the
+#                     *active seat* user read/write. No group membership,
+#                     no log out and back in. Applied by systemd's
+#                     73-seat-late.rules, so this file's 70- prefix must
+#                     keep sorting before it.
+#
+#   GROUP/MODE        covers the cases uaccess does not: a background or
+#                     autostart session that is not the active seat, a
+#                     remote/SSH session, or a seat-less system. Satellite
+#                     is an autostart tray app, so this path is load-bearing
+#                     rather than a fallback.
+#
+# OPTIONS+="static_node=uinput" applies the permissions to the statically
+# created node on kernels where uinput is a module that has not been loaded
+# yet -- otherwise the first open() races module autoload.
 #
 # Filename prefix `70-` keeps this rule after early-stage hotplug rules
-# (60-) and before user-customization rules (90-/99-).
-KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660"
+# (60-) and before systemd's seat handling (73-).
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput", GROUP="input", MODE="0660"
