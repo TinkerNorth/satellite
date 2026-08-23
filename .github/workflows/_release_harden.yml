@@ -1,0 +1,199 @@
+name: _release_harden (reusable)
+
+# Reusable release-hardening workflow shared by the TinkerNorth release
+# pipelines (satellite, dish-linux, dish-windows). One job: download every
+# per-platform build artifact, Grype-scan it, emit SPDX + CycloneDX SBOMs,
+# generate SHA256SUMS, cosign-sign every file (keyless), and upload the lot
+# as the `release-bundle` artifact the caller's provenance + publish jobs
+# consume.
+#
+# Source of truth: TinkerNorth/satellite/.github/workflows/_release_harden.yml
+# Re-sync a copy with:
+#   cp ../satellite/.github/workflows/_release_harden.yml .github/workflows/_release_harden.yml
+#
+# Callers invoke this with:
+#
+#   jobs:
+#     harden:
+#       needs: [<all platform build jobs>]
+#       permissions:
+#         contents: read
+#         id-token: write         # cosign keyless
+#         security-events: write  # Grype SARIF → code scanning
+#       uses: ./.github/workflows/_release_harden.yml
+#       with:
+#         artifact-pattern: 'linux-*'   # download-artifact glob
+#         product: 'dish'               # SBOM filename prefix
+#         grype-ignore-name-regex: ''   # optional CPE-collision ignore
+#
+# The caller then feeds `needs.harden.outputs.hashes` to the SLSA generic
+# generator and publishes the `release-bundle` artifact.
+#
+# Pin map (owner/repo @ tag → 40-char SHA), verify on update with
+#   gh api repos/<owner>/<repo>/git/ref/tags/<tag>:
+#   actions/download-artifact     @ v8.0.1  → 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+#   actions/upload-artifact       @ v7.0.1  → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+#   anchore/scan-action           @ v7.4.0  → e1165082ffb1fe366ebaf02d8526e7c4989ea9d2
+#   anchore/sbom-action           @ v0.24.0 → e22c389904149dbc22b58101806040fa8d37a610
+#   github/codeql-action          @ v4.37.7 → ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd
+
+on:
+  workflow_call:
+    inputs:
+      artifact-pattern:
+        description: "download-artifact glob matching the per-platform build artifacts"
+        required: true
+        type: string
+      product:
+        description: "SBOM filename prefix (e.g. dish, satellite)"
+        required: true
+        type: string
+      grype-ignore-name-regex:
+        description: "Optional Grype package-name regex ignored as a CPE collision with first-party artifact names"
+        required: false
+        default: ""
+        type: string
+    outputs:
+      hashes:
+        description: "base64-encoded sha256sum block over every non-signature file, for the SLSA generic generator"
+        value: ${{ jobs.harden.outputs.hashes }}
+
+jobs:
+  harden:
+    name: scan, SBOM, sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    outputs:
+      hashes: ${{ steps.hashes.outputs.hashes }}
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ${{ inputs.artifact-pattern }}
+          merge-multiple: true
+          path: release
+
+      - name: Show what arrived
+        shell: bash
+        run: find release -type f -printf '%p\n'
+
+      - name: Ignore CPE name collisions against first-party artifact names
+        if: ${{ inputs.grype-ignore-name-regex != '' }}
+        shell: bash
+        env:
+          IGNORE_REGEX: ${{ inputs.grype-ignore-name-regex }}
+        run: |
+          set -euo pipefail
+          printf 'ignore:\n  - package:\n      name: "%s"\n' "${IGNORE_REGEX}" > .grype.yaml
+          cat .grype.yaml
+
+      # Anchore Grype: scan every artifact in release/ for CVEs.
+      - name: Vulnerability scan (Grype)
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        id: grype
+        with:
+          path: release/
+          severity-cutoff: high
+          fail-build: true
+          only-fixed: false
+          add-cpes-if-none: true
+          output-format: sarif
+
+      - name: Upload Grype SARIF to code scanning
+        if: ${{ always() && steps.grype.outputs.sarif != '' }}
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: release-grype
+
+      # Syft: produce SPDX + CycloneDX SBOMs over the whole bundle.
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: release/
+          format: spdx-json
+          output-file: release/${{ inputs.product }}.sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: release/
+          format: cyclonedx-json
+          output-file: release/${{ inputs.product }}.sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Install cosign (upstream binary)
+        shell: bash
+        env:
+          COSIGN_VERSION: "2.6.5"
+          # Pin upstream SHA-256 of cosign-linux-amd64. Verify with:
+          #   gh release download v${COSIGN_VERSION} -R sigstore/cosign -p cosign_checksums.txt -O -
+          COSIGN_SHA256: "c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644" # cosign-linux-amd64 v2.6.5
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/cosign \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
+          chmod +x /tmp/cosign
+          sudo mv /tmp/cosign /usr/local/bin/cosign
+          cosign version
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          # `sha256sum --binary` produces deterministic, byte-mode digests.
+          # Sort so the file order is stable regardless of how artifacts
+          # arrived.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs -d '\n' sha256sum --binary > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Cosign-sign each artifact + SHA256SUMS (keyless)
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          cd release
+          for f in *; do
+            case "$f" in
+              *.sig|*.crt|SHA256SUMS.sig|SHA256SUMS.crt) continue ;;
+            esac
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.crt" \
+              "$f"
+          done
+          ls -l
+
+      - name: Compute base64 SHA256 hashes for SLSA provenance
+        id: hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          # SLSA generic generator wants `<base64>  <name>` lines, base64-encoded.
+          h=$(find . -maxdepth 1 -type f ! -name '*.sig' ! -name '*.crt' \
+                  -printf '%f\n' \
+                | LC_ALL=C sort \
+                | xargs -d '\n' sha256sum \
+                | base64 -w0)
+          echo "hashes=${h}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload hardened bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle
+          path: release/
+          retention-days: 14
