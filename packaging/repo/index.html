@@ -104,11 +104,19 @@ sudo apt install satellite</code></pre>
 sudo dnf install satellite</code></pre>
 
   <h2>Arch Linux</h2>
-  <p>Satellite is published to the AUR as <a href="https://aur.archlinux.org/packages/satellite-bin">satellite-bin</a>.
-  Install it with your preferred AUR helper:</p>
-  <pre><code>yay -S satellite-bin
-# or
-paru -S satellite-bin</code></pre>
+  <p>Add the signed pacman repository once and <code>pacman -Syu</code> owns
+  updates from then on; no AUR helper needed:</p>
+  <pre><code>curl -fsSL https://tinkernorth.github.io/satellite/gpg.key | sudo pacman-key --add -
+sudo pacman-key --lsign-key 4371E67B00CB54E69ED34D70428695F4ED61D3A8
+
+printf '\n[satellite]\nSigLevel = Required DatabaseOptional\nServer = https://tinkernorth.github.io/satellite/arch/$arch\n' \
+  | sudo tee -a /etc/pacman.conf
+
+sudo pacman -Syu satellite-bin</code></pre>
+  <p>Prefer building it yourself? The
+  <a href="https://github.com/TinkerNorth/satellite/tree/main/packaging/aur">PKGBUILD</a>
+  is in the repo for <code>makepkg -si</code>. (An AUR listing is planned for
+  when AUR account registration reopens.)</p>
 
   <h2>Other distros / no package manager</h2>
   <p>Every <a href="https://github.com/TinkerNorth/satellite/releases/latest">release</a> ships a
