@@ -1,0 +1,20 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sun, 23 Aug 2026 18:45:27 +0000
+Description: Satellite Linux package repository
+Label: Satellite
+Origin: TinkerNorth
+Suite: stable
+MD5Sum:
+ 2d0038b95efc4208c3009de384d0aeaf             1153 main/binary-amd64/Packages
+ e0a14ad13e11efbb0a13ec3ea55b572d              746 main/binary-amd64/Packages.gz
+SHA1:
+ 85ba0969ac7a7922823780b532ba916dfcc92770             1153 main/binary-amd64/Packages
+ e47b0aef325c170db7318a524c70f14c94807889              746 main/binary-amd64/Packages.gz
+SHA256:
+ 82c92c69fc950dd8ca42c853039e77201ec680f6130411873307c6bd36fb3286             1153 main/binary-amd64/Packages
+ 78b7ee0c0ca6d3145568d4315171493bcab83d48aa2c21d4243d5bbd1702ae53              746 main/binary-amd64/Packages.gz
+SHA512:
+ 595bb25d2e48a882806378672a19373b49b68eab818f827fecd10483798f97f4ef9683273ea43503203ee3381264687e41d9fb2d0655522117c0c183c5e362ed             1153 main/binary-amd64/Packages
+ f26d3dedf03f07101cc2587de9e11e850f26a816f0c13b3a8cbc4e105533356fbe6aee4e6bf807d3a6d765502e47ea292ae7a7ba9bb6a92c8b7fad9dd7a797f4              746 main/binary-amd64/Packages.gz

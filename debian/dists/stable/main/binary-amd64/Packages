@@ -1,0 +1,21 @@
+Package: satellite
+Architecture: amd64
+Version: 1.0.1
+Priority: optional
+Section: utils
+Maintainer: TinkerNorth <security@tinkernorth.com>
+Installed-Size: 1555
+Depends: libayatana-appindicator3-1 (>= 0.4.90), libc6 (>= 2.38), libcurl4t64 (>= 7.16.2), libgcc-s1 (>= 3.3.1), libglib2.0-0t64 (>= 2.30.0), libgtk-3-0t64 (>= 3.0.0), libnotify4 (>= 0.7.0), libsodium23 (>= 1.0.12), libssl3t64 (>= 3.0.0), libstdc++6 (>= 13.1)
+Filename: pool/main/s/satellite/satellite_1.0.1_amd64.deb
+Size: 666004
+MD5sum: 37f1717b10d089982fbf4256c7517ee5
+SHA1: 2d10bfe3697a3df0cfc6c941dcf3d306a3d93f48
+SHA256: 7b1a6e667a8e58f1c1d8f4b8d63be8ad75226466646e6e0a3332632ee0f130f5
+SHA512: 536205b4d80217da7c3c96611058956d4fba3543671c5a403b9152c3188b80803a3e03063268190ebb0a7971daed06cf132fe60d6d8eb3fee97fa72d3a9eb7d3
+Homepage: https://github.com/TinkerNorth/satellite
+Description: Low-latency Xbox controller forwarding over the network
+ Captures physical Xbox controller input on one machine and injects
+  it as a virtual Xbox 360 controller on another via /dev/uinput.
+  Includes a system-tray icon and a web UI at http://localhost:9877
+ for pairing, configuration, and status.
+
