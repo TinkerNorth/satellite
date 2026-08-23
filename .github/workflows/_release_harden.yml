@@ -19,7 +19,7 @@ name: _release_harden (reusable)
 #       permissions:
 #         contents: read
 #         id-token: write         # cosign keyless
-#         security-events: write  # Grype SARIF → code scanning
+#         security-events: write  # Grype SARIF upload to code scanning
 #       uses: ./.github/workflows/_release_harden.yml
 #       with:
 #         artifact-pattern: 'linux-*'   # download-artifact glob

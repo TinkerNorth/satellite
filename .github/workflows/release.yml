@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    # Bare MAJOR.MINOR.PATCH tags — org convention for the product repos,
+    # Bare MAJOR.MINOR.PATCH tags: org convention for the product repos,
     # because dish-android's pipeline requires bare tags. Every version
     # consumer below still tolerates a legacy v prefix by stripping it.
     tags: ["[0-9]*"]
@@ -23,9 +23,9 @@ on:
 #     README "How it works"). Codesigned + notarized if Developer ID secrets
 #     are set.
 #   * Linux:   packages .deb in a debian:trixie container and .rpm in a
-#     fedora:42 container — each distro's own dependency scanner writes the
-#     Depends/Requires, which a single Ubuntu-built package gets wrong — and
-#     an AppImage (with zsync self-update metadata) on the 22.04 glibc floor.
+#     fedora:42 container, so each distro's own dependency scanner writes the
+#     Depends/Requires (a single Ubuntu-built package gets both wrong), plus
+#     an AppImage with zsync self-update metadata on the 22.04 glibc floor.
 #     The .deb and .rpm jobs install their own package and launch it before
 #     uploading; nothing else can catch a missing runtime dependency.
 #
@@ -39,8 +39,8 @@ on:
 # pattern and anyone scripting `releases/latest` see either the old release
 # or the complete new one, never a half-uploaded one.
 #
-# Prerelease tags (v1.2.3-rc.1) publish marked as prerelease and skip the
-# APT/DNF repos — package managers never see them.
+# Prerelease tags (1.2.3-rc.1) publish marked as prerelease and skip the
+# APT/DNF repos; package managers never see them.
 #
 # Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
 #   actions/checkout                @ v7.0.0  → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -340,10 +340,10 @@ jobs:
           path: stage/
 
   # =========================================================================
-  # .deb — built in a debian:trixie container so dpkg-shlibdeps computes the
+  # .deb: built in a debian:trixie container so dpkg-shlibdeps computes the
   # Depends against Debian's own sonames. The previous single-host build
   # emitted Ubuntu `t64` package names in Depends, which resolve on no Debian
-  # release — CPACK_DEBIAN_PACKAGE_SHLIBDEPS reads the build host, so the
+  # release; CPACK_DEBIAN_PACKAGE_SHLIBDEPS reads the build host, so the
   # build host has to be the target distro.
   # =========================================================================
   deb:
@@ -469,7 +469,7 @@ jobs:
           if-no-files-found: error
 
   # =========================================================================
-  # .rpm — same reasoning in a fedora:42 container: rpmbuild's soname scanner
+  # .rpm: same reasoning in a fedora:42 container; rpmbuild's soname scanner
   # writes the Requires against Fedora's packages.
   # =========================================================================
   rpm:
@@ -573,8 +573,9 @@ jobs:
           if-no-files-found: error
 
   # =========================================================================
-  # AppImage — every other distro. ubuntu-22.04: an AppImage's floor is the
-  # glibc it linked against, and 22.04's 2.35 covers every supported desktop.
+  # AppImage: every other distro. ubuntu-22.04 because an AppImage's floor is
+  # the glibc it linked against, and 22.04's 2.35 covers every supported
+  # desktop.
   # =========================================================================
   appimage:
     name: Build AppImage
@@ -619,7 +620,7 @@ jobs:
           convert web/img/satellite-icon.png -resize 256x256 "${RUNNER_TEMP}/satellite.png"
           # Embed AppImageUpdate metadata so AppImageUpdate / Gear Lever can
           # delta-update off the newest release; appimagetool emits the
-          # matching .zsync, and the draft→flip publish keeps `latest` atomic.
+          # matching .zsync, and the draft-then-flip publish keeps `latest` atomic.
           export LDAI_UPDATE_INFORMATION="gh-releases-zsync|TinkerNorth|satellite|latest|satellite-*-x86_64.AppImage.zsync"
           mkdir -p stage
           out="stage/satellite-${{ steps.ver.outputs.version }}-x86_64.AppImage"
@@ -646,7 +647,7 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────
-  # harden — the shared reusable (scan, SBOMs, SHA256SUMS, cosign keyless).
+  # harden: the shared reusable (scan, SBOMs, SHA256SUMS, cosign keyless).
   # Canonical copy of _release_harden.yml lives in this repo.
   # ─────────────────────────────────────────────────────────────────────
   harden:
@@ -682,8 +683,8 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # publish: attach hardened bundle + SLSA provenance to the GitHub
-  # Release. Uploaded as a draft, flipped to published once every asset is
-  # in place — atomic for the zsync pattern and anyone scripting
+  # Release. Uploaded as a draft and flipped to published once every asset
+  # is in place: atomic for the zsync pattern and anyone scripting
   # releases/latest.
   # ─────────────────────────────────────────────────────────────────────
   publish:
@@ -733,7 +734,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # apt-publish: regenerate the APT repository at
   # https://tinkernorth.github.io/satellite/debian and commit to
-  # gh-pages. Stable tags only — a prerelease must never reach package
+  # gh-pages. Stable tags only; a prerelease must never reach package
   # managers. Skipped entirely if the GPG signing secret isn't set
   # (e.g. workflow_dispatch from a fork): unsigned repo metadata is worse
   # than no repo at all.

@@ -16,7 +16,7 @@
          installer documents the switch for exactly this.
       2. The ARP entry exists (native or WOW6432Node view) and points at the
          install.
-      3. The installed exe actually starts and stays up — satellite runs
+      3. The installed exe actually starts and stays up: satellite runs
          headless-fallback without a tray host, so "stays up 10 s" is the
          portable liveness check.
       4. A silent re-run over the same version (Inno's repair/upgrade path)
@@ -43,7 +43,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Inno derives the ARP key from the AppId in installer.iss. The installer is
-# admin-context, so the entry lands in HKLM — in the native view or the
+# admin-context, so the entry lands in HKLM, in the native view or the
 # WOW6432Node view depending on ArchitecturesInstallIn64BitMode; probe both.
 $appId = '{B8F3A2E1-7D4C-4E5F-9A1B-3C6D8E0F2A4B}'
 $arpCandidates = @(
