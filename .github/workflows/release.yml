@@ -34,6 +34,20 @@ on:
 # the tagged commit. The `harden` job (the shared _release_harden.yml) then
 # scans, signs, generates SBOMs, and produces SHA256SUMS.
 #
+# Alongside each versioned artifact, the shipping platforms stage a second
+# copy under a version-less STABLE NAME:
+#
+#   SatelliteSetup.exe   satellite-amd64.deb   satellite-x86_64.rpm
+#   satellite-x86_64.AppImage
+#
+# Those names are a permanent API, exactly like dish-windows' dish-setup.exe:
+# https://github.com/TinkerNorth/satellite/releases/latest/download/<name>
+# always resolves to the newest published build, which is what lets
+# dish-website (and anything else) link "the latest Satellite" without being
+# rebuilt for every release. Renaming or dropping one silently breaks every
+# consumer of that permalink. The stable copies flow through the same
+# harden job, so SHA256SUMS and the cosign signatures cover them too.
+#
 # The release is uploaded as a DRAFT and flipped to published afterwards:
 # GitHub never points releases/latest at a draft, so the AppImage zsync
 # pattern and anyone scripting `releases/latest` see either the old release
@@ -231,6 +245,10 @@ jobs:
           fi
           mkdir -p stage
           cp dist/SatelliteSetup.exe "stage/SatelliteSetup-${tag}${suffix}.exe"
+          # Stable-name copy: the /releases/latest/download/ permalink target.
+          # Never carries the version or the -unsigned suffix; the download
+          # pages declare signing state per product instead of via filename.
+          cp dist/SatelliteSetup.exe stage/SatelliteSetup.exe
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -462,6 +480,12 @@ jobs:
           fi
           echo "::notice::satellite came up headless, shut down on SIGTERM and exited 0"
 
+      # Stable-name copy for the /releases/latest/download/ permalink; the
+      # dash (vs the versioned name's underscores) keeps it clear of the
+      # satellite_*_amd64.deb glob above.
+      - name: Stage stable-name alias
+        run: cp dist/satellite_*_amd64.deb dist/satellite-amd64.deb
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-deb
@@ -566,6 +590,10 @@ jobs:
           fi
           echo "::notice::satellite came up headless, shut down on SIGTERM and exited 0"
 
+      # Stable-name copy for the /releases/latest/download/ permalink.
+      - name: Stage stable-name alias
+        run: cp dist/satellite-*.x86_64.rpm dist/satellite-x86_64.rpm
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-rpm
@@ -638,6 +666,9 @@ jobs:
           if [ ! -f "${out}.zsync" ]; then
             echo "::warning::no .zsync emitted; AppImageUpdate delta updates unavailable for this build"
           fi
+          # Stable-name copy for the /releases/latest/download/ permalink.
+          # No .zsync alias: AppImageUpdate matches the versioned pattern.
+          cp "${out}" stage/satellite-x86_64.AppImage
           ls -l stage/
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
