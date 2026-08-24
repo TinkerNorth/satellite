@@ -47,6 +47,7 @@ include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
     src/core/catalog.cpp
+    src/core/backend_registry.cpp
     src/core/update_service.cpp
     src/core/github_release.cpp
     src/core/network_info.cpp
@@ -90,6 +91,9 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/toast.cpp
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
+    src/platform/windows/hidmaestro_wire.cpp
+    src/platform/windows/hidmaestro_adapter.cpp
+    src/platform/windows/hidmaestro_helper_client.cpp
     src/platform/windows/gamepad_backend.cpp
     src/platform/windows/updater_adapter.cpp
     src/platform/windows/app_lifecycle.cpp
@@ -811,6 +815,17 @@ satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
+satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
+    src/core/backend_registry.cpp)
+satellite_add_pure_test(test_gamepad_mux tests/test_gamepad_mux.cpp)
+
+# HIDMaestro shared-memory codec + per-profile report packers: pure byte /
+# seqlock logic, verified on every platform even though the live backend is
+# Windows-only.
+satellite_add_pure_test(test_hidmaestro_wire tests/test_hidmaestro_wire.cpp
+    src/platform/windows/hidmaestro_wire.cpp)
+satellite_add_pure_test(test_hidmaestro_report tests/test_hidmaestro_report.cpp
+    src/platform/windows/hidmaestro_wire.cpp)
 
 # Portable session-crypto interop suite (net/session_crypto.cpp): the pinned
 # RFC 5869 HKDF vector, the HMAC-proof vector, and the AEAD direction/counter/
@@ -1185,6 +1200,42 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME vigem_adapter COMMAND test_vigem_adapter)
+endif()
+
+# Drives the real hidmaestro_adapter.cpp against a fake provisioner whose
+# "sections" are in-process anonymous file mappings, so the seqlock submit
+# path, per-profile packing, and the output-ring rumble/lightbar workers are
+# exercised without the driver, the helper, or elevation.
+if(WIN32)
+    add_executable(test_hidmaestro_adapter
+        tests/test_hidmaestro_adapter.cpp
+        src/platform/windows/hidmaestro_adapter.cpp
+        src/platform/windows/hidmaestro_wire.cpp
+    )
+    target_include_directories(test_hidmaestro_adapter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_include_directories(test_hidmaestro_adapter SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+    target_compile_definitions(test_hidmaestro_adapter PRIVATE
+        _WIN32_WINNT=0x0A00
+    )
+    target_link_libraries(test_hidmaestro_adapter PRIVATE
+        ws2_32
+        user32
+    )
+    if(MINGW)
+        target_compile_options(test_hidmaestro_adapter PRIVATE -O2 -Wall -Wextra)
+        target_link_options(test_hidmaestro_adapter PRIVATE -static)
+    elseif(MSVC)
+        target_compile_options(test_hidmaestro_adapter PRIVATE /O2 /W4)
+    endif()
+    set_target_properties(test_hidmaestro_adapter PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME hidmaestro_adapter COMMAND test_hidmaestro_adapter)
 endif()
 
 # Robustness fuzzing (opt-in, D-series fuzz harness): drives the receiver's

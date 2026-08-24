@@ -274,6 +274,20 @@ caller's own session.
   "serverVersion": "1.6.0",
   "maxControllers": 16,
   "backend": { "id": "vigem", "supported": true, "available": true, "errorCode": null },
+  "backends": [
+    { "id": "vigem", "vendor": "Nefarius Software Solutions", "displayName": "ViGEmBus",
+      "kernelMode": true, "available": true, "errorCode": null,
+      "controllers": [
+        { "type": 0, "name": "xbox", "latency": "lowest", "latencyRank": 0,
+          "motion": false, "touchpad": false, "lightbar": false },
+        { "type": 1, "name": "playstation", "latency": "lowest", "latencyRank": 0,
+          "motion": true, "touchpad": true, "lightbar": true }
+      ] },
+    { "id": "hidmaestro", "vendor": "hifihedgehog", "displayName": "HIDMaestro",
+      "kernelMode": false, "available": false, "errorCode": "DRIVER_MISSING",
+      "controllers": [ { "type": 0, "...": "…" }, { "type": 1, "...": "…" },
+                       { "type": 2, "...": "…" }, { "type": 3, "...": "…" } ] }
+  ],
   "motion": { "available": true },
   "host": {
     "catalog": { "supported": true },
@@ -286,7 +300,19 @@ caller's own session.
 
 `motion.available` reflects the motion backend right now (e.g. ViGEmBus new enough for
 the DS4 EX report). `backend.errorCode` ∈ `DRIVER_MISSING`, `BUS_OPEN_FAILED`,
-`MODULE_NOT_LOADED`, `DEVICE_MISSING`, `PERMISSION_DENIED`, or null.
+`HELPER_MISSING`, `MODULE_NOT_LOADED`, `DEVICE_MISSING`, `PERMISSION_DENIED`, or null.
+
+`backends` (additive; absent on older servers) is the host's full backend option list,
+most-preferred first — a host can carry more than one (Windows: `vigem` AND
+`hidmaestro`; controllers route to the first available backend supporting the
+requested type). The singular `backend` object stays the preferred-available backend
+(or the most-preferred backend's error when none is available), so existing clients
+keep working unchanged. Each entry's `controllers` lists the types that backend can
+materialize with its feature surface and a relative submit-latency tier: `latencyRank`
+is ordinal (smaller = lower latency; kernel-mode submit paths rank below user-mode
+shared-memory ones) so a client can compare "type X via backend A vs B" without
+naming any library. Ids `vigem` / `hidmaestro` / `uinput` / `machid` / `none` and all
+error codes are protocol constants, never localized.
 
 `host` is the receiver's OWN capability inventory, readable before pairing or any
 catalog round-trip so a client reflects the real receiver instead of an optimistic
@@ -363,12 +389,19 @@ to present it (static, localized) → **capabilities** = what is true right now
 - `controllerTypes[].id` is the wire enum value used as descriptor `type` (0 xbox360,
   1 ds4, 2 dualsense, 3 switchpro). The client renders its "Emulate" picker from this
   list instead of hardcoding the enum.
-- The offered set is per-backend — only identities the receiver can natively
-  materialize. Linux/uinput offers all four; Windows/ViGEm offers xbox360 + ds4 only
-  (no DualSense/Switch target); macOS/IOHIDUserDevice offers ds4 (drops the fake Xbox;
-  DualSense pending its report codec). A type the server does not offer but a client
-  requests anyway returns per-controller `invalidType`.
-- `requires` is a structured code (`"vigembus>=1.17"`), not prose.
+- The offered set is the union of the host's configured backends — only identities
+  the receiver can natively materialize. Linux/uinput offers all four; Windows offers
+  all four (xbox360 + ds4 prefer ViGEm's kernel path, dualsense + switchpro
+  materialize via HIDMaestro, which also covers xbox360 + ds4 when ViGEmBus is
+  absent); macOS/IOHIDUserDevice offers ds4 (drops the fake Xbox; DualSense pending
+  its report codec). The catalog is static per server version (its ETag is keyed on
+  version + locale), so a type stays offered even while its backend's driver is
+  missing — the plug then fails per-controller (`backendUnavailable` when no backend
+  bus opened, else `pluginFailed`) and `capabilities.backends` names which driver to
+  fix. A type the server does not offer at all returns per-controller `invalidType`.
+- `requires` is a structured code (`"vigembus>=1.17"`, `"hidmaestro>=1.7"`), not
+  prose. With multiple backends it names the requirement of the type's PREFERRED
+  materializer.
 - `controllerTypes[].emulates` is an OPTIONAL physical-pad identity hint —
   `{ "sdlType": …, "usb": [ "vid:pid", … ] }` — naming the physical controller this
   virtual type is the natural default for (e.g. `ds4` ← a `ps4` pad / USB `054c:05c4`).

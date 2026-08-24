@@ -230,7 +230,7 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
     server.Get("/donate", serveIndex);
 
     server.Get("/api/backend/status", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(buildBackendJson(), "application/json");
+        res.set_content(buildBackendStatusJson(), "application/json");
     });
 
     server.Get("/api/status", [&svc](const httplib::Request&, httplib::Response& res) {

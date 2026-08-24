@@ -11,10 +11,13 @@ REM        (required for build-satellite.bat and build-tests.bat)
 REM    [3] Inno Setup:                              iscc (installer.iss)
 REM    [4] LLVM:                                    clang-format, clang-tidy
 REM    [5] Cppcheck:                                static analysis
+REM    [6] .NET SDK 10:                             dotnet publish
+REM        (builds helper\hidmaestro\satellite-hm-helper.exe for the installer)
 REM
 REM  NOT installed (runtime-only): ViGEmBus driver. Grab it from
 REM  https://github.com/nefarius/ViGEmBus/releases to run the receiver and
-REM  inject a virtual Xbox 360 controller.
+REM  inject a virtual Xbox 360 controller. The HIDMaestro driver deploys via
+REM  the bundled helper (satellite-hm-helper.exe install-driver), elevated.
 REM
 REM  Requires: winget (ships with Windows 11; in the Microsoft Store as
 REM  "App Installer" otherwise). Some installers trigger a UAC prompt; approve
@@ -36,7 +39,7 @@ if %ERRORLEVEL% neq 0 (
 echo [OK]  winget available
 echo.
 
-echo === [1/5] MSYS2 ^(provides MinGW-w64 g++ + windres^) ===
+echo === [1/6] MSYS2 ^(provides MinGW-w64 g++ + windres^) ===
 winget install --id MSYS2.MSYS2 --silent --accept-source-agreements --accept-package-agreements
 echo.
 
@@ -48,7 +51,7 @@ if not exist "%MSYS2_ROOT%\usr\bin\pacman.exe" (
     exit /b 1
 )
 
-echo === [2/5] mingw-w64-ucrt-x86_64-gcc ^(via pacman^) ===
+echo === [2/6] mingw-w64-ucrt-x86_64-gcc ^(via pacman^) ===
 "%MSYS2_ROOT%\usr\bin\pacman.exe" -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] pacman could not install mingw-w64-ucrt-x86_64-gcc.
@@ -59,7 +62,7 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-echo === [3/5] mingw-w64-ucrt-x86_64-openssl ^(HTTPS client API^) ===
+echo === [3/6] mingw-w64-ucrt-x86_64-openssl ^(HTTPS client API^) ===
 REM webserver.cpp uses cpp-httplib's SSLServer (CPPHTTPLIB_OPENSSL_SUPPORT), and
 REM tls.cpp generates the self-signed cert via libcrypto. Both need OpenSSL
 REM headers + static archives shipped by the MSYS2 ucrt64 package.
@@ -73,13 +76,17 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-echo === [4/5] Inno Setup ^(installer build^) ===
+echo === [4/6] Inno Setup ^(installer build^) ===
 winget install --id JRSoftware.InnoSetup --silent --accept-source-agreements --accept-package-agreements
 echo.
 
-echo === [5/5] LLVM + Cppcheck ^(code-quality tools^) ===
+echo === [5/6] LLVM + Cppcheck ^(code-quality tools^) ===
 winget install --id LLVM.LLVM --silent --accept-source-agreements --accept-package-agreements
 winget install --id Cppcheck.Cppcheck --silent --accept-source-agreements --accept-package-agreements
+echo.
+
+echo === [6/6] .NET SDK 10 ^(HIDMaestro helper build^) ===
+winget install --id Microsoft.DotNet.SDK.10 --silent --accept-source-agreements --accept-package-agreements
 echo.
 
 echo === Adding %MINGW_BIN% to user PATH ===

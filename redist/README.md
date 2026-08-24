@@ -49,6 +49,28 @@ The installer's silent-install switches are the standard WixSharp Burn set
 `installer.iss` maps these into either silent success, a deferred-reboot
 prompt, or a non-blocking warning that surfaces on the final wizard page.
 
+### HIDMaestro
+
+- Component: hifihedgehog/HIDMaestro SDK release
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/releases/tag/v1.7.0
+- Pinned-version: `v1.7.0`
+- Filename: `HIDMaestro-v1.7.0.zip`
+- SHA-256: see `SHA256SUMS`
+- License: MIT
+- EOL: no. Actively maintained; bump deliberately, re-verifying the
+  shared-memory layout pins in `src/platform/windows/hidmaestro_wire.h`
+  (see `lib/VENDORED.md`) before adopting a new release.
+
+Unlike ViGEmBus there is no standalone driver installer: the UMDF2 driver
+is embedded inside `HIDMaestro.Core.dll` and deploys itself (certificate +
+signing + pnputil) when invoked elevated. `fetch-redist.ps1` stages the SDK
+assemblies into `redist/hidmaestro/`; `helper/hidmaestro` builds them into
+the self-contained `satellite-hm-helper.exe` that the installer bundles,
+and `SatelliteSetup.exe` runs `satellite-hm-helper.exe install-driver`
+during setup (no reboot required). The uninstaller's
+`satellite-hm-helper.exe remove-driver` removes the virtual devices and
+driver packages.
+
 ## Updating the pin
 
 ViGEmBus 1.22.0 is the final upstream release, so this is mostly a
@@ -64,5 +86,12 @@ adopt it as the bundled driver, the bump is:
    custom verifier in `fetch-redist.ps1`).
 4. Update the inventory block in this file.
 5. Build the installer end-to-end (`iscc installer.iss`) and smoke-test on
-   a clean VM with no prior ViGEmBus install, with an older one, and with
-   the same version. See the test matrix at the bottom of `installer.iss`.
+   a clean VM with no prior driver install, with an older one, and with
+   the same version (`scripts/test-installer-roundtrip.ps1` covers the
+   silent path with both drivers skipped).
+
+The same recipe applies to a HIDMaestro bump, plus one extra step: diff the
+new release's `driver/driver.h` and `SharedMemoryIO.cs` against the layout
+constants in `src/platform/windows/hidmaestro_wire.h` (`test_hidmaestro_wire`
+pins them) — the shared-memory protocol carries no version field, so the
+pin bump IS the compatibility review.

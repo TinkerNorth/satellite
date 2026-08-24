@@ -3,20 +3,24 @@ REM ============================================================================
 REM  Build the Windows Inno Setup installer (SatelliteSetup.exe)
 REM
 REM  Pipeline:
-REM    [1] scripts\fetch-redist.ps1  -- downloads + SHA-256 verifies redist\*.exe
-REM    [2] scripts\sign.ps1          -- signs satellite.exe (if SATELLITE_SIGN_*
+REM    [1] scripts\fetch-redist.ps1  -- downloads + SHA-256 verifies redist
+REM                                     binaries, stages redist\hidmaestro\
+REM    [2] dotnet publish            -- builds satellite-hm-helper.exe
+REM                                     (helper\hidmaestro, self-contained)
+REM    [3] scripts\sign.ps1          -- signs satellite.exe (if SATELLITE_SIGN_*
 REM                                     or CLOUD_SIGN_TOOL env is set; skipped
 REM                                     otherwise with a warning)
-REM    [3] iscc installer.iss        -- compiles the installer
-REM    [4] scripts\sign.ps1          -- signs SatelliteSetup.exe (same gating)
-REM    [5] scripts\generate-sbom.ps1 -- emits dist\satellite-sbom.cdx.json
+REM    [4] iscc installer.iss        -- compiles the installer
+REM    [5] scripts\sign.ps1          -- signs SatelliteSetup.exe (same gating)
+REM    [6] scripts\generate-sbom.ps1 -- emits dist\satellite-sbom.cdx.json
 REM
-REM  Steps [2] and [4] no-op cleanly if no signing credentials are
+REM  Steps [3] and [5] no-op cleanly if no signing credentials are
 REM  present, so this script is safe to run on a dev machine.
 REM
 REM  Requires:
 REM    - satellite.exe already built (run build-satellite.bat first)
 REM    - Inno Setup 6 on PATH       (winget install JRSoftware.InnoSetup)
+REM    - .NET SDK 10                (winget install Microsoft.DotNet.SDK.10)
 REM    - PowerShell 5.1+ (ships with Windows)
 REM ============================================================================
 
@@ -33,7 +37,7 @@ if not exist "%ROOT%satellite.exe" (
     exit /b 1
 )
 
-echo === [1/5] Fetching redistributables ===
+echo === [1/6] Fetching redistributables ===
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%FETCH%"
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] fetch-redist.ps1
@@ -41,7 +45,22 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-echo === [2/5] Signing satellite.exe ===
+echo === [2/6] Building HIDMaestro helper (dotnet publish) ===
+where dotnet.exe >nul 2>nul
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] dotnet.exe not found on PATH.
+    echo        Install the .NET SDK: winget install Microsoft.DotNet.SDK.10
+    echo        ^(or run install-dependencies.bat^)
+    exit /b 1
+)
+dotnet publish "%ROOT%helper\hidmaestro\satellite-hm-helper.csproj" -c Release
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] dotnet publish helper\hidmaestro
+    exit /b 1
+)
+echo.
+
+echo === [3/6] Signing satellite.exe ===
 REM Skip if no signing creds are configured -- dev builds should still work.
 if not defined SATELLITE_SIGN_THUMBPRINT if not defined SATELLITE_SIGN_PFX if not defined CLOUD_SIGN_TOOL (
     echo [SKIP] No signing credentials in env -- satellite.exe will be unsigned.
@@ -59,7 +78,7 @@ if %ERRORLEVEL% neq 0 (
 echo.
 
 :compile
-echo === [3/5] Compiling installer (iscc installer.iss) ===
+echo === [4/6] Compiling installer (iscc installer.iss) ===
 
 REM Locate iscc.exe. Prefer PATH; fall back to standard install locations
 REM so a fresh shell after a per-user winget install of Inno Setup just
@@ -85,7 +104,7 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-echo === [4/5] Signing SatelliteSetup.exe ===
+echo === [5/6] Signing SatelliteSetup.exe ===
 if not defined SATELLITE_SIGN_THUMBPRINT if not defined SATELLITE_SIGN_PFX if not defined CLOUD_SIGN_TOOL (
     echo [SKIP] No signing credentials in env -- SatelliteSetup.exe will be unsigned.
     goto :sbom
@@ -98,7 +117,7 @@ if %ERRORLEVEL% neq 0 (
 echo.
 
 :sbom
-echo === [5/5] Generating SBOM ===
+echo === [6/6] Generating SBOM ===
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SBOM%"
 if %ERRORLEVEL% neq 0 (
     echo [WARN] sbom generation failed -- continuing anyway
@@ -108,3 +127,4 @@ echo.
 echo === Installer built: dist\SatelliteSetup.exe ===
 
 endlocal
+

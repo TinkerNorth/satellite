@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Pure suite for the macOS DS4 v2 report codec (platform/macos/ds4_report.h):
+// Pure suite for the shared DS4 v2 report codec (core/ds4_report.h):
 // descriptor size/shape pins, input-report byte pins (buttons, sticks, hat,
 // triggers, IMU, battery, 12-bit touchpad packing), output-report parsing in
 // both transport forms, and the feature-report blobs. IOKit-free; runs on the
 // bare CI runner with no entitlement.
 #include "../src/core/touchpad_codec.h"
-#include "../src/platform/macos/ds4_report.h"
+#include "../src/core/ds4_report.h"
 // IOKit-free by design: only the pure probe-status seam is used from it.
 #include "../src/platform/macos/mac_hid_gamepad_adapter.h"
 

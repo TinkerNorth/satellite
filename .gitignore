@@ -33,6 +33,21 @@ compile_commands.json
 # Packaged release artifacts (.deb, etc.) produced by build-deb.sh / cpack
 /dist/
 
+# Fetched redistributables (hash-pinned by redist/SHA256SUMS; .exe already
+# covered) and the HIDMaestro SDK staging dir + .NET build output
+/redist/*.zip
+/redist/hidmaestro/
+/redist/hidmaestro-staging/
+/helper/hidmaestro/bin/
+/helper/hidmaestro/obj/
+
+# New-backend pure/adapter test binaries (CMake RUNTIME_OUTPUT_DIRECTORY;
+# Windows .exe already covered)
+/test_backend_registry
+/test_gamepad_mux
+/test_hidmaestro_wire
+/test_hidmaestro_report
+
 # IDE / Editor
 .vs/
 .vscode/

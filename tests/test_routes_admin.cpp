@@ -234,6 +234,16 @@ int main() {
             EXPECT(j.contains("supported") && j["supported"].is_boolean());
             EXPECT(j.contains("available") && j["available"].is_boolean());
             EXPECT(j.contains("errorCode"));
+            // Per-host option list rides alongside the legacy singular object.
+            EXPECT(j.contains("backends") && j["backends"].is_array());
+            if (j.contains("backends") && j["backends"].is_array() && !j["backends"].empty()) {
+                const Json& b = j["backends"][0];
+                EXPECT(!jsonStr(b, "id").empty());
+                EXPECT(b.contains("vendor"));
+                EXPECT(b.contains("kernelMode"));
+                EXPECT(b.contains("available"));
+                EXPECT(b.contains("controllers") && b["controllers"].is_array());
+            }
         }
     }
     {
