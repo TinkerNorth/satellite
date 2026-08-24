@@ -3,6 +3,16 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 1.1.0
+
+No protocol changes. Distribution release: every shipping platform now also
+uploads its artifact under a version-less stable name (`SatelliteSetup.exe`,
+`satellite-amd64.deb`, `satellite-x86_64.rpm`, `satellite-x86_64.AppImage`),
+so `releases/latest/download/<name>` is a permanent link to the newest build.
+The stable names are covered by SHA256SUMS and the cosign signatures like
+every other asset, and they are a public API: download pages link them, so
+they must not be renamed or dropped.
+
 ## 1.0.1
 
 No protocol changes. Packaging release: distro-native .deb/.rpm builds,
