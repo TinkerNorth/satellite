@@ -473,18 +473,23 @@ static void test_rumble_and_lightbar_worker_ds4() {
 }
 
 static void test_close_bus() {
-    TEST("closeBus — tears down slots, deprovisions, shuts the helper down");
+    TEST("closeBus — tears down slots but keeps the helper resident");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
-    EXPECT(adapter.ensureBusOpen());
-    EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
-    EXPECT(adapter.pluginDevice(2, GamepadIdentity::DualSense));
-    adapter.closeBus();
-    EXPECT(!adapter.isBusOpen());
-    EXPECT_EQ(prov.deprovisionCalls, 2);
-    EXPECT(prov.shutdownCalls >= 1);
-    EXPECT(!adapter.isDevicePlugged(1));
-    EXPECT(!adapter.isDevicePlugged(2));
+    {
+        HidMaestroAdapter adapter(prov);
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
+        EXPECT(adapter.pluginDevice(2, GamepadIdentity::DualSense));
+        adapter.closeBus();
+        EXPECT(!adapter.isBusOpen());
+        EXPECT_EQ(prov.deprovisionCalls, 2);
+        // Idle-close must NOT stop the helper: respawning it would mean a
+        // fresh UAC prompt on every reconnect.
+        EXPECT_EQ(prov.shutdownCalls, 0);
+        EXPECT(!adapter.isDevicePlugged(1));
+        EXPECT(!adapter.isDevicePlugged(2));
+    }
+    EXPECT(prov.shutdownCalls >= 1); // destructor ends the helper session
 }
 
 int main() {

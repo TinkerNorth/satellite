@@ -21,7 +21,10 @@ inline HANDLE toHandle(uint64_t v) { return reinterpret_cast<HANDLE>(static_cast
 HidMaestroAdapter::HidMaestroAdapter(hm::IHidMaestroProvisioner& provisioner)
     : provisioner_(provisioner) {}
 
-HidMaestroAdapter::~HidMaestroAdapter() { closeBus(); }
+HidMaestroAdapter::~HidMaestroAdapter() {
+    closeBus();
+    provisioner_.shutdown();
+}
 
 // "Bus open" = believed usable. Deliberately prompt-free: the elevated helper
 // (and its UAC prompt) is deferred to the first actual plug so a ViGEm-only
@@ -51,7 +54,10 @@ void HidMaestroAdapter::closeBus() {
         if (slot.plugged.load(std::memory_order_acquire)) provisioner_.deprovision(s);
         releaseSlotLocked(slot);
     }
-    provisioner_.shutdown();
+    // The helper stays resident: closeBus fires every time the session goes
+    // idle, and respawning the elevated helper would mean a fresh UAC prompt
+    // on every reconnect. It exits with satellite (parent watch) or in the
+    // destructor.
     busOpen_ = false;
 }
 
