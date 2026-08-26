@@ -40,8 +40,8 @@ constexpr BackendControllerSupport kHidMaestroSupport[] = {
 };
 constexpr BackendControllerSupport kUinputSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
-    {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, ""},
-    {CONTROLLER_TYPE_DUALSENSE, kFactsKernelDirect, true, true, true, ""},
+    {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, false, ""},
+    {CONTROLLER_TYPE_DUALSENSE, kFactsKernelDirect, true, true, false, ""},
     {CONTROLLER_TYPE_SWITCHPRO, kFactsKernelDirect, true, false, false, ""},
 };
 constexpr BackendControllerSupport kMacHidSupport[] = {

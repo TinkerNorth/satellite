@@ -574,8 +574,10 @@ On macOS, the same DS4 output report `0x05` that carries the motors also
 carries the lightbar colour; the IOHIDUserDevice set-report path fans it out
 to the lightbar callback when the report's colour-valid flag is set (entitled
 builds only). The Linux uinput backend has no host-driven lightbar channel
-(EV_LED is single-bit), so it never emits `MSG_LIGHTBAR`. Lightbar emission
-is a Windows / ViGEm-DS4 and macOS / IOHID-DS4 feature today.
+(EV_LED is single-bit), so it never emits `MSG_LIGHTBAR`, and the backend
+registry advertises `lightbar: false` for its Sony types so the catalog never
+offers a colour that cannot arrive. Lightbar emission is a Windows
+(ViGEm-DS4 and HIDMaestro DS4/DualSense) and macOS / IOHID-DS4 feature today.
 
 ### Per-dish actuator behaviour
 

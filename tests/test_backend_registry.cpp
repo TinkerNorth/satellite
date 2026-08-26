@@ -200,6 +200,26 @@ static void test_deriveCatalogTraits_order_decides_requires() {
     EXPECT_EQ(t.ds4MotionRequires, std::string("hidmaestro>=1.7"));
 }
 
+static void test_uinput_advertises_no_lightbar_it_cannot_deliver() {
+    TEST("uinput advertises no lightbar (evdev carries no RGB output channel)");
+    const BackendDescriptor* uinput = backendDescriptorById(BACKEND_ID_UINPUT);
+    EXPECT(uinput != nullptr);
+    for (size_t i = 0; i < uinput->supportCount; ++i) { EXPECT(!uinput->support[i].lightbar); }
+
+    CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
+    EXPECT(!t.ds4LightbarSupported);
+    EXPECT(!t.dualsenseLightbarSupported);
+    EXPECT(t.ds4TouchpadSupported);
+    EXPECT(t.ds4MotionSupported);
+    EXPECT(t.rumbleSupported);
+
+    EXPECT(!contains(buildBackendsJson({{BACKEND_ID_UINPUT, true, ""}}), "\"lightbar\":true"));
+
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_HIDMAESTRO, BACKEND_ID_MAC_HID}) {
+        EXPECT(contains(buildBackendsJson({{id, true, ""}}), "\"lightbar\":true"));
+    }
+}
+
 static void test_deriveCatalogTraits_uinput_matches_legacy() {
     TEST("deriveCatalogTraits — uinput reproduces the historical Linux traits");
     CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
@@ -414,6 +434,7 @@ int main() {
     test_buildBackendsJson_empty_and_multi();
     test_deriveCatalogTraits_windows_union();
     test_deriveCatalogTraits_order_decides_requires();
+    test_uinput_advertises_no_lightbar_it_cannot_deliver();
     test_deriveCatalogTraits_uinput_matches_legacy();
     test_deriveCatalogTraits_machid_matches_legacy();
     test_deriveCatalogTraits_ignores_availability();
