@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <string>
 #include <vector>
 
 namespace satellite {
@@ -51,8 +52,26 @@ class GamepadMux : public IGamepadPort {
     // First supporting child that accepts the plug wins; a child whose driver
     // is absent or bus is down refuses fast and the next one is tried.
     bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
+        return pluginDevicePreferring(serial, identity, std::string());
+    }
+
+    bool pluginDevicePreferring(uint32_t serial, GamepadIdentity identity,
+                                const std::string& preferredBackend) override {
         if (!validSerial(serial)) return false;
+        IGamepadPort* tried = nullptr;
+        if (!preferredBackend.empty()) {
+            for (IGamepadPort* p : ports_) {
+                if (preferredBackend != p->backendId()) continue;
+                tried = p;
+                if (p->supportsIdentity(identity) && p->pluginDevice(serial, identity)) {
+                    owner(serial).store(p, std::memory_order_release);
+                    return true;
+                }
+                break;
+            }
+        }
         for (IGamepadPort* p : ports_) {
+            if (p == tried) continue;
             if (!p->supportsIdentity(identity)) continue;
             if (p->pluginDevice(serial, identity)) {
                 owner(serial).store(p, std::memory_order_release);
@@ -132,6 +151,11 @@ class GamepadMux : public IGamepadPort {
 
     void setLightbarCallback(LightbarCallback cb) override {
         for (IGamepadPort* p : ports_) p->setLightbarCallback(cb);
+    }
+
+    const char* backendIdForSerial(uint32_t serial) const override {
+        const IGamepadPort* p = ownerOf(serial);
+        return p == nullptr ? "" : p->backendId();
     }
 
     // Which child owns a serial right now (nullptr = unplugged). For status

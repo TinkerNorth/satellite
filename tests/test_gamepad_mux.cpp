@@ -53,6 +53,7 @@ struct MockPort : IGamepadPort {
         busOpen = false;
     }
     bool isBusOpen() const override { return busOpen; }
+    const char* backendId() const override { return name.c_str(); }
     bool supportsIdentity(GamepadIdentity identity) const override {
         return identities.count(identity) != 0;
     }
@@ -345,8 +346,64 @@ static void test_motion_backend_ok_owner_scoped() {
     EXPECT(mux.motionBackendOk(5));
 }
 
+static void test_backend_id_for_serial_names_the_owner() {
+    TEST("backendIdForSerial names the child that took the plug");
+    MockPort a("vigem", {GamepadIdentity::Xbox, GamepadIdentity::DS4});
+    MockPort b("hidmaestro", {GamepadIdentity::Xbox, GamepadIdentity::DualSense});
+    GamepadMux mux({&a, &b});
+
+    EXPECT_EQ(std::string(mux.backendIdForSerial(1)), std::string(""));
+    EXPECT(mux.pluginDevice(1, GamepadIdentity::Xbox));
+    EXPECT_EQ(std::string(mux.backendIdForSerial(1)), std::string("vigem"));
+    EXPECT(mux.pluginDevice(2, GamepadIdentity::DualSense));
+    EXPECT_EQ(std::string(mux.backendIdForSerial(2)), std::string("hidmaestro"));
+    EXPECT(mux.unplugDevice(1));
+    EXPECT_EQ(std::string(mux.backendIdForSerial(1)), std::string(""));
+}
+
+static void test_preferred_backend_wins_when_it_can() {
+    TEST("preferredBackend jumps a later child ahead of the default order");
+    MockPort a("vigem", {GamepadIdentity::Xbox, GamepadIdentity::DS4});
+    MockPort b("hidmaestro", {GamepadIdentity::Xbox, GamepadIdentity::DualSense});
+    GamepadMux mux({&a, &b});
+
+    EXPECT(mux.pluginDevicePreferring(1, GamepadIdentity::Xbox, "hidmaestro"));
+    EXPECT_EQ(std::string(mux.backendIdForSerial(1)), std::string("hidmaestro"));
+    EXPECT_EQ(a.pluginCalls, 0);
+    EXPECT_EQ(b.pluginCalls, 1);
+
+    EXPECT(mux.pluginDevicePreferring(2, GamepadIdentity::Xbox, ""));
+    EXPECT_EQ(std::string(mux.backendIdForSerial(2)), std::string("vigem"));
+}
+
+static void test_preferred_backend_is_a_hint_not_a_mandate() {
+    TEST("an unhonourable preference still plugs, on the host's own order");
+    MockPort a("vigem", {GamepadIdentity::Xbox, GamepadIdentity::DS4});
+    MockPort b("hidmaestro", {GamepadIdentity::Xbox, GamepadIdentity::DualSense});
+
+    GamepadMux mux({&a, &b});
+    EXPECT(mux.pluginDevicePreferring(1, GamepadIdentity::DS4, "hidmaestro"));
+    EXPECT_EQ(std::string(mux.backendIdForSerial(1)), std::string("vigem"));
+
+    MockPort c("vigem", {GamepadIdentity::Xbox});
+    MockPort d("hidmaestro", {GamepadIdentity::Xbox});
+    d.pluginResult = false;
+    GamepadMux mux2({&c, &d});
+    EXPECT(mux2.pluginDevicePreferring(2, GamepadIdentity::Xbox, "hidmaestro"));
+    EXPECT_EQ(std::string(mux2.backendIdForSerial(2)), std::string("vigem"));
+    EXPECT_EQ(d.pluginCalls, 1);
+
+    MockPort e("vigem", {GamepadIdentity::Xbox});
+    GamepadMux mux3({&e});
+    EXPECT(mux3.pluginDevicePreferring(3, GamepadIdentity::Xbox, "does-not-exist"));
+    EXPECT_EQ(std::string(mux3.backendIdForSerial(3)), std::string("vigem"));
+}
+
 int main() {
     test_identity_union();
+    test_backend_id_for_serial_names_the_owner();
+    test_preferred_backend_wins_when_it_can();
+    test_preferred_backend_is_a_hint_not_a_mandate();
     test_bus_lifecycle_any_child();
     test_plug_prefers_first_supporting_child();
     test_plug_falls_back_when_preferred_refuses();

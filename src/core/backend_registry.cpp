@@ -24,38 +24,81 @@ uint8_t latencyTierRank(LatencyTier tier) { return static_cast<uint8_t>(tier); }
 
 namespace {
 
-// ViGEm / uinput submit through a kernel path → lowest tier. HIDMaestro and
-// machid submit through user-mode surfaces → one tier higher. Same controller
-// type across backends is how the client tells the user which route is snappier.
+constexpr SubmitPathFacts kFactsKernelDirect{1, 0, 0, false, 0};
+constexpr SubmitPathFacts kFactsHidMaestroSony{2, 1, 0, false, 0};
+constexpr SubmitPathFacts kFactsHidMaestroXbox{3, 2, 0, false, 0};
+
 constexpr BackendControllerSupport kVigemSupport[] = {
-    {CONTROLLER_TYPE_XBOX, LatencyTier::Lowest, false, false, false, ""},
-    {CONTROLLER_TYPE_PLAYSTATION, LatencyTier::Lowest, true, true, true, "vigembus>=1.17"},
+    {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
+    {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, "vigembus>=1.17"},
 };
 constexpr BackendControllerSupport kHidMaestroSupport[] = {
-    {CONTROLLER_TYPE_XBOX, LatencyTier::Low, false, false, false, ""},
-    {CONTROLLER_TYPE_PLAYSTATION, LatencyTier::Low, true, true, true, "hidmaestro>=1.7"},
-    {CONTROLLER_TYPE_DUALSENSE, LatencyTier::Low, true, true, true, "hidmaestro>=1.7"},
-    {CONTROLLER_TYPE_SWITCHPRO, LatencyTier::Low, true, false, false, "hidmaestro>=1.7"},
+    {CONTROLLER_TYPE_XBOX, kFactsHidMaestroXbox, false, false, false, ""},
+    {CONTROLLER_TYPE_PLAYSTATION, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7"},
+    {CONTROLLER_TYPE_DUALSENSE, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7"},
+    {CONTROLLER_TYPE_SWITCHPRO, kFactsHidMaestroSony, true, false, false, "hidmaestro>=1.7"},
 };
 constexpr BackendControllerSupport kUinputSupport[] = {
-    {CONTROLLER_TYPE_XBOX, LatencyTier::Lowest, false, false, false, ""},
-    {CONTROLLER_TYPE_PLAYSTATION, LatencyTier::Lowest, true, true, true, ""},
-    {CONTROLLER_TYPE_DUALSENSE, LatencyTier::Lowest, true, true, true, ""},
-    {CONTROLLER_TYPE_SWITCHPRO, LatencyTier::Lowest, true, false, false, ""},
+    {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
+    {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, ""},
+    {CONTROLLER_TYPE_DUALSENSE, kFactsKernelDirect, true, true, true, ""},
+    {CONTROLLER_TYPE_SWITCHPRO, kFactsKernelDirect, true, false, false, ""},
 };
 constexpr BackendControllerSupport kMacHidSupport[] = {
-    {CONTROLLER_TYPE_PLAYSTATION, LatencyTier::Low, true, true, true, ""},
+    {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, ""},
 };
 
 const BackendDescriptor kBackends[] = {
-    {BACKEND_ID_VIGEM, "Nefarius Software Solutions", "ViGEmBus", true, true, true, kVigemSupport,
-     2},
-    {BACKEND_ID_HIDMAESTRO, "hifihedgehog", "HIDMaestro", false, true, true, kHidMaestroSupport, 4},
-    {BACKEND_ID_UINPUT, "Linux uinput", "uinput", true, true, true, kUinputSupport, 4},
+    {BACKEND_ID_VIGEM, "Nefarius Software Solutions", "ViGEmBus", true, true, true,
+     BACKEND_LIFECYCLE_EOL, "2023-11-02", kVigemSupport, 2},
+    {BACKEND_ID_HIDMAESTRO, "hifihedgehog", "HIDMaestro", false, true, true,
+     BACKEND_LIFECYCLE_SUPPORTED, "", kHidMaestroSupport, 4},
+    {BACKEND_ID_UINPUT, "Linux uinput", "uinput", true, true, true, BACKEND_LIFECYCLE_SUPPORTED, "",
+     kUinputSupport, 4},
     {BACKEND_ID_MAC_HID, "Apple IOHIDUserDevice", "macOS virtual HID", false, false, true,
+     BACKEND_LIFECYCLE_SUPPORTED, "", kMacHidSupport, 1},
+    {BACKEND_ID_NONE, "", "None", false, false, true, BACKEND_LIFECYCLE_SUPPORTED, "",
      kMacHidSupport, 1},
-    {BACKEND_ID_NONE, "", "None", false, false, true, kMacHidSupport, 1},
 };
+
+void appendNullable(std::string& json, const char* value) {
+    if (value == nullptr || *value == '\0') {
+        json += "null";
+        return;
+    }
+    json += "\"";
+    json += value;
+    json += "\"";
+}
+
+void appendSubmitLatency(std::string& json, const SubmitPathFacts& f) {
+    const LatencyCost cost = estimateCost(f);
+    const LatencyTier tier = tierForScore(cost.score);
+
+    json += "{\"tier\":\"";
+    json += latencyTierName(tier);
+    json += "\",\"rank\":";
+    json += std::to_string(latencyTierRank(tier));
+    json += ",\"score\":";
+    json += std::to_string(cost.score);
+    json += ",\"nominalUs\":";
+    json += std::to_string(cost.nominalUs);
+    json += ",\"tailUs\":";
+    json += std::to_string(cost.tailUs);
+    json += ",\"submitPath\":\"";
+    json += submitPathName(f);
+    json += "\",\"facts\":{\"kernelCrossings\":";
+    json += std::to_string(f.kernelCrossings);
+    json += ",\"threadWakeups\":";
+    json += std::to_string(f.threadWakeups);
+    json += ",\"brokerHops\":";
+    json += std::to_string(f.brokerHops);
+    json += ",\"managedRuntime\":";
+    json += f.managedRuntime ? "true" : "false";
+    json += ",\"pollIntervalUs\":";
+    json += std::to_string(f.pollIntervalUs);
+    json += "}}";
+}
 
 } // namespace
 
@@ -86,31 +129,36 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses)
         json += ",\"available\":";
         json += st.available ? "true" : "false";
         json += ",\"errorCode\":";
-        if (st.errorCode.empty()) {
-            json += "null";
-        } else {
-            json += "\"";
-            json += st.errorCode;
-            json += "\"";
-        }
+        appendNullable(json, st.errorCode.c_str());
+        json += ",\"lifecycle\":\"";
+        json += d->lifecycle;
+        json += "\",\"eolDate\":";
+        appendNullable(json, d->eolDate);
+        json += ",\"driverVersion\":";
+        appendNullable(json, st.driverVersion.c_str());
         json += ",\"controllers\":[";
         for (size_t i = 0; i < d->supportCount; ++i) {
             if (i != 0) json += ",";
             const BackendControllerSupport& cs = d->support[i];
+            const LatencyTier tier = tierForScore(estimateCost(cs.facts).score);
             json += "{\"type\":";
             json += std::to_string(cs.controllerType);
             json += ",\"name\":\"";
             json += controllerTypeName(cs.controllerType);
             json += "\",\"latency\":\"";
-            json += latencyTierName(cs.latency);
+            json += latencyTierName(tier);
             json += "\",\"latencyRank\":";
-            json += std::to_string(latencyTierRank(cs.latency));
+            json += std::to_string(latencyTierRank(tier));
             json += ",\"motion\":";
             json += cs.motion ? "true" : "false";
             json += ",\"touchpad\":";
             json += cs.touchpad ? "true" : "false";
             json += ",\"lightbar\":";
             json += cs.lightbar ? "true" : "false";
+            json += ",\"motionRequires\":";
+            appendNullable(json, cs.motionRequires);
+            json += ",\"submitLatency\":";
+            appendSubmitLatency(json, cs.facts);
             json += "}";
         }
         json += "]}";

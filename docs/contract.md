@@ -165,7 +165,8 @@ Request:
       "ctrlIdx": 0,
       "type": 0,
       "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false },
-      "touchpadMode": "off"
+      "touchpadMode": "off",
+      "preferredBackend": null
     }
   ],
   "hostFeatures": { "mouseControl": true }
@@ -175,6 +176,11 @@ Request:
 - `controllers` is the COMPLETE desired set. Slots present on the server but absent
   from the array are unplugged. An empty array (or absent key) means "zero controllers".
 - `type` is a catalog id (see Catalog). `touchpadMode` ∈ `"ds4" | "mouse" | "off"`.
+- `preferredBackend` (additive; `null` or absent = the host chooses) names a backend id
+  from `capabilities.backends[]`. It is a **hint, not a mandate**: the host tries that
+  backend first when it materializes the requested `type`, and otherwise falls through
+  its normal preference order. There is deliberately no result code for "that backend
+  refused" — `backend` in the response reports which one actually took the pad.
 - `hostFeatures` is the requested set; absent = `{}`. Requests are client-owned desired
   state; grants are server policy. Different fields, not a two-master conflict.
 
@@ -193,6 +199,7 @@ Response (200):
       "ctrlIdx": 0,
       "result": "ok",
       "appliedType": 0,
+      "backend": "vigem",
       "motion": { "sinkSupportedForType": true, "backendOk": true }
     }
   ],
@@ -208,6 +215,11 @@ Per-controller `result` codes (protocol constants, never localized):
 reports the type still in force. Host-feature denials carry a structured reason the
 client translates if it knows it: `{"granted": false, "reason": "notSupported" |
 "backendUnavailable" | "denied"}`.
+
+`backend` (additive) is the id of the backend that materialized this pad, or `null`
+when the slot isn't plugged. This is the ONLY place the routing decision is observable:
+the host picks per plug, so two slots in one session can legitimately sit on different
+backends, and a client that sent `preferredBackend` learns here whether it got it.
 
 Host-input grants are a real privilege step (a phone that can move the mouse owns the
 PC). v1 grants `mouseControl` whenever the backend supports it; per-device policy can
@@ -234,9 +246,9 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
   "protocolVersion": 1,
   "maxControllers": 16,
   "controllers": [
-    { "ctrlIdx": 0, "active": true, "appliedType": 0,
+    { "ctrlIdx": 0, "active": true, "appliedType": 0, "backend": "vigem",
       "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false },
-      "touchpadMode": "off",
+      "touchpadMode": "off", "preferredBackend": null,
       "motion": { "sinkSupportedForType": true, "backendOk": true } }
   ],
   "hostFeatures": { "mouseControl": { "granted": true } }
@@ -277,16 +289,32 @@ caller's own session.
   "backends": [
     { "id": "vigem", "vendor": "Nefarius Software Solutions", "displayName": "ViGEmBus",
       "kernelMode": true, "available": true, "errorCode": null,
+      "lifecycle": "eol", "eolDate": "2023-11-02", "driverVersion": null,
       "controllers": [
         { "type": 0, "name": "xbox", "latency": "lowest", "latencyRank": 0,
-          "motion": false, "touchpad": false, "lightbar": false },
+          "motion": false, "touchpad": false, "lightbar": false, "motionRequires": null,
+          "submitLatency": { "tier": "lowest", "rank": 0, "score": 2,
+                             "nominalUs": 2, "tailUs": 5, "submitPath": "kernel-direct",
+                             "facts": { "kernelCrossings": 1, "threadWakeups": 0,
+                                        "brokerHops": 0, "managedRuntime": false,
+                                        "pollIntervalUs": 0 } } },
         { "type": 1, "name": "playstation", "latency": "lowest", "latencyRank": 0,
-          "motion": true, "touchpad": true, "lightbar": true }
+          "motion": true, "touchpad": true, "lightbar": true,
+          "motionRequires": "vigembus>=1.17", "submitLatency": { "...": "…" } }
       ] },
     { "id": "hidmaestro", "vendor": "hifihedgehog", "displayName": "HIDMaestro",
-      "kernelMode": false, "available": false, "errorCode": "DRIVER_MISSING",
-      "controllers": [ { "type": 0, "...": "…" }, { "type": 1, "...": "…" },
-                       { "type": 2, "...": "…" }, { "type": 3, "...": "…" } ] }
+      "kernelMode": false, "available": true, "errorCode": null,
+      "lifecycle": "supported", "eolDate": null, "driverVersion": null,
+      "controllers": [
+        { "type": 0, "name": "xbox", "latency": "medium", "latencyRank": 2,
+          "motion": false, "touchpad": false, "lightbar": false, "motionRequires": null,
+          "submitLatency": { "tier": "medium", "rank": 2, "score": 87,
+                             "nominalUs": 36, "tailUs": 515, "submitPath": "usermode-shm",
+                             "facts": { "kernelCrossings": 3, "threadWakeups": 2,
+                                        "brokerHops": 0, "managedRuntime": false,
+                                        "pollIntervalUs": 0 } } },
+        { "type": 1, "...": "…" }, { "type": 2, "...": "…" }, { "type": 3, "...": "…" }
+      ] }
   ],
   "motion": { "available": true },
   "host": {
@@ -308,11 +336,19 @@ most-preferred first — a host can carry more than one (Windows: `vigem` AND
 requested type). The singular `backend` object stays the preferred-available backend
 (or the most-preferred backend's error when none is available), so existing clients
 keep working unchanged. Each entry's `controllers` lists the types that backend can
-materialize with its feature surface and a relative submit-latency tier: `latencyRank`
-is ordinal (smaller = lower latency; kernel-mode submit paths rank below user-mode
-shared-memory ones) so a client can compare "type X via backend A vs B" without
-naming any library. Ids `vigem` / `hidmaestro` / `uinput` / `machid` / `none` and all
-error codes are protocol constants, never localized.
+materialize, with its feature surface for that type (`motionRequires` is the structured
+requires code for THAT backend, which is not necessarily the one the catalog quotes —
+see the catalog layering rule below) and a derived submit-latency estimate. Ids `vigem`
+/ `hidmaestro` / `uinput` / `machid` / `none` and all error codes are protocol
+constants, never localized.
+
+`lifecycle` ∈ `supported` | `maintenance` | `eol` is the UPSTREAM maintenance state of
+the driver, carried with `eolDate` (ISO date, or null) and `driverVersion` (the version
+the host actually read, or **null when it cannot read one** — never inferred, never
+back-filled from a shipped installer's version). All three are protocol constants; the
+copy a client renders for them is the client's own. A backend being `eol` says nothing
+about whether it works — `available` is the runtime truth, and an `eol` backend may
+well be the preferred one.
 
 `host` is the receiver's OWN capability inventory, readable before pairing or any
 catalog round-trip so a client reflects the real receiver instead of an optimistic
@@ -325,6 +361,58 @@ sets it true, so a client treats its absence as "older satellite, fall back to t
 default". The block is additive: an older server omits it and the client degrades
 gracefully. (`host.rumble` is the host return-channel; the per-type `rumble` feature
 is a different layer, whether the emulated pad has a motor.)
+
+#### Submit-path latency
+
+`submitLatency` — and the flat `latency` / `latencyRank` it backs — is **derived,
+never typed.** Those two flat fields keep their original string/integer types, so an
+older client parses this payload unchanged; everything new rides alongside them in
+`submitLatency`. The registry stores primitive facts about each
+backend × type submit path and the server scores them, so a new backend is a row of
+facts rather than a judgement call — and a type whose path differs from its siblings'
+scores differently with no special case. HIDMaestro signals two events per frame for
+Xbox (the input section plus the GIP companion) and one for every Sony/Switch pad, so
+its `xbox` row ranks a tier worse than its own `playstation` row.
+
+| Fact | Meaning |
+|------|---------|
+| `kernelCrossings` | user→kernel transitions per submitted frame |
+| `threadWakeups` | scheduler dispatches the frame waits on (the dominant tail term) |
+| `brokerHops` | extra user-mode process hops on the hot path (0 for every current backend) |
+| `managedRuntime` | GC/JIT anywhere on the per-frame path |
+| `pollIntervalUs` | 0 = the consumer is signalled; otherwise its sampling period |
+
+Weights, in microseconds, applied to a typical frame and to a bad one:
+
+| Unit | → `nominalUs` | → `tailUs` |
+|------|--------------|-----------|
+| `kernelCrossings` | 2 | 5 |
+| `threadWakeups` | 15 | 250 |
+| `brokerHops` | 40 | 500 |
+| `managedRuntime` | 5 | 2000 |
+| `pollIntervalUs` | T / 2 | T |
+
+`score = nominalUs + tailUs / 10`, in integer arithmetic (so HIDMaestro's Xbox row is
+36 + 515/10 = 36 + 51 = 87). `tier` bands the score — `lowest` < 10 ≤ `low` < 60 ≤
+`medium` < 250 ≤ `high` — and `rank` is that tier's ordinal (0–3), mirrored into the
+flat `latencyRank`, so a client that only wants ordering keeps sorting on it exactly as
+before. `submitPath` ∈ `kernel-direct` | `usermode-shm` | `usermode-broker` is the
+structural shorthand, for display; it is derived from the same facts and so can never
+disagree with the score.
+
+**Stability rule.** `facts` describe the implementation and change only when the
+implementation changes. `nominalUs`, `tailUs`, `score`, `tier`, `rank` and the flat
+`latency` / `latencyRank` are DERIVED and MAY shift between server versions as the
+weights are recalibrated against measurement. A client that needs a stable comparison sorts on `rank`, or re-derives
+from `facts` with its own weights. It MUST NOT persist the absolute microsecond figures
+or present them as measured on this host: they are a model of the code path, not a
+benchmark of the machine.
+
+For context when presenting them: a physical USB pad polls at ~1 ms, so every figure
+these weights can produce for a signalled (non-polling) backend sits inside a single
+poll interval. `lifecycle` and `available` are usually the more decision-relevant
+fields, and a client that ranks backends by speed alone will be precisely comparing a
+quantity the user cannot feel.
 
 ### `GET /api/catalog`: STATIC per server version, localized
 

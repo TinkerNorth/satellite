@@ -181,15 +181,17 @@ uint16_t SessionService::activeBitmapLocked(const Connection& conn) const {
     return bitmap;
 }
 
-static void fillMotionFlags(IGamepadPort& backend, const Controller& ctrl,
-                            ControllerApplyResult& out) {
+static void fillAppliedState(IGamepadPort& backend, const Controller& ctrl,
+                             ControllerApplyResult& out) {
     if (!ctrl.active) {
         out.motionSinkSupportedForType = false;
         out.motionBackendOk = false;
+        out.backendId.clear();
         return;
     }
     out.motionSinkSupportedForType = backend.supportsMotionForType(ctrl.controllerType);
     out.motionBackendOk = backend.motionBackendOk(ctrl.serialNo);
+    out.backendId = backend.backendIdForSerial(ctrl.serialNo);
 }
 
 void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDescriptor& desc,
@@ -210,7 +212,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         // DualSense on ViGEm): reject per-controller, leave any live pad intact.
         out.result = APPLY_ERR_INVALID_TYPE;
         out.appliedType = ctrl.active ? ctrl.controllerType : CONTROLLER_TYPE_XBOX;
-        fillMotionFlags(backend_, ctrl, out);
+        fillAppliedState(backend_, ctrl, out);
         return;
     }
 
@@ -239,7 +241,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
             out.result = APPLY_ERR_NO_SLOTS;
             return;
         }
-        bool plugOk = backend_.pluginDevice(serial, wantId);
+        bool plugOk = backend_.pluginDevicePreferring(serial, wantId, desc.preferredBackend);
         if (!plugOk) {
             // The plug never created a target, so the serial is clean to reuse.
             releaseSerial(serial);
@@ -254,6 +256,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         ctrl.identity = wantId;
         ctrl.caps = desc.caps;
         ctrl.touchpadMode = safeMode;
+        ctrl.preferredBackend = desc.preferredBackend;
         resetControllerStreamState(ctrl);
         conn.activeControllerCount++;
         conn.epoch++;
@@ -263,7 +266,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
                         controllerTypeLabel(desc.type) + " (serial " + std::to_string(serial) +
                         ") for " + conn.deviceName);
         out.appliedType = desc.type;
-        fillMotionFlags(backend_, ctrl, out);
+        fillAppliedState(backend_, ctrl, out);
         return;
     }
 
@@ -274,7 +277,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
             conn.epoch++;
             out.result = APPLY_ERR_REPLUG_FAIL;
             out.appliedType = ctrl.controllerType;
-            fillMotionFlags(backend_, ctrl, out);
+            fillAppliedState(backend_, ctrl, out);
             return;
         }
 
@@ -282,7 +285,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         if (fresh != 0) {
             // Transactional replug: plug the NEW target on a FRESH serial, only
             // then retire the old one. A plug failure leaves the old pad untouched.
-            bool plugOk = backend_.pluginDevice(fresh, wantId);
+            bool plugOk = backend_.pluginDevicePreferring(fresh, wantId, desc.preferredBackend);
             if (!plugOk) {
                 releaseSerial(fresh);
                 // Bump the epoch anyway so a client whose PUT response was lost
@@ -290,7 +293,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
                 conn.epoch++;
                 out.result = APPLY_ERR_REPLUG_FAIL;
                 out.appliedType = ctrl.controllerType;
-                fillMotionFlags(backend_, ctrl, out);
+                fillAppliedState(backend_, ctrl, out);
                 log_.logMsg(LogLevel::ERR, "service",
                             "Failed to replug controller #" + std::to_string(desc.ctrlIdx) +
                                 " as " + controllerTypeLabel(desc.type) + "; keeping existing " +
@@ -316,7 +319,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
                 return;
             }
             serialInUse_[serial - 1] = true; // reclaim the slot we just released
-            bool plugOk = backend_.pluginDevice(serial, wantId);
+            bool plugOk = backend_.pluginDevicePreferring(serial, wantId, desc.preferredBackend);
             if (!plugOk) {
                 releaseSerial(serial);
                 ctrl.active = false;
@@ -336,10 +339,11 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         ctrl.identity = wantId;
         ctrl.caps = desc.caps;
         ctrl.touchpadMode = safeMode;
+        ctrl.preferredBackend = desc.preferredBackend;
         resetControllerStreamState(ctrl);
         conn.epoch++;
         out.appliedType = desc.type;
-        fillMotionFlags(backend_, ctrl, out);
+        fillAppliedState(backend_, ctrl, out);
         log_.logMsg(LogLevel::INFO, "service",
                     "Replugged controller #" + std::to_string(desc.ctrlIdx) + " as " +
                         controllerTypeLabel(desc.type) + " (serial " +
@@ -352,8 +356,9 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
     ctrl.controllerType = desc.type;
     ctrl.caps = desc.caps;
     ctrl.touchpadMode = safeMode;
+    ctrl.preferredBackend = desc.preferredBackend;
     out.appliedType = desc.type;
-    fillMotionFlags(backend_, ctrl, out);
+    fillAppliedState(backend_, ctrl, out);
 }
 
 SessionUpsertResult SessionService::upsertSession(
@@ -506,6 +511,8 @@ SessionService::SessionView SessionService::getSessionView(const std::string& co
         cv.touchpadMode = ctrl.touchpadMode;
         cv.motionSinkSupportedForType = backend_.supportsMotionForType(ctrl.controllerType);
         cv.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
+        cv.backendId = backend_.backendIdForSerial(ctrl.serialNo);
+        cv.preferredBackend = ctrl.preferredBackend;
         view.controllers.push_back(cv);
     }
     return view;
@@ -903,6 +910,7 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
                 info.motionSink = ctrl.motionSinkActive;
                 info.motionSinkSupportedForType =
                     backend_.supportsMotionForType(ctrl.controllerType);
+                info.backendId = backend_.backendIdForSerial(ctrl.serialNo);
                 info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
                 info.touchpadActive = ctrl.lastTouchpadValid;
                 info.lightbarCapable = ctrl.lightbarCapable();

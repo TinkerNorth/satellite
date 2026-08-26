@@ -99,6 +99,11 @@ static std::string buildConnectionsJson(const SessionService& svc) {
             // Resolved here so the dashboard never rebuilds an asset path from the wire enum.
             o["catalogSlug"] = controllerTypeCatalogSlug(ctrl.controllerType);
             o["touchpadMode"] = touchpadModeName(ctrl.touchpadMode);
+            if (ctrl.backendId.empty()) {
+                o["backend"] = nullptr;
+            } else {
+                o["backend"] = ctrl.backendId;
+            }
             if (ctrl.batteryKnown) {
                 JsonOut battery;
                 if (ctrl.batteryLevel == BATTERY_LEVEL_UNKNOWN) {

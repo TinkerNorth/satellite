@@ -13,6 +13,7 @@
 // concurrent unplug can never unmap a view mid-write.
 #pragma once
 
+#include "core/gamepad_backend.h"
 #include "core/ports.h"
 #include "hidmaestro_provisioner.h"
 #include "hidmaestro_report.h"
@@ -39,6 +40,7 @@ class HidMaestroAdapter : public IGamepadPort {
     bool isBusOpen() const override;
     bool pluginDevice(uint32_t serial, GamepadIdentity identity) override;
     bool supportsIdentity(GamepadIdentity identity) const override;
+    const char* backendId() const override { return BACKEND_ID_HIDMAESTRO; }
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;

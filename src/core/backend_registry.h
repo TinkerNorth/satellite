@@ -18,11 +18,10 @@
 namespace satellite {
 
 // Relative submit latency class. Ordinal: a smaller rank means lower latency.
-// Clients order/compare by rank; the name is the display token. Kernel-mode
-// submit paths rank below user-mode shared-memory ones.
+// Clients order/compare by rank; the name is the display token.
 enum class LatencyTier : uint8_t {
-    Lowest = 0, // kernel-mode IOCTL submit (e.g. ViGEm, uinput)
-    Low = 1,    // user-mode shared-memory submit (e.g. HIDMaestro, machid)
+    Lowest = 0,
+    Low = 1,
     Medium = 2,
     High = 3,
 };
@@ -30,13 +29,73 @@ enum class LatencyTier : uint8_t {
 const char* latencyTierName(LatencyTier tier);
 uint8_t latencyTierRank(LatencyTier tier);
 
+struct SubmitPathFacts {
+    uint8_t kernelCrossings = 0;
+    uint8_t threadWakeups = 0;
+    uint8_t brokerHops = 0;
+    bool managedRuntime = false;
+    uint16_t pollIntervalUs = 0;
+};
+
+struct LatencyWeight {
+    uint32_t nominalUs;
+    uint32_t tailUs;
+};
+
+inline constexpr LatencyWeight kWeightKernelCrossing{2, 5};
+inline constexpr LatencyWeight kWeightThreadWakeup{15, 250};
+inline constexpr LatencyWeight kWeightBrokerHop{40, 500};
+inline constexpr LatencyWeight kWeightManagedRuntime{5, 2000};
+
+inline constexpr uint32_t kTailWeightDivisor = 10;
+
+inline constexpr uint32_t kScoreLowestMax = 10;
+inline constexpr uint32_t kScoreLowMax = 60;
+inline constexpr uint32_t kScoreMediumMax = 250;
+
+struct LatencyCost {
+    uint32_t nominalUs = 0;
+    uint32_t tailUs = 0;
+    uint32_t score = 0;
+};
+
+inline constexpr LatencyCost estimateCost(const SubmitPathFacts& f) {
+    const uint32_t nominal = kWeightKernelCrossing.nominalUs * f.kernelCrossings +
+                             kWeightThreadWakeup.nominalUs * f.threadWakeups +
+                             kWeightBrokerHop.nominalUs * f.brokerHops +
+                             (f.managedRuntime ? kWeightManagedRuntime.nominalUs : 0u) +
+                             f.pollIntervalUs / 2u;
+    const uint32_t tail = kWeightKernelCrossing.tailUs * f.kernelCrossings +
+                          kWeightThreadWakeup.tailUs * f.threadWakeups +
+                          kWeightBrokerHop.tailUs * f.brokerHops +
+                          (f.managedRuntime ? kWeightManagedRuntime.tailUs : 0u) + f.pollIntervalUs;
+    return {nominal, tail, nominal + tail / kTailWeightDivisor};
+}
+
+inline constexpr LatencyTier tierForScore(uint32_t score) {
+    if (score < kScoreLowestMax) return LatencyTier::Lowest;
+    if (score < kScoreLowMax) return LatencyTier::Low;
+    if (score < kScoreMediumMax) return LatencyTier::Medium;
+    return LatencyTier::High;
+}
+
+inline constexpr const char* submitPathName(const SubmitPathFacts& f) {
+    if (f.brokerHops > 0) return "usermode-broker";
+    if (f.threadWakeups > 0) return "usermode-shm";
+    return "kernel-direct";
+}
+
+inline const char* BACKEND_LIFECYCLE_SUPPORTED = "supported";
+inline const char* BACKEND_LIFECYCLE_MAINTENANCE = "maintenance";
+inline const char* BACKEND_LIFECYCLE_EOL = "eol";
+
 // One backend's support for a single controller type (CONTROLLER_TYPE_*),
 // including the feature surface it can deliver for that type. motionRequires
 // is the structured requires code ("" = none) surfaced by the catalog when
 // this backend is the type's preferred materializer.
 struct BackendControllerSupport {
     uint8_t controllerType;
-    LatencyTier latency;
+    SubmitPathFacts facts;
     bool motion;
     bool touchpad;
     bool lightbar;
@@ -52,6 +111,8 @@ struct BackendDescriptor {
     bool kernelMode;
     bool mouseControl; // host pointer injection available alongside this backend
     bool rumble;
+    const char* lifecycle;
+    const char* eolDate;
     const BackendControllerSupport* support;
     size_t supportCount;
 };
@@ -64,14 +125,22 @@ struct BackendRuntimeStatus {
     std::string id;
     bool available = false;
     std::string errorCode; // empty when available
+    std::string driverVersion;
+
+    BackendRuntimeStatus() = default;
+    BackendRuntimeStatus(std::string id_, bool available_, std::string errorCode_ = std::string(),
+                         std::string driverVersion_ = std::string())
+        : id(std::move(id_)), available(available_), errorCode(std::move(errorCode_)),
+          driverVersion(std::move(driverVersion_)) {}
 };
 
 // JSON array advertised at /api/server/capabilities. Pure: the caller supplies
 // probed availability; identity/latency/features come from the registry. Ids
 // with no descriptor are skipped. Each element:
 //   {"id","vendor","displayName","kernelMode","available","errorCode",
-//    "controllers":[{"type","name","latency","latencyRank",
-//                    "motion","touchpad","lightbar"}, ...]}
+//    "lifecycle","eolDate","driverVersion",
+//    "controllers":[{"type","name","latency","latencyRank","motion","touchpad",
+//                    "lightbar","motionRequires","submitLatency"}, ...]}
 std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses);
 
 // Catalog traits folded over the host's enumerated backends, preference by
