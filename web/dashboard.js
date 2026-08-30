@@ -65,6 +65,7 @@ function controllerStateLabel(key) {
 function backendCopy(backendId) {
   if (backendId === 'vigem') {
     return {
+      icon: 'img/icons/driver-kernel.svg',
       title: t('backend.vigem.title'),
       pipelineLabel: t('backend.vigem.pipeline-label'),
       flowLabel: t('backend.vigem.flow-label'),
@@ -93,8 +94,39 @@ function backendCopy(backendId) {
       },
     };
   }
+  if (backendId === 'hidmaestro') {
+    return {
+      icon: 'img/icons/driver-user.svg',
+      title: t('backend.hidmaestro.title'),
+      pipelineLabel: t('backend.hidmaestro.pipeline-label'),
+      flowLabel: t('backend.hidmaestro.flow-label'),
+      statusActive: t('backend.hidmaestro.status.active'),
+      statusIdle: t('backend.hidmaestro.status.idle'),
+      statusUnknown: t('backend.hidmaestro.status.unknown'),
+      errors: {
+        DRIVER_MISSING: {
+          title: t('backend.hidmaestro.err.driver-missing.title'),
+          body: t('backend.hidmaestro.err.driver-missing.body'),
+          steps: [
+            { text: t('backend.hidmaestro.err.driver-missing.step1'), url: 'https://github.com/TinkerNorth/satellite/releases/latest' },
+            { text: t('backend.hidmaestro.err.driver-missing.step2') },
+            { text: t('backend.hidmaestro.err.driver-missing.step3') },
+          ],
+        },
+        HELPER_MISSING: {
+          title: t('backend.hidmaestro.err.helper-missing.title'),
+          body: t('backend.hidmaestro.err.helper-missing.body'),
+          steps: [
+            { text: t('backend.hidmaestro.err.helper-missing.step1'), url: 'https://github.com/TinkerNorth/satellite/releases/latest' },
+            { text: t('backend.hidmaestro.err.helper-missing.step2') },
+          ],
+        },
+      },
+    };
+  }
   if (backendId === 'machid') {
     return {
+      icon: 'img/icons/driver-user.svg',
       title: t('backend.machid.title'),
       pipelineLabel: t('backend.machid.pipeline-label'),
       flowLabel: t('backend.machid.flow-label'),
@@ -109,6 +141,7 @@ function backendCopy(backendId) {
   }
   if (backendId === 'uinput') {
     return {
+      icon: 'img/icons/driver-kernel.svg',
       title: t('backend.uinput.title'),
       pipelineLabel: t('backend.uinput.pipeline-label'),
       flowLabel: t('backend.uinput.flow-label'),
@@ -738,8 +771,12 @@ async function removeDevice(id, btn) {
 }
 
 let backendGuideOpen = false;
+// Latest /api/backend/status backends array; SSE status ticks carry only the
+// singular backend object, so the per-backend guide reuses this snapshot.
+let lastBackends = null;
 
-function updateBackendPanel(backend, backendActive) {
+function updateBackendPanel(backend, backendActive, backends) {
+  if (backends !== undefined) lastBackends = backends;
   const alert = document.getElementById('backend-alert');
   if (!alert) return;
 
@@ -756,24 +793,31 @@ function updateBackendPanel(backend, backendActive) {
   const err   = (copy.errors && copy.errors[backend.errorCode]) || null;
   const label = document.getElementById('backend-label');
   if (label) label.textContent = err ? err.title : t('backend.unavailable');
-  populateBackendGuide(err);
+  populateBackendGuide(err, copy.icon, secondaryBackendGuides(backend));
 }
 
-function populateBackendGuide(err) {
-  const titleEl = document.getElementById('backend-guide-title');
-  const bodyEl  = document.getElementById('backend-guide-body');
-  const stepsEl = document.getElementById('backend-guide-steps');
-  if (!titleEl || !bodyEl || !stepsEl) return;
-
-  if (!err) {
-    titleEl.textContent = t('backend.guide.none.title');
-    bodyEl.textContent  = t('backend.guide.none.body');
-    stepsEl.innerHTML   = '';
-    return;
+// Remediation entries for the OTHER unavailable backends on this host, so a
+// Windows machine missing both drivers shows how to fix either one, not just
+// the preferred one the singular status reports.
+function secondaryBackendGuides(primary) {
+  if (!Array.isArray(lastBackends)) return [];
+  const out = [];
+  for (const b of lastBackends) {
+    if (!b || b.id === primary.id || b.available) continue;
+    const copy = backendCopy(b.id);
+    const err = (copy.errors && copy.errors[b.errorCode]) || null;
+    if (err) out.push({ icon: copy.icon, ...err });
   }
-  titleEl.textContent = err.title;
-  bodyEl.textContent  = err.body;
-  stepsEl.innerHTML = (err.steps || []).map(s => {
+  return out;
+}
+
+function guideTitleHtml(icon, title) {
+  const img = icon ? `<img src="${esc(icon)}" alt="" class="emoji-icon"> ` : '';
+  return img + esc(title);
+}
+
+function guideStepsHtml(err) {
+  return (err.steps || []).map(s => {
     let inner = esc(s.text);
     if (s.command) inner += `<pre class="guide-cmd">${esc(s.command)}</pre>`;
     if (s.url)     inner += ` <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url)}</a>`;
@@ -781,12 +825,38 @@ function populateBackendGuide(err) {
   }).join('');
 }
 
+function populateBackendGuide(err, icon, extras) {
+  const titleEl = document.getElementById('backend-guide-title');
+  const bodyEl  = document.getElementById('backend-guide-body');
+  const stepsEl = document.getElementById('backend-guide-steps');
+  const extraEl = document.getElementById('backend-guide-extra');
+  if (!titleEl || !bodyEl || !stepsEl) return;
+
+  if (!err) {
+    titleEl.textContent = t('backend.guide.none.title');
+    bodyEl.textContent  = t('backend.guide.none.body');
+    stepsEl.innerHTML   = '';
+  } else {
+    titleEl.innerHTML   = guideTitleHtml(icon, err.title);
+    bodyEl.textContent  = err.body;
+    stepsEl.innerHTML   = guideStepsHtml(err);
+  }
+
+  if (extraEl) {
+    extraEl.innerHTML = (extras || []).map(x =>
+      `<h3 class="guide-title">${guideTitleHtml(x.icon, x.title)}</h3>` +
+      `<p class="backend-guide-body">${esc(x.body)}</p>` +
+      `<ol class="guide-steps">${guideStepsHtml(x)}</ol>`
+    ).join('');
+  }
+}
+
 async function checkBackendStatus() {
   try {
     const r = await fetch('/api/backend/status');
     if (!r.ok) return;
     const d = await r.json();
-    updateBackendPanel(d, d.available);
+    updateBackendPanel(d, d.available, d.backends);
   } catch (e) { /* ignore */ }
 }
 

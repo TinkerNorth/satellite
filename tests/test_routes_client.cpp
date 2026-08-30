@@ -597,6 +597,7 @@ int main() {
             EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
             EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
             EXPECT(j.contains("backend") && j["backend"].is_object());
+            EXPECT(j.contains("backends") && j["backends"].is_array());
             EXPECT(j.contains("host") && j["host"].is_object());
             if (j.contains("backend")) EXPECT(!jsonStr(j["backend"], "id").empty());
         }

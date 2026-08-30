@@ -28,3 +28,9 @@ BackendStatus probeBackend() {
     status.errorCode = nullptr;
     return status;
 }
+
+std::vector<satellite::BackendRuntimeStatus> enumerateBackends() {
+    BackendStatus s = probeBackend();
+    return {
+        {BACKEND_ID_UINPUT, s.available, s.errorCode ? std::string(s.errorCode) : std::string()}};
+}

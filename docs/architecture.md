@@ -101,9 +101,9 @@ implemented by concrete adapters.
 ```
 Inbound Adapters          Core Domain           Outbound Adapters
 ─────────────────     ──────────────────     ──────────────────────
-receiver.cpp  ─────►                    ────► ViGEmAdapter (IGamepadPort)
-  (UDP recv)         SessionService          pluginDevice, unplugDevice,
-                     upsertSession()         submitReport, isDevicePlugged
+receiver.cpp  ─────►                    ────► GamepadMux (IGamepadPort)
+  (UDP recv)         SessionService           ├─► ViGEmAdapter (Windows)
+                     upsertSession()          ├─► HidMaestroAdapter (Windows)
 webserver.cpp ─────►  applyController() ────► ClientAdapter (IClientPort)
   (HTTPS/admin)      removeController()      sendHeartbeatAck, sendSessionClose
                      closeSessionById()
@@ -111,6 +111,19 @@ webserver.cpp ─────►  applyController() ────► ClientAdapte
                      handleHeartbeat()        logMsg → ring buffer
                      getConnectionsSnapshot()
 ```
+
+On Windows the composition root wires BOTH gamepad backends behind one
+`core/gamepad_mux.h` composite: `SessionService` keeps a single
+`IGamepadPort` reference and a single serial pool, and the mux records
+which child owns each serial at plug time (preference order: ViGEm's
+kernel path first, HIDMaestro for the identities ViGEm cannot
+materialize — DualSense, Switch Pro — and as the fallback when ViGEmBus
+is absent). Linux (uinput) and macOS (IOHIDUserDevice) keep their single
+adapter; the mux is pure and would take a second adapter there
+unchanged. `core/backend_registry.{h,cpp}` is the data-driven identity /
+vendor / per-type capability + latency-tier table both the
+`/api/server/capabilities` `backends` array and the catalog traits fold
+derive from.
 
 ### Key Design Principles
 
@@ -147,7 +160,9 @@ and a thin I/O shell, so the format is unit-testable without a socket or driver:
 | `net/discovery_beacon.h` (`buildDiscoveryBeacon`) | `net/discovery.cpp` (broadcast loop) |
 | `net/machine_id.h` (`isValidMachineId`)    | `net/machine_id.cpp` (file + RNG)  |
 | `vigem_submit_policy.h` (`ds4ExSubmitLanded`) | `vigem.cpp` (`DeviceIoControl`)  |
-| `platform/macos/ds4_report.h` (DS4 v2 pack/parse/descriptor) | `platform/macos/mac_hid_gamepad_adapter.cpp` (IOHIDUserDevice) |
+| `core/ds4_report.h` (DS4 v2 pack/parse/descriptor; shared by two shells) | `platform/macos/mac_hid_gamepad_adapter.cpp` (IOHIDUserDevice), `platform/windows/hidmaestro_adapter.cpp` |
+| `platform/windows/hidmaestro_wire.{h,cpp}` (seqlock frames + output ring) | `platform/windows/hidmaestro_adapter.cpp` (mapped sections, doorbells) |
+| `platform/windows/hidmaestro_report.h` (per-profile packers + output decode) | `platform/windows/hidmaestro_adapter.cpp` |
 
 When adding a wire format, follow this split: put the byte-shaping in a pure
 function and give it a `tests/test_*.cpp` suite.
@@ -326,7 +341,58 @@ protects all connection/controller state with a single `std::mutex`.
 Lock contention is negligible with ≤ 16 connections and ≤ 16 controllers.
 
 The ViGEm bus handle is owned by `ViGEmAdapter` (with its own mutex).
-Report submission (`DeviceIoControl`) is thread-safe per target.
+Report submission (`DeviceIoControl`) is thread-safe per target. The
+HIDMaestro slot table is owned by `HidMaestroAdapter` (its own mutex,
+held across the whole submit — the guarded section is a seqlock memcpy
+into a mapped view, so there is no blocking syscall worth dropping the
+lock for and no unplug can unmap a view mid-write). `GamepadMux` itself
+adds no lock: per-serial owners are atomics written at plug/unplug time.
+
+## Windows second backend: HIDMaestro (user-mode UMDF2)
+
+HIDMaestro materializes the identities ViGEmBus cannot — virtual
+DualSense (motion + touchpad + lightbar at the real DualSense report
+offsets), Switch Pro (motion via the driver's Nintendo protocol
+responder), plus DualShock 4 and Xbox 360 as fallbacks — while ViGEm
+stays preferred for the types both can serve (kernel submit path,
+lowest latency tier).
+
+### Pure/IO split
+
+- `platform/windows/hidmaestro_wire.{h,cpp}` — the shared-memory
+  contract with the driver: input-section seqlock writer (with the GIP
+  slice for Xbox profiles and the mandatory ExtendedReportSize clear)
+  and the 64-slot output-ring reader. No `<windows.h>`; pinned by
+  `tests/test_hidmaestro_wire.cpp` on every CI platform.
+- `platform/windows/hidmaestro_report.h` — per-profile packers
+  (xbox-360-wired HID+GIP, DS4 via the shared `core/ds4_report.h`
+  codec with the Sony calibration-stub IMU rescale, DualSense, Switch
+  Pro 0x30 body) and ring-packet decoding back to rumble/lightbar.
+  Pinned by `tests/test_hidmaestro_report.cpp`.
+- `platform/windows/hidmaestro_adapter.{h,cpp}` — the I/O shell:
+  per-serial slots holding mapped views + duplicated handles, the
+  zero-allocation submit path (pack → seqlock write → SetEvent), and
+  one output-ring worker thread per plugged serial. Tested against a
+  fake provisioner (`tests/test_hidmaestro_adapter.cpp`), the same
+  fake-driver-link strategy as `test_vigem_adapter`.
+
+### Elevation story
+
+Satellite stays asInvoker. Device lifecycle needs an elevated token
+(SwDevice creation, `Global\` section creation, driver deploy), so it
+lives in the bundled .NET helper (`helper/hidmaestro` →
+`satellite-hm-helper.exe`), spawned once per session on the FIRST
+HIDMaestro plug (one UAC prompt; never from a status probe). The helper
+drives the HIDMaestro SDK and duplicates the per-controller section +
+event handles into the satellite process over a private named pipe
+(`hidmaestro_helper_client.cpp`; the connecting client's PID is
+verified against the spawned process). After that the per-frame hot
+path is native only. If the helper dies, submits keep working (the
+mapped sections outlive it); the next unplug reports unconfirmed and
+quarantines the serial, matching the ViGEm zombie-target contract. The
+installer's optional-but-default "hidmaestro" component deploys the
+driver at setup time (`satellite-hm-helper.exe install-driver`,
+elevated there anyway; no reboot).
 
 ## macOS backend: virtual DualShock 4 via IOHIDUserDevice
 
@@ -338,7 +404,7 @@ touchpad, and motion with no per-game integration.
 
 ### Pure/IO split
 
-- `src/platform/macos/ds4_report.h` — IOKit-free: the HID report
+- `src/core/ds4_report.h` — OS-free: the HID report
   descriptor bytes, input-report packing (reusing the core
   `ds4PackTouchFinger` 12-bit touch codec and the Windows XUSB→DS4
   button/stick mapping byte-for-byte), output-report parsing (rumble

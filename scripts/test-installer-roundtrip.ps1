@@ -10,10 +10,11 @@
     on, against a real disk and a real registry:
 
       1. A fresh /VERYSILENT install into a directory WITH A SPACE lands
-         satellite.exe and the web UI assets. The bundled ViGEmBus driver is
-         explicitly skipped (/VIGEM=skip): a kernel driver install has no
-         business succeeding-or-hanging inside a CI assertion, and the
-         installer documents the switch for exactly this.
+         satellite.exe, the HIDMaestro helper, and the web UI assets. Both
+         bundled drivers are explicitly skipped (/VIGEM=skip
+         /HIDMAESTRO=skip): a driver install has no business
+         succeeding-or-hanging inside a CI assertion, and the installer
+         documents the switches for exactly this.
       2. The ARP entry exists (native or WOW6432Node view) and points at the
          install.
       3. The installed exe actually starts and stays up: satellite runs
@@ -74,12 +75,13 @@ function Invoke-Setup([string[]]$Arguments) {
 }
 
 try {
-    # --- 1. Fresh silent install (driver skipped) ----------------------------
-    'step 1: fresh silent install (/VIGEM=skip)'
+    # --- 1. Fresh silent install (drivers skipped) ---------------------------
+    'step 1: fresh silent install (/VIGEM=skip /HIDMAESTRO=skip)'
     $log1 = Join-Path $sandbox 'install-1.log'
-    $code = Invoke-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/VIGEM=skip', "/DIR=`"$installDir`"", "/LOG=`"$log1`"")
+    $code = Invoke-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/VIGEM=skip', '/HIDMAESTRO=skip', "/DIR=`"$installDir`"", "/LOG=`"$log1`"")
     Assert ($code -eq 0) "fresh install exits 0 (got $code)"
     Assert (Test-Path (Join-Path $installDir 'satellite.exe')) 'satellite.exe installed'
+    Assert (Test-Path (Join-Path $installDir 'satellite-hm-helper.exe')) 'HIDMaestro helper installed'
     Assert ($null -ne (Get-ChildItem -Path $installDir -Recurse -Filter 'dashboard.js' -ErrorAction SilentlyContinue | Select-Object -First 1)) 'web UI assets installed'
     $unins = Get-ChildItem -Path $installDir -Filter 'unins*.exe' -ErrorAction SilentlyContinue
     Assert ($null -ne $unins -and $unins.Count -ge 1) 'uninstaller present'
@@ -113,7 +115,7 @@ try {
     # --- 4. Silent re-run over the same version ------------------------------
     'step 4: silent re-run (repair / upgrade shape)'
     $log2 = Join-Path $sandbox 'install-2.log'
-    $code = Invoke-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/VIGEM=skip', "/LOG=`"$log2`"")
+    $code = Invoke-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/VIGEM=skip', '/HIDMAESTRO=skip', "/LOG=`"$log2`"")
     Assert ($code -eq 0) "re-run exits 0 (got $code)"
     Assert (Test-Path (Join-Path $installDir 'satellite.exe')) 'satellite.exe still present after re-run'
     Assert ($null -ne (Get-ArpKey)) 'ARP key survives the re-run'

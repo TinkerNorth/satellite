@@ -37,6 +37,16 @@ struct CatalogBackendTraits {
     std::string ds4MotionRequires; // structured code, e.g. "vigembus>=1.17"; "" = none
     bool ds4TouchpadSupported = false;
     bool ds4LightbarSupported = false;
+    // DualSense and Switch Pro carry their own motion/touchpad/lightbar fields:
+    // with multiple backends per host the preferred materializer (and so the
+    // requires code) can differ per type, e.g. ds4 via ViGEm but dualsense via
+    // HIDMaestro on the same Windows host.
+    bool dualsenseMotionSupported = false;
+    std::string dualsenseMotionRequires;
+    bool dualsenseTouchpadSupported = false;
+    bool dualsenseLightbarSupported = false;
+    bool switchProMotionSupported = false;
+    std::string switchProMotionRequires;
     bool mouseControlSupported = false;
     // rumble is RECEIVE (host streams rumble back); keyboardControl is SEND
     // (host injects keystrokes). A backend reports what it can't do so the

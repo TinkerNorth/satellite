@@ -14,10 +14,13 @@
 #include "shell_integration.h"
 
 #include "vigem_adapter.h"
+#include "hidmaestro_adapter.h"
+#include "hidmaestro_helper_client.h"
 #include "updater_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 
+#include "core/gamepad_mux.h"
 #include "core/session_service.h"
 #include "core/update_service.h"
 
@@ -174,11 +177,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     lifecycle::startFileLogger();
 
     // Session keys are derived via HKDF (net/session_crypto), injected so the
-    // core stays libsodium-free.
+    // core stays libsodium-free. Both Windows backends sit behind one mux:
+    // ViGEm preferred (kernel path) for the identities it materializes,
+    // HIDMaestro for the rest and as the fallback when ViGEmBus is absent.
     ViGEmAdapter vigemAdapter;
+    satellite::hidmaestro::HelperClient hmProvisioner;
+    HidMaestroAdapter hidMaestroAdapter(hmProvisioner);
+    satellite::GamepadMux gamepadMux({&vigemAdapter, &hidMaestroAdapter});
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
-    SessionService svc(vigemAdapter, clientAdapter, logAdapter, deriveSessionKey);
+    SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey);
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     // The persist callback runs under g_configMtx so saveConfig sees a consistent struct.

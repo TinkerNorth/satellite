@@ -12,3 +12,8 @@
 BackendStatus probeBackend() {
     return macHidBackendStatus(MacHidGamepadAdapter::runtimeAvailable());
 }
+
+std::vector<satellite::BackendRuntimeStatus> enumerateBackends() {
+    BackendStatus s = probeBackend();
+    return {{s.id, s.available, s.errorCode ? std::string(s.errorCode) : std::string()}};
+}

@@ -1194,6 +1194,12 @@ h2.section-title { font-size: 12px; }
 
 .update-banner {
   display: flex;
+  /* The four-button actions row is flex-shrink: 0; without wrap, a narrow
+     window overflows it off the banner and crushes the body to zero width
+     (title/detail wrapping one character per line). Wrapping drops the
+     actions onto their own row instead, where their own flex-wrap takes
+     over. */
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px;
   background: rgba(79, 227, 255, 0.06);
@@ -1213,7 +1219,9 @@ h2.section-title { font-size: 12px; }
 }
 .update-banner-icon .emoji-icon { width: 20px; height: 20px; }
 .update-banner-body {
-  flex: 1;
+  /* The 200px basis is what makes the wrap trigger: with basis 0 the body
+     "fits" at any squeeze and the actions row never wraps. */
+  flex: 1 1 200px;
   min-width: 0;
 }
 .update-banner-title {

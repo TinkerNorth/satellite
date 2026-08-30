@@ -496,6 +496,7 @@ struct ControllerDescriptor {
     uint8_t type = CONTROLLER_TYPE_XBOX; // catalog id (wire enum value)
     uint16_t caps = 0;                   // CAP_* word
     uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
+    std::string preferredBackend;
 };
 
 // Per-controller apply outcome returned in the PUT response body.
@@ -507,6 +508,7 @@ struct ControllerApplyResult {
     uint8_t appliedType = CONTROLLER_TYPE_XBOX;
     bool motionSinkSupportedForType = false;
     bool motionBackendOk = false;
+    std::string backendId;
 };
 
 struct Controller {
@@ -519,6 +521,7 @@ struct Controller {
     uint16_t caps = 0;         // CAP_* word from the descriptor
     // MOUSE routing is gated on the connection's mouseControlGranted.
     uint8_t touchpadMode = TOUCHPAD_MODE_OFF;
+    std::string preferredBackend;
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }
     bool lightbarCapable() const { return (caps & CAP_LIGHTBAR) != 0; }
     GamepadReport lastReport{};

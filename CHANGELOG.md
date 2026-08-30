@@ -3,6 +3,27 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+Second Windows gamepad backend: HIDMaestro (user-mode UMDF2) alongside — not
+replacing — ViGEmBus. Windows now offers all four controller types (DualSense
+and Switch Pro materialize via HIDMaestro, with motion; Xbox 360 / DualShock 4
+keep preferring ViGEm's kernel path and fall back to HIDMaestro when ViGEmBus
+is absent). Satellite runs with either driver, both, or none.
+
+Protocol (additive, protocol 1): `GET /api/server/capabilities` and
+`GET /api/backend/status` gain a `backends` array (id, vendor, kernelMode,
+availability, per-type feature + latency tiers); the singular `backend` object
+is unchanged and now reports the preferred-available backend. New backend id
+`hidmaestro` with error codes `DRIVER_MISSING` / `HELPER_MISSING`; new
+catalog motion requires code `"hidmaestro>=1.7"`. The Windows catalog now
+offers ids 2 (dualsense) and 3 (switchpro).
+
+Installer: new optional-but-default "HIDMaestro driver" component
+(`satellite-hm-helper.exe`, driver deploys at setup with no reboot), with
+`/HIDMAESTRO=auto|bundled|skip` and `/REMOVEHIDMAESTRO=yes|no|auto` switches
+mirroring the ViGEmBus ones.
+
 ## 1.1.0
 
 No protocol changes. Distribution release: every shipping platform now also
