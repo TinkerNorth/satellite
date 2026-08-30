@@ -73,3 +73,24 @@ the 90-day freshness window.
   them** — that would silently reintroduce the motion-data bug. Re-verify
   by diffing intent, not bytes. The runtime driver itself is installed by
   ViGEmBus's own installer on the user's machine; we ship no driver code.
+
+## HIDMaestro shared-memory protocol (`src/platform/windows/hidmaestro_wire.h`)
+
+- Component: hifihedgehog/HIDMaestro (driver shared-memory + report contracts)
+- Upstream: https://github.com/hifihedgehog/HIDMaestro
+- Pinned-commit: v1.7.0
+- Last-vendored: 2026-08-24
+- License: MIT
+- Notes: not copied source — a hand-written re-statement of the driver's
+  shared-memory contract (`driver/driver.h` `HIDMAESTRO_SHARED_INPUT` /
+  `HIDMAESTRO_SHARED_OUTPUT` and `SharedMemoryIO.cs`): section layouts,
+  seqlock discipline, output-ring geometry and Source codes, plus the
+  per-profile report byte layouts in `hidmaestro_report.h`
+  (xbox-360-wired, dualshock-4-v2, dualsense, switch-pro) and the neutral
+  Sony calibration scale (20 LSB/deg/s, 10000 LSB/g) the driver's
+  feature-report stubs imply. The protocol carries NO version field, so a
+  pin bump REQUIRES diffing those upstream files against the constants
+  here (`test_hidmaestro_wire` / `test_hidmaestro_report` pin them; the
+  section sizes 362 / 16904 are the runtime layout check). The runtime
+  driver itself deploys via the bundled `satellite-hm-helper.exe` from the
+  hash-pinned release zip (see `redist/README.md`); we ship no driver code.

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Pure DualShock 4 (v2, CUH-ZCT2) report codec for the macOS IOHIDUserDevice
-// backend: HID report-descriptor bytes, input-report packing, output-report
-// (rumble/lightbar) parsing, and the feature-report blobs served on get-report.
+// Pure DualShock 4 (v2, CUH-ZCT2) report codec: HID report-descriptor bytes,
+// input-report packing, output-report (rumble/lightbar) parsing, and the
+// feature-report blobs served on get-report.
 //
-// IOKit-free by design (same pure-codec/IO-shell doctrine as the rest of
-// src/: see docs/architecture.md "a pure codec, separate from its I/O").
-// The IOKit shell lives in mac_hid_gamepad_adapter.cpp; a future DriverKit
-// dext transport would reuse this header untouched.
+// OS-free by design (same pure-codec/IO-shell doctrine as the rest of src/:
+// see docs/architecture.md "a pure codec, separate from its I/O"), and shared
+// by two shells: the macOS IOHIDUserDevice adapter
+// (mac_hid_gamepad_adapter.cpp) and the Windows HIDMaestro adapter's report
+// packer (platform/windows/hidmaestro_report.h) — HIDMaestro's dualshock-4-v2
+// profile emits this same DS4 v2 USB wire format.
 //
 // Byte layout is the DS4 USB wire format. The authoritative in-repo reference
 // is DS4_REPORT_EX in vigem/include/ViGEm/BusShared.h (the 63-byte report 0x01

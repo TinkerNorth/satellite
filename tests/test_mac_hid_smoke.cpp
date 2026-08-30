@@ -13,7 +13,7 @@
 //      SKIP_RETURN_CODE so ctest reports "skipped", never a silent pass
 //      (mirrors tests/test_uinput_smoke.cpp).
 #include "../src/core/gamepad_backend.h"
-#include "../src/platform/macos/ds4_report.h"
+#include "../src/core/ds4_report.h"
 #include "../src/platform/macos/mac_hid_gamepad_adapter.h"
 
 #include <atomic>

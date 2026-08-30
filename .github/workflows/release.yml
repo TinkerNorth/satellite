@@ -58,6 +58,7 @@ on:
 #
 # Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
 #   actions/checkout                @ v7.0.0  → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+#   actions/setup-dotnet            @ v6.0.0  → a98b56852c35b8e3190ac28c8c2271da59106c68
 #   actions/upload-artifact         @ v7.0.1  → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
 #   actions/download-artifact       @ v8.0.1  → 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
 #   softprops/action-gh-release     @ v3.0.2  → 3d0d9888cb7fd7b750713d6e236d1fcb99157228
@@ -192,12 +193,26 @@ jobs:
           cmake --build build-msvc --config Release --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
 
-      # installer.iss bundles the ViGEmBus driver from redist/, which is not
-      # committed -- fetch + hash-verify it first (the documented
-      # `pwsh scripts/fetch-redist.ps1 ; iscc installer.iss` recipe).
-      - name: Fetch pinned redistributables (ViGEmBus)
+      # installer.iss bundles the ViGEmBus driver and the HIDMaestro helper,
+      # neither of which is committed -- fetch + hash-verify them first (the
+      # documented `pwsh scripts/fetch-redist.ps1 ; dotnet publish ; iscc`
+      # recipe).
+      - name: Fetch pinned redistributables (ViGEmBus + HIDMaestro)
         shell: pwsh
         run: pwsh scripts/fetch-redist.ps1
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build HIDMaestro helper (dotnet publish)
+        shell: pwsh
+        run: |
+          dotnet publish helper/hidmaestro/satellite-hm-helper.csproj -c Release
+          if (-not (Test-Path "helper/hidmaestro/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish/satellite-hm-helper.exe")) {
+            throw "dotnet publish did not produce satellite-hm-helper.exe"
+          }
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress
@@ -228,9 +243,9 @@ jobs:
             dist/SatelliteSetup.exe
 
       # The same class of assertions dish-windows runs, against the artifact
-      # that is about to be published rather than a rebuild of it. The driver
-      # is skipped (/VIGEM=skip): a kernel driver install has no business
-      # succeeding-or-hanging inside a CI assertion.
+      # that is about to be published rather than a rebuild of it. Both
+      # drivers are skipped (/VIGEM=skip /HIDMAESTRO=skip): a driver install
+      # has no business succeeding-or-hanging inside a CI assertion.
       - name: Installer silent round-trip + launch smoke (no UI)
         shell: pwsh
         run: ./scripts/test-installer-roundtrip.ps1 -Setup dist/SatelliteSetup.exe

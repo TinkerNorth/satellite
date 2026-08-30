@@ -103,6 +103,7 @@ class MacHidGamepadAdapter : public IGamepadPort {
     bool isBusOpen() const override;
     bool pluginDevice(uint32_t serial, GamepadIdentity identity) override;
     bool supportsIdentity(GamepadIdentity identity) const override;
+    const char* backendId() const override { return BACKEND_ID_MAC_HID; }
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;

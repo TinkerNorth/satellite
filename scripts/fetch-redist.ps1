@@ -1,15 +1,17 @@
 <#
 .SYNOPSIS
-    Download and verify the third-party installers bundled into SatelliteSetup.exe.
+    Download and verify the third-party binaries bundled into SatelliteSetup.exe.
 
 .DESCRIPTION
-    The Inno Setup installer (installer.iss) ships a copy of the ViGEmBus
-    driver installer as a prerequisite. That ~6 MB binary is not committed
-    to git; this script fetches it on demand and verifies its SHA-256
-    against the pinned hash in redist/SHA256SUMS before letting iscc
-    consume it.
+    The Inno Setup installer (installer.iss) ships two driver prerequisites:
+    the ViGEmBus driver installer, and the HIDMaestro SDK release that
+    helper/hidmaestro builds satellite-hm-helper.exe from. Neither binary is
+    committed to git; this script fetches them on demand and verifies each
+    SHA-256 against the pinned hash in redist/SHA256SUMS before letting the
+    helper build or iscc consume them. The HIDMaestro zip is additionally
+    unpacked into redist/hidmaestro/ (the helper project's reference path).
 
-    Idempotent. If the file already exists with the expected hash, nothing
+    Idempotent. If a file already exists with the expected hash, nothing
     is downloaded.
 
 .PARAMETER Force
@@ -33,6 +35,11 @@ $Redistributables = @(
         Name     = 'ViGEmBus 1.22.0'
         Url      = 'https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_1.22.0_x64_x86_arm64.exe'
         Filename = 'ViGEmBus_1.22.0_x64_x86_arm64.exe'
+    }
+    @{
+        Name     = 'HIDMaestro 1.7.0'
+        Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.7.0/HIDMaestro-v1.7.0.zip'
+        Filename = 'HIDMaestro-v1.7.0.zip'
     }
 )
 
@@ -96,6 +103,35 @@ foreach ($Item in $Redistributables) {
     }
     Write-Host "[OK]   verified $($Item.Filename)"
     $AnyDownloaded = $true
+}
+
+# Stage the HIDMaestro SDK assemblies where helper/hidmaestro's csproj
+# references them. The zip carries HIDMaestro.Core.dll at its root and the
+# WinRT projection assemblies inside the tool subfolders.
+$HmZip = Join-Path $RedistDir 'HIDMaestro-v1.7.0.zip'
+$HmSdkDir = Join-Path $RedistDir 'hidmaestro'
+$HmWanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll')
+$HmMissing = $HmWanted | Where-Object { -not (Test-Path (Join-Path $HmSdkDir $_)) }
+if ($HmMissing -or $Force) {
+    Write-Host "[INFO] Unpacking HIDMaestro SDK assemblies into redist/hidmaestro/"
+    $Staging = Join-Path $RedistDir 'hidmaestro-staging'
+    if (Test-Path $Staging) { Remove-Item -Recurse -Force $Staging }
+    Expand-Archive -Path $HmZip -DestinationPath $Staging -Force
+    if (-not (Test-Path $HmSdkDir)) {
+        New-Item -ItemType Directory -Path $HmSdkDir | Out-Null
+    }
+    foreach ($Name in $HmWanted) {
+        $Found = Get-ChildItem -Path $Staging -Recurse -Filter $Name |
+            Select-Object -First 1
+        if (-not $Found) {
+            Write-Error "HIDMaestro zip did not contain $Name"
+        }
+        Copy-Item $Found.FullName (Join-Path $HmSdkDir $Name) -Force
+    }
+    Remove-Item -Recurse -Force $Staging
+    Write-Host "[OK]   redist/hidmaestro/ staged ($($HmWanted -join ', '))"
+} else {
+    Write-Host "[OK]   HIDMaestro SDK assemblies already staged"
 }
 
 if ($AnyDownloaded) {

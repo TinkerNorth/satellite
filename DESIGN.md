@@ -109,6 +109,11 @@ surface:
 Neither set is driven by the theme tokens above; when retheming, update
 the baked accent in the dashboard copies by hand.
 
+The small UI glyphs under `web/img/icons/` (including the backend-driver
+pair `driver-kernel.svg` / `driver-user.svg` used by the backend setup
+guide) are original in-repo drawings in the same baked-accent flat style,
+not vendored art.
+
 ## Known follow-ups (out of scope for this PR)
 
 1. **Asset duplication**: [web/icon.png](web/icon.png) and

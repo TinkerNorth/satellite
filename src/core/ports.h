@@ -30,6 +30,18 @@ class IGamepadPort {
     // records the identity per serial so submitReport packs the right report.
     virtual bool pluginDevice(uint32_t serial, GamepadIdentity identity) = 0;
 
+    virtual bool pluginDevicePreferring(uint32_t serial, GamepadIdentity identity,
+                                        const std::string& preferredBackend) {
+        (void)preferredBackend;
+        return pluginDevice(serial, identity);
+    }
+
+    virtual const char* backendId() const { return ""; }
+
+    virtual const char* backendIdForSerial(uint32_t serial) const {
+        return isDevicePlugged(serial) ? backendId() : "";
+    }
+
     // Can this backend materialize `identity`? Gates per-backend catalog offers
     // and the invalidType apply result. Default = the two universally-emulable
     // identities; adapters widen or narrow.

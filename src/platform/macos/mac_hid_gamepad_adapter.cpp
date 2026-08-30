@@ -5,7 +5,7 @@
 // protocol is documented in mac_hid_gamepad_adapter.h.
 #include "mac_hid_gamepad_adapter.h"
 
-#include "ds4_report.h"
+#include "core/ds4_report.h"
 
 #include <atomic>
 #include <chrono>

@@ -22,10 +22,13 @@ satellite::JsonOut backendJsonObj(const BackendStatus& s);
 std::string buildBackendJson(const BackendStatus& s);
 std::string buildBackendJson();
 
-// Static facts about the backend that shape the catalog, keyed off the
-// backend's identity not its live health (the catalog only changes on server
-// upgrade; live health is /api/server/capabilities).
-satellite::CatalogBackendTraits catalogBackendTraits(const BackendStatus& s);
+// The /api/backend/status body: the singular object extended with the
+// per-host `backends` array (registry identity + live availability).
+std::string buildBackendStatusJson();
+
+// Static facts that shape the catalog, folded over the host's enumerated
+// backends via the registry — not their live health (the catalog only changes
+// on server upgrade; live health is /api/server/capabilities).
 satellite::CatalogBackendTraits catalogBackendTraits();
 
 // GET /api/server/capabilities: CURRENT dynamic state (the static

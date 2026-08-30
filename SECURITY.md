@@ -65,6 +65,7 @@ Out of scope:
   on the user's PC (root, Administrator, ability to drop binaries in
   `%APPDATA%`, etc.).
 - The vendored ViGEmBus driver itself; file with [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus).
+- The bundled HIDMaestro driver/SDK itself; file with [hifihedgehog/HIDMaestro](https://github.com/hifihedgehog/HIDMaestro).
 - DoS via raw network flooding. UDP without rate-limit is a known
   trade-off for hot-path latency; mitigations belong in the network
   fabric, not the protocol.

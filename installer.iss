@@ -31,11 +31,23 @@
 ;  accelerometer) to games via the DualShock 4 extended report. An older
 ;  ViGEmBus is therefore upgraded, not kept.
 ;
+;  HIDMaestro (user-mode UMDF2 driver, MIT) is the second, optional-but-
+;  default backend: it adds virtual DualSense, Switch Pro and DualShock 4 /
+;  Xbox 360 identities beyond what ViGEmBus can materialize. There is no
+;  standalone driver installer; the bundled satellite-hm-helper.exe embeds
+;  the HIDMaestro SDK and `install-driver` deploys it (self-signed cert +
+;  pnputil, no reboot). Satellite runs with either driver, both, or none
+;  (controller types degrade accordingly).
+;
 ;  Switches:
 ;    /VIGEM=auto      (default)  install only if missing or older
 ;    /VIGEM=bundled              force install even over a newer version
 ;    /VIGEM=skip                 leave the driver alone entirely
 ;    /REMOVEVIGEM=yes|no|auto    uninstall-time companion (see bottom)
+;    /HIDMAESTRO=auto (default)  deploy/refresh the driver (idempotent)
+;    /HIDMAESTRO=bundled         same as auto (kept for switch symmetry)
+;    /HIDMAESTRO=skip            leave the driver alone entirely
+;    /REMOVEHIDMAESTRO=yes|no|auto  uninstall-time companion (see bottom)
 ;    /OTA                        signals an in-app self-update; we relaunch
 ;                                the binary via Restart Manager (no UI)
 ; ============================================================================
@@ -57,6 +69,12 @@
 ; --- Bundled ViGEmBus (see redist/README.md for vendoring notes) ---
 #define ViGEmBusVersion "1.22.0"
 #define ViGEmBusInstaller "ViGEmBus_1.22.0_x64_x86_arm64.exe"
+
+; --- Bundled HIDMaestro helper (see redist/README.md; built by
+;     `dotnet publish helper/hidmaestro` from the pinned SDK release) ---
+#define HmVersion "1.7.0"
+#define HmHelperExe "satellite-hm-helper.exe"
+#define HmHelperSource "helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe"
 
 [Setup]
 ; Stable AppId: never change this without a migration plan; it's how
@@ -147,6 +165,7 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 [Components]
 Name: "main";  Description: "Satellite (required)"; Types: full custom; Flags: fixed
 Name: "vigem"; Description: "ViGEmBus driver: virtual gamepads, rumble and controller motion (gyro/accelerometer)"; Types: full
+Name: "hidmaestro"; Description: "HIDMaestro driver: adds virtual DualSense and Switch Pro controllers (user-mode, no reboot)"; Types: full
 
 [Tasks]
 ; Autostart is opt-in, matching the Settings > Apps > Startup model.
@@ -164,6 +183,9 @@ Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 ; ViGEmBus prerequisite: only extracted when we'll run it (see ShouldRunViGEm).
 Source: "redist\{#ViGEmBusInstaller}"; DestDir: "{tmp}"; Flags: deleteafterinstall; Components: vigem; Check: ShouldRunViGEm
+; HIDMaestro helper: installed beside satellite.exe (the app spawns it for
+; controller lifecycle), and also runs the driver deploy at ssPostInstall.
+Source: "{#HmHelperSource}"; DestDir: "{app}"; DestName: "{#HmHelperExe}"; Flags: ignoreversion sign; Components: hidmaestro
 
 [Dirs]
 ; Pre-create the LocalAppData tree the app uses for dumps + logs, with
@@ -323,24 +345,37 @@ const
 
 var
     VigemMode: String;          // 'auto' | 'bundled' | 'skip'
+    HmMode: String;             // 'auto' | 'bundled' | 'skip'
     DetectedVigemVersion: String;
+    DetectedHm: Boolean;
     RebootNeeded: Boolean;
     StatusLabel: TNewStaticText;
 
-function ParseVigemSwitch: String;
+function ParseDriverSwitch(const Prefix: String): String;
 var
-    i: Integer;
+    i, PrefixLen: Integer;
     P, Up: String;
 begin
     Result := 'auto';
+    PrefixLen := Length(Prefix);
     for i := 1 to ParamCount do begin
         P := ParamStr(i);
         Up := Uppercase(P);
-        if Copy(Up, 1, 7) = '/VIGEM=' then
-            Result := Lowercase(Trim(Copy(P, 8, MaxInt)));
+        if Copy(Up, 1, PrefixLen) = Prefix then
+            Result := Lowercase(Trim(Copy(P, PrefixLen + 1, MaxInt)));
     end;
     if (Result <> 'auto') and (Result <> 'bundled') and (Result <> 'skip') then
         Result := 'auto';
+end;
+
+function ParseVigemSwitch: String;
+begin
+    Result := ParseDriverSwitch('/VIGEM=');
+end;
+
+function ParseHmSwitch: String;
+begin
+    Result := ParseDriverSwitch('/HIDMAESTRO=');
 end;
 
 function GetInstalledVigemVersion: String;
@@ -366,6 +401,25 @@ begin
     if not StrToVersion(Installed, IP) then IP := 0;
     if not StrToVersion(Bundled, BP) then BP := 0;
     Result := ComparePackedVersion(IP, BP);
+end;
+
+// HIDMaestro is UMDF2: no {sys}\drivers\*.sys to version-probe. The SDK
+// writes HKLM\SOFTWARE\HIDMaestro after a successful deploy, which is also
+// what satellite.exe's own probe checks.
+function IsHidMaestroInstalled: Boolean;
+begin
+    Result := RegKeyExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\HIDMaestro');
+end;
+
+// The deploy is idempotent with a same-version fast path inside the SDK, so
+// 'auto' runs it whenever the component is selected: fresh installs deploy,
+// upgrades refresh the embedded driver to this build's pinned release.
+function ShouldRunHidMaestro: Boolean;
+begin
+    Result := False;
+    if HmMode = 'skip' then Exit;
+    if not WizardIsComponentSelected('hidmaestro') then Exit;
+    Result := True;
 end;
 
 // Returns True iff we should run the bundled ViGEmBus installer.
@@ -419,6 +473,17 @@ begin
         Result := Result + #13#10 + 'Override active: /VIGEM=bundled. The bundled installer runs regardless of version.'
     else
         Result := Result + #13#10 + 'Default: install or upgrade as above. To skip, uncheck the component above or pass /VIGEM=skip.';
+
+    Result := Result + #13#10 + #13#10
+            + 'HIDMaestro is a user-mode driver that adds virtual DualSense and'
+            + ' Switch Pro controllers (and covers DualShock 4 / Xbox 360 when'
+            + ' ViGEmBus is absent). No reboot needed.' + #13#10;
+    if DetectedHm then
+        Result := Result + 'Already deployed here; the bundled v' + '{#HmVersion}' + ' payload will refresh it.'
+    else
+        Result := Result + 'Not detected here. The bundled v' + '{#HmVersion}' + ' will be deployed.';
+    if HmMode = 'skip' then
+        Result := Result + #13#10 + 'Override active: /HIDMAESTRO=skip. The driver will not be touched.';
 end;
 
 function InitializeSetup: Boolean;
@@ -442,9 +507,14 @@ end;
 procedure InitializeWizard;
 begin
     VigemMode := ParseVigemSwitch;
+    HmMode := ParseHmSwitch;
     DetectedVigemVersion := GetInstalledVigemVersion;
+    DetectedHm := IsHidMaestroInstalled;
     RebootNeeded := False;
 
+    // Two driver paragraphs now share the caption; shrink the list a little
+    // so the taller label still fits the components page.
+    WizardForm.ComponentsList.Height := WizardForm.ComponentsList.Height - ScaleY(48);
     StatusLabel := TNewStaticText.Create(WizardForm);
     StatusLabel.Parent := WizardForm.SelectComponentsPage;
     StatusLabel.AutoSize := False;
@@ -452,7 +522,7 @@ begin
     StatusLabel.Left := WizardForm.ComponentsList.Left;
     StatusLabel.Width := WizardForm.ComponentsList.Width;
     StatusLabel.Top := WizardForm.ComponentsList.Top + WizardForm.ComponentsList.Height + ScaleY(8);
-    StatusLabel.Height := ScaleY(72);
+    StatusLabel.Height := ScaleY(120);
     StatusLabel.Caption := StatusText;
 end;
 
@@ -518,10 +588,37 @@ begin
     end;
 end;
 
+procedure RunHidMaestroDeploy;
+var
+    HelperPath: String;
+    ResultCode: Integer;
+begin
+    HelperPath := ExpandConstant('{app}\{#HmHelperExe}');
+    WizardForm.StatusLabel.Caption := 'Deploying the HIDMaestro driver (no reboot needed)...';
+    WizardForm.FilenameLabel.Caption := '{#HmHelperExe}';
+
+    if not Exec(HelperPath, 'install-driver', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+        MsgBox('Could not launch the HIDMaestro helper. Satellite will still ' +
+               'install; DualSense / Switch Pro controller types stay ' +
+               'unavailable until the driver is deployed (re-run this ' +
+               'installer to retry).', mbInformation, MB_OK);
+        Exit;
+    end;
+    if ResultCode <> 0 then
+        MsgBox('HIDMaestro driver deployment returned exit code ' +
+               IntToStr(ResultCode) + '. Satellite will still install; ' +
+               'DualSense / Switch Pro controller types stay unavailable ' +
+               'until the driver is deployed (check the setup log under ' +
+               '%TEMP% and re-run this installer to retry).', mbInformation, MB_OK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-    if (CurStep = ssPostInstall) and ShouldRunViGEm then
+    if CurStep <> ssPostInstall then Exit;
+    if ShouldRunViGEm then
         RunBundledViGEm;
+    if ShouldRunHidMaestro then
+        RunHidMaestroDeploy;
 end;
 
 function NeedRestart: Boolean;
@@ -529,31 +626,45 @@ begin
     Result := RebootNeeded;
 end;
 
-// Uninstall: optional ViGEmBus removal.
-// Opt-in on uninstall: many apps (DS4Windows, BetterJoy, MoonDeck-Buddy,
-// etc.) share the driver, and a default-yes would break them.
-//    /REMOVEVIGEM=auto  (default)  prompt the user, default No;
-//                                  silent uninstalls do not remove the driver
-//    /REMOVEVIGEM=yes              uninstall ViGEmBus
-//    /REMOVEVIGEM=no               leave the driver in place
+// Uninstall: optional driver removal, per driver.
+// Opt-in on uninstall: many apps (DS4Windows, BetterJoy, MoonDeck-Buddy for
+// ViGEmBus; PadForge and other HIDMaestro consumers) share the drivers, and
+// a default-yes would break them.
+//    /REMOVEVIGEM=auto        (default)  prompt the user, default No;
+//                                        silent uninstalls do not remove it
+//    /REMOVEVIGEM=yes|no                 remove / keep ViGEmBus
+//    /REMOVEHIDMAESTRO=auto|yes|no       same contract for HIDMaestro (runs
+//                                        at usUninstall, while the bundled
+//                                        helper still exists on disk)
 
 const
     UninstallKeyRoot = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall';
 
-function ParseRemoveVigemSwitch: String;
+function ParseRemoveSwitch(const Prefix: String): String;
 var
-    i: Integer;
+    i, PrefixLen: Integer;
     P, Up: String;
 begin
     Result := 'auto';
+    PrefixLen := Length(Prefix);
     for i := 1 to ParamCount do begin
         P := ParamStr(i);
         Up := Uppercase(P);
-        if Copy(Up, 1, 13) = '/REMOVEVIGEM=' then
-            Result := Lowercase(Trim(Copy(P, 14, MaxInt)));
+        if Copy(Up, 1, PrefixLen) = Prefix then
+            Result := Lowercase(Trim(Copy(P, PrefixLen + 1, MaxInt)));
     end;
     if (Result <> 'yes') and (Result <> 'no') then
         Result := 'auto';
+end;
+
+function ParseRemoveVigemSwitch: String;
+begin
+    Result := ParseRemoveSwitch('/REMOVEVIGEM=');
+end;
+
+function ParseRemoveHmSwitch: String;
+begin
+    Result := ParseRemoveSwitch('/REMOVEHIDMAESTRO=');
 end;
 
 function FindVigemUninstallString: String;
@@ -629,12 +740,44 @@ begin
     Exec(Exe, Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+// HIDMaestro removal runs at usUninstall so the bundled helper (which is the
+// uninstaller for the driver packages) is still on disk.
+procedure MaybeRemoveHidMaestro;
+var
+    Mode, HelperPath: String;
+    ShouldRemove: Boolean;
+    ResultCode: Integer;
+begin
+    if not RegKeyExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\HIDMaestro') then Exit;
+    HelperPath := ExpandConstant('{app}\{#HmHelperExe}');
+    if not FileExists(HelperPath) then Exit;
+
+    Mode := ParseRemoveHmSwitch;
+    ShouldRemove := False;
+    if Mode = 'yes' then
+        ShouldRemove := True
+    else if Mode = 'no' then
+        ShouldRemove := False
+    else if UninstallSilent then
+        ShouldRemove := False
+    else
+        ShouldRemove := MsgBox(
+            'Also remove the HIDMaestro driver?' + #13#10 + #13#10 +
+            'Other apps (PadForge and other HIDMaestro consumers) may share ' +
+            'this driver. Removing it will break them until they redeploy ' +
+            'it themselves.' + #13#10 + #13#10 +
+            'Click No if you''re unsure.',
+            mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+
+    if ShouldRemove then
+        Exec(HelperPath, 'remove-driver', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure MaybeRemoveVigem;
 var
     Mode: String;
     ShouldRemove: Boolean;
 begin
-    if CurUninstallStep <> usPostUninstall then Exit;
     if not FileExists(ExpandConstant('{sys}\drivers\ViGEmBus.sys')) then Exit;
 
     Mode := ParseRemoveVigemSwitch;
@@ -657,4 +800,12 @@ begin
 
     if ShouldRemove then
         RunVigemUninstall;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+    if CurUninstallStep = usUninstall then
+        MaybeRemoveHidMaestro
+    else if CurUninstallStep = usPostUninstall then
+        MaybeRemoveVigem;
 end;

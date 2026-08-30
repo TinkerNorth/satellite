@@ -129,6 +129,8 @@ static bool parseDescriptorObject(const Json& obj, bool requireIdx, ControllerDe
     if (jsonBool(caps, "analogTriggers")) d.caps |= CAP_ANALOG_TRIGGERS;
     if (jsonBool(caps, "lightbar")) d.caps |= CAP_LIGHTBAR;
 
+    d.preferredBackend = jsonStr(obj, "preferredBackend");
+
     const std::string mode = jsonStr(obj, "touchpadMode");
     if (mode == "ds4") {
         d.touchpadMode = TOUCHPAD_MODE_DS4;
@@ -157,6 +159,11 @@ static JsonOut controllerApplyObj(const ControllerApplyResult& r) {
     j["ctrlIdx"] = r.ctrlIdx;
     j["result"] = applyResultName(r.result);
     j["appliedType"] = r.appliedType;
+    if (r.backendId.empty()) {
+        j["backend"] = nullptr;
+    } else {
+        j["backend"] = r.backendId;
+    }
     JsonOut motion;
     motion["sinkSupportedForType"] = r.motionSinkSupportedForType;
     motion["backendOk"] = r.motionBackendOk;
@@ -206,6 +213,16 @@ static std::string buildSessionViewJson(const SessionService::SessionView& v) {
         o["appliedType"] = c.appliedType;
         o["caps"] = capsJsonObj(c.caps);
         o["touchpadMode"] = touchpadModeName(c.touchpadMode);
+        if (c.backendId.empty()) {
+            o["backend"] = nullptr;
+        } else {
+            o["backend"] = c.backendId;
+        }
+        if (c.preferredBackend.empty()) {
+            o["preferredBackend"] = nullptr;
+        } else {
+            o["preferredBackend"] = c.preferredBackend;
+        }
         JsonOut motion;
         motion["sinkSupportedForType"] = c.motionSinkSupportedForType;
         motion["backendOk"] = c.motionBackendOk;

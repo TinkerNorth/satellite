@@ -85,6 +85,15 @@ try {
             publisher = 'Nefarius Software Solutions e.U.'
             licenses  = @(@{ license = @{ id = 'BSD-3-Clause' } })
             description = 'Bundled redist prerequisite; installed once at machine scope. Drives virtual gamepads + controller motion.'
+        },
+        @{
+            type      = 'library'
+            'bom-ref' = 'pkg:generic/hidmaestro@1.7.0'
+            name      = 'HIDMaestro'
+            version   = '1.7.0'
+            publisher = 'hifihedgehog'
+            licenses  = @(@{ license = @{ id = 'MIT' } })
+            description = 'SDK embedded in the bundled satellite-hm-helper.exe; deploys the UMDF2 driver for virtual DualSense / Switch Pro / DualShock 4 / Xbox 360 pads.'
         }
     )
 

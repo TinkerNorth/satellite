@@ -2,6 +2,7 @@
 #include "vigem_adapter.h"
 
 #include "core/touchpad_codec.h"
+#include "pointer_inject.h"
 #include "vigem.h"
 
 extern HANDLE openVigemBus();
@@ -355,25 +356,7 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
 }
 
 bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
-    // Host-global desktop injection, independent of the bus, so it works with no
-    // controllers plugged.
-    INPUT inputs[2] = {};
-    int n = 0;
-    if (dx != 0 || dy != 0) {
-        inputs[n].type = INPUT_MOUSE;
-        inputs[n].mi.dx = dx;
-        inputs[n].mi.dy = dy;
-        inputs[n].mi.dwFlags = MOUSEEVENTF_MOVE;
-        ++n;
-    }
-    const bool was = relMouseBtnDown_.exchange(leftButton);
-    if (leftButton != was) {
-        inputs[n].type = INPUT_MOUSE;
-        inputs[n].mi.dwFlags = leftButton ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
-        ++n;
-    }
-    if (n == 0) return true; // idle frame: nothing to inject, still "handled"
-    return SendInput(static_cast<UINT>(n), inputs, sizeof(INPUT)) == static_cast<UINT>(n);
+    return injectRelativeMouse(relMouseBtnDown_, dx, dy, leftButton);
 }
 
 bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {

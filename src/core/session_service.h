@@ -63,6 +63,8 @@ class SessionService {
             uint8_t touchpadMode;
             bool motionSinkSupportedForType;
             bool motionBackendOk;
+            std::string backendId;
+            std::string preferredBackend;
         };
         std::vector<CtrlView> controllers;
     };
@@ -177,6 +179,7 @@ class SessionService {
             // rejected the motion node" from "no game subscribed yet". Meaningful
             // on Linux; true elsewhere.
             bool motionBackendOk;
+            std::string backendId;
             bool touchpadActive;
             // lightbarCapable: the CAP_LIGHTBAR bit and the gate for emitting
             // MSG_LIGHTBAR. lightbarKnown once a colour is set; r/g/b hold the

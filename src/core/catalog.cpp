@@ -175,14 +175,15 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
 
     // Feature slugs, modes, and requires codes below are PROTOCOL CONSTANTS,
     // never localized (docs/contract.md localization boundary rule). DualSense
-    // shares the DS4 feature surface; its touchpad renders the "ds4" pad mode.
-    auto ds4LikeFeatures = [&]() {
+    // renders the DS4-shaped surface; its touchpad renders the "ds4" pad mode.
+    auto ds4LikeFeatures = [](bool motion, const std::string& motionRequires, bool touchpad,
+                              bool lightbar) {
         JsonOut f;
         f["rumble"] = featureJson(true);
         f["analogTriggers"] = featureJson(true);
-        f["motion"] = featureJson(traits.ds4MotionSupported, traits.ds4MotionRequires);
-        f["lightbar"] = featureJson(traits.ds4LightbarSupported);
-        f["touchpad"] = featureJsonModes(traits.ds4TouchpadSupported, JsonOut::array({"ds4"}));
+        f["motion"] = featureJson(motion, motionRequires);
+        f["lightbar"] = featureJson(lightbar);
+        f["touchpad"] = featureJsonModes(touchpad, JsonOut::array({"ds4"}));
         return f;
     };
 
@@ -204,17 +205,23 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         types.push_back(typeJson(0, "xbox360", lang, en, serverVersion, std::move(xbox)));
     }
     if (traits.offersDS4) {
-        types.push_back(typeJson(1, "ds4", lang, en, serverVersion, ds4LikeFeatures()));
+        types.push_back(
+            typeJson(1, "ds4", lang, en, serverVersion,
+                     ds4LikeFeatures(traits.ds4MotionSupported, traits.ds4MotionRequires,
+                                     traits.ds4TouchpadSupported, traits.ds4LightbarSupported)));
     }
     if (traits.offersDualSense) {
-        types.push_back(typeJson(2, "dualsense", lang, en, serverVersion, ds4LikeFeatures()));
+        types.push_back(typeJson(
+            2, "dualsense", lang, en, serverVersion,
+            ds4LikeFeatures(traits.dualsenseMotionSupported, traits.dualsenseMotionRequires,
+                            traits.dualsenseTouchpadSupported, traits.dualsenseLightbarSupported)));
     }
     if (traits.offersSwitchPro) {
         // Switch Pro: motion, no analog triggers, no touchpad, no light bar.
         JsonOut sw;
         sw["rumble"] = featureJson(true);
         sw["analogTriggers"] = featureJson(false);
-        sw["motion"] = featureJson(traits.ds4MotionSupported);
+        sw["motion"] = featureJson(traits.switchProMotionSupported, traits.switchProMotionRequires);
         sw["lightbar"] = featureJson(false);
         sw["touchpad"] = featureJson(false);
         types.push_back(typeJson(3, "switchpro", lang, en, serverVersion, std::move(sw)));

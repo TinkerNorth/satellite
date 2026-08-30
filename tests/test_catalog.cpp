@@ -84,11 +84,19 @@ static void test_catalogETag_shape() {
 
 static void test_catalogJson_structure() {
     TEST("buildCatalogJson: ids match the wire enum, slugs and layers correct");
+    // Windows-union shape: ds4 via the preferred kernel backend, dualsense +
+    // switchpro via hidmaestro, each with its own requires code.
     CatalogBackendTraits traits;
     traits.ds4MotionSupported = true;
     traits.ds4MotionRequires = "vigembus>=1.17";
     traits.ds4TouchpadSupported = true;
     traits.ds4LightbarSupported = true;
+    traits.dualsenseMotionSupported = true;
+    traits.dualsenseMotionRequires = "hidmaestro>=1.7";
+    traits.dualsenseTouchpadSupported = true;
+    traits.dualsenseLightbarSupported = true;
+    traits.switchProMotionSupported = true;
+    traits.switchProMotionRequires = "hidmaestro>=1.7";
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;
@@ -131,13 +139,17 @@ static void test_catalogJson_structure() {
         // The DS4 touchpad advertises its pad mode explicitly (read, not inferred).
         EXPECT(types[1].find("\"touchpad\":{\"supported\":true,\"modes\":[\"ds4\"]}") !=
                std::string::npos);
-        // DualSense shares the DS4 feature surface (touchpad + pad mode).
+        // DualSense renders the DS4-shaped surface (touchpad + pad mode) but
+        // carries its own backend's requires code.
         EXPECT(types[2].find("\"touchpad\":{\"supported\":true,\"modes\":[\"ds4\"]}") !=
                std::string::npos);
-        // Switch Pro: motion, but no analog triggers and no touchpad.
+        EXPECT(types[2].find("\"requires\":\"hidmaestro>=1.7\"") != std::string::npos);
+        // Switch Pro: motion (with its backend's requires code), but no analog
+        // triggers and no touchpad.
         EXPECT(types[3].find("\"analogTriggers\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[3].find("\"touchpad\":{\"supported\":false}") != std::string::npos);
-        EXPECT(types[3].find("\"motion\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[3].find("\"motion\":{\"supported\":true,\"requires\":\"hidmaestro>=1.7\"}") !=
+               std::string::npos);
         // emulates: physical-pad hint per offered type, protocol constants (ordered
         // sdlType then usb). What a future client-side matcher keys a default off.
         EXPECT(types[0].find("\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}") !=
@@ -356,6 +368,10 @@ static void test_catalogJson_goldenShape_uinput() {
     traits.ds4MotionSupported = true;
     traits.ds4TouchpadSupported = true;
     traits.ds4LightbarSupported = true;
+    traits.dualsenseMotionSupported = true;
+    traits.dualsenseTouchpadSupported = true;
+    traits.dualsenseLightbarSupported = true;
+    traits.switchProMotionSupported = true;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Elevated lifecycle broker for the Windows HIDMaestro backend. Satellite
+       (native, asInvoker) spawns this once per session on the first HIDMaestro
+       plug; it drives the HIDMaestro SDK (driver install, SwDevice + shared
+       section creation) and duplicates the section/event handles back into the
+       satellite process, which then owns the per-frame hot path natively.
+       Published self-contained single-file so end users need no .NET runtime.
+       The SDK binaries come from the hash-pinned release zip that
+       scripts/fetch-redist.ps1 stages into redist/hidmaestro/. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>satellite-hm-helper</AssemblyName>
+    <RootNamespace>Satellite.HmHelper</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>1.0.0</Version>
+    <HmSdkDir Condition="'$(HmSdkDir)' == ''">$(MSBuildThisFileDirectory)..\..\redist\hidmaestro\</HmSdkDir>
+  </PropertyGroup>
+
+  <!-- The -windows TFM supplies the CsWinRT projection assemblies
+       (Microsoft.Windows.SDK.NET / WinRT.Runtime) HIDMaestro.Core binds to;
+       only the SDK itself comes from the staged release. -->
+  <ItemGroup>
+    <Reference Include="HIDMaestro.Core">
+      <HintPath>$(HmSdkDir)HIDMaestro.Core.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>

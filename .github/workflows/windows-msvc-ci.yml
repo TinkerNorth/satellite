@@ -11,9 +11,10 @@ name: Windows MSVC CI
 # This job does NOT publish; it proves the hardened build stays green. Promoting
 # it to the shipping artifact is a one-job swap in release.yml's `windows` job.
 #
-# Pin map (matches windows-ci.yml):
+# Pin map (checkout/upload-artifact match windows-ci.yml):
 #   actions/checkout        @ v7.0.0 → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 #   actions/upload-artifact @ v7.0.1 → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+#   actions/cache           @ v4.3.0 → 0057852bfaa89a56745cba8c7296529d2fc39830
 
 on:
   push:
@@ -30,16 +31,44 @@ jobs:
     name: Build, test (MSVC + vcpkg, hardened)
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      # The image's vcpkg ships with no binary cache configured, so every run
+      # rebuilt static OpenSSL from source (~6 min of a ~15 min job). The
+      # files provider is backed by the actions/cache step below.
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # ImageVersion is in the cache key because a runner-image update can
+      # bump MSVC or the image's own vcpkg checkout, either of which changes
+      # vcpkg's ABI hashes: under a fixed key the cache would go permanently
+      # stale (restored but never hit, rebuilt but never saved, since
+      # actions/cache does not update an existing key). The directory must
+      # exist before vcpkg first writes into it.
+      - name: Prepare vcpkg binary cache
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vcpkg-bincache | Out-Null
+          Add-Content $env:GITHUB_ENV "IMAGE_VERSION=$env:ImageVersion"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-bin-${{ runner.os }}-${{ env.IMAGE_VERSION }}-${{ hashFiles('vcpkg.json') }}
+          # A manifest bump still restores the previous archives: vcpkg keys
+          # each package by ABI hash, skips what no longer matches, and
+          # rebuilds only the delta, saved under the new key.
+          restore-keys: |
+            vcpkg-bin-${{ runner.os }}-
+
       # windows-latest ships VS (MSVC + Spectre-mitigated libs) and a vcpkg
       # checkout at VCPKG_INSTALLATION_ROOT, the same image release.yml builds
       # on. The configure step's vcpkg toolchain auto-installs libsodium +
-      # openssl (static) from vcpkg.json; the first run builds OpenSSL from
-      # source (several minutes). Add vcpkg binary caching later if that
-      # wall-time matters.
+      # openssl (static) from vcpkg.json, restored from the binary cache
+      # above; only a cold cache still builds OpenSSL from source, and the
+      # archives that run stores serve every later run on the same image.
       - name: Configure (MSVC + vcpkg static, hardened release)
         shell: pwsh
         run: |

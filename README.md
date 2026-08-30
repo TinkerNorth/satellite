@@ -18,9 +18,9 @@ Runs as a system tray application with a built-in web UI for configuration. No c
 
 **Sender** polls a physical Xbox controller via XInput at ~250 Hz and streams 12-byte `XUSB_REPORT` packets over UDP.
 
-**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual Xbox 360 controller through the ViGEmBus kernel driver, talking to it directly via `DeviceIoControl` with no DLLs in between.
+**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual controller — Xbox 360 / DualShock 4 through the ViGEmBus kernel driver (direct `DeviceIoControl`, no DLLs in between), and DualSense / Switch Pro (plus the same two as fallback) through the HIDMaestro user-mode driver (a seqlock write into the driver's shared-memory section, no managed code on the frame path).
 
-The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()`.
+The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()` (ViGEm) or `recvfrom()` → seqlock `memcpy()` → `SetEvent()` (HIDMaestro).
 
 The return path carries rumble the other direction. When a game on the receiver host calls `XInputSetState` (or the equivalent on Linux's evdev FF subsystem), the platform backend fires a notification, the receiver maps it to the originating dish session, and forwards a `MSG_RUMBLE` packet back over the encrypted UDP channel. See [Rumble (return path)](#rumble-return-path) below.
 
@@ -42,7 +42,7 @@ The return path carries rumble the other direction. When a game on the receiver 
 ## Prerequisites
 
 ### Receiver machine
-- **Windows 10/11** with the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) installed. The `SatelliteSetup.exe` installer bundles ViGEmBus 1.22.0 and installs it for you if it's missing (see [Installation](#installation)). Or:
+- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense + Switch Pro; user-mode, no reboot). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup). Or:
 - **macOS 10.15+** with a build carrying the `com.apple.developer.hid.virtual.device` entitlement (production builds): controllers are synthesized as virtual DualShock 4 pads via `IOHIDUserDevice`. Unentitled builds (CI artifacts, local compiles) run as development/web-UI servers only; controller descriptors apply as `backendUnavailable`.
 
@@ -66,22 +66,35 @@ Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth
   v1.22.0 if it's missing or older. ViGEmBus 1.22.0 is the final upstream
   release, so newer installations are left untouched. The Components page
   shows the detected status before you continue.
+- Deploy the HIDMaestro driver (optional-but-default component). It is a
+  user-mode UMDF2 driver embedded in the bundled `satellite-hm-helper.exe`;
+  deployment is idempotent and needs no reboot. It adds virtual DualSense
+  and Switch Pro controller types, and covers DualShock 4 / Xbox 360 when
+  ViGEmBus is absent.
 
-### ViGEmBus options for unattended installs
+### Driver options for unattended installs
 
-The installer accepts a `/VIGEM=` switch alongside Inno Setup's standard
-`/SILENT` / `/VERYSILENT`:
+The installer accepts `/VIGEM=` and `/HIDMAESTRO=` switches alongside Inno
+Setup's standard `/SILENT` / `/VERYSILENT`:
 
 | Switch | Behavior |
 |---|---|
 | *(none)* / `/VIGEM=auto` | Default. Install the bundled ViGEmBus only if missing or older than 1.22.0. |
 | `/VIGEM=bundled` | Force-run the bundled installer regardless of what's already there. |
 | `/VIGEM=skip` | Don't touch the driver. Use this on locked-down machines or when ViGEmBus is managed externally. |
+| *(none)* / `/HIDMAESTRO=auto` | Default. Deploy/refresh the bundled HIDMaestro driver (idempotent, no reboot). |
+| `/HIDMAESTRO=skip` | Don't touch the HIDMaestro driver. |
 
 A reboot is sometimes required on first ViGEmBus install (MSI exit code 3010).
 The Satellite installer surfaces this as a "Restart now / later" prompt
 on the final wizard page. Until you reboot, virtual-gamepad output may not
-work even though the driver is installed.
+work even though the driver is installed. HIDMaestro never needs a reboot.
+
+At runtime, the first HIDMaestro controller you plug in each Satellite
+session shows one Windows elevation prompt: creating the virtual device
+needs administrator rights, which Satellite (running unelevated) delegates
+to `satellite-hm-helper.exe` for that session. ViGEm-only sessions never
+see a prompt.
 
 ### Uninstalling
 
@@ -99,19 +112,24 @@ the uninstaller from the Start Menu. The uninstaller will:
 - Ask whether to also uninstall the ViGEmBus driver. The default is
   No, because other apps (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.)
   commonly share it and removing it would break them silently.
+- Ask the same, separately, for the HIDMaestro driver (other HIDMaestro
+  consumers such as PadForge may share it; default No).
 
 User configuration (`%APPDATA%\satellite\config.json` and the pairing
 keyfile) is left in place, so a reinstall preserves your paired
 clients. Delete that folder by hand if you want a clean wipe.
 
-The uninstaller accepts a `/REMOVEVIGEM=` switch alongside Inno Setup's
-standard `/SILENT`:
+The uninstaller accepts `/REMOVEVIGEM=` and `/REMOVEHIDMAESTRO=` switches
+alongside Inno Setup's standard `/SILENT`:
 
 | Switch | Behavior |
 |---|---|
 | *(none)* / `/REMOVEVIGEM=auto` | Default. Prompt the user; on `/SILENT` uninstall, do not touch the driver. |
 | `/REMOVEVIGEM=yes` | Always uninstall the ViGEmBus driver as part of removing Satellite. |
 | `/REMOVEVIGEM=no` | Never uninstall the ViGEmBus driver. Suppresses the prompt. |
+| *(none)* / `/REMOVEHIDMAESTRO=auto` | Default. Prompt the user; on `/SILENT` uninstall, do not touch the driver. |
+| `/REMOVEHIDMAESTRO=yes` | Always remove the HIDMaestro driver as part of removing Satellite. |
+| `/REMOVEHIDMAESTRO=no` | Never remove the HIDMaestro driver. Suppresses the prompt. |
 
 ## Building
 
@@ -556,8 +574,10 @@ On macOS, the same DS4 output report `0x05` that carries the motors also
 carries the lightbar colour; the IOHIDUserDevice set-report path fans it out
 to the lightbar callback when the report's colour-valid flag is set (entitled
 builds only). The Linux uinput backend has no host-driven lightbar channel
-(EV_LED is single-bit), so it never emits `MSG_LIGHTBAR`. Lightbar emission
-is a Windows / ViGEm-DS4 and macOS / IOHID-DS4 feature today.
+(EV_LED is single-bit), so it never emits `MSG_LIGHTBAR`, and the backend
+registry advertises `lightbar: false` for its Sony types so the catalog never
+offers a colour that cannot arrive. Lightbar emission is a Windows
+(ViGEm-DS4 and HIDMaestro DS4/DualSense) and macOS / IOHID-DS4 feature today.
 
 ### Per-dish actuator behaviour
 
