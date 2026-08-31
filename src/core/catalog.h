@@ -45,8 +45,11 @@ struct CatalogBackendTraits {
     std::string dualsenseMotionRequires;
     bool dualsenseTouchpadSupported = false;
     bool dualsenseLightbarSupported = false;
+    bool dualsenseTriggerEffectsSupported = false;
+    bool dualsensePlayerLedsSupported = false;
     bool switchProMotionSupported = false;
     std::string switchProMotionRequires;
+    bool switchProPlayerLedsSupported = false;
     bool mouseControlSupported = false;
     // rumble is RECEIVE (host streams rumble back); keyboardControl is SEND
     // (host injects keystrokes). A backend reports what it can't do so the

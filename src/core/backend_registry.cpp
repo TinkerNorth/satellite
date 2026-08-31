@@ -35,8 +35,10 @@ constexpr BackendControllerSupport kVigemSupport[] = {
 constexpr BackendControllerSupport kHidMaestroSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsHidMaestroXbox, false, false, false, ""},
     {CONTROLLER_TYPE_PLAYSTATION, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7"},
-    {CONTROLLER_TYPE_DUALSENSE, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7"},
-    {CONTROLLER_TYPE_SWITCHPRO, kFactsHidMaestroSony, true, false, false, "hidmaestro>=1.7"},
+    {CONTROLLER_TYPE_DUALSENSE, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7", true,
+     true},
+    {CONTROLLER_TYPE_SWITCHPRO, kFactsHidMaestroSony, true, false, false, "hidmaestro>=1.7", false,
+     true},
 };
 constexpr BackendControllerSupport kUinputSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
@@ -155,6 +157,10 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses)
             json += cs.touchpad ? "true" : "false";
             json += ",\"lightbar\":";
             json += cs.lightbar ? "true" : "false";
+            json += ",\"triggerEffects\":";
+            json += cs.triggerEffects ? "true" : "false";
+            json += ",\"playerLeds\":";
+            json += cs.playerLeds ? "true" : "false";
             json += ",\"motionRequires\":";
             appendNullable(json, cs.motionRequires);
             json += ",\"submitLatency\":";
@@ -197,6 +203,8 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.dualsenseMotionRequires = cs.motionRequires;
                     t.dualsenseTouchpadSupported = cs.touchpad;
                     t.dualsenseLightbarSupported = cs.lightbar;
+                    t.dualsenseTriggerEffectsSupported = cs.triggerEffects;
+                    t.dualsensePlayerLedsSupported = cs.playerLeds;
                 }
                 t.offersDualSense = true;
                 break;
@@ -204,6 +212,7 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                 if (!t.offersSwitchPro) {
                     t.switchProMotionSupported = cs.motion;
                     t.switchProMotionRequires = cs.motionRequires;
+                    t.switchProPlayerLedsSupported = cs.playerLeds;
                 }
                 t.offersSwitchPro = true;
                 break;

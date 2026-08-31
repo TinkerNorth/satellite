@@ -111,6 +111,17 @@ class IGamepadPort {
     // still drives the LED. Backends without one install a no-op stub.
     using LightbarCallback = std::function<void(uint32_t serial, uint8_t r, uint8_t g, uint8_t b)>;
     virtual void setLightbarCallback(LightbarCallback /*cb*/) {}
+
+    // DualSense adaptive-trigger sink: fires with the raw left/right effect
+    // blocks whenever a game rewrites them on the virtual pad. Only backends
+    // that surface raw DS5 output reports (HIDMaestro) ever call it.
+    using TriggerEffectsCallback =
+        std::function<void(uint32_t serial, const TriggerEffectsReport& report)>;
+    virtual void setTriggerEffectsCallback(TriggerEffectsCallback /*cb*/) {}
+
+    // Player-indicator LED sink (DualSense 5-LED bar, Switch Pro 4 LEDs).
+    using PlayerLedsCallback = std::function<void(uint32_t serial, uint8_t ledMask)>;
+    virtual void setPlayerLedsCallback(PlayerLedsCallback /*cb*/) {}
 };
 
 // Send encrypted UDP packets to clients.
@@ -146,6 +157,14 @@ class IClientPort {
     // Lightbar (0x000D), payload: ctrlIdx u8, r/g/b u8x3.
     virtual void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                               uint8_t b) = 0;
+
+    // Trigger effects (0x0010), 23-byte payload: ctrlIdx u8, left block (11),
+    // right block (11), raw DS5 bytes.
+    virtual void sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
+                                    const TriggerEffectsReport& report) = 0;
+
+    // Player LEDs (0x0011), payload: ctrlIdx u8, ledMask u8.
+    virtual void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) = 0;
 };
 
 class ILogPort {

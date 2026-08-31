@@ -373,6 +373,110 @@ static void test_decode_ds5_output() {
     EXPECT(d.hasRumble);
 }
 
+static void test_decode_ds5_trigger_effects() {
+    TEST("decodeOutputPacket — DS5 trigger-effect blocks, per-trigger flag-gated");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[0] = 0x04 | 0x08; // right + left trigger effect valid
+    for (int i = 0; i < 11; i++) pkt.data[10 + i] = (uint8_t)(0x40 + i); // right block
+    for (int i = 0; i < 11; i++) pkt.data[21 + i] = (uint8_t)(0x60 + i); // left block
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasRightTriggerEffect);
+    EXPECT(d.hasLeftTriggerEffect);
+    EXPECT(!d.hasRumble);
+    EXPECT_EQ(d.rightTriggerEffect[0], (uint8_t)0x40);
+    EXPECT_EQ(d.rightTriggerEffect[10], (uint8_t)0x4A);
+    EXPECT_EQ(d.leftTriggerEffect[0], (uint8_t)0x60);
+    EXPECT_EQ(d.leftTriggerEffect[10], (uint8_t)0x6A);
+
+    // One-sided write: only the flagged trigger decodes.
+    pkt.data[0] = 0x08;
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasRightTriggerEffect);
+    EXPECT(d.hasLeftTriggerEffect);
+
+    // A report too short to hold the blocks decodes neither.
+    pkt.data[0] = 0x04 | 0x08;
+    pkt.size = 31;
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasRightTriggerEffect);
+    EXPECT(!d.hasLeftTriggerEffect);
+}
+
+static void test_decode_ds5_player_leds() {
+    TEST("decodeOutputPacket — DS5 player LEDs, flag-gated and masked to 5 bits");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[1] = 0x10; // player-indicator control enable
+    pkt.data[43] = 0xE5; // high bits are DS5 fade/etc. flags, masked off
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasPlayerLeds);
+    EXPECT_EQ(d.playerLeds, (uint8_t)0x05);
+    EXPECT(!d.hasLightbar);
+    EXPECT(!d.hasRumble);
+
+    pkt.data[1] = 0x00; // no flag: byte 43 is stale, not a LED write
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasPlayerLeds);
+
+    pkt.data[1] = 0x10;
+    pkt.size = 43; // too short to hold the LED byte
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasPlayerLeds);
+}
+
+static void test_decode_ds5_lightbar_valid_flag1() {
+    TEST("decodeOutputPacket — DS5 lightbar honors valid_flag1 bit 2 (SDL/hid-playstation)");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[1] = 0x04; // LIGHTBAR_CONTROL_ENABLE, valid_flag2 untouched
+    pkt.data[44] = 5;
+    pkt.data[45] = 6;
+    pkt.data[46] = 7;
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasLightbar);
+    EXPECT_EQ(d.r, (uint8_t)5);
+    EXPECT_EQ(d.g, (uint8_t)6);
+    EXPECT_EQ(d.b, (uint8_t)7);
+}
+
+static void test_decode_switch_player_leds() {
+    TEST("decodeOutputPacket — Switch subcommand 0x30 player lights, low nibble only");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x01;
+    pkt.size = 11;
+    // Neutral rumble blocks so the amplitude decode stays quiet.
+    pkt.data[1] = 0x00;
+    pkt.data[2] = 0x01;
+    pkt.data[3] = 0x40;
+    pkt.data[4] = 0x40;
+    pkt.data[5] = 0x00;
+    pkt.data[6] = 0x01;
+    pkt.data[7] = 0x40;
+    pkt.data[8] = 0x40;
+    pkt.data[9] = 0x30;  // subcommand: set player lights
+    pkt.data[10] = 0xF3; // flash bits in the high nibble are dropped
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::SwitchPro, pkt);
+    EXPECT(d.hasPlayerLeds);
+    EXPECT_EQ(d.playerLeds, (uint8_t)0x03);
+
+    pkt.data[9] = 0x48; // a different subcommand (enable IMU) is not a LED write
+    d = decodeOutputPacket(GamepadIdentity::SwitchPro, pkt);
+    EXPECT(!d.hasPlayerLeds);
+
+    pkt.data[9] = 0x30;
+    pkt.reportId = 0x10; // the rumble stream carries no subcommand bytes
+    d = decodeOutputPacket(GamepadIdentity::SwitchPro, pkt);
+    EXPECT(!d.hasPlayerLeds);
+}
+
 static void test_decode_switch_rumble() {
     TEST("decodeOutputPacket — Switch HD-rumble amplitude reduction");
     OutputPacket pkt;
@@ -412,6 +516,10 @@ int main() {
     test_decode_xinput_rumble();
     test_decode_ds4_output();
     test_decode_ds5_output();
+    test_decode_ds5_trigger_effects();
+    test_decode_ds5_player_leds();
+    test_decode_ds5_lightbar_valid_flag1();
+    test_decode_switch_player_leds();
     test_decode_switch_rumble();
 
     std::cout << "hidmaestro_report: " << g_pass << " passed, " << g_fail << " failed\n";
