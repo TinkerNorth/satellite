@@ -411,7 +411,7 @@ static void test_decode_ds5_player_leds() {
     pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
     pkt.reportId = 0x02;
     pkt.size = 47;
-    pkt.data[1] = 0x10; // player-indicator control enable
+    pkt.data[1] = 0x10;  // player-indicator control enable
     pkt.data[43] = 0xE5; // high bits are DS5 fade/etc. flags, masked off
     DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
     EXPECT(d.hasPlayerLeds);

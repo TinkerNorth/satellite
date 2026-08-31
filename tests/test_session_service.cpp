@@ -1948,8 +1948,8 @@ static void test_feedback_replugResetsCoalesce() {
     MockLog log;
     SessionService svc(vigem, client, log);
 
-    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE,
-                                   CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS)});
+    auto r = upsert(
+        svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS)});
     (void)r;
     uint32_t serial = vigem.pluggedSerials.back();
     const TriggerEffectsReport fx = makeTriggerEffects(0x21, 0x26);
