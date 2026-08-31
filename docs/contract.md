@@ -592,7 +592,8 @@ Up (client → server):
 | 0x0002 | HEARTBEAT | empty |
 | 0x000A | MOTION | ctrlIdx(1) + gyroX/Y/Z(3×i16 LE) + accelX/Y/Z(3×i16 LE) + timestampDeltaUs(u32 LE) |
 | 0x000B | BATTERY | ctrlIdx(1) + level(1: 0..100 or 0xFF unknown) + status(1: 0 unknown,1 discharging,2 charging,3 full,4 wired) |
-| 0x000C | TOUCHPAD | ctrlIdx(1) + flags(1: b0 f0 active, b1 f1 active, b2 button) + f0 id(1)+x(i16 LE)+y(i16 LE) + f1 id(1)+x(i16 LE)+y(i16 LE) + eventTimeMs(u32 LE) |
+| 0x000C | TOUCHPAD (v1, 16B) | ctrlIdx(1) + flags(1: b0 f0 active, b1 f1 active, b2 button) + f0 id(1)+x(i16 LE)+y(i16 LE) + f1 id(1)+x(i16 LE)+y(i16 LE) + eventTimeMs(u32 LE) |
+| 0x000C | POINTER (v2, 19B) | ctrlIdx(1) + fingerFlags(1: b0 f0 active, b1 f1 active) + buttons(1: b0 left/click, b1 right, b2 middle) + f0 id(1)+x(i16 LE)+y(i16 LE) + f1 id(1)+x(i16 LE)+y(i16 LE) + eventTimeMs(u32 LE) + scrollV(i16 LE, 120 per wheel notch, an event: resends carry 0) |
 
 Down (server → client):
 
@@ -678,9 +679,33 @@ relative)**, not Unix epoch.
 
 ## Versioning
 
-`protocolVersion` (integer, currently **1**) rides in every pairing/session request and
-response. A server MUST reject a major version it doesn't speak with 409
-`{"error":"protocol version unsupported","supported":1}`; absent means 1.
+`protocolVersion` (integer, currently **2**) rides in every pairing/session request and
+response. The server ACCEPTS the whole `[supportedMin, supported]` range (currently
+**[1, 2]**), settles each session on the client's offer, and echoes that settled
+version in the pairing/session responses; absent means 1 (a pre-versioning client).
+The settled version keys the session's wire frames: a v1 session streams the 16-byte
+TOUCHPAD frame, a v2 session the 19-byte POINTER frame (the receiver also disambiguates
+by length, so mixed generations coexist).
+
+An offer OUTSIDE the range is rejected with 409
+`{"error":"protocol version unsupported","supported":2,"supportedMin":1}`. `supported`
+is the newest version the server speaks: a client seeing `supported` above its own
+current version must tell the user to update the app; below its own minimum, to update
+the satellite. Version negotiation happens ONLY on pairing and the session PUT;
+sub-resource writes (`/controllers/{idx}`) inherit their session's settled version and
+carry no `protocolVersion` field.
+
+An in-range but older session works fully at its own version; both ends surface a soft
+"update for the newest features" hint (the app's satellite chip, the dashboard's
+Update Dish chip + a server log line), never an error.
+
+Version history:
+
+- **1**: initial contract.
+- **2**: 0x000C reshaped into the POINTER frame: the click moved out of the finger
+  flags into a buttons byte (left/right/middle) and a signed vertical wheel was added.
+  Catalog/capabilities documents advertise the server's newest version so clients can
+  offer it directly.
 
 ## Error model
 

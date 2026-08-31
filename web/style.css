@@ -1388,6 +1388,12 @@ h2.section-title { font-size: 12px; }
   background: rgba(245, 158, 11, 0.14);
   border-color: rgba(245, 158, 11, 0.35);
 }
+.state-updateDish {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+  cursor: help;
+}
 
 .state-live, .state-quiet {
   color: var(--success);

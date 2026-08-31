@@ -150,6 +150,8 @@
   "devices.touchpad.mouse.tip": "Usa o touchpad como mouse relativo nesta máquina: o dedo 0 move o cursor e o clique do pad é o botão esquerdo do mouse.",
   "devices.touchpad.off": "Desligado",
   "devices.touchpad.off.tip": "Ignora a entrada de touchpad deste dispositivo.",
+  "devices.update-app": "Atualizar o Dish",
+  "devices.update-app.tip": "O app Dish deste dispositivo usa um protocolo mais antigo. Continua funcionando; atualize o app no telefone para os recursos mais novos.",
   "devices.err.remove": "Não foi possível remover esse dispositivo pareado",
   "devices.err.touchpad-mode": "Não foi possível alterar o roteamento do touchpad",
   "motion.na.text": "Sem movimento",

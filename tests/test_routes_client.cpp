@@ -202,21 +202,41 @@ int main() {
         EXPECT(res && res->status == 401);
     }
 
-    // ---- protocol-version gate ---------------------------------------------
+    // ---- protocol-version negotiation ---------------------------------------
     {
-        TEST("PUT /api/connections with protocolVersion 2: 409 + supported echo");
+        TEST("PUT /api/connections with an in-range older version: accepted and echoed");
         auto res =
-            cli.Put("/api/connections", auth, R"({"protocolVersion":2})", "application/json");
+            cli.Put("/api/connections", auth, R"({"protocolVersion":1})", "application/json");
+        EXPECT(res && res->status == 200);
+        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 1L);
+    }
+    {
+        TEST("absent protocolVersion reads as 1: accepted, session speaks v1");
+        auto res = cli.Put("/api/connections", auth, "{}", "application/json");
+        EXPECT(res && res->status == 200);
+        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 1L);
+    }
+    {
+        TEST("PUT /api/connections beyond the range: 409 + supported/supportedMin echo");
+        auto res =
+            cli.Put("/api/connections", auth, R"({"protocolVersion":3})", "application/json");
         EXPECT(res && res->status == 409);
         if (res) {
             Json j = parseJson(res->body);
             EXPECT_EQ(jsonInt(j, "supported"), static_cast<long>(PROTOCOL_VERSION));
+            EXPECT_EQ(jsonInt(j, "supportedMin"), static_cast<long>(PROTOCOL_VERSION_MIN));
         }
     }
     {
-        TEST("absent protocolVersion is accepted (legacy-lenient)");
-        auto res = cli.Put("/api/connections", auth, "{}", "application/json");
+        TEST("the current protocolVersion is accepted and echoed");
+        const std::string body =
+            std::string(R"({"protocolVersion":)") + std::to_string(PROTOCOL_VERSION) + "}";
+        auto res = cli.Put("/api/connections", auth, body, "application/json");
         EXPECT(res && res->status == 200);
+        if (res) {
+            EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"),
+                      static_cast<long>(PROTOCOL_VERSION));
+        }
     }
 
     // ---- session upsert + reconcile + CRUD ----------------------------------
@@ -224,7 +244,7 @@ int main() {
     {
         TEST("authed PUT /api/connections: 200 with token/salt/connectionId");
         const std::string body = R"({
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "deviceName": "Route Tester",
             "controllers": [
                 {"ctrlIdx": 0, "type": 0, "caps": {"rumble": true, "analogTriggers": true}},
@@ -257,11 +277,13 @@ int main() {
     std::string firstToken;
     {
         TEST("re-PUT converges in place: same connectionId, rotated token");
-        auto res1 = cli.Put("/api/connections", auth, R"({"controllers":[{"ctrlIdx":0,"type":0}]})",
+        auto res1 = cli.Put("/api/connections", auth,
+                            R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
                             "application/json");
         EXPECT(res1 && res1->status == 200);
         if (res1) firstToken = jsonStr(parseJson(res1->body), "token");
-        auto res2 = cli.Put("/api/connections", auth, R"({"controllers":[{"ctrlIdx":0,"type":0}]})",
+        auto res2 = cli.Put("/api/connections", auth,
+                            R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
                             "application/json");
         EXPECT(res2 && res2->status == 200);
         if (res1 && res2) {
@@ -272,21 +294,23 @@ int main() {
     }
     {
         TEST("malformed controllers array (missing type): 400");
-        auto res = cli.Put("/api/connections", auth, R"({"controllers":[{"ctrlIdx":0}]})",
-                           "application/json");
+        auto res =
+            cli.Put("/api/connections", auth,
+                    R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0}]})", "application/json");
         EXPECT(res && res->status == 400);
     }
     {
         TEST("auth via body keys (deviceId/hmacProof) works without headers");
-        const std::string body =
-            std::string(R"({"deviceId":")") + devId + R"(","hmacProof":")" + proof + R"("})";
+        const std::string body = std::string(R"({"protocolVersion":2,"deviceId":")") + devId +
+                                 R"(","hmacProof":")" + proof + R"("})";
         auto res = cli.Put("/api/connections", body, "application/json");
         EXPECT(res && res->status == 200);
     }
     {
         TEST("GET /api/connections/:id (reconcile view): applied state echoed");
         auto res = cli.Put("/api/connections", auth,
-                           R"({"controllers":[{"ctrlIdx":3,"type":1,"caps":{"motion":true},
+                           R"({"protocolVersion":2,
+                               "controllers":[{"ctrlIdx":3,"type":1,"caps":{"motion":true},
                                "touchpadMode":"ds4"}]})",
                            "application/json");
         EXPECT(res && res->status == 200);
@@ -334,10 +358,10 @@ int main() {
         EXPECT(res && res->status == 400);
     }
     {
-        TEST("per-slot PUT with protocolVersion 2: 409");
+        TEST("per-slot PUT carries no version gate: the session already settled it");
         auto res = cli.Put(("/api/connections/" + connId + "/controllers/5").c_str(), auth,
-                           R"({"type":0,"protocolVersion":2})", "application/json");
-        EXPECT(res && res->status == 409);
+                           R"({"type":0})", "application/json");
+        EXPECT(res && res->status == 200);
     }
     {
         TEST("per-slot DELETE removes the slot, session lives on");
@@ -379,9 +403,11 @@ int main() {
     {
         TEST("POST /api/pair with a wrong PIN: ok:false invalid/expired");
         std::string wrong = wrongPinFor(pinSnapshot());
-        auto res = cli.Post("/api/pair",
-                            std::string(R"({"deviceId":"dev-a-wrong","pin":")") + wrong + R"("})",
-                            "application/json");
+        auto res =
+            cli.Post("/api/pair",
+                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-wrong","pin":")") +
+                         wrong + R"("})",
+                     "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
             Json j = parseJson(res->body);
@@ -397,7 +423,7 @@ int main() {
         auto res =
             cli.Post("/api/pair",
                      std::string(R"({"deviceId":"dev-a-pin","deviceName":"PinDev","pin":")") + pin +
-                         R"(","protocolVersion":1})",
+                         R"(","protocolVersion":2})",
                      "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
@@ -417,8 +443,8 @@ int main() {
         crypto_kx_keypair(clientPk, clientSk);
         std::string pin = pinSnapshot().currentPin;
         auto res = cli.Post("/api/pair",
-                            std::string(R"({"deviceId":"dev-a-kx","pin":")") + pin +
-                                R"(","publicKey":")" + hexEncode(clientPk, 32) + R"("})",
+                            std::string(R"({"protocolVersion":2,"deviceId":"dev-a-kx","pin":")") +
+                                pin + R"(","publicKey":")" + hexEncode(clientPk, 32) + R"("})",
                             "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
@@ -438,10 +464,11 @@ int main() {
     {
         TEST("path A with an unusable client key: rejected, nothing persisted");
         std::string pin = pinSnapshot().currentPin;
-        auto res = cli.Post("/api/pair",
-                            std::string(R"({"deviceId":"dev-a-badkey","pin":")") + pin +
-                                R"(","publicKey":"zzzz"})",
-                            "application/json");
+        auto res =
+            cli.Post("/api/pair",
+                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-badkey","pin":")") +
+                         pin + R"(","publicKey":"zzzz"})",
+                     "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
             Json j = parseJson(res->body);
@@ -455,11 +482,25 @@ int main() {
         EXPECT(verifyPin(pin)); // still valid; consumed here by the assertion
     }
     {
-        TEST("POST /api/pair with protocolVersion 2: 409 before any PIN check");
-        auto res = cli.Post("/api/pair", R"({"deviceId":"dev-v2","pin":"0000",
-                            "protocolVersion":2})",
+        TEST("POST /api/pair beyond the range: 409 before any PIN check");
+        auto res = cli.Post("/api/pair", R"({"deviceId":"dev-v9","pin":"0000",
+                            "protocolVersion":9})",
                             "application/json");
         EXPECT(res && res->status == 409);
+        if (res) {
+            Json j = parseJson(res->body);
+            EXPECT_EQ(jsonInt(j, "supported"), static_cast<long>(PROTOCOL_VERSION));
+        }
+    }
+    {
+        TEST("POST /api/pair from a v1 client is serviced (wrong PIN classified, not 409)");
+        std::string wrong = wrongPinFor(pinSnapshot());
+        auto res = cli.Post("/api/pair",
+                            std::string(R"({"protocolVersion":1,"deviceId":"dev-v1","pin":")") +
+                                wrong + R"("})",
+                            "application/json");
+        EXPECT(res && res->status == 200);
+        if (res) EXPECT_EQ(jsonBool(parseJson(res->body), "ok"), false);
     }
 
     // ---- pairing: key rotation ----------------------------------------------
@@ -467,10 +508,11 @@ int main() {
         TEST("hmacProof of the current key rotates it (and returns the new one)");
         uint8_t curKey[CRYPTO_KEY_SIZE];
         EXPECT(hexDecode(pinPairedKeyHex, curKey, CRYPTO_KEY_SIZE));
-        auto res = cli.Post("/api/pair",
-                            std::string(R"({"deviceId":"dev-a-pin","hmacProof":")") +
-                                computeHmacProof(curKey, "dev-a-pin") + R"("})",
-                            "application/json");
+        auto res =
+            cli.Post("/api/pair",
+                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-pin","hmacProof":")") +
+                         computeHmacProof(curKey, "dev-a-pin") + R"("})",
+                     "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
             Json j = parseJson(res->body);
@@ -486,10 +528,11 @@ int main() {
         TEST("a bad rotation proof falls through to the PIN paths (no PIN: fail)");
         uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
         std::string before = storedKeyHex("dev-a-pin");
-        auto res = cli.Post("/api/pair",
-                            std::string(R"({"deviceId":"dev-a-pin","hmacProof":")") +
-                                computeHmacProof(otherKey, "dev-a-pin") + R"("})",
-                            "application/json");
+        auto res =
+            cli.Post("/api/pair",
+                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-pin","hmacProof":")") +
+                         computeHmacProof(otherKey, "dev-a-pin") + R"("})",
+                     "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
             Json j = parseJson(res->body);
@@ -503,7 +546,8 @@ int main() {
     {
         TEST("path B: clientPin registers a pending request");
         auto res = cli.Post("/api/pair",
-                            R"({"deviceId":"dev-b-poll","deviceName":"B","clientPin":"7391"})",
+                            R"({"protocolVersion":2,"deviceId":"dev-b-poll","deviceName":"B",
+                                "clientPin":"7391"})",
                             "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
@@ -547,7 +591,8 @@ int main() {
     {
         TEST("path B: poll after operator deny reads none (deny erases the request)");
         auto res = cli.Post("/api/pair",
-                            R"({"deviceId":"dev-b-deny","deviceName":"B2","clientPin":"4185"})",
+                            R"({"protocolVersion":2,"deviceId":"dev-b-deny","deviceName":"B2",
+                                "clientPin":"4185"})",
                             "application/json");
         EXPECT(res && res->status == 200);
         EXPECT(declinePairing("dev-b-deny"));
@@ -613,7 +658,7 @@ int main() {
         g_appRunning = true;
 
         TEST("recovers once running again");
-        auto ok = cli.Put("/api/connections", auth, "{}", "application/json");
+        auto ok = cli.Put("/api/connections", auth, R"({"protocolVersion":2})", "application/json");
         EXPECT(ok && ok->status == 200);
     }
 

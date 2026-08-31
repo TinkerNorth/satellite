@@ -165,6 +165,8 @@
   "devices.touchpad.mouse.tip": "Use the touchpad as a relative mouse on this machine: finger 0 moves the cursor, the clicky pad is the left mouse button.",
   "devices.touchpad.off": "Off",
   "devices.touchpad.off.tip": "Ignore touchpad input from this device.",
+  "devices.update-app": "Update Dish",
+  "devices.update-app.tip": "This device's Dish app uses an older protocol. It still works; update the app on the phone for the newest features.",
   "devices.err.remove": "Could not remove that paired device",
   "devices.err.touchpad-mode": "Could not change touchpad routing",
 

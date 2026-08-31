@@ -38,7 +38,7 @@ struct StubGamepad : IGamepadPort {
         lastTouchpad = r;
         return false;
     }
-    bool submitRelativeMouse(int, int, bool) override { return false; }
+    bool submitRelativeMouse(int, int, const MouseButtons&, int) override { return false; }
     void setLightbarCallback(LightbarCallback) override {}
 
     bool busOpen = true;
@@ -124,9 +124,10 @@ static void test_decodeMotionReport_noOverRead() {
 }
 
 static void test_decodeTouchpadReport_wireLayout() {
-    TEST("decodeTouchpadReport: decodes flags + both fingers + eventTimeMs");
-    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {
-        0x07,                   // flags: finger0 + finger1 + button
+    TEST("decodeTouchpadReportV2: decodes fingers + buttons + eventTimeMs + scroll");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES_V2] = {
+        0x03,                   // fingerFlags: finger0 + finger1
+        0x01,                   // buttons: left
         0x11,                   // finger0 trackingId
         0x34, 0x12,             // finger0 x = 0x1234
         0xFF, 0xFF,             // finger0 y = -1
@@ -134,11 +135,15 @@ static void test_decodeTouchpadReport_wireLayout() {
         0x00, 0x80,             // finger1 x = -32768
         0xFF, 0x7F,             // finger1 y = 32767
         0x78, 0x56, 0x34, 0x12, // eventTimeMs = 0x12345678 (LE)
+        0x78, 0x00,             // scrollV = 120
     };
-    TouchpadReport r = decodeTouchpadReport(p);
+    TouchpadReport r = decodeTouchpadReportV2(p);
     EXPECT(r.finger0.active);
     EXPECT(r.finger1.active);
     EXPECT(r.buttonPressed);
+    EXPECT(!r.rightPressed);
+    EXPECT(!r.middlePressed);
+    EXPECT_EQ(r.scrollV, (int16_t)120);
     EXPECT_EQ(static_cast<int>(r.finger0.trackingId), 0x11);
     EXPECT_EQ(static_cast<int>(r.finger0.x), 0x1234);
     EXPECT_EQ(static_cast<int>(r.finger0.y), -1);
@@ -149,9 +154,9 @@ static void test_decodeTouchpadReport_wireLayout() {
 }
 
 static void test_decodeTouchpadReport_noOverRead() {
-    TEST("decodeTouchpadReport: reads exactly TOUCHPAD_WIRE_PAYLOAD_BYTES");
-    std::vector<uint8_t> buf(TOUCHPAD_WIRE_PAYLOAD_BYTES, 0x00);
-    TouchpadReport r = decodeTouchpadReport(buf.data());
+    TEST("decodeTouchpadReportV2: reads exactly TOUCHPAD_WIRE_PAYLOAD_BYTES_V2");
+    std::vector<uint8_t> buf(TOUCHPAD_WIRE_PAYLOAD_BYTES_V2, 0x00);
+    TouchpadReport r = decodeTouchpadReportV2(buf.data());
     EXPECT(!r.finger0.active);
     EXPECT(!r.finger1.active);
 }
@@ -248,8 +253,8 @@ static void test_dispatch_touchpad_truncatedRejected() {
     SessionService svc(gp, cl, lg);
     uint32_t token = openWithController(svc);
 
-    // Full payload is 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES = 16 bytes.
-    for (int len = 0; len < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES; ++len) {
+    // The smallest valid frame is the v1 one: 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES_V1 = 16 bytes.
+    for (int len = 0; len < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES_V1; ++len) {
         std::vector<uint8_t> msg(static_cast<size_t>(len), 0x07);
         dispatchTight(svc, token, MSG_TOUCHPAD, msg);
     }
@@ -257,21 +262,31 @@ static void test_dispatch_touchpad_truncatedRejected() {
 }
 
 static void test_dispatch_touchpad_exactLengthAccepted() {
-    TEST("dispatchInnerMessage: MSG_TOUCHPAD at exact wire length is decoded");
+    TEST("dispatchInnerMessage: both touchpad frame generations decode by length");
     StubGamepad gp;
     StubClient cl;
     StubLog lg;
     SessionService svc(gp, cl, lg);
     uint32_t token = openWithController(svc);
 
-    std::vector<uint8_t> msg(1 + TOUCHPAD_WIRE_PAYLOAD_BYTES, 0x00);
-    msg[0] = 0;    // ctrlIdx
-    msg[1] = 0x01; // flags: finger0 active
-    msg[2] = 0x2A; // finger0 trackingId
-    dispatchTight(svc, token, MSG_TOUCHPAD, msg);
+    std::vector<uint8_t> v2(1 + TOUCHPAD_WIRE_PAYLOAD_BYTES_V2, 0x00);
+    v2[0] = 0;    // ctrlIdx
+    v2[1] = 0x01; // fingerFlags: finger0 active
+    v2[3] = 0x2A; // finger0 trackingId
+    dispatchTight(svc, token, MSG_TOUCHPAD, v2);
     EXPECT_EQ(gp.touchpadCalls, 1);
     EXPECT(gp.lastTouchpad.finger0.active);
     EXPECT_EQ(static_cast<int>(gp.lastTouchpad.finger0.trackingId), 0x2A);
+
+    std::vector<uint8_t> v1(1 + TOUCHPAD_WIRE_PAYLOAD_BYTES_V1, 0x00);
+    v1[0] = 0;    // ctrlIdx
+    v1[1] = 0x05; // flags: finger0 active + button pressed
+    v1[2] = 0x33; // finger0 trackingId
+    dispatchTight(svc, token, MSG_TOUCHPAD, v1);
+    EXPECT_EQ(gp.touchpadCalls, 2);
+    EXPECT(gp.lastTouchpad.finger0.active);
+    EXPECT(gp.lastTouchpad.buttonPressed);
+    EXPECT_EQ(static_cast<int>(gp.lastTouchpad.finger0.trackingId), 0x33);
 }
 
 static void test_dispatch_gamepad_truncatedRejected() {
