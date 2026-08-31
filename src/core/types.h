@@ -106,9 +106,14 @@ inline const char* controllerStateName(ControllerState s) {
     return "live";
 }
 
-// REST + wire protocol version (docs/contract.md). Rides in every pairing and
-// session request/response so any future change is gateable.
-inline const int PROTOCOL_VERSION = 1;
+// REST + wire protocol versions (docs/contract.md §Versioning). The satellite accepts
+// the whole [PROTOCOL_VERSION_MIN, PROTOCOL_VERSION] range, settles each session on the
+// client's offer (absent counts as 1), and warns that an older client should update for
+// the full feature set. Offers outside the range get 409 + {"supported", "supportedMin"}
+// so the rejected side knows which end must update.
+// v2 reshaped MSG_TOUCHPAD into the pointer frame (buttons byte + wheel).
+inline const int PROTOCOL_VERSION = 2;
+inline const int PROTOCOL_VERSION_MIN = 1;
 
 // Protocol message types (UDP streams + authenticated notifications only;
 // topology mutation is REST-only per docs/contract.md).
@@ -392,31 +397,46 @@ struct TouchpadReport {
     TouchpadFinger finger0{};
     TouchpadFinger finger1{};
     bool buttonPressed = false;
+    bool rightPressed = false;
+    bool middlePressed = false;
     // Sender-side sample timestamp (uptime ms). Mouse-mode time-scales by
     // (curr - prev) so the late first MOVE after touch-down doesn't jump.
     // Resends carry the SAME value; the receiver treats dt == 0 as a duplicate.
     uint32_t eventTimeMs = 0;
+    // Vertical wheel, signed, 120 per notch. An event, not state: resends carry 0.
+    int16_t scrollV = 0;
 };
 
-// Wire layout for MSG_TOUCHPAD payload (after the 1-byte ctrlIdx):
+// Wire layouts for the MSG_TOUCHPAD inner payload (after the 1-byte ctrlIdx).
+// v1 (16 bytes total):
 //   flags(1): bit0=finger0_active, bit1=finger1_active, bit2=button_pressed
 //   finger0_trackingId(1) + finger0_x(2 LE) + finger0_y(2 LE)
 //   finger1_trackingId(1) + finger1_x(2 LE) + finger1_y(2 LE)
 //   eventTimeMs(4 LE)
-// = 1 + 5 + 5 + 4 = 15 bytes after ctrlIdx → 16 bytes total inner payload.
-inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES = 15;
+// v2 pointer frame (19 bytes total):
+//   fingerFlags(1): bit0=finger0_active, bit1=finger1_active
+//   buttons(1): bit0=left/click, bit1=right, bit2=middle
+//   finger0_trackingId(1) + finger0_x(2 LE) + finger0_y(2 LE)
+//   finger1_trackingId(1) + finger1_x(2 LE) + finger1_y(2 LE)
+//   eventTimeMs(4 LE)
+//   scrollV(2 LE)
+// The lengths differ, so the receiver decodes by length and both protocol
+// generations land in the same TouchpadReport (v1 leaves the v2-only fields 0).
+inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES_V1 = 15;
+inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES_V2 = 18;
 
-// Decode the TOUCHPAD_WIRE_PAYLOAD_BYTES bytes after ctrlIdx. Explicit LE shifts
-// keep the wire byte-order-independent. See docs/contract.md.
-inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
-    auto le16 = [](const uint8_t* q) -> int16_t {
-        return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
-                                    (static_cast<uint16_t>(q[1]) << 8));
-    };
-    auto le32 = [](const uint8_t* q) -> uint32_t {
-        return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
-               (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
-    };
+namespace touchpad_wire_detail {
+inline int16_t le16(const uint8_t* q) {
+    return static_cast<int16_t>(static_cast<uint16_t>(q[0]) | (static_cast<uint16_t>(q[1]) << 8));
+}
+inline uint32_t le32(const uint8_t* q) {
+    return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
+           (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
+}
+} // namespace touchpad_wire_detail
+
+inline TouchpadReport decodeTouchpadReportV1(const uint8_t* p) {
+    using namespace touchpad_wire_detail;
     TouchpadReport r;
     const uint8_t flags = p[0];
     r.finger0.active = (flags & 0x01) != 0;
@@ -431,6 +451,35 @@ inline TouchpadReport decodeTouchpadReport(const uint8_t* p) {
     r.eventTimeMs = le32(p + 11);
     return r;
 }
+
+inline TouchpadReport decodeTouchpadReportV2(const uint8_t* p) {
+    using namespace touchpad_wire_detail;
+    TouchpadReport r;
+    const uint8_t fingers = p[0];
+    r.finger0.active = (fingers & 0x01) != 0;
+    r.finger1.active = (fingers & 0x02) != 0;
+    const uint8_t buttons = p[1];
+    r.buttonPressed = (buttons & 0x01) != 0;
+    r.rightPressed = (buttons & 0x02) != 0;
+    r.middlePressed = (buttons & 0x04) != 0;
+    r.finger0.trackingId = p[2];
+    r.finger0.x = le16(p + 3);
+    r.finger0.y = le16(p + 5);
+    r.finger1.trackingId = p[7];
+    r.finger1.x = le16(p + 8);
+    r.finger1.y = le16(p + 10);
+    r.eventTimeMs = le32(p + 12);
+    r.scrollV = le16(p + 16);
+    return r;
+}
+
+// Mouse button levels for one injected pointer frame. Levels, not edges: the
+// adapter tracks state and emits press/release only on change.
+struct MouseButtons {
+    bool left = false;
+    bool right = false;
+    bool middle = false;
+};
 
 // Touchpad routing modes (per-controller, client-owned via the descriptor;
 // "mouse" additionally requires the session's mouseControl grant).
@@ -577,6 +626,10 @@ struct Connection {
     // Server policy, returned in the PUT response. Streams for ungranted
     // features are dropped.
     bool mouseControlGranted = false;
+    // The version this session settled on (the client's in-range offer). Echoed
+    // in responses and surfaced to the dashboard so an old client is visibly
+    // "works, but update for the full feature set".
+    int protocolVersion = PROTOCOL_VERSION;
 };
 
 // Paired device info (persisted).
@@ -650,4 +703,5 @@ struct SessionUpsertResult {
     std::vector<ControllerApplyResult> controllers;
     bool mouseControlGranted = false;
     std::string mouseControlDenyReason; // empty when granted
+    int protocolVersion = PROTOCOL_VERSION;
 };

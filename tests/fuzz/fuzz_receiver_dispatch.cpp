@@ -57,7 +57,7 @@ struct FuzzGamepad : IGamepadPort {
     }
     bool submitBattery(uint32_t, const BatteryReport&) override { return true; }
     bool submitTouchpad(uint32_t, const TouchpadReport&) override { return true; }
-    bool submitRelativeMouse(int, int, bool) override { return true; }
+    bool submitRelativeMouse(int, int, const MouseButtons&, int) override { return true; }
     bool supportsRelativeMouse() const override { return true; }
     void setLightbarCallback(LightbarCallback) override {}
 };

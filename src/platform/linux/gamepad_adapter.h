@@ -42,7 +42,7 @@ class GamepadAdapter : public IGamepadPort {
     bool submitTouchpad(uint32_t serial, const TouchpadReport& report) override;
 
     // Button level is tracked so a held click fires one press/one release.
-    bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
+    bool submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) override;
     bool supportsRelativeMouse() const override { return true; }
 
     // uinput has no battery ioctl, so mirror each sample to
@@ -116,5 +116,5 @@ class GamepadAdapter : public IGamepadPort {
 
     // Lazily created on first submitRelativeMouse, destroyed in closeBus.
     int relMouseFd_ = -1;
-    bool relMouseBtnDown_ = false;
+    MouseButtons relMouseBtns_;
 };

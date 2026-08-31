@@ -150,6 +150,8 @@
   "devices.touchpad.mouse.tip": "Utiliser le pavé tactile comme une souris relative sur cette machine : le doigt 0 déplace le curseur, le clic du pavé fait office de bouton gauche.",
   "devices.touchpad.off": "Désactivé",
   "devices.touchpad.off.tip": "Ignorer l’entrée du pavé tactile de cet appareil.",
+  "devices.update-app": "Mettre à jour Dish",
+  "devices.update-app.tip": "L'app Dish de cet appareil utilise un protocole plus ancien. Elle fonctionne toujours ; mettez à jour l'app sur le téléphone pour les dernières fonctionnalités.",
   "devices.err.remove": "Impossible d’oublier cet appareil appairé",
   "devices.err.touchpad-mode": "Impossible de changer le routage du pavé tactile",
   "motion.na.text": "Aucun mouvement",

@@ -364,7 +364,7 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
 SessionUpsertResult SessionService::upsertSession(
     const std::string& deviceId, const std::string& deviceName, const std::string& clientIP,
     const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::vector<ControllerDescriptor>& descriptors,
-    bool requestMouseControl) {
+    bool requestMouseControl, int protocolVersion) {
     std::lock_guard<std::mutex> lk(mtx_);
     SessionUpsertResult res;
 
@@ -430,6 +430,7 @@ SessionUpsertResult SessionService::upsertSession(
     conn->lastCounter = 0;
     conn->lastPacketTime = now;
     conn->graceUntil = now + std::chrono::seconds(REST_LIVENESS_GRACE_SEC);
+    conn->protocolVersion = protocolVersion;
 
     const bool mouseSupported = backend_.supportsRelativeMouse();
     conn->mouseControlGranted = requestMouseControl && mouseSupported;
@@ -462,6 +463,7 @@ SessionUpsertResult SessionService::upsertSession(
     std::memcpy(res.sessionSalt, conn->sessionSalt, SESSION_SALT_SIZE);
     res.epoch = conn->epoch;
     res.maxControllers = MAX_BACKEND_CONTROLLERS;
+    res.protocolVersion = conn->protocolVersion;
     return res;
 }
 
@@ -502,6 +504,7 @@ SessionService::SessionView SessionService::getSessionView(const std::string& co
     view.deviceId = conn->deviceId;
     view.epoch = conn->epoch;
     view.mouseControlGranted = conn->mouseControlGranted;
+    view.protocolVersion = conn->protocolVersion;
     for (const auto& ctrl : conn->controllers) {
         if (!ctrl.active) continue;
         SessionView::CtrlView cv;
@@ -730,7 +733,17 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
             ctrl.touchpadMouseRemX = 0.0f;
             ctrl.touchpadMouseRemY = 0.0f;
         }
-        return backend_.submitRelativeMouse(dx, dy, report.buttonPressed);
+        MouseButtons buttons;
+        buttons.left = report.buttonPressed;
+        buttons.right = report.rightPressed;
+        buttons.middle = report.middlePressed;
+        // The wheel is an event: a duplicated or out-of-order frame (same/older
+        // eventTimeMs) must not scroll twice. Fresh frames pass it through.
+        int wheel = report.scrollV;
+        if (prevValid && static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs) <= 0) {
+            wheel = 0;
+        }
+        return backend_.submitRelativeMouse(dx, dy, buttons, wheel);
     }
 
     case TOUCHPAD_MODE_DS4:
@@ -886,6 +899,7 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
         cs.epoch = conn.epoch;
         cs.activeControllerCount = conn.activeControllerCount;
         cs.mouseControlGranted = conn.mouseControlGranted;
+        cs.protocolVersion = conn.protocolVersion;
         // The REST-open grace window counts as liveness so a fresh PUT doesn't
         // flash "not responding".
         const bool inGrace = now < conn.graceUntil;

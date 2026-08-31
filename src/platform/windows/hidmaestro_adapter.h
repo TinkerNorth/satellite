@@ -16,6 +16,7 @@
 #include "core/gamepad_backend.h"
 #include "core/ports.h"
 #include "hidmaestro_provisioner.h"
+#include "pointer_inject.h"
 #include "hidmaestro_report.h"
 #include "hidmaestro_wire.h"
 
@@ -50,7 +51,7 @@ class HidMaestroAdapter : public IGamepadPort {
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
     bool submitBattery(uint32_t serial, const BatteryReport& report) override;
     bool submitTouchpad(uint32_t serial, const TouchpadReport& report) override;
-    bool submitRelativeMouse(int dx, int dy, bool leftButton) override;
+    bool submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) override;
     bool supportsRelativeMouse() const override { return true; }
     bool supportsMotionForType(uint8_t controllerType) const override;
 
@@ -104,7 +105,7 @@ class HidMaestroAdapter : public IGamepadPort {
     RumbleCallback rumbleCb_;
     LightbarCallback lightbarCb_;
 
-    std::atomic<bool> relMouseBtnDown_{false};
+    RelMouseButtonState relMouseBtns_;
 
     void startOutputWorker(uint32_t serial); // caller holds busMtx_
     void stopOutputWorker(uint32_t serial);  // caller holds busMtx_

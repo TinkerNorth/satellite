@@ -234,7 +234,7 @@ int main() {
     EXPECT(adapter.submitTouchpad(kDs4Serial, touch));
 
     TEST("relative-mouse node materialises on first use");
-    EXPECT(adapter.submitRelativeMouse(3, -2, false));
+    EXPECT(adapter.submitRelativeMouse(3, -2, MouseButtons{}, 0));
     EXPECT(!findEventNodeByName("Satellite Virtual Pointer", 3000).empty());
 
     TEST("unplug removes devices and their nodes");

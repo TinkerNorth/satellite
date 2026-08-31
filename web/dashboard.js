@@ -715,11 +715,17 @@ function renderDeviceList() {
     const kickBtn = conn
       ? `<button class="btn-icon" type="button" data-act="disconnect" data-conn-id="${esc(conn.connectionId)}" title="${esc(disconnectLb)}"><img src="img/icons/close_x.svg" alt="${esc(disconnectLb)}" class="emoji-icon"></button>`
       : '';
+    // An in-range but older session still works; the chip says an app update
+    // gets it the newest features (mirror of the app's satellite-update chip).
+    const updateChip = (conn && conn.protocolVersion && conn.protocolCurrent &&
+                        conn.protocolVersion < conn.protocolCurrent)
+      ? ` <span class="device-state state-updateDish" title="${esc(t('devices.update-app.tip'))}">${esc(t('devices.update-app'))}</span>`
+      : '';
     return `
     <div class="device-item">
       <img class="device-glyph" src="img/icons/${esc(stateIcon)}" alt="">
       <div class="device-info">
-        <span class="device-name">${esc(d.name)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
+        <span class="device-name">${esc(d.name)} <span class="device-state state-${esc(stateKey)}">${esc(stateText)}</span>${updateChip}</span>
         <span class="device-meta">${meta}</span>
       </div>
       <div class="device-actions">

@@ -23,6 +23,11 @@
 // into this TU. Defined in platform/linux/globals.cpp.
 void logMsg(LogLevel level, const std::string& source, const std::string& message);
 
+// Pre-5.0 input-event-codes.h lacks the hi-res wheel axis.
+#ifndef REL_WHEEL_HI_RES
+#define REL_WHEEL_HI_RES 0x0b
+#endif
+
 namespace {
 
 constexpr uint16_t XBOX_VID = 0x045e;
@@ -124,7 +129,7 @@ void GamepadAdapter::closeBus() {
         ::close(relMouseFd_);
         relMouseFd_ = -1;
     }
-    relMouseBtnDown_ = false;
+    relMouseBtns_ = MouseButtons{};
     devices_.clear();
     busOpen_ = false;
 }
@@ -326,7 +331,11 @@ int GamepadAdapter::openRelMouseUinputDevice() {
     if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
     if (::ioctl(fd, UI_SET_RELBIT, REL_X) < 0) goto fail;
     if (::ioctl(fd, UI_SET_RELBIT, REL_Y) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_RELBIT, REL_WHEEL) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_RELBIT, REL_WHEEL_HI_RES) < 0) goto fail;
     if (::ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_KEYBIT, BTN_RIGHT) < 0) goto fail;
+    if (::ioctl(fd, UI_SET_KEYBIT, BTN_MIDDLE) < 0) goto fail;
 
     {
         struct uinput_setup usetup{};
@@ -607,7 +616,7 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
     return ok;
 }
 
-bool GamepadAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
+bool GamepadAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) {
     std::lock_guard<std::mutex> lk(mtx_);
     // Pointer node is host-global, created lazily by the first sample.
     if (relMouseFd_ < 0) {
@@ -619,10 +628,24 @@ bool GamepadAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
     bool ok = true;
     if (dx != 0) ok &= emit(fd, EV_REL, REL_X, dx);
     if (dy != 0) ok &= emit(fd, EV_REL, REL_Y, dy);
-    // Emit BTN_LEFT only on a level change so a held click presses once.
-    if (leftButton != relMouseBtnDown_) {
-        relMouseBtnDown_ = leftButton;
-        ok &= emit(fd, EV_KEY, BTN_LEFT, leftButton ? 1 : 0);
+    if (wheelV != 0) {
+        // Wire wheel is 120/notch (hi-res); classic REL_WHEEL wants whole notches.
+        ok &= emit(fd, EV_REL, REL_WHEEL_HI_RES, wheelV);
+        const int notches = wheelV / 120;
+        if (notches != 0) ok &= emit(fd, EV_REL, REL_WHEEL, notches);
+    }
+    // Emit each button only on a level change so a held click presses once.
+    if (buttons.left != relMouseBtns_.left) {
+        relMouseBtns_.left = buttons.left;
+        ok &= emit(fd, EV_KEY, BTN_LEFT, buttons.left ? 1 : 0);
+    }
+    if (buttons.right != relMouseBtns_.right) {
+        relMouseBtns_.right = buttons.right;
+        ok &= emit(fd, EV_KEY, BTN_RIGHT, buttons.right ? 1 : 0);
+    }
+    if (buttons.middle != relMouseBtns_.middle) {
+        relMouseBtns_.middle = buttons.middle;
+        ok &= emit(fd, EV_KEY, BTN_MIDDLE, buttons.middle ? 1 : 0);
     }
     ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
     return ok;

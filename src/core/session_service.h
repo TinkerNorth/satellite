@@ -34,7 +34,8 @@ class SessionService {
                                       const std::string& clientIP,
                                       const uint8_t pairingKey[CRYPTO_KEY_SIZE],
                                       const std::vector<ControllerDescriptor>& descriptors,
-                                      bool requestMouseControl);
+                                      bool requestMouseControl,
+                                      int protocolVersion = PROTOCOL_VERSION);
 
     // Standalone single-controller upsert (PUT .../controllers/{idx}).
     // False when connectionId doesn't exist or isn't owned by deviceId.
@@ -56,6 +57,7 @@ class SessionService {
         std::string deviceId;
         uint16_t epoch = 0;
         bool mouseControlGranted = false;
+        int protocolVersion = PROTOCOL_VERSION;
         struct CtrlView {
             uint8_t ctrlIdx;
             uint8_t appliedType;
@@ -151,6 +153,7 @@ class SessionService {
         uint16_t epoch;
         int activeControllerCount;
         bool mouseControlGranted;
+        int protocolVersion;
         // Always Active or NotResponding here (an existing connection is at
         // least Active). The full enum is surfaced by /api/devices.
         DeviceLinkState linkState;

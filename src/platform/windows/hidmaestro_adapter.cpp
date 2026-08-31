@@ -307,8 +307,9 @@ bool HidMaestroAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& re
     return packAndWriteLocked(slot);
 }
 
-bool HidMaestroAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
-    return injectRelativeMouse(relMouseBtnDown_, dx, dy, leftButton);
+bool HidMaestroAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons,
+                                            int wheelV) {
+    return injectRelativeMouse(relMouseBtns_, dx, dy, buttons, wheelV);
 }
 
 bool HidMaestroAdapter::supportsMotionForType(uint8_t controllerType) const {

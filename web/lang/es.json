@@ -150,6 +150,8 @@
   "devices.touchpad.mouse.tip": "Usa el panel táctil como ratón relativo en este equipo: el dedo 0 mueve el cursor y la pulsación del panel actúa como botón izquierdo del ratón.",
   "devices.touchpad.off": "Desactivado",
   "devices.touchpad.off.tip": "Ignora la entrada del panel táctil de este dispositivo.",
+  "devices.update-app": "Actualizar Dish",
+  "devices.update-app.tip": "La app Dish de este dispositivo usa un protocolo más antiguo. Sigue funcionando; actualiza la app en el teléfono para tener las últimas funciones.",
   "devices.err.remove": "No se pudo quitar ese dispositivo emparejado",
   "devices.err.touchpad-mode": "No se pudo cambiar el enrutamiento del panel táctil",
   "motion.na.text": "Sin movimiento",

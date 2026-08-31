@@ -116,9 +116,9 @@ class GamepadMux : public IGamepadPort {
         return p != nullptr && p->submitTouchpad(serial, report);
     }
 
-    bool submitRelativeMouse(int dx, int dy, bool leftButton) override {
+    bool submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) override {
         for (IGamepadPort* p : ports_) {
-            if (p->supportsRelativeMouse()) return p->submitRelativeMouse(dx, dy, leftButton);
+            if (p->supportsRelativeMouse()) return p->submitRelativeMouse(dx, dy, buttons, wheelV);
         }
         return false;
     }

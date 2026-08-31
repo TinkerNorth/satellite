@@ -93,10 +93,14 @@ class IGamepadPort {
         return false;
     }
 
-    // Inject a relative mouse movement (TOUCHPAD_MODE_MOUSE). `dx`/`dy` are
-    // pixels; `leftButton` is the button level (not an edge), so the adapter
-    // emits press/release only on change. Host-global, not keyed on a serial.
-    virtual bool submitRelativeMouse(int /*dx*/, int /*dy*/, bool /*leftButton*/) { return false; }
+    // Inject a relative mouse frame (TOUCHPAD_MODE_MOUSE). `dx`/`dy` are pixels;
+    // `buttons` are levels (not edges), so the adapter emits press/release only on
+    // change. `wheelV` is a signed wheel event, 120 per notch, already de-duplicated
+    // by the caller. Host-global, not keyed on a serial.
+    virtual bool submitRelativeMouse(int /*dx*/, int /*dy*/, const MouseButtons& /*buttons*/,
+                                     int /*wheelV*/) {
+        return false;
+    }
 
     // Whether submitRelativeMouse can reach the host. Drives the mouseControl
     // host-feature grant. Default false so inert backends deny rather than

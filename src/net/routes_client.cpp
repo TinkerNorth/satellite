@@ -93,17 +93,21 @@ static bool clientAuthed(const httplib::Request& req, httplib::Response& res, Cl
     return false;
 }
 
-static bool protocolVersionOk(const std::string& body, httplib::Response& res) {
-    long pv = PROTOCOL_VERSION;
-    if (jsonTryInt(parseBody(body), "protocolVersion", pv) && pv != PROTOCOL_VERSION) {
-        res.status = 409;
-        JsonOut err;
-        err["error"] = "protocol version unsupported";
-        err["supported"] = PROTOCOL_VERSION;
-        res.set_content(jsonDump(err), "application/json");
-        return false;
-    }
-    return true;
+// The satellite accepts [PROTOCOL_VERSION_MIN, PROTOCOL_VERSION] and settles the
+// session on the client's offer; an absent field is a pre-versioning client and
+// reads as 1. Only an out-of-range offer is refused, with `supported` (the newest
+// this satellite speaks) telling the client which side must update.
+static bool protocolVersionOk(const std::string& body, httplib::Response& res, long& pv) {
+    pv = 1;
+    jsonTryInt(parseBody(body), "protocolVersion", pv);
+    if (pv >= PROTOCOL_VERSION_MIN && pv <= PROTOCOL_VERSION) return true;
+    res.status = 409;
+    JsonOut err;
+    err["error"] = "protocol version unsupported";
+    err["supported"] = PROTOCOL_VERSION;
+    err["supportedMin"] = PROTOCOL_VERSION_MIN;
+    res.set_content(jsonDump(err), "application/json");
+    return false;
 }
 
 // `type` is REQUIRED: a descriptor without it would force a server-side default
@@ -188,7 +192,7 @@ static std::string buildUpsertResponseJson(const SessionUpsertResult& r) {
     j["sessionSalt"] = hexEncode(r.sessionSalt, SESSION_SALT_SIZE);
     j["epoch"] = r.epoch;
     j["maxControllers"] = r.maxControllers;
-    j["protocolVersion"] = PROTOCOL_VERSION;
+    j["protocolVersion"] = r.protocolVersion;
     JsonOut controllers = JsonOut::array();
     for (const auto& c : r.controllers) controllers.push_back(controllerApplyObj(c));
     j["controllers"] = std::move(controllers);
@@ -203,7 +207,7 @@ static std::string buildSessionViewJson(const SessionService::SessionView& v) {
     j["connectionId"] = v.connectionId;
     j["deviceId"] = v.deviceId;
     j["epoch"] = v.epoch;
-    j["protocolVersion"] = PROTOCOL_VERSION;
+    j["protocolVersion"] = v.protocolVersion;
     j["maxControllers"] = MAX_BACKEND_CONTROLLERS;
     JsonOut controllers = JsonOut::array();
     for (const auto& c : v.controllers) {
@@ -247,7 +251,14 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
     }
     ClientAuth auth;
     if (!clientAuthed(req, res, auth)) return;
-    if (!protocolVersionOk(req.body, res)) return;
+    long pv = PROTOCOL_VERSION;
+    if (!protocolVersionOk(req.body, res, pv)) return;
+    if (pv < PROTOCOL_VERSION) {
+        logMsg(LogLevel::WARN, "client",
+               "device " + auth.deviceId + " speaks protocol v" + std::to_string(pv) +
+                   " (current v" + std::to_string(PROTOCOL_VERSION) +
+                   "): update the Dish app for the full feature set");
+    }
 
     Json body = parseBody(req.body);
     std::string deviceName = jsonStr(body, "deviceName");
@@ -268,7 +279,7 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
     bool mouseRequested = jsonBool(jsonObject(body, "hostFeatures"), "mouseControl");
 
     auto result = svc.upsertSession(auth.deviceId, deviceName, req.remote_addr, auth.pairingKey,
-                                    descriptors, mouseRequested);
+                                    descriptors, mouseRequested, static_cast<int>(pv));
     if (!result.ok) {
         res.status = 500;
         JsonOut err;
@@ -316,7 +327,8 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
         res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
         return;
     }
-    if (!protocolVersionOk(req.body, res)) return;
+    long pv = PROTOCOL_VERSION;
+    if (!protocolVersionOk(req.body, res, pv)) return;
 
     // Key rotation / re-pair with proof of the current key. A failed proof
     // falls through to the PIN paths, identical to a fresh pairing attempt.
@@ -347,7 +359,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
             ok["ok"] = true;
             ok["message"] = "key rotated";
             ok["sharedKey"] = newKeyHex;
-            ok["protocolVersion"] = PROTOCOL_VERSION;
+            ok["protocolVersion"] = pv;
             res.set_content(jsonDump(ok), "application/json");
             return;
         }
@@ -392,7 +404,7 @@ static void pairRoute(SessionService& svc, const httplib::Request& req, httplib:
             } else {
                 ok["sharedKey"] = sharedKeyHex;
             }
-            ok["protocolVersion"] = PROTOCOL_VERSION;
+            ok["protocolVersion"] = pv;
             res.set_content(jsonDump(ok), "application/json");
             return;
         }
@@ -562,7 +574,8 @@ void registerClientRoutes(httplib::Server& server, SessionService& svc) {
                                                                      httplib::Response& res) {
         ClientAuth auth;
         if (!clientAuthed(req, res, auth)) return;
-        if (!protocolVersionOk(req.body, res)) return;
+        // No version gate here: the version is negotiated once, on the session
+        // PUT, and a sub-resource write inherits its session's settled version.
         ControllerDescriptor d;
         if (!parseDescriptorObject(parseBody(req.body), /*requireIdx=*/false, d)) {
             res.status = 400;
