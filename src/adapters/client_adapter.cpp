@@ -150,3 +150,31 @@ void ClientAdapter::sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_
     inner[7] = b;
     sendEncryptedPacket(conn, inner, sizeof(inner));
 }
+
+void ClientAdapter::sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
+                                       const TriggerEffectsReport& report) {
+    // Wire: ctrlIdx(1) + left block(11) + right block(11) = 23 bytes, raw DS5
+    // effect bytes forwarded verbatim.
+    const uint16_t payloadLen = 1 + TRIGGER_EFFECTS_WIRE_PAYLOAD_BYTES;
+    uint8_t inner[4 + 1 + TRIGGER_EFFECTS_WIRE_PAYLOAD_BYTES];
+    inner[0] = (uint8_t)(MSG_TRIGGER_EFFECTS >> 8);
+    inner[1] = (uint8_t)(MSG_TRIGGER_EFFECTS);
+    inner[2] = (uint8_t)(payloadLen >> 8);
+    inner[3] = (uint8_t)(payloadLen);
+    inner[4] = ctrlIdx;
+    std::memcpy(inner + 5, report.left, TRIGGER_EFFECT_BLOCK_BYTES);
+    std::memcpy(inner + 5 + TRIGGER_EFFECT_BLOCK_BYTES, report.right, TRIGGER_EFFECT_BLOCK_BYTES);
+    sendEncryptedPacket(conn, inner, sizeof(inner));
+}
+
+void ClientAdapter::sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) {
+    // Wire: ctrlIdx(1) + ledMask(1) = 2 bytes.
+    uint8_t inner[4 + 2];
+    inner[0] = (uint8_t)(MSG_PLAYER_LEDS >> 8);
+    inner[1] = (uint8_t)(MSG_PLAYER_LEDS);
+    inner[2] = 0;
+    inner[3] = 2;
+    inner[4] = ctrlIdx;
+    inner[5] = ledMask;
+    sendEncryptedPacket(conn, inner, sizeof(inner));
+}

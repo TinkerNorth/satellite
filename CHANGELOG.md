@@ -5,6 +5,17 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## Unreleased
 
+Controller-feedback return paths (protocol 2, unreleased, extended in place):
+new UDP messages TRIGGER_EFFECTS 0x0010 (raw DualSense adaptive-trigger
+blocks, forwarded verbatim from the game's output report) and PLAYER_LEDS
+0x0011 (player-indicator bitmask), each gated on new descriptor caps
+`triggerEffects` / `playerLeds`. HIDMaestro is the source (it hands back the
+game's raw DS5/Switch output reports); the DS5 decode also gains the
+documented valid_flag1 lightbar gate and the player-LED byte, and the Switch
+decode picks up subcommand 0x30 player lights. Catalog types and the
+`backends` array advertise the two new feature slugs (dualsense:
+triggerEffects + playerLeds, switchpro: playerLeds).
+
 Second Windows gamepad backend: HIDMaestro (user-mode UMDF2) alongside — not
 replacing — ViGEmBus. Windows now offers all four controller types (DualSense
 and Switch Pro materialize via HIDMaestro, with motion; Xbox 360 / DualShock 4

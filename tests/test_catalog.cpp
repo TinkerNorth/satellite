@@ -97,6 +97,9 @@ static void test_catalogJson_structure() {
     traits.dualsenseLightbarSupported = true;
     traits.switchProMotionSupported = true;
     traits.switchProMotionRequires = "hidmaestro>=1.7";
+    traits.dualsenseTriggerEffectsSupported = true;
+    traits.dualsensePlayerLedsSupported = true;
+    traits.switchProPlayerLedsSupported = true;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;
@@ -150,6 +153,16 @@ static void test_catalogJson_structure() {
         EXPECT(types[3].find("\"touchpad\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[3].find("\"motion\":{\"supported\":true,\"requires\":\"hidmaestro>=1.7\"}") !=
                std::string::npos);
+        // Raw-output surfaces: DualSense alone carries trigger effects; player
+        // LEDs ride DualSense and Switch Pro; DS4/Xbox carry neither.
+        EXPECT(types[2].find("\"triggerEffects\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[2].find("\"playerLeds\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[3].find("\"triggerEffects\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[3].find("\"playerLeds\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[1].find("\"triggerEffects\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[1].find("\"playerLeds\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[0].find("\"triggerEffects\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[0].find("\"playerLeds\":{\"supported\":false}") != std::string::npos);
         // emulates: physical-pad hint per offered type, protocol constants (ordered
         // sdlType then usb). What a future client-side matcher keys a default off.
         EXPECT(types[0].find("\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}") !=
@@ -383,10 +396,10 @@ static void test_catalogJson_goldenShape_uinput() {
     // emulates, hostFeatures) is pinned without coupling to localized copy.
     const std::string golden =
         R"({"locale":"en","protocolVersion":2,"serverVersion":"1.6.0","catalogVersion":2,"controllerTypes":[)"
-        R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
-        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]}},"emulates":{"sdlType":"ps4","usb":["054c:05c4"]}},)"
-        R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
-        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
+        R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
+        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4"]}},)"
+        R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
+        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
         R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";
     const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
     EXPECT_EQ(json, golden);

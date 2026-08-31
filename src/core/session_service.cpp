@@ -33,6 +33,11 @@ SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogP
     backend_.setLightbarCallback([this](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         handleLightbarFromBackend(serial, r, g, b);
     });
+    backend_.setTriggerEffectsCallback([this](uint32_t serial, const TriggerEffectsReport& r) {
+        handleTriggerEffectsFromBackend(serial, r);
+    });
+    backend_.setPlayerLedsCallback(
+        [this](uint32_t serial, uint8_t ledMask) { handlePlayerLedsFromBackend(serial, ledMask); });
 }
 
 // Internal helpers below assume the caller holds mtx_.
@@ -148,6 +153,10 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lightbarG = 0;
     ctrl.lightbarB = 0;
     ctrl.lastLightbarValid = false;
+    ctrl.lastTriggerEffects = TriggerEffectsReport{};
+    ctrl.lastTriggerEffectsValid = false;
+    ctrl.playerLeds = 0;
+    ctrl.lastPlayerLedsValid = false;
     // Controller structs persist across remove/re-add, so stale samples would
     // show phantom "active" state and a MOUSE first sample would delta against a
     // pre-readd finger (cursor jump).
@@ -787,6 +796,63 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
     // Emit only to senders that advertised CAP_LIGHTBAR; others would drop it.
     if (foundCtrl->lightbarCapable()) {
         client_.sendLightbar(*foundConn, foundCtrl->index, r, g, b);
+    }
+}
+
+void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
+                                                     const TriggerEffectsReport& report) {
+    // try_to_lock for the same reason as handleRumbleFromBackend: unplug joins
+    // this worker while holding mtx_; blocking here deadlocks.
+    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    if (!lk.owns_lock()) return;
+
+    Connection* foundConn = nullptr;
+    Controller* foundCtrl = nullptr;
+    for (auto& [tok, conn] : connections_) {
+        for (auto& ctrl : conn.controllers) {
+            if (ctrl.active && ctrl.serialNo == serial) {
+                foundConn = &conn;
+                foundCtrl = &ctrl;
+                break;
+            }
+        }
+        if (foundCtrl != nullptr) break;
+    }
+    if (foundCtrl == nullptr || foundConn == nullptr) return;
+
+    if (foundCtrl->lastTriggerEffectsValid && foundCtrl->lastTriggerEffects == report) return;
+    foundCtrl->lastTriggerEffects = report;
+    foundCtrl->lastTriggerEffectsValid = true;
+
+    if (foundCtrl->triggerEffectsCapable()) {
+        client_.sendTriggerEffects(*foundConn, foundCtrl->index, report);
+    }
+}
+
+void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMask) {
+    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    if (!lk.owns_lock()) return;
+
+    Connection* foundConn = nullptr;
+    Controller* foundCtrl = nullptr;
+    for (auto& [tok, conn] : connections_) {
+        for (auto& ctrl : conn.controllers) {
+            if (ctrl.active && ctrl.serialNo == serial) {
+                foundConn = &conn;
+                foundCtrl = &ctrl;
+                break;
+            }
+        }
+        if (foundCtrl != nullptr) break;
+    }
+    if (foundCtrl == nullptr || foundConn == nullptr) return;
+
+    if (foundCtrl->lastPlayerLedsValid && foundCtrl->playerLeds == ledMask) return;
+    foundCtrl->playerLeds = ledMask;
+    foundCtrl->lastPlayerLedsValid = true;
+
+    if (foundCtrl->playerLedsCapable()) {
+        client_.sendPlayerLeds(*foundConn, foundCtrl->index, ledMask);
     }
 }
 

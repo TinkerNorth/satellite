@@ -10,7 +10,8 @@ Principle: **control plane and data plane are split.**
   desired state; the server converges and returns the applied state. Retries are free,
   ordering is irrelevant. UDP never mutates topology.
 - Data = UDP streams on **9876**: input, heartbeat, motion, battery, touchpad up;
-  heartbeat ack, rumble, lightbar, session-close notify down.
+  heartbeat ack, rumble, lightbar, trigger effects, player LEDs, session-close
+  notify down.
 
 One user action = one call. Partial success rides in the response body (per-controller
 results), never in HTTP error codes.
@@ -164,7 +165,8 @@ Request:
     {
       "ctrlIdx": 0,
       "type": 0,
-      "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false },
+      "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false,
+                "triggerEffects": false, "playerLeds": false },
       "touchpadMode": "off",
       "preferredBackend": null
     }
@@ -439,7 +441,9 @@ to present it (static, localized) → **capabilities** = what is true right now
         "analogTriggers": { "supported": true },
         "motion": { "supported": false },
         "lightbar": { "supported": false },
-        "touchpad": { "supported": false }
+        "touchpad": { "supported": false },
+        "triggerEffects": { "supported": false },
+        "playerLeds": { "supported": false }
       },
       "emulates": { "sdlType": "xbox360", "usb": ["045e:028e"] }
     },
@@ -455,7 +459,9 @@ to present it (static, localized) → **capabilities** = what is true right now
         "analogTriggers": { "supported": true },
         "motion": { "supported": true, "requires": "vigembus>=1.17" },
         "lightbar": { "supported": true },
-        "touchpad": { "supported": true, "modes": ["ds4"] }
+        "touchpad": { "supported": true, "modes": ["ds4"] },
+        "triggerEffects": { "supported": false },
+        "playerLeds": { "supported": false }
       },
       "emulates": { "sdlType": "ps4", "usb": ["054c:05c4"] }
     }
@@ -499,6 +505,12 @@ to present it (static, localized) → **capabilities** = what is true right now
   `ps4`, `ps5`, `switchpro`); `usb` is lowercase `vendor:product`, an array so more
   hardware revisions can be added later. Additive within protocolVersion 1; interim
   clients IGNORE it and default to the first offered type. Rides only offered types.
+- Type-feature slugs are protocol constants: `rumble`, `analogTriggers`, `motion`,
+  `lightbar`, `touchpad`, `triggerEffects` (DualSense adaptive-trigger passthrough,
+  RECEIVE), `playerLeds` (player-indicator LEDs, RECEIVE). `triggerEffects` and
+  `playerLeds` reflect whether the type's preferred materializer surfaces the game's
+  raw output reports; a client advertises the matching descriptor caps only when it
+  can actuate them on the physical pad.
 - A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
   the client reads the offered modes rather than inferring them from the type id. The
   DS4 `touchpad` advertises `["ds4"]` (its pad-render mode); the relative-mouse path is
@@ -603,10 +615,13 @@ Down (server → client):
 | 0x0009 | RUMBLE | ctrlIdx(1) + strong(u16 BE) + weak(u16 BE) + durationMs(u16 BE) |
 | 0x000D | LIGHTBAR | ctrlIdx(1) + r(1) + g(1) + b(1) |
 | 0x000F | SESSION_CLOSE | reason(1: 0 shutdown, 1 kicked, 2 replaced, 3 unpaired) |
+| 0x0010 | TRIGGER_EFFECTS | ctrlIdx(1) + left block(11) + right block(11): raw DualSense trigger-effect fields (mode byte + 10 params each), forwarded verbatim from the game's output report. Sent only to senders whose descriptor advertised `triggerEffects`. Coalesced; both blocks always ride together (the server merges per-trigger writes). |
+| 0x0011 | PLAYER_LEDS | ctrlIdx(1) + ledMask(1): player-indicator bitmask, bit 0 = leftmost LED (DualSense bits 0-4, Switch Pro bits 0-3). Sent only to senders whose descriptor advertised `playerLeds`. |
 
 Opcodes 0x0004 (ADD), 0x0005 (REMOVE), 0x0006 (ACK), 0x0007 (SERVER_STATUS) and
 0x0008 (TYPE), 0x000E (CAPS_UPDATE) are **deleted**: topology mutation is REST-only,
-and server status rides in every heartbeat ack.
+and server status rides in every heartbeat ack. Deleted opcodes are never reused;
+new messages claim fresh ids (0x0010+).
 
 Corrected stream semantics (errors in the former docs, preserved here):
 
@@ -704,6 +719,10 @@ Version history:
 - **1**: initial contract.
 - **2**: 0x000C reshaped into the POINTER frame: the click moved out of the finger
   flags into a buttons byte (left/right/middle) and a signed vertical wheel was added.
+  Added the controller-feedback return paths: TRIGGER_EFFECTS 0x0010 and PLAYER_LEDS
+  0x0011 with their descriptor caps (`triggerEffects`, `playerLeds`) and catalog
+  type-feature slugs. Both are caps-gated, so a client that never advertises them
+  never sees them; no frame shape changed.
   Catalog/capabilities documents advertise the server's newest version so clients can
   offer it directly.
 

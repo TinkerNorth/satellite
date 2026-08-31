@@ -326,6 +326,16 @@ void HidMaestroAdapter::setLightbarCallback(LightbarCallback cb) {
     lightbarCb_ = std::move(cb);
 }
 
+void HidMaestroAdapter::setTriggerEffectsCallback(TriggerEffectsCallback cb) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    triggerEffectsCb_ = std::move(cb);
+}
+
+void HidMaestroAdapter::setPlayerLedsCallback(PlayerLedsCallback cb) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    playerLedsCb_ = std::move(cb);
+}
+
 // Caller holds busMtx_. The ring baseline is snapshotted HERE, under the plug
 // lock, so a packet published the instant the plug returns is never skipped —
 // the worker starting from "whatever the head is once my thread runs" would
@@ -374,6 +384,8 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
     const DWORD waitCount = doorbell ? 2 : 1;
     const DWORD timeoutMs = doorbell ? 500 : 8;
 
+    TriggerEffectsReport triggerEffects{};
+
     while (true) {
         const DWORD rc = WaitForMultipleObjects(waitCount, waits, FALSE, timeoutMs);
         if (rc == WAIT_OBJECT_0) return; // cancelled
@@ -382,16 +394,39 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
         hm::OutputPacket pkt;
         while (hm::readNextOutputPacket(view, lastSeq, pkt)) {
             const hm::DecodedOutput decoded = hm::decodeOutputPacket(identity, pkt);
-            if (!decoded.hasRumble && !decoded.hasLightbar) continue;
+            if (!decoded.hasRumble && !decoded.hasLightbar && !decoded.hasLeftTriggerEffect &&
+                !decoded.hasRightTriggerEffect && !decoded.hasPlayerLeds) {
+                continue;
+            }
             RumbleCallback rcb;
             LightbarCallback lcb;
+            TriggerEffectsCallback tcb;
+            PlayerLedsCallback pcb;
             {
                 std::lock_guard<std::mutex> lk(busMtx_);
                 rcb = rumbleCb_;
                 lcb = lightbarCb_;
+                tcb = triggerEffectsCb_;
+                pcb = playerLedsCb_;
             }
             if (decoded.hasRumble && rcb) rcb(serial, decoded.rumble);
             if (decoded.hasLightbar && lcb) lcb(serial, decoded.r, decoded.g, decoded.b);
+            if (decoded.hasLeftTriggerEffect || decoded.hasRightTriggerEffect) {
+                // Merge per-trigger valid flags into this worker's cache: the
+                // report always carries BOTH blocks downstream. The cache lives
+                // on the loop stack, so a replug starts from neutral effects,
+                // matching the fresh-actuator reset in SessionService.
+                if (decoded.hasLeftTriggerEffect) {
+                    std::memcpy(triggerEffects.left, decoded.leftTriggerEffect,
+                                TRIGGER_EFFECT_BLOCK_BYTES);
+                }
+                if (decoded.hasRightTriggerEffect) {
+                    std::memcpy(triggerEffects.right, decoded.rightTriggerEffect,
+                                TRIGGER_EFFECT_BLOCK_BYTES);
+                }
+                if (tcb) tcb(serial, triggerEffects);
+            }
+            if (decoded.hasPlayerLeds && pcb) pcb(serial, decoded.playerLeds);
         }
     }
 }
