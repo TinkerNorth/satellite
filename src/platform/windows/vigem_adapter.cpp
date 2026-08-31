@@ -355,8 +355,8 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
     return st.exSupported;
 }
 
-bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, bool leftButton) {
-    return injectRelativeMouse(relMouseBtnDown_, dx, dy, leftButton);
+bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) {
+    return injectRelativeMouse(relMouseBtns_, dx, dy, buttons, wheelV);
 }
 
 bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {

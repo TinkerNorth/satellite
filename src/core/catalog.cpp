@@ -2,6 +2,7 @@
 #include "catalog.h"
 
 #include "json.h"
+#include "types.h"
 
 #include <algorithm>
 #include <cctype>
@@ -189,7 +190,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
 
     JsonOut j;
     j["locale"] = locale;
-    j["protocolVersion"] = 1;
+    j["protocolVersion"] = PROTOCOL_VERSION;
     j["serverVersion"] = serverVersion;
     j["catalogVersion"] = kCatalogVersion;
     // Only the types this backend can materialize: a backend that can't host a

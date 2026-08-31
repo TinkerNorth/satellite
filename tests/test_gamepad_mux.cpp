@@ -91,7 +91,7 @@ struct MockPort : IGamepadPort {
         lastSerial = serial;
         return true;
     }
-    bool submitRelativeMouse(int, int, bool) override {
+    bool submitRelativeMouse(int, int, const MouseButtons&, int) override {
         relMouseCalls++;
         return true;
     }
@@ -307,14 +307,14 @@ static void test_relative_mouse_first_supporting() {
     b.relMouse = true;
     GamepadMux mux({&a, &b});
     EXPECT(mux.supportsRelativeMouse());
-    EXPECT(mux.submitRelativeMouse(1, 2, false));
+    EXPECT(mux.submitRelativeMouse(1, 2, MouseButtons{}, 0));
     EXPECT_EQ(a.relMouseCalls, 0);
     EXPECT_EQ(b.relMouseCalls, 1);
 
     MockPort c = makeVigemLike("c");
     GamepadMux none({&c});
     EXPECT(!none.supportsRelativeMouse());
-    EXPECT(!none.submitRelativeMouse(1, 2, false));
+    EXPECT(!none.submitRelativeMouse(1, 2, MouseButtons{}, 0));
     EXPECT_EQ(c.relMouseCalls, 0);
 }
 

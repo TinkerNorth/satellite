@@ -86,8 +86,53 @@ static void test_decodeMotion_le_fields() {
 }
 
 static void test_decodeTouchpad_flags_fingers_time() {
-    TEST("decodeTouchpadReport: flags, both fingers, and eventTimeMs");
-    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {
+    TEST("decodeTouchpadReportV2: fingers, buttons, eventTimeMs and scroll");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES_V2] = {
+        0x03,                   // fingerFlags: f0 active, f1 active
+        0x07,                   // buttons: left + right + middle
+        0x11,                   // finger0 trackingId
+        0x10, 0x27,             // finger0.x = 10000
+        0x18, 0xFC,             // finger0.y = -1000
+        0x22,                   // finger1 trackingId
+        0x00, 0x80,             // finger1.x = -32768
+        0xFF, 0x7F,             // finger1.y = 32767
+        0xD2, 0x04, 0x00, 0x00, // eventTimeMs = 1234
+        0x88, 0xFF,             // scrollV = -120
+    };
+    TouchpadReport r = decodeTouchpadReportV2(p);
+    EXPECT(r.finger0.active);
+    EXPECT(r.finger1.active);
+    EXPECT(r.buttonPressed);
+    EXPECT(r.rightPressed);
+    EXPECT(r.middlePressed);
+    EXPECT_EQ(r.finger0.trackingId, (uint8_t)0x11);
+    EXPECT_EQ(r.finger0.x, (int16_t)10000);
+    EXPECT_EQ(r.finger0.y, (int16_t)-1000);
+    EXPECT_EQ(r.finger1.trackingId, (uint8_t)0x22);
+    EXPECT_EQ(r.finger1.x, (int16_t)-32768);
+    EXPECT_EQ(r.finger1.y, (int16_t)32767);
+    EXPECT_EQ(r.eventTimeMs, 1234u);
+    EXPECT_EQ(r.scrollV, (int16_t)-120);
+}
+
+static void test_decodeTouchpad_buttonBitsIndependent() {
+    TEST("decodeTouchpadReportV2: each button bit decodes independently");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES_V2] = {0};
+    p[1] = 0x02; // right only
+    TouchpadReport r = decodeTouchpadReportV2(p);
+    EXPECT(!r.buttonPressed);
+    EXPECT(r.rightPressed);
+    EXPECT(!r.middlePressed);
+    p[1] = 0x04; // middle only
+    r = decodeTouchpadReportV2(p);
+    EXPECT(!r.buttonPressed);
+    EXPECT(!r.rightPressed);
+    EXPECT(r.middlePressed);
+}
+
+static void test_decodeTouchpad_v1Layout() {
+    TEST("decodeTouchpadReportV1: legacy flags carry the click, no buttons byte");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES_V1] = {
         0x07,                   // flags: f0 active, f1 active, button pressed
         0x11,                   // finger0 trackingId
         0x10, 0x27,             // finger0.x = 10000
@@ -97,26 +142,28 @@ static void test_decodeTouchpad_flags_fingers_time() {
         0xFF, 0x7F,             // finger1.y = 32767
         0xD2, 0x04, 0x00, 0x00, // eventTimeMs = 1234
     };
-    TouchpadReport r = decodeTouchpadReport(p);
+    TouchpadReport r = decodeTouchpadReportV1(p);
     EXPECT(r.finger0.active);
     EXPECT(r.finger1.active);
     EXPECT(r.buttonPressed);
-    EXPECT_EQ(r.finger0.trackingId, (uint8_t)0x11);
+    EXPECT(!r.rightPressed);
+    EXPECT(!r.middlePressed);
     EXPECT_EQ(r.finger0.x, (int16_t)10000);
-    EXPECT_EQ(r.finger0.y, (int16_t)-1000);
-    EXPECT_EQ(r.finger1.trackingId, (uint8_t)0x22);
-    EXPECT_EQ(r.finger1.x, (int16_t)-32768);
     EXPECT_EQ(r.finger1.y, (int16_t)32767);
     EXPECT_EQ(r.eventTimeMs, 1234u);
+    EXPECT_EQ(r.scrollV, (int16_t)0);
 }
 
 static void test_decodeTouchpad_clear_flags() {
-    TEST("decodeTouchpadReport: zero flags means no contact, no button");
-    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES] = {0};
-    TouchpadReport r = decodeTouchpadReport(p);
+    TEST("decodeTouchpadReportV2: zero bytes mean no contact, no buttons, no scroll");
+    uint8_t p[TOUCHPAD_WIRE_PAYLOAD_BYTES_V2] = {0};
+    TouchpadReport r = decodeTouchpadReportV2(p);
     EXPECT(!r.finger0.active);
     EXPECT(!r.finger1.active);
     EXPECT(!r.buttonPressed);
+    EXPECT(!r.rightPressed);
+    EXPECT(!r.middlePressed);
+    EXPECT_EQ(r.scrollV, (int16_t)0);
 }
 
 int main() {
@@ -128,6 +175,8 @@ int main() {
     test_ds4Pack_tracking_and_lift_bit();
     test_decodeMotion_le_fields();
     test_decodeTouchpad_flags_fingers_time();
+    test_decodeTouchpad_buttonBitsIndependent();
+    test_decodeTouchpad_v1Layout();
     test_decodeTouchpad_clear_flags();
 
     std::cout << "\n=== Test Results ===\n";

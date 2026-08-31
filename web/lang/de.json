@@ -165,6 +165,8 @@
   "devices.touchpad.mouse.tip": "Verwendet das Touchpad als relative Maus auf diesem Rechner: Finger 0 bewegt den Mauszeiger, das klickbare Pad ist die linke Maustaste.",
   "devices.touchpad.off": "Aus",
   "devices.touchpad.off.tip": "Touchpad-Eingaben von diesem Gerät ignorieren.",
+  "devices.update-app": "Dish aktualisieren",
+  "devices.update-app.tip": "Die Dish-App dieses Geräts nutzt ein älteres Protokoll. Es funktioniert weiterhin; aktualisiere die App auf dem Handy für die neuesten Funktionen.",
   "devices.err.remove": "Dieses gekoppelte Gerät konnte nicht entfernt werden",
   "devices.err.touchpad-mode": "Touchpad-Weiterleitung konnte nicht geändert werden",
 

@@ -150,6 +150,8 @@
   "devices.touchpad.mouse.tip": "Koristi dodirnu ploču kao relativni miš na ovom računaru: prst 0 pomjera kursor, klik ploče je lijevo dugme miša.",
   "devices.touchpad.off": "Isključeno",
   "devices.touchpad.off.tip": "Ignoriši ulaz dodirne ploče s ovog uređaja.",
+  "devices.update-app": "Ažuriraj Dish",
+  "devices.update-app.tip": "Dish aplikacija ovog uređaja koristi stariji protokol. I dalje radi; ažuriraj aplikaciju na telefonu za najnovije funkcije.",
   "devices.err.remove": "Taj upareni uređaj se nije mogao ukloniti",
   "devices.err.touchpad-mode": "Usmjeravanje dodirne ploče se nije moglo promijeniti",
   "motion.na.text": "Nema pokreta",

@@ -80,6 +80,8 @@ static std::string buildConnectionsJson(const SessionService& svc) {
         c["connectedAtEpoch"] = cs.connectedAtEpoch;
         c["epoch"] = cs.epoch;
         c["mouseControlGranted"] = cs.mouseControlGranted;
+        c["protocolVersion"] = cs.protocolVersion;
+        c["protocolCurrent"] = PROTOCOL_VERSION;
         // Active or NotResponding here; /api/devices covers the Paired (offline) case.
         c["state"] = deviceLinkStateName(cs.linkState);
 

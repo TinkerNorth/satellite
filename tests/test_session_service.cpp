@@ -70,6 +70,9 @@ struct MockViGem : IGamepadPort {
     int lastMouseDx = 0;
     int lastMouseDy = 0;
     bool lastMouseButton = false;
+    bool lastMouseRight = false;
+    bool lastMouseMiddle = false;
+    int lastMouseWheel = 0;
     // Tests synthesize "the platform fired a notification" by invoking these via
     // fireRumble / fireLightbar.
     RumbleCallback capturedRumbleCb;
@@ -158,11 +161,14 @@ struct MockViGem : IGamepadPort {
         // Switch Pro slots have no touchpad node and drop it.
         return submitTouchpadReturnVal && identityHasTouchpad(identityFor(serial));
     }
-    bool submitRelativeMouse(int dx, int dy, bool leftButton) override {
+    bool submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) override {
         submitRelativeMouseCalls++;
         lastMouseDx = dx;
         lastMouseDy = dy;
-        lastMouseButton = leftButton;
+        lastMouseButton = buttons.left;
+        lastMouseRight = buttons.right;
+        lastMouseMiddle = buttons.middle;
+        lastMouseWheel = wheelV;
         return submitRelativeMouseReturnVal;
     }
     bool supportsRelativeMouse() const override { return supportsRelativeMouseVal; }
@@ -296,12 +302,34 @@ static ControllerDescriptor makeDesc(uint8_t idx, uint8_t type = CONTROLLER_TYPE
     return d;
 }
 
-static SessionUpsertResult upsert(SessionService& svc,
-                                  const std::vector<ControllerDescriptor>& descriptors = {},
-                                  const std::string& devId = "dev1",
-                                  const std::string& devName = "TestDevice",
-                                  bool mouseControl = false) {
-    return svc.upsertSession(devId, devName, "192.168.1.100", TEST_KEY, descriptors, mouseControl);
+static SessionUpsertResult
+upsert(SessionService& svc, const std::vector<ControllerDescriptor>& descriptors = {},
+       const std::string& devId = "dev1", const std::string& devName = "TestDevice",
+       bool mouseControl = false, int protocolVersion = PROTOCOL_VERSION) {
+    return svc.upsertSession(devId, devName, "192.168.1.100", TEST_KEY, descriptors, mouseControl,
+                             protocolVersion);
+}
+
+static void test_upsert_recordsProtocolVersion() {
+    TEST("upsert: the negotiated protocol version rides the result and the snapshot");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r1 = upsert(svc, {makeDesc(0)}, "dev1", "D", false, 1);
+    EXPECT_EQ(r1.protocolVersion, 1);
+    auto snap1 = svc.getConnectionsSnapshot();
+    EXPECT_EQ(snap1.connections.size(), size_t{1});
+    if (!snap1.connections.empty()) EXPECT_EQ(snap1.connections[0].protocolVersion, 1);
+
+    // A re-PUT from an updated client raises the session in place.
+    auto r2 = upsert(svc, {makeDesc(0)}, "dev1", "D", false, PROTOCOL_VERSION);
+    EXPECT_EQ(r2.protocolVersion, PROTOCOL_VERSION);
+    auto snap2 = svc.getConnectionsSnapshot();
+    if (!snap2.connections.empty()) {
+        EXPECT_EQ(snap2.connections[0].protocolVersion, PROTOCOL_VERSION);
+    }
 }
 
 static void test_upsert_createsSession() {
@@ -1619,6 +1647,55 @@ static void test_touchpad_mouseMode_clickWithoutTouch() {
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
 
+static void test_touchpad_mouseMode_extendedButtonsAndWheel() {
+    TEST("touchpad: mouse mode forwards right/middle levels and the wheel event");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    TouchpadReport tr = mkTouch(false, 0, 0, 0, 1000);
+    tr.rightPressed = true;
+    tr.middlePressed = true;
+    tr.scrollV = 240;
+    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(!vigem.lastMouseButton);
+    EXPECT(vigem.lastMouseRight);
+    EXPECT(vigem.lastMouseMiddle);
+    EXPECT_EQ(vigem.lastMouseWheel, 240);
+
+    TouchpadReport up = mkTouch(false, 0, 0, 0, 1004);
+    EXPECT(svc.handleTouchpadData(r.token, 0, up));
+    EXPECT(!vigem.lastMouseRight);
+    EXPECT(!vigem.lastMouseMiddle);
+    EXPECT_EQ(vigem.lastMouseWheel, 0);
+}
+
+static void test_touchpad_mouseMode_wheelDuplicateSuppressed() {
+    TEST("touchpad: mouse mode: a duplicated frame must not scroll twice");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    TouchpadReport tr = mkTouch(false, 0, 0, 0, 1000);
+    tr.scrollV = 120;
+    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT_EQ(vigem.lastMouseWheel, 120);
+    // Byte-identical UDP duplicate: same eventTimeMs, same scroll. Neutralized.
+    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT_EQ(vigem.lastMouseWheel, 0);
+    // A fresh frame with a newer stamp scrolls again.
+    TouchpadReport next = mkTouch(false, 0, 0, 0, 1008);
+    next.scrollV = -120;
+    EXPECT(svc.handleTouchpadData(r.token, 0, next));
+    EXPECT_EQ(vigem.lastMouseWheel, -120);
+}
+
 static void test_touchpad_mouseMode_subPixelRemainder() {
     TEST("touchpad: mouse mode: sub-pixel remainder accumulates; resends keep it; gaps drop it");
     MockViGem vigem;
@@ -1881,7 +1958,8 @@ static void test_wireConstants() {
     EXPECT_EQ((int)MSG_TOUCHPAD, 0x000C);
     EXPECT_EQ((int)MSG_LIGHTBAR, 0x000D);
     EXPECT_EQ((int)MSG_SESSION_CLOSE, 0x000F);
-    EXPECT_EQ(PROTOCOL_VERSION, 1);
+    EXPECT_EQ(PROTOCOL_VERSION, 2);
+    EXPECT_EQ(PROTOCOL_VERSION_MIN, 1);
     EXPECT_EQ(SESSION_SALT_SIZE, 8);
     EXPECT_EQ((int)CRYPTO_DIR_CLIENT_TO_SERVER, 0);
     EXPECT_EQ((int)CRYPTO_DIR_SERVER_TO_CLIENT, 1);
@@ -1889,6 +1967,7 @@ static void test_wireConstants() {
 
 int main() {
     test_upsert_createsSession();
+    test_upsert_recordsProtocolVersion();
     test_upsert_zeroControllerSessionIsValid();
     test_upsert_idempotent_stableConnectionId_rotatingToken();
     test_upsert_rotation_notifiesOldTokenReplaced();
@@ -1969,6 +2048,8 @@ int main() {
     test_touchpad_mouseMode_gapReanchors();
     test_touchpad_mouseMode_buttonLevel();
     test_touchpad_mouseMode_clickWithoutTouch();
+    test_touchpad_mouseMode_extendedButtonsAndWheel();
+    test_touchpad_mouseMode_wheelDuplicateSuppressed();
     test_touchpad_mouseMode_subPixelRemainder();
     test_replug_resetsStreamCaches();
     test_rumble_forwardsAndCoalesces();

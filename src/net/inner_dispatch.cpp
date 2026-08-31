@@ -51,11 +51,14 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         break;
     }
     case MSG_TOUCHPAD: {
-        // ctrlIdx(1) + TOUCHPAD_WIRE_PAYLOAD_BYTES(15) = 16 bytes; explicit LE
-        // decode like MOTION.
-        if (msgLen < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES) break;
+        // ctrlIdx(1) + a version-shaped payload; the two generations differ in
+        // length (15 vs 18 after ctrlIdx), so the frame length picks the decoder
+        // and a v1 sender keeps working against a v2 satellite.
+        if (msgLen < 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES_V1) break;
         uint8_t ctrlIdx = payload[0];
-        TouchpadReport report = decodeTouchpadReport(payload + 1);
+        TouchpadReport report = (msgLen >= 1 + TOUCHPAD_WIRE_PAYLOAD_BYTES_V2)
+                                    ? decodeTouchpadReportV2(payload + 1)
+                                    : decodeTouchpadReportV1(payload + 1);
         svc.handleTouchpadData(token, ctrlIdx, report);
         break;
     }
