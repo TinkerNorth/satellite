@@ -179,6 +179,24 @@ struct MockViGem : IGamepadPort {
     void fireLightbar(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         if (capturedLightbarCb) capturedLightbarCb(serial, r, g, b);
     }
+    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
+        setTriggerEffectsCallbackCalls++;
+        capturedTriggerEffectsCb = std::move(cb);
+    }
+    void fireTriggerEffects(uint32_t serial, const TriggerEffectsReport& report) {
+        if (capturedTriggerEffectsCb) capturedTriggerEffectsCb(serial, report);
+    }
+    void setPlayerLedsCallback(PlayerLedsCallback cb) override {
+        setPlayerLedsCallbackCalls++;
+        capturedPlayerLedsCb = std::move(cb);
+    }
+    void firePlayerLeds(uint32_t serial, uint8_t mask) {
+        if (capturedPlayerLedsCb) capturedPlayerLedsCb(serial, mask);
+    }
+    int setTriggerEffectsCallbackCalls = 0;
+    int setPlayerLedsCallbackCalls = 0;
+    TriggerEffectsCallback capturedTriggerEffectsCb;
+    PlayerLedsCallback capturedPlayerLedsCb;
 
     // Default mirrors real Windows/Linux: the motion-capable types
     // (controllerTypeHasMotion) have an IMU sink, Xbox does not.
@@ -270,6 +288,29 @@ struct MockClient : IClientPort {
         lastLightbarG = g;
         lastLightbarB = b;
     }
+    void sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
+                            const TriggerEffectsReport& report) override {
+        triggerEffectsCalls++;
+        lastTriggerEffectsConnToken = conn.token;
+        lastTriggerEffectsCtrlIdx = ctrlIdx;
+        lastTriggerEffects = report;
+    }
+    void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) override {
+        playerLedsCalls++;
+        lastPlayerLedsConnToken = conn.token;
+        lastPlayerLedsCtrlIdx = ctrlIdx;
+        lastPlayerLeds = ledMask;
+    }
+
+    int triggerEffectsCalls = 0;
+    uint32_t lastTriggerEffectsConnToken = 0;
+    uint8_t lastTriggerEffectsCtrlIdx = 0;
+    TriggerEffectsReport lastTriggerEffects{};
+
+    int playerLedsCalls = 0;
+    uint32_t lastPlayerLedsConnToken = 0;
+    uint8_t lastPlayerLedsCtrlIdx = 0;
+    uint8_t lastPlayerLeds = 0;
 };
 
 struct MockLog : ILogPort {
@@ -1822,6 +1863,112 @@ static void test_lightbar_gatedOnCap() {
     }
 }
 
+static TriggerEffectsReport makeTriggerEffects(uint8_t leftMode, uint8_t rightMode) {
+    TriggerEffectsReport t{};
+    t.left[0] = leftMode;
+    t.left[1] = 0x11;
+    t.left[10] = 0xAA;
+    t.right[0] = rightMode;
+    t.right[1] = 0x22;
+    t.right[10] = 0xBB;
+    return t;
+}
+
+static void test_triggerEffects_gatedOnCap() {
+    TEST("trigger effects: forwarded only to CAP_TRIGGER_EFFECTS senders, coalesced");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    EXPECT_EQ(vigem.setTriggerEffectsCallbackCalls, 1);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_TRIGGER_EFFECTS),
+                 makeDesc(1, CONTROLLER_TYPE_DUALSENSE, 0)});
+    uint32_t serial0 = 0, serial1 = 0;
+    {
+        auto snap = svc.getConnectionsSnapshot();
+        for (auto& c : snap.connections[0].controllers) {
+            if (c.index == 0) serial0 = c.serial;
+            if (c.index == 1) serial1 = c.serial;
+        }
+    }
+    const TriggerEffectsReport fx = makeTriggerEffects(0x21, 0x26);
+    vigem.fireTriggerEffects(serial0, fx);
+    EXPECT_EQ(client.triggerEffectsCalls, 1);
+    EXPECT_EQ((int)client.lastTriggerEffectsCtrlIdx, 0);
+    EXPECT((client.lastTriggerEffects == fx));
+    vigem.fireTriggerEffects(serial0, fx); // identical → coalesced
+    EXPECT_EQ(client.triggerEffectsCalls, 1);
+    TriggerEffectsReport fx2 = fx;
+    fx2.right[0] = 0x01; // one changed byte → forwarded
+    vigem.fireTriggerEffects(serial0, fx2);
+    EXPECT_EQ(client.triggerEffectsCalls, 2);
+    vigem.fireTriggerEffects(serial1, fx); // no cap → dropped from the wire
+    EXPECT_EQ(client.triggerEffectsCalls, 2);
+    vigem.fireTriggerEffects(9999, fx); // stray serial → dropped
+    EXPECT_EQ(client.triggerEffectsCalls, 2);
+}
+
+static void test_playerLeds_gatedOnCap() {
+    TEST("player LEDs: forwarded only to CAP_PLAYER_LEDS senders, coalesced");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    EXPECT_EQ(vigem.setPlayerLedsCallbackCalls, 1);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_PLAYER_LEDS),
+                 makeDesc(1, CONTROLLER_TYPE_DUALSENSE, 0)});
+    uint32_t serial0 = 0, serial1 = 0;
+    {
+        auto snap = svc.getConnectionsSnapshot();
+        for (auto& c : snap.connections[0].controllers) {
+            if (c.index == 0) serial0 = c.serial;
+            if (c.index == 1) serial1 = c.serial;
+        }
+    }
+    vigem.firePlayerLeds(serial0, 0x01);
+    EXPECT_EQ(client.playerLedsCalls, 1);
+    EXPECT_EQ((int)client.lastPlayerLeds, 0x01);
+    vigem.firePlayerLeds(serial0, 0x01); // identical → coalesced
+    EXPECT_EQ(client.playerLedsCalls, 1);
+    vigem.firePlayerLeds(serial0, 0x03);
+    EXPECT_EQ(client.playerLedsCalls, 2);
+    EXPECT_EQ((int)client.lastPlayerLeds, 0x03);
+    vigem.firePlayerLeds(serial1, 0x01); // no cap → dropped
+    EXPECT_EQ(client.playerLedsCalls, 2);
+    vigem.firePlayerLeds(9999, 0x01); // stray serial → dropped
+    EXPECT_EQ(client.playerLedsCalls, 2);
+}
+
+static void test_feedback_replugResetsCoalesce() {
+    TEST("replug: trigger/LED coalesce state resets, so the same value re-forwards");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(
+        svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS)});
+    (void)r;
+    uint32_t serial = vigem.pluggedSerials.back();
+    const TriggerEffectsReport fx = makeTriggerEffects(0x21, 0x26);
+    vigem.fireTriggerEffects(serial, fx);
+    vigem.firePlayerLeds(serial, 0x1F);
+    EXPECT_EQ(client.triggerEffectsCalls, 1);
+    EXPECT_EQ(client.playerLedsCalls, 1);
+
+    // Identity change forces a replug; the fresh pad must not have the old
+    // values suppressed as "same as last".
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS)});
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS)});
+    uint32_t serial2 = vigem.pluggedSerials.back();
+    vigem.fireTriggerEffects(serial2, fx);
+    vigem.firePlayerLeds(serial2, 0x1F);
+    EXPECT_EQ(client.triggerEffectsCalls, 2);
+    EXPECT_EQ(client.playerLedsCalls, 2);
+}
+
 static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
     TEST("rumble/lightbar: backend callbacks drop (never block) while mtx_ is held");
     MockViGem vigem;
@@ -2054,6 +2201,9 @@ int main() {
     test_replug_resetsStreamCaches();
     test_rumble_forwardsAndCoalesces();
     test_lightbar_gatedOnCap();
+    test_triggerEffects_gatedOnCap();
+    test_playerLeds_gatedOnCap();
+    test_feedback_replugResetsCoalesce();
     test_backendCallbacks_dropNotBlock_whenLockHeld();
 
     test_concurrent_upsertCloseSnapshot();

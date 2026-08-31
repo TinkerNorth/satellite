@@ -132,6 +132,14 @@ inline const uint16_t MSG_LIGHTBAR = 0x000D;
 // the session key exists (an unauthenticated close would be a spoofable DoS);
 // after teardown the only safe channel is REST status codes.
 inline const uint16_t MSG_SESSION_CLOSE = 0x000F;
+// DualSense trigger-effect passthrough (server to client). The raw 11-byte
+// effect blocks a game wrote to the virtual DualSense, forwarded verbatim so
+// the sender can replay them into a physical DualSense; the satellite never
+// interprets the effect modes. 0x000E was the deleted CAPS_UPDATE and is
+// never reused.
+inline const uint16_t MSG_TRIGGER_EFFECTS = 0x0010;
+// Player-indicator LEDs (server to client): bitmask, bit 0 = leftmost LED.
+inline const uint16_t MSG_PLAYER_LEDS = 0x0011;
 
 // MSG_SESSION_CLOSE reason byte.
 inline const uint8_t CLOSE_REASON_SHUTDOWN = 0;
@@ -159,6 +167,8 @@ inline const uint16_t CAP_ANALOG_TRIGGERS = 0x0001; // analog L/R triggers
 inline const uint16_t CAP_RUMBLE = 0x0002;          // accepts the MSG_RUMBLE return path
 inline const uint16_t CAP_MOTION = 0x0004;          // streams MSG_MOTION IMU data
 inline const uint16_t CAP_LIGHTBAR = 0x0008;        // accepts the MSG_LIGHTBAR return path
+inline const uint16_t CAP_TRIGGER_EFFECTS = 0x0010; // accepts the MSG_TRIGGER_EFFECTS return path
+inline const uint16_t CAP_PLAYER_LEDS = 0x0020;     // accepts the MSG_PLAYER_LEDS return path
 
 // Wire form is the lowercase string (protocol constant, never localized).
 inline const uint8_t APPLY_OK = 0;
@@ -317,6 +327,31 @@ struct RumbleReport {
     uint16_t weakMagnitude = 0;   // high-frequency / small motor
     uint16_t durationMs = 0;      // 0 = continuous (until next packet)
 };
+
+// DualSense adaptive-trigger effect blocks (game to controller, return path).
+// Each block is the raw 11-byte DS5 output-report field: mode byte + 10 param
+// bytes, forwarded verbatim (the mode vocabulary is DualSense firmware's, not
+// ours). Wire order is left then right; the DS5 output report stores right
+// first (offset 10) and left second (offset 21).
+inline const int TRIGGER_EFFECT_BLOCK_BYTES = 11;
+
+struct TriggerEffectsReport {
+    uint8_t left[TRIGGER_EFFECT_BLOCK_BYTES] = {};
+    uint8_t right[TRIGGER_EFFECT_BLOCK_BYTES] = {};
+
+    bool operator==(const TriggerEffectsReport& o) const {
+        return std::memcmp(left, o.left, TRIGGER_EFFECT_BLOCK_BYTES) == 0 &&
+               std::memcmp(right, o.right, TRIGGER_EFFECT_BLOCK_BYTES) == 0;
+    }
+    bool operator!=(const TriggerEffectsReport& o) const { return !(*this == o); }
+};
+
+// MSG_TRIGGER_EFFECTS payload length after the 1-byte ctrlIdx.
+inline const int TRIGGER_EFFECTS_WIRE_PAYLOAD_BYTES = 2 * TRIGGER_EFFECT_BLOCK_BYTES;
+
+// Player-indicator LED bitmask: bit 0 = leftmost LED. DualSense has 5 LEDs
+// (bits 0..4), Switch Pro 4 (bits 0..3); senders mask to their hardware.
+inline const int PLAYER_LEDS_WIRE_PAYLOAD_BYTES = 1;
 
 // Motion report (sender to satellite, gyro + accel). Fixed full-scale wire
 // convention so no downstream renormalisation:
@@ -573,6 +608,8 @@ struct Controller {
     std::string preferredBackend;
     bool motionCapable() const { return (caps & CAP_MOTION) != 0; }
     bool lightbarCapable() const { return (caps & CAP_LIGHTBAR) != 0; }
+    bool triggerEffectsCapable() const { return (caps & CAP_TRIGGER_EFFECTS) != 0; }
+    bool playerLedsCapable() const { return (caps & CAP_PLAYER_LEDS) != 0; }
     GamepadReport lastReport{};
     // Last rumble forwarded; coalesces identical back-to-back updates so a game
     // holding the motors steady doesn't blast the wire.
@@ -594,6 +631,12 @@ struct Controller {
     uint8_t lightbarG = 0;
     uint8_t lightbarB = 0;
     bool lastLightbarValid = false;
+    // Last trigger-effect / player-LED state forwarded; same coalesce shape as
+    // rumble so a game re-writing an unchanged report doesn't blast the wire.
+    TriggerEffectsReport lastTriggerEffects{};
+    bool lastTriggerEffectsValid = false;
+    uint8_t playerLeds = 0;
+    bool lastPlayerLedsValid = false;
 };
 
 // Per paired client session. Keyed on deviceId and STABLE across reconnects: a

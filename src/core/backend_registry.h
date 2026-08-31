@@ -100,6 +100,10 @@ struct BackendControllerSupport {
     bool touchpad;
     bool lightbar;
     const char* motionRequires;
+    // Raw-output surfaces: only a backend that hands back the game's own
+    // DS5/Switch output reports (HIDMaestro) can source these.
+    bool triggerEffects = false;
+    bool playerLeds = false;
 };
 
 // Static identity of a backend, independent of host availability. `support`

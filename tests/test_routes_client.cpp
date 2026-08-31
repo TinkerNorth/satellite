@@ -77,6 +77,8 @@ struct StubClient : IClientPort {
     void sendSessionClose(const Connection&, uint8_t) override { closeNotifies++; }
     void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
+    void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
+    void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
     int closeNotifies = 0;
 };
 
@@ -328,6 +330,44 @@ int main() {
                 EXPECT_EQ(jsonStr(c, "touchpadMode"), std::string("ds4"));
                 EXPECT_EQ(jsonBool(c["caps"], "motion"), true);
                 EXPECT_EQ(jsonBool(c["caps"], "rumble"), false);
+            }
+        }
+    }
+    {
+        TEST("caps roundtrip: triggerEffects/playerLeds parse and echo in the view");
+        auto res = cli.Put("/api/connections", auth,
+                           R"({"protocolVersion":2,
+                               "controllers":[{"ctrlIdx":0,"type":2,
+                               "caps":{"rumble":true,"triggerEffects":true,"playerLeds":true}}]})",
+                           "application/json");
+        EXPECT(res && res->status == 200);
+        auto view = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        EXPECT(view && view->status == 200);
+        if (view) {
+            Json j = parseJson(view->body);
+            if (j.contains("controllers") && j["controllers"].is_array() &&
+                j["controllers"].size() == 1) {
+                const Json& c = j["controllers"][0];
+                EXPECT_EQ(jsonBool(c["caps"], "triggerEffects"), true);
+                EXPECT_EQ(jsonBool(c["caps"], "playerLeds"), true);
+                EXPECT_EQ(jsonBool(c["caps"], "lightbar"), false);
+            } else {
+                EXPECT(false);
+            }
+        }
+        // An absent caps object parses to no caps bits, not an error.
+        auto res2 = cli.Put("/api/connections", auth,
+                            R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
+                            "application/json");
+        EXPECT(res2 && res2->status == 200);
+        auto view2 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        EXPECT(view2 && view2->status == 200);
+        if (view2) {
+            Json j = parseJson(view2->body);
+            if (j.contains("controllers") && j["controllers"].is_array() &&
+                j["controllers"].size() == 1) {
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "triggerEffects"), false);
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "playerLeds"), false);
             }
         }
     }

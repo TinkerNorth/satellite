@@ -39,6 +39,8 @@ struct MockPort : IGamepadPort {
     std::set<uint32_t> plugged;
     RumbleCallback rumbleCb;
     LightbarCallback lightbarCb;
+    TriggerEffectsCallback triggerEffectsCb;
+    PlayerLedsCallback playerLedsCb;
 
     explicit MockPort(std::string n, std::set<GamepadIdentity> ids)
         : name(std::move(n)), identities(std::move(ids)) {}
@@ -100,6 +102,10 @@ struct MockPort : IGamepadPort {
     bool motionBackendOk(uint32_t) const override { return true; }
     void setRumbleCallback(RumbleCallback cb) override { rumbleCb = std::move(cb); }
     void setLightbarCallback(LightbarCallback cb) override { lightbarCb = std::move(cb); }
+    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
+        triggerEffectsCb = std::move(cb);
+    }
+    void setPlayerLedsCallback(PlayerLedsCallback cb) override { playerLedsCb = std::move(cb); }
 };
 
 MockPort makeVigemLike(const char* name = "vigem") {
@@ -298,6 +304,24 @@ static void test_callbacks_fan_in() {
     b.lightbarCb(2, 10, 20, 30);
     EXPECT_EQ(lightbarSerials.size(), static_cast<size_t>(1));
     EXPECT_EQ(lightbarSerials[0], 2u);
+
+    // Trigger-effect and player-LED sinks fan out to every child the same way.
+    std::vector<uint32_t> triggerSerials;
+    std::vector<uint32_t> ledSerials;
+    mux.setTriggerEffectsCallback(
+        [&](uint32_t serial, const TriggerEffectsReport&) { triggerSerials.push_back(serial); });
+    mux.setPlayerLedsCallback([&](uint32_t serial, uint8_t) { ledSerials.push_back(serial); });
+    EXPECT(a.triggerEffectsCb != nullptr);
+    EXPECT(b.triggerEffectsCb != nullptr);
+    EXPECT(a.playerLedsCb != nullptr);
+    EXPECT(b.playerLedsCb != nullptr);
+    TriggerEffectsReport fx{};
+    a.triggerEffectsCb(3, fx);
+    b.playerLedsCb(4, 0x0F);
+    EXPECT_EQ(triggerSerials.size(), static_cast<size_t>(1));
+    EXPECT_EQ(triggerSerials[0], 3u);
+    EXPECT_EQ(ledSerials.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ledSerials[0], 4u);
 }
 
 static void test_relative_mouse_first_supporting() {

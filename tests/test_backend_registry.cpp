@@ -220,6 +220,57 @@ static void test_uinput_advertises_no_lightbar_it_cannot_deliver() {
     }
 }
 
+static void test_rawOutput_surfaces_hidmaestro_only() {
+    TEST("triggerEffects/playerLeds ride only HIDMaestro's raw-output types");
+    // HIDMaestro hands back the game's raw DS5/Switch output reports, so it is
+    // the only backend that can source trigger effects and player LEDs.
+    const BackendDescriptor* hm = backendDescriptorById(BACKEND_ID_HIDMAESTRO);
+    EXPECT(hm != nullptr);
+    for (size_t i = 0; i < hm->supportCount; ++i) {
+        const BackendControllerSupport& cs = hm->support[i];
+        if (cs.controllerType == CONTROLLER_TYPE_DUALSENSE) {
+            EXPECT(cs.triggerEffects);
+            EXPECT(cs.playerLeds);
+        } else if (cs.controllerType == CONTROLLER_TYPE_SWITCHPRO) {
+            EXPECT(!cs.triggerEffects);
+            EXPECT(cs.playerLeds);
+        } else {
+            EXPECT(!cs.triggerEffects);
+            EXPECT(!cs.playerLeds);
+        }
+    }
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_UINPUT, BACKEND_ID_MAC_HID}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr);
+        for (size_t i = 0; i < d->supportCount; ++i) {
+            EXPECT(!d->support[i].triggerEffects);
+            EXPECT(!d->support[i].playerLeds);
+        }
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}), "\"triggerEffects\":true"));
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}), "\"playerLeds\":true"));
+    }
+    const std::string json = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(contains(json, "\"triggerEffects\":true"));
+    EXPECT(contains(json, "\"playerLeds\":true"));
+
+    // Traits aggregation carries them through for the catalog.
+    CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(t.dualsenseTriggerEffectsSupported);
+    EXPECT(t.dualsensePlayerLedsSupported);
+    EXPECT(t.switchProPlayerLedsSupported);
+    // ViGEm first: DS4 stays the preferred vigem shape, but the hidmaestro-only
+    // types still contribute their raw-output surfaces.
+    CatalogBackendTraits u =
+        deriveCatalogTraits({{BACKEND_ID_VIGEM, true, ""}, {BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(u.dualsenseTriggerEffectsSupported);
+    EXPECT(u.dualsensePlayerLedsSupported);
+    EXPECT(u.switchProPlayerLedsSupported);
+    CatalogBackendTraits v = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
+    EXPECT(!v.dualsenseTriggerEffectsSupported);
+    EXPECT(!v.dualsensePlayerLedsSupported);
+    EXPECT(!v.switchProPlayerLedsSupported);
+}
+
 static void test_deriveCatalogTraits_uinput_matches_legacy() {
     TEST("deriveCatalogTraits — uinput reproduces the historical Linux traits");
     CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
@@ -435,6 +486,7 @@ int main() {
     test_deriveCatalogTraits_windows_union();
     test_deriveCatalogTraits_order_decides_requires();
     test_uinput_advertises_no_lightbar_it_cannot_deliver();
+    test_rawOutput_surfaces_hidmaestro_only();
     test_deriveCatalogTraits_uinput_matches_legacy();
     test_deriveCatalogTraits_machid_matches_legacy();
     test_deriveCatalogTraits_ignores_availability();

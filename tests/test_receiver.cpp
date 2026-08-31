@@ -61,6 +61,8 @@ struct StubClient : IClientPort {
     void sendSessionClose(const Connection&, uint8_t) override {}
     void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
+    void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
+    void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
     int heartbeatAcks = 0;
 };
 

@@ -153,6 +153,14 @@ class GamepadMux : public IGamepadPort {
         for (IGamepadPort* p : ports_) p->setLightbarCallback(cb);
     }
 
+    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
+        for (IGamepadPort* p : ports_) p->setTriggerEffectsCallback(cb);
+    }
+
+    void setPlayerLedsCallback(PlayerLedsCallback cb) override {
+        for (IGamepadPort* p : ports_) p->setPlayerLedsCallback(cb);
+    }
+
     const char* backendIdForSerial(uint32_t serial) const override {
         const IGamepadPort* p = ownerOf(serial);
         return p == nullptr ? "" : p->backendId();

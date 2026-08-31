@@ -47,6 +47,8 @@ class HidMaestroAdapter : public IGamepadPort {
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
+    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override;
+    void setPlayerLedsCallback(PlayerLedsCallback cb) override;
 
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
     bool submitBattery(uint32_t serial, const BatteryReport& report) override;
@@ -104,6 +106,8 @@ class HidMaestroAdapter : public IGamepadPort {
 
     RumbleCallback rumbleCb_;
     LightbarCallback lightbarCb_;
+    TriggerEffectsCallback triggerEffectsCb_;
+    PlayerLedsCallback playerLedsCb_;
 
     RelMouseButtonState relMouseBtns_;
 

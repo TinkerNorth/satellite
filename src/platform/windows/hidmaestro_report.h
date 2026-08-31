@@ -391,6 +391,14 @@ struct DecodedOutput {
     uint8_t r = 0;
     uint8_t g = 0;
     uint8_t b = 0;
+    // DS5 only: per-trigger valid flags mirror valid_flag0 bits 2/3, so a game
+    // rewriting one trigger doesn't clobber the cached other block.
+    bool hasLeftTriggerEffect = false;
+    bool hasRightTriggerEffect = false;
+    uint8_t leftTriggerEffect[TRIGGER_EFFECT_BLOCK_BYTES] = {};
+    uint8_t rightTriggerEffect[TRIGGER_EFFECT_BLOCK_BYTES] = {};
+    bool hasPlayerLeds = false;
+    uint8_t playerLeds = 0;
 };
 
 // Switch HD-rumble block -> a coarse 0..1 amplitude (the same reduction the
@@ -431,16 +439,35 @@ inline DecodedOutput decodeOutputPacket(GamepadIdentity identity, const OutputPa
         }
         break;
     case GamepadIdentity::DualSense:
-        // DS5 output report 0x02, RID stripped: motors at payload 2/3 (right/
-        // weak precedes left/strong), lightbar RGB at 44-46 gated on
-        // valid_flag2's lightbar-control bit.
-        if (pkt.source == OUTPUT_SOURCE_HID_OUTPUT && pkt.reportId == 0x02 && pkt.size >= 47) {
-            if (pkt.data[0] & 0x03) {
+        // DS5 output report 0x02, RID stripped (SDL DS5EffectsState_t /
+        // hid-playstation dualsense_output_report_common layout): valid_flag0
+        // at 0, valid_flag1 at 1, motors at 2/3 (right/weak precedes
+        // left/strong), right trigger-effect block at 10-20, left at 21-31,
+        // valid_flag2 at 38, player LEDs at 43, lightbar RGB at 44-46.
+        if (pkt.source == OUTPUT_SOURCE_HID_OUTPUT && pkt.reportId == 0x02) {
+            if (pkt.size >= 4 && (pkt.data[0] & 0x03)) {
                 out.hasRumble = true;
                 out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
                 out.rumble.strongMagnitude = static_cast<uint16_t>(pkt.data[3]) * 257;
             }
-            if (pkt.data[38] & 0x04) {
+            // valid_flag0 bit 2 = right trigger effect, bit 3 = left.
+            if (pkt.size >= 32 && (pkt.data[0] & 0x04)) {
+                out.hasRightTriggerEffect = true;
+                std::memcpy(out.rightTriggerEffect, pkt.data + 10, TRIGGER_EFFECT_BLOCK_BYTES);
+            }
+            if (pkt.size >= 32 && (pkt.data[0] & 0x08)) {
+                out.hasLeftTriggerEffect = true;
+                std::memcpy(out.leftTriggerEffect, pkt.data + 21, TRIGGER_EFFECT_BLOCK_BYTES);
+            }
+            // valid_flag1 bit 4 = player-indicator control.
+            if (pkt.size >= 44 && (pkt.data[1] & 0x10)) {
+                out.hasPlayerLeds = true;
+                out.playerLeds = static_cast<uint8_t>(pkt.data[43] & 0x1F);
+            }
+            // Lightbar: valid_flag1 bit 2 is the documented control-enable
+            // (SDL/hid-playstation); the valid_flag2 bit-2 gate predates this
+            // decoder and is kept so whatever matched it keeps matching.
+            if (pkt.size >= 47 && ((pkt.data[1] & 0x04) || (pkt.data[38] & 0x04))) {
                 out.hasLightbar = true;
                 out.r = pkt.data[44];
                 out.g = pkt.data[45];
@@ -451,7 +478,9 @@ inline DecodedOutput decodeOutputPacket(GamepadIdentity identity, const OutputPa
     case GamepadIdentity::SwitchPro:
         // Rumble subcommand 0x01 / stream 0x10, RID stripped: payload byte 0
         // is the global packet counter, bytes 1-4 the left HD-rumble block,
-        // 5-8 the right.
+        // 5-8 the right. On 0x01 the subcommand id sits at byte 9 with its
+        // arguments from 10; subcommand 0x30 is the player-lights write whose
+        // low nibble is the solid-LED bitmask (high nibble = flash bits).
         if (pkt.source == OUTPUT_SOURCE_HID_OUTPUT &&
             (pkt.reportId == 0x01 || pkt.reportId == 0x10) && pkt.size >= 9) {
             const float left = switchRumbleAmplitude(pkt.data + 1);
@@ -459,6 +488,10 @@ inline DecodedOutput decodeOutputPacket(GamepadIdentity identity, const OutputPa
             out.hasRumble = true;
             out.rumble.strongMagnitude = static_cast<uint16_t>(left * 65535.0f);
             out.rumble.weakMagnitude = static_cast<uint16_t>(right * 65535.0f);
+            if (pkt.reportId == 0x01 && pkt.size >= 11 && pkt.data[9] == 0x30) {
+                out.hasPlayerLeds = true;
+                out.playerLeds = static_cast<uint8_t>(pkt.data[10] & 0x0F);
+            }
         }
         break;
     }

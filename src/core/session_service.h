@@ -122,6 +122,14 @@ class SessionService {
     // controller, coalesces, sends only unique updates.
     void handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b);
 
+    // Trigger-effect blocks from the backend's raw-output callback. Coalesces,
+    // then forwards only to senders that advertised CAP_TRIGGER_EFFECTS.
+    void handleTriggerEffectsFromBackend(uint32_t serial, const TriggerEffectsReport& report);
+
+    // Player-LED bitmask from the backend's raw-output callback. Coalesces,
+    // then forwards only to senders that advertised CAP_PLAYER_LEDS.
+    void handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMask);
+
     // Look up a connection's key + last counter; false if token not found.
     bool getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
                         uint32_t& outLastCounter) const;

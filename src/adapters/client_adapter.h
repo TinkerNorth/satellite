@@ -24,6 +24,9 @@ class ClientAdapter : public IClientPort {
                           uint16_t activeBitmap) override;
     void sendSessionClose(const Connection& conn, uint8_t reason) override;
     void sendRumble(const Connection& conn, uint8_t ctrlIdx, const RumbleReport& report) override;
+    void sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
+                            const TriggerEffectsReport& report) override;
+    void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) override;
     void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                       uint8_t b) override;
 
