@@ -184,19 +184,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // HIDMaestro for the rest and as the fallback when ViGEmBus is absent.
     ViGEmAdapter vigemAdapter;
     satellite::hidmaestro::HelperClient hmProvisioner;
+    // Windows ranks a newly arrived endpoint above every device the user has
+    // ever chosen, so materializing the pad hands it the whole desktop's audio.
+    // Declared BEFORE the adapter that borrows it, so it is still alive while
+    // that adapter tears down; joins its worker on the way out.
+    satellite::audioguard::PlugGuardRunner audioDefaultGuard([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return g_config.controllerAudioKeepDefaultDevice;
+    });
     // Read per plug, not cached: the dashboard toggle takes effect on the next
     // pad, and a pad already carrying audio keeps it until it is replugged.
     HidMaestroAdapter hidMaestroAdapter(hmProvisioner, [] {
         std::lock_guard<std::mutex> lk(g_configMtx);
         return g_config.controllerAudio;
-    });
-    // Windows ranks a newly arrived endpoint above every device the user has
-    // ever chosen, so materializing the pad hands it the whole desktop's audio.
-    // Outlives the adapter it is wired into, and joins its worker on the way
-    // out; the setting is read per plug like the one above.
-    satellite::audioguard::PlugGuardRunner audioDefaultGuard([] {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        return g_config.controllerAudioKeepDefaultDevice;
     });
     hidMaestroAdapter.setCompositePlugHooks(
         [&audioDefaultGuard] { audioDefaultGuard.beforeCompositePlug(); },
