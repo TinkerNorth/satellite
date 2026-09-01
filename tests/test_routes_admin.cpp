@@ -32,6 +32,7 @@
 using satellite::Json;
 using satellite::jsonBool;
 using satellite::jsonInt;
+using satellite::jsonObject;
 using satellite::jsonParse;
 using satellite::jsonStr;
 
@@ -337,6 +338,90 @@ int main() {
         EXPECT(other && other->status == 200);
         std::lock_guard<std::mutex> lk(g_configMtx);
         EXPECT_EQ(g_config.controllerAudio, true);
+    }
+    {
+        TEST("POST /api/config: each audio direction applies on its own");
+        auto res =
+            cli.Post("/api/config", R"({"controllerAudioMic":false,"controllerAudioSpeaker":true})",
+                     "application/json");
+        EXPECT(res && res->status == 200);
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            EXPECT_EQ(g_config.controllerAudioMic, false);
+            EXPECT_EQ(g_config.controllerAudioSpeaker, true);
+            EXPECT_EQ(g_config.controllerAudio, true);
+        }
+
+        TEST("GET /api/status carries both directions, so the form can seed itself");
+        auto status = cli.Get("/api/status");
+        EXPECT(status && status->status == 200);
+        if (status) {
+            const Json s = parseJson(status->body);
+            EXPECT_EQ(jsonBool(s, "controllerAudioMic"), false);
+            EXPECT_EQ(jsonBool(s, "controllerAudioSpeaker"), true);
+        }
+
+        TEST("GET /api/server/capabilities reports the directions as runtime state");
+        auto caps = cli.Get("/api/server/capabilities");
+        EXPECT(caps && caps->status == 200);
+        if (caps) {
+            const Json c = parseJson(caps->body);
+            const Json block = jsonObject(c, "controllerAudio");
+            EXPECT_EQ(jsonBool(block, "enabled"), true);
+            EXPECT_EQ(jsonBool(block, "mic"), false);
+            EXPECT_EQ(jsonBool(block, "speaker"), true);
+        }
+
+        TEST("POST /api/config: an absent direction key leaves that direction alone");
+        auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
+        EXPECT(other && other->status == 200);
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            EXPECT_EQ(g_config.controllerAudioMic, false);
+            EXPECT_EQ(g_config.controllerAudioSpeaker, true);
+        }
+
+        TEST("the master switch off forces both directions false in capabilities");
+        // The block reports what will actually flow, not what is configured: a
+        // pad that never materializes its endpoints streams neither direction,
+        // whatever the direction switches say.
+        auto masterOff =
+            cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
+        EXPECT(masterOff && masterOff->status == 200);
+        auto caps2 = cli.Get("/api/server/capabilities");
+        EXPECT(caps2 && caps2->status == 200);
+        if (caps2) {
+            const Json block = jsonObject(parseJson(caps2->body), "controllerAudio");
+            EXPECT_EQ(jsonBool(block, "enabled"), false);
+            EXPECT_EQ(jsonBool(block, "mic"), false);
+            EXPECT_EQ(jsonBool(block, "speaker"), false);
+        }
+
+        auto restore = cli.Post(
+            "/api/config",
+            R"({"controllerAudio":true,"controllerAudioMic":true,"controllerAudioSpeaker":true})",
+            "application/json");
+        EXPECT(restore && restore->status == 200);
+    }
+    {
+        TEST("POST /api/config: the default-device guard round-trips");
+        auto off = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":false})",
+                            "application/json");
+        EXPECT(off && off->status == 200);
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            EXPECT_EQ(g_config.controllerAudioKeepDefaultDevice, false);
+        }
+        auto status = cli.Get("/api/status");
+        EXPECT(status && status->status == 200);
+        if (status) {
+            EXPECT_EQ(jsonBool(parseJson(status->body), "controllerAudioKeepDefaultDevice"), false);
+        }
+        auto on = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":true})",
+                           "application/json");
+        EXPECT(on && on->status == 200);
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        EXPECT_EQ(g_config.controllerAudioKeepDefaultDevice, true);
     }
     {
         TEST("POST /api/config: autoStart round-trips through the platform hook");
