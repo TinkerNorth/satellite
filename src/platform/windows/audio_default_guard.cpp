@@ -64,8 +64,6 @@ const char* restoreReasonName(RestoreReason reason) {
         return "current-unknown";
     case RestoreReason::NotStolen:
         return "not-stolen";
-    case RestoreReason::AlreadyRestored:
-        return "already-restored";
     case RestoreReason::NoSnapshot:
         return "no-snapshot";
     case RestoreReason::PriorWasOurs:
@@ -88,10 +86,6 @@ DefaultEndpointDecision decideRestore(const RoleSnapshot& snap, const RoleObserv
     }
     if (!obs.currentIsOurs) {
         d.reason = RestoreReason::NotStolen;
-        return d;
-    }
-    if (snap.restored) {
-        d.reason = RestoreReason::AlreadyRestored;
         return d;
     }
     if (!snap.captured) {
@@ -117,12 +111,7 @@ DefaultEndpointDecision decideRestore(const RoleSnapshot& snap, const RoleObserv
     return d;
 }
 
-void noteRestoreResult(RoleSnapshot& snap, bool succeeded) {
-    if (succeeded) snap.restored = true;
-}
-
 bool couldRestoreLater(const RoleSnapshot& snap) {
-    if (snap.restored) return false;
     if (!snap.captured) return false;
     if (snap.priorWasOurs) return false;
     return !normalizeDeviceId(snap.priorId).empty();

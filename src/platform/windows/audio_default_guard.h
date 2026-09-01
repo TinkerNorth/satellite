@@ -59,11 +59,16 @@ bool deviceIdContains(const std::string& haystack, const std::string& needle);
 // shape change degrades into a failed devnode lookup, never a wrong match.
 std::string stripKsFilterPrefix(const std::string& ksFilterPath);
 
+// No per-plug "already restored" latch, on purpose. Two composite pads in one
+// session upsert plug milliseconds apart and Windows promotes each endpoint as
+// it enumerates, so one window sees two promotions; a latch would hand the
+// second pad the desktop. Inside the window a stolen default is always the
+// plug's doing, never the user's, so every observation is judged on its own
+// and the poll budget is what bounds the fight.
 struct RoleSnapshot {
     bool captured = false;
     std::string priorId;
     bool priorWasOurs = false; // the user had already chosen a pad; leave it
-    bool restored = false;     // once-per-role-per-plug latch
 };
 
 struct Snapshot {
@@ -79,7 +84,6 @@ enum class RestoreAction { None, Restore };
 enum class RestoreReason {
     CurrentUnknown,
     NotStolen,
-    AlreadyRestored,
     NoSnapshot,
     PriorWasOurs,
     NoPriorDefault,
@@ -103,13 +107,10 @@ struct DefaultEndpointDecision {
 
 DefaultEndpointDecision decideRestore(const RoleSnapshot& snap, const RoleObservation& obs);
 
-// A failed SetDefaultEndpoint leaves the latch open so the next poll retries;
-// only a success is once-per-role-per-plug.
-void noteRestoreResult(RoleSnapshot& snap, bool succeeded);
-
-// Whether a later poll could still restore this role. Promotion is not
-// synchronous with the plug returning, so the caller polls over a bounded
-// window; this lets it stop as soon as every role has settled.
+// Whether a poll could restore this role at all: a captured prior that is
+// neither empty nor one of ours. Promotion is not synchronous with the plug
+// returning, so the caller polls over a bounded window; a snapshot with no
+// restorable role lets it skip the window entirely.
 bool couldRestoreLater(const RoleSnapshot& snap);
 bool anyRoleCouldRestoreLater(const Snapshot& snapshot);
 

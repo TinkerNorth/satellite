@@ -353,7 +353,7 @@ void AudioDefaultGuard::snapshotBeforePlug() {
 }
 
 bool AudioDefaultGuard::restoreRoleLocked(void* enumerator, Role role) {
-    RoleSnapshot& s = snapshot_.role(role);
+    const RoleSnapshot& s = snapshot_.role(role);
 
     RoleObservation obs;
     obs.haveCurrent =
@@ -366,7 +366,6 @@ bool AudioDefaultGuard::restoreRoleLocked(void* enumerator, Role role) {
     ProbeVerdict verdict = ProbeVerdict::CoCreateFailed;
     HRESULT setHr = E_FAIL;
     const bool ok = setDefaultEndpoint(decision.targetId, role, obs.currentId, verdict, setHr);
-    noteRestoreResult(s, ok);
 
     if (ok) {
         ++restoredTotal_;
@@ -438,8 +437,9 @@ std::string AudioDefaultGuard::report() const {
 
 // Promotion is not synchronous with the plug returning: usbip attach, usbccgp,
 // usbaudio.sys, the KS interface, AudioEndpointBuilder, then the heuristic
-// re-runs. Five seconds of 250 ms polls covers that with room to spare, and the
-// loop stops early the moment every role has settled.
+// re-runs. Five seconds of 250 ms polls covers that with room to spare. The
+// loop runs the whole budget rather than stopping at the first restore, since
+// a second pad's endpoint arriving later in the same window is promoted too.
 namespace {
 const int GUARD_POLL_INTERVAL_MS = 250;
 const int GUARD_POLL_BUDGET = 20;
@@ -460,6 +460,14 @@ PlugGuardRunner::~PlugGuardRunner() {
 
 void PlugGuardRunner::beforeCompositePlug() {
     if (enabled_ && !enabled_()) return;
+    {
+        // The window may close between this read and the snapshot, which only
+        // means the earlier plug's promotions are done and a fresh snapshot is
+        // the right one; it cannot open, because only afterCompositePlug opens
+        // it and the adapter serialises the two hooks.
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (windowOpen_) return;
+    }
     guard_.reset();
     guard_.snapshotBeforePlug();
 }
@@ -469,6 +477,7 @@ void PlugGuardRunner::afterCompositePlug() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         armed_ = true;
+        windowOpen_ = true;
     }
     cv_.notify_one();
 }
@@ -485,8 +494,8 @@ void PlugGuardRunner::worker() {
             const RestorePass pass = guard_.restoreIfStolen();
             if (!pass.keepPolling) break;
             std::unique_lock<std::mutex> wait(mtx_);
-            // A new plug re-arms mid-window: abandon this pass rather than
-            // restoring against a snapshot that is about to be replaced.
+            // A new plug re-arms mid-window: restart the budget from that plug
+            // so its own promotion, up to five seconds out, is still inside it.
             if (cv_.wait_for(wait, std::chrono::milliseconds(GUARD_POLL_INTERVAL_MS),
                              [this] { return armed_ || stop_; })) {
                 break;
@@ -495,6 +504,7 @@ void PlugGuardRunner::worker() {
 
         lk.lock();
         if (stop_) return;
+        if (!armed_) windowOpen_ = false;
     }
 }
 

@@ -64,8 +64,9 @@ struct RestorePass {
 // restoreIfStolen() repeatedly over a bounded window afterwards. Promotion is
 // not synchronous with the plug returning (usbip attach, usbccgp, usbaudio.sys,
 // the KS interface, AudioEndpointBuilder, then the heuristic re-runs), so a
-// single immediate check misses it; the timing is the caller's to choose, and
-// every pass is idempotent per role.
+// single immediate check misses it; the timing is the caller's to choose. Each
+// pass restores whatever it finds stolen, and a second promotion inside the
+// window (a second pad) is restored again; only the caller's budget ends it.
 class AudioDefaultGuard {
   public:
     void snapshotBeforePlug();
@@ -109,7 +110,10 @@ class PlugGuardRunner {
 
     // Both are safe to call under a caller's lock. beforeCompositePlug does the
     // COM reads inline because the snapshot must be of the state BEFORE the
-    // endpoint exists; afterCompositePlug only signals.
+    // endpoint exists; afterCompositePlug only signals. A plug that lands while
+    // an earlier plug's window is still open keeps that window's snapshot: the
+    // current default may already be the first pad, and a fresh snapshot would
+    // record it as the user's choice and defend it.
     void beforeCompositePlug();
     void afterCompositePlug();
 
@@ -123,6 +127,7 @@ class PlugGuardRunner {
     std::mutex mtx_;
     std::condition_variable cv_;
     bool armed_ = false;
+    bool windowOpen_ = false;
     bool stop_ = false;
     std::thread thread_;
 };

@@ -6,7 +6,7 @@
 // the guard off a user's real DualSense (identical VID/PID, name, form factor),
 // and the IPolicyConfig probe verdict is what stands between us and calling an
 // unidentified vtable slot in the audio service. Both get exhaustive coverage
-// here, alongside the full restore matrix and the once-per-role-per-plug latch.
+// here, alongside the full restore matrix and the two-pads-in-one-window case.
 // Pure (no <windows.h>), so it runs on every CI platform.
 #include "test_util.h"
 
@@ -24,13 +24,11 @@ const char* const SPEAKERS = "{0.0.0.00000000}.{a1b2c3d4-0000-4000-8000-00000000
 const char* const HEADSET = "{0.0.0.00000000}.{a1b2c3d4-0000-4000-8000-000000000002}";
 const char* const PAD = "{0.0.0.00000000}.{a1b2c3d4-0000-4000-8000-0000000000ff}";
 
-RoleSnapshot captured(const std::string& priorId, bool priorWasOurs = false,
-                      bool restored = false) {
+RoleSnapshot captured(const std::string& priorId, bool priorWasOurs = false) {
     RoleSnapshot s;
     s.captured = true;
     s.priorId = priorId;
     s.priorWasOurs = priorWasOurs;
-    s.restored = restored;
     return s;
 }
 
@@ -274,76 +272,63 @@ static void test_decide_will_not_restore_to_the_current_default() {
     EXPECT(d.reason == RestoreReason::PriorIsCurrent);
 }
 
-static void test_decide_is_once_per_role_per_plug() {
-    TEST("a role already restored this plug is never restored again");
-    DefaultEndpointDecision d = decideRestore(
-        captured(SPEAKERS, /*priorWasOurs=*/false, /*restored=*/true), seeing(PAD, true));
-    EXPECT(d.action == RestoreAction::None);
-    EXPECT(d.reason == RestoreReason::AlreadyRestored);
+static void test_decide_restores_every_promotion_in_the_window() {
+    const char* const PAD_B = "{0.0.0.00000000}.{a1b2c3d4-0000-4000-8000-0000000000fe}";
 
-    TEST("a SECOND promotion after a successful restore is deliberately ignored");
-    RoleSnapshot s = captured(SPEAKERS);
+    TEST("a second pad promoted after the first was put back is put back too");
+    const RoleSnapshot s = captured(SPEAKERS);
     DefaultEndpointDecision first = decideRestore(s, seeing(PAD, true));
     EXPECT(first.action == RestoreAction::Restore);
-    noteRestoreResult(s, true);
-    DefaultEndpointDecision second = decideRestore(s, seeing(PAD, true));
-    EXPECT(second.action == RestoreAction::None);
-    EXPECT(second.reason == RestoreReason::AlreadyRestored);
-}
+    EXPECT_EQ(first.targetId, std::string(SPEAKERS));
+    DefaultEndpointDecision settled = decideRestore(s, seeing(SPEAKERS, false));
+    EXPECT(settled.action == RestoreAction::None);
+    EXPECT(settled.reason == RestoreReason::NotStolen);
+    DefaultEndpointDecision second = decideRestore(s, seeing(PAD_B, true));
+    EXPECT(second.action == RestoreAction::Restore);
+    EXPECT_EQ(second.targetId, std::string(SPEAKERS));
 
-static void test_note_restore_result_latches_only_on_success() {
-    TEST("a failed SetDefaultEndpoint leaves the latch open for the next poll");
-    RoleSnapshot s = captured(SPEAKERS);
-    noteRestoreResult(s, false);
-    EXPECT(!s.restored);
+    TEST("the same pad promoted twice is restored twice: the decision has no memory");
+    DefaultEndpointDecision again = decideRestore(s, seeing(PAD, true));
+    EXPECT(again.action == RestoreAction::Restore);
+    EXPECT(again.reason == RestoreReason::Stolen);
+
+    TEST("a failed SetDefaultEndpoint changes nothing for the next poll either");
     DefaultEndpointDecision retry = decideRestore(s, seeing(PAD, true));
     EXPECT(retry.action == RestoreAction::Restore);
     EXPECT_EQ(retry.targetId, std::string(SPEAKERS));
-
-    TEST("a success closes it");
-    noteRestoreResult(s, true);
-    EXPECT(s.restored);
-
-    TEST("a later failure cannot reopen a closed latch");
-    noteRestoreResult(s, false);
-    EXPECT(s.restored);
 }
 
 static void test_decision_matrix_is_exhaustive() {
-    TEST("every combination of the six inputs agrees with the stated rules");
+    TEST("every combination of the five inputs agrees with the stated rules");
     const char* const priors[] = {"", SPEAKERS, PAD};
     for (int haveCurrent = 0; haveCurrent < 2; ++haveCurrent) {
         for (int currentIsOurs = 0; currentIsOurs < 2; ++currentIsOurs) {
-            for (int restored = 0; restored < 2; ++restored) {
-                for (int capturedFlag = 0; capturedFlag < 2; ++capturedFlag) {
-                    for (int priorWasOurs = 0; priorWasOurs < 2; ++priorWasOurs) {
-                        for (const char* prior : priors) {
-                            RoleSnapshot s;
-                            s.captured = capturedFlag != 0;
-                            s.priorId = prior;
-                            s.priorWasOurs = priorWasOurs != 0;
-                            s.restored = restored != 0;
+            for (int capturedFlag = 0; capturedFlag < 2; ++capturedFlag) {
+                for (int priorWasOurs = 0; priorWasOurs < 2; ++priorWasOurs) {
+                    for (const char* prior : priors) {
+                        RoleSnapshot s;
+                        s.captured = capturedFlag != 0;
+                        s.priorId = prior;
+                        s.priorWasOurs = priorWasOurs != 0;
 
-                            RoleObservation o;
-                            o.haveCurrent = haveCurrent != 0;
-                            o.currentId = PAD;
-                            o.currentIsOurs = currentIsOurs != 0;
+                        RoleObservation o;
+                        o.haveCurrent = haveCurrent != 0;
+                        o.currentId = PAD;
+                        o.currentIsOurs = currentIsOurs != 0;
 
-                            const bool priorEmpty = std::string(prior).empty();
-                            const bool priorIsCurrent = std::string(prior) == std::string(PAD);
-                            const bool expect = o.haveCurrent && o.currentIsOurs && !s.restored &&
-                                                s.captured && !s.priorWasOurs && !priorEmpty &&
-                                                !priorIsCurrent;
+                        const bool priorEmpty = std::string(prior).empty();
+                        const bool priorIsCurrent = std::string(prior) == std::string(PAD);
+                        const bool expect = o.haveCurrent && o.currentIsOurs && s.captured &&
+                                            !s.priorWasOurs && !priorEmpty && !priorIsCurrent;
 
-                            DefaultEndpointDecision d = decideRestore(s, o);
-                            EXPECT_EQ(d.action == RestoreAction::Restore, expect);
-                            if (expect) {
-                                EXPECT_EQ(d.targetId, std::string(prior));
-                                EXPECT(d.reason == RestoreReason::Stolen);
-                            } else {
-                                EXPECT(d.targetId.empty());
-                                EXPECT(d.reason != RestoreReason::Stolen);
-                            }
+                        DefaultEndpointDecision d = decideRestore(s, o);
+                        EXPECT_EQ(d.action == RestoreAction::Restore, expect);
+                        if (expect) {
+                            EXPECT_EQ(d.targetId, std::string(prior));
+                            EXPECT(d.reason == RestoreReason::Stolen);
+                        } else {
+                            EXPECT(d.targetId.empty());
+                            EXPECT(d.reason != RestoreReason::Stolen);
                         }
                     }
                 }
@@ -355,9 +340,9 @@ static void test_decision_matrix_is_exhaustive() {
 static void test_reason_names_are_total() {
     TEST("every reason has a log token and the switch has no hole");
     const RestoreReason all[] = {
-        RestoreReason::CurrentUnknown, RestoreReason::NotStolen,    RestoreReason::AlreadyRestored,
-        RestoreReason::NoSnapshot,     RestoreReason::PriorWasOurs, RestoreReason::NoPriorDefault,
-        RestoreReason::PriorIsCurrent, RestoreReason::Stolen,
+        RestoreReason::CurrentUnknown, RestoreReason::NotStolen,      RestoreReason::NoSnapshot,
+        RestoreReason::PriorWasOurs,   RestoreReason::NoPriorDefault, RestoreReason::PriorIsCurrent,
+        RestoreReason::Stolen,
     };
     for (RestoreReason r : all) {
         const std::string name = restoreReasonName(r);
@@ -371,28 +356,27 @@ static void test_could_restore_later_drives_the_poll_window() {
     TEST("a live snapshot keeps the caller polling");
     EXPECT(couldRestoreLater(captured(SPEAKERS)));
 
-    TEST("every terminal state stops it");
+    TEST("only a snapshot with nothing to restore to stops it; a restore does not");
     EXPECT(!couldRestoreLater(RoleSnapshot{}));
-    EXPECT(!couldRestoreLater(captured(SPEAKERS, false, /*restored=*/true)));
     EXPECT(!couldRestoreLater(captured(SPEAKERS, /*priorWasOurs=*/true)));
     EXPECT(!couldRestoreLater(captured("")));
     EXPECT(!couldRestoreLater(captured("  \0", false)));
 }
 
 static void test_snapshot_roles_are_independent() {
-    TEST("roles latch separately: restoring console leaves the others pollable");
+    TEST("roles are judged separately: one the user gave to a pad leaves the others pollable");
     Snapshot snap;
     for (Role r : ALL_ROLES) snap.role(r) = captured(SPEAKERS);
     EXPECT(anyRoleCouldRestoreLater(snap));
 
-    noteRestoreResult(snap.role(Role::Console), true);
+    snap.role(Role::Console) = captured(PAD, /*priorWasOurs=*/true);
     EXPECT(!couldRestoreLater(snap.role(Role::Console)));
     EXPECT(couldRestoreLater(snap.role(Role::Multimedia)));
     EXPECT(couldRestoreLater(snap.role(Role::Communications)));
     EXPECT(anyRoleCouldRestoreLater(snap));
 
-    noteRestoreResult(snap.role(Role::Multimedia), true);
-    noteRestoreResult(snap.role(Role::Communications), true);
+    snap.role(Role::Multimedia) = captured(PAD, /*priorWasOurs=*/true);
+    snap.role(Role::Communications) = captured(PAD, /*priorWasOurs=*/true);
     EXPECT(!anyRoleCouldRestoreLater(snap));
 
     TEST("clear() puts it back to inert, so the next plug starts clean");
@@ -400,7 +384,7 @@ static void test_snapshot_roles_are_independent() {
     EXPECT(!anyRoleCouldRestoreLater(snap));
     for (Role r : ALL_ROLES) {
         EXPECT(!snap.role(r).captured);
-        EXPECT(!snap.role(r).restored);
+        EXPECT(!snap.role(r).priorWasOurs);
         EXPECT(snap.role(r).priorId.empty());
     }
 
@@ -409,28 +393,62 @@ static void test_snapshot_roles_are_independent() {
 }
 
 static void test_plug_lifecycle_walkthrough() {
-    TEST("snapshot, three polls, one late promotion: exactly one restore");
+    TEST("snapshot, one late promotion, every later poll quiet: exactly one restore per role");
     Snapshot snap;
     for (Role r : ALL_ROLES) snap.role(r) = captured(SPEAKERS);
 
+    // Promotion is not synchronous with the plug returning; it lands on the
+    // third poll here, the restore takes, and the polls after it see speakers.
     int restores = 0;
-    for (int pass = 0; pass < 4; ++pass) {
-        // Promotion is not synchronous with the plug returning; it lands on
-        // the third poll here.
-        const bool stolen = pass >= 2;
+    for (int pass = 0; pass < 6; ++pass) {
+        const bool stolen = pass == 2;
         for (Role r : ALL_ROLES) {
-            RoleSnapshot& s = snap.role(r);
+            const RoleSnapshot& s = snap.role(r);
             if (!couldRestoreLater(s)) continue;
             DefaultEndpointDecision d = decideRestore(s, seeing(stolen ? PAD : SPEAKERS, stolen));
             if (d.action == RestoreAction::Restore) {
                 EXPECT_EQ(d.targetId, std::string(SPEAKERS));
                 ++restores;
-                noteRestoreResult(s, true);
             }
         }
     }
     EXPECT_EQ(restores, 3);
-    EXPECT(!anyRoleCouldRestoreLater(snap));
+    EXPECT(anyRoleCouldRestoreLater(snap));
+}
+
+static void test_two_pads_in_one_window() {
+    const char* const PAD_B = "{0.0.0.00000000}.{a1b2c3d4-0000-4000-8000-0000000000fe}";
+
+    TEST("two pads plugged back to back: both promotions are undone against the ONE prior");
+    // A second plug inside the window keeps the first plug's snapshot (see
+    // PlugGuardRunner::beforeCompositePlug), so the prior is still the user's
+    // speakers when pad B's endpoint is promoted three polls after pad A's.
+    Snapshot snap;
+    for (Role r : ALL_ROLES) snap.role(r) = captured(SPEAKERS);
+
+    int restores = 0;
+    for (int pass = 0; pass < 8; ++pass) {
+        const char* current = pass == 2 ? PAD : pass == 5 ? PAD_B : SPEAKERS;
+        const bool stolen = current != SPEAKERS;
+        for (Role r : ALL_ROLES) {
+            const RoleSnapshot& s = snap.role(r);
+            if (!couldRestoreLater(s)) continue;
+            DefaultEndpointDecision d = decideRestore(s, seeing(current, stolen));
+            if (d.action == RestoreAction::Restore) {
+                EXPECT_EQ(d.targetId, std::string(SPEAKERS));
+                ++restores;
+            }
+        }
+    }
+    EXPECT_EQ(restores, 6);
+
+    TEST("and a fresh snapshot taken while pad A was still the default would defend pad A");
+    // Which is exactly why the runner must not take one mid-window.
+    const RoleSnapshot mistaken = captured(PAD, /*priorWasOurs=*/true);
+    EXPECT(!couldRestoreLater(mistaken));
+    DefaultEndpointDecision d = decideRestore(mistaken, seeing(PAD_B, true));
+    EXPECT(d.action == RestoreAction::None);
+    EXPECT(d.reason == RestoreReason::PriorWasOurs);
 }
 
 static void test_chain_recognises_our_devnode_by_service() {
@@ -771,13 +789,13 @@ int main() {
     test_decide_requires_a_non_empty_prior_id();
     test_decide_respects_a_deliberate_user_choice();
     test_decide_will_not_restore_to_the_current_default();
-    test_decide_is_once_per_role_per_plug();
-    test_note_restore_result_latches_only_on_success();
+    test_decide_restores_every_promotion_in_the_window();
     test_decision_matrix_is_exhaustive();
     test_reason_names_are_total();
     test_could_restore_later_drives_the_poll_window();
     test_snapshot_roles_are_independent();
     test_plug_lifecycle_walkthrough();
+    test_two_pads_in_one_window();
 
     test_chain_recognises_our_devnode_by_service();
     test_chain_recognises_our_devnode_by_hardware_id();
