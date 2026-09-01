@@ -19,6 +19,7 @@
 #include "updater_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
+#include "adapters/audio/opus_codec.h"
 
 #include "core/gamepad_mux.h"
 #include "core/session_service.h"
@@ -186,7 +187,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     satellite::GamepadMux gamepadMux({&vigemAdapter, &hidMaestroAdapter});
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
-    SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey);
+    // Controller audio's Opus codec, injected for the same reason as the key
+    // deriver above: the core owns the stream shapes, not the library that
+    // codes them. Stateless and scoped to main, so it outlives the service.
+    satellite::audio::OpusCodecFactory audioCodecs;
+    SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     // The persist callback runs under g_configMtx so saveConfig sees a consistent struct.

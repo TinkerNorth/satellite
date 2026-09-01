@@ -17,6 +17,7 @@
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
+#include "adapters/audio/opus_codec.h"
 
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -130,7 +131,11 @@ int main(int argc, const char* argv[]) {
     GamepadAdapter gamepadAdapter;
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
-    SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey);
+    // See the Windows main for why the codec is injected rather than built
+    // into the core. uinput has no audio endpoint to feed today, but the
+    // service's audio paths are platform-neutral and stay wired the same way.
+    satellite::audio::OpusCodecFactory audioCodecs;
+    SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
 
     LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
     UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);

@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install cmake pkg-config libsodium
+          brew install cmake pkg-config libsodium opus
 
       # Same pin as linux-ci.yml: a floating brew clang-format diverges from
       # the Linux lane on every LLVM bump. venv instead of pipx — the macOS
@@ -44,6 +44,7 @@ jobs:
           clang++ --version
           clang-format --version
           pkg-config --modversion libsodium
+          pkg-config --modversion opus
 
       - name: clang-format (check only)
         run: |

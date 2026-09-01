@@ -148,6 +148,17 @@ webserver and `UpdateService` are themselves adapters/infrastructure and touch
 port would add a seam with no domain consumer. (An earlier unused `IConfigPort` /
 `ConfigAdapter` pair was removed for exactly this reason.)
 
+A third-party library the core needs is a seam of its own, not a port: the core
+declares the shape and `main.cpp` supplies the implementation. HKDF arrives that
+way (`SessionService::KeyDeriver`, a `std::function` wired to
+`net/session_crypto.h`), and so does the controller-audio codec
+(`core/audio/audio_codec.h` declares `IAudioDecoder`/`IAudioEncoder` and a
+factory; `adapters/audio/opus_codec.*` implements them over libopus). The core
+purity gate is what forces this: `src/core` may include no third-party header,
+so anything that links one lives outside it. A null factory is a supported
+state — the audio paths still validate, gate and rate-limit, they just have
+nowhere to put the samples.
+
 ### Pattern: a pure codec, separate from its I/O
 
 Every wire format or derived value is split into a pure, socket-free core
@@ -163,6 +174,7 @@ and a thin I/O shell, so the format is unit-testable without a socket or driver:
 | `core/ds4_report.h` (DS4 v2 pack/parse/descriptor; shared by two shells) | `platform/macos/mac_hid_gamepad_adapter.cpp` (IOHIDUserDevice), `platform/windows/hidmaestro_adapter.cpp` |
 | `platform/windows/hidmaestro_wire.{h,cpp}` (seqlock frames + output ring) | `platform/windows/hidmaestro_adapter.cpp` (mapped sections, doorbells) |
 | `platform/windows/hidmaestro_report.h` (per-profile packers + output decode) | `platform/windows/hidmaestro_adapter.cpp` |
+| `core/audio/audio_jitter.h` (u16 reorder window, gap/late decisions) | `adapters/audio/opus_codec.cpp` (libopus), `core/session_service.cpp` |
 
 When adding a wire format, follow this split: put the byte-shaping in a pure
 function and give it a `tests/test_*.cpp` suite.

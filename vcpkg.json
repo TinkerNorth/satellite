@@ -6,6 +6,7 @@
   "homepage": "https://github.com/TinkerNorth/satellite",
   "dependencies": [
     "libsodium",
-    "openssl"
+    "openssl",
+    "opus"
   ]
 }

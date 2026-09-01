@@ -67,9 +67,9 @@ which we don't want sitting in CI secrets. After a release publishes:
 ## Why `-bin` instead of building from source
 
 An Arch source package (`satellite`) would need to pull `libcurl-dev`,
-`libsodium-dev`, `gtk3` headers, `libayatana-appindicator` headers, and
-`cmake` at build time. The AppImage is already bundled and code-signed
-upstream, so the `-bin` flavor is faster to install, exercises the same
+`libsodium-dev`, `opus` headers, `gtk3` headers, `libayatana-appindicator`
+headers, and `cmake` at build time. The AppImage is already bundled and
+code-signed upstream, so the `-bin` flavor is faster to install, exercises the same
 artifact every other Linux distribution channel exercises, and matches
 the conventions of similar AUR packages (e.g. `signal-desktop-bin`,
 `obsidian-bin`).

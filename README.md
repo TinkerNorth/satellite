@@ -155,7 +155,7 @@ game input. See `docs/architecture.md` → "macOS backend" for the design.
 Prerequisites:
 
 - Xcode Command Line Tools (`xcode-select --install`)
-- Homebrew packages: `brew install cmake pkg-config libsodium`
+- Homebrew packages: `brew install cmake pkg-config libsodium opus`
 
 Build:
 
@@ -179,10 +179,11 @@ the Windows behavior.
 Prerequisites:
 
 - `cmake`, `g++` (or `clang++`), `pkg-config`
-- libsodium development headers
-    - Debian/Ubuntu: `sudo apt install libsodium-dev`
-    - Fedora/RHEL:   `sudo dnf install libsodium-devel`
-    - Arch:          `sudo pacman -S libsodium`
+- libsodium and libopus development headers (libopus is the
+  controller-audio codec)
+    - Debian/Ubuntu: `sudo apt install libsodium-dev libopus-dev`
+    - Fedora/RHEL:   `sudo dnf install libsodium-devel opus-devel`
+    - Arch:          `sudo pacman -S libsodium opus`
 - *(Optional, for the system tray icon)* libayatana-appindicator + GTK3 dev
   headers. Without these, the binary builds headless and runs a
   `sigwait` loop. The web UI at `http://localhost:9877` is the primary
@@ -247,7 +248,7 @@ sudo apt install ./satellite_*.deb
 
 ```bash
 sudo apt install build-essential cmake pkg-config dpkg-dev rpm \
-                 libsodium-dev libcurl4-openssl-dev \
+                 libsodium-dev libopus-dev libcurl4-openssl-dev \
                  libayatana-appindicator3-dev libgtk-3-dev   # optional tray
 ./build-deb.sh
 ```

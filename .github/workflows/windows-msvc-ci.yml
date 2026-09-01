@@ -65,10 +65,10 @@ jobs:
 
       # windows-latest ships VS (MSVC + Spectre-mitigated libs) and a vcpkg
       # checkout at VCPKG_INSTALLATION_ROOT, the same image release.yml builds
-      # on. The configure step's vcpkg toolchain auto-installs libsodium +
-      # openssl (static) from vcpkg.json, restored from the binary cache
-      # above; only a cold cache still builds OpenSSL from source, and the
-      # archives that run stores serve every later run on the same image.
+      # on. The configure step's vcpkg toolchain auto-installs libsodium,
+      # openssl and opus (static) from vcpkg.json, restored from the binary
+      # cache above; only a cold cache still builds OpenSSL from source, and
+      # the archives that run stores serve every later run on the same image.
       - name: Configure (MSVC + vcpkg static, hardened release)
         shell: pwsh
         run: |

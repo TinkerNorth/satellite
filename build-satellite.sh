@@ -7,7 +7,7 @@
 #    to ViGEmBus ships here), so the build produces a server that still
 #    pairs, authenticates, and reports status but refuses controller-add
 #    requests with ACK_ERR_VIGEM_UNAVAIL.
-#    Prerequisites: Xcode CLT; Homebrew: cmake, libsodium, pkg-config.
+#    Prerequisites: Xcode CLT; Homebrew: cmake, libsodium, opus, pkg-config.
 #
 #  Linux:
 #    Virtual gamepads are synthesized via /dev/uinput. The uinput kernel
@@ -17,10 +17,10 @@
 #
 #    Prerequisites:
 #      - cmake, g++, pkg-config
-#      - libsodium development headers
-#          Debian/Ubuntu: libsodium-dev
-#          Fedora/RHEL:   libsodium-devel
-#          Arch:          libsodium
+#      - libsodium and libopus development headers
+#          Debian/Ubuntu: libsodium-dev libopus-dev
+#          Fedora/RHEL:   libsodium-devel opus-devel
+#          Arch:          libsodium opus
 #      - libayatana-appindicator + GTK3 development headers (optional —
 #        without these the binary builds headless / no tray icon)
 #          Debian/Ubuntu: libayatana-appindicator3-dev libgtk-3-dev

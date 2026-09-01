@@ -22,8 +22,14 @@ class SessionService {
                                           const uint8_t salt[SESSION_SALT_SIZE], uint32_t token,
                                           uint8_t outSessionKey[CRYPTO_KEY_SIZE])>;
 
+    // `audioCodecs` follows the same rule as `keyDeriver`: injected so the core
+    // stays libopus-free (scripts/check_core_purity.sh), production wires
+    // adapters/audio/opus_codec.h's factory, and it must outlive the service.
+    // Null is a supported state, not a degraded one -- a build or a suite with
+    // no codec still validates, gates and rate-limits audio, it just has
+    // nowhere to put the samples.
     SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
-                   KeyDeriver keyDeriver = {});
+                   KeyDeriver keyDeriver = {}, IAudioCodecFactory* audioCodecs = nullptr);
 
     // Declarative session upsert, keyed on deviceId. Creates the row on first
     // contact; afterwards rotates token/salt/sessionKey in place (connectionId
@@ -252,6 +258,14 @@ class SessionService {
     // Test seam: shift a connection's liveness clocks backwards so the
     // reap/grace/stall paths are testable without real sleeps.
     void backdateForTest(uint32_t token, int lastPacketSecondsAgo, int graceSecondsAgo);
+    // Test seam: reopen a controller's mic allowance so a suite can stream past
+    // MIC_AUDIO_MAX_PACKETS_PER_SEC frames without spending real seconds. Any
+    // audio test longer than 75 frames needs this or it measures the rate
+    // limiter instead of the thing under test.
+    void resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx);
+    // Test seam: preset the outbound speaker sequence, so the u16 wrap is
+    // reachable without encoding 65536 frames of audio to get there.
+    void setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
 #endif
 
   private:
@@ -259,6 +273,8 @@ class SessionService {
     IClientPort& client_;
     ILogPort& log_;
     KeyDeriver keyDeriver_;
+    // Non-owning; null when this build has no codec (see the constructor).
+    IAudioCodecFactory* audioCodecs_ = nullptr;
 
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
@@ -276,12 +292,23 @@ class SessionService {
     // nothing holds it (a stray event from a just-unplugged controller's
     // worker). Every backend-sourced callback funnels through this.
     bool findBySerialLocked(uint32_t serial, Connection*& outConn, Controller*& outCtrl);
-    // Controller audio, SAT-2 seam: the two halves that need the Opus codec and
-    // the jitter window. SAT-1 lands every gate around them so the validation,
-    // gating and rate limit are testable before the codec exists.
+    // Controller audio. Both halves run past every gate handleMicAudio /
+    // handleSpeakerAudioFromBackend applies, so they only ever see frames that
+    // belong to a bound, capable slot.
+    // Inbound: reorder window, then decode (FEC on a gap that has a carrier,
+    // concealment otherwise), then the pad's mic endpoint. False means the
+    // window refused the packet -- late, duplicate or malformed.
     bool deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const uint8_t* opus, size_t opusLen);
+    // Outbound: re-window whatever the backend handed over into whole 20 ms
+    // frames, encode each, send it. False means the frame could not be taken at
+    // all; a partial batch that is merely still short of a frame is a true.
     bool encodeAndSendSpeakerAudioLocked(Connection& conn, Controller& ctrl,
                                          const int16_t* stereo48k, size_t frames);
+    // One encoded 20 ms window onto the wire, advancing the controller's seq.
+    void sendSpeakerFrameLocked(Connection& conn, Controller& ctrl, ControllerAudio& audio,
+                                const int16_t* frame);
+    // The pad's audio working set, allocated on first use (see ControllerAudio).
+    ControllerAudio& ensureControllerAudioLocked(Controller& ctrl);
     Connection* findByDeviceId(const std::string& deviceId);
     Connection* findByConnectionId(const std::string& connectionId);
     const Connection* findByConnectionId(const std::string& connectionId) const;

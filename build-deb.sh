@@ -20,7 +20,7 @@
 #
 #  Prerequisites (Debian/Ubuntu):
 #      sudo apt install build-essential cmake pkg-config dpkg-dev \
-#                       libsodium-dev \
+#                       libsodium-dev libopus-dev \
 #                       libayatana-appindicator3-dev libgtk-3-dev
 # ============================================================================
 

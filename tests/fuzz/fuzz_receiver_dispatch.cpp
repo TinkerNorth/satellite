@@ -32,6 +32,7 @@
 #include "core/session_service.h"
 #include "net/inner_dispatch.h"
 #include "net/session_crypto.h"
+#include "adapters/audio/opus_codec.h"
 
 #include <sodium.h>
 
@@ -82,6 +83,10 @@ struct FuzzLog : ILogPort {
 FuzzGamepad g_gamepad;
 FuzzClient g_client;
 FuzzLog g_log;
+// The real codec, so attacker-chosen MSG_MIC_AUDIO bytes reach opus_decode
+// instead of stopping at the reorder window. Malformed Opus is exactly the kind
+// of input this harness exists to survive.
+satellite::audio::OpusCodecFactory g_audioCodecs;
 SessionService* g_svc = nullptr;
 uint32_t g_token = 0;
 
@@ -120,7 +125,7 @@ void initOnce() {
     // AEAD behavior is undefined before sodium_init (production calls it at
     // startup; the harness must too).
     if (sodium_init() < 0) abort();
-    static SessionService svc(g_gamepad, g_client, g_log, deriveSessionKey);
+    static SessionService svc(g_gamepad, g_client, g_log, deriveSessionKey, &g_audioCodecs);
     g_svc = &svc;
     openSession();
 }
@@ -162,6 +167,13 @@ void parseAndDispatch(uint32_t token, uint32_t counter, const uint8_t* plaintext
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     initOnce();
     if (size < 5) return 0;
+
+    // The mic path is rate-limited to MIC_AUDIO_MAX_PACKETS_PER_SEC, which a
+    // fuzzer outruns in milliseconds: left alone, every input after the first
+    // few dozen would be refused before reaching the decoder. Reopening the
+    // window each input keeps the codec on the fuzzed surface without touching
+    // the limiter's own logic (which test_session_service covers).
+    g_svc->resetMicRateWindowForTest(g_token, 1);
 
     // Proactive re-key: keep the session decryptable for the next input even
     // after a counter near the top advanced the replay floor.

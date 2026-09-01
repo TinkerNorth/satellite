@@ -24,8 +24,9 @@ static uint32_t makeRandomToken() {
 }
 
 SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
-                               KeyDeriver keyDeriver)
-    : backend_(backend), client_(client), log_(log), keyDeriver_(std::move(keyDeriver)) {
+                               KeyDeriver keyDeriver, IAudioCodecFactory* audioCodecs)
+    : backend_(backend), client_(client), log_(log), keyDeriver_(std::move(keyDeriver)),
+      audioCodecs_(audioCodecs) {
     // The `this`-capturing lambdas are safe: SessionService outlives the adapter,
     // and the adapter joins its notification workers before the callbacks fire.
     backend_.setRumbleCallback(
@@ -186,6 +187,13 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     // across a replug would swallow the first second of the new stream.
     ctrl.micWindowStart = std::chrono::steady_clock::time_point{};
     ctrl.micPacketsInWindow = 0;
+    // The codecs and the reorder window belong to the pad that WAS here. A
+    // decoder carries the previous pad's filter state and concealment history,
+    // and a sequence number carried across would make the new stream look like
+    // a 40 ms reorder of the old one. Dropping the whole thing also returns the
+    // memory (see ControllerAudio) rather than holding it for a pad that may
+    // never speak.
+    ctrl.audio.reset();
     // Controller structs persist across remove/re-add, so stale samples would
     // show phantom "active" state and a MOUSE first sample would delta against a
     // pre-readd finger (cursor jump).
@@ -207,6 +215,10 @@ void SessionService::removeControllerLocked(Connection& conn, Controller& ctrl) 
     if (ctrl.serialNo != 0) unplugAndRelease(ctrl.serialNo);
     ctrl.active = false;
     ctrl.serialNo = 0;
+    // resetControllerStreamState would do this at the next bind, but the codec
+    // pair is tens of kilobytes and an unbound slot may stay unbound for the
+    // rest of the session. Release it with the pad.
+    ctrl.audio.reset();
     conn.activeControllerCount--;
     conn.epoch++;
 }
@@ -940,30 +952,107 @@ bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t se
     return deliverMicAudioLocked(ctrl, seq, opus, opusLen);
 }
 
-// TODO(SAT-2): decode. Feed (seq, opus) through the controller's jitter window,
-// run the Opus decoder (PLC on a gap, FEC on the next packet), and push the
-// mono PCM to backend_.submitMicAudioPcm(ctrl.serialNo, ...). Until then a
-// validated frame is accepted and discarded: SAT-1 owns the gates, not the
-// codec.
+ControllerAudio& SessionService::ensureControllerAudioLocked(Controller& ctrl) {
+    if (!ctrl.audio) ctrl.audio = std::make_unique<ControllerAudio>();
+    return *ctrl.audio;
+}
+
 bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const uint8_t* opus,
                                            size_t opusLen) {
-    (void)ctrl;
-    (void)seq;
-    (void)opus;
-    (void)opusLen;
+    ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
+    const AudioJitterWindow::Result pushed = audio.micWindow.push(seq, opus, opusLen);
+    // A frame whose slot has already been played (or concealed past) is worse
+    // than useless: splicing it in now would be an audible jump backwards.
+    if (pushed.accept != AudioJitterWindow::Accept::Ok) return false;
+    // Taken, but held for reordering. Nothing is due until the frame in front
+    // of it arrives or is proven lost.
+    if (pushed.count == 0) return true;
+
+    // Created here, not at plug: a slot that advertises CAP_MIC and never
+    // speaks should not carry a decoder around (see ControllerAudio).
+    if (!audio.micDecoder && audioCodecs_ != nullptr) {
+        audio.micDecoder = audioCodecs_->makeMicDecoder();
+    }
+    // No codec in this build, or the codec refused to allocate. The frame still
+    // passed every gate, so this is an accept-and-drop, not a rejection.
+    if (!audio.micDecoder) return true;
+
+    // Sized by the channel count rather than assuming mono: the decoder writes
+    // maxFrames * channels, so a buffer that only happened to be right because
+    // AUDIO_MIC_CHANNELS is 1 would become an overflow the day it isn't.
+    int16_t pcm[AUDIO_FRAME_SAMPLES * AUDIO_MIC_CHANNELS];
+    for (int i = 0; i < pushed.count; i++) {
+        const AudioJitterWindow::Event& ev = pushed.events[i];
+        size_t decoded = 0;
+        if (ev.kind == AudioJitterWindow::Event::Kind::Packet) {
+            decoded = audio.micDecoder->decode(ev.data, ev.len, pcm, AUDIO_FRAME_SAMPLES);
+        } else if (ev.fecCarrier != nullptr) {
+            // The window hands over packet seq+1 precisely because Opus hides a
+            // redundant copy of seq inside it. Order is load-bearing: the FEC
+            // copy is decoded here, BEFORE the carrier's own frame, which the
+            // window emits next.
+            decoded = audio.micDecoder->decodeFec(ev.fecCarrier, ev.fecCarrierLen, pcm,
+                                                  AUDIO_FRAME_SAMPLES);
+        } else {
+            decoded = audio.micDecoder->conceal(pcm, AUDIO_FRAME_SAMPLES);
+        }
+        // A backend with no mic endpoint on this serial returns false, which is
+        // not an error: senders keep streaming and the pad simply has nowhere
+        // to put it (IGamepadPort::submitMicAudioPcm).
+        if (decoded > 0) (void)backend_.submitMicAudioPcm(ctrl.serialNo, pcm, decoded);
+    }
     return true;
 }
 
-// TODO(SAT-2): encode. Run the frame through the controller's Opus encoder and
-// emit each 20 ms packet with client_.sendSpeakerAudio(conn, ctrl.index, seq,
-// ...), seq incrementing per controller and wrapping. Until then a gated frame
-// is accepted and discarded.
+void SessionService::sendSpeakerFrameLocked(Connection& conn, Controller& ctrl,
+                                            ControllerAudio& audio, const int16_t* frame) {
+    uint8_t packet[MAX_INNER_PAYLOAD_BYTES - AUDIO_WIRE_HEADER_BYTES];
+    const size_t bytes =
+        audio.speakerEncoder->encode(frame, AUDIO_FRAME_SAMPLES, packet, sizeof(packet));
+    // The seq advances even when the encode failed. The 20 ms happened; saying
+    // so lets the client conceal a hole instead of silently playing the stream
+    // short and drifting against the game's clock.
+    const uint16_t seq = audio.speakerSeq++;
+    if (bytes == 0) return;
+    client_.sendSpeakerAudio(conn, ctrl.index, seq, packet, bytes);
+}
+
 bool SessionService::encodeAndSendSpeakerAudioLocked(Connection& conn, Controller& ctrl,
                                                      const int16_t* stereo48k, size_t frames) {
-    (void)conn;
-    (void)ctrl;
-    (void)stereo48k;
-    (void)frames;
+    ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
+    if (!audio.speakerEncoder && audioCodecs_ != nullptr) {
+        audio.speakerEncoder = audioCodecs_->makeSpeakerEncoder();
+    }
+    // No codec: accepted and dropped, same as the inbound direction.
+    if (!audio.speakerEncoder) return true;
+
+    const size_t frameSamples = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS;
+    size_t consumed = 0; // frames taken from stereo48k
+
+    // A backend hands over whatever its ring held, which is a batch boundary,
+    // not a codec boundary: half a window, three windows, anything. Top up the
+    // leftover tail first so frames stay contiguous across calls.
+    if (!audio.speakerPending.empty()) {
+        const size_t need = frameSamples - audio.speakerPending.size();
+        const size_t offered = frames * AUDIO_SPEAKER_CHANNELS;
+        const size_t take = need < offered ? need : offered;
+        audio.speakerPending.insert(audio.speakerPending.end(), stereo48k, stereo48k + take);
+        consumed = take / AUDIO_SPEAKER_CHANNELS;
+        if (audio.speakerPending.size() < frameSamples) return true; // still short of a window
+        sendSpeakerFrameLocked(conn, ctrl, audio, audio.speakerPending.data());
+        audio.speakerPending.clear();
+    }
+
+    // Whole windows go straight from the caller's buffer; the steady state
+    // (exactly one window per call) never copies.
+    while (frames - consumed >= static_cast<size_t>(AUDIO_FRAME_SAMPLES)) {
+        sendSpeakerFrameLocked(conn, ctrl, audio, stereo48k + consumed * AUDIO_SPEAKER_CHANNELS);
+        consumed += AUDIO_FRAME_SAMPLES;
+    }
+    if (consumed < frames) {
+        audio.speakerPending.assign(stereo48k + consumed * AUDIO_SPEAKER_CHANNELS,
+                                    stereo48k + frames * AUDIO_SPEAKER_CHANNELS);
+    }
     return true;
 }
 
@@ -1176,6 +1265,22 @@ void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
     const auto now = std::chrono::steady_clock::now();
     it->second.lastPacketTime = now - std::chrono::seconds(lastPacketSecondsAgo);
     it->second.graceUntil = now - std::chrono::seconds(graceSecondsAgo);
+}
+
+void SessionService::resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+    // Exactly what handleMicAudio's window lapse does, without the second.
+    it->second.controllers[ctrlIdx].micWindowStart = std::chrono::steady_clock::time_point{};
+    it->second.controllers[ctrlIdx].micPacketsInWindow = 0;
+}
+
+void SessionService::setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+    ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).speakerSeq = seq;
 }
 #endif
 

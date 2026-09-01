@@ -4,9 +4,12 @@
 #pragma once
 
 #include "core/version.h"
+#include "core/audio/audio_codec.h"
+#include "core/audio/audio_jitter.h"
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <array>
 #include <vector>
@@ -699,6 +702,27 @@ struct ControllerApplyResult {
     std::string backendId;
 };
 
+// A controller's audio working set: the reorder window and the two codecs, one
+// pair per pad because both are stateful across frames. Allocated on the pad's
+// first audio frame in either direction and released with it -- an Opus decoder
+// alone is ~18 KB, which is far and away the largest thing a controller owns,
+// and most controllers never carry audio at all.
+struct ControllerAudio {
+    // Inbound MSG_MIC_AUDIO: reorder window feeding the decoder, whose gap
+    // events become FEC recoveries or concealment.
+    AudioJitterWindow micWindow;
+    std::unique_ptr<IAudioDecoder> micDecoder;
+
+    // Outbound MSG_SPEAKER_AUDIO. The backend hands over whatever its audio
+    // ring happened to hold, which is not necessarily one 20 ms window, so the
+    // leftover tail of a batch waits here for the rest of its frame.
+    std::unique_ptr<IAudioEncoder> speakerEncoder;
+    std::vector<int16_t> speakerPending; // < one frame of interleaved stereo
+    // Per controller, wraps. Marks gaps and late frames for the client; it is
+    // not an ack sequence and nothing retransmits against it.
+    uint16_t speakerSeq = 0;
+};
+
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // backend serial (1..16), 0 = not plugged
@@ -751,6 +775,10 @@ struct Controller {
     // opens the next one, so an idle controller never banks an allowance.
     std::chrono::steady_clock::time_point micWindowStart{};
     uint16_t micPacketsInWindow = 0;
+    // Null until this slot actually carries audio; see ControllerAudio. Owning
+    // it here is what makes plug/unplug/replug the single lifetime story: the
+    // codecs die with the pad whose history they hold.
+    std::unique_ptr<ControllerAudio> audio;
 };
 
 // Per paired client session. Keyed on deviceId and STABLE across reconnects: a

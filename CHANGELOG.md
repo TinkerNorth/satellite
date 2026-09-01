@@ -5,6 +5,18 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## Unreleased
 
+Controller audio, codec and jitter window: the two audio paths the wire
+contract described now carry samples. Inbound MIC_AUDIO frames go through a
+2-frame reorder window keyed on the wrapping `seq` and into an Opus decoder,
+which recovers a single lost packet from the in-band FEC copy the next packet
+carries and conceals the rest; outbound speaker PCM is re-framed to exact 20 ms
+windows (a backend hands over batch boundaries, not codec boundaries), encoded,
+and sent with a per-controller wrapping sequence. Both codecs are created on a
+controller's first audio frame and released with the pad, so a slot that never
+carries audio never pays for one. libopus joins libsodium and OpenSSL as a
+required dependency on every platform; the core stays free of it behind an
+injected factory, the same arrangement that keeps HKDF out of the core.
+
 Controller audio, wire contract and server plumbing (protocol 2, unreleased,
 extended in place): the emulated pad's OWN audio endpoints now have a protocol.
 New UDP messages MIC_AUDIO 0x0012 (client to server, mono 48 kHz, one 20 ms Opus

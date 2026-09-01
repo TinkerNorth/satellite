@@ -78,6 +78,7 @@ set(SATELLITE_NET_SOURCES
 set(SATELLITE_ADAPTER_SOURCES
     src/adapters/log_adapter.cpp
     src/adapters/client_adapter.cpp
+    src/adapters/audio/opus_codec.cpp
 )
 
 # Windows-only infrastructure.
@@ -136,6 +137,56 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/tray.cpp
     src/platform/linux/updater_adapter.cpp
 )
+
+# libopus: the controller-audio codec (src/adapters/audio/opus_codec.cpp).
+# Required on every platform, like libsodium and OpenSSL: the codec sits on the
+# data plane, so an optional one would mean a build where controller audio
+# silently does not exist, and the Linux/macOS lanes are where a portability
+# regression in the wrapper would surface.
+#
+# Resolution mirrors satellite_link_sodium: vcpkg's CONFIG package under MSVC
+# (vcpkg.json lists opus), pkg-config everywhere else -- msys2, Debian/Fedora/
+# Arch and Homebrew all ship opus.pc, and all of them put the headers under
+# <prefix>/include/opus, which is what makes the bare #include <opus.h> work.
+# Defined up here rather than beside satellite_link_sodium because the three
+# app targets below call it.
+function(satellite_link_opus name)
+    if(MSVC)
+        find_package(Opus CONFIG REQUIRED)
+        target_link_libraries(${name} PRIVATE Opus::opus)
+        return()
+    endif()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(OPUS QUIET opus)
+    endif()
+    if(OPUS_FOUND)
+        target_include_directories(${name} SYSTEM PRIVATE ${OPUS_INCLUDE_DIRS})
+        target_link_directories(${name} PRIVATE ${OPUS_LIBRARY_DIRS})
+        target_link_libraries(${name} PRIVATE ${OPUS_LIBRARIES})
+        return()
+    endif()
+    # No pkg-config: search for the header at both spellings so a manual
+    # install (or -DOPUS_ROOT=<prefix>) still resolves.
+    find_path(OPUS_INCLUDE_DIR opus.h
+        HINTS ${OPUS_ROOT} ENV OPUS_ROOT
+        PATH_SUFFIXES include/opus include
+        PATHS /usr/local /opt/homebrew /opt/local /usr
+    )
+    find_library(OPUS_LIBRARY NAMES opus
+        HINTS ${OPUS_ROOT} ENV OPUS_ROOT
+        PATH_SUFFIXES lib lib64
+        PATHS /usr/local /opt/homebrew /opt/local /usr
+    )
+    if(NOT OPUS_INCLUDE_DIR OR NOT OPUS_LIBRARY)
+        message(FATAL_ERROR
+            "libopus not found. Install libopus-dev (Debian/Ubuntu), opus-devel "
+            "(Fedora/RHEL), opus (Arch / Homebrew / msys2), or build from source "
+            "and set -DOPUS_ROOT=<prefix>.")
+    endif()
+    target_include_directories(${name} SYSTEM PRIVATE ${OPUS_INCLUDE_DIR})
+    target_link_libraries(${name} PRIVATE ${OPUS_LIBRARY})
+endfunction()
 
 if(WIN32)
     set(SATELLITE_RC ${CMAKE_CURRENT_SOURCE_DIR}/satellite.rc)
@@ -233,6 +284,8 @@ if(WIN32)
         find_package(unofficial-sodium CONFIG REQUIRED)
         target_link_libraries(satellite PRIVATE unofficial-sodium::sodium)
     endif()
+
+    satellite_link_opus(satellite)
 
     # Exploit-mitigation flags. CMake is the single source of truth for the
     # build (build-satellite.bat just drives CMake), so these apply to every
@@ -358,6 +411,8 @@ elseif(APPLE)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
+    satellite_link_opus(satellite)
+
     target_link_libraries(satellite PRIVATE
         "-framework AppKit"
         "-framework Foundation"
@@ -447,6 +502,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # OpenSSL: the client API server speaks HTTPS (cpp-httplib SSLServer).
     find_package(OpenSSL REQUIRED)
     target_link_libraries(satellite PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+
+    satellite_link_opus(satellite)
 
     find_package(Threads REQUIRED)
     target_link_libraries(satellite PRIVATE Threads::Threads)
@@ -674,15 +731,20 @@ endif()
 # Tests (portable, core-only).
 enable_testing()
 
+# The real Opus codec rides along (adapters/audio/opus_codec.cpp): the audio
+# suites decode actual encoder output through the service rather than asserting
+# against a fake codec that could agree with a wrong implementation.
 add_executable(test_session_service
     tests/test_session_service.cpp
+    src/adapters/audio/opus_codec.cpp
     ${SATELLITE_CORE_SOURCES}
 )
 target_include_directories(test_session_service PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-# Enables the backdateForTest seam for reap/grace coverage.
+# Enables the backdateForTest / audio test seams (see session_service.h).
 target_compile_definitions(test_session_service PRIVATE SATELLITE_BUILD_TESTS)
+satellite_link_opus(test_session_service)
 
 if(WIN32 AND MINGW)
     target_compile_options(test_session_service PRIVATE -O2 -Wall -Wextra)
@@ -818,6 +880,18 @@ satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_gamepad_mux tests/test_gamepad_mux.cpp)
+
+# The audio reorder window (core/audio/audio_jitter.h) is header-only and
+# dependency-free by design, so its suite links nothing at all and runs on every
+# lane whether or not that lane has a codec.
+satellite_add_pure_test(test_audio_jitter tests/test_audio_jitter.cpp)
+
+# The libopus wrapper (adapters/audio/opus_codec.cpp): round-trips, concealment
+# and FEC recovery against real encoder output, so a drifting encoder setting
+# (bitrate, application, FEC) fails here rather than in someone's headset.
+satellite_add_pure_test(test_opus_codec tests/test_opus_codec.cpp
+    src/adapters/audio/opus_codec.cpp)
+satellite_link_opus(test_opus_codec)
 
 # HIDMaestro shared-memory codec + per-profile report packers: pure byte /
 # seqlock logic, verified on every platform even though the live backend is
@@ -1267,12 +1341,19 @@ if(SATELLITE_FUZZ)
         tests/fuzz/fuzz_receiver_dispatch.cpp
         src/net/inner_dispatch.cpp
         src/net/session_crypto.cpp
+        src/adapters/audio/opus_codec.cpp
         ${SATELLITE_CORE_SOURCES}
     )
     target_include_directories(fuzz_receiver_dispatch PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
+    # The real codec is on the harness's mic path, so attacker-chosen bytes
+    # reach opus_decode rather than stopping at the reorder window; the test
+    # seam is what keeps the rate limiter from closing that path after the
+    # first second of fuzzing (see the harness).
+    target_compile_definitions(fuzz_receiver_dispatch PRIVATE SATELLITE_BUILD_TESTS)
     satellite_link_sodium(fuzz_receiver_dispatch)
+    satellite_link_opus(fuzz_receiver_dispatch)
     if(SATELLITE_HAVE_LIBFUZZER)
         target_compile_options(fuzz_receiver_dispatch PRIVATE
             -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined)

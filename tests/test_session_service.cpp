@@ -10,7 +10,12 @@
 #include "../src/core/touchpad_codec.h"
 #include "../src/core/gamepad_backend.h"
 #include "../src/core/ipv4_util.h"
+// The real codec, not a fake: the audio suites decode actual Opus produced by
+// the same wrapper the client's encoder mirrors, so a stub that happened to
+// agree with a wrong implementation cannot hide behind them.
+#include "../src/adapters/audio/opus_codec.h"
 #include <cassert>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -211,8 +216,25 @@ struct MockViGem : IGamepadPort {
         submitMicAudioCalls++;
         lastMicAudioSerial = serial;
         lastMicAudioSamples = samples;
-        (void)mono48k;
+        lastMicAudioPcm.assign(mono48k, mono48k + samples);
+        // Per submission, because one packet can flush several frames at once
+        // (a concealed gap plus the packets behind it) and only the tail would
+        // otherwise be observable.
+        micAudioEnergies.push_back(meanSquare(mono48k, samples));
         return submitMicAudioReturnVal;
+    }
+
+    static double meanSquare(const int16_t* pcm, size_t samples) {
+        if (samples == 0) return 0.0;
+        double sum = 0.0;
+        for (size_t i = 0; i < samples; i++) sum += static_cast<double>(pcm[i]) * pcm[i];
+        return sum / static_cast<double>(samples);
+    }
+
+    // Mean square of the last PCM handed over. Distinguishes "the decoder ran"
+    // from "a zeroed buffer was submitted", which a call count cannot.
+    double lastMicAudioEnergy() const {
+        return meanSquare(lastMicAudioPcm.data(), lastMicAudioPcm.size());
     }
 
     int setTriggerEffectsCallbackCalls = 0;
@@ -222,6 +244,8 @@ struct MockViGem : IGamepadPort {
     int submitMicAudioCalls = 0;
     uint32_t lastMicAudioSerial = 0;
     size_t lastMicAudioSamples = 0;
+    std::vector<int16_t> lastMicAudioPcm;
+    std::vector<double> micAudioEnergies;
     bool submitMicAudioReturnVal = true;
     TriggerEffectsCallback capturedTriggerEffectsCb;
     PlayerLedsCallback capturedPlayerLedsCb;
@@ -2186,7 +2210,8 @@ static void test_speakerAudio_gatedOnCap() {
     MockViGem vigem;
     MockClient client;
     MockLog log;
-    SessionService svc(vigem, client, log);
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
     EXPECT_EQ(vigem.setSpeakerAudioCallbackCalls, 1);
 
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER),
@@ -2207,8 +2232,454 @@ static void test_speakerAudio_gatedOnCap() {
     // The registered backend callback lands on the same path.
     vigem.fireSpeakerAudio(serial0, pcm.data(), AUDIO_FRAME_SAMPLES);
 
-    // SAT-2 owns the encoder; until it lands, a gated frame is accepted and
-    // nothing reaches the wire. This assertion flips when SAT-2 fills the stub.
+    // Two whole windows got through the gate (the direct call and the callback)
+    // and each became exactly one wire packet; everything the gate refused
+    // produced nothing, which is what makes this an encoder-side gate rather
+    // than a send-side one.
+    EXPECT_EQ(client.speakerAudioCalls, 2);
+    EXPECT_EQ((int)client.lastSpeakerAudioCtrlIdx, 0);
+    EXPECT(!client.lastSpeakerAudioOpus.empty());
+}
+
+// ---- controller audio: the codec paths --------------------------------------
+
+// Real 20 ms mic packets from the production encoder, so the service decodes
+// what a client would actually send rather than a hand-rolled byte string.
+struct MicPacketSource {
+    std::unique_ptr<IAudioEncoder> enc =
+        satellite::audio::OpusStreamEncoder::create(satellite::audio::Stream::Mic);
+    int frameIndex = 0;
+
+    std::vector<uint8_t> next() {
+        std::vector<int16_t> src(AUDIO_FRAME_SAMPLES);
+        for (int i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+            const double t = (frameIndex * (double)AUDIO_FRAME_SAMPLES + i) / AUDIO_SAMPLE_RATE_HZ;
+            src[i] = (int16_t)(7000.0 * std::sin(2.0 * 3.14159265358979 * 220.0 * t) +
+                               3000.0 * std::sin(2.0 * 3.14159265358979 * 660.0 * t));
+        }
+        frameIndex++;
+        uint8_t buf[1024];
+        const size_t n = enc->encode(src.data(), AUDIO_FRAME_SAMPLES, buf, sizeof(buf));
+        return std::vector<uint8_t>(buf, buf + n);
+    }
+};
+
+// Interleaved stereo the speaker path can encode. Non-silent so a wrong frame
+// count is visible as a wrong packet count rather than as identical silence.
+static std::vector<int16_t> speakerPcm(size_t frames, int frameIndex = 0) {
+    std::vector<int16_t> pcm(frames * AUDIO_SPEAKER_CHANNELS);
+    for (size_t i = 0; i < frames; i++) {
+        const double t =
+            (frameIndex * (double)AUDIO_FRAME_SAMPLES + (double)i) / AUDIO_SAMPLE_RATE_HZ;
+        pcm[i * 2 + 0] = (int16_t)(9000.0 * std::sin(2.0 * 3.14159265358979 * 330.0 * t));
+        pcm[i * 2 + 1] = (int16_t)(4000.0 * std::sin(2.0 * 3.14159265358979 * 550.0 * t));
+    }
+    return pcm;
+}
+
+static void test_micAudio_decodesRealPacketsToTheBackend() {
+    TEST("mic audio: real Opus frames decode to 20 ms of PCM on the pad's mic endpoint");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    MicPacketSource mic;
+
+    for (int i = 0; i < 10; i++) {
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
+    }
+    // One wire frame is one 20 ms window, mono, routed to the pad this slot
+    // actually plugged.
+    EXPECT_EQ(vigem.lastMicAudioSamples, (size_t)AUDIO_FRAME_SAMPLES);
+    EXPECT_EQ(vigem.lastMicAudioSerial, serial0);
+    // Real audio came out, not a zeroed buffer: a service that counted frames
+    // without decoding them would pass every assertion above.
+    EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
+
+    // A backend with no mic endpoint on this serial says so, and that is not an
+    // error: senders keep streaming and the service keeps accepting.
+    vigem.submitMicAudioReturnVal = false;
+    const auto pkt = mic.next();
+    EXPECT(svc.handleMicAudio(r.token, 0, 10, pkt.data(), pkt.size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 11);
+    vigem.submitMicAudioReturnVal = true;
+
+    // A packet claiming twice the wire's window (Opus TOC frame-count code 1
+    // over a duplicated body) decodes to nothing rather than overrunning the
+    // fixed 20 ms buffer the decode path hands the codec. Accepted at the gate,
+    // dropped at the decoder, no PCM.
+    const auto base = mic.next();
+    std::vector<uint8_t> twoFrames;
+    twoFrames.push_back((uint8_t)((base[0] & 0xFC) | 0x01));
+    twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
+    twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
+    const int before = vigem.submitMicAudioCalls;
+    EXPECT(svc.handleMicAudio(r.token, 0, 11, twoFrames.data(), twoFrames.size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, before);
+}
+
+static void test_micAudio_withoutCodecAcceptsAndDrops() {
+    TEST("mic audio: with no codec wired the gates still run and the frame is dropped");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log); // no factory
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    for (int i = 0; i < 4; i++) {
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+    }
+    // Accepted (it passed every gate) but nowhere to go. This is the pre-SAT-2
+    // behaviour, kept deliberately so a build without a codec degrades to
+    // "no audio" rather than to a broken session.
+    EXPECT_EQ(vigem.submitMicAudioCalls, 0);
+}
+
+static void test_micAudio_gapConcealedAndReorderHealed() {
+    TEST("mic audio: a skipped seq is concealed; a swapped pair is reordered, not concealed");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    std::vector<std::vector<uint8_t>> pkts;
+    for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
+
+    for (int i = 0; i < 4; i++) {
+        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
+    }
+    EXPECT_EQ(vigem.submitMicAudioCalls, 4);
+
+    // Frame 4 is lost. Packet 5 alone proves nothing (it could be a reorder),
+    // so nothing is submitted yet: the 40 ms window is exactly the price of not
+    // concealing a frame that was merely out of order.
+    EXPECT(svc.handleMicAudio(r.token, 0, 5, pkts[5].data(), pkts[5].size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 4);
+
+    // Packet 6 lands 2 ahead of the missing one, which settles it: the gap is
+    // filled (from packet 5's in-band FEC copy of frame 4), then 5 and 6 play.
+    EXPECT(svc.handleMicAudio(r.token, 0, 6, pkts[6].data(), pkts[6].size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 7);
+    EXPECT_EQ(vigem.lastMicAudioSamples, (size_t)AUDIO_FRAME_SAMPLES);
+    // The concealed frame is audio in its own right, not a hole padded with
+    // zeros: submission 4 is the one the decoder invented for the lost packet.
+    EXPECT_EQ((int)vigem.micAudioEnergies.size(), 7);
+    EXPECT(vigem.micAudioEnergies[4] > 10000.0);
+    EXPECT(vigem.micAudioEnergies[5] > 10000.0);
+    EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
+
+    // A one-frame swap costs nothing: 8 before 7 waits, then both go together.
+    EXPECT(svc.handleMicAudio(r.token, 0, 8, pkts[8].data(), pkts[8].size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 7);
+    EXPECT(svc.handleMicAudio(r.token, 0, 7, pkts[7].data(), pkts[7].size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 9);
+
+    // And the frame that finally turns up after its slot was concealed is
+    // refused rather than played out of order.
+    EXPECT(!svc.handleMicAudio(r.token, 0, 4, pkts[4].data(), pkts[4].size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 9);
+}
+
+static void test_micAudio_streamsPastTheRateWindow() {
+    TEST("mic audio: a stream longer than one rate window keeps decoding");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    // Four seconds of speech at the wire's 50 packets/s. The limiter counts
+    // wall-clock seconds and a test loop outruns them, so the window is
+    // reopened on the cadence a real second would (see resetMicRateWindowForTest).
+    const int frames = 200;
+    for (int i = 0; i < frames; i++) {
+        if (i % MIC_AUDIO_MAX_PACKETS_PER_SEC == 0) svc.resetMicRateWindowForTest(r.token, 0);
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+    }
+    EXPECT_EQ(vigem.submitMicAudioCalls, frames);
+    EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
+}
+
+static void test_micAudio_seqWrapsMidStream() {
+    TEST("mic audio: the u16 seq wrapping past 0xFFFF is not a 65k-frame gap");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    // Straddle the wrap: a client that has been talking for 22 minutes hits it,
+    // and reading 0x0000 as ancient would silence the stream from there on.
+    for (int i = 0; i < 6; i++) {
+        svc.resetMicRateWindowForTest(r.token, 0);
+        const uint16_t seq = (uint16_t)(0xFFFD + i);
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, seq, pkt.data(), pkt.size()));
+        EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
+    }
+}
+
+static void test_micAudio_codecStateIsPerControllerAndDiesWithThePad() {
+    TEST("mic audio: each pad decodes its own stream, and a replug starts a fresh one");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC),
+                          makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const uint32_t serial1 = serialOfSlot(svc, 1);
+    MicPacketSource mic;
+
+    // Slot 0 gets to seq 40; slot 1 then starts its own stream at 0. A shared
+    // window would read that as 40 frames in the past and drop it.
+    for (int i = 0; i < 41; i++) {
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+    }
+    EXPECT_EQ(vigem.submitMicAudioCalls, 41);
+    EXPECT_EQ(vigem.lastMicAudioSerial, serial0);
+
+    const auto slot1 = mic.next();
+    EXPECT(svc.handleMicAudio(r.token, 1, 0, slot1.data(), slot1.size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 42);
+    EXPECT_EQ(vigem.lastMicAudioSerial, serial1);
+
+    // Identity change forces a replug. The new pad is a new stream: its decoder
+    // must not carry the old pad's filter state, and its window must not treat
+    // a restarted seq as 40 frames of history.
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_MIC),
+                 makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    // A re-PUT rotates the token, so the stream continues under the new one.
+    auto again = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC),
+                              makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    const int before = vigem.submitMicAudioCalls;
+    const uint32_t serial0b = serialOfSlot(svc, 0);
+    EXPECT(serial0b != serial0);
+
+    MicPacketSource fresh;
+    const auto restart = fresh.next();
+    EXPECT(svc.handleMicAudio(again.token, 0, 0, restart.data(), restart.size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, before + 1);
+    EXPECT_EQ(vigem.lastMicAudioSerial, serial0b);
+    EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
+}
+
+static void test_micAudio_unboundSlotSubmitsNothing() {
+    TEST("mic audio: an unbound slot decodes nothing, and rebinding starts clean");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    for (int i = 0; i < 5; i++) {
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+    }
+    EXPECT_EQ(vigem.submitMicAudioCalls, 5);
+
+    // Unbind the slot. Frames that were already in flight must find nothing to
+    // decode into: the codec state went with the pad.
+    auto gone = upsert(svc, {});
+    const auto strayPkt = mic.next();
+    EXPECT(!svc.handleMicAudio(gone.token, 0, 5, strayPkt.data(), strayPkt.size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 5);
+
+    // Rebinding gives a fresh stream, seq and all.
+    auto back = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource fresh;
+    const auto pkt = fresh.next();
+    EXPECT(svc.handleMicAudio(back.token, 0, 0, pkt.data(), pkt.size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 6);
+}
+
+static void test_speakerAudio_oneWindowBecomesOneWirePacket() {
+    TEST("speaker audio: a 20 ms window becomes one decodable Opus packet on the wire");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    (void)r;
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    const auto pcm = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ((int)client.lastSpeakerAudioCtrlIdx, 0);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+    EXPECT(!client.lastSpeakerAudioOpus.empty());
+    // Fits a datagram with room to spare, which is why the 1500-byte ceiling
+    // absorbs a VBR spike instead of being approached.
+    EXPECT(client.lastSpeakerAudioOpus.size() <
+           (size_t)(MAX_INNER_PAYLOAD_BYTES - AUDIO_WIRE_HEADER_BYTES));
+
+    // What went out is a real stereo 20 ms packet, not a length-shaped blob:
+    // decoding it with the client's half of the codec gives the window back.
+    auto dec = satellite::audio::OpusStreamDecoder::create(satellite::audio::Stream::Speaker);
+    EXPECT(dec != nullptr);
+    if (!dec) return;
+    std::vector<int16_t> out(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    EXPECT_EQ(dec->decode(client.lastSpeakerAudioOpus.data(), client.lastSpeakerAudioOpus.size(),
+                          out.data(), AUDIO_FRAME_SAMPLES),
+              (size_t)AUDIO_FRAME_SAMPLES);
+}
+
+static void test_speakerAudio_partialBatchesBuffer() {
+    TEST("speaker audio: partial and multi-window batches are re-framed to exact 20 ms packets");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    (void)r;
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    // A backend hands over whatever its ring held, which is a batch boundary,
+    // not a codec boundary. Half a window is not a packet.
+    const size_t half = AUDIO_FRAME_SAMPLES / 2;
+    const auto firstHalf = speakerPcm(half, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, firstHalf.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 0);
+
+    // The second half completes it: exactly one packet, not two short ones.
+    const auto secondHalf = speakerPcm(half, 1);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, secondHalf.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+
+    // Two and a half windows: two packets out, half a window carried forward.
+    const size_t batch = AUDIO_FRAME_SAMPLES * 2 + half;
+    const auto big = speakerPcm(batch, 2);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, big.data(), batch));
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 2);
+
+    // ...and the carried half joins the next batch rather than being dropped.
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, secondHalf.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 4);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 3);
+
+    // A one-frame dribble is buffered, never emitted as a runt packet.
+    const auto dribble = speakerPcm(1, 5);
+    for (int i = 0; i < 16; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, dribble.data(), 1));
+    }
+    EXPECT_EQ(client.speakerAudioCalls, 4);
+}
+
+static void test_speakerAudio_seqIsPerControllerAndWraps() {
+    TEST("speaker audio: seq counts per controller and wraps through 0xFFFF");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER),
+                          makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const uint32_t serial1 = serialOfSlot(svc, 1);
+    const auto pcm = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+
+    for (int i = 0; i < 3; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+        EXPECT_EQ((int)client.lastSpeakerAudioSeq, i);
+    }
+    // Slot 1 numbers its own stream: the client demuxes by ctrlIdx, so a shared
+    // counter would make one pad's gaps look like the other's.
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial1, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ((int)client.lastSpeakerAudioCtrlIdx, 1);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ((int)client.lastSpeakerAudioCtrlIdx, 0);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 3);
+
+    // The wrap is 22 minutes of audio away, so it is reached through the test
+    // seam rather than by encoding 65536 frames to get there.
+    svc.setSpeakerSeqForTest(r.token, 0, 0xFFFE);
+    const uint16_t expected[] = {0xFFFE, 0xFFFF, 0x0000, 0x0001};
+    for (uint16_t want : expected) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+        EXPECT_EQ((int)client.lastSpeakerAudioSeq, (int)want);
+    }
+}
+
+static void test_speakerAudio_encoderStateDiesWithThePad() {
+    TEST("speaker audio: a replug resets the encoder, the seq and the buffered remainder");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const auto whole = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    for (int i = 0; i < 3; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, whole.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 2);
+
+    // Leave half a window buffered, then replug.
+    const size_t half = AUDIO_FRAME_SAMPLES / 2;
+    const auto tail = speakerPcm(half, 3);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, tail.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_SPEAKER)});
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0b = serialOfSlot(svc, 0);
+    EXPECT(serial0b != serial0);
+
+    // Half a window from the NEW pad must not be completed by half a window
+    // from the old one: that would splice two different streams into one packet.
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0b, tail.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0b, tail.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 4);
+    // Fresh pad, fresh numbering: seq back to 0 is the observable proof that
+    // the whole audio state (encoder included) went with the old pad.
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+}
+
+static void test_speakerAudio_withoutCodecSendsNothing() {
+    TEST("speaker audio: with no codec wired the gate still runs and nothing is sent");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log); // no factory
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const auto pcm = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
     EXPECT_EQ(client.speakerAudioCalls, 0);
 }
 
@@ -2566,6 +3037,18 @@ int main() {
     test_micAudio_dropLoggedOncePerSessionPerCause();
     test_micLed_gatedOnCapAndCoalesced();
     test_speakerAudio_gatedOnCap();
+    test_micAudio_decodesRealPacketsToTheBackend();
+    test_micAudio_withoutCodecAcceptsAndDrops();
+    test_micAudio_gapConcealedAndReorderHealed();
+    test_micAudio_streamsPastTheRateWindow();
+    test_micAudio_seqWrapsMidStream();
+    test_micAudio_codecStateIsPerControllerAndDiesWithThePad();
+    test_micAudio_unboundSlotSubmitsNothing();
+    test_speakerAudio_oneWindowBecomesOneWirePacket();
+    test_speakerAudio_partialBatchesBuffer();
+    test_speakerAudio_seqIsPerControllerAndWraps();
+    test_speakerAudio_encoderStateDiesWithThePad();
+    test_speakerAudio_withoutCodecSendsNothing();
     test_audioBackendCallbacks_dropNotBlock_whenLockHeld();
     test_feedback_replugResetsCoalesce();
     test_backendCallbacks_dropNotBlock_whenLockHeld();
