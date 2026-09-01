@@ -119,6 +119,9 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     // pad without audio beats no pad at all.
     const bool wantAudio =
         hm::identityHasAudioPersona(identity) && audioEnabled_ && audioEnabled_();
+    // Before provisioning, because the snapshot has to predate the endpoint
+    // Windows is about to create and promote.
+    if (wantAudio && compositePlugBefore_) compositePlugBefore_();
     hm::ProvisionResult r;
     if (!provisioner_.provision(serial, identity, wantAudio, r)) {
         if (!wantAudio || !provisioner_.provision(serial, identity, false, r)) return false;
@@ -154,6 +157,9 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
 
     if (slot.outputView != nullptr) startOutputWorker(serial);
     if (slot.speakerView != nullptr) startAudioWorker(serial);
+    // Only when the composite really materialized: a persona that fell back to
+    // input-only created no endpoint, so there is nothing to watch for.
+    if (slot.speakerView != nullptr && compositePlugAfter_) compositePlugAfter_();
     return true;
 }
 
@@ -391,6 +397,12 @@ void HidMaestroAdapter::setTriggerEffectsCallback(TriggerEffectsCallback cb) {
 void HidMaestroAdapter::setPlayerLedsCallback(PlayerLedsCallback cb) {
     std::lock_guard<std::mutex> lk(busMtx_);
     playerLedsCb_ = std::move(cb);
+}
+
+void HidMaestroAdapter::setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    compositePlugBefore_ = std::move(before);
+    compositePlugAfter_ = std::move(after);
 }
 
 void HidMaestroAdapter::setSpeakerAudioCallback(SpeakerAudioCallback cb) {

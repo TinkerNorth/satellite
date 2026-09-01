@@ -83,6 +83,8 @@ set(SATELLITE_ADAPTER_SOURCES
 
 # Windows-only infrastructure.
 set(SATELLITE_WIN_SOURCES
+    src/platform/windows/audio_default_guard.cpp
+    src/platform/windows/audio_endpoint_com.cpp
     src/platform/windows/main.cpp
     src/platform/windows/globals.cpp
     src/platform/windows/config.cpp
@@ -237,6 +239,9 @@ if(WIN32)
         shell32
         ole32
         oleaut32
+        # CM_Get_DevNode_PropertyW, for walking an audio endpoint's PnP parent
+        # chain: setupapi forwards CM_Locate_DevNodeW but not the property API.
+        cfgmgr32
         # WinRT: RoActivateInstance / RoGetActivationFactory + HSTRING for the
         # actionable pairing toast (src/platform/windows/toast.cpp).
         runtimeobject
@@ -914,6 +919,8 @@ satellite_add_pure_test(test_hidmaestro_report tests/test_hidmaestro_report.cpp
 # protocol the C# producer on the other side reimplements.
 satellite_add_pure_test(test_hidmaestro_audio_wire tests/test_hidmaestro_audio_wire.cpp
     src/platform/windows/hidmaestro_audio_wire.cpp)
+satellite_add_pure_test(test_audio_default_guard tests/test_audio_default_guard.cpp
+    src/platform/windows/audio_default_guard.cpp)
 
 # Portable session-crypto interop suite (net/session_crypto.cpp): the pinned
 # RFC 5869 HKDF vector, the HMAC-proof vector, and the AEAD direction/counter/

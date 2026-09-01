@@ -14,6 +14,7 @@
 #include "shell_integration.h"
 
 #include "vigem_adapter.h"
+#include "audio_endpoint_com.h"
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
 #include "updater_adapter.h"
@@ -189,6 +190,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         std::lock_guard<std::mutex> lk(g_configMtx);
         return g_config.controllerAudio;
     });
+    // Windows ranks a newly arrived endpoint above every device the user has
+    // ever chosen, so materializing the pad hands it the whole desktop's audio.
+    // Outlives the adapter it is wired into, and joins its worker on the way
+    // out; the setting is read per plug like the one above.
+    satellite::audioguard::PlugGuardRunner audioDefaultGuard([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return g_config.controllerAudioKeepDefaultDevice;
+    });
+    hidMaestroAdapter.setCompositePlugHooks(
+        [&audioDefaultGuard] { audioDefaultGuard.beforeCompositePlug(); },
+        [&audioDefaultGuard] { audioDefaultGuard.afterCompositePlug(); });
     satellite::GamepadMux gamepadMux({&vigemAdapter, &hidMaestroAdapter});
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;

@@ -49,6 +49,13 @@ class HidMaestroAdapter : public IGamepadPort {
     // default for a decision that can install a kernel driver.
     using AudioEnabledFn = std::function<bool()>;
 
+    // Fired either side of a plug that actually asked for an audio-carrying
+    // persona, so the default-endpoint guard can snapshot before the endpoint
+    // exists and start watching once it does. Both run under the bus lock, so
+    // the "after" hook must only signal, never wait.
+    using CompositePlugHook = std::function<void()>;
+    void setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after);
+
     explicit HidMaestroAdapter(satellite::hidmaestro::IHidMaestroProvisioner& provisioner,
                                AudioEnabledFn audioEnabled = {});
     ~HidMaestroAdapter() override;
@@ -140,6 +147,8 @@ class HidMaestroAdapter : public IGamepadPort {
 
     satellite::hidmaestro::IHidMaestroProvisioner& provisioner_;
     AudioEnabledFn audioEnabled_;
+    CompositePlugHook compositePlugBefore_;
+    CompositePlugHook compositePlugAfter_;
     mutable std::mutex busMtx_;
     bool busOpen_ = false;
 

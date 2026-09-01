@@ -682,6 +682,77 @@ static void test_audio_request_matrix() {
     }
 }
 
+// The guard has to snapshot the default playback device BEFORE the endpoint
+// Windows is about to promote exists, and start watching only once one really
+// did. Both halves are wrong if the hooks fire on the wrong plugs.
+static void test_composite_plug_hooks() {
+    TEST("composite plug hooks fire once, in order, for an audio persona");
+    {
+        FakeProvisioner prov;
+        HidMaestroAdapter adapter(prov, audioOn());
+        std::vector<std::string> events;
+        adapter.setCompositePlugHooks([&] { events.push_back("before"); },
+                                      [&] { events.push_back("after"); });
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+        EXPECT_EQ(events.size(), (size_t)2);
+        if (events.size() == 2) {
+            EXPECT_EQ(events[0], std::string("before"));
+            EXPECT_EQ(events[1], std::string("after"));
+        }
+    }
+
+    TEST("no hooks for an identity that has no audio persona");
+    {
+        FakeProvisioner prov;
+        HidMaestroAdapter adapter(prov, audioOn());
+        int calls = 0;
+        adapter.setCompositePlugHooks([&] { calls++; }, [&] { calls++; });
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
+        EXPECT(adapter.pluginDevice(2, GamepadIdentity::SwitchPro));
+        EXPECT_EQ(calls, 0);
+    }
+
+    TEST("no hooks when the audio setting is off");
+    {
+        FakeProvisioner prov;
+        HidMaestroAdapter adapter(prov, [] { return false; });
+        int calls = 0;
+        adapter.setCompositePlugHooks([&] { calls++; }, [&] { calls++; });
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+        EXPECT_EQ(calls, 0);
+    }
+
+    TEST("a composite that fell back to input-only snapshots but never watches");
+    {
+        // The snapshot is spent either way -- it is taken before anyone knows
+        // the composite will be refused -- but nothing was promoted, so arming
+        // the watch would have it restore against a device that never moved.
+        FakeProvisioner prov;
+        prov.failAudioProvision = true;
+        HidMaestroAdapter adapter(prov, audioOn());
+        int before = 0;
+        int after = 0;
+        adapter.setCompositePlugHooks([&] { before++; }, [&] { after++; });
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+        EXPECT(!adapter.hasSpeakerEndpoint(1));
+        EXPECT_EQ(before, 1);
+        EXPECT_EQ(after, 0);
+    }
+
+    TEST("an adapter with no hooks wired plugs exactly as before");
+    {
+        FakeProvisioner prov;
+        HidMaestroAdapter adapter(prov, audioOn());
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+        EXPECT(adapter.hasSpeakerEndpoint(1));
+    }
+}
+
 static void test_audio_provision_failure_falls_back() {
     TEST("a refused composite falls back to the plain persona, pad still works");
     FakeProvisioner prov;
@@ -993,6 +1064,7 @@ int main() {
     test_rumble_worker_xbox();
     test_rumble_and_lightbar_worker_ds4();
     test_audio_request_matrix();
+    test_composite_plug_hooks();
     test_audio_provision_failure_falls_back();
     test_speaker_ring_to_callback();
     test_speaker_rate_conversion();
