@@ -134,7 +134,10 @@ JsonOut emulatesJson(const std::string& slug) {
         j["usb"] = JsonOut::array({"045e:028e"});
     } else if (slug == "ds4") {
         j["sdlType"] = "ps4";
-        j["usb"] = JsonOut::array({"054c:05c4"});
+        // Both revisions: ViGEm materializes the v1 identity (05c4), HIDMaestro's
+        // dualshock-4-v2 profiles the v2 (09cc) - and only the v2 hardware carries
+        // the USB audio function the mic/speaker feature slugs describe.
+        j["usb"] = JsonOut::array({"054c:05c4", "054c:09cc"});
     } else if (slug == "dualsense") {
         j["sdlType"] = "ps5";
         j["usb"] = JsonOut::array({"054c:0ce6"});

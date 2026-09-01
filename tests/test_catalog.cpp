@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later
+﻿// SPDX-License-Identifier: LGPL-3.0-or-later
 
 // core/catalog: Accept-Language resolution, catalog JSON shape, ETag, and the
 // locale completeness gate: every controller-TYPE string must resolve in every
@@ -181,7 +181,8 @@ static void test_catalogJson_structure() {
         // sdlType then usb). What a future client-side matcher keys a default off.
         EXPECT(types[0].find("\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}") !=
                std::string::npos);
-        EXPECT(types[1].find("\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\"]}") !=
+        EXPECT(types[1].find(
+                   "\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\",\"054c:09cc\"]}") !=
                std::string::npos);
         EXPECT(types[2].find("\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0ce6\"]}") !=
                std::string::npos);
@@ -206,13 +207,13 @@ static void test_catalogJson_inertBackend() {
     EXPECT(json.find("\"mouseControl\":{\"supported\":false") != std::string::npos);
     // An inert backend returns no rumble either (RECEIVE host feature gated off).
     EXPECT(json.find("\"rumble\":{\"supported\":false}") != std::string::npos);
-    // No offered identities → no pads to emulate advertised (never a fiction).
+    // No offered identities â†’ no pads to emulate advertised (never a fiction).
     std::vector<long> ids;
     auto types = controllerTypeElems(json, ids);
     EXPECT_EQ(types.size(), size_t{0});
     EXPECT(json.find("\"controllerTypes\":[]") != std::string::npos);
     EXPECT(json.find("\"keyboardControl\":{\"supported\":false}") != std::string::npos);
-    // No offered types → no emulates hints anywhere (rides only offered types).
+    // No offered types â†’ no emulates hints anywhere (rides only offered types).
     EXPECT(json.find("\"emulates\"") == std::string::npos);
 }
 
@@ -254,11 +255,11 @@ static void test_hostBlock_inertBackend() {
 }
 
 static void test_catalogString_fallbackChain() {
-    TEST("catalogString: locale → en → key marker");
-    const std::string lang = R"({"catalog.type.ds4.name":"DualShock 4 übersetzt"})";
+    TEST("catalogString: locale â†’ en â†’ key marker");
+    const std::string lang = R"({"catalog.type.ds4.name":"DualShock 4 Ã¼bersetzt"})";
     const std::string en = R"({"catalog.type.ds4.name":"DualShock 4","only.en":"English"})";
     EXPECT_EQ(catalogString(lang, en, "catalog.type.ds4.name"),
-              std::string("DualShock 4 übersetzt"));
+              std::string("DualShock 4 Ã¼bersetzt"));
     EXPECT_EQ(catalogString(lang, en, "only.en"), std::string("English"));
     EXPECT_EQ(catalogString(lang, en, "missing.key"), std::string("missing.key"));
 }
@@ -362,7 +363,7 @@ static void test_emulatesNotLocalized() {
     const std::string enJson = readFileAll(langPath("en"));
     const std::string needles[] = {
         "\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}",
-        "\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\"]}",
+        "\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\",\"054c:09cc\"]}",
         "\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0ce6\"]}",
         "\"emulates\":{\"sdlType\":\"switchpro\",\"usb\":[\"057e:2009\"]}",
     };
@@ -425,7 +426,7 @@ static void test_emulatesOnlyOnOfferedTypes() {
     traits.ds4TouchpadSupported = true;
     const std::string enJson = readFileAll(langPath("en"));
     const std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
-    EXPECT(json.find("\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\"]}") !=
+    EXPECT(json.find("\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\",\"054c:09cc\"]}") !=
            std::string::npos);
     EXPECT(json.find("\"sdlType\":\"xbox360\"") == std::string::npos);
     EXPECT(json.find("\"sdlType\":\"ps5\"") == std::string::npos);
@@ -450,13 +451,13 @@ static void test_catalogJson_goldenShape_uinput() {
     traits.offersDS4 = true;
     traits.offersDualSense = true;
     traits.offersSwitchPro = true;
-    // Empty lang → name/shortName/description resolve to their key markers, so the
+    // Empty lang â†’ name/shortName/description resolve to their key markers, so the
     // whole body is deterministic and the full structure (order, ids, slugs, features,
     // emulates, hostFeatures) is pinned without coupling to localized copy.
     const std::string golden =
         R"({"locale":"en","protocolVersion":2,"serverVersion":"1.6.0","catalogVersion":2,"controllerTypes":[)"
         R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
-        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4"]}},)"
+        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4","054c:09cc"]}},)"
         R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
         R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
         R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";

@@ -20,7 +20,10 @@ persona runs 32 kHz out and 16 kHz in exactly like the hardware it impersonates
 and a decimation without a lowpass would fold everything above 8 kHz into the
 voice band. The DualSense mute button rides `wButtons` 0x0800 into input byte 9
 bit 0x04, and the game's mute-lamp writes come back through the existing output
-ring.
+ring. The catalog's ds4 `emulates.usb` hint now lists both hardware revisions
+(054c:05c4 and 054c:09cc): ViGEm materializes the v1 identity, HIDMaestro the
+v2, and only the v2 carries the USB audio function the new feature slugs
+describe.
 
 Honesty, not polish: an audio-carrying persona is served over HIDMaestro's
 bundled WHLK-certified usbip-win2 kernel USB transport, which installs the
