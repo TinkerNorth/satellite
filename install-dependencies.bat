@@ -5,13 +5,16 @@ REM
 REM  Installs everything needed to build satellite.exe, run the unit tests,
 REM  build the Inno Setup installer, and run the documented code-quality tools.
 REM
-REM    [1] MSYS2 + mingw-w64-ucrt-x86_64-gcc:       g++ and windres
-REM    [2] mingw-w64-ucrt-x86_64-openssl:           OpenSSL (HTTPS client API)
-REM        (required for build-satellite.bat and build-tests.bat)
-REM    [3] Inno Setup:                              iscc (installer.iss)
-REM    [4] LLVM:                                    clang-format, clang-tidy
-REM    [5] Cppcheck:                                static analysis
-REM    [6] .NET SDK 10:                             dotnet publish
+REM    [1] MSYS2:                                   the MinGW-w64 environment
+REM    [2] mingw-w64-ucrt-x86_64-gcc:               g++ and windres
+REM    [3] mingw-w64-ucrt-x86_64-pkgconf:           pkg-config (library probing)
+REM    [4] mingw-w64-ucrt-x86_64-openssl:           OpenSSL (HTTPS client API)
+REM    [5] mingw-w64-ucrt-x86_64-opus:              libopus (controller-audio codec)
+REM        ([2]-[5] are required for build-satellite.bat and build-tests.bat)
+REM    [6] CMake:                                   drives build-satellite.bat
+REM    [7] Inno Setup:                              iscc (installer.iss)
+REM    [8] LLVM + Cppcheck:                         clang-format, clang-tidy, static analysis
+REM    [9] .NET SDK 10:                             dotnet publish
 REM        (builds helper\hidmaestro\satellite-hm-helper.exe for the installer)
 REM
 REM  NOT installed (runtime-only): ViGEmBus driver. Grab it from
@@ -39,19 +42,19 @@ if %ERRORLEVEL% neq 0 (
 echo [OK]  winget available
 echo.
 
-echo === [1/6] MSYS2 ^(provides MinGW-w64 g++ + windres^) ===
+echo === [1/9] MSYS2 ^(provides MinGW-w64 g++ + windres^) ===
 winget install --id MSYS2.MSYS2 --silent --accept-source-agreements --accept-package-agreements
 echo.
 
 if not exist "%MSYS2_ROOT%\usr\bin\pacman.exe" (
     echo [FAIL] MSYS2 not found at %MSYS2_ROOT% after install.
     echo        If you installed MSYS2 to a different location, run:
-    echo            pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openssl
+    echo            pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-openssl mingw-w64-ucrt-x86_64-opus
     echo        from an MSYS2 shell, then re-run this script.
     exit /b 1
 )
 
-echo === [2/6] mingw-w64-ucrt-x86_64-gcc ^(via pacman^) ===
+echo === [2/9] mingw-w64-ucrt-x86_64-gcc ^(via pacman^) ===
 "%MSYS2_ROOT%\usr\bin\pacman.exe" -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc
 if %ERRORLEVEL% neq 0 (
     echo [FAIL] pacman could not install mingw-w64-ucrt-x86_64-gcc.
@@ -62,7 +65,18 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-echo === [3/6] mingw-w64-ucrt-x86_64-openssl ^(HTTPS client API^) ===
+echo === [3/9] mingw-w64-ucrt-x86_64-pkgconf ^(pkg-config, used to locate OpenSSL and libopus^) ===
+"%MSYS2_ROOT%\usr\bin\pacman.exe" -S --needed --noconfirm mingw-w64-ucrt-x86_64-pkgconf
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] pacman could not install mingw-w64-ucrt-x86_64-pkgconf.
+    echo        Try opening "MSYS2 UCRT64" from the Start menu and running:
+    echo            pacman -Syu
+    echo        then re-run this script.
+    exit /b 1
+)
+echo.
+
+echo === [4/9] mingw-w64-ucrt-x86_64-openssl ^(HTTPS client API^) ===
 REM webserver.cpp uses cpp-httplib's SSLServer (CPPHTTPLIB_OPENSSL_SUPPORT), and
 REM tls.cpp generates the self-signed cert via libcrypto. Both need OpenSSL
 REM headers + static archives shipped by the MSYS2 ucrt64 package.
@@ -76,16 +90,31 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-echo === [4/6] Inno Setup ^(installer build^) ===
+echo === [5/9] mingw-w64-ucrt-x86_64-opus ^(controller-audio codec^) ===
+"%MSYS2_ROOT%\usr\bin\pacman.exe" -S --needed --noconfirm mingw-w64-ucrt-x86_64-opus
+if %ERRORLEVEL% neq 0 (
+    echo [FAIL] pacman could not install mingw-w64-ucrt-x86_64-opus.
+    echo        Try opening "MSYS2 UCRT64" from the Start menu and running:
+    echo            pacman -Syu
+    echo        then re-run this script.
+    exit /b 1
+)
+echo.
+
+echo === [6/9] CMake ^(drives build-satellite.bat^) ===
+winget install --id Kitware.CMake --silent --accept-source-agreements --accept-package-agreements
+echo.
+
+echo === [7/9] Inno Setup ^(installer build^) ===
 winget install --id JRSoftware.InnoSetup --silent --accept-source-agreements --accept-package-agreements
 echo.
 
-echo === [5/6] LLVM + Cppcheck ^(code-quality tools^) ===
+echo === [8/9] LLVM + Cppcheck ^(code-quality tools^) ===
 winget install --id LLVM.LLVM --silent --accept-source-agreements --accept-package-agreements
 winget install --id Cppcheck.Cppcheck --silent --accept-source-agreements --accept-package-agreements
 echo.
 
-echo === [6/6] .NET SDK 10 ^(HIDMaestro helper build^) ===
+echo === [9/9] .NET SDK 10 ^(HIDMaestro helper build^) ===
 winget install --id Microsoft.DotNet.SDK.10 --silent --accept-source-agreements --accept-package-agreements
 echo.
 
