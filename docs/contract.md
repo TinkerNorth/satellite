@@ -327,7 +327,8 @@ caller's own session.
     "mouseControl": { "supported": true, "available": true },
     "keyboardControl": { "supported": false },
     "rumble": { "supported": true, "available": true }
-  }
+  },
+  "controllerAudio": { "enabled": true, "mic": true, "speaker": true }
 }
 ```
 
@@ -358,6 +359,20 @@ first use. The per-controller `mic` / `speaker` columns are the static counterpa
 that backend COULD materialize, unaffected by the setting (the catalog is cached on
 server version + locale, so an install-time switch must not move it). A client that
 reads only the columns would offer a microphone on a host that has switched audio off.
+
+`controllerAudio` (top-level; additive, absent on older servers) is the host-level view
+of the same switch, split by direction, so a client learns what will ACTUALLY flow
+rather than what is merely configured. `enabled` is the host's `controllerAudio`
+setting ANDed with whether ANY enumerated backend can carry audio at all, so a host
+whose only backend has no audio-capable type reports false however the switches are
+set. The per-backend `audio` field stays the place to learn WHICH backend can. `mic`
+and `speaker` are the two per-direction settings ANDed with `enabled`, since neither
+direction can flow through a persona that was never given audio endpoints. Those two gate the WIRE and not
+the persona — the emulated pad keeps both Windows endpoints either way — which is why
+they can change under a live stream, while `enabled` only takes effect at the next
+plug. The block lives here and deliberately NOT in `/api/catalog`: that response's ETag
+is server version + locale and must stay static identity, so no runtime setting may
+reach it.
 
 `lifecycle` ∈ `supported` | `maintenance` | `eol` is the UPSTREAM maintenance state of
 the driver, carried with `eolDate` (ISO date, or null) and `driverVersion` (the version
@@ -696,11 +711,15 @@ pushed to an un-keyed client and surfaces as 401 on the next REST contact.
 
 Scope first, because the name invites the wrong reading: this carries the EMULATED
 PAD's OWN audio endpoints, never the host's game audio. A DualSense (or DualShock 4
-v2) materialized through a composite persona presents real Windows endpoints, a
-"Wireless Controller" speaker/headset out and a "Headset Microphone (Wireless
-Controller)" in. Whatever a game writes to that speaker endpoint rides 0x0013 to the
-client; whatever the client's microphone captures rides 0x0012 back into that mic
-endpoint. General audio streaming is out of scope and always will be.
+v2) materialized through a composite persona presents real Windows endpoints, named
+after that persona's USB product string — the DualSense composite is
+`Speakers (DualSense Wireless Controller)` out and `Headset Microphone (DualSense
+Wireless Controller)` in; the DualShock 4 v2 composite carries the plain "Wireless
+Controller" string, and its out terminal is a headset rather than a speaker, so
+Windows may not label it "Speakers" at all. Whatever a game writes to that speaker
+endpoint rides 0x0013 to the client; whatever the client's microphone captures rides
+0x0012 back into that mic endpoint. General audio streaming is out of scope and
+always will be.
 
 These three messages EXTEND protocol 2 IN PLACE. Version 2 has never been released, so
 there is no deployed client to migrate and no version bump: `protocolVersion` stays 2.
@@ -715,6 +734,7 @@ audio cap sees exactly the traffic it saw before.
 | Channels | mono | stereo |
 | Opus application | VOIP | AUDIO |
 | Bitrate | ~32 kbps VBR, in-band FEC on | ~96 kbps VBR, in-band FEC on |
+| Silence | Opus DTX on (encoder-side VAD) | all-zero windows not sent, `seq` not advanced |
 | Cap gate | `mic` | `speaker` |
 
 - The format is FIXED on the wire, never negotiated. Opus resamples to 48 kHz
@@ -722,12 +742,30 @@ audio cap sees exactly the traffic it saw before.
   resampler; 20 ms is also the pad's USB-audio service interval, so no side re-windows.
 - One message carries exactly one Opus packet. Opus packets are self-delimiting, so
   the frame length IS the packet length; a frame with the 3-byte header and no Opus
-  byte is malformed (a silence frame is a 1-byte DTX packet, not an empty one).
+  byte is malformed (a silence frame is a 1-byte DTX packet, not an empty one, and the
+  mic encoder really does emit those — see the silence bullet below).
 - `seq` is u16 and WRAPS. It exists only for gap detection and for late-drop inside the
   receiver's 2-frame (40 ms) reorder window. There are NO acks and NO retransmits: the
   lossy-telemetry rule above applies, and Opus conceals loss itself with in-band FEC
   (the next packet re-carries a coarse copy of the previous one) plus PLC on a gap.
   Adding a reliability layer here would trade a 20 ms hole for unbounded latency.
+- Silence is handled differently in each direction, on purpose. The mic encoder runs
+  Opus DTX: a live microphone never goes digitally silent, so a VAD is the only thing
+  that can collapse a quiet room (measured on libopus 1.6.1: digital silence
+  8.4 → 1.1 kbps; -50 dBFS room noise after speech gated 123 of 250 frames,
+  30.0 → 16.4 kbps). The speaker encoder declines DTX — that gate cuts anything
+  ~26-30 dB below the recent peak, which on game audio replaces a reverb tail or quiet
+  ambience with comfort noise at -2.3 dB SNR — and the server instead drops any 20 ms
+  window that is EXACTLY all-zero, which is what Windows renders into the endpoint
+  whenever nothing is playing to it. That saves ~28 kbps of Opus and ~52 kbps on the
+  wire, once the 59 bytes of per-packet framing are counted (IPv4 20 + UDP 8 +
+  token/counter 8 + Poly1305 16 + inner header 4 + audio header 3).
+- A suppressed speaker window does NOT advance `seq`, and a receiver MUST NOT read the
+  resulting cadence as loss. A suppressed window is not a hole: nothing was lost, and
+  concealing it would have Opus invent noise where the game wrote none. The opposite
+  case, a window whose encode failed, DOES advance `seq` — that 20 ms really happened,
+  so the client conceals it rather than playing the stream short and drifting against
+  the game's clock.
 - Speaker content is channels 1/2 of the DualSense 4-channel OUT stream (its speaker
   and headset jack). Channels 3/4 are the HD-haptics lanes and deliberately never cross
   the wire. DualShock 4 v2 headset stereo rides as-is.
@@ -756,7 +794,10 @@ speaker it can play to, and the server sends or accepts accordingly. They are
 independent directions; one does not imply the other. The catalog advertises the
 type-feature slugs `mic`/`speaker` only for the types whose preferred materializer can
 build a pad with audio endpoints (the two Sony types via HIDMaestro's composite
-personas); every other type and backend reports `false`.
+personas); every other type and backend reports `false`. The host's own per-direction
+switches are a third, separate thing and live in `/api/server/capabilities`'s
+`controllerAudio` block: a cap says what the CLIENT can do, the catalog says what the
+host COULD build, and that block says what the host will actually carry right now.
 
 ### Host-input streams (reserved)
 

@@ -362,14 +362,16 @@ int main() {
         }
 
         TEST("GET /api/server/capabilities reports the directions as runtime state");
+        // Asserted as relationships, not absolutes: the block says what will
+        // ACTUALLY flow, so on a lane whose only backend carries no audio at
+        // all (uinput, machid) every field is legitimately false.
         auto caps = cli.Get("/api/server/capabilities");
         EXPECT(caps && caps->status == 200);
         if (caps) {
-            const Json c = parseJson(caps->body);
-            const Json block = jsonObject(c, "controllerAudio");
-            EXPECT_EQ(jsonBool(block, "enabled"), true);
+            const Json block = jsonObject(parseJson(caps->body), "controllerAudio");
+            const bool enabled = jsonBool(block, "enabled");
             EXPECT_EQ(jsonBool(block, "mic"), false);
-            EXPECT_EQ(jsonBool(block, "speaker"), true);
+            EXPECT_EQ(jsonBool(block, "speaker"), enabled);
         }
 
         TEST("POST /api/config: an absent direction key leaves that direction alone");
@@ -381,10 +383,14 @@ int main() {
             EXPECT_EQ(g_config.controllerAudioSpeaker, true);
         }
 
-        TEST("the master switch off forces both directions false in capabilities");
-        // The block reports what will actually flow, not what is configured: a
-        // pad that never materializes its endpoints streams neither direction,
-        // whatever the direction switches say.
+        TEST("the master switch off forces every field false in capabilities");
+        // A pad that never materializes its endpoints streams neither
+        // direction, whatever the direction switches say. This one IS absolute:
+        // no backend can rescue a host that declined the persona.
+        auto restoreDirections =
+            cli.Post("/api/config", R"({"controllerAudioMic":true,"controllerAudioSpeaker":true})",
+                     "application/json");
+        EXPECT(restoreDirections && restoreDirections->status == 200);
         auto masterOff =
             cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
         EXPECT(masterOff && masterOff->status == 200);

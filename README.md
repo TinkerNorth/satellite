@@ -31,6 +31,9 @@ The return path carries rumble the other direction. When a game on the receiver 
 - Live status: packet count, sender IP, listening state
 - Configurable UDP port, changed via the web UI
 - Optional start with Windows (via registry)
+- Controller audio: an emulated DualSense or DualShock 4 v2 also presents
+  the pad's own microphone and speaker to Windows, each direction switchable
+  on its own. See [Controller audio](#controller-audio) below.
 - In-app OTA updates: the check/download/install/restart loop hits the
   GitHub Releases API, verifies SHA-256 against `SHA256SUMS`, then hands off
   to the platform-native installer (Inno Setup on Windows, `.app` bundle swap
@@ -101,11 +104,19 @@ see a prompt.
 ### Controller audio
 
 A real DualSense (or DualShock 4 v2) is not only a gamepad: it is also a USB
-audio device, presenting Windows a "Wireless Controller" speaker/headset
-output and a headset microphone input. Satellite emulates those endpoints too,
-so a game's chat audio reaches the player's headset on the client device and
-the client's microphone is recorded on the PC from the pad's own mic endpoint.
-The DualSense mute button and its mute lamp work end to end.
+audio device, presenting Windows a speaker/headset output and a headset
+microphone input. Satellite emulates those endpoints too, so a game's chat
+audio reaches the player's headset on the client device and the client's
+microphone is recorded on the PC from the pad's own mic endpoint. The
+DualSense mute button and its mute lamp work end to end.
+
+Windows names those endpoints after the persona's USB product string, so which
+device to pick in the sound mixer depends on the pad Satellite created. The
+DualSense composite reports "DualSense Wireless Controller" and appears as
+`Speakers (DualSense Wireless Controller)` and `Headset Microphone (DualSense
+Wireless Controller)`. The DualShock 4 v2 composite reports plain "Wireless
+Controller"; its output terminal is a headset rather than a speaker, so the
+leading noun may differ — look for the product string, not the prefix.
 
 This is the one part of Satellite that is not user-mode. HIDMaestro serves an
 audio-carrying ("composite") controller over a bundled, WHLK-certified
@@ -114,13 +125,48 @@ such a controller is created — not at setup time, and never for an input-only
 pad. Everything else, including every controller type without audio endpoints,
 stays on the user-mode UMDF2 path described above.
 
-Controller audio is on by default and is a single switch: **Settings →
-Controller audio** in the dashboard, stored as `controllerAudio` in
-`config.json`. With it off, Satellite only ever creates input-only personas,
-so the kernel transport is never installed. The switch applies to the next
-controller connected; a pad already carrying audio keeps it until it is
-reconnected. `GET /api/server/capabilities` reports the live state as `audio`
-on each backend.
+Controller audio is four settings, all under **Settings → Controller audio** in
+the dashboard, all persisted in `config.json`, and all on by default:
+
+| Setting | What it gates | Applies |
+|---|---|---|
+| `controllerAudio` | Whether an audio-carrying persona is created at all — and so whether the kernel transport is ever installed | Next controller connected |
+| `controllerAudioMic` | The client's microphone reaching the pad's mic endpoint | Immediately |
+| `controllerAudioSpeaker` | The pad's speaker output reaching the client | Immediately |
+| `controllerAudioKeepDefaultDevice` | Whether Satellite puts the previous default playback device back after the pad's endpoint appears | Next controller connected |
+
+The master switch is the one with teeth: with `controllerAudio` off, Satellite
+only ever creates input-only personas, so the kernel transport is never
+installed. It applies to the next controller connected; a pad already carrying
+audio keeps it until it is reconnected.
+
+The two direction switches gate the wire, not the persona. HIDMaestro has no
+mic-only audio function — every composite profile it ships declares both an
+input and an output streaming interface — so "microphone without speaker"
+cannot be expressed at the persona level at all. Both Windows endpoints
+therefore keep existing either way and only the network traffic stops, which is
+also why these two reach a stream that is already playing: nothing has to be
+replugged for them to take effect. Turning both off is not the same as
+`controllerAudio` off, which declines the persona and with it the kernel
+transport.
+
+`controllerAudioKeepDefaultDevice` is there because Windows promotes a newly
+arrived endpoint to the default playback device: an endpoint with no persisted
+`Level` value lands in the "newest device" bucket, where USB bus type and
+Speakers form factor both rank at the top ([default audio endpoint
+selection](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/default-audio-endpoint-selection)).
+That, and not the feature itself, is what makes controller audio look like it
+forwards everything: every sound on the desktop is being rendered into the
+pad's endpoint. With this on, Satellite puts the previous default back
+afterwards; turn it off to let the pad become the default the way Windows
+intended.
+
+A key missing from `config.json` reads as its default, so a config written
+before the switch was split keeps behaving exactly as it did. The live state
+is published two ways: `GET /api/server/capabilities` reports `audio` per
+backend, and additively a top-level `controllerAudio` object whose `enabled` /
+`mic` / `speaker` say what will actually flow; `GET /api/status` carries all
+four settings.
 
 ### Uninstalling
 

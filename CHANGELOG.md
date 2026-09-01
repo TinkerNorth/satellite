@@ -5,6 +5,35 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## Unreleased
 
+Controller audio, split per direction and no longer paying for silence: one
+`controllerAudio` switch turned both directions on together, so a host that
+wanted the pad's microphone had to accept its speaker too, and the speaker
+carries whatever Windows renders into the endpoint. `controllerAudioMic` and
+`controllerAudioSpeaker` now join it and gate the WIRE rather than the persona:
+HIDMaestro has no mic-only USB Audio function, so both Windows endpoints exist
+either way and only the network traffic stops. That also lets those two reach
+a stream already playing, which the master switch cannot: it decides whether a
+kernel transport is installed at all, so it lands at the next plug.
+`controllerAudioKeepDefaultDevice` is a fourth setting: Windows promotes a
+newly arrived endpoint to the default playback device, which is the real reason
+controller audio looked like it forwarded everything, and with it on Satellite
+puts the previous default back. Absent keys read as on, so an upgraded config
+keeps the behaviour its owner chose. All four ride `GET /api/status`, and
+`GET /api/server/capabilities` gains a top-level `controllerAudio` block
+(`enabled` / `mic` / `speaker`, each ANDed down to what will actually flow)
+rather than `/api/catalog`, whose ETag is server version plus locale and must
+stay static identity. The speaker path also stops sending digital silence: an
+all-zero 20 ms window is neither encoded nor sent, and deliberately does not
+advance `seq`, because a suppressed window is not a hole and concealing one
+would have Opus invent noise where the game wrote none (~28 kbps of Opus,
+~52 kbps on the wire once framing is counted). DTX goes on the mic encoder
+only; the speaker declines it, since that gate cuts anything ~26-30 dB below
+the recent peak and turns a reverb tail into comfort noise. Correcting the
+record while here: the loss hint, not the application, picks the mode, so both
+streams are Hybrid fullband and both really do carry in-band FEC (8.4 dB
+recovery against -1.3 dB for blind PLC on the speaker stream); dropping the
+hint to reach CELT would silently delete it.
+
 Controller audio, the pad end: an emulated DualSense or DualShock 4 v2 now
 presents Windows the microphone and speaker the physical pad does. HIDMaestro
 materializes the identity's composite persona (`dualsense-composite`,

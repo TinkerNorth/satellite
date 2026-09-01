@@ -395,6 +395,16 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
   controller-audio rings (see below). Same seqlock/doorbell shape as
   the driver's output ring, same no-`<windows.h>` rule, pinned by
   `tests/test_hidmaestro_audio_wire.cpp` on every CI platform.
+- `platform/windows/audio_default_guard.{h,cpp}` — every rule the
+  default-playback-device guard follows: the per-role restore decision,
+  the parent-chain predicate that tells our endpoint from a real
+  DualSense, and the vtable-validation verdict. No `<windows.h>`, pinned
+  by `tests/test_audio_default_guard.cpp` on every CI platform.
+- `platform/windows/audio_endpoint_com.{h,cpp}` — its I/O shell:
+  MMDevice reads, the cfgmgr32 parent walk, the one undocumented
+  `IPolicyConfig` write, and the worker that polls the guard after a
+  composite plug. Decides nothing; every failure is soft, because a
+  guard that cannot run must never fail a controller plug.
 
 ### Controller audio, and the one kernel driver
 
@@ -408,6 +418,32 @@ picks the composite id only when the identity has one AND the
 plug through a callback, so the dashboard toggle applies to the next pad
 without a restart, and a refused composite falls back to the plain persona
 rather than failing the plug.
+
+The other three settings never touch the persona. A composite always
+carries both endpoints: HIDMaestro ships no mic-only audio function, and
+all three of its audio profiles (`dualsense-composite`,
+`dualshock-4-v2-composite`, `dualsense-edge-composite`) declare both an
+`audioStreamingOut` and an `audioStreamingIn` interface. So
+`controllerAudioMic` and `controllerAudioSpeaker` gate the WIRE instead,
+sampled per frame by `SessionService` through `setAudioPolicy`. That is
+why they reach a stream already playing where the master switch cannot:
+nothing is replugged, only routed. The sample is taken before `mtx_`,
+because the policy itself takes the config lock and the two must never
+nest; the callback slot itself is read unlocked, wired once at startup
+like `keyDeriver`/`audioCodecs`, since a backend can fire its speaker
+callback from inside a call that already holds `mtx_`. Absent keys read
+as on, so a config written before the split keeps the behaviour its owner
+chose.
+
+`controllerAudioKeepDefaultDevice` answers a different problem. Windows
+promotes a newly arrived endpoint to the default playback device: an
+endpoint with no persisted `Level` value wins the "newest device" bucket,
+and USB bus type plus Speakers form factor both rank top there.
+Materializing the pad therefore hands it the whole desktop's audio, which
+is what made controller audio look like it forwarded everything. With the
+setting on Satellite puts the previous default back afterwards; it never
+stops the endpoint existing, because the pad speaker is the point of the
+feature.
 
 **This is not user-mode.** A composite persona is served over
 HIDMaestro's bundled WHLK-certified usbip-win2 kernel USB transport, which
@@ -438,6 +474,30 @@ like the hardware it impersonates. Handing 32 kHz samples to a 48 kHz
 consumer would play the stream half again too fast; decimating 48 kHz to
 16 kHz without a lowpass would fold everything above 8 kHz into the voice
 band.
+
+Both directions are Opus at 48 kHz, 20 ms, VBR, and both are configured in
+`adapters/audio/opus_codec.cpp`; satellite itself only ever builds the mic
+DECODER and the speaker ENCODER, since the other half of each pair lives
+on the client. `OPUS_SET_PACKET_LOSS_PERC(10)` is the load-bearing knob:
+it is the loss hint, not the application, that picks the mode, and it
+forces SILK in, so BOTH streams encode as Hybrid fullband and BOTH really
+do carry in-band FEC (measured on libopus 1.6.1: 8.4 dB recovery through
+`decode_fec` against -1.3 dB for blind PLC on the speaker stream).
+Dropping the hint to reach CELT would silently delete that FEC.
+
+Silence is where the two directions diverge. DTX goes on the mic encoder
+only: a live microphone never goes digitally silent, so a VAD is the only
+thing that can collapse a quiet room (123 of 250 frames gated at -50 dBFS
+after speech, 30.0 → 16.4 kbps). The speaker declines it, because that
+gate cuts anything ~26-30 dB below the recent peak and would replace a
+reverb tail or quiet ambience with comfort noise at -2.3 dB SNR. It uses
+`isDigitalSilence` instead, an exact all-zero test that cannot touch
+anything audible. Such a window is what Windows renders into the endpoint
+whenever nothing is playing to it, and `sendSpeakerFrameLocked` neither
+encodes nor sends it, saving ~28 kbps of Opus and ~52 kbps on the wire for
+a stream carrying nothing. It deliberately does not advance `seq` either:
+a suppressed window is not a hole, and asking the client to conceal one
+would have Opus invent noise where the game wrote none.
 
 The DualSense mute button rides `wButtons` bit 0x0800 into input byte 9 bit
 0x04, and the game's mute-lamp writes come back out of the existing output

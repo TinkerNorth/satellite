@@ -45,7 +45,9 @@
 ;  bundled WHLK-certified usbip-win2 kernel USB transport, which HIDMaestro
 ;  installs the first time such a controller is created. That is a first-use
 ;  event, not a setup event, and Satellite's `controllerAudio` setting
-;  (Settings > Controller audio, on by default) turns it off entirely.
+;  (Settings > Controller audio, on by default) turns it off entirely. The
+;  per-direction switches beside it only gate the network traffic; that one
+;  is what decides whether the transport is ever installed.
 ;
 ;  Switches:
 ;    /VIGEM=auto      (default)  install only if missing or older
@@ -499,8 +501,8 @@ begin
             + ' present its own microphone and speaker to Windows. That needs'
             + ' HIDMaestro''s bundled WHLK-certified usbip-win2 kernel USB'
             + ' transport, which installs the first time such a controller is'
-            + ' created, not during setup. Satellite''s Settings page has a'
-            + ' Controller audio switch (on by default); turning it off means the'
+            + ' created, not during setup. Satellite''s Settings page can turn'
+            + ' Controller audio off (it is on by default); with it off the'
             + ' transport is never installed.';
 end;
 

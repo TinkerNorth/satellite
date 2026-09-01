@@ -96,11 +96,19 @@ std::string buildCapabilitiesJson() {
     motion["available"] = (s.available && traits.ds4MotionSupported);
     j["motion"] = std::move(motion);
     j["host"] = JsonOut::parse(satellite::buildHostBlockJson(traits, s.available));
+    // What will ACTUALLY flow, which is why this ANDs in backend capability
+    // that the raw setting does not: a host whose only backend cannot carry
+    // audio streams nothing however the switches are set. The per-backend
+    // `audio` field stays the place to learn WHICH backend can.
+    const bool anyBackendCarriesAudio = traits.ds4MicSupported || traits.ds4SpeakerSupported ||
+                                        traits.dualsenseMicSupported ||
+                                        traits.dualsenseSpeakerSupported;
+    const bool audioLive = audio && anyBackendCarriesAudio;
     const ControllerAudioPolicy policy = controllerAudioPolicy();
     JsonOut audioBlock;
-    audioBlock["enabled"] = audio;
-    audioBlock["mic"] = audio && policy.mic;
-    audioBlock["speaker"] = audio && policy.speaker;
+    audioBlock["enabled"] = audioLive;
+    audioBlock["mic"] = audioLive && policy.mic;
+    audioBlock["speaker"] = audioLive && policy.speaker;
     j["controllerAudio"] = std::move(audioBlock);
     return jsonDump(j);
 }

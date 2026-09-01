@@ -81,9 +81,11 @@ DualShock 4 v2 (those personas carry the pad's real USB-audio function).
 `HMContext.IsUsbipBackendAvailable` / `HMContext.InstallUsbipBackend()` are
 the SDK's probe and install entry points, and the helper calls them
 explicitly so a blocked install is a reportable plug failure rather than a
-surprise. Turning `controllerAudio` off means it is never installed. Bumping
-the HIDMaestro pin therefore also bumps this transport; note the new usbip
-version in the commit message.
+surprise. Turning `controllerAudio` off means it is never installed; the
+`controllerAudioMic` / `controllerAudioSpeaker` switches beside it do not,
+since they gate the wire and the composite persona is still created.
+Bumping the HIDMaestro pin therefore also bumps this transport; note the
+new usbip version in the commit message.
 
 ## Updating the pin
 

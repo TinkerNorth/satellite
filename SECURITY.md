@@ -305,9 +305,13 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
   Every other Satellite path on Windows is user-mode; this one is not.
   The `controllerAudio` setting (Settings > Controller audio, on by
   default, `GET /api/server/capabilities` reports it per backend as
-  `audio`) turns it off, and with it off the transport is never
-  installed. Two consequences worth stating plainly rather than
-  discovering:
+  `audio` and host-wide as `controllerAudio.enabled`) turns it off, and
+  with it off the transport is never installed. Only that master switch
+  does: the `controllerAudioMic` and `controllerAudioSpeaker` settings
+  beside it gate the wire rather than the persona, so turning both off
+  stops the network traffic while the composite pad, and therefore the
+  kernel transport, is still created. Two consequences worth stating
+  plainly rather than discovering:
   - A composite persona is **not identifiable as virtual** from the HID
     node. It enumerates under `ROOT\HIDMAESTRO_UDE`, four parents above
     the HID device, so software that checks a pad's own device path,
@@ -321,7 +325,10 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
     the host can record it exactly as it could from a physically plugged
     controller. Satellite never stores it and never sends it anywhere but
     that endpoint. The client owns muting: a muted client sends no audio
-    at all rather than sending silence.
+    at all rather than sending silence. `controllerAudioMic` off makes the
+    host drop those frames before decode, but that is a host-side routing
+    choice, not a privacy guarantee a client can rely on; the endpoint
+    still exists either way.
 - **macOS virtual pads are entitlement-gated.** The macOS backend
   synthesizes virtual DualShock 4 controllers via `IOHIDUserDevice`,
   which requires the `com.apple.developer.hid.virtual.device`

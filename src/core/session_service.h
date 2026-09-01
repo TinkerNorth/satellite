@@ -317,7 +317,8 @@ class SessionService {
     // all; a partial batch that is merely still short of a frame is a true.
     bool encodeAndSendSpeakerAudioLocked(Connection& conn, Controller& ctrl,
                                          const int16_t* stereo48k, size_t frames);
-    // One encoded 20 ms window onto the wire, advancing the controller's seq.
+    // One 20 ms window onto the wire. A digitally-silent window is neither
+    // encoded nor sent and does NOT advance the seq; see the definition.
     void sendSpeakerFrameLocked(Connection& conn, Controller& ctrl, ControllerAudio& audio,
                                 const int16_t* frame);
     // The pad's audio working set, allocated on first use (see ControllerAudio).
