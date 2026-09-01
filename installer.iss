@@ -39,6 +39,14 @@
 ;  pnputil, no reboot). Satellite runs with either driver, both, or none
 ;  (controller types degrade accordingly).
 ;
+;  Setup installs NO kernel driver for HIDMaestro. One runtime feature does:
+;  controller audio (the emulated DualSense / DualShock 4 v2 presenting its
+;  own microphone and speaker to Windows) is served over HIDMaestro's
+;  bundled WHLK-certified usbip-win2 kernel USB transport, which HIDMaestro
+;  installs the first time such a controller is created. That is a first-use
+;  event, not a setup event, and Satellite's `controllerAudio` setting
+;  (Settings > Controller audio, on by default) turns it off entirely.
+;
 ;  Switches:
 ;    /VIGEM=auto      (default)  install only if missing or older
 ;    /VIGEM=bundled              force install even over a newer version
@@ -165,7 +173,7 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 [Components]
 Name: "main";  Description: "Satellite (required)"; Types: full custom; Flags: fixed
 Name: "vigem"; Description: "ViGEmBus driver: virtual gamepads, rumble and controller motion (gyro/accelerometer)"; Types: full
-Name: "hidmaestro"; Description: "HIDMaestro driver: adds virtual DualSense and Switch Pro controllers (user-mode, no reboot)"; Types: full
+Name: "hidmaestro"; Description: "HIDMaestro driver: adds virtual DualSense and Switch Pro controllers (user-mode, no reboot; controller audio later adds a signed kernel USB transport on first use)"; Types: full
 
 [Tasks]
 ; Autostart is opt-in, matching the Settings > Apps > Startup model.
@@ -484,6 +492,16 @@ begin
         Result := Result + 'Not detected here. The bundled v' + '{#HmVersion}' + ' will be deployed.';
     if HmMode = 'skip' then
         Result := Result + #13#10 + 'Override active: /HIDMAESTRO=skip. The driver will not be touched.';
+    // Setup installs no kernel driver here; controller audio does, on first
+    // use, and the user can turn it off before ever connecting a controller.
+    Result := Result + #13#10 + #13#10
+            + 'Controller audio: an emulated DualSense or DualShock 4 v2 can also'
+            + ' present its own microphone and speaker to Windows. That needs'
+            + ' HIDMaestro''s bundled WHLK-certified usbip-win2 kernel USB'
+            + ' transport, which installs the first time such a controller is'
+            + ' created, not during setup. Satellite''s Settings page has a'
+            + ' Controller audio switch (on by default); turning it off means the'
+            + ' transport is never installed.';
 end;
 
 function InitializeSetup: Boolean;

@@ -5,6 +5,36 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## Unreleased
 
+Controller audio, the pad end: an emulated DualSense or DualShock 4 v2 now
+presents Windows the microphone and speaker the physical pad does. HIDMaestro
+materializes the identity's composite persona (`dualsense-composite`,
+`dualshock-4-v2-composite`) instead of the plain one, and two new
+shared-memory rings alongside the driver's input/output pair carry PCM between
+the elevated helper and satellite: speaker up from the helper, microphone down
+to it, each a 32-slot seqlock ring with a doorbell, the same shape the driver's
+output ring already uses. The rings speak the wire's channel layout at the
+persona's own sample rate, which splits the work where it can be tested: the
+helper picks channels (dropping the DualSense's HD-haptics lanes 3/4, which
+never cross the wire), and satellite rate-converts, because the DualShock 4 v2
+persona runs 32 kHz out and 16 kHz in exactly like the hardware it impersonates
+and a decimation without a lowpass would fold everything above 8 kHz into the
+voice band. The DualSense mute button rides `wButtons` 0x0800 into input byte 9
+bit 0x04, and the game's mute-lamp writes come back through the existing output
+ring.
+
+Honesty, not polish: an audio-carrying persona is served over HIDMaestro's
+bundled WHLK-certified usbip-win2 kernel USB transport, which installs the
+first time such a controller is created. Satellite's Windows path was described
+as user-mode throughout; that was true of input and is now stated as being true
+of input only, in README.md, installer.iss (component description and the
+components-page prompt), docs/architecture.md and SECURITY.md. The new
+`controllerAudio` setting (on by default, Settings > Controller audio in the
+dashboard, persisted in config.json) is the off switch, and with it off the
+transport is never installed. `GET /api/server/capabilities` reports it per
+backend as `audio`, next to `kernelMode`, which keeps describing the input
+submit path and stays false. A refused composite falls back to the plain
+persona rather than failing the plug: a pad without audio beats no pad.
+
 Controller audio, codec and jitter window: the two audio paths the wire
 contract described now carry samples. Inbound MIC_AUDIO frames go through a
 2-frame reorder window keyed on the wrapping `seq` and into an Opus decoder,

@@ -398,9 +398,12 @@ inline const int PLAYER_LEDS_WIRE_PAYLOAD_BYTES = 1;
 
 // Controller audio wire format (MSG_MIC_AUDIO / MSG_SPEAKER_AUDIO). Fixed on
 // the wire, never negotiated: Opus runs at 48 kHz internally regardless, so
-// pinning the rate costs nothing and spares both ends a resampler. One wire
-// frame is exactly one 20 ms Opus packet, which is also the DualSense USB-audio
-// service interval, so no side has to re-window.
+// pinning the rate costs nothing and spares the CLIENT a resampler. One wire
+// frame is exactly one 20 ms Opus packet. The emulated pad's own USB-audio
+// endpoints do not share that cadence or, on the DualShock 4 v2 persona, that
+// rate (its isochronous service interval is 1 ms, and its audio function runs
+// 32 kHz out / 16 kHz in), so the HIDMaestro backend re-windows and rate-
+// converts on the host side; see platform/windows/hidmaestro_audio_wire.h.
 inline const int AUDIO_SAMPLE_RATE_HZ = 48000;
 inline const int AUDIO_FRAME_MS = 20;
 inline const int AUDIO_FRAME_SAMPLES = AUDIO_SAMPLE_RATE_HZ / 1000 * AUDIO_FRAME_MS; // 960 per ch
@@ -863,6 +866,14 @@ struct Config {
     std::string skipVersion;
     std::string networkInterface;
     bool allowPublicNetwork = false;
+
+    // Controller audio (the emulated pad's own mic/speaker endpoints). On by
+    // default because a DualSense that presents no audio endpoints is not the
+    // pad the game expects. The off switch is not cosmetic: materializing an
+    // audio-carrying persona means HIDMaestro installs its bundled signed
+    // kernel USB transport on first use, so a host that wants nothing but the
+    // user-mode input path has to be able to say so.
+    bool controllerAudio = true;
 };
 
 enum class LogLevel { INFO, WARN, ERR };

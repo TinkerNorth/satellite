@@ -16,6 +16,7 @@ struct StatusFields {
     int webPort = 0;
     bool autoStart = false;
     bool discoveryBroadcastEnabled = false;
+    bool controllerAudio = true;
     bool mdnsResponderActive = false;
     bool backendAvailable = false;
     uint64_t submitOk = 0;
@@ -37,6 +38,7 @@ inline std::string buildStatusJson(const StatusFields& f) {
     j["webPort"] = f.webPort;
     j["autoStart"] = f.autoStart;
     j["discoveryBroadcastEnabled"] = f.discoveryBroadcastEnabled;
+    j["controllerAudio"] = f.controllerAudio;
     j["mdnsResponderActive"] = f.mdnsResponderActive;
     j["backendAvailable"] = f.backendAvailable;
     j["backend"] = f.backend;

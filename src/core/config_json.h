@@ -25,6 +25,7 @@ inline std::string serializeConfig(const Config& cfg) {
     j["skipVersion"] = cfg.skipVersion;
     j["networkInterface"] = cfg.networkInterface;
     j["allowPublicNetwork"] = cfg.allowPublicNetwork;
+    j["controllerAudio"] = cfg.controllerAudio;
 
     JsonOut devices = JsonOut::array();
     for (const auto& d : cfg.pairedDevices) {
@@ -71,6 +72,9 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     cfg.skipVersion = jsonStr(j, "skipVersion");
     cfg.networkInterface = jsonStr(j, "networkInterface");
     cfg.allowPublicNetwork = jsonBool(j, "allowPublicNetwork", cfg.allowPublicNetwork);
+    // Absent in configs written before controller audio existed, which must
+    // read as the default (on) rather than as an explicit opt-out.
+    cfg.controllerAudio = jsonBool(j, "controllerAudio", cfg.controllerAudio);
 
     auto it = j.find("pairedDevices");
     if (it != j.end() && it->is_array()) {

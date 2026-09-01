@@ -5,9 +5,11 @@
 // TUs); their bodies are unchanged.
 #include "routes_common.h"
 
+#include "app/app_state.h" // g_config / g_configMtx: the controllerAudio switch
 #include "core/types.h"
 
 #include <fstream>
+#include <mutex>
 
 using satellite::Json;
 using satellite::jsonDump;
@@ -41,9 +43,17 @@ std::string buildBackendJson() { return buildBackendJson(probeBackend()); }
 // GET /api/backend/status: the legacy singular object plus the per-host
 // `backends` array, so the dashboard can render remediation for every
 // unavailable backend rather than only the preferred one.
+// The `controllerAudio` setting under its own lock, so a caller does not have
+// to hold g_configMtx across a whole JSON build.
+static bool controllerAudioEnabled() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    return g_config.controllerAudio;
+}
+
 std::string buildBackendStatusJson() {
     JsonOut j = backendJsonObj(probeBackend());
-    j["backends"] = JsonOut::parse(satellite::buildBackendsJson(enumerateBackends()));
+    j["backends"] =
+        JsonOut::parse(satellite::buildBackendsJson(enumerateBackends(), controllerAudioEnabled()));
     return jsonDump(j);
 }
 
@@ -66,12 +76,13 @@ std::string buildCapabilitiesJson() {
     BackendStatus s = probeBackend();
     std::vector<satellite::BackendRuntimeStatus> all = enumerateBackends();
     satellite::CatalogBackendTraits traits = satellite::deriveCatalogTraits(all);
+    const bool audio = controllerAudioEnabled();
     JsonOut j;
     j["protocolVersion"] = PROTOCOL_VERSION;
     j["serverVersion"] = SATELLITE_VERSION;
     j["maxControllers"] = MAX_BACKEND_CONTROLLERS;
     j["backend"] = backendJsonObj(s);
-    j["backends"] = JsonOut::parse(satellite::buildBackendsJson(all));
+    j["backends"] = JsonOut::parse(satellite::buildBackendsJson(all, audio));
     JsonOut motion;
     motion["available"] = (s.available && traits.ds4MotionSupported);
     j["motion"] = std::move(motion);

@@ -116,7 +116,15 @@ const BackendDescriptor* backendDescriptorById(const std::string& id) {
     return nullptr;
 }
 
-std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses) {
+bool backendCanCarryAudio(const BackendDescriptor& d) {
+    for (size_t i = 0; i < d.supportCount; ++i) {
+        if (d.support[i].mic || d.support[i].speaker) return true;
+    }
+    return false;
+}
+
+std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
+                              bool controllerAudio) {
     std::string json = "[";
     bool first = true;
     for (const auto& st : statuses) {
@@ -133,6 +141,8 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses)
         json += d->displayName;
         json += "\",\"kernelMode\":";
         json += d->kernelMode ? "true" : "false";
+        json += ",\"audio\":";
+        json += (controllerAudio && backendCanCarryAudio(*d)) ? "true" : "false";
         json += ",\"available\":";
         json += st.available ? "true" : "false";
         json += ",\"errorCode\":";

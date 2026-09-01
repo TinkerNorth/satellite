@@ -183,7 +183,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // HIDMaestro for the rest and as the fallback when ViGEmBus is absent.
     ViGEmAdapter vigemAdapter;
     satellite::hidmaestro::HelperClient hmProvisioner;
-    HidMaestroAdapter hidMaestroAdapter(hmProvisioner);
+    // Read per plug, not cached: the dashboard toggle takes effect on the next
+    // pad, and a pad already carrying audio keeps it until it is replugged.
+    HidMaestroAdapter hidMaestroAdapter(hmProvisioner, [] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return g_config.controllerAudio;
+    });
     satellite::GamepadMux gamepadMux({&vigemAdapter, &hidMaestroAdapter});
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;

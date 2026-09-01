@@ -42,7 +42,7 @@ The return path carries rumble the other direction. When a game on the receiver 
 ## Prerequisites
 
 ### Receiver machine
-- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense + Switch Pro; user-mode, no reboot). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
+- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense + Switch Pro; user-mode for input, no reboot — see [Controller audio](#controller-audio) for the one case that also loads a kernel USB transport). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup). Or:
 - **macOS 10.15+** with a build carrying the `com.apple.developer.hid.virtual.device` entitlement (production builds): controllers are synthesized as virtual DualShock 4 pads via `IOHIDUserDevice`. Unentitled builds (CI artifacts, local compiles) run as development/web-UI servers only; controller descriptors apply as `backendUnavailable`.
 
@@ -70,7 +70,9 @@ Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth
   user-mode UMDF2 driver embedded in the bundled `satellite-hm-helper.exe`;
   deployment is idempotent and needs no reboot. It adds virtual DualSense
   and Switch Pro controller types, and covers DualShock 4 / Xbox 360 when
-  ViGEmBus is absent.
+  ViGEmBus is absent. Setup installs no kernel driver for it; the one
+  component that does is controller audio, and it installs on first use
+  rather than at setup time (see [Controller audio](#controller-audio)).
 
 ### Driver options for unattended installs
 
@@ -95,6 +97,30 @@ session shows one Windows elevation prompt: creating the virtual device
 needs administrator rights, which Satellite (running unelevated) delegates
 to `satellite-hm-helper.exe` for that session. ViGEm-only sessions never
 see a prompt.
+
+### Controller audio
+
+A real DualSense (or DualShock 4 v2) is not only a gamepad: it is also a USB
+audio device, presenting Windows a "Wireless Controller" speaker/headset
+output and a headset microphone input. Satellite emulates those endpoints too,
+so a game's chat audio reaches the player's headset on the client device and
+the client's microphone is recorded on the PC from the pad's own mic endpoint.
+The DualSense mute button and its mute lamp work end to end.
+
+This is the one part of Satellite that is not user-mode. HIDMaestro serves an
+audio-carrying ("composite") controller over a bundled, WHLK-certified
+usbip-win2 kernel USB transport, which HIDMaestro installs the **first time**
+such a controller is created — not at setup time, and never for an input-only
+pad. Everything else, including every controller type without audio endpoints,
+stays on the user-mode UMDF2 path described above.
+
+Controller audio is on by default and is a single switch: **Settings →
+Controller audio** in the dashboard, stored as `controllerAudio` in
+`config.json`. With it off, Satellite only ever creates input-only personas,
+so the kernel transport is never installed. The switch applies to the next
+controller connected; a pad already carrying audio keeps it until it is
+reconnected. `GET /api/server/capabilities` reports the live state as `audio`
+on each backend.
 
 ### Uninstalling
 

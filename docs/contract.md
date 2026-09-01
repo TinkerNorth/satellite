@@ -293,7 +293,7 @@ caller's own session.
   "backend": { "id": "vigem", "supported": true, "available": true, "errorCode": null },
   "backends": [
     { "id": "vigem", "vendor": "Nefarius Software Solutions", "displayName": "ViGEmBus",
-      "kernelMode": true, "available": true, "errorCode": null,
+      "kernelMode": true, "audio": false, "available": true, "errorCode": null,
       "lifecycle": "eol", "eolDate": "2023-11-02", "driverVersion": null,
       "controllers": [
         { "type": 0, "name": "xbox", "latency": "lowest", "latencyRank": 0,
@@ -308,7 +308,7 @@ caller's own session.
           "motionRequires": "vigembus>=1.17", "submitLatency": { "...": "…" } }
       ] },
     { "id": "hidmaestro", "vendor": "hifihedgehog", "displayName": "HIDMaestro",
-      "kernelMode": false, "available": true, "errorCode": null,
+      "kernelMode": false, "audio": true, "available": true, "errorCode": null,
       "lifecycle": "supported", "eolDate": null, "driverVersion": null,
       "controllers": [
         { "type": 0, "name": "xbox", "latency": "medium", "latencyRank": 2,
@@ -346,6 +346,18 @@ requires code for THAT backend, which is not necessarily the one the catalog quo
 see the catalog layering rule below) and a derived submit-latency estimate. Ids `vigem`
 / `hidmaestro` / `uinput` / `machid` / `none` and all error codes are protocol
 constants, never localized.
+
+`kernelMode` describes that backend's INPUT submit path and nothing else. It stays
+`false` for `hidmaestro` even when `audio` is true: input still goes through a user-mode
+UMDF2 driver. `audio` (additive; absent on older servers) is the one runtime-switched
+field on a backend entry, and it is what tells a reader a kernel component is in play.
+It is true only when the backend has a controller type with audio endpoints AND the
+host's `controllerAudio` setting is on, because materializing an audio-carrying
+(composite) persona means the backend installs a bundled signed kernel USB transport on
+first use. The per-controller `mic` / `speaker` columns are the static counterpart: what
+that backend COULD materialize, unaffected by the setting (the catalog is cached on
+server version + locale, so an install-time switch must not move it). A client that
+reads only the columns would offer a microphone on a host that has switched audio off.
 
 `lifecycle` ∈ `supported` | `maintenance` | `eol` is the UPSTREAM maintenance state of
 the driver, carried with `eolDate` (ISO date, or null) and `driverVersion` (the version

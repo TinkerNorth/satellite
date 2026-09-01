@@ -28,18 +28,37 @@ namespace hidmaestro {
 
 // Profile ids from HIDMaestro's embedded catalog, one per materializable
 // identity. nullptr = identity not mapped (never the case today).
-inline const char* profileForIdentity(GamepadIdentity identity) {
+//
+// `audio` asks for the composite persona: the same pad plus its real USB-audio
+// function, which is the only way the emulated DualSense presents Windows the
+// speaker and microphone endpoints the physical one does. Only the two Sony
+// identities have such a persona (an Xbox 360 pad and a Switch Pro have no
+// audio function to emulate), and only the v2 DualShock 4 does — DS4 v1
+// hardware carries no USB audio, so HIDMaestro ships no composite for it.
+//
+// Asking for a composite is not free: HIDMaestro serves it over its bundled
+// usbip-win2 kernel USB transport, which self-installs on the first composite
+// creation. That is why `audio` is an explicit argument tracing back to the
+// `controllerAudio` setting rather than something this function assumes.
+inline const char* profileForIdentity(GamepadIdentity identity, bool audio = false) {
     switch (identity) {
     case GamepadIdentity::Xbox:
         return "xbox-360-wired";
     case GamepadIdentity::DS4:
-        return "dualshock-4-v2";
+        return audio ? "dualshock-4-v2-composite" : "dualshock-4-v2";
     case GamepadIdentity::DualSense:
-        return "dualsense";
+        return audio ? "dualsense-composite" : "dualsense";
     case GamepadIdentity::SwitchPro:
         return "switch-pro";
     }
     return nullptr;
+}
+
+// Whether an identity has a composite persona at all, i.e. whether asking for
+// audio would change anything. Keeps the plug path from spending a failed
+// provision attempt on an identity that could never have carried audio.
+inline bool identityHasAudioPersona(GamepadIdentity identity) {
+    return identity == GamepadIdentity::DS4 || identity == GamepadIdentity::DualSense;
 }
 
 // ── xbox-360-wired ─────────────────────────────────────────────────────────
@@ -258,6 +277,10 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
     uint8_t meta = 0;
     if (b & 0x0400) meta |= 0x01; // Guide -> PS
     if (st.touchpadButtonPressed) meta |= 0x02;
+    // The DualSense is the only identity with a mute button, so it is the only
+    // one that consumes WBUTTON_MIC_MUTE; every other packer leaves 0x0800
+    // alone. Bit 0x04 of buttons[2] is where hid-playstation reads it.
+    if (b & WBUTTON_MIC_MUTE) meta |= 0x04;
     out[9] = meta;
 
     const MotionReport motion = sonyMotionFromWire(st.motion);
@@ -399,6 +422,9 @@ struct DecodedOutput {
     uint8_t rightTriggerEffect[TRIGGER_EFFECT_BLOCK_BYTES] = {};
     bool hasPlayerLeds = false;
     uint8_t playerLeds = 0;
+    // DS5 only: the mute lamp behind the microphone button, MIC_LED_STATE_*.
+    bool hasMicLed = false;
+    uint8_t micLed = MIC_LED_STATE_OFF;
 };
 
 // Switch HD-rumble block -> a coarse 0..1 amplitude (the same reduction the
@@ -442,13 +468,24 @@ inline DecodedOutput decodeOutputPacket(GamepadIdentity identity, const OutputPa
         // DS5 output report 0x02, RID stripped (SDL DS5EffectsState_t /
         // hid-playstation dualsense_output_report_common layout): valid_flag0
         // at 0, valid_flag1 at 1, motors at 2/3 (right/weak precedes
-        // left/strong), right trigger-effect block at 10-20, left at 21-31,
-        // valid_flag2 at 38, player LEDs at 43, lightbar RGB at 44-46.
+        // left/strong), mic-mute LED mode at 8, power-save control at 9, right
+        // trigger-effect block at 10-20, left at 21-31, valid_flag2 at 38,
+        // player LEDs at 43, lightbar RGB at 44-46.
         if (pkt.source == OUTPUT_SOURCE_HID_OUTPUT && pkt.reportId == 0x02) {
             if (pkt.size >= 4 && (pkt.data[0] & 0x03)) {
                 out.hasRumble = true;
                 out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
                 out.rumble.strongMagnitude = static_cast<uint16_t>(pkt.data[3]) * 257;
+            }
+            // valid_flag1 bit 0 = mic-mute-LED control enable. Byte 8 is the
+            // lamp mode; the states happen to be MIC_LED_STATE_* already
+            // (0 off, 1 solid, 2 the pad's own breathing pattern). Anything
+            // above PULSE is a mode this decoder has no name for, so it is
+            // dropped here rather than forwarded for the service to reject:
+            // an unknown lamp mode is not a mute state to guess at.
+            if (pkt.size >= 9 && (pkt.data[1] & 0x01) && pkt.data[8] < MIC_LED_STATE_COUNT) {
+                out.hasMicLed = true;
+                out.micLed = pkt.data[8];
             }
             // valid_flag0 bit 2 = right trigger effect, bit 3 = left.
             if (pkt.size >= 32 && (pkt.data[0] & 0x04)) {

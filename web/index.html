@@ -163,6 +163,19 @@
         a fallback for senders that predate the mDNS responder. Turn it off
         only on a network where every sender supports mDNS.</p>
 
+      <h2 class="section-title section-title-spaced" data-i18n="settings.audio.title">Controller audio</h2>
+      <div class="toggle-row">
+        <span data-i18n="settings.audio.label">Controller microphone and speaker</span>
+        <label class="switch"><input type="checkbox" id="settings-controllerAudio"><span class="slider"></span></label>
+      </div>
+      <p class="hint" data-i18n="settings.audio.hint">A DualSense or DualShock 4 v2 created here also presents the
+        controller's own microphone and speaker to Windows, so game chat reaches
+        your headset and your voice reaches the game. Controller audio needs a
+        bundled signed kernel USB transport, which HIDMaestro installs the first
+        time such a controller is created. Turn this off to keep the input only
+        controller and skip that install. Changes apply the next time a
+        controller is connected.</p>
+
       <div class="btn-row">
         <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" data-i18n="settings.save" disabled>Save Config</button>
         <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" data-i18n="settings.undo" disabled>Undo</button>

@@ -71,6 +71,20 @@ during setup (no reboot required). The uninstaller's
 `satellite-hm-helper.exe remove-driver` removes the virtual devices and
 driver packages.
 
+`HIDMaestro.Core.dll` also embeds a **second, kernel-mode** driver payload:
+`USBip-0.9.7.7-x64.exe` (~33 MB), the WHLK-certified usbip-win2 USB
+transport. It is not deployed at setup time and is not used by any
+input-only controller. HIDMaestro installs it the first time a *composite*
+persona is created, which is what Satellite asks for when the
+`controllerAudio` setting is on and the identity is a DualSense or
+DualShock 4 v2 (those personas carry the pad's real USB-audio function).
+`HMContext.IsUsbipBackendAvailable` / `HMContext.InstallUsbipBackend()` are
+the SDK's probe and install entry points, and the helper calls them
+explicitly so a blocked install is a reportable plug failure rather than a
+surprise. Turning `controllerAudio` off means it is never installed. Bumping
+the HIDMaestro pin therefore also bumps this transport; note the new usbip
+version in the commit message.
+
 ## Updating the pin
 
 ViGEmBus 1.22.0 is the final upstream release, so this is mostly a

@@ -93,6 +93,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
     src/platform/windows/hidmaestro_wire.cpp
+    src/platform/windows/hidmaestro_audio_wire.cpp
     src/platform/windows/hidmaestro_adapter.cpp
     src/platform/windows/hidmaestro_helper_client.cpp
     src/platform/windows/gamepad_backend.cpp
@@ -886,6 +887,13 @@ satellite_add_pure_test(test_gamepad_mux tests/test_gamepad_mux.cpp)
 # lane whether or not that lane has a codec.
 satellite_add_pure_test(test_audio_jitter tests/test_audio_jitter.cpp)
 
+# The rational resampler (core/audio/audio_resampler.h), likewise header-only.
+# It exists because an emulated pad's own endpoints do not all run at the wire
+# rate (the DualShock 4 v2 persona is 32 kHz out / 16 kHz in), and a resampler
+# that is subtly wrong sounds like a chipmunk or an aliasing mess rather than
+# failing, so the suite asserts spectral behaviour and not just sample counts.
+satellite_add_pure_test(test_audio_resampler tests/test_audio_resampler.cpp)
+
 # The libopus wrapper (adapters/audio/opus_codec.cpp): round-trips, concealment
 # and FEC recovery against real encoder output, so a drifting encoder setting
 # (bitrate, application, FEC) fails here rather than in someone's headset.
@@ -900,6 +908,12 @@ satellite_add_pure_test(test_hidmaestro_wire tests/test_hidmaestro_wire.cpp
     src/platform/windows/hidmaestro_wire.cpp)
 satellite_add_pure_test(test_hidmaestro_report tests/test_hidmaestro_report.cpp
     src/platform/windows/hidmaestro_wire.cpp)
+
+# The controller-audio rings between the helper and satellite. Same rule as the
+# driver's rings: no version field, so the suite pins the SIZES and the seqlock
+# protocol the C# producer on the other side reimplements.
+satellite_add_pure_test(test_hidmaestro_audio_wire tests/test_hidmaestro_audio_wire.cpp
+    src/platform/windows/hidmaestro_audio_wire.cpp)
 
 # Portable session-crypto interop suite (net/session_crypto.cpp): the pinned
 # RFC 5869 HKDF vector, the HMAC-proof vector, and the AEAD direction/counter/
@@ -1278,13 +1292,16 @@ endif()
 
 # Drives the real hidmaestro_adapter.cpp against a fake provisioner whose
 # "sections" are in-process anonymous file mappings, so the seqlock submit
-# path, per-profile packing, and the output-ring rumble/lightbar workers are
-# exercised without the driver, the helper, or elevation.
+# path, per-profile packing, the output-ring rumble/lightbar/mic-LED workers
+# and the controller-audio pump in both directions are exercised without the
+# driver, the helper, or elevation. Deliberately NEVER creates a real composite
+# persona: doing that would install a kernel USB transport.
 if(WIN32)
     add_executable(test_hidmaestro_adapter
         tests/test_hidmaestro_adapter.cpp
         src/platform/windows/hidmaestro_adapter.cpp
         src/platform/windows/hidmaestro_wire.cpp
+        src/platform/windows/hidmaestro_audio_wire.cpp
     )
     target_include_directories(test_hidmaestro_adapter PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src

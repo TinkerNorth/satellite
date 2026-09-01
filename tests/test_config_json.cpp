@@ -27,6 +27,7 @@ static void test_full_round_trip() {
     in.skipVersion = "1.2.4";
     in.networkInterface = "eth0";
     in.allowPublicNetwork = true;
+    in.controllerAudio = false;
 
     PairedDevice d0;
     d0.id = "dev-0";
@@ -62,6 +63,7 @@ static void test_full_round_trip() {
     EXPECT_EQ(out.skipVersion, in.skipVersion);
     EXPECT_EQ(out.networkInterface, in.networkInterface);
     EXPECT_EQ(out.allowPublicNetwork, in.allowPublicNetwork);
+    EXPECT_EQ(out.controllerAudio, in.controllerAudio);
 
     EXPECT_EQ(out.pairedDevices.size(), in.pairedDevices.size());
     if (out.pairedDevices.size() == 2) {
@@ -186,6 +188,44 @@ static void test_legacy_pair_port_key_ignored() {
     EXPECT(serializeConfig(cfg).find("pairPort") == std::string::npos);
 }
 
+// Controller audio decides whether a plug installs a kernel USB transport, so
+// "absent means default" has to mean the documented default (on) and an
+// explicit false has to survive a save/load round-trip. Getting the absent case
+// wrong either turns audio off for everyone on upgrade or turns it on for a
+// user who switched it off.
+static void test_controller_audio_default_and_persistence() {
+    TEST("controllerAudio defaults to on");
+    const Config defaults;
+    EXPECT(defaults.controllerAudio);
+
+    TEST("a config written before controller audio existed loads as on");
+    Config legacy;
+    parseConfigInto(R"({"udpPort":9876,"autoStart":true})", legacy);
+    EXPECT(legacy.controllerAudio);
+
+    TEST("an explicit false survives serialize -> parse");
+    Config off;
+    off.controllerAudio = false;
+    Config back;
+    parseConfigInto(serializeConfig(off), back);
+    EXPECT(!back.controllerAudio);
+
+    TEST("an explicit true survives too, and the key is actually written");
+    Config on;
+    on.controllerAudio = true;
+    const std::string text = serializeConfig(on);
+    EXPECT(text.find("\"controllerAudio\"") != std::string::npos);
+    Config backOn;
+    backOn.controllerAudio = false; // start from the opposite value
+    parseConfigInto(text, backOn);
+    EXPECT(backOn.controllerAudio);
+
+    TEST("a non-boolean value is ignored rather than coerced");
+    Config junk;
+    parseConfigInto(R"({"controllerAudio":"no"})", junk);
+    EXPECT(junk.controllerAudio);
+}
+
 static void test_last_check_epoch_64bit() {
     TEST("lastCheckEpoch round-trips a value larger than 2^31 (not truncated)");
     Config in;
@@ -207,6 +247,7 @@ int main() {
     test_paired_device_missing_id_skipped();
     test_shared_key_on_disk_name();
     test_legacy_pair_port_key_ignored();
+    test_controller_audio_default_and_persistence();
     test_last_check_epoch_64bit();
 
     std::cout << "config_json: " << g_pass << " passed, " << g_fail << " failed\n";

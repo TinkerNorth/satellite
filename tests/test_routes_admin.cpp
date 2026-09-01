@@ -245,6 +245,9 @@ int main() {
                 EXPECT(!jsonStr(b, "id").empty());
                 EXPECT(b.contains("vendor"));
                 EXPECT(b.contains("kernelMode"));
+                // Runtime controller-audio switch, alongside the static
+                // kernelMode identity (see backend_registry.h).
+                EXPECT(b.contains("audio") && b["audio"].is_boolean());
                 EXPECT(b.contains("available"));
                 EXPECT(b.contains("controllers") && b["controllers"].is_array());
             }
@@ -309,6 +312,31 @@ int main() {
         EXPECT_EQ(g_config.udpPort, 4242);
         EXPECT_EQ(g_config.discoveryBroadcastEnabled, false);
         EXPECT_EQ(g_config.networkInterface, std::string("lo0"));
+    }
+    {
+        TEST("POST /api/config: controllerAudio applies and shows up in /api/status");
+        auto off = cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
+        EXPECT(off && off->status == 200);
+        {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            EXPECT_EQ(g_config.controllerAudio, false);
+        }
+        auto status = cli.Get("/api/status");
+        EXPECT(status && status->status == 200);
+        if (status) EXPECT_EQ(jsonBool(parseJson(status->body), "controllerAudio"), false);
+
+        TEST("POST /api/config: the capabilities backends array follows the setting");
+        auto caps = cli.Get("/api/server/capabilities");
+        EXPECT(caps && caps->status == 200);
+        if (caps) { EXPECT(caps->body.find("\"audio\":true") == std::string::npos); }
+
+        TEST("POST /api/config: controllerAudio goes back on, and absent leaves it alone");
+        auto on = cli.Post("/api/config", R"({"controllerAudio":true})", "application/json");
+        EXPECT(on && on->status == 200);
+        auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
+        EXPECT(other && other->status == 200);
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        EXPECT_EQ(g_config.controllerAudio, true);
     }
     {
         TEST("POST /api/config: autoStart round-trips through the platform hook");
