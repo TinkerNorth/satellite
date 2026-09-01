@@ -217,6 +217,45 @@ static void test_encodeAudioFrameHeader_byteExactAndRoundTrip() {
     }
 }
 
+// Exactness is the whole safety argument for suppressing these frames: a
+// threshold would eventually swallow something a player could hear, and the
+// speaker path has no way to tell quiet game audio from an idle endpoint.
+static void test_isDigitalSilence() {
+    TEST("isDigitalSilence: all-zero is silence, any non-zero sample is not");
+    std::vector<int16_t> zeros(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    EXPECT(isDigitalSilence(zeros.data(), zeros.size()));
+
+    for (size_t at : {(size_t)0, zeros.size() / 2, zeros.size() - 1}) {
+        std::vector<int16_t> one = zeros;
+        one[at] = 1;
+        EXPECT(!isDigitalSilence(one.data(), one.size()));
+        one[at] = -1;
+        EXPECT(!isDigitalSilence(one.data(), one.size()));
+    }
+
+    TEST("isDigitalSilence: the quietest audible sample is not silence");
+    std::vector<int16_t> lsb(zeros.size(), 0);
+    lsb[7] = 1;
+    EXPECT(!isDigitalSilence(lsb.data(), lsb.size()));
+
+    TEST("isDigitalSilence: a full-scale frame is not silence");
+    std::vector<int16_t> loud(zeros.size(), 32767);
+    EXPECT(!isDigitalSilence(loud.data(), loud.size()));
+    std::vector<int16_t> loudNeg(zeros.size(), -32768);
+    EXPECT(!isDigitalSilence(loudNeg.data(), loudNeg.size()));
+
+    TEST("isDigitalSilence: null is not silence, and an empty span is");
+    EXPECT(!isDigitalSilence(nullptr, 0));
+    EXPECT(!isDigitalSilence(nullptr, 16));
+    EXPECT(isDigitalSilence(zeros.data(), 0));
+
+    TEST("isDigitalSilence: it only reads the samples it was given");
+    std::vector<int16_t> tail = zeros;
+    tail.back() = 999;
+    EXPECT(isDigitalSilence(tail.data(), tail.size() - 1));
+    EXPECT(!isDigitalSilence(tail.data(), tail.size()));
+}
+
 static void test_micAudioWireConstants() {
     TEST("mic/speaker audio wire constants match the contract");
     EXPECT_EQ((int)MSG_MIC_AUDIO, 0x0012);
@@ -585,6 +624,7 @@ int main() {
     test_decodeTouchpadReport_noOverRead();
     test_decodeAudioFrameHeader_bigEndianSeq();
     test_encodeAudioFrameHeader_byteExactAndRoundTrip();
+    test_isDigitalSilence();
     test_micAudioWireConstants();
 
     test_dispatch_micAudio_truncatedRejected();

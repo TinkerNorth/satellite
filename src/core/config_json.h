@@ -26,6 +26,9 @@ inline std::string serializeConfig(const Config& cfg) {
     j["networkInterface"] = cfg.networkInterface;
     j["allowPublicNetwork"] = cfg.allowPublicNetwork;
     j["controllerAudio"] = cfg.controllerAudio;
+    j["controllerAudioMic"] = cfg.controllerAudioMic;
+    j["controllerAudioSpeaker"] = cfg.controllerAudioSpeaker;
+    j["controllerAudioKeepDefaultDevice"] = cfg.controllerAudioKeepDefaultDevice;
 
     JsonOut devices = JsonOut::array();
     for (const auto& d : cfg.pairedDevices) {
@@ -75,6 +78,13 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     // Absent in configs written before controller audio existed, which must
     // read as the default (on) rather than as an explicit opt-out.
     cfg.controllerAudio = jsonBool(j, "controllerAudio", cfg.controllerAudio);
+    // Same rule one level down: a config predating the split has neither key
+    // and must read as both directions on, which is what the old single
+    // switch meant when it was on.
+    cfg.controllerAudioMic = jsonBool(j, "controllerAudioMic", cfg.controllerAudioMic);
+    cfg.controllerAudioSpeaker = jsonBool(j, "controllerAudioSpeaker", cfg.controllerAudioSpeaker);
+    cfg.controllerAudioKeepDefaultDevice =
+        jsonBool(j, "controllerAudioKeepDefaultDevice", cfg.controllerAudioKeepDefaultDevice);
 
     auto it = j.find("pairedDevices");
     if (it != j.end() && it->is_array()) {

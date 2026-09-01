@@ -416,6 +416,88 @@ void test_encoderRespectsTheOutputCeiling() {
     EXPECT(bytes <= sizeof(tight));
 }
 
+// DTX is asymmetric on purpose, and the asymmetry is invisible from the header:
+// only behaviour can pin it. The mic wants it because a live microphone never
+// goes digitally silent, so a VAD gate is the only thing that can collapse a
+// quiet room. The speaker must not have it, because its gate cuts anything
+// ~26-30 dB below the recent peak -- on game audio that turns a reverb tail or
+// quiet ambience into comfort noise.
+void test_micEncoderUsesDtxOnSilence() {
+    TEST("mic: sustained digital silence collapses to tiny DTX packets");
+    auto enc = OpusStreamEncoder::create(Stream::Mic);
+    EXPECT(enc != nullptr);
+    if (!enc) return;
+
+    const std::vector<int16_t> silence(MIC_FRAME, 0);
+    uint8_t packet[MAX_PACKET];
+
+    // DTX needs a run of qualifying input before it engages (measured at 200 ms
+    // on libopus 1.6.1), so the steady state is what gets asserted, not frame 1.
+    size_t tiny = 0;
+    size_t total = 0;
+    for (int i = 0; i < 100; i++) {
+        const size_t bytes = enc->encode(silence.data(), MIC_FRAME, packet, sizeof(packet));
+        EXPECT(bytes > 0);
+        if (i >= 20) {
+            total++;
+            if (bytes <= 2) tiny++;
+        }
+    }
+    EXPECT(total > 0);
+    EXPECT(tiny > total * 3 / 4);
+
+    TEST("mic: DTX packets are still legal frames the decoder accepts");
+    // A 1-byte packet is a valid Opus frame, not a malformed one -- the wire
+    // minimum is header + 1 byte precisely so it survives dispatch.
+    auto dec = OpusStreamDecoder::create(Stream::Mic);
+    EXPECT(dec != nullptr);
+    if (!dec) return;
+    const size_t bytes = enc->encode(silence.data(), MIC_FRAME, packet, sizeof(packet));
+    EXPECT(bytes >= 1);
+    EXPECT(bytes <= 2);
+    std::vector<int16_t> out(MIC_FRAME, 12345);
+    EXPECT_EQ(dec->decode(packet, bytes, out.data(), AUDIO_FRAME_SAMPLES), MIC_FRAME);
+}
+
+void test_micEncoderKeepsSpeechIntact() {
+    TEST("mic: DTX does not gate real speech");
+    auto enc = OpusStreamEncoder::create(Stream::Mic);
+    EXPECT(enc != nullptr);
+    if (!enc) return;
+
+    std::vector<int16_t> pcm(MIC_FRAME);
+    uint8_t packet[MAX_PACKET];
+    size_t tiny = 0;
+    for (int i = 0; i < 60; i++) {
+        fillMicFrame(pcm, i);
+        const size_t bytes = enc->encode(pcm.data(), MIC_FRAME, packet, sizeof(packet));
+        EXPECT(bytes > 0);
+        if (bytes <= 2) tiny++;
+    }
+    EXPECT_EQ(tiny, (size_t)0);
+}
+
+void test_speakerEncoderDoesNotUseDtx() {
+    TEST("speaker: silence stays a full packet, because DTX is deliberately off");
+    auto enc = OpusStreamEncoder::create(Stream::Speaker);
+    EXPECT(enc != nullptr);
+    if (!enc) return;
+
+    const std::vector<int16_t> silence(SPEAKER_FRAME, 0);
+    uint8_t packet[MAX_PACKET];
+    size_t tiny = 0;
+    for (int i = 0; i < 100; i++) {
+        const size_t bytes = enc->encode(silence.data(), SPEAKER_FRAME / AUDIO_SPEAKER_CHANNELS,
+                                         packet, sizeof(packet));
+        EXPECT(bytes > 0);
+        if (bytes <= 2) tiny++;
+    }
+    // Not a bug being pinned: the speaker path suppresses exact silence before
+    // it ever reaches the encoder (SessionService::sendSpeakerFrameLocked), so
+    // the codec never needs a VAD and must not have one.
+    EXPECT_EQ(tiny, (size_t)0);
+}
+
 } // namespace
 
 int main() {
@@ -430,6 +512,9 @@ int main() {
     test_decodeFecFallsBackToConcealment();
     test_factoryPinsTheStreamFormats();
     test_encoderRespectsTheOutputCeiling();
+    test_micEncoderUsesDtxOnSilence();
+    test_micEncoderKeepsSpeechIntact();
+    test_speakerEncoderDoesNotUseDtx();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

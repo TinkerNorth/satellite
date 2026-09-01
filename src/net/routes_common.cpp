@@ -50,6 +50,15 @@ static bool controllerAudioEnabled() {
     return g_config.controllerAudio;
 }
 
+// The per-direction wire gates, for the capabilities block below. Separate from
+// the master switch on purpose: the client learns what will actually flow, and
+// the catalog stays static identity (its ETag is version+locale, so a runtime
+// setting must never reach it).
+static ControllerAudioPolicy controllerAudioPolicy() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker};
+}
+
 std::string buildBackendStatusJson() {
     JsonOut j = backendJsonObj(probeBackend());
     j["backends"] =
@@ -87,6 +96,12 @@ std::string buildCapabilitiesJson() {
     motion["available"] = (s.available && traits.ds4MotionSupported);
     j["motion"] = std::move(motion);
     j["host"] = JsonOut::parse(satellite::buildHostBlockJson(traits, s.available));
+    const ControllerAudioPolicy policy = controllerAudioPolicy();
+    JsonOut audioBlock;
+    audioBlock["enabled"] = audio;
+    audioBlock["mic"] = audio && policy.mic;
+    audioBlock["speaker"] = audio && policy.speaker;
+    j["controllerAudio"] = std::move(audioBlock);
     return jsonDump(j);
 }
 

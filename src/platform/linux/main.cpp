@@ -137,6 +137,14 @@ int main(int argc, const char* argv[]) {
     satellite::audio::OpusCodecFactory audioCodecs;
     SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
 
+    // Read per frame, not cached: unlike the master switch these gate the wire
+    // rather than the persona, so flipping one reaches a stream already
+    // playing instead of waiting for a replug.
+    svc.setAudioPolicy([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker};
+    });
+
     LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
     UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
     updateService.setPersistCallback([] {

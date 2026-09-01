@@ -198,6 +198,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     satellite::audio::OpusCodecFactory audioCodecs;
     SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
 
+    // Read per frame, not cached: unlike the master switch these gate the wire
+    // rather than the persona, so flipping one reaches a stream already
+    // playing instead of waiting for a replug.
+    svc.setAudioPolicy([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker};
+    });
+
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     // The persist callback runs under g_configMtx so saveConfig sees a consistent struct.
     WindowsUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");

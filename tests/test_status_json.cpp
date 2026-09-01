@@ -44,12 +44,13 @@ static void test_status_exact_shape() {
     TEST("buildStatusJson: exact JSON shape and field order");
     std::string s = buildStatusJson(makeFields());
     EXPECT_EQ(
-        s,
-        std::string(R"({"listening":true,"packets":12345,"senderIP":"192.168.1.42","udpPort":9876,)"
-                    R"("webPort":9871,"autoStart":true,"discoveryBroadcastEnabled":false,)"
-                    R"("controllerAudio":false,)"
-                    R"("mdnsResponderActive":true,"backendAvailable":true,)"
-                    R"("backend":{"kind":"vigem","available":true}})"));
+        s, std::string(
+               R"({"listening":true,"packets":12345,"senderIP":"192.168.1.42","udpPort":9876,)"
+               R"("webPort":9871,"autoStart":true,"discoveryBroadcastEnabled":false,)"
+               R"("controllerAudio":false,"controllerAudioMic":true,"controllerAudioSpeaker":true,)"
+               R"("controllerAudioKeepDefaultDevice":true,)"
+               R"("mdnsResponderActive":true,"backendAvailable":true,)"
+               R"("backend":{"kind":"vigem","available":true}})"));
 }
 
 // The dashboard seeds its toggle from /api/status and treats an absent key as
@@ -67,6 +68,39 @@ static void test_status_carries_controller_audio() {
     // static preference to the SSE tick would ship it 4 times a second.
     EXPECT(buildDebugJson(f).find("controllerAudio") == std::string::npos);
     EXPECT(jsonDump(buildSseStatusObject(f)).find("controllerAudio") == std::string::npos);
+}
+
+// The two direction switches ride the same surface for the same reason: the
+// settings form seeds all three from one /api/status read, and a missing key
+// there would render as a toggle that silently disagrees with the server.
+static void test_status_carries_the_audio_directions() {
+    TEST("buildStatusJson: each direction round-trips independently");
+    StatusFields f = makeFields();
+    f.controllerAudioMic = true;
+    f.controllerAudioSpeaker = false;
+    std::string s = buildStatusJson(f);
+    EXPECT(s.find("\"controllerAudioMic\":true") != std::string::npos);
+    EXPECT(s.find("\"controllerAudioSpeaker\":false") != std::string::npos);
+
+    f.controllerAudioMic = false;
+    f.controllerAudioSpeaker = true;
+    s = buildStatusJson(f);
+    EXPECT(s.find("\"controllerAudioMic\":false") != std::string::npos);
+    EXPECT(s.find("\"controllerAudioSpeaker\":true") != std::string::npos);
+
+    TEST("the directions are independent of the master switch in the payload");
+    f.controllerAudio = false;
+    f.controllerAudioMic = true;
+    f.controllerAudioSpeaker = true;
+    s = buildStatusJson(f);
+    EXPECT(s.find("\"controllerAudio\":false") != std::string::npos);
+    EXPECT(s.find("\"controllerAudioMic\":true") != std::string::npos);
+
+    TEST("the debug and SSE payloads stay free of them too");
+    EXPECT(buildDebugJson(f).find("controllerAudioMic") == std::string::npos);
+    EXPECT(buildDebugJson(f).find("controllerAudioSpeaker") == std::string::npos);
+    EXPECT(jsonDump(buildSseStatusObject(f)).find("controllerAudioMic") == std::string::npos);
+    EXPECT(jsonDump(buildSseStatusObject(f)).find("controllerAudioSpeaker") == std::string::npos);
 }
 
 static void test_debug_exact_shape() {
@@ -96,6 +130,7 @@ int main() {
     std::cout << "Running status JSON tests...\n\n";
     test_status_exact_shape();
     test_status_carries_controller_audio();
+    test_status_carries_the_audio_directions();
     test_debug_exact_shape();
     test_sse_exact_shape();
 

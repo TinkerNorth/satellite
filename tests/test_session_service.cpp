@@ -2205,6 +2205,21 @@ static void test_micLed_gatedOnCapAndCoalesced() {
     EXPECT_EQ(client.micLedCalls, 3);
 }
 
+// Interleaved stereo the speaker path can encode. Non-silent so a wrong frame
+// count is visible as a wrong packet count rather than as identical silence,
+// and so the exact-silence suppression in sendSpeakerFrameLocked does not eat
+// frames a test meant to send.
+static std::vector<int16_t> speakerPcm(size_t frames, int frameIndex = 0) {
+    std::vector<int16_t> pcm(frames * AUDIO_SPEAKER_CHANNELS);
+    for (size_t i = 0; i < frames; i++) {
+        const double t =
+            (frameIndex * (double)AUDIO_FRAME_SAMPLES + (double)i) / AUDIO_SAMPLE_RATE_HZ;
+        pcm[i * 2 + 0] = (int16_t)(9000.0 * std::sin(2.0 * 3.14159265358979 * 330.0 * t));
+        pcm[i * 2 + 1] = (int16_t)(4000.0 * std::sin(2.0 * 3.14159265358979 * 550.0 * t));
+    }
+    return pcm;
+}
+
 static void test_speakerAudio_gatedOnCap() {
     TEST("speaker audio: backend frames gated on CAP_SPEAKER, strays and empties dropped");
     MockViGem vigem;
@@ -2219,7 +2234,7 @@ static void test_speakerAudio_gatedOnCap() {
     const uint32_t serial0 = serialOfSlot(svc, 0);
     const uint32_t serial1 = serialOfSlot(svc, 1);
 
-    std::vector<int16_t> pcm(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    const auto pcm = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
     EXPECT(svc.handleSpeakerAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
 
     // CAP_MIC is the other direction: encoding for a client that would drop the
@@ -2239,6 +2254,214 @@ static void test_speakerAudio_gatedOnCap() {
     EXPECT_EQ(client.speakerAudioCalls, 2);
     EXPECT_EQ((int)client.lastSpeakerAudioCtrlIdx, 0);
     EXPECT(!client.lastSpeakerAudioOpus.empty());
+}
+
+// ---- controller audio: exact-silence suppression ----------------------------
+
+// Windows renders digital zeros into the pad's endpoint whenever nothing is
+// playing to it. Encoding those cost ~28 kbps of Opus and ~52 kbps on the wire
+// once framing is counted, for a stream carrying nothing.
+static void test_speakerAudio_exactSilenceIsNotSent() {
+    TEST("speaker audio: an all-zero window produces no packet at all");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    for (int i = 0; i < 50; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.speakerAudioCalls, 0);
+
+    TEST("speaker audio: suppression does not burn sequence numbers");
+    // A suppressed window is not a hole, so it must not advance seq: a client
+    // that saw a jump would run PLC over a gap with no signal to guess at, and
+    // Opus would invent noise where the game wrote none.
+    const auto tone = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+
+    TEST("speaker audio: seq stays contiguous across a silent stretch");
+    for (int i = 0; i < 25; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 2);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 1);
+}
+
+static void test_speakerAudio_anythingAudibleStillGoes() {
+    TEST("speaker audio: one non-zero sample in a window is enough to send it");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    const size_t samples = (size_t)AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS;
+    for (size_t at : {(size_t)0, samples / 2, samples - 1}) {
+        std::vector<int16_t> nearly(samples, 0);
+        nearly[at] = 1; // the quietest representable sample
+        const int before = client.speakerAudioCalls;
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, nearly.data(), AUDIO_FRAME_SAMPLES));
+        EXPECT_EQ(client.speakerAudioCalls, before + 1);
+    }
+
+    TEST("speaker audio: a half-silent window is still audible content");
+    std::vector<int16_t> half(samples, 0);
+    const auto tone = speakerPcm(AUDIO_FRAME_SAMPLES, 1);
+    for (size_t i = samples / 2; i < samples; i++) half[i] = tone[i];
+    const int before = client.speakerAudioCalls;
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, half.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, before + 1);
+}
+
+// ---- controller audio: the host's per-direction switches --------------------
+
+static void test_audioPolicy_defaultsToBothOn() {
+    TEST("audio policy: a service with no policy wired streams both directions");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC | CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    const auto tone = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+
+    const auto opus = opusFrame(32);
+    EXPECT(svc.handleMicAudio(r.token, 0, 0, opus.data(), opus.size()));
+}
+
+static void test_audioPolicy_speakerOffStopsTheStream() {
+    TEST("audio policy: speaker off sends nothing, even for audible content");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    bool speakerOn = false;
+    svc.setAudioPolicy([&] { return ControllerAudioPolicy{true, speakerOn}; });
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const auto tone = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+
+    for (int i = 0; i < 10; i++) {
+        EXPECT(!svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.speakerAudioCalls, 0);
+
+    TEST("audio policy: the speaker gate is read per frame, not cached at plug");
+    // The whole point of gating the wire rather than the persona: the pad keeps
+    // its Windows endpoints, so the switch has to reach a stream already
+    // playing instead of waiting for a replug.
+    speakerOn = true;
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+
+    speakerOn = false;
+    EXPECT(!svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+
+    TEST("audio policy: a gated speaker frame burns no sequence number");
+    speakerOn = true;
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 1);
+}
+
+static void test_audioPolicy_micOffDropsWithAReason() {
+    TEST("audio policy: mic off drops the frame before it reaches the backend");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    bool micOn = false;
+    svc.setAudioPolicy([&] { return ControllerAudioPolicy{micOn, true}; });
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    const auto opus = opusFrame(32);
+    for (int i = 0; i < 20; i++) {
+        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size()));
+    }
+    EXPECT_EQ(vigem.submitMicAudioCalls, 0);
+
+    TEST("audio policy: the host-off drop logs once per session, with its own cause");
+    // The client cannot see this setting, so a mic going nowhere has to leave
+    // something behind to diagnose it with -- but only one line, not 50 a second.
+    EXPECT_EQ(log.countContaining("controller microphone is off on the host"), 1);
+
+    TEST("audio policy: a capless sender is still told about its own mistake first");
+    auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, 0)}, "devB", "B");
+    (void)svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size());
+    EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
+
+    TEST("audio policy: the mic gate is read per frame too");
+    micOn = true;
+    EXPECT(svc.handleMicAudio(r.token, 0, 100, opus.data(), opus.size()));
+
+    TEST("audio policy: a host-disabled mic frame consumes no rate-limit budget");
+    // Checked before the window so a direction that is off cannot be used to
+    // exhaust the budget a re-enabled one would need.
+    micOn = false;
+    for (int i = 0; i < MIC_AUDIO_MAX_PACKETS_PER_SEC * 2; i++) {
+        (void)svc.handleMicAudio(r.token, 0, (uint16_t)(200 + i), opus.data(), opus.size());
+    }
+    micOn = true;
+    EXPECT(svc.handleMicAudio(r.token, 0, 900, opus.data(), opus.size()));
+    EXPECT_EQ(log.countContaining("packets/s"), 0);
+}
+
+static void test_audioPolicy_directionsAreIndependent() {
+    TEST("audio policy: turning one direction off leaves the other alone");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    svc.setAudioPolicy([] { return ControllerAudioPolicy{true, false}; });
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC | CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    const auto tone = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(!svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 0);
+
+    // Acceptance, not backend submission: opusFrame is a synthetic gate
+    // fixture the real decoder rejects, and the decode path has its own tests.
+    // What matters here is that the mic direction was never gated.
+    const auto opus = opusFrame(32);
+    for (uint16_t seq = 0; seq < 4; seq++) {
+        EXPECT(svc.handleMicAudio(r.token, 0, seq, opus.data(), opus.size()));
+    }
+    EXPECT_EQ(log.countContaining("controller microphone is off on the host"), 0);
+
+    TEST("audio policy: mic LED still rides CAP_MIC, not the host's mic switch");
+    // The lamp reports what the game asked for. Muting the host's intake does
+    // not make the game's request untrue, and the client renders it against its
+    // own mute state anyway.
+    vigem.fireMicLed(serial0, MIC_LED_STATE_ON);
+    EXPECT_EQ(client.micLedCalls, 1);
 }
 
 // ---- controller audio: the codec paths --------------------------------------
@@ -2263,19 +2486,6 @@ struct MicPacketSource {
         return std::vector<uint8_t>(buf, buf + n);
     }
 };
-
-// Interleaved stereo the speaker path can encode. Non-silent so a wrong frame
-// count is visible as a wrong packet count rather than as identical silence.
-static std::vector<int16_t> speakerPcm(size_t frames, int frameIndex = 0) {
-    std::vector<int16_t> pcm(frames * AUDIO_SPEAKER_CHANNELS);
-    for (size_t i = 0; i < frames; i++) {
-        const double t =
-            (frameIndex * (double)AUDIO_FRAME_SAMPLES + (double)i) / AUDIO_SAMPLE_RATE_HZ;
-        pcm[i * 2 + 0] = (int16_t)(9000.0 * std::sin(2.0 * 3.14159265358979 * 330.0 * t));
-        pcm[i * 2 + 1] = (int16_t)(4000.0 * std::sin(2.0 * 3.14159265358979 * 550.0 * t));
-    }
-    return pcm;
-}
 
 static void test_micAudio_decodesRealPacketsToTheBackend() {
     TEST("mic audio: real Opus frames decode to 20 ms of PCM on the pad's mic endpoint");
@@ -3037,6 +3247,12 @@ int main() {
     test_micAudio_dropLoggedOncePerSessionPerCause();
     test_micLed_gatedOnCapAndCoalesced();
     test_speakerAudio_gatedOnCap();
+    test_speakerAudio_exactSilenceIsNotSent();
+    test_speakerAudio_anythingAudibleStillGoes();
+    test_audioPolicy_defaultsToBothOn();
+    test_audioPolicy_speakerOffStopsTheStream();
+    test_audioPolicy_micOffDropsWithAReason();
+    test_audioPolicy_directionsAreIndependent();
     test_micAudio_decodesRealPacketsToTheBackend();
     test_micAudio_withoutCodecAcceptsAndDrops();
     test_micAudio_gapConcealedAndReorderHealed();

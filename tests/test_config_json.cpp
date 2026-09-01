@@ -28,6 +28,9 @@ static void test_full_round_trip() {
     in.networkInterface = "eth0";
     in.allowPublicNetwork = true;
     in.controllerAudio = false;
+    in.controllerAudioMic = false;
+    in.controllerAudioSpeaker = false;
+    in.controllerAudioKeepDefaultDevice = false;
 
     PairedDevice d0;
     d0.id = "dev-0";
@@ -64,6 +67,9 @@ static void test_full_round_trip() {
     EXPECT_EQ(out.networkInterface, in.networkInterface);
     EXPECT_EQ(out.allowPublicNetwork, in.allowPublicNetwork);
     EXPECT_EQ(out.controllerAudio, in.controllerAudio);
+    EXPECT_EQ(out.controllerAudioMic, in.controllerAudioMic);
+    EXPECT_EQ(out.controllerAudioSpeaker, in.controllerAudioSpeaker);
+    EXPECT_EQ(out.controllerAudioKeepDefaultDevice, in.controllerAudioKeepDefaultDevice);
 
     EXPECT_EQ(out.pairedDevices.size(), in.pairedDevices.size());
     if (out.pairedDevices.size() == 2) {
@@ -226,6 +232,86 @@ static void test_controller_audio_default_and_persistence() {
     EXPECT(junk.controllerAudio);
 }
 
+// The split adds two keys under the master switch. The dangerous case is
+// upgrade: a config written before the split has neither key, and reading
+// either as "off" would silently kill a direction the user never turned off.
+static void test_controller_audio_split_directions() {
+    TEST("both directions default to on");
+    const Config defaults;
+    EXPECT(defaults.controllerAudioMic);
+    EXPECT(defaults.controllerAudioSpeaker);
+
+    TEST("a config predating the split loads with both directions on");
+    Config legacy;
+    parseConfigInto(R"({"udpPort":9876,"controllerAudio":true})", legacy);
+    EXPECT(legacy.controllerAudio);
+    EXPECT(legacy.controllerAudioMic);
+    EXPECT(legacy.controllerAudioSpeaker);
+
+    TEST("the directions are independent of each other");
+    Config micOnly;
+    parseConfigInto(R"({"controllerAudioSpeaker":false})", micOnly);
+    EXPECT(micOnly.controllerAudioMic);
+    EXPECT(!micOnly.controllerAudioSpeaker);
+
+    Config speakerOnly;
+    parseConfigInto(R"({"controllerAudioMic":false})", speakerOnly);
+    EXPECT(!speakerOnly.controllerAudioMic);
+    EXPECT(speakerOnly.controllerAudioSpeaker);
+
+    TEST("the directions are independent of the master switch");
+    Config masterOff;
+    parseConfigInto(R"({"controllerAudio":false})", masterOff);
+    EXPECT(!masterOff.controllerAudio);
+    EXPECT(masterOff.controllerAudioMic);
+    EXPECT(masterOff.controllerAudioSpeaker);
+
+    TEST("both keys are actually written, and survive a round-trip");
+    Config in;
+    in.controllerAudioMic = false;
+    in.controllerAudioSpeaker = true;
+    const std::string text = serializeConfig(in);
+    EXPECT(text.find("\"controllerAudioMic\"") != std::string::npos);
+    EXPECT(text.find("\"controllerAudioSpeaker\"") != std::string::npos);
+    Config out;
+    out.controllerAudioMic = true;
+    out.controllerAudioSpeaker = false;
+    parseConfigInto(text, out);
+    EXPECT(!out.controllerAudioMic);
+    EXPECT(out.controllerAudioSpeaker);
+
+    TEST("non-boolean values are ignored rather than coerced");
+    Config junk;
+    parseConfigInto(R"({"controllerAudioMic":"no","controllerAudioSpeaker":0})", junk);
+    EXPECT(junk.controllerAudioMic);
+    EXPECT(junk.controllerAudioSpeaker);
+
+    TEST("keeping the default playback device defaults to on");
+    EXPECT(Config{}.controllerAudioKeepDefaultDevice);
+
+    TEST("a config predating the guard loads with it on");
+    Config preGuard;
+    parseConfigInto(R"({"controllerAudio":true,"controllerAudioMic":false})", preGuard);
+    EXPECT(preGuard.controllerAudioKeepDefaultDevice);
+
+    TEST("an explicit opt-out survives a round-trip and is written");
+    Config optOut;
+    optOut.controllerAudioKeepDefaultDevice = false;
+    const std::string guardText = serializeConfig(optOut);
+    EXPECT(guardText.find("\"controllerAudioKeepDefaultDevice\"") != std::string::npos);
+    Config guardBack;
+    parseConfigInto(guardText, guardBack);
+    EXPECT(!guardBack.controllerAudioKeepDefaultDevice);
+
+    TEST("the guard is independent of the direction switches");
+    Config mix;
+    parseConfigInto(R"({"controllerAudioKeepDefaultDevice":false})", mix);
+    EXPECT(!mix.controllerAudioKeepDefaultDevice);
+    EXPECT(mix.controllerAudioMic);
+    EXPECT(mix.controllerAudioSpeaker);
+    EXPECT(mix.controllerAudio);
+}
+
 static void test_last_check_epoch_64bit() {
     TEST("lastCheckEpoch round-trips a value larger than 2^31 (not truncated)");
     Config in;
@@ -248,6 +334,7 @@ int main() {
     test_shared_key_on_disk_name();
     test_legacy_pair_port_key_ignored();
     test_controller_audio_default_and_persistence();
+    test_controller_audio_split_directions();
     test_last_check_epoch_64bit();
 
     std::cout << "config_json: " << g_pass << " passed, " << g_fail << " failed\n";

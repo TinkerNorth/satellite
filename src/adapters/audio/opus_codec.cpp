@@ -25,10 +25,11 @@ namespace {
 //
 // Speaker: 96 kbps stereo under OPUS_APPLICATION_AUDIO, because this carries
 // game and chat audio a player listens to rather than speech a codec can model.
-// At that rate Opus picks CELT, which has no in-band FEC to give; the flag is
-// set anyway so the intent survives a future bitrate change, and the receiver's
-// concealment path covers the difference (which is exactly what the FEC decode
-// entry degrades to when a packet carries none).
+// The loss hint below, not the application, is what picks the mode: it forces
+// SILK in, so BOTH streams encode as Hybrid fullband and both really do carry
+// in-band FEC (measured on libopus 1.6.1: 8.4 dB recovery via decode_fec vs
+// -1.3 dB for blind PLC on the speaker stream). Dropping the hint to zero would
+// hand the speaker to CELT and silently delete that FEC.
 const int OPUS_MIC_BITRATE_BPS = 32000;
 const int OPUS_SPEAKER_BITRATE_BPS = 96000;
 const int OPUS_EXPECTED_PACKET_LOSS_PCT = 10;
@@ -115,6 +116,16 @@ std::unique_ptr<OpusStreamEncoder> OpusStreamEncoder::create(Stream stream) {
     if (opus_encoder_ctl(enc.get(), OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_PACKET_LOSS_PCT)) !=
         OPUS_OK) {
         return nullptr;
+    }
+    // Mic only. A live microphone never goes digitally silent, so DTX is the
+    // only thing that can collapse a quiet room (measured: 123 of 250 frames
+    // gated at -50 dBFS after speech, 30.0 -> 16.4 kbps). The speaker stream
+    // declines it on purpose: its gate cuts anything ~26-30 dB below the recent
+    // peak, which on game audio means a reverb tail or quiet ambience is
+    // replaced by comfort noise at -2.3 dB SNR. That path uses the exact-silence
+    // suppression in SessionService instead, which cannot touch audible content.
+    if (stream == Stream::Mic) {
+        if (opus_encoder_ctl(enc.get(), OPUS_SET_DTX(1)) != OPUS_OK) return nullptr;
     }
     return std::unique_ptr<OpusStreamEncoder>(new OpusStreamEncoder(std::move(enc), channels));
 }

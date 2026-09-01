@@ -413,6 +413,18 @@ inline const int AUDIO_FRAME_SAMPLES = AUDIO_SAMPLE_RATE_HZ / 1000 * AUDIO_FRAME
 inline const int AUDIO_MIC_CHANNELS = 1;
 inline const int AUDIO_SPEAKER_CHANNELS = 2;
 
+// Exact zero, not a threshold. Windows renders digital zeros into the pad's
+// endpoint whenever nothing is playing to it, which is the case worth not
+// paying 96 kbps for; anything a listener could actually hear must go out
+// untouched, so this deliberately refuses to guess at "quiet enough".
+inline bool isDigitalSilence(const int16_t* pcm, size_t sampleCount) {
+    if (pcm == nullptr) return false;
+    for (size_t i = 0; i < sampleCount; i++) {
+        if (pcm[i] != 0) return false;
+    }
+    return true;
+}
+
 // Both audio messages: ctrlIdx(1) + seq(u16 BE) ahead of the Opus bytes.
 inline const int AUDIO_WIRE_HEADER_BYTES = 3;
 // Smallest frame worth dispatching: the header plus at least one Opus byte.
@@ -462,6 +474,7 @@ inline const int MIC_LED_WIRE_PAYLOAD_BYTES = 1;
 inline const uint8_t MIC_DROP_LOG_NO_CONTROLLER = 0x01;
 inline const uint8_t MIC_DROP_LOG_NO_CAP = 0x02;
 inline const uint8_t MIC_DROP_LOG_RATE_LIMIT = 0x04;
+inline const uint8_t MIC_DROP_LOG_HOST_DISABLED = 0x08;
 
 // Motion report (sender to satellite, gyro + accel). Fixed full-scale wire
 // convention so no downstream renormalisation:
@@ -874,6 +887,26 @@ struct Config {
     // kernel USB transport on first use, so a host that wants nothing but the
     // user-mode input path has to be able to say so.
     bool controllerAudio = true;
+    // The two directions, independently. A composite persona always carries
+    // both endpoints, so these gate the WIRE and not the persona: the Windows
+    // endpoints still exist, they just stop being pumped across the network.
+    // Both off is not the same as controllerAudio=false, which declines the
+    // persona -- and so the kernel transport -- outright.
+    bool controllerAudioMic = true;
+    bool controllerAudioSpeaker = true;
+    // Windows ranks a newly arrived endpoint above every endpoint the user has
+    // ever chosen, so materializing the pad hands it the whole desktop's audio
+    // by default -- which is what makes controller audio feel like it forwards
+    // "everything". On means put the previous default back afterwards.
+    bool controllerAudioKeepDefaultDevice = true;
+};
+
+// The two wire gates above, sampled together. One read means one lock rather
+// than one per direction, and it keeps a frame from being judged against two
+// different generations of the setting.
+struct ControllerAudioPolicy {
+    bool mic = true;
+    bool speaker = true;
 };
 
 enum class LogLevel { INFO, WARN, ERR };

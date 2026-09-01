@@ -17,6 +17,9 @@ struct StatusFields {
     bool autoStart = false;
     bool discoveryBroadcastEnabled = false;
     bool controllerAudio = true;
+    bool controllerAudioMic = true;
+    bool controllerAudioSpeaker = true;
+    bool controllerAudioKeepDefaultDevice = true;
     bool mdnsResponderActive = false;
     bool backendAvailable = false;
     uint64_t submitOk = 0;
@@ -39,6 +42,9 @@ inline std::string buildStatusJson(const StatusFields& f) {
     j["autoStart"] = f.autoStart;
     j["discoveryBroadcastEnabled"] = f.discoveryBroadcastEnabled;
     j["controllerAudio"] = f.controllerAudio;
+    j["controllerAudioMic"] = f.controllerAudioMic;
+    j["controllerAudioSpeaker"] = f.controllerAudioSpeaker;
+    j["controllerAudioKeepDefaultDevice"] = f.controllerAudioKeepDefaultDevice;
     j["mdnsResponderActive"] = f.mdnsResponderActive;
     j["backendAvailable"] = f.backendAvailable;
     j["backend"] = f.backend;

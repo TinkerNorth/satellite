@@ -46,6 +46,16 @@ SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogP
         [this](uint32_t serial, uint8_t state) { handleMicLedFromBackend(serial, state); });
 }
 
+void SessionService::setAudioPolicy(AudioPolicyFn fn) { audioPolicy_ = std::move(fn); }
+
+ControllerAudioPolicy SessionService::audioPolicy() const {
+    // Deliberately unlocked, like keyDeriver_ and audioCodecs_: a backend may
+    // fire its speaker callback from inside a call that already holds mtx_
+    // (which is why the handler below uses try_to_lock), so taking the lock
+    // here would deadlock that path outright.
+    return audioPolicy_ ? audioPolicy_() : ControllerAudioPolicy{};
+}
+
 // Internal helpers below assume the caller holds mtx_.
 
 bool SessionService::findBySerialLocked(uint32_t serial, Connection*& outConn,
@@ -884,6 +894,11 @@ bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_
                                                    size_t frames) {
     if (stereo48k == nullptr || frames == 0) return false;
 
+    // Sampled before mtx_ is taken: the policy reads the config lock, and the
+    // two must never nest. Dropping here rather than at encode time is the
+    // whole point of the switch -- an off speaker costs no Opus frames.
+    if (!audioPolicy().speaker) return false;
+
     // try_to_lock for the same reason as handleRumbleFromBackend: unplug joins
     // this worker while holding mtx_; blocking here deadlocks. Dropping a
     // speaker frame is a 20 ms gap the client's PLC already knows how to cover.
@@ -904,6 +919,12 @@ bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_
 bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t seq,
                                     const uint8_t* opus, size_t opusLen) {
     if (opus == nullptr || opusLen == 0) return false;
+
+    // Sampled before mtx_, as in handleSpeakerAudioFromBackend. Read once and
+    // carried into the gate below so the drop still gets its one log line: a
+    // client whose mic goes nowhere deserves a reason in the log, and the
+    // client cannot see this setting.
+    const bool hostWantsMic = audioPolicy().mic;
 
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
@@ -932,6 +953,13 @@ bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t se
     // best-effort hint (unlike MSG_MOTION, which is accepted uncapped).
     if (!ctrl.micCapable()) {
         return dropOnce(MIC_DROP_LOG_NO_CAP, "sender never advertised the mic cap");
+    }
+
+    // Host-side off switch. Checked after the cap so a misconfigured client
+    // still gets told about its own mistake first, and before the rate-limit
+    // window so a disabled direction does not quietly consume budget.
+    if (!hostWantsMic) {
+        return dropOnce(MIC_DROP_LOG_HOST_DISABLED, "controller microphone is off on the host");
     }
 
     // Fixed one-second window: cheap, and the stream is a steady 50 packets/s
@@ -1006,6 +1034,18 @@ bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const
 
 void SessionService::sendSpeakerFrameLocked(Connection& conn, Controller& ctrl,
                                             ControllerAudio& audio, const int16_t* frame) {
+    // Suppressed frames do NOT advance seq, unlike the encode failure below.
+    // A failed encode lost real audio and the client should conceal a hole;
+    // digital silence lost nothing, and its correct rendering is the silence a
+    // starved sink already plays. Advancing here would instead ask the client
+    // to run PLC over a gap that has no signal to guess at, and Opus would
+    // invent noise where the game wrote none. Skipping also leaves the encoder
+    // and the decoder resting on the same last real frame, so neither drifts.
+    if (isDigitalSilence(frame, static_cast<size_t>(AUDIO_FRAME_SAMPLES) *
+                                    static_cast<size_t>(AUDIO_SPEAKER_CHANNELS))) {
+        return;
+    }
+
     uint8_t packet[MAX_INNER_PAYLOAD_BYTES - AUDIO_WIRE_HEADER_BYTES];
     const size_t bytes =
         audio.speakerEncoder->encode(frame, AUDIO_FRAME_SAMPLES, packet, sizeof(packet));

@@ -31,6 +31,17 @@ class SessionService {
     SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
                    KeyDeriver keyDeriver = {}, IAudioCodecFactory* audioCodecs = nullptr);
 
+    // The host's per-direction controller-audio gates, read per frame so the
+    // dashboard toggle reaches a live stream rather than the next replug.
+    // Wired once at startup and never reassigned afterwards, exactly like
+    // keyDeriver/audioCodecs -- reads take no lock, because a backend can fire
+    // its speaker callback from under mtx_. Absent means both directions on:
+    // unlike `controllerAudio`, which can install a kernel driver and so
+    // defaults off when nobody answers, these are a routing preference and the
+    // safe answer is the documented behaviour.
+    using AudioPolicyFn = std::function<ControllerAudioPolicy()>;
+    void setAudioPolicy(AudioPolicyFn fn);
+
     // Declarative session upsert, keyed on deviceId. Creates the row on first
     // contact; afterwards rotates token/salt/sessionKey in place (connectionId
     // stays stable) and converges the controller set to `descriptors`. Missing
@@ -275,6 +286,8 @@ class SessionService {
     KeyDeriver keyDeriver_;
     // Non-owning; null when this build has no codec (see the constructor).
     IAudioCodecFactory* audioCodecs_ = nullptr;
+    AudioPolicyFn audioPolicy_;
+    ControllerAudioPolicy audioPolicy() const;
 
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
