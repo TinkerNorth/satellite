@@ -5,6 +5,23 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## Unreleased
 
+Controller audio, wire contract and server plumbing (protocol 2, unreleased,
+extended in place): the emulated pad's OWN audio endpoints now have a protocol.
+New UDP messages MIC_AUDIO 0x0012 (client to server, mono 48 kHz, one 20 ms Opus
+packet per frame), SPEAKER_AUDIO 0x0013 (server to client, stereo) and MIC_LED
+0x0014 (mute-lamp state, coalesced like LIGHTBAR), each `ctrlIdx(1) + seq(u16 BE)`
+framed and gated on new descriptor caps `mic` / `speaker`. The streams are lossy by
+design: no acks, no retransmits, Opus in-band FEC plus PLC conceal loss, and `seq`
+only marks gaps and late frames inside a 2-frame reorder window. Mute is the
+client's to enforce, so muted means zero mic packets on the wire; `wButtons` bit
+0x0800 (the one free bit in the XINPUT-shaped word) carries the DualSense mic-mute
+button so host-side software can still see the state. The UDP datagram ceiling grew
+from 256 to 1500 bytes in both directions to fit an Opus packet inside one Ethernet
+MTU. Catalog types and the `backends` array advertise the `mic`/`speaker` feature
+slugs for the two Sony types via HIDMaestro, which is the only backend that can
+materialize a pad carrying real audio endpoints. The codec, the jitter window and
+the HIDMaestro composite personas land in the following changes.
+
 Controller-feedback return paths (protocol 2, unreleased, extended in place):
 new UDP messages TRIGGER_EFFECTS 0x0010 (raw DualSense adaptive-trigger
 blocks, forwarded verbatim from the game's output report) and PLAYER_LEDS

@@ -104,6 +104,14 @@ struct BackendControllerSupport {
     // DS5/Switch output reports (HIDMaestro) can source these.
     bool triggerEffects = false;
     bool playerLeds = false;
+    // Controller-audio endpoints: only a backend that can materialize a
+    // composite (USB-audio-carrying) persona presents the pad's own mic and
+    // speaker to the host. Static identity, like every other column here: the
+    // runtime on/off switch is the `controllerAudio` server setting, which the
+    // catalog deliberately does not see (its ETag is version + locale, so
+    // install-state variance would serve stale caches).
+    bool mic = false;
+    bool speaker = false;
 };
 
 // Static identity of a backend, independent of host availability. `support`

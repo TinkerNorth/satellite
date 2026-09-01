@@ -271,6 +271,61 @@ static void test_rawOutput_surfaces_hidmaestro_only() {
     EXPECT(!v.switchProPlayerLedsSupported);
 }
 
+static void test_controllerAudio_surfaces_hidmaestroSonyOnly() {
+    TEST("mic/speaker ride only HIDMaestro's two Sony types");
+    // Controller audio needs a composite (USB-audio) persona, which only
+    // HIDMaestro can materialize, and only the DualShock 4 v2 and DualSense
+    // have audio endpoints worth emulating in the first place.
+    const BackendDescriptor* hm = backendDescriptorById(BACKEND_ID_HIDMAESTRO);
+    EXPECT(hm != nullptr);
+    for (size_t i = 0; i < hm->supportCount; ++i) {
+        const BackendControllerSupport& cs = hm->support[i];
+        const bool sony = cs.controllerType == CONTROLLER_TYPE_PLAYSTATION ||
+                          cs.controllerType == CONTROLLER_TYPE_DUALSENSE;
+        EXPECT_EQ(cs.mic, sony);
+        EXPECT_EQ(cs.speaker, sony);
+        // Both directions ship together: a pad's audio function carries the
+        // headset jack and the microphone as one interface.
+        EXPECT_EQ(cs.mic, cs.speaker);
+    }
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_UINPUT, BACKEND_ID_MAC_HID}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr);
+        for (size_t i = 0; i < d->supportCount; ++i) {
+            EXPECT(!d->support[i].mic);
+            EXPECT(!d->support[i].speaker);
+        }
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}), "\"mic\":true"));
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}), "\"speaker\":true"));
+    }
+    const std::string json = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(contains(json, "\"mic\":true"));
+    EXPECT(contains(json, "\"speaker\":true"));
+
+    // Traits aggregation carries them to the catalog for both Sony types.
+    CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(t.ds4MicSupported);
+    EXPECT(t.ds4SpeakerSupported);
+    EXPECT(t.dualsenseMicSupported);
+    EXPECT(t.dualsenseSpeakerSupported);
+
+    // ViGEm listed first takes the DS4 column, and ViGEm has no audio: the
+    // catalog must then say so rather than promising a surface the preferred
+    // materializer cannot build.
+    CatalogBackendTraits u =
+        deriveCatalogTraits({{BACKEND_ID_VIGEM, true, ""}, {BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(!u.ds4MicSupported);
+    EXPECT(!u.ds4SpeakerSupported);
+    EXPECT(u.dualsenseMicSupported); // ViGEm offers no DualSense, so hidmaestro wins it
+    EXPECT(u.dualsenseSpeakerSupported);
+
+    CatalogBackendTraits v = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
+    EXPECT(!v.ds4MicSupported);
+    EXPECT(!v.ds4SpeakerSupported);
+    EXPECT(!v.dualsenseMicSupported);
+    EXPECT(!v.dualsenseSpeakerSupported);
+}
+
 static void test_deriveCatalogTraits_uinput_matches_legacy() {
     TEST("deriveCatalogTraits — uinput reproduces the historical Linux traits");
     CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
@@ -487,6 +542,7 @@ int main() {
     test_deriveCatalogTraits_order_decides_requires();
     test_uinput_advertises_no_lightbar_it_cannot_deliver();
     test_rawOutput_surfaces_hidmaestro_only();
+    test_controllerAudio_surfaces_hidmaestroSonyOnly();
     test_deriveCatalogTraits_uinput_matches_legacy();
     test_deriveCatalogTraits_machid_matches_legacy();
     test_deriveCatalogTraits_ignores_availability();

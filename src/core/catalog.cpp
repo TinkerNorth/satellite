@@ -178,7 +178,8 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     // never localized (docs/contract.md localization boundary rule). DualSense
     // renders the DS4-shaped surface; its touchpad renders the "ds4" pad mode.
     auto ds4LikeFeatures = [](bool motion, const std::string& motionRequires, bool touchpad,
-                              bool lightbar, bool triggerEffects, bool playerLeds) {
+                              bool lightbar, bool triggerEffects, bool playerLeds, bool mic,
+                              bool speaker) {
         JsonOut f;
         f["rumble"] = featureJson(true);
         f["analogTriggers"] = featureJson(true);
@@ -187,6 +188,8 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         f["touchpad"] = featureJsonModes(touchpad, JsonOut::array({"ds4"}));
         f["triggerEffects"] = featureJson(triggerEffects);
         f["playerLeds"] = featureJson(playerLeds);
+        f["mic"] = featureJson(mic);
+        f["speaker"] = featureJson(speaker);
         return f;
     };
 
@@ -207,15 +210,19 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         xbox["touchpad"] = featureJson(false);
         xbox["triggerEffects"] = featureJson(false);
         xbox["playerLeds"] = featureJson(false);
+        xbox["mic"] = featureJson(false);
+        xbox["speaker"] = featureJson(false);
         types.push_back(typeJson(0, "xbox360", lang, en, serverVersion, std::move(xbox)));
     }
     if (traits.offersDS4) {
-        // DS4 has no adaptive triggers and no player LEDs (lightbar only).
-        types.push_back(
-            typeJson(1, "ds4", lang, en, serverVersion,
-                     ds4LikeFeatures(traits.ds4MotionSupported, traits.ds4MotionRequires,
-                                     traits.ds4TouchpadSupported, traits.ds4LightbarSupported,
-                                     false, false)));
+        // DS4 has no adaptive triggers and no player LEDs (lightbar only), but
+        // the v2 pad does carry a headset audio function, so mic/speaker ride
+        // the traits like the rest.
+        types.push_back(typeJson(
+            1, "ds4", lang, en, serverVersion,
+            ds4LikeFeatures(traits.ds4MotionSupported, traits.ds4MotionRequires,
+                            traits.ds4TouchpadSupported, traits.ds4LightbarSupported, false, false,
+                            traits.ds4MicSupported, traits.ds4SpeakerSupported)));
     }
     if (traits.offersDualSense) {
         types.push_back(typeJson(
@@ -223,7 +230,8 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
             ds4LikeFeatures(traits.dualsenseMotionSupported, traits.dualsenseMotionRequires,
                             traits.dualsenseTouchpadSupported, traits.dualsenseLightbarSupported,
                             traits.dualsenseTriggerEffectsSupported,
-                            traits.dualsensePlayerLedsSupported)));
+                            traits.dualsensePlayerLedsSupported, traits.dualsenseMicSupported,
+                            traits.dualsenseSpeakerSupported)));
     }
     if (traits.offersSwitchPro) {
         // Switch Pro: motion, no analog triggers, no touchpad, no light bar.
@@ -235,6 +243,8 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         sw["touchpad"] = featureJson(false);
         sw["triggerEffects"] = featureJson(false);
         sw["playerLeds"] = featureJson(traits.switchProPlayerLedsSupported);
+        sw["mic"] = featureJson(false);
+        sw["speaker"] = featureJson(false);
         types.push_back(typeJson(3, "switchpro", lang, en, serverVersion, std::move(sw)));
     }
     j["controllerTypes"] = std::move(types);

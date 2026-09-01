@@ -140,6 +140,21 @@ inline const uint16_t MSG_SESSION_CLOSE = 0x000F;
 inline const uint16_t MSG_TRIGGER_EFFECTS = 0x0010;
 // Player-indicator LEDs (server to client): bitmask, bit 0 = leftmost LED.
 inline const uint16_t MSG_PLAYER_LEDS = 0x0011;
+// Controller audio, the emulated pad's own endpoints (never game audio).
+// Payload of both audio messages: ctrlIdx(1) + seq(u16 BE) + one Opus packet
+// (the rest of the frame). One packet per message, 20 ms, 48 kHz.
+//   MSG_MIC_AUDIO     client to server: the pad's headset mic, mono.
+//   MSG_SPEAKER_AUDIO server to client: the pad's speaker/headset out, stereo.
+// `seq` wraps and exists ONLY for gap detection and late-drop inside the
+// receiver's 2-frame reorder window; there are no acks and no retransmits (the
+// contract's lossy-telemetry doctrine), Opus in-band FEC + PLC conceal loss.
+inline const uint16_t MSG_MIC_AUDIO = 0x0012;
+inline const uint16_t MSG_SPEAKER_AUDIO = 0x0013;
+// Mic-mute LED (server to client): ctrlIdx(1) + state(1), MIC_LED_STATE_*.
+// Sourced from the game's DS5 output report and coalesced last-value-wins like
+// MSG_LIGHTBAR. Gated on CAP_MIC, not a cap of its own: a mute lamp without a
+// microphone behind it is dead metal.
+inline const uint16_t MSG_MIC_LED = 0x0014;
 
 // MSG_SESSION_CLOSE reason byte.
 inline const uint8_t CLOSE_REASON_SHUTDOWN = 0;
@@ -169,6 +184,10 @@ inline const uint16_t CAP_MOTION = 0x0004;          // streams MSG_MOTION IMU da
 inline const uint16_t CAP_LIGHTBAR = 0x0008;        // accepts the MSG_LIGHTBAR return path
 inline const uint16_t CAP_TRIGGER_EFFECTS = 0x0010; // accepts the MSG_TRIGGER_EFFECTS return path
 inline const uint16_t CAP_PLAYER_LEDS = 0x0020;     // accepts the MSG_PLAYER_LEDS return path
+// Audio caps advertise the CLIENT's actuator/source, same rule as the feedback
+// caps. CAP_MIC also gates the MSG_MIC_LED return path (see MSG_MIC_LED).
+inline const uint16_t CAP_MIC = 0x0040;     // sources MSG_MIC_AUDIO (and takes MSG_MIC_LED)
+inline const uint16_t CAP_SPEAKER = 0x0080; // accepts the MSG_SPEAKER_AUDIO return path
 
 // Wire form is the lowercase string (protocol constant, never localized).
 inline const uint8_t APPLY_OK = 0;
@@ -206,6 +225,19 @@ inline const int AUTH_TAG_SIZE = 16;    // Poly1305
 inline const int CRYPTO_KEY_SIZE = 32;
 inline const int CRYPTO_NONCE_SIZE = 12;
 inline const int SESSION_SALT_SIZE = 8; // HKDF salt minted per session PUT
+
+// Datagram ceiling for the encrypted data plane, both directions. 1500 is the
+// usual Ethernet MTU, so a full-size packet crosses a LAN without fragmenting
+// (a fragmented audio frame would be an all-or-nothing loss anyway). Overhead
+// is header(8) + Poly1305 tag(16); what is left carries type(2) + length(2) +
+// payload. Audio is what needed the room: one 20 ms Opus packet is ~80 bytes
+// (mic, 32 kbps) to ~240 bytes (speaker, 96 kbps), so the ceiling is an order
+// of magnitude clear of the steady state and absorbs a VBR spike instead of
+// truncating one. Senders MUST keep an inner message inside it; receivers
+// silently drop anything larger (a truncated read fails the AEAD anyway).
+inline const int UDP_DATAGRAM_MAX_BYTES = 1500;
+inline const int MAX_INNER_MESSAGE_BYTES = UDP_DATAGRAM_MAX_BYTES - HEADER_SIZE - AUTH_TAG_SIZE;
+inline const int MAX_INNER_PAYLOAD_BYTES = MAX_INNER_MESSAGE_BYTES - INNER_HEADER_SIZE;
 
 // Nonce direction byte (nonce[0]) so the two directions of one session key can
 // never share a nonce. See docs/contract.md.
@@ -307,6 +339,14 @@ inline bool controllerTypeHasTouchpad(uint8_t type) {
     return type == CONTROLLER_TYPE_PLAYSTATION || type == CONTROLLER_TYPE_DUALSENSE;
 }
 
+// The one free bit in the XINPUT-shaped wButtons word: XINPUT defines every
+// other value (0x0400 is XUSB's Guide, see the identity encoders), so 0x0800 is
+// all the room the word has left. It carries the DualSense mic-mute button.
+// ONLY the DualSense identity consumes it (that is the sole emulated pad with a
+// mute button); every other identity ignores the bit rather than mapping it
+// onto something it happens to have free.
+inline const uint16_t WBUTTON_MIC_MUTE = 0x0800;
+
 // Binary-compatible with XUSB_REPORT / XINPUT_GAMEPAD.
 struct GamepadReport {
     uint16_t wButtons = 0;
@@ -352,6 +392,70 @@ inline const int TRIGGER_EFFECTS_WIRE_PAYLOAD_BYTES = 2 * TRIGGER_EFFECT_BLOCK_B
 // Player-indicator LED bitmask: bit 0 = leftmost LED. DualSense has 5 LEDs
 // (bits 0..4), Switch Pro 4 (bits 0..3); senders mask to their hardware.
 inline const int PLAYER_LEDS_WIRE_PAYLOAD_BYTES = 1;
+
+// Controller audio wire format (MSG_MIC_AUDIO / MSG_SPEAKER_AUDIO). Fixed on
+// the wire, never negotiated: Opus runs at 48 kHz internally regardless, so
+// pinning the rate costs nothing and spares both ends a resampler. One wire
+// frame is exactly one 20 ms Opus packet, which is also the DualSense USB-audio
+// service interval, so no side has to re-window.
+inline const int AUDIO_SAMPLE_RATE_HZ = 48000;
+inline const int AUDIO_FRAME_MS = 20;
+inline const int AUDIO_FRAME_SAMPLES = AUDIO_SAMPLE_RATE_HZ / 1000 * AUDIO_FRAME_MS; // 960 per ch
+// Mic is the pad's headset microphone (mono); speaker is channels 1/2 of the
+// DualSense 4-channel OUT stream, i.e. the pad speaker / headset jack (stereo).
+// Channels 3/4 are the HD-haptics lanes and deliberately never cross the wire.
+inline const int AUDIO_MIC_CHANNELS = 1;
+inline const int AUDIO_SPEAKER_CHANNELS = 2;
+
+// Both audio messages: ctrlIdx(1) + seq(u16 BE) ahead of the Opus bytes.
+inline const int AUDIO_WIRE_HEADER_BYTES = 3;
+// Smallest frame worth dispatching: the header plus at least one Opus byte.
+// (A 1-byte Opus packet is legal: it is a valid DTX/silence frame.)
+inline const int AUDIO_WIRE_MIN_PAYLOAD_BYTES = AUDIO_WIRE_HEADER_BYTES + 1;
+
+// The fixed header both audio messages carry ahead of their Opus bytes.
+struct AudioFrameHeader {
+    uint8_t ctrlIdx = 0;
+    uint16_t seq = 0;
+};
+
+// Explicit shifts (not a struct memcpy) keep the wire byte-order-independent,
+// same as the motion/touchpad decoders below. `p` must have at least
+// AUDIO_WIRE_HEADER_BYTES readable; callers guard on that first.
+inline AudioFrameHeader decodeAudioFrameHeader(const uint8_t* p) {
+    AudioFrameHeader h;
+    h.ctrlIdx = p[0];
+    h.seq = static_cast<uint16_t>((static_cast<uint16_t>(p[1]) << 8) | static_cast<uint16_t>(p[2]));
+    return h;
+}
+
+inline void encodeAudioFrameHeader(uint8_t* p, uint8_t ctrlIdx, uint16_t seq) {
+    p[0] = ctrlIdx;
+    p[1] = static_cast<uint8_t>(seq >> 8);
+    p[2] = static_cast<uint8_t>(seq);
+}
+
+// Server-side sanity ceiling, per controller. Nominal is 1000/AUDIO_FRAME_MS =
+// 50 packets/s; 75 leaves a jittery client room to flush a queued frame or two
+// without letting a hostile one run the decoder as a CPU faucet.
+inline const int MIC_AUDIO_MAX_PACKETS_PER_SEC = 75;
+
+// MSG_MIC_LED state byte. Pulse is the DualSense's own breathing pattern, which
+// the pad renders itself; the satellite only forwards which mode the game asked
+// for. Anything else is malformed and dropped rather than guessed at.
+inline const uint8_t MIC_LED_STATE_OFF = 0;
+inline const uint8_t MIC_LED_STATE_ON = 1;
+inline const uint8_t MIC_LED_STATE_PULSE = 2;
+inline const uint8_t MIC_LED_STATE_COUNT = 3;
+inline const int MIC_LED_WIRE_PAYLOAD_BYTES = 1;
+
+// Why a mic frame was dropped, recorded once per session per cause (see
+// Connection::micDropLogged). Bookkeeping, not a wire value: at 50 frames/s a
+// misconfigured client would otherwise turn one mistake into a log flood, and
+// silence would leave nothing to diagnose it with.
+inline const uint8_t MIC_DROP_LOG_NO_CONTROLLER = 0x01;
+inline const uint8_t MIC_DROP_LOG_NO_CAP = 0x02;
+inline const uint8_t MIC_DROP_LOG_RATE_LIMIT = 0x04;
 
 // Motion report (sender to satellite, gyro + accel). Fixed full-scale wire
 // convention so no downstream renormalisation:
@@ -610,6 +714,8 @@ struct Controller {
     bool lightbarCapable() const { return (caps & CAP_LIGHTBAR) != 0; }
     bool triggerEffectsCapable() const { return (caps & CAP_TRIGGER_EFFECTS) != 0; }
     bool playerLedsCapable() const { return (caps & CAP_PLAYER_LEDS) != 0; }
+    bool micCapable() const { return (caps & CAP_MIC) != 0; }
+    bool speakerCapable() const { return (caps & CAP_SPEAKER) != 0; }
     GamepadReport lastReport{};
     // Last rumble forwarded; coalesces identical back-to-back updates so a game
     // holding the motors steady doesn't blast the wire.
@@ -637,6 +743,14 @@ struct Controller {
     bool lastTriggerEffectsValid = false;
     uint8_t playerLeds = 0;
     bool lastPlayerLedsValid = false;
+    // Mic-mute LED last forwarded; same coalesce shape again.
+    uint8_t micLedState = MIC_LED_STATE_OFF;
+    bool lastMicLedValid = false;
+    // Fixed one-second window for inbound MSG_MIC_AUDIO (see
+    // MIC_AUDIO_MAX_PACKETS_PER_SEC). The first packet after a window lapses
+    // opens the next one, so an idle controller never banks an allowance.
+    std::chrono::steady_clock::time_point micWindowStart{};
+    uint16_t micPacketsInWindow = 0;
 };
 
 // Per paired client session. Keyed on deviceId and STABLE across reconnects: a
@@ -669,6 +783,9 @@ struct Connection {
     // Server policy, returned in the PUT response. Streams for ungranted
     // features are dropped.
     bool mouseControlGranted = false;
+    // MIC_DROP_LOG_* causes already logged for this session, so a bad client
+    // gets one diagnosable line per cause instead of 50 a second.
+    uint8_t micDropLogged = 0;
     // The version this session settled on (the client's in-range offer). Echoed
     // in responses and surfaced to the dashboard so an old client is visibly
     // "works, but update for the full feature set".

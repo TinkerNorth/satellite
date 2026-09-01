@@ -71,6 +71,8 @@ struct FuzzClient : IClientPort {
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
+    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
 };
 
 struct FuzzLog : ILogPort {
@@ -83,9 +85,11 @@ FuzzLog g_log;
 SessionService* g_svc = nullptr;
 uint32_t g_token = 0;
 
-// The receiver reads at most 256-byte datagrams: header(8) + ciphertext, and
-// ciphertext carries a 16-byte tag, so plaintext is capped at 232.
-constexpr size_t MAX_DATAGRAM = 256;
+// Mirror receiver.cpp's recv buffer: header(8) + ciphertext, and ciphertext
+// carries a 16-byte tag, so the plaintext an attacker can steer is capped at
+// MAX_INNER_MESSAGE_BYTES. Kept in lockstep with the real ceiling so the fuzzer
+// reaches the audio frames' length range.
+constexpr size_t MAX_DATAGRAM = UDP_DATAGRAM_MAX_BYTES;
 constexpr size_t MAX_PLAINTEXT = MAX_DATAGRAM - HEADER_SIZE - AUTH_TAG_SIZE;
 
 // Rotate well before the u32 replay floor can saturate the session (mirrors
@@ -102,7 +106,9 @@ void openSession() {
     descriptors[0].touchpadMode = TOUCHPAD_MODE_OFF;
     descriptors[1].ctrlIdx = 1;
     descriptors[1].type = CONTROLLER_TYPE_PLAYSTATION;
-    descriptors[1].caps = CAP_RUMBLE | CAP_MOTION | CAP_LIGHTBAR;
+    // Slot 1 advertises the audio caps and slot 0 does not, so MSG_MIC_AUDIO
+    // reaches both the accepted and the cap-refused branch.
+    descriptors[1].caps = CAP_RUMBLE | CAP_MOTION | CAP_LIGHTBAR | CAP_MIC | CAP_SPEAKER;
     descriptors[1].touchpadMode = TOUCHPAD_MODE_DS4;
     auto r = g_svc->upsertSession("fuzz-dev", "Fuzzer", "192.0.2.1", pairingKey, descriptors,
                                   /*requestMouseControl=*/true);

@@ -9,9 +9,9 @@ Principle: **control plane and data plane are split.**
 - Control = HTTPS REST on **9443**, declarative full-state. The client PUTs its complete
   desired state; the server converges and returns the applied state. Retries are free,
   ordering is irrelevant. UDP never mutates topology.
-- Data = UDP streams on **9876**: input, heartbeat, motion, battery, touchpad up;
-  heartbeat ack, rumble, lightbar, trigger effects, player LEDs, session-close
-  notify down.
+- Data = UDP streams on **9876**: input, heartbeat, motion, battery, touchpad,
+  controller mic audio up; heartbeat ack, rumble, lightbar, trigger effects,
+  player LEDs, controller speaker audio, mic LED, session-close notify down.
 
 One user action = one call. Partial success rides in the response body (per-controller
 results), never in HTTP error codes.
@@ -166,7 +166,8 @@ Request:
       "ctrlIdx": 0,
       "type": 0,
       "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false,
-                "triggerEffects": false, "playerLeds": false },
+                "triggerEffects": false, "playerLeds": false,
+                "mic": false, "speaker": false },
       "touchpadMode": "off",
       "preferredBackend": null
     }
@@ -249,7 +250,9 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
   "maxControllers": 16,
   "controllers": [
     { "ctrlIdx": 0, "active": true, "appliedType": 0, "backend": "vigem",
-      "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false },
+      "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false,
+                "triggerEffects": false, "playerLeds": false,
+                "mic": false, "speaker": false },
       "touchpadMode": "off", "preferredBackend": null,
       "motion": { "sinkSupportedForType": true, "backendOk": true } }
   ],
@@ -443,7 +446,9 @@ to present it (static, localized) → **capabilities** = what is true right now
         "lightbar": { "supported": false },
         "touchpad": { "supported": false },
         "triggerEffects": { "supported": false },
-        "playerLeds": { "supported": false }
+        "playerLeds": { "supported": false },
+        "mic": { "supported": false },
+        "speaker": { "supported": false }
       },
       "emulates": { "sdlType": "xbox360", "usb": ["045e:028e"] }
     },
@@ -461,7 +466,9 @@ to present it (static, localized) → **capabilities** = what is true right now
         "lightbar": { "supported": true },
         "touchpad": { "supported": true, "modes": ["ds4"] },
         "triggerEffects": { "supported": false },
-        "playerLeds": { "supported": false }
+        "playerLeds": { "supported": false },
+        "mic": { "supported": false },
+        "speaker": { "supported": false }
       },
       "emulates": { "sdlType": "ps4", "usb": ["054c:05c4"] }
     }
@@ -507,10 +514,13 @@ to present it (static, localized) → **capabilities** = what is true right now
   clients IGNORE it and default to the first offered type. Rides only offered types.
 - Type-feature slugs are protocol constants: `rumble`, `analogTriggers`, `motion`,
   `lightbar`, `touchpad`, `triggerEffects` (DualSense adaptive-trigger passthrough,
-  RECEIVE), `playerLeds` (player-indicator LEDs, RECEIVE). `triggerEffects` and
-  `playerLeds` reflect whether the type's preferred materializer surfaces the game's
-  raw output reports; a client advertises the matching descriptor caps only when it
-  can actuate them on the physical pad.
+  RECEIVE), `playerLeds` (player-indicator LEDs, RECEIVE), `mic` (the pad's own
+  microphone endpoint, SEND) and `speaker` (the pad's own speaker/headset endpoint,
+  RECEIVE). `triggerEffects` and `playerLeds` reflect whether the type's preferred
+  materializer surfaces the game's raw output reports; `mic`/`speaker` reflect whether
+  it can materialize a pad that carries real audio endpoints (see Controller audio).
+  A client advertises the matching descriptor caps only when it can actuate them on
+  the physical pad.
 - A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
   the client reads the offered modes rather than inferring them from the type id. The
   DS4 `touchpad` advertises `["ds4"]` (its pad-render mode); the relative-mouse path is
@@ -587,6 +597,13 @@ inner plaintext  : msgType(2 BE) | msgLen(2 BE) | payload
 
 - Each direction keeps its own monotonically increasing counter, starting at 1. The
   direction byte ensures the two directions never share a nonce even under one key.
+- **A datagram is at most 1500 bytes**, both directions: one Ethernet MTU, so a full
+  packet crosses a LAN without fragmenting (a fragmented audio frame would be an
+  all-or-nothing loss anyway). Overhead is header(8) + tag(16), leaving 1476 bytes for
+  `msgType | msgLen | payload` and so 1472 bytes of payload. Everything but audio sits
+  under 30 bytes; a 20 ms Opus packet is ~80 bytes (mic) to ~240 bytes (speaker), so
+  the ceiling exists to absorb a VBR spike rather than to be approached. Senders MUST
+  stay inside it; a larger datagram is truncated on read and fails the AEAD.
 - Replay guard (receiver side, per direction): drop when `counter <= lastCounter`
   (first packet exempt while `lastCounter == 0`).
 - **Counter exhaustion is impossible to wrap**: a counter can never go backwards, so a
@@ -606,6 +623,7 @@ Up (client → server):
 | 0x000B | BATTERY | ctrlIdx(1) + level(1: 0..100 or 0xFF unknown) + status(1: 0 unknown,1 discharging,2 charging,3 full,4 wired) |
 | 0x000C | TOUCHPAD (v1, 16B) | ctrlIdx(1) + flags(1: b0 f0 active, b1 f1 active, b2 button) + f0 id(1)+x(i16 LE)+y(i16 LE) + f1 id(1)+x(i16 LE)+y(i16 LE) + eventTimeMs(u32 LE) |
 | 0x000C | POINTER (v2, 19B) | ctrlIdx(1) + fingerFlags(1: b0 f0 active, b1 f1 active) + buttons(1: b0 left/click, b1 right, b2 middle) + f0 id(1)+x(i16 LE)+y(i16 LE) + f1 id(1)+x(i16 LE)+y(i16 LE) + eventTimeMs(u32 LE) + scrollV(i16 LE, 120 per wheel notch, an event: resends carry 0) |
+| 0x0012 | MIC_AUDIO | ctrlIdx(1) + seq(u16 BE) + opusPacket(rest, >= 1 byte): one 20 ms Opus packet from the pad's microphone, mono 48 kHz. Accepted only from senders whose descriptor advertised `mic`. See Controller audio. |
 
 Down (server → client):
 
@@ -617,6 +635,8 @@ Down (server → client):
 | 0x000F | SESSION_CLOSE | reason(1: 0 shutdown, 1 kicked, 2 replaced, 3 unpaired) |
 | 0x0010 | TRIGGER_EFFECTS | ctrlIdx(1) + left block(11) + right block(11): raw DualSense trigger-effect fields (mode byte + 10 params each), forwarded verbatim from the game's output report. Sent only to senders whose descriptor advertised `triggerEffects`. Coalesced; both blocks always ride together (the server merges per-trigger writes). |
 | 0x0011 | PLAYER_LEDS | ctrlIdx(1) + ledMask(1): player-indicator bitmask, bit 0 = leftmost LED (DualSense bits 0-4, Switch Pro bits 0-3). Sent only to senders whose descriptor advertised `playerLeds`. |
+| 0x0013 | SPEAKER_AUDIO | ctrlIdx(1) + seq(u16 BE) + opusPacket(rest, >= 1 byte): one 20 ms Opus packet for the pad's speaker/headset output, stereo 48 kHz. Sent only to senders whose descriptor advertised `speaker`. See Controller audio. |
+| 0x0014 | MIC_LED | ctrlIdx(1) + state(1: 0 off, 1 on, 2 pulse): the mic-mute lamp state the game asked for. Coalesced last-value-wins like LIGHTBAR. Sent only to senders whose descriptor advertised `mic` (a mute lamp with no microphone behind it has nothing to report). |
 
 Opcodes 0x0004 (ADD), 0x0005 (REMOVE), 0x0006 (ACK), 0x0007 (SERVER_STATUS) and
 0x0008 (TYPE), 0x000E (CAPS_UPDATE) are **deleted**: topology mutation is REST-only,
@@ -660,13 +680,84 @@ session (and its key) exists, because they must be authenticated: an unauthentic
 plus REST reason codes are the only safe channel; "unpaired" therefore CANNOT be
 pushed to an un-keyed client and surfaces as 401 on the next REST contact.
 
+### Controller audio (0x0012 / 0x0013 / 0x0014)
+
+Scope first, because the name invites the wrong reading: this carries the EMULATED
+PAD's OWN audio endpoints, never the host's game audio. A DualSense (or DualShock 4
+v2) materialized through a composite persona presents real Windows endpoints, a
+"Wireless Controller" speaker/headset out and a "Headset Microphone (Wireless
+Controller)" in. Whatever a game writes to that speaker endpoint rides 0x0013 to the
+client; whatever the client's microphone captures rides 0x0012 back into that mic
+endpoint. General audio streaming is out of scope and always will be.
+
+These three messages EXTEND protocol 2 IN PLACE. Version 2 has never been released, so
+there is no deployed client to migrate and no version bump: `protocolVersion` stays 2.
+Every addition is caps-gated, so an interim protocol-2 client that advertises neither
+audio cap sees exactly the traffic it saw before.
+
+| Property | MIC_AUDIO 0x0012 (up) | SPEAKER_AUDIO 0x0013 (down) |
+|---|---|---|
+| Payload | ctrlIdx(1) + seq(u16 BE) + one Opus packet | same |
+| Rate | 48 kHz | 48 kHz |
+| Frame | 20 ms = 960 samples per channel | 20 ms = 960 samples per channel |
+| Channels | mono | stereo |
+| Opus application | VOIP | AUDIO |
+| Bitrate | ~32 kbps VBR, in-band FEC on | ~96 kbps VBR, in-band FEC on |
+| Cap gate | `mic` | `speaker` |
+
+- The format is FIXED on the wire, never negotiated. Opus resamples to 48 kHz
+  internally regardless, so pinning the rate costs nothing and spares both ends a
+  resampler; 20 ms is also the pad's USB-audio service interval, so no side re-windows.
+- One message carries exactly one Opus packet. Opus packets are self-delimiting, so
+  the frame length IS the packet length; a frame with the 3-byte header and no Opus
+  byte is malformed (a silence frame is a 1-byte DTX packet, not an empty one).
+- `seq` is u16 and WRAPS. It exists only for gap detection and for late-drop inside the
+  receiver's 2-frame (40 ms) reorder window. There are NO acks and NO retransmits: the
+  lossy-telemetry rule above applies, and Opus conceals loss itself with in-band FEC
+  (the next packet re-carries a coarse copy of the previous one) plus PLC on a gap.
+  Adding a reliability layer here would trade a 20 ms hole for unbounded latency.
+- Speaker content is channels 1/2 of the DualSense 4-channel OUT stream (its speaker
+  and headset jack). Channels 3/4 are the HD-haptics lanes and deliberately never cross
+  the wire. DualShock 4 v2 headset stereo rides as-is.
+- Server-side sanity limit: MIC_AUDIO beyond ~75 packets/s per controller is dropped
+  (nominal is 50). Audio for an unknown session, an unbound slot, or a slot that never
+  advertised the cap is likewise dropped, silently on the wire, with one server log
+  line per session per cause.
+
+**Mic-mute button.** `GamepadReport.wButtons` is XINPUT-shaped and has exactly one free
+bit left, `0x0800`, which is now the DualSense mic-mute button. Only the DualSense
+identity maps it into the emulated pad's input report; every other identity ignores it
+(no other emulated pad has a mute button). The bit is state, not an edge, like every
+other button in the word.
+
+**Mute is the client's to enforce (privacy invariant).** Muted means ZERO MIC_AUDIO
+packets on the wire, not silent ones: the client stops delivering capture, and it also
+sets `wButtons` bit `0x0800` so host-side software can see the state. A host cannot mute
+a client's microphone, and a client that is muted cannot be talked into streaming.
+MIC_LED 0x0014 is advisory in the other direction: it reports which lamp state the game
+asked for, and the client renders it (last writer wins against its own local mute
+state). Because the LED describes a microphone, it rides `mic`, not a cap of its own.
+
+**Caps and catalog.** `mic` and `speaker` follow the house rule that a cap advertises
+the CLIENT's actuator/source: the client claims a microphone it can capture from and a
+speaker it can play to, and the server sends or accepts accordingly. They are
+independent directions; one does not imply the other. The catalog advertises the
+type-feature slugs `mic`/`speaker` only for the types whose preferred materializer can
+build a pad with audio endpoints (the two Sony types via HIDMaestro's composite
+personas); every other type and backend reports `false`.
+
 ### Host-input streams (reserved)
+
+MIC_AUDIO 0x0012 is the first inhabitant of this slot: a stream that flows INTO the
+host from the client, beyond the input reports themselves. It follows the rules below,
+with the per-controller cap standing in for a hostFeature grant (audio belongs to one
+emulated pad, not to the host).
 
 When host features ship beyond touchpad-mouse (0x000C), their streams get new opcodes
 and follow the loss-safety rule: state that must not stick goes FULL-STATE per frame
 (keyboard = the complete pressed-key set every packet); deltas only where loss is
-benign (mouse moves). Streams are valid only for session-granted hostFeatures; the
-server drops streams for ungranted features.
+benign (mouse moves, audio frames). Streams are valid only for session-granted
+hostFeatures; the server drops streams for ungranted features.
 
 ## Liveness
 
@@ -723,6 +814,13 @@ Version history:
   0x0011 with their descriptor caps (`triggerEffects`, `playerLeds`) and catalog
   type-feature slugs. Both are caps-gated, so a client that never advertises them
   never sees them; no frame shape changed.
+  Then controller audio: MIC_AUDIO 0x0012, SPEAKER_AUDIO 0x0013 and MIC_LED 0x0014 with
+  the caps `mic`/`speaker`, the matching catalog slugs, and `wButtons` bit 0x0800 as the
+  DualSense mic-mute button. The datagram ceiling rose to 1500 bytes to fit an Opus
+  packet. Version 2 was never released, so all of this EXTENDS 2 IN PLACE rather than
+  claiming a 3: there is no deployed client to migrate, and every addition is caps-gated
+  or additive, so an interim protocol-2 client that advertises neither audio cap sees
+  exactly the traffic it saw before.
   Catalog/capabilities documents advertise the server's newest version so clients can
   offer it directly.
 

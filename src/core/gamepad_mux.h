@@ -161,6 +161,19 @@ class GamepadMux : public IGamepadPort {
         for (IGamepadPort* p : ports_) p->setPlayerLedsCallback(cb);
     }
 
+    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
+        for (IGamepadPort* p : ports_) p->setSpeakerAudioCallback(cb);
+    }
+
+    void setMicLedCallback(MicLedCallback cb) override {
+        for (IGamepadPort* p : ports_) p->setMicLedCallback(cb);
+    }
+
+    bool submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) override {
+        IGamepadPort* p = ownerOf(serial);
+        return p != nullptr && p->submitMicAudioPcm(serial, mono48k, samples);
+    }
+
     const char* backendIdForSerial(uint32_t serial) const override {
         const IGamepadPort* p = ownerOf(serial);
         return p == nullptr ? "" : p->backendId();

@@ -100,6 +100,10 @@ static void test_catalogJson_structure() {
     traits.dualsenseTriggerEffectsSupported = true;
     traits.dualsensePlayerLedsSupported = true;
     traits.switchProPlayerLedsSupported = true;
+    traits.ds4MicSupported = true;
+    traits.ds4SpeakerSupported = true;
+    traits.dualsenseMicSupported = true;
+    traits.dualsenseSpeakerSupported = true;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;
@@ -163,6 +167,16 @@ static void test_catalogJson_structure() {
         EXPECT(types[1].find("\"playerLeds\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[0].find("\"triggerEffects\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[0].find("\"playerLeds\":{\"supported\":false}") != std::string::npos);
+        // Controller audio: only the two Sony pads have their own speaker and
+        // microphone endpoints to emulate. Xbox and Switch Pro have neither.
+        EXPECT(types[1].find("\"mic\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[1].find("\"speaker\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[2].find("\"mic\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[2].find("\"speaker\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[0].find("\"mic\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[0].find("\"speaker\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[3].find("\"mic\":{\"supported\":false}") != std::string::npos);
+        EXPECT(types[3].find("\"speaker\":{\"supported\":false}") != std::string::npos);
         // emulates: physical-pad hint per offered type, protocol constants (ordered
         // sdlType then usb). What a future client-side matcher keys a default off.
         EXPECT(types[0].find("\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}") !=
@@ -359,6 +373,51 @@ static void test_emulatesNotLocalized() {
     }
 }
 
+static size_t countOccurrences(const std::string& haystack, const std::string& needle) {
+    size_t n = 0;
+    for (size_t at = haystack.find(needle); at != std::string::npos;
+         at = haystack.find(needle, at + needle.size())) {
+        n++;
+    }
+    return n;
+}
+
+static void test_audioFeatureSlugsNotLocalized() {
+    TEST("buildCatalogJson: mic/speaker are protocol constants, identical across all six locales");
+    // Feature slugs are never translated (contract.md localization boundary),
+    // so the audio pair must render byte-identically in every locale file the
+    // server ships. The completeness gate below covers the localized TYPE
+    // strings; this covers the machine-readable half.
+    EXPECT_EQ(catalogLocales().size(), size_t{6});
+    CatalogBackendTraits traits;
+    traits.offersDS4 = true;
+    traits.offersDualSense = true;
+    traits.ds4MicSupported = true;
+    traits.ds4SpeakerSupported = true;
+    traits.dualsenseMicSupported = true;
+    traits.dualsenseSpeakerSupported = true;
+
+    const std::string enJson = readFileAll(langPath("en"));
+    for (const auto& locale : catalogLocales()) {
+        const std::string langJson = readFileAll(langPath(locale));
+        EXPECT(!langJson.empty());
+        const std::string json = buildCatalogJson(locale, langJson, enJson, "1.6.0", traits);
+        // Both offered types carry both features, in every locale.
+        EXPECT_EQ(countOccurrences(json, "\"mic\":{\"supported\":true}"), size_t{2});
+        EXPECT_EQ(countOccurrences(json, "\"speaker\":{\"supported\":true}"), size_t{2});
+    }
+
+    // A backend without the composite personas advertises neither, so a client
+    // reading the catalog never offers audio the host cannot materialize.
+    CatalogBackendTraits inert;
+    inert.offersDS4 = true;
+    inert.offersDualSense = true;
+    const std::string plain = buildCatalogJson("en", enJson, enJson, "1.6.0", inert);
+    EXPECT_EQ(countOccurrences(plain, "\"mic\":{\"supported\":false}"), size_t{2});
+    EXPECT_EQ(countOccurrences(plain, "\"speaker\":{\"supported\":false}"), size_t{2});
+    EXPECT_EQ(countOccurrences(plain, "\"mic\":{\"supported\":true}"), size_t{0});
+}
+
 static void test_emulatesOnlyOnOfferedTypes() {
     TEST("buildCatalogJson: emulates rides only offered types (ds4-only backend)");
     CatalogBackendTraits traits; // machid/none-like: ds4 only
@@ -396,10 +455,10 @@ static void test_catalogJson_goldenShape_uinput() {
     // emulates, hostFeatures) is pinned without coupling to localized copy.
     const std::string golden =
         R"({"locale":"en","protocolVersion":2,"serverVersion":"1.6.0","catalogVersion":2,"controllerTypes":[)"
-        R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
-        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4"]}},)"
-        R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
-        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
+        R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
+        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4"]}},)"
+        R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
+        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
         R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";
     const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
     EXPECT_EQ(json, golden);
@@ -478,6 +537,7 @@ int main() {
     test_imageSlugs_matchCatalogIds();
     test_artworkCompletenessGate();
     test_emulatesNotLocalized();
+    test_audioFeatureSlugsNotLocalized();
     test_emulatesOnlyOnOfferedTypes();
     test_catalogJson_goldenShape_uinput();
     test_catalogVersion_present();
