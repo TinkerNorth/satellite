@@ -225,7 +225,7 @@
   "settings.discovery.hint": "mDNS / Bonjour is the modern discovery path and works on subnets that drop broadcast. The legacy UDP beacon stays on as a fallback for senders that predate the mDNS responder. Turn it off only on a network where every sender supports mDNS.",
   "settings.audio.title": "Controller audio",
   "settings.audio.label": "Controller microphone and speaker",
-  "settings.audio.hint": "A DualSense or DualShock 4 v2 created here also presents the controller's own microphone and speaker to Windows, so game chat reaches your headset and your voice reaches the game. Controller audio needs a bundled signed kernel USB transport, which HIDMaestro installs the first time such a controller is created. Turn this off to keep the input only controller and skip that install. Changes apply the next time a controller is connected.",
+  "settings.audio.hint": "A DualSense or DualShock 4 v2 created here also presents the controller's own microphone and speaker to Windows, so game chat reaches your headset and your voice reaches the game. Controller audio needs a bundled signed kernel USB transport, which HIDMaestro installs the first time such a controller is created. Turn this off to keep the input-only controller and skip that install. Changes apply the next time a controller is connected.",
   "settings.mdns.active": "Active",
   "settings.mdns.inactive": "Inactive",
   "settings.save": "Save Config",
