@@ -29,6 +29,7 @@ license=('LGPL-3.0-or-later')
 # fails fast on minimal systems.
 depends=(
     'libsodium'
+    'opus'
     'gtk3'
     'libayatana-appindicator'
     'curl'

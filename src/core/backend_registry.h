@@ -104,6 +104,14 @@ struct BackendControllerSupport {
     // DS5/Switch output reports (HIDMaestro) can source these.
     bool triggerEffects = false;
     bool playerLeds = false;
+    // Controller-audio endpoints: only a backend that can materialize a
+    // composite (USB-audio-carrying) persona presents the pad's own mic and
+    // speaker to the host. Static identity, like every other column here: the
+    // runtime on/off switch is the `controllerAudio` server setting, which the
+    // catalog deliberately does not see (its ETag is version + locale, so
+    // install-state variance would serve stale caches).
+    bool mic = false;
+    bool speaker = false;
 };
 
 // Static identity of a backend, independent of host availability. `support`
@@ -112,6 +120,11 @@ struct BackendDescriptor {
     const char* id;          // stable wire id (matches BACKEND_ID_*)
     const char* vendor;      // who maintains the driver
     const char* displayName; // UI label
+    // Whether the INPUT submit path crosses into the kernel. It says nothing
+    // about controller audio: a HIDMaestro pad carrying audio endpoints is
+    // still a user-mode submit path, but its composite persona additionally
+    // rides a bundled signed kernel USB transport that installs on first use.
+    // The `audio` field in the JSON is what tells a reader that is in play.
     bool kernelMode;
     bool mouseControl; // host pointer injection available alongside this backend
     bool rumble;
@@ -138,14 +151,24 @@ struct BackendRuntimeStatus {
           driverVersion(std::move(driverVersion_)) {}
 };
 
+// True when any controller type this backend serves has audio endpoints, i.e.
+// when the `controllerAudio` setting can change what this backend materializes.
+bool backendCanCarryAudio(const BackendDescriptor& d);
+
 // JSON array advertised at /api/server/capabilities. Pure: the caller supplies
-// probed availability; identity/latency/features come from the registry. Ids
-// with no descriptor are skipped. Each element:
-//   {"id","vendor","displayName","kernelMode","available","errorCode",
+// probed availability and the host's `controllerAudio` setting;
+// identity/latency/features come from the registry. Ids with no descriptor are
+// skipped. Each element:
+//   {"id","vendor","displayName","kernelMode","audio","available","errorCode",
 //    "lifecycle","eolDate","driverVersion",
 //    "controllers":[{"type","name","latency","latencyRank","motion","touchpad",
 //                    "lightbar","motionRequires","submitLatency"}, ...]}
-std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses);
+// `audio` is the only runtime-switched field on the element: the per-controller
+// `mic`/`speaker` columns are static identity (what the backend COULD do), and
+// `audio` is whether this host will actually ask it to. Both are needed: a
+// client reading only the columns would offer audio a host has turned off.
+std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
+                              bool controllerAudio);
 
 // Catalog traits folded over the host's enumerated backends, preference by
 // list order (the platform's enumerateBackends() ordering). A type is offered

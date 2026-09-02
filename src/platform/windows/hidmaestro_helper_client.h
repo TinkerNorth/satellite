@@ -36,7 +36,8 @@ class HelperClient : public IHidMaestroProvisioner {
     bool isReady() const override;
     bool ensureReady() override;
     void shutdown() override;
-    bool provision(uint32_t serial, GamepadIdentity identity, ProvisionResult& out) override;
+    bool provision(uint32_t serial, GamepadIdentity identity, bool audio,
+                   ProvisionResult& out) override;
     bool deprovision(uint32_t serial) override;
 
   private:

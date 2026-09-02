@@ -247,8 +247,9 @@ bool HelperClient::requestLocked(const std::string& line, std::string& response)
     return true;
 }
 
-bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, ProvisionResult& out) {
-    const char* profile = profileForIdentity(identity);
+bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool audio,
+                             ProvisionResult& out) {
+    const char* profile = profileForIdentity(identity, audio);
     if (profile == nullptr) return false;
     std::lock_guard<std::mutex> lk(mtx_);
     if (pipe_ == INVALID_HANDLE_VALUE) return false;
@@ -272,6 +273,19 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, Provisio
     out.companionEvent = handleField("companionEvent");
     out.outputSection = handleField("output");
     out.outputEvent = handleField("outputEvent");
+
+    // Audio fields are absent on a plain profile and on a helper that predates
+    // controller audio, so every one of them defaults to "no endpoint" rather
+    // than to a guess about the persona's format.
+    out.speakerSection = handleField("speakerAudio");
+    out.speakerEvent = handleField("speakerAudioEvent");
+    out.micSection = handleField("micAudio");
+    out.micEvent = handleField("micAudioEvent");
+    out.speakerChannels = static_cast<int>(jsonInt(j, "speakerChannels", 0));
+    out.speakerRateHz = static_cast<int>(jsonInt(j, "speakerRateHz", 0));
+    out.micChannels = static_cast<int>(jsonInt(j, "micChannels", 0));
+    out.micRateHz = static_cast<int>(jsonInt(j, "micRateHz", 0));
+
     return out.inputSection != 0 && out.inputEvent != 0;
 }
 

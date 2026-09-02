@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later
+﻿// SPDX-License-Identifier: LGPL-3.0-or-later
 
-// core/backend_registry — the library-agnostic backend model the API
+// core/backend_registry â€” the library-agnostic backend model the API
 // advertises: identity + vendor + per-controller-type capability/latency data,
 // the JSON builder joining static descriptors with probed availability, and
 // the catalog-traits fold. Pure, so it tests without any platform probe.
@@ -105,9 +105,9 @@ static void test_hidmaestro_widens_the_windows_type_set() {
 }
 
 static void test_buildBackendsJson_available_backend() {
-    TEST("buildBackendsJson — available backend serializes vendor + null error");
+    TEST("buildBackendsJson â€” available backend serializes vendor + null error");
     std::vector<BackendRuntimeStatus> statuses = {{BACKEND_ID_VIGEM, true, ""}};
-    std::string json = buildBackendsJson(statuses);
+    std::string json = buildBackendsJson(statuses, true);
     EXPECT(contains(json, "\"id\":\"vigem\""));
     EXPECT(contains(json, "\"vendor\":\"Nefarius Software Solutions\""));
     EXPECT(contains(json, "\"available\":true"));
@@ -122,9 +122,9 @@ static void test_buildBackendsJson_available_backend() {
 }
 
 static void test_buildBackendsJson_unavailable_backend() {
-    TEST("buildBackendsJson — unavailable backend carries errorCode + tier");
+    TEST("buildBackendsJson â€” unavailable backend carries errorCode + tier");
     std::vector<BackendRuntimeStatus> statuses = {{BACKEND_ID_HIDMAESTRO, false, "DRIVER_MISSING"}};
-    std::string json = buildBackendsJson(statuses);
+    std::string json = buildBackendsJson(statuses, true);
     EXPECT(contains(json, "\"id\":\"hidmaestro\""));
     EXPECT(contains(json, "\"vendor\":\"hifihedgehog\""));
     EXPECT(contains(json, "\"available\":false"));
@@ -137,12 +137,12 @@ static void test_buildBackendsJson_unavailable_backend() {
 }
 
 static void test_buildBackendsJson_skips_unknown_ids() {
-    TEST("buildBackendsJson — unknown ids dropped, not emitted");
+    TEST("buildBackendsJson â€” unknown ids dropped, not emitted");
     std::vector<BackendRuntimeStatus> statuses = {
         {"phantom-backend", true, ""},
         {BACKEND_ID_VIGEM, true, ""},
     };
-    std::string json = buildBackendsJson(statuses);
+    std::string json = buildBackendsJson(statuses, true);
     EXPECT(!contains(json, "phantom-backend"));
     EXPECT(contains(json, "\"id\":\"vigem\""));
     EXPECT(contains(json, "[{"));
@@ -151,19 +151,19 @@ static void test_buildBackendsJson_skips_unknown_ids() {
 }
 
 static void test_buildBackendsJson_empty_and_multi() {
-    TEST("buildBackendsJson — empty list and multi-backend ordering");
-    EXPECT_EQ(buildBackendsJson({}), std::string("[]"));
+    TEST("buildBackendsJson â€” empty list and multi-backend ordering");
+    EXPECT_EQ(buildBackendsJson({}, true), std::string("[]"));
 
     std::vector<BackendRuntimeStatus> statuses = {
         {BACKEND_ID_VIGEM, true, ""},
         {BACKEND_ID_HIDMAESTRO, false, "DRIVER_MISSING"},
     };
-    std::string json = buildBackendsJson(statuses);
+    std::string json = buildBackendsJson(statuses, true);
     EXPECT(json.find("vigem") < json.find("hidmaestro"));
 }
 
 static void test_deriveCatalogTraits_windows_union() {
-    TEST("deriveCatalogTraits — vigem+hidmaestro union, preference by order");
+    TEST("deriveCatalogTraits â€” vigem+hidmaestro union, preference by order");
     std::vector<BackendRuntimeStatus> statuses = {
         {BACKEND_ID_VIGEM, true, ""},
         {BACKEND_ID_HIDMAESTRO, false, "DRIVER_MISSING"},
@@ -191,7 +191,7 @@ static void test_deriveCatalogTraits_windows_union() {
 }
 
 static void test_deriveCatalogTraits_order_decides_requires() {
-    TEST("deriveCatalogTraits — first-listed backend wins the shared types");
+    TEST("deriveCatalogTraits â€” first-listed backend wins the shared types");
     std::vector<BackendRuntimeStatus> statuses = {
         {BACKEND_ID_HIDMAESTRO, true, ""},
         {BACKEND_ID_VIGEM, true, ""},
@@ -213,10 +213,11 @@ static void test_uinput_advertises_no_lightbar_it_cannot_deliver() {
     EXPECT(t.ds4MotionSupported);
     EXPECT(t.rumbleSupported);
 
-    EXPECT(!contains(buildBackendsJson({{BACKEND_ID_UINPUT, true, ""}}), "\"lightbar\":true"));
+    EXPECT(
+        !contains(buildBackendsJson({{BACKEND_ID_UINPUT, true, ""}}, true), "\"lightbar\":true"));
 
     for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_HIDMAESTRO, BACKEND_ID_MAC_HID}) {
-        EXPECT(contains(buildBackendsJson({{id, true, ""}}), "\"lightbar\":true"));
+        EXPECT(contains(buildBackendsJson({{id, true, ""}}, true), "\"lightbar\":true"));
     }
 }
 
@@ -246,10 +247,10 @@ static void test_rawOutput_surfaces_hidmaestro_only() {
             EXPECT(!d->support[i].triggerEffects);
             EXPECT(!d->support[i].playerLeds);
         }
-        EXPECT(!contains(buildBackendsJson({{id, true, ""}}), "\"triggerEffects\":true"));
-        EXPECT(!contains(buildBackendsJson({{id, true, ""}}), "\"playerLeds\":true"));
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}, true), "\"triggerEffects\":true"));
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}, true), "\"playerLeds\":true"));
     }
-    const std::string json = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    const std::string json = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, true);
     EXPECT(contains(json, "\"triggerEffects\":true"));
     EXPECT(contains(json, "\"playerLeds\":true"));
 
@@ -271,8 +272,63 @@ static void test_rawOutput_surfaces_hidmaestro_only() {
     EXPECT(!v.switchProPlayerLedsSupported);
 }
 
+static void test_controllerAudio_surfaces_hidmaestroSonyOnly() {
+    TEST("mic/speaker ride only HIDMaestro's two Sony types");
+    // Controller audio needs a composite (USB-audio) persona, which only
+    // HIDMaestro can materialize, and only the DualShock 4 v2 and DualSense
+    // have audio endpoints worth emulating in the first place.
+    const BackendDescriptor* hm = backendDescriptorById(BACKEND_ID_HIDMAESTRO);
+    EXPECT(hm != nullptr);
+    for (size_t i = 0; i < hm->supportCount; ++i) {
+        const BackendControllerSupport& cs = hm->support[i];
+        const bool sony = cs.controllerType == CONTROLLER_TYPE_PLAYSTATION ||
+                          cs.controllerType == CONTROLLER_TYPE_DUALSENSE;
+        EXPECT_EQ(cs.mic, sony);
+        EXPECT_EQ(cs.speaker, sony);
+        // Both directions ship together: a pad's audio function carries the
+        // headset jack and the microphone as one interface.
+        EXPECT_EQ(cs.mic, cs.speaker);
+    }
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_UINPUT, BACKEND_ID_MAC_HID}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr);
+        for (size_t i = 0; i < d->supportCount; ++i) {
+            EXPECT(!d->support[i].mic);
+            EXPECT(!d->support[i].speaker);
+        }
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}, true), "\"mic\":true"));
+        EXPECT(!contains(buildBackendsJson({{id, true, ""}}, true), "\"speaker\":true"));
+    }
+    const std::string json = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, true);
+    EXPECT(contains(json, "\"mic\":true"));
+    EXPECT(contains(json, "\"speaker\":true"));
+
+    // Traits aggregation carries them to the catalog for both Sony types.
+    CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(t.ds4MicSupported);
+    EXPECT(t.ds4SpeakerSupported);
+    EXPECT(t.dualsenseMicSupported);
+    EXPECT(t.dualsenseSpeakerSupported);
+
+    // ViGEm listed first takes the DS4 column, and ViGEm has no audio: the
+    // catalog must then say so rather than promising a surface the preferred
+    // materializer cannot build.
+    CatalogBackendTraits u =
+        deriveCatalogTraits({{BACKEND_ID_VIGEM, true, ""}, {BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(!u.ds4MicSupported);
+    EXPECT(!u.ds4SpeakerSupported);
+    EXPECT(u.dualsenseMicSupported); // ViGEm offers no DualSense, so hidmaestro wins it
+    EXPECT(u.dualsenseSpeakerSupported);
+
+    CatalogBackendTraits v = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
+    EXPECT(!v.ds4MicSupported);
+    EXPECT(!v.ds4SpeakerSupported);
+    EXPECT(!v.dualsenseMicSupported);
+    EXPECT(!v.dualsenseSpeakerSupported);
+}
+
 static void test_deriveCatalogTraits_uinput_matches_legacy() {
-    TEST("deriveCatalogTraits — uinput reproduces the historical Linux traits");
+    TEST("deriveCatalogTraits â€” uinput reproduces the historical Linux traits");
     CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
     EXPECT(t.offersXbox);
     EXPECT(t.offersDS4);
@@ -288,7 +344,7 @@ static void test_deriveCatalogTraits_uinput_matches_legacy() {
 }
 
 static void test_deriveCatalogTraits_machid_matches_legacy() {
-    TEST("deriveCatalogTraits — machid/none reproduce the historical macOS traits");
+    TEST("deriveCatalogTraits â€” machid/none reproduce the historical macOS traits");
     for (const char* id : {BACKEND_ID_MAC_HID, BACKEND_ID_NONE}) {
         CatalogBackendTraits t = deriveCatalogTraits({{id, false, ""}});
         EXPECT(!t.offersXbox);
@@ -305,7 +361,7 @@ static void test_deriveCatalogTraits_machid_matches_legacy() {
 }
 
 static void test_deriveCatalogTraits_ignores_availability() {
-    TEST("deriveCatalogTraits — static identity only; availability never gates");
+    TEST("deriveCatalogTraits â€” static identity only; availability never gates");
     std::vector<BackendRuntimeStatus> up = {{BACKEND_ID_VIGEM, true, ""},
                                             {BACKEND_ID_HIDMAESTRO, true, ""}};
     std::vector<BackendRuntimeStatus> down = {{BACKEND_ID_VIGEM, false, "DRIVER_MISSING"},
@@ -318,7 +374,7 @@ static void test_deriveCatalogTraits_ignores_availability() {
 }
 
 static void test_deriveCatalogTraits_empty_and_unknown() {
-    TEST("deriveCatalogTraits — empty list and unknown ids fold to nothing");
+    TEST("deriveCatalogTraits â€” empty list and unknown ids fold to nothing");
     CatalogBackendTraits t = deriveCatalogTraits({{"phantom-backend", true, ""}});
     EXPECT(!t.offersXbox);
     EXPECT(!t.offersDS4);
@@ -331,7 +387,7 @@ static void test_deriveCatalogTraits_empty_and_unknown() {
 }
 
 static void test_estimateCost_matches_the_documented_table() {
-    TEST("estimateCost — documented rows, evaluated at compile time");
+    TEST("estimateCost â€” documented rows, evaluated at compile time");
     constexpr SubmitPathFacts kernelDirect{1, 0, 0, false, 0};
     constexpr SubmitPathFacts hmSony{2, 1, 0, false, 0};
     constexpr SubmitPathFacts hmXbox{3, 2, 0, false, 0};
@@ -380,10 +436,57 @@ static void test_derived_tier_separates_rows_within_one_backend() {
     EXPECT(tierFor(uinput, CONTROLLER_TYPE_SWITCHPRO) == LatencyTier::Lowest);
 }
 
+// `audio` is the one runtime-switched field on a backend element: the
+// per-controller mic/speaker columns say what the backend COULD materialize,
+// and this says whether this host will ask it to. A client reading only the
+// columns would offer a microphone a host has switched off, so both must be
+// present and both must be right.
+static void test_buildBackendsJson_audio_reflects_the_setting() {
+    TEST("buildBackendsJson — audio true only when the setting is on AND the backend can");
+    const std::string on = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, true);
+    EXPECT(contains(on, "\"audio\":true"));
+
+    const std::string off = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, false);
+    EXPECT(contains(off, "\"audio\":false"));
+    EXPECT(!contains(off, "\"audio\":true"));
+
+    TEST("a backend with no audio-capable type reports false whatever the setting");
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_UINPUT, BACKEND_ID_MAC_HID}) {
+        EXPECT(contains(buildBackendsJson({{id, true, ""}}, true), "\"audio\":false"));
+        EXPECT(contains(buildBackendsJson({{id, true, ""}}, false), "\"audio\":false"));
+    }
+
+    TEST("backendCanCarryAudio is the static half of that decision");
+    const BackendDescriptor* hm = backendDescriptorById(BACKEND_ID_HIDMAESTRO);
+    EXPECT(hm != nullptr && backendCanCarryAudio(*hm));
+    for (const char* id :
+         {BACKEND_ID_VIGEM, BACKEND_ID_UINPUT, BACKEND_ID_MAC_HID, BACKEND_ID_NONE}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr && !backendCanCarryAudio(*d));
+    }
+
+    TEST("turning the setting off leaves the static capability columns alone");
+    // The catalog is keyed on server version + locale, so it must not move
+    // with an install-time switch; only `audio` may.
+    EXPECT(contains(off, "\"mic\":true"));
+    EXPECT(contains(off, "\"speaker\":true"));
+    EXPECT(contains(off, "\"kernelMode\":false")); // audio does not rewrite the input path
+
+    TEST("the field parses as a real boolean, not as text");
+    Json parsed;
+    EXPECT(jsonParse(on, parsed));
+    EXPECT(parsed.is_array() && parsed.size() == 1);
+    if (parsed.is_array() && parsed.size() == 1) {
+        EXPECT(parsed[0].contains("audio"));
+        EXPECT(parsed[0]["audio"].is_boolean());
+        EXPECT_EQ(parsed[0]["audio"].get<bool>(), true);
+    }
+}
+
 static void test_buildBackendsJson_lifecycle_and_submit_latency() {
-    TEST("buildBackendsJson — lifecycle, driverVersion, derived detail block");
+    TEST("buildBackendsJson â€” lifecycle, driverVersion, derived detail block");
     std::vector<BackendRuntimeStatus> statuses = {{BACKEND_ID_VIGEM, true, ""}};
-    std::string json = buildBackendsJson(statuses);
+    std::string json = buildBackendsJson(statuses, true);
     EXPECT(contains(json, "\"lifecycle\":\"eol\""));
     EXPECT(contains(json, "\"eolDate\":\"2023-11-02\""));
     EXPECT(contains(json, "\"driverVersion\":null"));
@@ -400,9 +503,9 @@ static void test_buildBackendsJson_lifecycle_and_submit_latency() {
 
     std::vector<BackendRuntimeStatus> withVersion = {
         {BACKEND_ID_VIGEM, true, std::string(), "1.22.0"}};
-    EXPECT(contains(buildBackendsJson(withVersion), "\"driverVersion\":\"1.22.0\""));
+    EXPECT(contains(buildBackendsJson(withVersion, true), "\"driverVersion\":\"1.22.0\""));
 
-    std::string hmJson = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    std::string hmJson = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, true);
     EXPECT(contains(hmJson, "\"lifecycle\":\"supported\""));
     EXPECT(contains(hmJson, "\"eolDate\":null"));
     EXPECT(contains(hmJson, "\"submitPath\":\"usermode-shm\""));
@@ -411,8 +514,8 @@ static void test_buildBackendsJson_lifecycle_and_submit_latency() {
 }
 
 static void test_buildBackendsJson_stays_backwards_compatible() {
-    TEST("buildBackendsJson — flat latency/latencyRank still emitted");
-    std::string json = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    TEST("buildBackendsJson â€” flat latency/latencyRank still emitted");
+    std::string json = buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, true);
     EXPECT(contains(json, "\"latency\":\"medium\""));
     EXPECT(contains(json, "\"latencyRank\":2"));
     EXPECT(contains(json, "\"latency\":\"low\""));
@@ -425,13 +528,13 @@ static void test_buildBackendsJson_stays_backwards_compatible() {
 }
 
 static void test_buildBackendsJson_parses_and_agrees_with_itself() {
-    TEST("buildBackendsJson — valid JSON, flat fields agree with the detail block");
+    TEST("buildBackendsJson â€” valid JSON, flat fields agree with the detail block");
     std::vector<BackendRuntimeStatus> statuses = {
         {BACKEND_ID_VIGEM, true, ""},
         {BACKEND_ID_HIDMAESTRO, false, "DRIVER_MISSING"},
     };
     Json parsed;
-    EXPECT(jsonParse(buildBackendsJson(statuses), parsed));
+    EXPECT(jsonParse(buildBackendsJson(statuses, true), parsed));
     EXPECT(parsed.is_array());
     EXPECT_EQ(parsed.size(), static_cast<size_t>(2));
 
@@ -474,6 +577,7 @@ int main() {
     test_buildBackendsJson_parses_and_agrees_with_itself();
     test_estimateCost_matches_the_documented_table();
     test_derived_tier_separates_rows_within_one_backend();
+    test_buildBackendsJson_audio_reflects_the_setting();
     test_buildBackendsJson_lifecycle_and_submit_latency();
     test_buildBackendsJson_stays_backwards_compatible();
     test_descriptorById_known_and_unknown();
@@ -487,6 +591,7 @@ int main() {
     test_deriveCatalogTraits_order_decides_requires();
     test_uinput_advertises_no_lightbar_it_cannot_deliver();
     test_rawOutput_surfaces_hidmaestro_only();
+    test_controllerAudio_surfaces_hidmaestroSonyOnly();
     test_deriveCatalogTraits_uinput_matches_legacy();
     test_deriveCatalogTraits_machid_matches_legacy();
     test_deriveCatalogTraits_ignores_availability();

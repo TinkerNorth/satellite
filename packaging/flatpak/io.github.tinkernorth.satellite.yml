@@ -66,6 +66,23 @@ modules:
         # Verified against the published tarball.
         sha256: ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19
 
+  # libopus, the controller-audio codec. Built here rather than assumed from
+  # the runtime: the Platform carries a libopus for its media stack but the
+  # SDK's headers are not something this manifest should bet a channel on, and
+  # a redundant 20-second build is cheaper than a channel that stops
+  # configuring on a runtime bump.
+  - name: opus
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --disable-doc
+      - --disable-extra-programs
+    sources:
+      - type: archive
+        url: https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz
+        # Verified against xiph's published SHA256SUMS.txt.
+        sha256: 65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1
+
   - name: satellite
     buildsystem: cmake-ninja
     builddir: true

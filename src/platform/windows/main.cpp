@@ -14,11 +14,13 @@
 #include "shell_integration.h"
 
 #include "vigem_adapter.h"
+#include "audio_endpoint_com.h"
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
 #include "updater_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
+#include "adapters/audio/opus_codec.h"
 
 #include "core/gamepad_mux.h"
 #include "core/session_service.h"
@@ -182,11 +184,39 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // HIDMaestro for the rest and as the fallback when ViGEmBus is absent.
     ViGEmAdapter vigemAdapter;
     satellite::hidmaestro::HelperClient hmProvisioner;
-    HidMaestroAdapter hidMaestroAdapter(hmProvisioner);
+    // Windows ranks a newly arrived endpoint above every device the user has
+    // ever chosen, so materializing the pad hands it the whole desktop's audio.
+    // Declared BEFORE the adapter that borrows it, so it is still alive while
+    // that adapter tears down; joins its worker on the way out.
+    satellite::audioguard::PlugGuardRunner audioDefaultGuard([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return g_config.controllerAudioKeepDefaultDevice;
+    });
+    // Read per plug, not cached: the dashboard toggle takes effect on the next
+    // pad, and a pad already carrying audio keeps it until it is replugged.
+    HidMaestroAdapter hidMaestroAdapter(hmProvisioner, [] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return g_config.controllerAudio;
+    });
+    hidMaestroAdapter.setCompositePlugHooks(
+        [&audioDefaultGuard] { audioDefaultGuard.beforeCompositePlug(); },
+        [&audioDefaultGuard] { audioDefaultGuard.afterCompositePlug(); });
     satellite::GamepadMux gamepadMux({&vigemAdapter, &hidMaestroAdapter});
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
-    SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey);
+    // Controller audio's Opus codec, injected for the same reason as the key
+    // deriver above: the core owns the stream shapes, not the library that
+    // codes them. Stateless and scoped to main, so it outlives the service.
+    satellite::audio::OpusCodecFactory audioCodecs;
+    SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
+
+    // Read per frame, not cached: unlike the master switch these gate the wire
+    // rather than the persona, so flipping one reaches a stream already
+    // playing instead of waiting for a replug.
+    svc.setAudioPolicy([] {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker};
+    });
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     // The persist callback runs under g_configMtx so saveConfig sees a consistent struct.

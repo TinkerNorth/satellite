@@ -32,11 +32,16 @@ constexpr BackendControllerSupport kVigemSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
     {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, "vigembus>=1.17"},
 };
+// Trailing columns are triggerEffects, playerLeds, mic, speaker. Only the two
+// Sony pads have real audio endpoints to emulate (the DualShock 4 v2 and the
+// DualSense composite personas); an Xbox pad and a Switch Pro have none, so
+// they advertise none.
 constexpr BackendControllerSupport kHidMaestroSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsHidMaestroXbox, false, false, false, ""},
-    {CONTROLLER_TYPE_PLAYSTATION, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7"},
+    {CONTROLLER_TYPE_PLAYSTATION, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7", false,
+     false, true, true},
     {CONTROLLER_TYPE_DUALSENSE, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7", true,
-     true},
+     true, true, true},
     {CONTROLLER_TYPE_SWITCHPRO, kFactsHidMaestroSony, true, false, false, "hidmaestro>=1.7", false,
      true},
 };
@@ -111,7 +116,15 @@ const BackendDescriptor* backendDescriptorById(const std::string& id) {
     return nullptr;
 }
 
-std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses) {
+bool backendCanCarryAudio(const BackendDescriptor& d) {
+    for (size_t i = 0; i < d.supportCount; ++i) {
+        if (d.support[i].mic || d.support[i].speaker) return true;
+    }
+    return false;
+}
+
+std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
+                              bool controllerAudio) {
     std::string json = "[";
     bool first = true;
     for (const auto& st : statuses) {
@@ -128,6 +141,8 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses)
         json += d->displayName;
         json += "\",\"kernelMode\":";
         json += d->kernelMode ? "true" : "false";
+        json += ",\"audio\":";
+        json += (controllerAudio && backendCanCarryAudio(*d)) ? "true" : "false";
         json += ",\"available\":";
         json += st.available ? "true" : "false";
         json += ",\"errorCode\":";
@@ -161,6 +176,10 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses)
             json += cs.triggerEffects ? "true" : "false";
             json += ",\"playerLeds\":";
             json += cs.playerLeds ? "true" : "false";
+            json += ",\"mic\":";
+            json += cs.mic ? "true" : "false";
+            json += ",\"speaker\":";
+            json += cs.speaker ? "true" : "false";
             json += ",\"motionRequires\":";
             appendNullable(json, cs.motionRequires);
             json += ",\"submitLatency\":";
@@ -194,6 +213,8 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.ds4MotionRequires = cs.motionRequires;
                     t.ds4TouchpadSupported = cs.touchpad;
                     t.ds4LightbarSupported = cs.lightbar;
+                    t.ds4MicSupported = cs.mic;
+                    t.ds4SpeakerSupported = cs.speaker;
                 }
                 t.offersDS4 = true;
                 break;
@@ -205,6 +226,8 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.dualsenseLightbarSupported = cs.lightbar;
                     t.dualsenseTriggerEffectsSupported = cs.triggerEffects;
                     t.dualsensePlayerLedsSupported = cs.playerLeds;
+                    t.dualsenseMicSupported = cs.mic;
+                    t.dualsenseSpeakerSupported = cs.speaker;
                 }
                 t.offersDualSense = true;
                 break;
