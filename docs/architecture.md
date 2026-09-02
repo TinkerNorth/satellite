@@ -148,6 +148,17 @@ webserver and `UpdateService` are themselves adapters/infrastructure and touch
 port would add a seam with no domain consumer. (An earlier unused `IConfigPort` /
 `ConfigAdapter` pair was removed for exactly this reason.)
 
+A third-party library the core needs is a seam of its own, not a port: the core
+declares the shape and `main.cpp` supplies the implementation. HKDF arrives that
+way (`SessionService::KeyDeriver`, a `std::function` wired to
+`net/session_crypto.h`), and so does the controller-audio codec
+(`core/audio/audio_codec.h` declares `IAudioDecoder`/`IAudioEncoder` and a
+factory; `adapters/audio/opus_codec.*` implements them over libopus). The core
+purity gate is what forces this: `src/core` may include no third-party header,
+so anything that links one lives outside it. A null factory is a supported
+state — the audio paths still validate, gate and rate-limit, they just have
+nowhere to put the samples.
+
 ### Pattern: a pure codec, separate from its I/O
 
 Every wire format or derived value is split into a pure, socket-free core
@@ -163,6 +174,7 @@ and a thin I/O shell, so the format is unit-testable without a socket or driver:
 | `core/ds4_report.h` (DS4 v2 pack/parse/descriptor; shared by two shells) | `platform/macos/mac_hid_gamepad_adapter.cpp` (IOHIDUserDevice), `platform/windows/hidmaestro_adapter.cpp` |
 | `platform/windows/hidmaestro_wire.{h,cpp}` (seqlock frames + output ring) | `platform/windows/hidmaestro_adapter.cpp` (mapped sections, doorbells) |
 | `platform/windows/hidmaestro_report.h` (per-profile packers + output decode) | `platform/windows/hidmaestro_adapter.cpp` |
+| `core/audio/audio_jitter.h` (u16 reorder window, gap/late decisions) | `adapters/audio/opus_codec.cpp` (libopus), `core/session_service.cpp` |
 
 When adding a wire format, follow this split: put the byte-shaping in a pure
 function and give it a `tests/test_*.cpp` suite.
@@ -348,7 +360,7 @@ into a mapped view, so there is no blocking syscall worth dropping the
 lock for and no unplug can unmap a view mid-write). `GamepadMux` itself
 adds no lock: per-serial owners are atomics written at plug/unplug time.
 
-## Windows second backend: HIDMaestro (user-mode UMDF2)
+## Windows second backend: HIDMaestro (user-mode UMDF2, plus one kernel transport for audio)
 
 HIDMaestro materializes the identities ViGEmBus cannot — virtual
 DualSense (motion + touchpad + lightbar at the real DualSense report
@@ -356,6 +368,10 @@ offsets), Switch Pro (motion via the driver's Nintendo protocol
 responder), plus DualShock 4 and Xbox 360 as fallbacks — while ViGEm
 stays preferred for the types both can serve (kernel submit path,
 lowest latency tier).
+
+The input path is user-mode end to end. Controller audio is the
+exception and is documented as such below: an audio-carrying persona is
+served over HIDMaestro's bundled usbip-win2 kernel USB transport.
 
 ### Pure/IO split
 
@@ -375,6 +391,117 @@ lowest latency tier).
   one output-ring worker thread per plugged serial. Tested against a
   fake provisioner (`tests/test_hidmaestro_adapter.cpp`), the same
   fake-driver-link strategy as `test_vigem_adapter`.
+- `platform/windows/hidmaestro_audio_wire.{h,cpp}` — the two
+  controller-audio rings (see below). Same seqlock/doorbell shape as
+  the driver's output ring, same no-`<windows.h>` rule, pinned by
+  `tests/test_hidmaestro_audio_wire.cpp` on every CI platform.
+- `platform/windows/audio_default_guard.{h,cpp}` — every rule the
+  default-playback-device guard follows: the per-role restore decision,
+  the parent-chain predicate that tells our endpoint from a real
+  DualSense, and the vtable-validation verdict. No `<windows.h>`, pinned
+  by `tests/test_audio_default_guard.cpp` on every CI platform.
+- `platform/windows/audio_endpoint_com.{h,cpp}` — its I/O shell:
+  MMDevice reads, the cfgmgr32 parent walk, the one undocumented
+  `IPolicyConfig` write, and the worker that polls the guard after a
+  composite plug. Decides nothing; every failure is soft, because a
+  guard that cannot run must never fail a controller plug.
+
+### Controller audio, and the one kernel driver
+
+A real DualSense is a composite USB device: a HID gamepad plus a USB
+Audio Class function carrying the speaker/headset output and the headset
+microphone. HIDMaestro can materialize that composite too
+(`dualsense-composite`, `dualshock-4-v2-composite`), which is what makes
+the emulated pad present real Windows audio endpoints. `profileForIdentity`
+picks the composite id only when the identity has one AND the
+`controllerAudio` setting is on; `HidMaestroAdapter` reads that setting per
+plug through a callback, so the dashboard toggle applies to the next pad
+without a restart, and a refused composite falls back to the plain persona
+rather than failing the plug.
+
+The other three settings never touch the persona. A composite always
+carries both endpoints: HIDMaestro ships no mic-only audio function, and
+all three of its audio profiles (`dualsense-composite`,
+`dualshock-4-v2-composite`, `dualsense-edge-composite`) declare both an
+`audioStreamingOut` and an `audioStreamingIn` interface. So
+`controllerAudioMic` and `controllerAudioSpeaker` gate the WIRE instead,
+sampled per frame by `SessionService` through `setAudioPolicy`. That is
+why they reach a stream already playing where the master switch cannot:
+nothing is replugged, only routed. The sample is taken before `mtx_`,
+because the policy itself takes the config lock and the two must never
+nest; the callback slot itself is read unlocked, wired once at startup
+like `keyDeriver`/`audioCodecs`, since a backend can fire its speaker
+callback from inside a call that already holds `mtx_`. Absent keys read
+as on, so a config written before the split keeps the behaviour its owner
+chose.
+
+`controllerAudioKeepDefaultDevice` answers a different problem. Windows
+promotes a newly arrived endpoint to the default playback device: an
+endpoint with no persisted `Level` value wins the "newest device" bucket,
+and USB bus type plus Speakers form factor both rank top there.
+Materializing the pad therefore hands it the whole desktop's audio, which
+is what made controller audio look like it forwarded everything. With the
+setting on Satellite puts the previous default back afterwards; it never
+stops the endpoint existing, because the pad speaker is the point of the
+feature.
+
+**This is not user-mode.** A composite persona is served over
+HIDMaestro's bundled WHLK-certified usbip-win2 kernel USB transport, which
+self-installs on the first composite creation. The helper does that
+install explicitly (`HMContext.InstallUsbipBackend`) so a blocked or
+declined install is a clean, reportable failure instead of a surprise
+inside device creation. Nothing else in Satellite's Windows path loads a
+kernel driver, and `controllerAudio` off means it never happens.
+
+PCM does not travel over the helper's JSON pipe (one 20 ms window is ~2 KB,
+50 times a second, per direction). Instead a composite plug hands back two
+more shared sections plus their doorbells:
+
+| Ring | Producer | Consumer | Carries |
+|---|---|---|---|
+| speaker | helper | satellite | the game's output, channels 1/2 of the pad's OUT stream |
+| mic | satellite | helper | the client's microphone, on its way to the pad's mic endpoint |
+
+The contract each ring encodes: **the ring speaks the WIRE's channel
+layout (stereo out, mono in) at the PERSONA's sample rate.** That split is
+deliberate. Channel lane selection is trivially correct and belongs next to
+the SDK, in the helper (which also drops the DualSense's channels 3/4, the
+HD-haptics lanes, on the floor). Rate conversion is not trivially correct,
+so it lives in `core/audio/audio_resampler.h` on the satellite side, where
+ctest covers it: the DualSense composite runs 48 kHz both ways and needs
+none, but the DualShock 4 v2 composite runs 32 kHz out / 16 kHz in, exactly
+like the hardware it impersonates. Handing 32 kHz samples to a 48 kHz
+consumer would play the stream half again too fast; decimating 48 kHz to
+16 kHz without a lowpass would fold everything above 8 kHz into the voice
+band.
+
+Both directions are Opus at 48 kHz, 20 ms, VBR, and both are configured in
+`adapters/audio/opus_codec.cpp`; satellite itself only ever builds the mic
+DECODER and the speaker ENCODER, since the other half of each pair lives
+on the client. `OPUS_SET_PACKET_LOSS_PERC(10)` is the load-bearing knob:
+it is the loss hint, not the application, that picks the mode, and it
+forces SILK in, so BOTH streams encode as Hybrid fullband and BOTH really
+do carry in-band FEC (measured on libopus 1.6.1: 8.4 dB recovery through
+`decode_fec` against -1.3 dB for blind PLC on the speaker stream).
+Dropping the hint to reach CELT would silently delete that FEC.
+
+Silence is where the two directions diverge. DTX goes on the mic encoder
+only: a live microphone never goes digitally silent, so a VAD is the only
+thing that can collapse a quiet room (123 of 250 frames gated at -50 dBFS
+after speech, 30.0 → 16.4 kbps). The speaker declines it, because that
+gate cuts anything ~26-30 dB below the recent peak and would replace a
+reverb tail or quiet ambience with comfort noise at -2.3 dB SNR. It uses
+`isDigitalSilence` instead, an exact all-zero test that cannot touch
+anything audible. Such a window is what Windows renders into the endpoint
+whenever nothing is playing to it, and `sendSpeakerFrameLocked` neither
+encodes nor sends it, saving ~28 kbps of Opus and ~52 kbps on the wire for
+a stream carrying nothing. It deliberately does not advance `seq` either:
+a suppressed window is not a hole, and asking the client to conceal one
+would have Opus invent noise where the game wrote none.
+
+The DualSense mute button rides `wButtons` bit 0x0800 into input byte 9 bit
+0x04, and the game's mute-lamp writes come back out of the existing output
+ring (DS5 report 0x02, valid_flag1 bit 0 gating byte 8) as `setMicLedCallback`.
 
 ### Elevation story
 
@@ -391,8 +518,10 @@ path is native only. If the helper dies, submits keep working (the
 mapped sections outlive it); the next unplug reports unconfirmed and
 quarantines the serial, matching the ViGEm zombie-target contract. The
 installer's optional-but-default "hidmaestro" component deploys the
-driver at setup time (`satellite-hm-helper.exe install-driver`,
-elevated there anyway; no reboot).
+UMDF2 driver at setup time (`satellite-hm-helper.exe install-driver`,
+elevated there anyway; no reboot). It does NOT deploy the usbip
+transport: that one waits for the first composite plug, so a host that
+never enables controller audio never acquires it.
 
 ## macOS backend: virtual DualShock 4 via IOHIDUserDevice
 

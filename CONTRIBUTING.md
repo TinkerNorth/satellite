@@ -6,14 +6,21 @@ conventions that aren't obvious from skimming the code.
 ## Getting set up
 
 ```bash
-# 1) Install build deps for your platform (see README "Prerequisites")
-# 2) Generate compile_commands.json + run the test suite
-cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+# 1) Install the toolchain CI uses (Windows: scripts\install-deps.ps1)
+scripts/install-deps.sh
+# 2) Build + run the test suite via the CI presets
+#    (Windows: scripts\build.ps1 release test)
+scripts/build.sh release test
 # 3) Point git at the in-tree pre-commit hook
 ./scripts/setup-hooks.sh
 ```
+
+`CMakePresets.json` is the single source of configure truth: each CI lane
+(`windows-mingw`, `linux`, `macos`, `windows-msvc`) is a preset, the
+workflows and the `scripts/build.*` wrappers both drive them, and
+`scripts/ci-local.ps1` / `scripts/ci-local.sh` re-run every PR gate locally
+in CI's order. Add `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` on top of a preset
+if you want `compile_commands.json` for clangd.
 
 The pre-commit hook runs `clang-format -i` (autofix, re-stages) on staged
 C/C++/Objective-C++ files. It skips gracefully if the tool isn't installed.
@@ -89,7 +96,11 @@ Build + style workflows run on every PR:
 | `windows-ci.yml` | windows-latest | clang-format check, MinGW MSYS2 build, ctest, uploads `satellite.exe` |
 
 All three workflows install clang-format **pinned to 22.1.4** so verdicts
-match across runners. If any step fails, the PR is blocked.
+match across runners, run the same `scripts/check-format.sh` gate, and
+configure through the same `CMakePresets.json` presets the local scripts
+drive. If any step fails, the PR is blocked. To get the same verdict before
+pushing, run `scripts/ci-local.ps1` (Windows) or `scripts/ci-local.sh`
+(Linux / macOS).
 
 Security gates also run on every PR:
 
@@ -260,8 +271,10 @@ and `dish-mac` in the same PR / release cycle.
   The Inno Setup installer (`installer.iss`) bundles ViGEmBus 1.22.0 as
   a prerequisite; building the installer requires running
   `pwsh scripts/fetch-redist.ps1` first (verifies SHA-256 against
-  `redist/SHA256SUMS`), then `iscc installer.iss`. `build-installer.bat`
-  chains both. The installer accepts two unattended-install switches,
+  `redist/SHA256SUMS`), then `iscc installer.iss`.
+  `scripts/build-installer.ps1` chains both (plus the helper publish,
+  env-gated signing, and the version pass-through from `/VERSION`).
+  The installer accepts two unattended-install switches,
   documented in the README and in the comment blocks at the top of
   `installer.iss`:
     - `/VIGEM=auto|bundled|skip` (install path): override the bundled-driver auto-detect.

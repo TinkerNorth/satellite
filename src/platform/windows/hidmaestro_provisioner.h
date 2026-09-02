@@ -29,6 +29,24 @@ struct ProvisionResult {
     uint64_t companionEvent = 0;
     uint64_t outputSection = 0;
     uint64_t outputEvent = 0;
+
+    // Controller-audio rings (hidmaestro_audio_wire.h), present only for a
+    // composite persona that actually materialized its USB-audio function.
+    // Zero on every other profile, and on a composite whose helper could not
+    // create the sections: audio degrades to absent, the pad still works.
+    uint64_t speakerSection = 0;
+    uint64_t speakerEvent = 0;
+    uint64_t micSection = 0;
+    uint64_t micEvent = 0;
+
+    // The persona's endpoint formats, read off the SDK at plug time and
+    // constant for the life of the plug, so they ride here instead of in every
+    // ring slot. Zero = that direction has no endpoint. They are NOT assumed to
+    // be the wire format: the DualShock 4 v2 persona is 32 kHz out / 16 kHz in.
+    int speakerChannels = 0;
+    int speakerRateHz = 0;
+    int micChannels = 0;
+    int micRateHz = 0;
 };
 
 class IHidMaestroProvisioner {
@@ -46,8 +64,12 @@ class IHidMaestroProvisioner {
     virtual void shutdown() = 0;
 
     // Create a virtual controller of `identity` on `serial`. Populates `out`
-    // on success; on failure the serial holds no device.
-    virtual bool provision(uint32_t serial, GamepadIdentity identity, ProvisionResult& out) = 0;
+    // on success; on failure the serial holds no device. `audio` asks for the
+    // identity's composite persona (see profileForIdentity): it can fail on
+    // its own, because materializing one installs HIDMaestro's bundled kernel
+    // USB transport, so the caller is expected to retry without it.
+    virtual bool provision(uint32_t serial, GamepadIdentity identity, bool audio,
+                           ProvisionResult& out) = 0;
 
     // Tear down the controller for `serial`. False = removal unconfirmed (the
     // caller must quarantine the serial). Idempotent.

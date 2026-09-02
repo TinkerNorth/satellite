@@ -53,6 +53,11 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
                                         size_t innerLen) {
     if (sock_ == INVALID_SOCKET) return;
 
+    // The buffers below are sized for MAX_INNER_MESSAGE_BYTES exactly, and
+    // encryptPacket has no length of its own to check against; an oversized
+    // caller is a bug, and dropping the frame beats overrunning the stack.
+    if (innerLen > static_cast<size_t>(MAX_INNER_MESSAGE_BYTES)) return;
+
     sockaddr_in addr{};
     if (!getAddr(conn.token, addr)) return;
 
@@ -60,7 +65,10 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     // direction's nonces disjoint from the client's under the shared session key.
     const uint32_t counter = nextTxCounter(conn.token);
 
-    uint8_t ct[64 + AUTH_TAG_SIZE]; // max inner we send is 11 bytes (rumble)
+    // Sized so the whole datagram lands on UDP_DATAGRAM_MAX_BYTES: the control
+    // messages are all under 30 bytes, but MSG_SPEAKER_AUDIO carries a 20 ms
+    // Opus packet and the ceiling has to hold a VBR spike, not the average.
+    uint8_t ct[MAX_INNER_MESSAGE_BYTES + AUTH_TAG_SIZE];
     unsigned long long ctLen = 0;
     if (!encryptPacket(conn.sessionKey, CRYPTO_DIR_SERVER_TO_CLIENT, counter, conn.token, inner,
                        innerLen, ct, &ctLen)) {
@@ -68,6 +76,8 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     }
 
     uint8_t pkt[HEADER_SIZE + sizeof(ct)];
+    static_assert(sizeof(pkt) == UDP_DATAGRAM_MAX_BYTES,
+                  "the framed packet must land exactly on the datagram ceiling");
     uint32_t t = conn.token;
     pkt[0] = (uint8_t)(t >> 24);
     pkt[1] = (uint8_t)(t >> 16);
@@ -176,5 +186,37 @@ void ClientAdapter::sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint
     inner[3] = 2;
     inner[4] = ctrlIdx;
     inner[5] = ledMask;
+    sendEncryptedPacket(conn, inner, sizeof(inner));
+}
+
+void ClientAdapter::sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+                                     const uint8_t* opus, size_t opusLen) {
+    // Wire: ctrlIdx(1) + seq(u16 BE) + one Opus packet. An empty packet would
+    // decode to nothing on the far side, so it never leaves; an oversized one
+    // cannot be split (Opus packets are atomic) and is dropped rather than
+    // truncated into a frame the decoder would reject anyway.
+    if (opusLen == 0) return;
+    const size_t payloadLen = (size_t)AUDIO_WIRE_HEADER_BYTES + opusLen;
+    if (payloadLen > (size_t)MAX_INNER_PAYLOAD_BYTES) return;
+
+    uint8_t inner[INNER_HEADER_SIZE + MAX_INNER_PAYLOAD_BYTES];
+    inner[0] = (uint8_t)(MSG_SPEAKER_AUDIO >> 8);
+    inner[1] = (uint8_t)(MSG_SPEAKER_AUDIO);
+    inner[2] = (uint8_t)(payloadLen >> 8);
+    inner[3] = (uint8_t)(payloadLen);
+    encodeAudioFrameHeader(inner + INNER_HEADER_SIZE, ctrlIdx, seq);
+    std::memcpy(inner + INNER_HEADER_SIZE + AUDIO_WIRE_HEADER_BYTES, opus, opusLen);
+    sendEncryptedPacket(conn, inner, INNER_HEADER_SIZE + payloadLen);
+}
+
+void ClientAdapter::sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) {
+    // Wire: ctrlIdx(1) + state(1) = 2 bytes, state is MIC_LED_STATE_*.
+    uint8_t inner[4 + 2];
+    inner[0] = (uint8_t)(MSG_MIC_LED >> 8);
+    inner[1] = (uint8_t)(MSG_MIC_LED);
+    inner[2] = 0;
+    inner[3] = 2;
+    inner[4] = ctrlIdx;
+    inner[5] = state;
     sendEncryptedPacket(conn, inner, sizeof(inner));
 }

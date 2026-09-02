@@ -3,9 +3,71 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
   "configurePresets": [
     {
+      "name": "windows-mingw",
+      "displayName": "Windows (MinGW-w64, Release)",
+      "description": "The lane windows-ci.yml builds and tests: MSYS2 MINGW64 gcc via MinGW Makefiles. Warnings-as-errors matches the linux/macos lanes; the MinGW build is warning-clean on GCC 16. Needs C:\\msys64\\mingw64\\bin on PATH (scripts/install-deps.ps1).",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
+    },
+    {
+      "name": "windows-mingw-debug",
+      "displayName": "Windows (MinGW-w64, Debug)",
+      "description": "Local-dev debug variant of windows-mingw. Not a CI lane.",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (Release, warnings as errors)",
+      "description": "The lane linux-ci.yml builds and tests. Warnings-as-errors lives here (not in CMakeLists.txt) so casual local builds stay friendly while preset users get CI's verdict.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux (Debug, warnings as errors)",
+      "description": "Local-dev debug variant of linux. Not a CI lane.",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS (Release, warnings as errors)",
+      "description": "The lane macos-ci.yml builds and tests. Same flags as linux; a separate name so each workflow reads its own preset.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
+    },
+    {
+      "name": "macos-debug",
+      "displayName": "macOS (Debug, warnings as errors)",
+      "description": "Local-dev debug variant of macos. Not a CI lane.",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
+    },
+    {
       "name": "windows-msvc",
       "displayName": "Windows (MSVC + vcpkg, hardened release)",
-      "description": "MSVC build that unlocks /guard:cf (CFG) + /CETCOMPAT (CET shadow stack) + /Qspectre. libsodium + openssl come from vcpkg's static triplet so their CRT linkage matches the app's /MT. Requires VCPKG_ROOT in the environment.",
+      "description": "MSVC build that unlocks /guard:cf (CFG) + /CETCOMPAT (CET shadow stack) + /Qspectre. libsodium + openssl come from vcpkg's static triplet so their CRT linkage matches the app's /MT. Requires VCPKG_ROOT in the environment. The generator below is the default; CI and scripts/build.ps1 override it per-machine with `-G $(scripts/windows-vs-generator.ps1)` so a VS 2026 box maps to its own generator.",
       "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64", "strategy": "set" },
       "binaryDir": "${sourceDir}/build-msvc",
@@ -19,12 +81,78 @@
   ],
   "buildPresets": [
     {
+      "name": "windows-mingw",
+      "configurePreset": "windows-mingw",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-mingw-debug",
+      "configurePreset": "windows-mingw-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "macos",
+      "configurePreset": "macos",
+      "configuration": "Release"
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug",
+      "configuration": "Debug"
+    },
+    {
       "name": "windows-msvc",
       "configurePreset": "windows-msvc",
       "configuration": "Release"
     }
   ],
   "testPresets": [
+    {
+      "name": "windows-mingw",
+      "configurePreset": "windows-mingw",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-mingw-debug",
+      "configurePreset": "windows-mingw-debug",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "macos",
+      "configurePreset": "macos",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
     {
       "name": "windows-msvc",
       "configurePreset": "windows-msvc",

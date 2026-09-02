@@ -1,13 +1,32 @@
-let settingsSavedConfig = { udpPort: 9876, autoStart: false, discoveryBroadcast: true };
+﻿let settingsSavedConfig = {
+  udpPort: 9876, autoStart: false, discoveryBroadcast: true, controllerAudio: true,
+  controllerAudioMic: true, controllerAudioSpeaker: true,
+  controllerAudioKeepDefaultDevice: true,
+};
+
+// The audio sub-switches, which all follow one pattern: DOM id, saved-config
+// key and POST key are the same string.
+const SETTINGS_AUDIO_KEYS = [
+  'controllerAudioMic', 'controllerAudioSpeaker', 'controllerAudioKeepDefaultDevice',
+];
+
+function settingsAudioEl(key) { return document.getElementById('settings-' + key); }
 
 function settingsCheckDirty() {
   const curPort = parseInt(document.getElementById('settings-udpPort').value, 10);
   const curAuto = document.getElementById('settings-autoStart').checked;
   const curBroadcast = document.getElementById('settings-discoveryBroadcast').checked;
+  const curAudio = document.getElementById('settings-controllerAudio').checked;
+  const audioDirty = SETTINGS_AUDIO_KEYS.some((k) => {
+    const el = settingsAudioEl(k);
+    return el && el.checked !== settingsSavedConfig[k];
+  });
   const dirty =
     curPort !== settingsSavedConfig.udpPort ||
     curAuto !== settingsSavedConfig.autoStart ||
-    curBroadcast !== settingsSavedConfig.discoveryBroadcast;
+    curBroadcast !== settingsSavedConfig.discoveryBroadcast ||
+    curAudio !== settingsSavedConfig.controllerAudio ||
+    audioDirty;
   document.getElementById('settings-btnSave').disabled = !dirty;
   document.getElementById('settings-btnUndo').disabled = !dirty;
   // Editing clears stale validation/save messages so a prior error doesn't
@@ -23,6 +42,12 @@ function settingsUndo() {
   document.getElementById('settings-autoStart').checked = settingsSavedConfig.autoStart;
   document.getElementById('settings-discoveryBroadcast').checked =
     settingsSavedConfig.discoveryBroadcast;
+  document.getElementById('settings-controllerAudio').checked =
+    settingsSavedConfig.controllerAudio;
+  SETTINGS_AUDIO_KEYS.forEach((k) => {
+    const el = settingsAudioEl(k);
+    if (el) el.checked = settingsSavedConfig[k];
+  });
   settingsSetPortError('');
   settingsSetSaveStatus('', false);
   settingsCheckDirty();
@@ -43,6 +68,7 @@ async function settingsSave() {
   const port = parseInt(document.getElementById('settings-udpPort').value, 10);
   const auto = document.getElementById('settings-autoStart').checked;
   const broadcast = document.getElementById('settings-discoveryBroadcast').checked;
+  const audio = document.getElementById('settings-controllerAudio').checked;
 
   // Client-side range check: the server silently clamps a port outside
   // 1024-65535 and still returns ok:true, so without this the user gets no
@@ -54,11 +80,17 @@ async function settingsSave() {
   }
   settingsSetPortError('');
 
-  const res = await apiPost('/api/config', {
+  const payload = {
     udpPort: port,
     autoStart: auto,
     discoveryBroadcastEnabled: broadcast,
+    controllerAudio: audio,
+  };
+  SETTINGS_AUDIO_KEYS.forEach((k) => {
+    const el = settingsAudioEl(k);
+    if (el) payload[k] = el.checked;
   });
+  const res = await apiPost('/api/config', payload);
 
   // Only commit saved-state when the server confirmed the write, else a
   // failed POST would clear the dirty flag and look like a success.
@@ -78,6 +110,11 @@ async function settingsSave() {
   settingsSavedConfig.udpPort = effectivePort;
   settingsSavedConfig.autoStart = auto;
   settingsSavedConfig.discoveryBroadcast = broadcast;
+  settingsSavedConfig.controllerAudio = audio;
+  SETTINGS_AUDIO_KEYS.forEach((k) => {
+    const el = settingsAudioEl(k);
+    if (el) settingsSavedConfig[k] = el.checked;
+  });
   document.getElementById('settings-udpPort').value = effectivePort;
   settingsCheckDirty();
 
@@ -112,10 +149,19 @@ async function initSettings() {
     settingsSavedConfig.autoStart = d.autoStart;
     // Absent key (pre-1.6 server) defaults to on, matching the config default.
     settingsSavedConfig.discoveryBroadcast = d.discoveryBroadcastEnabled !== false;
+    // Same rule for a server that predates controller audio: absent is on.
+    settingsSavedConfig.controllerAudio = d.controllerAudio !== false;
+    SETTINGS_AUDIO_KEYS.forEach((k) => { settingsSavedConfig[k] = d[k] !== false; });
     document.getElementById('settings-udpPort').value = d.udpPort;
     document.getElementById('settings-autoStart').checked = d.autoStart;
     document.getElementById('settings-discoveryBroadcast').checked =
       settingsSavedConfig.discoveryBroadcast;
+    document.getElementById('settings-controllerAudio').checked =
+      settingsSavedConfig.controllerAudio;
+    SETTINGS_AUDIO_KEYS.forEach((k) => {
+      const el = settingsAudioEl(k);
+      if (el) el.checked = settingsSavedConfig[k];
+    });
     settingsRenderMdnsStatus(d.mdnsResponderActive === true);
   } catch (e) { /* ignore */ }
 
@@ -124,9 +170,15 @@ async function initSettings() {
   const udp = document.getElementById('settings-udpPort');
   const auto = document.getElementById('settings-autoStart');
   const broadcast = document.getElementById('settings-discoveryBroadcast');
+  const audio = document.getElementById('settings-controllerAudio');
   if (udp) udp.addEventListener('input', settingsCheckDirty);
   if (auto) auto.addEventListener('change', settingsCheckDirty);
   if (broadcast) broadcast.addEventListener('change', settingsCheckDirty);
+  if (audio) audio.addEventListener('change', settingsCheckDirty);
+  SETTINGS_AUDIO_KEYS.forEach((k) => {
+    const el = settingsAudioEl(k);
+    if (el) el.addEventListener('change', settingsCheckDirty);
+  });
 
   // "Start with Windows" reads odd on Mac/Linux, so adapt the label per OS.
   try {

@@ -52,6 +52,23 @@ struct StubGamepad : IGamepadPort {
     TouchpadReport lastTouchpad{};
 };
 
+// A session's-eye view of what dispatch handed the service. The mic path has no
+// backend call to count (SAT-2 owns the decode), so the dispatch tests assert on
+// the accept/drop log the service emits instead.
+struct CountingLog : ILogPort {
+    void logMsg(LogLevel, const std::string&, const std::string& msg) override {
+        messages.push_back(msg);
+    }
+    int countContaining(const std::string& needle) const {
+        int n = 0;
+        for (const auto& m : messages) {
+            if (m.find(needle) != std::string::npos) n++;
+        }
+        return n;
+    }
+    std::vector<std::string> messages;
+};
+
 struct StubClient : IClientPort {
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
@@ -63,6 +80,8 @@ struct StubClient : IClientPort {
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
+    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
     int heartbeatAcks = 0;
 };
 
@@ -161,6 +180,187 @@ static void test_decodeTouchpadReport_noOverRead() {
     TouchpadReport r = decodeTouchpadReportV2(buf.data());
     EXPECT(!r.finger0.active);
     EXPECT(!r.finger1.active);
+}
+
+static void test_decodeAudioFrameHeader_bigEndianSeq() {
+    TEST("decodeAudioFrameHeader: ctrlIdx then big-endian seq");
+    // Unlike MOTION/TOUCHPAD (little-endian), the audio seq is BIG-endian:
+    // it shares the shape of the other u16 BE fields on the feedback path.
+    const uint8_t p[AUDIO_WIRE_HEADER_BYTES] = {0x07, 0x12, 0x34};
+    AudioFrameHeader h = decodeAudioFrameHeader(p);
+    EXPECT_EQ(static_cast<int>(h.ctrlIdx), 7);
+    EXPECT_EQ(static_cast<int>(h.seq), 0x1234);
+
+    const uint8_t zero[AUDIO_WIRE_HEADER_BYTES] = {0x00, 0x00, 0x00};
+    EXPECT_EQ(static_cast<int>(decodeAudioFrameHeader(zero).seq), 0);
+    // Wrap boundary: the receiver's gap logic keys on this value wrapping.
+    const uint8_t top[AUDIO_WIRE_HEADER_BYTES] = {0xFF, 0xFF, 0xFF};
+    EXPECT_EQ(static_cast<int>(decodeAudioFrameHeader(top).ctrlIdx), 0xFF);
+    EXPECT_EQ(static_cast<int>(decodeAudioFrameHeader(top).seq), 0xFFFF);
+}
+
+static void test_encodeAudioFrameHeader_byteExactAndRoundTrip() {
+    TEST("encodeAudioFrameHeader: byte-exact, and decode is its inverse");
+    uint8_t p[AUDIO_WIRE_HEADER_BYTES] = {0xAA, 0xAA, 0xAA};
+    encodeAudioFrameHeader(p, 3, 0xBEEF);
+    EXPECT_EQ(static_cast<int>(p[0]), 3);
+    EXPECT_EQ(static_cast<int>(p[1]), 0xBE); // high byte first
+    EXPECT_EQ(static_cast<int>(p[2]), 0xEF);
+
+    // Round-trip every interesting seq: zero, both single-byte halves, the
+    // wrap boundary, and the value after it.
+    for (uint32_t seq : {0u, 1u, 0x00FFu, 0x0100u, 0xFF00u, 0xFFFEu, 0xFFFFu}) {
+        encodeAudioFrameHeader(p, 12, static_cast<uint16_t>(seq));
+        AudioFrameHeader h = decodeAudioFrameHeader(p);
+        EXPECT_EQ(static_cast<int>(h.ctrlIdx), 12);
+        EXPECT_EQ(static_cast<unsigned long>(h.seq), static_cast<unsigned long>(seq));
+    }
+}
+
+// Exactness is the whole safety argument for suppressing these frames: a
+// threshold would eventually swallow something a player could hear, and the
+// speaker path has no way to tell quiet game audio from an idle endpoint.
+static void test_isDigitalSilence() {
+    TEST("isDigitalSilence: all-zero is silence, any non-zero sample is not");
+    std::vector<int16_t> zeros(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    EXPECT(isDigitalSilence(zeros.data(), zeros.size()));
+
+    for (size_t at : {(size_t)0, zeros.size() / 2, zeros.size() - 1}) {
+        std::vector<int16_t> one = zeros;
+        one[at] = 1;
+        EXPECT(!isDigitalSilence(one.data(), one.size()));
+        one[at] = -1;
+        EXPECT(!isDigitalSilence(one.data(), one.size()));
+    }
+
+    TEST("isDigitalSilence: the quietest audible sample is not silence");
+    std::vector<int16_t> lsb(zeros.size(), 0);
+    lsb[7] = 1;
+    EXPECT(!isDigitalSilence(lsb.data(), lsb.size()));
+
+    TEST("isDigitalSilence: a full-scale frame is not silence");
+    std::vector<int16_t> loud(zeros.size(), 32767);
+    EXPECT(!isDigitalSilence(loud.data(), loud.size()));
+    std::vector<int16_t> loudNeg(zeros.size(), -32768);
+    EXPECT(!isDigitalSilence(loudNeg.data(), loudNeg.size()));
+
+    TEST("isDigitalSilence: null is not silence, and an empty span is");
+    EXPECT(!isDigitalSilence(nullptr, 0));
+    EXPECT(!isDigitalSilence(nullptr, 16));
+    EXPECT(isDigitalSilence(zeros.data(), 0));
+
+    TEST("isDigitalSilence: it only reads the samples it was given");
+    std::vector<int16_t> tail = zeros;
+    tail.back() = 999;
+    EXPECT(isDigitalSilence(tail.data(), tail.size() - 1));
+    EXPECT(!isDigitalSilence(tail.data(), tail.size()));
+}
+
+static void test_micAudioWireConstants() {
+    TEST("mic/speaker audio wire constants match the contract");
+    EXPECT_EQ((int)MSG_MIC_AUDIO, 0x0012);
+    EXPECT_EQ((int)MSG_SPEAKER_AUDIO, 0x0013);
+    EXPECT_EQ((int)MSG_MIC_LED, 0x0014);
+    EXPECT_EQ(AUDIO_WIRE_HEADER_BYTES, 3);      // ctrlIdx(1) + seq(2)
+    EXPECT_EQ(AUDIO_WIRE_MIN_PAYLOAD_BYTES, 4); // + one Opus byte
+    EXPECT_EQ(AUDIO_SAMPLE_RATE_HZ, 48000);
+    EXPECT_EQ(AUDIO_FRAME_MS, 20);
+    EXPECT_EQ(AUDIO_FRAME_SAMPLES, 960);
+    EXPECT_EQ(AUDIO_MIC_CHANNELS, 1);
+    EXPECT_EQ(AUDIO_SPEAKER_CHANNELS, 2);
+    EXPECT_EQ(MIC_AUDIO_MAX_PACKETS_PER_SEC, 75);
+    EXPECT_EQ((int)MIC_LED_STATE_OFF, 0);
+    EXPECT_EQ((int)MIC_LED_STATE_ON, 1);
+    EXPECT_EQ((int)MIC_LED_STATE_PULSE, 2);
+    EXPECT_EQ((int)MIC_LED_STATE_COUNT, 3);
+    // The datagram ceiling both buffers are sized from, and its two derived
+    // inner limits (header 8 + tag 16 of overhead, then the 4-byte inner header).
+    EXPECT_EQ(UDP_DATAGRAM_MAX_BYTES, 1500);
+    EXPECT_EQ(MAX_INNER_MESSAGE_BYTES, 1476);
+    EXPECT_EQ(MAX_INNER_PAYLOAD_BYTES, 1472);
+}
+
+// Open a session whose slot 0 advertises CAP_MIC, so mic frames clear the cap
+// gate and the rate limiter becomes the observable.
+static uint32_t openWithMicController(SessionService& svc,
+                                      const std::string& devId = "dev-mic-test") {
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    ControllerDescriptor d;
+    d.ctrlIdx = 0;
+    d.type = CONTROLLER_TYPE_DUALSENSE;
+    d.caps = CAP_MIC;
+    d.touchpadMode = TOUCHPAD_MODE_OFF;
+    auto r = svc.upsertSession(devId, "MicTest", "192.168.1.51", key, {d}, false);
+    return r.token;
+}
+
+// A well-formed MSG_MIC_AUDIO frame: ctrlIdx + seq + `opusBytes` filler.
+static std::vector<uint8_t> micFrame(uint8_t ctrlIdx, uint16_t seq, size_t opusBytes) {
+    std::vector<uint8_t> msg(AUDIO_WIRE_HEADER_BYTES + opusBytes, 0x5A);
+    encodeAudioFrameHeader(msg.data(), ctrlIdx, seq);
+    return msg;
+}
+
+static void test_dispatch_micAudio_truncatedRejected() {
+    TEST("dispatchInnerMessage: truncated MSG_MIC_AUDIO never reaches the service");
+    StubGamepad gp;
+    StubClient cl;
+    CountingLog lg;
+    SessionService svc(gp, cl, lg);
+    uint32_t token = openWithController(svc); // caps = 0, so any arrival logs once
+
+    // Header-only and shorter: 0..3 bytes all lack an Opus byte. None may reach
+    // the service, so none may produce the once-per-session drop line.
+    for (int len = 0; len < AUDIO_WIRE_MIN_PAYLOAD_BYTES; ++len) {
+        std::vector<uint8_t> msg(static_cast<size_t>(len), 0x5A);
+        dispatchTight(svc, token, MSG_MIC_AUDIO, msg);
+    }
+    EXPECT_EQ(lg.countContaining("Mic audio"), 0);
+
+    // One more byte is the smallest legal frame (a 1-byte Opus DTX packet) and
+    // must get through the guard to the service's cap gate.
+    dispatchTight(svc, token, MSG_MIC_AUDIO, micFrame(0, 1, 1));
+    EXPECT_EQ(lg.countContaining("never advertised the mic cap"), 1);
+}
+
+static void test_dispatch_micAudio_reachesServiceAndRateLimits() {
+    TEST("dispatchInnerMessage: MSG_MIC_AUDIO reaches the service until the rate limit");
+    StubGamepad gp;
+    StubClient cl;
+    CountingLog lg;
+    SessionService svc(gp, cl, lg);
+    uint32_t token = openWithMicController(svc);
+
+    // MIC_AUDIO_MAX_PACKETS_PER_SEC frames all clear every gate; the window is
+    // a whole second, so a test loop cannot outrun it.
+    for (int i = 0; i < MIC_AUDIO_MAX_PACKETS_PER_SEC; ++i) {
+        dispatchTight(svc, token, MSG_MIC_AUDIO, micFrame(0, (uint16_t)i, 40));
+    }
+    EXPECT_EQ(lg.countContaining("Mic audio"), 0);
+
+    // The next one is over the ceiling: dropped, logged exactly once however
+    // many more arrive.
+    dispatchTight(svc, token, MSG_MIC_AUDIO, micFrame(0, 999, 40));
+    dispatchTight(svc, token, MSG_MIC_AUDIO, micFrame(0, 1000, 40));
+    EXPECT_EQ(lg.countContaining("packets/s"), 1);
+}
+
+static void test_dispatch_micAudio_unknownSlotAndToken() {
+    TEST("dispatchInnerMessage: MSG_MIC_AUDIO for an unbound slot or token is dropped");
+    StubGamepad gp;
+    StubClient cl;
+    CountingLog lg;
+    SessionService svc(gp, cl, lg);
+    uint32_t token = openWithMicController(svc);
+
+    // Slot 5 is not bound; slot 255 is past MAX_CONTROLLERS_PER_CONN entirely.
+    dispatchTight(svc, token, MSG_MIC_AUDIO, micFrame(5, 0, 20));
+    dispatchTight(svc, token, MSG_MIC_AUDIO, micFrame(255, 0, 20));
+    EXPECT_EQ(lg.countContaining("no such bound controller"), 1); // once per session
+
+    // An unknown token has no session to log against and must stay silent.
+    dispatchTight(svc, token ^ 0xFFFFFFFFu, MSG_MIC_AUDIO, micFrame(0, 0, 20));
+    EXPECT_EQ(lg.countContaining("Mic audio"), 1); // still just the slot line
 }
 
 static void test_dispatch_motion_truncatedRejected() {
@@ -422,6 +622,14 @@ int main() {
     test_decodeMotionReport_noOverRead();
     test_decodeTouchpadReport_wireLayout();
     test_decodeTouchpadReport_noOverRead();
+    test_decodeAudioFrameHeader_bigEndianSeq();
+    test_encodeAudioFrameHeader_byteExactAndRoundTrip();
+    test_isDigitalSilence();
+    test_micAudioWireConstants();
+
+    test_dispatch_micAudio_truncatedRejected();
+    test_dispatch_micAudio_reachesServiceAndRateLimits();
+    test_dispatch_micAudio_unknownSlotAndToken();
 
     test_dispatch_motion_truncatedRejected();
     test_dispatch_motion_exactLengthAccepted();

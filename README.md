@@ -31,6 +31,9 @@ The return path carries rumble the other direction. When a game on the receiver 
 - Live status: packet count, sender IP, listening state
 - Configurable UDP port, changed via the web UI
 - Optional start with Windows (via registry)
+- Controller audio: an emulated DualSense or DualShock 4 v2 also presents
+  the pad's own microphone and speaker to Windows, each direction switchable
+  on its own. See [Controller audio](#controller-audio) below.
 - In-app OTA updates: the check/download/install/restart loop hits the
   GitHub Releases API, verifies SHA-256 against `SHA256SUMS`, then hands off
   to the platform-native installer (Inno Setup on Windows, `.app` bundle swap
@@ -42,7 +45,7 @@ The return path carries rumble the other direction. When a game on the receiver 
 ## Prerequisites
 
 ### Receiver machine
-- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense + Switch Pro; user-mode, no reboot). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
+- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense + Switch Pro; user-mode for input, no reboot — see [Controller audio](#controller-audio) for the one case that also loads a kernel USB transport). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup). Or:
 - **macOS 10.15+** with a build carrying the `com.apple.developer.hid.virtual.device` entitlement (production builds): controllers are synthesized as virtual DualShock 4 pads via `IOHIDUserDevice`. Unentitled builds (CI artifacts, local compiles) run as development/web-UI servers only; controller descriptors apply as `backendUnavailable`.
 
@@ -50,8 +53,8 @@ The return path carries rumble the other direction. When a game on the receiver 
 - **dish-android**: an Android phone running the Dish app (Bluetooth/USB controllers, touch overlay, motion). Other Dish clients implement the same contract ([`docs/contract.md`](docs/contract.md)).
 
 ### Build toolchain
-- **Windows:** [MinGW-w64](https://winlibs.com/) (g++), or any C++17 compiler targeting Windows. [Inno Setup 6](https://jrsoftware.org/isinfo.php) is needed only to build the installer.
-- **Linux / macOS:** `cmake`, `pkg-config`, a C++17 compiler, and the libsodium development headers. See the per-platform sections in [Building](#building) for distro-specific package names.
+- **Windows:** MSYS2's MINGW64 toolchain (g++, CMake, OpenSSL, libopus), the same lane CI builds and tests. `scripts\install-deps.ps1` installs all of it, plus [Inno Setup 6](https://jrsoftware.org/isinfo.php) and the .NET SDK for the installer pipeline; pass `-Msvc` to also bootstrap the hardened MSVC + vcpkg lane.
+- **Linux / macOS:** `cmake`, `pkg-config`, a C++17 compiler, and the libsodium/libopus development headers. `scripts/install-deps.sh` installs the exact CI package set (apt on Debian/Ubuntu, brew on macOS). See the per-platform sections in [Building](#building) for other distros' package names.
 
 ## Installation
 
@@ -70,7 +73,9 @@ Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth
   user-mode UMDF2 driver embedded in the bundled `satellite-hm-helper.exe`;
   deployment is idempotent and needs no reboot. It adds virtual DualSense
   and Switch Pro controller types, and covers DualShock 4 / Xbox 360 when
-  ViGEmBus is absent.
+  ViGEmBus is absent. Setup installs no kernel driver for it; the one
+  component that does is controller audio, and it installs on first use
+  rather than at setup time (see [Controller audio](#controller-audio)).
 
 ### Driver options for unattended installs
 
@@ -95,6 +100,73 @@ session shows one Windows elevation prompt: creating the virtual device
 needs administrator rights, which Satellite (running unelevated) delegates
 to `satellite-hm-helper.exe` for that session. ViGEm-only sessions never
 see a prompt.
+
+### Controller audio
+
+A real DualSense (or DualShock 4 v2) is not only a gamepad: it is also a USB
+audio device, presenting Windows a speaker/headset output and a headset
+microphone input. Satellite emulates those endpoints too, so a game's chat
+audio reaches the player's headset on the client device and the client's
+microphone is recorded on the PC from the pad's own mic endpoint. The
+DualSense mute button and its mute lamp work end to end.
+
+Windows names those endpoints after the persona's USB product string, so which
+device to pick in the sound mixer depends on the pad Satellite created. The
+DualSense composite reports "DualSense Wireless Controller" and appears as
+`Speakers (DualSense Wireless Controller)` and `Headset Microphone (DualSense
+Wireless Controller)`. The DualShock 4 v2 composite reports plain "Wireless
+Controller"; its output terminal is a headset rather than a speaker, so the
+leading noun may differ — look for the product string, not the prefix.
+
+This is the one part of Satellite that is not user-mode. HIDMaestro serves an
+audio-carrying ("composite") controller over a bundled, WHLK-certified
+usbip-win2 kernel USB transport, which HIDMaestro installs the **first time**
+such a controller is created — not at setup time, and never for an input-only
+pad. Everything else, including every controller type without audio endpoints,
+stays on the user-mode UMDF2 path described above.
+
+Controller audio is four settings, all under **Settings → Controller audio** in
+the dashboard, all persisted in `config.json`, and all on by default:
+
+| Setting | What it gates | Applies |
+|---|---|---|
+| `controllerAudio` | Whether an audio-carrying persona is created at all — and so whether the kernel transport is ever installed | Next controller connected |
+| `controllerAudioMic` | The client's microphone reaching the pad's mic endpoint | Immediately |
+| `controllerAudioSpeaker` | The pad's speaker output reaching the client | Immediately |
+| `controllerAudioKeepDefaultDevice` | Whether Satellite puts the previous default playback device back after the pad's endpoint appears | Next controller connected |
+
+The master switch is the one with teeth: with `controllerAudio` off, Satellite
+only ever creates input-only personas, so the kernel transport is never
+installed. It applies to the next controller connected; a pad already carrying
+audio keeps it until it is reconnected.
+
+The two direction switches gate the wire, not the persona. HIDMaestro has no
+mic-only audio function — every composite profile it ships declares both an
+input and an output streaming interface — so "microphone without speaker"
+cannot be expressed at the persona level at all. Both Windows endpoints
+therefore keep existing either way and only the network traffic stops, which is
+also why these two reach a stream that is already playing: nothing has to be
+replugged for them to take effect. Turning both off is not the same as
+`controllerAudio` off, which declines the persona and with it the kernel
+transport.
+
+`controllerAudioKeepDefaultDevice` is there because Windows promotes a newly
+arrived endpoint to the default playback device: an endpoint with no persisted
+`Level` value lands in the "newest device" bucket, where USB bus type and
+Speakers form factor both rank at the top ([default audio endpoint
+selection](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/default-audio-endpoint-selection)).
+That, and not the feature itself, is what makes controller audio look like it
+forwards everything: every sound on the desktop is being rendered into the
+pad's endpoint. With this on, Satellite puts the previous default back
+afterwards; turn it off to let the pad become the default the way Windows
+intended.
+
+A key missing from `config.json` reads as its default, so a config written
+before the switch was split keeps behaving exactly as it did. The live state
+is published two ways: `GET /api/server/capabilities` reports `audio` per
+backend, and additively a top-level `controllerAudio` object whose `enabled` /
+`mic` / `speaker` say what will actually flow; `GET /api/status` carries all
+four settings.
 
 ### Uninstalling
 
@@ -133,11 +205,38 @@ alongside Inno Setup's standard `/SILENT`:
 
 ## Building
 
+Local builds and CI run on the same rails: [`CMakePresets.json`](CMakePresets.json)
+carries every lane's configure flags, and the scripts under
+[`scripts/`](scripts/) drive those presets. The whole story is four commands:
+
+| Step | Windows | Linux / macOS |
+|---|---|---|
+| Install the CI toolchain (once) | `scripts\install-deps.ps1` | `scripts/install-deps.sh` |
+| Build (add `debug` and/or `test`) | `scripts\build.ps1` | `scripts/build.sh` |
+| Run every CI gate before pushing | `scripts\ci-local.ps1` | `scripts/ci-local.sh` |
+| Build the Windows installer | `scripts\build-installer.ps1` | n/a |
+
+The historical entry points (`build-satellite.bat`, `build-satellite.sh`,
+`build-tests.bat`, `build-deb.sh`, `build-installer.bat`,
+`install-dependencies.bat`) still work; each is now a thin forwarder to the
+matching script.
+
 ### Windows
 
-```batch
-build-satellite.bat
+```powershell
+scripts\install-deps.ps1        # once: MSYS2 MINGW64 toolchain + extras
+scripts\build.ps1               # Release build -> satellite.exe
+scripts\build.ps1 release test  # build, then the full ctest suite
+scripts\ci-local.ps1            # everything windows-ci.yml gates on
 ```
+
+The default lane is MSYS2 **MINGW64** with MinGW Makefiles, exactly what
+`windows-ci.yml` builds and tests. (An earlier `install-dependencies.bat`
+installed the UCRT64 toolchain instead; that is not what CI runs, and
+`scripts\install-deps.ps1` migrates the PATH entry.) The hardened
+MSVC + vcpkg lane that `windows-msvc-ci.yml` and releases build (CFG, CET,
+Spectre mitigations) is `scripts\build.ps1 -Msvc` after a one-time
+`scripts\install-deps.ps1 -Msvc`.
 
 ### macOS
 
@@ -155,15 +254,17 @@ game input. See `docs/architecture.md` → "macOS backend" for the design.
 Prerequisites:
 
 - Xcode Command Line Tools (`xcode-select --install`)
-- Homebrew packages: `brew install cmake pkg-config libsodium`
+- Homebrew packages: `brew install cmake pkg-config libsodium opus`
 
 Build:
 
 ```bash
-./build-satellite.sh
+scripts/install-deps.sh   # once: the macos-ci.yml brew set + pinned clang-format
+scripts/build.sh          # Release build -> satellite.app
 ```
 
-The script runs `cmake -S . -B build` and `cmake --build build`, producing a
+`scripts/build.sh` drives the `macos` preset (the same configure line
+`macos-ci.yml` runs, warnings-as-errors included), producing a
 `satellite.app` bundle at the repo root. Config lives at
 `~/Library/Application Support/satellite/config.json`; the DPAPI-equivalent
 keyfile lives at `~/.config/satellite/keyfile` (mode `0600`). "Run at login"
@@ -179,10 +280,11 @@ the Windows behavior.
 Prerequisites:
 
 - `cmake`, `g++` (or `clang++`), `pkg-config`
-- libsodium development headers
-    - Debian/Ubuntu: `sudo apt install libsodium-dev`
-    - Fedora/RHEL:   `sudo dnf install libsodium-devel`
-    - Arch:          `sudo pacman -S libsodium`
+- libsodium and libopus development headers (libopus is the
+  controller-audio codec)
+    - Debian/Ubuntu: `sudo apt install libsodium-dev libopus-dev`
+    - Fedora/RHEL:   `sudo dnf install libsodium-devel opus-devel`
+    - Arch:          `sudo pacman -S libsodium opus`
 - *(Optional, for the system tray icon)* libayatana-appindicator + GTK3 dev
   headers. Without these, the binary builds headless and runs a
   `sigwait` loop. The web UI at `http://localhost:9877` is the primary
@@ -246,11 +348,15 @@ sudo apt install ./satellite_*.deb
 …or build it yourself with the same CPack flow CI uses:
 
 ```bash
-sudo apt install build-essential cmake pkg-config dpkg-dev rpm \
-                 libsodium-dev libcurl4-openssl-dev \
-                 libayatana-appindicator3-dev libgtk-3-dev   # optional tray
-./build-deb.sh
+scripts/install-deps.sh   # the linux-ci.yml package set (apt)
+sudo apt install dpkg-dev
+scripts/build-deb.sh
 ```
+
+`scripts/build-deb.sh` uses the same `cpack -G DEB` invocation as the
+release workflow's Debian job (which additionally builds inside a
+`debian:trixie` container so the package's Depends line is computed against
+Debian's own sonames).
 
 The postinstall script reloads udev, loads the `uinput` kernel module, adds
 `$SUDO_USER` to the `input` group, and registers the autostart-friendly
@@ -304,11 +410,15 @@ PKGBUILD source: [`packaging/aur/`](packaging/aur/).
 Build:
 
 ```bash
-./build-satellite.sh
+scripts/install-deps.sh   # once: the linux-ci.yml package set (apt)
+scripts/build.sh          # Release build -> ./satellite
 ```
 
 The same script handles macOS and Linux (it dispatches on `uname -s`). On
-Linux it produces a `satellite` binary at the repo root.
+Linux it drives the `linux` preset (the same configure line `linux-ci.yml`
+runs) and produces a `satellite` binary at the repo root. An AppImage
+matching the released one is `scripts/build-appimage.sh`, best run on the
+oldest glibc you intend to support.
 
 Grant `/dev/uinput` access (one-time setup; the `.deb` postinstall does
 this for you):
@@ -338,23 +448,27 @@ toggled from the web UI.
 
 ### Building the installer
 
-After `build-satellite.bat` produces `satellite.exe`, run:
+After `scripts\build.ps1` produces `satellite.exe`, run:
 
-```batch
-build-installer.bat
+```powershell
+scripts\build-installer.ps1
 ```
 
-This fetches the bundled ViGEmBus prerequisite (verifying SHA-256 against
-the pin in `redist/SHA256SUMS`) and compiles the installer with
-[Inno Setup](https://jrsoftware.org/isinfo.php), producing
-`dist\SatelliteSetup.exe`. That one installer packages the app, web
-UI, ViGEmBus 1.22.0 prerequisite, and uninstaller. `redist/` is
-`.gitignore`d; see [`redist/README.md`](redist/README.md) for the
-vendoring policy and how to bump the pin.
+This fetches the bundled driver prerequisites (verifying SHA-256 against
+the pin in `redist/SHA256SUMS`), publishes the HIDMaestro helper, and
+compiles the installer with [Inno Setup](https://jrsoftware.org/isinfo.php),
+passing `/DMyAppVersion=<content of /VERSION>` the same way the release
+workflow passes the tag. The result is `dist\SatelliteSetup.exe`: one
+installer packaging the app, web UI, ViGEmBus 1.22.0 prerequisite, and
+uninstaller. `redist/` is `.gitignore`d; see
+[`redist/README.md`](redist/README.md) for the vendoring policy and how to
+bump the pin.
 
-`build-installer.bat` is a thin wrapper around
-`scripts/fetch-redist.ps1` + `iscc installer.iss`. Invoke either piece
-directly if you're scripting around it (the PowerShell script accepts
+`scripts\build-installer.ps1` chains `scripts/fetch-redist.ps1`,
+`dotnet publish`, optional code signing (`scripts/sign.ps1`, gated on the
+`SATELLITE_SIGN_*` / `CLOUD_SIGN_TOOL` environment variables and skipped
+cleanly without them), `iscc`, and `scripts/generate-sbom.ps1`. Invoke any
+piece directly if you're scripting around it (the fetch script accepts
 `-Force` to re-download even when the existing copy matches the pin).
 
 ## Usage
@@ -601,24 +715,45 @@ Formatting, linting, and static analysis run through standard C++ tooling.
 
 ### Installing
 
-All three tools are available via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+CI pins **clang-format 22.1.4** on all three platforms so verdicts match
+across runners; install the same pin locally. `scripts/install-deps.ps1` and
+`scripts/install-deps.sh` do this for you, or by hand:
 
 ```powershell
-winget install LLVM.ClangFormat      # clang-format
+python -m pip install clang-format==22.1.4   # Windows (pip wheel, same as CI)
+```
+
+```bash
+pipx install clang-format==22.1.4            # Linux (same as CI)
+python3 -m venv ~/.clang-format-venv \
+  && ~/.clang-format-venv/bin/pip install clang-format==22.1.4   # macOS (same as CI)
+```
+
+clang-tidy and cppcheck are optional extras via
+[winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/)
+(a floating LLVM also ships its own clang-format; the pinned 22.1.4 is the
+one the format gate trusts):
+
+```powershell
 winget install LLVM.LLVM             # clang-tidy (included in full LLVM)
 winget install Cppcheck.Cppcheck     # cppcheck
 ```
-
-> `clang-format` installs standalone via `LLVM.ClangFormat` if you don't need the full LLVM toolchain. `clang-tidy` requires the full `LLVM.LLVM` package.
 
 After installing, restart your terminal so the tools are on your `PATH`.
 
 ### Usage
 
-**Format all source files:**
+**Check formatting exactly like CI** (every lane runs this same script over
+`src/` and `tests/`, `*.cpp` / `*.h` / `*.mm`):
 
-```powershell
-clang-format -i src/core/*.cpp src/core/*.h src/net/*.cpp src/net/*.h src/adapters/*.cpp src/adapters/*.h src/platform/windows/*.cpp src/platform/windows/*.h
+```bash
+bash scripts/check-format.sh
+```
+
+**Format all source files in place** (the same file set):
+
+```bash
+find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \) -print0 | xargs -0 clang-format -i
 ```
 
 **Lint with clang-tidy:**
@@ -644,10 +779,26 @@ Unit tests use mock implementations of the port interfaces; no external test
 framework is required. CMake registers every suite with CTest:
 
 ```powershell
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
+scripts\build.ps1 release test    # Windows (preset windows-mingw)
 ```
+
+```bash
+scripts/build.sh release test     # Linux / macOS (preset linux / macos)
+```
+
+Or drive the presets directly; each carries its CI lane's exact flags:
+
+```powershell
+cmake --preset windows-mingw      # or: linux, macos, windows-msvc
+cmake --build --preset windows-mingw
+ctest --preset windows-mingw
+```
+
+Before pushing, `scripts\ci-local.ps1` (Windows) or `scripts/ci-local.sh`
+(Linux / macOS) runs every gate the PR workflows run, in the same order:
+format check, action-pin lint, core purity (Linux/macOS), configure + build +
+ctest via the presets, and the helper publish (Windows). A missing tool fails
+the run unless you pass `-AllowMissing` / `--allow-missing`.
 
 ### Suites
 

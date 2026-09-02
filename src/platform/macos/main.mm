@@ -16,6 +16,7 @@
 
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
+#include "adapters/audio/opus_codec.h"
 
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -70,7 +71,22 @@ int main(int argc, const char* argv[]) {
         MacHidGamepadAdapter gamepadAdapter;
         ClientAdapter clientAdapter;
         LogAdapter logAdapter;
-        SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey);
+        // See the Windows main for why the codec is injected rather than built
+        // into the core. IOHIDUserDevice has no audio endpoint to feed today,
+        // but the service's audio paths are platform-neutral and stay wired
+        // the same way.
+        satellite::audio::OpusCodecFactory audioCodecs;
+        SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey,
+                           &audioCodecs);
+
+        // Read per frame, not cached: unlike the master switch these gate the
+        // wire rather than the persona, so flipping one reaches a stream
+        // already playing instead of waiting for a replug.
+        svc.setAudioPolicy([] {
+            std::lock_guard<std::mutex> lk(g_configMtx);
+            return ControllerAudioPolicy{g_config.controllerAudioMic,
+                                         g_config.controllerAudioSpeaker};
+        });
 
         MacOSUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
         UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);

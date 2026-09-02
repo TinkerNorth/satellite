@@ -22,8 +22,25 @@ class SessionService {
                                           const uint8_t salt[SESSION_SALT_SIZE], uint32_t token,
                                           uint8_t outSessionKey[CRYPTO_KEY_SIZE])>;
 
+    // `audioCodecs` follows the same rule as `keyDeriver`: injected so the core
+    // stays libopus-free (scripts/check_core_purity.sh), production wires
+    // adapters/audio/opus_codec.h's factory, and it must outlive the service.
+    // Null is a supported state, not a degraded one -- a build or a suite with
+    // no codec still validates, gates and rate-limits audio, it just has
+    // nowhere to put the samples.
     SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
-                   KeyDeriver keyDeriver = {});
+                   KeyDeriver keyDeriver = {}, IAudioCodecFactory* audioCodecs = nullptr);
+
+    // The host's per-direction controller-audio gates, read per frame so the
+    // dashboard toggle reaches a live stream rather than the next replug.
+    // Wired once at startup and never reassigned afterwards, exactly like
+    // keyDeriver/audioCodecs -- reads take no lock, because a backend can fire
+    // its speaker callback from under mtx_. Absent means both directions on:
+    // unlike `controllerAudio`, which can install a kernel driver and so
+    // defaults off when nobody answers, these are a routing preference and the
+    // safe answer is the documented behaviour.
+    using AudioPolicyFn = std::function<ControllerAudioPolicy()>;
+    void setAudioPolicy(AudioPolicyFn fn);
 
     // Declarative session upsert, keyed on deviceId. Creates the row on first
     // contact; afterwards rotates token/salt/sessionKey in place (connectionId
@@ -130,6 +147,26 @@ class SessionService {
     // then forwards only to senders that advertised CAP_PLAYER_LEDS.
     void handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMask);
 
+    // One MSG_MIC_AUDIO frame: the sender's microphone, headed for the emulated
+    // pad's mic endpoint. `opus` is one whole 20 ms packet, valid only for this
+    // call. Validates session, slot and CAP_MIC, then rate-limits, then hands
+    // the packet to the decode path; returns true only when it got that far.
+    // Every rejection is a SILENT drop on the wire (the stream is best-effort
+    // and there is no error channel for it), logged once per session per cause.
+    bool handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
+                        size_t opusLen);
+
+    // Speaker PCM from the backend's audio callback: what a game wrote to the
+    // pad's speaker/headset endpoint. `frames` per-channel, interleaved stereo,
+    // valid only for this call. Resolves serial to controller, gates on
+    // CAP_SPEAKER, then hands the frame to the encode path.
+    bool handleSpeakerAudioFromBackend(uint32_t serial, const int16_t* stereo48k, size_t frames);
+
+    // Mic-mute LED state (MIC_LED_STATE_*) from the backend's raw-output
+    // callback. Coalesces, then forwards only to senders that advertised
+    // CAP_MIC: a mute lamp with no microphone behind it has nothing to report.
+    void handleMicLedFromBackend(uint32_t serial, uint8_t state);
+
     // Look up a connection's key + last counter; false if token not found.
     bool getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
                         uint32_t& outLastCounter) const;
@@ -232,6 +269,14 @@ class SessionService {
     // Test seam: shift a connection's liveness clocks backwards so the
     // reap/grace/stall paths are testable without real sleeps.
     void backdateForTest(uint32_t token, int lastPacketSecondsAgo, int graceSecondsAgo);
+    // Test seam: reopen a controller's mic allowance so a suite can stream past
+    // MIC_AUDIO_MAX_PACKETS_PER_SEC frames without spending real seconds. Any
+    // audio test longer than 75 frames needs this or it measures the rate
+    // limiter instead of the thing under test.
+    void resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx);
+    // Test seam: preset the outbound speaker sequence, so the u16 wrap is
+    // reachable without encoding 65536 frames of audio to get there.
+    void setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
 #endif
 
   private:
@@ -239,6 +284,10 @@ class SessionService {
     IClientPort& client_;
     ILogPort& log_;
     KeyDeriver keyDeriver_;
+    // Non-owning; null when this build has no codec (see the constructor).
+    IAudioCodecFactory* audioCodecs_ = nullptr;
+    AudioPolicyFn audioPolicy_;
+    ControllerAudioPolicy audioPolicy() const;
 
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
@@ -252,6 +301,28 @@ class SessionService {
     uint32_t serialScanStart_ = 0;
 
     // Helpers below assume the caller holds mtx_.
+    // Backend serial to its owning connection + ACTIVE controller; false when
+    // nothing holds it (a stray event from a just-unplugged controller's
+    // worker). Every backend-sourced callback funnels through this.
+    bool findBySerialLocked(uint32_t serial, Connection*& outConn, Controller*& outCtrl);
+    // Controller audio. Both halves run past every gate handleMicAudio /
+    // handleSpeakerAudioFromBackend applies, so they only ever see frames that
+    // belong to a bound, capable slot.
+    // Inbound: reorder window, then decode (FEC on a gap that has a carrier,
+    // concealment otherwise), then the pad's mic endpoint. False means the
+    // window refused the packet -- late, duplicate or malformed.
+    bool deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const uint8_t* opus, size_t opusLen);
+    // Outbound: re-window whatever the backend handed over into whole 20 ms
+    // frames, encode each, send it. False means the frame could not be taken at
+    // all; a partial batch that is merely still short of a frame is a true.
+    bool encodeAndSendSpeakerAudioLocked(Connection& conn, Controller& ctrl,
+                                         const int16_t* stereo48k, size_t frames);
+    // One 20 ms window onto the wire. A digitally-silent window is neither
+    // encoded nor sent and does NOT advance the seq; see the definition.
+    void sendSpeakerFrameLocked(Connection& conn, Controller& ctrl, ControllerAudio& audio,
+                                const int16_t* frame);
+    // The pad's audio working set, allocated on first use (see ControllerAudio).
+    ControllerAudio& ensureControllerAudioLocked(Controller& ctrl);
     Connection* findByDeviceId(const std::string& deviceId);
     Connection* findByConnectionId(const std::string& connectionId);
     const Connection* findByConnectionId(const std::string& connectionId) const;

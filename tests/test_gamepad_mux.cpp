@@ -41,6 +41,10 @@ struct MockPort : IGamepadPort {
     LightbarCallback lightbarCb;
     TriggerEffectsCallback triggerEffectsCb;
     PlayerLedsCallback playerLedsCb;
+    SpeakerAudioCallback speakerAudioCb;
+    MicLedCallback micLedCb;
+    int micAudioCalls = 0;
+    size_t lastMicSamples = 0;
 
     explicit MockPort(std::string n, std::set<GamepadIdentity> ids)
         : name(std::move(n)), identities(std::move(ids)) {}
@@ -106,6 +110,16 @@ struct MockPort : IGamepadPort {
         triggerEffectsCb = std::move(cb);
     }
     void setPlayerLedsCallback(PlayerLedsCallback cb) override { playerLedsCb = std::move(cb); }
+    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
+        speakerAudioCb = std::move(cb);
+    }
+    void setMicLedCallback(MicLedCallback cb) override { micLedCb = std::move(cb); }
+    bool submitMicAudioPcm(uint32_t serial, const int16_t*, size_t samples) override {
+        micAudioCalls++;
+        lastSerial = serial;
+        lastMicSamples = samples;
+        return true;
+    }
 };
 
 MockPort makeVigemLike(const char* name = "vigem") {
@@ -322,6 +336,43 @@ static void test_callbacks_fan_in() {
     EXPECT_EQ(triggerSerials[0], 3u);
     EXPECT_EQ(ledSerials.size(), static_cast<size_t>(1));
     EXPECT_EQ(ledSerials[0], 4u);
+
+    // Controller audio: the two sinks fan out like the rest.
+    std::vector<uint32_t> speakerSerials;
+    std::vector<uint32_t> micLedSerials;
+    mux.setSpeakerAudioCallback(
+        [&](uint32_t serial, const int16_t*, size_t) { speakerSerials.push_back(serial); });
+    mux.setMicLedCallback([&](uint32_t serial, uint8_t) { micLedSerials.push_back(serial); });
+    EXPECT(a.speakerAudioCb != nullptr);
+    EXPECT(b.speakerAudioCb != nullptr);
+    EXPECT(a.micLedCb != nullptr);
+    EXPECT(b.micLedCb != nullptr);
+    const int16_t pcm[4] = {0, 0, 0, 0};
+    b.speakerAudioCb(5, pcm, 2);
+    a.micLedCb(6, MIC_LED_STATE_ON);
+    EXPECT_EQ(speakerSerials.size(), static_cast<size_t>(1));
+    EXPECT_EQ(speakerSerials[0], 5u);
+    EXPECT_EQ(micLedSerials.size(), static_cast<size_t>(1));
+    EXPECT_EQ(micLedSerials[0], 6u);
+}
+
+static void test_micAudio_routesToOwner() {
+    TEST("mic PCM goes to the child that owns the serial, and nowhere when unowned");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+
+    // Only b can materialize a DualSense, so b owns serial 1.
+    EXPECT(mux.pluginDevice(1, GamepadIdentity::DualSense));
+    const std::vector<int16_t> pcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(mux.submitMicAudioPcm(1, pcm.data(), pcm.size()));
+    EXPECT_EQ(a.micAudioCalls, 0);
+    EXPECT_EQ(b.micAudioCalls, 1);
+    EXPECT_EQ(b.lastMicSamples, static_cast<size_t>(AUDIO_FRAME_SAMPLES));
+
+    // An unowned serial has no audio endpoint to reach: refused, not guessed.
+    EXPECT(!mux.submitMicAudioPcm(2, pcm.data(), pcm.size()));
+    EXPECT_EQ(b.micAudioCalls, 1);
 }
 
 static void test_relative_mouse_first_supporting() {
@@ -438,6 +489,7 @@ int main() {
     test_unplug_unconfirmed_keeps_owner();
     test_unplug_unowned_serial_is_gone();
     test_callbacks_fan_in();
+    test_micAudio_routesToOwner();
     test_relative_mouse_first_supporting();
     test_motion_for_type_follows_preference();
     test_motion_backend_ok_owner_scoped();

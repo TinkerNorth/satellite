@@ -257,6 +257,10 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
             f.webPort = g_config.webPort;
             f.autoStart = g_config.autoStart;
             f.discoveryBroadcastEnabled = g_config.discoveryBroadcastEnabled;
+            f.controllerAudio = g_config.controllerAudio;
+            f.controllerAudioMic = g_config.controllerAudioMic;
+            f.controllerAudioSpeaker = g_config.controllerAudioSpeaker;
+            f.controllerAudioKeepDefaultDevice = g_config.controllerAudioKeepDefaultDevice;
         }
         f.listening = g_listening.load();
         f.packets = static_cast<uint64_t>(g_packetCount.load());
@@ -337,6 +341,29 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
             g_config.discoveryBroadcastEnabled = broadcastVal;
         }
 
+        // Same present-only rule. Takes effect on the next controller plug:
+        // an audio persona already materialized keeps its endpoints until the
+        // pad is replugged, so the toggle never yanks a live stream.
+        bool controllerAudioVal = false;
+        if (jsonTryBool(body, "controllerAudio", controllerAudioVal)) {
+            g_config.controllerAudio = controllerAudioVal;
+        }
+
+        // The two directions gate the wire, not the persona, so unlike the
+        // master switch above these DO reach a stream already running.
+        bool controllerAudioMicVal = false;
+        if (jsonTryBool(body, "controllerAudioMic", controllerAudioMicVal)) {
+            g_config.controllerAudioMic = controllerAudioMicVal;
+        }
+        bool controllerAudioSpeakerVal = false;
+        if (jsonTryBool(body, "controllerAudioSpeaker", controllerAudioSpeakerVal)) {
+            g_config.controllerAudioSpeaker = controllerAudioSpeakerVal;
+        }
+        bool keepDefaultVal = false;
+        if (jsonTryBool(body, "controllerAudioKeepDefaultDevice", keepDefaultVal)) {
+            g_config.controllerAudioKeepDefaultDevice = keepDefaultVal;
+        }
+
         if (body.contains("networkInterface")) {
             g_config.networkInterface = jsonStr(body, "networkInterface");
         }
@@ -346,6 +373,9 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
                "Config updated: udpPort=" + std::to_string(g_config.udpPort) + " autoStart=" +
                    std::string(g_config.autoStart ? "true" : "false") + " broadcast=" +
                    std::string(g_config.discoveryBroadcastEnabled ? "true" : "false") +
+                   " controllerAudio=" + std::string(g_config.controllerAudio ? "true" : "false") +
+                   " mic=" + std::string(g_config.controllerAudioMic ? "true" : "false") +
+                   " speaker=" + std::string(g_config.controllerAudioSpeaker ? "true" : "false") +
                    (portRejected ? " (udpPort out of range, ignored)" : ""));
         JsonOut resp;
         resp["ok"] = true;

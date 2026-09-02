@@ -36,6 +36,8 @@ static JsonOut capsJsonObj(uint16_t caps) {
     j["lightbar"] = (caps & CAP_LIGHTBAR) != 0;
     j["triggerEffects"] = (caps & CAP_TRIGGER_EFFECTS) != 0;
     j["playerLeds"] = (caps & CAP_PLAYER_LEDS) != 0;
+    j["mic"] = (caps & CAP_MIC) != 0;
+    j["speaker"] = (caps & CAP_SPEAKER) != 0;
     return j;
 }
 
@@ -136,6 +138,8 @@ static bool parseDescriptorObject(const Json& obj, bool requireIdx, ControllerDe
     if (jsonBool(caps, "lightbar")) d.caps |= CAP_LIGHTBAR;
     if (jsonBool(caps, "triggerEffects")) d.caps |= CAP_TRIGGER_EFFECTS;
     if (jsonBool(caps, "playerLeds")) d.caps |= CAP_PLAYER_LEDS;
+    if (jsonBool(caps, "mic")) d.caps |= CAP_MIC;
+    if (jsonBool(caps, "speaker")) d.caps |= CAP_SPEAKER;
 
     d.preferredBackend = jsonStr(obj, "preferredBackend");
 

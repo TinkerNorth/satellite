@@ -79,6 +79,8 @@ struct StubClient : IClientPort {
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
+    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
     int closeNotifies = 0;
 };
 
@@ -368,6 +370,53 @@ int main() {
                 j["controllers"].size() == 1) {
                 EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "triggerEffects"), false);
                 EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "playerLeds"), false);
+            }
+        }
+    }
+    {
+        TEST("caps roundtrip: mic/speaker parse and echo independently in the view");
+        // The two audio caps are independent directions (mic = the client
+        // sources audio, speaker = the client accepts it), so a descriptor
+        // asking for one must not grant the other.
+        auto res = cli.Put("/api/connections", auth,
+                           R"({"protocolVersion":2,
+                               "controllers":[{"ctrlIdx":0,"type":2,
+                               "caps":{"mic":true,"speaker":false}}]})",
+                           "application/json");
+        EXPECT(res && res->status == 200);
+        auto view = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        EXPECT(view && view->status == 200);
+        if (view) {
+            Json j = parseJson(view->body);
+            if (j.contains("controllers") && j["controllers"].is_array() &&
+                j["controllers"].size() == 1) {
+                const Json& c = j["controllers"][0];
+                EXPECT_EQ(jsonBool(c["caps"], "mic"), true);
+                EXPECT_EQ(jsonBool(c["caps"], "speaker"), false);
+                // Neighbouring bits must not be set by the audio pair.
+                EXPECT_EQ(jsonBool(c["caps"], "triggerEffects"), false);
+                EXPECT_EQ(jsonBool(c["caps"], "playerLeds"), false);
+                EXPECT_EQ(jsonBool(c["caps"], "lightbar"), false);
+            } else {
+                EXPECT(false);
+            }
+        }
+        auto res2 = cli.Put("/api/connections", auth,
+                            R"({"protocolVersion":2,
+                                "controllers":[{"ctrlIdx":0,"type":2,
+                                "caps":{"speaker":true}}]})",
+                            "application/json");
+        EXPECT(res2 && res2->status == 200);
+        auto view2 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        EXPECT(view2 && view2->status == 200);
+        if (view2) {
+            Json j = parseJson(view2->body);
+            if (j.contains("controllers") && j["controllers"].is_array() &&
+                j["controllers"].size() == 1) {
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "mic"), false);
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), true);
+            } else {
+                EXPECT(false);
             }
         }
     }

@@ -163,6 +163,42 @@
         a fallback for senders that predate the mDNS responder. Turn it off
         only on a network where every sender supports mDNS.</p>
 
+      <h2 class="section-title section-title-spaced" data-i18n="settings.audio.title">Controller audio</h2>
+      <div class="toggle-row">
+        <span data-i18n="settings.audio.label">Controller microphone and speaker</span>
+        <label class="switch"><input type="checkbox" id="settings-controllerAudio"><span class="slider"></span></label>
+      </div>
+      <p class="hint" data-i18n="settings.audio.hint">A DualSense or DualShock 4 v2 created here also gets the
+        controller's own microphone and speaker, as real Windows audio devices.
+        Windows decides what plays through them, the same as for any headset:
+        pick the controller under Settings &gt; System &gt; Sound &gt; Volume mixer for
+        the apps you want on it. Controller audio needs a bundled signed kernel USB
+        transport, which HIDMaestro installs the first time such a controller is
+        created. Turn this off to keep the input-only controller and skip that
+        install. Changes apply the next time a controller is connected.</p>
+
+      <div class="toggle-row">
+        <span data-i18n="settings.audio.mic-label">Microphone: your voice reaches the game</span>
+        <label class="switch"><input type="checkbox" id="settings-controllerAudioMic"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <span data-i18n="settings.audio.speaker-label">Speaker: game audio reaches your headset</span>
+        <label class="switch"><input type="checkbox" id="settings-controllerAudioSpeaker"><span class="slider"></span></label>
+      </div>
+      <p class="hint" data-i18n="settings.audio.directions-hint">Each direction can be turned off on its own. The controller
+        keeps both Windows audio devices either way; the switch only stops the
+        audio crossing the network, so it applies straight away instead of
+        waiting for the next connection.</p>
+
+      <div class="toggle-row">
+        <span data-i18n="settings.audio.keep-default-label">Keep my current default playback device</span>
+        <label class="switch"><input type="checkbox" id="settings-controllerAudioKeepDefaultDevice"><span class="slider"></span></label>
+      </div>
+      <p class="hint" data-i18n="settings.audio.keep-default-hint">Windows makes any newly connected audio device the default,
+        which would send every sound on this PC to the controller. With this on,
+        Satellite puts your previous device back afterwards. Turn it off if you
+        want the controller to become the default the way Windows intended.</p>
+
       <div class="btn-row">
         <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" data-i18n="settings.save" disabled>Save Config</button>
         <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" data-i18n="settings.undo" disabled>Undo</button>

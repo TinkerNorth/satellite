@@ -10,6 +10,9 @@ name: version-consistency
 # installer.iss       auto-derives MyAppVersion from /VERSION via Inno Setup's
 #                     #FileOpen / #FileRead, so it's covered transitively; we
 #                     just sanity-check the Inno preprocessor line stayed put.
+# vcpkg.json          the MSVC lane's manifest carries its own "version";
+#                     vcpkg does not read /VERSION, so it drifts silently
+#                     without this check (it sat at 1.0.0 through 1.1.0).
 #
 # A PR-time text-consistency gate, not a full re-build.
 
@@ -19,6 +22,7 @@ on:
       - "VERSION"
       - "src/core/version.h"
       - "installer.iss"
+      - "vcpkg.json"
       - ".github/workflows/version-consistency.yml"
   push:
     branches: [main]
@@ -26,13 +30,14 @@ on:
       - "VERSION"
       - "src/core/version.h"
       - "installer.iss"
+      - "vcpkg.json"
 
 permissions:
   contents: read
 
 jobs:
   check:
-    name: VERSION ↔ src/core/version.h ↔ installer.iss
+    name: VERSION ↔ src/core/version.h ↔ installer.iss ↔ vcpkg.json
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -88,9 +93,14 @@ jobs:
             fail=1
           fi
 
+          # ── vcpkg.json ────────────────────────────────────────────────
+          vcpkg_ver=$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' vcpkg.json | head -1)
+          echo "vcpkg.json version = $vcpkg_ver"
+          [ "$vcpkg_ver" = "$ver" ] || { echo "::error::vcpkg.json version=$vcpkg_ver, expected $ver"; fail=1; }
+
           if [ "$fail" -ne 0 ]; then
             echo
-            echo "::error::Version sources drifted. Bump /VERSION and src/core/version.h together; installer.iss derives automatically."
+            echo "::error::Version sources drifted. Bump /VERSION, src/core/version.h and vcpkg.json together; installer.iss derives automatically."
             exit 1
           fi
           echo "All version sources agree on $ver."
