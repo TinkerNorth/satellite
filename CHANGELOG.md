@@ -126,6 +126,23 @@ Installer: new optional-but-default "HIDMaestro driver" component
 `/HIDMAESTRO=auto|bundled|skip` and `/REMOVEHIDMAESTRO=yes|no|auto` switches
 mirroring the ViGEmBus ones.
 
+Build system: local builds and CI now run the same rails. Every CI lane's
+configure line lives in `CMakePresets.json` (`windows-mingw`, `linux`,
+`macos`, `windows-msvc`, plus debug variants), the workflows call the presets
+and the shared `scripts/check-format.sh` gate, and new scripts drive the same
+presets locally: `scripts/install-deps.{ps1,sh}` (installs exactly CI's
+toolchain), `scripts/build.{ps1,sh}` (`[debug|release] [test]`, `-Msvc` for
+the hardened lane), `scripts/ci-local.{ps1,sh}` (every PR gate in CI's order;
+`--allow-missing`/`-AllowMissing` downgrades a missing tool to a notice),
+`scripts/build-installer.ps1` (now passes `/DMyAppVersion` from `/VERSION`
+like the release workflow always did), `scripts/build-deb.sh` (CI's cpack
+invocation) and `scripts/build-appimage.sh` (the recipe release.yml now
+calls). The old root entry points forward to these. Fixes real drift:
+`install-dependencies.bat` installed the UCRT64 toolchain while CI builds
+MINGW64; the Windows lane now also carries warnings-as-errors like Linux and
+macOS; `vcpkg.json` sat at 1.0.0 while `/VERSION` said 1.1.0 (now checked by
+version-consistency.yml).
+
 ## 1.1.0
 
 No protocol changes. Distribution release: every shipping platform now also
