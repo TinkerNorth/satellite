@@ -40,6 +40,51 @@ static void test_profile_mapping() {
               std::string("dualsense"));
     EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::SwitchPro)),
               std::string("switch-pro"));
+
+    TEST("audio defaults OFF: a caller that says nothing never asks for a composite");
+    for (GamepadIdentity id : {GamepadIdentity::Xbox, GamepadIdentity::DS4,
+                               GamepadIdentity::DualSense, GamepadIdentity::SwitchPro}) {
+        EXPECT_EQ(std::string(profileForIdentity(id)), std::string(profileForIdentity(id, false)));
+    }
+}
+
+// The full setting-by-identity matrix. Getting this wrong in either direction
+// is expensive: a false positive installs a kernel USB transport nobody asked
+// for, a false negative silently drops the pad's audio endpoints.
+static void test_profile_audio_matrix() {
+    TEST("audio on: the two Sony identities switch to their composite personas");
+    EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::DualSense, true)),
+              std::string("dualsense-composite"));
+    EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::DS4, true)),
+              std::string("dualshock-4-v2-composite"));
+
+    TEST("audio on: identities with no audio function are unchanged");
+    EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::Xbox, true)),
+              std::string("xbox-360-wired"));
+    EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::SwitchPro, true)),
+              std::string("switch-pro"));
+
+    TEST("audio off: every identity keeps its plain persona");
+    EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::DualSense, false)),
+              std::string("dualsense"));
+    EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::DS4, false)),
+              std::string("dualshock-4-v2"));
+
+    TEST("identityHasAudioPersona agrees with the mapping it guards");
+    for (GamepadIdentity id : {GamepadIdentity::Xbox, GamepadIdentity::DS4,
+                               GamepadIdentity::DualSense, GamepadIdentity::SwitchPro}) {
+        const bool differs =
+            std::string(profileForIdentity(id, true)) != std::string(profileForIdentity(id, false));
+        EXPECT_EQ(identityHasAudioPersona(id), differs);
+    }
+
+    TEST("the composite ids are the ones HIDMaestro v1.7.0 actually ships");
+    // The v1 DualShock 4 has no USB audio function and therefore no composite;
+    // the audio persona is deliberately the v2, matching the plain profile.
+    EXPECT(std::string(profileForIdentity(GamepadIdentity::DS4, true)).find("v1") ==
+           std::string::npos);
+    EXPECT(std::string(profileForIdentity(GamepadIdentity::DS4, true)).rfind("dualshock-4-v2", 0) ==
+           0);
 }
 
 static void test_x360_neutral_report() {
@@ -223,6 +268,84 @@ static void test_ds5_payload_buttons_motion_touch() {
     const int touchX = out[33] | ((out[34] & 0x0F) << 8);
     EXPECT_EQ(touchX, 960);
     EXPECT_EQ(out[52], (uint8_t)(0x10 | 4)); // charging at 40%
+}
+
+// WBUTTON_MIC_MUTE is the one free bit in the XINPUT-shaped button word, and
+// only the DualSense has a mute button to spend it on. Both directions are
+// asserted: setting the bit lights byte 9 bit 0x04 and touches nothing else,
+// clearing it puts the byte back.
+static void test_ds5_mic_mute_button_bit() {
+    TEST("packDs5Payload — WBUTTON_MIC_MUTE sets input byte 9 bit 0x04");
+    Ds5InputState st{};
+    uint8_t clear[DS5_PAYLOAD_BYTES];
+    packDs5Payload(st, clear);
+    EXPECT_EQ(clear[9], (uint8_t)0x00);
+
+    st.pad.wButtons = WBUTTON_MIC_MUTE;
+    uint8_t set[DS5_PAYLOAD_BYTES];
+    packDs5Payload(st, set);
+    EXPECT_EQ(set[9], (uint8_t)0x04);
+
+    TEST("the mute bit changes byte 9 and nothing else in the report");
+    for (size_t i = 0; i < DS5_PAYLOAD_BYTES; ++i) {
+        if (i == 6 || i == 9) continue; // 6 is the per-report seq counter
+        EXPECT_EQ(set[i], clear[i]);
+    }
+
+    TEST("mute coexists with PS and the touchpad click in the same byte");
+    st.pad.wButtons = WBUTTON_MIC_MUTE | 0x0400; // + Guide -> PS
+    st.touchpadButtonPressed = true;
+    uint8_t both[DS5_PAYLOAD_BYTES];
+    packDs5Payload(st, both);
+    EXPECT_EQ(both[9], (uint8_t)(0x01 | 0x02 | 0x04));
+
+    TEST("clearing the bit clears it again (no latched state)");
+    st.pad.wButtons = 0x0400;
+    st.touchpadButtonPressed = true;
+    uint8_t cleared[DS5_PAYLOAD_BYTES];
+    packDs5Payload(st, cleared);
+    EXPECT_EQ(cleared[9], (uint8_t)(0x01 | 0x02));
+}
+
+// Every other identity must ignore 0x0800: those pads have no mute button, and
+// a stray bit landing in a real button field would fire a phantom press.
+static void test_mic_mute_bit_ignored_by_other_identities() {
+    TEST("packX360Report — the mute bit changes no byte of the Xbox report");
+    GamepadReport pad{};
+    uint8_t x360Clear[X360_REPORT_BYTES];
+    packX360Report(pad, x360Clear);
+    pad.wButtons = WBUTTON_MIC_MUTE;
+    uint8_t x360Set[X360_REPORT_BYTES];
+    packX360Report(pad, x360Set);
+    EXPECT_EQ(std::memcmp(x360Clear, x360Set, X360_REPORT_BYTES), 0);
+
+    TEST("packGip — the mute bit changes no byte of the XUSB companion slice");
+    GamepadReport pad2{};
+    uint8_t gipClear[INPUT_GIP_LENGTH];
+    packGip(pad2, gipClear);
+    pad2.wButtons = WBUTTON_MIC_MUTE;
+    uint8_t gipSet[INPUT_GIP_LENGTH];
+    packGip(pad2, gipSet);
+    EXPECT_EQ(std::memcmp(gipClear, gipSet, INPUT_GIP_LENGTH), 0);
+
+    TEST("packDs4Payload — the mute bit changes no byte of the DS4 report");
+    Ds4InputState ds4{};
+    uint8_t ds4Clear[DS4_PAYLOAD_BYTES];
+    packDs4Payload(ds4, ds4Clear);
+    ds4.pad.wButtons = WBUTTON_MIC_MUTE;
+    uint8_t ds4Set[DS4_PAYLOAD_BYTES];
+    packDs4Payload(ds4, ds4Set);
+    EXPECT_EQ(std::memcmp(ds4Clear, ds4Set, DS4_PAYLOAD_BYTES), 0);
+
+    TEST("packSwitchBody — the mute bit changes no byte of the Switch body");
+    GamepadReport pad3{};
+    MotionReport motion{};
+    uint8_t swClear[SWITCH_BODY_BYTES];
+    packSwitchBody(pad3, motion, swClear);
+    pad3.wButtons = WBUTTON_MIC_MUTE;
+    uint8_t swSet[SWITCH_BODY_BYTES];
+    packSwitchBody(pad3, motion, swSet);
+    EXPECT_EQ(std::memcmp(swClear, swSet, SWITCH_BODY_BYTES), 0);
 }
 
 static void test_switch_body_neutral() {
@@ -446,6 +569,123 @@ static void test_decode_ds5_lightbar_valid_flag1() {
     EXPECT_EQ(d.b, (uint8_t)7);
 }
 
+// The mute lamp lives at byte 8 (SDL ucMicLightMode / hid-playstation
+// mute_button_led), gated by valid_flag1 bit 0. Byte 9 next to it is the
+// power-save control, which is why this suite asserts that writing byte 9 does
+// NOT produce a mute-LED state: a one-byte slip would report power-save bits
+// as a lamp mode.
+static void test_decode_ds5_mic_led() {
+    TEST("decodeOutputPacket — DS5 mute LED: valid_flag1 bit 0 gates byte 8");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[1] = 0x01; // MIC_MUTE_LED_CONTROL_ENABLE
+    pkt.data[8] = MIC_LED_STATE_ON;
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasMicLed);
+    EXPECT_EQ(d.micLed, MIC_LED_STATE_ON);
+    EXPECT(!d.hasRumble);
+    EXPECT(!d.hasLightbar);
+    EXPECT(!d.hasPlayerLeds);
+
+    TEST("all three defined lamp states decode to themselves");
+    pkt.data[8] = MIC_LED_STATE_OFF;
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasMicLed);
+    EXPECT_EQ(d.micLed, MIC_LED_STATE_OFF);
+    pkt.data[8] = MIC_LED_STATE_PULSE;
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasMicLed);
+    EXPECT_EQ(d.micLed, MIC_LED_STATE_PULSE);
+
+    TEST("a state above PULSE is dropped at the decoder, not forwarded");
+    for (uint8_t bad : {(uint8_t)MIC_LED_STATE_COUNT, (uint8_t)0x10, (uint8_t)0xFF}) {
+        pkt.data[8] = bad;
+        d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+        EXPECT(!d.hasMicLed);
+        EXPECT_EQ(d.micLed, MIC_LED_STATE_OFF);
+    }
+
+    TEST("no valid_flag1 bit 0: byte 8 is stale bytes, not a lamp write");
+    pkt.data[8] = MIC_LED_STATE_PULSE;
+    pkt.data[1] = 0x00;
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasMicLed);
+    pkt.data[1] = 0x10; // player-indicator enable only
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasMicLed);
+
+    TEST("a report too short to hold byte 8 decodes no lamp state");
+    pkt.data[1] = 0x01;
+    pkt.size = 8;
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasMicLed);
+    pkt.size = 9; // exactly long enough
+    d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasMicLed);
+    EXPECT_EQ(d.micLed, MIC_LED_STATE_PULSE);
+
+    TEST("byte 9 is power-save control, not the lamp: writing it decodes nothing");
+    OutputPacket ps;
+    ps.source = OUTPUT_SOURCE_HID_OUTPUT;
+    ps.reportId = 0x02;
+    ps.size = 47;
+    ps.data[1] = 0x01;
+    ps.data[8] = MIC_LED_STATE_OFF;
+    ps.data[9] = 0x10; // POWER_SAVE_CONTROL_MIC_MUTE
+    DecodedOutput dps = decodeOutputPacket(GamepadIdentity::DualSense, ps);
+    EXPECT(dps.hasMicLed);
+    EXPECT_EQ(dps.micLed, MIC_LED_STATE_OFF);
+
+    TEST("only the DualSense identity decodes a mute lamp");
+    pkt.data[8] = MIC_LED_STATE_ON;
+    pkt.size = 47;
+    for (GamepadIdentity id :
+         {GamepadIdentity::Xbox, GamepadIdentity::DS4, GamepadIdentity::SwitchPro}) {
+        EXPECT(!decodeOutputPacket(id, pkt).hasMicLed);
+    }
+}
+
+// The lamp shares its report with rumble, the trigger blocks, the player LEDs
+// and the lightbar; a game writing all of them at once must still decode every
+// field exactly as it did before the lamp existed.
+static void test_decode_ds5_mic_led_coexists() {
+    TEST("decodeOutputPacket — a full DS5 write decodes every field, lamp included");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[0] = 0x03 | 0x04 | 0x08; // motors + both trigger effects
+    pkt.data[1] = 0x01 | 0x04 | 0x10; // mute lamp + lightbar + player LEDs
+    pkt.data[2] = 11;                 // right/weak
+    pkt.data[3] = 22;                 // left/strong
+    pkt.data[8] = MIC_LED_STATE_PULSE;
+    for (int i = 0; i < 11; i++) pkt.data[10 + i] = (uint8_t)(0x40 + i);
+    for (int i = 0; i < 11; i++) pkt.data[21 + i] = (uint8_t)(0x60 + i);
+    pkt.data[43] = 0x1F;
+    pkt.data[44] = 1;
+    pkt.data[45] = 2;
+    pkt.data[46] = 3;
+
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasRumble);
+    EXPECT_EQ(d.rumble.weakMagnitude, (uint16_t)(11 * 257));
+    EXPECT_EQ(d.rumble.strongMagnitude, (uint16_t)(22 * 257));
+    EXPECT(d.hasRightTriggerEffect);
+    EXPECT_EQ(d.rightTriggerEffect[0], (uint8_t)0x40);
+    EXPECT(d.hasLeftTriggerEffect);
+    EXPECT_EQ(d.leftTriggerEffect[0], (uint8_t)0x60);
+    EXPECT(d.hasPlayerLeds);
+    EXPECT_EQ(d.playerLeds, (uint8_t)0x1F);
+    EXPECT(d.hasLightbar);
+    EXPECT_EQ(d.r, (uint8_t)1);
+    EXPECT_EQ(d.g, (uint8_t)2);
+    EXPECT_EQ(d.b, (uint8_t)3);
+    EXPECT(d.hasMicLed);
+    EXPECT_EQ(d.micLed, MIC_LED_STATE_PULSE);
+}
+
 static void test_decode_switch_player_leds() {
     TEST("decodeOutputPacket — Switch subcommand 0x30 player lights, low nibble only");
     OutputPacket pkt;
@@ -501,6 +741,7 @@ static void test_decode_switch_rumble() {
 
 int main() {
     test_profile_mapping();
+    test_profile_audio_matrix();
     test_x360_neutral_report();
     test_x360_sticks_roundtrip_extremes();
     test_x360_buttons_and_hat();
@@ -510,6 +751,8 @@ int main() {
     test_ds4_payload();
     test_ds5_payload_neutral();
     test_ds5_payload_buttons_motion_touch();
+    test_ds5_mic_mute_button_bit();
+    test_mic_mute_bit_ignored_by_other_identities();
     test_switch_body_neutral();
     test_switch_body_buttons_positional();
     test_switch_body_sticks_and_imu();
@@ -519,6 +762,8 @@ int main() {
     test_decode_ds5_trigger_effects();
     test_decode_ds5_player_leds();
     test_decode_ds5_lightbar_valid_flag1();
+    test_decode_ds5_mic_led();
+    test_decode_ds5_mic_led_coexists();
     test_decode_switch_player_leds();
     test_decode_switch_rumble();
 

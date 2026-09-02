@@ -24,8 +24,9 @@ static uint32_t makeRandomToken() {
 }
 
 SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
-                               KeyDeriver keyDeriver)
-    : backend_(backend), client_(client), log_(log), keyDeriver_(std::move(keyDeriver)) {
+                               KeyDeriver keyDeriver, IAudioCodecFactory* audioCodecs)
+    : backend_(backend), client_(client), log_(log), keyDeriver_(std::move(keyDeriver)),
+      audioCodecs_(audioCodecs) {
     // The `this`-capturing lambdas are safe: SessionService outlives the adapter,
     // and the adapter joins its notification workers before the callbacks fire.
     backend_.setRumbleCallback(
@@ -38,9 +39,42 @@ SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogP
     });
     backend_.setPlayerLedsCallback(
         [this](uint32_t serial, uint8_t ledMask) { handlePlayerLedsFromBackend(serial, ledMask); });
+    backend_.setSpeakerAudioCallback([this](uint32_t serial, const int16_t* pcm, size_t frames) {
+        (void)handleSpeakerAudioFromBackend(serial, pcm, frames);
+    });
+    backend_.setMicLedCallback(
+        [this](uint32_t serial, uint8_t state) { handleMicLedFromBackend(serial, state); });
+}
+
+void SessionService::setAudioPolicy(AudioPolicyFn fn) { audioPolicy_ = std::move(fn); }
+
+ControllerAudioPolicy SessionService::audioPolicy() const {
+    // Deliberately unlocked, like keyDeriver_ and audioCodecs_: a backend may
+    // fire its speaker callback from inside a call that already holds mtx_
+    // (which is why the handler below uses try_to_lock), so taking the lock
+    // here would deadlock that path outright.
+    return audioPolicy_ ? audioPolicy_() : ControllerAudioPolicy{};
 }
 
 // Internal helpers below assume the caller holds mtx_.
+
+bool SessionService::findBySerialLocked(uint32_t serial, Connection*& outConn,
+                                        Controller*& outCtrl) {
+    // Linear scan, bounded by the 16-controller cap; not worth a reverse index
+    // that must track allocateSerial/releaseSerial.
+    for (auto& [tok, conn] : connections_) {
+        for (auto& ctrl : conn.controllers) {
+            if (ctrl.active && ctrl.serialNo == serial) {
+                outConn = &conn;
+                outCtrl = &ctrl;
+                return true;
+            }
+        }
+    }
+    outConn = nullptr;
+    outCtrl = nullptr;
+    return false;
+}
 
 Connection* SessionService::findByDeviceId(const std::string& deviceId) {
     for (auto& [tok, conn] : connections_) {
@@ -157,6 +191,19 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lastTriggerEffectsValid = false;
     ctrl.playerLeds = 0;
     ctrl.lastPlayerLedsValid = false;
+    ctrl.micLedState = MIC_LED_STATE_OFF;
+    ctrl.lastMicLedValid = false;
+    // A fresh pad starts with a fresh mic allowance; carrying a spent window
+    // across a replug would swallow the first second of the new stream.
+    ctrl.micWindowStart = std::chrono::steady_clock::time_point{};
+    ctrl.micPacketsInWindow = 0;
+    // The codecs and the reorder window belong to the pad that WAS here. A
+    // decoder carries the previous pad's filter state and concealment history,
+    // and a sequence number carried across would make the new stream look like
+    // a 40 ms reorder of the old one. Dropping the whole thing also returns the
+    // memory (see ControllerAudio) rather than holding it for a pad that may
+    // never speak.
+    ctrl.audio.reset();
     // Controller structs persist across remove/re-add, so stale samples would
     // show phantom "active" state and a MOUSE first sample would delta against a
     // pre-readd finger (cursor jump).
@@ -178,6 +225,10 @@ void SessionService::removeControllerLocked(Connection& conn, Controller& ctrl) 
     if (ctrl.serialNo != 0) unplugAndRelease(ctrl.serialNo);
     ctrl.active = false;
     ctrl.serialNo = 0;
+    // resetControllerStreamState would do this at the next bind, but the codec
+    // pair is tens of kilobytes and an unbound slot may stay unbound for the
+    // rest of the session. Release it with the pad.
+    ctrl.audio.reset();
     conn.activeControllerCount--;
     conn.epoch++;
 }
@@ -437,6 +488,9 @@ SessionUpsertResult SessionService::upsertSession(
     }
     deriveSessionKeyLocked(*conn, pairingKey);
     conn->lastCounter = 0;
+    // Fresh token/salt/key = a fresh session, so a client that fixed (or
+    // re-made) a mic-stream mistake gets a new diagnosable log line for it.
+    conn->micDropLogged = 0;
     conn->lastPacketTime = now;
     conn->graceUntil = now + std::chrono::seconds(REST_LIVENESS_GRACE_SEC);
     conn->protocolVersion = protocolVersion;
@@ -615,22 +669,10 @@ void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
-    // Linear scan, bounded by the 16-controller cap; not worth a reverse index
-    // that must track allocateSerial/releaseSerial.
+    // A miss is a stray event from a just-unplugged controller's worker.
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
-    for (auto& [tok, conn] : connections_) {
-        for (auto& ctrl : conn.controllers) {
-            if (ctrl.active && ctrl.serialNo == serial) {
-                foundConn = &conn;
-                foundCtrl = &ctrl;
-                break;
-            }
-        }
-        if (foundConn) break;
-    }
-    // Stray event from a just-unplugged controller's worker.
-    if (!foundConn || !foundCtrl) return;
+    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
 
     // Coalesce identical back-to-back updates (games hold the motors steady
     // across many frames). wireDurationMs is excluded so the caller can bump the
@@ -771,17 +813,7 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
-    for (auto& [tok, conn] : connections_) {
-        for (auto& ctrl : conn.controllers) {
-            if (ctrl.active && ctrl.serialNo == serial) {
-                foundConn = &conn;
-                foundCtrl = &ctrl;
-                break;
-            }
-        }
-        if (foundCtrl != nullptr) break;
-    }
-    if (foundCtrl == nullptr || foundConn == nullptr) return;
+    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
 
     // Coalesce unchanged colours (same shape as the rumble coalesce).
     if (foundCtrl->lastLightbarValid && foundCtrl->lightbarR == r && foundCtrl->lightbarG == g &&
@@ -808,17 +840,7 @@ void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
-    for (auto& [tok, conn] : connections_) {
-        for (auto& ctrl : conn.controllers) {
-            if (ctrl.active && ctrl.serialNo == serial) {
-                foundConn = &conn;
-                foundCtrl = &ctrl;
-                break;
-            }
-        }
-        if (foundCtrl != nullptr) break;
-    }
-    if (foundCtrl == nullptr || foundConn == nullptr) return;
+    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
 
     if (foundCtrl->lastTriggerEffectsValid && foundCtrl->lastTriggerEffects == report) return;
     foundCtrl->lastTriggerEffects = report;
@@ -835,17 +857,7 @@ void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMas
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
-    for (auto& [tok, conn] : connections_) {
-        for (auto& ctrl : conn.controllers) {
-            if (ctrl.active && ctrl.serialNo == serial) {
-                foundConn = &conn;
-                foundCtrl = &ctrl;
-                break;
-            }
-        }
-        if (foundCtrl != nullptr) break;
-    }
-    if (foundCtrl == nullptr || foundConn == nullptr) return;
+    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
 
     if (foundCtrl->lastPlayerLedsValid && foundCtrl->playerLeds == ledMask) return;
     foundCtrl->playerLeds = ledMask;
@@ -854,6 +866,234 @@ void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMas
     if (foundCtrl->playerLedsCapable()) {
         client_.sendPlayerLeds(*foundConn, foundCtrl->index, ledMask);
     }
+}
+
+void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
+    // Malformed state: the DS5 report byte only ever carries off/on/pulse, so
+    // anything else is a decode bug or a hostile report. Drop rather than
+    // forward a value the client would have to guess at.
+    if (state >= MIC_LED_STATE_COUNT) return;
+
+    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    if (!lk.owns_lock()) return;
+
+    Connection* foundConn = nullptr;
+    Controller* foundCtrl = nullptr;
+    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
+
+    if (foundCtrl->lastMicLedValid && foundCtrl->micLedState == state) return;
+    foundCtrl->micLedState = state;
+    foundCtrl->lastMicLedValid = true;
+
+    // CAP_MIC, not a lamp cap of its own: the LED reports the state of a
+    // microphone the client must actually have.
+    if (foundCtrl->micCapable()) { client_.sendMicLed(*foundConn, foundCtrl->index, state); }
+}
+
+bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_t* stereo48k,
+                                                   size_t frames) {
+    if (stereo48k == nullptr || frames == 0) return false;
+
+    // Sampled before mtx_ is taken: the policy reads the config lock, and the
+    // two must never nest. Dropping here rather than at encode time is the
+    // whole point of the switch -- an off speaker costs no Opus frames.
+    if (!audioPolicy().speaker) return false;
+
+    // try_to_lock for the same reason as handleRumbleFromBackend: unplug joins
+    // this worker while holding mtx_; blocking here deadlocks. Dropping a
+    // speaker frame is a 20 ms gap the client's PLC already knows how to cover.
+    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    if (!lk.owns_lock()) return false;
+
+    Connection* foundConn = nullptr;
+    Controller* foundCtrl = nullptr;
+    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return false;
+
+    // Emit only to senders that advertised CAP_SPEAKER; encoding for a client
+    // that would drop the frame is pure wasted CPU.
+    if (!foundCtrl->speakerCapable()) return false;
+
+    return encodeAndSendSpeakerAudioLocked(*foundConn, *foundCtrl, stereo48k, frames);
+}
+
+bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t seq,
+                                    const uint8_t* opus, size_t opusLen) {
+    if (opus == nullptr || opusLen == 0) return false;
+
+    // Sampled before mtx_, as in handleSpeakerAudioFromBackend. Read once and
+    // carried into the gate below so the drop still gets its one log line: a
+    // client whose mic goes nowhere deserves a reason in the log, and the
+    // client cannot see this setting.
+    const bool hostWantsMic = audioPolicy().mic;
+
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    // No session: nothing to log against, and an unroutable token is exactly
+    // what a stale or spoofed datagram looks like.
+    if (it == connections_.end()) return false;
+    Connection& conn = it->second;
+
+    auto dropOnce = [&](uint8_t cause, const std::string& why) {
+        if ((conn.micDropLogged & cause) == 0) {
+            conn.micDropLogged |= cause;
+            log_.logMsg(LogLevel::WARN, "service",
+                        "Mic audio from " + conn.deviceName + " controller #" +
+                            std::to_string(ctrlIdx) + " dropped: " + why);
+        }
+        return false;
+    };
+
+    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN || !conn.controllers[ctrlIdx].active) {
+        return dropOnce(MIC_DROP_LOG_NO_CONTROLLER, "no such bound controller");
+    }
+    Controller& ctrl = conn.controllers[ctrlIdx];
+
+    // Caps advertise the client's own source: a sender that never claimed a
+    // microphone has no business streaming one, so this is a gate and not a
+    // best-effort hint (unlike MSG_MOTION, which is accepted uncapped).
+    if (!ctrl.micCapable()) {
+        return dropOnce(MIC_DROP_LOG_NO_CAP, "sender never advertised the mic cap");
+    }
+
+    // Host-side off switch. Checked after the cap so a misconfigured client
+    // still gets told about its own mistake first, and before the rate-limit
+    // window so a disabled direction does not quietly consume budget.
+    if (!hostWantsMic) {
+        return dropOnce(MIC_DROP_LOG_HOST_DISABLED, "controller microphone is off on the host");
+    }
+
+    // Fixed one-second window: cheap, and the stream is a steady 50 packets/s
+    // so there is no burst shape worth a token bucket. A client running hot
+    // loses the overflow, not the session.
+    const auto now = std::chrono::steady_clock::now();
+    if (ctrl.micPacketsInWindow == 0 || now - ctrl.micWindowStart >= std::chrono::seconds(1)) {
+        ctrl.micWindowStart = now;
+        ctrl.micPacketsInWindow = 0;
+    }
+    if (ctrl.micPacketsInWindow >= MIC_AUDIO_MAX_PACKETS_PER_SEC) {
+        return dropOnce(MIC_DROP_LOG_RATE_LIMIT, "more than " +
+                                                     std::to_string(MIC_AUDIO_MAX_PACKETS_PER_SEC) +
+                                                     " packets/s");
+    }
+    ctrl.micPacketsInWindow++;
+
+    return deliverMicAudioLocked(ctrl, seq, opus, opusLen);
+}
+
+ControllerAudio& SessionService::ensureControllerAudioLocked(Controller& ctrl) {
+    if (!ctrl.audio) ctrl.audio = std::make_unique<ControllerAudio>();
+    return *ctrl.audio;
+}
+
+bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const uint8_t* opus,
+                                           size_t opusLen) {
+    ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
+    const AudioJitterWindow::Result pushed = audio.micWindow.push(seq, opus, opusLen);
+    // A frame whose slot has already been played (or concealed past) is worse
+    // than useless: splicing it in now would be an audible jump backwards.
+    if (pushed.accept != AudioJitterWindow::Accept::Ok) return false;
+    // Taken, but held for reordering. Nothing is due until the frame in front
+    // of it arrives or is proven lost.
+    if (pushed.count == 0) return true;
+
+    // Created here, not at plug: a slot that advertises CAP_MIC and never
+    // speaks should not carry a decoder around (see ControllerAudio).
+    if (!audio.micDecoder && audioCodecs_ != nullptr) {
+        audio.micDecoder = audioCodecs_->makeMicDecoder();
+    }
+    // No codec in this build, or the codec refused to allocate. The frame still
+    // passed every gate, so this is an accept-and-drop, not a rejection.
+    if (!audio.micDecoder) return true;
+
+    // Sized by the channel count rather than assuming mono: the decoder writes
+    // maxFrames * channels, so a buffer that only happened to be right because
+    // AUDIO_MIC_CHANNELS is 1 would become an overflow the day it isn't.
+    int16_t pcm[AUDIO_FRAME_SAMPLES * AUDIO_MIC_CHANNELS];
+    for (int i = 0; i < pushed.count; i++) {
+        const AudioJitterWindow::Event& ev = pushed.events[i];
+        size_t decoded = 0;
+        if (ev.kind == AudioJitterWindow::Event::Kind::Packet) {
+            decoded = audio.micDecoder->decode(ev.data, ev.len, pcm, AUDIO_FRAME_SAMPLES);
+        } else if (ev.fecCarrier != nullptr) {
+            // The window hands over packet seq+1 precisely because Opus hides a
+            // redundant copy of seq inside it. Order is load-bearing: the FEC
+            // copy is decoded here, BEFORE the carrier's own frame, which the
+            // window emits next.
+            decoded = audio.micDecoder->decodeFec(ev.fecCarrier, ev.fecCarrierLen, pcm,
+                                                  AUDIO_FRAME_SAMPLES);
+        } else {
+            decoded = audio.micDecoder->conceal(pcm, AUDIO_FRAME_SAMPLES);
+        }
+        // A backend with no mic endpoint on this serial returns false, which is
+        // not an error: senders keep streaming and the pad simply has nowhere
+        // to put it (IGamepadPort::submitMicAudioPcm).
+        if (decoded > 0) (void)backend_.submitMicAudioPcm(ctrl.serialNo, pcm, decoded);
+    }
+    return true;
+}
+
+void SessionService::sendSpeakerFrameLocked(Connection& conn, Controller& ctrl,
+                                            ControllerAudio& audio, const int16_t* frame) {
+    // Suppressed frames do NOT advance seq, unlike the encode failure below.
+    // A failed encode lost real audio and the client should conceal a hole;
+    // digital silence lost nothing, and its correct rendering is the silence a
+    // starved sink already plays. Advancing here would instead ask the client
+    // to run PLC over a gap that has no signal to guess at, and Opus would
+    // invent noise where the game wrote none. Skipping also leaves the encoder
+    // and the decoder resting on the same last real frame, so neither drifts.
+    if (isDigitalSilence(frame, static_cast<size_t>(AUDIO_FRAME_SAMPLES) *
+                                    static_cast<size_t>(AUDIO_SPEAKER_CHANNELS))) {
+        return;
+    }
+
+    uint8_t packet[MAX_INNER_PAYLOAD_BYTES - AUDIO_WIRE_HEADER_BYTES];
+    const size_t bytes =
+        audio.speakerEncoder->encode(frame, AUDIO_FRAME_SAMPLES, packet, sizeof(packet));
+    // The seq advances even when the encode failed. The 20 ms happened; saying
+    // so lets the client conceal a hole instead of silently playing the stream
+    // short and drifting against the game's clock.
+    const uint16_t seq = audio.speakerSeq++;
+    if (bytes == 0) return;
+    client_.sendSpeakerAudio(conn, ctrl.index, seq, packet, bytes);
+}
+
+bool SessionService::encodeAndSendSpeakerAudioLocked(Connection& conn, Controller& ctrl,
+                                                     const int16_t* stereo48k, size_t frames) {
+    ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
+    if (!audio.speakerEncoder && audioCodecs_ != nullptr) {
+        audio.speakerEncoder = audioCodecs_->makeSpeakerEncoder();
+    }
+    // No codec: accepted and dropped, same as the inbound direction.
+    if (!audio.speakerEncoder) return true;
+
+    const size_t frameSamples = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS;
+    size_t consumed = 0; // frames taken from stereo48k
+
+    // A backend hands over whatever its ring held, which is a batch boundary,
+    // not a codec boundary: half a window, three windows, anything. Top up the
+    // leftover tail first so frames stay contiguous across calls.
+    if (!audio.speakerPending.empty()) {
+        const size_t need = frameSamples - audio.speakerPending.size();
+        const size_t offered = frames * AUDIO_SPEAKER_CHANNELS;
+        const size_t take = need < offered ? need : offered;
+        audio.speakerPending.insert(audio.speakerPending.end(), stereo48k, stereo48k + take);
+        consumed = take / AUDIO_SPEAKER_CHANNELS;
+        if (audio.speakerPending.size() < frameSamples) return true; // still short of a window
+        sendSpeakerFrameLocked(conn, ctrl, audio, audio.speakerPending.data());
+        audio.speakerPending.clear();
+    }
+
+    // Whole windows go straight from the caller's buffer; the steady state
+    // (exactly one window per call) never copies.
+    while (frames - consumed >= static_cast<size_t>(AUDIO_FRAME_SAMPLES)) {
+        sendSpeakerFrameLocked(conn, ctrl, audio, stereo48k + consumed * AUDIO_SPEAKER_CHANNELS);
+        consumed += AUDIO_FRAME_SAMPLES;
+    }
+    if (consumed < frames) {
+        audio.speakerPending.assign(stereo48k + consumed * AUDIO_SPEAKER_CHANNELS,
+                                    stereo48k + frames * AUDIO_SPEAKER_CHANNELS);
+    }
+    return true;
 }
 
 bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,
@@ -1065,6 +1305,22 @@ void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
     const auto now = std::chrono::steady_clock::now();
     it->second.lastPacketTime = now - std::chrono::seconds(lastPacketSecondsAgo);
     it->second.graceUntil = now - std::chrono::seconds(graceSecondsAgo);
+}
+
+void SessionService::resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+    // Exactly what handleMicAudio's window lapse does, without the second.
+    it->second.controllers[ctrlIdx].micWindowStart = std::chrono::steady_clock::time_point{};
+    it->second.controllers[ctrlIdx].micPacketsInWindow = 0;
+}
+
+void SessionService::setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+    ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).speakerSeq = seq;
 }
 #endif
 

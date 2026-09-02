@@ -27,6 +27,9 @@ class ClientAdapter : public IClientPort {
     void sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
                             const TriggerEffectsReport& report) override;
     void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) override;
+    void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+                          const uint8_t* opus, size_t opusLen) override;
+    void sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) override;
     void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                       uint8_t b) override;
 

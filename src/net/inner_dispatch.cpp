@@ -62,6 +62,18 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         svc.handleTouchpadData(token, ctrlIdx, report);
         break;
     }
+    case MSG_MIC_AUDIO: {
+        // ctrlIdx(1) + seq(u16 BE) + at least one Opus byte. Opus packets are
+        // self-delimiting, so the frame length IS the packet length and there
+        // is nothing else to parse here; the service owns validation and the
+        // decode. A frame with a header but no Opus bytes is malformed, not a
+        // silence frame (silence is a 1-byte DTX packet).
+        if (msgLen < AUDIO_WIRE_MIN_PAYLOAD_BYTES) break;
+        AudioFrameHeader hdr = decodeAudioFrameHeader(payload);
+        svc.handleMicAudio(token, hdr.ctrlIdx, hdr.seq, payload + AUDIO_WIRE_HEADER_BYTES,
+                           (size_t)(msgLen - AUDIO_WIRE_HEADER_BYTES));
+        break;
+    }
     default:
         break;
     }

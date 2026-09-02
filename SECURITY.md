@@ -296,6 +296,39 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
   more than 90 days old. This is best-effort, not exhaustive; file an
   advisory if you spot a vendored component that's missing from
   `VENDORED.md`.
+- **Controller audio loads a kernel USB transport, and its personas are
+  deliberately indistinguishable from real hardware.** An emulated
+  DualSense or DualShock 4 v2 can present the pad's own microphone and
+  speaker to Windows. Those "composite" personas are served over
+  HIDMaestro's bundled WHLK-certified usbip-win2 kernel USB transport,
+  which HIDMaestro installs the first time such a controller is created.
+  Every other Satellite path on Windows is user-mode; this one is not.
+  The `controllerAudio` setting (Settings > Controller audio, on by
+  default, `GET /api/server/capabilities` reports it per backend as
+  `audio` and host-wide as `controllerAudio.enabled`) turns it off, and
+  with it off the transport is never installed. Only that master switch
+  does: the `controllerAudioMic` and `controllerAudioSpeaker` settings
+  beside it gate the wire rather than the persona, so turning both off
+  stops the network traffic while the composite pad, and therefore the
+  kernel transport, is still created. Two consequences worth stating
+  plainly rather than discovering:
+  - A composite persona is **not identifiable as virtual** from the HID
+    node. It enumerates under `ROOT\HIDMAESTRO_UDE`, four parents above
+    the HID device, so software that checks a pad's own device path,
+    VID/PID or container id sees a real DualSense. That is the point (a
+    pad that announces itself as emulated is a pad games refuse), but it
+    means Satellite cannot be used to satisfy an anti-cheat or
+    attestation requirement, and we will not treat "software could not
+    tell it was virtual" as a vulnerability.
+  - Microphone audio from a client crosses the encrypted session and is
+    written to the emulated pad's mic endpoint, where any application on
+    the host can record it exactly as it could from a physically plugged
+    controller. Satellite never stores it and never sends it anywhere but
+    that endpoint. The client owns muting: a muted client sends no audio
+    at all rather than sending silence. `controllerAudioMic` off makes the
+    host drop those frames before decode, but that is a host-side routing
+    choice, not a privacy guarantee a client can rely on; the endpoint
+    still exists either way.
 - **macOS virtual pads are entitlement-gated.** The macOS backend
   synthesizes virtual DualShock 4 controllers via `IOHIDUserDevice`,
   which requires the `com.apple.developer.hid.virtual.device`

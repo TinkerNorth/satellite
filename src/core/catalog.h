@@ -37,6 +37,11 @@ struct CatalogBackendTraits {
     std::string ds4MotionRequires; // structured code, e.g. "vigembus>=1.17"; "" = none
     bool ds4TouchpadSupported = false;
     bool ds4LightbarSupported = false;
+    // Controller audio: the pad's OWN speaker/headset and microphone endpoints,
+    // present only on the Sony types and only via a backend that can
+    // materialize a composite (USB-audio) persona.
+    bool ds4MicSupported = false;
+    bool ds4SpeakerSupported = false;
     // DualSense and Switch Pro carry their own motion/touchpad/lightbar fields:
     // with multiple backends per host the preferred materializer (and so the
     // requires code) can differ per type, e.g. ds4 via ViGEm but dualsense via
@@ -47,6 +52,8 @@ struct CatalogBackendTraits {
     bool dualsenseLightbarSupported = false;
     bool dualsenseTriggerEffectsSupported = false;
     bool dualsensePlayerLedsSupported = false;
+    bool dualsenseMicSupported = false;
+    bool dualsenseSpeakerSupported = false;
     bool switchProMotionSupported = false;
     std::string switchProMotionRequires;
     bool switchProPlayerLedsSupported = false;
