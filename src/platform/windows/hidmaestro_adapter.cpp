@@ -3,6 +3,7 @@
 
 #include "pointer_inject.h"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -18,8 +19,9 @@ inline HANDLE toHandle(uint64_t v) { return reinterpret_cast<HANDLE>(static_cast
 
 } // namespace
 
-HidMaestroAdapter::HidMaestroAdapter(hm::IHidMaestroProvisioner& provisioner)
-    : provisioner_(provisioner) {}
+HidMaestroAdapter::HidMaestroAdapter(hm::IHidMaestroProvisioner& provisioner,
+                                     AudioEnabledFn audioEnabled)
+    : provisioner_(provisioner), audioEnabled_(std::move(audioEnabled)) {}
 
 HidMaestroAdapter::~HidMaestroAdapter() {
     closeBus();
@@ -40,12 +42,14 @@ void HidMaestroAdapter::closeBus() {
     std::vector<uint32_t> serials;
     {
         std::lock_guard<std::mutex> lk(busMtx_);
-        serials.reserve(outputWorkers_.size());
+        serials.reserve(outputWorkers_.size() + audioWorkers_.size());
         for (auto& [serial, _] : outputWorkers_) serials.push_back(serial);
+        for (auto& [serial, _] : audioWorkers_) serials.push_back(serial);
     }
     for (uint32_t serial : serials) {
         std::lock_guard<std::mutex> lk(busMtx_);
         stopOutputWorker(serial);
+        stopAudioWorker(serial);
     }
 
     std::lock_guard<std::mutex> lk(busMtx_);
@@ -76,14 +80,24 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.plugged.store(false, std::memory_order_release);
     if (slot.inputView) UnmapViewOfFile(slot.inputView);
     if (slot.outputView) UnmapViewOfFile(const_cast<uint8_t*>(slot.outputView));
+    if (slot.speakerView) UnmapViewOfFile(const_cast<uint8_t*>(slot.speakerView));
+    if (slot.micView) UnmapViewOfFile(slot.micView);
     for (HANDLE h : {slot.inputSection, slot.inputEvent, slot.companionEvent, slot.outputSection,
-                     slot.outputEvent}) {
+                     slot.outputEvent, slot.speakerSection, slot.speakerEvent, slot.micSection,
+                     slot.micEvent}) {
         if (h) CloseHandle(h);
     }
     slot.inputView = nullptr;
     slot.outputView = nullptr;
+    slot.speakerView = nullptr;
+    slot.micView = nullptr;
     slot.inputSection = slot.inputEvent = slot.companionEvent = nullptr;
     slot.outputSection = slot.outputEvent = nullptr;
+    slot.speakerSection = slot.speakerEvent = slot.micSection = slot.micEvent = nullptr;
+    slot.speakerRateHz = slot.micRateHz = 0;
+    slot.micResampler = {};
+    slot.micScratch.clear();
+    slot.micSeq = 0;
     slot.ds4 = {};
     slot.ds5 = {};
     slot.switchPad = {};
@@ -98,8 +112,20 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     if (!busOpen_) return false;
     if (!provisioner_.isReady() && !provisioner_.ensureReady()) return false;
 
+    // Ask for the audio-carrying persona when the setting allows it and the
+    // identity has one. It can fail on its own (the composite rides a kernel
+    // USB transport that self-installs on first use, and that install can be
+    // declined or blocked), so a failure falls back to the plain persona: a
+    // pad without audio beats no pad at all.
+    const bool wantAudio =
+        hm::identityHasAudioPersona(identity) && audioEnabled_ && audioEnabled_();
+    // Before provisioning, because the snapshot has to predate the endpoint
+    // Windows is about to create and promote.
+    if (wantAudio && compositePlugBefore_) compositePlugBefore_();
     hm::ProvisionResult r;
-    if (!provisioner_.provision(serial, identity, r)) return false;
+    if (!provisioner_.provision(serial, identity, wantAudio, r)) {
+        if (!wantAudio || !provisioner_.provision(serial, identity, false, r)) return false;
+    }
 
     IoSlot& slot = io_[serial];
     slot.identity = identity;
@@ -115,6 +141,7 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
         slot.outputView = static_cast<const uint8_t*>(
             MapViewOfFile(slot.outputSection, FILE_MAP_READ, 0, 0, hm::OUTPUT_SECTION_SIZE));
     }
+    attachAudioLocked(slot, r);
     if (slot.inputView == nullptr) {
         releaseSlotLocked(slot);
         provisioner_.deprovision(serial);
@@ -129,7 +156,42 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     packAndWriteLocked(slot);
 
     if (slot.outputView != nullptr) startOutputWorker(serial);
+    if (slot.speakerView != nullptr) startAudioWorker(serial);
+    // Only when the composite really materialized: a persona that fell back to
+    // input-only created no endpoint, so there is nothing to watch for.
+    if (slot.speakerView != nullptr && compositePlugAfter_) compositePlugAfter_();
     return true;
+}
+
+// Caller holds busMtx_. Every failure here degrades to "no audio on this pad"
+// rather than failing the plug: the input path is the thing the session
+// actually needs. Mapping asks for exactly AUDIO_SECTION_SIZE, so a helper
+// built against a different ring layout fails the map instead of misreading
+// PCM (the section SIZE is the layout check, same rule as the driver's).
+void HidMaestroAdapter::attachAudioLocked(IoSlot& slot, const hm::ProvisionResult& r) {
+    slot.speakerSection = toHandle(r.speakerSection);
+    slot.speakerEvent = toHandle(r.speakerEvent);
+    slot.micSection = toHandle(r.micSection);
+    slot.micEvent = toHandle(r.micEvent);
+    slot.speakerRateHz = r.speakerRateHz;
+    slot.micRateHz = r.micRateHz;
+
+    if (slot.speakerSection) {
+        slot.speakerView = static_cast<const uint8_t*>(
+            MapViewOfFile(slot.speakerSection, FILE_MAP_READ, 0, 0, hm::AUDIO_SECTION_SIZE));
+    }
+    if (slot.micSection) {
+        slot.micView = static_cast<uint8_t*>(MapViewOfFile(
+            slot.micSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, hm::AUDIO_SECTION_SIZE));
+    }
+    if (slot.micView != nullptr) {
+        // A persona that reported no rate is taken at the wire rate, which
+        // configures the identity: the alternative (guessing) would silently
+        // pitch-shift the stream.
+        slot.micResampler.configure(AUDIO_SAMPLE_RATE_HZ,
+                                    slot.micRateHz > 0 ? slot.micRateHz : AUDIO_SAMPLE_RATE_HZ,
+                                    AUDIO_MIC_CHANNELS);
+    }
 }
 
 bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
@@ -138,6 +200,7 @@ bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
     {
         std::lock_guard<std::mutex> lk(busMtx_);
         stopOutputWorker(serial);
+        stopAudioWorker(serial);
     }
 
     std::lock_guard<std::mutex> lk(busMtx_);
@@ -336,6 +399,68 @@ void HidMaestroAdapter::setPlayerLedsCallback(PlayerLedsCallback cb) {
     playerLedsCb_ = std::move(cb);
 }
 
+void HidMaestroAdapter::setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    compositePlugBefore_ = std::move(before);
+    compositePlugAfter_ = std::move(after);
+}
+
+void HidMaestroAdapter::setSpeakerAudioCallback(SpeakerAudioCallback cb) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    speakerAudioCb_ = std::move(cb);
+}
+
+void HidMaestroAdapter::setMicLedCallback(MicLedCallback cb) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    micLedCb_ = std::move(cb);
+}
+
+bool HidMaestroAdapter::hasSpeakerEndpoint(uint32_t serial) const {
+    if (!isValidSerial(serial)) return false;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    return io_[serial].speakerView != nullptr;
+}
+
+bool HidMaestroAdapter::hasMicEndpoint(uint32_t serial) const {
+    if (!isValidSerial(serial)) return false;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    return io_[serial].micView != nullptr;
+}
+
+// One 20 ms window of the client's microphone, on its way to the pad's mic
+// endpoint. Rate-converted here (the endpoint is 16 kHz on the DualShock 4 v2
+// persona) and handed to the helper as endpoint-rate mono; the helper only has
+// to spread it across the endpoint's channels. False = this pad has no mic
+// endpoint, which is a normal state and not an error the sender should act on.
+bool HidMaestroAdapter::submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) {
+    if (!isValidSerial(serial) || mono48k == nullptr || samples == 0) return false;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_relaxed) || slot.micView == nullptr) return false;
+
+    slot.micScratch.clear();
+    slot.micResampler.process(mono48k, samples, slot.micScratch);
+    // A downsampler can legitimately produce nothing from a short first chunk
+    // while its filter fills; that is delivered, not dropped.
+    if (slot.micScratch.empty()) return true;
+
+    // One window never fills a slot, but chunking rather than truncating means
+    // an over-long batch degrades to extra slots instead of clipped audio.
+    size_t offset = 0;
+    while (offset < slot.micScratch.size()) {
+        const size_t chunk =
+            std::min(slot.micScratch.size() - offset, hm::AUDIO_SLOT_SAMPLE_CAPACITY);
+        if (!hm::writeAudioSlot(slot.micView, serial, slot.micSeq, slot.micScratch.data() + offset,
+                                static_cast<uint16_t>(chunk))) {
+            return false;
+        }
+        slot.micSeq++;
+        offset += chunk;
+    }
+    if (slot.micEvent) SetEvent(slot.micEvent);
+    return true;
+}
+
 // Caller holds busMtx_. The ring baseline is snapshotted HERE, under the plug
 // lock, so a packet published the instant the plug returns is never skipped —
 // the worker starting from "whatever the head is once my thread runs" would
@@ -395,19 +520,21 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
         while (hm::readNextOutputPacket(view, lastSeq, pkt)) {
             const hm::DecodedOutput decoded = hm::decodeOutputPacket(identity, pkt);
             if (!decoded.hasRumble && !decoded.hasLightbar && !decoded.hasLeftTriggerEffect &&
-                !decoded.hasRightTriggerEffect && !decoded.hasPlayerLeds) {
+                !decoded.hasRightTriggerEffect && !decoded.hasPlayerLeds && !decoded.hasMicLed) {
                 continue;
             }
             RumbleCallback rcb;
             LightbarCallback lcb;
             TriggerEffectsCallback tcb;
             PlayerLedsCallback pcb;
+            MicLedCallback mcb;
             {
                 std::lock_guard<std::mutex> lk(busMtx_);
                 rcb = rumbleCb_;
                 lcb = lightbarCb_;
                 tcb = triggerEffectsCb_;
                 pcb = playerLedsCb_;
+                mcb = micLedCb_;
             }
             if (decoded.hasRumble && rcb) rcb(serial, decoded.rumble);
             if (decoded.hasLightbar && lcb) lcb(serial, decoded.r, decoded.g, decoded.b);
@@ -427,6 +554,89 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
                 if (tcb) tcb(serial, triggerEffects);
             }
             if (decoded.hasPlayerLeds && pcb) pcb(serial, decoded.playerLeds);
+            if (decoded.hasMicLed && mcb) mcb(serial, decoded.micLed);
+        }
+    }
+}
+
+// Caller holds busMtx_. Same baseline-under-the-plug-lock rule as the output
+// worker: the helper can publish a batch the instant the plug returns.
+void HidMaestroAdapter::startAudioWorker(uint32_t serial) {
+    const uint32_t baseline = hm::audioRingHead(io_[serial].speakerView);
+    auto& w = audioWorkers_[serial];
+    w.cancel = CreateEventW(nullptr, TRUE /* manual reset */, FALSE, nullptr);
+    HANDLE cancelHandle = w.cancel;
+    w.th = std::thread(
+        [this, serial, cancelHandle, baseline] { audioLoop(serial, cancelHandle, baseline); });
+}
+
+// Caller holds busMtx_.
+void HidMaestroAdapter::stopAudioWorker(uint32_t serial) {
+    auto it = audioWorkers_.find(serial);
+    if (it == audioWorkers_.end()) return;
+    OutputWorker w = std::move(it->second);
+    audioWorkers_.erase(it);
+    if (w.cancel) SetEvent(w.cancel);
+    // Drop + reacquire busMtx_ around the join for the same reason the output
+    // worker does: the worker takes the lock to snapshot the callback.
+    busMtx_.unlock();
+    if (w.th.joinable()) w.th.join();
+    if (w.cancel) CloseHandle(w.cancel);
+    busMtx_.lock();
+}
+
+// Speaker ring drain: endpoint-rate stereo in, wire-rate stereo out to the
+// SAT-2 backend callback, which re-windows whatever batch size arrives into
+// 20 ms Opus frames. The resampler is loop-local, so a replug starts from a
+// clean filter rather than the tail of the previous pad's audio.
+void HidMaestroAdapter::audioLoop(uint32_t serial, HANDLE cancel, uint32_t lastSeq) {
+    const uint8_t* view;
+    HANDLE doorbell;
+    int rateHz;
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        IoSlot& slot = io_[serial];
+        view = slot.speakerView;
+        doorbell = slot.speakerEvent;
+        rateHz = slot.speakerRateHz;
+    }
+    if (view == nullptr) return;
+
+    satellite::audio::RationalResampler resampler;
+    resampler.configure(rateHz > 0 ? rateHz : AUDIO_SAMPLE_RATE_HZ, AUDIO_SAMPLE_RATE_HZ,
+                        AUDIO_SPEAKER_CHANNELS);
+
+    // The helper signals once per published batch; the timeout is the same
+    // safety net the output worker uses for a doorbell that never rings.
+    HANDLE waits[2] = {cancel, doorbell};
+    const DWORD waitCount = doorbell ? 2 : 1;
+    const DWORD timeoutMs = 500;
+
+    hm::AudioPacket pkt;
+    std::vector<int16_t> pcm;
+
+    while (true) {
+        const DWORD rc = WaitForMultipleObjects(waitCount, waits, FALSE, timeoutMs);
+        if (rc == WAIT_OBJECT_0) return; // cancelled
+        if (rc == WAIT_FAILED) return;
+
+        while (hm::readNextAudioSlot(view, lastSeq, pkt)) {
+            // A batch stamped with someone else's serial means the section was
+            // aliased or reused; dropping it is safer than playing it out on
+            // the wrong controller's stream.
+            if (pkt.serial != serial) continue;
+            const size_t frames = pkt.sampleCount / AUDIO_SPEAKER_CHANNELS;
+            if (frames == 0) continue;
+            pcm.clear();
+            resampler.process(pkt.data, frames, pcm);
+            if (pcm.empty()) continue;
+
+            SpeakerAudioCallback cb;
+            {
+                std::lock_guard<std::mutex> lk(busMtx_);
+                cb = speakerAudioCb_;
+            }
+            if (cb) cb(serial, pcm.data(), pcm.size() / AUDIO_SPEAKER_CHANNELS);
         }
     }
 }

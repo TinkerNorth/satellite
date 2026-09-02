@@ -103,7 +103,11 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         while (g_appRunning) {
             sockaddr_in sender{};
             socklen_t slen = sizeof(sender);
-            uint8_t buf[256];
+            // One MTU-sized datagram (header + ciphertext + tag). It used to be
+            // 256, which fit every control message; the audio streams need room
+            // for a 20 ms Opus packet, and a short read would truncate the tag
+            // and fail the AEAD rather than degrade.
+            uint8_t buf[UDP_DATAGRAM_MAX_BYTES];
             int n = (int)recvfrom(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
                                   reinterpret_cast<sockaddr*>(&sender), &slen);
 
@@ -129,7 +133,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             }
 
             // In-place decrypt: libsodium chacha20-poly1305 supports `m == c`
-            // overlap, saving a second 256-byte stack buffer.
+            // overlap, saving a second datagram-sized stack buffer.
             uint8_t* ciphertext = buf + HEADER_SIZE;
             auto ctLen = static_cast<size_t>(n - HEADER_SIZE);
             unsigned long long ptLen = 0;

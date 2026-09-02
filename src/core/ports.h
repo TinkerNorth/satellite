@@ -8,6 +8,7 @@
 #include "update_types.h"
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 
 // Virtual gamepad synthesis. Windows: ViGEmAdapter (ViGEmBus). Linux:
@@ -122,6 +123,32 @@ class IGamepadPort {
     // Player-indicator LED sink (DualSense 5-LED bar, Switch Pro 4 LEDs).
     using PlayerLedsCallback = std::function<void(uint32_t serial, uint8_t ledMask)>;
     virtual void setPlayerLedsCallback(PlayerLedsCallback /*cb*/) {}
+
+    // Controller audio: the emulated pad's OWN endpoints, never host game
+    // audio. Only a backend that can materialize an audio-carrying persona
+    // (HIDMaestro's composite profiles) wires any of the three; the defaults
+    // keep every other backend inert rather than silently swallowing PCM.
+
+    // Push one AUDIO_FRAME_MS window into the pad's microphone endpoint:
+    // `samples` mono frames at AUDIO_SAMPLE_RATE_HZ. False = no mic endpoint on
+    // this serial, which is not an error (senders keep streaming).
+    virtual bool submitMicAudioPcm(uint32_t /*serial*/, const int16_t* /*mono48k*/,
+                                   size_t /*samples*/) {
+        return false;
+    }
+
+    // Speaker sink: fires with the PCM a game wrote to the pad's speaker /
+    // headset endpoint. `frames` counts per-channel frames; the buffer is
+    // interleaved stereo at AUDIO_SAMPLE_RATE_HZ and is valid ONLY for the
+    // duration of the call (it aliases the backend's ring).
+    using SpeakerAudioCallback =
+        std::function<void(uint32_t serial, const int16_t* stereo48k, size_t frames)>;
+    virtual void setSpeakerAudioCallback(SpeakerAudioCallback /*cb*/) {}
+
+    // Mic-mute LED sink: the MIC_LED_STATE_* the game asked the pad's mute lamp
+    // for. Separate from the player LEDs; different lamp, different report bit.
+    using MicLedCallback = std::function<void(uint32_t serial, uint8_t state)>;
+    virtual void setMicLedCallback(MicLedCallback /*cb*/) {}
 };
 
 // Send encrypted UDP packets to clients.
@@ -165,6 +192,15 @@ class IClientPort {
 
     // Player LEDs (0x0011), payload: ctrlIdx u8, ledMask u8.
     virtual void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) = 0;
+
+    // Speaker audio (0x0013): ctrlIdx u8, seq u16 BE, then one 20 ms Opus
+    // packet. Lossy by contract: no ack, no retransmit, no reordering on this
+    // side; the receiver conceals gaps with Opus FEC/PLC.
+    virtual void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+                                  const uint8_t* opus, size_t opusLen) = 0;
+
+    // Mic-mute LED (0x0014), payload: ctrlIdx u8, state u8 (MIC_LED_STATE_*).
+    virtual void sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) = 0;
 };
 
 class ILogPort {
