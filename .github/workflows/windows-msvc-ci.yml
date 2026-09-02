@@ -78,11 +78,11 @@ jobs:
 
       - name: Build (Release + LTCG)
         shell: pwsh
-        run: cmake --build build-msvc --config Release
+        run: cmake --build --preset windows-msvc
 
       - name: Test
         shell: pwsh
-        run: ctest --test-dir build-msvc -C Release --output-on-failure
+        run: ctest --preset windows-msvc
 
       - name: Verify satellite.exe was produced
         shell: pwsh

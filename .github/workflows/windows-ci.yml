@@ -48,10 +48,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install 'clang-format==22.1.4'
 
+      # The gate itself lives in scripts/check-format.sh so this workflow,
+      # linux-ci.yml, macos-ci.yml and scripts/ci-local.* cannot drift on the
+      # file set or the invocation.
       - name: clang-format (check only)
-        run: |
-          FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
-          echo "$FILES" | xargs clang-format --dry-run --Werror
+        run: bash scripts/check-format.sh
 
       # MinGW-w64 toolchain (matches the local build documented in
       # docs/architecture.md and the -mwindows / -static link flags in
@@ -84,18 +85,20 @@ jobs:
           g++ --version | head -1
           openssl version   # surface the OpenSSL the build links (MSYS2 ships latest 3.x, e.g. 3.6.x)
 
-      - name: Configure (Release, MinGW Makefiles)
+      # The configure line lives in CMakePresets.json (preset windows-mingw:
+      # MinGW Makefiles, Release, warnings-as-errors) so this workflow and
+      # scripts/build.ps1 / scripts/ci-local.ps1 run the identical build.
+      - name: Configure (Release, preset windows-mingw)
         shell: msys2 {0}
-        run: cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+        run: cmake --preset windows-mingw
 
       - name: Build
         shell: msys2 {0}
-        run: cmake --build build --config Release -j "$(nproc)"
+        run: cmake --build --preset windows-mingw -j "$(nproc)"
 
       - name: Run tests
         shell: msys2 {0}
-        working-directory: build
-        run: ctest --output-on-failure -C Release
+        run: ctest --preset windows-mingw
 
       - name: Verify satellite.exe was produced
         run: |

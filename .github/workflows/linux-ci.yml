@@ -52,27 +52,31 @@ jobs:
           pkg-config --modversion ayatana-appindicator3-0.1
           pkg-config --modversion gtk+-3.0
 
+      # The gate itself lives in scripts/check-format.sh so this workflow,
+      # macos-ci.yml, windows-ci.yml and scripts/ci-local.sh cannot drift on
+      # the file set or the invocation.
       - name: clang-format (check only)
-        run: |
-          FILES=$(find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
-          echo "$FILES" | xargs clang-format --dry-run --Werror
+        run: bash scripts/check-format.sh
 
       # Compiler-independent architecture gate: src/core stays std+intra-core+
       # nlohmann-only, and net/adapters never name a platform/<os>/ path.
       - name: Core purity gate
         run: bash scripts/check_core_purity.sh
 
-      # CI-only (not in CMakeLists) so local builds stay friendly.
+      # The configure line (Release + warnings-as-errors) lives in
+      # CMakePresets.json (preset linux) so this workflow and scripts/build.sh
+      # / scripts/ci-local.sh run the identical build. It stays out of
+      # CMakeLists.txt so casual `cmake -S . -B build` invocations remain
+      # friendly.
       - name: Configure (Release, tray enabled)
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+        run: cmake --preset linux
 
       # Bound -j: bare `-j` oversubscribes and OOM-kills hosted runners (exit 143).
       - name: Build (tray enabled)
-        run: cmake --build build --config Release -j "$(nproc)"
+        run: cmake --build --preset linux -j "$(nproc)"
 
       - name: Run tests
-        working-directory: build
-        run: ctest --output-on-failure
+        run: ctest --preset linux
 
       # The unprivileged ctest pass above skips uinput_smoke (it cannot open
       # the event nodes it creates). This lane runs the binary directly as
@@ -113,17 +117,15 @@ jobs:
 
       - name: Configure (Release, no tray) and confirm tray is disabled
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON 2>&1 | tee cmake-configure.log
+          cmake --preset linux 2>&1 | tee cmake-configure.log
           grep -q 'libayatana-appindicator not found' cmake-configure.log \
             || (echo "expected headless fallback message in cmake output" && exit 1)
 
       - name: Build (headless)
-        run: cmake --build build --config Release -j "$(nproc)"
+        run: cmake --build --preset linux -j "$(nproc)"
 
       - name: Run tests
-        working-directory: build
-        run: ctest --output-on-failure
+        run: ctest --preset linux
 
   fuzz:
     name: Fuzz smoke (decrypt->dispatch robustness, bounded)

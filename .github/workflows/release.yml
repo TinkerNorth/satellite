@@ -190,7 +190,7 @@ jobs:
           $generator = ./scripts/windows-vs-generator.ps1
           $disp = ("${{ inputs.tag || github.ref_name }}") -replace '^v',''
           cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp"
-          cmake --build build-msvc --config Release --target satellite
+          cmake --build --preset windows-msvc --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
 
       # installer.iss bundles the ViGEmBus driver and the HIDMaestro helper,
@@ -640,51 +640,13 @@ jobs:
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
             file wget
 
-      - name: Build satellite
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
-          cmake --build build --config Release --target satellite -j "$(nproc)"
-
-      - name: Stage version
-        id: ver
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          echo "tag=${tag}"        >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}"  >> "$GITHUB_OUTPUT"
-
+      # The whole recipe (build, linuxdeploy, zsync normalisation, stable-name
+      # copy) lives in scripts/build-appimage.sh so a local AppImage and the
+      # released one come off the same path (the dish-linux model).
       - name: Build AppImage
         run: |
-          set -euo pipefail
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
-          chmod +x linuxdeploy
-          appdir="${RUNNER_TEMP}/Satellite.AppDir"
-          mkdir -p "${appdir}/usr/share/applications" "${appdir}/usr/share/icons/hicolor/256x256/apps"
-          convert web/img/satellite-icon.png -resize 256x256 "${RUNNER_TEMP}/satellite.png"
-          # Embed AppImageUpdate metadata so AppImageUpdate / Gear Lever can
-          # delta-update off the newest release; appimagetool emits the
-          # matching .zsync, and the draft-then-flip publish keeps `latest` atomic.
-          export LDAI_UPDATE_INFORMATION="gh-releases-zsync|TinkerNorth|satellite|latest|satellite-*-x86_64.AppImage.zsync"
-          mkdir -p stage
-          out="stage/satellite-${{ steps.ver.outputs.version }}-x86_64.AppImage"
-          OUTPUT="${out}" ./linuxdeploy --appimage-extract-and-run --appdir "${appdir}" \
-            --executable satellite \
-            --desktop-file packaging/debian/satellite.desktop \
-            --icon-file "${RUNNER_TEMP}/satellite.png" \
-            --output appimage
-          # appimagetool drops the .zsync next to the AppImage or in the CWD
-          # depending on version; normalise into stage/.
-          if [ ! -f "${out}.zsync" ] && [ -f "$(basename "${out}").zsync" ]; then
-            mv "$(basename "${out}").zsync" "${out}.zsync"
-          fi
-          [ -f "${out}" ] || { echo "::error::linuxdeploy produced no AppImage"; exit 1; }
-          if [ ! -f "${out}.zsync" ]; then
-            echo "::warning::no .zsync emitted; AppImageUpdate delta updates unavailable for this build"
-          fi
-          # Stable-name copy for the /releases/latest/download/ permalink.
-          # No .zsync alias: AppImageUpdate matches the versioned pattern.
-          cp "${out}" stage/satellite-x86_64.AppImage
-          ls -l stage/
+          tag="${{ inputs.tag || github.ref_name }}"
+          SATELLITE_VERSION="${tag#v}" bash scripts/build-appimage.sh
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
