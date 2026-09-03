@@ -1271,8 +1271,10 @@ h2.section-title { font-size: 12px; }
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
   margin-left: auto;
-  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 .update-banner-actions .btn {
   padding: 6px 12px;
@@ -1376,8 +1378,9 @@ h2.section-title { font-size: 12px; }
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-left: auto;
-  flex-shrink: 0;
+  justify-content: flex-end;
+  flex: 1 0 100%;
+  min-width: 0;
 }
 .driver-banner-actions:empty { display: none; }
 .driver-banner-actions .btn {

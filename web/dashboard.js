@@ -968,13 +968,7 @@ function renderDriverBanner() {
     detail.textContent = t('drivers.detail.rerun');
   }
 
-  if (updateCarriesDrivers) {
-    if (updState === UPDATE_STATE_AVAILABLE) {
-      acts.appendChild(makeBtn('btn-start', t('updates.btn.download'), () => updatesDownload()));
-    } else if (updState === UPDATE_STATE_DOWNLOADED) {
-      acts.appendChild(makeBtn('btn-start', t('updates.btn.restart-install'), () => updatesPromptRestart()));
-    }
-  } else if (!restartPending) {
+  if (!updateCarriesDrivers && !restartPending) {
     acts.appendChild(makeBtn('btn-start', t('drivers.btn.get-installer'), () => openExternal(driverReleaseUrl())));
   }
 
