@@ -3,7 +3,15 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
+## 2.0.0 (unreleased)
+
+Everything below ships as 2.0.0. The version number is aligned across the
+Dish and Satellite family for this release: protocol 2 spans all of it
+(controller feedback, controller audio, negotiated versioning), and a mixed
+fleet is exactly what the negotiation in `docs/contract.md` exists to keep
+working. The HIDMaestro backend, the composite audio personas and the
+unified build story (one script contract shared by CI and local builds)
+land here too.
 
 Controller audio, split per direction and no longer paying for silence: one
 `controllerAudio` switch turned both directions on together, so a host that
