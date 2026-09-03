@@ -243,6 +243,8 @@ arrays. The remaining globals are:
 
 - `g_config` / `g_configMtx`: application configuration
 - Atomic telemetry counters (`g_packetCount`, `g_submitOk`, etc.)
+- `satellite::g_wire` (`app/wire_stats.h`): per-message wire counters, all
+  incremented off the gamepad hot path (see "Hot-path discipline")
 - Log ring buffer (`g_logRing`, `g_logMtx`)
 - Win32 plumbing (`g_hwnd`, `g_httpServer`, `g_appRunning`)
 
@@ -257,14 +259,14 @@ and runs a `recvfrom` loop. It delegates all business logic to
 ```
 recvfrom()
   │
-  ├─ n < 8 → drop (too small for header)
+  ├─ n < 28 → drop (too small for header+inner+tag) [g_wire.rxRunt]
   │
   ├─ Extract token (bytes 0-3), counter (bytes 4-7)
-  │  └─ svc.getDecryptInfo(token) → not found → drop
-  │  └─ counter <= lastCounter → drop (replay)
+  │  └─ svc.getDecryptInfo(token) → not found → drop [g_wire.rxUnknownToken]
+  │  └─ counter <= lastCounter → drop (replay) [g_replayDrop]
   │
   ├─ Decrypt (ChaCha20-Poly1305)
-  │  └─ Fail → drop
+  │  └─ Fail → drop [g_decryptFail]
   │
   ├─ svc.updatePostDecrypt(token, counter, ip, port)
   │
@@ -301,7 +303,16 @@ loop is kept allocation-free and minimally locked. If you touch
   `inet_ntop` / `std::string` allocation per packet).
 - Lock-free loop telemetry. `g_maxLoopUs` uses a thread-local
   high-water-mark so the atomic CAS loop is skipped on the ~99% of
-  packets below the running per-second peak.
+  packets below the running per-second peak. Because that mark never
+  resets, a reader that zeroes `g_maxLoopUs` only sees it rise again on a
+  new all-time record; `/api/debug` folds each windowed read into
+  `g_wire.peakLoopUs` and reports that as the true peak.
+- No new counters on the accepted-packet path. The per-message counters in
+  `app/wire_stats.h` are incremented only in the receiver's rejection
+  branches and in its cold (non-gamepad) dispatch branch, in
+  `ClientAdapter::sendEncryptedPacket` (no outbound message is reachable
+  from the gamepad path), and in `SessionService`'s audio paths, which run
+  at 50 Hz per controller under a lock they already hold.
 
 The conceptual pipeline above lists `getDecryptInfo` /
 `updatePostDecrypt` / `handleGamepadData` as distinct steps; on the
