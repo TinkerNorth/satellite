@@ -359,7 +359,20 @@ function initDashboard() {
   startSSE();
   loadDevices();
   checkBackendStatus();
+  startDriverPolling();
   dashRenderNetWarning();
+}
+
+let driverPollTimer = null;
+const DRIVER_POLL_MS = 15000;
+
+function startDriverPolling() {
+  if (driverPollTimer) return;
+  driverPollTimer = setInterval(() => {
+    const view = document.getElementById('view-dashboard');
+    if (!view || view.style.display === 'none') return;
+    checkBackendStatus();
+  }, DRIVER_POLL_MS);
 }
 
 async function dashRenderNetWarning() {
@@ -783,6 +796,11 @@ let lastBackends = null;
 
 function updateBackendPanel(backend, backendActive, backends) {
   if (backends !== undefined) lastBackends = backends;
+  renderBackendAlert(backend);
+  if (backends !== undefined) renderDriverBanner();
+}
+
+function renderBackendAlert(backend) {
   const alert = document.getElementById('backend-alert');
   if (!alert) return;
 
@@ -854,6 +872,112 @@ function populateBackendGuide(err, icon, extras) {
       `<p class="backend-guide-body">${esc(x.body)}</p>` +
       `<ol class="guide-steps">${guideStepsHtml(x)}</ol>`
     ).join('');
+  }
+}
+
+const DRIVER_BANNER_BACKENDS = ['vigem', 'hidmaestro'];
+const RELEASES_URL = 'https://github.com/TinkerNorth/satellite/releases';
+
+function driverDisplayName(id) {
+  return id === 'vigem' ? t('drivers.name.vigem') : t('drivers.name.hidmaestro');
+}
+
+function driverRow(b) {
+  const label = driverDisplayName(b.id) + (b.driverVersion ? ' ' + b.driverVersion : '');
+  if (!b.available) {
+    if (b.errorCode === 'HELPER_MISSING') {
+      return { level: 'err', text: t('drivers.row.helper-missing', [label]) };
+    }
+    if (b.errorCode === 'BUS_OPEN_FAILED') {
+      return { level: 'err', text: t('drivers.row.unresponsive', [label]) };
+    }
+    return { level: 'err', text: t('drivers.row.missing', [driverDisplayName(b.id)]) };
+  }
+  if (b.restartPending) {
+    return { level: 'warn', text: t('drivers.row.restart-pending', [label]) };
+  }
+  switch (b.versionState) {
+    case 'outdated': return { level: 'warn', text: t('drivers.row.outdated', [label, b.bundledVersion || '']) };
+    case 'newer':    return { level: 'ok',   text: t('drivers.row.newer',    [label, b.bundledVersion || '']) };
+    case 'current':  return { level: 'ok',   text: t('drivers.row.current',  [label]) };
+    default:         return { level: 'ok',   text: t('drivers.row.installed-unknown', [label]) };
+  }
+}
+
+function driverReleaseUrl() {
+  const cur = updatesState && updatesState.currentVersion;
+  if (cur && /^\d+\.\d+\.\d+$/.test(cur)) return RELEASES_URL + '/tag/v' + cur;
+  return RELEASES_URL + '/latest';
+}
+
+function renderDriverBanner() {
+  const banner = document.getElementById('driver-banner');
+  if (!banner) return;
+  const rows = Array.isArray(lastBackends)
+    ? DRIVER_BANNER_BACKENDS.map(id => lastBackends.find(b => b && b.id === id)).filter(Boolean)
+    : [];
+  if (rows.length !== DRIVER_BANNER_BACKENDS.length) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  const items = rows.map(b => ({ ...driverRow(b), icon: backendCopy(b.id).icon }));
+  const level = items.some(r => r.level === 'err') ? 'err'
+              : items.some(r => r.level === 'warn') ? 'warn' : 'ok';
+  const restartPending = rows.some(b => b.restartPending);
+
+  banner.classList.toggle('driver-warn', level === 'warn');
+  banner.classList.toggle('driver-err', level === 'err');
+  banner.style.display = 'flex';
+
+  const title = document.getElementById('driver-banner-title');
+  if (title) {
+    title.textContent = level === 'err' ? t('drivers.title.missing')
+                      : level === 'warn' ? t('drivers.title.attention')
+                      : t('drivers.title.ok');
+  }
+
+  const list = document.getElementById('driver-list');
+  if (list) {
+    setHTML(list, items.map(r =>
+      `<li class="driver-row-${r.level}"><span class="backend-dot backend-${r.level}"></span>` +
+      `<img src="${esc(r.icon)}" alt="" class="emoji-icon">${esc(r.text)}</li>`
+    ).join(''));
+  }
+
+  const detail = document.getElementById('driver-banner-detail');
+  const acts = document.getElementById('driver-banner-actions');
+  if (!detail || !acts) return;
+  acts.innerHTML = '';
+  if (level === 'ok') {
+    detail.textContent = '';
+    return;
+  }
+
+  const upd = updatesState;
+  const updState = upd ? upd.state : null;
+  const updateCarriesDrivers = upd && upd.info && upd.info.installMethod === 'self' &&
+    (updState === UPDATE_STATE_AVAILABLE || updState === UPDATE_STATE_DOWNLOADING ||
+     updState === UPDATE_STATE_VERIFYING || updState === UPDATE_STATE_DOWNLOADED);
+
+  if (restartPending) {
+    detail.textContent = t('drivers.detail.restart');
+  } else if (updateCarriesDrivers) {
+    detail.textContent = t('drivers.detail.via-update', [upd.info.version]);
+  } else {
+    detail.textContent = t('drivers.detail.rerun');
+  }
+
+  if (!updateCarriesDrivers && !restartPending) {
+    acts.appendChild(makeBtn('btn-start', t('drivers.btn.get-installer'), () => openExternal(driverReleaseUrl())));
+  }
+
+  const alertShown = document.getElementById('backend-alert');
+  if (alertShown && alertShown.classList.contains('show')) {
+    acts.appendChild(makeBtn('btn-undo', t('backend.guide.toggle'), () => {
+      if (!backendGuideOpen) toggleBackendGuide();
+      alertShown.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
   }
 }
 

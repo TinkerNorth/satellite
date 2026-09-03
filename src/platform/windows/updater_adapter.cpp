@@ -529,7 +529,7 @@ bool WindowsUpdaterAdapter::applyUpdate(const std::string& localPath, const Upda
     sei.fMask = SEE_MASK_NOASYNC;
     sei.lpVerb = "open";
     sei.lpFile = localPath.c_str();
-    sei.lpParameters = "/VERYSILENT /OTA /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
+    sei.lpParameters = "/VERYSILENT /NORESTART /OTA /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
     sei.nShow = SW_SHOWNORMAL;
 
     if (!ShellExecuteExA(&sei)) {

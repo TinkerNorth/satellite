@@ -87,19 +87,60 @@ Setup's standard `/SILENT` / `/VERYSILENT`:
 | *(none)* / `/VIGEM=auto` | Default. Install the bundled ViGEmBus only if missing or older than 1.22.0. |
 | `/VIGEM=bundled` | Force-run the bundled installer regardless of what's already there. |
 | `/VIGEM=skip` | Don't touch the driver. Use this on locked-down machines or when ViGEmBus is managed externally. |
-| *(none)* / `/HIDMAESTRO=auto` | Default. Deploy/refresh the bundled HIDMaestro driver (idempotent, no reboot). |
-| `/HIDMAESTRO=skip` | Don't touch the HIDMaestro driver. |
+| *(none)* / `/HIDMAESTRO=auto` | Default. Deploy/refresh the bundled HIDMaestro driver (idempotent, no reboot) and register the Satellite Controller Broker service. |
+| `/HIDMAESTRO=skip` | Don't touch the HIDMaestro driver, and don't register the broker service (an existing one is removed). |
 
-A reboot is sometimes required on first ViGEmBus install (MSI exit code 3010).
-The Satellite installer surfaces this as a "Restart now / later" prompt
-on the final wizard page. Until you reboot, virtual-gamepad output may not
-work even though the driver is installed. HIDMaestro never needs a reboot.
+A reboot is sometimes required on first ViGEmBus install or on an upgrade
+over an older ViGEmBus (MSI exit code 3010). The Satellite installer surfaces
+this as a "Restart now / later" prompt on the final wizard page. Until you
+reboot, virtual-gamepad output may not work even though the driver is
+installed. HIDMaestro never needs a reboot.
 
-At runtime, the first HIDMaestro controller you plug in each Satellite
-session shows one Windows elevation prompt: creating the virtual device
-needs administrator rights, which Satellite (running unelevated) delegates
-to `satellite-hm-helper.exe` for that session. ViGEm-only sessions never
-see a prompt.
+### Upgrading
+
+Running a newer `SatelliteSetup.exe` over an existing install (or letting
+the in-app updater do it) upgrades everything in place:
+
+- The app and web UI are replaced; your config, pairings and the autostart /
+  desktop-icon choices are kept.
+- **ViGEmBus** is upgraded only if the installed `ViGEmBus.sys` is older than
+  the bundled 1.22.0 (compared by file version). Same or newer is left alone.
+  An upgrade that replaces a loaded kernel driver can require a restart.
+- **HIDMaestro** is re-deployed from the bundled helper every time the
+  component is selected. The SDK compares the installed driver's manifest hash
+  to the embedded one, so a same-version run is a ~50 ms no-op and a bumped
+  pin is a real redeploy. No reboot.
+- Component selection follows Inno Setup's memory of your previous install: a
+  "Full" install picks up new components (HIDMaestro was added in 2.0.0); a
+  "Custom" install keeps exactly the components you picked before, so the new
+  driver is not added silently. The dashboard tells you either way.
+- The in-app updater runs the installer `/VERYSILENT /NORESTART`, so it never
+  reboots the PC by itself. Driver failures are written to the setup log under
+  `%TEMP%` instead of raising a dialog nobody is there to dismiss.
+
+The dashboard shows a **driver banner** on Windows: which of the two drivers is
+installed, its version against the version this Satellite build bundles, and
+whether ViGEmBus is waiting on a restart to finish an upgrade. It stays a small
+green strip while everything is current and turns amber or red with the fix as
+the action: install the pending Satellite update (which carries both drivers)
+or re-run the installer for the running version.
+
+Creating a HIDMaestro virtual device needs administrator rights, and
+Satellite itself runs unelevated. Setup therefore registers the bundled
+`satellite-hm-helper.exe` as the **Satellite Controller Broker** service
+(`SatelliteHmBroker`, LocalSystem, demand-start). When a HIDMaestro
+controller connects, Satellite reaches the broker over a named pipe, the
+broker creates the device and hands the shared-memory handles back, and no
+elevation prompt appears, whether or not anyone is at the PC. The service
+starts on the first connection (Windows' named-pipe service trigger, or
+Satellite starting it directly, which setup permits) and exits after five
+idle minutes, so it costs nothing while no controller is plugged. The broker
+admits only interactive logons and only the installed `satellite.exe`
+beside it; Satellite in turn accepts the pipe only when its server is the
+registered service's process. If the service is missing (installed with
+`/HIDMAESTRO=skip`, or removed by hand), Satellite falls back to spawning the
+helper elevated for the session, which is the one case that still shows a
+UAC prompt. ViGEm-only sessions never involve either path.
 
 ### Controller audio
 

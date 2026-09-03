@@ -39,6 +39,13 @@
 ;  pnputil, no reboot). Satellite runs with either driver, both, or none
 ;  (controller types degrade accordingly).
 ;
+;  The same helper is registered as the LocalSystem service SatelliteHmBroker
+;  (demand-start; the SCM's named-pipe trigger or satellite itself starts it,
+;  and it exits after five idle minutes). Creating a HIDMaestro device needs
+;  an elevated token, and the service is what lets the unelevated satellite
+;  get one without a UAC prompt at plug time. Without it satellite falls back
+;  to spawning the helper `runas` (one prompt per session).
+;
 ;  Setup installs NO kernel driver for HIDMaestro. One runtime feature does:
 ;  controller audio (the emulated DualSense / DualShock 4 v2 presenting its
 ;  own microphone and speaker to Windows) is served over HIDMaestro's
@@ -319,6 +326,58 @@ var
     PreviousDesktopIcon: Boolean;
     IsFirstInstall: Boolean;
 
+const
+    BrokerServiceName = 'SatelliteHmBroker';
+    BrokerPipeName = 'satellite-hm-broker';
+    BrokerServiceSddl = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;WD)';
+
+function BrokerServiceExists: Boolean;
+begin
+    Result := RegKeyExists(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Services\' + BrokerServiceName);
+end;
+
+procedure RunSc(const Args: String);
+var
+    ResultCode: Integer;
+begin
+    Exec(ExpandConstant('{sys}\sc.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Log('sc.exe ' + Args + ' -> ' + IntToStr(ResultCode));
+end;
+
+procedure StopBrokerService;
+var
+    ResultCode: Integer;
+begin
+    if BrokerServiceExists then begin
+        RunSc('stop ' + BrokerServiceName);
+        Sleep(1500);
+    end;
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM satellite-hm-helper.exe', '', SW_HIDE,
+         ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure RemoveBrokerService;
+begin
+    if not BrokerServiceExists then Exit;
+    StopBrokerService;
+    RunSc('delete ' + BrokerServiceName);
+end;
+
+procedure RegisterBrokerService;
+var
+    BinPath: String;
+begin
+    BinPath := '"\"' + ExpandConstant('{app}\satellite-hm-helper.exe') + '\" service"';
+    if BrokerServiceExists then
+        RunSc('config ' + BrokerServiceName + ' binPath= ' + BinPath + ' start= demand obj= LocalSystem DisplayName= "Satellite Controller Broker"')
+    else
+        RunSc('create ' + BrokerServiceName + ' binPath= ' + BinPath + ' start= demand obj= LocalSystem DisplayName= "Satellite Controller Broker"');
+    RunSc('description ' + BrokerServiceName + ' "Creates Satellite''s virtual HIDMaestro controllers for the signed-in user so Satellite never needs to run elevated. Starts on demand and exits when idle."');
+    RunSc('sdset ' + BrokerServiceName + ' ' + BrokerServiceSddl);
+    RunSc('triggerinfo ' + BrokerServiceName + ' start/namedpipe/' + BrokerPipeName);
+    RunSc('failure ' + BrokerServiceName + ' reset= 86400 actions= restart/5000/restart/30000//');
+end;
+
 function ShouldShowAutostartTask: Boolean;
 begin
     // Show the autostart task ONLY on a first install. On upgrade we
@@ -432,6 +491,11 @@ begin
     Result := True;
 end;
 
+function ShouldRegisterBroker: Boolean;
+begin
+    Result := ShouldRunHidMaestro;
+end;
+
 // Returns True iff we should run the bundled ViGEmBus installer.
 // Used both by the [Files] Check= (gates extraction) and the post-install
 // step (gates execution). Both must agree.
@@ -487,7 +551,9 @@ begin
     Result := Result + #13#10 + #13#10
             + 'HIDMaestro is a user-mode driver that adds virtual DualSense and'
             + ' Switch Pro controllers (and covers DualShock 4 / Xbox 360 when'
-            + ' ViGEmBus is absent). No reboot needed.' + #13#10;
+            + ' ViGEmBus is absent). No reboot needed. Setup also registers the'
+            + ' Satellite Controller Broker service so no elevation prompt is'
+            + ' needed when a controller connects.' + #13#10;
     if DetectedHm then
         Result := Result + 'Already deployed here; the bundled v' + '{#HmVersion}' + ' payload will refresh it.'
     else
@@ -551,6 +617,14 @@ const
     VigemMaxAttempts = 4;
     VigemRetryDelayMs = 8000;
 
+procedure DriverNotice(const Msg: String; Typ: TMsgBoxType);
+begin
+    if WantsOTARelaunch then
+        Log('driver notice (OTA, suppressed): ' + Msg)
+    else
+        MsgBox(Msg, Typ, MB_OK);
+end;
+
 procedure RunBundledViGEm;
 var
     InstallerPath: String;
@@ -566,11 +640,11 @@ begin
     repeat
         Inc(Attempt);
         if not Exec(InstallerPath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-            MsgBox('Could not launch the bundled ViGEmBus installer. Satellite ' +
+            DriverNotice('Could not launch the bundled ViGEmBus installer. Satellite ' +
                    'will still install, but you must install ViGEmBus manually ' +
                    'before connecting a sender.' + #13#10 + #13#10 +
                    'Get it from: https://github.com/nefarius/ViGEmBus/releases',
-                   mbInformation, MB_OK);
+                   mbInformation);
             Exit;
         end;
         if ResultCode <> VigemBusyCode then
@@ -587,23 +661,23 @@ begin
         1641, 3010:
             RebootNeeded := True;
         1602:
-            MsgBox('ViGEmBus installation was cancelled. Install it manually ' +
+            DriverNotice('ViGEmBus installation was cancelled. Install it manually ' +
                    'before using virtual gamepads, or re-run the Satellite ' +
-                   'installer.', mbInformation, MB_OK);
+                   'installer.', mbInformation);
         1603:
-            MsgBox('ViGEmBus installation failed (fatal error). Check the ' +
+            DriverNotice('ViGEmBus installation failed (fatal error). Check the ' +
                    'installer log under %TEMP% and install manually before ' +
-                   'using virtual gamepads.', mbError, MB_OK);
+                   'using virtual gamepads.', mbError);
         VigemBusyCode:
-            MsgBox('Another installation (often Windows Update) was still in ' +
+            DriverNotice('Another installation (often Windows Update) was still in ' +
                    'progress, so ViGEmBus could not be installed right now. ' +
                    'Let any pending updates finish, then re-run the Satellite ' +
-                   'installer to add the driver.', mbInformation, MB_OK);
+                   'installer to add the driver.', mbInformation);
         else begin
             Msg := 'ViGEmBus installer returned exit code ' + IntToStr(ResultCode) + '.' + #13#10 +
                    'Satellite will still install, but virtual gamepad output ' +
                    'may not work until ViGEmBus is installed manually.';
-            MsgBox(Msg, mbError, MB_OK);
+            DriverNotice(Msg, mbError);
         end;
     end;
 end;
@@ -618,18 +692,24 @@ begin
     WizardForm.FilenameLabel.Caption := '{#HmHelperExe}';
 
     if not Exec(HelperPath, 'install-driver', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-        MsgBox('Could not launch the HIDMaestro helper. Satellite will still ' +
+        DriverNotice('Could not launch the HIDMaestro helper. Satellite will still ' +
                'install; DualSense / Switch Pro controller types stay ' +
                'unavailable until the driver is deployed (re-run this ' +
-               'installer to retry).', mbInformation, MB_OK);
+               'installer to retry).', mbInformation);
         Exit;
     end;
     if ResultCode <> 0 then
-        MsgBox('HIDMaestro driver deployment returned exit code ' +
+        DriverNotice('HIDMaestro driver deployment returned exit code ' +
                IntToStr(ResultCode) + '. Satellite will still install; ' +
                'DualSense / Switch Pro controller types stay unavailable ' +
                'until the driver is deployed (check the setup log under ' +
-               '%TEMP% and re-run this installer to retry).', mbInformation, MB_OK);
+               '%TEMP% and re-run this installer to retry).', mbInformation);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+    Result := '';
+    StopBrokerService;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -639,6 +719,10 @@ begin
         RunBundledViGEm;
     if ShouldRunHidMaestro then
         RunHidMaestroDeploy;
+    if ShouldRegisterBroker then
+        RegisterBrokerService
+    else
+        RemoveBrokerService;
 end;
 
 function NeedRestart: Boolean;
@@ -824,8 +908,9 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-    if CurUninstallStep = usUninstall then
-        MaybeRemoveHidMaestro
-    else if CurUninstallStep = usPostUninstall then
+    if CurUninstallStep = usUninstall then begin
+        RemoveBrokerService;
+        MaybeRemoveHidMaestro;
+    end else if CurUninstallStep = usPostUninstall then
         MaybeRemoveVigem;
 end;

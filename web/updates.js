@@ -59,6 +59,7 @@ function updatesRenderAll() {
   updatesRender('dashboard-update-slot');
   updatesRender('settings-update-slot');
   updatesRenderSettingsFields();
+  if (typeof renderDriverBanner === 'function') renderDriverBanner();
 }
 
 function updatesRender(slotId) {

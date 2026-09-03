@@ -572,8 +572,64 @@ static void test_buildBackendsJson_parses_and_agrees_with_itself() {
     EXPECT_EQ(hmDs4["motionRequires"].get<std::string>(), std::string("hidmaestro>=1.7"));
 }
 
+static void test_driverVersionState_derivation() {
+    TEST("driverVersionState: both sides known compare numerically");
+    EXPECT_EQ(std::string(driverVersionState("1.22.0.0", "1.22.0")),
+              std::string(DRIVER_VERSION_STATE_CURRENT));
+    EXPECT_EQ(std::string(driverVersionState("1.21.442.0", "1.22.0")),
+              std::string(DRIVER_VERSION_STATE_OUTDATED));
+    EXPECT_EQ(std::string(driverVersionState("1.4.7.12", "1.4.7.12")),
+              std::string(DRIVER_VERSION_STATE_CURRENT));
+    EXPECT_EQ(std::string(driverVersionState("1.4.8.0", "1.4.7.12")),
+              std::string(DRIVER_VERSION_STATE_NEWER));
+
+    TEST("driverVersionState: an unread or unpinned side is unknown, never inferred");
+    EXPECT_EQ(std::string(driverVersionState("", "1.22.0")),
+              std::string(DRIVER_VERSION_STATE_UNKNOWN));
+    EXPECT_EQ(std::string(driverVersionState("1.22.0", "")),
+              std::string(DRIVER_VERSION_STATE_UNKNOWN));
+    EXPECT_EQ(std::string(driverVersionState("", "")), std::string(DRIVER_VERSION_STATE_UNKNOWN));
+}
+
+static void test_buildBackendsJson_driver_version_fields() {
+    TEST("buildBackendsJson: driverVersion/bundledVersion/versionState/restartPending ride each "
+         "entry");
+    std::vector<BackendRuntimeStatus> statuses = {
+        {BACKEND_ID_VIGEM, true, "", "1.21.442.0", "1.22.0", true},
+        {BACKEND_ID_HIDMAESTRO, true, "", "1.4.7.12", "1.4.7.12", false},
+    };
+    Json j = Json::parse(buildBackendsJson(statuses, true));
+    EXPECT(j.is_array() && j.size() == 2);
+    const Json& v = j[0];
+    EXPECT_EQ(v["driverVersion"].get<std::string>(), std::string("1.21.442.0"));
+    EXPECT_EQ(v["bundledVersion"].get<std::string>(), std::string("1.22.0"));
+    EXPECT_EQ(v["versionState"].get<std::string>(), std::string("outdated"));
+    EXPECT_EQ(v["restartPending"].get<bool>(), true);
+    const Json& hm = j[1];
+    EXPECT_EQ(hm["driverVersion"].get<std::string>(), std::string("1.4.7.12"));
+    EXPECT_EQ(hm["versionState"].get<std::string>(), std::string("current"));
+    EXPECT_EQ(hm["restartPending"].get<bool>(), false);
+
+    TEST("buildBackendsJson: a host that read nothing reports nulls and unknown");
+    Json u = Json::parse(buildBackendsJson({{BACKEND_ID_UINPUT, true, ""}}, true));
+    EXPECT(u[0]["driverVersion"].is_null());
+    EXPECT(u[0]["bundledVersion"].is_null());
+    EXPECT_EQ(u[0]["versionState"].get<std::string>(), std::string("unknown"));
+    EXPECT_EQ(u[0]["restartPending"].get<bool>(), false);
+
+    TEST("buildBackendsJson: a missing driver still carries the bundled version it would get");
+    Json m = Json::parse(buildBackendsJson(
+        {{BACKEND_ID_VIGEM, false, "DRIVER_MISSING", "", "1.22.0", false}}, true));
+    EXPECT(m[0]["driverVersion"].is_null());
+    EXPECT_EQ(m[0]["bundledVersion"].get<std::string>(), std::string("1.22.0"));
+    EXPECT_EQ(m[0]["versionState"].get<std::string>(), std::string("unknown"));
+    EXPECT_EQ(m[0]["errorCode"].get<std::string>(), std::string("DRIVER_MISSING"));
+}
+
 int main() {
     test_latencyTier_names_and_ranks();
+    test_driverVersionState_derivation();
+    test_buildBackendsJson_driver_version_fields();
     test_buildBackendsJson_parses_and_agrees_with_itself();
     test_estimateCost_matches_the_documented_table();
     test_derived_tier_separates_rows_within_one_backend();
