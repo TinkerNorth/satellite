@@ -4,7 +4,9 @@
 // (satellite-hm-helper.exe). Satellite stays asInvoker: the helper carries the
 // HIDMaestro SDK (driver install, SwDevice + Global\ section creation — all of
 // which need an elevated token) and hands duplicated section/event handles
-// back over a private named pipe, one JSON line per request. Spawning it
+// back over a named pipe, one JSON line per request. Two ways to reach it, in
+// order: the SatelliteHmBroker service setup registers (LocalSystem, demand-
+// start, well-known pipe; no prompt), else a helper spawned `runas`, which
 // shows one UAC prompt per session, deferred to the first HIDMaestro plug.
 #pragma once
 
@@ -27,6 +29,7 @@ bool helperBinaryPresent();
 // deploy) or the hidmaestro.inf_* driver-store directories. Non-admin.
 bool driverInstalled();
 std::string installedDriverVersion();
+bool brokerServiceRegistered();
 
 class HelperClient : public IHidMaestroProvisioner {
   public:
@@ -43,6 +46,9 @@ class HelperClient : public IHidMaestroProvisioner {
 
   private:
     bool startLocked();
+    bool connectBrokerLocked();
+    bool spawnHelperLocked();
+    bool helloLocked();
     void stopLocked(bool sendShutdown);
     bool requestLocked(const std::string& line, std::string& response);
 

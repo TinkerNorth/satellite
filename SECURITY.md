@@ -59,11 +59,21 @@ In scope:
 - The pairing flow (PIN paths A/B on `:9443`) + the loopback-only admin
   HTTP/SSE web UI exposed by `satellite`.
 
+- On Windows, the `SatelliteHmBroker` service boundary: the LocalSystem
+  broker that creates HIDMaestro virtual devices for the unelevated
+  `satellite.exe` over `\\.\pipe\satellite-hm-broker` (interactive-logon
+  DACL, client image-path check; see `docs/architecture.md`, "Elevation
+  story"). A way for a non-interactive or remote caller to reach it, or to
+  obtain anything beyond virtual controller / audio device creation through
+  it, is in scope.
+
 Out of scope:
 
 - Anything that requires the attacker to already have local privileges
   on the user's PC (root, Administrator, ability to drop binaries in
-  `%APPDATA%`, etc.).
+  `%APPDATA%`, etc.). A process already running as the signed-in user can
+  reach the broker by design; that is the same trust it already holds over
+  the user's own session.
 - The vendored ViGEmBus driver itself; file with [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus).
 - The bundled HIDMaestro driver/SDK itself; file with [hifihedgehog/HIDMaestro](https://github.com/hifihedgehog/HIDMaestro).
 - DoS via raw network flooding. UDP without rate-limit is a known

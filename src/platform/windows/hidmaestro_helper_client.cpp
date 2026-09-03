@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "hidmaestro_helper_client.h"
 
+#include "app/app_state.h"
 #include "core/driver_inf.h"
 #include "core/json.h"
 #include "core/semver.h"
 #include "hidmaestro_report.h"
 
 #include <shellapi.h>
+#include <winsvc.h>
 
 #include <fstream>
 #include <random>
@@ -20,6 +22,9 @@ namespace {
 // the connect budget additionally covers a user hesitating at the UAC prompt.
 constexpr DWORD kConnectTimeoutMs = 120000;
 constexpr DWORD kRequestTimeoutMs = 120000;
+constexpr DWORD kBrokerConnectTimeoutMs = 10000;
+constexpr const wchar_t* kBrokerServiceName = L"SatelliteHmBroker";
+constexpr const wchar_t* kBrokerPipe = L"\\\\.\\pipe\\satellite-hm-broker";
 
 std::wstring modulePathDirFile(const wchar_t* filename) {
     wchar_t buf[MAX_PATH];
@@ -48,6 +53,30 @@ bool driverStorePresent() {
     return true;
 }
 
+DWORD brokerServicePid(bool tryStart) {
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (scm == nullptr) return 0;
+    DWORD access = SERVICE_QUERY_STATUS | (tryStart ? SERVICE_START : 0);
+    SC_HANDLE svc = OpenServiceW(scm, kBrokerServiceName, access);
+    if (svc == nullptr && tryStart)
+        svc = OpenServiceW(scm, kBrokerServiceName, SERVICE_QUERY_STATUS);
+    if (svc == nullptr) {
+        CloseServiceHandle(scm);
+        return 0;
+    }
+    SERVICE_STATUS_PROCESS ssp{};
+    DWORD needed = 0;
+    DWORD pid = 0;
+    if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&ssp),
+                             sizeof(ssp), &needed)) {
+        if (ssp.dwCurrentState == SERVICE_STOPPED && tryStart) StartServiceW(svc, 0, nullptr);
+        if (ssp.dwCurrentState == SERVICE_RUNNING) pid = ssp.dwProcessId;
+    }
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return pid;
+}
+
 std::string readFileBytes(const std::wstring& path) {
     std::ifstream f(path.c_str(), std::ios::binary);
     if (!f.is_open()) return "";
@@ -61,6 +90,16 @@ std::wstring helperBinaryPath() { return modulePathDirFile(L"satellite-hm-helper
 bool helperBinaryPresent() {
     const std::wstring path = helperBinaryPath();
     return !path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool brokerServiceRegistered() {
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (scm == nullptr) return false;
+    SC_HANDLE svc = OpenServiceW(scm, kBrokerServiceName, SERVICE_QUERY_STATUS);
+    const bool exists = svc != nullptr;
+    if (svc != nullptr) CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return exists;
 }
 
 bool driverInstalled() {
@@ -115,6 +154,71 @@ bool HelperClient::startLocked() {
     const std::wstring helper = helperBinaryPath();
     if (helper.empty() || GetFileAttributesW(helper.c_str()) == INVALID_FILE_ATTRIBUTES)
         return false;
+    if (connectBrokerLocked()) {
+        logMsg(LogLevel::INFO, "hidmaestro", "Connected to the SatelliteHmBroker service");
+        return true;
+    }
+    if (!spawnHelperLocked()) return false;
+    logMsg(LogLevel::INFO, "hidmaestro", "Spawned an elevated helper for this session");
+    return true;
+}
+
+bool HelperClient::connectBrokerLocked() {
+    if (!brokerServiceRegistered()) return false;
+
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    const ULONGLONG deadline = GetTickCount64() + kBrokerConnectTimeoutMs;
+    bool startAttempted = false;
+    while (true) {
+        pipe = CreateFileW(kBrokerPipe, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_OVERLAPPED, nullptr);
+        if (pipe != INVALID_HANDLE_VALUE) break;
+        const DWORD err = GetLastError();
+        if (err == ERROR_PIPE_BUSY) {
+            WaitNamedPipeW(kBrokerPipe, 1000);
+        } else if (err == ERROR_FILE_NOT_FOUND) {
+            if (!startAttempted) {
+                brokerServicePid(/*tryStart=*/true);
+                startAttempted = true;
+            }
+            Sleep(250);
+        } else {
+            return false;
+        }
+        if (GetTickCount64() >= deadline) return false;
+    }
+
+    ULONG serverPid = 0;
+    if (!GetNamedPipeServerProcessId(pipe, &serverPid) || serverPid == 0 ||
+        serverPid != brokerServicePid(/*tryStart=*/false)) {
+        CloseHandle(pipe);
+        return false;
+    }
+
+    HANDLE ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ioEvent == nullptr) {
+        CloseHandle(pipe);
+        return false;
+    }
+    pipe_ = pipe;
+    ioEvent_ = ioEvent;
+    helperProcess_ = nullptr;
+    if (!helloLocked()) {
+        stopLocked(false);
+        return false;
+    }
+    return true;
+}
+
+bool HelperClient::helloLocked() {
+    std::string response;
+    if (!requestLocked("{\"op\":\"hello\",\"protocol\":1}", response)) return false;
+    Json j;
+    return jsonParse(response, j) && jsonBool(j, "ok");
+}
+
+bool HelperClient::spawnHelperLocked() {
+    const std::wstring helper = helperBinaryPath();
 
     // Unguessable per-session pipe name; the connecting client's PID is
     // verified against the process we spawned before any request is sent.
@@ -192,13 +296,7 @@ bool HelperClient::startLocked() {
     ioEvent_ = ioEvent;
     helperProcess_ = sei.hProcess;
 
-    std::string response;
-    if (!requestLocked("{\"op\":\"hello\",\"protocol\":1}", response)) {
-        stopLocked(false);
-        return false;
-    }
-    Json j;
-    if (!jsonParse(response, j) || !jsonBool(j, "ok")) {
+    if (!helloLocked()) {
         stopLocked(false);
         return false;
     }
@@ -209,7 +307,7 @@ void HelperClient::stopLocked(bool sendShutdown) {
     if (pipe_ != INVALID_HANDLE_VALUE && sendShutdown) {
         std::string response;
         requestLocked("{\"op\":\"shutdown\"}", response);
-        WaitForSingleObject(helperProcess_, 5000);
+        if (helperProcess_) WaitForSingleObject(helperProcess_, 5000);
     }
     if (pipe_ != INVALID_HANDLE_VALUE) CloseHandle(pipe_);
     pipe_ = INVALID_HANDLE_VALUE;

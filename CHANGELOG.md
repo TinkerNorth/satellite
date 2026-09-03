@@ -13,6 +13,31 @@ working. The HIDMaestro backend, the composite audio personas and the
 unified build story (one script contract shared by CI and local builds)
 land here too.
 
+No elevation prompt when a controller connects. Creating a HIDMaestro
+virtual device needs an administrator token, and until now Satellite got
+one by spawning `satellite-hm-helper.exe` with `runas` on the first
+HIDMaestro plug of each session: one UAC prompt, at the exact moment
+nobody is at the PC, because the pad is on the phone across the room. Setup
+now registers the same helper as the LocalSystem service `SatelliteHmBroker`
+("Satellite Controller Broker"), demand-start, and Satellite talks to it over
+the well-known pipe `\\.\pipe\satellite-hm-broker` instead. Nothing about
+the hot path changes; the broker only does what the spawned helper did
+(create the SwDevice, duplicate the section and event handles into the
+satellite process, tear down on disconnect). What changes is who holds the
+token: the pipe's DACL admits interactive logons only, the broker admits a
+connection only when the client is the installed `satellite.exe` beside it,
+and Satellite accepts the pipe only when its server PID is the registered
+service's PID, so a squatted pipe name is refused rather than trusted.
+Setup grants interactive users SERVICE_START and installs a named-pipe
+service trigger, so the service is started by whoever connects first and
+exits after five idle minutes; a PC with no controller plugged runs no
+broker. The `runas` path stays as the fallback when the service is absent
+(`/HIDMAESTRO=skip` installs, hand-removed service, a second concurrent
+session refused as `busy`), so the one remaining UAC prompt is the one an
+administrator opted into. The helper gains `service` (SCM-hosted) and
+`broker` (console, for debugging) modes; `hello` answers `"broker":true`
+over the service so the log says which path a session took.
+
 Driver status on the Windows dashboard, and an upgrade path that never reboots
 behind your back. `GET /api/backend/status` and `GET /api/server/capabilities`
 now fill each backend's `driverVersion` on Windows (the ViGEmBus.sys file

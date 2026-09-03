@@ -83,6 +83,7 @@ try {
     Assert (Test-Path (Join-Path $installDir 'satellite.exe')) 'satellite.exe installed'
     Assert (Test-Path (Join-Path $installDir 'satellite-hm-helper.exe')) 'HIDMaestro helper installed'
     Assert ($null -ne (Get-ChildItem -Path $installDir -Recurse -Filter 'dashboard.js' -ErrorAction SilentlyContinue | Select-Object -First 1)) 'web UI assets installed'
+    Assert ($null -eq (Get-Service -Name 'SatelliteHmBroker' -ErrorAction SilentlyContinue)) 'broker service not registered under /HIDMAESTRO=skip'
     $unins = Get-ChildItem -Path $installDir -Filter 'unins*.exe' -ErrorAction SilentlyContinue
     Assert ($null -ne $unins -and $unins.Count -ge 1) 'uninstaller present'
 
@@ -134,6 +135,7 @@ try {
     Assert (-not (Test-Path (Join-Path $installDir 'satellite.exe'))) 'satellite.exe removed'
     Assert (-not (Test-Path $installDir)) 'install directory removed'
     Assert ($null -eq (Get-ArpKey)) 'ARP key removed'
+    Assert ($null -eq (Get-Service -Name 'SatelliteHmBroker' -ErrorAction SilentlyContinue)) 'broker service absent after uninstall'
 }
 finally {
     if (Test-Path $installDir) {

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.IO.MemoryMappedFiles;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using HIDMaestro;
@@ -17,6 +20,8 @@ internal static class Program
             {
                 > 0 when args[0] == "serve" => Serve(ParseOption(args, "--pipe"),
                                                      ParsePid(args)),
+                > 0 when args[0] == "service" => ServiceHost.Run(),
+                > 0 when args[0] == "broker" => RunBrokerConsole(),
                 > 0 when args[0] == "install-driver" => InstallDriver(),
                 > 0 when args[0] == "remove-driver" => RemoveDriver(),
                 > 0 when args[0] == "cleanup" => Cleanup(),
@@ -34,7 +39,7 @@ internal static class Program
     {
         Console.Error.WriteLine(
             "usage: satellite-hm-helper <serve --pipe <name> --parent-pid <pid>" +
-            " | install-driver | remove-driver | cleanup>");
+            " | service | broker | install-driver | remove-driver | cleanup>");
         return 2;
     }
 
@@ -99,28 +104,405 @@ internal static class Program
             ".", pipeName, System.IO.Pipes.PipeDirection.InOut);
         pipe.Connect(30000);
 
+        Pump(pipe, session);
+        return 0;
+    }
+
+    private static void Pump(Stream pipe, Session session)
+    {
         using var reader = new StreamReader(pipe, new UTF8Encoding(false));
         using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
 
         while (true)
         {
-            string? line = reader.ReadLine();
-            if (line == null) break; // satellite closed the pipe
+            string? line;
+            try
+            {
+                line = reader.ReadLine();
+            }
+            catch (IOException)
+            {
+                break;
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            if (line == null) break;
             string response = session.Handle(line, out bool quit);
-            writer.Write(response);
-            writer.Write('\n');
+            try
+            {
+                writer.Write(response);
+                writer.Write('\n');
+            }
+            catch (IOException)
+            {
+                break;
+            }
             if (quit) break;
         }
+    }
+
+    private static int RunBrokerConsole()
+    {
+        var broker = new Broker(idleExit: false);
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            broker.Stop();
+        };
+        Console.Error.WriteLine($"satellite-hm-helper: broker listening on \\\\.\\pipe\\{Broker.PipeName}");
+        broker.Run();
         return 0;
+    }
+
+    internal sealed class Broker
+    {
+        public const string PipeName = "satellite-hm-broker";
+        private static readonly TimeSpan IdleExitAfter = TimeSpan.FromMinutes(5);
+
+        private readonly bool _idleExit;
+        private readonly string _expectedClient;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly object _lock = new();
+        private bool _busy;
+        private Timer? _idle;
+
+        public Broker(bool idleExit)
+        {
+            _idleExit = idleExit;
+            string dir = Path.GetDirectoryName(Environment.ProcessPath ?? "") ?? AppContext.BaseDirectory;
+            _expectedClient = Path.GetFullPath(Path.Combine(dir, "satellite.exe"));
+        }
+
+        public void Stop()
+        {
+            _stop.Cancel();
+        }
+
+        public void Run()
+        {
+            ArmIdleTimer();
+            while (!_stop.IsCancellationRequested)
+            {
+                NamedPipeServerStream pipe;
+                try
+                {
+                    pipe = CreateServerPipe();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"satellite-hm-helper: pipe create failed: {ex.Message}");
+                    if (_stop.Token.WaitHandle.WaitOne(1000)) break;
+                    continue;
+                }
+                try
+                {
+                    pipe.WaitForConnectionAsync(_stop.Token).GetAwaiter().GetResult();
+                }
+                catch (OperationCanceledException)
+                {
+                    pipe.Dispose();
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"satellite-hm-helper: accept failed: {ex.Message}");
+                    pipe.Dispose();
+                    continue;
+                }
+                var t = new Thread(() => ServeClient(pipe)) { IsBackground = true, Name = "hm-broker-client" };
+                t.Start();
+            }
+        }
+
+        private NamedPipeServerStream CreateServerPipe()
+        {
+            var security = new PipeSecurity();
+            security.AddAccessRule(new PipeAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                PipeAccessRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new PipeAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                PipeAccessRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new PipeAccessRule(
+                new SecurityIdentifier(WellKnownSidType.InteractiveSid, null),
+                PipeAccessRights.ReadWrite, AccessControlType.Allow));
+            using (var self = WindowsIdentity.GetCurrent())
+            {
+                if (self.User != null)
+                    security.AddAccessRule(new PipeAccessRule(self.User, PipeAccessRights.FullControl,
+                                                              AccessControlType.Allow));
+            }
+            return NamedPipeServerStreamAcl.Create(
+                PipeName, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 64 * 1024, 64 * 1024, security);
+        }
+
+        private void ServeClient(NamedPipeServerStream pipe)
+        {
+            using (pipe)
+            {
+                int pid = 0;
+                string? reason = Authorize(pipe, out pid);
+                if (reason != null)
+                {
+                    WriteLine(pipe, Error(reason));
+                    return;
+                }
+
+                lock (_lock)
+                {
+                    if (_busy)
+                    {
+                        WriteLine(pipe, Error("busy"));
+                        return;
+                    }
+                    _busy = true;
+                    _idle?.Change(Timeout.Infinite, Timeout.Infinite);
+                }
+
+                try
+                {
+                    using var client = System.Diagnostics.Process.GetProcessById(pid);
+                    using var session = new Session(pid, broker: true);
+                    client.EnableRaisingEvents = true;
+                    client.Exited += (_, _) =>
+                    {
+                        try { pipe.Dispose(); } catch { /* unblocks the reader */ }
+                    };
+                    if (client.HasExited) return;
+                    Pump(pipe, session);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"satellite-hm-helper: session ended: {ex.Message}");
+                }
+                finally
+                {
+                    lock (_lock)
+                    {
+                        _busy = false;
+                    }
+                    ArmIdleTimer();
+                }
+            }
+        }
+
+        private string? Authorize(NamedPipeServerStream pipe, out int pid)
+        {
+            pid = 0;
+            if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out uint upid))
+                return "client pid unavailable";
+            pid = checked((int)upid);
+            if (!ProcessIdToSessionId(upid, out uint session) || session == 0)
+                return "client not interactive";
+            string? path = ImagePath(upid);
+            if (path == null) return "client image unavailable";
+            if (!string.Equals(Path.GetFullPath(path), _expectedClient, StringComparison.OrdinalIgnoreCase))
+                return "client not satellite.exe";
+            return null;
+        }
+
+        private static string? ImagePath(uint pid)
+        {
+            nint h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, checked((int)pid));
+            if (h == 0) return null;
+            try
+            {
+                var sb = new StringBuilder(32768);
+                int len = sb.Capacity;
+                return QueryFullProcessImageNameW(h, 0, sb, ref len) ? sb.ToString(0, len) : null;
+            }
+            finally
+            {
+                CloseHandle(h);
+            }
+        }
+
+        private static void WriteLine(Stream pipe, string line)
+        {
+            try
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(line + "\n");
+                pipe.Write(bytes, 0, bytes.Length);
+                pipe.Flush();
+            }
+            catch { /* client gone */ }
+        }
+
+        private void ArmIdleTimer()
+        {
+            if (!_idleExit) return;
+            lock (_lock)
+            {
+                _idle ??= new Timer(_ =>
+                {
+                    lock (_lock)
+                    {
+                        if (_busy) return;
+                    }
+                    Stop();
+                }, null, Timeout.Infinite, Timeout.Infinite);
+                _idle.Change(IdleExitAfter, Timeout.InfiniteTimeSpan);
+            }
+        }
+
+        private static string Error(string message)
+        {
+            using var stream = new MemoryStream();
+            using (var w = new Utf8JsonWriter(stream))
+            {
+                w.WriteStartObject();
+                w.WriteBoolean("ok", false);
+                w.WriteString("error", message);
+                w.WriteEndObject();
+            }
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+
+        private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeClientProcessId(nint pipe, out uint clientPid);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool ProcessIdToSessionId(uint pid, out uint sessionId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern nint OpenProcess(uint access, bool inherit, int pid);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool QueryFullProcessImageNameW(nint process, uint flags, StringBuilder name,
+                                                              ref int size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(nint handle);
+    }
+
+    internal static class ServiceHost
+    {
+        public const string ServiceName = "SatelliteHmBroker";
+
+        private const int SERVICE_WIN32_OWN_PROCESS = 0x10;
+        private const int SERVICE_STOPPED = 1;
+        private const int SERVICE_START_PENDING = 2;
+        private const int SERVICE_STOP_PENDING = 3;
+        private const int SERVICE_RUNNING = 4;
+        private const int SERVICE_ACCEPT_STOP = 1;
+        private const int SERVICE_ACCEPT_SHUTDOWN = 4;
+        private const int SERVICE_CONTROL_STOP = 1;
+        private const int SERVICE_CONTROL_INTERROGATE = 4;
+        private const int SERVICE_CONTROL_SHUTDOWN = 5;
+        private const int ERROR_CALL_NOT_IMPLEMENTED = 120;
+        private const int ERROR_FAILED_SERVICE_CONTROLLER_CONNECT = 1063;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SERVICE_STATUS
+        {
+            public int dwServiceType;
+            public int dwCurrentState;
+            public int dwControlsAccepted;
+            public int dwWin32ExitCode;
+            public int dwServiceSpecificExitCode;
+            public int dwCheckPoint;
+            public int dwWaitHint;
+        }
+
+        private delegate void ServiceMainProc(int argc, nint argv);
+        private delegate int HandlerExProc(int control, int eventType, nint eventData, nint context);
+
+        private static ServiceMainProc? s_main;
+        private static HandlerExProc? s_handler;
+        private static nint s_status;
+        private static Broker? s_broker;
+
+        public static int Run()
+        {
+            s_main = ServiceMain;
+            nint name = Marshal.StringToHGlobalUni(ServiceName);
+            nint table = Marshal.AllocHGlobal(nint.Size * 4);
+            Marshal.WriteIntPtr(table, 0, name);
+            Marshal.WriteIntPtr(table, nint.Size, Marshal.GetFunctionPointerForDelegate(s_main));
+            Marshal.WriteIntPtr(table, nint.Size * 2, 0);
+            Marshal.WriteIntPtr(table, nint.Size * 3, 0);
+            if (!StartServiceCtrlDispatcherW(table))
+            {
+                int err = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine(err == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
+                    ? "satellite-hm-helper: 'service' must be started by the Service Control Manager; use 'broker' to run in a console."
+                    : $"satellite-hm-helper: StartServiceCtrlDispatcher failed ({err})");
+                return 1;
+            }
+            return 0;
+        }
+
+        private static void ServiceMain(int argc, nint argv)
+        {
+            s_handler = Handler;
+            s_status = RegisterServiceCtrlHandlerExW(ServiceName, s_handler, 0);
+            if (s_status == 0) return;
+            Report(SERVICE_START_PENDING, 0, 3000);
+            s_broker = new Broker(idleExit: true);
+            Report(SERVICE_RUNNING, SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN, 0);
+            try
+            {
+                s_broker.Run();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"satellite-hm-helper: broker failed: {ex.Message}");
+            }
+            Report(SERVICE_STOPPED, 0, 0);
+        }
+
+        private static int Handler(int control, int eventType, nint eventData, nint context)
+        {
+            switch (control)
+            {
+                case SERVICE_CONTROL_STOP:
+                case SERVICE_CONTROL_SHUTDOWN:
+                    Report(SERVICE_STOP_PENDING, 0, 5000);
+                    s_broker?.Stop();
+                    return 0;
+                case SERVICE_CONTROL_INTERROGATE:
+                    return 0;
+                default:
+                    return ERROR_CALL_NOT_IMPLEMENTED;
+            }
+        }
+
+        private static void Report(int state, int controls, int waitHintMs)
+        {
+            var status = new SERVICE_STATUS
+            {
+                dwServiceType = SERVICE_WIN32_OWN_PROCESS,
+                dwCurrentState = state,
+                dwControlsAccepted = controls,
+                dwWaitHint = waitHintMs,
+            };
+            SetServiceStatus(s_status, ref status);
+        }
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool StartServiceCtrlDispatcherW(nint table);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern nint RegisterServiceCtrlHandlerExW(string name, HandlerExProc handler, nint context);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool SetServiceStatus(nint status, ref SERVICE_STATUS serviceStatus);
     }
 
     // Pipe protocol (one JSON line per request, one per response).
     //
     //   {"op":"hello","protocol":1}
-    //     -> {"ok":true,"helper":"satellite-hm-helper","audio":true}
+    //     -> {"ok":true,"helper":"satellite-hm-helper","audio":true,"broker":B}
     //        `audio` says this helper can broker controller-audio rings; a
     //        satellite talking to an older helper simply sees it absent and
-    //        gets no audio fields on plug.
+    //        gets no audio fields on plug. `broker` is true when the answer
+    //        comes from the SatelliteHmBroker service rather than a helper
+    //        satellite spawned (and elevated) itself.
     //
     //   {"op":"plug","serial":N,"profile":"<id>"}
     //     -> {"ok":true,"index":N,"input":H,"inputEvent":H,"companionEvent":H,
@@ -139,13 +521,18 @@ internal static class Program
     private sealed class Session : IDisposable
     {
         private readonly int _parentPid;
+        private readonly bool _broker;
         private readonly HMContext _ctx = new();
         private readonly Dictionary<uint, HMController> _controllers = new();
         private readonly Dictionary<uint, AudioBridge> _audio = new();
         private bool _initialized;
         private bool _disposed;
 
-        public Session(int parentPid) => _parentPid = parentPid;
+        public Session(int parentPid, bool broker = false)
+        {
+            _parentPid = parentPid;
+            _broker = broker;
+        }
 
         public string Handle(string line, out bool quit)
         {
@@ -162,6 +549,7 @@ internal static class Program
                         {
                             w.WriteString("helper", "satellite-hm-helper");
                             w.WriteBoolean("audio", true);
+                            w.WriteBoolean("broker", _broker);
                         });
                     case "plug":
                         return Plug(root.GetProperty("serial").GetUInt32(),
