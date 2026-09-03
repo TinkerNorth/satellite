@@ -14,6 +14,11 @@ name: version-consistency
 #                     vcpkg does not read /VERSION, so it drifts silently
 #                     without this check (it sat at 1.0.0 through 1.1.0).
 #
+# Bundled-driver pins: src/platform/windows/driver_pins.h is what the
+# dashboard's driver banner compares installed drivers against, and
+# installer.iss carries the same ViGEmBus / HIDMaestro versions for the
+# payload it ships. They must agree.
+#
 # A PR-time text-consistency gate, not a full re-build.
 
 on:
@@ -21,6 +26,7 @@ on:
     paths:
       - "VERSION"
       - "src/core/version.h"
+      - "src/platform/windows/driver_pins.h"
       - "installer.iss"
       - "vcpkg.json"
       - ".github/workflows/version-consistency.yml"
@@ -29,6 +35,7 @@ on:
     paths:
       - "VERSION"
       - "src/core/version.h"
+      - "src/platform/windows/driver_pins.h"
       - "installer.iss"
       - "vcpkg.json"
 
@@ -98,9 +105,21 @@ jobs:
           echo "vcpkg.json version = $vcpkg_ver"
           [ "$vcpkg_ver" = "$ver" ] || { echo "::error::vcpkg.json version=$vcpkg_ver, expected $ver"; fail=1; }
 
+          # ── bundled driver pins ───────────────────────────────────────
+          pins=src/platform/windows/driver_pins.h
+          pin_vigem=$(grep -E '^#define[[:space:]]+SATELLITE_VIGEMBUS_BUNDLED_VERSION' "$pins" | sed -E 's/.*"([^"]+)".*/\1/')
+          pin_hm=$(grep -E '^#define[[:space:]]+SATELLITE_HIDMAESTRO_SDK_VERSION' "$pins" | sed -E 's/.*"([^"]+)".*/\1/')
+          pin_hm_drv=$(grep -E '^#define[[:space:]]+SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION' "$pins" | sed -E 's/.*"([^"]+)".*/\1/')
+          iss_vigem=$(grep -E '^#define[[:space:]]+ViGEmBusVersion' installer.iss | sed -E 's/.*"([^"]+)".*/\1/')
+          iss_hm=$(grep -E '^#define[[:space:]]+HmVersion' installer.iss | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "driver_pins.h vigem=$pin_vigem hidmaestro-sdk=$pin_hm hidmaestro-driver=$pin_hm_drv; installer.iss vigem=$iss_vigem hidmaestro=$iss_hm"
+          [ -n "$pin_vigem" ] && [ "$pin_vigem" = "$iss_vigem" ] || { echo "::error::ViGEmBus pin drift: driver_pins.h=$pin_vigem installer.iss=$iss_vigem"; fail=1; }
+          [ -n "$pin_hm" ] && [ "$pin_hm" = "$iss_hm" ] || { echo "::error::HIDMaestro SDK pin drift: driver_pins.h=$pin_hm installer.iss=$iss_hm"; fail=1; }
+          [[ "$pin_hm_drv" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "::error::SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION '$pin_hm_drv' is not a dotted version"; fail=1; }
+
           if [ "$fail" -ne 0 ]; then
             echo
-            echo "::error::Version sources drifted. Bump /VERSION, src/core/version.h and vcpkg.json together; installer.iss derives automatically."
+            echo "::error::Version sources drifted. Bump /VERSION, src/core/version.h and vcpkg.json together; installer.iss derives automatically. Driver pins: keep src/platform/windows/driver_pins.h and the installer.iss #defines in step."
             exit 1
           fi
           echo "All version sources agree on $ver."

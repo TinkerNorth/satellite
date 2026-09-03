@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "hidmaestro_helper_client.h"
 
+#include "core/driver_inf.h"
 #include "core/json.h"
+#include "core/semver.h"
 #include "hidmaestro_report.h"
 
 #include <shellapi.h>
 
+#include <fstream>
 #include <random>
 
 namespace satellite {
@@ -28,17 +31,27 @@ std::wstring modulePathDirFile(const wchar_t* filename) {
     return path.substr(0, slash + 1) + filename;
 }
 
-bool driverStorePresent() {
+std::wstring driverStoreRepository() {
     wchar_t sysRoot[MAX_PATH];
     const UINT n = GetSystemWindowsDirectoryW(sysRoot, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return false;
-    const std::wstring repo =
-        std::wstring(sysRoot, n) + L"\\System32\\DriverStore\\FileRepository\\hidmaestro.inf_*";
+    if (n == 0 || n >= MAX_PATH) return L"";
+    return std::wstring(sysRoot, n) + L"\\System32\\DriverStore\\FileRepository\\";
+}
+
+bool driverStorePresent() {
+    const std::wstring repo = driverStoreRepository();
+    if (repo.empty()) return false;
     WIN32_FIND_DATAW fd;
-    HANDLE find = FindFirstFileW(repo.c_str(), &fd);
+    HANDLE find = FindFirstFileW((repo + L"hidmaestro.inf_*").c_str(), &fd);
     if (find == INVALID_HANDLE_VALUE) return false;
     FindClose(find);
     return true;
+}
+
+std::string readFileBytes(const std::wstring& path) {
+    std::ifstream f(path.c_str(), std::ios::binary);
+    if (!f.is_open()) return "";
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
 } // namespace
@@ -58,6 +71,24 @@ bool driverInstalled() {
         return true;
     }
     return driverStorePresent();
+}
+
+std::string installedDriverVersion() {
+    const std::wstring repo = driverStoreRepository();
+    if (repo.empty()) return "";
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileW((repo + L"hidmaestro.inf_*").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) return "";
+    std::string best;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) continue;
+        const std::string v =
+            parseInfDriverVersion(readFileBytes(repo + fd.cFileName + L"\\hidmaestro.inf"));
+        if (v.empty()) continue;
+        if (best.empty() || compareDottedVersion(v, best) > 0) best = v;
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+    return best;
 }
 
 HelperClient::~HelperClient() { shutdown(); }

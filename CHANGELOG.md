@@ -13,6 +13,34 @@ working. The HIDMaestro backend, the composite audio personas and the
 unified build story (one script contract shared by CI and local builds)
 land here too.
 
+Driver status on the Windows dashboard, and an upgrade path that never reboots
+behind your back. `GET /api/backend/status` and `GET /api/server/capabilities`
+now fill each backend's `driverVersion` on Windows (the ViGEmBus.sys file
+version; the HIDMaestro driver-store INF `DriverVer`) and gain three additive
+fields beside it: `bundledVersion` (what this Satellite build's installer
+ships for that driver, null where it ships nothing), `versionState`
+(`current` / `outdated` / `newer` / `unknown`, derived server-side so no client
+has to compare version strings) and `restartPending` (ViGEmBus only: the bus
+device node reports `DN_NEED_RESTART`, which is what a driver upgrade that
+returned 3010 leaves behind until Windows restarts). The dashboard renders a
+driver banner off those fields on Windows hosts: a quiet green strip when both
+drivers are installed and current, and an amber or red banner naming what is
+missing, outdated, unresponsive or waiting on a restart, with the fix as the
+action. If a Satellite update is already available or downloaded, the banner
+routes to it, since the installer carries both drivers; otherwise it links the
+installer for the running version. The upgrade path itself had one real hole:
+the in-app updater ran the installer `/VERYSILENT` without `/NORESTART`, and a
+bundled ViGEmBus upgrade over an older driver (1.21.x is common in the field)
+can return 3010, which a very-silent Inno run answers by rebooting the PC
+without asking. The updater now passes `/NORESTART`, the installer logs driver
+failures instead of raising a modal when it runs under `/OTA` (there is nobody
+at the keyboard to dismiss one), and the banner's restart-pending row is how
+the user learns the reboot is owed. The pinned versions live in one header
+(`src/platform/windows/driver_pins.h`) and `version-consistency.yml` fails the
+build if `installer.iss` drifts from it; bumping the HIDMaestro SDK now also
+means re-reading the INF version its `HIDMaestro.Core.dll` embeds (the recipe
+is in `redist/README.md`).
+
 Controller audio, split per direction and no longer paying for silence: one
 `controllerAudio` switch turned both directions on together, so a host that
 wanted the pad's microphone had to accept its speaker too, and the speaker

@@ -26,6 +26,7 @@ bool helperBinaryPresent();
 // Driver footprint: HKLM\SOFTWARE\HIDMaestro (written after a successful
 // deploy) or the hidmaestro.inf_* driver-store directories. Non-admin.
 bool driverInstalled();
+std::string installedDriverVersion();
 
 class HelperClient : public IHidMaestroProvisioner {
   public:

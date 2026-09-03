@@ -551,6 +551,14 @@ const
     VigemMaxAttempts = 4;
     VigemRetryDelayMs = 8000;
 
+procedure DriverNotice(const Msg: String; Typ: TMsgBoxType);
+begin
+    if WantsOTARelaunch then
+        Log('driver notice (OTA, suppressed): ' + Msg)
+    else
+        MsgBox(Msg, Typ, MB_OK);
+end;
+
 procedure RunBundledViGEm;
 var
     InstallerPath: String;
@@ -566,11 +574,11 @@ begin
     repeat
         Inc(Attempt);
         if not Exec(InstallerPath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-            MsgBox('Could not launch the bundled ViGEmBus installer. Satellite ' +
+            DriverNotice('Could not launch the bundled ViGEmBus installer. Satellite ' +
                    'will still install, but you must install ViGEmBus manually ' +
                    'before connecting a sender.' + #13#10 + #13#10 +
                    'Get it from: https://github.com/nefarius/ViGEmBus/releases',
-                   mbInformation, MB_OK);
+                   mbInformation);
             Exit;
         end;
         if ResultCode <> VigemBusyCode then
@@ -587,23 +595,23 @@ begin
         1641, 3010:
             RebootNeeded := True;
         1602:
-            MsgBox('ViGEmBus installation was cancelled. Install it manually ' +
+            DriverNotice('ViGEmBus installation was cancelled. Install it manually ' +
                    'before using virtual gamepads, or re-run the Satellite ' +
-                   'installer.', mbInformation, MB_OK);
+                   'installer.', mbInformation);
         1603:
-            MsgBox('ViGEmBus installation failed (fatal error). Check the ' +
+            DriverNotice('ViGEmBus installation failed (fatal error). Check the ' +
                    'installer log under %TEMP% and install manually before ' +
-                   'using virtual gamepads.', mbError, MB_OK);
+                   'using virtual gamepads.', mbError);
         VigemBusyCode:
-            MsgBox('Another installation (often Windows Update) was still in ' +
+            DriverNotice('Another installation (often Windows Update) was still in ' +
                    'progress, so ViGEmBus could not be installed right now. ' +
                    'Let any pending updates finish, then re-run the Satellite ' +
-                   'installer to add the driver.', mbInformation, MB_OK);
+                   'installer to add the driver.', mbInformation);
         else begin
             Msg := 'ViGEmBus installer returned exit code ' + IntToStr(ResultCode) + '.' + #13#10 +
                    'Satellite will still install, but virtual gamepad output ' +
                    'may not work until ViGEmBus is installed manually.';
-            MsgBox(Msg, mbError, MB_OK);
+            DriverNotice(Msg, mbError);
         end;
     end;
 end;
@@ -618,18 +626,18 @@ begin
     WizardForm.FilenameLabel.Caption := '{#HmHelperExe}';
 
     if not Exec(HelperPath, 'install-driver', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-        MsgBox('Could not launch the HIDMaestro helper. Satellite will still ' +
+        DriverNotice('Could not launch the HIDMaestro helper. Satellite will still ' +
                'install; DualSense / Switch Pro controller types stay ' +
                'unavailable until the driver is deployed (re-run this ' +
-               'installer to retry).', mbInformation, MB_OK);
+               'installer to retry).', mbInformation);
         Exit;
     end;
     if ResultCode <> 0 then
-        MsgBox('HIDMaestro driver deployment returned exit code ' +
+        DriverNotice('HIDMaestro driver deployment returned exit code ' +
                IntToStr(ResultCode) + '. Satellite will still install; ' +
                'DualSense / Switch Pro controller types stay unavailable ' +
                'until the driver is deployed (check the setup log under ' +
-               '%TEMP% and re-run this installer to retry).', mbInformation, MB_OK);
+               '%TEMP% and re-run this installer to retry).', mbInformation);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

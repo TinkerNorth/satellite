@@ -90,10 +90,40 @@ Setup's standard `/SILENT` / `/VERYSILENT`:
 | *(none)* / `/HIDMAESTRO=auto` | Default. Deploy/refresh the bundled HIDMaestro driver (idempotent, no reboot). |
 | `/HIDMAESTRO=skip` | Don't touch the HIDMaestro driver. |
 
-A reboot is sometimes required on first ViGEmBus install (MSI exit code 3010).
-The Satellite installer surfaces this as a "Restart now / later" prompt
-on the final wizard page. Until you reboot, virtual-gamepad output may not
-work even though the driver is installed. HIDMaestro never needs a reboot.
+A reboot is sometimes required on first ViGEmBus install or on an upgrade
+over an older ViGEmBus (MSI exit code 3010). The Satellite installer surfaces
+this as a "Restart now / later" prompt on the final wizard page. Until you
+reboot, virtual-gamepad output may not work even though the driver is
+installed. HIDMaestro never needs a reboot.
+
+### Upgrading
+
+Running a newer `SatelliteSetup.exe` over an existing install (or letting
+the in-app updater do it) upgrades everything in place:
+
+- The app and web UI are replaced; your config, pairings and the autostart /
+  desktop-icon choices are kept.
+- **ViGEmBus** is upgraded only if the installed `ViGEmBus.sys` is older than
+  the bundled 1.22.0 (compared by file version). Same or newer is left alone.
+  An upgrade that replaces a loaded kernel driver can require a restart.
+- **HIDMaestro** is re-deployed from the bundled helper every time the
+  component is selected. The SDK compares the installed driver's manifest hash
+  to the embedded one, so a same-version run is a ~50 ms no-op and a bumped
+  pin is a real redeploy. No reboot.
+- Component selection follows Inno Setup's memory of your previous install: a
+  "Full" install picks up new components (HIDMaestro was added in 2.0.0); a
+  "Custom" install keeps exactly the components you picked before, so the new
+  driver is not added silently. The dashboard tells you either way.
+- The in-app updater runs the installer `/VERYSILENT /NORESTART`, so it never
+  reboots the PC by itself. Driver failures are written to the setup log under
+  `%TEMP%` instead of raising a dialog nobody is there to dismiss.
+
+The dashboard shows a **driver banner** on Windows: which of the two drivers is
+installed, its version against the version this Satellite build bundles, and
+whether ViGEmBus is waiting on a restart to finish an upgrade. It stays a small
+green strip while everything is current and turns amber or red with the fix as
+the action: install the pending Satellite update (which carries both drivers)
+or re-run the installer for the running version.
 
 At runtime, the first HIDMaestro controller you plug in each Satellite
 session shows one Windows elevation prompt: creating the virtual device

@@ -2,7 +2,8 @@
 #include "core/backend_registry.h"
 
 #include "core/gamepad_backend.h" // BACKEND_ID_*
-#include "core/types.h"           // CONTROLLER_TYPE_*, controllerTypeName
+#include "core/semver.h"
+#include "core/types.h" // CONTROLLER_TYPE_*, controllerTypeName
 
 namespace satellite {
 
@@ -116,6 +117,15 @@ const BackendDescriptor* backendDescriptorById(const std::string& id) {
     return nullptr;
 }
 
+const char* driverVersionState(const std::string& driverVersion,
+                               const std::string& bundledVersion) {
+    if (driverVersion.empty() || bundledVersion.empty()) return DRIVER_VERSION_STATE_UNKNOWN;
+    const int c = compareDottedVersion(driverVersion, bundledVersion);
+    if (c < 0) return DRIVER_VERSION_STATE_OUTDATED;
+    if (c > 0) return DRIVER_VERSION_STATE_NEWER;
+    return DRIVER_VERSION_STATE_CURRENT;
+}
+
 bool backendCanCarryAudio(const BackendDescriptor& d) {
     for (size_t i = 0; i < d.supportCount; ++i) {
         if (d.support[i].mic || d.support[i].speaker) return true;
@@ -153,6 +163,12 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
         appendNullable(json, d->eolDate);
         json += ",\"driverVersion\":";
         appendNullable(json, st.driverVersion.c_str());
+        json += ",\"bundledVersion\":";
+        appendNullable(json, st.bundledVersion.c_str());
+        json += ",\"versionState\":\"";
+        json += driverVersionState(st.driverVersion, st.bundledVersion);
+        json += "\",\"restartPending\":";
+        json += st.restartPending ? "true" : "false";
         json += ",\"controllers\":[";
         for (size_t i = 0; i < d->supportCount; ++i) {
             if (i != 0) json += ",";
