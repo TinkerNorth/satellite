@@ -22,6 +22,7 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
+using satellite::compareDottedVersion;
 using satellite::compareSemver;
 
 static int sign(int v) { return v < 0 ? -1 : (v > 0 ? 1 : 0); }
@@ -147,6 +148,32 @@ static void testAntisymmetry() {
     }
 }
 
+static void testDottedVersion() {
+    TEST("dotted: equal four-part versions compare equal");
+    EXPECT(compareDottedVersion("1.4.7.12", "1.4.7.12") == 0);
+
+    TEST("dotted: fourth component participates, unlike semver core");
+    EXPECT(sign(compareDottedVersion("1.4.7.12", "1.4.7.13")) == -1);
+    EXPECT(sign(compareDottedVersion("1.4.7.13", "1.4.7.12")) == 1);
+    EXPECT(compareSemver("1.4.7.12", "1.4.7.13") == 0);
+
+    TEST("dotted: missing trailing components read as zero");
+    EXPECT(compareDottedVersion("1.22.0", "1.22.0.0") == 0);
+    EXPECT(compareDottedVersion("1.22", "1.22.0.0") == 0);
+
+    TEST("dotted: the shipped ViGEmBus pin outranks the previous upstream build");
+    EXPECT(sign(compareDottedVersion("1.21.442.0", "1.22.0")) == -1);
+    EXPECT(sign(compareDottedVersion("1.22.0", "1.21.442.0")) == 1);
+
+    TEST("dotted: numeric, not lexical");
+    EXPECT(sign(compareDottedVersion("1.9.0", "1.10.0")) == -1);
+    EXPECT(sign(compareDottedVersion("1.4.7.9", "1.4.7.12")) == -1);
+
+    TEST("dotted: non-numeric components read as zero");
+    EXPECT(compareDottedVersion("1.x.0", "1.0.0") == 0);
+    EXPECT(compareDottedVersion("", "0.0.0.0") == 0);
+}
+
 int main() {
     std::cout << "Running semver tests...\n\n";
 
@@ -158,6 +185,7 @@ int main() {
     testSemverSpecChain();
     testMalformedComponents();
     testAntisymmetry();
+    testDottedVersion();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

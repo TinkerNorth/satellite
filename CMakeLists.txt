@@ -242,6 +242,7 @@ if(WIN32)
         # CM_Get_DevNode_PropertyW, for walking an audio endpoint's PnP parent
         # chain: setupapi forwards CM_Locate_DevNodeW but not the property API.
         cfgmgr32
+        version
         # WinRT: RoActivateInstance / RoGetActivationFactory + HSTRING for the
         # actionable pairing toast (src/platform/windows/toast.cpp).
         runtimeobject
@@ -885,6 +886,7 @@ satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
+satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)
 satellite_add_pure_test(test_gamepad_mux tests/test_gamepad_mux.cpp)
 
 # The audio reorder window (core/audio/audio_jitter.h) is header-only and

@@ -111,3 +111,18 @@ new release's `driver/driver.h` and `SharedMemoryIO.cs` against the layout
 constants in `src/platform/windows/hidmaestro_wire.h` (`test_hidmaestro_wire`
 pins them) — the shared-memory protocol carries no version field, so the
 pin bump IS the compatibility review.
+
+Either bump also updates `src/platform/windows/driver_pins.h`, which is what
+the dashboard's driver banner compares the installed drivers against
+(`versionState` in `/api/backend/status`). `version-consistency.yml` fails if
+the `ViGEmBusVersion` / `HmVersion` defines in `installer.iss` drift from it.
+The HIDMaestro UMDF driver is versioned separately from the SDK release
+(1.7.0 embeds driver `1.4.7.12`); read the embedded INF version straight out
+of the staged assembly rather than guessing:
+
+```powershell
+Select-String -Path redist/hidmaestro/HIDMaestro.Core.dll -Pattern 'DriverVer\s*=\s*[0-9/]+,\s*([0-9.]+)' -AllMatches |
+  ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+```
+
+and put that value in `SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION`.

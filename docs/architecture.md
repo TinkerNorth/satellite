@@ -508,13 +508,31 @@ ring (DS5 report 0x02, valid_flag1 bit 0 gating byte 8) as `setMicLedCallback`.
 Satellite stays asInvoker. Device lifecycle needs an elevated token
 (SwDevice creation, `Global\` section creation, driver deploy), so it
 lives in the bundled .NET helper (`helper/hidmaestro` →
-`satellite-hm-helper.exe`), spawned once per session on the FIRST
-HIDMaestro plug (one UAC prompt; never from a status probe). The helper
-drives the HIDMaestro SDK and duplicates the per-controller section +
-event handles into the satellite process over a private named pipe
-(`hidmaestro_helper_client.cpp`; the connecting client's PID is
-verified against the spawned process). After that the per-frame hot
-path is native only. If the helper dies, submits keep working (the
+`satellite-hm-helper.exe`). The helper drives the HIDMaestro SDK and
+duplicates the per-controller section + event handles into the
+satellite process over a named pipe (`hidmaestro_helper_client.cpp`).
+Two transports reach it, tried in order on the FIRST HIDMaestro plug
+(never from a status probe):
+
+1. The **SatelliteHmBroker** service (`satellite-hm-helper.exe
+   service`): LocalSystem, demand-start, registered by setup with the
+   hidmaestro component. It listens on `\\.\pipe\satellite-hm-broker`
+   with a DACL that admits interactive logons only, and admits a
+   connection only when the client PID is the installed `satellite.exe`
+   beside it in an interactive session. Satellite starts it if stopped
+   (setup grants SERVICE_START to interactive users, and the SCM's
+   named-pipe trigger covers the same case), then accepts the pipe only
+   if `GetNamedPipeServerProcessId` equals the service's PID from
+   `QueryServiceStatusEx`, so a squatted pipe name is refused. One
+   client session at a time (the SDK's orphan sweep is machine-global);
+   a second is answered `busy`. The service exits after five idle
+   minutes and the trigger brings it back. No UAC prompt.
+2. A helper spawned `runas` with a private, per-session pipe name (one
+   UAC prompt; the connecting client's PID is verified against the
+   spawned process). This is the fallback when the service is absent or
+   busy.
+
+After that the per-frame hot path is native only. If the helper dies, submits keep working (the
 mapped sections outlive it); the next unplug reports unconfirmed and
 quarantines the serial, matching the ViGEm zombie-target contract. The
 installer's optional-but-default "hidmaestro" component deploys the

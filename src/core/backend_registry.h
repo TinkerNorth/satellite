@@ -143,13 +143,24 @@ struct BackendRuntimeStatus {
     bool available = false;
     std::string errorCode; // empty when available
     std::string driverVersion;
+    std::string bundledVersion;
+    bool restartPending = false;
 
     BackendRuntimeStatus() = default;
     BackendRuntimeStatus(std::string id_, bool available_, std::string errorCode_ = std::string(),
-                         std::string driverVersion_ = std::string())
+                         std::string driverVersion_ = std::string(),
+                         std::string bundledVersion_ = std::string(), bool restartPending_ = false)
         : id(std::move(id_)), available(available_), errorCode(std::move(errorCode_)),
-          driverVersion(std::move(driverVersion_)) {}
+          driverVersion(std::move(driverVersion_)), bundledVersion(std::move(bundledVersion_)),
+          restartPending(restartPending_) {}
 };
+
+inline const char* DRIVER_VERSION_STATE_CURRENT = "current";
+inline const char* DRIVER_VERSION_STATE_OUTDATED = "outdated";
+inline const char* DRIVER_VERSION_STATE_NEWER = "newer";
+inline const char* DRIVER_VERSION_STATE_UNKNOWN = "unknown";
+
+const char* driverVersionState(const std::string& driverVersion, const std::string& bundledVersion);
 
 // True when any controller type this backend serves has audio endpoints, i.e.
 // when the `controllerAudio` setting can change what this backend materializes.
@@ -160,7 +171,7 @@ bool backendCanCarryAudio(const BackendDescriptor& d);
 // identity/latency/features come from the registry. Ids with no descriptor are
 // skipped. Each element:
 //   {"id","vendor","displayName","kernelMode","audio","available","errorCode",
-//    "lifecycle","eolDate","driverVersion",
+//    "lifecycle","eolDate","driverVersion","bundledVersion","versionState","restartPending",
 //    "controllers":[{"type","name","latency","latencyRank","motion","touchpad",
 //                    "lightbar","motionRequires","submitLatency"}, ...]}
 // `audio` is the only runtime-switched field on the element: the per-controller

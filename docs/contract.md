@@ -294,7 +294,8 @@ caller's own session.
   "backends": [
     { "id": "vigem", "vendor": "Nefarius Software Solutions", "displayName": "ViGEmBus",
       "kernelMode": true, "audio": false, "available": true, "errorCode": null,
-      "lifecycle": "eol", "eolDate": "2023-11-02", "driverVersion": null,
+      "lifecycle": "eol", "eolDate": "2023-11-02", "driverVersion": "1.22.0.0",
+      "bundledVersion": "1.22.0", "versionState": "current", "restartPending": false,
       "controllers": [
         { "type": 0, "name": "xbox", "latency": "lowest", "latencyRank": 0,
           "motion": false, "touchpad": false, "lightbar": false, "motionRequires": null,
@@ -309,7 +310,8 @@ caller's own session.
       ] },
     { "id": "hidmaestro", "vendor": "hifihedgehog", "displayName": "HIDMaestro",
       "kernelMode": false, "audio": true, "available": true, "errorCode": null,
-      "lifecycle": "supported", "eolDate": null, "driverVersion": null,
+      "lifecycle": "supported", "eolDate": null, "driverVersion": "1.4.7.12",
+      "bundledVersion": "1.4.7.12", "versionState": "current", "restartPending": false,
       "controllers": [
         { "type": 0, "name": "xbox", "latency": "medium", "latencyRank": 2,
           "motion": false, "touchpad": false, "lightbar": false, "motionRequires": null,
@@ -381,6 +383,20 @@ back-filled from a shipped installer's version). All three are protocol constant
 copy a client renders for them is the client's own. A backend being `eol` says nothing
 about whether it works — `available` is the runtime truth, and an `eol` backend may
 well be the preferred one.
+
+`bundledVersion`, `versionState` and `restartPending` (additive; absent on older
+servers) are the install-state companions to `driverVersion`. `bundledVersion` is the
+driver version the running server's own installer ships for that backend (null where it
+ships none: uinput, machid, and any build without a pin). `versionState` ∈ `current` |
+`outdated` | `newer` | `unknown` is `driverVersion` compared numerically against
+`bundledVersion`, derived server-side so a client never parses version strings; it is
+`unknown` whenever either side is null, including a missing driver (whose `errorCode`
+already says so). `restartPending` is true when the driver was replaced on disk but the
+loaded one is still the old one and Windows needs a restart to finish (ViGEmBus reports
+this on its bus device node); it is false everywhere else. On Windows `driverVersion` is
+the `ViGEmBus.sys` file version for `vigem` and the driver-store INF `DriverVer` for
+`hidmaestro` (the HIDMaestro SDK release and its UMDF driver carry different version
+schemes; the INF is what Device Manager shows and what a bumped pin changes).
 
 `host` is the receiver's OWN capability inventory, readable before pairing or any
 catalog round-trip so a client reflects the real receiver instead of an optimistic

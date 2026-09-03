@@ -251,6 +251,10 @@ int main() {
                 EXPECT(b.contains("audio") && b["audio"].is_boolean());
                 EXPECT(b.contains("available"));
                 EXPECT(b.contains("controllers") && b["controllers"].is_array());
+                EXPECT(b.contains("driverVersion"));
+                EXPECT(b.contains("bundledVersion"));
+                EXPECT(b.contains("versionState") && b["versionState"].is_string());
+                EXPECT(b.contains("restartPending") && b["restartPending"].is_boolean());
             }
         }
     }

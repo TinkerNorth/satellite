@@ -88,4 +88,17 @@ inline int compareSemver(const std::string& a, const std::string& b) {
     return semverComparePrerelease(aPre, bPre);
 }
 
+inline int compareDottedVersion(const std::string& a, const std::string& b) {
+    std::vector<std::string> av = semverSplitDots(a);
+    std::vector<std::string> bv = semverSplitDots(b);
+    size_t n = av.size() > bv.size() ? av.size() : bv.size();
+    for (size_t i = 0; i < n; i++) {
+        std::string ax = i < av.size() && semverIdentIsNumeric(av[i]) ? av[i] : "0";
+        std::string bx = i < bv.size() && semverIdentIsNumeric(bv[i]) ? bv[i] : "0";
+        int c = semverCompareNumericIdent(ax, bx);
+        if (c != 0) return c;
+    }
+    return 0;
+}
+
 } // namespace satellite
