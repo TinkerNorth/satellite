@@ -22,10 +22,12 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         memcpy(&report, payload + 1, sizeof(GamepadReport));
         result.wasGamepadData = true;
         result.gamepadOk = svc.handleGamepadData(token, ctrlIdx, report);
+        result.handled = true;
         break;
     }
     case MSG_HEARTBEAT_PING:
         svc.handleHeartbeat(token);
+        result.handled = true;
         break;
 
         // Topology mutation is REST-only: the old registration opcodes no longer
@@ -38,6 +40,7 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         uint8_t ctrlIdx = payload[0];
         MotionReport report = decodeMotionReport(payload + 1);
         svc.handleMotionData(token, ctrlIdx, report);
+        result.handled = true;
         break;
     }
     case MSG_BATTERY: {
@@ -48,6 +51,7 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         report.level = payload[1];
         report.status = payload[2];
         svc.handleBatteryUpdate(token, ctrlIdx, report);
+        result.handled = true;
         break;
     }
     case MSG_TOUCHPAD: {
@@ -60,6 +64,7 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
                                     ? decodeTouchpadReportV2(payload + 1)
                                     : decodeTouchpadReportV1(payload + 1);
         svc.handleTouchpadData(token, ctrlIdx, report);
+        result.handled = true;
         break;
     }
     case MSG_MIC_AUDIO: {
@@ -72,6 +77,7 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         AudioFrameHeader hdr = decodeAudioFrameHeader(payload);
         svc.handleMicAudio(token, hdr.ctrlIdx, hdr.seq, payload + AUDIO_WIRE_HEADER_BYTES,
                            (size_t)(msgLen - AUDIO_WIRE_HEADER_BYTES));
+        result.handled = true;
         break;
     }
     default:

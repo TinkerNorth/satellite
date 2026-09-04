@@ -563,6 +563,7 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
             f.udpPort = g_config.udpPort;
+            f.webPort = g_config.webPort;
         }
         f.listening = g_listening.load();
         f.packets = static_cast<uint64_t>(g_packetCount.load());
@@ -570,9 +571,23 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         f.submitFail = static_cast<uint64_t>(g_submitFail.load());
         f.lastLoopUs = static_cast<uint64_t>(g_lastLoopUs.load());
         f.maxLoopUs = maxUs;
+        f.peakLoopUs = satellite::g_wire.observePeakLoopUs(maxUs);
         f.senderIP = senderIP;
         f.decryptFail = static_cast<uint64_t>(g_decryptFail.load());
         f.replayDrop = static_cast<uint64_t>(g_replayDrop.load());
+        f.mdnsResponderActive = g_mdnsResponderActive.load();
+        f.clientApiListening = (g_clientServer != nullptr);
+        f.connections = svc.activeSessionCount();
+        f.controllers = svc.totalActiveControllers();
+        f.maxControllers = MAX_BACKEND_CONTROLLERS;
+        const satellite::WireCounts w = satellite::g_wire.snapshot();
+        f.rx = w.rx;
+        f.rx.input = f.submitOk + f.submitFail;
+        f.tx = w.tx;
+        f.authNotPaired = w.authNotPaired;
+        f.authBadProof = w.authBadProof;
+        f.sessionsReaped = w.sessionsReaped;
+        f.audio = svc.audioCounts();
         res.set_content(buildDebugJson(f), "application/json");
     });
 

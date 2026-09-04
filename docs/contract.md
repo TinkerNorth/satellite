@@ -846,6 +846,26 @@ hostFeatures; the server drops streams for ungranted features.
 | `DELETE /api/devices/{deviceId}` | Unpair; closes any live session (notify `unpaired`) |
 | `GET /api/connections` | Live sessions + per-controller truth (`pluggedIn` reflects the adapter, not `serialNo > 0`) |
 | `DELETE /api/connections/{connectionId}` | Kick (notify `kicked`); transient, client may reconnect |
+| `GET /api/backend/status` | Preferred backend plus the per-host `backends` array (identity, availability, driver/bundled version, lifecycle) |
+| `GET /api/debug` | Wire, audio and host telemetry for the diagnostics page |
+
+### `GET /api/debug`
+
+Counters are cumulative since the receiver bound its socket (once per process in
+practice) and are **not** part of the client contract: this is an operator surface and
+fields may be added at any time. Alongside the long-standing scalars (`listening`,
+`packets`, `submitOk`, `submitFail`, `lastLoopUs`, `senderIP`, `udpPort`, `decryptFail`,
+`replayDrop`, `backendAvailable`, `backend`) it carries:
+
+| Field | Meaning |
+|-------|---------|
+| `rx` | Accepted inbound messages by type (`input` = `submitOk + submitFail`, `heartbeat`, `motion`, `battery`, `pointer`, `micAudio`) and the rejections that never reached a decoder (`malformed` = known opcode whose length guard failed, `unknownType`, `runt` = datagram under 28 bytes, `unknownToken`) |
+| `tx` | Outbound datagrams (`packets`, `bytes`) and their split by message (`heartbeatAck`, `rumble`, `lightbar`, `triggerEffects`, `playerLeds`, `speakerAudio`, `micLed`, `sessionClose`), plus the four send failures (`unroutable`, `encryptFailed`, `oversize`, `sendFailed`) |
+| `audio` | Controller-audio stream health: `micAccepted` / `micLate` / `micDropped` partition every inbound frame, `micDecoded` + `micFecRecovered` + `micConcealed` count what reached the pad, and `speakerSent` / `speakerSilenceSuppressed` / `speakerEncodeFailed` / `speakerLockContended` the outbound side |
+| `auth` | Client-API 401s, split `notPaired` / `badProof` |
+| `peakLoopUs` | True hot-path peak. `maxLoopUs` keeps its read-and-zero window semantics for benchmark tooling and reads 0 unless a new all-time record was set since the last read |
+| `webPort`, `mdnsResponderActive`, `clientApiListening`, `connections`, `controllers`, `maxControllers`, `sessionsReaped` | Host gauges |
+
 
 The admin surface never sets descriptor fields (single-writer rule). The former
 `POST /api/devices/touchpad-mode` (both surfaces) and `POST /api/devices/remove` are

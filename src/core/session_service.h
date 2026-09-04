@@ -9,6 +9,7 @@
 #pragma once
 
 #include "ports.h"
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 #include <functional>
@@ -248,6 +249,10 @@ class SessionService {
     };
     ConnectionsSnapshot getConnectionsSnapshot() const;
 
+    AudioStreamCounts audioCounts() const;
+
+    int activeSessionCount() const;
+
     bool isDeviceConnected(const std::string& deviceId) const;
 
     // Per-paired-device link state (server's view): Paired when no live
@@ -288,6 +293,21 @@ class SessionService {
     IAudioCodecFactory* audioCodecs_ = nullptr;
     AudioPolicyFn audioPolicy_;
     ControllerAudioPolicy audioPolicy() const;
+
+    struct AudioCounters {
+        std::atomic<uint64_t> micAccepted{0};
+        std::atomic<uint64_t> micDropped{0};
+        std::atomic<uint64_t> micLate{0};
+        std::atomic<uint64_t> micDecoded{0};
+        std::atomic<uint64_t> micFecRecovered{0};
+        std::atomic<uint64_t> micConcealed{0};
+        std::atomic<uint64_t> speakerSent{0};
+        std::atomic<uint64_t> speakerSilenceSuppressed{0};
+        std::atomic<uint64_t> speakerEncodeFailed{0};
+        std::atomic<uint64_t> speakerLockContended{0};
+    };
+    AudioCounters audio_;
+    static void bumpAudio(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;

@@ -14,6 +14,7 @@ class SessionService;
 struct DispatchResult {
     bool wasGamepadData = false;
     bool gamepadOk = false; // only meaningful when wasGamepadData
+    bool handled = false;
 };
 
 // Parse one decrypted inner message and delegate to SessionService. `payload`

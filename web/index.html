@@ -283,81 +283,43 @@
       </div>
     </div>
 
-    <div class="debug-pipeline">
-      <div class="pipe-stage" id="pipe-udp">
-        <div class="pipe-icon"><img src="img/icons/dish.svg" alt="Dish" class="brand-icon"></div>
-        <div class="pipe-label" data-i18n="debug.pipeline.udp-recv">UDP Recv</div>
-        <div class="pipe-value" id="d-pps">0 pps</div>
+    <div class="debug-flow">
+      <div class="pipe-stage" id="pipe-client">
+        <div class="pipe-icon"><img src="img/icons/phone_touch.svg" alt="" class="emoji-icon"></div>
+        <div class="pipe-label" data-i18n="debug.pipeline.client">Client</div>
+        <div class="pipe-value" id="d-client-ip">&mdash;</div>
       </div>
-      <div class="pipe-arrow" id="pipe-arrow-1"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
+      <div class="pipe-edge">
+        <div class="pipe-dir" id="d-rx-arrow"><img src="img/icons/arrow_right.svg" alt="" class="emoji-icon"><span id="d-rx-pps">0 pps</span></div>
+        <div class="pipe-dir pipe-dir-rev" id="d-tx-arrow"><img src="img/icons/arrow_left.svg" alt="" class="emoji-icon"><span id="d-tx-pps">0 pps</span></div>
+      </div>
+      <div class="pipe-stage" id="pipe-satellite">
+        <div class="pipe-icon"><img src="img/icons/satellite.svg" alt="" class="brand-icon"></div>
+        <div class="pipe-label" data-i18n="debug.pipeline.satellite">Satellite</div>
+        <div class="pipe-value" id="d-status" data-i18n="debug.status.stopped">Stopped</div>
+      </div>
+      <div class="pipe-edge">
+        <div class="pipe-dir" id="d-submit-arrow"><img src="img/icons/arrow_right.svg" alt="" class="emoji-icon"><span id="d-submit-pps">0 pps</span></div>
+        <div class="pipe-dir pipe-dir-rev" id="d-event-arrow"><img src="img/icons/arrow_left.svg" alt="" class="emoji-icon"><span id="d-event-pps">0 pps</span></div>
+      </div>
       <div class="pipe-stage" id="pipe-backend">
-        <div class="pipe-icon"><img src="img/icons/gamepad.svg" alt="" class="emoji-icon"></div>
+        <div class="pipe-icon"><img src="img/icons/driver-kernel.svg" alt="" class="emoji-icon" id="pipe-backend-icon"></div>
         <div class="pipe-label" id="pipe-backend-label" data-i18n="debug.pipeline.inject">Inject</div>
-        <div class="pipe-value" id="d-submit-rate">0 pps</div>
-      </div>
-      <div class="pipe-arrow" id="pipe-arrow-2"><img src="img/icons/arrow_right.svg" alt="to" class="emoji-icon"></div>
-      <div class="pipe-stage" id="pipe-system">
-        <div class="pipe-icon"><img src="img/icons/monitor.svg" alt="" class="emoji-icon"></div>
-        <div class="pipe-label" data-i18n="debug.pipeline.system">System</div>
-        <div class="pipe-value" id="d-status" data-i18n="dashboard.status.stopped">Stopped</div>
+        <div class="pipe-value" id="d-backend-state">&mdash;</div>
       </div>
     </div>
 
-    <div class="debug-grid">
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.packets-received">Packets Received</span>
-        <span class="debug-stat-value" id="d-packets">0</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.submitted-ok">Submitted OK</span>
-        <span class="debug-stat-value debug-ok" id="d-submit-ok">0</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.submit-errors">Submit Errors</span>
-        <span class="debug-stat-value debug-err" id="d-submit-fail">0</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.drop-rate">Drop Rate</span>
-        <span class="debug-stat-value" id="d-drop-rate">0%</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.last-loop">Last Loop</span>
-        <span class="debug-stat-value" id="d-last-loop">0 µs</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.max-loop">Max Loop (peak)</span>
-        <span class="debug-stat-value" id="d-max-loop">0 µs</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.sender-ip">Sender IP</span>
-        <span class="debug-stat-value" id="d-sender" data-i18n="debug.sender.none">none</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.udp-port">UDP Port</span>
-        <span class="debug-stat-value" id="d-port">—</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.http-port">HTTP Port</span>
-        <span class="debug-stat-value" id="d-http-port">—</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.decrypt-failures">Decrypt Failures</span>
-        <span class="debug-stat-value debug-ok" id="d-decrypt-fail">0</span>
-      </div>
-      <div class="debug-stat">
-        <span class="debug-stat-label" data-i18n="debug.stats.replay-drops">Replay Drops</span>
-        <span class="debug-stat-value debug-ok" id="d-replay-drop">0</span>
-      </div>
-      <div class="debug-stat" id="d-backend-row" style="display:none">
-        <span class="debug-stat-label" id="d-backend-label" data-i18n="debug.stats.backend">Backend</span>
-        <span class="debug-stat-value" id="d-backend-value">—</span>
-      </div>
+    <div id="debug-groups"></div>
+
+    <div class="section">
+      <h2 class="section-title" data-i18n="debug.section.backends">Backends</h2>
+      <div id="debug-backends" class="debug-backends"></div>
     </div>
 
     <div class="section">
-      <h2 class="section-title" data-i18n="debug.chart.title">Packet Rate History</h2>
+      <h2 class="section-title" data-i18n="debug.chart.title">Traffic history</h2>
       <div class="debug-chart" id="d-chart"></div>
-      <p class="hint" data-i18n="debug.chart.hint">Updates every 500ms · showing last 60 samples (30 seconds)</p>
+      <p class="hint" data-i18n="debug.chart.hint">Updates every 500 ms &middot; last 60 samples (30 seconds)</p>
     </div>
   </div>
 

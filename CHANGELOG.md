@@ -13,6 +13,51 @@ working. The HIDMaestro backend, the composite audio personas and the
 unified build story (one script contract shared by CI and local builds)
 land here too.
 
+The diagnostics page tells both halves of the story. `GET /api/debug` was
+eight counters about inbound UDP plus one backend name, and the page built on
+it showed one direction, named only the preferred backend (so a Windows box
+with both drivers only ever said "ViGEm"), and painted an idle-but-healthy host
+red because it read `backendAvailable` -- which means "the bus is open right
+now", not "the driver works". The payload gains three blocks. `rx` counts
+accepted inbound messages by type (input, heartbeat, motion, battery, pointer,
+mic audio) and the four ways a datagram is refused before any decoder sees it
+(`malformed` for a known opcode that failed its length guard, `unknownType`,
+`runt`, `unknownToken`). `tx` is the direction that had no telemetry at all:
+datagrams and bytes sent, split across heartbeat acks, rumble, lightbar,
+trigger effects, player LEDs, speaker audio, the mic lamp and session closes,
+plus `unroutable` / `encryptFailed` / `oversize` / `sendFailed` -- the last of
+which required checking `sendto`'s return value, which the client adapter had
+been discarding. `audio` reports the health of the streams this release turns
+on: mic frames accepted, arrived-too-late and dropped (a partition of every
+inbound frame), how many reached the pad by decode, by Opus in-band FEC and by
+concealment, and on the way out how many speaker frames were sent, suppressed
+as digital silence, failed to encode, or lost to lock contention. Alongside
+them: client-API 401s split `notPaired` / `badProof`, reaped sessions, and the
+host gauges the page previously had to infer (`webPort` -- which the old page
+read but the server never sent -- `mdnsResponderActive`, `clientApiListening`,
+live connection and controller counts).
+
+None of it touches the gamepad hot path, and the split is deliberate rather
+than incidental: the inbound counters live only in the receiver's rejection
+branches and its cold non-gamepad dispatch branch (`DispatchResult` grew a
+`handled` flag so the receiver can tell a malformed frame from an unrecognised
+one without re-parsing, keeping `inner_dispatch.cpp` free of globals as its
+portable test build requires), the outbound ones sit in
+`ClientAdapter::sendEncryptedPacket`, which no gamepad packet reaches, and the
+audio ones in `SessionService` under locks those paths already hold. Inbound
+byte counting is deliberately absent: it would cost an atomic add per packet on
+the accepted path. `maxLoopUs` keeps its read-and-zero window semantics for
+benchmark tooling, and a new `peakLoopUs` reports the peak that field could not:
+the receiver's thread-local high-water mark never resets, so a zeroed
+`maxLoopUs` climbs again only on a new all-time record, which is why the page's
+"peak" read 0 nearly always. The page itself is rebuilt around a bidirectional
+flow diagram, six grouped sections, a mirrored in/out traffic chart and a list
+of every backend the host reports with its vendor, mode, audio capability,
+lifecycle and installed-versus-bundled driver version; it degrades to em dashes
+against an older satellite rather than rendering `undefined`, and it stops
+polling when you navigate away instead of fetching `/api/debug` twice a second
+for the life of the tab.
+
 No elevation prompt when a controller connects. Creating a HIDMaestro
 virtual device needs an administrator token, and until now Satellite got
 one by spawning `satellite-hm-helper.exe` with `runas` on the first

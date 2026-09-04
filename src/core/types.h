@@ -476,6 +476,19 @@ inline const uint8_t MIC_DROP_LOG_NO_CAP = 0x02;
 inline const uint8_t MIC_DROP_LOG_RATE_LIMIT = 0x04;
 inline const uint8_t MIC_DROP_LOG_HOST_DISABLED = 0x08;
 
+struct AudioStreamCounts {
+    uint64_t micAccepted = 0;
+    uint64_t micDropped = 0;
+    uint64_t micLate = 0;
+    uint64_t micDecoded = 0;
+    uint64_t micFecRecovered = 0;
+    uint64_t micConcealed = 0;
+    uint64_t speakerSent = 0;
+    uint64_t speakerSilenceSuppressed = 0;
+    uint64_t speakerEncodeFailed = 0;
+    uint64_t speakerLockContended = 0;
+};
+
 // Motion report (sender to satellite, gyro + accel). Fixed full-scale wire
 // convention so no downstream renormalisation:
 //   gyro  +/-2000 deg/s: int16 LSB = 2000/32767 deg/s

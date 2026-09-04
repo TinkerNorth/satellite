@@ -2,6 +2,7 @@
 #pragma once
 
 #include "core/json.h"
+#include "app/wire_stats.h"
 
 #include <cstdint>
 #include <string>
@@ -29,6 +30,17 @@ struct StatusFields {
     uint64_t decryptFail = 0;
     uint64_t replayDrop = 0;
     uint64_t logSeq = 0;
+    uint64_t peakLoopUs = 0;
+    bool clientApiListening = false;
+    int connections = 0;
+    int controllers = 0;
+    int maxControllers = 0;
+    RxCounts rx;
+    TxCounts tx;
+    AudioStreamCounts audio;
+    uint64_t authNotPaired = 0;
+    uint64_t authBadProof = 0;
+    uint64_t sessionsReaped = 0;
     JsonOut backend;
 };
 
@@ -59,12 +71,69 @@ inline std::string buildDebugJson(const StatusFields& f) {
     j["submitFail"] = f.submitFail;
     j["lastLoopUs"] = f.lastLoopUs;
     j["maxLoopUs"] = f.maxLoopUs;
+    j["peakLoopUs"] = f.peakLoopUs;
     j["senderIP"] = f.senderIP;
     j["udpPort"] = f.udpPort;
+    j["webPort"] = f.webPort;
     j["decryptFail"] = f.decryptFail;
     j["replayDrop"] = f.replayDrop;
     j["backendAvailable"] = f.backendAvailable;
     j["backend"] = f.backend;
+    j["mdnsResponderActive"] = f.mdnsResponderActive;
+    j["clientApiListening"] = f.clientApiListening;
+    j["connections"] = f.connections;
+    j["controllers"] = f.controllers;
+    j["maxControllers"] = f.maxControllers;
+
+    JsonOut rx;
+    rx["input"] = f.rx.input;
+    rx["heartbeat"] = f.rx.heartbeat;
+    rx["motion"] = f.rx.motion;
+    rx["battery"] = f.rx.battery;
+    rx["pointer"] = f.rx.pointer;
+    rx["micAudio"] = f.rx.micAudio;
+    rx["malformed"] = f.rx.malformed;
+    rx["unknownType"] = f.rx.unknownType;
+    rx["runt"] = f.rx.runt;
+    rx["unknownToken"] = f.rx.unknownToken;
+    j["rx"] = std::move(rx);
+
+    JsonOut tx;
+    tx["packets"] = f.tx.packets;
+    tx["bytes"] = f.tx.bytes;
+    tx["heartbeatAck"] = f.tx.heartbeatAck;
+    tx["rumble"] = f.tx.rumble;
+    tx["lightbar"] = f.tx.lightbar;
+    tx["triggerEffects"] = f.tx.triggerEffects;
+    tx["playerLeds"] = f.tx.playerLeds;
+    tx["speakerAudio"] = f.tx.speakerAudio;
+    tx["micLed"] = f.tx.micLed;
+    tx["sessionClose"] = f.tx.sessionClose;
+    tx["unroutable"] = f.tx.unroutable;
+    tx["encryptFailed"] = f.tx.encryptFailed;
+    tx["oversize"] = f.tx.oversize;
+    tx["sendFailed"] = f.tx.sendFailed;
+    j["tx"] = std::move(tx);
+
+    JsonOut audio;
+    audio["micAccepted"] = f.audio.micAccepted;
+    audio["micDropped"] = f.audio.micDropped;
+    audio["micLate"] = f.audio.micLate;
+    audio["micDecoded"] = f.audio.micDecoded;
+    audio["micFecRecovered"] = f.audio.micFecRecovered;
+    audio["micConcealed"] = f.audio.micConcealed;
+    audio["speakerSent"] = f.audio.speakerSent;
+    audio["speakerSilenceSuppressed"] = f.audio.speakerSilenceSuppressed;
+    audio["speakerEncodeFailed"] = f.audio.speakerEncodeFailed;
+    audio["speakerLockContended"] = f.audio.speakerLockContended;
+    j["audio"] = std::move(audio);
+
+    JsonOut auth;
+    auth["notPaired"] = f.authNotPaired;
+    auth["badProof"] = f.authBadProof;
+    j["auth"] = std::move(auth);
+
+    j["sessionsReaped"] = f.sessionsReaped;
     return jsonDump(j);
 }
 

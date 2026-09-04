@@ -17,6 +17,7 @@
 #include "core/json.h"
 #include "core/session_service.h"
 #include "core/version.h"
+#include "app/wire_stats.h"
 
 #include <sodium.h>
 
@@ -85,6 +86,11 @@ static bool clientAuthed(const httplib::Request& req, httplib::Response& res, Cl
         }
     }
 
+    if (std::string(code) == "BAD_PROOF") {
+        satellite::g_wire.authBadProof.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        satellite::g_wire.authNotPaired.fetch_add(1, std::memory_order_relaxed);
+    }
     logMsg(LogLevel::WARN, "client",
            "401 unauthorized " + req.method + " " + req.path + " (" + code +
                (out.deviceId.empty() ? ", no deviceId supplied" : ", deviceId " + out.deviceId) +

@@ -884,6 +884,7 @@ satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
+satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)

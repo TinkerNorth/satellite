@@ -363,6 +363,50 @@ static void test_dispatch_micAudio_unknownSlotAndToken() {
     EXPECT_EQ(lg.countContaining("Mic audio"), 1); // still just the slot line
 }
 
+static void test_dispatch_handledFlagSplitsMalformedFromUnknown() {
+    TEST("dispatchInnerMessage: a well-formed frame of every dispatched type reports handled");
+    StubGamepad gp;
+    StubClient cl;
+    StubLog lg;
+    SessionService svc(gp, cl, lg);
+    uint32_t token = openWithController(svc);
+
+    EXPECT(dispatchTight(svc, token, MSG_HEARTBEAT_PING, {}).handled);
+    EXPECT(dispatchTight(svc, token, MSG_GAMEPAD_DATA, std::vector<uint8_t>(13, 0)).handled);
+    EXPECT(dispatchTight(svc, token, MSG_MOTION,
+                         std::vector<uint8_t>(1 + MOTION_WIRE_PAYLOAD_BYTES, 0))
+               .handled);
+    EXPECT(dispatchTight(svc, token, MSG_BATTERY, std::vector<uint8_t>(3, 0)).handled);
+    EXPECT(dispatchTight(svc, token, MSG_TOUCHPAD,
+                         std::vector<uint8_t>(1 + TOUCHPAD_WIRE_PAYLOAD_BYTES_V1, 0))
+               .handled);
+
+    TEST("dispatchInnerMessage: handled means parsed and delivered, not accepted by policy");
+    // The slot advertised no CAP_MIC, so the service drops the frame -- but the
+    // frame itself was well formed, which is the distinction the caller counts.
+    EXPECT(dispatchTight(svc, token, MSG_MIC_AUDIO, micFrame(0, 1, 8)).handled);
+
+    TEST("dispatchInnerMessage: every length-guard rejection reports not handled");
+    EXPECT(!dispatchTight(svc, token, MSG_GAMEPAD_DATA, std::vector<uint8_t>(12, 0)).handled);
+    EXPECT(
+        !dispatchTight(svc, token, MSG_MOTION, std::vector<uint8_t>(MOTION_WIRE_PAYLOAD_BYTES, 0))
+             .handled);
+    EXPECT(!dispatchTight(svc, token, MSG_BATTERY, std::vector<uint8_t>(2, 0)).handled);
+    EXPECT(!dispatchTight(svc, token, MSG_TOUCHPAD,
+                          std::vector<uint8_t>(TOUCHPAD_WIRE_PAYLOAD_BYTES_V1, 0))
+                .handled);
+    for (int len = 0; len < AUDIO_WIRE_MIN_PAYLOAD_BYTES; ++len) {
+        EXPECT(!dispatchTight(svc, token, MSG_MIC_AUDIO, std::vector<uint8_t>((size_t)len, 0))
+                    .handled);
+    }
+
+    TEST("dispatchInnerMessage: unknown and deleted opcodes report not handled");
+    for (uint16_t t : {(uint16_t)0x0004, (uint16_t)0x0005, (uint16_t)0x0008, (uint16_t)0x000E,
+                       (uint16_t)0x7FFF}) {
+        EXPECT(!dispatchTight(svc, token, t, std::vector<uint8_t>(40, 0)).handled);
+    }
+}
+
 static void test_dispatch_motion_truncatedRejected() {
     TEST("dispatchInnerMessage: truncated MSG_MOTION is rejected (no decode)");
     StubGamepad gp;
@@ -627,6 +671,7 @@ int main() {
     test_isDigitalSilence();
     test_micAudioWireConstants();
 
+    test_dispatch_handledFlagSplitsMalformedFromUnknown();
     test_dispatch_micAudio_truncatedRejected();
     test_dispatch_micAudio_reachesServiceAndRateLimits();
     test_dispatch_micAudio_unknownSlotAndToken();
