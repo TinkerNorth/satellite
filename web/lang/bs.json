@@ -221,6 +221,13 @@
   "settings.discovery.mdns-label": "mDNS / Bonjour responder",
   "settings.discovery.broadcast-label": "Naslijeđeni UDP broadcast signal",
   "settings.discovery.hint": "mDNS / Bonjour je savremeni način otkrivanja i radi na podmrežama koje odbacuju broadcast. Naslijeđeni UDP signal ostaje uključen kao rezerva za pošiljaoce starije od mDNS respondera. Isključite ga samo na mreži gdje svaki pošiljalac podržava mDNS.",
+  "settings.crash.title": "Dijagnostika",
+  "settings.crash.label": "Šalji izvještaje o padovima",
+  "settings.crash.hint": "Isključeno po zadanom. Kada je uključeno, Satellite šalje izvještaj svojim programerima ako se sruši: stack trace, verziju i operativni sistem. Nikada ne šalje tvoju igru, unos s kontrolera, uparene uređaje niti sadržaj tvoje mreže. Isključivanje zaustavlja već sljedeći izvještaj, ne samo buduće.",
+  "settings.crash.status.off": "Izvještaji o padovima se ne šalju.",
+  "settings.crash.status.on": "Izvještaji o padovima se šalju.",
+  "settings.crash.status.unavailable": "Ovaj build ne može slati izvještaje o padovima, pa se ništa ne šalje. Zvanična izdanja mogu.",
+
   "settings.audio.title": "Zvuk kontrolera",
   "settings.audio.label": "Mikrofon i zvučnik kontrolera",
   "settings.audio.hint": "DualSense ili DualShock 4 v2 napravljen ovdje dobija i vlastiti mikrofon i zvučnik kontrolera, kao stvarne Windows audio uređaje. Windows odlučuje šta se kroz njih pušta, isto kao za bilo koje slušalice: izaberite kontroler u Postavke > Sistem > Zvuk > Mikser jačine zvuka za aplikacije koje želite na njemu. Zvuk kontrolera zahtijeva priloženi potpisani USB transport u kernelu, koji HIDMaestro instalira prvi put kada se takav kontroler napravi. Isključite ovu opciju da zadržite kontroler samo za unos i preskočite tu instalaciju. Promjene važe od sljedećeg povezivanja kontrolera.",

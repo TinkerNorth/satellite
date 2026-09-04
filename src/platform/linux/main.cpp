@@ -34,6 +34,11 @@
 #include <cstdio>
 #include <thread>
 
+#include "adapters/crash_adapter.h"
+#include "core/crash_reporting.h"
+
+namespace crash = satellite::crash;
+
 #ifdef SATELLITE_HAS_TRAY
 #include <glib-unix.h>
 #include <gtk/gtk.h>
@@ -127,6 +132,11 @@ int main(int argc, const char* argv[]) {
 
     g_config = loadConfig();
     g_config.autoStart = getAutoStart();
+
+    // Nothing else claims the fatal signals on Linux, so this is the only
+    // crash recorder satellite has here. It still arms only behind the
+    // operator's opt-in and a DSN this build actually carries.
+    crash::init(g_config.crashReporting, crash::databaseDirFor(configPath()));
 
     GamepadAdapter gamepadAdapter;
     ClientAdapter clientAdapter;
@@ -229,6 +239,11 @@ int main(int argc, const char* argv[]) {
 
     svc.closeAllSessions();
     saveConfig(g_config);
+
+    // Flush before exit; a pending envelope is lost if the transport never
+    // gets to run.
+    crash::shutdown();
+
     netShutdown();
     return 0;
 }

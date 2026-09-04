@@ -60,6 +60,7 @@ static void test_status_exact_shape() {
                R"("webPort":9871,"autoStart":true,"discoveryBroadcastEnabled":false,)"
                R"("controllerAudio":false,"controllerAudioMic":true,"controllerAudioSpeaker":true,)"
                R"("controllerAudioKeepDefaultDevice":true,)"
+               R"("crashReporting":false,"crashReportingActive":false,)"
                R"("mdnsResponderActive":true,"backendAvailable":true,)"
                R"("backend":{"kind":"vigem","available":true}})"));
 }

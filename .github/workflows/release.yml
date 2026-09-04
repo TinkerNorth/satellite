@@ -185,11 +185,15 @@ jobs:
       # checkout; windows-msvc-ci.yml A/B-validates this same path on every PR.
       - name: Build satellite.exe (MSVC + vcpkg, hardened)
         shell: pwsh
+        env:
+          # Empty for anything but a release from this repo: secrets are not
+          # exposed to forks, so a fork build carries no DSN and cannot report.
+          SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $generator = ./scripts/windows-vs-generator.ps1
           $disp = ("${{ inputs.tag || github.ref_name }}") -replace '^v',''
-          cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp"
+          cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp" -DSATELLITE_SENTRY_DSN="$env:SATELLITE_SENTRY_DSN"
           cmake --build --preset windows-msvc --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
 
@@ -285,9 +289,13 @@ jobs:
         run: brew install cmake pkg-config libsodium opus
 
       - name: Build satellite.app (stub)
+        env:
+          # Empty for anything but a release from this repo: secrets are not
+          # exposed to forks, so a fork build carries no DSN and cannot report.
+          SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
           cmake --build build --config Release --target satellite -j "$(sysctl -n hw.ncpu)"
 
       - name: Sign + notarize (if Developer ID configured)
@@ -407,9 +415,13 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Build satellite
+        env:
+          # Empty for anything but a release from this repo: secrets are not
+          # exposed to forks, so a fork build carries no DSN and cannot report.
+          SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
           cmake --build build --config Release --target satellite -j "$(nproc)"
 
       - name: Package (.deb via CPack)
@@ -537,9 +549,13 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Build satellite
+        env:
+          # Empty for anything but a release from this repo: secrets are not
+          # exposed to forks, so a fork build carries no DSN and cannot report.
+          SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
           cmake --build build --config Release --target satellite -j "$(nproc)"
 
       - name: Package (.rpm via CPack)
@@ -644,6 +660,10 @@ jobs:
       # copy) lives in scripts/build-appimage.sh so a local AppImage and the
       # released one come off the same path (the dish-linux model).
       - name: Build AppImage
+        env:
+          # Empty for anything but a release from this repo: secrets are not
+          # exposed to forks, so a fork build carries no DSN and cannot report.
+          SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           SATELLITE_VERSION="${tag#v}" bash scripts/build-appimage.sh

@@ -221,6 +221,13 @@
   "settings.discovery.mdns-label": "Répondeur mDNS / Bonjour",
   "settings.discovery.broadcast-label": "Balise UDP de diffusion (héritée)",
   "settings.discovery.hint": "mDNS / Bonjour est la méthode de découverte moderne et fonctionne sur les sous-réseaux qui bloquent la diffusion. La balise UDP héritée reste active comme solution de repli pour les émetteurs antérieurs au répondeur mDNS. Ne la désactivez que sur un réseau où tous les émetteurs prennent en charge mDNS.",
+  "settings.crash.title": "Diagnostics",
+  "settings.crash.label": "Envoyer les rapports de plantage",
+  "settings.crash.hint": "Désactivé par défaut. Une fois activé, Satellite envoie un rapport à ses développeurs en cas de plantage : la pile d'appels, la version et le système d'exploitation. Il n'envoie jamais votre jeu, vos commandes, vos appareils appairés ni le contenu de votre réseau. Le désactiver arrête dès le prochain rapport, pas seulement les suivants.",
+  "settings.crash.status.off": "Aucun rapport de plantage n'est envoyé.",
+  "settings.crash.status.on": "Les rapports de plantage sont envoyés.",
+  "settings.crash.status.unavailable": "Cette version ne peut pas envoyer de rapports de plantage : rien n'est envoyé. Les versions officielles le peuvent.",
+
   "settings.audio.title": "Audio de la manette",
   "settings.audio.label": "Microphone et haut-parleur de la manette",
   "settings.audio.hint": "Une DualSense ou une DualShock 4 v2 créée ici obtient aussi le microphone et le haut-parleur propres à la manette, comme de vrais périphériques audio Windows. C'est Windows qui décide de ce qui y est joué, comme pour n'importe quel casque : choisissez la manette dans Paramètres > Système > Son > Mélangeur de volume pour les applications voulues. L'audio de la manette nécessite un transport USB noyau signé et fourni, que HIDMaestro installe la première fois qu'une telle manette est créée. Désactivez cette option pour conserver la manette en entrée seule et éviter cette installation. Les changements s'appliquent à la prochaine connexion d'une manette.",

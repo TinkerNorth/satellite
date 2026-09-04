@@ -241,6 +241,13 @@
   "settings.discovery.mdns-label": "mDNS / Bonjour responder",
   "settings.discovery.broadcast-label": "Legacy UDP broadcast beacon",
   "settings.discovery.hint": "mDNS / Bonjour is the modern discovery path and works on subnets that drop broadcast. The legacy UDP beacon stays on as a fallback for senders that predate the mDNS responder. Turn it off only on a network where every sender supports mDNS.",
+  "settings.crash.title": "Diagnostics",
+  "settings.crash.label": "Send crash reports",
+  "settings.crash.hint": "Off by default. When on, Satellite sends a report to its developers if it crashes: the stack trace, the version and the operating system. It never sends your gameplay, your controller input, your paired devices or the contents of your network. Turning it off stops the very next report, not just future ones.",
+  "settings.crash.status.off": "Crash reports are not being sent.",
+  "settings.crash.status.on": "Crash reports are being sent.",
+  "settings.crash.status.unavailable": "This build cannot send crash reports, so nothing is being sent. Official releases can.",
+
   "settings.audio.title": "Controller audio",
   "settings.audio.label": "Controller microphone and speaker",
   "settings.audio.hint": "A DualSense or DualShock 4 v2 created here also gets the controller's own microphone and speaker, as real Windows audio devices. Windows decides what plays through them, the same as for any headset: pick the controller under Settings > System > Sound > Volume mixer for the apps you want on it. Controller audio needs a bundled signed kernel USB transport, which HIDMaestro installs the first time such a controller is created. Turn this off to keep the input-only controller and skip that install. Changes apply the next time a controller is connected.",
