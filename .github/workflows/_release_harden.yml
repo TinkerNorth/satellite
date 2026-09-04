@@ -93,7 +93,7 @@ jobs:
 
       # Anchore Grype: scan every artifact in release/ for CVEs.
       - name: Vulnerability scan (Grype)
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         id: grype
         with:
           path: release/
