@@ -277,9 +277,12 @@ Nothing about the local artifacts changes. On Windows the existing
 `dumps\*.dmp` writer keeps running, and `dumpFilter` now chains to whatever
 top-level filter was installed before it instead of swallowing the exception,
 so the local dump and the Sentry report both see the crash rather than
-whichever recorder armed last winning outright. Session tracking and
-`send_default_pii` are off: the crash is the payload, and a server meant to run
-unattended for weeks should not be reporting every start and stop to anyone.
+whichever recorder armed last winning outright. Automatic session tracking is
+turned off, because it defaults to on and a server meant to run unattended for
+weeks should not report every start and stop to anyone; the crash is the
+payload. PII is off too, but by not touching it: sentry-native does not send it
+by default, and the setter that would change that exists only on Nintendo
+Switch.
 The status payload reports the opt-in and whether it actually armed as separate
 fields, so a build with no DSN says so instead of claiming reports are going
 somewhere they are not.

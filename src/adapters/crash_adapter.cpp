@@ -59,10 +59,12 @@ void init([[maybe_unused]] bool userEnabled, [[maybe_unused]] const std::string&
     // "crash reports".
     sentry_options_set_auto_session_tracking(options, 0);
 
-    // Backtraces routinely pick up the home directory, and satellite's runs
-    // next to paired-device state. Sentry's own IP inference is off for the
-    // same reason: nothing here needs to know who the operator is.
-    sentry_options_set_send_default_pii(options, 0);
+    // No sentry_options_set_send_default_pii() call here on purpose: in
+    // sentry-native that setter exists only under SENTRY_PLATFORM_NX, and its
+    // own documentation states that not sending PII is already the default
+    // everywhere ("If false (the default), the SDK won't add PII or other
+    // sensitive data to the payload"). Calling it would not compile on any
+    // platform satellite ships to, and would not change behaviour if it did.
 
     if (sentry_init(options) == 0) { g_active = true; }
 #endif
