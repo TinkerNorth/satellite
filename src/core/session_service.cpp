@@ -903,7 +903,10 @@ bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_
     // this worker while holding mtx_; blocking here deadlocks. Dropping a
     // speaker frame is a 20 ms gap the client's PLC already knows how to cover.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) return false;
+    if (!lk.owns_lock()) {
+        bumpAudio(audio_.speakerLockContended);
+        return false;
+    }
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
@@ -934,6 +937,7 @@ bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t se
     Connection& conn = it->second;
 
     auto dropOnce = [&](uint8_t cause, const std::string& why) {
+        bumpAudio(audio_.micDropped);
         if ((conn.micDropLogged & cause) == 0) {
             conn.micDropLogged |= cause;
             log_.logMsg(LogLevel::WARN, "service",
@@ -991,7 +995,11 @@ bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const
     const AudioJitterWindow::Result pushed = audio.micWindow.push(seq, opus, opusLen);
     // A frame whose slot has already been played (or concealed past) is worse
     // than useless: splicing it in now would be an audible jump backwards.
-    if (pushed.accept != AudioJitterWindow::Accept::Ok) return false;
+    if (pushed.accept != AudioJitterWindow::Accept::Ok) {
+        bumpAudio(audio_.micLate);
+        return false;
+    }
+    bumpAudio(audio_.micAccepted);
     // Taken, but held for reordering. Nothing is due until the frame in front
     // of it arrives or is proven lost.
     if (pushed.count == 0) return true;
@@ -1014,6 +1022,7 @@ bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const
         size_t decoded = 0;
         if (ev.kind == AudioJitterWindow::Event::Kind::Packet) {
             decoded = audio.micDecoder->decode(ev.data, ev.len, pcm, AUDIO_FRAME_SAMPLES);
+            if (decoded > 0) bumpAudio(audio_.micDecoded);
         } else if (ev.fecCarrier != nullptr) {
             // The window hands over packet seq+1 precisely because Opus hides a
             // redundant copy of seq inside it. Order is load-bearing: the FEC
@@ -1021,8 +1030,10 @@ bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const
             // window emits next.
             decoded = audio.micDecoder->decodeFec(ev.fecCarrier, ev.fecCarrierLen, pcm,
                                                   AUDIO_FRAME_SAMPLES);
+            if (decoded > 0) bumpAudio(audio_.micFecRecovered);
         } else {
             decoded = audio.micDecoder->conceal(pcm, AUDIO_FRAME_SAMPLES);
+            if (decoded > 0) bumpAudio(audio_.micConcealed);
         }
         // A backend with no mic endpoint on this serial returns false, which is
         // not an error: senders keep streaming and the pad simply has nowhere
@@ -1043,6 +1054,7 @@ void SessionService::sendSpeakerFrameLocked(Connection& conn, Controller& ctrl,
     // and the decoder resting on the same last real frame, so neither drifts.
     if (isDigitalSilence(frame, static_cast<size_t>(AUDIO_FRAME_SAMPLES) *
                                     static_cast<size_t>(AUDIO_SPEAKER_CHANNELS))) {
+        bumpAudio(audio_.speakerSilenceSuppressed);
         return;
     }
 
@@ -1053,7 +1065,11 @@ void SessionService::sendSpeakerFrameLocked(Connection& conn, Controller& ctrl,
     // so lets the client conceal a hole instead of silently playing the stream
     // short and drifting against the game's clock.
     const uint16_t seq = audio.speakerSeq++;
-    if (bytes == 0) return;
+    if (bytes == 0) {
+        bumpAudio(audio_.speakerEncodeFailed);
+        return;
+    }
+    bumpAudio(audio_.speakerSent);
     client_.sendSpeakerAudio(conn, ctrl.index, seq, packet, bytes);
 }
 
@@ -1295,6 +1311,26 @@ int SessionService::reapTimedOut() {
 }
 
 bool SessionService::isBackendAvailable() const { return backend_.isBusOpen(); }
+
+int SessionService::activeSessionCount() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return static_cast<int>(connections_.size());
+}
+
+AudioStreamCounts SessionService::audioCounts() const {
+    AudioStreamCounts c;
+    c.micAccepted = audio_.micAccepted.load(std::memory_order_relaxed);
+    c.micDropped = audio_.micDropped.load(std::memory_order_relaxed);
+    c.micLate = audio_.micLate.load(std::memory_order_relaxed);
+    c.micDecoded = audio_.micDecoded.load(std::memory_order_relaxed);
+    c.micFecRecovered = audio_.micFecRecovered.load(std::memory_order_relaxed);
+    c.micConcealed = audio_.micConcealed.load(std::memory_order_relaxed);
+    c.speakerSent = audio_.speakerSent.load(std::memory_order_relaxed);
+    c.speakerSilenceSuppressed = audio_.speakerSilenceSuppressed.load(std::memory_order_relaxed);
+    c.speakerEncodeFailed = audio_.speakerEncodeFailed.load(std::memory_order_relaxed);
+    c.speakerLockContended = audio_.speakerLockContended.load(std::memory_order_relaxed);
+    return c;
+}
 
 #ifdef SATELLITE_BUILD_TESTS
 void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
