@@ -2724,6 +2724,84 @@ static void test_micAudio_unboundSlotSubmitsNothing() {
     EXPECT_EQ(vigem.submitMicAudioCalls, 6);
 }
 
+static void test_audioCounts_trackTheMicStream() {
+    TEST("audio counts: accepted, decoded, FEC-recovered and late all agree with the backend");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    std::vector<std::vector<uint8_t>> pkts;
+    for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
+
+    for (int i = 0; i < 4; i++) {
+        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
+    }
+    auto c = svc.audioCounts();
+    EXPECT_EQ(c.micAccepted, (uint64_t)4);
+    EXPECT_EQ(c.micDecoded, (uint64_t)4);
+    EXPECT_EQ(c.micFecRecovered, (uint64_t)0);
+    EXPECT_EQ(c.micConcealed, (uint64_t)0);
+    EXPECT_EQ(c.micLate, (uint64_t)0);
+
+    EXPECT(svc.handleMicAudio(r.token, 0, 5, pkts[5].data(), pkts[5].size()));
+    c = svc.audioCounts();
+    EXPECT_EQ(c.micAccepted, (uint64_t)5);
+    EXPECT_EQ(c.micDecoded, (uint64_t)4);
+
+    EXPECT(svc.handleMicAudio(r.token, 0, 6, pkts[6].data(), pkts[6].size()));
+    c = svc.audioCounts();
+    EXPECT_EQ(c.micAccepted, (uint64_t)6);
+    EXPECT_EQ(c.micFecRecovered, (uint64_t)1);
+    EXPECT_EQ(c.micDecoded, (uint64_t)6);
+    EXPECT_EQ(c.micConcealed, (uint64_t)0);
+    EXPECT_EQ(c.micDecoded + c.micFecRecovered + c.micConcealed,
+              (uint64_t)vigem.submitMicAudioCalls);
+
+    EXPECT(!svc.handleMicAudio(r.token, 0, 4, pkts[4].data(), pkts[4].size()));
+    c = svc.audioCounts();
+    EXPECT_EQ(c.micLate, (uint64_t)1);
+    EXPECT_EQ(c.micAccepted, (uint64_t)6);
+
+    TEST("audio counts: a gate rejection is a drop, never an accept");
+    EXPECT(!svc.handleMicAudio(r.token, 1, 0, pkts[0].data(), pkts[0].size()));
+    c = svc.audioCounts();
+    EXPECT_EQ(c.micDropped, (uint64_t)1);
+    EXPECT_EQ(c.micAccepted, (uint64_t)6);
+}
+
+static void test_audioCounts_separateSuppressedSilenceFromSentFrames() {
+    TEST("audio counts: suppressed silence is counted, not sent");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    for (int i = 0; i < 50; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    }
+    auto c = svc.audioCounts();
+    EXPECT_EQ(c.speakerSilenceSuppressed, (uint64_t)50);
+    EXPECT_EQ(c.speakerSent, (uint64_t)0);
+    EXPECT_EQ((uint64_t)client.speakerAudioCalls, c.speakerSent);
+
+    const auto tone = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0, tone.data(), AUDIO_FRAME_SAMPLES));
+    c = svc.audioCounts();
+    EXPECT_EQ(c.speakerSent, (uint64_t)1);
+    EXPECT_EQ(c.speakerSilenceSuppressed, (uint64_t)50);
+    EXPECT_EQ(c.speakerEncodeFailed, (uint64_t)0);
+    EXPECT_EQ((uint64_t)client.speakerAudioCalls, c.speakerSent);
+}
+
 static void test_speakerAudio_oneWindowBecomesOneWirePacket() {
     TEST("speaker audio: a 20 ms window becomes one decodable Opus packet on the wire");
     MockViGem vigem;
@@ -3265,6 +3343,8 @@ int main() {
     test_speakerAudio_seqIsPerControllerAndWraps();
     test_speakerAudio_encoderStateDiesWithThePad();
     test_speakerAudio_withoutCodecSendsNothing();
+    test_audioCounts_trackTheMicStream();
+    test_audioCounts_separateSuppressedSilenceFromSentFrames();
     test_audioBackendCallbacks_dropNotBlock_whenLockHeld();
     test_feedback_replugResetsCoalesce();
     test_backendCallbacks_dropNotBlock_whenLockHeld();

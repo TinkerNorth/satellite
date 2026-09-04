@@ -7,15 +7,22 @@
 #include "session_crypto.h"
 #include "core/session_service.h"
 #include "adapters/client_adapter.h"
+#include "app/wire_stats.h"
 
 #ifdef _WIN32
 #include <avrt.h> // MMCSS: AvSetMmThreadCharacteristics for the RX thread
 #endif
 
+using satellite::g_wire;
+
 static void reaperLoop(SessionService& svc) {
     while (g_appRunning) {
         netSleepMs(1000);
-        svc.reapTimedOut();
+        const int reaped = svc.reapTimedOut();
+        if (reaped > 0) {
+            g_wire.sessionsReaped.fetch_add(static_cast<uint64_t>(reaped),
+                                            std::memory_order_relaxed);
+        }
     }
 }
 
@@ -91,6 +98,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         g_decryptFail.store(0, std::memory_order_relaxed);
         g_replayDrop.store(0, std::memory_order_relaxed);
         g_senderIP.store(0);
+        g_wire.reset();
 
         std::thread reaper(reaperLoop, std::ref(svc));
 
@@ -112,7 +120,10 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
                                   reinterpret_cast<sockaddr*>(&sender), &slen);
 
             // Minimum packet: header(8) + inner_header(4) + tag(16) = 28 bytes
-            if (n < HEADER_SIZE + INNER_HEADER_SIZE + AUTH_TAG_SIZE) continue;
+            if (n < HEADER_SIZE + INNER_HEADER_SIZE + AUTH_TAG_SIZE) {
+                if (n >= 0) g_wire.rxRunt.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
 
             auto t0 = std::chrono::steady_clock::now();
 
@@ -124,7 +135,10 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             // Look up connection key (brief lock).
             uint8_t key[CRYPTO_KEY_SIZE];
             uint32_t lastCounter;
-            if (!svc.getDecryptInfo(token, key, lastCounter)) continue;
+            if (!svc.getDecryptInfo(token, key, lastCounter)) {
+                g_wire.rxUnknownToken.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
 
             // Replay protection.
             if (counter <= lastCounter && lastCounter != 0) {
@@ -150,10 +164,16 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             const uint32_t senderIPv4 = sender.sin_addr.s_addr;
             const uint16_t senderPort = ntohs(sender.sin_port);
 
-            if (ptLen < (unsigned long long)INNER_HEADER_SIZE) continue;
+            if (ptLen < (unsigned long long)INNER_HEADER_SIZE) {
+                g_wire.rxMalformed.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             uint16_t msgType = ((uint16_t)plaintext[0] << 8) | (uint16_t)plaintext[1];
             uint16_t msgLen = ((uint16_t)plaintext[2] << 8) | (uint16_t)plaintext[3];
-            if ((size_t)(INNER_HEADER_SIZE + msgLen) > ptLen) continue;
+            if ((size_t)(INNER_HEADER_SIZE + msgLen) > ptLen) {
+                g_wire.rxMalformed.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
             // Fast path: MSG_GAMEPAD_DATA hits the fused single-lock entry.
@@ -170,6 +190,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             } else {
                 svc.updatePostDecryptV4(token, counter, senderIPv4, senderPort);
                 dr = dispatchInnerMessage(svc, token, msgType, payload, msgLen);
+                g_wire.recordInbound(msgType, dr.handled);
             }
 
             // Hot path only: record loop latency + submit-outcome telemetry.

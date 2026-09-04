@@ -39,6 +39,9 @@
   --log-error-text: #F87171;
   --log-msg: #D1D5DB;
   --log-source: #A78BFA;
+
+  --traffic-in: #4FE3FF;
+  --traffic-out: #A78BFA;
 }
 
 * {
@@ -339,7 +342,7 @@ button:disabled,
 }
 .btn-icon .emoji-icon { width: 18px; height: 18px; vertical-align: 0; }
 .flow-arrow .emoji-icon,
-.pipe-arrow .emoji-icon { width: 1em; height: 1em; vertical-align: -0.15em; }
+.pipe-dir .emoji-icon { width: 1em; height: 1em; vertical-align: -0.15em; }
 
 .section-title .section-glyph {
   width: 16px;
@@ -957,12 +960,13 @@ h2.section-title { font-size: 12px; }
   width: 560px;
 }
 
-.debug-pipeline {
+.debug-flow {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   padding: 16px 0 20px;
+  flex-wrap: wrap;
 }
 
 .pipe-stage {
@@ -974,7 +978,7 @@ h2.section-title { font-size: 12px; }
   background: var(--bg);
   border: 1px solid var(--outline);
   border-radius: var(--corner-button);
-  min-width: 100px;
+  min-width: 92px;
   transition: border-color 0.3s;
 }
 
@@ -1002,18 +1006,30 @@ h2.section-title { font-size: 12px; }
   color: var(--text);
 }
 
-.pipe-arrow {
-  color: var(--outline);
-  font-size: 18px;
-  font-weight: bold;
+.pipe-edge {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 80px;
+}
+
+.pipe-dir {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
   transition: color 0.3s;
 }
 
-.pipe-arrow.pipe-flow { color: var(--success); }
+.pipe-dir-rev { flex-direction: row-reverse; }
+
+.pipe-dir.pipe-flow { color: var(--success); }
 
 .debug-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -1021,6 +1037,8 @@ h2.section-title { font-size: 12px; }
 .debug-stat {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
   padding: 8px 12px;
   background: var(--bg);
   border: 1px solid var(--outline);
@@ -1045,33 +1063,120 @@ h2.section-title { font-size: 12px; }
 .debug-err { color: var(--error); }
 
 .debug-chart {
-  min-height: 70px;
-  display: flex;
-  align-items: flex-end;
+  min-height: 88px;
 }
 
-.chart-bars {
+.chart-scale {
   display: flex;
-  align-items: flex-end;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+
+.chart-scale-rx { color: var(--traffic-in); }
+.chart-scale-tx { color: var(--traffic-out); }
+
+.chart-cols {
+  display: flex;
+  align-items: stretch;
   gap: 2px;
-  flex: 1;
-  height: 60px;
+  height: 72px;
 }
 
-.chart-bar {
+.chart-col {
   flex: 1;
-  min-width: 4px;
-  border-radius: 2px 2px 0 0;
+  min-width: 3px;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-half-up {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--outline);
+}
+
+.chart-half-down {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+}
+
+.chart-seg {
+  width: 100%;
   transition: height 0.2s;
 }
 
-.chart-max {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-muted);
-  writing-mode: vertical-rl;
-  margin-left: 6px;
+.chart-seg-rx {
+  background: var(--traffic-in);
+  border-radius: 2px 2px 0 0;
 }
+
+.chart-seg-tx {
+  background: var(--traffic-out);
+  border-radius: 0 0 2px 2px;
+}
+
+.debug-backends {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.debug-backend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--outline);
+  border-radius: var(--corner-button);
+}
+
+.debug-backend-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.debug-backend-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.debug-backend-name {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.debug-backend-meta {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.debug-backend-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+
+.debug-backend-version {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.debug-backend-bundled { margin-left: 6px; }
 
 .log-controls {
   display: flex;
