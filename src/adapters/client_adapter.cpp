@@ -4,6 +4,8 @@
 
 #include "net/session_crypto.h"
 
+#include "app/wire_stats.h"
+
 #include <cstring>
 
 void ClientAdapter::setSocket(SOCKET sock) { sock_ = sock; }
@@ -51,15 +53,25 @@ uint32_t ClientAdapter::nextTxCounter(uint32_t token) {
 
 void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* inner,
                                         size_t innerLen) {
-    if (sock_ == INVALID_SOCKET) return;
+    const uint16_t msgType = ((uint16_t)inner[0] << 8) | (uint16_t)inner[1];
+    if (sock_ == INVALID_SOCKET) {
+        satellite::g_wire.txUnroutable.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     // The buffers below are sized for MAX_INNER_MESSAGE_BYTES exactly, and
     // encryptPacket has no length of its own to check against; an oversized
     // caller is a bug, and dropping the frame beats overrunning the stack.
-    if (innerLen > static_cast<size_t>(MAX_INNER_MESSAGE_BYTES)) return;
+    if (innerLen > static_cast<size_t>(MAX_INNER_MESSAGE_BYTES)) {
+        satellite::g_wire.txOversize.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     sockaddr_in addr{};
-    if (!getAddr(conn.token, addr)) return;
+    if (!getAddr(conn.token, addr)) {
+        satellite::g_wire.txUnroutable.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     // Monotonic per-token counter in the nonce; the direction byte keeps this
     // direction's nonces disjoint from the client's under the shared session key.
@@ -72,6 +84,7 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     unsigned long long ctLen = 0;
     if (!encryptPacket(conn.sessionKey, CRYPTO_DIR_SERVER_TO_CLIENT, counter, conn.token, inner,
                        innerLen, ct, &ctLen)) {
+        satellite::g_wire.txEncryptFailed.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -89,8 +102,13 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     pkt[7] = (uint8_t)(counter);
     memcpy(pkt + HEADER_SIZE, ct, ctLen);
 
-    sendto(sock_, reinterpret_cast<const char*>(pkt), (int)(HEADER_SIZE + ctLen), 0,
-           reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    const int sent = sendto(sock_, reinterpret_cast<const char*>(pkt), (int)(HEADER_SIZE + ctLen),
+                            0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (sent == SOCKET_ERROR) {
+        satellite::g_wire.txSendFailed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    satellite::g_wire.recordOutbound(msgType, static_cast<size_t>(sent));
 }
 
 void ClientAdapter::sendHeartbeatAck(const Connection& conn, bool backendAvailable,
