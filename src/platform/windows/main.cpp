@@ -20,7 +20,7 @@
 #include "updater_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
-#include "core/crash_reporting.h"
+#include "adapters/crash_adapter.h"
 #include "adapters/audio/opus_codec.h"
 
 #include "core/gamepad_mux.h"

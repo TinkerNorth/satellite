@@ -34,7 +34,7 @@
 #include <cstdio>
 #include <thread>
 
-#include "core/crash_reporting.h"
+#include "adapters/crash_adapter.h"
 
 namespace crash = satellite::crash;
 

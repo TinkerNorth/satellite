@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// Crash reporting: the decision layer over the Sentry native SDK.
+// Crash reporting: the policy, with no SDK anywhere near it.
 //
 // Satellite transmits nothing unless BOTH of these are true:
 //
@@ -16,8 +16,9 @@
 // from SATELLITE_RELEASE_VERSION, which only release.yml sets, so "production"
 // cannot be reached by a developer build even by accident.
 //
-// The policy itself (shouldArm) is a pure function kept out of the SDK-guarded
-// section so the tests can drive it without linking Sentry.
+// Everything here is std-only by design: this is the half the core purity gate
+// allows, and the half worth testing. The Sentry binding lives in
+// adapters/crash_adapter.h, which is where a third-party header belongs.
 
 #pragma once
 
@@ -30,13 +31,13 @@ const char* compiledDsn();
 const char* environment(); // "production" | "development"
 const char* release();     // "satellite@<display version>"
 
-// True when this build was linked against the Sentry SDK at all. False means
-// every entry point below is an inert stub.
-bool sdkAvailable();
+// $SENTRY_DSN, or empty when unset: the deliberate escape hatch for pointing a
+// local build at a scratch project. Read through _dupenv_s on MSVC, whose
+// warnings-as-errors lane rejects std::getenv outright.
+std::string envDsn();
 
 // The pure policy. `compiled` is the baked-in DSN (may be empty), `envOverride`
-// is $SENTRY_DSN (may be null: the deliberate escape hatch for testing a local
-// build against a scratch project), `userEnabled` is the operator's opt-in.
+// is $SENTRY_DSN (may be null or empty), `userEnabled` is the operator's opt-in.
 //
 // Reporting arms only when some DSN exists AND the operator said yes. The
 // escape hatch deliberately still respects the opt-in: a developer pointing a
@@ -48,31 +49,9 @@ bool shouldArm(const char* compiled, const char* envOverride, bool userEnabled);
 // file's own directory, plus a "sentry" subdirectory. Pure and separator-aware
 // so it can be checked against explicit inputs.
 //
-// Windows uses ensureSubdir() instead, so crash state lands beside the existing
-// dumps\ and logs\ in LocalAppData rather than in the roaming profile.
+// Windows passes lifecycle::sentryDir() instead, so crash state lands beside
+// the existing dumps\ and logs\ in LocalAppData rather than in the roaming
+// profile.
 std::string databaseDirFor(const std::string& configFilePath);
-
-// Arms the SDK if shouldArm() says so. `databaseDir` is where Sentry keeps its
-// run state and any pending envelope; it must be a writable absolute path that
-// survives restarts, NOT the working directory (a tray app launched from
-// Explorer or run as a service has no predictable cwd).
-//
-// Idempotent. Safe to call when the SDK is absent or the policy says no.
-void init(bool userEnabled, const std::string& databaseDir);
-
-// Applies a live flip of the operator's opt-in, reusing the database path the
-// last init() was given.
-//
-// Disarming is immediate and deliberate: withdrawing consent has to stop the
-// next crash from being sent, not the next-restart-after-that one. Arming is
-// also immediate, so the switch is not a lie in either direction.
-void setEnabled(bool userEnabled);
-
-// Flushes pending events and closes the SDK. Safe when init() never armed.
-void shutdown();
-
-// True only when init() actually armed the SDK. Drives what the admin UI is
-// allowed to claim: a build with no DSN must not show "reports are being sent".
-bool active();
 
 } // namespace satellite::crash

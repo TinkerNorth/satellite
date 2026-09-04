@@ -11,7 +11,7 @@
 #include "config.h"
 #include "pairing.h"
 #include "pairing_service.h"
-#include "core/crash_reporting.h"
+#include "adapters/crash_adapter.h"
 #include "core/json.h"
 #include "core/session_service.h"
 #include "core/update_service.h"

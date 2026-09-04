@@ -119,6 +119,7 @@ set(SATELLITE_NET_SOURCES
 set(SATELLITE_ADAPTER_SOURCES
     src/adapters/log_adapter.cpp
     src/adapters/client_adapter.cpp
+    src/adapters/crash_adapter.cpp
     src/adapters/audio/opus_codec.cpp
 )
 
@@ -935,7 +936,7 @@ satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/co
 satellite_add_pure_test(test_json tests/test_json.cpp)
 satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_crash_reporting tests/test_crash_reporting.cpp
-                        src/core/crash_reporting.cpp)
+                        src/core/crash_reporting.cpp src/adapters/crash_adapter.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)

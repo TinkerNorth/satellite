@@ -2,10 +2,12 @@
 
 #include "core/crash_reporting.h"
 
+#include <cstddef>
 #include <cstdlib>
 
 // Injected by CMake. The fallbacks keep this translation unit compilable on
-// its own (the pure policy test builds it without the rest of the build).
+// its own, which is exactly the state the pure policy test builds it in: an
+// empty DSN, so a test run can never transmit.
 #ifndef SATELLITE_SENTRY_DSN
 #define SATELLITE_SENTRY_DSN ""
 #endif
@@ -16,28 +18,25 @@
 #define SATELLITE_SENTRY_RELEASE "satellite@unknown"
 #endif
 
-#ifdef SATELLITE_HAS_SENTRY
-#include <sentry.h>
-#endif
-
 namespace satellite::crash {
-
-namespace {
-bool g_active = false;
-// Remembered from init() so a live flip can re-arm without the admin route
-// having to know where satellite keeps its state.
-std::string g_databaseDir;
-} // namespace
 
 const char* compiledDsn() { return SATELLITE_SENTRY_DSN; }
 const char* environment() { return SATELLITE_SENTRY_ENVIRONMENT; }
 const char* release() { return SATELLITE_SENTRY_RELEASE; }
 
-bool sdkAvailable() {
-#ifdef SATELLITE_HAS_SENTRY
-    return true;
+std::string envDsn() {
+#ifdef _MSC_VER
+    // The hardened MSVC lane builds with warnings as errors, and std::getenv
+    // trips C4996 there. _dupenv_s is the sanctioned spelling; same contract.
+    char* raw = nullptr;
+    std::size_t len = 0;
+    if (_dupenv_s(&raw, &len, "SENTRY_DSN") != 0 || raw == nullptr) { return {}; }
+    std::string value(raw);
+    std::free(raw);
+    return value;
 #else
-    return false;
+    const char* raw = std::getenv("SENTRY_DSN");
+    return raw != nullptr ? std::string(raw) : std::string();
 #endif
 }
 
@@ -62,64 +61,5 @@ std::string databaseDirFor(const std::string& configFilePath) {
     // a mixed one back.
     return configFilePath.substr(0, cut + 1) + "sentry";
 }
-
-void init([[maybe_unused]] bool userEnabled, [[maybe_unused]] const std::string& databaseDir) {
-    // Remembered even when the policy says no, so a later opt-in can arm
-    // without being handed the path again.
-    if (!databaseDir.empty()) { g_databaseDir = databaseDir; }
-
-    if (g_active) { return; }
-    if (!shouldArm(compiledDsn(), std::getenv("SENTRY_DSN"), userEnabled)) { return; }
-
-#ifdef SATELLITE_HAS_SENTRY
-    sentry_options_t* options = sentry_options_new();
-
-    // Leave the DSN unset when only $SENTRY_DSN is present: the SDK reads the
-    // environment itself, and setting an empty string here would override it.
-    if (compiledDsn()[0] != '\0') { sentry_options_set_dsn(options, compiledDsn()); }
-
-    // Not the working directory. A tray app launched from Explorer, or the
-    // service, has no cwd worth writing run state into.
-    sentry_options_set_database_path(options, databaseDir.c_str());
-
-    sentry_options_set_release(options, release());
-    sentry_options_set_environment(options, environment());
-
-    // Off in shipped builds: the SDK's debug channel is noisy and satellite
-    // already has its own log.
-    sentry_options_set_debug(options, 0);
-
-    // The crash itself is the payload. Session tracking would report every
-    // start and stop of a server that is meant to run unattended for weeks,
-    // which is telemetry the operator did not agree to when they ticked a box
-    // labelled "crash reports".
-    sentry_options_set_auto_session_tracking(options, 0);
-
-    // Backtraces routinely pick up the home directory, and satellite's runs
-    // next to paired-device state. Sentry's own IP inference is off for the
-    // same reason: nothing here needs to know who the operator is.
-    sentry_options_set_send_default_pii(options, 0);
-
-    if (sentry_init(options) == 0) { g_active = true; }
-#endif
-}
-
-void setEnabled(bool userEnabled) {
-    if (!userEnabled) {
-        shutdown();
-        return;
-    }
-    init(true, g_databaseDir);
-}
-
-void shutdown() {
-    if (!g_active) { return; }
-    g_active = false;
-#ifdef SATELLITE_HAS_SENTRY
-    sentry_close();
-#endif
-}
-
-bool active() { return g_active; }
 
 } // namespace satellite::crash

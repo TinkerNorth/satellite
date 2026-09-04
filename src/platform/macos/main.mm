@@ -20,7 +20,7 @@
 
 #include "core/session_service.h"
 #include "core/update_service.h"
-#include "core/crash_reporting.h"
+#include "adapters/crash_adapter.h"
 
 namespace crash = satellite::crash;
 

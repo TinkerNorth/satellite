@@ -5,6 +5,7 @@
 // independent gates have to hold: a DSN must exist, and the operator must have
 // said yes. Neither one alone is enough, in either direction.
 
+#include "adapters/crash_adapter.h"
 #include "core/config_json.h"
 #include "core/crash_reporting.h"
 
