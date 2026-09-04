@@ -249,6 +249,41 @@ MINGW64; the Windows lane now also carries warnings-as-errors like Linux and
 macOS; `vcpkg.json` sat at 1.0.0 while `/VERSION` said 1.1.0 (now checked by
 version-consistency.yml).
 
+Opt-in crash reporting. Satellite has never transmitted anything, and on
+Linux and macOS it had no crash recorder at all: a segfault died with whatever
+the distro's core-dump collector happened to catch. Windows wrote a local
+minidump nobody was told about. This adds Sentry behind two independent gates,
+because one is not enough. The operator's switch (Settings, Diagnostics) is
+off by default and stays off through an upgrade: an install that never saw the
+ask must not start transmitting on its owner's behalf, which is why the config
+default is `false` rather than matching the Dish clients' default-on. Turning
+it off disarms the SDK immediately rather than at the next restart, since
+withdrawing consent has to stop the next crash and not the one after it.
+
+The second gate is the build. `SATELLITE_SENTRY_DSN` is empty in CMake and is
+only ever filled in by `release.yml` from a repository secret, so a local
+build, a PR build and a build from a fork (secrets are not exposed to forks)
+carry no DSN and cannot transmit no matter what the switch says. The Sentry
+environment is derived from `SATELLITE_RELEASE_VERSION`, which only the release
+workflow sets, so `production` is not a label a developer build reaches by
+accident -- and because it is only a label (`scripts/build-appimage.sh` sets
+that variable when run by hand), the DSN is the gate that actually holds.
+The release string uses the display version, so a `-dev` build cannot file
+itself against a real release and mix unsymbolicated frames into genuine data.
+`$SENTRY_DSN` still works as a developer escape hatch, and still respects the
+opt-in.
+
+Nothing about the local artifacts changes. On Windows the existing
+`dumps\*.dmp` writer keeps running, and `dumpFilter` now chains to whatever
+top-level filter was installed before it instead of swallowing the exception,
+so the local dump and the Sentry report both see the crash rather than
+whichever recorder armed last winning outright. Session tracking and
+`send_default_pii` are off: the crash is the payload, and a server meant to run
+unattended for weeks should not be reporting every start and stop to anyone.
+The status payload reports the opt-in and whether it actually armed as separate
+fields, so a build with no DSN says so instead of claiming reports are going
+somewhere they are not.
+
 ## 1.1.0
 
 No protocol changes. Distribution release: every shipping platform now also

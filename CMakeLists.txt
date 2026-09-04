@@ -38,6 +38,46 @@ if(WIN32)
     add_compile_definitions(NOMINMAX)
 endif()
 
+# ── Crash reporting (Sentry) ──────────────────────────────────────────────
+#
+# Two independent gates, on purpose.
+#
+# The ENVIRONMENT is a label. It is derived from SATELLITE_RELEASE_VERSION,
+# which only .github/workflows/release.yml sets, so "production" is not a name
+# a developer build reaches by accident. It is still only a label: anyone can
+# pass -DSATELLITE_RELEASE_VERSION, and scripts/build-appimage.sh does exactly
+# that when run by hand.
+#
+# The DSN is the real gate. It is empty here and is only ever filled in by
+# release.yml from the SENTRY_DSN repository secret, so a local build, a PR
+# build and a build from a fork (secrets are not exposed to forks) carry no
+# DSN and physically cannot transmit, whatever label they wear. Labels drift;
+# a missing DSN cannot.
+#
+# RELEASE uses the DISPLAY version, not SATELLITE_VERSION: the latter is
+# stripped to bare MAJOR.MINOR.PATCH above, so a dev build would file itself
+# against the real release and mix unsymbolicated frames into genuine data.
+# DISPLAY carries the "-dev" suffix that keeps the two apart.
+if(DEFINED SATELLITE_RELEASE_VERSION AND NOT "${SATELLITE_RELEASE_VERSION}" STREQUAL "")
+    set(SATELLITE_SENTRY_ENVIRONMENT "production")
+else()
+    set(SATELLITE_SENTRY_ENVIRONMENT "development")
+endif()
+
+set(SATELLITE_SENTRY_DSN "" CACHE STRING
+    "Sentry DSN. Empty (the default) disables crash reporting at compile time.")
+
+# Optional dependency, exactly like the tray: absent means the facade in
+# core/crash_reporting.cpp compiles to inert stubs and everything else still
+# builds. Keeps a source checkout buildable with no extra packages.
+find_package(sentry CONFIG QUIET)
+if(sentry_FOUND)
+    message(STATUS "satellite: Sentry SDK found; crash reporting compiled in "
+                   "(environment: ${SATELLITE_SENTRY_ENVIRONMENT})")
+else()
+    message(STATUS "satellite: Sentry SDK not found; crash reporting stubbed out")
+endif()
+
 # Vendored single-header libraries (nlohmann/json, cpp-httplib) under lib/.
 # SYSTEM keeps their internal warnings out of -Wall/-Wextra//W4, and every
 # target (including pure-core tests) can include them.
@@ -51,6 +91,7 @@ set(SATELLITE_CORE_SOURCES
     src/core/update_service.cpp
     src/core/github_release.cpp
     src/core/network_info.cpp
+    src/core/crash_reporting.cpp
 )
 
 # Currently-shared infrastructure (to be ported to POSIX in Stage 3).
@@ -721,6 +762,18 @@ if(TARGET satellite)
     target_compile_definitions(satellite PRIVATE
         SATELLITE_VERSION_RESOLVED="${SATELLITE_VERSION_DISPLAY}")
 
+    # Crash reporting identity. Only the shipped binary carries these; the test
+    # targets compile core/crash_reporting.cpp against the header's fallbacks,
+    # which resolve to an empty DSN and so can never transmit from a test run.
+    target_compile_definitions(satellite PRIVATE
+        SATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
+        SATELLITE_SENTRY_ENVIRONMENT="${SATELLITE_SENTRY_ENVIRONMENT}"
+        SATELLITE_SENTRY_RELEASE="satellite@${SATELLITE_VERSION_DISPLAY}")
+    if(sentry_FOUND)
+        target_compile_definitions(satellite PRIVATE SATELLITE_HAS_SENTRY=1)
+        target_link_libraries(satellite PRIVATE sentry::sentry)
+    endif()
+
     include(CheckIPOSupported)
     check_ipo_supported(RESULT SATELLITE_IPO_OK OUTPUT SATELLITE_IPO_MSG LANGUAGES CXX)
     if(SATELLITE_IPO_OK)
@@ -881,6 +934,8 @@ satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/co
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
 satellite_add_pure_test(test_json tests/test_json.cpp)
 satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
+satellite_add_pure_test(test_crash_reporting tests/test_crash_reporting.cpp
+                        src/core/crash_reporting.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)

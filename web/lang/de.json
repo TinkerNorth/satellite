@@ -241,6 +241,13 @@
   "settings.discovery.mdns-label": "mDNS-/Bonjour-Responder",
   "settings.discovery.broadcast-label": "Klassischer UDP-Broadcast-Beacon",
   "settings.discovery.hint": "mDNS / Bonjour ist der moderne Erkennungsweg und funktioniert auch in Subnetzen, die Broadcasts verwerfen. Der klassische UDP-Beacon bleibt als Ausweichlösung für Sender aktiv, die älter als der mDNS-Responder sind. Deaktivieren Sie ihn nur in einem Netzwerk, in dem jeder Sender mDNS unterstützt.",
+  "settings.crash.title": "Diagnose",
+  "settings.crash.label": "Absturzberichte senden",
+  "settings.crash.hint": "Standardmäßig aus. Wenn aktiviert, sendet Satellite bei einem Absturz einen Bericht an die Entwickler: den Stacktrace, die Version und das Betriebssystem. Niemals gesendet werden dein Spielgeschehen, deine Controller-Eingaben, deine gekoppelten Geräte oder Inhalte aus deinem Netzwerk. Beim Ausschalten entfällt schon der nächste Bericht, nicht erst die späteren.",
+  "settings.crash.status.off": "Es werden keine Absturzberichte gesendet.",
+  "settings.crash.status.on": "Absturzberichte werden gesendet.",
+  "settings.crash.status.unavailable": "Dieser Build kann keine Absturzberichte senden, es wird also nichts gesendet. Offizielle Releases können es.",
+
   "settings.audio.title": "Controller-Audio",
   "settings.audio.label": "Mikrofon und Lautsprecher des Controllers",
   "settings.audio.hint": "Ein hier erstellter DualSense oder DualShock 4 v2 erhält auch das eigene Mikrofon und den eigenen Lautsprecher des Controllers, als echte Windows-Audiogeräte. Windows entscheidet, was darüber wiedergegeben wird, genau wie bei jedem Headset: Wählen Sie den Controller unter Einstellungen > System > Sound > Lautstärkemixer für die gewünschten Apps aus. Controller-Audio benötigt einen mitgelieferten signierten USB-Kerneltransport, den HIDMaestro beim ersten Erstellen eines solchen Controllers installiert. Deaktivieren Sie diese Option, um den reinen Eingabe-Controller zu behalten und diese Installation zu überspringen. Änderungen gelten ab der nächsten Controller-Verbindung.",

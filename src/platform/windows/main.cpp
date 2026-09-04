@@ -20,6 +20,7 @@
 #include "updater_adapter.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
+#include "core/crash_reporting.h"
 #include "adapters/audio/opus_codec.h"
 
 #include "core/gamepad_mux.h"
@@ -33,6 +34,8 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+
+namespace crash = satellite::crash;
 
 namespace {
 
@@ -169,6 +172,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     }
     g_config = loadConfig();
     if (firstRun) g_config.autoStart = getAutoStart();
+
+    // Crash reporting arms here rather than beside installCrashHandler(),
+    // because it needs the operator's opt-in and that only exists once the
+    // config has been read. Sentry installs its own top-level filter, so
+    // satellite's goes back on top afterwards and chains to it.
+    crash::init(g_config.crashReporting, lifecycle::sentryDir());
+    lifecycle::rearmCrashFilterChain();
 
     // Constructive only: writes HKCU\Run when autostart is on, never deletes,
     // so a portable build can't wipe an installed copy's Run entry.
@@ -313,6 +323,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     svc.closeAllSessions();
 
     lifecycle::stopFileLogger();
+
+    // Flush before the process winds down; a pending envelope is lost if the
+    // transport never gets to run.
+    crash::shutdown();
 
     removeTrayIcon();
     saveConfig(g_config);

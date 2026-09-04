@@ -29,6 +29,7 @@ inline std::string serializeConfig(const Config& cfg) {
     j["controllerAudioMic"] = cfg.controllerAudioMic;
     j["controllerAudioSpeaker"] = cfg.controllerAudioSpeaker;
     j["controllerAudioKeepDefaultDevice"] = cfg.controllerAudioKeepDefaultDevice;
+    j["crashReporting"] = cfg.crashReporting;
 
     JsonOut devices = JsonOut::array();
     for (const auto& d : cfg.pairedDevices) {
@@ -85,6 +86,10 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     cfg.controllerAudioSpeaker = jsonBool(j, "controllerAudioSpeaker", cfg.controllerAudioSpeaker);
     cfg.controllerAudioKeepDefaultDevice =
         jsonBool(j, "controllerAudioKeepDefaultDevice", cfg.controllerAudioKeepDefaultDevice);
+    // Absent in every config written before crash reporting existed, and the
+    // default it falls back to is false. That is the point: an upgrade must
+    // not start transmitting on behalf of an operator who never saw the ask.
+    cfg.crashReporting = jsonBool(j, "crashReporting", cfg.crashReporting);
 
     auto it = j.find("pairedDevices");
     if (it != j.end() && it->is_array()) {

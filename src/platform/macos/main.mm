@@ -20,6 +20,9 @@
 
 #include "core/session_service.h"
 #include "core/update_service.h"
+#include "core/crash_reporting.h"
+
+namespace crash = satellite::crash;
 
 #include <sys/stat.h>
 
@@ -67,6 +70,10 @@ int main(int argc, const char* argv[]) {
 
         g_config = loadConfig();
         g_config.autoStart = getAutoStart();
+
+        // As on Linux: the only crash recorder here, and still gated on the
+        // operator's opt-in plus a DSN this build actually carries.
+        crash::init(g_config.crashReporting, crash::databaseDirFor(configPath()));
 
         MacHidGamepadAdapter gamepadAdapter;
         ClientAdapter clientAdapter;
@@ -145,6 +152,10 @@ int main(int argc, const char* argv[]) {
 
         svc.closeAllSessions();
         saveConfig(g_config);
+
+        // Flush before exit; a pending envelope is lost otherwise.
+        crash::shutdown();
+
         netShutdown();
     }
     return 0;

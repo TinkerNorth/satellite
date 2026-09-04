@@ -209,6 +209,18 @@
         Satellite puts your previous device back afterwards. Turn it off if you
         want the controller to become the default the way Windows intended.</p>
 
+      <h2 class="section-title section-title-spaced" data-i18n="settings.crash.title">Diagnostics</h2>
+      <div class="toggle-row">
+        <span data-i18n="settings.crash.label">Send crash reports</span>
+        <label class="switch"><input type="checkbox" id="settings-crashReporting"><span class="slider"></span></label>
+      </div>
+      <p class="hint" data-i18n="settings.crash.hint">Off by default. When on, Satellite sends a report to its
+        developers if it crashes: the stack trace, the version and the operating
+        system. It never sends your gameplay, your controller input, your paired
+        devices or the contents of your network. Turning it off stops the very
+        next report, not just future ones.</p>
+      <p class="hint" id="settings-crashReporting-status" role="status"></p>
+
       <div class="btn-row">
         <button class="btn btn-save" id="settings-btnSave" onclick="settingsSave()" data-i18n="settings.save" disabled>Save Config</button>
         <button class="btn btn-undo" id="settings-btnUndo" onclick="settingsUndo()" data-i18n="settings.undo" disabled>Undo</button>

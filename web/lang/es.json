@@ -221,6 +221,13 @@
   "settings.discovery.mdns-label": "Respondedor mDNS / Bonjour",
   "settings.discovery.broadcast-label": "Baliza de difusión UDP heredada",
   "settings.discovery.hint": "mDNS / Bonjour es la vía de descubrimiento moderna y funciona en subredes que descartan la difusión. La baliza UDP heredada se mantiene activa como alternativa para los emisores anteriores al respondedor mDNS. Desactívala solo en una red donde todos los emisores admitan mDNS.",
+  "settings.crash.title": "Diagnóstico",
+  "settings.crash.label": "Enviar informes de fallos",
+  "settings.crash.hint": "Desactivado de forma predeterminada. Si se activa, Satellite envía un informe a sus desarrolladores cuando falla: la traza de pila, la versión y el sistema operativo. Nunca envía tu partida, tus mandos, tus dispositivos vinculados ni el contenido de tu red. Desactivarlo detiene ya el siguiente informe, no solo los posteriores.",
+  "settings.crash.status.off": "No se están enviando informes de fallos.",
+  "settings.crash.status.on": "Se están enviando informes de fallos.",
+  "settings.crash.status.unavailable": "Esta compilación no puede enviar informes de fallos, así que no se envía nada. Las versiones oficiales sí pueden.",
+
   "settings.audio.title": "Audio del mando",
   "settings.audio.label": "Micrófono y altavoz del mando",
   "settings.audio.hint": "Un DualSense o un DualShock 4 v2 creado aquí también obtiene el micrófono y el altavoz propios del mando, como dispositivos de audio reales de Windows. Windows decide qué suena por ellos, igual que con cualquier auricular: elige el mando en Configuración > Sistema > Sonido > Mezclador de volumen para las aplicaciones que quieras. El audio del mando necesita un transporte USB de núcleo firmado e incluido, que HIDMaestro instala la primera vez que se crea un mando de este tipo. Desactiva esta opción para conservar el mando solo de entrada y omitir esa instalación. Los cambios se aplican la próxima vez que se conecte un mando.",
