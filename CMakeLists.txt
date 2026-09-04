@@ -1031,6 +1031,11 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/net/local_iface.cpp
         src/core/config_io.cpp
         ${SATELLITE_CORE_SOURCES}
+        # routes_admin.cpp reads crash::active() and flips crash::setEnabled(),
+        # so the route tests need the adapter as well as the pure policy that
+        # rides in SATELLITE_CORE_SOURCES. It compiles inert here: the test
+        # targets never define SATELLITE_HAS_SENTRY.
+        src/adapters/crash_adapter.cpp
     )
     if(APPLE)
         set(SATELLITE_ROUTE_TEST_PLATFORM_SOURCES
