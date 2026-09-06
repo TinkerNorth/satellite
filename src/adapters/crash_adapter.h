@@ -27,7 +27,7 @@ bool sdkAvailable();
 // Idempotent. Safe to call when the SDK is absent or the policy says no.
 void init(bool userEnabled, const std::string& databaseDir);
 
-// Applies a live flip of the operator's opt-in, reusing the database path the
+// Applies a live flip of the operator's switch, reusing the database path the
 // last init() was given.
 //
 // Disarming is immediate and deliberate: withdrawing consent has to stop the

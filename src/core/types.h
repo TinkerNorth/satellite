@@ -913,13 +913,11 @@ struct Config {
     // "everything". On means put the previous default back afterwards.
     bool controllerAudioKeepDefaultDevice = true;
 
-    // Crash reporting to Sentry. Off by default, and deliberately not matched
-    // to the Dish clients' default-on: satellite transmitted nothing at all
-    // before this existed, so every install upgrading into it has an operator
-    // who was never asked. Defaulting on would answer for them. A release
-    // build additionally needs a DSN compiled in before this switch can do
-    // anything -- see core/crash_reporting.h.
-    bool crashReporting = false;
+    // Crash reporting to Sentry. On by default, the same opt-out switch the
+    // Dish clients ship, so one switch means one thing across the family. A
+    // release build additionally needs a DSN compiled in before this switch
+    // can do anything -- see core/crash_reporting.h.
+    bool crashReporting = true;
 };
 
 // The two wire gates above, sampled together. One read means one lock rather

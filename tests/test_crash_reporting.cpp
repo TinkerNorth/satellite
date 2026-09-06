@@ -57,20 +57,20 @@ static void test_test_build_carries_no_dsn() {
     EXPECT_EQ(std::string(crash::environment()), std::string("development"));
 }
 
-static void test_default_is_off() {
-    TEST("Config: crash reporting defaults off");
-    // An install upgrading into this feature has an operator who was never
-    // asked, so the default has to answer "no" on their behalf.
+static void test_default_is_on() {
+    TEST("Config: crash reporting defaults on, the Dish clients' opt-out");
     Config cfg;
-    EXPECT(!cfg.crashReporting);
+    EXPECT(cfg.crashReporting);
 }
 
-static void test_absent_key_reads_as_off() {
-    TEST("Config: a config predating the key reads as off, not as opt-in");
+static void test_absent_key_reads_as_on() {
+    TEST("Config: a config predating the key reads as on; an explicit false reads as off");
     Config cfg;
     parseConfigInto(R"({"udpPort":9876})", cfg);
-    EXPECT(!cfg.crashReporting);
+    EXPECT(cfg.crashReporting);
     EXPECT_EQ(cfg.udpPort, 9876);
+    parseConfigInto(R"({"crashReporting":false})", cfg);
+    EXPECT(!cfg.crashReporting);
 }
 
 static void test_round_trip() {
@@ -112,8 +112,8 @@ int main() {
     test_arms_when_both_hold();
     test_env_override_is_the_dev_hatch();
     test_test_build_carries_no_dsn();
-    test_default_is_off();
-    test_absent_key_reads_as_off();
+    test_default_is_on();
+    test_absent_key_reads_as_on();
     test_round_trip();
     test_inactive_without_sdk();
 

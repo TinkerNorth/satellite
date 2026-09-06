@@ -6,6 +6,11 @@
 
 #ifdef SATELLITE_HAS_SENTRY
 #include <sentry.h>
+#ifdef _WIN32
+#include <windows.h>
+
+#include <cstddef>
+#endif
 #endif
 
 namespace satellite::crash {
@@ -45,6 +50,24 @@ void init([[maybe_unused]] bool userEnabled, [[maybe_unused]] const std::string&
     // Not the working directory. A tray app launched from Explorer, or the
     // service, has no cwd worth writing run state into.
     sentry_options_set_database_path(options, g_databaseDir.c_str());
+
+#ifdef _WIN32
+    // The crashpad backend is a separate process, staged beside satellite.exe
+    // by CMake and shipped by the installer. The SDK's own lookup is relative
+    // to the working directory, which a tray app launched from Explorer, or
+    // the service, does not control.
+    {
+        char exe[MAX_PATH];
+        const DWORD len = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            std::string handler(exe, len);
+            const std::size_t cut = handler.find_last_of("\\/");
+            if (cut != std::string::npos) { handler.erase(cut + 1); }
+            handler += "crashpad_handler.exe";
+            sentry_options_set_handler_path(options, handler.c_str());
+        }
+    }
+#endif
 
     sentry_options_set_release(options, release());
     sentry_options_set_environment(options, environment());

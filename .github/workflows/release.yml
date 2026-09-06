@@ -160,6 +160,23 @@ jobs:
           echo "::warning::Stable tag ${GITHUB_REF_NAME} is being released UNSIGNED; artifacts carry an -unsigned suffix. Missing: ${missing[*]}"
           echo "::warning::Set the repository variable ENFORCE_RELEASE_SIGNING=true to make this a hard failure once signing certificates are available."
 
+      - name: Report crash-reporting readiness (advisory)
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::warning::SENTRY_DSN not set; this release builds with no DSN and sends no crash reports."
+          else
+            echo "SENTRY_DSN present; release builds carry the DSN."
+          fi
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "::warning::SENTRY_AUTH_TOKEN not set; debug symbols will not be uploaded and native frames stay unsymbolicated."
+          else
+            echo "SENTRY_AUTH_TOKEN present; debug symbols will be uploaded."
+          fi
+
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform build jobs.
   # ─────────────────────────────────────────────────────────────────────
@@ -196,6 +213,31 @@ jobs:
           cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp" -DSATELLITE_SENTRY_DSN="$env:SATELLITE_SENTRY_DSN"
           cmake --build --preset windows-msvc --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
+
+      # Best effort: a symbol-upload hiccup must not fail a release. The org
+      # and project fall back to the numeric ids inside the DSN, which the
+      # Sentry API accepts in place of slugs.
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          if (-not $env:SENTRY_AUTH_TOKEN -or -not $env:SENTRY_DSN) {
+            Write-Host "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
+            exit 0
+          }
+          if (-not $env:SENTRY_ORG -and ($env:SENTRY_DSN -match '@o(\d+)\.')) { $env:SENTRY_ORG = $Matches[1] }
+          if (-not $env:SENTRY_PROJECT) { $env:SENTRY_PROJECT = ($env:SENTRY_DSN -split '/')[-1] }
+          $cli = Join-Path $env:RUNNER_TEMP 'sentry-cli.exe'
+          Invoke-WebRequest -Uri 'https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Windows-x86_64.exe' -OutFile $cli
+          $hash = (Get-FileHash -Algorithm SHA256 $cli).Hash.ToLowerInvariant()
+          if ($hash -ne '8643986aec8d8cf8d69cd476d67427578e5dbbda378eba506d199681082abe5a') { throw "sentry-cli checksum mismatch: $hash" }
+          & $cli debug-files upload --include-sources satellite.exe satellite.pdb
+          if ($LASTEXITCODE -ne 0) { throw "sentry-cli exited $LASTEXITCODE" }
 
       # installer.iss bundles the ViGEmBus driver and the HIDMaestro helper,
       # neither of which is committed -- fetch + hash-verify them first (the
@@ -404,7 +446,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             git ca-certificates \
-            build-essential cmake pkg-config \
+            build-essential cmake pkg-config curl \
             libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
             dpkg-dev fakeroot file gzip lintian
@@ -423,6 +465,36 @@ jobs:
           tag="${{ inputs.tag || github.ref_name }}"
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
           cmake --build build --config Release --target satellite -j "$(nproc)"
+
+
+      # Best effort: a symbol-upload hiccup must not fail a release. The org
+      # and project fall back to the numeric ids inside the DSN, which the
+      # Sentry API accepts in place of slugs. The binary is uploaded before
+      # packaging strips it.
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
+            exit 0
+          fi
+          if [ -z "${SENTRY_ORG:-}" ]; then
+            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
+          fi
+          if [ -z "${SENTRY_PROJECT:-}" ]; then
+            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
+          fi
+          cli="${RUNNER_TEMP}/sentry-cli"
+          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
+          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
+          chmod +x "$cli"
+          "$cli" debug-files upload --include-sources satellite
 
       - name: Package (.deb via CPack)
         run: |
@@ -542,6 +614,7 @@ jobs:
             libsodium-devel openssl-devel libcurl-devel opus-devel \
             gtk3-devel libayatana-appindicator-gtk3-devel libnotify-devel \
             gzip
+          dnf -y install --allowerasing curl
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -557,6 +630,36 @@ jobs:
           tag="${{ inputs.tag || github.ref_name }}"
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
           cmake --build build --config Release --target satellite -j "$(nproc)"
+
+
+      # Best effort: a symbol-upload hiccup must not fail a release. The org
+      # and project fall back to the numeric ids inside the DSN, which the
+      # Sentry API accepts in place of slugs. The binary is uploaded before
+      # packaging strips it.
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
+            exit 0
+          fi
+          if [ -z "${SENTRY_ORG:-}" ]; then
+            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
+          fi
+          if [ -z "${SENTRY_PROJECT:-}" ]; then
+            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
+          fi
+          cli="${RUNNER_TEMP}/sentry-cli"
+          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
+          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
+          chmod +x "$cli"
+          "$cli" debug-files upload --include-sources satellite
 
       - name: Package (.rpm via CPack)
         run: |
@@ -667,6 +770,35 @@ jobs:
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           SATELLITE_VERSION="${tag#v}" bash scripts/build-appimage.sh
+
+      # Best effort: a symbol-upload hiccup must not fail a release. The org
+      # and project fall back to the numeric ids inside the DSN, which the
+      # Sentry API accepts in place of slugs. The binary is uploaded before
+      # packaging strips it.
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
+            exit 0
+          fi
+          if [ -z "${SENTRY_ORG:-}" ]; then
+            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
+          fi
+          if [ -z "${SENTRY_PROJECT:-}" ]; then
+            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
+          fi
+          cli="${RUNNER_TEMP}/sentry-cli"
+          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
+          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
+          chmod +x "$cli"
+          "$cli" debug-files upload --include-sources satellite
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

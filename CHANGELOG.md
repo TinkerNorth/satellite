@@ -249,16 +249,18 @@ MINGW64; the Windows lane now also carries warnings-as-errors like Linux and
 macOS; `vcpkg.json` sat at 1.0.0 while `/VERSION` said 1.1.0 (now checked by
 version-consistency.yml).
 
-Opt-in crash reporting. Satellite has never transmitted anything, and on
-Linux and macOS it had no crash recorder at all: a segfault died with whatever
-the distro's core-dump collector happened to catch. Windows wrote a local
-minidump nobody was told about. This adds Sentry behind two independent gates,
-because one is not enough. The operator's switch (Settings, Diagnostics) is
-off by default and stays off through an upgrade: an install that never saw the
-ask must not start transmitting on its owner's behalf, which is why the config
-default is `false` rather than matching the Dish clients' default-on. Turning
-it off disarms the SDK immediately rather than at the next restart, since
-withdrawing consent has to stop the next crash and not the one after it.
+Crash reporting, with the same switch the Dish clients have. Satellite had
+never transmitted anything, and on Linux and macOS it had no crash recorder
+at all: a segfault died with whatever the distro's core-dump collector
+happened to catch. Windows wrote a local minidump nobody was told about. This
+adds Sentry behind two independent gates, because one is not enough. The
+operator's switch (Settings, Diagnostics, "Share crash reports") is on by
+default and turns off with one click, the same opt-out Dish for Android,
+Windows and Linux ship, down to the wording, so one switch means one thing
+across the family. Turning it off disarms the SDK immediately rather than at
+the next restart, since withdrawing consent has to stop the next crash and
+not the one after it. [`PRIVACY.md`](PRIVACY.md) is new and says exactly what
+a report contains.
 
 The second gate is the build. `SATELLITE_SENTRY_DSN` is empty in CMake and is
 only ever filled in by `release.yml` from a repository secret, so a local
@@ -271,7 +273,20 @@ that variable when run by hand), the DSN is the gate that actually holds.
 The release string uses the display version, so a `-dev` build cannot file
 itself against a real release and mix unsymbolicated frames into genuine data.
 `$SENTRY_DSN` still works as a developer escape hatch, and still respects the
-opt-in.
+switch.
+
+What ships per platform. Windows takes the SDK from vcpkg with the crashpad
+backend, whose handler is a separate process: CMake stages
+`crashpad_handler.exe` beside `satellite.exe`, the installer ships it, and the
+installer round-trip test asserts it, because without it Satellite starts,
+runs, and captures nothing. Linux has no distro package for sentry-native, so
+the release lanes build it from the hash-pinned 0.16.3 release bundle with the
+in-process backend, and only when a DSN is present; a PR build or a source
+build never pays for it, and `linux-ci.yml` compiles that path once with a
+DSN that resolves nowhere so a release tag is not the first thing to try it.
+Release builds keep debug information, upload it to Sentry with `sentry-cli`
+when the `SENTRY_AUTH_TOKEN` secret exists, and strip it before packaging, so
+nothing shipped carries symbols and the reports arrive readable.
 
 Nothing about the local artifacts changes. On Windows the existing
 `dumps\*.dmp` writer keeps running, and `dumpFilter` now chains to whatever

@@ -69,13 +69,36 @@ set(SATELLITE_SENTRY_DSN "" CACHE STRING
 
 # Optional dependency, exactly like the tray: absent means the facade in
 # core/crash_reporting.cpp compiles to inert stubs and everything else still
-# builds. Keeps a source checkout buildable with no extra packages.
-find_package(sentry CONFIG QUIET)
+# builds. Windows (vcpkg) and macOS (Homebrew) resolve a packaged SDK through
+# find_package. Linux has no distro package for sentry-native, so the release
+# bundle is fetched and built from source, pinned by hash, and only when a DSN
+# is present: a build that cannot transmit does not pay for an SDK it will
+# never call. SENTRY_BACKEND=inproc there, so nothing extra has to ship in the
+# .deb, the .rpm or the AppImage.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT SATELLITE_SENTRY_DSN STREQUAL "")
+        include(FetchContent)
+        set(SENTRY_BACKEND inproc CACHE STRING "" FORCE)
+        set(SENTRY_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(SENTRY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(SENTRY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(sentry
+            URL https://github.com/getsentry/sentry-native/releases/download/0.16.3/sentry-native.zip
+            URL_HASH SHA256=21380c182dde677794a7b6c57e8d6e03d79ec5a03eec67514ffa7522f7e161b5
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        FetchContent_MakeAvailable(sentry)
+        set(sentry_FOUND TRUE)
+    else()
+        set(sentry_FOUND FALSE)
+    endif()
+else()
+    find_package(sentry CONFIG QUIET)
+endif()
 if(sentry_FOUND)
-    message(STATUS "satellite: Sentry SDK found; crash reporting compiled in "
+    message(STATUS "satellite: Sentry SDK available; crash reporting compiled in "
                    "(environment: ${SATELLITE_SENTRY_ENVIRONMENT})")
 else()
-    message(STATUS "satellite: Sentry SDK not found; crash reporting stubbed out")
+    message(STATUS "satellite: Sentry SDK not available; crash reporting stubbed out")
 endif()
 
 # Vendored single-header libraries (nlohmann/json, cpp-httplib) under lib/.
@@ -773,6 +796,35 @@ if(TARGET satellite)
     if(sentry_FOUND)
         target_compile_definitions(satellite PRIVATE SATELLITE_HAS_SENTRY=1)
         target_link_libraries(satellite PRIVATE sentry::sentry)
+        # Debug information for the symbol upload in release.yml. The .deb,
+        # the .rpm and the AppImage strip on packaging and the installer never
+        # picks up a .pdb, so nothing shipped carries it.
+        if(MSVC)
+            target_compile_options(satellite PRIVATE /Zi)
+            target_link_options(satellite PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF)
+        else()
+            target_compile_options(satellite PRIVATE -g)
+        endif()
+    endif()
+    if(sentry_FOUND AND WIN32)
+        # The vcpkg port builds sentry-native with the crashpad backend, whose
+        # handler is a separate process kept under the port's tools directory.
+        # Without it satellite starts, runs, and captures nothing, so it is
+        # staged beside satellite.exe and the installer ships it.
+        find_program(SATELLITE_CRASHPAD_HANDLER
+            NAMES crashpad_handler
+            HINTS "${sentry_DIR}/../../tools/sentry-native"
+            NO_DEFAULT_PATH)
+        if(NOT SATELLITE_CRASHPAD_HANDLER)
+            message(FATAL_ERROR
+                "sentry-native was found but crashpad_handler was not, so crashes "
+                "would never be captured. Expected it under the Sentry package's "
+                "tools/sentry-native.")
+        endif()
+        add_custom_command(TARGET satellite POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SATELLITE_CRASHPAD_HANDLER}" "$<TARGET_FILE_DIR:satellite>"
+            COMMENT "Staging crashpad_handler beside satellite.exe")
     endif()
 
     include(CheckIPOSupported)

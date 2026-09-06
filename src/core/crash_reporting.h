@@ -9,8 +9,8 @@
 //      build, a PR build and a fork build all physically cannot report,
 //      whatever environment string they claim. A label can be passed on the
 //      command line; a missing DSN cannot be argued with.
-//   2. The operator opted in. Config::crashReporting defaults to false, so an
-//      existing install that never saw the switch stays silent.
+//   2. The operator has not opted out. Config::crashReporting defaults to
+//      true, matching the Dish clients; the switch in Settings turns it off.
 //
 // The environment string separates the two worlds in Sentry. It is derived
 // from SATELLITE_RELEASE_VERSION, which only release.yml sets, so "production"
@@ -37,10 +37,10 @@ const char* release();     // "satellite@<display version>"
 std::string envDsn();
 
 // The pure policy. `compiled` is the baked-in DSN (may be empty), `envOverride`
-// is $SENTRY_DSN (may be null or empty), `userEnabled` is the operator's opt-in.
+// is $SENTRY_DSN (may be null or empty), `userEnabled` is the operator's switch.
 //
-// Reporting arms only when some DSN exists AND the operator said yes. The
-// escape hatch deliberately still respects the opt-in: a developer pointing a
+// Reporting arms only when some DSN exists AND the switch is on. The escape
+// hatch deliberately still respects the switch: a developer pointing a
 // build at their own project is not a reason to bypass a user's choice on a
 // machine that is not theirs.
 bool shouldArm(const char* compiled, const char* envOverride, bool userEnabled);

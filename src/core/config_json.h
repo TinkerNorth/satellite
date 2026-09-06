@@ -86,9 +86,9 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     cfg.controllerAudioSpeaker = jsonBool(j, "controllerAudioSpeaker", cfg.controllerAudioSpeaker);
     cfg.controllerAudioKeepDefaultDevice =
         jsonBool(j, "controllerAudioKeepDefaultDevice", cfg.controllerAudioKeepDefaultDevice);
-    // Absent in every config written before crash reporting existed, and the
-    // default it falls back to is false. That is the point: an upgrade must
-    // not start transmitting on behalf of an operator who never saw the ask.
+    // Absent in every config written before crash reporting existed; falls
+    // back to the struct default (on), the same opt-out the Dish clients use.
+    // An explicit false is honoured so an opt-out survives every reload.
     cfg.crashReporting = jsonBool(j, "crashReporting", cfg.crashReporting);
 
     auto it = j.find("pairedDevices");
