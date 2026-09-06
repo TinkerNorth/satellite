@@ -209,3 +209,37 @@ jobs:
               diffoscope --no-progress satellite-A satellite-B | head -200 || true
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The SDK is only built when a DSN is present, which no PR build has, so
+  # this is the one lane that compiles and links the Sentry path before a
+  # release tag does. The DSN resolves nowhere; nothing runs it.
+  sentry-sdk:
+    name: Build with the Sentry SDK (dummy DSN)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
+            libayatana-appindicator3-dev libgtk-3-dev libnotify-dev
+
+      - name: Configure with a DSN that resolves nowhere
+        run: |
+          cmake -S . -B build-sentry -DCMAKE_BUILD_TYPE=Release \
+            -DSATELLITE_SENTRY_DSN="https://public@o0.ingest.sentry.invalid/0"
+
+      - name: Build
+        run: cmake --build build-sentry --target satellite -j "$(nproc)"
+
+      - name: Verify the SDK is linked and the binary carries debug info
+        run: |
+          test -x satellite
+          nm satellite | grep -q 'sentry_init' || { echo "::error::sentry_init is not linked"; exit 1; }
+          readelf -S satellite | grep -q '\.debug_info' || { echo "::error::no debug info for the symbol upload"; exit 1; }

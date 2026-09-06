@@ -221,6 +221,13 @@
   "settings.discovery.mdns-label": "Respondedor mDNS / Bonjour",
   "settings.discovery.broadcast-label": "Beacon de broadcast UDP legado",
   "settings.discovery.hint": "O mDNS / Bonjour é o método moderno de descoberta e funciona em sub-redes que descartam broadcast. O beacon UDP legado permanece ativo como alternativa para remetentes anteriores ao respondedor mDNS. Desative-o apenas em uma rede onde todos os remetentes sejam compatíveis com mDNS.",
+  "settings.crash.title": "Diagnóstico",
+  "settings.crash.label": "Compartilhar relatórios de falhas",
+  "settings.crash.hint": "Compartilhe logs de falhas anonimizados e stack traces com a TinkerNorth para ajudar a corrigir bugs. Nenhum jogo ou entrada de controle é incluído.",
+  "settings.crash.status.off": "Nenhum relatório de falhas está sendo enviado.",
+  "settings.crash.status.on": "Relatórios de falhas estão sendo enviados.",
+  "settings.crash.status.unavailable": "Esta compilação não pode enviar relatórios de falhas, portanto nada é enviado. As versões oficiais podem.",
+
   "settings.audio.title": "Áudio do controle",
   "settings.audio.label": "Microfone e alto-falante do controle",
   "settings.audio.hint": "Um DualSense ou DualShock 4 v2 criado aqui também ganha o microfone e o alto-falante do próprio controle, como dispositivos de áudio reais do Windows. O Windows decide o que toca por eles, igual a qualquer fone: escolha o controle em Configurações > Sistema > Som > Mixer de volume para os aplicativos que quiser. O áudio do controle precisa de um transporte USB de kernel assinado e incluído, que o HIDMaestro instala na primeira vez que um controle desse tipo é criado. Desative esta opção para manter o controle apenas de entrada e pular essa instalação. As mudanças valem na próxima vez que um controle for conectado.",

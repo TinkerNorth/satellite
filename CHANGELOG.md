@@ -249,6 +249,59 @@ MINGW64; the Windows lane now also carries warnings-as-errors like Linux and
 macOS; `vcpkg.json` sat at 1.0.0 while `/VERSION` said 1.1.0 (now checked by
 version-consistency.yml).
 
+Crash reporting, with the same switch the Dish clients have. Satellite had
+never transmitted anything, and on Linux and macOS it had no crash recorder
+at all: a segfault died with whatever the distro's core-dump collector
+happened to catch. Windows wrote a local minidump nobody was told about. This
+adds Sentry behind two independent gates, because one is not enough. The
+operator's switch (Settings, Diagnostics, "Share crash reports") is on by
+default and turns off with one click, the same opt-out Dish for Android,
+Windows and Linux ship, down to the wording, so one switch means one thing
+across the family. Turning it off disarms the SDK immediately rather than at
+the next restart, since withdrawing consent has to stop the next crash and
+not the one after it. [`PRIVACY.md`](PRIVACY.md) is new and says exactly what
+a report contains.
+
+The second gate is the build. `SATELLITE_SENTRY_DSN` is empty in CMake and is
+only ever filled in by `release.yml` from a repository secret, so a local
+build, a PR build and a build from a fork (secrets are not exposed to forks)
+carry no DSN and cannot transmit no matter what the switch says. The Sentry
+environment is derived from `SATELLITE_RELEASE_VERSION`, which only the release
+workflow sets, so `production` is not a label a developer build reaches by
+accident -- and because it is only a label (`scripts/build-appimage.sh` sets
+that variable when run by hand), the DSN is the gate that actually holds.
+The release string uses the display version, so a `-dev` build cannot file
+itself against a real release and mix unsymbolicated frames into genuine data.
+`$SENTRY_DSN` still works as a developer escape hatch, and still respects the
+switch.
+
+What ships per platform. Windows takes the SDK from vcpkg with the crashpad
+backend, whose handler is a separate process: CMake stages
+`crashpad_handler.exe` beside `satellite.exe`, the installer ships it, and the
+installer round-trip test asserts it, because without it Satellite starts,
+runs, and captures nothing. Linux has no distro package for sentry-native, so
+the release lanes build it from the hash-pinned 0.16.3 release bundle with the
+in-process backend, and only when a DSN is present; a PR build or a source
+build never pays for it, and `linux-ci.yml` compiles that path once with a
+DSN that resolves nowhere so a release tag is not the first thing to try it.
+Release builds keep debug information, upload it to Sentry with `sentry-cli`
+when the `SENTRY_AUTH_TOKEN` secret exists, and strip it before packaging, so
+nothing shipped carries symbols and the reports arrive readable.
+
+Nothing about the local artifacts changes. On Windows the existing
+`dumps\*.dmp` writer keeps running, and `dumpFilter` now chains to whatever
+top-level filter was installed before it instead of swallowing the exception,
+so the local dump and the Sentry report both see the crash rather than
+whichever recorder armed last winning outright. Automatic session tracking is
+turned off, because it defaults to on and a server meant to run unattended for
+weeks should not report every start and stop to anyone; the crash is the
+payload. PII is off too, but by not touching it: sentry-native does not send it
+by default, and the setter that would change that exists only on Nintendo
+Switch.
+The status payload reports the opt-in and whether it actually armed as separate
+fields, so a build with no DSN says so instead of claiming reports are going
+somewhere they are not.
+
 ## 1.1.0
 
 No protocol changes. Distribution release: every shipping platform now also

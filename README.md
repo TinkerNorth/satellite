@@ -912,12 +912,17 @@ for the local-equivalent commands and the per-release verification recipe
 (`cosign verify-blob` + `slsa-verifier verify-artifact`). Vulnerability
 disclosure: [`SECURITY.md`](SECURITY.md).
 
-> **Branch protection.** GitHub's branch-protection and repository-
-> ruleset features are not available for private repositories on the free
-> org plan this repo lives under, so direct pushes to `main` are not
-> blocked at the platform level. The PR-based flow is a convention; the
-> CI workflows (`linux-ci.yml`, `macos-ci.yml`, `windows-ci.yml`,
-> `security.yml`, `codeql.yml`) are the quality gate.
+> **Branch protection.** `main` requires the CI workflows
+> (`linux-ci.yml`, `macos-ci.yml`, `windows-ci.yml`, `windows-msvc-ci.yml`,
+> `security.yml`, `codeql.yml`) to pass before a pull request can merge.
+
+## Privacy
+
+Satellite runs on your own PC and talks to your own Dish clients over your
+own network. Two things can leave the machine: the update check against
+GitHub Releases, and, with *Share crash reports* on, a crash report to
+Sentry. Both can be turned off in Settings. [`PRIVACY.md`](PRIVACY.md) has
+the full list of what is stored, what is sent, and to whom.
 
 ## License
 
@@ -932,4 +937,15 @@ and are redistributed unchanged under their own terms:
 
 - [cpp-httplib](https://github.com/yhirose/cpp-httplib) by Yuji Hirose (MIT)
 - ViGEm header definitions derived from [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus) (MIT)
+
+### Linked third-party components
+
+Official release builds also link:
+
+- [sentry-native](https://github.com/getsentry/sentry-native) by Functional
+  Software, Inc. (MIT), the crash reporter behind the *Share crash reports*
+  switch. Windows builds ship its crash handler,
+  [Crashpad](https://chromium.googlesource.com/crashpad/crashpad)
+  (Apache-2.0), as `crashpad_handler.exe` beside `satellite.exe`. See
+  [`PRIVACY.md`](PRIVACY.md) for what a crash report contains.
 

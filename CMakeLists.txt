@@ -38,6 +38,69 @@ if(WIN32)
     add_compile_definitions(NOMINMAX)
 endif()
 
+# ── Crash reporting (Sentry) ──────────────────────────────────────────────
+#
+# Two independent gates, on purpose.
+#
+# The ENVIRONMENT is a label. It is derived from SATELLITE_RELEASE_VERSION,
+# which only .github/workflows/release.yml sets, so "production" is not a name
+# a developer build reaches by accident. It is still only a label: anyone can
+# pass -DSATELLITE_RELEASE_VERSION, and scripts/build-appimage.sh does exactly
+# that when run by hand.
+#
+# The DSN is the real gate. It is empty here and is only ever filled in by
+# release.yml from the SENTRY_DSN repository secret, so a local build, a PR
+# build and a build from a fork (secrets are not exposed to forks) carry no
+# DSN and physically cannot transmit, whatever label they wear. Labels drift;
+# a missing DSN cannot.
+#
+# RELEASE uses the DISPLAY version, not SATELLITE_VERSION: the latter is
+# stripped to bare MAJOR.MINOR.PATCH above, so a dev build would file itself
+# against the real release and mix unsymbolicated frames into genuine data.
+# DISPLAY carries the "-dev" suffix that keeps the two apart.
+if(DEFINED SATELLITE_RELEASE_VERSION AND NOT "${SATELLITE_RELEASE_VERSION}" STREQUAL "")
+    set(SATELLITE_SENTRY_ENVIRONMENT "production")
+else()
+    set(SATELLITE_SENTRY_ENVIRONMENT "development")
+endif()
+
+set(SATELLITE_SENTRY_DSN "" CACHE STRING
+    "Sentry DSN. Empty (the default) disables crash reporting at compile time.")
+
+# Optional dependency, exactly like the tray: absent means the facade in
+# core/crash_reporting.cpp compiles to inert stubs and everything else still
+# builds. Windows (vcpkg) and macOS (Homebrew) resolve a packaged SDK through
+# find_package. Linux has no distro package for sentry-native, so the release
+# bundle is fetched and built from source, pinned by hash, and only when a DSN
+# is present: a build that cannot transmit does not pay for an SDK it will
+# never call. SENTRY_BACKEND=inproc there, so nothing extra has to ship in the
+# .deb, the .rpm or the AppImage.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT SATELLITE_SENTRY_DSN STREQUAL "")
+        include(FetchContent)
+        set(SENTRY_BACKEND inproc CACHE STRING "" FORCE)
+        set(SENTRY_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(SENTRY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(SENTRY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(sentry
+            URL https://github.com/getsentry/sentry-native/releases/download/0.16.3/sentry-native.zip
+            URL_HASH SHA256=21380c182dde677794a7b6c57e8d6e03d79ec5a03eec67514ffa7522f7e161b5
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        FetchContent_MakeAvailable(sentry)
+        set(sentry_FOUND TRUE)
+    else()
+        set(sentry_FOUND FALSE)
+    endif()
+else()
+    find_package(sentry CONFIG QUIET)
+endif()
+if(sentry_FOUND)
+    message(STATUS "satellite: Sentry SDK available; crash reporting compiled in "
+                   "(environment: ${SATELLITE_SENTRY_ENVIRONMENT})")
+else()
+    message(STATUS "satellite: Sentry SDK not available; crash reporting stubbed out")
+endif()
+
 # Vendored single-header libraries (nlohmann/json, cpp-httplib) under lib/.
 # SYSTEM keeps their internal warnings out of -Wall/-Wextra//W4, and every
 # target (including pure-core tests) can include them.
@@ -51,6 +114,7 @@ set(SATELLITE_CORE_SOURCES
     src/core/update_service.cpp
     src/core/github_release.cpp
     src/core/network_info.cpp
+    src/core/crash_reporting.cpp
 )
 
 # Currently-shared infrastructure (to be ported to POSIX in Stage 3).
@@ -78,6 +142,7 @@ set(SATELLITE_NET_SOURCES
 set(SATELLITE_ADAPTER_SOURCES
     src/adapters/log_adapter.cpp
     src/adapters/client_adapter.cpp
+    src/adapters/crash_adapter.cpp
     src/adapters/audio/opus_codec.cpp
 )
 
@@ -721,6 +786,47 @@ if(TARGET satellite)
     target_compile_definitions(satellite PRIVATE
         SATELLITE_VERSION_RESOLVED="${SATELLITE_VERSION_DISPLAY}")
 
+    # Crash reporting identity. Only the shipped binary carries these; the test
+    # targets compile core/crash_reporting.cpp against the header's fallbacks,
+    # which resolve to an empty DSN and so can never transmit from a test run.
+    target_compile_definitions(satellite PRIVATE
+        SATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
+        SATELLITE_SENTRY_ENVIRONMENT="${SATELLITE_SENTRY_ENVIRONMENT}"
+        SATELLITE_SENTRY_RELEASE="satellite@${SATELLITE_VERSION_DISPLAY}")
+    if(sentry_FOUND)
+        target_compile_definitions(satellite PRIVATE SATELLITE_HAS_SENTRY=1)
+        target_link_libraries(satellite PRIVATE sentry::sentry)
+        # Debug information for the symbol upload in release.yml. The .deb,
+        # the .rpm and the AppImage strip on packaging and the installer never
+        # picks up a .pdb, so nothing shipped carries it.
+        if(MSVC)
+            target_compile_options(satellite PRIVATE /Zi)
+            target_link_options(satellite PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF)
+        else()
+            target_compile_options(satellite PRIVATE -g)
+        endif()
+    endif()
+    if(sentry_FOUND AND WIN32)
+        # The vcpkg port builds sentry-native with the crashpad backend, whose
+        # handler is a separate process kept under the port's tools directory.
+        # Without it satellite starts, runs, and captures nothing, so it is
+        # staged beside satellite.exe and the installer ships it.
+        find_program(SATELLITE_CRASHPAD_HANDLER
+            NAMES crashpad_handler
+            HINTS "${sentry_DIR}/../../tools/sentry-native"
+            NO_DEFAULT_PATH)
+        if(NOT SATELLITE_CRASHPAD_HANDLER)
+            message(FATAL_ERROR
+                "sentry-native was found but crashpad_handler was not, so crashes "
+                "would never be captured. Expected it under the Sentry package's "
+                "tools/sentry-native.")
+        endif()
+        add_custom_command(TARGET satellite POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SATELLITE_CRASHPAD_HANDLER}" "$<TARGET_FILE_DIR:satellite>"
+            COMMENT "Staging crashpad_handler beside satellite.exe")
+    endif()
+
     include(CheckIPOSupported)
     check_ipo_supported(RESULT SATELLITE_IPO_OK OUTPUT SATELLITE_IPO_MSG LANGUAGES CXX)
     if(SATELLITE_IPO_OK)
@@ -881,6 +987,8 @@ satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/co
 satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
 satellite_add_pure_test(test_json tests/test_json.cpp)
 satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
+satellite_add_pure_test(test_crash_reporting tests/test_crash_reporting.cpp
+                        src/core/crash_reporting.cpp src/adapters/crash_adapter.cpp)
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
@@ -975,6 +1083,11 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/net/local_iface.cpp
         src/core/config_io.cpp
         ${SATELLITE_CORE_SOURCES}
+        # routes_admin.cpp reads crash::active() and flips crash::setEnabled(),
+        # so the route tests need the adapter as well as the pure policy that
+        # rides in SATELLITE_CORE_SOURCES. It compiles inert here: the test
+        # targets never define SATELLITE_HAS_SENTRY.
+        src/adapters/crash_adapter.cpp
     )
     if(APPLE)
         set(SATELLITE_ROUTE_TEST_PLATFORM_SOURCES
