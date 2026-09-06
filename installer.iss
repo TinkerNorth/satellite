@@ -193,6 +193,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "satellite.exe"; DestDir: "{app}"; Flags: ignoreversion sign; Components: main
+; Sentry's crash handler is a separate process; only MSVC (vcpkg) builds stage it.
+Source: "crashpad_handler.exe"; DestDir: "{app}"; Flags: ignoreversion sign skipifsourcedoesntexist; Components: main
 Source: "web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: main
 ; LICENSE + README give Programs & Features something to link to and let
 ; the user open them from the Start Menu without internet.

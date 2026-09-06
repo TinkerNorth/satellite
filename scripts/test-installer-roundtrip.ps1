@@ -82,6 +82,9 @@ try {
     Assert ($code -eq 0) "fresh install exits 0 (got $code)"
     Assert (Test-Path (Join-Path $installDir 'satellite.exe')) 'satellite.exe installed'
     Assert (Test-Path (Join-Path $installDir 'satellite-hm-helper.exe')) 'HIDMaestro helper installed'
+    if (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'crashpad_handler.exe')) {
+        Assert (Test-Path (Join-Path $installDir 'crashpad_handler.exe')) 'crash handler installed beside satellite.exe'
+    }
     Assert ($null -ne (Get-ChildItem -Path $installDir -Recurse -Filter 'dashboard.js' -ErrorAction SilentlyContinue | Select-Object -First 1)) 'web UI assets installed'
     Assert ($null -eq (Get-Service -Name 'SatelliteHmBroker' -ErrorAction SilentlyContinue)) 'broker service not registered under /HIDMAESTRO=skip'
     $unins = Get-ChildItem -Path $installDir -Filter 'unins*.exe' -ErrorAction SilentlyContinue

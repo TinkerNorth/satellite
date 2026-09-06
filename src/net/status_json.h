@@ -21,6 +21,11 @@ struct StatusFields {
     bool controllerAudioMic = true;
     bool controllerAudioSpeaker = true;
     bool controllerAudioKeepDefaultDevice = true;
+    // The operator's opt-in, and whether it actually amounts to anything. They
+    // differ on every build without a DSN compiled in, and the UI has to say
+    // so rather than imply reports are going somewhere they are not.
+    bool crashReporting = false;
+    bool crashReportingActive = false;
     bool mdnsResponderActive = false;
     bool backendAvailable = false;
     uint64_t submitOk = 0;
@@ -57,6 +62,8 @@ inline std::string buildStatusJson(const StatusFields& f) {
     j["controllerAudioMic"] = f.controllerAudioMic;
     j["controllerAudioSpeaker"] = f.controllerAudioSpeaker;
     j["controllerAudioKeepDefaultDevice"] = f.controllerAudioKeepDefaultDevice;
+    j["crashReporting"] = f.crashReporting;
+    j["crashReportingActive"] = f.crashReportingActive;
     j["mdnsResponderActive"] = f.mdnsResponderActive;
     j["backendAvailable"] = f.backendAvailable;
     j["backend"] = f.backend;

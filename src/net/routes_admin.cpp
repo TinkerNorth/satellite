@@ -11,6 +11,7 @@
 #include "config.h"
 #include "pairing.h"
 #include "pairing_service.h"
+#include "adapters/crash_adapter.h"
 #include "core/json.h"
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -34,6 +35,8 @@ using satellite::jsonStr;
 using satellite::jsonTryBool;
 using satellite::jsonTryInt;
 using satellite::StatusFields;
+
+namespace crash = satellite::crash;
 
 // Keys must stay in sync with the web/ JS that consumes them.
 static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
@@ -261,7 +264,9 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
             f.controllerAudioMic = g_config.controllerAudioMic;
             f.controllerAudioSpeaker = g_config.controllerAudioSpeaker;
             f.controllerAudioKeepDefaultDevice = g_config.controllerAudioKeepDefaultDevice;
+            f.crashReporting = g_config.crashReporting;
         }
+        f.crashReportingActive = crash::active();
         f.listening = g_listening.load();
         f.packets = static_cast<uint64_t>(g_packetCount.load());
         f.senderIP = senderIP;
@@ -362,6 +367,14 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         bool keepDefaultVal = false;
         if (jsonTryBool(body, "controllerAudioKeepDefaultDevice", keepDefaultVal)) {
             g_config.controllerAudioKeepDefaultDevice = keepDefaultVal;
+        }
+
+        // Consent, so it reaches the SDK now rather than at the next restart.
+        // Withdrawing it has to stop the very next crash from being sent.
+        bool crashReportingVal = false;
+        if (jsonTryBool(body, "crashReporting", crashReportingVal)) {
+            g_config.crashReporting = crashReportingVal;
+            crash::setEnabled(crashReportingVal);
         }
 
         if (body.contains("networkInterface")) {

@@ -37,7 +37,10 @@ appdir="${tmp_dir}/Satellite.AppDir"
 
 echo "==> satellite ${version} AppImage (x86_64)"
 
-cmake -S . -B "${build_dir}" -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${version}"
+# SATELLITE_SENTRY_DSN is empty unless release.yml exported it from the
+# repository secret, so a hand-run of this script still produces a build
+# that cannot transmit, even though it stamps a release version.
+cmake -S . -B "${build_dir}" -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${version}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN:-}"
 cmake --build "${build_dir}" --config Release --target satellite -j "$(nproc)"
 
 wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
