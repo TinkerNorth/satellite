@@ -35,6 +35,11 @@ constexpr const char* kRunValueName = "Satellite";
 // Retention cap: a leaky build can drop a 5-20MB .dmp per minute.
 constexpr size_t kMaxDumpFiles = 10;
 
+// Whoever held the top-level filter before us. Sentry installs its own during
+// sentry_init(), so swallowing the exception here would mean a crash is only
+// ever recorded in one of the two places. We chain instead.
+LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = nullptr;
+
 // Rolls on size or date change, whichever trips first.
 constexpr size_t kMaxLogFileBytes = 5 * 1024 * 1024;
 constexpr int kLogRetentionDays = 7;
@@ -137,8 +142,16 @@ void deleteOlderThan(const std::wstring& dir, const wchar_t* ext, int days) {
     FindClose(h);
 }
 
+// Passes the exception on to whoever held the filter before us, or to the OS
+// when nobody did. Every exit from dumpFilter goes through here so a later
+// early return cannot silently drop the chain.
+LONG chainOrDefault(EXCEPTION_POINTERS* ep) {
+    if (g_prevFilter != nullptr) return g_prevFilter(ep);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
-    if (g_dumpDirW[0] == L'\0') return EXCEPTION_EXECUTE_HANDLER;
+    if (g_dumpDirW[0] == L'\0') return chainOrDefault(ep);
 
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -146,7 +159,7 @@ LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
     if (FAILED(StringCchPrintfW(path, ARRAYSIZE(path),
                                 L"%s\\satellite-%04u%02u%02u-%02u%02u%02u.dmp", g_dumpDirW,
                                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond))) {
-        return EXCEPTION_EXECUTE_HANDLER;
+        return chainOrDefault(ep);
     }
 
     HANDLE f =
@@ -162,8 +175,9 @@ LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
         CloseHandle(f);
     }
 
-    // Hand off to the default handler so WER still runs.
-    return EXCEPTION_EXECUTE_HANDLER;
+    // Hand off so WER, and Sentry's filter when crash reporting is armed,
+    // still run.
+    return chainOrDefault(ep);
 }
 
 const char* levelStr(LogLevel l) {
@@ -289,6 +303,7 @@ void loggerLoop() {
 
 std::string dumpDir() { return ensureSubdir(L"dumps"); }
 std::string logDir() { return ensureSubdir(L"logs"); }
+std::string sentryDir() { return ensureSubdir(L"sentry"); }
 
 bool acquireSingleInstance(const char* appTitle) {
     // Local\ namespace = per-session, so RDP sessions/fast user switching get
@@ -318,10 +333,21 @@ void installCrashHandler() {
     std::wstring dumps = ensureSubdirW(L"dumps");
     StringCchCopyW(g_dumpDirW, ARRAYSIZE(g_dumpDirW), dumps.c_str());
 
-    SetUnhandledExceptionFilter(dumpFilter);
+    // Keep whatever was installed before us. crash::init() runs first in
+    // WinMain, so when reporting is armed this is Sentry's filter and both it
+    // and the local dumps\ artifact see the crash.
+    g_prevFilter = SetUnhandledExceptionFilter(dumpFilter);
 
     // One-shot trim now, since rotation otherwise waits for the next crash.
     retainNewestN(dumps, L".dmp", kMaxDumpFiles);
+}
+
+void rearmCrashFilterChain() {
+    LPTOP_LEVEL_EXCEPTION_FILTER prev = SetUnhandledExceptionFilter(dumpFilter);
+    // Guard against chaining to ourselves, which would recurse until the stack
+    // is gone. prev == dumpFilter means nothing installed after us and there is
+    // nothing new to chain to.
+    if (prev != dumpFilter) { g_prevFilter = prev; }
 }
 
 void registerForRestart() {

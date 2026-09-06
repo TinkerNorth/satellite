@@ -10,6 +10,14 @@ const SETTINGS_AUDIO_KEYS = [
   'controllerAudioMic', 'controllerAudioSpeaker', 'controllerAudioKeepDefaultDevice',
 ];
 
+// Same DOM-id/config-key/POST-key convention as the audio switches, but NOT
+// gated by the controller-audio master switch, and with the opposite default:
+// an absent key reads as OFF. These are consent switches, so a server that
+// predates them, or one that never answered, must not be shown as opted in.
+const SETTINGS_OPTIN_KEYS = ['crashReporting'];
+
+function settingsOptInEl(key) { return document.getElementById('settings-' + key); }
+
 function settingsAudioEl(key) { return document.getElementById('settings-' + key); }
 
 function settingsCheckDirty() {
@@ -21,12 +29,17 @@ function settingsCheckDirty() {
     const el = settingsAudioEl(k);
     return el && el.checked !== settingsSavedConfig[k];
   });
+  const optInDirty = SETTINGS_OPTIN_KEYS.some((k) => {
+    const el = settingsOptInEl(k);
+    return el && el.checked !== settingsSavedConfig[k];
+  });
   const dirty =
     curPort !== settingsSavedConfig.udpPort ||
     curAuto !== settingsSavedConfig.autoStart ||
     curBroadcast !== settingsSavedConfig.discoveryBroadcast ||
     curAudio !== settingsSavedConfig.controllerAudio ||
-    audioDirty;
+    audioDirty ||
+    optInDirty;
   document.getElementById('settings-btnSave').disabled = !dirty;
   document.getElementById('settings-btnUndo').disabled = !dirty;
   // Editing clears stale validation/save messages so a prior error doesn't
@@ -46,6 +59,10 @@ function settingsUndo() {
     settingsSavedConfig.controllerAudio;
   SETTINGS_AUDIO_KEYS.forEach((k) => {
     const el = settingsAudioEl(k);
+    if (el) el.checked = settingsSavedConfig[k];
+  });
+  SETTINGS_OPTIN_KEYS.forEach((k) => {
+    const el = settingsOptInEl(k);
     if (el) el.checked = settingsSavedConfig[k];
   });
   settingsSetPortError('');
@@ -90,6 +107,10 @@ async function settingsSave() {
     const el = settingsAudioEl(k);
     if (el) payload[k] = el.checked;
   });
+  SETTINGS_OPTIN_KEYS.forEach((k) => {
+    const el = settingsOptInEl(k);
+    if (el) payload[k] = el.checked;
+  });
   const res = await apiPost('/api/config', payload);
 
   // Only commit saved-state when the server confirmed the write, else a
@@ -113,6 +134,10 @@ async function settingsSave() {
   settingsSavedConfig.controllerAudio = audio;
   SETTINGS_AUDIO_KEYS.forEach((k) => {
     const el = settingsAudioEl(k);
+    if (el) settingsSavedConfig[k] = el.checked;
+  });
+  SETTINGS_OPTIN_KEYS.forEach((k) => {
+    const el = settingsOptInEl(k);
     if (el) settingsSavedConfig[k] = el.checked;
   });
   document.getElementById('settings-udpPort').value = effectivePort;
@@ -152,6 +177,9 @@ async function initSettings() {
     // Same rule for a server that predates controller audio: absent is on.
     settingsSavedConfig.controllerAudio = d.controllerAudio !== false;
     SETTINGS_AUDIO_KEYS.forEach((k) => { settingsSavedConfig[k] = d[k] !== false; });
+    // `=== true`, not `!== false`: consent defaults to off when the server
+    // says nothing, which is the reverse of every switch above.
+    SETTINGS_OPTIN_KEYS.forEach((k) => { settingsSavedConfig[k] = d[k] === true; });
     document.getElementById('settings-udpPort').value = d.udpPort;
     document.getElementById('settings-autoStart').checked = d.autoStart;
     document.getElementById('settings-discoveryBroadcast').checked =
@@ -162,6 +190,12 @@ async function initSettings() {
       const el = settingsAudioEl(k);
       if (el) el.checked = settingsSavedConfig[k];
     });
+    SETTINGS_OPTIN_KEYS.forEach((k) => {
+      const el = settingsOptInEl(k);
+      if (el) el.checked = settingsSavedConfig[k];
+    });
+    settingsRenderCrashReportingHint(d.crashReportingActive === true,
+                                     settingsSavedConfig.crashReporting === true);
     settingsRenderMdnsStatus(d.mdnsResponderActive === true);
   } catch (e) { /* ignore */ }
 
@@ -177,6 +211,10 @@ async function initSettings() {
   if (audio) audio.addEventListener('change', settingsCheckDirty);
   SETTINGS_AUDIO_KEYS.forEach((k) => {
     const el = settingsAudioEl(k);
+    if (el) el.addEventListener('change', settingsCheckDirty);
+  });
+  SETTINGS_OPTIN_KEYS.forEach((k) => {
+    const el = settingsOptInEl(k);
     if (el) el.addEventListener('change', settingsCheckDirty);
   });
 
@@ -269,4 +307,15 @@ async function settingsInterfaceChange() {
   const note = document.getElementById('settings-interface-note');
   if (note) note.textContent = res.ok ? t('netinfo.restart-note') : t('settings.save.unreachable');
   initNetworkSettings();
+}
+
+// A build with no DSN compiled in cannot transmit no matter what the switch
+// says, and the UI must not imply otherwise. This is the honest-label rule:
+// say "on, and sending" only when the server confirms it actually armed.
+function settingsRenderCrashReportingHint(active, wanted) {
+  const el = document.getElementById('settings-crashReporting-status');
+  if (!el) return;
+  if (!wanted) { el.textContent = t('settings.crash.status.off'); return; }
+  el.textContent = active ? t('settings.crash.status.on')
+                          : t('settings.crash.status.unavailable');
 }

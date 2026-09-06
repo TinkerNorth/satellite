@@ -912,6 +912,12 @@ struct Config {
     // by default -- which is what makes controller audio feel like it forwards
     // "everything". On means put the previous default back afterwards.
     bool controllerAudioKeepDefaultDevice = true;
+
+    // Crash reporting to Sentry. On by default, the same opt-out switch the
+    // Dish clients ship, so one switch means one thing across the family. A
+    // release build additionally needs a DSN compiled in before this switch
+    // can do anything -- see core/crash_reporting.h.
+    bool crashReporting = true;
 };
 
 // The two wire gates above, sampled together. One read means one lock rather
