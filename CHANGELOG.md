@@ -3,7 +3,7 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## 2.0.0 (unreleased)
+## 2.0.0
 
 Everything below ships as 2.0.0. The version number is aligned across the
 Dish and Satellite family for this release: protocol 2 spans all of it
@@ -185,8 +185,8 @@ carries audio never pays for one. libopus joins libsodium and OpenSSL as a
 required dependency on every platform; the core stays free of it behind an
 injected factory, the same arrangement that keeps HKDF out of the core.
 
-Controller audio, wire contract and server plumbing (protocol 2, unreleased,
-extended in place): the emulated pad's OWN audio endpoints now have a protocol.
+Controller audio, wire contract and server plumbing (protocol 2, extended in
+place before 2.0.0): the emulated pad's OWN audio endpoints now have a protocol.
 New UDP messages MIC_AUDIO 0x0012 (client to server, mono 48 kHz, one 20 ms Opus
 packet per frame), SPEAKER_AUDIO 0x0013 (server to client, stereo) and MIC_LED
 0x0014 (mute-lamp state, coalesced like LIGHTBAR), each `ctrlIdx(1) + seq(u16 BE)`
@@ -202,7 +202,7 @@ slugs for the two Sony types via HIDMaestro, which is the only backend that can
 materialize a pad carrying real audio endpoints. The codec, the jitter window and
 the HIDMaestro composite personas land in the following changes.
 
-Controller-feedback return paths (protocol 2, unreleased, extended in place):
+Controller-feedback return paths (protocol 2, extended in place before 2.0.0):
 new UDP messages TRIGGER_EFFECTS 0x0010 (raw DualSense adaptive-trigger
 blocks, forwarded verbatim from the game's output report) and PLAYER_LEDS
 0x0011 (player-indicator bitmask), each gated on new descriptor caps
