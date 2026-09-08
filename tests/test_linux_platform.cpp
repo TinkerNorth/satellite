@@ -2,8 +2,10 @@
 #include "../src/platform/linux/config.h"
 #include "../src/platform/linux/gamepad_adapter.h"
 #include "../src/platform/linux/netlink_rejoin.h"
+#include "../src/platform/linux/update_helper_script.h"
 
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cstdio>
@@ -454,6 +456,86 @@ static void testNetlinkBatchWantsRejoin() {
     EXPECT(!netwatch::batchWantsRejoin(buf, len));
 }
 
+struct TempSwapDir {
+    std::string path;
+    std::string src;
+    std::string dst;
+    TempSwapDir() {
+        char tmpl[] = "/tmp/satellite-swap-XXXXXX";
+        char* d = mkdtemp(tmpl);
+        path = (d != nullptr) ? d : "";
+        src = path + "/new";
+        dst = path + "/current";
+    }
+    ~TempSwapDir() {
+        if (!path.empty()) {
+            int rc = system(("rm -rf " + path).c_str());
+            (void)rc;
+        }
+    }
+};
+
+static void writeText(const std::string& p, const std::string& text) {
+    std::ofstream f(p);
+    f << text;
+}
+
+static std::string writeHelperScript(const std::string& script) {
+    char tmpl[] = "/tmp/satellite-helper-XXXXXX.sh";
+    int fd = mkstemps(tmpl, 3);
+    if (fd < 0) return "";
+    ssize_t n = write(fd, script.data(), script.size());
+    (void)n;
+    int rc = fchmod(fd, 0700);
+    (void)rc;
+    close(fd);
+    return tmpl;
+}
+
+static void testSwapScriptSparesLiveProcess() {
+    TempSwapDir dir;
+    writeText(dir.src, "#!/bin/sh\nexit 0\n");
+    writeText(dir.dst, "old\n");
+
+    const std::string helper =
+        writeHelperScript(satellite::update::buildSwapScript(getpid(), dir.src, dir.dst, 2));
+    const int rc = system(("/bin/bash " + helper).c_str());
+
+    TEST("swap script leaves the binary alone while the process is still alive");
+    EXPECT(rc != 0);
+    EXPECT(slurp(dir.dst) == "old\n");
+    EXPECT(!fileExists(dir.dst + ".old"));
+    EXPECT(fileExists(dir.src));
+    EXPECT(!fileExists(helper));
+}
+
+static void testSwapScriptInstallsAfterProcessExits() {
+    TempSwapDir dir;
+    writeText(dir.src, "#!/bin/sh\nexit 0\n");
+    writeText(dir.dst, "old\n");
+
+    const pid_t child = fork();
+    if (child == 0) { _exit(0); }
+
+    TEST("swap script installs the new binary once the process has exited");
+    if (child < 0) {
+        EXPECT(false);
+        return;
+    }
+    int status = 0;
+    waitpid(child, &status, 0);
+
+    const std::string helper =
+        writeHelperScript(satellite::update::buildSwapScript(child, dir.src, dir.dst, 2));
+    const int rc = system(("/bin/bash " + helper).c_str());
+
+    EXPECT(rc == 0);
+    EXPECT(slurp(dir.dst) == "#!/bin/sh\nexit 0\n");
+    EXPECT(slurp(dir.dst + ".old") == "old\n");
+    EXPECT(!fileExists(dir.src));
+    EXPECT(!fileExists(helper));
+}
+
 int main() {
     std::cout << "Running Linux platform tests...\n\n";
 
@@ -473,6 +555,8 @@ int main() {
     testSetLightbarCallbackWritesProxyFile();
     testSysfsProxyDirEnvOverride();
     testNetlinkBatchWantsRejoin();
+    testSwapScriptSparesLiveProcess();
+    testSwapScriptInstallsAfterProcessExits();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

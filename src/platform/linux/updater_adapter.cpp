@@ -2,6 +2,7 @@
 #include "updater_adapter.h"
 
 #include "config.h"
+#include "update_helper_script.h"
 #include "core/github_release.h"
 #include "core/version.h"
 
@@ -517,24 +518,7 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         outError = "mkstemps failed";
         return false;
     }
-    std::string script;
-    script += "#!/bin/bash\n";
-    script += "set -e\n";
-    script += "PID=" + std::to_string(pid) + "\n";
-    script += "SRC=\"" + localPath + "\"\n";
-    script += "DST=\"" + currentPath + "\"\n";
-    script += "for i in $(seq 1 60); do\n";
-    script += "  if ! kill -0 \"$PID\" 2>/dev/null; then break; fi\n";
-    script += "  sleep 0.5\n";
-    script += "done\n";
-    // Same-fs mv is atomic. Keep a .old copy so the user can roll back if the
-    // new binary crashes on startup.
-    script += "if [ -f \"$DST\" ]; then mv -f \"$DST\" \"$DST.old\" || true; fi\n";
-    script += "mv -f \"$SRC\" \"$DST\"\n";
-    script += "chmod +x \"$DST\"\n";
-    // setsid so the relaunched AppImage survives our exit.
-    script += "setsid \"$DST\" >/dev/null 2>&1 &\n";
-    script += "rm -f -- \"$0\"\n";
+    std::string script = satellite::update::buildSwapScript(pid, localPath, currentPath);
 
     // A truncated script would still get executed — abort rather than risk it.
     size_t off = 0;
