@@ -3,6 +3,15 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.0.1
+
+No protocol changes. Fix release: the AppImage self-update no longer replaces
+the binary underneath a running satellite. The helper script waited 30 seconds
+for the old process to exit and then swapped whether or not it had, leaving a
+live process to page-fault on an AppImage that had moved out from under it. It
+now aborts and leaves the install untouched; the next update check offers the
+release again.
+
 ## 2.0.0
 
 Everything below ships as 2.0.0. The version number is aligned across the
