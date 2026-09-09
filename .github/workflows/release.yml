@@ -895,6 +895,48 @@ jobs:
           draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
           [ "$draft" = "false" ] || { echo "::error::release is still a draft"; exit 1; }
 
+  sentry-release:
+    name: Create the Sentry release
+    needs: [publish]
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Create the release and associate commits
+        continue-on-error: true
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping the Sentry release."
+            exit 0
+          fi
+          if [ -z "${SENTRY_ORG:-}" ]; then
+            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
+          fi
+          if [ -z "${SENTRY_PROJECT:-}" ]; then
+            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
+          fi
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="satellite@${tag#v}"
+          cli="${RUNNER_TEMP}/sentry-cli"
+          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
+          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
+          chmod +x "$cli"
+          "$cli" releases new "$version"
+          "$cli" releases set-commits "$version" --auto
+          "$cli" releases finalize "$version"
+          "$cli" deploys new -e production -r "$version"
+
   # ─────────────────────────────────────────────────────────────────────
   # apt-publish: regenerate the APT repository at
   # https://tinkernorth.github.io/satellite/debian and commit to
