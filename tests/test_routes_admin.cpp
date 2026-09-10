@@ -259,6 +259,18 @@ int main() {
         }
     }
     {
+        TEST("POST /api/backend/install-driver: rejects a body with no id");
+        auto res = cli.Post("/api/backend/install-driver", "{}", "application/json");
+        EXPECT(res && res->status == 400);
+        if (res) EXPECT(!jsonStr(parseJson(res->body), "error").empty());
+
+        TEST("POST /api/backend/install-driver: rejects a backend this host cannot install");
+        auto unknown = cli.Post("/api/backend/install-driver", R"({"id":"nosuchbackend"})",
+                                "application/json");
+        EXPECT(unknown && unknown->status == 400);
+        if (unknown) EXPECT(!jsonStr(parseJson(unknown->body), "error").empty());
+    }
+    {
         TEST("GET /api/server/capabilities is served on the admin surface too");
         auto res = cli.Get("/api/server/capabilities");
         EXPECT(res && res->status == 200);

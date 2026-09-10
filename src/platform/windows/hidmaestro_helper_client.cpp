@@ -130,6 +130,48 @@ std::string installedDriverVersion() {
     return best;
 }
 
+bool installDriver(std::string& outError) {
+    const std::wstring helper = helperBinaryPath();
+    if (helper.empty() || GetFileAttributesW(helper.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        outError = "satellite-hm-helper.exe is not next to satellite.exe";
+        return false;
+    }
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    sei.lpVerb = L"runas";
+    sei.lpFile = helper.c_str();
+    sei.lpParameters = L"install-driver";
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei) || sei.hProcess == nullptr) {
+        const DWORD err = GetLastError();
+        outError = err == ERROR_CANCELLED
+                       ? "Elevation was declined"
+                       : "Could not start the helper (error " + std::to_string(err) + ")";
+        return false;
+    }
+
+    const DWORD waited = WaitForSingleObject(sei.hProcess, kRequestTimeoutMs);
+    DWORD exitCode = 0;
+    if (waited != WAIT_OBJECT_0) {
+        CloseHandle(sei.hProcess);
+        outError = "The driver install did not finish in time";
+        return false;
+    }
+    const bool gotExit = GetExitCodeProcess(sei.hProcess, &exitCode) != 0;
+    CloseHandle(sei.hProcess);
+    if (!gotExit || exitCode != 0) {
+        outError = "The helper reported failure (exit " + std::to_string(exitCode) + ")";
+        return false;
+    }
+    if (!driverInstalled()) {
+        outError = "The helper finished but the driver is still not installed";
+        return false;
+    }
+    return true;
+}
+
 HelperClient::~HelperClient() { shutdown(); }
 
 bool HelperClient::installed() const { return helperBinaryPresent() && driverInstalled(); }

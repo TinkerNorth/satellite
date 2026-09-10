@@ -68,6 +68,9 @@
   "drivers.detail.restart": "Der neue ViGEmBus-Treiber ist installiert, aber der alte ist noch geladen. Starten Sie Windows neu, um den Vorgang abzuschließen.",
   "drivers.detail.via-update": "Mit dem Satellite-Update %1$s werden auch beide Treiber installiert bzw. aktualisiert.",
   "drivers.detail.rerun": "Führen Sie das Satellite-Installationsprogramm erneut aus, um die Treiber zu installieren oder zu aktualisieren; lassen Sie beide Treiberkomponenten ausgewählt. Andere Apps, die diese Treiber verwenden, funktionieren weiterhin.",
+  "drivers.btn.install-driver": "Treiber installieren",
+  "drivers.state.installing": "Treiber wird installiert…",
+  "drivers.error.install": "Treiberinstallation fehlgeschlagen: %1$s",
   "drivers.btn.get-installer": "Installer herunterladen",
 
   "backend.vigem.title": "ViGEmBus-Treiber",
