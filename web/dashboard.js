@@ -77,7 +77,7 @@ function backendCopy(backendId) {
           title: t('backend.vigem.err.driver-missing.title'),
           body: t('backend.vigem.err.driver-missing.body'),
           steps: [
-            { text: t('backend.vigem.err.driver-missing.step1'), url: 'https://github.com/nefarius/ViGEmBus/releases' },
+            { text: t('backend.vigem.err.driver-missing.step1'), url: 'https://github.com/TinkerNorth/satellite/releases/latest' },
             { text: t('backend.vigem.err.driver-missing.step2') },
             { text: t('backend.vigem.err.driver-missing.step3') },
             { text: t('backend.vigem.err.driver-missing.step4') },
@@ -87,8 +87,8 @@ function backendCopy(backendId) {
           title: t('backend.vigem.err.bus-open-failed.title'),
           body: t('backend.vigem.err.bus-open-failed.body'),
           steps: [
-            { text: t('backend.vigem.err.bus-open-failed.step1'), url: 'https://github.com/nefarius/ViGEmBus/releases' },
-            { text: t('backend.vigem.err.bus-open-failed.step2') },
+            { text: t('backend.vigem.err.bus-open-failed.step1') },
+            { text: t('backend.vigem.err.bus-open-failed.step2'), url: 'https://github.com/TinkerNorth/satellite/releases/latest' },
           ],
         },
       },
