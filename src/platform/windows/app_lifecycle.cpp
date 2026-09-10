@@ -316,7 +316,7 @@ bool acquireSingleInstance(const char* appTitle) {
 
     // Nudge the existing instance's tray window so a second double-click isn't
     // met with silence. tray.cpp can ignore WM_USER+100 safely.
-    HWND existing = FindWindowExA(HWND_MESSAGE, nullptr, "ControllerForwardTray", appTitle);
+    HWND existing = FindWindowExA(nullptr, nullptr, "ControllerForwardTray", appTitle);
     if (existing != nullptr) { PostMessageA(existing, WM_USER + 100, 0, 0); }
     return false;
 }
