@@ -29,6 +29,10 @@ Each entry MUST list:
 - Component: nefarius/ViGEmBus runtime installer
 - Upstream: https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0
 - Pinned-version: `v1.22.0` (final release; repo archived 2023-11-02)
+- Driver version: `1.21.442.0` — the `ViGEmBus.sys` this release lays down.
+  Upstream versions the setup bundle and the driver separately and did not
+  rebuild the driver for 1.22.0, so the two numbers differ (`pnputil
+  /enum-drivers` shows `08/30/2022 1.21.442.0` after installing v1.22.0).
 - Filename: `ViGEmBus_1.22.0_x64_x86_arm64.exe`
 - SHA-256: see `SHA256SUMS`
 - License: BSD-3-Clause
@@ -115,10 +119,25 @@ pin bump IS the compatibility review.
 Either bump also updates `src/platform/windows/driver_pins.h`, which is what
 the dashboard's driver banner compares the installed drivers against
 (`versionState` in `/api/backend/status`). `version-consistency.yml` fails if
-the `ViGEmBusVersion` / `HmVersion` defines in `installer.iss` drift from it.
-The HIDMaestro UMDF driver is versioned separately from the SDK release
-(1.7.0 embeds driver `1.4.7.12`); read the embedded INF version straight out
-of the staged assembly rather than guessing:
+the `ViGEmBusVersion` / `ViGEmBusDriverVersion` / `HmVersion` defines in
+`installer.iss` drift from it.
+
+Both drivers are versioned separately from the release that carries them, so
+each has two pins: the release/installer version, and the driver binary's own
+version, which is the ONLY one worth comparing against a machine — it is what
+the runtime probe reads (`ViGEmBus.sys` file version; driver-store INF
+`DriverVer`) and what the installer's `/VIGEM=auto` decision uses. Pin the
+release version to the wrong slot and every fresh install reports the driver
+as outdated. For ViGEmBus, install the bundled setup on a clean VM and read
+the number back:
+
+```powershell
+(Get-Item $env:SystemRoot\System32\drivers\ViGEmBus.sys).VersionInfo.FileVersion
+```
+
+and put that value in `SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION`. For
+HIDMaestro (1.7.0 embeds driver `1.4.7.12`), read the embedded INF version
+straight out of the staged assembly rather than guessing:
 
 ```powershell
 Select-String -Path redist/hidmaestro/HIDMaestro.Core.dll -Pattern 'DriverVer\s*=\s*[0-9/]+,\s*([0-9.]+)' -AllMatches |

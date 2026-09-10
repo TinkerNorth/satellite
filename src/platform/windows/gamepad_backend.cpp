@@ -135,7 +135,7 @@ std::vector<satellite::BackendRuntimeStatus> enumerateBackends() {
     BackendStatus vigem = probeViGEm();
     out.push_back({BACKEND_ID_VIGEM, vigem.available,
                    vigem.errorCode ? std::string(vigem.errorCode) : std::string(),
-                   installedVigemBusVersion(), SATELLITE_VIGEMBUS_BUNDLED_VERSION,
+                   installedVigemBusVersion(), SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION,
                    vigemBusRestartPending()});
     BackendStatus hm = probeHidMaestro();
     out.push_back({BACKEND_ID_HIDMAESTRO, hm.available,
