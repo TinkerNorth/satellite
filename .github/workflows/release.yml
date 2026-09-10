@@ -672,15 +672,17 @@ jobs:
       - name: Assert package contents and scriptlets
         run: |
           set -euo pipefail
-          rpm -qlp dist/*.rpm
+          contents="$(rpm -qlp dist/*.rpm)"
+          scripts="$(rpm -qp --scripts dist/*.rpm)"
+          printf '%s\n' "${contents}"
           rpm -qp --requires dist/*.rpm
-          rpm -qlp dist/*.rpm | grep -qx '/usr/lib/udev/rules.d/70-satellite-uinput.rules' \
+          grep -qx '/usr/lib/udev/rules.d/70-satellite-uinput.rules' <<<"${contents}" \
             || { echo "::error::udev rule missing or at the wrong path"; exit 1; }
-          rpm -qlp dist/*.rpm | grep -qx '/usr/lib/modules-load.d/satellite.conf' \
+          grep -qx '/usr/lib/modules-load.d/satellite.conf' <<<"${contents}" \
             || { echo "::error::modules-load entry missing"; exit 1; }
-          rpm -qp --scripts dist/*.rpm | grep -q 'udevadm control' \
+          grep -q 'udevadm control' <<<"${scripts}" \
             || { echo "::error::rpm carries no udev reload scriptlet"; exit 1; }
-          rpm -qp --scripts dist/*.rpm | grep -q 'modprobe uinput' \
+          grep -q 'modprobe uinput' <<<"${scripts}" \
             || { echo "::error::rpm carries no modprobe uinput scriptlet"; exit 1; }
 
       - name: Install the package and launch it

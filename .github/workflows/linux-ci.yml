@@ -241,5 +241,7 @@ jobs:
       - name: Verify the SDK is linked and the binary carries debug info
         run: |
           test -x satellite
-          nm satellite | grep -q 'sentry_init' || { echo "::error::sentry_init is not linked"; exit 1; }
-          readelf -S satellite | grep -q '\.debug_info' || { echo "::error::no debug info for the symbol upload"; exit 1; }
+          syms="$(nm satellite)"
+          sections="$(readelf -S satellite)"
+          grep -q 'sentry_init' <<<"${syms}" || { echo "::error::sentry_init is not linked"; exit 1; }
+          grep -q '\.debug_info' <<<"${sections}" || { echo "::error::no debug info for the symbol upload"; exit 1; }
