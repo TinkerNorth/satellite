@@ -65,6 +65,25 @@ void UpdateService::requestDownload() {
     cv_.notify_all();
 }
 
+void UpdateService::requestRepair() {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (state_ == UpdateState::Checking || state_ == UpdateState::Downloading ||
+            state_ == UpdateState::Verifying || state_ == UpdateState::Installing) {
+            return;
+        }
+        if (info_.installMethod == InstallMethod::Manual) return;
+        repairPending_ = true;
+        if (info_.version.empty()) {
+            pendingCheck_ = true;
+            userInitiatedCheck_ = true;
+        } else {
+            pendingDownload_ = true;
+        }
+    }
+    cv_.notify_all();
+}
+
 void UpdateService::requestInstall() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -208,6 +227,18 @@ void UpdateService::workerLoop() {
                 if (state_ == UpdateState::UpdateAvailable &&
                     info_.installMethod == InstallMethod::SelfInstall) {
                     pendingDownload_ = true;
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lk(mtx_);
+                if (repairPending_) {
+                    const bool usable =
+                        !info_.version.empty() && info_.installMethod == InstallMethod::SelfInstall;
+                    if (usable) {
+                        pendingDownload_ = true;
+                    } else {
+                        repairPending_ = false;
+                    }
                 }
             }
         }
@@ -355,7 +386,9 @@ void UpdateService::doDownload() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         info = info_;
-        if (!info.available) {
+        const bool repair = repairPending_;
+        repairPending_ = false;
+        if (!info.available && !repair) {
             state_ = UpdateState::Idle;
             lastError_ = "No update to download";
             fireBroadcast();
