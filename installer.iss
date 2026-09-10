@@ -265,10 +265,12 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""S
 
 ; Interactive install: normal "Launch Satellite?" tickbox on the finish page.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: shellexec nowait postinstall skipifsilent
-; Restart Manager handles the OTA relaunch automatically (we closed the app
-; via RM at the start of the install, and RestartApplications=yes brings it
-; back). The legacy /OTA explicit-relaunch path is kept only so older
-; binaries that pass the switch aren't broken.
+; In-app update (/OTA): the finish-page entry above is skipped because Setup
+; is silent, and RestartApplications only restarts what Restart Manager
+; closed -- the app closed itself before Setup started. runasoriginaluser
+; keeps the relaunched app at the invoking user's integrity, matching how
+; the autostart entry runs it (see satellite.manifest: asInvoker).
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: WantsOTARelaunch
 
 [UninstallRun]
 ; Best-effort graceful shutdown first (WM_CLOSE via taskkill), then
@@ -297,11 +299,10 @@ Type: files;          Name: "{userappdata}\satellite\config.json"
 Type: dirifempty;     Name: "{userappdata}\satellite"
 
 [Code]
-// OTA relaunch flag (legacy, kept for backwards-compatibility).
-// A pre-Restart-Manager satellite.exe spawns this installer with
-// `/VERYSILENT /OTA`. RM handles the relaunch on modern builds, but the
-// switch is still recognised so rolling out a new installer onto an old
-// binary doesn't strand the user without a relaunch.
+// OTA relaunch flag: satellite.exe spawns this installer with
+// `/VERYSILENT /OTA` for an in-app update and closes itself, so nothing
+// else would bring it back. Gates the [Run] relaunch and suppresses the
+// driver notices, which have no operator to read them.
 
 function WantsOTARelaunch: Boolean;
 var
