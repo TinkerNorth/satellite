@@ -3,6 +3,30 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.0.4
+
+No protocol changes. Windows driver and installer fixes.
+
+The app window is now a hidden top-level window instead of a message-only
+one. Message-only windows are excluded from broadcast messages, so
+WM_QUERYENDSESSION never arrived: Windows logoff and shutdown never reached
+the app, and the installer's Restart Manager could not close it, leaving
+"Setup was unable to automatically close all applications" and a file it could
+not replace. The installer also force-closes an app that never answers, and
+the toast Accept/Reject buttons now reach the running instance.
+
+An in-app update brings Satellite back up afterwards. Nothing did: the app
+closes itself, so Restart Manager has nothing to restart, and the finish-page
+launch entry is skipped by a silent install.
+
+Drivers can be fixed without hunting down an installer. The HIDMaestro driver
+installs straight from the dashboard using the helper Satellite already
+ships, and the driver banner now downloads and runs the verified installer
+itself instead of opening a release page in whichever browser is viewing the
+dashboard. The ViGEmBus guidance points at the installer that carries it
+rather than at upstream, and an unresponsive bus asks for the restart that
+actually clears it.
+
 ## 2.0.3
 
 No protocol changes and no changes to the shipped application. The release
