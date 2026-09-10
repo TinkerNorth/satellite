@@ -521,15 +521,18 @@ bool WindowsUpdaterAdapter::verifyArtifact(const std::string& localPath, const U
 bool WindowsUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
                                         std::string& outError) {
     (void)info;
-    // /OTA (installer.iss WantsOTARelaunch) auto-relaunches satellite.exe even
-    // silently; /CLOSEAPPLICATIONS lets Inno's Restart Manager close us so the
-    // .exe isn't locked during the write.
+    // /OTA (installer.iss WantsOTARelaunch) relaunches satellite.exe after a
+    // silent install; /CLOSEAPPLICATIONS lets Inno's Restart Manager close us
+    // so the .exe isn't locked during the write. /SUPPRESSMSGBOXES keeps a
+    // silent update silent: without it Inno can block on a modal dialog with
+    // no operator in front of it.
     SHELLEXECUTEINFOA sei{};
     sei.cbSize = sizeof(sei);
     sei.fMask = SEE_MASK_NOASYNC;
     sei.lpVerb = "open";
     sei.lpFile = localPath.c_str();
-    sei.lpParameters = "/VERYSILENT /NORESTART /OTA /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
+    sei.lpParameters = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /OTA /CLOSEAPPLICATIONS "
+                       "/RESTARTAPPLICATIONS";
     sei.nShow = SW_SHOWNORMAL;
 
     if (!ShellExecuteExA(&sei)) {
