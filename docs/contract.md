@@ -294,8 +294,8 @@ caller's own session.
   "backends": [
     { "id": "vigem", "vendor": "Nefarius Software Solutions", "displayName": "ViGEmBus",
       "kernelMode": true, "audio": false, "available": true, "errorCode": null,
-      "lifecycle": "eol", "eolDate": "2023-11-02", "driverVersion": "1.22.0.0",
-      "bundledVersion": "1.22.0", "versionState": "current", "restartPending": false,
+      "lifecycle": "eol", "eolDate": "2023-11-02", "driverVersion": "1.21.442.0",
+      "bundledVersion": "1.21.442.0", "versionState": "current", "restartPending": false,
       "controllers": [
         { "type": 0, "name": "xbox", "latency": "lowest", "latencyRank": 0,
           "motion": false, "touchpad": false, "lightbar": false, "motionRequires": null,
@@ -395,8 +395,11 @@ already says so). `restartPending` is true when the driver was replaced on disk 
 loaded one is still the old one and Windows needs a restart to finish (ViGEmBus reports
 this on its bus device node); it is false everywhere else. On Windows `driverVersion` is
 the `ViGEmBus.sys` file version for `vigem` and the driver-store INF `DriverVer` for
-`hidmaestro` (the HIDMaestro SDK release and its UMDF driver carry different version
-schemes; the INF is what Device Manager shows and what a bumped pin changes).
+`hidmaestro`, and `bundledVersion` is pinned to match on both. Each driver's release
+carries a different number than the driver inside it (ViGEmBus 1.22.0 ships
+`ViGEmBus.sys` 1.21.442.0; HIDMaestro SDK 1.7.0 ships INF 1.4.7.12), so the pin is
+the inner one: it is what Device Manager shows, what a bumped pin changes, and the
+only number `versionState` can compare against without lying.
 
 `host` is the receiver's OWN capability inventory, readable before pairing or any
 catalog round-trip so a client reflects the real receiver instead of an optimistic
