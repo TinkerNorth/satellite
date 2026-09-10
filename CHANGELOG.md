@@ -3,6 +3,14 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.0.3
+
+No protocol changes and no changes to the shipped application. The release
+workflow asserted the .rpm contents through a pipe into `grep -q`, which under
+`pipefail` reports 141 when grep exits on an early match before rpm finishes
+writing; 2.0.2 failed that way on a package that was correct. The assertions
+now match against captured output.
+
 ## 2.0.2
 
 No protocol changes. Fix release for the Windows driver banner, which lied
