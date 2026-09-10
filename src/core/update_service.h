@@ -47,6 +47,7 @@ class UpdateService {
     // dropped; there is no queue depth.
     void requestCheck(bool userInitiated);
     void requestDownload();
+    void requestRepair();
     void requestInstall();
     void cancelInFlight();
 
@@ -107,6 +108,7 @@ class UpdateService {
 
     bool pendingCheck_ = false;
     bool pendingDownload_ = false;
+    bool repairPending_ = false;
     bool pendingInstall_ = false;
     std::atomic<bool> cancelFlag_{false};
     std::atomic<bool> stopping_{false};

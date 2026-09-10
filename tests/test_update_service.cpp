@@ -282,6 +282,52 @@ static void test_manual_method_does_not_download() {
     EXPECT(svc.snapshot().state == UpdateState::UpdateAvailable);
 }
 
+static void test_repair_downloads_the_current_release() {
+    TEST("requestRepair: downloads the release we already run");
+    MockUpdater up;
+    up.fetchVersion = SATELLITE_VERSION;
+    MockLog log;
+    Config cfg;
+    std::mutex cfgMtx;
+    UpdateService svc(up, log, cfg, cfgMtx);
+    svc.start();
+    svc.requestCheck(true);
+    EXPECT(waitForState(svc, UpdateState::UpToDate));
+    svc.requestRepair();
+    EXPECT(waitForState(svc, UpdateState::Downloaded));
+}
+
+static void test_repair_checks_first_when_no_release_is_known() {
+    TEST("requestRepair: with no prior check, runs one and then downloads");
+    MockUpdater up;
+    up.fetchVersion = SATELLITE_VERSION;
+    MockLog log;
+    Config cfg;
+    std::mutex cfgMtx;
+    UpdateService svc(up, log, cfg, cfgMtx);
+    svc.start();
+    svc.requestRepair();
+    EXPECT(waitForState(svc, UpdateState::Downloaded));
+    EXPECT(up.fetchCalls == 1);
+}
+
+static void test_repair_ignores_manual_install_hosts() {
+    TEST("requestRepair: a package-managed host is left alone");
+    MockUpdater up;
+    up.fetchVersion = SATELLITE_VERSION;
+    up.method = InstallMethod::Manual;
+    MockLog log;
+    Config cfg;
+    std::mutex cfgMtx;
+    UpdateService svc(up, log, cfg, cfgMtx);
+    svc.start();
+    svc.requestCheck(true);
+    EXPECT(waitForState(svc, UpdateState::UpToDate));
+    svc.requestRepair();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT(svc.snapshot().state == UpdateState::UpToDate);
+}
+
 static void test_auto_download_and_install_chain() {
     TEST("auto flags: check chains straight through to Installing");
     MockUpdater up;
@@ -363,6 +409,9 @@ int main() {
     test_verify_failure();
     test_cancel_in_flight();
     test_manual_method_does_not_download();
+    test_repair_downloads_the_current_release();
+    test_repair_checks_first_when_no_release_is_known();
+    test_repair_ignores_manual_install_hosts();
     test_auto_download_and_install_chain();
     test_update_preferences_persists();
     test_skip_version_clears_available();

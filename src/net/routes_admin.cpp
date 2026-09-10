@@ -452,6 +452,16 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         res.set_content(R"({"ok":true})", "application/json");
     });
 
+    server.Post("/api/updates/repair", [](const httplib::Request&, httplib::Response& res) {
+        if (!g_updateService) {
+            res.status = 503;
+            res.set_content(R"({"error":"updater not initialized"})", "application/json");
+            return;
+        }
+        g_updateService->requestRepair();
+        res.set_content(R"({"ok":true})", "application/json");
+    });
+
     server.Post("/api/updates/install", [](const httplib::Request&, httplib::Response& res) {
         if (!g_updateService) {
             res.status = 503;

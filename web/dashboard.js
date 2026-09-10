@@ -876,7 +876,6 @@ function populateBackendGuide(err, icon, extras) {
 }
 
 const DRIVER_BANNER_BACKENDS = ['vigem', 'hidmaestro'];
-const RELEASES_URL = 'https://github.com/TinkerNorth/satellite/releases';
 
 let driverInstallBusy = false;
 let driverInstallError = '';
@@ -916,12 +915,6 @@ function driverRow(b) {
     case 'current':  return { level: 'ok',   text: t('drivers.row.current',  [label]) };
     default:         return { level: 'ok',   text: t('drivers.row.installed-unknown', [label]) };
   }
-}
-
-function driverReleaseUrl() {
-  const cur = updatesState && updatesState.currentVersion;
-  if (cur && /^\d+\.\d+\.\d+$/.test(cur)) return RELEASES_URL + '/tag/' + cur;
-  return RELEASES_URL + '/latest';
 }
 
 function renderDriverBanner() {
@@ -998,7 +991,7 @@ function renderDriverBanner() {
   }
 
   if (!updateCarriesDrivers && !restartPending) {
-    acts.appendChild(makeBtn('btn-start', t('drivers.btn.get-installer'), () => openExternal(driverReleaseUrl())));
+    acts.appendChild(makeBtn('btn-start', t('drivers.btn.get-installer'), () => updatesRepair()));
   }
 
   const alertShown = document.getElementById('backend-alert');

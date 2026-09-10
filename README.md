@@ -588,6 +588,7 @@ never fire.
 | POST   | `/api/updates/check`       | Trigger a check now                            |
 | POST   | `/api/updates/download`    | Fetch the artifact                             |
 | POST   | `/api/updates/install`     | Apply the downloaded artifact (will restart)   |
+| POST   | `/api/updates/repair`      | Re-fetch and re-run the current installer (drivers) |
 | POST   | `/api/updates/cancel`      | Cancel an in-flight download                   |
 | POST   | `/api/updates/dismiss`     | "Remind me later"; hides the banner            |
 | POST   | `/api/updates/skip`        | `{version}`; never notify about this version again |
