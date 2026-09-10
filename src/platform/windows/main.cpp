@@ -268,8 +268,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     wc.lpszClassName = L"ControllerForwardTray";
     RegisterClassW(&wc);
 
-    g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Satellite", WS_OVERLAPPED, 0,
-                             0, 0, 0, nullptr, nullptr, hInst, nullptr);
+    g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Satellite", WS_OVERLAPPED, 0, 0,
+                             0, 0, nullptr, nullptr, hInst, nullptr);
 
     HPOWERNOTIFY powerNotify =
         RegisterSuspendResumeNotification(g_hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
