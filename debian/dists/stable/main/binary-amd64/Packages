@@ -82,3 +82,24 @@ Description: Low-latency Xbox controller forwarding over the network
   Includes a system-tray icon and a web UI at http://localhost:9877
  for pairing, configuration, and status.
 
+Package: satellite
+Architecture: amd64
+Version: 2.0.2
+Priority: optional
+Section: utils
+Maintainer: TinkerNorth <security@tinkernorth.com>
+Installed-Size: 2095
+Depends: libayatana-appindicator3-1 (>= 0.4.90), libc6 (>= 2.38), libcurl4t64 (>= 7.16.2), libgcc-s1 (>= 3.3.1), libglib2.0-0t64 (>= 2.30.0), libgtk-3-0t64 (>= 3.0.0), libnotify4 (>= 0.7.0), libopus0 (>= 1.1), libsodium23 (>= 1.0.12), libssl3t64 (>= 3.0.0), libstdc++6 (>= 13.1)
+Filename: pool/main/s/satellite/satellite_2.0.2_amd64.deb
+Size: 906746
+MD5sum: 8c49f61cb1dbac33d65479af96150fc7
+SHA1: 019b4f1e444bd261e5eb2790f81beaa5fdaacfe8
+SHA256: a9ac48c52046bb14098a179d84924e8234d3277dff6acfb6838b3ba73bf8d15a
+SHA512: ed4be78a59b09aac6dcf3aa4fe390cb613c798736646bc8799c4bc6c98e9cc2c2d4ebbf3ef13f111413dda47805bc679458bdf4ab3a3ed7468fcebb36512050c
+Homepage: https://github.com/TinkerNorth/satellite
+Description: Low-latency Xbox controller forwarding over the network
+ Captures physical Xbox controller input on one machine and injects
+  it as a virtual Xbox 360 controller on another via /dev/uinput.
+  Includes a system-tray icon and a web UI at http://localhost:9877
+ for pairing, configuration, and status.
+
