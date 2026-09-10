@@ -3,6 +3,17 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.0.2
+
+No protocol changes. Fix release for the Windows driver banner, which lied
+twice on a fresh install: its "Get installer" button linked
+`releases/tag/v<version>` although tags have been bare since 1.0.0, and
+ViGEmBus reported an update as available because the pin it compared against
+was the setup bundle's version (1.22.0) rather than the driver that bundle
+installs (`ViGEmBus.sys` 1.21.442.0). The installer made the same comparison
+and so re-ran the bundled ViGEmBus setup on every install; that run always
+exited "same-or-newer already installed", so nothing was ever downgraded.
+
 ## 2.0.1
 
 No protocol changes. Fix release: the AppImage self-update no longer replaces
