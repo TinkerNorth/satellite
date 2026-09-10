@@ -238,6 +238,10 @@ async function updatesInstall() {
   await apiPost('/api/updates/install');
 }
 
+async function updatesRepair() {
+  await apiPost('/api/updates/repair');
+}
+
 async function updatesCancel() {
   await apiPost('/api/updates/cancel');
 }
