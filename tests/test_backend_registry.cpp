@@ -10,6 +10,7 @@
 #include "../src/core/gamepad_backend.h"
 #include "../src/core/json.h"
 #include "../src/core/types.h"
+#include "../src/platform/windows/driver_pins.h"
 
 #include <string>
 
@@ -574,9 +575,9 @@ static void test_buildBackendsJson_parses_and_agrees_with_itself() {
 
 static void test_driverVersionState_derivation() {
     TEST("driverVersionState: both sides known compare numerically");
-    EXPECT_EQ(std::string(driverVersionState("1.22.0.0", "1.22.0")),
+    EXPECT_EQ(std::string(driverVersionState("1.21.442.0", "1.21.442.0")),
               std::string(DRIVER_VERSION_STATE_CURRENT));
-    EXPECT_EQ(std::string(driverVersionState("1.21.442.0", "1.22.0")),
+    EXPECT_EQ(std::string(driverVersionState("1.19.144.0", "1.21.442.0")),
               std::string(DRIVER_VERSION_STATE_OUTDATED));
     EXPECT_EQ(std::string(driverVersionState("1.4.7.12", "1.4.7.12")),
               std::string(DRIVER_VERSION_STATE_CURRENT));
@@ -584,25 +585,41 @@ static void test_driverVersionState_derivation() {
               std::string(DRIVER_VERSION_STATE_NEWER));
 
     TEST("driverVersionState: an unread or unpinned side is unknown, never inferred");
-    EXPECT_EQ(std::string(driverVersionState("", "1.22.0")),
+    EXPECT_EQ(std::string(driverVersionState("", "1.21.442.0")),
               std::string(DRIVER_VERSION_STATE_UNKNOWN));
-    EXPECT_EQ(std::string(driverVersionState("1.22.0", "")),
+    EXPECT_EQ(std::string(driverVersionState("1.21.442.0", "")),
               std::string(DRIVER_VERSION_STATE_UNKNOWN));
     EXPECT_EQ(std::string(driverVersionState("", "")), std::string(DRIVER_VERSION_STATE_UNKNOWN));
+}
+
+static void test_bundled_pins_are_the_driver_binaries_not_the_installers() {
+    TEST("driver_pins.h: the versions the banner compares are the driver binaries' own");
+    EXPECT_EQ(std::string(SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION), std::string("1.21.442.0"));
+    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION), std::string("1.4.7.12"));
+
+    TEST("driver_pins.h: the release versions are separate and are not compared");
+    EXPECT_EQ(std::string(SATELLITE_VIGEMBUS_BUNDLED_VERSION), std::string("1.22.0"));
+    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_SDK_VERSION), std::string("1.7.0"));
+    EXPECT_EQ(
+        std::string(driverVersionState("1.21.442.0", SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION)),
+        std::string(DRIVER_VERSION_STATE_CURRENT));
+    EXPECT_EQ(
+        std::string(driverVersionState("1.4.7.12", SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION)),
+        std::string(DRIVER_VERSION_STATE_CURRENT));
 }
 
 static void test_buildBackendsJson_driver_version_fields() {
     TEST("buildBackendsJson: driverVersion/bundledVersion/versionState/restartPending ride each "
          "entry");
     std::vector<BackendRuntimeStatus> statuses = {
-        {BACKEND_ID_VIGEM, true, "", "1.21.442.0", "1.22.0", true},
+        {BACKEND_ID_VIGEM, true, "", "1.19.144.0", "1.21.442.0", true},
         {BACKEND_ID_HIDMAESTRO, true, "", "1.4.7.12", "1.4.7.12", false},
     };
     Json j = Json::parse(buildBackendsJson(statuses, true));
     EXPECT(j.is_array() && j.size() == 2);
     const Json& v = j[0];
-    EXPECT_EQ(v["driverVersion"].get<std::string>(), std::string("1.21.442.0"));
-    EXPECT_EQ(v["bundledVersion"].get<std::string>(), std::string("1.22.0"));
+    EXPECT_EQ(v["driverVersion"].get<std::string>(), std::string("1.19.144.0"));
+    EXPECT_EQ(v["bundledVersion"].get<std::string>(), std::string("1.21.442.0"));
     EXPECT_EQ(v["versionState"].get<std::string>(), std::string("outdated"));
     EXPECT_EQ(v["restartPending"].get<bool>(), true);
     const Json& hm = j[1];
@@ -619,9 +636,9 @@ static void test_buildBackendsJson_driver_version_fields() {
 
     TEST("buildBackendsJson: a missing driver still carries the bundled version it would get");
     Json m = Json::parse(buildBackendsJson(
-        {{BACKEND_ID_VIGEM, false, "DRIVER_MISSING", "", "1.22.0", false}}, true));
+        {{BACKEND_ID_VIGEM, false, "DRIVER_MISSING", "", "1.21.442.0", false}}, true));
     EXPECT(m[0]["driverVersion"].is_null());
-    EXPECT_EQ(m[0]["bundledVersion"].get<std::string>(), std::string("1.22.0"));
+    EXPECT_EQ(m[0]["bundledVersion"].get<std::string>(), std::string("1.21.442.0"));
     EXPECT_EQ(m[0]["versionState"].get<std::string>(), std::string("unknown"));
     EXPECT_EQ(m[0]["errorCode"].get<std::string>(), std::string("DRIVER_MISSING"));
 }
@@ -629,6 +646,7 @@ static void test_buildBackendsJson_driver_version_fields() {
 int main() {
     test_latencyTier_names_and_ranks();
     test_driverVersionState_derivation();
+    test_bundled_pins_are_the_driver_binaries_not_the_installers();
     test_buildBackendsJson_driver_version_fields();
     test_buildBackendsJson_parses_and_agrees_with_itself();
     test_estimateCost_matches_the_documented_table();

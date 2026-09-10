@@ -26,10 +26,13 @@
 ;      the app itself runs asInvoker (see satellite.manifest).
 ;
 ;  ViGEmBus 1.22.0 (final upstream release, repo archived 2023-11) is
-;  bundled as a prerequisite. It creates the virtual gamepads and (from
-;  v1.17 on, so v1.22.0 included) carries controller motion (gyro /
-;  accelerometer) to games via the DualShock 4 extended report. An older
-;  ViGEmBus is therefore upgraded, not kept.
+;  bundled as a prerequisite. 1.22.0 is the installer's own version; the
+;  driver it lays down is ViGEmBus.sys 1.21.442.0, and that file version is
+;  what every comparison here -- and satellite.exe's driver banner -- reads.
+;  It creates the virtual gamepads and (from v1.17 on, so v1.22.0
+;  included) carries controller motion (gyro / accelerometer) to games
+;  via the DualShock 4 extended report. An older ViGEmBus is therefore
+;  upgraded, not kept.
 ;
 ;  HIDMaestro (user-mode UMDF2 driver, MIT) is the second, optional-but-
 ;  default backend: it adds virtual DualSense, Switch Pro and DualShock 4 /
@@ -85,6 +88,7 @@
 
 ; --- Bundled ViGEmBus (see redist/README.md for vendoring notes) ---
 #define ViGEmBusVersion "1.22.0"
+#define ViGEmBusDriverVersion "1.21.442.0"
 #define ViGEmBusInstaller "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 
 ; --- Bundled HIDMaestro helper (see redist/README.md; built by
@@ -402,7 +406,8 @@ begin
 end;
 
 // ViGEmBus prerequisite handling.
-// Auto-detect logic at wizard start:
+// Auto-detect logic at wizard start, against the bundled DRIVER version
+// (ViGEmBusDriverVersion) because what we probe is ViGEmBus.sys itself:
 //    detected == bundled    -> skip
 //    detected <  bundled    -> upgrade
 //    detected >  bundled    -> keep user's (do not downgrade)
@@ -517,7 +522,7 @@ begin
         Result := True;
         Exit;
     end;
-    Cmp := CompareVigemVersion(DetectedVigemVersion, '{#ViGEmBusVersion}');
+    Cmp := CompareVigemVersion(DetectedVigemVersion, '{#ViGEmBusDriverVersion}');
     Result := (Cmp < 0);
 end;
 
@@ -531,15 +536,15 @@ begin
             + ' motion (gyro / accelerometer) to your games.' + #13#10;
 
     if DetectedVigemVersion = '' then
-        Detail := 'Not detected here. The bundled v' + '{#ViGEmBusVersion}' + ' will be installed.'
+        Detail := 'Not detected here. The bundled v' + '{#ViGEmBusVersion}' + ' (driver v' + '{#ViGEmBusDriverVersion}' + ') will be installed.'
     else begin
-        Cmp := CompareVigemVersion(DetectedVigemVersion, '{#ViGEmBusVersion}');
+        Cmp := CompareVigemVersion(DetectedVigemVersion, '{#ViGEmBusDriverVersion}');
         if Cmp < 0 then
-            Detail := 'v' + DetectedVigemVersion + ' detected. Will upgrade to v' + '{#ViGEmBusVersion}' + ' (older builds cannot pass controller motion).'
+            Detail := 'Driver v' + DetectedVigemVersion + ' detected. Will upgrade to the bundled v' + '{#ViGEmBusVersion}' + ' (driver v' + '{#ViGEmBusDriverVersion}' + '; older builds cannot pass controller motion).'
         else if Cmp = 0 then
-            Detail := 'v' + DetectedVigemVersion + ' already installed. Will skip.'
+            Detail := 'Driver v' + DetectedVigemVersion + ' already installed (the bundled v' + '{#ViGEmBusVersion}' + ' carries the same). Will skip.'
         else
-            Detail := 'v' + DetectedVigemVersion + ' detected, newer than the bundled v' + '{#ViGEmBusVersion}' + '. Keeping yours.';
+            Detail := 'Driver v' + DetectedVigemVersion + ' detected, newer than the bundled v' + '{#ViGEmBusDriverVersion}' + '. Keeping yours.';
     end;
     Result := Result + Detail;
 

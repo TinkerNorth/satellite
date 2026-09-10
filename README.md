@@ -66,9 +66,11 @@ Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth
 - Optionally set Satellite to start with Windows
 - Register in **Settings → Apps → Installed Apps** with an uninstaller
 - Detect the ViGEmBus driver and, by default, install the bundled
-  v1.22.0 if it's missing or older. ViGEmBus 1.22.0 is the final upstream
-  release, so newer installations are left untouched. The Components page
-  shows the detected status before you continue.
+  v1.22.0 if it's missing or older. That release lays down `ViGEmBus.sys`
+  1.21.442.0, which is the file version the installer and the app's driver
+  banner compare against; ViGEmBus 1.22.0 is the final upstream release, so
+  newer installations are left untouched. The Components page shows the
+  detected status before you continue.
 - Deploy the HIDMaestro driver (optional-but-default component). It is a
   user-mode UMDF2 driver embedded in the bundled `satellite-hm-helper.exe`;
   deployment is idempotent and needs no reboot. It adds virtual DualSense
@@ -84,7 +86,7 @@ Setup's standard `/SILENT` / `/VERYSILENT`:
 
 | Switch | Behavior |
 |---|---|
-| *(none)* / `/VIGEM=auto` | Default. Install the bundled ViGEmBus only if missing or older than 1.22.0. |
+| *(none)* / `/VIGEM=auto` | Default. Install the bundled ViGEmBus only if missing or older than the driver it carries, `ViGEmBus.sys` 1.21.442.0. |
 | `/VIGEM=bundled` | Force-run the bundled installer regardless of what's already there. |
 | `/VIGEM=skip` | Don't touch the driver. Use this on locked-down machines or when ViGEmBus is managed externally. |
 | *(none)* / `/HIDMAESTRO=auto` | Default. Deploy/refresh the bundled HIDMaestro driver (idempotent, no reboot) and register the Satellite Controller Broker service. |
@@ -104,7 +106,9 @@ the in-app updater do it) upgrades everything in place:
 - The app and web UI are replaced; your config, pairings and the autostart /
   desktop-icon choices are kept.
 - **ViGEmBus** is upgraded only if the installed `ViGEmBus.sys` is older than
-  the bundled 1.22.0 (compared by file version). Same or newer is left alone.
+  the 1.21.442.0 the bundled v1.22.0 carries (compared by file version; the
+  installer and the driver are versioned separately upstream). Same or newer
+  is left alone.
   An upgrade that replaces a loaded kernel driver can require a restart.
 - **HIDMaestro** is re-deployed from the bundled helper every time the
   component is selected. The SDK compares the installed driver's manifest hash

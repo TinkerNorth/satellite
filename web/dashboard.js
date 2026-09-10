@@ -906,7 +906,7 @@ function driverRow(b) {
 
 function driverReleaseUrl() {
   const cur = updatesState && updatesState.currentVersion;
-  if (cur && /^\d+\.\d+\.\d+$/.test(cur)) return RELEASES_URL + '/tag/v' + cur;
+  if (cur && /^\d+\.\d+\.\d+$/.test(cur)) return RELEASES_URL + '/tag/' + cur;
   return RELEASES_URL + '/latest';
 }
 
