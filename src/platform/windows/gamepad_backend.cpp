@@ -144,3 +144,13 @@ std::vector<satellite::BackendRuntimeStatus> enumerateBackends() {
                    SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION, false});
     return out;
 }
+
+bool installBundledDriver(const std::string& backendId, std::string& outError) {
+    if (backendId == BACKEND_ID_HIDMAESTRO) return satellite::hidmaestro::installDriver(outError);
+    if (backendId == BACKEND_ID_VIGEM) {
+        outError = "ViGEmBus is installed by the Satellite installer, not from here";
+        return false;
+    }
+    outError = "Unknown backend";
+    return false;
+}

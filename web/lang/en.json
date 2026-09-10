@@ -68,6 +68,9 @@
   "drivers.detail.restart": "The new ViGEmBus driver is installed, but the old one is still loaded. Restart Windows to finish.",
   "drivers.detail.via-update": "Installing the Satellite %1$s update also installs or updates both drivers.",
   "drivers.detail.rerun": "Re-run the Satellite installer to install or update the drivers; keep both driver components selected. Other apps that use these drivers keep working.",
+  "drivers.btn.install-driver": "Install driver",
+  "drivers.state.installing": "Installing the driver…",
+  "drivers.error.install": "Driver install failed: %1$s",
   "drivers.btn.get-installer": "Get installer",
 
   "backend.vigem.title": "ViGEmBus Driver",
