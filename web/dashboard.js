@@ -878,6 +878,20 @@ function populateBackendGuide(err, icon, extras) {
 const DRIVER_BANNER_BACKENDS = ['vigem', 'hidmaestro'];
 const RELEASES_URL = 'https://github.com/TinkerNorth/satellite/releases';
 
+let driverInstallBusy = false;
+let driverInstallError = '';
+
+async function installBundledDriver(backendId) {
+  if (driverInstallBusy) return;
+  driverInstallBusy = true;
+  driverInstallError = '';
+  renderDriverBanner();
+  const r = await apiPost('/api/backend/install-driver', { id: backendId });
+  driverInstallBusy = false;
+  driverInstallError = r.ok ? '' : ((r.data && r.data.error) || '');
+  await checkBackendStatus();
+}
+
 function driverDisplayName(id) {
   return id === 'vigem' ? t('drivers.name.vigem') : t('drivers.name.hidmaestro');
 }
@@ -966,6 +980,21 @@ function renderDriverBanner() {
     detail.textContent = t('drivers.detail.via-update', [upd.info.version]);
   } else {
     detail.textContent = t('drivers.detail.rerun');
+  }
+
+  const hm = rows.find(b => b.id === 'hidmaestro');
+  const hmInstallable = !restartPending && hm &&
+    (hm.errorCode === 'DRIVER_MISSING' || hm.versionState === 'outdated');
+  if (hmInstallable) {
+    const btn = makeBtn('btn-start',
+      driverInstallBusy ? t('drivers.state.installing') : t('drivers.btn.install-driver'),
+      () => installBundledDriver('hidmaestro'));
+    btn.disabled = driverInstallBusy;
+    acts.appendChild(btn);
+  }
+
+  if (driverInstallError) {
+    detail.textContent = t('drivers.error.install', [driverInstallError]);
   }
 
   if (!updateCarriesDrivers && !restartPending) {

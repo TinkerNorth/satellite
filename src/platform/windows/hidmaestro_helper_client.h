@@ -30,6 +30,7 @@ bool helperBinaryPresent();
 bool driverInstalled();
 std::string installedDriverVersion();
 bool brokerServiceRegistered();
+bool installDriver(std::string& outError);
 
 class HelperClient : public IHidMaestroProvisioner {
   public:

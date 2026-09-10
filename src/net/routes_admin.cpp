@@ -243,6 +243,25 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         res.set_content(buildBackendStatusJson(), "application/json");
     });
 
+    server.Post("/api/backend/install-driver",
+                [](const httplib::Request& req, httplib::Response& res) {
+                    const std::string id = jsonStr(parseBody(req.body), "id");
+                    if (id.empty()) {
+                        res.status = 400;
+                        res.set_content(R"({"error":"missing id"})", "application/json");
+                        return;
+                    }
+                    std::string err;
+                    if (!installBundledDriver(id, err)) {
+                        res.status = 400;
+                        JsonOut body;
+                        body["error"] = err;
+                        res.set_content(jsonDump(body), "application/json");
+                        return;
+                    }
+                    res.set_content(R"({"ok":true})", "application/json");
+                });
+
     server.Get("/api/status", [&svc](const httplib::Request&, httplib::Response& res) {
         char senderIP[INET_ADDRSTRLEN] = "none";
         uint32_t ipRaw = g_senderIP.load(std::memory_order_relaxed);

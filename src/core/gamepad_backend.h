@@ -8,6 +8,7 @@
 #include "core/backend_registry.h"
 
 #include <cstring>
+#include <string>
 #include <vector>
 
 // Stable identifiers exposed in the JSON API. Web UI matches on these.
@@ -46,6 +47,8 @@ BackendStatus probeBackend();
 // first (the plug router and deriveCatalogTraits() both honour this order).
 // Platform-implemented; side-effect-free like probeBackend().
 std::vector<satellite::BackendRuntimeStatus> enumerateBackends();
+
+bool installBundledDriver(const std::string& backendId, std::string& outError);
 
 // Which TOUCHPAD_MODE_* values this server can honour. Clients query via GET
 // /api/server/capabilities so their mode-picker disables modes the host can't
