@@ -17,8 +17,8 @@ std::string logDir();
 std::string sentryDir();
 
 // True if we are the first instance. False if another is already running, in
-// which case we ping its HWND_MESSAGE window (titled `appTitle`) and the caller
-// should exit without showing UI.
+// which case we ping its hidden top-level window (titled `appTitle`) and the
+// caller should exit without showing UI.
 bool acquireSingleInstance(const char* appTitle);
 
 // Idempotent. Caps retained dumps so a leaky build can't fill the disk.

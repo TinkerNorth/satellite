@@ -258,7 +258,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     }
     g_updateService = &updateService;
 
-    // Hidden message-only window; class name is the literal Explorer/another
+    // Hidden top-level window (never shown, WS_EX_TOOLWINDOW): top-level is
+    // what makes WM_QUERYENDSESSION reach us, since a message-only window is
+    // excluded from broadcasts. Class name is the literal Explorer/another
     // instance uses to find us (see acquireSingleInstance / protocol forward).
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;
@@ -266,8 +268,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     wc.lpszClassName = L"ControllerForwardTray";
     RegisterClassW(&wc);
 
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"Satellite", 0, 0, 0, 0, 0, HWND_MESSAGE,
-                             nullptr, hInst, nullptr);
+    g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Satellite", WS_OVERLAPPED, 0,
+                             0, 0, 0, nullptr, nullptr, hInst, nullptr);
 
     HPOWERNOTIFY powerNotify =
         RegisterSuspendResumeNotification(g_hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
