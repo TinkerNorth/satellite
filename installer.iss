@@ -11,8 +11,9 @@
 ;      scripts/sign.ps1 for the recipe and the registration line below.
 ;    * Restart Manager: if satellite.exe is running, it gets closed
 ;      cleanly (WM_QUERYENDSESSION) instead of taskkill /F so config
-;      writes survive an in-place upgrade.
-;    * AppMutex prevents two installers from racing each other.
+;      writes survive an in-place upgrade, and force-closed only if it
+;      does not answer.
+;    * SetupMutex prevents two installers from racing each other.
 ;    * SetupLogging=yes preserves logs under %TEMP% so failed installs
 ;      can be diagnosed remotely.
 ;    * Autostart is OPT-IN (Flags: unchecked): users actively choose to
@@ -145,14 +146,16 @@ VersionInfoProductVersion={#MyAppVersion}
 ; gracefully (sends WM_QUERYENDSESSION; tray.cpp returns TRUE and saves
 ; config on WM_ENDSESSION). RestartApplications=yes brings the app back up
 ; after install finishes, replacing the hand-rolled /OTA relaunch.
-CloseApplications=yes
+; force keeps the graceful attempt and adds a terminate for an app that
+; never answers it, which is otherwise a failed install (Inno exit 5).
+CloseApplications=force
 CloseApplicationsFilter=*.exe,*.dll
 RestartApplications=yes
-; AppMutex prevents two installer instances from racing. Must match nothing
-; the app itself holds: the app's runtime singleton uses
-; "Local\TinkerNorth.Satellite.Singleton.v1" (see app_lifecycle.cpp). This
-; one is the installer's own coordinator.
-AppMutex=Global\TinkerNorth.Satellite.Installer.v1
+; SetupMutex is created and checked by Setup itself, so a second installer
+; instance stops instead of racing this one. AppMutex is deliberately not
+; set: it only asks the user to close the app by hand, which is what
+; CloseApplications does for us.
+SetupMutex=TinkerNorth.Satellite.Setup.v1,Global\TinkerNorth.Satellite.Setup.v1
 
 ; Log every install/uninstall to %TEMP%\Setup Log YYYY-MM-DD #NNN.txt.
 SetupLogging=yes
