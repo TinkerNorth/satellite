@@ -169,8 +169,10 @@ class SessionService {
     void handleMicLedFromBackend(uint32_t serial, uint8_t state);
 
     // Look up a connection's key + last counter; false if token not found.
-    bool getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
-                        uint32_t& outLastCounter) const;
+    // outSeenCounter, when given, reports whether any counter has been accepted
+    // yet: until then lastCounter carries no replay information.
+    bool getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE], uint32_t& outLastCounter,
+                        bool* outSeenCounter = nullptr) const;
 
     void updatePostDecrypt(uint32_t token, uint32_t counter, const std::string& clientIP,
                            uint16_t clientPort);
