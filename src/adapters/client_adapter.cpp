@@ -8,7 +8,7 @@
 
 #include <cstring>
 
-void ClientAdapter::setSocket(SOCKET sock) { sock_ = sock; }
+void ClientAdapter::setSocket(SOCKET sock) { sock_.store(sock, std::memory_order_release); }
 
 void ClientAdapter::updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) {
     sockaddr_in addr{};
@@ -54,7 +54,8 @@ uint32_t ClientAdapter::nextTxCounter(uint32_t token) {
 void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* inner,
                                         size_t innerLen) {
     const uint16_t msgType = ((uint16_t)inner[0] << 8) | (uint16_t)inner[1];
-    if (sock_ == INVALID_SOCKET) {
+    const SOCKET sock = sock_.load(std::memory_order_acquire);
+    if (sock == INVALID_SOCKET) {
         satellite::g_wire.txUnroutable.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -102,8 +103,8 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     pkt[7] = (uint8_t)(counter);
     memcpy(pkt + HEADER_SIZE, ct, ctLen);
 
-    const int sent = sendto(sock_, reinterpret_cast<const char*>(pkt), (int)(HEADER_SIZE + ctLen),
-                            0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    const int sent = sendto(sock, reinterpret_cast<const char*>(pkt), (int)(HEADER_SIZE + ctLen), 0,
+                            reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     if (sent == SOCKET_ERROR) {
         satellite::g_wire.txSendFailed.fetch_add(1, std::memory_order_relaxed);
         return;

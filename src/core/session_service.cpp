@@ -488,6 +488,7 @@ SessionUpsertResult SessionService::upsertSession(
     }
     deriveSessionKeyLocked(*conn, pairingKey);
     conn->lastCounter = 0;
+    conn->seenCounter = false;
     // Fresh token/salt/key = a fresh session, so a client that fixed (or
     // re-made) a mic-stream mistake gets a new diagnosable log line for it.
     conn->micDropLogged = 0;
@@ -1134,12 +1135,13 @@ bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,
 }
 
 bool SessionService::getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
-                                    uint32_t& outLastCounter) const {
+                                    uint32_t& outLastCounter, bool* outSeenCounter) const {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return false;
     std::memcpy(outKey, it->second.sessionKey, CRYPTO_KEY_SIZE);
     outLastCounter = it->second.lastCounter;
+    if (outSeenCounter != nullptr) *outSeenCounter = it->second.seenCounter;
     return true;
 }
 
@@ -1149,6 +1151,7 @@ void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
     it->second.lastCounter = counter;
+    it->second.seenCounter = true;
     it->second.lastPacketTime = std::chrono::steady_clock::now();
     it->second.clientIP = clientIP;
     it->second.clientIPv4 = parseIPv4Nbo(clientIP);
@@ -1170,6 +1173,7 @@ void SessionService::updatePostDecryptV4(uint32_t token, uint32_t counter,
     if (it == connections_.end()) return;
     Connection& conn = it->second;
     conn.lastCounter = counter;
+    conn.seenCounter = true;
     conn.lastPacketTime = std::chrono::steady_clock::now();
     refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
     client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
@@ -1185,6 +1189,7 @@ bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter
     Connection& conn = it->second;
 
     conn.lastCounter = counter;
+    conn.seenCounter = true;
     conn.lastPacketTime = std::chrono::steady_clock::now();
     refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
     client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);

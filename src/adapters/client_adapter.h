@@ -5,6 +5,7 @@
 #include "core/ports.h"
 #include "net/net_compat.h"
 
+#include <atomic>
 #include <unordered_map>
 #include <mutex>
 
@@ -34,7 +35,7 @@ class ClientAdapter : public IClientPort {
                       uint8_t b) override;
 
   private:
-    SOCKET sock_ = INVALID_SOCKET;
+    std::atomic<SOCKET> sock_{INVALID_SOCKET};
     std::mutex addrMtx_;
     std::unordered_map<uint32_t, sockaddr_in> addrs_;
     // Per-token server-to-client send counter (nonce material). Counters and the

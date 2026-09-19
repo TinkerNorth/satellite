@@ -135,13 +135,14 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             // Look up connection key (brief lock).
             uint8_t key[CRYPTO_KEY_SIZE];
             uint32_t lastCounter;
-            if (!svc.getDecryptInfo(token, key, lastCounter)) {
+            bool seenCounter = false;
+            if (!svc.getDecryptInfo(token, key, lastCounter, &seenCounter)) {
                 g_wire.rxUnknownToken.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
             // Replay protection.
-            if (counter <= lastCounter && lastCounter != 0) {
+            if (seenCounter && counter <= lastCounter) {
                 g_replayDrop.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
@@ -228,8 +229,8 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         // close-notify (reason=shutdown) can ride out before teardown.
         svc.closeAllSessions(CLOSE_REASON_SHUTDOWN);
 
-        closesocket(sock);
         client.setSocket(INVALID_SOCKET);
+        closesocket(sock);
 
         reaper.join();
     }
