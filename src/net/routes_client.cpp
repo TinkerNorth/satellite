@@ -39,6 +39,7 @@ static JsonOut capsJsonObj(uint16_t caps) {
     j["playerLeds"] = (caps & CAP_PLAYER_LEDS) != 0;
     j["mic"] = (caps & CAP_MIC) != 0;
     j["speaker"] = (caps & CAP_SPEAKER) != 0;
+    j["hapticAudio"] = (caps & CAP_HAPTIC_AUDIO) != 0;
     return j;
 }
 
@@ -146,6 +147,7 @@ static bool parseDescriptorObject(const Json& obj, bool requireIdx, ControllerDe
     if (jsonBool(caps, "playerLeds")) d.caps |= CAP_PLAYER_LEDS;
     if (jsonBool(caps, "mic")) d.caps |= CAP_MIC;
     if (jsonBool(caps, "speaker")) d.caps |= CAP_SPEAKER;
+    if (jsonBool(caps, "hapticAudio")) d.caps |= CAP_HAPTIC_AUDIO;
 
     d.preferredBackend = jsonStr(obj, "preferredBackend");
 

@@ -38,7 +38,7 @@ static StatusFields makeFields() {
     f.controllers = 3;
     f.maxControllers = 16;
     f.rx = {1007, 60, 900, 4, 120, 500, 2, 1, 8, 9};
-    f.tx = {600, 48000, 60, 12, 4, 2, 1, 520, 3, 1, 6, 0, 0, 11};
+    f.tx = {600, 48000, 60, 12, 4, 2, 1, 520, 3, 3, 1, 6, 0, 0, 11};
     f.audio = {500, 2, 1, 498, 1, 1, 520, 40, 0, 3};
     f.authNotPaired = 4;
     f.authBadProof = 2;
@@ -59,7 +59,7 @@ static void test_status_exact_shape() {
                R"({"listening":true,"packets":12345,"senderIP":"192.168.1.42","udpPort":9876,)"
                R"("webPort":9871,"autoStart":true,"discoveryBroadcastEnabled":false,)"
                R"("controllerAudio":false,"controllerAudioMic":true,"controllerAudioSpeaker":true,)"
-               R"("controllerAudioKeepDefaultDevice":true,)"
+               R"("controllerAudioHaptics":true,"controllerAudioKeepDefaultDevice":true,)"
                R"("crashReporting":false,"crashReportingActive":false,)"
                R"("mdnsResponderActive":true,"backendAvailable":true,)"
                R"("backend":{"kind":"vigem","available":true}})"));
@@ -90,9 +90,11 @@ static void test_status_carries_the_audio_directions() {
     StatusFields f = makeFields();
     f.controllerAudioMic = true;
     f.controllerAudioSpeaker = false;
+    f.controllerAudioHaptics = false;
     std::string s = buildStatusJson(f);
     EXPECT(s.find("\"controllerAudioMic\":true") != std::string::npos);
     EXPECT(s.find("\"controllerAudioSpeaker\":false") != std::string::npos);
+    EXPECT(s.find("\"controllerAudioHaptics\":false") != std::string::npos);
 
     f.controllerAudioMic = false;
     f.controllerAudioSpeaker = true;
@@ -138,22 +140,25 @@ static void test_debug_exact_shape() {
     TEST("buildDebugJson: exact JSON shape and field order");
     std::string s = buildDebugJson(makeFields());
     EXPECT_EQ(
-        s, std::string(R"({"listening":true,"packets":12345,"submitOk":1000,"submitFail":7,)"
-                       R"("lastLoopUs":250,"maxLoopUs":9001,"peakLoopUs":9100,"senderIP":"192.168.)"
-                       R"(1.42","udpPort":9876,"webPort":9871,"decryptFail":3,"replayDrop":5,)"
-                       R"("backendAvailable":true,"backend":{"kind":"vigem","available":true},)"
-                       R"("mdnsResponderActive":true,"clientApiListening":true,"connections":2,)"
-                       R"("controllers":3,"maxControllers":16,"rx":{"input":1007,)"
-                       R"("heartbeat":60,"motion":900,"battery":4,"pointer":120,"micAudio":500,)"
-                       R"("malformed":2,"unknownType":1,"runt":8,"unknownToken":9},)"
-                       R"("tx":{"packets":600,"bytes":48000,"heartbeatAck":60,"rumble":12,)"
-                       R"("lightbar":4,"triggerEffects":2,"playerLeds":1,"speakerAudio":520,)"
-                       R"("micLed":3,"sessionClose":1,"unroutable":6,"encryptFailed":0,)"
-                       R"("oversize":0,"sendFailed":11},"audio":{"micAccepted":500,)"
-                       R"("micDropped":2,"micLate":1,"micDecoded":498,"micFecRecovered":1,)"
-                       R"("micConcealed":1,"speakerSent":520,"speakerSilenceSuppressed":40,)"
-                       R"("speakerEncodeFailed":0,"speakerLockContended":3},"auth":{"notPaired":4,)"
-                       R"("badProof":2},"sessionsReaped":5})"));
+        s,
+        std::string(
+            R"({"listening":true,"packets":12345,"submitOk":1000,"submitFail":7,)"
+            R"("lastLoopUs":250,"maxLoopUs":9001,"peakLoopUs":9100,"senderIP":"192.168.)"
+            R"(1.42","udpPort":9876,"webPort":9871,"decryptFail":3,"replayDrop":5,)"
+            R"("backendAvailable":true,"backend":{"kind":"vigem","available":true},)"
+            R"("mdnsResponderActive":true,"clientApiListening":true,"connections":2,)"
+            R"("controllers":3,"maxControllers":16,"rx":{"input":1007,)"
+            R"("heartbeat":60,"motion":900,"battery":4,"pointer":120,"micAudio":500,)"
+            R"("malformed":2,"unknownType":1,"runt":8,"unknownToken":9},)"
+            R"("tx":{"packets":600,"bytes":48000,"heartbeatAck":60,"rumble":12,)"
+            R"("lightbar":4,"triggerEffects":2,"playerLeds":1,"speakerAudio":520,"hapticAudio":3,)"
+            R"("micLed":3,"sessionClose":1,"unroutable":6,"encryptFailed":0,)"
+            R"("oversize":0,"sendFailed":11},"audio":{"micAccepted":500,)"
+            R"("micDropped":2,"micLate":1,"micDecoded":498,"micFecRecovered":1,)"
+            R"("micConcealed":1,"speakerSent":520,"speakerSilenceSuppressed":40,)"
+            R"("speakerEncodeFailed":0,"speakerLockContended":3,"hapticSent":0,"hapticSilenceSuppressed":0,)"
+            R"("hapticEncodeFailed":0,"hapticLockContended":0,"hapticReducedToRumble":0},"auth":{"notPaired":4,)"
+            R"("badProof":2},"sessionsReaped":5})"));
 }
 
 static void test_sse_exact_shape() {

@@ -1,13 +1,14 @@
 ﻿let settingsSavedConfig = {
   udpPort: 9876, autoStart: false, discoveryBroadcast: true, controllerAudio: true,
-  controllerAudioMic: true, controllerAudioSpeaker: true,
+  controllerAudioMic: true, controllerAudioSpeaker: true, controllerAudioHaptics: true,
   controllerAudioKeepDefaultDevice: true,
 };
 
 // The audio sub-switches, which all follow one pattern: DOM id, saved-config
 // key and POST key are the same string.
 const SETTINGS_AUDIO_KEYS = [
-  'controllerAudioMic', 'controllerAudioSpeaker', 'controllerAudioKeepDefaultDevice',
+  'controllerAudioMic', 'controllerAudioSpeaker', 'controllerAudioHaptics',
+  'controllerAudioKeepDefaultDevice',
 ];
 
 // Same DOM-id/config-key/POST-key convention as the audio switches, but NOT

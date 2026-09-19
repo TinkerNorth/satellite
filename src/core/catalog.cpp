@@ -182,7 +182,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     // renders the DS4-shaped surface; its touchpad renders the "ds4" pad mode.
     auto ds4LikeFeatures = [](bool motion, const std::string& motionRequires, bool touchpad,
                               bool lightbar, bool triggerEffects, bool playerLeds, bool mic,
-                              bool speaker) {
+                              bool speaker, bool hapticAudio) {
         JsonOut f;
         f["rumble"] = featureJson(true);
         f["analogTriggers"] = featureJson(true);
@@ -193,6 +193,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         f["playerLeds"] = featureJson(playerLeds);
         f["mic"] = featureJson(mic);
         f["speaker"] = featureJson(speaker);
+        f["hapticAudio"] = featureJson(hapticAudio);
         return f;
     };
 
@@ -215,6 +216,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         xbox["playerLeds"] = featureJson(false);
         xbox["mic"] = featureJson(false);
         xbox["speaker"] = featureJson(false);
+        xbox["hapticAudio"] = featureJson(false);
         types.push_back(typeJson(0, "xbox360", lang, en, serverVersion, std::move(xbox)));
     }
     if (traits.offersDS4) {
@@ -225,7 +227,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
             1, "ds4", lang, en, serverVersion,
             ds4LikeFeatures(traits.ds4MotionSupported, traits.ds4MotionRequires,
                             traits.ds4TouchpadSupported, traits.ds4LightbarSupported, false, false,
-                            traits.ds4MicSupported, traits.ds4SpeakerSupported)));
+                            traits.ds4MicSupported, traits.ds4SpeakerSupported, false)));
     }
     if (traits.offersDualSense) {
         types.push_back(typeJson(
@@ -234,7 +236,8 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
                             traits.dualsenseTouchpadSupported, traits.dualsenseLightbarSupported,
                             traits.dualsenseTriggerEffectsSupported,
                             traits.dualsensePlayerLedsSupported, traits.dualsenseMicSupported,
-                            traits.dualsenseSpeakerSupported)));
+                            traits.dualsenseSpeakerSupported,
+                            traits.dualsenseHapticAudioSupported)));
     }
     if (traits.offersSwitchPro) {
         // Switch Pro: motion, no analog triggers, no touchpad, no light bar.
@@ -248,6 +251,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         sw["playerLeds"] = featureJson(traits.switchProPlayerLedsSupported);
         sw["mic"] = featureJson(false);
         sw["speaker"] = featureJson(false);
+        sw["hapticAudio"] = featureJson(false);
         types.push_back(typeJson(3, "switchpro", lang, en, serverVersion, std::move(sw)));
     }
     j["controllerTypes"] = std::move(types);

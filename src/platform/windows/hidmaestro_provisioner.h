@@ -38,6 +38,11 @@ struct ProvisionResult {
     uint64_t speakerEvent = 0;
     uint64_t micSection = 0;
     uint64_t micEvent = 0;
+    // The haptics lanes of the same OUT endpoint, a ring of their own so the
+    // two lanes stay independently gated. Zero on every persona whose
+    // endpoint has none (only the DualSense's does).
+    uint64_t hapticSection = 0;
+    uint64_t hapticEvent = 0;
 
     // The persona's endpoint formats, read off the SDK at plug time and
     // constant for the life of the plug, so they ride here instead of in every

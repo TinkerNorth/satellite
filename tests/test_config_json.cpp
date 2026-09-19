@@ -30,6 +30,7 @@ static void test_full_round_trip() {
     in.controllerAudio = false;
     in.controllerAudioMic = false;
     in.controllerAudioSpeaker = false;
+    in.controllerAudioHaptics = false;
     in.controllerAudioKeepDefaultDevice = false;
 
     PairedDevice d0;
@@ -69,6 +70,7 @@ static void test_full_round_trip() {
     EXPECT_EQ(out.controllerAudio, in.controllerAudio);
     EXPECT_EQ(out.controllerAudioMic, in.controllerAudioMic);
     EXPECT_EQ(out.controllerAudioSpeaker, in.controllerAudioSpeaker);
+    EXPECT_EQ(out.controllerAudioHaptics, in.controllerAudioHaptics);
     EXPECT_EQ(out.controllerAudioKeepDefaultDevice, in.controllerAudioKeepDefaultDevice);
 
     EXPECT_EQ(out.pairedDevices.size(), in.pairedDevices.size());
@@ -240,6 +242,7 @@ static void test_controller_audio_split_directions() {
     const Config defaults;
     EXPECT(defaults.controllerAudioMic);
     EXPECT(defaults.controllerAudioSpeaker);
+    EXPECT(defaults.controllerAudioHaptics);
 
     TEST("a config predating the split loads with both directions on");
     Config legacy;
@@ -247,12 +250,25 @@ static void test_controller_audio_split_directions() {
     EXPECT(legacy.controllerAudio);
     EXPECT(legacy.controllerAudioMic);
     EXPECT(legacy.controllerAudioSpeaker);
+    EXPECT(legacy.controllerAudioHaptics);
+
+    TEST("a config predating the haptics lane loads with haptics on");
+    Config preHaptics;
+    parseConfigInto(R"({"controllerAudioMic":true,"controllerAudioSpeaker":true})", preHaptics);
+    EXPECT(preHaptics.controllerAudioHaptics);
 
     TEST("the directions are independent of each other");
     Config micOnly;
     parseConfigInto(R"({"controllerAudioSpeaker":false})", micOnly);
     EXPECT(micOnly.controllerAudioMic);
     EXPECT(!micOnly.controllerAudioSpeaker);
+    EXPECT(micOnly.controllerAudioHaptics);
+
+    Config noHaptics;
+    parseConfigInto(R"({"controllerAudioHaptics":false})", noHaptics);
+    EXPECT(noHaptics.controllerAudioMic);
+    EXPECT(noHaptics.controllerAudioSpeaker);
+    EXPECT(!noHaptics.controllerAudioHaptics);
 
     Config speakerOnly;
     parseConfigInto(R"({"controllerAudioMic":false})", speakerOnly);
@@ -273,6 +289,7 @@ static void test_controller_audio_split_directions() {
     const std::string text = serializeConfig(in);
     EXPECT(text.find("\"controllerAudioMic\"") != std::string::npos);
     EXPECT(text.find("\"controllerAudioSpeaker\"") != std::string::npos);
+    EXPECT(text.find("\"controllerAudioHaptics\"") != std::string::npos);
     Config out;
     out.controllerAudioMic = true;
     out.controllerAudioSpeaker = false;

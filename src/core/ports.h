@@ -145,6 +145,14 @@ class IGamepadPort {
         std::function<void(uint32_t serial, const int16_t* stereo48k, size_t frames)>;
     virtual void setSpeakerAudioCallback(SpeakerAudioCallback /*cb*/) {}
 
+    // Haptic sink: the PCM a game wrote to channels 3/4 of the same endpoint,
+    // the two voice-coil actuators, left first. Same framing and lifetime
+    // rules as the speaker sink. Only a persona whose OUT endpoint carries
+    // the haptics lanes (the DualSense composite) ever fires it.
+    using HapticAudioCallback =
+        std::function<void(uint32_t serial, const int16_t* stereo48k, size_t frames)>;
+    virtual void setHapticAudioCallback(HapticAudioCallback /*cb*/) {}
+
     // Mic-mute LED sink: the MIC_LED_STATE_* the game asked the pad's mute lamp
     // for. Separate from the player LEDs; different lamp, different report bit.
     using MicLedCallback = std::function<void(uint32_t serial, uint8_t state)>;
@@ -198,6 +206,11 @@ class IClientPort {
     // side; the receiver conceals gaps with Opus FEC/PLC.
     virtual void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
                                   const uint8_t* opus, size_t opusLen) = 0;
+
+    // HD haptics (0x0015): same shape as speaker audio, one 20 ms stereo Opus
+    // packet of the pad's two actuator lanes. Same lossy doctrine.
+    virtual void sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+                                 const uint8_t* opus, size_t opusLen) = 0;
 
     // Mic-mute LED (0x0014), payload: ctrlIdx u8, state u8 (MIC_LED_STATE_*).
     virtual void sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) = 0;

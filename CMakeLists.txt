@@ -1010,6 +1010,12 @@ satellite_add_pure_test(test_audio_jitter tests/test_audio_jitter.cpp)
 # failing, so the suite asserts spectral behaviour and not just sample counts.
 satellite_add_pure_test(test_audio_resampler tests/test_audio_resampler.cpp)
 
+# The haptic-waveform-to-motor-strength reduction (core/audio/haptic_envelope.h),
+# header-only. It is what a client with plain motors feels from a game that only
+# ever speaks DualSense haptics, so the scale, the lane mapping and the floor
+# are pinned here rather than discovered on someone's pad.
+satellite_add_pure_test(test_haptic_envelope tests/test_haptic_envelope.cpp)
+
 # The libopus wrapper (adapters/audio/opus_codec.cpp): round-trips, concealment
 # and FEC recovery against real encoder output, so a drifting encoder setting
 # (bitrate, application, FEC) fails here rather than in someone's headset.

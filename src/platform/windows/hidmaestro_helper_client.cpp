@@ -452,6 +452,8 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     out.speakerEvent = handleField("speakerAudioEvent");
     out.micSection = handleField("micAudio");
     out.micEvent = handleField("micAudioEvent");
+    out.hapticSection = handleField("hapticAudio");
+    out.hapticEvent = handleField("hapticAudioEvent");
     out.speakerChannels = static_cast<int>(jsonInt(j, "speakerChannels", 0));
     out.speakerRateHz = static_cast<int>(jsonInt(j, "speakerRateHz", 0));
     out.micChannels = static_cast<int>(jsonInt(j, "micChannels", 0));

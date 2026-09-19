@@ -512,7 +512,10 @@ internal static class Program
     //         "speakerAudio":H,"speakerAudioEvent":H,
     //         "micAudio":H,"micAudioEvent":H,
     //         "speakerChannels":N,"speakerRateHz":N,
-    //         "micChannels":N,"micRateHz":N}
+    //         "micChannels":N,"micRateHz":N,
+    //         // present only when that endpoint also carries the HD-haptics
+    //         // lanes (the DualSense composite); same rate as the speaker:
+    //         "hapticAudio":H,"hapticAudioEvent":H,"hapticChannels":N}
     //
     // Every H is a handle already duplicated into the satellite process, which
     // owns it. The audio sections carry PCM in the ring layout pinned by
@@ -791,7 +794,8 @@ internal static class Program
     }
 
     // Controller audio for one composite persona: the pad's own USB-audio
-    // endpoints joined to satellite's two shared-memory rings.
+    // endpoints joined to satellite's shared-memory rings (speaker and mic on
+    // every composite, plus the haptics lanes on a DualSense).
     //
     // Everything here is deliberately mechanical — lane selection, a
     // fixed-layout ring write, a ring read, a channel spread — because this
@@ -820,6 +824,11 @@ internal static class Program
         private const long AudioSectionSize = RingHeaderSize + (long)RingSlots * SlotSize;
 
         private const int WireSpeakerChannels = 2;
+        // Channels 3/4 of a DualSense OUT stream: the two voice-coil
+        // actuators, left first. Only an endpoint with at least this many
+        // channels has them.
+        private const int WireHapticChannels = 2;
+        private const int HapticSourceChannels = 4;
 
         // The SDK raises one USB service interval (1 ms) of OUT audio at a
         // time. A doorbell per millisecond would be a thousand cross-process
@@ -838,10 +847,13 @@ internal static class Program
         private readonly object _speakerLock = new();
 
         private MemoryMappedFile? _speakerMap;
+        private MemoryMappedFile? _hapticMap;
         private MemoryMappedFile? _micMap;
         private MemoryMappedViewAccessor? _speakerView;
+        private MemoryMappedViewAccessor? _hapticView;
         private MemoryMappedViewAccessor? _micView;
         private EventWaitHandle? _speakerDoorbell;
+        private EventWaitHandle? _hapticDoorbell;
         private EventWaitHandle? _micDoorbell;
         private EventWaitHandle? _cancel;
         private Thread? _micThread;
@@ -849,6 +861,11 @@ internal static class Program
         private readonly short[] _speakerPending = new short[SpeakerFlushFrames * WireSpeakerChannels];
         private int _speakerPendingFrames;
         private ushort _speakerSeq;
+        // Same cadence as the speaker: both lanes come off one OUT frame, so
+        // they fill and flush in lockstep under the one lock.
+        private readonly short[] _hapticPending = new short[SpeakerFlushFrames * WireHapticChannels];
+        private int _hapticPendingFrames;
+        private ushort _hapticSeq;
 
         private readonly short[] _micSlot = new short[SlotSampleCapacity];
         private byte[] _micBytes = new byte[SlotSampleCapacity * 2];
@@ -856,6 +873,8 @@ internal static class Program
 
         private ulong _speakerHandle;
         private ulong _speakerEventHandle;
+        private ulong _hapticHandle;
+        private ulong _hapticEventHandle;
         private ulong _micHandle;
         private ulong _micEventHandle;
 
@@ -902,6 +921,27 @@ internal static class Program
                 _micEventHandle == 0)
                 throw new InvalidOperationException("could not duplicate the audio ring handles");
 
+            // The haptic ring exists only where the endpoint has the lanes.
+            // Its failure is its own: the speaker and mic rings above are
+            // already handed over, and a pad without haptics beats a pad
+            // without audio.
+            if (_output.Channels >= HapticSourceChannels)
+            {
+                try
+                {
+                    _hapticMap = MemoryMappedFile.CreateNew(null, AudioSectionSize);
+                    _hapticView = _hapticMap.CreateViewAccessor();
+                    _hapticDoorbell = new EventWaitHandle(false, EventResetMode.AutoReset);
+                    _hapticHandle = duplicate(_hapticMap.SafeMemoryMappedFileHandle.DangerousGetHandle());
+                    _hapticEventHandle = duplicate(_hapticDoorbell.SafeWaitHandle.DangerousGetHandle());
+                    if (_hapticHandle == 0 || _hapticEventHandle == 0) DropHapticRing();
+                }
+                catch
+                {
+                    DropHapticRing();
+                }
+            }
+
             _output.FramesReceived += OnOutputFrames;
 
             // Background so a wedged drain can never hold the process open, and
@@ -923,12 +963,33 @@ internal static class Program
             w.WriteNumber("speakerRateHz", _output.SampleRateHz);
             w.WriteNumber("micChannels", _microphone.Channels);
             w.WriteNumber("micRateHz", _microphone.SampleRateHz);
+            if (_hapticHandle != 0)
+            {
+                w.WriteNumber("hapticAudio", _hapticHandle);
+                w.WriteNumber("hapticAudioEvent", _hapticEventHandle);
+                w.WriteNumber("hapticChannels", WireHapticChannels);
+            }
+        }
+
+        // Caller holds no lock: only reached from Start, before the frame
+        // handler is subscribed.
+        private void DropHapticRing()
+        {
+            _hapticView?.Dispose();
+            _hapticView = null;
+            _hapticMap?.Dispose();
+            _hapticMap = null;
+            _hapticDoorbell?.Dispose();
+            _hapticDoorbell = null;
+            _hapticHandle = 0;
+            _hapticEventHandle = 0;
         }
 
         // The game's audio, straight off the emulated pad's OUT endpoint. On a
-        // DualSense that is four channels: 1/2 are the speaker/headset lanes
-        // and 3/4 are the HD-haptics lanes, which deliberately never cross the
-        // wire. Runs on the SDK's own audio pump thread.
+        // DualSense that is four channels: 1/2 are the speaker/headset lanes,
+        // 3/4 the HD-haptics lanes, and each pair goes to its own ring so
+        // satellite can gate and encode them apart. Runs on the SDK's own
+        // audio pump thread.
         private void OnOutputFrames(HMAudioOutput source, ReadOnlyMemory<byte> pcm)
         {
             if (_disposed) return;
@@ -941,6 +1002,7 @@ internal static class Program
             lock (_speakerLock)
             {
                 if (_disposed) return;
+                bool haptics = _hapticView != null && channels >= HapticSourceChannels;
                 for (int f = 0; f < frames; f++)
                 {
                     int b = f * stride;
@@ -948,7 +1010,18 @@ internal static class Program
                     _speakerPending[o] = unchecked((short)(bytes[b] | (bytes[b + 1] << 8)));
                     _speakerPending[o + 1] = unchecked((short)(bytes[b + 2] | (bytes[b + 3] << 8)));
                     _speakerPendingFrames++;
-                    if (_speakerPendingFrames >= SpeakerFlushFrames) FlushSpeakerLocked();
+                    if (haptics)
+                    {
+                        int h = _hapticPendingFrames * WireHapticChannels;
+                        _hapticPending[h] = unchecked((short)(bytes[b + 4] | (bytes[b + 5] << 8)));
+                        _hapticPending[h + 1] = unchecked((short)(bytes[b + 6] | (bytes[b + 7] << 8)));
+                        _hapticPendingFrames++;
+                    }
+                    if (_speakerPendingFrames >= SpeakerFlushFrames)
+                    {
+                        FlushSpeakerLocked();
+                        FlushHapticLocked();
+                    }
                 }
             }
         }
@@ -961,6 +1034,16 @@ internal static class Program
             _speakerSeq++;
             _speakerPendingFrames = 0;
             _speakerDoorbell?.Set();
+        }
+
+        private void FlushHapticLocked()
+        {
+            if (_hapticPendingFrames <= 0 || _hapticView == null) return;
+            WriteSlot(_hapticView, _serial, _hapticSeq, _hapticPending,
+                      _hapticPendingFrames * WireHapticChannels);
+            _hapticSeq++;
+            _hapticPendingFrames = 0;
+            _hapticDoorbell?.Set();
         }
 
         private void MicLoop()
@@ -1091,6 +1174,12 @@ internal static class Program
                 _speakerMap = null;
                 _speakerDoorbell?.Dispose();
                 _speakerDoorbell = null;
+                _hapticView?.Dispose();
+                _hapticView = null;
+                _hapticMap?.Dispose();
+                _hapticMap = null;
+                _hapticDoorbell?.Dispose();
+                _hapticDoorbell = null;
             }
 
             _cancel?.Set();

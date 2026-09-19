@@ -30,6 +30,8 @@ class ClientAdapter : public IClientPort {
     void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) override;
     void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
                           const uint8_t* opus, size_t opusLen) override;
+    void sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
+                         size_t opusLen) override;
     void sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) override;
     void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                       uint8_t b) override;
@@ -44,6 +46,9 @@ class ClientAdapter : public IClientPort {
     std::unordered_map<uint32_t, uint32_t> txCounters_;
 
     void sendEncryptedPacket(const Connection& conn, const uint8_t* inner, size_t innerLen);
+    // Shared body of the outbound audio lanes (speaker, haptics).
+    void sendAudioMessage(const Connection& conn, uint16_t msgType, uint8_t ctrlIdx, uint16_t seq,
+                          const uint8_t* opus, size_t opusLen);
 
     bool getAddr(uint32_t token, sockaddr_in& out);
     uint32_t nextTxCounter(uint32_t token);

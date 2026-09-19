@@ -152,7 +152,8 @@ int main(int argc, const char* argv[]) {
     // playing instead of waiting for a replug.
     svc.setAudioPolicy([] {
         std::lock_guard<std::mutex> lk(g_configMtx);
-        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker};
+        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
+                                     g_config.controllerAudioHaptics};
     });
 
     LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");

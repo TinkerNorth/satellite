@@ -210,17 +210,28 @@ void ClientAdapter::sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint
 
 void ClientAdapter::sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
                                      const uint8_t* opus, size_t opusLen) {
-    // Wire: ctrlIdx(1) + seq(u16 BE) + one Opus packet. An empty packet would
-    // decode to nothing on the far side, so it never leaves; an oversized one
-    // cannot be split (Opus packets are atomic) and is dropped rather than
-    // truncated into a frame the decoder would reject anyway.
+    sendAudioMessage(conn, MSG_SPEAKER_AUDIO, ctrlIdx, seq, opus, opusLen);
+}
+
+void ClientAdapter::sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+                                    const uint8_t* opus, size_t opusLen) {
+    sendAudioMessage(conn, MSG_HAPTIC_AUDIO, ctrlIdx, seq, opus, opusLen);
+}
+
+void ClientAdapter::sendAudioMessage(const Connection& conn, uint16_t msgType, uint8_t ctrlIdx,
+                                     uint16_t seq, const uint8_t* opus, size_t opusLen) {
+    // Wire: ctrlIdx(1) + seq(u16 BE) + one Opus packet, the same shape for
+    // every outbound audio lane. An empty packet would decode to nothing on
+    // the far side, so it never leaves; an oversized one cannot be split (Opus
+    // packets are atomic) and is dropped rather than truncated into a frame
+    // the decoder would reject anyway.
     if (opusLen == 0) return;
     const size_t payloadLen = (size_t)AUDIO_WIRE_HEADER_BYTES + opusLen;
     if (payloadLen > (size_t)MAX_INNER_PAYLOAD_BYTES) return;
 
     uint8_t inner[INNER_HEADER_SIZE + MAX_INNER_PAYLOAD_BYTES];
-    inner[0] = (uint8_t)(MSG_SPEAKER_AUDIO >> 8);
-    inner[1] = (uint8_t)(MSG_SPEAKER_AUDIO);
+    inner[0] = (uint8_t)(msgType >> 8);
+    inner[1] = (uint8_t)(msgType);
     inner[2] = (uint8_t)(payloadLen >> 8);
     inner[3] = (uint8_t)(payloadLen);
     encodeAudioFrameHeader(inner + INNER_HEADER_SIZE, ctrlIdx, seq);

@@ -3,6 +3,23 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+Protocol 3. A DualSense game that vibrates through Sony's own pad library
+authors the effect as audio on the pad's HD-haptics lanes and never writes a
+motor byte, so a streamed pad stayed still in it while a local one shook.
+The helper now hands those lanes (channels 3/4 of the composite's output
+stream) to Satellite on a ring of their own, and Satellite sends them down as
+HAPTIC_AUDIO 0x0015 to a client that advertises the new `hapticAudio` cap, or
+reduces each 20 ms window to motor strength on the existing RUMBLE path for a
+client that only advertises `rumble`, mixed with the game's HID rumble by MAX.
+A `controllerAudioHaptics` switch beside the mic and speaker ones stops both
+renderings at once; `/api/server/capabilities` gains
+`controllerAudio.hapticAudio`, the catalog gains the `hapticAudio` slug on the
+DualSense type, and `/api/debug` gains the lane's counters. No frame shape
+changed and the accepted range is still [1, 3], so every shipped Dish keeps
+working at its own version and gains the rumble reduction without an update.
+
 ## 2.0.4
 
 No protocol changes. Windows driver and installer fixes.

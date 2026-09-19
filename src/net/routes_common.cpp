@@ -56,7 +56,8 @@ static bool controllerAudioEnabled() {
 // setting must never reach it).
 static ControllerAudioPolicy controllerAudioPolicy() {
     std::lock_guard<std::mutex> lk(g_configMtx);
-    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker};
+    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
+                                 g_config.controllerAudioHaptics};
 }
 
 std::string buildBackendStatusJson() {
@@ -109,6 +110,11 @@ std::string buildCapabilitiesJson() {
     audioBlock["enabled"] = audioLive;
     audioBlock["mic"] = audioLive && policy.mic;
     audioBlock["speaker"] = audioLive && policy.speaker;
+    // Narrower than the others: the lanes exist on one pad's endpoint, so a
+    // host whose backends carry audio but no DualSense composite streams no
+    // haptics whatever the switch says. Covers both renderings of the lane,
+    // the waveform and its rumble reduction.
+    audioBlock["hapticAudio"] = audioLive && policy.haptics && traits.dualsenseHapticAudioSupported;
     j["controllerAudio"] = std::move(audioBlock);
     return jsonDump(j);
 }

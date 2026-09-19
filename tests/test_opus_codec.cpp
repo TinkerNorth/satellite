@@ -374,9 +374,29 @@ void test_factoryPinsTheStreamFormats() {
     OpusCodecFactory factory;
     auto micDec = factory.makeMicDecoder();
     auto spkEnc = factory.makeSpeakerEncoder();
+    auto hapEnc = factory.makeHapticEncoder();
     EXPECT(micDec != nullptr);
     EXPECT(spkEnc != nullptr);
-    if (!micDec || !spkEnc) return;
+    EXPECT(hapEnc != nullptr);
+    if (!micDec || !spkEnc || !hapEnc) return;
+
+    // The haptic lane is the speaker's shape: two channels, one 20 ms window
+    // per packet, decodable by a stereo decoder on the far side.
+    {
+        std::vector<int16_t> lanes;
+        fillSpeakerFrame(lanes, 0);
+        uint8_t hapPacket[MAX_PACKET];
+        const size_t hapBytes =
+            hapEnc->encode(lanes.data(), MIC_FRAME, hapPacket, sizeof(hapPacket));
+        EXPECT(hapBytes > 0);
+        auto hapDec = OpusStreamDecoder::create(Stream::Haptic);
+        EXPECT(hapDec != nullptr);
+        if (hapDec) {
+            std::vector<int16_t> out(static_cast<size_t>(MIC_FRAME) * 2, 0);
+            EXPECT_EQ(hapDec->decode(hapPacket, hapBytes, out.data(), MIC_FRAME),
+                      (size_t)MIC_FRAME);
+        }
+    }
 
     // The formats the wire pins (types.h), reached through the seam the service
     // actually uses, so a factory wired to the wrong Stream fails here.

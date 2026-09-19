@@ -80,6 +80,7 @@ struct StubClient : IClientPort {
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
     void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
     int closeNotifies = 0;
 };
@@ -222,8 +223,10 @@ int main() {
     }
     {
         TEST("PUT /api/connections beyond the range: 409 + supported/supportedMin echo");
-        auto res =
-            cli.Put("/api/connections", auth, R"({"protocolVersion":3})", "application/json");
+        auto res = cli.Put("/api/connections", auth,
+                           std::string(R"({"protocolVersion":)") +
+                               std::to_string(PROTOCOL_VERSION + 1) + "}",
+                           "application/json");
         EXPECT(res && res->status == 409);
         if (res) {
             Json j = parseJson(res->body);
@@ -247,8 +250,11 @@ int main() {
     std::string connId;
     {
         TEST("authed PUT /api/connections: 200 with token/salt/connectionId");
-        const std::string body = R"({
-            "protocolVersion": 2,
+        // Offers the newest version so the echo pins it; every other body in
+        // this file speaks a fixed older version on purpose.
+        const std::string body = std::string(R"({
+            "protocolVersion": )") +
+                                 std::to_string(PROTOCOL_VERSION) + R"(,
             "deviceName": "Route Tester",
             "controllers": [
                 {"ctrlIdx": 0, "type": 0, "caps": {"rumble": true, "analogTriggers": true}},
@@ -397,6 +403,7 @@ int main() {
                 EXPECT_EQ(jsonBool(c["caps"], "triggerEffects"), false);
                 EXPECT_EQ(jsonBool(c["caps"], "playerLeds"), false);
                 EXPECT_EQ(jsonBool(c["caps"], "lightbar"), false);
+                EXPECT_EQ(jsonBool(c["caps"], "hapticAudio"), false);
             } else {
                 EXPECT(false);
             }
@@ -415,6 +422,30 @@ int main() {
                 j["controllers"].size() == 1) {
                 EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "mic"), false);
                 EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), true);
+            } else {
+                EXPECT(false);
+            }
+        }
+
+        TEST("caps roundtrip: hapticAudio is its own bit, apart from speaker");
+        // A client that plays the haptic waveform says so on its own; the
+        // speaker lane neither implies nor requires it.
+        auto res3 = cli.Put("/api/connections", auth,
+                            R"({"protocolVersion":3,
+                                "controllers":[{"ctrlIdx":0,"type":2,
+                                "caps":{"hapticAudio":true,"rumble":true}}]})",
+                            "application/json");
+        EXPECT(res3 && res3->status == 200);
+        auto view3 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        EXPECT(view3 && view3->status == 200);
+        if (view3) {
+            Json j = parseJson(view3->body);
+            if (j.contains("controllers") && j["controllers"].is_array() &&
+                j["controllers"].size() == 1) {
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "hapticAudio"), true);
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "rumble"), true);
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), false);
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "mic"), false);
             } else {
                 EXPECT(false);
             }
@@ -512,7 +543,7 @@ int main() {
         auto res =
             cli.Post("/api/pair",
                      std::string(R"({"deviceId":"dev-a-pin","deviceName":"PinDev","pin":")") + pin +
-                         R"(","protocolVersion":2})",
+                         R"(","protocolVersion":)" + std::to_string(PROTOCOL_VERSION) + "}",
                      "application/json");
         EXPECT(res && res->status == 200);
         if (res) {

@@ -225,7 +225,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // playing instead of waiting for a replug.
     svc.setAudioPolicy([] {
         std::lock_guard<std::mutex> lk(g_configMtx);
-        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker};
+        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
+                                     g_config.controllerAudioHaptics};
     });
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).

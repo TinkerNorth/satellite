@@ -2,6 +2,7 @@
 
 #include "session_service.h"
 
+#include "core/audio/haptic_envelope.h"
 #include "ipv4_util.h"
 
 #include <algorithm>
@@ -41,6 +42,9 @@ SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogP
         [this](uint32_t serial, uint8_t ledMask) { handlePlayerLedsFromBackend(serial, ledMask); });
     backend_.setSpeakerAudioCallback([this](uint32_t serial, const int16_t* pcm, size_t frames) {
         (void)handleSpeakerAudioFromBackend(serial, pcm, frames);
+    });
+    backend_.setHapticAudioCallback([this](uint32_t serial, const int16_t* pcm, size_t frames) {
+        (void)handleHapticAudioFromBackend(serial, pcm, frames);
     });
     backend_.setMicLedCallback(
         [this](uint32_t serial, uint8_t state) { handleMicLedFromBackend(serial, state); });
@@ -183,6 +187,10 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     // must not be suppressed as "same as last".
     ctrl.lastRumble = RumbleReport{};
     ctrl.lastRumbleValid = false;
+    ctrl.hidRumble = RumbleReport{};
+    ctrl.hapticRumble = RumbleReport{};
+    ctrl.hapticRumbleSentAt = {};
+    ctrl.hapticRumbleExpiresAt = {};
     ctrl.lightbarR = 0;
     ctrl.lightbarG = 0;
     ctrl.lightbarB = 0;
@@ -675,21 +683,38 @@ void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
 
+    foundCtrl->hidRumble = report;
+    forwardRumbleLocked(*foundConn, *foundCtrl, wireDurationMs, /*force=*/false);
+}
+
+bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
+                                         uint16_t wireDurationMs, bool force) {
+    // A haptic level past its window is a stream that stopped; mixing it in
+    // would hand every later HID update a phantom motor.
+    const auto now = std::chrono::steady_clock::now();
+    const bool hapticLive = now < ctrl.hapticRumbleExpiresAt;
+    RumbleReport mixed;
+    mixed.strongMagnitude = std::max(ctrl.hidRumble.strongMagnitude,
+                                     hapticLive ? ctrl.hapticRumble.strongMagnitude : uint16_t{0});
+    mixed.weakMagnitude = std::max(ctrl.hidRumble.weakMagnitude,
+                                   hapticLive ? ctrl.hapticRumble.weakMagnitude : uint16_t{0});
+
     // Coalesce identical back-to-back updates (games hold the motors steady
     // across many frames). wireDurationMs is excluded so the caller can bump the
     // refresh deadline without forcing a packet.
     auto sameAs = [](const RumbleReport& a, const RumbleReport& b) {
         return a.strongMagnitude == b.strongMagnitude && a.weakMagnitude == b.weakMagnitude;
     };
-    if (foundCtrl->lastRumbleValid && sameAs(foundCtrl->lastRumble, report)) { return; }
+    if (!force && ctrl.lastRumbleValid && sameAs(ctrl.lastRumble, mixed)) { return false; }
 
-    RumbleReport stamped = report;
+    RumbleReport stamped = mixed;
     stamped.durationMs = wireDurationMs;
 
-    foundCtrl->lastRumble = stamped;
-    foundCtrl->lastRumbleValid = true;
+    ctrl.lastRumble = stamped;
+    ctrl.lastRumbleValid = true;
 
-    client_.sendRumble(*foundConn, foundCtrl->index, stamped);
+    client_.sendRumble(conn, ctrl.index, stamped);
+    return true;
 }
 
 bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const MotionReport& report) {
@@ -917,7 +942,95 @@ bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_
     // that would drop the frame is pure wasted CPU.
     if (!foundCtrl->speakerCapable()) return false;
 
-    return encodeAndSendSpeakerAudioLocked(*foundConn, *foundCtrl, stereo48k, frames);
+    return encodeAndSendAudioLocked(*foundConn, *foundCtrl, OutboundAudioLane::Speaker, stereo48k,
+                                    frames);
+}
+
+bool SessionService::handleHapticAudioFromBackend(uint32_t serial, const int16_t* stereo48k,
+                                                  size_t frames) {
+    if (stereo48k == nullptr || frames == 0) return false;
+
+    // Same order as the speaker: the gate is sampled before mtx_ (it reads the
+    // config lock; the two never nest), and it covers BOTH renderings. A host
+    // that turned haptics off wants no haptics, not haptics-as-rumble.
+    if (!audioPolicy().haptics) return false;
+
+    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    if (!lk.owns_lock()) {
+        bumpAudio(audio_.hapticLockContended);
+        return false;
+    }
+
+    Connection* foundConn = nullptr;
+    Controller* foundCtrl = nullptr;
+    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return false;
+
+    // The waveform to a sender that can play it; a reduction to whoever can
+    // only rumble; nothing to a sender with neither. Never both: a client
+    // playing the waveform is already rendering the effect, and a motor
+    // shaking alongside its own voice coils would double it.
+    if (foundCtrl->hapticAudioCapable()) {
+        return encodeAndSendAudioLocked(*foundConn, *foundCtrl, OutboundAudioLane::Haptic,
+                                        stereo48k, frames);
+    }
+    if (!foundCtrl->rumbleCapable()) return false;
+
+    // Re-window into whole 20 ms frames exactly as the encode path does, so
+    // the reduction sees the same windows the waveform would have been cut
+    // into. A partial tail waits for the rest of its frame.
+    ControllerAudio& audio = ensureControllerAudioLocked(*foundCtrl);
+    ControllerAudio::OutboundLane& lane = audio.haptic;
+    const size_t frameSamples = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS;
+    size_t consumed = 0;
+    if (!lane.pending.empty()) {
+        const size_t need = frameSamples - lane.pending.size();
+        const size_t offered = frames * AUDIO_HAPTIC_CHANNELS;
+        const size_t take = need < offered ? need : offered;
+        lane.pending.insert(lane.pending.end(), stereo48k, stereo48k + take);
+        consumed = take / AUDIO_HAPTIC_CHANNELS;
+        if (lane.pending.size() < frameSamples) return true;
+        reduceHapticWindowToRumbleLocked(*foundConn, *foundCtrl, lane.pending.data());
+        lane.pending.clear();
+    }
+    while (frames - consumed >= static_cast<size_t>(AUDIO_FRAME_SAMPLES)) {
+        reduceHapticWindowToRumbleLocked(*foundConn, *foundCtrl,
+                                         stereo48k + consumed * AUDIO_HAPTIC_CHANNELS);
+        consumed += AUDIO_FRAME_SAMPLES;
+    }
+    if (consumed < frames) {
+        lane.pending.assign(stereo48k + consumed * AUDIO_HAPTIC_CHANNELS,
+                            stereo48k + frames * AUDIO_HAPTIC_CHANNELS);
+    }
+    return true;
+}
+
+void SessionService::reduceHapticWindowToRumbleLocked(Connection& conn, Controller& ctrl,
+                                                      const int16_t* frame) {
+    bumpAudio(audio_.hapticReducedToRumble);
+    const RumbleReport level =
+        satellite::audio::hapticWindowToRumble(frame, static_cast<size_t>(AUDIO_FRAME_SAMPLES));
+    const auto now = std::chrono::steady_clock::now();
+    ctrl.hapticRumble = level;
+    ctrl.hapticRumbleExpiresAt =
+        now + std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS);
+
+    // The client runs each MSG_RUMBLE for its duration. A haptic-only level
+    // gets the short one, so a stream that stops takes the motor with it; the
+    // moment the HID motors contribute, the mixed value carries their long
+    // duration instead, or a game holding plain rumble under a haptic burst
+    // would lose it when the burst ended.
+    const bool hidContributes =
+        ctrl.hidRumble.strongMagnitude != 0 || ctrl.hidRumble.weakMagnitude != 0;
+    const uint16_t durationMs =
+        hidContributes ? RUMBLE_WIRE_DURATION_MS : satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS;
+    // A steady non-zero level must be re-sent before the client's timer runs
+    // out, coalescing or not.
+    const bool steadyNonZero = level.strongMagnitude != 0 || level.weakMagnitude != 0;
+    const bool refreshDue = now - ctrl.hapticRumbleSentAt >=
+                            std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_REFRESH_MS);
+    if (forwardRumbleLocked(conn, ctrl, durationMs, /*force=*/steadyNonZero && refreshDue)) {
+        ctrl.hapticRumbleSentAt = now;
+    }
 }
 
 bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t seq,
@@ -1044,8 +1157,13 @@ bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const
     return true;
 }
 
-void SessionService::sendSpeakerFrameLocked(Connection& conn, Controller& ctrl,
-                                            ControllerAudio& audio, const int16_t* frame) {
+void SessionService::sendAudioFrameLocked(Connection& conn, Controller& ctrl,
+                                          OutboundAudioLane lane,
+                                          ControllerAudio::OutboundLane& state,
+                                          const int16_t* frame) {
+    const bool speaker = lane == OutboundAudioLane::Speaker;
+    const int channels = speaker ? AUDIO_SPEAKER_CHANNELS : AUDIO_HAPTIC_CHANNELS;
+
     // Suppressed frames do NOT advance seq, unlike the encode failure below.
     // A failed encode lost real audio and the client should conceal a hole;
     // digital silence lost nothing, and its correct rendering is the silence a
@@ -1053,62 +1171,73 @@ void SessionService::sendSpeakerFrameLocked(Connection& conn, Controller& ctrl,
     // to run PLC over a gap that has no signal to guess at, and Opus would
     // invent noise where the game wrote none. Skipping also leaves the encoder
     // and the decoder resting on the same last real frame, so neither drifts.
+    // For haptics this is also the steady state: a pad's actuators are silent
+    // far more than a speaker is, so the lane costs nothing until a game
+    // actually plays an effect.
     if (isDigitalSilence(frame, static_cast<size_t>(AUDIO_FRAME_SAMPLES) *
-                                    static_cast<size_t>(AUDIO_SPEAKER_CHANNELS))) {
-        bumpAudio(audio_.speakerSilenceSuppressed);
+                                    static_cast<size_t>(channels))) {
+        bumpAudio(speaker ? audio_.speakerSilenceSuppressed : audio_.hapticSilenceSuppressed);
         return;
     }
 
     uint8_t packet[MAX_INNER_PAYLOAD_BYTES - AUDIO_WIRE_HEADER_BYTES];
-    const size_t bytes =
-        audio.speakerEncoder->encode(frame, AUDIO_FRAME_SAMPLES, packet, sizeof(packet));
+    const size_t bytes = state.encoder->encode(frame, AUDIO_FRAME_SAMPLES, packet, sizeof(packet));
     // The seq advances even when the encode failed. The 20 ms happened; saying
     // so lets the client conceal a hole instead of silently playing the stream
     // short and drifting against the game's clock.
-    const uint16_t seq = audio.speakerSeq++;
+    const uint16_t seq = state.seq++;
     if (bytes == 0) {
-        bumpAudio(audio_.speakerEncodeFailed);
+        bumpAudio(speaker ? audio_.speakerEncodeFailed : audio_.hapticEncodeFailed);
         return;
     }
-    bumpAudio(audio_.speakerSent);
-    client_.sendSpeakerAudio(conn, ctrl.index, seq, packet, bytes);
+    if (speaker) {
+        bumpAudio(audio_.speakerSent);
+        client_.sendSpeakerAudio(conn, ctrl.index, seq, packet, bytes);
+    } else {
+        bumpAudio(audio_.hapticSent);
+        client_.sendHapticAudio(conn, ctrl.index, seq, packet, bytes);
+    }
 }
 
-bool SessionService::encodeAndSendSpeakerAudioLocked(Connection& conn, Controller& ctrl,
-                                                     const int16_t* stereo48k, size_t frames) {
+bool SessionService::encodeAndSendAudioLocked(Connection& conn, Controller& ctrl,
+                                              OutboundAudioLane lane, const int16_t* stereo48k,
+                                              size_t frames) {
+    const bool speaker = lane == OutboundAudioLane::Speaker;
+    const int channels = speaker ? AUDIO_SPEAKER_CHANNELS : AUDIO_HAPTIC_CHANNELS;
     ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
-    if (!audio.speakerEncoder && audioCodecs_ != nullptr) {
-        audio.speakerEncoder = audioCodecs_->makeSpeakerEncoder();
+    ControllerAudio::OutboundLane& state = speaker ? audio.speaker : audio.haptic;
+    if (!state.encoder && audioCodecs_ != nullptr) {
+        state.encoder =
+            speaker ? audioCodecs_->makeSpeakerEncoder() : audioCodecs_->makeHapticEncoder();
     }
     // No codec: accepted and dropped, same as the inbound direction.
-    if (!audio.speakerEncoder) return true;
+    if (!state.encoder) return true;
 
-    const size_t frameSamples = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS;
+    const size_t frameSamples = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * channels;
     size_t consumed = 0; // frames taken from stereo48k
 
     // A backend hands over whatever its ring held, which is a batch boundary,
     // not a codec boundary: half a window, three windows, anything. Top up the
     // leftover tail first so frames stay contiguous across calls.
-    if (!audio.speakerPending.empty()) {
-        const size_t need = frameSamples - audio.speakerPending.size();
-        const size_t offered = frames * AUDIO_SPEAKER_CHANNELS;
+    if (!state.pending.empty()) {
+        const size_t need = frameSamples - state.pending.size();
+        const size_t offered = frames * channels;
         const size_t take = need < offered ? need : offered;
-        audio.speakerPending.insert(audio.speakerPending.end(), stereo48k, stereo48k + take);
-        consumed = take / AUDIO_SPEAKER_CHANNELS;
-        if (audio.speakerPending.size() < frameSamples) return true; // still short of a window
-        sendSpeakerFrameLocked(conn, ctrl, audio, audio.speakerPending.data());
-        audio.speakerPending.clear();
+        state.pending.insert(state.pending.end(), stereo48k, stereo48k + take);
+        consumed = take / channels;
+        if (state.pending.size() < frameSamples) return true; // still short of a window
+        sendAudioFrameLocked(conn, ctrl, lane, state, state.pending.data());
+        state.pending.clear();
     }
 
     // Whole windows go straight from the caller's buffer; the steady state
     // (exactly one window per call) never copies.
     while (frames - consumed >= static_cast<size_t>(AUDIO_FRAME_SAMPLES)) {
-        sendSpeakerFrameLocked(conn, ctrl, audio, stereo48k + consumed * AUDIO_SPEAKER_CHANNELS);
+        sendAudioFrameLocked(conn, ctrl, lane, state, stereo48k + consumed * channels);
         consumed += AUDIO_FRAME_SAMPLES;
     }
     if (consumed < frames) {
-        audio.speakerPending.assign(stereo48k + consumed * AUDIO_SPEAKER_CHANNELS,
-                                    stereo48k + frames * AUDIO_SPEAKER_CHANNELS);
+        state.pending.assign(stereo48k + consumed * channels, stereo48k + frames * channels);
     }
     return true;
 }
@@ -1334,6 +1463,11 @@ AudioStreamCounts SessionService::audioCounts() const {
     c.speakerSilenceSuppressed = audio_.speakerSilenceSuppressed.load(std::memory_order_relaxed);
     c.speakerEncodeFailed = audio_.speakerEncodeFailed.load(std::memory_order_relaxed);
     c.speakerLockContended = audio_.speakerLockContended.load(std::memory_order_relaxed);
+    c.hapticSent = audio_.hapticSent.load(std::memory_order_relaxed);
+    c.hapticSilenceSuppressed = audio_.hapticSilenceSuppressed.load(std::memory_order_relaxed);
+    c.hapticEncodeFailed = audio_.hapticEncodeFailed.load(std::memory_order_relaxed);
+    c.hapticLockContended = audio_.hapticLockContended.load(std::memory_order_relaxed);
+    c.hapticReducedToRumble = audio_.hapticReducedToRumble.load(std::memory_order_relaxed);
     return c;
 }
 
@@ -1361,7 +1495,14 @@ void SessionService::setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint1
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
-    ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).speakerSeq = seq;
+    ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).speaker.seq = seq;
+}
+
+void SessionService::setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+    ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).haptic.seq = seq;
 }
 #endif
 

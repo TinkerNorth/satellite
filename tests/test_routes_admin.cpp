@@ -75,6 +75,7 @@ struct StubClient : IClientPort {
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
     void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
     int closeNotifies = 0;
 };
@@ -357,14 +358,16 @@ int main() {
     }
     {
         TEST("POST /api/config: each audio direction applies on its own");
-        auto res =
-            cli.Post("/api/config", R"({"controllerAudioMic":false,"controllerAudioSpeaker":true})",
-                     "application/json");
+        auto res = cli.Post("/api/config",
+                            R"({"controllerAudioMic":false,"controllerAudioSpeaker":true,
+                         "controllerAudioHaptics":false})",
+                            "application/json");
         EXPECT(res && res->status == 200);
         {
             std::lock_guard<std::mutex> lk(g_configMtx);
             EXPECT_EQ(g_config.controllerAudioMic, false);
             EXPECT_EQ(g_config.controllerAudioSpeaker, true);
+            EXPECT_EQ(g_config.controllerAudioHaptics, false);
             EXPECT_EQ(g_config.controllerAudio, true);
         }
 
@@ -375,6 +378,7 @@ int main() {
             const Json s = parseJson(status->body);
             EXPECT_EQ(jsonBool(s, "controllerAudioMic"), false);
             EXPECT_EQ(jsonBool(s, "controllerAudioSpeaker"), true);
+            EXPECT_EQ(jsonBool(s, "controllerAudioHaptics"), false);
         }
 
         TEST("GET /api/server/capabilities reports the directions as runtime state");
@@ -388,6 +392,30 @@ int main() {
             const bool enabled = jsonBool(block, "enabled");
             EXPECT_EQ(jsonBool(block, "mic"), false);
             EXPECT_EQ(jsonBool(block, "speaker"), enabled);
+            // Switched off above, so false whatever the backend could carry.
+            EXPECT_EQ(jsonBool(block, "hapticAudio"), false);
+        }
+
+        TEST("capabilities: hapticAudio follows its switch AND the DualSense composite");
+        // Narrower than mic/speaker: the lanes exist on one pad's endpoint,
+        // so the field can only be true where a backend can build that pad
+        // with its audio function, i.e. where the catalog says so.
+        auto hapticsOn =
+            cli.Post("/api/config", R"({"controllerAudioHaptics":true})", "application/json");
+        EXPECT(hapticsOn && hapticsOn->status == 200);
+        auto caps3 = cli.Get("/api/server/capabilities");
+        EXPECT(caps3 && caps3->status == 200);
+        if (caps3) {
+            const Json body = parseJson(caps3->body);
+            const Json block = jsonObject(body, "controllerAudio");
+            bool dualsenseHaptics = false;
+            for (const Json& b : body["backends"]) {
+                for (const Json& c : b["controllers"]) {
+                    if (jsonBool(c, "hapticAudio")) dualsenseHaptics = true;
+                }
+            }
+            EXPECT_EQ(jsonBool(block, "hapticAudio"),
+                      jsonBool(block, "enabled") && dualsenseHaptics);
         }
 
         TEST("POST /api/config: an absent direction key leaves that direction alone");
@@ -417,6 +445,7 @@ int main() {
             EXPECT_EQ(jsonBool(block, "enabled"), false);
             EXPECT_EQ(jsonBool(block, "mic"), false);
             EXPECT_EQ(jsonBool(block, "speaker"), false);
+            EXPECT_EQ(jsonBool(block, "hapticAudio"), false);
         }
 
         auto restore = cli.Post(
