@@ -223,8 +223,10 @@ int main() {
     }
     {
         TEST("PUT /api/connections beyond the range: 409 + supported/supportedMin echo");
-        auto res =
-            cli.Put("/api/connections", auth, R"({"protocolVersion":3})", "application/json");
+        auto res = cli.Put("/api/connections", auth,
+                           std::string(R"({"protocolVersion":)") +
+                               std::to_string(PROTOCOL_VERSION + 1) + "}",
+                           "application/json");
         EXPECT(res && res->status == 409);
         if (res) {
             Json j = parseJson(res->body);
@@ -248,8 +250,11 @@ int main() {
     std::string connId;
     {
         TEST("authed PUT /api/connections: 200 with token/salt/connectionId");
-        const std::string body = R"({
-            "protocolVersion": 2,
+        // Offers the newest version so the echo pins it; every other body in
+        // this file speaks a fixed older version on purpose.
+        const std::string body = std::string(R"({
+            "protocolVersion": )") +
+                                 std::to_string(PROTOCOL_VERSION) + R"(,
             "deviceName": "Route Tester",
             "controllers": [
                 {"ctrlIdx": 0, "type": 0, "caps": {"rumble": true, "analogTriggers": true}},
@@ -538,7 +543,7 @@ int main() {
         auto res =
             cli.Post("/api/pair",
                      std::string(R"({"deviceId":"dev-a-pin","deviceName":"PinDev","pin":")") + pin +
-                         R"(","protocolVersion":2})",
+                         R"(","protocolVersion":)" + std::to_string(PROTOCOL_VERSION) + "}",
                      "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
