@@ -99,6 +99,7 @@ static void test_outboundTypeMapping() {
         {MSG_TRIGGER_EFFECTS, "triggerEffects", &WireStats::txTriggerEffects},
         {MSG_PLAYER_LEDS, "playerLeds", &WireStats::txPlayerLeds},
         {MSG_SPEAKER_AUDIO, "speakerAudio", &WireStats::txSpeakerAudio},
+        {MSG_HAPTIC_AUDIO, "hapticAudio", &WireStats::txHapticAudio},
         {MSG_MIC_LED, "micLed", &WireStats::txMicLed},
         {MSG_SESSION_CLOSE, "sessionClose", &WireStats::txSessionClose},
     };

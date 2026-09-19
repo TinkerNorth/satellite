@@ -12,11 +12,12 @@
 // IOCTL there is nothing worth dropping the lock for), and holding it means a
 // concurrent unplug can never unmap a view mid-write.
 //
-// Controller audio adds a second per-serial worker (the speaker ring drain)
-// alongside the output-ring worker, with the same doorbell/cancel/join
-// lifecycle. Rate conversion between the persona's endpoints and the pinned
-// wire rate happens here rather than in the helper, because here it is
-// unit-tested; see hidmaestro_audio_wire.h for what crosses the rings.
+// Controller audio adds per-serial workers (the speaker ring drain, and on a
+// DualSense the haptic ring drain) alongside the output-ring worker, with the
+// same doorbell/cancel/join lifecycle. Rate conversion between the persona's
+// endpoints and the pinned wire rate happens here rather than in the helper,
+// because here it is unit-tested; see hidmaestro_audio_wire.h for what
+// crosses the rings.
 #pragma once
 
 #include "core/audio/audio_resampler.h"
@@ -74,6 +75,7 @@ class HidMaestroAdapter : public IGamepadPort {
     void setTriggerEffectsCallback(TriggerEffectsCallback cb) override;
     void setPlayerLedsCallback(PlayerLedsCallback cb) override;
     void setSpeakerAudioCallback(SpeakerAudioCallback cb) override;
+    void setHapticAudioCallback(HapticAudioCallback cb) override;
     void setMicLedCallback(MicLedCallback cb) override;
     bool submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) override;
 
@@ -82,6 +84,7 @@ class HidMaestroAdapter : public IGamepadPort {
     // for tests and diagnostics; the wire caps come from the catalog.
     bool hasSpeakerEndpoint(uint32_t serial) const;
     bool hasMicEndpoint(uint32_t serial) const;
+    bool hasHapticEndpoint(uint32_t serial) const;
 
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
     bool submitBattery(uint32_t serial, const BatteryReport& report) override;
@@ -110,11 +113,16 @@ class HidMaestroAdapter : public IGamepadPort {
         HANDLE outputEvent = nullptr;
 
         // Controller-audio rings, all null on a persona with no audio function.
-        // speakerView is read-only (the helper produces), micView is written.
+        // speakerView and hapticView are read-only (the helper produces),
+        // micView is written. The haptic ring is null on every persona but the
+        // DualSense composite; it shares the speaker's endpoint rate.
         const uint8_t* speakerView = nullptr;
+        const uint8_t* hapticView = nullptr;
         uint8_t* micView = nullptr;
         HANDLE speakerSection = nullptr;
         HANDLE speakerEvent = nullptr;
+        HANDLE hapticSection = nullptr;
+        HANDLE hapticEvent = nullptr;
         HANDLE micSection = nullptr;
         HANDLE micEvent = nullptr;
         int speakerRateHz = 0;
@@ -154,15 +162,20 @@ class HidMaestroAdapter : public IGamepadPort {
 
     std::array<IoSlot, MAX_BACKEND_CONTROLLERS + 1> io_;
 
+    // Which helper-produced audio ring a drain worker reads.
+    enum class AudioLane { Speaker, Haptic };
+
     // Plug/unplug-time only (not hot path), so a map is fine.
     std::unordered_map<uint32_t, OutputWorker> outputWorkers_;
-    std::unordered_map<uint32_t, OutputWorker> audioWorkers_;
+    std::unordered_map<uint32_t, OutputWorker> speakerWorkers_;
+    std::unordered_map<uint32_t, OutputWorker> hapticWorkers_;
 
     RumbleCallback rumbleCb_;
     LightbarCallback lightbarCb_;
     TriggerEffectsCallback triggerEffectsCb_;
     PlayerLedsCallback playerLedsCb_;
     SpeakerAudioCallback speakerAudioCb_;
+    HapticAudioCallback hapticAudioCb_;
     MicLedCallback micLedCb_;
 
     RelMouseButtonState relMouseBtns_;
@@ -170,9 +183,12 @@ class HidMaestroAdapter : public IGamepadPort {
     void startOutputWorker(uint32_t serial); // caller holds busMtx_
     void stopOutputWorker(uint32_t serial);  // caller holds busMtx_
     void outputLoop(uint32_t serial, HANDLE cancel, uint32_t lastSeq);
-    void startAudioWorker(uint32_t serial); // caller holds busMtx_
-    void stopAudioWorker(uint32_t serial);  // caller holds busMtx_
-    void audioLoop(uint32_t serial, HANDLE cancel, uint32_t lastSeq);
+    void startAudioWorker(uint32_t serial, AudioLane lane); // caller holds busMtx_
+    void stopAudioWorker(uint32_t serial, AudioLane lane);  // caller holds busMtx_
+    void audioLoop(uint32_t serial, AudioLane lane, HANDLE cancel, uint32_t lastSeq);
+    std::unordered_map<uint32_t, OutputWorker>& audioWorkers(AudioLane lane) {
+        return lane == AudioLane::Speaker ? speakerWorkers_ : hapticWorkers_;
+    }
     void releaseSlotLocked(IoSlot& slot);
     // Map the audio rings this plug came back with. Caller holds busMtx_;
     // failure is not fatal, it just leaves the pad without audio.

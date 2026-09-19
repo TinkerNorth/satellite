@@ -14,6 +14,7 @@
 // the same wrapper the client's encoder mirrors, so a stub that happened to
 // agree with a wrong implementation cannot hide behind them.
 #include "../src/adapters/audio/opus_codec.h"
+#include "../src/core/audio/haptic_envelope.h"
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -205,6 +206,13 @@ struct MockViGem : IGamepadPort {
     void fireSpeakerAudio(uint32_t serial, const int16_t* pcm, size_t frames) {
         if (capturedSpeakerAudioCb) capturedSpeakerAudioCb(serial, pcm, frames);
     }
+    void setHapticAudioCallback(HapticAudioCallback cb) override {
+        setHapticAudioCallbackCalls++;
+        capturedHapticAudioCb = std::move(cb);
+    }
+    void fireHapticAudio(uint32_t serial, const int16_t* pcm, size_t frames) {
+        if (capturedHapticAudioCb) capturedHapticAudioCb(serial, pcm, frames);
+    }
     void setMicLedCallback(MicLedCallback cb) override {
         setMicLedCallbackCalls++;
         capturedMicLedCb = std::move(cb);
@@ -240,6 +248,7 @@ struct MockViGem : IGamepadPort {
     int setTriggerEffectsCallbackCalls = 0;
     int setPlayerLedsCallbackCalls = 0;
     int setSpeakerAudioCallbackCalls = 0;
+    int setHapticAudioCallbackCalls = 0;
     int setMicLedCallbackCalls = 0;
     int submitMicAudioCalls = 0;
     uint32_t lastMicAudioSerial = 0;
@@ -250,6 +259,7 @@ struct MockViGem : IGamepadPort {
     TriggerEffectsCallback capturedTriggerEffectsCb;
     PlayerLedsCallback capturedPlayerLedsCb;
     SpeakerAudioCallback capturedSpeakerAudioCb;
+    HapticAudioCallback capturedHapticAudioCb;
     MicLedCallback capturedMicLedCb;
 
     // Default mirrors real Windows/Linux: the motion-capable types
@@ -363,6 +373,14 @@ struct MockClient : IClientPort {
         lastSpeakerAudioSeq = seq;
         lastSpeakerAudioOpus.assign(opus, opus + opusLen);
     }
+    void sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
+                         size_t opusLen) override {
+        hapticAudioCalls++;
+        lastHapticAudioConnToken = conn.token;
+        lastHapticAudioCtrlIdx = ctrlIdx;
+        lastHapticAudioSeq = seq;
+        lastHapticAudioOpus.assign(opus, opus + opusLen);
+    }
     void sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) override {
         micLedCalls++;
         lastMicLedConnToken = conn.token;
@@ -375,6 +393,12 @@ struct MockClient : IClientPort {
     uint8_t lastSpeakerAudioCtrlIdx = 0;
     uint16_t lastSpeakerAudioSeq = 0;
     std::vector<uint8_t> lastSpeakerAudioOpus;
+
+    int hapticAudioCalls = 0;
+    uint32_t lastHapticAudioConnToken = 0;
+    uint8_t lastHapticAudioCtrlIdx = 0;
+    uint16_t lastHapticAudioSeq = 0;
+    std::vector<uint8_t> lastHapticAudioOpus;
 
     int micLedCalls = 0;
     uint32_t lastMicLedConnToken = 0;
@@ -3042,6 +3066,315 @@ static void test_speakerAudio_withoutCodecSendsNothing() {
     EXPECT_EQ(client.speakerAudioCalls, 0);
 }
 
+// ---- controller audio: the haptics lane ------------------------------------
+//
+// Channels 3/4 of the DualSense OUT endpoint. A sender that can play the
+// waveform (CAP_HAPTIC_AUDIO) gets it as MSG_HAPTIC_AUDIO on its own seq; a
+// sender with plain motors (CAP_RUMBLE only) gets each window reduced to
+// motor strength on the MSG_RUMBLE path; both at once never happens.
+
+static std::vector<int16_t> hapticPcm(size_t frames, double leftPeak, double rightPeak,
+                                      int frameIndex = 0) {
+    std::vector<int16_t> pcm(frames * AUDIO_HAPTIC_CHANNELS);
+    for (size_t i = 0; i < frames; i++) {
+        const double t =
+            (frameIndex * (double)AUDIO_FRAME_SAMPLES + (double)i) / AUDIO_SAMPLE_RATE_HZ;
+        pcm[i * 2 + 0] = (int16_t)(leftPeak * std::sin(2.0 * 3.14159265358979 * 120.0 * t));
+        pcm[i * 2 + 1] = (int16_t)(rightPeak * std::sin(2.0 * 3.14159265358979 * 240.0 * t));
+    }
+    return pcm;
+}
+
+static void test_hapticAudio_waveformToCapableSender() {
+    TEST("haptic audio: a CAP_HAPTIC_AUDIO sender gets the waveform, never a rumble");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+    EXPECT_EQ(vigem.setHapticAudioCallbackCalls, 1);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_HAPTIC_AUDIO | CAP_RUMBLE),
+                 makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const uint32_t serial1 = serialOfSlot(svc, 1);
+
+    const auto pcm = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.hapticAudioCalls, 1);
+    EXPECT_EQ((int)client.lastHapticAudioCtrlIdx, 0);
+    EXPECT_EQ((int)client.lastHapticAudioSeq, 0);
+    EXPECT(!client.lastHapticAudioOpus.empty());
+    // The waveform is the rendering; nothing else moves.
+    EXPECT_EQ(client.rumbleCalls, 0);
+    EXPECT_EQ(client.speakerAudioCalls, 0);
+
+    // The registered backend callback lands on the same path.
+    vigem.fireHapticAudio(serial0, pcm.data(), AUDIO_FRAME_SAMPLES);
+    EXPECT_EQ(client.hapticAudioCalls, 2);
+    EXPECT_EQ((int)client.lastHapticAudioSeq, 1);
+
+    TEST("haptic audio: CAP_SPEAKER is a different lane and does not admit haptics");
+    EXPECT(!svc.handleHapticAudioFromBackend(serial1, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.hapticAudioCalls, 2);
+    EXPECT_EQ(client.rumbleCalls, 0);
+
+    TEST("haptic audio: strays and empties dropped");
+    EXPECT(!svc.handleHapticAudioFromBackend(9999, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT(!svc.handleHapticAudioFromBackend(serial0, nullptr, AUDIO_FRAME_SAMPLES));
+    EXPECT(!svc.handleHapticAudioFromBackend(serial0, pcm.data(), 0));
+    EXPECT_EQ(client.hapticAudioCalls, 2);
+
+    TEST("haptic audio: exact silence is suppressed and burns no seq");
+    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    for (int i = 0; i < 20; i++) {
+        EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.hapticAudioCalls, 2);
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.hapticAudioCalls, 3);
+    EXPECT_EQ((int)client.lastHapticAudioSeq, 2);
+
+    TEST("haptic audio: the two outbound lanes number independently");
+    // Same type, wider caps: the slot converges in place (no replug), so the
+    // haptic lane keeps counting from where it was while the speaker lane
+    // starts from zero.
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    upsert(svc,
+           {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_HAPTIC_AUDIO | CAP_SPEAKER | CAP_RUMBLE)});
+    const uint32_t serial0b = serialOfSlot(svc, 0);
+    EXPECT_EQ(serial0b, serial0);
+    for (int i = 0; i < 3; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0b, spk.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT(svc.handleHapticAudioFromBackend(serial0b, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 2);
+    EXPECT_EQ((int)client.lastHapticAudioSeq, 3);
+}
+
+static void test_hapticAudio_reducedToRumbleForMotorSenders() {
+    TEST("haptic audio: a CAP_RUMBLE-only sender gets each window as motor strength");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE),
+                 makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_LIGHTBAR)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const uint32_t serial1 = serialOfSlot(svc, 1);
+
+    // Left lane loud, right lane quiet: left is the strong motor.
+    const auto loudLeft = hapticPcm(AUDIO_FRAME_SAMPLES, 32767.0, 8000.0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, loudLeft.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.hapticAudioCalls, 0);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ((int)client.lastRumbleCtrlIdx, 0);
+    EXPECT(client.lastRumble.strongMagnitude > 60000);
+    EXPECT(client.lastRumble.weakMagnitude > 10000 && client.lastRumble.weakMagnitude < 20000);
+    // Haptic-only levels carry the short duration, so a stream that stops
+    // takes the motor with it.
+    EXPECT_EQ(client.lastRumble.durationMs, satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS);
+
+    TEST("haptic audio: silence reduces to a stop, once");
+    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 0);
+    EXPECT_EQ((int)client.lastRumble.weakMagnitude, 0);
+    for (int i = 0; i < 10; i++) {
+        EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.rumbleCalls, 2); // steady zero coalesces
+
+    TEST("haptic audio: a sender with neither cap gets nothing");
+    EXPECT(!svc.handleHapticAudioFromBackend(serial1, loudLeft.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ(client.hapticAudioCalls, 0);
+
+    TEST("haptic audio: a steady level is refreshed before the client's timer runs out");
+    const auto steady = hapticPcm(AUDIO_FRAME_SAMPLES, 16000.0, 16000.0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, steady.data(), AUDIO_FRAME_SAMPLES));
+    const int afterFirst = client.rumbleCalls;
+    EXPECT_EQ(afterFirst, 3);
+    // The same window again, inside the refresh interval: coalesced.
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, steady.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, afterFirst);
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_REFRESH_MS + 10));
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, steady.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, afterFirst + 1); // forced re-send of the same level
+
+    TEST("haptic audio: no codec is needed for the reduction");
+    MockViGem vigem2;
+    MockClient client2;
+    MockLog log2;
+    SessionService svc2(vigem2, client2, log2); // no factory
+    upsert(svc2, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t s2 = serialOfSlot(svc2, 0);
+    EXPECT(svc2.handleHapticAudioFromBackend(s2, loudLeft.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client2.rumbleCalls, 1);
+}
+
+static void test_hapticAudio_reductionReWindowsPartialBatches() {
+    TEST("haptic audio: the reduction sees whole 20 ms windows however the backend batches");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    const auto pcm = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    const size_t half = AUDIO_FRAME_SAMPLES / 2;
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, pcm.data(), half));
+    EXPECT_EQ(client.rumbleCalls, 0); // short of a window
+    EXPECT(
+        svc.handleHapticAudioFromBackend(serial0, pcm.data() + half * AUDIO_HAPTIC_CHANNELS, half));
+    EXPECT_EQ(client.rumbleCalls, 1);
+
+    // Three identical windows in one batch: three reductions, one packet,
+    // because the level does not change after the first (and the refresh
+    // interval has not passed).
+    std::vector<int16_t> three;
+    for (int i = 0; i < 3; i++) {
+        const auto w = hapticPcm(AUDIO_FRAME_SAMPLES, 4000.0, 4000.0, 0);
+        three.insert(three.end(), w.begin(), w.end());
+    }
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, three.data(), 3 * AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 2);
+}
+
+static void test_hapticAudio_mixesWithHidRumbleByMax() {
+    TEST("haptic reduction and HID rumble mix per motor by MAX; neither cancels the other");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+
+    // The game holds plain rumble on the strong motor.
+    RumbleReport hid{};
+    hid.strongMagnitude = 30000;
+    hid.weakMagnitude = 0;
+    vigem.fireRumble(serial0, hid);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 30000);
+    EXPECT_EQ(client.lastRumble.durationMs, RUMBLE_WIRE_DURATION_MS);
+
+    // A haptic burst louder on the weak side, quieter on the strong side.
+    const auto burst = hapticPcm(AUDIO_FRAME_SAMPLES, 4000.0, 32767.0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, burst.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 30000); // HID wins on strong
+    EXPECT(client.lastRumble.weakMagnitude > 60000);          // haptics win on weak
+    // HID contributes, so the mixed value keeps HID's long duration: the
+    // held rumble must outlive the burst.
+    EXPECT_EQ(client.lastRumble.durationMs, RUMBLE_WIRE_DURATION_MS);
+
+    // The burst ends: back to exactly the HID level, in one packet.
+    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 3);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 30000);
+    EXPECT_EQ((int)client.lastRumble.weakMagnitude, 0);
+
+    TEST("a HID update while haptics are live mixes the live level in");
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, burst.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 4);
+    hid.strongMagnitude = 0;
+    vigem.fireRumble(serial0, hid); // game releases its motor
+    EXPECT_EQ(client.rumbleCalls, 5);
+    EXPECT(client.lastRumble.strongMagnitude > 0);   // the burst's strong lane remains
+    EXPECT(client.lastRumble.weakMagnitude > 60000); // and its weak lane
+
+    TEST("an expired haptic level is not mixed into a later HID update");
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS + 20));
+    hid.strongMagnitude = 12000;
+    vigem.fireRumble(serial0, hid);
+    EXPECT_EQ(client.rumbleCalls, 6);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 12000);
+    EXPECT_EQ((int)client.lastRumble.weakMagnitude, 0);
+}
+
+static void test_hapticAudio_policyOffStopsBothRenderings() {
+    TEST("audio policy: haptics off stops the waveform AND the reduction");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+    bool hapticsOn = true;
+    svc.setAudioPolicy([&] { return ControllerAudioPolicy{true, true, hapticsOn}; });
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_HAPTIC_AUDIO),
+                 makeDesc(1, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const uint32_t serial1 = serialOfSlot(svc, 1);
+    const auto pcm = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT(svc.handleHapticAudioFromBackend(serial1, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.hapticAudioCalls, 1);
+    EXPECT_EQ(client.rumbleCalls, 1);
+
+    hapticsOn = false;
+    EXPECT(!svc.handleHapticAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT(!svc.handleHapticAudioFromBackend(serial1, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.hapticAudioCalls, 1);
+    EXPECT_EQ(client.rumbleCalls, 1);
+
+    TEST("audio policy: the speaker lane is untouched by the haptics switch");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_HAPTIC_AUDIO | CAP_SPEAKER)});
+    const uint32_t serial0b = serialOfSlot(svc, 0);
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(serial0b, spk.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+
+    hapticsOn = true;
+    EXPECT(svc.handleHapticAudioFromBackend(serial0b, pcm.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.hapticAudioCalls, 2);
+}
+
+static void test_hapticAudio_countersTrackBothRenderings() {
+    TEST("audio counters: the haptic lane reports sent, suppressed and reduced separately");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_HAPTIC_AUDIO),
+                 makeDesc(1, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const uint32_t serial1 = serialOfSlot(svc, 1);
+    const auto pcm = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+
+    for (int i = 0; i < 4; i++) {
+        EXPECT(svc.handleHapticAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
+    }
+    for (int i = 0; i < 6; i++) {
+        EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
+    }
+    for (int i = 0; i < 5; i++) {
+        EXPECT(svc.handleHapticAudioFromBackend(serial1, pcm.data(), AUDIO_FRAME_SAMPLES));
+    }
+    const AudioStreamCounts c = svc.audioCounts();
+    EXPECT_EQ(c.hapticSent, uint64_t{4});
+    EXPECT_EQ(c.hapticSilenceSuppressed, uint64_t{6});
+    EXPECT_EQ(c.hapticEncodeFailed, uint64_t{0});
+    EXPECT_EQ(c.hapticReducedToRumble, uint64_t{5});
+    // The speaker lane never moved.
+    EXPECT_EQ(c.speakerSent, uint64_t{0});
+    EXPECT_EQ(c.speakerSilenceSuppressed, uint64_t{0});
+}
+
 static void test_audioBackendCallbacks_dropNotBlock_whenLockHeld() {
     TEST("mic LED / speaker: backend callbacks drop (never block) while mtx_ is held");
     MockViGem vigem;
@@ -3290,8 +3623,11 @@ static void test_wireConstants() {
     EXPECT_EQ((int)MSG_MIC_AUDIO, 0x0012);
     EXPECT_EQ((int)MSG_SPEAKER_AUDIO, 0x0013);
     EXPECT_EQ((int)MSG_MIC_LED, 0x0014);
-    // Protocol 2 is extended in place: the audio messages must NOT move it.
-    EXPECT_EQ(PROTOCOL_VERSION, 2);
+    EXPECT_EQ((int)MSG_HAPTIC_AUDIO, 0x0015);
+    EXPECT_EQ((int)CAP_HAPTIC_AUDIO, 0x0100);
+    // Protocol 3 added HAPTIC_AUDIO; the floor stays at 1 so every shipped
+    // client still settles.
+    EXPECT_EQ(PROTOCOL_VERSION, 3);
     EXPECT_EQ(PROTOCOL_VERSION_MIN, 1);
     EXPECT_EQ(SESSION_SALT_SIZE, 8);
     EXPECT_EQ((int)CRYPTO_DIR_CLIENT_TO_SERVER, 0);
@@ -3418,6 +3754,12 @@ int main() {
     test_speakerAudio_seqIsPerControllerAndWraps();
     test_speakerAudio_encoderStateDiesWithThePad();
     test_speakerAudio_withoutCodecSendsNothing();
+    test_hapticAudio_waveformToCapableSender();
+    test_hapticAudio_reducedToRumbleForMotorSenders();
+    test_hapticAudio_reductionReWindowsPartialBatches();
+    test_hapticAudio_mixesWithHidRumbleByMax();
+    test_hapticAudio_policyOffStopsBothRenderings();
+    test_hapticAudio_countersTrackBothRenderings();
     test_audioCounts_trackTheMicStream();
     test_audioCounts_separateSuppressedSilenceFromSentFrames();
     test_audioBackendCallbacks_dropNotBlock_whenLockHeld();

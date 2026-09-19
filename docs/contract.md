@@ -1,6 +1,6 @@
 # Dish ↔ Satellite protocol contract
 
-Version: protocol 1 · 2026-06-09. This document is the single source of truth for the
+Version: protocol 3 · 2026-09-19. This document is the single source of truth for the
 client ↔ server contract. It replaces the former `protocol.md`, `connection-api.md`
 (this repo) and `wire-format.md` (dish-android). Both ends implement against this file.
 
@@ -11,7 +11,8 @@ Principle: **control plane and data plane are split.**
   ordering is irrelevant. UDP never mutates topology.
 - Data = UDP streams on **9876**: input, heartbeat, motion, battery, touchpad,
   controller mic audio up; heartbeat ack, rumble, lightbar, trigger effects,
-  player LEDs, controller speaker audio, mic LED, session-close notify down.
+  player LEDs, controller speaker audio, mic LED, controller haptic audio,
+  session-close notify down.
 
 One user action = one call. Partial success rides in the response body (per-controller
 results), never in HTTP error codes.
@@ -167,7 +168,7 @@ Request:
       "type": 0,
       "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false,
                 "triggerEffects": false, "playerLeds": false,
-                "mic": false, "speaker": false },
+                "mic": false, "speaker": false, "hapticAudio": false },
       "touchpadMode": "off",
       "preferredBackend": null
     }
@@ -252,7 +253,7 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
     { "ctrlIdx": 0, "active": true, "appliedType": 0, "backend": "vigem",
       "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false,
                 "triggerEffects": false, "playerLeds": false,
-                "mic": false, "speaker": false },
+                "mic": false, "speaker": false, "hapticAudio": false },
       "touchpadMode": "off", "preferredBackend": null,
       "motion": { "sinkSupportedForType": true, "backendOk": true } }
   ],
@@ -330,7 +331,7 @@ caller's own session.
     "keyboardControl": { "supported": false },
     "rumble": { "supported": true, "available": true }
   },
-  "controllerAudio": { "enabled": true, "mic": true, "speaker": true }
+  "controllerAudio": { "enabled": true, "mic": true, "speaker": true, "hapticAudio": true }
 }
 ```
 
@@ -372,7 +373,10 @@ and `speaker` are the two per-direction settings ANDed with `enabled`, since nei
 direction can flow through a persona that was never given audio endpoints. Those two gate the WIRE and not
 the persona — the emulated pad keeps both Windows endpoints either way — which is why
 they can change under a live stream, while `enabled` only takes effect at the next
-plug. The block lives here and deliberately NOT in `/api/catalog`: that response's ETag
+plug. `hapticAudio` (additive, protocol 3) is the haptics switch ANDed with `enabled`
+AND with whether a listed backend can build a DualSense composite, the one pad whose
+endpoint carries the haptics lanes; it covers both renderings of the lane, the
+waveform and its rumble reduction (see Controller haptics). The block lives here and deliberately NOT in `/api/catalog`: that response's ETag
 is server version + locale and must stay static identity, so no runtime setting may
 reach it.
 
@@ -494,7 +498,8 @@ to present it (static, localized) → **capabilities** = what is true right now
         "triggerEffects": { "supported": false },
         "playerLeds": { "supported": false },
         "mic": { "supported": false },
-        "speaker": { "supported": false }
+        "speaker": { "supported": false },
+        "hapticAudio": { "supported": false }
       },
       "emulates": { "sdlType": "xbox360", "usb": ["045e:028e"] }
     },
@@ -514,7 +519,8 @@ to present it (static, localized) → **capabilities** = what is true right now
         "triggerEffects": { "supported": false },
         "playerLeds": { "supported": false },
         "mic": { "supported": false },
-        "speaker": { "supported": false }
+        "speaker": { "supported": false },
+        "hapticAudio": { "supported": false }
       },
       "emulates": { "sdlType": "ps4", "usb": ["054c:05c4"] }
     }
@@ -561,10 +567,13 @@ to present it (static, localized) → **capabilities** = what is true right now
 - Type-feature slugs are protocol constants: `rumble`, `analogTriggers`, `motion`,
   `lightbar`, `touchpad`, `triggerEffects` (DualSense adaptive-trigger passthrough,
   RECEIVE), `playerLeds` (player-indicator LEDs, RECEIVE), `mic` (the pad's own
-  microphone endpoint, SEND) and `speaker` (the pad's own speaker/headset endpoint,
-  RECEIVE). `triggerEffects` and `playerLeds` reflect whether the type's preferred
+  microphone endpoint, SEND), `speaker` (the pad's own speaker/headset endpoint,
+  RECEIVE) and `hapticAudio` (the DualSense HD-haptics lanes, RECEIVE; protocol 3).
+  `triggerEffects` and `playerLeds` reflect whether the type's preferred
   materializer surfaces the game's raw output reports; `mic`/`speaker` reflect whether
-  it can materialize a pad that carries real audio endpoints (see Controller audio).
+  it can materialize a pad that carries real audio endpoints (see Controller audio);
+  `hapticAudio` whether that endpoint carries the haptics lanes, which only the
+  DualSense's does.
   A client advertises the matching descriptor caps only when it can actuate them on
   the physical pad.
 - A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
@@ -683,6 +692,7 @@ Down (server → client):
 | 0x0011 | PLAYER_LEDS | ctrlIdx(1) + ledMask(1): player-indicator bitmask, bit 0 = leftmost LED (DualSense bits 0-4, Switch Pro bits 0-3). Sent only to senders whose descriptor advertised `playerLeds`. |
 | 0x0013 | SPEAKER_AUDIO | ctrlIdx(1) + seq(u16 BE) + opusPacket(rest, >= 1 byte): one 20 ms Opus packet for the pad's speaker/headset output, stereo 48 kHz. Sent only to senders whose descriptor advertised `speaker`. See Controller audio. |
 | 0x0014 | MIC_LED | ctrlIdx(1) + state(1: 0 off, 1 on, 2 pulse): the mic-mute lamp state the game asked for. Coalesced last-value-wins like LIGHTBAR. Sent only to senders whose descriptor advertised `mic` (a mute lamp with no microphone behind it has nothing to report). |
+| 0x0015 | HAPTIC_AUDIO | ctrlIdx(1) + seq(u16 BE) + opusPacket(rest, >= 1 byte): one 20 ms Opus packet of the DualSense HD-haptics lanes, stereo 48 kHz, left actuator on channel 1. Own `seq`, independent of SPEAKER_AUDIO. Sent only to senders whose descriptor advertised `hapticAudio`; a sender with `rumble` but not `hapticAudio` gets the same windows reduced to RUMBLE 0x0009 instead. Protocol 3. See Controller haptics. |
 
 Opcodes 0x0004 (ADD), 0x0005 (REMOVE), 0x0006 (ACK), 0x0007 (SERVER_STATUS) and
 0x0008 (TYPE), 0x000E (CAPS_UPDATE) are **deleted**: topology mutation is REST-only,
@@ -740,10 +750,9 @@ endpoint rides 0x0013 to the client; whatever the client's microphone captures r
 0x0012 back into that mic endpoint. General audio streaming is out of scope and
 always will be.
 
-These three messages EXTEND protocol 2 IN PLACE. Version 2 has never been released, so
-there is no deployed client to migrate and no version bump: `protocolVersion` stays 2.
-Every addition is caps-gated, so an interim protocol-2 client that advertises neither
-audio cap sees exactly the traffic it saw before.
+These three messages extended protocol 2 in place before it shipped (see Versioning);
+every one is caps-gated, so a client that advertises neither audio cap sees exactly
+the traffic it saw before.
 
 | Property | MIC_AUDIO 0x0012 (up) | SPEAKER_AUDIO 0x0013 (down) |
 |---|---|---|
@@ -786,8 +795,9 @@ audio cap sees exactly the traffic it saw before.
   so the client conceals it rather than playing the stream short and drifting against
   the game's clock.
 - Speaker content is channels 1/2 of the DualSense 4-channel OUT stream (its speaker
-  and headset jack). Channels 3/4 are the HD-haptics lanes and deliberately never cross
-  the wire. DualShock 4 v2 headset stereo rides as-is.
+  and headset jack). Channels 3/4 are the HD-haptics lanes and ride their own message,
+  HAPTIC_AUDIO 0x0015 (see Controller haptics). DualShock 4 v2 headset stereo rides
+  as-is, and its endpoint has no haptics lanes.
 - Server-side sanity limit: MIC_AUDIO beyond ~75 packets/s per controller is dropped
   (nominal is 50). Audio for an unknown session, an unbound slot, or a slot that never
   advertised the cap is likewise dropped, silently on the wire, with one server log
@@ -817,6 +827,50 @@ personas); every other type and backend reports `false`. The host's own per-dire
 switches are a third, separate thing and live in `/api/server/capabilities`'s
 `controllerAudio` block: a cap says what the CLIENT can do, the catalog says what the
 host COULD build, and that block says what the host will actually carry right now.
+
+### Controller haptics (0x0015)
+
+A DualSense game authors its vibration as audio: channels 3/4 of the pad's OUT stream
+drive two voice-coil actuators, and the waveform IS the effect. Games built on Sony's
+own pad library use nothing else, so a pad that only ever receives HID motor bytes
+never rumbles in them. HAPTIC_AUDIO carries those two lanes down to the client with
+the speaker stream's exact shape and rules: one 20 ms stereo Opus packet per message
+(left actuator on channel 1, right on channel 2), 48 kHz, ~96 kbps VBR with in-band
+FEC, an all-zero window neither sent nor counted in `seq`, an encode failure counted
+but not sent, no acks, no retransmits. It is a lane of its own, with its own `seq`,
+so a client that plays one lane but not the other never pays for both. Nothing about
+it is negotiated.
+
+**Two renderings, never both.** The cap `hapticAudio` follows the house rule: a client
+advertises it only when it can play the WAVEFORM into its pad's own audio function
+(a DualSense on USB with that function reachable). A client whose pad has plain motors,
+or whose platform cannot reach the pad's audio function, leaves it off and advertises
+`rumble` as it always has; the server then reduces each 20 ms window to one magnitude
+per lane (RMS, scaled so a full-scale sine reads full magnitude, floored at -40 dBFS
+so tails and dither read exactly zero) and sends it as RUMBLE 0x0009, left lane on
+`strongMag`, right on `weakMag`, the mapping the pad's own compatible-vibration mode
+uses. A client that advertises `hapticAudio` never receives that reduction: it is
+already rendering the effect, and motors shaking alongside their own voice coils would
+double it. A client advertising neither cap receives nothing.
+
+The reduction rides the same RUMBLE path as the game's HID motor bytes, mixed per
+motor by MAX so neither source cancels the other, and coalesced against the last send
+like any rumble. Its `durMs` is short (100 ms, five windows of slack) while only
+haptics contribute, so a stream that stops takes the motor with it within that; the
+moment the HID motors contribute, the mixed value carries the HID duration (500 ms)
+instead, so a game holding plain rumble under a haptic burst keeps it when the burst
+ends. A steady non-zero level is re-sent at least every 50 ms so a sustained tone
+whose window RMS happens to repeat does not coalesce away and let the client's timer
+run out. A haptic level older than its duration is not mixed into later HID updates.
+
+**Gates.** Host side: the `controllerAudioHaptics` switch (dashboard, `/api/config`)
+stops BOTH renderings at once, since a host that turned haptics off wants no haptics
+in whatever form the client would have given them; it gates the wire, not the
+persona, so it applies to a live stream. `/api/server/capabilities`'s
+`controllerAudio.hapticAudio` reports that switch ANDed with `enabled` and with a
+listed backend being able to build the DualSense composite. Catalog: the type-feature
+slug `hapticAudio` is true only on the DualSense type, and only when its preferred
+materializer is HIDMaestro; the DualShock 4 v2 audio function is headset-only.
 
 ### Host-input streams (reserved)
 
@@ -863,8 +917,8 @@ fields may be added at any time. Alongside the long-standing scalars (`listening
 | Field | Meaning |
 |-------|---------|
 | `rx` | Accepted inbound messages by type (`input` = `submitOk + submitFail`, `heartbeat`, `motion`, `battery`, `pointer`, `micAudio`) and the rejections that never reached a decoder (`malformed` = known opcode whose length guard failed, `unknownType`, `runt` = datagram under 28 bytes, `unknownToken`) |
-| `tx` | Outbound datagrams (`packets`, `bytes`) and their split by message (`heartbeatAck`, `rumble`, `lightbar`, `triggerEffects`, `playerLeds`, `speakerAudio`, `micLed`, `sessionClose`), plus the four send failures (`unroutable`, `encryptFailed`, `oversize`, `sendFailed`) |
-| `audio` | Controller-audio stream health: `micAccepted` / `micLate` / `micDropped` partition every inbound frame, `micDecoded` + `micFecRecovered` + `micConcealed` count what reached the pad, and `speakerSent` / `speakerSilenceSuppressed` / `speakerEncodeFailed` / `speakerLockContended` the outbound side |
+| `tx` | Outbound datagrams (`packets`, `bytes`) and their split by message (`heartbeatAck`, `rumble`, `lightbar`, `triggerEffects`, `playerLeds`, `speakerAudio`, `hapticAudio`, `micLed`, `sessionClose`), plus the four send failures (`unroutable`, `encryptFailed`, `oversize`, `sendFailed`) |
+| `audio` | Controller-audio stream health: `micAccepted` / `micLate` / `micDropped` partition every inbound frame, `micDecoded` + `micFecRecovered` + `micConcealed` count what reached the pad, `speakerSent` / `speakerSilenceSuppressed` / `speakerEncodeFailed` / `speakerLockContended` the speaker lane, and `hapticSent` / `hapticSilenceSuppressed` / `hapticEncodeFailed` / `hapticLockContended` the haptic lane plus `hapticReducedToRumble` for the windows that went out as RUMBLE instead |
 | `auth` | Client-API 401s, split `notPaired` / `badProof` |
 | `peakLoopUs` | True hot-path peak. `maxLoopUs` keeps its read-and-zero window semantics for benchmark tooling and reads 0 unless a new all-time record was set since the last read |
 | `webPort`, `mdnsResponderActive`, `clientApiListening`, `connections`, `controllers`, `maxControllers`, `sessionsReaped` | Host gauges |
@@ -877,16 +931,16 @@ relative)**, not Unix epoch.
 
 ## Versioning
 
-`protocolVersion` (integer, currently **2**) rides in every pairing/session request and
+`protocolVersion` (integer, currently **3**) rides in every pairing/session request and
 response. The server ACCEPTS the whole `[supportedMin, supported]` range (currently
-**[1, 2]**), settles each session on the client's offer, and echoes that settled
+**[1, 3]**), settles each session on the client's offer, and echoes that settled
 version in the pairing/session responses; absent means 1 (a pre-versioning client).
 The settled version keys the session's wire frames: a v1 session streams the 16-byte
 TOUCHPAD frame, a v2 session the 19-byte POINTER frame (the receiver also disambiguates
 by length, so mixed generations coexist).
 
 An offer OUTSIDE the range is rejected with 409
-`{"error":"protocol version unsupported","supported":2,"supportedMin":1}`. `supported`
+`{"error":"protocol version unsupported","supported":3,"supportedMin":1}`. `supported`
 is the newest version the server speaks: a client seeing `supported` above its own
 current version must tell the user to update the app; below its own minimum, to update
 the satellite. Version negotiation happens ONLY on pairing and the session PUT;
@@ -915,6 +969,13 @@ Version history:
   exactly the traffic it saw before.
   Catalog/capabilities documents advertise the server's newest version so clients can
   offer it directly.
+- **3**: HAPTIC_AUDIO 0x0015 with the descriptor cap `hapticAudio`, the catalog
+  type-feature slug of the same name, the `controllerAudio.hapticAudio` capabilities
+  field and the `controllerAudioHaptics` host switch (see Controller haptics). No frame
+  shape changed, so a version-2 session sees byte-identical traffic; the bump exists
+  because 2 shipped, and a released version is not extended in place. A version-2
+  client still gains from a version-3 host: it never advertises `hapticAudio`, so the
+  host reduces the lanes to RUMBLE 0x0009 for it, which is a version-2 message.
 
 ## Error model
 

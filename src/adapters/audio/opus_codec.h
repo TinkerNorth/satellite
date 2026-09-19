@@ -26,11 +26,13 @@ struct OpusDecoder;
 
 namespace satellite::audio {
 
-// Which of the two wire streams an instance is pinned to. The distinction is
-// not just channel count: the mic runs Opus's VOIP application at a bitrate
-// where in-band FEC exists, the speaker runs the AUDIO application at a bitrate
+// Which of the wire streams an instance is pinned to. The distinction is not
+// just channel count: the mic runs Opus's VOIP application at a bitrate where
+// in-band FEC exists, the speaker runs the AUDIO application at a bitrate
 // where fidelity matters more (see opus_codec.cpp for the numbers and why).
-enum class Stream { Mic, Speaker };
+// Haptics take the speaker's settings: two actuator lanes whose waveform IS
+// the effect, so it gets the same fidelity budget as something a player hears.
+enum class Stream { Mic, Speaker, Haptic };
 
 // Declared here, defined in opus_codec.cpp, so the unique_ptrs below work
 // against the incomplete handle types above.
@@ -84,6 +86,7 @@ class OpusCodecFactory : public IAudioCodecFactory {
   public:
     std::unique_ptr<IAudioDecoder> makeMicDecoder() override;
     std::unique_ptr<IAudioEncoder> makeSpeakerEncoder() override;
+    std::unique_ptr<IAudioEncoder> makeHapticEncoder() override;
 };
 
 } // namespace satellite::audio

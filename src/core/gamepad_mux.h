@@ -161,6 +161,9 @@ class GamepadMux : public IGamepadPort {
         for (IGamepadPort* p : ports_) p->setPlayerLedsCallback(cb);
     }
 
+    void setHapticAudioCallback(HapticAudioCallback cb) override {
+        for (IGamepadPort* p : ports_) p->setHapticAudioCallback(cb);
+    }
     void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
         for (IGamepadPort* p : ports_) p->setSpeakerAudioCallback(cb);
     }

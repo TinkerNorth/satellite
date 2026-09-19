@@ -465,19 +465,21 @@ inside device creation. Nothing else in Satellite's Windows path loads a
 kernel driver, and `controllerAudio` off means it never happens.
 
 PCM does not travel over the helper's JSON pipe (one 20 ms window is ~2 KB,
-50 times a second, per direction). Instead a composite plug hands back two
-more shared sections plus their doorbells:
+50 times a second, per direction). Instead a composite plug hands back more
+shared sections plus their doorbells:
 
 | Ring | Producer | Consumer | Carries |
 |---|---|---|---|
 | speaker | helper | satellite | the game's output, channels 1/2 of the pad's OUT stream |
+| haptic | helper | satellite | channels 3/4 of that stream, the DualSense's two voice-coil actuators; absent on a persona whose endpoint has no such lanes (DualShock 4 v2) |
 | mic | satellite | helper | the client's microphone, on its way to the pad's mic endpoint |
 
 The contract each ring encodes: **the ring speaks the WIRE's channel
 layout (stereo out, mono in) at the PERSONA's sample rate.** That split is
 deliberate. Channel lane selection is trivially correct and belongs next to
-the SDK, in the helper (which also drops the DualSense's channels 3/4, the
-HD-haptics lanes, on the floor). Rate conversion is not trivially correct,
+the SDK, in the helper, which splits one OUT frame into the speaker pair and
+the haptic pair under one lock so the two rings fill and flush in lockstep.
+Rate conversion is not trivially correct,
 so it lives in `core/audio/audio_resampler.h` on the satellite side, where
 ctest covers it: the DualSense composite runs 48 kHz both ways and needs
 none, but the DualShock 4 v2 composite runs 32 kHz out / 16 kHz in, exactly

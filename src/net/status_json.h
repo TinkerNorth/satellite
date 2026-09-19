@@ -20,6 +20,7 @@ struct StatusFields {
     bool controllerAudio = true;
     bool controllerAudioMic = true;
     bool controllerAudioSpeaker = true;
+    bool controllerAudioHaptics = true;
     bool controllerAudioKeepDefaultDevice = true;
     // The operator's opt-in, and whether it actually amounts to anything. They
     // differ on every build without a DSN compiled in, and the UI has to say
@@ -61,6 +62,7 @@ inline std::string buildStatusJson(const StatusFields& f) {
     j["controllerAudio"] = f.controllerAudio;
     j["controllerAudioMic"] = f.controllerAudioMic;
     j["controllerAudioSpeaker"] = f.controllerAudioSpeaker;
+    j["controllerAudioHaptics"] = f.controllerAudioHaptics;
     j["controllerAudioKeepDefaultDevice"] = f.controllerAudioKeepDefaultDevice;
     j["crashReporting"] = f.crashReporting;
     j["crashReportingActive"] = f.crashReportingActive;
@@ -114,6 +116,7 @@ inline std::string buildDebugJson(const StatusFields& f) {
     tx["triggerEffects"] = f.tx.triggerEffects;
     tx["playerLeds"] = f.tx.playerLeds;
     tx["speakerAudio"] = f.tx.speakerAudio;
+    tx["hapticAudio"] = f.tx.hapticAudio;
     tx["micLed"] = f.tx.micLed;
     tx["sessionClose"] = f.tx.sessionClose;
     tx["unroutable"] = f.tx.unroutable;
@@ -133,6 +136,11 @@ inline std::string buildDebugJson(const StatusFields& f) {
     audio["speakerSilenceSuppressed"] = f.audio.speakerSilenceSuppressed;
     audio["speakerEncodeFailed"] = f.audio.speakerEncodeFailed;
     audio["speakerLockContended"] = f.audio.speakerLockContended;
+    audio["hapticSent"] = f.audio.hapticSent;
+    audio["hapticSilenceSuppressed"] = f.audio.hapticSilenceSuppressed;
+    audio["hapticEncodeFailed"] = f.audio.hapticEncodeFailed;
+    audio["hapticLockContended"] = f.audio.hapticLockContended;
+    audio["hapticReducedToRumble"] = f.audio.hapticReducedToRumble;
     j["audio"] = std::move(audio);
 
     JsonOut auth;
