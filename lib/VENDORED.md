@@ -37,8 +37,8 @@ the 90-day freshness window.
 
 - Component: nlohmann/json
 - Upstream: https://github.com/nlohmann/json
-- Pinned-commit: v3.11.3
-- Last-vendored: 2026-06-19
+- Pinned-commit: v3.12.0
+- Last-vendored: 2026-09-19
 - License: MIT
 - Notes: vendored as the single-header amalgamation. No local modifications.
   Used project-wide via `src/core/json.h` for response building and request /
