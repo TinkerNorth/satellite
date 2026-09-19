@@ -827,6 +827,7 @@ struct Connection {
     uint8_t sessionKey[CRYPTO_KEY_SIZE] = {};
     uint8_t sessionSalt[SESSION_SALT_SIZE] = {};
     uint32_t lastCounter = 0; // replay protection (client to server)
+    bool seenCounter = false;
     // Bumps on every applied-topology change; echoed in PUT/GET responses and
     // every heartbeat ack so the client can reconcile.
     uint16_t epoch = 0;
