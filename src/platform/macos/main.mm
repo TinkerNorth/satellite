@@ -93,7 +93,8 @@ int main(int argc, const char* argv[]) {
         svc.setAudioPolicy([] {
             std::lock_guard<std::mutex> lk(g_configMtx);
             return ControllerAudioPolicy{g_config.controllerAudioMic,
-                                         g_config.controllerAudioSpeaker};
+                                         g_config.controllerAudioSpeaker,
+                                         g_config.controllerAudioHaptics};
         });
 
         MacOSUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");

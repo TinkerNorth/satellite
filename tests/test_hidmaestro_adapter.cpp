@@ -49,12 +49,16 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         HANDLE outputEvent = nullptr;
         HANDLE speakerSection = nullptr;
         HANDLE micSection = nullptr;
+        HANDLE hapticSection = nullptr;
         uint8_t* speakerView = nullptr;
         uint8_t* micView = nullptr;
+        uint8_t* hapticView = nullptr;
         HANDLE speakerEvent = nullptr;
         HANDLE micEvent = nullptr;
+        HANDLE hapticEvent = nullptr;
         uint32_t micLastSeq = 0; // this side's drain cursor over the mic ring
         uint16_t speakerSeq = 0;
+        uint16_t hapticSeq = 0;
     };
 
     bool installedVal = true;
@@ -68,6 +72,9 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     // adapter's resamplers to exist.
     bool audioAvailable = true;
     bool failAudioProvision = false;
+    // Whether the composite's endpoint carries the haptics lanes: the
+    // DualSense does, the DualShock 4 v2 does not.
+    bool hapticAvailable = true;
     int speakerRateHz = 48000;
     int micRateHz = 48000;
     int micChannels = 1;
@@ -96,9 +103,10 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         if (f.outputView) UnmapViewOfFile(f.outputView);
         if (f.speakerView) UnmapViewOfFile(f.speakerView);
         if (f.micView) UnmapViewOfFile(f.micView);
-        for (HANDLE h :
-             {f.inputSection, f.outputSection, f.inputEvent, f.companionEvent, f.outputEvent,
-              f.speakerSection, f.micSection, f.speakerEvent, f.micEvent}) {
+        if (f.hapticView) UnmapViewOfFile(f.hapticView);
+        for (HANDLE h : {f.inputSection, f.outputSection, f.inputEvent, f.companionEvent,
+                         f.outputEvent, f.speakerSection, f.micSection, f.speakerEvent, f.micEvent,
+                         f.hapticSection, f.hapticEvent}) {
             if (h) CloseHandle(h);
         }
         f = Fake{};
@@ -154,6 +162,13 @@ struct FakeProvisioner : IHidMaestroProvisioner {
                 MapViewOfFile(f.micSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0));
             f.speakerEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
             f.micEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (hapticAvailable && identity == GamepadIdentity::DualSense) {
+                f.hapticSection = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                                     0, AUDIO_SECTION_SIZE, nullptr);
+                f.hapticView = static_cast<uint8_t*>(
+                    MapViewOfFile(f.hapticSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0));
+                f.hapticEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            }
         }
 
         out.controllerIndex = serial;
@@ -173,6 +188,10 @@ struct FakeProvisioner : IHidMaestroProvisioner {
             out.speakerRateHz = speakerRateHz;
             out.micChannels = micChannels;
             out.micRateHz = micRateHz;
+        }
+        if (f.hapticSection) {
+            out.hapticSection = reinterpret_cast<uint64_t>(dup(f.hapticSection));
+            out.hapticEvent = reinterpret_cast<uint64_t>(dup(f.hapticEvent));
         }
 
         auto existing = live.find(serial);
@@ -214,6 +233,14 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         writeAudioSlot(f.speakerView, serial, f.speakerSeq++, interleaved.data(),
                        static_cast<uint16_t>(interleaved.size()));
         SetEvent(f.speakerEvent);
+    }
+
+    // Publish haptic PCM the same way, onto the lane's own ring.
+    void publishHaptic(uint32_t serial, const std::vector<int16_t>& interleaved) {
+        Fake& f = live.at(serial);
+        writeAudioSlot(f.hapticView, serial, f.hapticSeq++, interleaved.data(),
+                       static_cast<uint16_t>(interleaved.size()));
+        SetEvent(f.hapticEvent);
     }
 
     // Drain everything satellite has written to the mic ring, the way the
@@ -287,11 +314,14 @@ struct AudioSink {
     std::mutex m;
     std::condition_variable cv;
     int speakerCalls = 0;
+    int hapticCalls = 0;
     int micLedCalls = 0;
     uint32_t lastSerial = 0;
     uint8_t lastMicLed = 0xFF;
     size_t totalFrames = 0;
-    std::vector<int16_t> pcm; // accumulated interleaved stereo
+    size_t hapticFrames = 0;
+    std::vector<int16_t> pcm;       // accumulated interleaved stereo (speaker)
+    std::vector<int16_t> hapticPcm; // accumulated interleaved stereo (haptics)
 
     void install(HidMaestroAdapter& adapter) {
         adapter.setSpeakerAudioCallback(
@@ -303,6 +333,16 @@ struct AudioSink {
                 pcm.insert(pcm.end(), stereo48k, stereo48k + frames * AUDIO_SPEAKER_CHANNELS);
                 cv.notify_all();
             });
+        adapter.setHapticAudioCallback(
+            [this](uint32_t serial, const int16_t* stereo48k, size_t frames) {
+                std::lock_guard<std::mutex> lk(m);
+                hapticCalls++;
+                lastSerial = serial;
+                hapticFrames += frames;
+                hapticPcm.insert(hapticPcm.end(), stereo48k,
+                                 stereo48k + frames * AUDIO_HAPTIC_CHANNELS);
+                cv.notify_all();
+            });
         adapter.setMicLedCallback([this](uint32_t serial, uint8_t state) {
             std::lock_guard<std::mutex> lk(m);
             micLedCalls++;
@@ -310,6 +350,12 @@ struct AudioSink {
             lastMicLed = state;
             cv.notify_all();
         });
+    }
+
+    bool waitHapticFrames(size_t atLeast, int timeoutMs = 3000) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, std::chrono::milliseconds(timeoutMs),
+                           [&] { return hapticFrames >= atLeast; });
     }
 
     bool waitFrames(size_t atLeast, int timeoutMs = 3000) {
@@ -815,6 +861,55 @@ static void test_speaker_ring_to_callback() {
     }
 }
 
+static void test_haptic_ring_to_callback() {
+    TEST("haptic ring -> its own callback: the lanes arrive intact and apart from the speaker");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, audioOn());
+    AudioSink sink;
+    sink.install(adapter);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+    EXPECT(adapter.hasSpeakerEndpoint(1));
+    EXPECT(adapter.hasHapticEndpoint(1));
+
+    const std::vector<int16_t> lanes = stereoTone(48000, 150.0, 240);
+    prov.publishHaptic(1, lanes);
+    EXPECT(sink.waitHapticFrames(240));
+    {
+        std::lock_guard<std::mutex> lk(sink.m);
+        EXPECT_EQ(sink.lastSerial, (uint32_t)1);
+        EXPECT_EQ(sink.hapticFrames, (size_t)240);
+        EXPECT(sink.hapticPcm == lanes);
+        // The speaker callback never saw haptic PCM.
+        EXPECT_EQ(sink.speakerCalls, 0);
+        EXPECT_EQ(sink.totalFrames, (size_t)0);
+    }
+
+    TEST("both lanes drain concurrently without crossing");
+    const std::vector<int16_t> spk = stereoTone(48000, 1000.0, 240);
+    prov.publishSpeaker(1, spk);
+    prov.publishHaptic(1, lanes);
+    EXPECT(sink.waitFrames(240));
+    EXPECT(sink.waitHapticFrames(480));
+    {
+        std::lock_guard<std::mutex> lk(sink.m);
+        EXPECT(sink.pcm == spk);
+        EXPECT_EQ(sink.hapticCalls, 2);
+    }
+
+    TEST("a persona whose endpoint has no haptics lanes gets no haptic ring");
+    prov.hapticAvailable = false;
+    EXPECT(adapter.pluginDevice(2, GamepadIdentity::DualSense));
+    EXPECT(adapter.hasSpeakerEndpoint(2));
+    EXPECT(!adapter.hasHapticEndpoint(2));
+    EXPECT(adapter.pluginDevice(3, GamepadIdentity::DS4));
+    EXPECT(!adapter.hasHapticEndpoint(3));
+
+    TEST("unplug forgets the haptic endpoint with the rest");
+    EXPECT(adapter.unplugDevice(1));
+    EXPECT(!adapter.hasHapticEndpoint(1));
+}
+
 // The DualShock 4 v2 persona's speaker endpoint is 32 kHz, so the adapter must
 // rate-convert before the SAT-2 callback, which is pinned at the wire rate.
 // Half again as many frames come out, and the tone keeps its level.
@@ -1067,6 +1162,7 @@ int main() {
     test_composite_plug_hooks();
     test_audio_provision_failure_falls_back();
     test_speaker_ring_to_callback();
+    test_haptic_ring_to_callback();
     test_speaker_rate_conversion();
     test_mic_submit_to_ring();
     test_mic_submit_without_endpoint();

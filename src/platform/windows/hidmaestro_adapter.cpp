@@ -42,14 +42,16 @@ void HidMaestroAdapter::closeBus() {
     std::vector<uint32_t> serials;
     {
         std::lock_guard<std::mutex> lk(busMtx_);
-        serials.reserve(outputWorkers_.size() + audioWorkers_.size());
+        serials.reserve(outputWorkers_.size() + speakerWorkers_.size() + hapticWorkers_.size());
         for (auto& [serial, _] : outputWorkers_) serials.push_back(serial);
-        for (auto& [serial, _] : audioWorkers_) serials.push_back(serial);
+        for (auto& [serial, _] : speakerWorkers_) serials.push_back(serial);
+        for (auto& [serial, _] : hapticWorkers_) serials.push_back(serial);
     }
     for (uint32_t serial : serials) {
         std::lock_guard<std::mutex> lk(busMtx_);
         stopOutputWorker(serial);
-        stopAudioWorker(serial);
+        stopAudioWorker(serial, AudioLane::Speaker);
+        stopAudioWorker(serial, AudioLane::Haptic);
     }
 
     std::lock_guard<std::mutex> lk(busMtx_);
@@ -81,19 +83,22 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     if (slot.inputView) UnmapViewOfFile(slot.inputView);
     if (slot.outputView) UnmapViewOfFile(const_cast<uint8_t*>(slot.outputView));
     if (slot.speakerView) UnmapViewOfFile(const_cast<uint8_t*>(slot.speakerView));
+    if (slot.hapticView) UnmapViewOfFile(const_cast<uint8_t*>(slot.hapticView));
     if (slot.micView) UnmapViewOfFile(slot.micView);
     for (HANDLE h : {slot.inputSection, slot.inputEvent, slot.companionEvent, slot.outputSection,
-                     slot.outputEvent, slot.speakerSection, slot.speakerEvent, slot.micSection,
-                     slot.micEvent}) {
+                     slot.outputEvent, slot.speakerSection, slot.speakerEvent, slot.hapticSection,
+                     slot.hapticEvent, slot.micSection, slot.micEvent}) {
         if (h) CloseHandle(h);
     }
     slot.inputView = nullptr;
     slot.outputView = nullptr;
     slot.speakerView = nullptr;
+    slot.hapticView = nullptr;
     slot.micView = nullptr;
     slot.inputSection = slot.inputEvent = slot.companionEvent = nullptr;
     slot.outputSection = slot.outputEvent = nullptr;
     slot.speakerSection = slot.speakerEvent = slot.micSection = slot.micEvent = nullptr;
+    slot.hapticSection = slot.hapticEvent = nullptr;
     slot.speakerRateHz = slot.micRateHz = 0;
     slot.micResampler = {};
     slot.micScratch.clear();
@@ -156,7 +161,8 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     packAndWriteLocked(slot);
 
     if (slot.outputView != nullptr) startOutputWorker(serial);
-    if (slot.speakerView != nullptr) startAudioWorker(serial);
+    if (slot.speakerView != nullptr) startAudioWorker(serial, AudioLane::Speaker);
+    if (slot.hapticView != nullptr) startAudioWorker(serial, AudioLane::Haptic);
     // Only when the composite really materialized: a persona that fell back to
     // input-only created no endpoint, so there is nothing to watch for.
     if (slot.speakerView != nullptr && compositePlugAfter_) compositePlugAfter_();
@@ -173,12 +179,18 @@ void HidMaestroAdapter::attachAudioLocked(IoSlot& slot, const hm::ProvisionResul
     slot.speakerEvent = toHandle(r.speakerEvent);
     slot.micSection = toHandle(r.micSection);
     slot.micEvent = toHandle(r.micEvent);
+    slot.hapticSection = toHandle(r.hapticSection);
+    slot.hapticEvent = toHandle(r.hapticEvent);
     slot.speakerRateHz = r.speakerRateHz;
     slot.micRateHz = r.micRateHz;
 
     if (slot.speakerSection) {
         slot.speakerView = static_cast<const uint8_t*>(
             MapViewOfFile(slot.speakerSection, FILE_MAP_READ, 0, 0, hm::AUDIO_SECTION_SIZE));
+    }
+    if (slot.hapticSection) {
+        slot.hapticView = static_cast<const uint8_t*>(
+            MapViewOfFile(slot.hapticSection, FILE_MAP_READ, 0, 0, hm::AUDIO_SECTION_SIZE));
     }
     if (slot.micSection) {
         slot.micView = static_cast<uint8_t*>(MapViewOfFile(
@@ -200,7 +212,8 @@ bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
     {
         std::lock_guard<std::mutex> lk(busMtx_);
         stopOutputWorker(serial);
-        stopAudioWorker(serial);
+        stopAudioWorker(serial, AudioLane::Speaker);
+        stopAudioWorker(serial, AudioLane::Haptic);
     }
 
     std::lock_guard<std::mutex> lk(busMtx_);
@@ -410,6 +423,11 @@ void HidMaestroAdapter::setSpeakerAudioCallback(SpeakerAudioCallback cb) {
     speakerAudioCb_ = std::move(cb);
 }
 
+void HidMaestroAdapter::setHapticAudioCallback(HapticAudioCallback cb) {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    hapticAudioCb_ = std::move(cb);
+}
+
 void HidMaestroAdapter::setMicLedCallback(MicLedCallback cb) {
     std::lock_guard<std::mutex> lk(busMtx_);
     micLedCb_ = std::move(cb);
@@ -419,6 +437,12 @@ bool HidMaestroAdapter::hasSpeakerEndpoint(uint32_t serial) const {
     if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);
     return io_[serial].speakerView != nullptr;
+}
+
+bool HidMaestroAdapter::hasHapticEndpoint(uint32_t serial) const {
+    if (!isValidSerial(serial)) return false;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    return io_[serial].hapticView != nullptr;
 }
 
 bool HidMaestroAdapter::hasMicEndpoint(uint32_t serial) const {
@@ -561,21 +585,25 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
 
 // Caller holds busMtx_. Same baseline-under-the-plug-lock rule as the output
 // worker: the helper can publish a batch the instant the plug returns.
-void HidMaestroAdapter::startAudioWorker(uint32_t serial) {
-    const uint32_t baseline = hm::audioRingHead(io_[serial].speakerView);
-    auto& w = audioWorkers_[serial];
+void HidMaestroAdapter::startAudioWorker(uint32_t serial, AudioLane lane) {
+    const IoSlot& slot = io_[serial];
+    const uint32_t baseline =
+        hm::audioRingHead(lane == AudioLane::Speaker ? slot.speakerView : slot.hapticView);
+    auto& w = audioWorkers(lane)[serial];
     w.cancel = CreateEventW(nullptr, TRUE /* manual reset */, FALSE, nullptr);
     HANDLE cancelHandle = w.cancel;
-    w.th = std::thread(
-        [this, serial, cancelHandle, baseline] { audioLoop(serial, cancelHandle, baseline); });
+    w.th = std::thread([this, serial, lane, cancelHandle, baseline] {
+        audioLoop(serial, lane, cancelHandle, baseline);
+    });
 }
 
 // Caller holds busMtx_.
-void HidMaestroAdapter::stopAudioWorker(uint32_t serial) {
-    auto it = audioWorkers_.find(serial);
-    if (it == audioWorkers_.end()) return;
+void HidMaestroAdapter::stopAudioWorker(uint32_t serial, AudioLane lane) {
+    auto& workers = audioWorkers(lane);
+    auto it = workers.find(serial);
+    if (it == workers.end()) return;
     OutputWorker w = std::move(it->second);
-    audioWorkers_.erase(it);
+    workers.erase(it);
     if (w.cancel) SetEvent(w.cancel);
     // Drop + reacquire busMtx_ around the join for the same reason the output
     // worker does: the worker takes the lock to snapshot the callback.
@@ -585,22 +613,28 @@ void HidMaestroAdapter::stopAudioWorker(uint32_t serial) {
     busMtx_.lock();
 }
 
-// Speaker ring drain: endpoint-rate stereo in, wire-rate stereo out to the
-// SAT-2 backend callback, which re-windows whatever batch size arrives into
-// 20 ms Opus frames. The resampler is loop-local, so a replug starts from a
-// clean filter rather than the tail of the previous pad's audio.
-void HidMaestroAdapter::audioLoop(uint32_t serial, HANDLE cancel, uint32_t lastSeq) {
+// Audio ring drain, one per lane: endpoint-rate stereo in, wire-rate stereo
+// out to the SAT-2 backend callback, which re-windows whatever batch size
+// arrives into 20 ms Opus frames. The resampler is loop-local, so a replug
+// starts from a clean filter rather than the tail of the previous pad's
+// audio. The haptic lane is the same shape at the same endpoint rate; only
+// the ring, the doorbell and the callback differ.
+void HidMaestroAdapter::audioLoop(uint32_t serial, AudioLane lane, HANDLE cancel,
+                                  uint32_t lastSeq) {
+    const bool speaker = lane == AudioLane::Speaker;
     const uint8_t* view;
     HANDLE doorbell;
     int rateHz;
     {
         std::lock_guard<std::mutex> lk(busMtx_);
         IoSlot& slot = io_[serial];
-        view = slot.speakerView;
-        doorbell = slot.speakerEvent;
+        view = speaker ? slot.speakerView : slot.hapticView;
+        doorbell = speaker ? slot.speakerEvent : slot.hapticEvent;
         rateHz = slot.speakerRateHz;
     }
     if (view == nullptr) return;
+    static_assert(AUDIO_HAPTIC_CHANNELS == AUDIO_SPEAKER_CHANNELS,
+                  "both lanes share one drain shape");
 
     satellite::audio::RationalResampler resampler;
     resampler.configure(rateHz > 0 ? rateHz : AUDIO_SAMPLE_RATE_HZ, AUDIO_SAMPLE_RATE_HZ,
@@ -634,7 +668,7 @@ void HidMaestroAdapter::audioLoop(uint32_t serial, HANDLE cancel, uint32_t lastS
             SpeakerAudioCallback cb;
             {
                 std::lock_guard<std::mutex> lk(busMtx_);
-                cb = speakerAudioCb_;
+                cb = speaker ? speakerAudioCb_ : hapticAudioCb_;
             }
             if (cb) cb(serial, pcm.data(), pcm.size() / AUDIO_SPEAKER_CHANNELS);
         }

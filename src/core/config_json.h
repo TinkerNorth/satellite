@@ -28,6 +28,7 @@ inline std::string serializeConfig(const Config& cfg) {
     j["controllerAudio"] = cfg.controllerAudio;
     j["controllerAudioMic"] = cfg.controllerAudioMic;
     j["controllerAudioSpeaker"] = cfg.controllerAudioSpeaker;
+    j["controllerAudioHaptics"] = cfg.controllerAudioHaptics;
     j["controllerAudioKeepDefaultDevice"] = cfg.controllerAudioKeepDefaultDevice;
     j["crashReporting"] = cfg.crashReporting;
 
@@ -84,6 +85,10 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     // switch meant when it was on.
     cfg.controllerAudioMic = jsonBool(j, "controllerAudioMic", cfg.controllerAudioMic);
     cfg.controllerAudioSpeaker = jsonBool(j, "controllerAudioSpeaker", cfg.controllerAudioSpeaker);
+    // Absent in every config written before the haptics lane existed; reads as
+    // on, since the lane is part of the same endpoint the speaker switch
+    // already covered.
+    cfg.controllerAudioHaptics = jsonBool(j, "controllerAudioHaptics", cfg.controllerAudioHaptics);
     cfg.controllerAudioKeepDefaultDevice =
         jsonBool(j, "controllerAudioKeepDefaultDevice", cfg.controllerAudioKeepDefaultDevice);
     // Absent in every config written before crash reporting existed; falls

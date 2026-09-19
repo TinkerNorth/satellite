@@ -58,4 +58,7 @@ class IAudioCodecFactory {
     virtual std::unique_ptr<IAudioDecoder> makeMicDecoder() = 0;
     // Stereo, speaker format. Returns null when the codec refuses to allocate.
     virtual std::unique_ptr<IAudioEncoder> makeSpeakerEncoder() = 0;
+    // Stereo, haptics format (the two actuator lanes). Returns null when the
+    // codec refuses to allocate.
+    virtual std::unique_ptr<IAudioEncoder> makeHapticEncoder() = 0;
 };

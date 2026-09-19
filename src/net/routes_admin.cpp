@@ -282,6 +282,7 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
             f.controllerAudio = g_config.controllerAudio;
             f.controllerAudioMic = g_config.controllerAudioMic;
             f.controllerAudioSpeaker = g_config.controllerAudioSpeaker;
+            f.controllerAudioHaptics = g_config.controllerAudioHaptics;
             f.controllerAudioKeepDefaultDevice = g_config.controllerAudioKeepDefaultDevice;
             f.crashReporting = g_config.crashReporting;
         }
@@ -383,6 +384,10 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         if (jsonTryBool(body, "controllerAudioSpeaker", controllerAudioSpeakerVal)) {
             g_config.controllerAudioSpeaker = controllerAudioSpeakerVal;
         }
+        bool controllerAudioHapticsVal = false;
+        if (jsonTryBool(body, "controllerAudioHaptics", controllerAudioHapticsVal)) {
+            g_config.controllerAudioHaptics = controllerAudioHapticsVal;
+        }
         bool keepDefaultVal = false;
         if (jsonTryBool(body, "controllerAudioKeepDefaultDevice", keepDefaultVal)) {
             g_config.controllerAudioKeepDefaultDevice = keepDefaultVal;
@@ -408,6 +413,7 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
                    " controllerAudio=" + std::string(g_config.controllerAudio ? "true" : "false") +
                    " mic=" + std::string(g_config.controllerAudioMic ? "true" : "false") +
                    " speaker=" + std::string(g_config.controllerAudioSpeaker ? "true" : "false") +
+                   " haptics=" + std::string(g_config.controllerAudioHaptics ? "true" : "false") +
                    (portRejected ? " (udpPort out of range, ignored)" : ""));
         JsonOut resp;
         resp["ok"] = true;

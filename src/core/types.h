@@ -115,7 +115,10 @@ inline const char* controllerStateName(ControllerState s) {
 // the full feature set. Offers outside the range get 409 + {"supported", "supportedMin"}
 // so the rejected side knows which end must update.
 // v2 reshaped MSG_TOUCHPAD into the pointer frame (buttons byte + wheel).
-inline const int PROTOCOL_VERSION = 2;
+// v3 added the HAPTIC_AUDIO return path (0x0015 + CAP_HAPTIC_AUDIO). No frame
+// shape changed, so a v2 session sees byte-identical traffic; the bump exists
+// because v2 shipped, and a released version is not extended in place.
+inline const int PROTOCOL_VERSION = 3;
 inline const int PROTOCOL_VERSION_MIN = 1;
 
 // Protocol message types (UDP streams + authenticated notifications only;
@@ -158,6 +161,16 @@ inline const uint16_t MSG_SPEAKER_AUDIO = 0x0013;
 // MSG_LIGHTBAR. Gated on CAP_MIC, not a cap of its own: a mute lamp without a
 // microphone behind it is dead metal.
 inline const uint16_t MSG_MIC_LED = 0x0014;
+// HD haptics (server to client): channels 3/4 of the DualSense's 4-channel OUT
+// stream, i.e. the waveform a game plays into the pad's two voice-coil
+// actuators. Same payload shape and cadence as MSG_SPEAKER_AUDIO (ctrlIdx +
+// seq + one 20 ms stereo Opus packet, left actuator on channel 1), and the
+// same lossy doctrine. Gated on CAP_HAPTIC_AUDIO: a client that can play the
+// waveform into its pad's own audio function advertises it; one that cannot
+// leaves it off and gets the host-side reduction to MSG_RUMBLE instead
+// (SessionService::handleHapticAudioFromBackend), so a pad with plain motors
+// still feels a game that only ever speaks haptics.
+inline const uint16_t MSG_HAPTIC_AUDIO = 0x0015;
 
 // MSG_SESSION_CLOSE reason byte.
 inline const uint8_t CLOSE_REASON_SHUTDOWN = 0;
@@ -191,6 +204,10 @@ inline const uint16_t CAP_PLAYER_LEDS = 0x0020;     // accepts the MSG_PLAYER_LE
 // caps. CAP_MIC also gates the MSG_MIC_LED return path (see MSG_MIC_LED).
 inline const uint16_t CAP_MIC = 0x0040;     // sources MSG_MIC_AUDIO (and takes MSG_MIC_LED)
 inline const uint16_t CAP_SPEAKER = 0x0080; // accepts the MSG_SPEAKER_AUDIO return path
+// Advertised only by a client that renders the haptic WAVEFORM (a DualSense
+// on USB with its audio function reachable). A client that would only ever
+// reduce it to motor strength leaves this off and lets the host do that.
+inline const uint16_t CAP_HAPTIC_AUDIO = 0x0100; // accepts the MSG_HAPTIC_AUDIO return path
 
 // Wire form is the lowercase string (protocol constant, never localized).
 inline const uint8_t APPLY_OK = 0;
@@ -371,6 +388,11 @@ struct RumbleReport {
     uint16_t durationMs = 0;      // 0 = continuous (until next packet)
 };
 
+// The duration stamped on a game's HID rumble. Matches the dish-side rumble
+// heartbeat that refreshes the actuator, so a held level survives the gap
+// between refreshes and a lost stop packet still ends within it.
+inline const uint16_t RUMBLE_WIRE_DURATION_MS = 500;
+
 // DualSense adaptive-trigger effect blocks (game to controller, return path).
 // Each block is the raw 11-byte DS5 output-report field: mode byte + 10 param
 // bytes, forwarded verbatim (the mode vocabulary is DualSense firmware's, not
@@ -408,10 +430,13 @@ inline const int AUDIO_SAMPLE_RATE_HZ = 48000;
 inline const int AUDIO_FRAME_MS = 20;
 inline const int AUDIO_FRAME_SAMPLES = AUDIO_SAMPLE_RATE_HZ / 1000 * AUDIO_FRAME_MS; // 960 per ch
 // Mic is the pad's headset microphone (mono); speaker is channels 1/2 of the
-// DualSense 4-channel OUT stream, i.e. the pad speaker / headset jack (stereo).
-// Channels 3/4 are the HD-haptics lanes and deliberately never cross the wire.
+// DualSense 4-channel OUT stream, i.e. the pad speaker / headset jack (stereo);
+// haptics are channels 3/4 of that same stream, the left and right voice-coil
+// actuators, carried as their own stereo stream so a client that plays one
+// but not the other never pays for both.
 inline const int AUDIO_MIC_CHANNELS = 1;
 inline const int AUDIO_SPEAKER_CHANNELS = 2;
+inline const int AUDIO_HAPTIC_CHANNELS = 2;
 
 // Exact zero, not a threshold. Windows renders digital zeros into the pad's
 // endpoint whenever nothing is playing to it, which is the case worth not
@@ -487,6 +512,12 @@ struct AudioStreamCounts {
     uint64_t speakerSilenceSuppressed = 0;
     uint64_t speakerEncodeFailed = 0;
     uint64_t speakerLockContended = 0;
+    uint64_t hapticSent = 0;
+    uint64_t hapticSilenceSuppressed = 0;
+    uint64_t hapticEncodeFailed = 0;
+    uint64_t hapticLockContended = 0;
+    // Frames reduced to MSG_RUMBLE for a client without CAP_HAPTIC_AUDIO.
+    uint64_t hapticReducedToRumble = 0;
 };
 
 // Motion report (sender to satellite, gyro + accel). Fixed full-scale wire
@@ -742,14 +773,19 @@ struct ControllerAudio {
     AudioJitterWindow micWindow;
     std::unique_ptr<IAudioDecoder> micDecoder;
 
-    // Outbound MSG_SPEAKER_AUDIO. The backend hands over whatever its audio
-    // ring happened to hold, which is not necessarily one 20 ms window, so the
-    // leftover tail of a batch waits here for the rest of its frame.
-    std::unique_ptr<IAudioEncoder> speakerEncoder;
-    std::vector<int16_t> speakerPending; // < one frame of interleaved stereo
-    // Per controller, wraps. Marks gaps and late frames for the client; it is
-    // not an ack sequence and nothing retransmits against it.
-    uint16_t speakerSeq = 0;
+    // Outbound MSG_SPEAKER_AUDIO and MSG_HAPTIC_AUDIO, one lane each. The
+    // backend hands over whatever its audio ring happened to hold, which is
+    // not necessarily one 20 ms window, so the leftover tail of a batch waits
+    // in `pending` for the rest of its frame. `seq` is per controller per lane
+    // and wraps; it marks gaps and late frames for the client and is not an
+    // ack sequence, nothing retransmits against it.
+    struct OutboundLane {
+        std::unique_ptr<IAudioEncoder> encoder;
+        std::vector<int16_t> pending; // < one frame of interleaved stereo
+        uint16_t seq = 0;
+    };
+    OutboundLane speaker;
+    OutboundLane haptic;
 };
 
 struct Controller {
@@ -769,11 +805,22 @@ struct Controller {
     bool playerLedsCapable() const { return (caps & CAP_PLAYER_LEDS) != 0; }
     bool micCapable() const { return (caps & CAP_MIC) != 0; }
     bool speakerCapable() const { return (caps & CAP_SPEAKER) != 0; }
+    bool hapticAudioCapable() const { return (caps & CAP_HAPTIC_AUDIO) != 0; }
+    bool rumbleCapable() const { return (caps & CAP_RUMBLE) != 0; }
     GamepadReport lastReport{};
     // Last rumble forwarded; coalesces identical back-to-back updates so a game
-    // holding the motors steady doesn't blast the wire.
+    // holding the motors steady doesn't blast the wire. What goes out is the
+    // per-motor MAX of the two sources below, so neither cancels the other.
     RumbleReport lastRumble{};
     bool lastRumbleValid = false;
+    // The game's HID motor bytes, as decoded by the backend.
+    RumbleReport hidRumble{};
+    // The haptic waveform reduced to motor strength, for a client that cannot
+    // play the waveform itself. Expires: a stream that stops mid-buzz must not
+    // leave its last level mixed into every later HID update.
+    RumbleReport hapticRumble{};
+    std::chrono::steady_clock::time_point hapticRumbleSentAt{};
+    std::chrono::steady_clock::time_point hapticRumbleExpiresAt{};
     MotionReport lastMotion{}; // cached for the web UI debug pane
     bool lastMotionValid = false;
     // True when the last motion sample reached the backend's IMU surface.
@@ -908,6 +955,10 @@ struct Config {
     // persona -- and so the kernel transport -- outright.
     bool controllerAudioMic = true;
     bool controllerAudioSpeaker = true;
+    // The haptics lane of the same OUT endpoint. Off stops both the waveform
+    // stream and its rumble reduction: a host that turned haptics off wants no
+    // haptics, in whatever form the client would have rendered them.
+    bool controllerAudioHaptics = true;
     // Windows ranks a newly arrived endpoint above every endpoint the user has
     // ever chosen, so materializing the pad hands it the whole desktop's audio
     // by default -- which is what makes controller audio feel like it forwards
@@ -927,6 +978,7 @@ struct Config {
 struct ControllerAudioPolicy {
     bool mic = true;
     bool speaker = true;
+    bool haptics = true;
 };
 
 enum class LogLevel { INFO, WARN, ERR };

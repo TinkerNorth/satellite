@@ -33,16 +33,17 @@ constexpr BackendControllerSupport kVigemSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
     {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, "vigembus>=1.17"},
 };
-// Trailing columns are triggerEffects, playerLeds, mic, speaker. Only the two
-// Sony pads have real audio endpoints to emulate (the DualShock 4 v2 and the
-// DualSense composite personas); an Xbox pad and a Switch Pro have none, so
-// they advertise none.
+// Trailing columns are triggerEffects, playerLeds, mic, speaker, hapticAudio.
+// Only the two Sony pads have real audio endpoints to emulate (the DualShock
+// 4 v2 and the DualSense composite personas); an Xbox pad and a Switch Pro
+// have none, so they advertise none. Haptic lanes exist on the DualSense
+// endpoint alone.
 constexpr BackendControllerSupport kHidMaestroSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsHidMaestroXbox, false, false, false, ""},
     {CONTROLLER_TYPE_PLAYSTATION, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7", false,
      false, true, true},
     {CONTROLLER_TYPE_DUALSENSE, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7", true,
-     true, true, true},
+     true, true, true, true},
     {CONTROLLER_TYPE_SWITCHPRO, kFactsHidMaestroSony, true, false, false, "hidmaestro>=1.7", false,
      true},
 };
@@ -196,6 +197,8 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
             json += cs.mic ? "true" : "false";
             json += ",\"speaker\":";
             json += cs.speaker ? "true" : "false";
+            json += ",\"hapticAudio\":";
+            json += cs.hapticAudio ? "true" : "false";
             json += ",\"motionRequires\":";
             appendNullable(json, cs.motionRequires);
             json += ",\"submitLatency\":";
@@ -244,6 +247,7 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.dualsensePlayerLedsSupported = cs.playerLeds;
                     t.dualsenseMicSupported = cs.mic;
                     t.dualsenseSpeakerSupported = cs.speaker;
+                    t.dualsenseHapticAudioSupported = cs.hapticAudio;
                 }
                 t.offersDualSense = true;
                 break;

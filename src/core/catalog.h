@@ -54,6 +54,7 @@ struct CatalogBackendTraits {
     bool dualsensePlayerLedsSupported = false;
     bool dualsenseMicSupported = false;
     bool dualsenseSpeakerSupported = false;
+    bool dualsenseHapticAudioSupported = false;
     bool switchProMotionSupported = false;
     std::string switchProMotionRequires;
     bool switchProPlayerLedsSupported = false;

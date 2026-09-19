@@ -112,6 +112,10 @@ struct BackendControllerSupport {
     // install-state variance would serve stale caches).
     bool mic = false;
     bool speaker = false;
+    // The HD-haptics lanes of that same OUT endpoint: only the DualSense
+    // carries them (the DualShock 4 v2 function is headset-only), so only its
+    // composite persona can source MSG_HAPTIC_AUDIO.
+    bool hapticAudio = false;
 };
 
 // Static identity of a backend, independent of host availability. `support`

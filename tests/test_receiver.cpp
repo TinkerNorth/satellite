@@ -81,6 +81,7 @@ struct StubClient : IClientPort {
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
     void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
     int heartbeatAcks = 0;
 };

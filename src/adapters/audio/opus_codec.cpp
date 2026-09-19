@@ -35,7 +35,15 @@ const int OPUS_SPEAKER_BITRATE_BPS = 96000;
 const int OPUS_EXPECTED_PACKET_LOSS_PCT = 10;
 
 int channelsFor(Stream stream) {
-    return stream == Stream::Mic ? AUDIO_MIC_CHANNELS : AUDIO_SPEAKER_CHANNELS;
+    switch (stream) {
+    case Stream::Mic:
+        return AUDIO_MIC_CHANNELS;
+    case Stream::Speaker:
+        return AUDIO_SPEAKER_CHANNELS;
+    case Stream::Haptic:
+        return AUDIO_HAPTIC_CHANNELS;
+    }
+    return AUDIO_SPEAKER_CHANNELS;
 }
 
 } // namespace
@@ -152,6 +160,10 @@ std::unique_ptr<IAudioDecoder> OpusCodecFactory::makeMicDecoder() {
 
 std::unique_ptr<IAudioEncoder> OpusCodecFactory::makeSpeakerEncoder() {
     return OpusStreamEncoder::create(Stream::Speaker);
+}
+
+std::unique_ptr<IAudioEncoder> OpusCodecFactory::makeHapticEncoder() {
+    return OpusStreamEncoder::create(Stream::Haptic);
 }
 
 } // namespace satellite::audio

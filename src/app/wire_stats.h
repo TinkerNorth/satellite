@@ -31,6 +31,7 @@ struct TxCounts {
     uint64_t triggerEffects = 0;
     uint64_t playerLeds = 0;
     uint64_t speakerAudio = 0;
+    uint64_t hapticAudio = 0;
     uint64_t micLed = 0;
     uint64_t sessionClose = 0;
     uint64_t unroutable = 0;
@@ -66,6 +67,7 @@ struct WireStats {
     std::atomic<uint64_t> txTriggerEffects{0};
     std::atomic<uint64_t> txPlayerLeds{0};
     std::atomic<uint64_t> txSpeakerAudio{0};
+    std::atomic<uint64_t> txHapticAudio{0};
     std::atomic<uint64_t> txMicLed{0};
     std::atomic<uint64_t> txSessionClose{0};
     std::atomic<uint64_t> txUnroutable{0};
@@ -140,6 +142,9 @@ struct WireStats {
         case MSG_SPEAKER_AUDIO:
             bump(txSpeakerAudio);
             break;
+        case MSG_HAPTIC_AUDIO:
+            bump(txHapticAudio);
+            break;
         case MSG_MIC_LED:
             bump(txMicLed);
             break;
@@ -170,6 +175,7 @@ struct WireStats {
         c.tx.triggerEffects = read(txTriggerEffects);
         c.tx.playerLeds = read(txPlayerLeds);
         c.tx.speakerAudio = read(txSpeakerAudio);
+        c.tx.hapticAudio = read(txHapticAudio);
         c.tx.micLed = read(txMicLed);
         c.tx.sessionClose = read(txSessionClose);
         c.tx.unroutable = read(txUnroutable);
@@ -207,6 +213,7 @@ struct WireStats {
         fn(txTriggerEffects);
         fn(txPlayerLeds);
         fn(txSpeakerAudio);
+        fn(txHapticAudio);
         fn(txMicLed);
         fn(txSessionClose);
         fn(txUnroutable);

@@ -113,12 +113,15 @@ class SessionService {
     void handleHeartbeat(uint32_t token);
 
     // Rumble fired by the backend's notification thread. Resolves serial to
-    // controller, coalesces against last forwarded state, sends only unique
-    // updates. `wireDurationMs` stamps a duration the dish can't invent (Linux
-    // uinput "play" events have none); the 500 ms default matches the dish-side
-    // rumble heartbeat that refreshes the actuator.
+    // controller, records the game's HID motor bytes, then forwards the
+    // per-motor MAX of those and any live haptic reduction (see
+    // handleHapticAudioFromBackend), coalescing against the last forwarded
+    // state so only unique updates leave. `wireDurationMs` stamps a duration
+    // the dish can't invent (Linux uinput "play" events have none); the
+    // RUMBLE_WIRE_DURATION_MS default matches the dish-side rumble heartbeat
+    // that refreshes the actuator.
     void handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
-                                 uint16_t wireDurationMs = 500);
+                                 uint16_t wireDurationMs = RUMBLE_WIRE_DURATION_MS);
 
     // IMU sample (MSG_MOTION). Caches for the web UI and forwards via
     // submitMotion when active. Returns whether the backend accepted it. False
@@ -162,6 +165,14 @@ class SessionService {
     // valid only for this call. Resolves serial to controller, gates on
     // CAP_SPEAKER, then hands the frame to the encode path.
     bool handleSpeakerAudioFromBackend(uint32_t serial, const int16_t* stereo48k, size_t frames);
+
+    // Haptic PCM from the backend's audio callback: what a game wrote to the
+    // pad's two actuator lanes. Same framing as the speaker. A sender that
+    // advertised CAP_HAPTIC_AUDIO gets the waveform as MSG_HAPTIC_AUDIO; one
+    // that advertised only CAP_RUMBLE gets each window reduced to motor
+    // strength and mixed into the MSG_RUMBLE path (core/audio/haptic_envelope.h);
+    // one that advertised neither gets nothing.
+    bool handleHapticAudioFromBackend(uint32_t serial, const int16_t* stereo48k, size_t frames);
 
     // Mic-mute LED state (MIC_LED_STATE_*) from the backend's raw-output
     // callback. Coalesces, then forwards only to senders that advertised
@@ -284,6 +295,7 @@ class SessionService {
     // Test seam: preset the outbound speaker sequence, so the u16 wrap is
     // reachable without encoding 65536 frames of audio to get there.
     void setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
+    void setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
 #endif
 
   private:
@@ -307,6 +319,11 @@ class SessionService {
         std::atomic<uint64_t> speakerSilenceSuppressed{0};
         std::atomic<uint64_t> speakerEncodeFailed{0};
         std::atomic<uint64_t> speakerLockContended{0};
+        std::atomic<uint64_t> hapticSent{0};
+        std::atomic<uint64_t> hapticSilenceSuppressed{0};
+        std::atomic<uint64_t> hapticEncodeFailed{0};
+        std::atomic<uint64_t> hapticLockContended{0};
+        std::atomic<uint64_t> hapticReducedToRumble{0};
     };
     AudioCounters audio_;
     static void bumpAudio(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
@@ -327,22 +344,35 @@ class SessionService {
     // nothing holds it (a stray event from a just-unplugged controller's
     // worker). Every backend-sourced callback funnels through this.
     bool findBySerialLocked(uint32_t serial, Connection*& outConn, Controller*& outCtrl);
-    // Controller audio. Both halves run past every gate handleMicAudio /
-    // handleSpeakerAudioFromBackend applies, so they only ever see frames that
-    // belong to a bound, capable slot.
+    // Controller audio. Every half runs past every gate handleMicAudio /
+    // handleSpeakerAudioFromBackend / handleHapticAudioFromBackend applies, so
+    // they only ever see frames that belong to a bound, capable slot.
     // Inbound: reorder window, then decode (FEC on a gap that has a carrier,
     // concealment otherwise), then the pad's mic endpoint. False means the
     // window refused the packet -- late, duplicate or malformed.
     bool deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const uint8_t* opus, size_t opusLen);
+    // The two outbound lanes share one shape (stereo, 20 ms, own seq) and one
+    // code path; this picks the encoder, the counters and the wire message.
+    enum class OutboundAudioLane { Speaker, Haptic };
     // Outbound: re-window whatever the backend handed over into whole 20 ms
     // frames, encode each, send it. False means the frame could not be taken at
     // all; a partial batch that is merely still short of a frame is a true.
-    bool encodeAndSendSpeakerAudioLocked(Connection& conn, Controller& ctrl,
-                                         const int16_t* stereo48k, size_t frames);
+    bool encodeAndSendAudioLocked(Connection& conn, Controller& ctrl, OutboundAudioLane lane,
+                                  const int16_t* stereo48k, size_t frames);
     // One 20 ms window onto the wire. A digitally-silent window is neither
     // encoded nor sent and does NOT advance the seq; see the definition.
-    void sendSpeakerFrameLocked(Connection& conn, Controller& ctrl, ControllerAudio& audio,
-                                const int16_t* frame);
+    void sendAudioFrameLocked(Connection& conn, Controller& ctrl, OutboundAudioLane lane,
+                              ControllerAudio::OutboundLane& state, const int16_t* frame);
+    // Haptic windows for a sender without CAP_HAPTIC_AUDIO: reduce to motor
+    // strength, then out through the shared rumble path.
+    void reduceHapticWindowToRumbleLocked(Connection& conn, Controller& ctrl, const int16_t* frame);
+    // The one place MSG_RUMBLE leaves from: per-motor MAX of the HID motors and
+    // the (unexpired) haptic reduction, coalesced against the last send.
+    // `force` re-sends an unchanged level, which the haptic path needs to keep
+    // a steady level alive past the client's duration timer. True when a
+    // packet left.
+    bool forwardRumbleLocked(Connection& conn, Controller& ctrl, uint16_t wireDurationMs,
+                             bool force);
     // The pad's audio working set, allocated on first use (see ControllerAudio).
     ControllerAudio& ensureControllerAudioLocked(Controller& ctrl);
     Connection* findByDeviceId(const std::string& deviceId);
