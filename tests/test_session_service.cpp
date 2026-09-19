@@ -552,6 +552,77 @@ static void test_upsert_saltAndCounterRotate() {
     EXPECT(std::memcmp(r1.sessionSalt, r2.sessionSalt, SESSION_SALT_SIZE) != 0);
 }
 
+static void test_replay_seenFlagStartsClear() {
+    TEST("getDecryptInfo: a fresh session reports no counter accepted yet");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc);
+    uint8_t key[CRYPTO_KEY_SIZE];
+    uint32_t ctr = 999;
+    bool seen = true;
+    EXPECT(svc.getDecryptInfo(r.token, key, ctr, &seen));
+    EXPECT_EQ(ctr, (uint32_t)0);
+    EXPECT(!seen);
+}
+
+static void test_replay_counterZeroMarksSeen() {
+    TEST("getDecryptInfo: an accepted counter 0 is distinguishable from none accepted");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc);
+    svc.updatePostDecryptV4(r.token, 0, 0x0100007f, 5555);
+
+    uint8_t key[CRYPTO_KEY_SIZE];
+    uint32_t ctr = 999;
+    bool seen = false;
+    EXPECT(svc.getDecryptInfo(r.token, key, ctr, &seen));
+    EXPECT_EQ(ctr, (uint32_t)0);
+    EXPECT(seen);
+}
+
+static void test_replay_gamepadPathMarksSeen() {
+    TEST("handleGamepadDataAndUpdate: the fused path marks the session seen");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0)});
+    GamepadReport rpt{};
+    EXPECT(svc.handleGamepadDataAndUpdate(r.token, 0, 0x0100007f, 4242, 0, rpt));
+
+    uint8_t key[CRYPTO_KEY_SIZE];
+    uint32_t ctr = 999;
+    bool seen = false;
+    EXPECT(svc.getDecryptInfo(r.token, key, ctr, &seen));
+    EXPECT(seen);
+}
+
+static void test_replay_rotationClearsSeen() {
+    TEST("upsert: rotating the token clears the seen flag with the counter");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r1 = upsert(svc);
+    svc.updatePostDecryptV4(r1.token, 7, 0x0100007f, 5555);
+    auto r2 = upsert(svc);
+
+    uint8_t key[CRYPTO_KEY_SIZE];
+    uint32_t ctr = 999;
+    bool seen = true;
+    EXPECT(svc.getDecryptInfo(r2.token, key, ctr, &seen));
+    EXPECT_EQ(ctr, (uint32_t)0);
+    EXPECT(!seen);
+}
+
 static void test_upsert_keyDeriverIsUsed() {
     TEST("upsert: injected KeyDeriver output becomes the session key");
     MockViGem vigem;
@@ -3234,6 +3305,10 @@ int main() {
     test_upsert_idempotent_stableConnectionId_rotatingToken();
     test_upsert_rotation_notifiesOldTokenReplaced();
     test_upsert_saltAndCounterRotate();
+    test_replay_seenFlagStartsClear();
+    test_replay_counterZeroMarksSeen();
+    test_replay_gamepadPathMarksSeen();
+    test_replay_rotationClearsSeen();
     test_upsert_keyDeriverIsUsed();
     test_upsert_defaultDeriverCopiesPairingKey();
     test_upsert_keyCopiedNotAliased();
