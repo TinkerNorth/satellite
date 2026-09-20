@@ -15,9 +15,20 @@
 
 using satellite::g_wire;
 
-static void reaperLoop(SessionService& svc) {
+// Session maintenance off the hot path: the motor-state tick every
+// RUMBLE_REFRESH_MS / 2 (so a held level is re-sent within one refresh
+// interval of becoming due), the idle-input re-publish on the same tick, the
+// reaper once a second.
+static void maintenanceLoop(SessionService& svc) {
+    const int tickMs = RUMBLE_REFRESH_MS / 2;
+    int sinceReapMs = 0;
     while (g_appRunning) {
-        netSleepMs(1000);
+        netSleepMs(tickMs);
+        svc.refreshRumble();
+        svc.refreshIdleInput();
+        sinceReapMs += tickMs;
+        if (sinceReapMs < 1000) continue;
+        sinceReapMs = 0;
         const int reaped = svc.reapTimedOut();
         if (reaped > 0) {
             g_wire.sessionsReaped.fetch_add(static_cast<uint64_t>(reaped),
@@ -100,7 +111,7 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
         g_senderIP.store(0);
         g_wire.reset();
 
-        std::thread reaper(reaperLoop, std::ref(svc));
+        std::thread reaper(maintenanceLoop, std::ref(svc));
 
         // Per-thread high-water-mark: skip the cross-thread CAS on g_maxLoopUs
         // on the ~99% of packets below the running peak. The atomic still
