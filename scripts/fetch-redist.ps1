@@ -37,9 +37,9 @@ $Redistributables = @(
         Filename = 'ViGEmBus_1.22.0_x64_x86_arm64.exe'
     }
     @{
-        Name     = 'HIDMaestro 1.7.0'
-        Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.7.0/HIDMaestro-v1.7.0.zip'
-        Filename = 'HIDMaestro-v1.7.0.zip'
+        Name     = 'HIDMaestro 1.9.0'
+        Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.9.0/HIDMaestro-v1.9.0.zip'
+        Filename = 'HIDMaestro-v1.9.0.zip'
     }
 )
 
@@ -108,7 +108,8 @@ foreach ($Item in $Redistributables) {
 # Stage the HIDMaestro SDK assemblies where helper/hidmaestro's csproj
 # references them. The zip carries HIDMaestro.Core.dll at its root and the
 # WinRT projection assemblies inside the tool subfolders.
-$HmZip = Join-Path $RedistDir 'HIDMaestro-v1.7.0.zip'
+# The zip is the table's HIDMaestro entry, so a bump edits one place.
+$HmZip = Join-Path $RedistDir ($Redistributables | Where-Object { $_.Name -like 'HIDMaestro *' }).Filename
 $HmSdkDir = Join-Path $RedistDir 'hidmaestro'
 $HmWanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll')
 $HmMissing = $HmWanted | Where-Object { -not (Test-Path (Join-Path $HmSdkDir $_)) }

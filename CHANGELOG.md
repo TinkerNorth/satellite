@@ -5,6 +5,22 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## Unreleased
 
+The bundled HIDMaestro SDK moves from 1.7.0 to 1.9.0 (driver INF 1.4.7.12 to
+1.8.1.958; the installer's helper reinstalls it, no reboot). Three things
+change for a user. A virtual Xbox 360 pad no longer tells XInput it runs on an
+empty battery: 1.7.0's reply to `IOCTL_XUSB_GET_BATTERY_INFO` put WIRED/FULL
+one word early, so every game that surfaces battery state warned the moment
+the pad appeared (SDL read it as 10 %). A virtual controller now keeps the
+same device paths, container id and USB serial across recreation, restarts,
+reboots and driver upgrades, so a program that keys a binding on the device
+path keeps it; the paths change once, on the first run after this upgrade.
+And the composite personas' USB transport is usbip-win2 0.9.7.5 (0.9.7.7
+before): a machine an earlier Satellite put on 0.9.7.7 is moved in place the
+first time the transport is idle, with nothing to do. The shared-memory
+contract Satellite reads is byte-for-byte the same, and Satellite still passes
+no identity key, so the 1.8.x boot-loop bug (an `index:N` key handed back to
+the SDK) never applied here.
+
 Protocol 3. A DualSense game that vibrates through Sony's own pad library
 authors the effect as audio on the pad's HD-haptics lanes and never writes a
 motor byte, so a streamed pad stayed still in it while a local one shook.

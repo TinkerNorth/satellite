@@ -94,7 +94,7 @@
 
 ; --- Bundled HIDMaestro helper (see redist/README.md; built by
 ;     `dotnet publish helper/hidmaestro` from the pinned SDK release) ---
-#define HmVersion "1.7.0"
+#define HmVersion "1.9.0"
 #define HmHelperExe "satellite-hm-helper.exe"
 #define HmHelperSource "helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe"
 
