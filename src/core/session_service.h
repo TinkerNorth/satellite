@@ -285,6 +285,10 @@ class SessionService {
     // without a silent window. Returns the number of packets sent.
     int refreshRumble();
 
+    // The same tick's other half: lets the backend keep an idle pad
+    // reporting (IGamepadPort::refreshIdleInput).
+    void refreshIdleInput();
+
     bool isBackendAvailable() const;
     int totalActiveControllers() const;
     int availableSlots() const;

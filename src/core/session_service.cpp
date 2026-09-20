@@ -729,6 +729,8 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
     return true;
 }
 
+void SessionService::refreshIdleInput() { backend_.refreshIdleInput(); }
+
 int SessionService::refreshRumble() {
     std::lock_guard<std::mutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();

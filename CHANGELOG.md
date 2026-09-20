@@ -30,6 +30,16 @@ ignores durations, ran on. A maintenance tick re-sends a held level every
 silent window, and the coalesce cache is no longer trusted past the client's
 duration. Clients need no change: honouring the duration was always enough.
 
+An idle Sony pad on the HIDMaestro backend keeps reporting. Every Dish client
+sends INPUT on change only, while a real DualSense reports every 4 ms whether
+or not anything moved, and Sony's own pad library depends on that: it opens a
+pad by waiting for its next input report, so a game built on it (007 First
+Light among them) sat at controller setup until the player touched the pad,
+and could read a pad whose reports stopped as gone. The same maintenance tick
+now re-publishes an idle DualSense or DualShock 4 persona's last frame every
+100 ms with its free-running clocks advanced, exactly as the pad itself
+would. Clients need no change and must not send keepalive input.
+
 ## 2.0.4
 
 No protocol changes. Windows driver and installer fixes.

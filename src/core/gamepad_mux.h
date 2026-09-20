@@ -106,6 +106,10 @@ class GamepadMux : public IGamepadPort {
         return p != nullptr && p->submitMotion(serial, report);
     }
 
+    void refreshIdleInput() override {
+        for (IGamepadPort* p : ports_) p->refreshIdleInput();
+    }
+
     bool submitBattery(uint32_t serial, const BatteryReport& report) override {
         IGamepadPort* p = ownerOf(serial);
         return p != nullptr && p->submitBattery(serial, report);

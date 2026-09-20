@@ -42,6 +42,16 @@
 #include <unordered_map>
 #include <vector>
 
+// How long a Sony pad may sit without a frame before the maintenance tick
+// re-publishes its last state. A real DualSense reports every 4 ms whether or
+// not anything moved; Sony's own pad library (libScePad, which games like 007
+// First Light drive the DualSense through) opens a pad by waiting for its
+// next input report and reads one whose reports stop as gone, while every
+// Dish client sends INPUT on change only. 100 ms keeps a pad alive at a rate
+// nothing notices, and bounds the open wait to a tick or two. Only the Sony
+// identities need it: XInput and the Switch stack keep state, not streams.
+inline constexpr int SONY_IDLE_REPORT_MS = 100;
+
 class HidMaestroAdapter : public IGamepadPort {
   public:
     // Read at every plug rather than cached, so flipping the `controllerAudio`
@@ -70,6 +80,9 @@ class HidMaestroAdapter : public IGamepadPort {
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
+    // Re-publishes every plugged Sony pad that has gone SONY_IDLE_REPORT_MS
+    // without a frame, clocks advanced, state unchanged (see the constant).
+    void refreshIdleInput() override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
     void setTriggerEffectsCallback(TriggerEffectsCallback cb) override;

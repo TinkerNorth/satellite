@@ -17,13 +17,15 @@ using satellite::g_wire;
 
 // Session maintenance off the hot path: the motor-state tick every
 // RUMBLE_REFRESH_MS / 2 (so a held level is re-sent within one refresh
-// interval of becoming due), the reaper once a second.
+// interval of becoming due), the idle-input re-publish on the same tick, the
+// reaper once a second.
 static void maintenanceLoop(SessionService& svc) {
     const int tickMs = RUMBLE_REFRESH_MS / 2;
     int sinceReapMs = 0;
     while (g_appRunning) {
         netSleepMs(tickMs);
         svc.refreshRumble();
+        svc.refreshIdleInput();
         sinceReapMs += tickMs;
         if (sinceReapMs < 1000) continue;
         sinceReapMs = 0;

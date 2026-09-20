@@ -702,7 +702,11 @@ new messages claim fresh ids (0x0010+).
 Corrected stream semantics (errors in the former docs, preserved here):
 
 - INPUT frames are full-state snapshots per packet, loss-safe by construction. Never
-  delta-encode them.
+  delta-encode them. Clients send them on change only; a backend whose pads are
+  read as a stream rather than as state (HIDMaestro's Sony personas, which Sony's
+  own pad library opens by waiting for the next report) re-publishes an idle
+  pad's last frame itself, every 100 ms, with the pad's free-running clocks
+  advanced. Clients never need to send keepalive input.
 - Heartbeat cadence is **2000 ms** (not 250 ms), dead at 5 misses, "not responding"
   display state at 2 misses. Heartbeats stay UDP: their job is proving the DATA path
   works; REST can't.
