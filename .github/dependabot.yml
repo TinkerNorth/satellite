@@ -7,3 +7,10 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "ci"
+    # One PR per week for every action bump together (the way dish-android's
+    # arrive): the bumps are independent one-liners, and with "require branches
+    # to be up to date" on main, N separate PRs cost N full CI cycles.
+    groups:
+      github-actions:
+        patterns:
+          - "*"

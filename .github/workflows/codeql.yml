@@ -8,8 +8,8 @@ name: CodeQL
 #
 # Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
 #   actions/checkout         @ v7.0.0  → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-#   github/codeql-action/init    @ v4.37.0 → 99df26d4f13ea111d4ec1a7dddef6063f76b97e9
-#   github/codeql-action/analyze @ v4.37.0 → 99df26d4f13ea111d4ec1a7dddef6063f76b97e9
+#   github/codeql-action/init    @ v4.38.0 → b96794f015dfd88f77b49b1c93e0fa7110f94c63
+#   github/codeql-action/analyze @ v4.38.0 → b96794f015dfd88f77b49b1c93e0fa7110f94c63
 
 on:
   push:
@@ -51,7 +51,7 @@ jobs:
             libayatana-appindicator3-dev libgtk-3-dev
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: ${{ matrix.language }}
           # We drive our own cmake build; without this CodeQL warns and falls back.
@@ -77,7 +77,7 @@ jobs:
         # findings in the logs while GHAS enablement is still pending
         # (see HANDOFF.md item 5).
         continue-on-error: true
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           category: "/language:${{ matrix.language }}"
           upload: failure-only
