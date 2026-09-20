@@ -306,6 +306,20 @@ bool HidMaestroAdapter::submitReport(uint32_t serial, const GamepadReport& repor
     return packAndWriteLocked(slot);
 }
 
+void HidMaestroAdapter::refreshIdleInput() {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    const auto now = std::chrono::steady_clock::now();
+    for (IoSlot& slot : io_) {
+        if (!slot.plugged.load(std::memory_order_relaxed)) continue;
+        if (slot.identity != GamepadIdentity::DS4 && slot.identity != GamepadIdentity::DualSense)
+            continue;
+        // lastSonySubmit is stamped by every pack, this one included, so the
+        // cadence is "a frame at least this often", whoever supplied the last.
+        if (now - slot.lastSonySubmit < std::chrono::milliseconds(SONY_IDLE_REPORT_MS)) continue;
+        packAndWriteLocked(slot);
+    }
+}
+
 bool HidMaestroAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     if (!isValidSerial(serial)) return false;
     std::lock_guard<std::mutex> lk(busMtx_);

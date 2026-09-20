@@ -63,6 +63,16 @@ class IGamepadPort {
     // recorded at plug.
     virtual bool submitReport(uint32_t serial, const GamepadReport& report) = 0;
 
+    // The maintenance tick, off the hot path (the reaper thread, every
+    // RUMBLE_REFRESH_MS / 2). Every Dish client sends INPUT on change only,
+    // while a real pad reports continuously, and some consumers depend on
+    // that: Sony's own pad library opens a pad by waiting for its next input
+    // report and reads one whose reports stop as gone. A backend whose pads
+    // are read that way re-publishes an idle pad's last state here, with its
+    // free-running clocks advanced, exactly as the pad itself would. Default
+    // no-op: XInput and evdev consumers keep state, not streams.
+    virtual void refreshIdleInput() {}
+
     // Rumble sink, invoked from a platform worker thread. Must stay callable
     // until the adapter is destroyed (SessionService outlives it).
     using RumbleCallback = std::function<void(uint32_t serial, const RumbleReport& report)>;

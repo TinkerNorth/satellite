@@ -573,6 +573,48 @@ static void test_ds5_submit() {
     EXPECT_EQ(data[52], (uint8_t)(0x10 | 7));
 }
 
+static void test_idle_sony_pads_keep_reporting() {
+    TEST("refreshIdleInput — an idle Sony pad is re-published, clocks advanced; others are not");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSense));
+    EXPECT(adapter.pluginDevice(5, GamepadIdentity::DS4));
+    EXPECT(adapter.pluginDevice(6, GamepadIdentity::Xbox));
+    EXPECT(adapter.pluginDevice(7, GamepadIdentity::SwitchPro));
+    // The plug's neutral frame is a frame: nothing is due yet.
+    adapter.refreshIdleInput();
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)2);
+    EXPECT_EQ(prov.inputSeq(5), (uint32_t)2);
+
+    const uint8_t* ds5 = prov.inputData(4);
+    const uint8_t ds5SeqBefore = ds5[6];
+    std::this_thread::sleep_for(std::chrono::milliseconds(SONY_IDLE_REPORT_MS + 20));
+    adapter.refreshIdleInput();
+    // The Sony pads got a fresh frame each, the same state with the counter
+    // advanced, as an untouched pad would report.
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)4);
+    EXPECT_EQ(static_cast<uint8_t>(ds5[6] - ds5SeqBefore), (uint8_t)1);
+    EXPECT_EQ(prov.inputSeq(5), (uint32_t)4);
+    EXPECT_EQ(u32at(prov.inputSection(4), INPUT_DATASIZE_OFFSET), (uint32_t)DS5_PAYLOAD_BYTES);
+    // The Xbox and Switch pads are read as state and were left alone.
+    EXPECT_EQ(prov.inputSeq(6), (uint32_t)2);
+    EXPECT_EQ(prov.inputSeq(7), (uint32_t)2);
+
+    // A client frame resets the clock: right after one, the tick is quiet.
+    GamepadReport rpt{};
+    EXPECT(adapter.submitReport(4, rpt));
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)6);
+    adapter.refreshIdleInput();
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)6);
+
+    // An unplugged pad is not touched.
+    EXPECT(adapter.unplugDevice(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(SONY_IDLE_REPORT_MS + 20));
+    adapter.refreshIdleInput();
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)8);
+}
+
 static void test_switch_submit() {
     TEST("SwitchPro — pad and motion merge into the 48-byte body");
     FakeProvisioner prov;
@@ -1154,6 +1196,7 @@ int main() {
     test_xbox_submit_bytes();
     test_ds4_submit_merges_motion_touch_battery();
     test_ds5_submit();
+    test_idle_sony_pads_keep_reporting();
     test_switch_submit();
     test_motion_support_matrix();
     test_rumble_worker_xbox();

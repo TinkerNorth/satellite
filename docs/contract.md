@@ -685,7 +685,7 @@ Down (server → client):
 | Opcode | Name | Payload |
 |--------|------|---------|
 | 0x0003 | HEARTBEAT_ACK | backendAvailable(1) + totalActiveControllers(1) + epoch(u16 BE) + activeBitmap(u16 BE) |
-| 0x0009 | RUMBLE | ctrlIdx(1) + strong(u16 BE) + weak(u16 BE) + durationMs(u16 BE) |
+| 0x0009 | RUMBLE | ctrlIdx(1) + strong(u16 BE) + weak(u16 BE) + durationMs(u16 BE). A command with a lifetime: the client runs the motors at this level for durMs, then stops. The satellite owns the motor's state (see Rumble lifetime below): it re-sends a held level every 200 ms, well inside the 500 ms it stamps, and sends the stop itself when the source goes away, so durMs is only the client's safety net against a dead host. |
 | 0x000D | LIGHTBAR | ctrlIdx(1) + r(1) + g(1) + b(1) |
 | 0x000F | SESSION_CLOSE | reason(1: 0 shutdown, 1 kicked, 2 replaced, 3 unpaired) |
 | 0x0010 | TRIGGER_EFFECTS | ctrlIdx(1) + left block(11) + right block(11): raw DualSense trigger-effect fields (mode byte + 10 params each), forwarded verbatim from the game's output report. Sent only to senders whose descriptor advertised `triggerEffects`. Coalesced; both blocks always ride together (the server merges per-trigger writes). |
@@ -702,7 +702,11 @@ new messages claim fresh ids (0x0010+).
 Corrected stream semantics (errors in the former docs, preserved here):
 
 - INPUT frames are full-state snapshots per packet, loss-safe by construction. Never
-  delta-encode them.
+  delta-encode them. Clients send them on change only; a backend whose pads are
+  read as a stream rather than as state (HIDMaestro's Sony personas, which Sony's
+  own pad library opens by waiting for the next report) re-publishes an idle
+  pad's last frame itself, every 100 ms, with the pad's free-running clocks
+  advanced. Clients never need to send keepalive input.
 - Heartbeat cadence is **2000 ms** (not 250 ms), dead at 5 misses, "not responding"
   display state at 2 misses. Heartbeats stay UDP: their job is proving the DATA path
   works; REST can't.
@@ -827,6 +831,30 @@ personas); every other type and backend reports `false`. The host's own per-dire
 switches are a third, separate thing and live in `/api/server/capabilities`'s
 `controllerAudio` block: a cap says what the CLIENT can do, the catalog says what the
 host COULD build, and that block says what the host will actually carry right now.
+
+### Rumble lifetime (0x0009)
+
+A RUMBLE packet is a command, not a state: the client runs the motors at the
+given level for `durMs` (0 = until the next packet; clients cap it at 1500 ms
+against a hostile host) and then stops on its own. Only the satellite knows
+whether the game still wants the level (it keeps writing it) or has stopped
+(it wrote zeros, or its haptic stream ended), so the satellite owns the
+motor's state:
+
+- A level the game holds through HID is re-sent, unchanged, every 200 ms,
+  well inside the 500 ms it is stamped with, so a client whose actuator runs
+  per command never gaps. The game's own zero ends the refreshes.
+- Identical back-to-back levels are coalesced only while the client can still
+  be running the last command; once that command's `durMs` has elapsed the
+  same level goes out again.
+- A haptic reduction (see Controller haptics) is refreshed by its own stream.
+  If the stream ends without a silent window, the satellite sends the stop
+  itself once the level's short duration has passed, so a pad whose raw path
+  ignores durations (a Direct-claimed pad runs until the next write) still
+  stops.
+
+A client therefore never has to refresh or time out a rumble on the
+satellite's behalf; honouring `durMs` is enough.
 
 ### Controller haptics (0x0015)
 

@@ -279,6 +279,16 @@ class SessionService {
     // Returns number reaped.
     int reapTimedOut();
 
+    // The motor-state tick (RUMBLE_REFRESH_MS cadence, from the maintenance
+    // thread): re-sends a held HID level before the client's duration runs
+    // out, and sends the stop for a haptic reduction whose stream ended
+    // without a silent window. Returns the number of packets sent.
+    int refreshRumble();
+
+    // The same tick's other half: lets the backend keep an idle pad
+    // reporting (IGamepadPort::refreshIdleInput).
+    void refreshIdleInput();
+
     bool isBackendAvailable() const;
     int totalActiveControllers() const;
     int availableSlots() const;

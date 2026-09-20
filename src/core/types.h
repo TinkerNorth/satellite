@@ -388,10 +388,16 @@ struct RumbleReport {
     uint16_t durationMs = 0;      // 0 = continuous (until next packet)
 };
 
-// The duration stamped on a game's HID rumble. Matches the dish-side rumble
-// heartbeat that refreshes the actuator, so a held level survives the gap
-// between refreshes and a lost stop packet still ends within it.
+// Rumble on the wire is a command with a lifetime: the client runs the motors
+// at the given level for durMs, then stops. The satellite is the only party
+// that knows whether the game still wants the level (it keeps writing it) or
+// has stopped (it wrote zeros, or its haptic stream ended), so the satellite
+// owns the motor's state: a held HID level is re-sent every
+// RUMBLE_REFRESH_MS, well inside the duration, and a stop is sent the moment
+// the source goes away. durMs is the client's safety net against a dead or
+// partitioned host, never the mechanism that ends a held rumble.
 inline const uint16_t RUMBLE_WIRE_DURATION_MS = 500;
+inline const int RUMBLE_REFRESH_MS = 200;
 
 // DualSense adaptive-trigger effect blocks (game to controller, return path).
 // Each block is the raw 11-byte DS5 output-report field: mode byte + 10 param
@@ -811,8 +817,13 @@ struct Controller {
     // Last rumble forwarded; coalesces identical back-to-back updates so a game
     // holding the motors steady doesn't blast the wire. What goes out is the
     // per-motor MAX of the two sources below, so neither cancels the other.
+    // Coalescing is only sound while the client is still running the last
+    // command, hence the expiry: past it an identical level must go out
+    // again, because the client's motors have already stopped.
     RumbleReport lastRumble{};
     bool lastRumbleValid = false;
+    std::chrono::steady_clock::time_point lastRumbleSentAt{};
+    std::chrono::steady_clock::time_point lastRumbleExpiresAt{};
     // The game's HID motor bytes, as decoded by the backend.
     RumbleReport hidRumble{};
     // The haptic waveform reduced to motor strength, for a client that cannot
