@@ -311,8 +311,8 @@ caller's own session.
       ] },
     { "id": "hidmaestro", "vendor": "hifihedgehog", "displayName": "HIDMaestro",
       "kernelMode": false, "audio": true, "available": true, "errorCode": null,
-      "lifecycle": "supported", "eolDate": null, "driverVersion": "1.4.7.12",
-      "bundledVersion": "1.4.7.12", "versionState": "current", "restartPending": false,
+      "lifecycle": "supported", "eolDate": null, "driverVersion": "1.8.1.958",
+      "bundledVersion": "1.8.1.958", "versionState": "current", "restartPending": false,
       "controllers": [
         { "type": 0, "name": "xbox", "latency": "medium", "latencyRank": 2,
           "motion": false, "touchpad": false, "lightbar": false, "motionRequires": null,
@@ -401,7 +401,7 @@ this on its bus device node); it is false everywhere else. On Windows `driverVer
 the `ViGEmBus.sys` file version for `vigem` and the driver-store INF `DriverVer` for
 `hidmaestro`, and `bundledVersion` is pinned to match on both. Each driver's release
 carries a different number than the driver inside it (ViGEmBus 1.22.0 ships
-`ViGEmBus.sys` 1.21.442.0; HIDMaestro SDK 1.7.0 ships INF 1.4.7.12), so the pin is
+`ViGEmBus.sys` 1.21.442.0; HIDMaestro SDK 1.9.0 ships INF 1.8.1.958), so the pin is
 the inner one: it is what Device Manager shows, what a bumped pin changes, and the
 only number `versionState` can compare against without lying.
 

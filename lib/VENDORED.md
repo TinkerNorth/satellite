@@ -78,8 +78,8 @@ the 90-day freshness window.
 
 - Component: hifihedgehog/HIDMaestro (driver shared-memory + report contracts)
 - Upstream: https://github.com/hifihedgehog/HIDMaestro
-- Pinned-commit: v1.7.0
-- Last-vendored: 2026-08-24
+- Pinned-commit: v1.9.0
+- Last-vendored: 2026-09-20
 - License: MIT
 - Notes: not copied source — a hand-written re-statement of the driver's
   shared-memory contract (`driver/driver.h` `HIDMAESTRO_SHARED_INPUT` /
@@ -94,3 +94,7 @@ the 90-day freshness window.
   section sizes 362 / 16904 are the runtime layout check). The runtime
   driver itself deploys via the bundled `satellite-hm-helper.exe` from the
   hash-pinned release zip (see `redist/README.md`); we ship no driver code.
+  v1.7.0 -> v1.9.0 (2026-09-20): `driver/driver.h` and
+  `Internal/SharedMemoryIO.cs` changed only in comment punctuation; every
+  offset, size, ring constant and Source code is the same, so the pins here
+  are unchanged and the compatibility review is the diff itself.

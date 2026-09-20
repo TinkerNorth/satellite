@@ -5,7 +5,8 @@
 // path publishes input frames into the input section with a seqlock so the
 // driver never reads a torn frame, and the rumble/lightbar return path drains
 // the driver's output ring — no managed code on any per-frame path. Offsets
-// are the contract with HIDMaestro driver/driver.h at v1.7.0 (HIDMAESTRO_
+// are the contract with HIDMaestro driver/driver.h at v1.9.0, unchanged
+// since v1.7.0 (HIDMAESTRO_
 // SHARED_INPUT 362 bytes, HIDMAESTRO_SHARED_OUTPUT 8 + 64*264 bytes); the
 // protocol carries no version field, so the section SIZES are the layout
 // check (a pre-v1.3.5 278-byte input section fails the size probe).
