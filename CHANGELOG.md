@@ -20,6 +20,16 @@ DualSense type, and `/api/debug` gains the lane's counters. No frame shape
 changed and the accepted range is still [1, 3], so every shipped Dish keeps
 working at its own version and gains the rumble reduction without an update.
 
+The satellite now owns a rumble's lifetime. A RUMBLE packet runs a client's
+motors for its duration and then stops, but the satellite forwarded a game's
+level once and coalesced every identical repeat, so a level a game held for
+longer than half a second died on any client whose actuator runs per command
+(SDL pads, the phone vibrator) while a Direct-claimed pad, whose raw path
+ignores durations, ran on. A maintenance tick re-sends a held level every
+200 ms, sends the stop itself when a haptic reduction's stream ends without a
+silent window, and the coalesce cache is no longer trusted past the client's
+duration. Clients need no change: honouring the duration was always enough.
+
 ## 2.0.4
 
 No protocol changes. Windows driver and installer fixes.

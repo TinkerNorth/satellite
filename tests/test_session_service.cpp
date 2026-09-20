@@ -3375,6 +3375,116 @@ static void test_hapticAudio_countersTrackBothRenderings() {
     EXPECT_EQ(c.speakerSilenceSuppressed, uint64_t{0});
 }
 
+// ---- rumble: the host owns the motor's lifetime ------------------------------
+//
+// A rumble packet runs the client's motors for durMs and then stops, so a
+// level the game keeps writing has to be re-sent inside that window, and a
+// level whose source went away has to be stopped explicitly. Both are the
+// maintenance tick's job (SessionService::refreshRumble); the receive path
+// only coalesces while the client can still be running the last command.
+
+static void test_rumble_heldLevelIsRefreshedBeforeTheClientStops() {
+    TEST("rumble: a held HID level is re-sent every RUMBLE_REFRESH_MS, unchanged");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t serial = serialOfSlot(svc, 0);
+
+    RumbleReport rr{};
+    rr.strongMagnitude = 20000;
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    // Inside the refresh interval the tick sends nothing.
+    EXPECT_EQ(svc.refreshRumble(), 0);
+    EXPECT_EQ(client.rumbleCalls, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(RUMBLE_REFRESH_MS + 10));
+    EXPECT_EQ(svc.refreshRumble(), 1);
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 20000);
+    EXPECT_EQ(client.lastRumble.durationMs, RUMBLE_WIRE_DURATION_MS);
+
+    TEST("rumble: the game's zero ends the refreshes");
+    rr.strongMagnitude = 0;
+    vigem.fireRumble(serial, rr);
+    EXPECT_EQ(client.rumbleCalls, 3);
+    std::this_thread::sleep_for(std::chrono::milliseconds(RUMBLE_REFRESH_MS + 10));
+    EXPECT_EQ(svc.refreshRumble(), 0);
+    EXPECT_EQ(client.rumbleCalls, 3);
+}
+
+static void test_rumble_coalesceNeverOutlivesTheClientsCommand() {
+    TEST("rumble: an identical level after the last command expired is sent again");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t serial = serialOfSlot(svc, 0);
+
+    // A haptic-only level: short duration, no HID source to refresh it.
+    const auto burst = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial, burst.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 1);
+    const RumbleReport level = client.lastRumble;
+    EXPECT_EQ(level.durationMs, satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS);
+
+    // The client's motors have stopped by now. The game then holds exactly
+    // that level through HID: same magnitudes as the cache, but the cache is
+    // no longer what the client is doing, so it must go out.
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS + 20));
+    RumbleReport hid{};
+    hid.strongMagnitude = level.strongMagnitude;
+    hid.weakMagnitude = level.weakMagnitude;
+    vigem.fireRumble(serial, hid);
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ(client.lastRumble.durationMs, RUMBLE_WIRE_DURATION_MS);
+}
+
+static void test_rumble_hapticStreamThatEndsIsStoppedByTheHost() {
+    TEST("rumble: a haptic-only level whose stream ended gets an explicit stop from the tick");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const uint32_t serial = serialOfSlot(svc, 0);
+
+    const auto burst = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    EXPECT(svc.handleHapticAudioFromBackend(serial, burst.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 1);
+    // While the level is live the tick leaves it alone (the stream is its
+    // own refresh).
+    EXPECT_EQ(svc.refreshRumble(), 0);
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS + 20));
+    // The stream stopped without a silent window: the tick sends the zero,
+    // once. A Direct pad, whose motors run until the next write, needs this.
+    EXPECT_EQ(svc.refreshRumble(), 1);
+    EXPECT_EQ(client.rumbleCalls, 2);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 0);
+    EXPECT_EQ((int)client.lastRumble.weakMagnitude, 0);
+    EXPECT_EQ(svc.refreshRumble(), 0);
+    EXPECT_EQ(client.rumbleCalls, 2);
+
+    TEST("rumble: a haptic level under a held HID level expires back to the HID level");
+    RumbleReport hid{};
+    hid.strongMagnitude = 12000;
+    vigem.fireRumble(serial, hid);
+    EXPECT_EQ(client.rumbleCalls, 3);
+    EXPECT(svc.handleHapticAudioFromBackend(serial, burst.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.rumbleCalls, 4);
+    EXPECT(client.lastRumble.strongMagnitude > 12000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(RUMBLE_REFRESH_MS + 10));
+    // The tick's refresh of the held HID level now mixes an expired haptic
+    // level out: the client is back to what the game holds.
+    EXPECT_EQ(svc.refreshRumble(), 1);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 12000);
+    EXPECT_EQ((int)client.lastRumble.weakMagnitude, 0);
+}
+
 static void test_audioBackendCallbacks_dropNotBlock_whenLockHeld() {
     TEST("mic LED / speaker: backend callbacks drop (never block) while mtx_ is held");
     MockViGem vigem;
@@ -3760,6 +3870,9 @@ int main() {
     test_hapticAudio_mixesWithHidRumbleByMax();
     test_hapticAudio_policyOffStopsBothRenderings();
     test_hapticAudio_countersTrackBothRenderings();
+    test_rumble_heldLevelIsRefreshedBeforeTheClientStops();
+    test_rumble_coalesceNeverOutlivesTheClientsCommand();
+    test_rumble_hapticStreamThatEndsIsStoppedByTheHost();
     test_audioCounts_trackTheMicStream();
     test_audioCounts_separateSuppressedSilenceFromSentFrames();
     test_audioBackendCallbacks_dropNotBlock_whenLockHeld();

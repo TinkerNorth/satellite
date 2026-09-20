@@ -187,6 +187,8 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     // must not be suppressed as "same as last".
     ctrl.lastRumble = RumbleReport{};
     ctrl.lastRumbleValid = false;
+    ctrl.lastRumbleSentAt = {};
+    ctrl.lastRumbleExpiresAt = {};
     ctrl.hidRumble = RumbleReport{};
     ctrl.hapticRumble = RumbleReport{};
     ctrl.hapticRumbleSentAt = {};
@@ -693,6 +695,9 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
     // would hand every later HID update a phantom motor.
     const auto now = std::chrono::steady_clock::now();
     const bool hapticLive = now < ctrl.hapticRumbleExpiresAt;
+    // A client past the last command's duration has stopped its motors, so
+    // "same as last" no longer means "already running".
+    const bool lastExpired = ctrl.lastRumbleValid && now >= ctrl.lastRumbleExpiresAt;
     RumbleReport mixed;
     mixed.strongMagnitude = std::max(ctrl.hidRumble.strongMagnitude,
                                      hapticLive ? ctrl.hapticRumble.strongMagnitude : uint16_t{0});
@@ -705,16 +710,63 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
     auto sameAs = [](const RumbleReport& a, const RumbleReport& b) {
         return a.strongMagnitude == b.strongMagnitude && a.weakMagnitude == b.weakMagnitude;
     };
-    if (!force && ctrl.lastRumbleValid && sameAs(ctrl.lastRumble, mixed)) { return false; }
+    if (!force && ctrl.lastRumbleValid && !lastExpired && sameAs(ctrl.lastRumble, mixed)) {
+        return false;
+    }
 
     RumbleReport stamped = mixed;
     stamped.durationMs = wireDurationMs;
 
     ctrl.lastRumble = stamped;
     ctrl.lastRumbleValid = true;
+    ctrl.lastRumbleSentAt = now;
+    // durationMs 0 is "until the next packet" on the wire, which never expires.
+    ctrl.lastRumbleExpiresAt = wireDurationMs == 0
+                                   ? std::chrono::steady_clock::time_point::max()
+                                   : now + std::chrono::milliseconds(wireDurationMs);
 
     client_.sendRumble(conn, ctrl.index, stamped);
     return true;
+}
+
+int SessionService::refreshRumble() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto now = std::chrono::steady_clock::now();
+    int sent = 0;
+    for (auto& [token, conn] : connections_) {
+        for (auto& ctrl : conn.controllers) {
+            if (!ctrl.active || ctrl.serialNo == 0) continue;
+            const bool hidHeld =
+                ctrl.hidRumble.strongMagnitude != 0 || ctrl.hidRumble.weakMagnitude != 0;
+            if (hidHeld) {
+                // The game still writes this level; keep the client's motors
+                // running across its duration boundary.
+                if (now - ctrl.lastRumbleSentAt >= std::chrono::milliseconds(RUMBLE_REFRESH_MS)) {
+                    if (forwardRumbleLocked(conn, ctrl, RUMBLE_WIRE_DURATION_MS, /*force=*/true)) {
+                        sent++;
+                    }
+                }
+                continue;
+            }
+            // No HID source. A haptic reduction whose stream ended without a
+            // silent window leaves its last level in the coalesce cache; once
+            // it has expired, the mixed value is zero and the stop goes out
+            // (an already-zero cache coalesces to nothing).
+            const bool hapticStale = now >= ctrl.hapticRumbleExpiresAt;
+            const bool cacheNonZero =
+                ctrl.lastRumbleValid &&
+                (ctrl.lastRumble.strongMagnitude != 0 || ctrl.lastRumble.weakMagnitude != 0);
+            if (hapticStale && cacheNonZero) {
+                ctrl.hapticRumble = RumbleReport{};
+                if (forwardRumbleLocked(conn, ctrl,
+                                        satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS,
+                                        /*force=*/false)) {
+                    sent++;
+                }
+            }
+        }
+    }
+    return sent;
 }
 
 bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const MotionReport& report) {
