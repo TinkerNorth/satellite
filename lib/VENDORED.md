@@ -25,13 +25,21 @@ the 90-day freshness window.
 
 - Component: yhirose/cpp-httplib
 - Upstream: https://github.com/yhirose/cpp-httplib
-- Pinned-commit: v0.51.0
-- Last-vendored: 2026-07-25
+- Pinned-commit: v0.56.0
+- Last-vendored: 2026-09-20
 - License: MIT
 - Notes: vendored as a single header, byte-identical to the upstream tag
   (modulo CRLF in the working tree; git stores it LF). No local
   modifications. Used by `src/net/webserver.cpp` and the `src/net/routes_*`
-  handlers.
+  handlers. v0.51.0 -> v0.56.0 review (2026-09-20): `Headers`/`Params` are
+  now an insertion-ordered container (still `find`/`end`/`->second`, which is
+  all `routes_client.cpp` uses, and still constructible from an initializer
+  list, which the route tests use); regex routes refuse paths longer than
+  `CPPHTTPLIB_REGEX_ROUTE_PATH_MAX_LENGTH` (256) and ours carry a short
+  connection id and a slot index; the SSE provider in `routes_admin.cpp`
+  writes on every tick and returns false when a write fails, so the new
+  no-progress rule for content providers never trips; `Error` values shifted
+  and are not used numerically; `CPPHTTPLIB_NO_EXCEPTIONS` is still honoured.
 
 ## nlohmann/json (`lib/nlohmann/json.hpp`)
 
@@ -49,18 +57,29 @@ the 90-day freshness window.
 - Component: jedisct1/libsodium
 - Upstream: https://github.com/jedisct1/libsodium
 - Pinned-commit: 1.0.22-RELEASE
-- Last-vendored: 2026-07-25
+- Last-vendored: 2026-09-20
 - License: ISC
 - Notes: bundled MinGW prebuilt archives (`libsodium-mingw.tar.gz`,
   `libsodium-win32/`, `libsodium-win64/`) consumed by the Windows
   toolchain. Linux + macOS link against the system package.
+  `libsodium-mingw.tar.gz` is the release asset
+  `libsodium-1.0.22-mingw.tar.gz` from the 1.0.22-RELEASE GitHub release,
+  SHA-256 `1d99e0afaf27bce664249232e9dc628ae6bb7b49f0ab53ad6db372b028a35d9d`,
+  minisign-verified against the libsodium release key
+  (`RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3`), and the two
+  directories are its contents unpacked. Until 2026-09-20 the archive was a
+  2026-04-16 rebuild of the same version (identical headers, different
+  `libsodium.a`/`libsodium-26.dll` bytes); it was replaced with the tagged
+  release bytes so the pin names what is actually here. 1.0.22 is still the
+  newest release.
 
 ## ViGEm Bus Driver SDK (`vigem/include/ViGEm/`)
 
 - Component: ViGEm/ViGEmClient (the SDK submodule of nefarius/ViGEmBus)
 - Upstream: https://github.com/ViGEm/ViGEmClient
 - Pinned-commit: v1.21.222.0 (driver ABI targeted: ViGEmBus v1.22.0)
-- Last-vendored: 2026-07-25
+- Last-vendored: 2026-09-20 (upstream archived 2023-09-08 at b66d02d; each
+  re-stamp is a check that nothing moved upstream, and nothing has)
 - License: MIT
 - Notes: **not** a verbatim upstream copy — a hand-maintained minimal
   subset of `include/ViGEm/Common.h` and `include/ViGEm/km/BusShared.h`,
