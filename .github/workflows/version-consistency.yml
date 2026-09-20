@@ -18,8 +18,8 @@ name: version-consistency
 # dashboard's driver banner compares installed drivers against, and
 # installer.iss carries the same ViGEmBus / HIDMaestro versions for the
 # payload it ships. They must agree. Each driver carries two numbers: the
-# release/installer version (ViGEmBus 1.22.0, HIDMaestro SDK 1.7.0) and the
-# driver binary's own (ViGEmBus.sys 1.21.442.0, HIDMaestro INF 1.4.7.12).
+# release/installer version (ViGEmBus 1.22.0, HIDMaestro SDK 1.9.0) and the
+# driver binary's own (ViGEmBus.sys 1.21.442.0, HIDMaestro INF 1.8.1.958).
 # The banner compares the binary's, so both pairs are pinned and checked.
 #
 # A PR-time text-consistency gate, not a full re-build.

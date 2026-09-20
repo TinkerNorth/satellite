@@ -7,7 +7,8 @@
 // vigem_submit_policy.h and core/ds4_report.h) so every packer is verified on
 // every CI platform; the I/O shell is hidmaestro_adapter.cpp.
 //
-// Byte layouts are pinned to HIDMaestro v1.7.0's shipped profiles:
+// Byte layouts are pinned to HIDMaestro v1.9.0's shipped profiles (their
+// descriptors are unchanged since v1.7.0; only prose fields moved):
 // xbox-360-wired (18-byte no-RID report + the 14-byte GIP slice),
 // dualshock-4-v2 (DS4 v2 USB report 0x01 — identical to core/ds4_report.h),
 // dualsense (DS5 USB report 0x01), and switch-pro (the 48-byte 0x30 body the
