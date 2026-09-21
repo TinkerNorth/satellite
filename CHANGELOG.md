@@ -3,7 +3,12 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
+## 2.1.0
+
+Protocol 3, additive: the accepted range is now [1, 3], so every shipped Dish
+keeps working at its own version and a Dish that speaks 3 gains the DualSense
+HD-haptics lanes. Also the Windows driver SDK bump and vendored-library
+updates below.
 
 The bundled HIDMaestro SDK moves from 1.7.0 to 1.9.0 (driver INF 1.4.7.12 to
 1.8.1.958; the installer's helper reinstalls it, no reboot). Three things
