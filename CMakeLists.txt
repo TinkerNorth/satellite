@@ -38,6 +38,15 @@ if(WIN32)
     add_compile_definitions(NOMINMAX)
 endif()
 
+# MSVC links the static CRT everywhere: vcpkg's x64-windows-static packages
+# (libsodium, OpenSSL, opus) are built against it, and a target on the default
+# DLL CRT that links them draws LNK4098 (defaultlib LIBCMT conflicts) at every
+# link. The app target used to set this for itself only; the tests link the
+# same packages.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # ── Crash reporting (Sentry) ──────────────────────────────────────────────
 #
 # Two independent gates, on purpose.
@@ -86,7 +95,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             URL https://github.com/getsentry/sentry-native/releases/download/0.16.3/sentry-native.zip
             URL_HASH SHA256=21380c182dde677794a7b6c57e8d6e03d79ec5a03eec67514ffa7522f7e161b5
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        # Third-party targets keep their own warning policy, the way the
+        # vendored headers do behind SYSTEM includes: warnings-as-errors is
+        # a gate on this repository's code, not on the SDK's.
+        set(SATELLITE_SAVED_WARNING_AS_ERROR "${CMAKE_COMPILE_WARNING_AS_ERROR}")
+        set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
         FetchContent_MakeAvailable(sentry)
+        set(CMAKE_COMPILE_WARNING_AS_ERROR "${SATELLITE_SAVED_WARNING_AS_ERROR}")
         set(sentry_FOUND TRUE)
     else()
         set(sentry_FOUND FALSE)
@@ -389,7 +404,6 @@ if(WIN32)
         )
         set_target_properties(satellite PROPERTIES
             LINK_FLAGS "/SUBSYSTEM:WINDOWS"
-            MSVC_RUNTIME_LIBRARY "MultiThreaded"
         )
     endif()
 
@@ -825,11 +839,31 @@ if(TARGET satellite)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT SATELLITE_IPO_OK OUTPUT SATELLITE_IPO_MSG LANGUAGES CXX)
     if(SATELLITE_IPO_OK)
-        set_target_properties(satellite PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-            # Bare -flto (CMake's IPO default) links serially; -flto=auto parallelizes LTRANS.
-            target_link_options(satellite PRIVATE $<$<CONFIG:Release>:-flto=auto>)
+        if(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            # CMake's GNU IPO flag is -flto=auto, which sizes the LTRANS stage
+            # from sched_getaffinity and drives it through a program it finds
+            # as `make`. MinGW has neither: the count comes out as one job, and
+            # no MinGW prefix ships a `make` (MSYS2 ships mingw32-make), so
+            # lto-wrapper falls back to serial compilation and warns at every
+            # link. The option set itself is replaced, because lto-wrapper
+            # keeps `auto` once it has seen it and a later -flto=N would not
+            # win: the count is taken here, and the link runs with MAKE
+            # pointing at the make that is there.
+            cmake_host_system_information(RESULT SATELLITE_LTO_JOBS QUERY NUMBER_OF_LOGICAL_CORES)
+            if(NOT SATELLITE_LTO_JOBS GREATER 1)
+                set(SATELLITE_LTO_JOBS 2)
+            endif()
+            find_program(SATELLITE_LTO_MAKE NAMES mingw32-make make)
+            if(NOT SATELLITE_LTO_MAKE)
+                message(FATAL_ERROR
+                    "satellite: the Release link needs a make program for GCC's "
+                    "parallel LTO (pacman -S mingw-w64-x86_64-make).")
+            endif()
+            set(CMAKE_CXX_COMPILE_OPTIONS_IPO -flto=${SATELLITE_LTO_JOBS} -fno-fat-lto-objects)
+            set_target_properties(satellite PROPERTIES
+                CXX_LINKER_LAUNCHER "${CMAKE_COMMAND};-E;env;MAKE=${SATELLITE_LTO_MAKE}")
         endif()
+        set_target_properties(satellite PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         message(STATUS "satellite: LTO/IPO enabled for Release builds.")
     else()
         message(STATUS "satellite: LTO/IPO unavailable: ${SATELLITE_IPO_MSG}")
@@ -838,6 +872,17 @@ endif()
 
 # Tests (portable, core-only).
 enable_testing()
+
+# Every first-party test compiles at the app's warning level on every lane:
+# -Wall -Wextra for GCC and clang (Linux and macOS included, not only MinGW),
+# /W4 for MSVC. Warnings-as-errors comes from the presets, as for the app.
+function(satellite_test_warnings name)
+    if(MSVC)
+        target_compile_options(${name} PRIVATE /O2 /W4)
+    else()
+        target_compile_options(${name} PRIVATE -O2 -Wall -Wextra)
+    endif()
+endfunction()
 
 # The real Opus codec rides along (adapters/audio/opus_codec.cpp): the audio
 # suites decode actual encoder output through the service rather than asserting
@@ -854,11 +899,7 @@ target_include_directories(test_session_service PRIVATE
 target_compile_definitions(test_session_service PRIVATE SATELLITE_BUILD_TESTS)
 satellite_link_opus(test_session_service)
 
-if(WIN32 AND MINGW)
-    target_compile_options(test_session_service PRIVATE -O2 -Wall -Wextra)
-elseif(MSVC)
-    target_compile_options(test_session_service PRIVATE /O2 /W4)
-endif()
+satellite_test_warnings(test_session_service)
 
 set_target_properties(test_session_service PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -877,11 +918,7 @@ add_executable(test_receiver
 target_include_directories(test_receiver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-if(WIN32 AND MINGW)
-    target_compile_options(test_receiver PRIVATE -O2 -Wall -Wextra)
-elseif(MSVC)
-    target_compile_options(test_receiver PRIVATE /O2 /W4)
-endif()
+satellite_test_warnings(test_receiver)
 set_target_properties(test_receiver PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -894,11 +931,7 @@ add_executable(test_mdns_protocol
 target_include_directories(test_mdns_protocol PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-if(WIN32 AND MINGW)
-    target_compile_options(test_mdns_protocol PRIVATE -O2 -Wall -Wextra)
-elseif(MSVC)
-    target_compile_options(test_mdns_protocol PRIVATE /O2 /W4)
-endif()
+satellite_test_warnings(test_mdns_protocol)
 set_target_properties(test_mdns_protocol PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -915,11 +948,7 @@ add_executable(test_pairing
 target_include_directories(test_pairing PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-if(WIN32 AND MINGW)
-    target_compile_options(test_pairing PRIVATE -O2 -Wall -Wextra)
-elseif(MSVC)
-    target_compile_options(test_pairing PRIVATE /O2 /W4)
-endif()
+satellite_test_warnings(test_pairing)
 set_target_properties(test_pairing PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -930,11 +959,9 @@ add_test(NAME pairing COMMAND test_pairing)
 function(satellite_add_pure_test name)
     add_executable(${name} ${ARGN})
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    satellite_test_warnings(${name})
     if(WIN32 AND MINGW)
-        target_compile_options(${name} PRIVATE -O2 -Wall -Wextra)
         target_link_options(${name} PRIVATE -static)
-    elseif(MSVC)
-        target_compile_options(${name} PRIVATE /O2 /W4)
     endif()
     set_target_properties(${name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -1137,7 +1164,7 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             CPPHTTPLIB_NO_EXCEPTIONS
             SATELLITE_BUILD_TESTS
         )
-        target_compile_options(${name} PRIVATE -O2 -Wall -Wextra)
+        satellite_test_warnings(${name})
         satellite_link_sodium(${name})
         find_package(Threads REQUIRED)
         target_link_libraries(${name} PRIVATE Threads::Threads)
@@ -1204,7 +1231,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         CPPHTTPLIB_NO_EXCEPTIONS
         SATELLITE_BUILD_TESTS
     )
-    target_compile_options(test_linux_platform PRIVATE -O2 -Wall -Wextra)
+    satellite_test_warnings(test_linux_platform)
     find_package(Threads REQUIRED)
     target_link_libraries(test_linux_platform PRIVATE Threads::Threads)
     set_target_properties(test_linux_platform PROPERTIES
@@ -1240,7 +1267,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         CPPHTTPLIB_NO_EXCEPTIONS
         SATELLITE_BUILD_TESTS
     )
-    target_compile_options(test_uinput_smoke PRIVATE -O2 -Wall -Wextra)
+    satellite_test_warnings(test_uinput_smoke)
     target_link_libraries(test_uinput_smoke PRIVATE Threads::Threads)
     set_target_properties(test_uinput_smoke PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -1279,7 +1306,7 @@ if(APPLE)
         CPPHTTPLIB_NO_EXCEPTIONS
         SATELLITE_BUILD_TESTS
     )
-    target_compile_options(test_macos_platform PRIVATE -O2 -Wall -Wextra)
+    satellite_test_warnings(test_macos_platform)
     satellite_link_sodium(test_macos_platform)
     find_package(Threads REQUIRED)
     target_link_libraries(test_macos_platform PRIVATE Threads::Threads)
@@ -1308,7 +1335,7 @@ if(APPLE)
     )
     # Gates the injectOutputReportForTest seam, like the linux platform suite.
     target_compile_definitions(test_mac_hid_smoke PRIVATE SATELLITE_BUILD_TESTS)
-    target_compile_options(test_mac_hid_smoke PRIVATE -O2 -Wall -Wextra)
+    satellite_test_warnings(test_mac_hid_smoke)
     target_link_libraries(test_mac_hid_smoke PRIVATE
         "-framework IOKit"
         "-framework CoreFoundation"
@@ -1357,8 +1384,8 @@ if(WIN32)
         crypt32
         winmm
     )
+    satellite_test_warnings(test_windows_platform)
     if(MINGW)
-        target_compile_options(test_windows_platform PRIVATE -O2 -Wall -Wextra)
         target_link_options(test_windows_platform PRIVATE -static)
         target_include_directories(test_windows_platform SYSTEM PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/include)
@@ -1366,7 +1393,6 @@ if(WIN32)
             ${CMAKE_CURRENT_SOURCE_DIR}/lib/libsodium/libsodium-win64/lib)
         target_link_libraries(test_windows_platform PRIVATE sodium)
     elseif(MSVC)
-        target_compile_options(test_windows_platform PRIVATE /O2 /W4)
         find_package(unofficial-sodium CONFIG REQUIRED)
         target_link_libraries(test_windows_platform PRIVATE unofficial-sodium::sodium)
     endif()
@@ -1402,11 +1428,9 @@ if(WIN32)
         user32
         setupapi
     )
+    satellite_test_warnings(test_vigem_adapter)
     if(MINGW)
-        target_compile_options(test_vigem_adapter PRIVATE -O2 -Wall -Wextra)
         target_link_options(test_vigem_adapter PRIVATE -static)
-    elseif(MSVC)
-        target_compile_options(test_vigem_adapter PRIVATE /O2 /W4)
     endif()
     set_target_properties(test_vigem_adapter PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -1441,11 +1465,9 @@ if(WIN32)
         ws2_32
         user32
     )
+    satellite_test_warnings(test_hidmaestro_adapter)
     if(MINGW)
-        target_compile_options(test_hidmaestro_adapter PRIVATE -O2 -Wall -Wextra)
         target_link_options(test_hidmaestro_adapter PRIVATE -static)
-    elseif(MSVC)
-        target_compile_options(test_hidmaestro_adapter PRIVATE /O2 /W4)
     endif()
     set_target_properties(test_hidmaestro_adapter PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -1495,6 +1517,7 @@ if(SATELLITE_FUZZ)
     target_compile_definitions(fuzz_receiver_dispatch PRIVATE SATELLITE_BUILD_TESTS)
     satellite_link_sodium(fuzz_receiver_dispatch)
     satellite_link_opus(fuzz_receiver_dispatch)
+    target_compile_options(fuzz_receiver_dispatch PRIVATE -Wall -Wextra)
     if(SATELLITE_HAVE_LIBFUZZER)
         target_compile_options(fuzz_receiver_dispatch PRIVATE
             -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined)
