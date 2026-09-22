@@ -35,7 +35,6 @@ namespace crash = satellite::crash;
 
 @implementation SatelliteAppDelegate
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
-    (void)sender;
     g_appRunning = false;
     g_httpServer.stop();
     if (g_clientServer) g_clientServer->stop();
@@ -43,10 +42,9 @@ namespace crash = satellite::crash;
 }
 @end
 
-int main(int argc, const char* argv[]) {
-    (void)argc;
-    (void)argv;
-
+// No command line: everything is configured through the web UI and the
+// config file, so the entry point takes none.
+int main() {
     @autoreleasepool {
         // Virtual gamepads need the com.apple.developer.hid.virtual.device
         // entitlement (production builds). Unentitled processes run the full

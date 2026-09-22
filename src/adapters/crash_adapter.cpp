@@ -30,7 +30,7 @@ bool sdkAvailable() {
 #endif
 }
 
-void init([[maybe_unused]] bool userEnabled, [[maybe_unused]] const std::string& databaseDir) {
+void init(bool userEnabled, const std::string& databaseDir) {
     // Remembered even when the policy says no, so a later opt-in can arm
     // without being handed the path again.
     if (!databaseDir.empty()) { g_databaseDir = databaseDir; }

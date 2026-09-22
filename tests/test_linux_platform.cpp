@@ -11,12 +11,23 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <system_error>
 
 #include "test_util.h"
+
+// Fixture teardown: a tmpdir that cannot be removed is a failed test, not a
+// stray directory nobody hears about.
+static void removeTree(const std::string& path) {
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+    EXPECT(!ec);
+    if (ec) std::cerr << "  remove_all(" << path << "): " << ec.message() << "\n";
+}
 
 // Per-test tmp dir as XDG_CONFIG_HOME, removed on teardown: isolates tests from
 // the real user config and from each other.
@@ -29,11 +40,7 @@ struct TempXdg {
         setenv("XDG_CONFIG_HOME", path.c_str(), 1);
     }
     ~TempXdg() {
-        if (!path.empty()) {
-            std::string cmd = "rm -rf " + path;
-            int rc = system(cmd.c_str());
-            (void)rc;
-        }
+        if (!path.empty()) removeTree(path);
         unsetenv("XDG_CONFIG_HOME");
     }
 };
@@ -306,11 +313,7 @@ struct TempProxyDir {
         setenv("SATELLITE_SYSFS_PROXY_DIR", path.c_str(), 1);
     }
     ~TempProxyDir() {
-        if (!path.empty()) {
-            std::string cmd = "rm -rf " + path;
-            int rc = system(cmd.c_str());
-            (void)rc;
-        }
+        if (!path.empty()) removeTree(path);
         unsetenv("SATELLITE_SYSFS_PROXY_DIR");
     }
 };
@@ -468,10 +471,7 @@ struct TempSwapDir {
         dst = path + "/current";
     }
     ~TempSwapDir() {
-        if (!path.empty()) {
-            int rc = system(("rm -rf " + path).c_str());
-            (void)rc;
-        }
+        if (!path.empty()) removeTree(path);
     }
 };
 
@@ -480,28 +480,33 @@ static void writeText(const std::string& p, const std::string& text) {
     f << text;
 }
 
+// Empty when the script could not be written whole and made executable; the
+// callers assert on that rather than running a half-written helper.
 static std::string writeHelperScript(const std::string& script) {
     char tmpl[] = "/tmp/satellite-helper-XXXXXX.sh";
     int fd = mkstemps(tmpl, 3);
     if (fd < 0) return "";
-    ssize_t n = write(fd, script.data(), script.size());
-    (void)n;
-    int rc = fchmod(fd, 0700);
-    (void)rc;
+    const ssize_t n = write(fd, script.data(), script.size());
+    const bool written = n >= 0 && static_cast<size_t>(n) == script.size();
+    const bool executable = fchmod(fd, 0700) == 0;
     close(fd);
-    return tmpl;
+    if (written && executable) return tmpl;
+    unlink(tmpl);
+    return "";
 }
 
 static void testSwapScriptSparesLiveProcess() {
+    TEST("swap script leaves the binary alone while the process is still alive");
     TempSwapDir dir;
     writeText(dir.src, "#!/bin/sh\nexit 0\n");
     writeText(dir.dst, "old\n");
 
     const std::string helper =
         writeHelperScript(satellite::update::buildSwapScript(getpid(), dir.src, dir.dst, 2));
+    EXPECT(!helper.empty());
+    if (helper.empty()) return;
     const int rc = system(("/bin/bash " + helper).c_str());
 
-    TEST("swap script leaves the binary alone while the process is still alive");
     EXPECT(rc != 0);
     EXPECT(slurp(dir.dst) == "old\n");
     EXPECT(!fileExists(dir.dst + ".old"));
@@ -527,6 +532,8 @@ static void testSwapScriptInstallsAfterProcessExits() {
 
     const std::string helper =
         writeHelperScript(satellite::update::buildSwapScript(child, dir.src, dir.dst, 2));
+    EXPECT(!helper.empty());
+    if (helper.empty()) return;
     const int rc = system(("/bin/bash " + helper).c_str());
 
     EXPECT(rc == 0);

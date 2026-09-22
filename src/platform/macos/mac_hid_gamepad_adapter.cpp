@@ -173,7 +173,18 @@ void MacHidGamepadAdapter::closeBus() {
         serials.reserve(slots_.size());
         for (auto& [serial, _] : slots_) serials.push_back(serial);
     }
-    for (uint32_t serial : serials) (void)unplugDevice(serial);
+    // An unconfirmed teardown has no SessionService to quarantine it here
+    // (the bus is going away), so the count is what is left to report.
+    size_t unconfirmed = 0;
+    for (uint32_t serial : serials) {
+        if (!unplugDevice(serial)) unconfirmed++;
+    }
+    if (unconfirmed != 0) {
+        std::fprintf(stderr,
+                     "satellite: bus closed with %zu virtual pad(s) whose teardown never "
+                     "confirmed; their kernel devices are left in place\n",
+                     unconfirmed);
+    }
 
     std::lock_guard<std::mutex> lk(mtx_);
     busOpen_ = false;
@@ -285,8 +296,15 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
 
     // Prime with one neutral report (centred sticks, hat released, battery
     // wired-full) so the pad is not a stuck corner before the first frame,
-    // mirroring the ViGEm plug-in centring.
-    (void)submitLocked(*slot);
+    // mirroring the ViGEm plug-in centring. The pad is usable without it (the
+    // first real frame lands the same way), so a refusal is reported, not
+    // treated as a failed plug.
+    if (!submitLocked(*slot)) {
+        std::fprintf(stderr,
+                     "satellite: IOHIDUserDevice refused the priming report for serial=%u; "
+                     "the pad reads as idle only from its first real frame\n",
+                     serial);
+    }
 
     slots_.emplace(serial, std::move(slot));
     return true;
@@ -324,14 +342,18 @@ bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
     const long rc = dispatch_semaphore_wait(slot->cancelled,
                                             dispatch_time(DISPATCH_TIME_NOW, kCancelTimeoutNs));
     if (rc != 0) {
-        // Unconfirmed teardown: deliberately leak the refs (freeing them under
-        // a possibly-live callback risks a use-after-free) and report failure
-        // so SessionService quarantines the serial.
+        // Unconfirmed teardown: the refs are never released (freeing them
+        // under a possibly-live callback risks a use-after-free), and failure
+        // is reported so SessionService quarantines the serial. The slot moves
+        // to the quarantine list so the intent is ownership, not a leak: the
+        // struct is reclaimed with the adapter, the kernel device it names is
+        // not, and no submit can reach it (it is out of the map).
         std::fprintf(stderr,
                      "satellite: IOHIDUserDevice cancel timed out for serial=%u; "
                      "serial will be quarantined\n",
                      serial);
-        (void)slot.release();
+        std::lock_guard<std::mutex> lk(mtx_);
+        quarantined_.push_back(std::move(slot));
         return false;
     }
     CFRelease(slot->device);

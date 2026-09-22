@@ -363,6 +363,9 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
     }
 
     GitHubAsset asset;
+    // False only for the assetless Snap/Flatpak case below: every other
+    // install type fails the call when its asset is missing.
+    bool haveAsset = true;
     std::string manual;
     InstallMethod method = InstallMethod::SelfInstall;
     switch (installType_) {
@@ -406,7 +409,7 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         // An AppImage asset, when the release has one, supplies release metadata
         // only -- its absence is not an error, because neither channel consumes
         // GitHub assets at all.
-        (void)pickAppImageAsset(pick, asset);
+        haveAsset = pickAppImageAsset(pick, asset);
         method = InstallMethod::Manual;
         manual = (installType_ == InstallType::Snap)
                      ? "sudo snap refresh satellite"
@@ -435,7 +438,7 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
     out.assetSize = asset.size;
     // Skip the SHA256SUMS round-trip when no asset was resolved (snap/flatpak
     // with an assetless release): looking up "" can only ever miss.
-    out.assetSha256 = asset.name.empty() ? std::string() : fetchAssetDigest(pick, asset.name);
+    out.assetSha256 = haveAsset ? fetchAssetDigest(pick, asset.name) : std::string();
     out.releaseNotes = pick.body.size() > 8192 ? pick.body.substr(0, 8192) + "..." : pick.body;
     out.htmlUrl = pick.htmlUrl;
     out.publishedAtEpoch = isoToEpoch(pick.publishedAt);

@@ -98,7 +98,7 @@ class GamepadAdapter : public IGamepadPort {
 
     void startReader(uint32_t serial, Device& dev); // caller holds mtx_
     void stopReader(uint32_t serial);               // caller holds mtx_
-    void readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4);
+    void readerLoop(uint32_t serial, int fd, int wakeFd);
 
     // Switch Pro has a distinct evdev layout (Nintendo A/B + X/Y swap, ZL/ZR as
     // buttons); caller holds mtx_.

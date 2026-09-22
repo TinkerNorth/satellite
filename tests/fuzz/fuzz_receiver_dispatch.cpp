@@ -37,6 +37,7 @@
 #include <sodium.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -90,6 +91,25 @@ FuzzLog g_log;
 satellite::audio::OpusCodecFactory g_audioCodecs;
 SessionService* g_svc = nullptr;
 uint32_t g_token = 0;
+
+// What the dispatched inputs did. The standalone driver prints them so a run
+// that never reached a handler is visible as such; under libFuzzer they are
+// simply kept.
+struct Tally {
+    uint64_t gamepadSubmitted = 0;
+    uint64_t gamepadRefused = 0;
+    uint64_t innerHandled = 0;
+    uint64_t innerDropped = 0;
+};
+Tally g_tally;
+
+// Invariant violations are crashes on purpose: that is the one signal a
+// fuzzer reports.
+void require(bool ok, const char* what) {
+    if (ok) return;
+    std::fprintf(stderr, "fuzz_receiver_dispatch: invariant broken: %s\n", what);
+    std::abort();
+}
 
 // Mirror receiver.cpp's recv buffer: header(8) + ciphertext, and ciphertext
 // carries a 16-byte tag, so the plaintext an attacker can steer is capped at
@@ -151,16 +171,31 @@ void parseAndDispatch(uint32_t token, uint32_t counter, const uint8_t* plaintext
         uint8_t ctrlIdx = payload[0];
         GamepadReport report;
         std::memcpy(&report, payload + 1, sizeof(GamepadReport));
-        (void)g_svc->handleGamepadDataAndUpdate(token, counter, senderIPv4, senderPort, ctrlIdx,
-                                                report);
+        if (g_svc->handleGamepadDataAndUpdate(token, counter, senderIPv4, senderPort, ctrlIdx,
+                                              report)) {
+            g_tally.gamepadSubmitted++;
+        } else {
+            g_tally.gamepadRefused++;
+        }
     } else {
         g_svc->updatePostDecryptV4(token, counter, senderIPv4, senderPort);
-        (void)dispatchInnerMessage(*g_svc, token, msgType, payload, msgLen);
+        const DispatchResult cold = dispatchInnerMessage(*g_svc, token, msgType, payload, msgLen);
+        // The fused fast path above and the dispatcher's own length guard must
+        // agree on what a gamepad frame is: anything routed here is not one.
+        require(!cold.wasGamepadData, "dispatcher accepted a gamepad frame the fast path refused");
+        if (cold.handled) {
+            g_tally.innerHandled++;
+        } else {
+            g_tally.innerDropped++;
+        }
     }
 
     // Same bytes against a token nobody owns: every handler's lookup-miss
-    // branch must be as crash-free as the hit path.
-    (void)dispatchInnerMessage(*g_svc, token ^ 0x5A5A5A5Au, msgType, payload, msgLen);
+    // branch must be as crash-free as the hit path, and nothing may report a
+    // report as submitted on a session that does not exist.
+    const DispatchResult miss =
+        dispatchInnerMessage(*g_svc, token ^ 0x5A5A5A5Au, msgType, payload, msgLen);
+    require(!(miss.wasGamepadData && miss.gamepadOk), "a gamepad frame landed on an unowned token");
 }
 
 } // namespace
@@ -212,9 +247,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // the real token with an unauthenticated body (AEAD must reject; the
     // rejection path must be crash-free). A forged tag passing is 2^-128.
     {
+        // The harness owns exactly one session, so a lookup on any other
+        // token must miss; a hit would mean key material for a token nobody
+        // was ever handed.
         uint8_t bogusKey[CRYPTO_KEY_SIZE];
         uint32_t bogusLast = 0;
-        (void)g_svc->getDecryptInfo(g_token ^ 0xA5A5A5A5u, bogusKey, bogusLast);
+        require(!g_svc->getDecryptInfo(g_token ^ 0xA5A5A5A5u, bogusKey, bogusLast),
+                "decrypt info returned for a token nobody owns");
 
         if (innerLen >= (size_t)AUTH_TAG_SIZE) {
             uint8_t hostile[MAX_DATAGRAM];
@@ -241,12 +280,19 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 #include <fstream>
 #include <string>
 
+// libFuzzer reserves every non-zero return for itself and this harness never
+// produces one, so a non-zero here is a harness bug, reported like any other
+// broken invariant.
+static void runInput(const uint8_t* data, size_t size) {
+    require(LLVMFuzzerTestOneInput(data, size) == 0, "harness returned non-zero");
+}
+
 static int runOneFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return 0;
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                                std::istreambuf_iterator<char>());
-    (void)LLVMFuzzerTestOneInput(bytes.empty() ? nullptr : bytes.data(), bytes.size());
+    runInput(bytes.empty() ? nullptr : bytes.data(), bytes.size());
     return 1;
 }
 
@@ -283,13 +329,17 @@ int main(int argc, char** argv) {
         uint8_t buf[300];
         size_t len = next() % (sizeof(buf) + 1);
         for (size_t i = 0; i < len; i++) buf[i] = static_cast<uint8_t>(next());
-        (void)LLVMFuzzerTestOneInput(buf, len);
+        runInput(buf, len);
         swept++;
     }
 
     std::printf("fuzz_receiver_dispatch (standalone): %d corpus inputs + %d sweep inputs, "
-                "no crashes\n",
-                replayed, swept);
+                "no crashes; gamepad frames %llu submitted / %llu refused, other messages "
+                "%llu handled / %llu dropped\n",
+                replayed, swept, static_cast<unsigned long long>(g_tally.gamepadSubmitted),
+                static_cast<unsigned long long>(g_tally.gamepadRefused),
+                static_cast<unsigned long long>(g_tally.innerHandled),
+                static_cast<unsigned long long>(g_tally.innerDropped));
     return 0;
 }
 #endif

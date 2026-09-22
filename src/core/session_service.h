@@ -359,8 +359,10 @@ class SessionService {
     // they only ever see frames that belong to a bound, capable slot.
     // Inbound: reorder window, then decode (FEC on a gap that has a carrier,
     // concealment otherwise), then the pad's mic endpoint. False means the
-    // window refused the packet -- late, duplicate or malformed.
-    bool deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const uint8_t* opus, size_t opusLen);
+    // window refused the packet -- late, duplicate or malformed. `conn` owns
+    // `ctrl`; it carries the once-per-session log flags.
+    bool deliverMicAudioLocked(Connection& conn, Controller& ctrl, uint16_t seq,
+                               const uint8_t* opus, size_t opusLen);
     // The two outbound lanes share one shape (stereo, 20 ms, own seq) and one
     // code path; this picks the encoder, the counters and the wire message.
     enum class OutboundAudioLane { Speaker, Haptic };
