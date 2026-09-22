@@ -183,15 +183,6 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/updater_adapter.mm
 )
 
-# IOKit/HID APIs the adapter uses are deprecation-prone across SDKs; the app
-# target suppresses target-wide, so every test target compiling this TU needs
-# the same or the warnings-as-errors macOS lane breaks. Source-scoped: it
-# applies wherever the TU is compiled without loosening whole targets.
-if(APPLE)
-    set_source_files_properties(src/platform/macos/mac_hid_gamepad_adapter.cpp
-        PROPERTIES COMPILE_OPTIONS -Wno-deprecated-declarations)
-endif()
-
 # Linux-only infrastructure.
 set(SATELLITE_LINUX_SOURCES
     src/platform/linux/main.cpp
@@ -488,12 +479,16 @@ elseif(APPLE)
     target_link_libraries(satellite PRIVATE
         "-framework AppKit"
         "-framework Foundation"
+        # Pairing-request banners (src/platform/macos/tray.mm): the
+        # UNUserNotificationCenter API, which needs the bundle identifier the
+        # MACOSX_BUNDLE properties below give the .app.
+        "-framework UserNotifications"
         # Virtual-DS4 backend: IOHIDUserDevice + CF property dictionaries.
         "-framework IOKit"
         "-framework CoreFoundation"
     )
 
-    target_compile_options(satellite PRIVATE -O2 -Wall -Wextra -Wno-deprecated-declarations)
+    target_compile_options(satellite PRIVATE -O2 -Wall -Wextra)
 
     # Keep the MACOSX_BUNDLE wrapper but drop the .app next to the source tree,
     # matching the Windows build's output convention.

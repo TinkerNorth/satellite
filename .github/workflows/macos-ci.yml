@@ -17,7 +17,11 @@ concurrency:
 jobs:
   ci:
     name: Build, test, lint, format
-    runs-on: macos-14
+    # Homebrew supports the three current macOS releases and warns on every
+    # command once a runner image ages out of that window (macOS 14 did in
+    # 2026); this lane also builds against that image's SDK (15). Bump this
+    # together with CONTRIBUTING.md.
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
@@ -27,7 +31,11 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install cmake pkg-config libsodium opus
+          # The runner image ships some of these already, and `brew install`
+          # of a present formula prints a warning; install only the missing.
+          for formula in cmake pkg-config libsodium opus; do
+            brew list --versions "$formula" > /dev/null 2>&1 || brew install "$formula"
+          done
 
       # Same pin as linux-ci.yml: a floating brew clang-format diverges from
       # the Linux lane on every LLVM bump. venv instead of pipx — the macOS
@@ -89,3 +97,5 @@ jobs:
           name: satellite-macos-stub.app
           path: satellite.app
           retention-days: 14
+          # A missing bundle is a failed lane, not a warning annotation.
+          if-no-files-found: error
