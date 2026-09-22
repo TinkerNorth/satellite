@@ -132,3 +132,5 @@ jobs:
           name: satellite-windows-x64
           path: satellite.exe
           retention-days: 14
+          # A missing binary is a failed lane, not a warning annotation.
+          if-no-files-found: error
