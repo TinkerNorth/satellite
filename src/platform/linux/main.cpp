@@ -116,10 +116,9 @@ static gboolean onTraySignal(gpointer) {
 }
 #endif
 
-int main(int argc, const char* argv[]) {
-    (void)argc;
-    (void)argv;
-
+// No command line: everything is configured through the web UI and the
+// config file, so the entry point takes none.
+int main() {
     if (!netInit()) {
         std::fprintf(stderr, "Failed to initialize network subsystem\n");
         return 1;

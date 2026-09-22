@@ -16,10 +16,21 @@
 #include <thread>
 #include <vector>
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-function-type"
-
 extern void logMsg(LogLevel level, const std::string& source, const std::string& message);
+
+namespace {
+
+// GetProcAddress hands back FARPROC, and casting that straight to the real
+// signature is what -Wcast-function-type exists to flag. GCC documents
+// `void (*)()` as the one function type that matches everything, so the
+// conversion goes through it: no pragma, and the warning stays armed for the
+// rest of the file.
+template <typename Fn> Fn procAddress(HMODULE module, const char* name) {
+    using Anything = void (*)();
+    return reinterpret_cast<Fn>(reinterpret_cast<Anything>(GetProcAddress(module, name)));
+}
+
+} // namespace
 
 namespace lifecycle {
 
@@ -356,7 +367,7 @@ void registerForRestart() {
     typedef HRESULT(WINAPI * RAR)(PCWSTR, DWORD);
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     if (!k32) return;
-    RAR rar = reinterpret_cast<RAR>(GetProcAddress(k32, "RegisterApplicationRestart"));
+    RAR rar = procAddress<RAR>(k32, "RegisterApplicationRestart");
     if (!rar) return;
     rar(L"/restart", RESTART_NO_CRASH | RESTART_NO_HANG);
 }
@@ -366,7 +377,7 @@ void hardenDllSearchPath() {
     typedef BOOL(WINAPI * SDDD)(DWORD);
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     if (!k32) return;
-    SDDD sddd = reinterpret_cast<SDDD>(GetProcAddress(k32, "SetDefaultDllDirectories"));
+    SDDD sddd = procAddress<SDDD>(k32, "SetDefaultDllDirectories");
     if (sddd) {
         // 0x00000800 = LOAD_LIBRARY_SEARCH_SYSTEM32
         // 0x00000200 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR
@@ -380,7 +391,7 @@ void applyRuntimeMitigations() {
     typedef BOOL(WINAPI * SPMP)(int, PVOID, SIZE_T);
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     if (!k32) return;
-    SPMP set = reinterpret_cast<SPMP>(GetProcAddress(k32, "SetProcessMitigationPolicy"));
+    SPMP set = procAddress<SPMP>(k32, "SetProcessMitigationPolicy");
     if (!set) return;
 
     // ProcessImageLoadPolicy (4): refuse remote/low-IL image loads (stops the
@@ -473,5 +484,3 @@ void stopFileLogger() {
 }
 
 } // namespace lifecycle
-
-#pragma GCC diagnostic pop

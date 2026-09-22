@@ -518,9 +518,8 @@ bool WindowsUpdaterAdapter::verifyArtifact(const std::string& localPath, const U
     return true;
 }
 
-bool WindowsUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
+bool WindowsUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& /*info*/,
                                         std::string& outError) {
-    (void)info;
     // /OTA (installer.iss WantsOTARelaunch) relaunches satellite.exe after a
     // silent install; /CLOSEAPPLICATIONS lets Inno's Restart Manager close us
     // so the .exe isn't locked during the write. /SUPPRESSMSGBOXES keeps a

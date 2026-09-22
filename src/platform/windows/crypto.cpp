@@ -51,11 +51,7 @@ std::string sha256hex(const std::string& input) {
     BCryptFinishHash(hHash, hash, 32, 0);
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
-    char hex[65];
-    for (int i = 0; i < 32; i++)
-        (void)snprintf(hex + static_cast<ptrdiff_t>(i) * 2, 3, "%02x", hash[i]);
-    hex[64] = 0;
-    return std::string(hex);
+    return hexEncode(hash, sizeof(hash));
 }
 
 std::string dpapiEncrypt(const std::string& plaintext) {

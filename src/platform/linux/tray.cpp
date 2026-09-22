@@ -112,14 +112,12 @@ static void applyIcon(AppIndicator* ind) {
 }
 
 #ifdef SATELLITE_HAS_LIBNOTIFY
-static void onPairAccept(NotifyNotification*, char* action, gpointer user_data) {
-    (void)action;
+static void onPairAccept(NotifyNotification*, char* /*action*/, gpointer user_data) {
     const char* id = static_cast<const char*>(user_data);
     if (id != nullptr) confirmPairing(id);
 }
 
-static void onPairReject(NotifyNotification*, char* action, gpointer user_data) {
-    (void)action;
+static void onPairReject(NotifyNotification*, char* /*action*/, gpointer user_data) {
     const char* id = static_cast<const char*>(user_data);
     if (id != nullptr) declinePairing(id);
 }
