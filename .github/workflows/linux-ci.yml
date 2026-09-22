@@ -175,9 +175,10 @@ jobs:
     name: Build reproducibility
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # A gate, on pushes and PRs alike: two Release builds of the same tree
-    # must produce the same satellite binary. Drift is a failure with the
-    # diffoscope report in the log, not a summary line nobody reads.
+    # A gate, on pushes and PRs alike: two Release builds of the same tree,
+    # from differently named build directories, must produce the same
+    # satellite binary. Drift is a failure with the diffoscope report in the
+    # log, not a summary line nobody reads.
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -190,25 +191,28 @@ jobs:
             libcurl4-openssl-dev libopus-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev diffoscope
 
-      # Both builds run from the same build directory name: the path of the
-      # build tree is an input like any other (it reaches the compiler as the
-      # working directory), so it is held constant rather than varied.
+      # The build directory is named differently each time on purpose: it is
+      # the compiler's working directory, and this build (Release, no DSN, so
+      # no -g, and nothing generated into the tree) gives the binary no
+      # legitimate reason to carry it. A build tree whose name leaks into the
+      # output is a defect this job exists to catch, not an input to hold
+      # constant.
       - name: Build twice and diff
         shell: bash
         run: |
           set -euo pipefail
           for run in A B; do
-            rm -rf build-repro
-            cmake -S . -B build-repro -DCMAKE_BUILD_TYPE=Release \
+            cmake -S . -B "build-${run}" -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
-            cmake --build build-repro --target satellite -j "$(nproc)"
+            cmake --build "build-${run}" --target satellite -j "$(nproc)"
             mv satellite "satellite-${run}"
+            rm -rf "build-${run}"
           done
           if cmp -s satellite-A satellite-B; then
-            echo "satellite Linux Release build is bit-identical across two runs."
+            echo "satellite Linux Release build is bit-identical across two runs and build directories."
             exit 0
           fi
-          echo "::error::satellite Linux Release build is NOT bit-identical across two runs."
+          echo "::error::satellite Linux Release build is NOT bit-identical across two runs and build directories."
           # diffoscope exits 1 when it finds differences, which is the expected
           # outcome here; any other status means it produced no report.
           if diffoscope --no-progress satellite-A satellite-B; then
