@@ -35,8 +35,7 @@ std::vector<satellite::BackendRuntimeStatus> enumerateBackends() {
         {BACKEND_ID_UINPUT, s.available, s.errorCode ? std::string(s.errorCode) : std::string()}};
 }
 
-bool installBundledDriver(const std::string& backendId, std::string& outError) {
-    (void)backendId;
+bool installBundledDriver(const std::string& /*backendId*/, std::string& outError) {
     outError = "This host ships no installable driver";
     return false;
 }

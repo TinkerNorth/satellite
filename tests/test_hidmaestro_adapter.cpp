@@ -651,8 +651,6 @@ static void test_motion_support_matrix() {
     EXPECT(adapter.supportsMotionForType(CONTROLLER_TYPE_PLAYSTATION));
     EXPECT(adapter.supportsMotionForType(CONTROLLER_TYPE_DUALSENSE));
     EXPECT(adapter.supportsMotionForType(CONTROLLER_TYPE_SWITCHPRO));
-    GamepadReport rpt{};
-    (void)rpt;
     MotionReport motion{};
     FakeProvisioner prov2;
     HidMaestroAdapter adapter2(prov2);

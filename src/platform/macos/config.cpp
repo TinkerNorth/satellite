@@ -3,12 +3,19 @@
 
 #include "config_posix.h"
 
+#include <fcntl.h>
 #include <mach-o/dyld.h>
+#include <spawn.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <climits>
+#include <cstring>
+
+extern char** environ;
 
 static std::string appSupportDir() {
     std::string dir = homeDir() + "/Library/Application Support/satellite";
@@ -60,16 +67,51 @@ static std::string launchAgentPath() {
 // test builds: the platform suite redirects HOME into a tmpdir to exercise the
 // plist contract hermetically, and `launchctl load -w` would still mutate the
 // REAL launchd override database (keyed by label, not by path).
-static void launchctlSetLoaded(bool load, const std::string& plist) {
 #ifdef SATELLITE_BUILD_TESTS
-    (void)load;
-    (void)plist;
+static void launchctlSetLoaded(bool /*load*/, const std::string& /*plist*/) {}
 #else
-    std::string cmd = std::string("/bin/launchctl ") + (load ? "load" : "unload") + " -w " + plist +
-                      " >/dev/null 2>&1";
-    (void)system(cmd.c_str());
-#endif
+static void launchctlSetLoaded(bool load, const std::string& plist) {
+    // posix_spawn rather than system(): no shell, so the plist path is an
+    // argument and never something to quote, and the exit status is ours to
+    // read. launchctl's own chatter still goes to /dev/null.
+    const char* verb = load ? "load" : "unload";
+    const char* argv[] = {"/bin/launchctl", verb, "-w", plist.c_str(), nullptr};
+    const std::string what = std::string("launchctl ") + verb + " -w " + plist;
+
+    posix_spawn_file_actions_t actions;
+    int rc = posix_spawn_file_actions_init(&actions);
+    if (rc != 0) {
+        logMsg(LogLevel::WARN, "config", what + " could not start: " + std::strerror(rc));
+        return;
+    }
+    pid_t pid = 0;
+    rc = posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    if (rc == 0) {
+        rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    }
+    if (rc == 0) {
+        rc = posix_spawn(&pid, argv[0], &actions, nullptr, const_cast<char* const*>(argv), environ);
+    }
+    posix_spawn_file_actions_destroy(&actions);
+    if (rc != 0) {
+        logMsg(LogLevel::WARN, "config", what + " could not start: " + std::strerror(rc));
+        return;
+    }
+
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        const int err = errno;
+        logMsg(LogLevel::WARN, "config", what + ": waitpid failed: " + std::strerror(err));
+    } else if (!WIFEXITED(status)) {
+        logMsg(LogLevel::WARN, "config", what + " was terminated by a signal");
+    } else if (WEXITSTATUS(status) != 0) {
+        logMsg(LogLevel::WARN, "config",
+               what + " failed with exit status " + std::to_string(WEXITSTATUS(status)));
+    }
 }
+#endif
 
 void setAutoStart(bool enable) {
     std::string plist = launchAgentPath();

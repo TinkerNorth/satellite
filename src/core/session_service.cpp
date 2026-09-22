@@ -40,11 +40,15 @@ SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogP
     });
     backend_.setPlayerLedsCallback(
         [this](uint32_t serial, uint8_t ledMask) { handlePlayerLedsFromBackend(serial, ledMask); });
+    // The two audio handlers report whether a frame went out, which the tests
+    // pin; the sinks have nobody to tell. Every reason for a false is either a
+    // gate that is meant to be silent (policy off, no capable sender, a stray
+    // serial) or already counted in the audio stats (contention, encode).
     backend_.setSpeakerAudioCallback([this](uint32_t serial, const int16_t* pcm, size_t frames) {
-        (void)handleSpeakerAudioFromBackend(serial, pcm, frames);
+        handleSpeakerAudioFromBackend(serial, pcm, frames);
     });
     backend_.setHapticAudioCallback([this](uint32_t serial, const int16_t* pcm, size_t frames) {
-        (void)handleHapticAudioFromBackend(serial, pcm, frames);
+        handleHapticAudioFromBackend(serial, pcm, frames);
     });
     backend_.setMicLedCallback(
         [this](uint32_t serial, uint8_t state) { handleMicLedFromBackend(serial, state); });
@@ -1149,7 +1153,7 @@ bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t se
     }
     ctrl.micPacketsInWindow++;
 
-    return deliverMicAudioLocked(ctrl, seq, opus, opusLen);
+    return deliverMicAudioLocked(conn, ctrl, seq, opus, opusLen);
 }
 
 ControllerAudio& SessionService::ensureControllerAudioLocked(Controller& ctrl) {
@@ -1157,8 +1161,8 @@ ControllerAudio& SessionService::ensureControllerAudioLocked(Controller& ctrl) {
     return *ctrl.audio;
 }
 
-bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const uint8_t* opus,
-                                           size_t opusLen) {
+bool SessionService::deliverMicAudioLocked(Connection& conn, Controller& ctrl, uint16_t seq,
+                                           const uint8_t* opus, size_t opusLen) {
     ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
     const AudioJitterWindow::Result pushed = audio.micWindow.push(seq, opus, opusLen);
     // A frame whose slot has already been played (or concealed past) is worse
@@ -1203,10 +1207,19 @@ bool SessionService::deliverMicAudioLocked(Controller& ctrl, uint16_t seq, const
             decoded = audio.micDecoder->conceal(pcm, AUDIO_FRAME_SAMPLES);
             if (decoded > 0) bumpAudio(audio_.micConcealed);
         }
+        if (decoded == 0) continue;
         // A backend with no mic endpoint on this serial returns false, which is
         // not an error: senders keep streaming and the pad simply has nowhere
-        // to put it (IGamepadPort::submitMicAudioPcm).
-        if (decoded > 0) (void)backend_.submitMicAudioPcm(ctrl.serialNo, pcm, decoded);
+        // to put it (IGamepadPort::submitMicAudioPcm). The client cannot see
+        // that either, so it gets one line per session, like the drop causes.
+        if (backend_.submitMicAudioPcm(ctrl.serialNo, pcm, decoded)) continue;
+        if ((conn.micDropLogged & MIC_DROP_LOG_NO_SINK) == 0) {
+            conn.micDropLogged |= MIC_DROP_LOG_NO_SINK;
+            log_.logMsg(LogLevel::INFO, "service",
+                        "Mic audio from " + conn.deviceName + " controller #" +
+                            std::to_string(ctrl.index) +
+                            " decodes but the emulated pad has no microphone endpoint");
+        }
     }
     return true;
 }

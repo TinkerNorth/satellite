@@ -193,8 +193,9 @@ void test_decodeRejectsMalformedInput() {
     std::vector<int16_t> out(MIC_FRAME * 2, 0);
     const uint8_t garbage[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     // Not asserting failure: some byte strings ARE valid Opus. Asserting only
-    // that nothing reads out of bounds and the decoder survives.
-    (void)dec->decode(garbage, sizeof(garbage), out.data(), out.size());
+    // that nothing reads out of bounds, nothing is written past the capacity
+    // handed over, and the decoder survives.
+    EXPECT(dec->decode(garbage, sizeof(garbage), out.data(), out.size()) <= out.size());
     EXPECT_EQ(dec->decode(nullptr, 4, out.data(), out.size()), (size_t)0);
     EXPECT_EQ(dec->decode(garbage, 0, out.data(), out.size()), (size_t)0);
     EXPECT_EQ(dec->decode(garbage, sizeof(garbage), nullptr, out.size()), (size_t)0);
@@ -205,7 +206,7 @@ void test_decodeRejectsMalformedInput() {
     uint8_t packet[MAX_PACKET];
     const size_t bytes = enc->encode(src.data(), MIC_FRAME, packet, sizeof(packet));
     EXPECT(bytes > 4);
-    (void)dec->decode(packet, bytes / 2, out.data(), out.size()); // truncated
+    EXPECT(dec->decode(packet, bytes / 2, out.data(), out.size()) <= out.size()); // truncated
     // Whatever the malformed input did, a real packet still decodes.
     EXPECT_EQ(dec->decode(packet, bytes, out.data(), out.size()), MIC_FRAME);
 }

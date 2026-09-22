@@ -15,6 +15,8 @@
 
 #include <sodium.h>
 
+#include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <string>
 
@@ -40,6 +42,9 @@ static void testRandomHelpers() {
     TEST("randomHex: draws fresh bytes per call");
     EXPECT(randomHex(8) != h);
 
+    TEST("randomHex: zero bytes is empty");
+    EXPECT_EQ(randomHex(0), std::string(""));
+
     TEST("randomDigits: length and charset");
     std::string d = randomDigits(4);
     EXPECT_EQ(d.size(), size_t{4});
@@ -56,6 +61,24 @@ static void testHexCodec() {
 
     TEST("hexEncode: empty input");
     EXPECT_EQ(hexEncode(in, 0), std::string(""));
+
+    TEST("hexEncode: every byte value matches printf's %02x, and decodes back");
+    // The encoder is a nibble table, not printf; this pins it to the printf
+    // rendering the callers relied on before, one byte at a time, all 256.
+    uint8_t all[256];
+    for (int i = 0; i < 256; i++) all[i] = static_cast<uint8_t>(i);
+    const std::string encoded = hexEncode(all, sizeof(all));
+    EXPECT_EQ(encoded.size(), size_t{512});
+    int mismatches = 0;
+    for (int i = 0; i < 256; i++) {
+        char ref[3];
+        EXPECT_EQ(std::snprintf(ref, sizeof(ref), "%02x", i), 2);
+        if (encoded.compare(static_cast<size_t>(i) * 2, 2, ref) != 0) mismatches++;
+    }
+    EXPECT_EQ(mismatches, 0);
+    uint8_t back[256] = {0};
+    EXPECT(hexDecode(encoded, back, sizeof(back)));
+    EXPECT_EQ(std::memcmp(back, all, sizeof(all)), 0);
 
     TEST("hexDecode: roundtrip of hexEncode");
     uint8_t out[4] = {0};
@@ -227,10 +250,10 @@ static void testPinBurnsAfterMaxFails() {
     verifyPin(pinSnapshot().currentPin); // fresh pair, fail count 0
     PinSnapshot s = pinSnapshot();
 
-    // PIN_MAX_FAILS is 5: the 5th wrong guess burns both PINs.
-    for (int i = 0; i < 5; i++) (void)verifyPin("99999");
-
     TEST("burn: five wrong guesses reset the pair");
+    // PIN_MAX_FAILS is 5: the 5th wrong guess burns both PINs. A five-digit
+    // guess can never match a four-digit PIN, so every one of them is a miss.
+    for (int i = 0; i < 5; i++) EXPECT(!verifyPin("99999"));
     PinSnapshot burned = pinSnapshot();
     EXPECT_EQ(burned.previousPin, std::string(""));
     EXPECT_EQ(burned.currentPin.size(), size_t{4});

@@ -42,8 +42,9 @@
 //     an in-flight block contending for the hub mutex can finish, and after
 //     the cancel handler fires no further block runs, making the CFRelease
 //     safe. An unconfirmed cancel (timeout) returns false from unplugDevice
-//     so SessionService quarantines the serial; the ref is deliberately
-//     leaked rather than freed under a possibly-live callback.
+//     so SessionService quarantines the serial; the slot moves to
+//     quarantined_, whose refs are deliberately never released rather than
+//     freed under a possibly-live callback.
 #pragma once
 
 #include "core/gamepad_backend.h"
@@ -54,6 +55,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 // Compile-time availability of the IOHIDUserDevice API (public since macOS
 // 10.15; the header moved between hid/ and hidsystem/ across SDKs). Without
@@ -142,5 +144,8 @@ class MacHidGamepadAdapter : public IGamepadPort {
     mutable std::mutex mtx_;
     bool busOpen_ = false;
     std::unordered_map<uint32_t, std::unique_ptr<Slot>> slots_;
+    // Slots whose cancel never confirmed. Out of slots_, so unreachable by any
+    // submit; their kernel refs are never released (see the locking protocol).
+    std::vector<std::unique_ptr<Slot>> quarantined_;
     std::shared_ptr<CallbackHub> hub_;
 };

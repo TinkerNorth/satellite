@@ -32,8 +32,7 @@ class IGamepadPort {
     virtual bool pluginDevice(uint32_t serial, GamepadIdentity identity) = 0;
 
     virtual bool pluginDevicePreferring(uint32_t serial, GamepadIdentity identity,
-                                        const std::string& preferredBackend) {
-        (void)preferredBackend;
+                                        const std::string& /*preferredBackend*/) {
         return pluginDevice(serial, identity);
     }
 

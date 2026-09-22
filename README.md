@@ -784,9 +784,8 @@ python -m pip install clang-format==22.1.4   # Windows (pip wheel, same as CI)
 ```
 
 ```bash
-pipx install clang-format==22.1.4            # Linux (same as CI)
 python3 -m venv ~/.clang-format-venv \
-  && ~/.clang-format-venv/bin/pip install clang-format==22.1.4   # macOS (same as CI)
+  && ~/.clang-format-venv/bin/pip install clang-format==22.1.4   # Linux and macOS (same as CI)
 ```
 
 clang-tidy and cppcheck are optional extras via

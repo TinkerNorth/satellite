@@ -14,20 +14,15 @@
 #include <sodium.h>
 
 #include <chrono>
-#include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 std::string randomHex(int bytes) {
-    std::string out;
-    char buf[3];
-    for (int i = 0; i < bytes; i++) {
-        uint8_t b = 0;
-        randombytes_buf(&b, 1);
-        (void)snprintf(buf, sizeof(buf), "%02x", b);
-        out += buf;
-    }
-    return out;
+    if (bytes <= 0) return std::string();
+    std::vector<uint8_t> raw(static_cast<size_t>(bytes));
+    randombytes_buf(raw.data(), raw.size());
+    return hexEncode(raw.data(), raw.size());
 }
 
 std::string randomDigits(int n) {
@@ -116,12 +111,12 @@ PinSnapshot pinSnapshot() {
 }
 
 std::string hexEncode(const uint8_t* data, size_t len) {
+    static const char digits[] = "0123456789abcdef";
     std::string out;
     out.reserve(len * 2);
-    char buf[3];
     for (size_t i = 0; i < len; i++) {
-        (void)snprintf(buf, sizeof(buf), "%02x", data[i]);
-        out += buf;
+        out.push_back(digits[data[i] >> 4]);
+        out.push_back(digits[data[i] & 0x0F]);
     }
     return out;
 }

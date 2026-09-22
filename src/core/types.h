@@ -506,6 +506,9 @@ inline const uint8_t MIC_DROP_LOG_NO_CONTROLLER = 0x01;
 inline const uint8_t MIC_DROP_LOG_NO_CAP = 0x02;
 inline const uint8_t MIC_DROP_LOG_RATE_LIMIT = 0x04;
 inline const uint8_t MIC_DROP_LOG_HOST_DISABLED = 0x08;
+// Not a rejection: the frame passed every gate and decoded, but the emulated
+// pad on this backend has no microphone endpoint to play it into.
+inline const uint8_t MIC_DROP_LOG_NO_SINK = 0x10;
 
 struct AudioStreamCounts {
     uint64_t micAccepted = 0;

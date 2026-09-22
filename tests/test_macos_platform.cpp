@@ -18,15 +18,19 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <system_error>
 
 #include "test_util.h"
 
 // Per-test tmp dir as HOME, restored on teardown: isolates the tests from the
 // real user profile and from each other (macOS analogue of the linux TempXdg).
+// A tmpdir that cannot be removed is a failed test, not a stray directory
+// nobody hears about.
 struct TempHome {
     std::string path;
     std::string savedHome;
@@ -42,9 +46,10 @@ struct TempHome {
     }
     ~TempHome() {
         if (!path.empty()) {
-            std::string cmd = "rm -rf " + path;
-            int rc = system(cmd.c_str());
-            (void)rc;
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+            EXPECT(!ec);
+            if (ec) std::cerr << "  remove_all(" << path << "): " << ec.message() << "\n";
         }
         if (hadHome) {
             setenv("HOME", savedHome.c_str(), 1);
@@ -526,10 +531,10 @@ static void testPinBurnsAfterMaxFails() {
     verifyPin(pinSnapshot().currentPin); // fresh pair, fail count 0
     PinSnapshot s = pinSnapshot();
 
-    // PIN_MAX_FAILS is 5: the 5th wrong guess burns both PINs.
-    for (int i = 0; i < 5; i++) (void)verifyPin("99999");
-
     TEST("burn: five wrong guesses reset the pair");
+    // PIN_MAX_FAILS is 5: the 5th wrong guess burns both PINs. A five-digit
+    // guess can never match a four-digit PIN, so every one of them is a miss.
+    for (int i = 0; i < 5; i++) EXPECT(!verifyPin("99999"));
     PinSnapshot burned = pinSnapshot();
     EXPECT_EQ(burned.previousPin, std::string(""));
     EXPECT_EQ(burned.currentPin.size(), size_t{4});

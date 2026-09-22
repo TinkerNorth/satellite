@@ -82,6 +82,36 @@ bool setupAbsRes(int fd, uint16_t code, int32_t min, int32_t max, int32_t resolu
     return ::ioctl(fd, UI_ABS_SETUP, &abs) == 0;
 }
 
+// Tear down one uinput node and close its fd. close() destroys the device
+// synchronously even when UI_DEV_DESTROY fails, so removal is confirmed
+// either way; a refusal still says something about the kernel or the node, so
+// it is logged rather than lost.
+void destroyUinputNode(int fd, const std::string& node) {
+    if (::ioctl(fd, UI_DEV_DESTROY) != 0) {
+        const int err = errno;
+        logMsg(LogLevel::WARN, "uinput",
+               "UI_DEV_DESTROY on the " + node + ": " + std::strerror(err));
+    }
+    ::close(fd);
+}
+
+std::string nodeName(const char* kind, uint32_t serial) {
+    return std::string(kind) + " node of serial " + std::to_string(serial);
+}
+
+// Complete one force-feedback handshake (UI_END_FF_UPLOAD / UI_END_FF_ERASE).
+// The kernel keeps the request pending until it is acked, and rejects future
+// uploads on a pad whose ack it never got, so a failure here is the reason a
+// game later reports "no haptics".
+void endFfRequest(int fd, unsigned long request, void* arg, const char* what, uint32_t serial) {
+    if (::ioctl(fd, request, arg) != 0) {
+        const int err = errno;
+        logMsg(LogLevel::WARN, "uinput",
+               std::string(what) + " ack for serial " + std::to_string(serial) +
+                   " failed: " + std::strerror(err));
+    }
+}
+
 } // namespace
 
 GamepadAdapter::~GamepadAdapter() { closeBus(); }
@@ -110,23 +140,13 @@ void GamepadAdapter::closeBus() {
 
     std::lock_guard<std::mutex> lk(mtx_);
     for (auto& [serial, dev] : devices_) {
-        if (dev.fd >= 0) {
-            (void)::ioctl(dev.fd, UI_DEV_DESTROY);
-            ::close(dev.fd);
-        }
-        if (dev.motionFd >= 0) {
-            (void)::ioctl(dev.motionFd, UI_DEV_DESTROY);
-            ::close(dev.motionFd);
-        }
-        if (dev.touchFd >= 0) {
-            (void)::ioctl(dev.touchFd, UI_DEV_DESTROY);
-            ::close(dev.touchFd);
-        }
+        if (dev.fd >= 0) destroyUinputNode(dev.fd, nodeName("gamepad", serial));
+        if (dev.motionFd >= 0) destroyUinputNode(dev.motionFd, nodeName("motion", serial));
+        if (dev.touchFd >= 0) destroyUinputNode(dev.touchFd, nodeName("touchpad", serial));
     }
     // Pointer node is host-global, not per-controller.
     if (relMouseFd_ >= 0) {
-        (void)::ioctl(relMouseFd_, UI_DEV_DESTROY);
-        ::close(relMouseFd_);
+        destroyUinputNode(relMouseFd_, "pointer node");
         relMouseFd_ = -1;
     }
     relMouseBtns_ = MouseButtons{};
@@ -394,17 +414,12 @@ bool GamepadAdapter::unplugDevice(uint32_t serial) {
     stopReader(serial);                    // joins reader thread; safe to take the fd after
     it = devices_.find(serial);
     if (it == devices_.end()) return true; // defensive: stopReader doesn't erase
-    if (it->second.fd >= 0) {
-        (void)::ioctl(it->second.fd, UI_DEV_DESTROY);
-        ::close(it->second.fd);
-    }
+    if (it->second.fd >= 0) destroyUinputNode(it->second.fd, nodeName("gamepad", serial));
     if (it->second.motionFd >= 0) {
-        (void)::ioctl(it->second.motionFd, UI_DEV_DESTROY);
-        ::close(it->second.motionFd);
+        destroyUinputNode(it->second.motionFd, nodeName("motion", serial));
     }
     if (it->second.touchFd >= 0) {
-        (void)::ioctl(it->second.touchFd, UI_DEV_DESTROY);
-        ::close(it->second.touchFd);
+        destroyUinputNode(it->second.touchFd, nodeName("touchpad", serial));
     }
     devices_.erase(it);
     // close(fd) destroys a uinput device synchronously even if UI_DEV_DESTROY
@@ -748,9 +763,8 @@ void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
     dev.readerRunning.store(true, std::memory_order_release);
     int devFd = dev.fd;
     int wakeFd = dev.wakePipeRead;
-    bool isDS4 = dev.identity == GamepadIdentity::DS4 || dev.identity == GamepadIdentity::DualSense;
-    dev.readerThread = std::thread(
-        [this, serial, devFd, wakeFd, isDS4] { readerLoop(serial, devFd, wakeFd, isDS4); });
+    dev.readerThread =
+        std::thread([this, serial, devFd, wakeFd] { readerLoop(serial, devFd, wakeFd); });
 }
 
 // Caller holds mtx_. Extract under the lock, drop it for the join, retake it:
@@ -782,9 +796,10 @@ void GamepadAdapter::stopReader(uint32_t serial) {
     mtx_.lock();
 }
 
-void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4) {
-    (void)isDS4; // FF_RUMBLE shape is identical for Xbox and DS4 profiles.
-
+// The loop is profile-agnostic: FF_RUMBLE has the same shape on every
+// identity this adapter publishes, so the reader never needs to know which
+// one it serves.
+void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd) {
     while (true) {
         struct pollfd pfds[2]{};
         pfds[0].fd = fd;
@@ -825,7 +840,7 @@ void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4)
                     auto it = devices_.find(serial);
                     if (it != devices_.end()) it->second.effects[effectId] = m;
                 }
-                (void)::ioctl(fd, UI_END_FF_UPLOAD, &upload);
+                endFfRequest(fd, UI_END_FF_UPLOAD, &upload, "UI_END_FF_UPLOAD", serial);
             }
         } else if (ev.type == EV_UINPUT && ev.code == UI_FF_ERASE) {
             struct uinput_ff_erase erase{};
@@ -837,7 +852,7 @@ void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd, bool isDS4)
                     auto it = devices_.find(serial);
                     if (it != devices_.end()) it->second.effects.erase(erase.effect_id);
                 }
-                (void)::ioctl(fd, UI_END_FF_ERASE, &erase);
+                endFfRequest(fd, UI_END_FF_ERASE, &erase, "UI_END_FF_ERASE", serial);
             }
         } else if (ev.type == EV_FF) {
             int effectId = ev.code;

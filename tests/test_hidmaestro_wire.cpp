@@ -41,8 +41,12 @@ static void test_layout_offsets() {
     EXPECT_EQ(INPUT_EXT_DATA_OFFSET, (size_t)282);
     EXPECT_EQ(INPUT_EXT_DATA_CAPACITY, (size_t)80);
     EXPECT_EQ(INPUT_SECTION_SIZE, (size_t)362);
-    EXPECT(INPUT_DATA_OFFSET + INPUT_DATA_CAPACITY <= INPUT_GIP_OFFSET);
-    EXPECT(INPUT_EXT_DATA_OFFSET + INPUT_EXT_DATA_CAPACITY <= INPUT_SECTION_SIZE);
+    // Pure layout arithmetic, so it is pinned at compile time: a section whose
+    // regions overlap does not get as far as running the suite.
+    static_assert(INPUT_DATA_OFFSET + INPUT_DATA_CAPACITY <= INPUT_GIP_OFFSET,
+                  "legacy report data must end before the GIP block");
+    static_assert(INPUT_EXT_DATA_OFFSET + INPUT_EXT_DATA_CAPACITY <= INPUT_SECTION_SIZE,
+                  "extended report data must fit inside the input section");
 
     TEST("output ring offsets match the driver contract");
     EXPECT_EQ(OUTPUT_RING_SLOTS, (size_t)64);

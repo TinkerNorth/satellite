@@ -90,19 +90,28 @@ jobs:
           if (-not (Test-Path satellite.exe)) { throw "satellite.exe not produced at repo root" }
           Get-Item satellite.exe | Format-List Name, Length, LastWriteTime
 
-      # Best-effort proof the CFG + CET bits actually landed in the PE header.
-      # Informational only; never fails the build (dumpbin location varies).
-      - name: Confirm CFG / CET bits (informational)
+      # The hardening this lane exists for, read back from the PE: CFG in the
+      # DLL characteristics and load config, CET shadow-stack compatibility in
+      # the extended characteristics. dumpbin comes from the same toolset
+      # vswhere resolves for the generator (scripts/windows-vs-generator.ps1),
+      # so a missing dumpbin is a broken image, not a reason to skip.
+      - name: Confirm CFG / CET bits
         shell: pwsh
-        continue-on-error: true
         run: |
-          $dumpbin = Get-ChildItem -ErrorAction SilentlyContinue -Path `
-            "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe", `
-            "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
-            Select-Object -First 1
-          if ($null -eq $dumpbin) { Write-Host "dumpbin not found; skipping check"; exit 0 }
-          & $dumpbin.FullName /headers /loadconfig satellite.exe |
-            Select-String -Pattern 'Guard|CET|Control Flow|cfInstrumented|Shadow'
+          $ErrorActionPreference = "Stop"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsRoot) { throw "vswhere found no Visual Studio installation with the C++ x64 toolset" }
+          $dumpbin = Get-ChildItem -Path (Join-Path $vsRoot "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe") |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if ($null -eq $dumpbin) { throw "dumpbin.exe not found under $vsRoot" }
+          $headers = & $dumpbin.FullName /headers satellite.exe | Out-String
+          $loadconfig = & $dumpbin.FullName /loadconfig satellite.exe | Out-String
+          $headers -split "`n" | Select-String -Pattern 'Guard|CET|Control Flow|Shadow' | ForEach-Object { $_.Line }
+          $loadconfig -split "`n" | Select-String -Pattern 'Guard|CET|Control Flow|Shadow|Instrumented' | ForEach-Object { $_.Line }
+          if ($headers -notmatch 'Control Flow Guard') { throw "satellite.exe was linked without Control Flow Guard (/GUARD:CF)" }
+          if ($loadconfig -notmatch 'CF instrumented') { throw "satellite.exe's load config does not carry CF instrumentation (/guard:cf)" }
+          if ($headers -notmatch 'CET compatible') { throw "satellite.exe was linked without CET shadow-stack compatibility (/CETCOMPAT)" }
 
       - name: Upload MSVC artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -110,3 +119,5 @@ jobs:
           name: satellite-windows-x64-msvc
           path: satellite.exe
           retention-days: 14
+          # A missing binary is a failed lane, not a warning annotation.
+          if-no-files-found: error

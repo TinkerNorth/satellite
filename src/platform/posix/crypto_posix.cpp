@@ -16,6 +16,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstring>
+
 static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static std::string base64Encode(const std::vector<uint8_t>& data) {
@@ -54,10 +57,7 @@ static std::vector<uint8_t> base64Decode(const std::string& s) {
 std::string sha256hex(const std::string& input) {
     uint8_t hash[crypto_hash_sha256_BYTES];
     crypto_hash_sha256(hash, reinterpret_cast<const uint8_t*>(input.data()), input.size());
-    char hex[65];
-    for (int i = 0; i < 32; i++) (void)snprintf(hex + i * 2, 3, "%02x", hash[i]);
-    hex[64] = 0;
-    return std::string(hex);
+    return hexEncode(hash, sizeof(hash));
 }
 
 // Local 0600 keyfile next to the config replaces DPAPI's user-scoped key.
@@ -84,7 +84,14 @@ static bool writeLocalKey(const uint8_t key[LOCAL_KEY_LEN]) {
     if (fd < 0) return false;
     ssize_t n = ::write(fd, key, LOCAL_KEY_LEN);
     ::close(fd);
-    (void)::chmod(path.c_str(), 0600);
+    // A fresh file is born 0600 from the open above; this narrows a keyfile
+    // that already existed with wider bits. The key is on disk either way, so
+    // a refusal is reported rather than treated as a failed write.
+    if (::chmod(path.c_str(), 0600) != 0) {
+        const int err = errno;
+        logMsg(LogLevel::WARN, "keystore",
+               "Could not restrict " + path + " to owner-only: " + std::strerror(err));
+    }
     return n == (ssize_t)LOCAL_KEY_LEN;
 }
 

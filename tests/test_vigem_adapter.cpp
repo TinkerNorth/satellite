@@ -275,7 +275,8 @@ static void test_ds4_ex_struct_abi() {
     TEST("DS4 EX ABI: EX submit is 71 bytes, EX report is 63, distinct from basic submit");
     EXPECT_EQ(sizeof(DS4_REPORT_EX), (size_t)63);
     EXPECT_EQ(sizeof(DS4_SUBMIT_REPORT_EX), (size_t)71);
-    EXPECT(sizeof(DS4_SUBMIT_REPORT_EX) != sizeof(DS4_SUBMIT_REPORT));
+    static_assert(sizeof(DS4_SUBMIT_REPORT_EX) != sizeof(DS4_SUBMIT_REPORT),
+                  "the EX submit must not be mistakable for the basic one by size");
     DS4_SUBMIT_REPORT_EX sr{};
     DS4_SUBMIT_REPORT_EX_INIT(&sr, 1);
     EXPECT_EQ((size_t)sr.Size, sizeof(DS4_SUBMIT_REPORT_EX)); // Size field the driver reads

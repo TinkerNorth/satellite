@@ -35,12 +35,14 @@ jobs:
       # Ubuntu 24.04 ships clang-format 18 by default, which disagrees with
       # brew's current LLVM (used by macos-ci.yml) on braced-init lists and
       # other subtle rules. Pin to a recent clang-format from PyPI so the
-      # Linux and macOS workflows agree on style.
+      # Linux and macOS workflows agree on style. A venv rather than pipx, the
+      # same way macos-ci.yml installs it: the image's pipx runs a deprecated
+      # code path of its own and warns about it on every install.
       - name: Install clang-format (pinned)
         run: |
-          pipx install clang-format==22.1.4
-          pipx ensurepath
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$HOME/.clang-format-venv"
+          "$HOME/.clang-format-venv/bin/pip" install clang-format==22.1.4
+          echo "$HOME/.clang-format-venv/bin" >> "$GITHUB_PATH"
 
       - name: Tool versions
         run: |
@@ -99,6 +101,8 @@ jobs:
           name: satellite-linux-x64
           path: satellite
           retention-days: 14
+          # A missing binary is a failed lane, not a warning annotation.
+          if-no-files-found: error
 
   headless:
     name: Verify headless fallback build
@@ -145,7 +149,8 @@ jobs:
       - name: Configure (clang, SATELLITE_FUZZ=ON)
         run: |
           CC=clang CXX=clang++ cmake -S . -B build-fuzz \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSATELLITE_FUZZ=ON
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSATELLITE_FUZZ=ON \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
           # The lane exists to run the REAL fuzzer; fail loudly if configure
           # fell back to the standalone driver instead of libFuzzer.
           grep -q "^SATELLITE_HAVE_LIBFUZZER:INTERNAL=1$" build-fuzz/CMakeCache.txt \
@@ -167,17 +172,13 @@ jobs:
             /tmp/fuzz-corpus tests/fuzz/corpus
 
   reproducibility:
-    name: Build reproducibility (advisory)
+    name: Build reproducibility
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # Advisory only: the upstream goal is bit-identical Release builds
-    # but the toolchain doesn't guarantee that yet. Surface drift in the
-    # job summary; do not block the PR. See SECURITY_HARDENING_PROMPT.md
-    # section A.5.
-    # push-only: a per-PR double-build isn't worth it, and its
-    # continue-on-error red X misreads as a PR-check failure.
-    if: github.event_name == 'push'
-    continue-on-error: true
+    # A gate, on pushes and PRs alike: two Release builds of the same tree,
+    # from differently named build directories, must produce the same
+    # satellite binary. Drift is a failure with the diffoscope report in the
+    # log, not a summary line nobody reads.
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -190,25 +191,34 @@ jobs:
             libcurl4-openssl-dev libopus-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev diffoscope
 
+      # The build directory is named differently each time on purpose: it is
+      # the compiler's working directory, and this build (Release, no DSN, so
+      # no -g, and nothing generated into the tree) gives the binary no
+      # legitimate reason to carry it. A build tree whose name leaks into the
+      # output is a defect this job exists to catch, not an input to hold
+      # constant.
       - name: Build twice and diff
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S . -B build-A -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-A -j "$(nproc)"
-          mv satellite satellite-A
-          rm -rf build-A
-          cmake -S . -B build-B -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-B -j "$(nproc)"
-          mv satellite satellite-B
-          {
-            if cmp -s satellite-A satellite-B; then
-              echo "::notice::satellite Linux Release build is bit-identical across two runs."
-            else
-              echo "::warning::satellite Linux Release build is NOT bit-identical across two runs."
-              diffoscope --no-progress satellite-A satellite-B | head -200 || true
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          for run in A B; do
+            cmake -S . -B "build-${run}" -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+            cmake --build "build-${run}" --target satellite -j "$(nproc)"
+            mv satellite "satellite-${run}"
+            rm -rf "build-${run}"
+          done
+          if cmp -s satellite-A satellite-B; then
+            echo "satellite Linux Release build is bit-identical across two runs and build directories."
+            exit 0
+          fi
+          echo "::error::satellite Linux Release build is NOT bit-identical across two runs and build directories."
+          # diffoscope exits 1 when it finds differences, which is the expected
+          # outcome here; any other status means it produced no report.
+          if diffoscope --no-progress satellite-A satellite-B; then
+            echo "::error::cmp reports a difference that diffoscope could not show"
+          fi
+          exit 1
 
   # The SDK is only built when a DSN is present, which no PR build has, so
   # this is the one lane that compiles and links the Sentry path before a
@@ -230,9 +240,12 @@ jobs:
             libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev
 
+      # Warnings-as-errors as on every other lane; CMakeLists.txt scopes it to
+      # this repository's targets, so the SDK's own build keeps its own policy.
       - name: Configure with a DSN that resolves nowhere
         run: |
           cmake -S . -B build-sentry -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
             -DSATELLITE_SENTRY_DSN="https://public@o0.ingest.sentry.invalid/0"
 
       - name: Build

@@ -22,9 +22,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #include "test_util.h"
@@ -45,13 +47,18 @@ struct TempHome {
         setenv("HOME", path.c_str(), 1);
         setenv("XDG_CONFIG_HOME", path.c_str(), 1);
     }
-    ~TempHome() {
-        if (path.rfind("/tmp/satellite-routes-", 0) == 0) {
-            std::string cmd = "rm -rf " + path;
-            int rc = system(cmd.c_str());
-            (void)rc;
-        }
+    // Called before the results are tallied so a tmpdir that cannot be removed
+    // is a failed test, not a stray directory nobody hears about; the
+    // destructor only covers the early-exit paths.
+    void cleanup() {
+        if (path.rfind("/tmp/satellite-routes-", 0) != 0) return;
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+        EXPECT(!ec);
+        if (ec) std::cerr << "  remove_all(" << path << "): " << ec.message() << "\n";
+        path.clear();
     }
+    ~TempHome() { cleanup(); }
 };
 
 struct StubGamepad : IGamepadPort {
@@ -735,6 +742,7 @@ int main() {
 
     server.stop();
     serverThread.join();
+    home.cleanup();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

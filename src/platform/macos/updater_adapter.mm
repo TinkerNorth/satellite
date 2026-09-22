@@ -99,8 +99,6 @@ class ProgressDelegate {
                  didWriteData:(int64_t)bytesWritten
             totalBytesWritten:(int64_t)totalBytesWritten
     totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
-    (void)session;
-    (void)bytesWritten;
     if (self.impl) {
         self.impl->onProgress(
             (uint64_t)totalBytesWritten,
@@ -112,7 +110,6 @@ class ProgressDelegate {
 - (void)URLSession:(NSURLSession*)session
                  downloadTask:(NSURLSessionDownloadTask*)task
     didFinishDownloadingToURL:(NSURL*)location {
-    (void)session;
     NSError* err = nil;
     [[NSFileManager defaultManager] removeItemAtURL:self.destination error:nil];
     if (![[NSFileManager defaultManager] moveItemAtURL:location
@@ -134,8 +131,6 @@ class ProgressDelegate {
 - (void)URLSession:(NSURLSession*)session
                     task:(NSURLSessionTask*)task
     didCompleteWithError:(NSError*)error {
-    (void)session;
-    (void)task;
     if (error) {
         if (error.code == NSURLErrorCancelled) {
             self.ok = NO;
@@ -356,9 +351,8 @@ bool MacOSUpdaterAdapter::verifyArtifact(const std::string& localPath, const Upd
     return true;
 }
 
-bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& info,
+bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const UpdateInfo& /*info*/,
                                       std::string& outError) {
-    (void)info;
     @autoreleasepool {
         std::string bundle = currentAppBundle();
         if (bundle.empty()) {
@@ -377,9 +371,15 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         // ditto preserves extended attributes and resource forks, required to
         // keep codesigned bundles valid.
         NSTask* task = [[NSTask alloc] init];
-        task.launchPath = @"/usr/bin/ditto";
+        task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/ditto"];
         task.arguments = @[ @"-xk", zipPath, stagingDir ];
-        [task launch];
+        NSError* launchError = nil;
+        if (![task launchAndReturnError:&launchError]) {
+            outError = std::string("ditto could not start: ") +
+                       (launchError != nil ? launchError.localizedDescription.UTF8String
+                                           : "unknown error");
+            return false;
+        }
         [task waitUntilExit];
         if (task.terminationStatus != 0) {
             outError = "ditto -xk failed";
@@ -427,9 +427,15 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
         chmod(helper.UTF8String, 0755);
 
         NSTask* run = [[NSTask alloc] init];
-        run.launchPath = @"/bin/bash";
+        run.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
         run.arguments = @[ helper ];
-        [run launch];
+        NSError* helperError = nil;
+        if (![run launchAndReturnError:&helperError]) {
+            outError = std::string("swap helper could not start: ") +
+                       (helperError != nil ? helperError.localizedDescription.UTF8String
+                                           : "unknown error");
+            return false;
+        }
 
         // Terminate so the detached helper can swap the bundle we still hold open.
         dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });

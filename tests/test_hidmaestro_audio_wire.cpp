@@ -59,9 +59,11 @@ static void test_layout_offsets() {
     EXPECT_EQ(AUDIO_SECTION_SIZE, (size_t)131464);
     EXPECT_EQ(AUDIO_SECTION_SIZE, AUDIO_RING_HEADER_SIZE + AUDIO_RING_SLOTS * AUDIO_SLOT_SIZE);
 
-    TEST("a slot holds more than either producer ever batches");
-    // 20 ms of 48 kHz stereo is 1920 interleaved samples; mono is 960.
-    EXPECT(AUDIO_SLOT_SAMPLE_CAPACITY >= 1920);
+    // A slot holds more than either producer ever batches: 20 ms of 48 kHz
+    // stereo is 1920 interleaved samples, mono is 960. Compile-time, like the
+    // capacity itself.
+    static_assert(AUDIO_SLOT_SAMPLE_CAPACITY >= 1920,
+                  "a slot must hold one 20 ms stereo window at the wire rate");
 }
 
 static void test_write_read_round_trip() {

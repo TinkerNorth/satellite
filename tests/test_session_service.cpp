@@ -15,6 +15,7 @@
 // agree with a wrong implementation cannot hide behind them.
 #include "../src/adapters/audio/opus_codec.h"
 #include "../src/core/audio/haptic_envelope.h"
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -555,7 +556,8 @@ static void test_upsert_rotation_notifiesOldTokenReplaced() {
     EXPECT_EQ(client.sessionCloseCalls, 1);
     EXPECT_EQ(client.closeNotifies[0].first, r1.token);
     EXPECT_EQ((int)client.closeNotifies[0].second, (int)CLOSE_REASON_REPLACED);
-    (void)r2;
+    // The notify names the old token; the replacement got a fresh one.
+    EXPECT(r2.token != r1.token);
 }
 
 static void test_upsert_saltAndCounterRotate() {
@@ -2216,9 +2218,12 @@ static void test_micAudio_replugRestoresAllowance() {
 
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     const auto opus = opusFrame(48);
+    // Exactly the budget gets through; the packet after it is the first drop.
+    int accepted = 0;
     for (int i = 0; i <= MIC_AUDIO_MAX_PACKETS_PER_SEC; ++i) {
-        (void)svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size());
+        if (svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
     }
+    EXPECT_EQ(accepted, MIC_AUDIO_MAX_PACKETS_PER_SEC);
     EXPECT(!svc.handleMicAudio(r.token, 0, 999, opus.data(), opus.size()));
 
     // Identity change forces a replug. Carrying the spent window onto the fresh
@@ -2240,13 +2245,13 @@ static void test_micAudio_dropLoggedOncePerSessionPerCause() {
 
     // 50 frames a second of the same mistake must not become 50 log lines.
     for (int i = 0; i < 20; ++i) {
-        (void)svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size());
+        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
 
     // A different cause is worth its own line, once.
     for (int i = 0; i < 20; ++i) {
-        (void)svc.handleMicAudio(r.token, 4, (uint16_t)i, opus.data(), opus.size());
+        EXPECT(!svc.handleMicAudio(r.token, 4, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("no such bound controller"), 1);
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
@@ -2254,7 +2259,7 @@ static void test_micAudio_dropLoggedOncePerSessionPerCause() {
     // A re-PUT rotates token/salt/key, so it is a new session: a repeat mistake
     // is diagnosable again instead of silently inheriting the old flag.
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, 0)});
-    (void)svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size());
+    EXPECT(!svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 2);
 }
 
@@ -2506,7 +2511,7 @@ static void test_audioPolicy_micOffDropsWithAReason() {
 
     TEST("audio policy: a capless sender is still told about its own mistake first");
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, 0)}, "devB", "B");
-    (void)svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size());
+    EXPECT(!svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
 
     TEST("audio policy: the mic gate is read per frame too");
@@ -2518,7 +2523,7 @@ static void test_audioPolicy_micOffDropsWithAReason() {
     // exhaust the budget a re-enabled one would need.
     micOn = false;
     for (int i = 0; i < MIC_AUDIO_MAX_PACKETS_PER_SEC * 2; i++) {
-        (void)svc.handleMicAudio(r.token, 0, (uint16_t)(200 + i), opus.data(), opus.size());
+        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)(200 + i), opus.data(), opus.size()));
     }
     micOn = true;
     EXPECT(svc.handleMicAudio(r.token, 0, 900, opus.data(), opus.size()));
@@ -2608,11 +2613,18 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
 
     // A backend with no mic endpoint on this serial says so, and that is not an
-    // error: senders keep streaming and the service keeps accepting.
+    // error: senders keep streaming and the service keeps accepting. The
+    // client cannot see where its audio went, so the log gets one line per
+    // session for it, not one per frame.
     vigem.submitMicAudioReturnVal = false;
     const auto pkt = mic.next();
     EXPECT(svc.handleMicAudio(r.token, 0, 10, pkt.data(), pkt.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 11);
+    EXPECT_EQ(log.countContaining("no microphone endpoint"), 1);
+    const auto pkt2 = mic.next();
+    EXPECT(svc.handleMicAudio(r.token, 0, 11, pkt2.data(), pkt2.size()));
+    EXPECT_EQ(vigem.submitMicAudioCalls, 12);
+    EXPECT_EQ(log.countContaining("no microphone endpoint"), 1);
     vigem.submitMicAudioReturnVal = true;
 
     // A packet claiming twice the wire's window (Opus TOC frame-count code 1
@@ -2625,7 +2637,7 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     const int before = vigem.submitMicAudioCalls;
-    EXPECT(svc.handleMicAudio(r.token, 0, 11, twoFrames.data(), twoFrames.size()));
+    EXPECT(svc.handleMicAudio(r.token, 0, 12, twoFrames.data(), twoFrames.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, before);
 }
 
@@ -2905,8 +2917,7 @@ static void test_speakerAudio_oneWindowBecomesOneWirePacket() {
     satellite::audio::OpusCodecFactory codecs;
     SessionService svc(vigem, client, log, {}, &codecs);
 
-    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
-    (void)r;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const uint32_t serial0 = serialOfSlot(svc, 0);
 
     const auto pcm = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
@@ -2939,8 +2950,7 @@ static void test_speakerAudio_partialBatchesBuffer() {
     satellite::audio::OpusCodecFactory codecs;
     SessionService svc(vigem, client, log, {}, &codecs);
 
-    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
-    (void)r;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const uint32_t serial0 = serialOfSlot(svc, 0);
 
     // A backend hands over whatever its ring held, which is a batch boundary,
@@ -3492,9 +3502,7 @@ static void test_audioBackendCallbacks_dropNotBlock_whenLockHeld() {
     MockLog log;
     SessionService svc(vigem, client, log);
 
-    auto rA =
-        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC | CAP_SPEAKER)}, "devA", "A");
-    (void)rA;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC | CAP_SPEAKER)}, "devA", "A");
     const uint32_t serialA = vigem.pluggedSerials.back();
     auto rB = upsert(svc, {}, "devB", "B");
 
@@ -3527,8 +3535,7 @@ static void test_feedback_replugResetsCoalesce() {
     SessionService svc(vigem, client, log);
 
     const uint16_t caps = CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
-    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, caps)});
-    (void)r;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, caps)});
     uint32_t serial = vigem.pluggedSerials.back();
     const TriggerEffectsReport fx = makeTriggerEffects(0x21, 0x26);
     vigem.fireTriggerEffects(serial, fx);
@@ -3558,11 +3565,9 @@ static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
     MockLog log;
     SessionService svc(vigem, client, log);
 
-    auto rA = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE | CAP_LIGHTBAR)},
-                     "devA", "A");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE | CAP_LIGHTBAR)}, "devA", "A");
     uint32_t serialA = vigem.pluggedSerials.back();
     auto rB = upsert(svc, {}, "devB", "B");
-    (void)rA;
 
     RumbleReport rr{};
     rr.strongMagnitude = 1000;
@@ -3605,12 +3610,18 @@ static void test_concurrent_upsertCloseSnapshot() {
     std::thread t2([&] {
         for (int i = 0; i < 200; i++) { svc.closeSessionsForDevice("devA", CLOSE_REASON_UNPAIRED); }
     });
+    // Only devA is ever upserted, so no snapshot taken mid-race may ever hold
+    // more than that one session, however the three threads interleave.
+    std::atomic<int> oversized{0};
     std::thread t3([&] {
-        for (int i = 0; i < 200; i++) { (void)svc.getConnectionsSnapshot(); }
+        for (int i = 0; i < 200; i++) {
+            if (svc.getConnectionsSnapshot().connections.size() > 1) oversized++;
+        }
     });
     t1.join();
     t2.join();
     t3.join();
+    EXPECT_EQ(oversized.load(), 0);
     svc.closeAllSessions();
     EXPECT_EQ(svc.totalActiveControllers(), 0);
     EXPECT_EQ(svc.availableSlots(), 16);

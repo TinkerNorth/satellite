@@ -67,12 +67,13 @@
     {
       "name": "windows-msvc",
       "displayName": "Windows (MSVC + vcpkg, hardened release)",
-      "description": "MSVC build that unlocks /guard:cf (CFG) + /CETCOMPAT (CET shadow stack) + /Qspectre. libsodium + openssl come from vcpkg's static triplet so their CRT linkage matches the app's /MT. Requires VCPKG_ROOT in the environment. The generator below is the default; CI and scripts/build.ps1 override it per-machine with `-G $(scripts/windows-vs-generator.ps1)` so a VS 2026 box maps to its own generator.",
+      "description": "MSVC build that unlocks /guard:cf (CFG) + /CETCOMPAT (CET shadow stack) + /Qspectre. libsodium + openssl come from vcpkg's static triplet so their CRT linkage matches the app's /MT. Warnings-as-errors (/WX) as on every other lane. Requires VCPKG_ROOT in the environment. The generator below is the default; CI and scripts/build.ps1 override it per-machine with `-G $(scripts/windows-vs-generator.ps1)` so a VS 2026 box maps to its own generator.",
       "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64", "strategy": "set" },
       "binaryDir": "${sourceDir}/build-msvc",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/build-msvc/vcpkg_installed"

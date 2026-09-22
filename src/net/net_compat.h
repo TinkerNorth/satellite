@@ -80,8 +80,8 @@ inline void netSetRecvTimeoutMs(SOCKET s, unsigned ms) {
 // Suppress Winsock's "connection reset" errors on UDP recvfrom following an
 // ICMP Port Unreachable reply from a downed peer. No-op on POSIX, where
 // recvfrom() is not affected by that quirk.
-inline void netDisableUdpConnReset(SOCKET s) {
 #ifdef _WIN32
+inline void netDisableUdpConnReset(SOCKET s) {
 #ifndef SIO_UDP_CONNRESET
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
@@ -89,10 +89,10 @@ inline void netDisableUdpConnReset(SOCKET s) {
     DWORD dwBytesReturned = 0;
     ::WSAIoctl(s, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior), nullptr, 0,
                &dwBytesReturned, nullptr, nullptr);
-#else
-    (void)s;
-#endif
 }
+#else
+inline void netDisableUdpConnReset(SOCKET /*s*/) {}
+#endif
 
 inline void netSleepMs(unsigned ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
