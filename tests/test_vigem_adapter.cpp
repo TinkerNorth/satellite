@@ -9,6 +9,8 @@
 
 #include "vigem_submit_policy.h"
 
+#include "core/ds4_report.h"
+
 #include <iostream>
 #include <string>
 
@@ -240,6 +242,77 @@ static void test_xusb_to_ds4_conversion_maps_input() {
     a.closeBus();
 }
 
+// The DS4 report the driver receives is the one Sony layout the core packs for
+// every DS4 shell: same button word, same hat, same stick bytes, same PS bit.
+static void test_ds4_report_is_the_shared_sony_layout() {
+    fake::g.reset();
+    ViGEmAdapter a;
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4));
+
+    TEST("DS4 report: every XUSB button lands as the shared Sony button word");
+    for (int bit = 0; bit < 16; bit++) {
+        GamepadReport rpt{};
+        rpt.wButtons = static_cast<uint16_t>(1u << bit);
+        EXPECT(a.submitReport(1, rpt));
+        EXPECT_EQ((int)fake::g.lastDs4Ex.Report.wButtons,
+                  (int)sonyButtonsFromXusb(rpt.wButtons, 0, 0));
+    }
+
+    TEST("DS4 report: contradictory d-pad combinations resolve as the shared hat does");
+    for (const uint16_t dpad : {0x0003, 0x000C, 0x000F, 0x0009, 0x0006}) {
+        GamepadReport rpt{};
+        rpt.wButtons = dpad;
+        EXPECT(a.submitReport(1, rpt));
+        EXPECT_EQ((int)(fake::g.lastDs4Ex.Report.wButtons & 0x000F), (int)ds4HatFromButtons(dpad));
+    }
+
+    TEST("DS4 report: the digital L2/R2 bits are left to the bus, whatever the triggers");
+    {
+        GamepadReport rpt{};
+        rpt.bLeftTrigger = 255;
+        rpt.bRightTrigger = 255;
+        EXPECT(a.submitReport(1, rpt));
+        const DS4_REPORT_EX& ex = fake::g.lastDs4Ex;
+        EXPECT_EQ((int)(ex.Report.wButtons & (DS4_BUTTON_TRIGGER_LEFT | DS4_BUTTON_TRIGGER_RIGHT)),
+                  0);
+        EXPECT_EQ((int)ex.Report.bTriggerL, 255);
+        EXPECT_EQ((int)ex.Report.bTriggerR, 255);
+    }
+
+    TEST("DS4 report: sticks are the shared byte conversion, Y inverted");
+    {
+        GamepadReport rpt{};
+        rpt.sThumbLX = -32768;
+        rpt.sThumbLY = -32768;
+        rpt.sThumbRX = 12345;
+        rpt.sThumbRY = -12345;
+        EXPECT(a.submitReport(1, rpt));
+        const DS4_REPORT_EX& ex = fake::g.lastDs4Ex;
+        EXPECT_EQ((int)ex.Report.bThumbLX, (int)ds4StickByte(-32768));
+        EXPECT_EQ((int)ex.Report.bThumbLY, (int)ds4StickByteInverted(-32768));
+        EXPECT_EQ((int)ex.Report.bThumbRX, (int)ds4StickByte(12345));
+        EXPECT_EQ((int)ex.Report.bThumbRY, (int)ds4StickByteInverted(-12345));
+    }
+
+    TEST("DS4 report: Guide is the PS bit, and the touchpad click bit is not disturbed");
+    {
+        GamepadReport rpt{};
+        rpt.wButtons = 0x0400;
+        EXPECT(a.submitReport(1, rpt));
+        EXPECT_EQ((int)fake::g.lastDs4Ex.Report.bSpecial, 0x01);
+        TouchpadReport tp{};
+        tp.buttonPressed = true;
+        EXPECT(a.submitTouchpad(1, tp));
+        EXPECT(a.submitReport(1, rpt));
+        EXPECT_EQ((int)fake::g.lastDs4Ex.Report.bSpecial, 0x03);
+        rpt.wButtons = 0;
+        EXPECT(a.submitReport(1, rpt));
+        EXPECT_EQ((int)fake::g.lastDs4Ex.Report.bSpecial, 0x02);
+    }
+    a.closeBus();
+}
+
 // DS4 extended-report submit policy (the 50/1784/259 regression).
 // ds4ExSubmitLanded decides whether an EX submit reached the device from the
 // GetOverlappedResult outcome. The driver routinely completes this IOCTL with a
@@ -354,6 +427,7 @@ int main() {
     test_xbox_uses_synchronous_xusb_submit();
     test_submit_to_unplugged_serial_is_rejected();
     test_xusb_to_ds4_conversion_maps_input();
+    test_ds4_report_is_the_shared_sony_layout();
 
     test_ds4ExSubmitLanded_overlapped_success_always_lands();
     test_ds4ExSubmitLanded_benign_failures_still_land();

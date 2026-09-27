@@ -5,6 +5,7 @@
 #include "core/github_release.h"
 #include "core/version.h"
 #include "globals.h"
+#include "net/pin_rotation.h"
 
 #include <winhttp.h>
 #include <bcrypt.h>
@@ -57,6 +58,14 @@ struct WinHttpHandle {
     WinHttpHandle(const WinHttpHandle&) = delete;
     WinHttpHandle& operator=(const WinHttpHandle&) = delete;
     WinHttpHandle(WinHttpHandle&& o) noexcept : h(o.h) { o.h = nullptr; }
+    WinHttpHandle& operator=(WinHttpHandle&& o) noexcept {
+        if (this != &o) {
+            if (h) WinHttpCloseHandle(h);
+            h = o.h;
+            o.h = nullptr;
+        }
+        return *this;
+    }
     operator HINTERNET() const { return h; }
 };
 
@@ -85,42 +94,61 @@ bool parseUrl(const std::wstring& url, ParsedUrl& out) {
     return true;
 }
 
-bool httpGetToString(const std::wstring& url, std::string& out, std::string& err) {
+// The three WinHTTP handles behind one GET, declared in acquisition order so
+// they close in reverse: request, then connection, then session.
+struct GetRequest {
+    WinHttpHandle session;
+    WinHttpHandle conn;
+    WinHttpHandle req;
+};
+
+struct HttpTimeouts {
+    DWORD resolveMs;
+    DWORD connectMs;
+    DWORD sendMs;
+    DWORD receiveMs;
+};
+
+// Opens `url` as a GET, up to but not including the send. GitHub's per-UA
+// rate-limit bucket keys off the user agent.
+bool openGetRequest(const std::wstring& url, const HttpTimeouts& timeouts, GetRequest& out,
+                    std::string& err) {
     ParsedUrl u;
     if (!parseUrl(url, u)) {
         err = "Invalid URL";
         return false;
     }
-    // GitHub's per-UA rate-limit bucket keys off this header.
-    std::wstring ua = L"Satellite/" + toWide(SATELLITE_VERSION_STRING) + L" (+updater)";
-    WinHttpHandle session(WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
-    if (!session) {
+    const std::wstring ua = L"Satellite/" + toWide(SATELLITE_VERSION_STRING) + L" (+updater)";
+    out.session = WinHttpHandle(WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+    if (!out.session) {
         err = "WinHttpOpen failed";
         return false;
     }
-    DWORD timeoutMs = 15000;
-    WinHttpSetTimeouts(session, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
-
-    WinHttpHandle conn(WinHttpConnect(session, u.host.c_str(), u.port, 0));
-    if (!conn) {
+    WinHttpSetTimeouts(out.session, timeouts.resolveMs, timeouts.connectMs, timeouts.sendMs,
+                       timeouts.receiveMs);
+    out.conn = WinHttpHandle(WinHttpConnect(out.session, u.host.c_str(), u.port, 0));
+    if (!out.conn) {
         err = "WinHttpConnect failed";
         return false;
     }
-
-    DWORD flags = u.https ? WINHTTP_FLAG_SECURE : 0;
-    WinHttpHandle req(WinHttpOpenRequest(conn, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                         WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
-    if (!req) {
+    const DWORD flags = u.https ? WINHTTP_FLAG_SECURE : 0;
+    out.req =
+        WinHttpHandle(WinHttpOpenRequest(out.conn, L"GET", u.path.c_str(), nullptr,
+                                         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
+    if (!out.req) {
         err = "WinHttpOpenRequest failed";
         return false;
     }
+    return true;
+}
 
-    std::wstring headers = L"Accept: application/vnd.github+json\r\n"
-                           L"X-GitHub-Api-Version: 2022-11-28\r\n";
-
-    if (!WinHttpSendRequest(req, headers.c_str(), static_cast<DWORD>(headers.size()),
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+// Sends the request with `headers` (or none) and reads the status line. Only a
+// 2xx is a success; the rest name the status in `err`.
+bool sendAndCheck(HINTERNET req, const std::wstring& headers, std::string& err) {
+    const wchar_t* hdr = headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str();
+    const DWORD hdrLen = static_cast<DWORD>(headers.size());
+    if (!WinHttpSendRequest(req, hdr, hdrLen, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
         err = "WinHttpSendRequest failed";
         return false;
     }
@@ -128,7 +156,6 @@ bool httpGetToString(const std::wstring& url, std::string& out, std::string& err
         err = "WinHttpReceiveResponse failed";
         return false;
     }
-
     DWORD status = 0;
     DWORD statusSize = sizeof(status);
     if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -143,11 +170,14 @@ bool httpGetToString(const std::wstring& url, std::string& out, std::string& err
         err = buf;
         return false;
     }
+    return true;
+}
 
+bool readBodyToString(HINTERNET req, std::string& out, std::string& err) {
     out.clear();
     DWORD avail = 0;
     while (WinHttpQueryDataAvailable(req, &avail) && avail > 0) {
-        size_t before = out.size();
+        const size_t before = out.size();
         out.resize(before + avail);
         DWORD read = 0;
         if (!WinHttpReadData(req, out.data() + before, avail, &read)) {
@@ -160,60 +190,26 @@ bool httpGetToString(const std::wstring& url, std::string& out, std::string& err
     return true;
 }
 
+bool httpGetToString(const std::wstring& url, std::string& out, std::string& err) {
+    GetRequest get;
+    const HttpTimeouts timeouts{15000, 15000, 15000, 15000};
+    if (!openGetRequest(url, timeouts, get, err)) return false;
+    const std::wstring headers = L"Accept: application/vnd.github+json\r\n"
+                                 L"X-GitHub-Api-Version: 2022-11-28\r\n";
+    if (!sendAndCheck(get.req, headers, err)) return false;
+    return readBodyToString(get.req, out, err);
+}
+
 bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
                    const std::function<void(uint64_t, uint64_t)>& onProgress,
                    const std::atomic<bool>* cancel, std::string& err) {
-    ParsedUrl u;
-    if (!parseUrl(url, u)) {
-        err = "Invalid URL";
-        return false;
-    }
-    // GitHub's per-UA rate-limit bucket keys off this header.
-    std::wstring ua = L"Satellite/" + toWide(SATELLITE_VERSION_STRING) + L" (+updater)";
-    WinHttpHandle session(WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
-    if (!session) {
-        err = "WinHttpOpen failed";
-        return false;
-    }
-    WinHttpSetTimeouts(session, 15000, 15000, 30000, 60000);
-
-    WinHttpHandle conn(WinHttpConnect(session, u.host.c_str(), u.port, 0));
-    if (!conn) {
-        err = "WinHttpConnect failed";
-        return false;
-    }
-    DWORD flags = u.https ? WINHTTP_FLAG_SECURE : 0;
-    WinHttpHandle req(WinHttpOpenRequest(conn, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                         WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
-    if (!req) {
-        err = "WinHttpOpenRequest failed";
-        return false;
-    }
-    if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0,
-                            0)) {
-        err = "WinHttpSendRequest failed";
-        return false;
-    }
-    if (!WinHttpReceiveResponse(req, nullptr)) {
-        err = "WinHttpReceiveResponse failed";
-        return false;
-    }
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
-                             WINHTTP_NO_HEADER_INDEX)) {
-        err = "WinHttpQueryHeaders failed";
-        return false;
-    }
-    if (status < 200 || status >= 300) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "HTTP %lu", static_cast<unsigned long>(status));
-        err = buf;
-        return false;
-    }
+    // Longer send/receive budgets than the API call: an installer download
+    // runs for minutes on a slow link.
+    GetRequest get;
+    const HttpTimeouts timeouts{15000, 15000, 30000, 60000};
+    if (!openGetRequest(url, timeouts, get, err)) return false;
+    if (!sendAndCheck(get.req, L"", err)) return false;
+    const HINTERNET req = get.req;
 
     uint64_t total = 0; // Content-Length for the progress total when present
 
@@ -268,16 +264,41 @@ bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
     return true;
 }
 
+void closeAlgorithm(void* alg) {
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+}
+
+void destroyHash(void* hash) {
+    if (hash) BCryptDestroyHash(hash);
+}
+
+// Feeds the whole file through `hash`, 64 KiB at a time.
+bool hashFile(BCRYPT_HASH_HANDLE hash, const std::wstring& path, std::string& err) {
+    std::ifstream f(fromWide(path), std::ios::binary);
+    if (!f.is_open()) {
+        err = "Cannot open downloaded file for hashing";
+        return false;
+    }
+    std::vector<char> buf(64 * 1024);
+    while (f.read(buf.data(), buf.size()) || f.gcount() > 0) {
+        const std::streamsize n = f.gcount();
+        if (n <= 0) break;
+        if (BCryptHashData(hash, reinterpret_cast<PUCHAR>(buf.data()), static_cast<ULONG>(n), 0) <
+            0) {
+            err = "BCryptHashData failed";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool sha256OfFile(const std::wstring& path, std::string& hexOut, std::string& err) {
     BCRYPT_ALG_HANDLE alg = nullptr;
-    NTSTATUS st = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-    if (st < 0) {
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {
         err = "BCryptOpenAlgorithmProvider failed";
         return false;
     }
-    auto closeAlg = std::unique_ptr<void, void (*)(void*)>(alg, [](void* p) {
-        if (p) BCryptCloseAlgorithmProvider(p, 0);
-    });
+    const std::unique_ptr<void, void (*)(void*)> closeAlg(alg, closeAlgorithm);
 
     DWORD hashLen = 0, cb = 0;
     BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hashLen), sizeof(hashLen),
@@ -288,44 +309,20 @@ bool sha256OfFile(const std::wstring& path, std::string& hexOut, std::string& er
     }
 
     BCRYPT_HASH_HANDLE hash = nullptr;
-    st = BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0);
-    if (st < 0) {
+    if (BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) < 0) {
         err = "BCryptCreateHash failed";
         return false;
     }
-    auto destroyHash = std::unique_ptr<void, void (*)(void*)>(hash, [](void* p) {
-        if (p) BCryptDestroyHash(p);
-    });
+    const std::unique_ptr<void, void (*)(void*)> destroy(hash, destroyHash);
 
-    std::ifstream f(fromWide(path), std::ios::binary);
-    if (!f.is_open()) {
-        err = "Cannot open downloaded file for hashing";
-        return false;
-    }
-    std::vector<char> buf(64 * 1024);
-    while (f.read(buf.data(), buf.size()) || f.gcount() > 0) {
-        std::streamsize n = f.gcount();
-        if (n <= 0) break;
-        st = BCryptHashData(hash, reinterpret_cast<PUCHAR>(buf.data()), static_cast<ULONG>(n), 0);
-        if (st < 0) {
-            err = "BCryptHashData failed";
-            return false;
-        }
-    }
+    if (!hashFile(hash, path, err)) return false;
 
     std::vector<unsigned char> digest(hashLen);
-    st = BCryptFinishHash(hash, digest.data(), hashLen, 0);
-    if (st < 0) {
+    if (BCryptFinishHash(hash, digest.data(), hashLen, 0) < 0) {
         err = "BCryptFinishHash failed";
         return false;
     }
-    static const char* kHex = "0123456789abcdef";
-    hexOut.clear();
-    hexOut.reserve(static_cast<size_t>(hashLen) * 2);
-    for (DWORD i = 0; i < hashLen; i++) {
-        hexOut += kHex[digest[i] >> 4];
-        hexOut += kHex[digest[i] & 0xF];
-    }
+    hexOut = hexEncode(digest.data(), digest.size());
     return true;
 }
 

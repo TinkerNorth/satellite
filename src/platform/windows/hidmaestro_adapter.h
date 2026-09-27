@@ -196,6 +196,18 @@ class HidMaestroAdapter : public IGamepadPort {
     void startOutputWorker(uint32_t serial); // caller holds busMtx_
     void stopOutputWorker(uint32_t serial);  // caller holds busMtx_
     void outputLoop(uint32_t serial, HANDLE cancel, uint32_t lastSeq);
+    // outputLoop's delivery: the callbacks as registered at that moment, copied
+    // out under busMtx_ so they run without it.
+    struct OutputCallbacks {
+        RumbleCallback rumble;
+        LightbarCallback lightbar;
+        TriggerEffectsCallback triggerEffects;
+        PlayerLedsCallback playerLeds;
+        MicLedCallback micLed;
+    };
+    OutputCallbacks snapshotOutputCallbacks() const;
+    void deliverDecodedOutput(uint32_t serial, const satellite::hidmaestro::DecodedOutput& decoded,
+                              TriggerEffectsReport& triggerEffects);
     void startAudioWorker(uint32_t serial, AudioLane lane); // caller holds busMtx_
     void stopAudioWorker(uint32_t serial, AudioLane lane);  // caller holds busMtx_
     void audioLoop(uint32_t serial, AudioLane lane, HANDLE cancel, uint32_t lastSeq);
@@ -211,4 +223,13 @@ class HidMaestroAdapter : public IGamepadPort {
     // merged state for its identity, and publish the frame. Caller holds
     // busMtx_; the slot must be plugged.
     bool packAndWriteLocked(IoSlot& slot);
+    // The slot's merged state packed as its identity's report into slot.payload:
+    // the length, and whether the Xbox companion slice rides along.
+    uint16_t packFrameLocked(IoSlot& slot, bool& withGip);
+    // pluginDevice's steps, all under busMtx_.
+    bool provisionSlotLocked(uint32_t serial, GamepadIdentity identity, bool wantAudio,
+                             satellite::hidmaestro::ProvisionResult& r);
+    bool adoptProvisionedLocked(uint32_t serial, IoSlot& slot,
+                                const satellite::hidmaestro::ProvisionResult& r);
+    void startSlotWorkersLocked(uint32_t serial, const IoSlot& slot);
 };

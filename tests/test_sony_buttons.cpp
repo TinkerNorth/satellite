@@ -67,6 +67,16 @@ int main() {
         EXPECT_EQ(xusbSeen, XUSB_MAPPED_BITS);
     }
     {
+        TEST("sonyBitFor answers from the table, at compile time, and 0 for anything unmapped");
+        static_assert(sonyBitFor(0x1000) == (1u << 5), "Cross");
+        static_assert(sonyBitFor(0x0080) == (1u << 15), "R3");
+        static_assert(sonyBitFor(0x0400) == 0, "Guide has no place in the word");
+        for (const auto& m : XUSB_TO_SONY_BUTTONS) EXPECT_EQ(sonyBitFor(m.xusb), m.sony);
+        EXPECT_EQ(sonyBitFor(0x0001), 0);          // the d-pad is the hat
+        EXPECT_EQ(sonyBitFor(0x0800), 0);          // mute is the DualSense's alone
+        EXPECT_EQ(sonyBitFor(0x1000 | 0x2000), 0); // one bit at a time, never a mask
+    }
+    {
         TEST("the hat rides in the low nibble and nothing else touches it");
         EXPECT_EQ(sonyButtonsFromXusb(0x0001, 0, 0) & HAT_NIBBLE, 0); // up
         EXPECT_EQ(sonyButtonsFromXusb(0x0009, 0, 0) & HAT_NIBBLE, 1); // up + right

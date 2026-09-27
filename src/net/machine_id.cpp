@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "machine_id.h"
-#include "config.h" // configPath()
+#include "config.h"       // configPath()
+#include "pin_rotation.h" // hexEncode
 
 #include <sodium.h>
 
@@ -20,16 +21,6 @@ std::string machineIdPath() {
     return (pos != std::string::npos ? p.substr(0, pos) : std::string(".")) + "/machine-id";
 }
 
-std::string toHex(const uint8_t* data, size_t len) {
-    static const char* digits = "0123456789abcdef";
-    std::string out;
-    out.reserve(len * 2);
-    for (size_t i = 0; i < len; ++i) {
-        out.push_back(digits[data[i] >> 4]);
-        out.push_back(digits[data[i] & 0x0F]);
-    }
-    return out;
-}
 } // namespace
 
 std::string ensureMachineId() {
@@ -54,7 +45,7 @@ std::string ensureMachineId() {
 
     uint8_t raw[16];
     randombytes_buf(raw, sizeof(raw));
-    g_machineId = toHex(raw, sizeof(raw));
+    g_machineId = hexEncode(raw, sizeof(raw));
 
     // Best-effort persist: a failed write still leaves a valid id for this run;
     // the dish re-learns it on the next scan.

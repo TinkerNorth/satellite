@@ -139,10 +139,11 @@ inline const uint8_t DS4V2_REPORT_DESCRIPTOR[] = {
 inline const size_t DS4V2_REPORT_DESCRIPTOR_BYTES = sizeof(DS4V2_REPORT_DESCRIPTOR);
 
 // DS4 hat nibble from XUSB dpad bits. Encoding: 0 N, 1 NE, 2 E, 3 SE, 4 S,
-// 5 SW, 6 W, 7 NW, 8 released. The branch ordering mirrors
-// ViGEmAdapter::submitDS4Report exactly so contradictory bit combinations
-// (up+down held) resolve identically on both platforms.
-inline uint8_t ds4HatFromButtons(uint16_t wButtons) {
+// 5 SW, 6 W, 7 NW, 8 released. Every DS4 shell (ViGEm, HIDMaestro, macOS)
+// reads this one function, so contradictory bit combinations (up+down held)
+// resolve identically everywhere. constexpr so a shell can hold its driver's
+// hat constants to it at compile time.
+constexpr uint8_t ds4HatFromButtons(uint16_t wButtons) {
     const bool up = (wButtons & 0x0001) != 0;
     const bool down = (wButtons & 0x0002) != 0;
     const bool left = (wButtons & 0x0004) != 0;
@@ -181,10 +182,23 @@ inline constexpr XusbToSonyButton XUSB_TO_SONY_BUTTONS[] = {
 inline constexpr uint16_t SONY_BUTTON_L2 = 1u << 10;
 inline constexpr uint16_t SONY_BUTTON_R2 = 1u << 11;
 
+// The table looked up one XUSB bit at a time, at compile time, so a shell can
+// hold another API's button constants to it with a static_assert. 0 for a bit
+// the word has no place for (the d-pad is the hat; Guide and mute ride
+// elsewhere).
+constexpr uint16_t sonyBitFor(uint16_t xusb) {
+    for (const auto& m : XUSB_TO_SONY_BUTTONS) {
+        if (m.xusb == xusb) return m.sony;
+    }
+    return 0;
+}
+
 // The hat in bits 0..3, the mapped buttons above it, and the digital L2/R2
 // bits real hardware derives from the analog values (the ViGEm driver
-// synthesizes those bus-side; here we are the hardware).
-inline uint16_t sonyButtonsFromXusb(uint16_t wButtons, uint8_t leftTrigger, uint8_t rightTrigger) {
+// synthesizes those bus-side, so that shell passes 0 for both; the HIDMaestro
+// and macOS shells are the hardware).
+constexpr uint16_t sonyButtonsFromXusb(uint16_t wButtons, uint8_t leftTrigger,
+                                       uint8_t rightTrigger) {
     uint16_t btn = ds4HatFromButtons(wButtons);
     for (const auto& m : XUSB_TO_SONY_BUTTONS) {
         if (wButtons & m.xusb) btn |= m.sony;
@@ -195,8 +209,8 @@ inline uint16_t sonyButtonsFromXusb(uint16_t wButtons, uint8_t leftTrigger, uint
 }
 
 // Xbox signed int16 stick -> DS4 unsigned byte; Y axes inverted (XUSB Y is
-// positive-up, DS4 is positive-down). Same arithmetic as the Windows adapter,
-// so a given wire report produces byte-identical stick values on both.
+// positive-up, DS4 is positive-down). The ViGEm adapter reads these too, so a
+// given wire report produces byte-identical stick values on every DS4 shell.
 // Note centre (0) lands on 127, not 128; real sticks never sit exactly centred
 // and every consumer deadzones, so we keep the single shared formula.
 inline uint8_t ds4StickByte(int16_t v) {
@@ -207,10 +221,8 @@ inline uint8_t ds4StickByteInverted(int16_t v) {
 }
 
 // DS4 battery byte: bit 4 (0x10) = cable connected, low nibble = level in
-// tenths (nibble 11 + cable = the "fully charged" sentinel). Same mapping as
-// the file-local ds4BatteryByte in platform/windows/vigem_adapter.cpp
-// (duplicated because that TU is Windows-only; hoist candidate if a third
-// backend ever needs it).
+// tenths (nibble 11 + cable = the "fully charged" sentinel). The ViGEm
+// adapter's battery frame reads this too.
 inline uint8_t ds4BatteryByte(const BatteryReport& report) {
     int nibble = (report.level == BATTERY_LEVEL_UNKNOWN)
                      ? 5 // mid-scale so the host still shows something

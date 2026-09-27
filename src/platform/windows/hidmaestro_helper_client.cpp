@@ -259,18 +259,62 @@ bool HelperClient::helloLocked() {
     return jsonParse(response, j) && jsonBool(j, "ok");
 }
 
-bool HelperClient::spawnHelperLocked() {
-    const std::wstring helper = helperBinaryPath();
+namespace {
 
-    // Unguessable per-session pipe name; the connecting client's PID is
-    // verified against the process we spawned before any request is sent.
+// Unguessable per-session pipe name; the connecting client's PID is verified
+// against the process we spawned before any request is sent.
+std::wstring freshPipeName() {
     std::random_device rd;
     wchar_t token[33];
     for (int i = 0; i < 32; ++i) token[i] = L"0123456789abcdef"[rd() & 0xF];
     token[32] = L'\0';
-    std::wstring pipeName =
-        L"\\\\.\\pipe\\satellite-hm-" + std::to_wstring(GetCurrentProcessId()) + L"-" + token;
+    return L"\\\\.\\pipe\\satellite-hm-" + std::to_wstring(GetCurrentProcessId()) + L"-" + token;
+}
 
+// The helper process serving `pipeName`, or nullptr when it would not start.
+// "runas" is a prompt-free no-op when satellite itself is elevated.
+HANDLE launchHelper(const std::wstring& helper, const std::wstring& pipeName) {
+    const std::wstring params = L"serve --pipe \"" + pipeName + L"\" --parent-pid " +
+                                std::to_wstring(GetCurrentProcessId());
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    sei.lpVerb = L"runas";
+    sei.lpFile = helper.c_str();
+    sei.lpParameters = params.c_str();
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei)) return nullptr;
+    return sei.hProcess;
+}
+
+// Waits for a client to connect to `pipe`, giving up when the helper exits
+// (UAC declined, crash) or the connect budget runs out.
+bool awaitPipeClient(HANDLE pipe, HANDLE ioEvent, HANDLE process) {
+    OVERLAPPED ov{};
+    ov.hEvent = ioEvent;
+    if (ConnectNamedPipe(pipe, &ov) != 0) return true;
+    const DWORD err = GetLastError();
+    if (err == ERROR_PIPE_CONNECTED) return true;
+    if (err != ERROR_IO_PENDING) return false;
+    HANDLE waits[2] = {ioEvent, process};
+    const DWORD rc = WaitForMultipleObjects(2, waits, FALSE, kConnectTimeoutMs);
+    DWORD ignored = 0;
+    if (rc == WAIT_OBJECT_0) return GetOverlappedResult(pipe, &ov, &ignored, FALSE) != 0;
+    CancelIoEx(pipe, &ov);
+    GetOverlappedResult(pipe, &ov, &ignored, TRUE);
+    return false;
+}
+
+// Someone else racing onto our pipe name is refused.
+bool pipeClientIs(HANDLE pipe, HANDLE process) {
+    ULONG clientPid = 0;
+    return GetNamedPipeClientProcessId(pipe, &clientPid) && clientPid == GetProcessId(process);
+}
+
+} // namespace
+
+bool HelperClient::spawnHelperLocked() {
+    const std::wstring pipeName = freshPipeName();
     HANDLE pipe = CreateNamedPipeW(
         pipeName.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 64 * 1024, 64 * 1024, 0, nullptr);
@@ -282,53 +326,17 @@ bool HelperClient::spawnHelperLocked() {
         return false;
     }
 
-    std::wstring params = L"serve --pipe \"" + pipeName + L"\" --parent-pid " +
-                          std::to_wstring(GetCurrentProcessId());
-
-    SHELLEXECUTEINFOW sei{};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
-    sei.lpVerb = L"runas"; // no-op prompt-free when satellite itself is elevated
-    sei.lpFile = helper.c_str();
-    sei.lpParameters = params.c_str();
-    sei.nShow = SW_HIDE;
-    if (!ShellExecuteExW(&sei) || sei.hProcess == nullptr) {
+    HANDLE process = launchHelper(helperBinaryPath(), pipeName);
+    if (process == nullptr) {
         CloseHandle(ioEvent);
         CloseHandle(pipe);
         return false;
     }
 
-    OVERLAPPED ov{};
-    ov.hEvent = ioEvent;
-    bool connected = ConnectNamedPipe(pipe, &ov) != 0;
+    const bool connected = awaitPipeClient(pipe, ioEvent, process) && pipeClientIs(pipe, process);
     if (!connected) {
-        const DWORD err = GetLastError();
-        if (err == ERROR_PIPE_CONNECTED) {
-            connected = true;
-        } else if (err == ERROR_IO_PENDING) {
-            HANDLE waits[2] = {ioEvent, sei.hProcess};
-            const DWORD rc = WaitForMultipleObjects(2, waits, FALSE, kConnectTimeoutMs);
-            if (rc == WAIT_OBJECT_0) {
-                DWORD ignored = 0;
-                connected = GetOverlappedResult(pipe, &ov, &ignored, FALSE) != 0;
-            } else {
-                // Helper exited (UAC declined, crash) or timed out.
-                CancelIoEx(pipe, &ov);
-                DWORD ignored = 0;
-                GetOverlappedResult(pipe, &ov, &ignored, TRUE);
-            }
-        }
-    }
-
-    ULONG clientPid = 0;
-    if (connected && (!GetNamedPipeClientProcessId(pipe, &clientPid) ||
-                      clientPid != GetProcessId(sei.hProcess))) {
-        connected = false; // someone else raced onto our pipe name: refuse it
-    }
-
-    if (!connected) {
-        TerminateProcess(sei.hProcess, 1);
-        CloseHandle(sei.hProcess);
+        TerminateProcess(process, 1);
+        CloseHandle(process);
         CloseHandle(ioEvent);
         CloseHandle(pipe);
         return false;
@@ -336,7 +344,7 @@ bool HelperClient::spawnHelperLocked() {
 
     pipe_ = pipe;
     ioEvent_ = ioEvent;
-    helperProcess_ = sei.hProcess;
+    helperProcess_ = process;
 
     if (!helloLocked()) {
         stopLocked(false);
@@ -365,55 +373,49 @@ void HelperClient::stopLocked(bool sendShutdown) {
     }
 }
 
+// Caller holds mtx_. One overlapped read or write on the pipe, bounded by the
+// request budget; `moved` is what completed.
+bool HelperClient::overlappedIoLocked(bool write, void* buf, DWORD len, DWORD& moved) {
+    OVERLAPPED ov{};
+    ov.hEvent = ioEvent_;
+    ResetEvent(ioEvent_);
+    const BOOL started =
+        write ? WriteFile(pipe_, buf, len, nullptr, &ov) : ReadFile(pipe_, buf, len, nullptr, &ov);
+    if (!started && GetLastError() != ERROR_IO_PENDING) return false;
+    if (WaitForSingleObject(ioEvent_, kRequestTimeoutMs) != WAIT_OBJECT_0) {
+        CancelIoEx(pipe_, &ov);
+        GetOverlappedResult(pipe_, &ov, &moved, TRUE);
+        return false;
+    }
+    return GetOverlappedResult(pipe_, &ov, &moved, FALSE) != 0;
+}
+
+// Caller holds mtx_. Tears the channel down so the next ensureReady() starts a
+// fresh helper; always false, so a failing request can return it.
+bool HelperClient::dropChannelLocked() {
+    stopLocked(false);
+    return false;
+}
+
 // Caller holds mtx_. One newline-terminated JSON request, one newline-
-// terminated JSON response; any transport failure tears the channel down so
-// the next ensureReady() starts a fresh helper.
+// terminated JSON response; any transport failure drops the channel.
 bool HelperClient::requestLocked(const std::string& line, std::string& response) {
     if (pipe_ == INVALID_HANDLE_VALUE) return false;
-
-    auto fail = [this]() {
-        if (pipe_ != INVALID_HANDLE_VALUE) CloseHandle(pipe_);
-        pipe_ = INVALID_HANDLE_VALUE;
-        if (ioEvent_) CloseHandle(ioEvent_);
-        ioEvent_ = nullptr;
-        if (helperProcess_) {
-            TerminateProcess(helperProcess_, 1);
-            CloseHandle(helperProcess_);
-            helperProcess_ = nullptr;
-        }
-        return false;
-    };
-
-    auto overlappedIo = [this](bool write, void* buf, DWORD len, DWORD& moved) {
-        OVERLAPPED ov{};
-        ov.hEvent = ioEvent_;
-        ResetEvent(ioEvent_);
-        const BOOL started = write ? WriteFile(pipe_, buf, len, nullptr, &ov)
-                                   : ReadFile(pipe_, buf, len, nullptr, &ov);
-        if (!started && GetLastError() != ERROR_IO_PENDING) return false;
-        if (WaitForSingleObject(ioEvent_, kRequestTimeoutMs) != WAIT_OBJECT_0) {
-            CancelIoEx(pipe_, &ov);
-            GetOverlappedResult(pipe_, &ov, &moved, TRUE);
-            return false;
-        }
-        return GetOverlappedResult(pipe_, &ov, &moved, FALSE) != 0;
-    };
 
     std::string out = line;
     out.push_back('\n');
     DWORD moved = 0;
-    if (!overlappedIo(true, out.data(), static_cast<DWORD>(out.size()), moved) ||
-        moved != out.size()) {
-        return fail();
-    }
+    const bool sent = overlappedIoLocked(true, out.data(), static_cast<DWORD>(out.size()), moved) &&
+                      moved == out.size();
+    if (!sent) return dropChannelLocked();
 
     response.clear();
     char ch = 0;
     while (true) {
-        if (!overlappedIo(false, &ch, 1, moved) || moved != 1) return fail();
+        if (!overlappedIoLocked(false, &ch, 1, moved) || moved != 1) return dropChannelLocked();
         if (ch == '\n') break;
         if (ch != '\r') response.push_back(ch);
-        if (response.size() > 64 * 1024) return fail();
+        if (response.size() > 64 * 1024) return dropChannelLocked();
     }
     return true;
 }
