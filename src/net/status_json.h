@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #pragma once
 
+#include "core/ipv4_util.h"
 #include "core/json.h"
 #include "app/wire_stats.h"
 
@@ -150,6 +151,15 @@ inline std::string buildDebugJson(const StatusFields& f) {
 
     j["sessionsReaped"] = f.sessionsReaped;
     return jsonDump(j);
+}
+
+// The dashboard's sender label: "none" until a packet has arrived, then the
+// dotted quad of the last one.
+inline std::string senderIpLabel(uint32_t nbo) { return nbo == 0 ? "none" : formatIPv4Nbo(nbo); }
+
+// One server-sent event, framed as EventSource reads it.
+inline std::string sseEvent(const std::string& event, const std::string& data) {
+    return "event: " + event + "\ndata: " + data + "\n\n";
 }
 
 inline JsonOut buildSseStatusObject(const StatusFields& f) {

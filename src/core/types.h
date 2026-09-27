@@ -721,16 +721,33 @@ inline const int TOUCHPAD_MOUSE_MAX_GAP_MS = 100;
 
 // Wire/UI name (protocol constant, never localized). The inverse mapping lives
 // in the descriptor parser, which defaults unknowns to OFF.
+// The wire names of the touchpad modes, read by both directions of the JSON
+// so the two cannot drift.
+struct TouchpadModeName {
+    const char* name;
+    uint8_t mode;
+};
+inline constexpr TouchpadModeName TOUCHPAD_MODE_NAMES[] = {
+    {"ds4", TOUCHPAD_MODE_DS4},
+    {"mouse", TOUCHPAD_MODE_MOUSE},
+    {"off", TOUCHPAD_MODE_OFF},
+};
+
+// An unknown value reads as the default mode.
 inline const char* touchpadModeName(uint8_t mode) {
-    switch (mode) {
-    case TOUCHPAD_MODE_MOUSE:
-        return "mouse";
-    case TOUCHPAD_MODE_OFF:
-        return "off";
-    case TOUCHPAD_MODE_DS4:
-    default:
-        return "ds4";
+    for (const auto& entry : TOUCHPAD_MODE_NAMES) {
+        if (entry.mode == mode) return entry.name;
     }
+    return "ds4";
+}
+
+// An unknown or absent name is off: a descriptor asks for a touchpad, it does
+// not get one by default.
+inline uint8_t touchpadModeFromName(const std::string& name) {
+    for (const auto& entry : TOUCHPAD_MODE_NAMES) {
+        if (name == entry.name) return entry.mode;
+    }
+    return TOUCHPAD_MODE_OFF;
 }
 
 inline const char* batteryStatusName(uint8_t status) {

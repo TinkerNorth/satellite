@@ -6,6 +6,8 @@
 // (net/pairing.cpp is the pure request registry.)
 #pragma once
 
+#include "core/types.h"
+
 #include <string>
 
 // Persist (or replace) a paired device. Both pairing paths land here.
@@ -24,3 +26,15 @@ bool confirmPairing(const std::string& deviceId);
 
 // Decline a pending request. True iff one existed.
 bool declinePairing(const std::string& deviceId);
+
+// The stored record for a device, copied out under the config lock so a
+// concurrent unpair cannot dangle it. False when the device is not paired.
+bool findPairedDevice(const std::string& deviceId, PairedDevice& out);
+
+// The last-seen identity a session PUT refreshes: the name can change on
+// the client between sessions. A device that is not paired is left alone.
+void refreshPairedDeviceIdentity(const std::string& deviceId, const std::string& clientIP,
+                                 const std::string& deviceName);
+
+// Removes the record and persists the change; false when there was none.
+bool forgetPairedDevice(const std::string& deviceId);
