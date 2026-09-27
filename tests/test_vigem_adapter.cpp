@@ -260,11 +260,12 @@ static void test_ds4_report_is_the_shared_sony_layout() {
     }
 
     TEST("DS4 report: contradictory d-pad combinations resolve as the shared hat does");
-    for (const uint16_t dpad : {0x0003, 0x000C, 0x000F, 0x0009, 0x0006}) {
+    for (const int dpad : {0x0003, 0x000C, 0x000F, 0x0009, 0x0006}) {
         GamepadReport rpt{};
-        rpt.wButtons = dpad;
+        rpt.wButtons = static_cast<uint16_t>(dpad);
         EXPECT(a.submitReport(1, rpt));
-        EXPECT_EQ((int)(fake::g.lastDs4Ex.Report.wButtons & 0x000F), (int)ds4HatFromButtons(dpad));
+        EXPECT_EQ((int)(fake::g.lastDs4Ex.Report.wButtons & 0x000F),
+                  (int)ds4HatFromButtons(rpt.wButtons));
     }
 
     TEST("DS4 report: the digital L2/R2 bits are left to the bus, whatever the triggers");
