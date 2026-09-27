@@ -5,12 +5,12 @@ index 2873b3d..7ee1d78 100644
 @@ -616,7 +616,7 @@ if(SENTRY_BACKEND_CRASHPAD)
  	endif()
  	add_subdirectory(external/crashpad crashpad_build)
-
+ 
 -	if(WIN32)
 +	if(WIN32 AND SENTRY_TRANSPORT_CRASHPAD_USE_WER)
  		add_dependencies(sentry crashpad::wer)
  	endif()
-
+ 
 @@ -632,7 +632,9 @@ if(SENTRY_BACKEND_CRASHPAD)
  		set_property(TARGET crashpad_snapshot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
  		set_property(TARGET crashpad_tools PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -47,7 +47,7 @@ index 2247e2a..b89c570 100644
 @@ -126,7 +126,7 @@ if(NOT IOS)
      )
  endif()
-
+ 
 -if (WIN32)
 +if (WIN32 AND SENTRY_TRANSPORT_CRASHPAD_USE_WER)
      add_library(crashpad_wer SHARED
@@ -60,7 +60,7 @@ index 9ddca42..4fa1e4e 100644
 @@ -156,7 +156,7 @@ crashpad_backend_user_consent_changed(sentry_backend_t *backend)
     }
  }
-
+ 
 -#ifdef SENTRY_PLATFORM_WINDOWS
 +#if defined(SENTRY_PLATFORM_WINDOWS) && defined(SENTRY_TRANSPORT_CRASHPAD_USE_WER)
  static void
@@ -69,9 +69,9 @@ index 9ddca42..4fa1e4e 100644
 @@ -575,7 +575,7 @@ crashpad_backend_startup(
          report_id);
      sentry_free(minidump_url);
-
+ 
 -#ifdef SENTRY_PLATFORM_WINDOWS
 +#if defined(SENTRY_PLATFORM_WINDOWS) && defined(SENTRY_TRANSPORT_CRASHPAD_USE_WER)
      crashpad_register_wer_module(absolute_handler_path, data);
  #endif
-
+ 
