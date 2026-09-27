@@ -3,6 +3,33 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.1.1
+
+No protocol changes. Windows crash visibility, and an updater fix.
+
+Four times in one evening the app died with a pad plugged in and nothing
+recorded it: no minidump, no Crashpad report, no Sentry event, no Event
+Viewer entry. The process switched Windows Error Reporting off for itself
+at startup, and the crashes a hardened build produces (a stack-protection
+or control-flow check firing, or an `abort()`) never reach the handler that
+writes the local dump and hands it to Crashpad. Windows Error Reporting now
+stays on with only its dialog suppressed, so every crash leaves an
+*Application Error* event; Crashpad's Windows Error Reporting module,
+`crashpad_wer.dll`, is built, shipped and registered, so those crashes reach
+Sentry under the same *Share crash reports* switch; the installer adds a
+per-app dump policy so they also leave a minidump in the usual `dumps\`
+folder; `abort()` is hooked and chained into Crashpad with a minidump of its
+own; the local minidump is written off the crashing thread, so a stack
+overflow still gets one; and the log keeps its last lines through a crash
+and says why the process is leaving on a normal exit, at logoff, or when the
+installer closes it. `satellite.exe /crash-test`, `/crash-test=abort` and
+`/crash-test=fastfail` prove each path on any machine.
+
+The updater could end the process on its own. Queueing a download and then
+skipping that version in the moment before the worker picked it up made the
+worker lock a mutex it already held, which the Windows runtime turns into an
+exception nothing catches. It now broadcasts after releasing the lock.
+
 ## 2.1.0
 
 Protocol 3, additive: the accepted range is now [1, 3], so every shipped Dish
