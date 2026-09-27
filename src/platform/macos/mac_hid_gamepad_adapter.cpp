@@ -195,24 +195,21 @@ bool MacHidGamepadAdapter::isBusOpen() const {
     return busOpen_;
 }
 
-bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
-    if (!isValidSerial(serial)) return false;
+namespace {
 
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!busOpen_) return false;
-    if (slots_.count(serial) != 0) return false;
-
-    // Device properties: the DS4 v2 identity, so macOS's DualShock support
-    // adopts the pad. The serial string mirrors real hardware (MAC-formatted),
-    // distinct per backend serial.
+// The virtual pad's IOKit identity: the DS4 v2 descriptor and USB identity so
+// macOS's DualShock support adopts it, a MAC-formatted serial string distinct
+// per backend serial (as real hardware exposes), and the DS4's 250 Hz USB poll
+// interval. nullptr when IOKit refuses.
+IOHIDUserDeviceRef createDs4UserDevice(uint32_t serial) {
     CFDataRef desc = CFDataCreate(kCFAllocatorDefault, DS4V2_REPORT_DESCRIPTOR,
                                   static_cast<CFIndex>(DS4V2_REPORT_DESCRIPTOR_BYTES));
-    if (desc == nullptr) return false;
+    if (desc == nullptr) return nullptr;
     CFMutableDictionaryRef props = CFDictionaryCreateMutable(
         kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     if (props == nullptr) {
         CFRelease(desc);
-        return false;
+        return nullptr;
     }
     CFDictionarySetValue(props, CFSTR(kIOHIDReportDescriptorKey), desc);
     setDictNumber(props, CFSTR(kIOHIDVendorIDKey), DS4V2_VENDOR_ID);
@@ -233,6 +230,52 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     IOHIDUserDeviceRef dev = IOHIDUserDeviceCreateWithProperties(kCFAllocatorDefault, props, 0);
     CFRelease(props);
     CFRelease(desc);
+    return dev;
+}
+
+// Feature-report reads (calibration / firmware / pairing) served from the pure
+// blob table so DS4 drivers complete their adoption handshake.
+IOReturn serveFeatureReport(uint32_t serial, IOHIDReportType type, uint32_t reportID,
+                            uint8_t* report, CFIndex* reportLength) {
+    if (type != kIOHIDReportTypeFeature || report == nullptr || reportLength == nullptr) {
+        return kIOReturnUnsupported;
+    }
+    uint8_t blob[64];
+    const size_t n = ds4FeatureReport(reportID, serial, blob);
+    if (n == 0) return kIOReturnUnsupported;
+    size_t copy = n;
+    if (*reportLength >= 0 && static_cast<size_t>(*reportLength) < copy) {
+        copy = static_cast<size_t>(*reportLength);
+    }
+    std::memcpy(report, blob, copy);
+    *reportLength = static_cast<CFIndex>(copy);
+    return kIOReturnSuccess;
+}
+
+} // namespace
+
+std::unique_ptr<MacHidGamepadAdapter::Slot> MacHidGamepadAdapter::makeSlot(uint32_t serial,
+                                                                           bool isDS4) {
+    auto slot = std::make_unique<Slot>();
+    slot->isDS4 = isDS4;
+    char queueName[64];
+    std::snprintf(queueName, sizeof(queueName), "com.tinkernorth.satellite.machid.%u", serial);
+    slot->queue = dispatch_queue_create(queueName, DISPATCH_QUEUE_SERIAL);
+    slot->cancelled = dispatch_semaphore_create(0);
+    if (slot->queue != nullptr && slot->cancelled != nullptr) return slot;
+    if (slot->queue != nullptr) dispatch_release(slot->queue);
+    if (slot->cancelled != nullptr) dispatch_release(slot->cancelled);
+    return nullptr;
+}
+
+bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
+    if (!isValidSerial(serial)) return false;
+
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (!busOpen_) return false;
+    if (slots_.count(serial) != 0) return false;
+
+    IOHIDUserDeviceRef dev = createDs4UserDevice(serial);
     if (dev == nullptr) {
         std::fprintf(stderr,
                      "satellite: IOHIDUserDevice create failed for serial=%u; "
@@ -241,25 +284,18 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
         return false;
     }
 
-    auto slot = std::make_unique<Slot>();
-    slot->device = dev;
-    slot->isDS4 = isDS4;
-    char queueName[64];
-    std::snprintf(queueName, sizeof(queueName), "com.tinkernorth.satellite.machid.%u", serial);
-    slot->queue = dispatch_queue_create(queueName, DISPATCH_QUEUE_SERIAL);
-    slot->cancelled = dispatch_semaphore_create(0);
-    if (slot->queue == nullptr || slot->cancelled == nullptr) {
-        if (slot->queue != nullptr) dispatch_release(slot->queue);
-        if (slot->cancelled != nullptr) dispatch_release(slot->cancelled);
+    std::unique_ptr<Slot> slot = makeSlot(serial, isDS4);
+    if (slot == nullptr) {
         CFRelease(dev);
         return false;
     }
+    slot->device = dev;
 
-    // Output reports (rumble + lightbar) from whatever game adopted the pad.
-    // Registered before activation per the IOHIDUserDevice contract. The block
-    // (copied by the API) captures the hub weakly, never `this`: on the
-    // cancel-timeout quarantine path the device outlives the adapter, and a
-    // late invocation must degrade to a no-op.
+    // Both blocks are registered before activation per the IOHIDUserDevice
+    // contract. Output reports (rumble + lightbar) from whatever game adopted
+    // the pad go to the hub, which the block (copied by the API) captures
+    // weakly, never `this`: on the cancel-timeout quarantine path the device
+    // outlives the adapter, and a late invocation must degrade to a no-op.
     std::weak_ptr<CallbackHub> weakHub = hub_;
     IOHIDUserDeviceRegisterSetReportBlock(dev, ^IOReturn(IOHIDReportType type, uint32_t reportID,
                                                          const uint8_t* report,
@@ -271,22 +307,9 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
       hub->dispatchOutputReport(serial, reportID, report, static_cast<size_t>(reportLength));
       return kIOReturnSuccess;
     });
-
-    // Feature-report reads (calibration / firmware / pairing): served from the
-    // pure blob table so DS4 drivers complete their adoption handshake.
     IOHIDUserDeviceRegisterGetReportBlock(dev, ^IOReturn(IOHIDReportType type, uint32_t reportID,
                                                          uint8_t* report, CFIndex* reportLength) {
-      if (type != kIOHIDReportTypeFeature || report == nullptr || reportLength == nullptr)
-          return kIOReturnUnsupported;
-      uint8_t blob[64];
-      const size_t n = ds4FeatureReport(reportID, serial, blob);
-      if (n == 0) return kIOReturnUnsupported;
-      size_t copy = n;
-      if (*reportLength >= 0 && static_cast<size_t>(*reportLength) < copy)
-          copy = static_cast<size_t>(*reportLength);
-      std::memcpy(report, blob, copy);
-      *reportLength = static_cast<CFIndex>(copy);
-      return kIOReturnSuccess;
+      return serveFeatureReport(serial, type, reportID, report, reportLength);
     });
 
     dispatch_semaphore_t cancelled = slot->cancelled;

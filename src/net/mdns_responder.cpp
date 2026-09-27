@@ -575,6 +575,8 @@ void sendGoodbye(const Responder& r) {
 
 } // namespace
 
+// Long on purpose: the responder's whole lifecycle, bring-up to goodbye, in
+// one flow; each step is named above, and the unwind paths read in order here.
 void mdnsResponderThread() {
     if (!netInit()) return;
 

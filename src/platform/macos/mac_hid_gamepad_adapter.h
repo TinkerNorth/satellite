@@ -138,6 +138,9 @@ class MacHidGamepadAdapter : public IGamepadPort {
     struct CallbackHub; // rumble/lightbar sinks + their mutex; blocks hold it weakly
 
     bool plugCommon(uint32_t serial, bool isDS4);
+    // A slot with its serial dispatch queue and cancel semaphore, device unset;
+    // nullptr when either could not be made.
+    static std::unique_ptr<Slot> makeSlot(uint32_t serial, bool isDS4);
     bool submitLocked(Slot& slot); // pack + HandleReport; caller holds mtx_
     void handleOutputReport(uint32_t serial, uint32_t reportId, const uint8_t* data, size_t len);
 
