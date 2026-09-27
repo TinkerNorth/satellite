@@ -1,5 +1,6 @@
 # Build artifacts
 *.exe
+/crashpad_wer.dll
 *.obj
 *.o
 *.d

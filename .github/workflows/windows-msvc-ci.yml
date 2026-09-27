@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-bincache
-          key: vcpkg-bin-${{ runner.os }}-${{ env.IMAGE_VERSION }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-bin-${{ runner.os }}-${{ env.IMAGE_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/ports/**') }}
           # A manifest bump still restores the previous archives: vcpkg keys
           # each package by ABI hash, skips what no longer matches, and
           # rebuilds only the delta, saved under the new key.
@@ -88,7 +88,9 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path satellite.exe)) { throw "satellite.exe not produced at repo root" }
-          Get-Item satellite.exe | Format-List Name, Length, LastWriteTime
+          if (-not (Test-Path crashpad_handler.exe)) { throw "crashpad_handler.exe was not staged beside satellite.exe" }
+          if (-not (Test-Path crashpad_wer.dll)) { throw "crashpad_wer.dll was not staged beside satellite.exe" }
+          Get-Item satellite.exe, crashpad_handler.exe, crashpad_wer.dll | Format-List Name, Length, LastWriteTime
 
       # The hardening this lane exists for, read back from the PE: CFG in the
       # DLL characteristics and load config, CET shadow-stack compatibility in

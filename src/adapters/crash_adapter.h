@@ -42,4 +42,6 @@ void shutdown();
 // allowed to claim: a build with no DSN must not show "reports are being sent".
 bool active();
 
+void breadcrumb(const char* category, const std::string& message);
+
 } // namespace satellite::crash

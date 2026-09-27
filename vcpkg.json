@@ -8,6 +8,14 @@
     "libsodium",
     "openssl",
     "opus",
-    "sentry-native"
+    {
+      "name": "sentry-native",
+      "features": [
+        {
+          "name": "wer",
+          "platform": "windows"
+        }
+      ]
+    }
   ]
 }

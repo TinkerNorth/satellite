@@ -52,11 +52,18 @@ standard error and, under systemd, to the journal.
 `%LOCALAPPDATA%\TinkerNorth\Satellite\dumps\` whether or not crash reporting
 is on. A minidump is a snapshot of the crashed process and can contain
 whatever it held in memory, including the address of a connected Dish client;
-treat it as sensitive before attaching it to a public issue. With crash
-reporting on, the Sentry SDK keeps its run state and any report it has not
-yet delivered under `%LOCALAPPDATA%\TinkerNorth\Satellite\sentry\` on
-Windows and `~/.config/satellite/sentry/` on Linux. Delete either folder at
-any time; Satellite recreates it only when it needs it again.
+treat it as sensitive before attaching it to a public issue. A few kinds of
+crash (a stack-protection or control-flow check firing, or an `abort()`)
+never reach Satellite's own handler; for those, Windows Error Reporting
+records an *Application Error* event in Event Viewer and writes its own
+minidump into the same `dumps\` folder, under the same cap of ten files.
+Windows may also send Microsoft its own report of such a crash, exactly as it
+does for any other program on the PC; that is governed by the Windows
+diagnostics settings, not by Satellite's switch. With crash reporting on,
+the Sentry SDK keeps its run state and any report it has not yet delivered
+under `%LOCALAPPDATA%\TinkerNorth\Satellite\sentry\` on Windows and
+`~/.config/satellite/sentry/` on Linux. Delete either folder at any time;
+Satellite recreates it only when it needs it again.
 
 **The web UI.** Settings, pairing and diagnostics live in a small web page
 Satellite serves to your own browser on `http://localhost:9877`. It answers
@@ -104,7 +111,16 @@ contains:
   contain fragments of whatever Satellite held at that moment, which in
   principle includes the address of a connected Dish client;
 - the Satellite version and a build environment label, the operating system
-  name and version, the CPU architecture, and a random event id.
+  name and version, the CPU architecture, and a random event id;
+- when the crash went through `abort()` or an uncaught exception, one line
+  naming the thread and, where the runtime can tell, the exception type and
+  message.
+
+On Windows the SDK's handler is a separate program, `crashpad_handler.exe`,
+and its Windows Error Reporting module, `crashpad_wer.dll`, is registered
+with Windows (a value under the current user's registry hive) so that a
+crash Windows catches first is still handed to the same handler and reported
+the same way, with the switch honoured.
 
 It does **not** contain controller input, controller audio, your paired
 devices or their keys, your configuration, your user name, or a device

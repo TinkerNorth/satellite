@@ -24,6 +24,12 @@ bool acquireSingleInstance(const char* appTitle);
 // Idempotent. Caps retained dumps so a leaky build can't fill the disk.
 void installCrashHandler();
 
+void installTerminateHandler();
+
+enum class CrashTestKind { Exception, Abort, FastFail };
+bool parseCrashTestSwitch(const std::string& cmdLine, CrashTestKind& kind);
+void crashForTest(CrashTestKind kind);
+
 // Re-asserts satellite's filter over one installed after it, capturing that
 // one as the chain target.
 //
@@ -52,7 +58,8 @@ void applyRuntimeMitigations();
 void reconcileAutoStart();
 
 // Spawn the log-file writer (drains the ring to a daily-rotated .log under
-// logDir(), 7-day retention). Idempotent; stops when g_appRunning is false.
+// logDir(), 7-day retention). Idempotent; runs until stopFileLogger(), which
+// drains whatever is still queued before it returns.
 void startFileLogger();
 
 void stopFileLogger();

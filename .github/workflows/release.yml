@@ -213,6 +213,8 @@ jobs:
           cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp" -DSATELLITE_SENTRY_DSN="$env:SATELLITE_SENTRY_DSN"
           cmake --build --preset windows-msvc --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
+          if (-not (Test-Path crashpad_handler.exe)) { throw "crashpad_handler.exe was not staged beside satellite.exe" }
+          if (-not (Test-Path crashpad_wer.dll)) { throw "crashpad_wer.dll was not staged beside satellite.exe" }
 
       # Best effort: a symbol-upload hiccup must not fail a release. The org
       # and project fall back to the numeric ids inside the DSN, which the
