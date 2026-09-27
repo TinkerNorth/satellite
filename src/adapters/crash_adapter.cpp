@@ -111,4 +111,17 @@ void shutdown() {
 
 bool active() { return g_active; }
 
+void breadcrumb(const char* category, const std::string& message) {
+    if (!g_active) { return; }
+#ifdef SATELLITE_HAS_SENTRY
+    sentry_value_t crumb = sentry_value_new_breadcrumb("error", message.c_str());
+    sentry_value_set_by_key(crumb, "category", sentry_value_new_string(category));
+    sentry_value_set_by_key(crumb, "level", sentry_value_new_string("fatal"));
+    sentry_add_breadcrumb(crumb);
+#else
+    (void)category;
+    (void)message;
+#endif
+}
+
 } // namespace satellite::crash

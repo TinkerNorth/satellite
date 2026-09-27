@@ -834,6 +834,24 @@ if(TARGET satellite)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${SATELLITE_CRASHPAD_HANDLER}" "$<TARGET_FILE_DIR:satellite>"
             COMMENT "Staging crashpad_handler beside satellite.exe")
+        find_file(SATELLITE_CRASHPAD_WER
+            NAMES crashpad_wer.dll
+            HINTS "${sentry_DIR}/../../bin" "${sentry_DIR}/../../tools/sentry-native"
+            NO_DEFAULT_PATH)
+        if(SATELLITE_CRASHPAD_WER)
+            add_custom_command(TARGET satellite POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${SATELLITE_CRASHPAD_WER}" "$<TARGET_FILE_DIR:satellite>"
+                COMMENT "Staging crashpad_wer.dll beside satellite.exe")
+        elseif(NOT SATELLITE_SENTRY_DSN STREQUAL "")
+            message(FATAL_ERROR
+                "sentry-native was found but crashpad_wer.dll was not, so a fast-fail "
+                "crash (stack cookie, CFG, CET, abort) would never reach Sentry. The "
+                "overlay port under vcpkg/ports builds it for the static triplet.")
+        else()
+            message(STATUS "satellite: crashpad_wer.dll not found; fast-fail crashes "
+                           "stay with Windows Error Reporting only")
+        endif()
     endif()
 
     include(CheckIPOSupported)

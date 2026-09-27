@@ -427,9 +427,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
     case WM_ENDSESSION:
         if (wp) {
+            logMsg(LogLevel::INFO, "app",
+                   (lp & ENDSESSION_CLOSEAPP) != 0 ? "Shutting down: Restart Manager close request"
+                                                   : "Shutting down: session ending");
             g_appRunning = false;
             removeTrayIcon();
             saveConfig(g_config);
+            PostQuitMessage(0);
         }
         return 0;
 

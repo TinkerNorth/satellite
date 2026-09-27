@@ -964,6 +964,7 @@ Official release builds also link:
   Software, Inc. (MIT), the crash reporter behind the *Share crash reports*
   switch. Windows builds ship its crash handler,
   [Crashpad](https://chromium.googlesource.com/crashpad/crashpad)
-  (Apache-2.0), as `crashpad_handler.exe` beside `satellite.exe`. See
-  [`PRIVACY.md`](PRIVACY.md) for what a crash report contains.
+  (Apache-2.0), as `crashpad_handler.exe` and `crashpad_wer.dll` beside
+  `satellite.exe`. See [`PRIVACY.md`](PRIVACY.md) for what a crash report
+  contains.
 

@@ -282,6 +282,39 @@ static void test_manual_method_does_not_download() {
     EXPECT(svc.snapshot().state == UpdateState::UpdateAvailable);
 }
 
+static void test_download_queued_before_skip_settles_without_relocking() {
+    TEST("doDownload: a download queued before skipVersion settles to Idle on a live worker");
+    MockUpdater up;
+    MockLog log;
+    Config cfg;
+    std::mutex cfgMtx;
+    UpdateService svc(up, log, cfg, cfgMtx);
+    std::atomic<bool> holdWorker{true};
+    std::atomic<bool> workerHeld{false};
+    svc.setStatusCallback([&](const UpdateStatusSnapshot& snap) {
+        if (snap.state != UpdateState::UpdateAvailable || workerHeld.exchange(true)) return;
+        while (holdWorker.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+    svc.start();
+    svc.requestCheck(true);
+    for (int i = 0; i < 3000 && !workerHeld.load(); i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT(workerHeld.load());
+    svc.requestDownload();
+    svc.skipVersion("99.0.0");
+    holdWorker = false;
+    bool settled = false;
+    for (int i = 0; i < 3000 && !settled; i++) {
+        settled = svc.snapshot().message == "No update to download";
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT(settled);
+    EXPECT(svc.snapshot().state == UpdateState::Idle);
+    svc.requestCheck(true);
+    EXPECT(waitForState(svc, UpdateState::UpToDate));
+}
+
 static void test_repair_downloads_the_current_release() {
     TEST("requestRepair: downloads the release we already run");
     MockUpdater up;
@@ -409,6 +442,7 @@ int main() {
     test_verify_failure();
     test_cancel_in_flight();
     test_manual_method_does_not_download();
+    test_download_queued_before_skip_settles_without_relocking();
     test_repair_downloads_the_current_release();
     test_repair_checks_first_when_no_release_is_known();
     test_repair_ignores_manual_install_hosts();

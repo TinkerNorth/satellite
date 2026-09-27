@@ -200,8 +200,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "satellite.exe"; DestDir: "{app}"; Flags: ignoreversion sign; Components: main
-; Sentry's crash handler is a separate process; only MSVC (vcpkg) builds stage it.
+; Sentry's crash handler is a separate process and its Windows Error Reporting
+; module a DLL; only MSVC (vcpkg) builds stage them.
 Source: "crashpad_handler.exe"; DestDir: "{app}"; Flags: ignoreversion sign skipifsourcedoesntexist; Components: main
+Source: "crashpad_wer.dll"; DestDir: "{app}"; Flags: ignoreversion sign skipifsourcedoesntexist; Components: main
 Source: "web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: main
 ; LICENSE + README give Programs & Features something to link to and let
 ; the user open them from the Start Menu without internet.
@@ -235,6 +237,12 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: 
 ; up on uninstall; the app's setAutoStart(false) cleans it up on
 ; user opt-out.
 Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
+; Windows Error Reporting keeps its own minidump for the crashes that never
+; reach the app's in-process handlers (fast-fails), in the same folder and
+; under the same cap as the app's own dumps.
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: expandsz; ValueName: "DumpFolder"; ValueData: "%LOCALAPPDATA%\TinkerNorth\Satellite\dumps"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: dword; ValueName: "DumpType"; ValueData: 1; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: dword; ValueName: "DumpCount"; ValueData: 10; Flags: uninsdeletekey
 
 [Run]
 ; Firewall rules apply to private + domain profiles. Public is excluded so
