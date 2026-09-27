@@ -1564,6 +1564,47 @@ static void test_classifyQuestions() {
     EXPECT(!withoutQu.wantUnicast);
 }
 
+// The §8.2 tiebreak compares what we propose against what a peer proposes, so
+// the bytes a probe carries for a name must be the bytes the announcement then
+// publishes for it. Both come from one encoder now; this is the check.
+static void test_probeProposesTheAnnouncementBytes() {
+    TEST("a probe proposes exactly the SRV and TXT bytes the announcement carries");
+    mdns::ResponseInputs in = sampleInputs();
+    uint8_t buf[512];
+    const size_t n = mdns::encodeAnnouncement(buf, sizeof(buf), in);
+    mdns::Header h{};
+    std::vector<Rr> rrs;
+    EXPECT(parseResponseRecords(buf, n, h, rrs));
+    const std::vector<mdns::ProbeRecord> proposed = mdns::buildProposedRecords(in);
+    for (const uint16_t type : {mdns::TYPE_SRV, mdns::TYPE_TXT}) {
+        const Rr* rr = findRr(rrs, type);
+        const mdns::ProbeRecord* rec = nullptr;
+        for (const auto& r : proposed) {
+            if (r.type == type) rec = &r;
+        }
+        EXPECT(rr != nullptr && rec != nullptr);
+        if (rr == nullptr || rec == nullptr) continue;
+        EXPECT_EQ(static_cast<size_t>(rr->rdlen), rec->rdata.size());
+        const bool sameBytes =
+            static_cast<size_t>(rr->rdlen) == rec->rdata.size() &&
+            std::memcmp(buf + rr->rdataOffset, rec->rdata.data(), rr->rdlen) == 0;
+        EXPECT(sameBytes);
+    }
+
+    TEST("an empty TXT set is one zero byte on both sides (DNS-SD §6.1)");
+    in.txtPairs.clear();
+    const size_t n2 = mdns::encodeAnnouncement(buf, sizeof(buf), in);
+    EXPECT(parseResponseRecords(buf, n2, h, rrs));
+    const Rr* txt = findRr(rrs, mdns::TYPE_TXT);
+    EXPECT(txt != nullptr && txt->rdlen == 1 && buf[txt->rdataOffset] == 0);
+    const std::vector<mdns::ProbeRecord> proposedEmpty = mdns::buildProposedRecords(in);
+    bool proposedOneZero = false;
+    for (const auto& r : proposedEmpty) {
+        if (r.type == mdns::TYPE_TXT) proposedOneZero = r.rdata.size() == 1 && r.rdata[0] == 0;
+    }
+    EXPECT(proposedOneZero);
+}
+
 int main() {
     std::cout << "Running mDNS protocol tests...\n\n";
 
@@ -1669,6 +1710,7 @@ int main() {
 
     test_nameEqCi();
     test_classifyQuestions();
+    test_probeProposesTheAnnouncementBytes();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

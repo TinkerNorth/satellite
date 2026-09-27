@@ -17,6 +17,7 @@
 // one position right by the leading report-id.
 #pragma once
 
+#include "core/byte_order.h"
 #include "core/touchpad_codec.h"
 #include "core/types.h"
 
@@ -157,6 +158,42 @@ inline uint8_t ds4HatFromButtons(uint16_t wButtons) {
     return 8;
 }
 
+// XUSB button bits to the Sony report's button word: the low byte carries the
+// hat and the face buttons, the high byte the shoulders, the menu pair and the
+// thumb clicks. The DualShock 4 writes the word as one little-endian u16, the
+// DualSense as two bytes; the mapping is the same, and this is its one home.
+struct XusbToSonyButton {
+    uint16_t xusb;
+    uint16_t sony;
+};
+inline constexpr XusbToSonyButton XUSB_TO_SONY_BUTTONS[] = {
+    {0x4000, 1u << 4},  // X      -> Square
+    {0x1000, 1u << 5},  // A      -> Cross
+    {0x2000, 1u << 6},  // B      -> Circle
+    {0x8000, 1u << 7},  // Y      -> Triangle
+    {0x0100, 1u << 8},  // LB     -> L1
+    {0x0200, 1u << 9},  // RB     -> R1
+    {0x0020, 1u << 12}, // Back   -> Share / Create
+    {0x0010, 1u << 13}, // Start  -> Options
+    {0x0040, 1u << 14}, // LS     -> L3
+    {0x0080, 1u << 15}, // RS     -> R3
+};
+inline constexpr uint16_t SONY_BUTTON_L2 = 1u << 10;
+inline constexpr uint16_t SONY_BUTTON_R2 = 1u << 11;
+
+// The hat in bits 0..3, the mapped buttons above it, and the digital L2/R2
+// bits real hardware derives from the analog values (the ViGEm driver
+// synthesizes those bus-side; here we are the hardware).
+inline uint16_t sonyButtonsFromXusb(uint16_t wButtons, uint8_t leftTrigger, uint8_t rightTrigger) {
+    uint16_t btn = ds4HatFromButtons(wButtons);
+    for (const auto& m : XUSB_TO_SONY_BUTTONS) {
+        if (wButtons & m.xusb) btn |= m.sony;
+    }
+    if (leftTrigger > 0) btn |= SONY_BUTTON_L2;
+    if (rightTrigger > 0) btn |= SONY_BUTTON_R2;
+    return btn;
+}
+
 // Xbox signed int16 stick -> DS4 unsigned byte; Y axes inverted (XUSB Y is
 // positive-up, DS4 is positive-down). Same arithmetic as the Windows adapter,
 // so a given wire report produces byte-identical stick values on both.
@@ -236,25 +273,10 @@ inline void ds4PackInputReport(const Ds4InputState& st, uint8_t out[DS4V2_INPUT_
     out[3] = ds4StickByte(st.pad.sThumbRX);
     out[4] = ds4StickByteInverted(st.pad.sThumbRY);
 
-    // XUSB -> DS4 buttons, identical mapping to ViGEmAdapter::submitDS4Report,
-    // plus the digital L2/R2 bits real hardware derives from the analog values
-    // (the ViGEm driver synthesizes those bus-side; here we are the hardware).
+    // XUSB -> DS4 buttons, the same mapping ViGEmAdapter::submitDS4Report uses.
     const uint16_t x = st.pad.wButtons;
-    uint16_t btn = ds4HatFromButtons(x);          // bits 0..3
-    if (x & 0x1000) btn |= 1 << 5;                // A      -> Cross
-    if (x & 0x2000) btn |= 1 << 6;                // B      -> Circle
-    if (x & 0x4000) btn |= 1 << 4;                // X      -> Square
-    if (x & 0x8000) btn |= 1 << 7;                // Y      -> Triangle
-    if (x & 0x0100) btn |= 1 << 8;                // LB     -> L1
-    if (x & 0x0200) btn |= 1 << 9;                // RB     -> R1
-    if (x & 0x0020) btn |= 1 << 12;               // Back   -> Share
-    if (x & 0x0010) btn |= 1 << 13;               // Start  -> Options
-    if (x & 0x0040) btn |= 1 << 14;               // LS     -> L3
-    if (x & 0x0080) btn |= 1 << 15;               // RS     -> R3
-    if (st.pad.bLeftTrigger > 0) btn |= 1 << 10;  // L2 digital
-    if (st.pad.bRightTrigger > 0) btn |= 1 << 11; // R2 digital
-    out[5] = static_cast<uint8_t>(btn & 0xFF);
-    out[6] = static_cast<uint8_t>(btn >> 8);
+    satellite::writeLE16(out + 5,
+                         sonyButtonsFromXusb(x, st.pad.bLeftTrigger, st.pad.bRightTrigger));
 
     out[7] = static_cast<uint8_t>(((x & 0x0400) ? 0x01 : 0x00) |          // Guide -> PS
                                   (st.touchpadButtonPressed ? 0x02 : 0) | // touchpad click
@@ -263,20 +285,15 @@ inline void ds4PackInputReport(const Ds4InputState& st, uint8_t out[DS4V2_INPUT_
     out[8] = st.pad.bLeftTrigger;
     out[9] = st.pad.bRightTrigger;
 
-    out[10] = static_cast<uint8_t>(st.timestamp & 0xFF);
-    out[11] = static_cast<uint8_t>(st.timestamp >> 8);
+    satellite::writeLE16(out + 10, st.timestamp);
     out[12] = st.batteryByte;
 
-    auto le16 = [&out](int off, int16_t v) {
-        out[off] = static_cast<uint8_t>(static_cast<uint16_t>(v) & 0xFF);
-        out[off + 1] = static_cast<uint8_t>(static_cast<uint16_t>(v) >> 8);
-    };
-    le16(13, st.motion.gyroX);
-    le16(15, st.motion.gyroY);
-    le16(17, st.motion.gyroZ);
-    le16(19, st.motion.accelX);
-    le16(21, st.motion.accelY);
-    le16(23, st.motion.accelZ);
+    satellite::writeLE16(out + 13, static_cast<uint16_t>(st.motion.gyroX));
+    satellite::writeLE16(out + 15, static_cast<uint16_t>(st.motion.gyroY));
+    satellite::writeLE16(out + 17, static_cast<uint16_t>(st.motion.gyroZ));
+    satellite::writeLE16(out + 19, static_cast<uint16_t>(st.motion.accelX));
+    satellite::writeLE16(out + 21, static_cast<uint16_t>(st.motion.accelY));
+    satellite::writeLE16(out + 23, static_cast<uint16_t>(st.motion.accelZ));
 
     // [25..29] reserved. [30] is where hid-sony-lineage consumers read the
     // battery; mirror [12] so both conventions see the same value.
@@ -289,14 +306,8 @@ inline void ds4PackInputReport(const Ds4InputState& st, uint8_t out[DS4V2_INPUT_
     out[34] = st.touchPacketCounter;
     const auto f0 = ds4PackTouchFinger(st.finger0, st.touchTrackingId0);
     const auto f1 = ds4PackTouchFinger(st.finger1, st.touchTrackingId1);
-    out[35] = f0[0];
-    out[36] = f0[1];
-    out[37] = f0[2];
-    out[38] = f0[3];
-    out[39] = f1[0];
-    out[40] = f1[1];
-    out[41] = f1[2];
-    out[42] = f1[3];
+    std::memcpy(out + 35, f0.data(), 4);
+    std::memcpy(out + 39, f1.data(), 4);
     // [43..60] would be the two touch history frames; zero means "no data"
     // (lift bit clear + tracking id 0 is ignored because [33] declares 1 frame).
 }

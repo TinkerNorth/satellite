@@ -1398,67 +1398,77 @@ bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter
     return backend_.submitReport(ctrl.serialNo, report);
 }
 
+SessionService::ConnectionSnapshot::CtrlInfo
+SessionService::snapshotController(const Controller& ctrl) const {
+    ConnectionSnapshot::CtrlInfo info{};
+    info.index = ctrl.index;
+    info.serial = ctrl.serialNo;
+    info.active = true;
+    info.pluggedIn = backend_.isDevicePlugged(ctrl.serialNo);
+    info.controllerType = ctrl.controllerType;
+    info.touchpadMode = ctrl.touchpadMode;
+    info.batteryKnown = ctrl.lastBatteryValid;
+    info.batteryLevel = ctrl.lastBattery.level;
+    info.batteryStatus = ctrl.lastBattery.status;
+    info.motionCapable = ctrl.motionCapable();
+    info.motionActive = ctrl.lastMotionValid;
+    info.motionSink = ctrl.motionSinkActive;
+    info.motionSinkSupportedForType = backend_.supportsMotionForType(ctrl.controllerType);
+    info.backendId = backend_.backendIdForSerial(ctrl.serialNo);
+    info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
+    info.touchpadActive = ctrl.lastTouchpadValid;
+    info.lightbarCapable = ctrl.lightbarCapable();
+    info.lightbarKnown = ctrl.lastLightbarValid;
+    info.lightbarR = ctrl.lightbarR;
+    info.lightbarG = ctrl.lightbarG;
+    info.lightbarB = ctrl.lightbarB;
+    return info;
+}
+
+// The REST-open grace window counts as liveness so a fresh PUT doesn't flash
+// "not responding".
+DeviceLinkState SessionService::linkStateAt(const Connection& conn,
+                                            std::chrono::steady_clock::time_point now) {
+    const auto stallThreshold =
+        std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
+    const bool inGrace = now < conn.graceUntil;
+    const bool stalled = !inGrace && now - conn.lastPacketTime > stallThreshold;
+    return stalled ? DeviceLinkState::NotResponding : DeviceLinkState::Active;
+}
+
+SessionService::ConnectionSnapshot
+SessionService::snapshotConnection(uint32_t token, const Connection& conn,
+                                   std::chrono::steady_clock::time_point now) const {
+    ConnectionSnapshot cs;
+    cs.connectionId = conn.connectionId;
+    cs.token = token;
+    cs.deviceId = conn.deviceId;
+    cs.deviceName = conn.deviceName;
+    cs.clientIP = conn.clientIP;
+    cs.connectedAtEpoch =
+        std::chrono::duration_cast<std::chrono::seconds>(conn.connectedAt.time_since_epoch())
+            .count();
+    cs.epoch = conn.epoch;
+    cs.activeControllerCount = conn.activeControllerCount;
+    cs.mouseControlGranted = conn.mouseControlGranted;
+    cs.protocolVersion = conn.protocolVersion;
+    cs.linkState = linkStateAt(conn, now);
+    for (const auto& ctrl : conn.controllers) {
+        if (ctrl.active) cs.controllers.push_back(snapshotController(ctrl));
+    }
+    return cs;
+}
+
 SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() const {
     std::lock_guard<std::mutex> lk(mtx_);
     ConnectionsSnapshot snap;
     snap.totalControllers = 0;
     snap.maxControllers = MAX_BACKEND_CONTROLLERS;
     snap.backendAvailable = backend_.isBusOpen();
-
     const auto now = std::chrono::steady_clock::now();
-    const auto stallThreshold =
-        std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
-
-    for (auto& [tok, conn] : connections_) {
-        ConnectionSnapshot cs;
-        cs.connectionId = conn.connectionId;
-        cs.token = tok;
-        cs.deviceId = conn.deviceId;
-        cs.deviceName = conn.deviceName;
-        cs.clientIP = conn.clientIP;
-        cs.connectedAtEpoch =
-            std::chrono::duration_cast<std::chrono::seconds>(conn.connectedAt.time_since_epoch())
-                .count();
-        cs.epoch = conn.epoch;
-        cs.activeControllerCount = conn.activeControllerCount;
-        cs.mouseControlGranted = conn.mouseControlGranted;
-        cs.protocolVersion = conn.protocolVersion;
-        // The REST-open grace window counts as liveness so a fresh PUT doesn't
-        // flash "not responding".
-        const bool inGrace = now < conn.graceUntil;
-        cs.linkState = (!inGrace && now - conn.lastPacketTime > stallThreshold)
-                           ? DeviceLinkState::NotResponding
-                           : DeviceLinkState::Active;
-
-        for (auto& ctrl : conn.controllers) {
-            if (ctrl.active) {
-                ConnectionSnapshot::CtrlInfo info{};
-                info.index = ctrl.index;
-                info.serial = ctrl.serialNo;
-                info.active = true;
-                info.pluggedIn = backend_.isDevicePlugged(ctrl.serialNo);
-                info.controllerType = ctrl.controllerType;
-                info.touchpadMode = ctrl.touchpadMode;
-                info.batteryKnown = ctrl.lastBatteryValid;
-                info.batteryLevel = ctrl.lastBattery.level;
-                info.batteryStatus = ctrl.lastBattery.status;
-                info.motionCapable = ctrl.motionCapable();
-                info.motionActive = ctrl.lastMotionValid;
-                info.motionSink = ctrl.motionSinkActive;
-                info.motionSinkSupportedForType =
-                    backend_.supportsMotionForType(ctrl.controllerType);
-                info.backendId = backend_.backendIdForSerial(ctrl.serialNo);
-                info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
-                info.touchpadActive = ctrl.lastTouchpadValid;
-                info.lightbarCapable = ctrl.lightbarCapable();
-                info.lightbarKnown = ctrl.lastLightbarValid;
-                info.lightbarR = ctrl.lightbarR;
-                info.lightbarG = ctrl.lightbarG;
-                info.lightbarB = ctrl.lightbarB;
-                cs.controllers.push_back(info);
-                snap.totalControllers++;
-            }
-        }
+    for (const auto& [tok, conn] : connections_) {
+        ConnectionSnapshot cs = snapshotConnection(tok, conn, now);
+        snap.totalControllers += static_cast<int>(cs.controllers.size());
         snap.connections.push_back(std::move(cs));
     }
     return snap;

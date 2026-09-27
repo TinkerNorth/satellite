@@ -428,8 +428,26 @@ static void test_dismiss_clears_available() {
     EXPECT(waitForState(svc, UpdateState::Idle));
 }
 
+static void test_progressWorthBroadcasting() {
+    TEST("progress: with a known size, only a whole percent moved is worth a broadcast");
+    EXPECT(!progressWorthBroadcasting(0, 1000, 5, 1000));
+    EXPECT(progressWorthBroadcasting(0, 1000, 10, 1000));
+    EXPECT(!progressWorthBroadcasting(10, 1000, 19, 1000));
+    EXPECT(progressWorthBroadcasting(10, 1000, 20, 1000));
+
+    TEST("progress: a size that arrives late is measured from zero percent");
+    EXPECT(!progressWorthBroadcasting(5, 0, 5, 1000));
+    EXPECT(progressWorthBroadcasting(5, 0, 10, 1000));
+
+    TEST("progress: with no size, every quarter megabyte is worth one");
+    EXPECT(!progressWorthBroadcasting(0, 0, 256 * 1024 - 1, 0));
+    EXPECT(progressWorthBroadcasting(0, 0, 256 * 1024, 0));
+    EXPECT(!progressWorthBroadcasting(256 * 1024, 0, 256 * 1024 + 100, 0));
+}
+
 int main() {
     std::cout << "Running update_service tests...\n\n";
+    test_progressWorthBroadcasting();
     test_semver_compare();
     test_semver_prerelease();
     test_semver_malformed();

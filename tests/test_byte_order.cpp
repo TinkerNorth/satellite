@@ -59,6 +59,28 @@ int main() {
         EXPECT_EQ(out[3], 0xBE);
     }
 
+    {
+        TEST("little-endian writes lay the bytes out least significant first, and read back");
+        uint8_t out[4] = {};
+        satellite::writeLE16(out, 0x1234);
+        EXPECT_EQ(out[0], 0x34);
+        EXPECT_EQ(out[1], 0x12);
+        EXPECT_EQ(readLE16(out), 0x1234u);
+        satellite::writeLE32(out, 0xCAFEBABE);
+        EXPECT_EQ(out[0], 0xBE);
+        EXPECT_EQ(out[1], 0xBA);
+        EXPECT_EQ(out[2], 0xFE);
+        EXPECT_EQ(out[3], 0xCA);
+        EXPECT_EQ(readLE32(out), 0xCAFEBABEu);
+    }
+    {
+        TEST("the signed 16-bit read is the same bytes with their sign");
+        const uint8_t minusOne[2] = {0xFF, 0xFF};
+        const uint8_t lowest[2] = {0x00, 0x80};
+        EXPECT_EQ(satellite::readLE16s(minusOne), -1);
+        EXPECT_EQ(satellite::readLE16s(lowest), -32768);
+    }
+
     std::cout << "test_byte_order: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

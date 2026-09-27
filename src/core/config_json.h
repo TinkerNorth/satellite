@@ -46,6 +46,26 @@ inline std::string serializeConfig(const Config& cfg) {
     return jsonDumpPretty(j) + "\n";
 }
 
+// The paired-device list, appended to what `cfg` already holds. An entry
+// without an id is skipped: there is nothing to key it by.
+inline void parsePairedDevicesInto(const Json& j, Config& cfg) {
+    const auto it = j.find("pairedDevices");
+    if (it == j.end() || !it->is_array()) return;
+    for (const auto& d : *it) {
+        if (!d.is_object()) continue;
+        PairedDevice dev;
+        dev.id = jsonStr(d, "id");
+        dev.name = jsonStr(d, "name");
+        dev.lastIP = jsonStr(d, "lastIP");
+        dev.pairedAt = jsonStr(d, "pairedAt");
+        dev.sharedKeyHex = jsonStr(d, "sharedKey");
+        if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
+    }
+}
+
+// One field per line on purpose: this is the on-disk schema, and it reads
+// best as the list it is. Every key is optional; an absent one keeps the
+// struct default, which is what lets a config written by an older build load.
 inline void parseConfigInto(const std::string& text, Config& cfg) {
     Json j;
     if (!jsonParse(text, j) || !j.is_object()) return;
@@ -96,19 +116,7 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     // An explicit false is honoured so an opt-out survives every reload.
     cfg.crashReporting = jsonBool(j, "crashReporting", cfg.crashReporting);
 
-    auto it = j.find("pairedDevices");
-    if (it != j.end() && it->is_array()) {
-        for (const auto& d : *it) {
-            if (!d.is_object()) continue;
-            PairedDevice dev;
-            dev.id = jsonStr(d, "id");
-            dev.name = jsonStr(d, "name");
-            dev.lastIP = jsonStr(d, "lastIP");
-            dev.pairedAt = jsonStr(d, "pairedAt");
-            dev.sharedKeyHex = jsonStr(d, "sharedKey");
-            if (!dev.id.empty()) cfg.pairedDevices.push_back(dev);
-        }
-    }
+    parsePairedDevicesInto(j, cfg);
 }
 
 } // namespace satellite

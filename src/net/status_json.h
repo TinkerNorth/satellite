@@ -73,6 +73,61 @@ inline std::string buildStatusJson(const StatusFields& f) {
     return jsonDump(j);
 }
 
+inline JsonOut rxCountsJson(const RxCounts& rx) {
+    JsonOut j;
+    j["input"] = rx.input;
+    j["heartbeat"] = rx.heartbeat;
+    j["motion"] = rx.motion;
+    j["battery"] = rx.battery;
+    j["pointer"] = rx.pointer;
+    j["micAudio"] = rx.micAudio;
+    j["malformed"] = rx.malformed;
+    j["unknownType"] = rx.unknownType;
+    j["runt"] = rx.runt;
+    j["unknownToken"] = rx.unknownToken;
+    return j;
+}
+
+inline JsonOut txCountsJson(const TxCounts& tx) {
+    JsonOut j;
+    j["packets"] = tx.packets;
+    j["bytes"] = tx.bytes;
+    j["heartbeatAck"] = tx.heartbeatAck;
+    j["rumble"] = tx.rumble;
+    j["lightbar"] = tx.lightbar;
+    j["triggerEffects"] = tx.triggerEffects;
+    j["playerLeds"] = tx.playerLeds;
+    j["speakerAudio"] = tx.speakerAudio;
+    j["hapticAudio"] = tx.hapticAudio;
+    j["micLed"] = tx.micLed;
+    j["sessionClose"] = tx.sessionClose;
+    j["unroutable"] = tx.unroutable;
+    j["encryptFailed"] = tx.encryptFailed;
+    j["oversize"] = tx.oversize;
+    j["sendFailed"] = tx.sendFailed;
+    return j;
+}
+
+inline JsonOut audioCountsJson(const AudioStreamCounts& audio) {
+    JsonOut j;
+    j["micAccepted"] = audio.micAccepted;
+    j["micDropped"] = audio.micDropped;
+    j["micLate"] = audio.micLate;
+    j["micDecoded"] = audio.micDecoded;
+    j["micFecRecovered"] = audio.micFecRecovered;
+    j["micConcealed"] = audio.micConcealed;
+    j["speakerSent"] = audio.speakerSent;
+    j["speakerSilenceSuppressed"] = audio.speakerSilenceSuppressed;
+    j["speakerEncodeFailed"] = audio.speakerEncodeFailed;
+    j["speakerLockContended"] = audio.speakerLockContended;
+    j["hapticSent"] = audio.hapticSent;
+    j["hapticSilenceSuppressed"] = audio.hapticSilenceSuppressed;
+    j["hapticEncodeFailed"] = audio.hapticEncodeFailed;
+    j["hapticLockContended"] = audio.hapticLockContended;
+    j["hapticReducedToRumble"] = audio.hapticReducedToRumble;
+    return j;
+}
+
 inline std::string buildDebugJson(const StatusFields& f) {
     JsonOut j;
     j["listening"] = f.listening;
@@ -95,54 +150,9 @@ inline std::string buildDebugJson(const StatusFields& f) {
     j["controllers"] = f.controllers;
     j["maxControllers"] = f.maxControllers;
 
-    JsonOut rx;
-    rx["input"] = f.rx.input;
-    rx["heartbeat"] = f.rx.heartbeat;
-    rx["motion"] = f.rx.motion;
-    rx["battery"] = f.rx.battery;
-    rx["pointer"] = f.rx.pointer;
-    rx["micAudio"] = f.rx.micAudio;
-    rx["malformed"] = f.rx.malformed;
-    rx["unknownType"] = f.rx.unknownType;
-    rx["runt"] = f.rx.runt;
-    rx["unknownToken"] = f.rx.unknownToken;
-    j["rx"] = std::move(rx);
-
-    JsonOut tx;
-    tx["packets"] = f.tx.packets;
-    tx["bytes"] = f.tx.bytes;
-    tx["heartbeatAck"] = f.tx.heartbeatAck;
-    tx["rumble"] = f.tx.rumble;
-    tx["lightbar"] = f.tx.lightbar;
-    tx["triggerEffects"] = f.tx.triggerEffects;
-    tx["playerLeds"] = f.tx.playerLeds;
-    tx["speakerAudio"] = f.tx.speakerAudio;
-    tx["hapticAudio"] = f.tx.hapticAudio;
-    tx["micLed"] = f.tx.micLed;
-    tx["sessionClose"] = f.tx.sessionClose;
-    tx["unroutable"] = f.tx.unroutable;
-    tx["encryptFailed"] = f.tx.encryptFailed;
-    tx["oversize"] = f.tx.oversize;
-    tx["sendFailed"] = f.tx.sendFailed;
-    j["tx"] = std::move(tx);
-
-    JsonOut audio;
-    audio["micAccepted"] = f.audio.micAccepted;
-    audio["micDropped"] = f.audio.micDropped;
-    audio["micLate"] = f.audio.micLate;
-    audio["micDecoded"] = f.audio.micDecoded;
-    audio["micFecRecovered"] = f.audio.micFecRecovered;
-    audio["micConcealed"] = f.audio.micConcealed;
-    audio["speakerSent"] = f.audio.speakerSent;
-    audio["speakerSilenceSuppressed"] = f.audio.speakerSilenceSuppressed;
-    audio["speakerEncodeFailed"] = f.audio.speakerEncodeFailed;
-    audio["speakerLockContended"] = f.audio.speakerLockContended;
-    audio["hapticSent"] = f.audio.hapticSent;
-    audio["hapticSilenceSuppressed"] = f.audio.hapticSilenceSuppressed;
-    audio["hapticEncodeFailed"] = f.audio.hapticEncodeFailed;
-    audio["hapticLockContended"] = f.audio.hapticLockContended;
-    audio["hapticReducedToRumble"] = f.audio.hapticReducedToRumble;
-    j["audio"] = std::move(audio);
+    j["rx"] = rxCountsJson(f.rx);
+    j["tx"] = txCountsJson(f.tx);
+    j["audio"] = audioCountsJson(f.audio);
 
     JsonOut auth;
     auth["notPaired"] = f.authNotPaired;
