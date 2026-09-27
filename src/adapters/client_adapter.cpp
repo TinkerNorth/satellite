@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "client_adapter.h"
+#include "core/byte_order.h"
 
 #include "net/session_crypto.h"
 
@@ -53,7 +54,7 @@ uint32_t ClientAdapter::nextTxCounter(uint32_t token) {
 
 void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* inner,
                                         size_t innerLen) {
-    const uint16_t msgType = ((uint16_t)inner[0] << 8) | (uint16_t)inner[1];
+    const uint16_t msgType = satellite::readBE16(inner);
     const SOCKET sock = sock_.load(std::memory_order_acquire);
     if (sock == INVALID_SOCKET) {
         satellite::g_wire.txUnroutable.fetch_add(1, std::memory_order_relaxed);

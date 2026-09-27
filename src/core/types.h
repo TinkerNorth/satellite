@@ -3,6 +3,8 @@
 // Pure domain types: no Windows, Winsock, or platform gamepad headers.
 #pragma once
 
+#include "core/byte_order.h"
+
 #include "core/version.h"
 #include "core/audio/audio_codec.h"
 #include "core/audio/audio_jitter.h"
@@ -474,14 +476,13 @@ struct AudioFrameHeader {
 inline AudioFrameHeader decodeAudioFrameHeader(const uint8_t* p) {
     AudioFrameHeader h;
     h.ctrlIdx = p[0];
-    h.seq = static_cast<uint16_t>((static_cast<uint16_t>(p[1]) << 8) | static_cast<uint16_t>(p[2]));
+    h.seq = satellite::readBE16(p + 1);
     return h;
 }
 
 inline void encodeAudioFrameHeader(uint8_t* p, uint8_t ctrlIdx, uint16_t seq) {
     p[0] = ctrlIdx;
-    p[1] = static_cast<uint8_t>(seq >> 8);
-    p[2] = static_cast<uint8_t>(seq);
+    satellite::writeBE16(p + 1, seq);
 }
 
 // Server-side sanity ceiling, per controller. Nominal is 1000/AUDIO_FRAME_MS =
@@ -557,22 +558,14 @@ inline const int MOTION_WIRE_PAYLOAD_BYTES = 16;
 // Decode the 16 little-endian wire bytes after ctrlIdx. Explicit shifts keep
 // decoding byte-order-independent. See docs/contract.md.
 inline MotionReport decodeMotionReport(const uint8_t* p) {
-    auto le16 = [](const uint8_t* q) -> int16_t {
-        return static_cast<int16_t>(static_cast<uint16_t>(q[0]) |
-                                    (static_cast<uint16_t>(q[1]) << 8));
-    };
-    auto le32 = [](const uint8_t* q) -> uint32_t {
-        return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
-               (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
-    };
     MotionReport r;
-    r.gyroX = le16(p + 0);
-    r.gyroY = le16(p + 2);
-    r.gyroZ = le16(p + 4);
-    r.accelX = le16(p + 6);
-    r.accelY = le16(p + 8);
-    r.accelZ = le16(p + 10);
-    r.timestampDeltaUs = le32(p + 12);
+    r.gyroX = satellite::readLE16s(p + 0);
+    r.gyroY = satellite::readLE16s(p + 2);
+    r.gyroZ = satellite::readLE16s(p + 4);
+    r.accelX = satellite::readLE16s(p + 6);
+    r.accelY = satellite::readLE16s(p + 8);
+    r.accelZ = satellite::readLE16s(p + 10);
+    r.timestampDeltaUs = satellite::readLE32(p + 12);
     return r;
 }
 
@@ -636,35 +629,23 @@ struct TouchpadReport {
 inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES_V1 = 15;
 inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES_V2 = 18;
 
-namespace touchpad_wire_detail {
-inline int16_t le16(const uint8_t* q) {
-    return static_cast<int16_t>(static_cast<uint16_t>(q[0]) | (static_cast<uint16_t>(q[1]) << 8));
-}
-inline uint32_t le32(const uint8_t* q) {
-    return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
-           (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
-}
-} // namespace touchpad_wire_detail
-
 inline TouchpadReport decodeTouchpadReportV1(const uint8_t* p) {
-    using namespace touchpad_wire_detail;
     TouchpadReport r;
     const uint8_t flags = p[0];
     r.finger0.active = (flags & 0x01) != 0;
     r.finger1.active = (flags & 0x02) != 0;
     r.buttonPressed = (flags & 0x04) != 0;
     r.finger0.trackingId = p[1];
-    r.finger0.x = le16(p + 2);
-    r.finger0.y = le16(p + 4);
+    r.finger0.x = satellite::readLE16s(p + 2);
+    r.finger0.y = satellite::readLE16s(p + 4);
     r.finger1.trackingId = p[6];
-    r.finger1.x = le16(p + 7);
-    r.finger1.y = le16(p + 9);
-    r.eventTimeMs = le32(p + 11);
+    r.finger1.x = satellite::readLE16s(p + 7);
+    r.finger1.y = satellite::readLE16s(p + 9);
+    r.eventTimeMs = satellite::readLE32(p + 11);
     return r;
 }
 
 inline TouchpadReport decodeTouchpadReportV2(const uint8_t* p) {
-    using namespace touchpad_wire_detail;
     TouchpadReport r;
     const uint8_t fingers = p[0];
     r.finger0.active = (fingers & 0x01) != 0;
@@ -674,13 +655,13 @@ inline TouchpadReport decodeTouchpadReportV2(const uint8_t* p) {
     r.rightPressed = (buttons & 0x02) != 0;
     r.middlePressed = (buttons & 0x04) != 0;
     r.finger0.trackingId = p[2];
-    r.finger0.x = le16(p + 3);
-    r.finger0.y = le16(p + 5);
+    r.finger0.x = satellite::readLE16s(p + 3);
+    r.finger0.y = satellite::readLE16s(p + 5);
     r.finger1.trackingId = p[7];
-    r.finger1.x = le16(p + 8);
-    r.finger1.y = le16(p + 10);
-    r.eventTimeMs = le32(p + 12);
-    r.scrollV = le16(p + 16);
+    r.finger1.x = satellite::readLE16s(p + 8);
+    r.finger1.y = satellite::readLE16s(p + 10);
+    r.eventTimeMs = satellite::readLE32(p + 12);
+    r.scrollV = satellite::readLE16s(p + 16);
     return r;
 }
 

@@ -1502,6 +1502,68 @@ static void test_knownAnswer_endToEnd_staleTtlStillSent() {
     EXPECT(findRr(rrs, mdns::TYPE_PTR) != nullptr); // sent; querier's copy was stale
 }
 
+static void test_nameEqCi() {
+    TEST("nameEqCi: DNS names compare case-insensitively (RFC 1035 §2.3.3)");
+    EXPECT(mdns::nameEqCi("Laptop.local.", "laptop.LOCAL."));
+    EXPECT(mdns::nameEqCi("", ""));
+    EXPECT(!mdns::nameEqCi("laptop.local.", "laptop.local"));
+    EXPECT(!mdns::nameEqCi("laptop.local.", "desktop.local."));
+}
+
+static void test_classifyQuestions() {
+    const std::string instance = "den._satellite._udp.local.";
+    const std::string host = "den.local.";
+
+    TEST("classifyQuestions: no questions match nothing");
+    EXPECT(!mdns::classifyQuestions({}, instance, host).matched);
+
+    TEST("classifyQuestions: a PTR or ANY for the service type matches");
+    EXPECT(mdns::classifyQuestions({makeQuestion("_satellite._udp.local.", mdns::TYPE_PTR)},
+                                   instance, host)
+               .matched);
+    EXPECT(mdns::classifyQuestions({makeQuestion("_satellite._udp.local.", mdns::TYPE_ANY)},
+                                   instance, host)
+               .matched);
+
+    TEST("classifyQuestions: the instance name matches for SRV, TXT and ANY, not for A");
+    for (const uint16_t type : {mdns::TYPE_SRV, mdns::TYPE_TXT, mdns::TYPE_ANY}) {
+        EXPECT(mdns::classifyQuestions({makeQuestion(instance, type)}, instance, host).matched);
+    }
+    EXPECT(
+        !mdns::classifyQuestions({makeQuestion(instance, mdns::TYPE_A)}, instance, host).matched);
+
+    TEST("classifyQuestions: the host name matches for A and ANY, not for SRV");
+    EXPECT(mdns::classifyQuestions({makeQuestion(host, mdns::TYPE_A)}, instance, host).matched);
+    EXPECT(mdns::classifyQuestions({makeQuestion(host, mdns::TYPE_ANY)}, instance, host).matched);
+    EXPECT(!mdns::classifyQuestions({makeQuestion(host, mdns::TYPE_SRV)}, instance, host).matched);
+
+    TEST("classifyQuestions: names compare case-insensitively");
+    EXPECT(mdns::classifyQuestions({makeQuestion("DEN.LOCAL.", mdns::TYPE_A)}, instance, host)
+               .matched);
+
+    TEST("classifyQuestions: another host's names do not match");
+    EXPECT(!mdns::classifyQuestions({makeQuestion("attic.local.", mdns::TYPE_A),
+                                     makeQuestion("attic._satellite._udp.local.", mdns::TYPE_SRV)},
+                                    instance, host)
+                .matched);
+
+    TEST("classifyQuestions: the QU bit of a matching question asks for a unicast answer");
+    mdns::Question qu = makeQuestion(host, mdns::TYPE_A);
+    qu.unicastResponse = true;
+    const mdns::QueryMatch withQu =
+        mdns::classifyQuestions({makeQuestion("attic.local.", mdns::TYPE_A), qu}, instance, host);
+    EXPECT(withQu.matched);
+    EXPECT(withQu.wantUnicast);
+
+    TEST("classifyQuestions: a QU bit on a question we do not answer asks for nothing");
+    mdns::Question other = makeQuestion("attic.local.", mdns::TYPE_A);
+    other.unicastResponse = true;
+    const mdns::QueryMatch withoutQu =
+        mdns::classifyQuestions({other, makeQuestion(host, mdns::TYPE_A)}, instance, host);
+    EXPECT(withoutQu.matched);
+    EXPECT(!withoutQu.wantUnicast);
+}
+
 int main() {
     std::cout << "Running mDNS protocol tests...\n\n";
 
@@ -1604,6 +1666,9 @@ int main() {
 
     test_knownAnswer_endToEnd_suppressesKnownPtr();
     test_knownAnswer_endToEnd_staleTtlStillSent();
+
+    test_nameEqCi();
+    test_classifyQuestions();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

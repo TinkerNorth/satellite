@@ -660,6 +660,27 @@ static void test_dispatch_gamepad_backendRejectReportsNotOk() {
     EXPECT_EQ(gp.gamepadCalls, 1);
 }
 
+static void test_parseInnerHeader() {
+    TEST("parseInnerHeader: type and length are big-endian, and the length must fit");
+    const uint8_t frame[] = {0x12, 0x34, 0x00, 0x02, 0xAA, 0xBB};
+    InnerHeader h;
+    EXPECT(parseInnerHeader(frame, sizeof(frame), h));
+    EXPECT_EQ(h.msgType, 0x1234);
+    EXPECT_EQ(h.msgLen, 2);
+
+    TEST("parseInnerHeader: a length that runs past the plaintext is malformed");
+    EXPECT(!parseInnerHeader(frame, 5, h));
+
+    TEST("parseInnerHeader: a zero-length payload at exactly the header is well-formed");
+    const uint8_t bare[] = {0x00, 0x01, 0x00, 0x00};
+    EXPECT(parseInnerHeader(bare, sizeof(bare), h));
+    EXPECT_EQ(h.msgType, 1);
+    EXPECT_EQ(h.msgLen, 0);
+
+    TEST("parseInnerHeader: fewer than four bytes cannot hold a header");
+    for (size_t n = 0; n < 4; n++) EXPECT(!parseInnerHeader(frame, n, h));
+}
+
 int main() {
     std::cout << "Running receiver wire-decode tests...\n\n";
 
@@ -671,6 +692,7 @@ int main() {
     test_encodeAudioFrameHeader_byteExactAndRoundTrip();
     test_isDigitalSilence();
     test_micAudioWireConstants();
+    test_parseInnerHeader();
 
     test_dispatch_handledFlagSplitsMalformedFromUnknown();
     test_dispatch_micAudio_truncatedRejected();
