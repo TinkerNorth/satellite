@@ -2,18 +2,25 @@
 #include "app_lifecycle.h"
 #include "config.h"
 
+#include "adapters/crash_adapter.h"
+
 #include <DbgHelp.h>
 #include <knownfolders.h>
 #include <processthreadsapi.h>
 #include <shlobj.h>
 #include <strsafe.h>
+#include <werapi.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <csignal>
+#include <cstdlib>
 #include <ctime>
+#include <exception>
 #include <fstream>
 #include <thread>
+#include <typeinfo>
 #include <vector>
 
 extern void logMsg(LogLevel level, const std::string& source, const std::string& message);
@@ -61,6 +68,18 @@ std::atomic<bool> g_loggerStarted{false};
 std::thread g_loggerThread;
 
 wchar_t g_dumpDirW[MAX_PATH] = {};
+wchar_t g_dumpPathW[MAX_PATH] = {};
+
+using AbortHandler = void (*)(int);
+AbortHandler g_prevAbortHandler = nullptr;
+
+DWORD g_loggerThreadId = 0;
+HANDLE g_logWake = nullptr;
+HANDLE g_logFlushed = nullptr;
+std::atomic<bool> g_logFlushPending{false};
+std::atomic<bool> g_loggerStopRequested{false};
+
+constexpr DWORD kStatusFatalAppExit = 0x40000015;
 
 std::wstring utf8ToWide(const std::string& s) {
     if (s.empty()) return {};
@@ -158,37 +177,109 @@ void deleteOlderThan(const std::wstring& dir, const wchar_t* ext, int days) {
 // early return cannot silently drop the chain.
 LONG chainOrDefault(EXCEPTION_POINTERS* ep) {
     if (g_prevFilter != nullptr) return g_prevFilter(ep);
-    return EXCEPTION_EXECUTE_HANDLER;
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
-LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
-    if (g_dumpDirW[0] == L'\0') return chainOrDefault(ep);
+bool flushFileLog(DWORD timeoutMs) {
+    if (!g_loggerStarted.load(std::memory_order_relaxed) || g_logWake == nullptr ||
+        g_logFlushed == nullptr || GetCurrentThreadId() == g_loggerThreadId) {
+        return false;
+    }
+    ResetEvent(g_logFlushed);
+    g_logFlushPending.store(true, std::memory_order_release);
+    SetEvent(g_logWake);
+    return WaitForSingleObject(g_logFlushed, timeoutMs) == WAIT_OBJECT_0;
+}
+
+struct DumpJob {
+    EXCEPTION_POINTERS* ep;
+    DWORD threadId;
+};
+
+DWORD WINAPI writeDumpThread(LPVOID param) {
+    const DumpJob* job = static_cast<const DumpJob*>(param);
+    HANDLE f = CreateFileW(g_dumpPathW, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return 1;
+    MINIDUMP_EXCEPTION_INFORMATION mei{job->threadId, job->ep, FALSE};
+    // Small dumps that still capture locals + per-thread state.
+    MINIDUMP_TYPE type =
+        static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithIndirectlyReferencedMemory |
+                                   MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, type,
+                      job->ep != nullptr ? &mei : nullptr, nullptr, nullptr);
+    CloseHandle(f);
+    return 0;
+}
+
+void writeLocalDump(EXCEPTION_POINTERS* ep) {
+    if (g_dumpDirW[0] == L'\0') return;
 
     SYSTEMTIME st;
     GetLocalTime(&st);
-    wchar_t path[MAX_PATH];
-    if (FAILED(StringCchPrintfW(path, ARRAYSIZE(path),
+    if (FAILED(StringCchPrintfW(g_dumpPathW, ARRAYSIZE(g_dumpPathW),
                                 L"%s\\satellite-%04u%02u%02u-%02u%02u%02u.dmp", g_dumpDirW,
                                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond))) {
-        return chainOrDefault(ep);
+        return;
     }
 
-    HANDLE f =
-        CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f != INVALID_HANDLE_VALUE) {
-        MINIDUMP_EXCEPTION_INFORMATION mei{GetCurrentThreadId(), ep, FALSE};
-        // Small dumps that still capture locals + per-thread state.
-        MINIDUMP_TYPE type =
-            static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithIndirectlyReferencedMemory |
-                                       MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, type, ep ? &mei : nullptr,
-                          nullptr, nullptr);
-        CloseHandle(f);
+    DumpJob job{ep, GetCurrentThreadId()};
+    HANDLE t = CreateThread(nullptr, 0, writeDumpThread, &job, 0, nullptr);
+    if (t == nullptr) {
+        writeDumpThread(&job);
+        return;
     }
+    WaitForSingleObject(t, 60000);
+    CloseHandle(t);
+}
+
+LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
+    flushFileLog(2000);
+    writeLocalDump(ep);
 
     // Hand off so WER, and Sentry's filter when crash reporting is armed,
     // still run.
     return chainOrDefault(ep);
+}
+
+void onAbortSignal(int signum) {
+    const std::string msg = "abort() on thread " + std::to_string(GetCurrentThreadId());
+    logMsg(LogLevel::ERR, "crash", msg);
+    satellite::crash::breadcrumb("crash", msg);
+    flushFileLog(2000);
+
+    CONTEXT ctx{};
+    RtlCaptureContext(&ctx);
+    EXCEPTION_RECORD rec{};
+    rec.ExceptionCode = kStatusFatalAppExit;
+    rec.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+#if defined(_M_ARM64) || defined(__aarch64__)
+    rec.ExceptionAddress = reinterpret_cast<PVOID>(ctx.Pc);
+#else
+    rec.ExceptionAddress = reinterpret_cast<PVOID>(ctx.Rip);
+#endif
+    EXCEPTION_POINTERS ep{&rec, &ctx};
+    writeLocalDump(&ep);
+
+    if (g_prevAbortHandler != nullptr && g_prevAbortHandler != SIG_IGN) {
+        g_prevAbortHandler(signum);
+    }
+}
+
+void onTerminate() {
+    std::string reason = "no active exception";
+    if (std::exception_ptr active = std::current_exception()) {
+        try {
+            std::rethrow_exception(active);
+        } catch (const std::exception& e) {
+            reason = std::string(typeid(e).name()) + ": " + e.what();
+        } catch (...) { reason = "non-standard exception"; }
+    }
+    const std::string msg =
+        "std::terminate on thread " + std::to_string(GetCurrentThreadId()) + ": " + reason;
+    logMsg(LogLevel::ERR, "crash", msg);
+    satellite::crash::breadcrumb("crash", msg);
+    std::abort();
 }
 
 const char* levelStr(LogLevel l) {
@@ -227,7 +318,7 @@ std::wstring todaysLogPath(const std::wstring& dir) {
 }
 
 void loggerLoop() {
-    using namespace std::chrono_literals;
+    g_loggerThreadId = GetCurrentThreadId();
     std::wstring dir = utf8ToWide(logDir());
     if (dir.empty()) return;
 
@@ -240,7 +331,8 @@ void loggerLoop() {
                     nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
 
-    while (g_appRunning.load(std::memory_order_relaxed)) {
+    for (;;) {
+        const bool flushRequested = g_logFlushPending.exchange(false, std::memory_order_acq_rel);
         std::vector<LogEntry> drained;
         uint64_t snapshotSeq;
         {
@@ -273,6 +365,7 @@ void loggerLoop() {
         }
         if (!drained.empty()) FlushFileBuffers(h);
         lastSeq = snapshotSeq;
+        if (flushRequested && g_logFlushed != nullptr) SetEvent(g_logFlushed);
 
         // Rotation: date change or size cap. Reopen on the new path.
         LARGE_INTEGER size{};
@@ -305,7 +398,12 @@ void loggerLoop() {
             }
         }
 
-        std::this_thread::sleep_for(1s);
+        if (g_loggerStopRequested.load(std::memory_order_relaxed)) break;
+        if (g_logWake != nullptr) {
+            WaitForSingleObject(g_logWake, 1000);
+        } else {
+            Sleep(1000);
+        }
     }
     CloseHandle(h);
 }
@@ -337,9 +435,16 @@ void installCrashHandler() {
     if (installed) return;
     installed = true;
 
-    // Suppress WER's default UI so the user doesn't see both our dump and the
-    // standard "Satellite has stopped working" dialog.
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    // WER stays armed: it is the only recorder left for a fast-fail (stack
+    // cookie, CFG, CET, abort with no handler), which never reaches a filter.
+    // Only its "Satellite has stopped working" dialog is suppressed.
+    SetErrorMode(SEM_FAILCRITICALERRORS);
+    if (HMODULE k32 = GetModuleHandleW(L"kernel32.dll")) {
+        typedef HRESULT(WINAPI * WSF)(DWORD);
+        if (WSF werSetFlags = procAddress<WSF>(k32, "WerSetFlags")) {
+            werSetFlags(WER_FAULT_REPORTING_NO_UI);
+        }
+    }
 
     std::wstring dumps = ensureSubdirW(L"dumps");
     StringCchCopyW(g_dumpDirW, ARRAYSIZE(g_dumpDirW), dumps.c_str());
@@ -359,6 +464,33 @@ void rearmCrashFilterChain() {
     // is gone. prev == dumpFilter means nothing installed after us and there is
     // nothing new to chain to.
     if (prev != dumpFilter) { g_prevFilter = prev; }
+
+    AbortHandler prevAbort = signal(SIGABRT, onAbortSignal);
+    if (prevAbort != SIG_ERR && prevAbort != onAbortSignal) { g_prevAbortHandler = prevAbort; }
+}
+
+void installTerminateHandler() { std::set_terminate(onTerminate); }
+
+bool parseCrashTestSwitch(const std::string& cmdLine, CrashTestKind& kind) {
+    const std::size_t at = cmdLine.find("/crash-test");
+    if (at == std::string::npos) return false;
+    if (cmdLine.compare(at, 20, "/crash-test=fastfail") == 0) {
+        kind = CrashTestKind::FastFail;
+    } else if (cmdLine.compare(at, 17, "/crash-test=abort") == 0) {
+        kind = CrashTestKind::Abort;
+    } else {
+        kind = CrashTestKind::Exception;
+    }
+    return true;
+}
+
+void crashForTest(CrashTestKind kind) {
+    if (kind == CrashTestKind::FastFail) {
+        RaiseFailFastException(nullptr, nullptr, FAIL_FAST_GENERATE_EXCEPTION_ADDRESS);
+    }
+    if (kind == CrashTestKind::Abort) std::abort();
+    RaiseException(EXCEPTION_ACCESS_VIOLATION, EXCEPTION_NONCONTINUABLE, 0, nullptr);
+    TerminateProcess(GetCurrentProcess(), 3);
 }
 
 void registerForRestart() {
@@ -476,11 +608,16 @@ void reconcileAutoStart() {
 
 void startFileLogger() {
     if (g_loggerStarted.exchange(true)) return; // idempotent
+    g_logWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_logFlushed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_loggerThread = std::thread(loggerLoop);
 }
 
 void stopFileLogger() {
-    if (g_loggerThread.joinable()) g_loggerThread.join();
+    if (!g_loggerThread.joinable()) return;
+    g_loggerStopRequested.store(true, std::memory_order_relaxed);
+    if (g_logWake != nullptr) SetEvent(g_logWake);
+    g_loggerThread.join();
 }
 
 } // namespace lifecycle

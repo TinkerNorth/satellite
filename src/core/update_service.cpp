@@ -383,6 +383,7 @@ void UpdateService::doCheck(bool userInitiated) {
 
 void UpdateService::doDownload() {
     UpdateInfo info;
+    bool settled = false;
     {
         std::lock_guard<std::mutex> lk(mtx_);
         info = info_;
@@ -391,22 +392,21 @@ void UpdateService::doDownload() {
         if (!info.available && !repair) {
             state_ = UpdateState::Idle;
             lastError_ = "No update to download";
-            fireBroadcast();
-            return;
-        }
-        if (info.installMethod == InstallMethod::Manual) {
+            settled = true;
+        } else if (info.installMethod == InstallMethod::Manual) {
             state_ = UpdateState::UpdateAvailable;
-            fireBroadcast();
-            return;
+            settled = true;
+        } else {
+            state_ = UpdateState::Downloading;
+            lastError_.clear();
+            failedPhase_ = UpdateState::Idle;
+            bytesDownloaded_ = 0;
+            bytesTotal_ = info.assetSize;
+            cancelFlag_ = false;
         }
-        state_ = UpdateState::Downloading;
-        lastError_.clear();
-        failedPhase_ = UpdateState::Idle;
-        bytesDownloaded_ = 0;
-        bytesTotal_ = info.assetSize;
-        cancelFlag_ = false;
     }
     fireBroadcast();
+    if (settled) return;
     log_.logMsg(LogLevel::INFO, "updater", "Downloading " + info.assetName);
 
     auto onProgress = [this](uint64_t soFar, uint64_t total) {

@@ -281,6 +281,18 @@ and `dish-mac` in the same PR / release cycle.
     - `/REMOVEVIGEM=auto|yes|no` (uninstall path): control whether the
       driver is removed alongside Satellite. Default `auto` prompts in
       attended uninstalls and leaves the driver alone in silent uninstalls.
+  To prove the crash pipeline end to end on a machine, run
+  `satellite.exe /crash-test` (an unhandled access violation: Satellite's
+  own minidump writer, then Crashpad), `satellite.exe /crash-test=abort`
+  (`abort()`, the route every `std::terminate` takes: the SIGABRT hook, then
+  Crashpad) or `satellite.exe /crash-test=fastfail` (a fast-fail, which only
+  Windows Error Reporting and the `crashpad_wer.dll` module can see). Each
+  runs beside an already-running Satellite, keeps its Sentry state under
+  `sentry\crash-test` and honours the *Share crash reports* switch. Expect a
+  `.dmp` under `%LOCALAPPDATA%\TinkerNorth\Satellite\dumps\` (from Windows
+  Error Reporting for the fast-fail), an *Application Error* event in Event
+  Viewer for anything Crashpad did not take over, and, on a release build
+  with the switch on, an event in Sentry.
 - **Linux** synthesizes virtual gamepads through `/dev/uinput`. Optional
   tray icon via libayatana-appindicator (CMake auto-detects; falls back
   to a headless `sigwait` loop).
@@ -293,5 +305,7 @@ and `dish-mac` in the same PR / release cycle.
 ## Reporting bugs
 
 Use the issue templates under `.github/ISSUE_TEMPLATE/`. Include the
-OS and version, the relevant log excerpt (Windows: `%APPDATA%\satellite\`;
-Linux: `journalctl --user -e`), and which Dish client is connecting.
+OS and version, the relevant log excerpt (Windows:
+`%LOCALAPPDATA%\TinkerNorth\Satellite\logs\`, plus any `.dmp` from the
+`dumps\` folder beside it; Linux: `journalctl --user -e`), and which Dish
+client is connecting.

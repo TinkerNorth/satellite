@@ -98,6 +98,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     lifecycle::hardenDllSearchPath();
     lifecycle::applyRuntimeMitigations();
     lifecycle::installCrashHandler();
+    lifecycle::installTerminateHandler();
+
+    {
+        lifecycle::CrashTestKind kind = lifecycle::CrashTestKind::Exception;
+        if (lifecycle::parseCrashTestSwitch(lpCmdLine != nullptr ? lpCmdLine : "", kind)) {
+            g_config = loadConfig();
+            crash::init(g_config.crashReporting, lifecycle::sentryDir() + "\\crash-test");
+            lifecycle::rearmCrashFilterChain();
+            lifecycle::crashForTest(kind);
+            return 3;
+        }
+    }
+
     lifecycle::registerForRestart();
 
     // A toast button launched us with a satellite-pair: URI. Forward it to the
@@ -305,6 +318,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         DispatchMessageW(&msg);
     }
 
+    logMsg(LogLevel::INFO, "app", "Shutting down");
     g_appRunning = false;
     if (powerNotify) UnregisterSuspendResumeNotification(powerNotify);
     g_httpServer.stop();
