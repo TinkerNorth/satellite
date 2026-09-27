@@ -33,6 +33,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <fstream>
+#include <mutex>
+#include <string>
 #include <thread>
 
 namespace crash = satellite::crash;
@@ -91,93 +94,82 @@ void addrChangeWatcherThread() {
     }
 }
 
-} // namespace
+// `/crash-test`: arm crash reporting from the config and crash on purpose, so
+// the pipeline can be proven end to end on a machine (see CONTRIBUTING). True
+// when the command line asked for it.
+bool crashForTestIfAsked(const std::string& cmd) {
+    lifecycle::CrashTestKind kind = lifecycle::CrashTestKind::Exception;
+    if (!lifecycle::parseCrashTestSwitch(cmd, kind)) return false;
+    g_config = loadConfig();
+    crash::init(g_config.crashReporting, lifecycle::sentryDir() + "\\crash-test");
+    lifecycle::rearmCrashFilterChain();
+    lifecycle::crashForTest(kind);
+    return true;
+}
 
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
-    // Pre-init hardening: must run before any LoadLibrary/file I/O.
-    lifecycle::hardenDllSearchPath();
-    lifecycle::applyRuntimeMitigations();
-    lifecycle::installCrashHandler();
-    lifecycle::installTerminateHandler();
-
-    {
-        lifecycle::CrashTestKind kind = lifecycle::CrashTestKind::Exception;
-        if (lifecycle::parseCrashTestSwitch(lpCmdLine != nullptr ? lpCmdLine : "", kind)) {
-            g_config = loadConfig();
-            crash::init(g_config.crashReporting, lifecycle::sentryDir() + "\\crash-test");
-            lifecycle::rearmCrashFilterChain();
-            lifecycle::crashForTest(kind);
-            return 3;
-        }
+// A toast button launched us with a satellite-pair: URI. Forward it to the
+// already-running instance (which holds the pairing registry); a deep link
+// must never start a second copy. True when the command line carried one.
+bool forwardPairUri(const std::string& cmd) {
+    const auto at = cmd.find("satellite-pair:");
+    if (at == std::string::npos) return false;
+    std::string uri = cmd.substr(at);
+    while (!uri.empty() && (uri.back() == '"' || uri.back() == ' ')) uri.pop_back();
+    HWND running = FindWindowW(L"ControllerForwardTray", nullptr);
+    if (running != nullptr) {
+        COPYDATASTRUCT cds{};
+        cds.dwData = PAIR_URI_COPYDATA;
+        cds.cbData = static_cast<DWORD>(uri.size() + 1);
+        cds.lpData = const_cast<char*>(uri.c_str());
+        SendMessageW(running, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
     }
+    return true;
+}
 
-    lifecycle::registerForRestart();
-
-    // A toast button launched us with a satellite-pair: URI. Forward it to the
-    // already-running instance (which holds the pairing registry) and exit; a
-    // deep link must never start a second copy.
-    {
-        std::string cmd = lpCmdLine != nullptr ? lpCmdLine : "";
-        auto at = cmd.find("satellite-pair:");
-        if (at != std::string::npos) {
-            std::string uri = cmd.substr(at);
-            while (!uri.empty() && (uri.back() == '"' || uri.back() == ' ')) uri.pop_back();
-            HWND running = FindWindowW(L"ControllerForwardTray", nullptr);
-            if (running != nullptr) {
-                COPYDATASTRUCT cds{};
-                cds.dwData = PAIR_URI_COPYDATA;
-                cds.cbData = static_cast<DWORD>(uri.size() + 1);
-                cds.lpData = const_cast<char*>(uri.c_str());
-                SendMessageW(running, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
-            }
-            return 0;
-        }
-    }
-
-    // Refuse a second copy; tap the existing instance's window so it can flash
-    // a balloon, then exit (double-launch otherwise fights over ports).
-    if (!lifecycle::acquireSingleInstance(APP_TITLE)) return 0;
-
-    // AppUserModelID must be set before any HWND/tray icon, or taskbar/toast/
-    // jump-list grouping falls back to "satellite.exe". COM apartment is
-    // required by the jump-list registration below.
-    HRESULT hrCoInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+// AppUserModelID must be set before any HWND/tray icon, or taskbar/toast/
+// jump-list grouping falls back to "satellite.exe". The COM apartment is
+// required by the jump-list registration, and common controls by
+// TaskDialogIndirect; both early, so a failed libsodium init can use the
+// modern dialog rather than MessageBox.
+HRESULT initShellIntegration() {
+    const HRESULT hrCoInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(hrCoInit)) {
         logMsg(LogLevel::WARN, "startup",
                "CoInitializeEx failed; jump list and toasts may be unavailable");
     }
     shell_integration::registerAppUserModelID();
-
-    // Needed for TaskDialogIndirect; done early so a failed libsodium init can
-    // use the modern dialog rather than MessageBox.
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES};
     if (!InitCommonControlsEx(&icc)) {
         logMsg(LogLevel::WARN, "startup",
                "InitCommonControlsEx failed; dialogs may render plainly");
     }
+    return hrCoInit;
+}
 
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS); // low-latency input forwarding
-    timeBeginPeriod(1); // default 15.6ms timer resolution would distort scheduling
-
+// httplib requires Winsock up globally.
+bool startWinsock() {
     WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { // httplib requires Winsock up globally
-        showFatalError(L"Satellite", L"Network stack failed to initialize",
-                       L"Windows Sockets (Winsock) could not start, so Satellite cannot reach "
-                       L"your devices.\n\nTry restarting Windows; if the problem persists, file an "
-                       L"issue at https://github.com/TinkerNorth/satellite/issues.");
-        return 1;
-    }
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) return true;
+    showFatalError(L"Satellite", L"Network stack failed to initialize",
+                   L"Windows Sockets (Winsock) could not start, so Satellite cannot reach "
+                   L"your devices.\n\nTry restarting Windows; if the problem persists, file an "
+                   L"issue at https://github.com/TinkerNorth/satellite/issues.");
+    return false;
+}
 
-    if (!sodiumInit()) {
-        showFatalError(L"Satellite", L"Cryptography library failed to initialize",
-                       L"libsodium could not start. Satellite cannot run without it.\n\n"
-                       L"Try reinstalling Satellite; if the problem persists, file an issue at "
-                       L"https://github.com/TinkerNorth/satellite/issues.");
-        return 1;
-    }
+bool startCrypto() {
+    if (sodiumInit()) return true;
+    showFatalError(L"Satellite", L"Cryptography library failed to initialize",
+                   L"libsodium could not start. Satellite cannot run without it.\n\n"
+                   L"Try reinstalling Satellite; if the problem persists, file an issue at "
+                   L"https://github.com/TinkerNorth/satellite/issues.");
+    return false;
+}
 
-    // On first run (no JSON yet) seed autostart from the registry so the
-    // installer's task selection survives; the JSON is authoritative after that.
+// On first run (no JSON yet) seed autostart from the registry so the
+// installer's task selection survives; the JSON is authoritative after that.
+void loadConfigSeedingAutostart() {
     bool firstRun;
     {
         std::ifstream probe(configPath());
@@ -185,6 +177,146 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     }
     g_config = loadConfig();
     if (firstRun) g_config.autoStart = getAutoStart();
+}
+
+// The settings the adapters read per plug and per frame rather than cache: the
+// dashboard toggle takes effect on the next pad (the audio persona, which a
+// pad already carrying audio keeps until it is replugged) or the next frame
+// (the wire directions, which gate the wire rather than the persona).
+bool controllerAudioEnabled() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    return g_config.controllerAudio;
+}
+
+bool keepDefaultAudioDevice() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    return g_config.controllerAudioKeepDefaultDevice;
+}
+
+ControllerAudioPolicy audioPolicyFromConfig() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
+                                 g_config.controllerAudioHaptics};
+}
+
+// Under g_configMtx so saveConfig sees a consistent struct.
+void persistConfig() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    saveConfig(g_config);
+}
+
+// Toast once when an update first appears: edge-triggered on the transition
+// to UpdateAvailable so an open settings page doesn't spam, re-armed on Idle
+// or UpToDate so the next one toasts again. Process-wide because the updater
+// worker calls this until stop() at shutdown.
+std::atomic<bool> g_toastedAvailable{false};
+
+void onUpdateStatus(const UpdateStatusSnapshot& snap) {
+    if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
+        if (!g_toastedAvailable.exchange(true)) {
+            shell_integration::showToast(std::string("Satellite update ready"),
+                                         std::string("Version ") + snap.info.version +
+                                             " is available. Click to install.");
+        }
+    } else if (snap.state == UpdateState::Idle || snap.state == UpdateState::UpToDate) {
+        g_toastedAvailable.store(false);
+    }
+    updateTrayTooltip();
+}
+
+// Hidden top-level window (never shown, WS_EX_TOOLWINDOW): top-level is
+// what makes WM_QUERYENDSESSION reach us, since a message-only window is
+// excluded from broadcasts. Class name is the literal Explorer/another
+// instance uses to find us (see acquireSingleInstance / protocol forward).
+HWND createTrayWindow(HINSTANCE hInst) {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"ControllerForwardTray";
+    RegisterClassW(&wc);
+    return CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Satellite", WS_OVERLAPPED, 0, 0, 0,
+                           0, nullptr, nullptr, hInst, nullptr);
+}
+
+// The service's threads, joined in the order they were started.
+struct Workers {
+    std::thread recv;
+    std::thread admin;
+    std::thread client;
+    std::thread disc;
+    std::thread mdns;
+    std::thread tooltip;
+    std::thread addr;
+};
+
+Workers startWorkers(SessionService& svc, ClientAdapter& clientAdapter) {
+    Workers w;
+    w.recv = std::thread(receiverThread, std::ref(svc), std::ref(clientAdapter));
+    w.admin = std::thread(adminHttpThread, std::ref(svc));
+    w.client = std::thread(clientApiThread, std::ref(svc));
+    w.disc = std::thread(discoveryThread);
+    w.mdns = std::thread(mdnsResponderThread);
+    w.tooltip = std::thread(tooltipTickerThread);
+    w.addr = std::thread(addrChangeWatcherThread);
+    return w;
+}
+
+void joinWorkers(Workers& w) {
+    w.recv.join();
+    w.admin.join();
+    w.client.join();
+    w.disc.join();
+    w.mdns.join();
+    w.tooltip.join();
+    w.addr.join();
+}
+
+void runMessageLoop() {
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+// The updater stops before the http thread is joined so its SSE-broadcast
+// callback can't fire into a torn-down server.
+void stopServers(UpdateService& updateService) {
+    g_httpServer.stop();
+    if (g_clientServer) g_clientServer->stop();
+    updateService.stop();
+    g_updateService = nullptr;
+}
+
+} // namespace
+
+// Long on purpose: the composition root. Every collaborator lives on this
+// stack in the order it must be constructed, and the shutdown below mirrors
+// that order; a helper per step would move the lifetimes out of sight.
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
+    // Pre-init hardening: must run before any LoadLibrary/file I/O.
+    lifecycle::hardenDllSearchPath();
+    lifecycle::applyRuntimeMitigations();
+    lifecycle::installCrashHandler();
+    lifecycle::installTerminateHandler();
+
+    const std::string cmd = lpCmdLine != nullptr ? lpCmdLine : "";
+    if (crashForTestIfAsked(cmd)) return 3;
+
+    lifecycle::registerForRestart();
+    if (forwardPairUri(cmd)) return 0;
+
+    // Refuse a second copy; tap the existing instance's window so it can flash
+    // a balloon, then exit (double-launch otherwise fights over ports).
+    if (!lifecycle::acquireSingleInstance(APP_TITLE)) return 0;
+
+    const HRESULT hrCoInit = initShellIntegration();
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS); // low-latency input forwarding
+    timeBeginPeriod(1); // default 15.6ms timer resolution would distort scheduling
+    if (!startWinsock()) return 1;
+    if (!startCrypto()) return 1;
+
+    loadConfigSeedingAutostart();
 
     // Crash reporting arms here rather than beside installCrashHandler(),
     // because it needs the operator's opt-in and that only exists once the
@@ -211,16 +343,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // ever chosen, so materializing the pad hands it the whole desktop's audio.
     // Declared BEFORE the adapter that borrows it, so it is still alive while
     // that adapter tears down; joins its worker on the way out.
-    satellite::audioguard::PlugGuardRunner audioDefaultGuard([] {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        return g_config.controllerAudioKeepDefaultDevice;
-    });
-    // Read per plug, not cached: the dashboard toggle takes effect on the next
-    // pad, and a pad already carrying audio keeps it until it is replugged.
-    HidMaestroAdapter hidMaestroAdapter(hmProvisioner, [] {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        return g_config.controllerAudio;
-    });
+    satellite::audioguard::PlugGuardRunner audioDefaultGuard(keepDefaultAudioDevice);
+    HidMaestroAdapter hidMaestroAdapter(hmProvisioner, controllerAudioEnabled);
     hidMaestroAdapter.setCompositePlugHooks(
         [&audioDefaultGuard] { audioDefaultGuard.beforeCompositePlug(); },
         [&audioDefaultGuard] { audioDefaultGuard.afterCompositePlug(); });
@@ -232,113 +356,41 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // codes them. Stateless and scoped to main, so it outlives the service.
     satellite::audio::OpusCodecFactory audioCodecs;
     SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
-
-    // Read per frame, not cached: unlike the master switch these gate the wire
-    // rather than the persona, so flipping one reaches a stream already
-    // playing instead of waiting for a replug.
-    svc.setAudioPolicy([] {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
-                                     g_config.controllerAudioHaptics};
-    });
+    svc.setAudioPolicy(audioPolicyFromConfig);
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).
-    // The persist callback runs under g_configMtx so saveConfig sees a consistent struct.
     WindowsUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
     UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
-    updateService.setPersistCallback([] {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        saveConfig(g_config);
-    });
-    // Toast once when an update first appears. Edge-triggered on the transition
-    // to UpdateAvailable so an open settings page doesn't spam.
-    {
-        // `static` is load-bearing: the callback captures this by reference and
-        // outlives the block (fires from the updater worker until stop() at
-        // shutdown); an automatic local here would be a use-after-free.
-        static std::atomic<bool> toastedAvailable{false};
-        updateService.setStatusCallback([](const UpdateStatusSnapshot& snap) {
-            if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
-                if (!toastedAvailable.exchange(true)) {
-                    shell_integration::showToast(std::string("Satellite update ready"),
-                                                 std::string("Version ") + snap.info.version +
-                                                     " is available. Click to install.");
-                }
-            } else if (snap.state == UpdateState::Idle || snap.state == UpdateState::UpToDate) {
-                toastedAvailable.store(false); // re-arm so the next UpdateAvailable toasts again
-            }
-            updateTrayTooltip();
-        });
-    }
+    updateService.setPersistCallback(persistConfig);
+    updateService.setStatusCallback(onUpdateStatus);
     g_updateService = &updateService;
 
-    // Hidden top-level window (never shown, WS_EX_TOOLWINDOW): top-level is
-    // what makes WM_QUERYENDSESSION reach us, since a message-only window is
-    // excluded from broadcasts. Class name is the literal Explorer/another
-    // instance uses to find us (see acquireSingleInstance / protocol forward).
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = hInst;
-    wc.lpszClassName = L"ControllerForwardTray";
-    RegisterClassW(&wc);
-
-    g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Satellite", WS_OVERLAPPED, 0, 0,
-                             0, 0, nullptr, nullptr, hInst, nullptr);
-
+    g_hwnd = createTrayWindow(hInst);
     HPOWERNOTIFY powerNotify =
         RegisterSuspendResumeNotification(g_hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
-
     addTrayIcon(g_hwnd);
 
     // Reverse-pairing: when a dish submits a request, raise a native toast +
     // Accept/Reject dialog so the operator never has to open the web UI.
     setPairRequestListener(notifyPairRequestWindows);
-
     // satellite-pair: scheme lets the toast's Accept/Reject route back here.
     registerPairProtocol();
-
     // Jump list must come after AUMID + COM init; CommitList is idempotent.
     shell_integration::refreshJumpList();
 
     g_webDir = getExeDir() + "\\web";
 
     updateService.start(); // spawns worker + timer threads internally
+    Workers workers = startWorkers(svc, clientAdapter);
 
-    std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
-    std::thread adminTh(adminHttpThread, std::ref(svc));
-    std::thread clientTh(clientApiThread, std::ref(svc));
-    std::thread discTh(discoveryThread);
-    std::thread mdnsTh(mdnsResponderThread);
-    std::thread tooltipTh(tooltipTickerThread);
-    std::thread addrTh(addrChangeWatcherThread);
-
-    MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+    runMessageLoop();
 
     logMsg(LogLevel::INFO, "app", "Shutting down");
     g_appRunning = false;
     if (powerNotify) UnregisterSuspendResumeNotification(powerNotify);
-    g_httpServer.stop();
-    if (g_clientServer) g_clientServer->stop();
-
-    // Stop the updater before joining the http thread so its SSE-broadcast
-    // callback can't fire into a torn-down server.
-    updateService.stop();
-    g_updateService = nullptr;
-
-    recvTh.join();
-    adminTh.join();
-    clientTh.join();
-    discTh.join();
-    mdnsTh.join();
-    tooltipTh.join();
-    addrTh.join();
-
+    stopServers(updateService);
+    joinWorkers(workers);
     svc.closeAllSessions();
-
     lifecycle::stopFileLogger();
 
     // Flush before the process winds down; a pending envelope is lost if the
