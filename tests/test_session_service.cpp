@@ -3799,6 +3799,33 @@ static void test_feedbackState_aCapTheRePutDroppedIsNotResent() {
     EXPECT_EQ(pad.client.playerLedsCalls, 1);
 }
 
+static constexpr uint16_t CAPS_WITHOUT_TRIGGER_EFFECTS = CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_MIC;
+static constexpr uint16_t CAPS_WITHOUT_PLAYER_LEDS = CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_MIC;
+
+static void test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStayAway() {
+    TEST("rotate: a re-PUT without the trigger-effects cap keeps only the trigger effects away");
+    LitPadSession pad;
+    const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, CAPS_WITHOUT_TRIGGER_EFFECTS);
+
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.deliveredTriggerEffects, 1);
+    EXPECT_EQ(pad.client.deliveredLightbars, 2);
+    EXPECT_EQ(pad.client.deliveredPlayerLeds, 2);
+}
+
+static void test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway() {
+    TEST("rotate: a re-PUT without the player-LED cap keeps only the player LEDs away");
+    LitPadSession pad;
+    const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, CAPS_WITHOUT_PLAYER_LEDS);
+
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.deliveredPlayerLeds, 1);
+    EXPECT_EQ(pad.client.deliveredLightbars, 2);
+    EXPECT_EQ(pad.client.deliveredTriggerEffects, 2);
+}
+
 static void test_feedbackState_aPadTheRePutRepluggedHasNothingToResend() {
     TEST("rotate: a pad the re-PUT replugged has no state to send again");
     LitPadSession pad;
@@ -4134,6 +4161,8 @@ int main() {
     test_feedbackState_firstDatagramCarryingInputResends();
     test_feedbackState_firstDatagramByStringAddressResends();
     test_feedbackState_aCapTheRePutDroppedIsNotResent();
+    test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStayAway();
+    test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway();
     test_feedbackState_aPadTheRePutRepluggedHasNothingToResend();
     test_feedbackState_aSlotTheRePutDroppedIsNotResent();
 
