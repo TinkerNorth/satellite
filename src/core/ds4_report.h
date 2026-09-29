@@ -18,12 +18,14 @@
 #pragma once
 
 #include "core/byte_order.h"
+#include "core/hex.h"
 #include "core/touchpad_codec.h"
 #include "core/types.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 // USB identity of a DualShock 4 v2. Published verbatim so macOS's native DS4
 // support (GameController.framework's DualShock profile and games' own VID/PID
@@ -489,19 +491,12 @@ inline void ds4MacForSerial(uint32_t serial, uint8_t out[6]) {
     out[5] = static_cast<uint8_t>(serial & 0xFF);
 }
 
-// "02:53:41:54:00:0c" — the kIOHIDSerialNumberKey string, mirroring how real
-// DS4s expose their MAC as the USB serial. `out` must hold >= 18 chars.
-inline void ds4SerialString(uint32_t serial, char out[18]) {
+// The kIOHIDSerialNumberKey string, "02:53:41:54:00:0c" for serial 0x0C: real
+// DS4s expose their MAC as the USB serial.
+inline std::string ds4SerialString(uint32_t serial) {
     uint8_t mac[6];
     ds4MacForSerial(serial, mac);
-    static const char* hexd = "0123456789abcdef";
-    int pos = 0;
-    for (int i = 0; i < 6; i++) {
-        out[pos++] = hexd[mac[i] >> 4];
-        out[pos++] = hexd[mac[i] & 0x0F];
-        if (i != 5) out[pos++] = ':';
-    }
-    out[pos] = '\0';
+    return hexEncodeSeparated(mac, sizeof(mac), ':');
 }
 
 // Fill `out` (>= 64 bytes) with the feature report for `reportId`; returns the

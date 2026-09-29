@@ -397,9 +397,7 @@ static void test_feature_reports() {
 
     EXPECT_EQ(ds4FeatureReport(0x99, 3, buf), (size_t)0); // unknown id unserved
 
-    char serialStr[18];
-    ds4SerialString(0x0C, serialStr);
-    EXPECT_EQ(std::string(serialStr), std::string("02:53:41:54:00:0c"));
+    EXPECT_EQ(ds4SerialString(0x0C), std::string("02:53:41:54:00:0c"));
 }
 
 // The parse every USB hid-sony-lineage consumer applies to feature report

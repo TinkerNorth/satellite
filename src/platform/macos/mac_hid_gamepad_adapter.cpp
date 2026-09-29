@@ -217,9 +217,8 @@ IOHIDUserDeviceRef createDs4UserDevice(uint32_t serial) {
     setDictNumber(props, CFSTR(kIOHIDVersionNumberKey), DS4V2_VERSION_BCD);
     setDictString(props, CFSTR(kIOHIDManufacturerKey), DS4V2_MANUFACTURER_STRING);
     setDictString(props, CFSTR(kIOHIDProductKey), DS4V2_PRODUCT_STRING);
-    char serialStr[18];
-    ds4SerialString(serial, serialStr);
-    setDictString(props, CFSTR(kIOHIDSerialNumberKey), serialStr);
+    const std::string serialStr = ds4SerialString(serial);
+    setDictString(props, CFSTR(kIOHIDSerialNumberKey), serialStr.c_str());
     setDictString(props, CFSTR(kIOHIDTransportKey), "USB");
     setDictNumber(props, CFSTR(kIOHIDCountryCodeKey), 0);
     setDictNumber(props, CFSTR(kIOHIDPrimaryUsagePageKey), kHIDPage_GenericDesktop);
