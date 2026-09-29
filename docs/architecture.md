@@ -493,9 +493,10 @@ Both directions are Opus at 48 kHz, 20 ms, VBR, and both are configured in
 DECODER and the speaker ENCODER, since the other half of each pair lives
 on the client. `OPUS_SET_PACKET_LOSS_PERC(10)` is the load-bearing knob:
 it is the loss hint, not the application, that picks the mode, and it
-forces SILK in, so BOTH streams encode as Hybrid fullband and BOTH really
-do carry in-band FEC (measured on libopus 1.6.1: 8.4 dB recovery through
-`decode_fec` against -1.3 dB for blind PLC on the speaker stream).
+forces SILK in, so the speaker encodes as Hybrid (SILK under CELT) instead
+of CELT alone and BOTH streams really do carry in-band FEC (measured on
+libopus 1.6.1: 8.4 dB recovery through `decode_fec` against -1.3 dB for
+blind PLC on the speaker stream).
 Dropping the hint to reach CELT would silently delete that FEC.
 
 Silence is where the two directions diverge. DTX goes on the mic encoder

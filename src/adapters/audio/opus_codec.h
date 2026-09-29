@@ -27,9 +27,10 @@ struct OpusDecoder;
 namespace satellite::audio {
 
 // Which of the wire streams an instance is pinned to. The distinction is not
-// just channel count: the mic runs Opus's VOIP application at a bitrate where
-// in-band FEC exists, the speaker runs the AUDIO application at a bitrate
-// where fidelity matters more (see opus_codec.cpp for the numbers and why).
+// just channel count: the mic runs Opus's VOIP application at a speech
+// bitrate, the speaker runs the AUDIO application at a bitrate where fidelity
+// matters more, and both carry in-band FEC (see opus_codec.cpp for the numbers
+// and why).
 // Haptics take the speaker's settings: two actuator lanes whose waveform IS
 // the effect, so it gets the same fidelity budget as something a player hears.
 enum class Stream { Mic, Speaker, Haptic };
