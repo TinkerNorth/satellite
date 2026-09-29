@@ -3686,8 +3686,8 @@ static void test_feedbackState_rotatedSessionGetsTheLightbarAgain() {
     EXPECT_EQ((int)pad.client.lastLightbarB, 30);
 }
 
-static void test_feedbackState_rotatedSessionGetsEveryOtherStateAgain() {
-    TEST("rotate: trigger effects, player LEDs and the mic lamp come back with the colour");
+static void test_feedbackState_rotatedSessionGetsTriggerEffectsAndPlayerLedsAgain() {
+    TEST("rotate: trigger effects and player LEDs come back with the colour");
     LitPadSession pad;
 
     const auto second = pad.rePut();
@@ -3699,9 +3699,19 @@ static void test_feedbackState_rotatedSessionGetsEveryOtherStateAgain() {
     EXPECT_EQ(pad.client.deliveredPlayerLeds, 2);
     EXPECT_EQ(pad.client.lastPlayerLedsConnToken, second.token);
     EXPECT_EQ((int)pad.client.lastPlayerLeds, 0x04);
-    EXPECT_EQ(pad.client.deliveredMicLeds, 2);
-    EXPECT_EQ(pad.client.lastMicLedConnToken, second.token);
-    EXPECT_EQ((int)pad.client.lastMicLedState, (int)MIC_LED_STATE_ON);
+}
+
+static void test_feedbackState_micLampIsNotReplayedSinceItAlsoMutesTheMicrophone() {
+    TEST("rotate: the mic lamp is not sent again: on a client it also mutes the pad's microphone, "
+         "and a replay would undo the user's own unmute");
+    LitPadSession pad;
+    EXPECT_EQ(pad.client.deliveredMicLeds, 1);
+
+    const auto second = pad.rePut();
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.deliveredMicLeds, 1);
+    EXPECT_EQ(pad.client.micLedCalls, 1);
 }
 
 static void test_feedbackState_rumbleIsNotReplayed() {
@@ -3740,7 +3750,7 @@ static void test_feedbackState_onlyTheFirstDatagramResends() {
     const auto second = pad.rePut();
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
     const int lightbarsAfterFirst = pad.client.lightbarCalls;
-    const int micLedsAfterFirst = pad.client.micLedCalls;
+    const int playerLedsAfterFirst = pad.client.playerLedsCalls;
 
     pad.svc.updatePostDecryptV4(second.token, 2, CLIENT_IPV4_NBO, CLIENT_PORT);
     GamepadReport rpt{};
@@ -3749,7 +3759,7 @@ static void test_feedbackState_onlyTheFirstDatagramResends() {
     EXPECT(submitted);
 
     EXPECT_EQ(pad.client.lightbarCalls, lightbarsAfterFirst);
-    EXPECT_EQ(pad.client.micLedCalls, micLedsAfterFirst);
+    EXPECT_EQ(pad.client.playerLedsCalls, playerLedsAfterFirst);
 }
 
 static void test_feedbackState_firstDatagramCarryingInputResends() {
@@ -3787,7 +3797,6 @@ static void test_feedbackState_aCapTheRePutDroppedIsNotResent() {
     EXPECT_EQ(pad.client.lightbarCalls, 1);
     EXPECT_EQ(pad.client.triggerEffectsCalls, 1);
     EXPECT_EQ(pad.client.playerLedsCalls, 1);
-    EXPECT_EQ(pad.client.micLedCalls, 1);
 }
 
 static void test_feedbackState_aPadTheRePutRepluggedHasNothingToResend() {
@@ -3800,7 +3809,6 @@ static void test_feedbackState_aPadTheRePutRepluggedHasNothingToResend() {
     EXPECT_EQ(pad.client.lightbarCalls, 1);
     EXPECT_EQ(pad.client.triggerEffectsCalls, 1);
     EXPECT_EQ(pad.client.playerLedsCalls, 1);
-    EXPECT_EQ(pad.client.micLedCalls, 1);
 }
 
 static void test_feedbackState_aSlotTheRePutDroppedIsNotResent() {
@@ -4118,7 +4126,8 @@ int main() {
     test_feedback_replugResetsCoalesce();
     test_backendCallbacks_dropNotBlock_whenLockHeld();
     test_feedbackState_rotatedSessionGetsTheLightbarAgain();
-    test_feedbackState_rotatedSessionGetsEveryOtherStateAgain();
+    test_feedbackState_rotatedSessionGetsTriggerEffectsAndPlayerLedsAgain();
+    test_feedbackState_micLampIsNotReplayedSinceItAlsoMutesTheMicrophone();
     test_feedbackState_rumbleIsNotReplayed();
     test_feedbackState_freshSessionGetsWhatWasSetBeforeItsFirstDatagram();
     test_feedbackState_onlyTheFirstDatagramResends();

@@ -742,16 +742,20 @@ pushed to an un-keyed client and surfaces as 401 on the next REST contact.
 
 ### Feedback state on a session's first datagram
 
-LIGHTBAR 0x000D, TRIGGER_EFFECTS 0x0010, PLAYER_LEDS 0x0011 and MIC_LED 0x0014 each
-carry a whole state, last value wins, and the satellite sends one only when the game
-changes it. A session can first be reached at its first authenticated datagram: a PUT
-drops the old token's address, and the new one is learned from that datagram. Right
-then the satellite sends each of these states the game has set, for every pad of the
+LIGHTBAR 0x000D, TRIGGER_EFFECTS 0x0010 and PLAYER_LEDS 0x0011 each carry a whole
+state, last value wins, and the satellite sends one only when the game changes it. A
+session can first be reached at its first authenticated datagram: a PUT drops the old
+token's address, and the new one is learned from that datagram. Right then the
+satellite sends each of these three states the game has set, for every pad of the
 session whose caps admit it, so a client that relaunched and re-PUT (or a state the
 game set before that datagram) shows the game's current state instead of waiting for
 the game to change it. A client therefore treats a repeated value as the same state.
-RUMBLE 0x0009 is a command with a lifetime and refreshes on its own schedule (see
-Rumble lifetime), and the audio lanes are streams; neither is ever replayed.
+
+Three kinds are never replayed. MIC_LED 0x0014 is state too, but on a client the lamp
+also mutes the pad's microphone, and the user's own mute writes the same lamp (last
+writer wins on the pad): a replay is no new write from the game, and it would undo an
+unmute the user made since. RUMBLE 0x0009 is a command with a lifetime and refreshes
+on its own schedule (see Rumble lifetime), and the audio lanes are streams.
 
 ### Controller audio (0x0012 / 0x0013 / 0x0014)
 
