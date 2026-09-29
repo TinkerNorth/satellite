@@ -317,14 +317,33 @@ struct MockClient : IClientPort {
     uint8_t lastLightbarG = 0;
     uint8_t lastLightbarB = 0;
 
-    void updateClientAddr(uint32_t, const std::string&, uint16_t) override { updateAddrCalls++; }
+    // The real ClientAdapter reaches only a token whose address one of that
+    // session's datagrams taught it, and drops a send to any other token as
+    // unroutable. The delivered* counts are what a client can have received.
+    std::set<uint32_t> addressedTokens;
+    int deliveredLightbars = 0;
+    int deliveredTriggerEffects = 0;
+    int deliveredPlayerLeds = 0;
+    int deliveredMicLeds = 0;
+    int deliveredRumbles = 0;
+
+    bool reaches(const Connection& conn) const { return addressedTokens.count(conn.token) != 0; }
+
+    void updateClientAddr(uint32_t token, const std::string&, uint16_t) override {
+        updateAddrCalls++;
+        addressedTokens.insert(token);
+    }
     void updateClientAddrV4(uint32_t token, uint32_t ipv4Nbo, uint16_t port) override {
         updateAddrV4Calls++;
         lastV4Token = token;
         lastV4IPv4Nbo = ipv4Nbo;
         lastV4Port = port;
+        addressedTokens.insert(token);
     }
-    void removeClientAddr(uint32_t) override { removeAddrCalls++; }
+    void removeClientAddr(uint32_t token) override {
+        removeAddrCalls++;
+        addressedTokens.erase(token);
+    }
     void sendHeartbeatAck(const Connection&, bool backendAvailable, uint8_t totalActiveControllers,
                           uint16_t epoch, uint16_t activeBitmap) override {
         heartbeatAckCalls++;
@@ -340,6 +359,7 @@ struct MockClient : IClientPort {
     }
     void sendRumble(const Connection& conn, uint8_t ctrlIdx, const RumbleReport& report) override {
         rumbleCalls++;
+        if (reaches(conn)) deliveredRumbles++;
         lastRumbleConnToken = conn.token;
         lastRumbleCtrlIdx = ctrlIdx;
         lastRumble = report;
@@ -347,6 +367,7 @@ struct MockClient : IClientPort {
     void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                       uint8_t b) override {
         lightbarCalls++;
+        if (reaches(conn)) deliveredLightbars++;
         lastLightbarConnToken = conn.token;
         lastLightbarCtrlIdx = ctrlIdx;
         lastLightbarR = r;
@@ -356,12 +377,14 @@ struct MockClient : IClientPort {
     void sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
                             const TriggerEffectsReport& report) override {
         triggerEffectsCalls++;
+        if (reaches(conn)) deliveredTriggerEffects++;
         lastTriggerEffectsConnToken = conn.token;
         lastTriggerEffectsCtrlIdx = ctrlIdx;
         lastTriggerEffects = report;
     }
     void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) override {
         playerLedsCalls++;
+        if (reaches(conn)) deliveredPlayerLeds++;
         lastPlayerLedsConnToken = conn.token;
         lastPlayerLedsCtrlIdx = ctrlIdx;
         lastPlayerLeds = ledMask;
@@ -384,6 +407,7 @@ struct MockClient : IClientPort {
     }
     void sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) override {
         micLedCalls++;
+        if (reaches(conn)) deliveredMicLeds++;
         lastMicLedConnToken = conn.token;
         lastMicLedCtrlIdx = ctrlIdx;
         lastMicLedState = state;
@@ -3595,6 +3619,193 @@ static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
     EXPECT_EQ(client.lightbarCalls, 1);
 }
 
+// ---- feedback state once a session's client can be reached ------------------
+
+static constexpr uint32_t CLIENT_IPV4_NBO = 0x0100007f;
+static constexpr uint16_t CLIENT_PORT = 5555;
+static constexpr uint16_t ALL_STATE_CAPS =
+    CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+
+// One DualSense slot whose game set every feedback state while the first
+// session's client was reachable, so each state reached it once.
+struct LitPadSession {
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc{vigem, client, log};
+    SessionUpsertResult first;
+    uint32_t serial = 0;
+    TriggerEffectsReport triggerEffects = makeTriggerEffects(0x21, 0x26);
+
+    explicit LitPadSession(uint16_t caps = ALL_STATE_CAPS) {
+        first = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, caps)});
+        serial = serialOfSlot(svc, 0);
+        svc.updatePostDecryptV4(first.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+        vigem.fireLightbar(serial, 10, 20, 30);
+        vigem.fireTriggerEffects(serial, triggerEffects);
+        vigem.firePlayerLeds(serial, 0x04);
+        vigem.fireMicLed(serial, MIC_LED_STATE_ON);
+    }
+
+    // The client came back (a relaunch): the same device PUTs again, and the
+    // session rotates in place with its pads kept.
+    SessionUpsertResult rePut(uint8_t type = CONTROLLER_TYPE_DUALSENSE,
+                              uint16_t caps = ALL_STATE_CAPS) {
+        return upsert(svc, {makeDesc(0, type, caps)});
+    }
+};
+
+static void test_feedbackState_rotatedSessionGetsTheLightbarAgain() {
+    TEST("rotate: the new session's first datagram brings the pad's light bar colour back");
+    LitPadSession pad;
+    EXPECT_EQ(pad.client.deliveredLightbars, 1);
+
+    const auto second = pad.rePut();
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.deliveredLightbars, 2);
+    EXPECT_EQ(pad.client.lastLightbarConnToken, second.token);
+    EXPECT_EQ((int)pad.client.lastLightbarR, 10);
+    EXPECT_EQ((int)pad.client.lastLightbarG, 20);
+    EXPECT_EQ((int)pad.client.lastLightbarB, 30);
+}
+
+static void test_feedbackState_rotatedSessionGetsEveryOtherStateAgain() {
+    TEST("rotate: trigger effects, player LEDs and the mic lamp come back with the colour");
+    LitPadSession pad;
+
+    const auto second = pad.rePut();
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.deliveredTriggerEffects, 2);
+    EXPECT_EQ(pad.client.lastTriggerEffectsConnToken, second.token);
+    EXPECT((pad.client.lastTriggerEffects == pad.triggerEffects));
+    EXPECT_EQ(pad.client.deliveredPlayerLeds, 2);
+    EXPECT_EQ(pad.client.lastPlayerLedsConnToken, second.token);
+    EXPECT_EQ((int)pad.client.lastPlayerLeds, 0x04);
+    EXPECT_EQ(pad.client.deliveredMicLeds, 2);
+    EXPECT_EQ(pad.client.lastMicLedConnToken, second.token);
+    EXPECT_EQ((int)pad.client.lastMicLedState, (int)MIC_LED_STATE_ON);
+}
+
+static void test_feedbackState_rumbleIsNotReplayed() {
+    TEST("rotate: a rumble command is not sent again by the new session's first datagram");
+    LitPadSession pad(ALL_STATE_CAPS | CAP_RUMBLE);
+    RumbleReport held{};
+    held.strongMagnitude = 1000;
+    pad.vigem.fireRumble(pad.serial, held);
+    EXPECT_EQ(pad.client.rumbleCalls, 1);
+
+    const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, ALL_STATE_CAPS | CAP_RUMBLE);
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.rumbleCalls, 1);
+}
+
+static void test_feedbackState_freshSessionGetsWhatWasSetBeforeItsFirstDatagram() {
+    TEST("fresh session: a colour set before its first datagram arrives with that datagram");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_LIGHTBAR)});
+    vigem.fireLightbar(serialOfSlot(svc, 0), 10, 20, 30);
+    EXPECT_EQ(client.deliveredLightbars, 0);
+
+    svc.updatePostDecryptV4(r.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(client.deliveredLightbars, 1);
+    EXPECT_EQ((int)client.lastLightbarR, 10);
+}
+
+static void test_feedbackState_onlyTheFirstDatagramResends() {
+    TEST("rotate: datagrams after the first send no state again");
+    LitPadSession pad;
+    const auto second = pad.rePut();
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    const int lightbarsAfterFirst = pad.client.lightbarCalls;
+    const int micLedsAfterFirst = pad.client.micLedCalls;
+
+    pad.svc.updatePostDecryptV4(second.token, 2, CLIENT_IPV4_NBO, CLIENT_PORT);
+    GamepadReport rpt{};
+    const bool submitted =
+        pad.svc.handleGamepadDataAndUpdate(second.token, 3, CLIENT_IPV4_NBO, CLIENT_PORT, 0, rpt);
+    EXPECT(submitted);
+
+    EXPECT_EQ(pad.client.lightbarCalls, lightbarsAfterFirst);
+    EXPECT_EQ(pad.client.micLedCalls, micLedsAfterFirst);
+}
+
+static void test_feedbackState_firstDatagramCarryingInputResends() {
+    TEST("rotate: a first datagram that carries input brings the state back too");
+    LitPadSession pad;
+    const auto second = pad.rePut();
+    GamepadReport rpt{};
+
+    const bool submitted =
+        pad.svc.handleGamepadDataAndUpdate(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT, 0, rpt);
+
+    EXPECT(submitted);
+    EXPECT_EQ(pad.client.deliveredLightbars, 2);
+    EXPECT_EQ(pad.client.lastLightbarConnToken, second.token);
+}
+
+static void test_feedbackState_firstDatagramByStringAddressResends() {
+    TEST("rotate: a first datagram recorded by its string address brings the state back too");
+    LitPadSession pad;
+    const auto second = pad.rePut();
+
+    pad.svc.updatePostDecrypt(second.token, 1, "127.0.0.1", CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.deliveredLightbars, 2);
+    EXPECT_EQ(pad.client.lastLightbarConnToken, second.token);
+}
+
+static void test_feedbackState_aCapTheRePutDroppedIsNotResent() {
+    TEST("rotate: a state whose cap the re-PUT dropped is not sent again");
+    LitPadSession pad;
+    const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, 0);
+
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.lightbarCalls, 1);
+    EXPECT_EQ(pad.client.triggerEffectsCalls, 1);
+    EXPECT_EQ(pad.client.playerLedsCalls, 1);
+    EXPECT_EQ(pad.client.micLedCalls, 1);
+}
+
+static void test_feedbackState_aPadTheRePutRepluggedHasNothingToResend() {
+    TEST("rotate: a pad the re-PUT replugged has no state to send again");
+    LitPadSession pad;
+    const auto second = pad.rePut(CONTROLLER_TYPE_PLAYSTATION, ALL_STATE_CAPS);
+
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.lightbarCalls, 1);
+    EXPECT_EQ(pad.client.triggerEffectsCalls, 1);
+    EXPECT_EQ(pad.client.playerLedsCalls, 1);
+    EXPECT_EQ(pad.client.micLedCalls, 1);
+}
+
+static void test_feedbackState_aSlotTheRePutDroppedIsNotResent() {
+    TEST("rotate: a slot the re-PUT dropped is not sent its old state");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto first = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_LIGHTBAR),
+                                    makeDesc(1, CONTROLLER_TYPE_PLAYSTATION, CAP_LIGHTBAR)});
+    svc.updatePostDecryptV4(first.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    vigem.fireLightbar(serialOfSlot(svc, 0), 10, 20, 30);
+    vigem.fireLightbar(serialOfSlot(svc, 1), 40, 50, 60);
+    const auto second = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_LIGHTBAR)});
+
+    svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(client.deliveredLightbars, 3);
+    EXPECT_EQ((int)client.lastLightbarCtrlIdx, 0);
+}
+
 static void test_concurrent_upsertCloseSnapshot() {
     TEST("concurrency: upsert vs unpair-close vs snapshot races don't corrupt state");
     MockViGem vigem;
@@ -3889,6 +4100,16 @@ int main() {
     test_audioBackendCallbacks_dropNotBlock_whenLockHeld();
     test_feedback_replugResetsCoalesce();
     test_backendCallbacks_dropNotBlock_whenLockHeld();
+    test_feedbackState_rotatedSessionGetsTheLightbarAgain();
+    test_feedbackState_rotatedSessionGetsEveryOtherStateAgain();
+    test_feedbackState_rumbleIsNotReplayed();
+    test_feedbackState_freshSessionGetsWhatWasSetBeforeItsFirstDatagram();
+    test_feedbackState_onlyTheFirstDatagramResends();
+    test_feedbackState_firstDatagramCarryingInputResends();
+    test_feedbackState_firstDatagramByStringAddressResends();
+    test_feedbackState_aCapTheRePutDroppedIsNotResent();
+    test_feedbackState_aPadTheRePutRepluggedHasNothingToResend();
+    test_feedbackState_aSlotTheRePutDroppedIsNotResent();
 
     test_concurrent_upsertCloseSnapshot();
 

@@ -974,6 +974,31 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     if (foundCtrl->micCapable()) { client_.sendMicLed(*foundConn, foundCtrl->index, state); }
 }
 
+// The coalesce caches above hold each state as last sent, so a client that
+// relaunched and re-PUT would never see an unchanged one again, and one set
+// before the session could be reached went nowhere. Rumble is a command with a
+// lifetime that refreshes on its own, and the audio lanes are streams: neither
+// is replayed.
+void SessionService::resendFeedbackStateLocked(const Connection& conn) {
+    for (const auto& ctrl : conn.controllers) {
+        if (ctrl.active) resendControllerFeedbackStateLocked(conn, ctrl);
+    }
+}
+
+void SessionService::resendControllerFeedbackStateLocked(const Connection& conn,
+                                                         const Controller& ctrl) {
+    const bool resendLightbar = ctrl.lastLightbarValid && ctrl.lightbarCapable();
+    if (resendLightbar) {
+        client_.sendLightbar(conn, ctrl.index, ctrl.lightbarR, ctrl.lightbarG, ctrl.lightbarB);
+    }
+    const bool resendTriggerEffects = ctrl.lastTriggerEffectsValid && ctrl.triggerEffectsCapable();
+    if (resendTriggerEffects) client_.sendTriggerEffects(conn, ctrl.index, ctrl.lastTriggerEffects);
+    const bool resendPlayerLeds = ctrl.lastPlayerLedsValid && ctrl.playerLedsCapable();
+    if (resendPlayerLeds) client_.sendPlayerLeds(conn, ctrl.index, ctrl.playerLeds);
+    const bool resendMicLed = ctrl.lastMicLedValid && ctrl.micCapable();
+    if (resendMicLed) client_.sendMicLed(conn, ctrl.index, ctrl.micLedState);
+}
+
 bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_t* stereo48k,
                                                    size_t frames) {
     if (stereo48k == nullptr || frames == 0) return false;
@@ -1341,17 +1366,29 @@ bool SessionService::getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SI
     return true;
 }
 
+// An authenticated datagram moves the replay window and proves the session
+// live. True for the session's first, which is the first moment its client can
+// be reached: a PUT drops the old token's address, and the new one is learned
+// from this datagram.
+static bool recordAuthenticatedDatagramLocked(Connection& conn, uint32_t counter) {
+    const bool firstDatagram = !conn.seenCounter;
+    conn.lastCounter = counter;
+    conn.seenCounter = true;
+    conn.lastPacketTime = std::chrono::steady_clock::now();
+    return firstDatagram;
+}
+
 void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
                                        const std::string& clientIP, uint16_t clientPort) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
-    it->second.lastCounter = counter;
-    it->second.seenCounter = true;
-    it->second.lastPacketTime = std::chrono::steady_clock::now();
-    it->second.clientIP = clientIP;
-    it->second.clientIPv4 = parseIPv4Nbo(clientIP);
+    Connection& conn = it->second;
+    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
+    conn.clientIP = clientIP;
+    conn.clientIPv4 = parseIPv4Nbo(clientIP);
     client_.updateClientAddr(token, clientIP, clientPort);
+    if (firstDatagram) resendFeedbackStateLocked(conn);
 }
 
 // Refresh Connection::clientIP only when the numeric IPv4 changes (common case
@@ -1368,11 +1405,10 @@ void SessionService::updatePostDecryptV4(uint32_t token, uint32_t counter,
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
     Connection& conn = it->second;
-    conn.lastCounter = counter;
-    conn.seenCounter = true;
-    conn.lastPacketTime = std::chrono::steady_clock::now();
+    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
     refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
     client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
+    if (firstDatagram) resendFeedbackStateLocked(conn);
 }
 
 bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter,
@@ -1384,11 +1420,10 @@ bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter
     if (it == connections_.end()) return false;
     Connection& conn = it->second;
 
-    conn.lastCounter = counter;
-    conn.seenCounter = true;
-    conn.lastPacketTime = std::chrono::steady_clock::now();
+    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
     refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
     client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
+    if (firstDatagram) resendFeedbackStateLocked(conn);
 
     if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
     Controller& ctrl = conn.controllers[ctrlIdx];
