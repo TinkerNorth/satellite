@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../src/core/json.h"
 
+#include <cstddef>
 #include <iostream>
 #include <string>
 
@@ -71,6 +72,98 @@ static void test_object_descend() {
     EXPECT(jsonObject(j, "x").empty());
 }
 
+// A PUT /api/connections body whose hostFeatures object nests `depth` levels.
+static std::string hostFeaturesNested(size_t depth) {
+    std::string body = "{\"hostFeatures\":";
+    for (size_t level = 0; level < depth; ++level) body += "{\"a\":";
+    body += "true";
+    body.append(depth, '}');
+    body += "}";
+    return body;
+}
+
+// 100000 levels (about 600 KB) outrun any thread's stack in one recursive
+// basic_json copy, and the route copies hostFeatures out of what it parsed.
+static void test_deep_request_body_is_refused_before_anything_copies_it() {
+    TEST("jsonParse: a body nesting hostFeatures 100000 deep is refused, never copied");
+    Json body;
+    const bool accepted = jsonParse(hostFeaturesNested(100000), body);
+    EXPECT(!accepted);
+    EXPECT(jsonObject(body, "hostFeatures").empty());
+}
+
+// `depth` arrays, each holding the next; the innermost is empty.
+static std::string arraysNested(size_t depth) {
+    return std::string(depth, '[') + std::string(depth, ']');
+}
+
+// `depth` objects, each holding the next under "a"; the innermost holds 0.
+static std::string objectsNested(size_t depth) {
+    std::string text;
+    for (size_t level = 0; level < depth; ++level) text += "{\"a\":";
+    text += "0";
+    text.append(depth, '}');
+    return text;
+}
+
+// One array holding `count` empty arrays side by side.
+static std::string siblingArrays(size_t count) {
+    std::string text = "[";
+    for (size_t i = 0; i < count; ++i) text += (i == 0) ? "[]" : ",[]";
+    text += "]";
+    return text;
+}
+
+static void test_nesting_up_to_the_bound_parses() {
+    TEST("jsonParse: arrays and objects nested exactly JSON_MAX_DEPTH deep parse");
+    Json arrays;
+    EXPECT(jsonParse(arraysNested(JSON_MAX_DEPTH), arrays));
+    EXPECT(arrays.is_array());
+    Json objects;
+    EXPECT(jsonParse(objectsNested(JSON_MAX_DEPTH), objects));
+    EXPECT(objects.is_object());
+}
+
+static void test_nesting_one_past_the_bound_is_refused_like_malformed_json() {
+    TEST("jsonParse: one level past JSON_MAX_DEPTH is refused and discarded, arrays or objects");
+    Json arrays;
+    EXPECT(!jsonParse(arraysNested(JSON_MAX_DEPTH + 1), arrays));
+    EXPECT(arrays.is_discarded());
+    Json objects;
+    EXPECT(!jsonParse(objectsNested(JSON_MAX_DEPTH + 1), objects));
+    EXPECT(objects.is_discarded());
+}
+
+static void test_depth_counts_open_containers_not_siblings() {
+    TEST("jsonParse: a thousand sibling arrays sit two levels deep, not a thousand");
+    Json siblings;
+    EXPECT(jsonParse(siblingArrays(1000), siblings));
+    EXPECT_EQ(siblings.size(), static_cast<size_t>(1000));
+}
+
+static void test_request_body_absent_reads_as_an_empty_object() {
+    TEST("jsonRequestBody: no body at all reads as {}");
+    Json body;
+    EXPECT(jsonRequestBody("", body));
+    EXPECT(body.is_object());
+    EXPECT(body.empty());
+}
+
+static void test_request_body_object_is_the_body() {
+    TEST("jsonRequestBody: a JSON object is taken as the body");
+    Json body;
+    EXPECT(jsonRequestBody(R"({"deviceName":"Pixel 9"})", body));
+    EXPECT_EQ(jsonStr(body, "deviceName"), std::string("Pixel 9"));
+}
+
+static void test_request_body_that_is_not_an_object_is_refused() {
+    TEST("jsonRequestBody: malformed text, a non-object and an over-deep object are refused");
+    Json body;
+    EXPECT(!jsonRequestBody("{\"controllers\":[", body));
+    EXPECT(!jsonRequestBody("[1,2]", body));
+    EXPECT(!jsonRequestBody(objectsNested(JSON_MAX_DEPTH + 1), body));
+}
+
 static void test_dump_is_ordered_and_compact() {
     TEST("jsonDump: preserves insertion order, compact (no spaces)");
     JsonOut j;
@@ -131,6 +224,13 @@ int main() {
     test_typed_accessors_fallback();
     test_try_accessors();
     test_object_descend();
+    test_deep_request_body_is_refused_before_anything_copies_it();
+    test_nesting_up_to_the_bound_parses();
+    test_nesting_one_past_the_bound_is_refused_like_malformed_json();
+    test_depth_counts_open_containers_not_siblings();
+    test_request_body_absent_reads_as_an_empty_object();
+    test_request_body_object_is_the_body();
+    test_request_body_that_is_not_an_object_is_refused();
     test_dump_is_ordered_and_compact();
     test_dump_escaping();
     test_dump_invalid_utf8_does_not_throw();

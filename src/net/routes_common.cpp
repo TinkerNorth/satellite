@@ -14,7 +14,7 @@
 using satellite::Json;
 using satellite::jsonDump;
 using satellite::JsonOut;
-using satellite::jsonParse;
+using satellite::jsonRequestBody;
 
 void replyJson(httplib::Response& res, const std::string& body) {
     res.set_content(body, JSON_MIME);
@@ -31,7 +31,7 @@ void replyError(httplib::Response& res, int status, const std::string& message) 
 
 Json parseBody(const std::string& body) {
     Json j;
-    if (!jsonParse(body, j) || !j.is_object()) return Json::object();
+    if (!jsonRequestBody(body, j)) return Json::object();
     return j;
 }
 

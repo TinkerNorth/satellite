@@ -31,6 +31,7 @@ using satellite::jsonBool;
 using satellite::jsonDump;
 using satellite::jsonObject;
 using satellite::JsonOut;
+using satellite::jsonRequestBody;
 using satellite::jsonStr;
 using satellite::jsonTryInt;
 using satellite::parseControllerDescriptors;
@@ -202,6 +203,12 @@ static void upsertConnectionRoute(SessionService& svc, const Request& req, Respo
     }
     ClientAuth auth;
     if (!clientAuthed(req, res, auth)) return;
+    // Read as {}, a garbled body would be the empty desired set and unplug every pad.
+    Json body;
+    if (!jsonRequestBody(req.body, body)) {
+        replyError(res, 400, "body must be a JSON object");
+        return;
+    }
     long pv = PROTOCOL_VERSION;
     if (!protocolVersionOk(req.body, res, pv)) return;
     if (pv < PROTOCOL_VERSION) {
@@ -211,7 +218,6 @@ static void upsertConnectionRoute(SessionService& svc, const Request& req, Respo
                    "): update the Dish app for the full feature set");
     }
 
-    const Json body = parseBody(req.body);
     std::string deviceName = jsonStr(body, "deviceName");
     if (deviceName.empty()) deviceName = auth.device.name;
 
