@@ -3,9 +3,9 @@
 
 #include "config.h"
 #include "core/github_release.h"
+#include "core/hex.h"
 #include "core/version.h"
 #include "globals.h"
-#include "net/pin_rotation.h"
 
 #include <winhttp.h>
 #include <bcrypt.h>

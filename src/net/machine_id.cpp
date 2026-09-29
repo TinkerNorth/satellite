@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "machine_id.h"
-#include "config.h"       // configPath()
-#include "pin_rotation.h" // hexEncode
+#include "config.h" // configPath()
+#include "core/hex.h"
 
 #include <sodium.h>
 

@@ -3,8 +3,8 @@
 #include "pairing_service.h"
 #include "app/app_state.h"
 #include "config.h" // g_config, g_configMtx, saveConfig, getCurrentDate
+#include "core/hex.h"
 #include "core/types.h"
-#include "crypto.h" // hexEncode
 #include "pairing.h"
 
 #include <sodium.h>
