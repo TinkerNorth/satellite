@@ -87,7 +87,7 @@ the 90-day freshness window.
 - Component: ViGEm/ViGEmClient (the SDK submodule of nefarius/ViGEmBus)
 - Upstream: https://github.com/ViGEm/ViGEmClient
 - Pinned-commit: v1.21.222.0 (driver ABI targeted: ViGEmBus v1.22.0)
-- Last-vendored: 2026-09-20 (upstream archived 2023-09-08 at b66d02d; each
+- Last-vendored: 2026-09-29 (upstream archived 2023-09-08 at b66d02d; each
   re-stamp is a check that nothing moved upstream, and nothing has)
 - License: MIT
 - Notes: **not** a verbatim upstream copy — a hand-maintained minimal
@@ -101,6 +101,16 @@ the 90-day freshness window.
   them** — that would silently reintroduce the motion-data bug. Re-verify
   by diffing intent, not bytes. The runtime driver itself is installed by
   ViGEmBus's own installer on the user's machine; we ship no driver code.
+  Review (2026-09-29) against the header ViGEmBus v1.22.0 builds with (its
+  `sdk` submodule, ViGEmClient cb8c9f4, whose `BusShared.h` is the same blob
+  as v1.21.222.0's and b66d02d's): the two notification requests had drifted
+  from it. `IOCTL_DS4_REQUEST_NOTIFICATION` is write-only (the driver's DMF
+  table matches the whole code, access bits included, and failed the
+  read-write code we sent, so DS4 rumble and lightbar never came back),
+  `XUSB_REQUEST_NOTIFICATION` carries `LargeMotor, SmallMotor, LedNumber` (we
+  read the LED slot as the small motor), and the DS4 notification carries the
+  small motor first. `test_vigem_adapter` now pins every IOCTL code, both
+  notification sizes and both layouts.
 
 ## HIDMaestro shared-memory protocol (`src/platform/windows/hidmaestro_wire.h`)
 

@@ -11,14 +11,21 @@
 
 #include "core/ds4_report.h"
 
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <future>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "test_util.h"
 
 // Records what the adapter asks the driver to do and lets each test pin the
 // accept/reject verdict. Single-threaded except waitNext*Notification, which the
-// adapter's worker thread calls; those touch no shared counters and park on cancel.
+// adapter's worker thread calls; those take the one pending notification (set
+// before plugin, so the worker's start orders it) and then park on cancel.
 namespace fake {
 struct State {
     int pluginXboxCalls = 0;
@@ -39,6 +46,10 @@ struct State {
     DS4_REPORT_EX lastDs4Ex{};
     DS4_REPORT lastDs4Basic{};
 
+    // A notification the driver completes once, as the bytes it writes.
+    std::vector<uint8_t> xusbNotification;
+    std::vector<uint8_t> ds4Notification;
+
     void reset() { *this = State{}; }
 
     // Zero just the call counters, preserving the driver verdicts. Lets a test
@@ -50,6 +61,14 @@ struct State {
     }
 };
 static State g;
+
+// Hands the worker the pending notification, byte for byte, the first time it asks.
+static bool completeOnce(std::vector<uint8_t>& pending, void* out, size_t size) {
+    if (pending.size() != size) return false;
+    std::memcpy(out, pending.data(), size);
+    pending.clear();
+    return true;
+}
 } // namespace fake
 
 // These signatures must match vigem.h / the adapter's extern decls exactly so
@@ -86,16 +105,91 @@ bool submitDs4ExSync(HANDLE, ULONG, DS4_SUBMIT_REPORT_EX&, HANDLE, const DS4_REP
     return fake::g.ds4ExAccepts;
 }
 
-// The notification worker the adapter spawns at plugin time blocks here; park
-// on the cancel event so unplug/closeBus joins cleanly without real IOCTLs.
-bool waitNextXusbNotification(HANDLE, ULONG, HANDLE cancel, XUSB_REQUEST_NOTIFICATION&) {
+// The notification worker the adapter spawns at plugin time blocks here; after
+// the pending notification, if any, park on the cancel event so unplug/closeBus
+// joins cleanly without real IOCTLs.
+bool waitNextXusbNotification(HANDLE, ULONG, HANDLE cancel, XUSB_REQUEST_NOTIFICATION& out) {
+    if (fake::completeOnce(fake::g.xusbNotification, &out, sizeof(out))) return true;
     WaitForSingleObject(cancel, INFINITE);
     return false;
 }
-bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICATION&) {
+bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICATION& out) {
+    if (fake::completeOnce(fake::g.ds4Notification, &out, sizeof(out))) return true;
     WaitForSingleObject(cancel, INFINITE);
     return false;
 }
+
+// ViGEmBus v1.22.0's side of the notification contract, from the sdk header it
+// builds against (ViGEmClient cb8c9f4, the same BusShared.h every ViGEmClient
+// release has carried since 2018). Its DMF table matches the whole IOCTL code,
+// access bits included, and fails any other code; it fills each notification
+// by field name in these layouts.
+namespace driver {
+struct Ioctl {
+    const char* name;
+    unsigned long sent;
+    unsigned long dispatched;
+};
+constexpr Ioctl IOCTLS[] = {
+    {"IOCTL_VIGEM_PLUGIN_TARGET", IOCTL_VIGEM_PLUGIN_TARGET, 0x2AA004},
+    {"IOCTL_VIGEM_UNPLUG_TARGET", IOCTL_VIGEM_UNPLUG_TARGET, 0x2AA008},
+    {"IOCTL_VIGEM_CHECK_VERSION", IOCTL_VIGEM_CHECK_VERSION, 0x2AA00C},
+    {"IOCTL_VIGEM_WAIT_DEVICE_READY", IOCTL_VIGEM_WAIT_DEVICE_READY, 0x2AA010},
+    {"IOCTL_XUSB_REQUEST_NOTIFICATION", IOCTL_XUSB_REQUEST_NOTIFICATION, 0x2AE804},
+    {"IOCTL_XUSB_SUBMIT_REPORT", IOCTL_XUSB_SUBMIT_REPORT, 0x2AA808},
+    {"IOCTL_DS4_SUBMIT_REPORT", IOCTL_DS4_SUBMIT_REPORT, 0x2AA80C},
+    {"IOCTL_DS4_REQUEST_NOTIFICATION", IOCTL_DS4_REQUEST_NOTIFICATION, 0x2AA810},
+};
+
+// XUSB_REQUEST_NOTIFICATION: {Size, SerialNo, LargeMotor, SmallMotor, LedNumber}.
+constexpr size_t XUSB_NOTIFICATION_SIZE = 12;
+constexpr size_t XUSB_LARGE_MOTOR_AT = 8;
+constexpr size_t XUSB_SMALL_MOTOR_AT = 9;
+constexpr size_t XUSB_LED_NUMBER_AT = 10;
+
+// DS4_REQUEST_NOTIFICATION: {Size, SerialNo, {SmallMotor, LargeMotor, Red, Green, Blue}}.
+constexpr size_t DS4_NOTIFICATION_SIZE = 16;
+constexpr size_t DS4_SMALL_MOTOR_AT = 8;
+constexpr size_t DS4_LARGE_MOTOR_AT = 9;
+constexpr size_t DS4_RED_AT = 10;
+constexpr size_t DS4_GREEN_AT = 11;
+constexpr size_t DS4_BLUE_AT = 12;
+
+static std::vector<uint8_t> xusbNotification(uint8_t largeMotor, uint8_t smallMotor,
+                                             uint8_t ledNumber) {
+    std::vector<uint8_t> bytes(XUSB_NOTIFICATION_SIZE, 0);
+    bytes[XUSB_LARGE_MOTOR_AT] = largeMotor;
+    bytes[XUSB_SMALL_MOTOR_AT] = smallMotor;
+    bytes[XUSB_LED_NUMBER_AT] = ledNumber;
+    return bytes;
+}
+
+static std::vector<uint8_t> ds4Notification(uint8_t smallMotor, uint8_t largeMotor, uint8_t red,
+                                            uint8_t green, uint8_t blue) {
+    std::vector<uint8_t> bytes(DS4_NOTIFICATION_SIZE, 0);
+    bytes[DS4_SMALL_MOTOR_AT] = smallMotor;
+    bytes[DS4_LARGE_MOTOR_AT] = largeMotor;
+    bytes[DS4_RED_AT] = red;
+    bytes[DS4_GREEN_AT] = green;
+    bytes[DS4_BLUE_AT] = blue;
+    return bytes;
+}
+} // namespace driver
+
+// What the adapter's notification worker forwards, delivered to the test thread.
+struct ForwardedFeedback {
+    std::promise<RumbleReport> rumble;
+    std::promise<std::array<uint8_t, 3>> lightbar;
+};
+
+constexpr auto FORWARD_TIMEOUT = std::chrono::seconds(5);
+
+template <typename T> static bool arrivesInTime(const std::future<T>& forwarded) {
+    return forwarded.wait_for(FORWARD_TIMEOUT) == std::future_status::ready;
+}
+
+// A motor byte as the adapter scales it onto the u16 rumble range.
+static uint16_t rumbleMagnitude(uint8_t motor) { return static_cast<uint16_t>(motor * 257); }
 
 // Plugging a DS4 slot fires a one-shot EX probe submit so EX capability is known
 // before the controller-add ACK is built. On a modern ViGEmBus the probe is
@@ -356,6 +450,78 @@ static void test_ds4_ex_struct_abi() {
     EXPECT_EQ((size_t)sr.Size, sizeof(DS4_SUBMIT_REPORT_EX)); // Size field the driver reads
 }
 
+static void test_every_ioctl_is_a_code_the_driver_dispatches() {
+    for (const driver::Ioctl& ioctl : driver::IOCTLS) {
+        TEST(std::string("ViGEm bus ABI: ") + ioctl.name + " is the code ViGEmBus dispatches");
+        EXPECT_EQ(ioctl.sent, ioctl.dispatched);
+    }
+    TEST("ViGEm bus ABI: both notification buffers are the size the driver fills");
+    EXPECT_EQ(sizeof(XUSB_REQUEST_NOTIFICATION), driver::XUSB_NOTIFICATION_SIZE);
+    EXPECT_EQ(sizeof(DS4_REQUEST_NOTIFICATION), driver::DS4_NOTIFICATION_SIZE);
+}
+
+// The game's large (low-frequency) motor is the strong one on every Dish; the
+// player-LED slot the driver reports beside the motors is not a motor.
+static void test_xusb_rumble_forwards_the_large_motor_as_strong() {
+    TEST("XUSB rumble: the driver's large motor arrives as strong, its small motor as weak");
+    constexpr uint8_t largeMotor = 200;
+    constexpr uint8_t smallMotor = 50;
+    constexpr uint8_t ledNumber = 3;
+    fake::g.reset();
+    fake::g.xusbNotification = driver::xusbNotification(largeMotor, smallMotor, ledNumber);
+    ForwardedFeedback forwarded;
+    std::future<RumbleReport> rumble = forwarded.rumble.get_future();
+    ViGEmAdapter a;
+    a.setRumbleCallback(
+        [&forwarded](uint32_t, const RumbleReport& r) { forwarded.rumble.set_value(r); });
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(1, GamepadIdentity::Xbox));
+
+    const bool arrived = arrivesInTime(rumble);
+    EXPECT(arrived);
+    const RumbleReport report = arrived ? rumble.get() : RumbleReport{};
+    EXPECT_EQ(report.strongMagnitude, rumbleMagnitude(largeMotor));
+    EXPECT_EQ(report.weakMagnitude, rumbleMagnitude(smallMotor));
+    a.closeBus();
+}
+
+// A DS4 output report names the small (right) motor first; the strong one is
+// still the large motor, and the lightbar colour rides the same notification.
+static void test_ds4_feedback_forwards_the_large_motor_as_strong_and_the_colour() {
+    TEST("DS4 feedback: the driver's large motor arrives as strong, its small motor as weak");
+    constexpr uint8_t smallMotor = 50;
+    constexpr uint8_t largeMotor = 200;
+    constexpr std::array<uint8_t, 3> colour = {10, 20, 30};
+    fake::g.reset();
+    fake::g.ds4Notification =
+        driver::ds4Notification(smallMotor, largeMotor, colour[0], colour[1], colour[2]);
+    ForwardedFeedback forwarded;
+    std::future<RumbleReport> rumble = forwarded.rumble.get_future();
+    std::future<std::array<uint8_t, 3>> lightbar = forwarded.lightbar.get_future();
+    ViGEmAdapter a;
+    a.setRumbleCallback(
+        [&forwarded](uint32_t, const RumbleReport& r) { forwarded.rumble.set_value(r); });
+    a.setLightbarCallback([&forwarded](uint32_t, uint8_t r, uint8_t g, uint8_t b) {
+        forwarded.lightbar.set_value({r, g, b});
+    });
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(1, GamepadIdentity::DS4));
+
+    const bool rumbleArrived = arrivesInTime(rumble);
+    EXPECT(rumbleArrived);
+    const RumbleReport report = rumbleArrived ? rumble.get() : RumbleReport{};
+    EXPECT_EQ(report.strongMagnitude, rumbleMagnitude(largeMotor));
+    EXPECT_EQ(report.weakMagnitude, rumbleMagnitude(smallMotor));
+
+    TEST("DS4 feedback: the driver's lightbar colour arrives with the rumble");
+    const bool lightbarArrived = arrivesInTime(lightbar);
+    EXPECT(lightbarArrived);
+    const std::array<uint8_t, 3> forwardedColour =
+        lightbarArrived ? lightbar.get() : std::array<uint8_t, 3>{};
+    EXPECT(forwardedColour == colour);
+    a.closeBus();
+}
+
 // submitMotion forwards gyro/accel onto the EX report and reports the IMU sink
 // as live when the driver accepts EX.
 static void test_motion_submit_lands_on_ex_when_supported() {
@@ -434,6 +600,9 @@ int main() {
     test_ds4ExSubmitLanded_benign_failures_still_land();
     test_ds4ExSubmitLanded_real_failures_do_not_land();
     test_ds4_ex_struct_abi();
+    test_every_ioctl_is_a_code_the_driver_dispatches();
+    test_xusb_rumble_forwards_the_large_motor_as_strong();
+    test_ds4_feedback_forwards_the_large_motor_as_strong_and_the_colour();
     test_motion_submit_lands_on_ex_when_supported();
     test_motion_submit_not_delivered_when_ex_unsupported();
     test_motion_submit_rejected_for_xbox_and_unplugged();
