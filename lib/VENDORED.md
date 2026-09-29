@@ -3,8 +3,9 @@
 Source-of-truth inventory for components vendored under
 `satellite/lib/` and `satellite/vigem/include/`. Ecosystem scanners
 (OSV-Scanner, Dependabot, Trivy) cannot deduce these by reading the
-source tree, so we maintain this file by hand and feed it to OSV-Scanner
-through `satellite/osv-scanner.toml`.
+source tree, so we maintain this file by hand, and
+`scripts/vendored-osv-lockfile.sh` hands OSV-Scanner the upstream commit
+each block's `Upstream` and `Pinned-commit` resolve to.
 
 Each component MUST list:
 

@@ -223,11 +223,16 @@ Security gates also run on every PR:
 
 | Workflow | What it does |
 |---|---|
-| `security.yml` | action-pin lint, vulnerability allowlist expiry, OSV-Scanner against `lib/` + `vigem/include/` (with the synthetic [`osv-scanner.toml`](osv-scanner.toml) lockfile), gitleaks secret scan, GitHub `dependency-review-action`, vendored-component freshness check (`lib/VENDORED.md` <= 90 days). |
+| `security.yml` | action-pin lint, vulnerability allowlist expiry, OSV-Scanner against the upstream commit each `lib/VENDORED.md` pin names (`scripts/vendored-osv-lockfile.sh`), gitleaks secret scan, GitHub `dependency-review-action`, vendored-component freshness check (`lib/VENDORED.md` <= 90 days). |
 | `codeql.yml` | CodeQL `cpp` analysis (security-extended + security-and-quality query packs). |
 
-A new high-severity CVE published against any vendored component causes
-the next PR to fail without code changes. To verify the gate locally
+An OSV advisory whose git range covers a vendored component's pinned
+commit fails the next PR, and the Monday run, without code changes. OSV
+cannot place every advisory on a release commit: libsodium tags its
+releases on a branch its fixes do not descend from, so CVE-2025-69277
+matches libsodium's master but neither 1.0.18-RELEASE nor 1.0.20-RELEASE,
+though both are affected. The hand review in "Updating a vendored
+component" covers what the gate cannot see. To verify the gate locally
 before pushing, see "Running security checks locally" below.
 
 ## Security
@@ -261,9 +266,11 @@ cpp-httplib, libsodium, or the ViGEm headers, in the same PR:
 
 1. Update the component block in `lib/VENDORED.md` (commit SHA / version
    tag, `Last-vendored:` set to today's date).
-2. Update the matching `[[PackageOverride]]` version in
-   [`osv-scanner.toml`](osv-scanner.toml).
-3. Re-run OSV-Scanner locally (see below) to confirm no new advisories.
+2. Run the OSV gate locally (see below): `scripts/vendored-osv-lockfile.sh`
+   must resolve every pin, and OSV-Scanner must report no advisories.
+3. Review what the gate cannot see: the upstream's GitHub security
+   advisories (`gh api repos/<owner>/<repo>/security-advisories`), NVD, and
+   every release note between the old pin and the new one.
 
 The `vendored-freshness` CI step fails if any `Last-vendored:` date is
 more than 90 days old, so quarterly refreshes happen even when no
@@ -305,8 +312,9 @@ for e in data.get('exceptions', []) or []:
         print('EXPIRED:', e); sys.exit(1)
 PY
 
-# OSV-Scanner against vendored components
-osv-scanner --recursive --skip-git --lockfile=osv-scanner.toml lib vigem/include
+# OSV-Scanner against the vendored components' pinned upstream commits
+bash scripts/vendored-osv-lockfile.sh > "${TMPDIR:-/tmp}/vendored-osv.json"
+osv-scanner --config=osv-scanner.toml --lockfile "osv-scanner:${TMPDIR:-/tmp}/vendored-osv.json"
 
 # Gitleaks
 gitleaks detect --no-banner --redact --source .
