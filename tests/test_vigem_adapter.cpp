@@ -119,11 +119,11 @@ bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICAT
     return false;
 }
 
-// ViGEmBus v1.22.0's side of the notification contract, from the sdk header it
-// builds against (ViGEmClient cb8c9f4, the same BusShared.h every ViGEmClient
-// release has carried since 2018). Its DMF table matches the whole IOCTL code,
-// access bits included, and fails any other code; it fills each notification
-// by field name in these layouts.
+// ViGEmBus v1.22.0's side of the contract, from the sdk header it builds against
+// (ViGEmClient cb8c9f4, whose notification codes and structs are those of 2018's
+// e8bbbe6e). Its DMF table matches the whole IOCTL code, access bits included,
+// and any other code is completed with STATUS_NOT_SUPPORTED; it fills each
+// notification by field name in these layouts.
 namespace driver {
 struct Ioctl {
     const char* name;
