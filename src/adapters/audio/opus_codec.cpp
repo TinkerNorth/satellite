@@ -17,8 +17,9 @@ namespace {
 // The plan's formats, in one place. Both streams are 48 kHz, 20 ms, VBR with
 // in-band FEC requested; what differs is the application and the bitrate.
 //
-// Mic: 32 kbps mono under OPUS_APPLICATION_VOIP puts Opus in SILK mode, which
-// is the only mode that HAS in-band FEC -- the redundant low-rate copy of the
+// Mic: 32 kbps mono under OPUS_APPLICATION_VOIP encodes as SILK wideband on
+// band-limited input and as Hybrid fullband on broadband input. Both keep the
+// SILK layer, the only one with in-band FEC: the redundant low-rate copy of the
 // previous frame that lets a receiver recover a single lost packet instead of
 // guessing at it. The expected-loss hint is what makes the encoder actually
 // spend bits on that copy; without it the flag alone does nothing.
