@@ -3,6 +3,7 @@
 
 #include "app/app_state.h"
 #include "core/driver_inf.h"
+#include "core/hex.h"
 #include "core/json.h"
 #include "core/semver.h"
 #include "hidmaestro_report.h"
@@ -261,14 +262,18 @@ bool HelperClient::helloLocked() {
 
 namespace {
 
+constexpr size_t kPipeTokenBytes = 16;
+
 // Unguessable per-session pipe name; the connecting client's PID is verified
 // against the process we spawned before any request is sent.
 std::wstring freshPipeName() {
     std::random_device rd;
-    wchar_t token[33];
-    for (int i = 0; i < 32; ++i) token[i] = L"0123456789abcdef"[rd() & 0xF];
-    token[32] = L'\0';
-    return L"\\\\.\\pipe\\satellite-hm-" + std::to_wstring(GetCurrentProcessId()) + L"-" + token;
+    uint8_t tokenBytes[kPipeTokenBytes];
+    for (uint8_t& byte : tokenBytes) byte = static_cast<uint8_t>(rd());
+    const std::string token = hexEncode(tokenBytes, sizeof(tokenBytes));
+    const std::wstring wideToken(token.begin(), token.end());
+    return L"\\\\.\\pipe\\satellite-hm-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+           wideToken;
 }
 
 // The helper process serving `pipeName`, or nullptr when it would not start.
