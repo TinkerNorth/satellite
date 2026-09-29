@@ -972,13 +972,14 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     if (foundCtrl->micCapable()) { client_.sendMicLed(*foundConn, foundCtrl->index, state); }
 }
 
-// The coalesce caches above hold each state as last sent, so a client that
-// relaunched and re-PUT would never see an unchanged one again, and one set
-// before the session could be reached went nowhere. Rumble is a command with a
-// lifetime that refreshes on its own, and the audio lanes are streams. The mic
-// lamp also mutes the pad's microphone on a client, where the user's own mute
-// writes the same lamp: a replay is no new write from the game, and would undo
-// an unmute. None of those is replayed.
+// The caches above hold what the game last set, sent or not (a slot without the
+// cap still caches it), and an unchanged state is never sent twice: a client
+// that relaunched and re-PUT would not see it again, nor one set before the
+// session could be reached or while the slot lacked the cap. Rumble is a
+// command with a lifetime that refreshes on its own, and the audio lanes are
+// streams. The mic lamp also mutes the pad's microphone on a client, where the
+// user's own mute writes the same lamp: a replay is no new write from the game,
+// and would undo an unmute. None of those is replayed.
 void SessionService::resendFeedbackStateLocked(const Connection& conn) {
     for (const auto& ctrl : conn.controllers) {
         if (ctrl.active) resendControllerFeedbackStateLocked(conn, ctrl);

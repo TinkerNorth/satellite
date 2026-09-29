@@ -3826,6 +3826,23 @@ static void test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway() {
     EXPECT_EQ(pad.client.deliveredTriggerEffects, 2);
 }
 
+static constexpr uint16_t CAPS_WITHOUT_LIGHTBAR = CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+
+static void test_feedbackState_aCapTheRePutAddedBringsTheStateSetWhileItWasOff() {
+    TEST("rotate: a cap the re-PUT added brings the state the game set while it was off");
+    LitPadSession pad(CAPS_WITHOUT_LIGHTBAR);
+    EXPECT_EQ(pad.client.lightbarCalls, 0);
+
+    const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, ALL_STATE_CAPS);
+    pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+
+    EXPECT_EQ(pad.client.deliveredLightbars, 1);
+    EXPECT_EQ(pad.client.lastLightbarConnToken, second.token);
+    EXPECT_EQ((int)pad.client.lastLightbarR, 10);
+    EXPECT_EQ((int)pad.client.lastLightbarG, 20);
+    EXPECT_EQ((int)pad.client.lastLightbarB, 30);
+}
+
 static void test_feedbackState_aPadTheRePutRepluggedHasNothingToResend() {
     TEST("rotate: a pad the re-PUT replugged has no state to send again");
     LitPadSession pad;
@@ -4163,6 +4180,7 @@ int main() {
     test_feedbackState_aCapTheRePutDroppedIsNotResent();
     test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStayAway();
     test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway();
+    test_feedbackState_aCapTheRePutAddedBringsTheStateSetWhileItWasOff();
     test_feedbackState_aPadTheRePutRepluggedHasNothingToResend();
     test_feedbackState_aSlotTheRePutDroppedIsNotResent();
 
