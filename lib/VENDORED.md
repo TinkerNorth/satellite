@@ -25,8 +25,8 @@ the 90-day freshness window.
 
 - Component: yhirose/cpp-httplib
 - Upstream: https://github.com/yhirose/cpp-httplib
-- Pinned-commit: v0.56.0
-- Last-vendored: 2026-09-20
+- Pinned-commit: v0.58.0
+- Last-vendored: 2026-09-29
 - License: MIT
 - Notes: vendored as a single header, byte-identical to the upstream tag
   (modulo CRLF in the working tree; git stores it LF). No local
@@ -40,6 +40,15 @@ the 90-day freshness window.
   writes on every tick and returns false when a write fails, so the new
   no-progress rule for content providers never trips; `Error` values shifted
   and are not used numerically; `CPPHTTPLIB_NO_EXCEPTIONS` is still honoured.
+  v0.56.0 -> v0.58.0 review (2026-09-29): the 0.57.0 server fixes come along
+  (a chunk-size line may carry nothing but a chunk-ext, which closes a
+  request-smuggling gap, and both the declared and the received trailers are
+  capped), as does 0.57.1's check that a client method is a token; an OpenSSL
+  connection now sends `close_notify` without waiting for the peer's, so an
+  idle keep-alive client no longer holds a worker or `Server::stop()`;
+  `100 Continue` now waits until the body is read and WebSocket upgrades run
+  `pre_request_handler`, and Satellite has no `Expect` handler and no
+  WebSocket route. No API Satellite calls changed.
 
 ## nlohmann/json (`lib/nlohmann/json.hpp`)
 
