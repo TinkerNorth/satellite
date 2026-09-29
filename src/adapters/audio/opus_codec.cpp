@@ -25,12 +25,12 @@ namespace {
 //
 // Speaker: 96 kbps stereo under OPUS_APPLICATION_AUDIO, because this carries
 // game and chat audio a player listens to rather than speech a codec can model.
-// The loss hint below, not the application, is what picks the mode: it forces
-// SILK in, so the speaker encodes as Hybrid, SILK under CELT, instead of CELT
-// alone, and both streams really do carry in-band FEC (measured on libopus
-// 1.6.1: 8.4 dB recovery via decode_fec vs -1.3 dB for blind PLC on the speaker
-// stream). Dropping the hint to zero would hand the speaker to CELT and
-// silently delete that FEC.
+// In-band FEC and the loss hint below, together and not the application, are
+// what pick the mode: the pair forces SILK in, so the speaker encodes as Hybrid,
+// SILK under CELT, instead of CELT alone, and both streams really do carry
+// in-band FEC (measured on libopus 1.6.1: 8.4 dB recovery via decode_fec vs
+// -1.3 dB for blind PLC on the speaker stream). Turning either one off would
+// hand the speaker to CELT and silently delete that FEC.
 const int OPUS_MIC_BITRATE_BPS = 32000;
 const int OPUS_SPEAKER_BITRATE_BPS = 96000;
 const int OPUS_EXPECTED_PACKET_LOSS_PCT = 10;
