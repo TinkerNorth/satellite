@@ -4,6 +4,7 @@
 #include "config.h"
 #include "update_helper_script.h"
 #include "core/github_release.h"
+#include "core/hex.h"
 #include "core/version.h"
 
 #include <curl/curl.h>
@@ -221,13 +222,7 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     std::fclose(f);
     unsigned char digest[crypto_hash_sha256_BYTES];
     crypto_hash_sha256_final(&st, digest);
-    static const char* kHex = "0123456789abcdef";
-    hexOut.clear();
-    hexOut.reserve(crypto_hash_sha256_BYTES * 2);
-    for (size_t i = 0; i < sizeof(digest); i++) {
-        hexOut += kHex[digest[i] >> 4];
-        hexOut += kHex[digest[i] & 0xF];
-    }
+    hexOut = hexEncode(digest, sizeof(digest));
     return true;
 }
 
