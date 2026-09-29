@@ -3,10 +3,10 @@
 #include "session_service.h"
 
 #include "core/audio/haptic_envelope.h"
+#include "core/hex.h"
 #include "ipv4_util.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 
 // std::random not libsodium, to keep the core libsodium-free. These values need
@@ -16,6 +16,8 @@
 
 using satellite::formatIPv4Nbo;
 using satellite::parseIPv4Nbo;
+
+static constexpr const char* CONNECTION_ID_PREFIX = "conn_";
 
 static uint32_t makeRandomToken() {
     static std::random_device rd;
@@ -461,13 +463,9 @@ SessionUpsertResult SessionService::upsertSession(
     Connection* conn = findByDeviceId(deviceId);
     if (conn == nullptr) {
         Connection c;
-        char idHex[9];
-        uint32_t idRand;
         do {
-            idRand = makeRandomToken();
-            snprintf(idHex, sizeof(idHex), "%08x", idRand);
-        } while (findByConnectionId(std::string("conn_") + idHex) != nullptr);
-        c.connectionId = std::string("conn_") + idHex;
+            c.connectionId = CONNECTION_ID_PREFIX + hexEncodeBE32(makeRandomToken());
+        } while (findByConnectionId(c.connectionId) != nullptr);
         c.deviceId = deviceId;
         c.connectedAt = now;
         c.token = generateUniqueToken();

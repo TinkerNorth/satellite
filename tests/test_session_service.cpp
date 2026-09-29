@@ -527,6 +527,22 @@ static void test_upsert_createsSession() {
     EXPECT(log.logCalls > 0);
 }
 
+static void test_upsert_connectionIdIsConnAndEightHexDigits() {
+    TEST("upsert: the connection id is conn_ and eight lowercase hex digits");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    const auto r = upsert(svc);
+    const std::string prefix = "conn_";
+    const size_t hexDigits = 8;
+    EXPECT_EQ(r.connectionId.size(), prefix.size() + hexDigits);
+    EXPECT_EQ(r.connectionId.rfind(prefix, 0), size_t{0});
+    EXPECT(r.connectionId.find_first_not_of("0123456789abcdef", prefix.size()) ==
+           std::string::npos);
+}
+
 static void test_upsert_zeroControllerSessionIsValid() {
     TEST("upsert: zero-controller session is valid and persists");
     MockViGem vigem;
@@ -3968,6 +3984,7 @@ static void test_wireConstants() {
 
 int main() {
     test_upsert_createsSession();
+    test_upsert_connectionIdIsConnAndEightHexDigits();
     test_upsert_recordsProtocolVersion();
     test_upsert_zeroControllerSessionIsValid();
     test_upsert_idempotent_stableConnectionId_rotatingToken();

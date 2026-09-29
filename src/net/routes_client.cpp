@@ -13,6 +13,7 @@
 #include "session_crypto.h"
 #include "core/catalog.h"
 #include "core/descriptor_json.h"
+#include "core/hex.h"
 #include "core/json.h"
 #include "core/session_service.h"
 #include "core/version.h"
@@ -135,12 +136,9 @@ static JsonOut mouseControlObj(bool granted, const std::string& denyReason) {
 }
 
 static std::string buildUpsertResponseJson(const SessionUpsertResult& r) {
-    char tokenHex[9];
-    snprintf(tokenHex, sizeof(tokenHex), "%08x", r.token);
-
     JsonOut j;
     j["connectionId"] = r.connectionId;
-    j["token"] = std::string(tokenHex);
+    j["token"] = hexEncodeBE32(r.token);
     j["sessionSalt"] = hexEncode(r.sessionSalt, SESSION_SALT_SIZE);
     j["epoch"] = r.epoch;
     j["maxControllers"] = r.maxControllers;

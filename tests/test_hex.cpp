@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// The one hex encoder: every key, salt, digest, id and MAC address Satellite
-// writes as text is spelled by core/hex.h.
+// core/hex.h: bytes as lowercase hex, high nibble first, the separated form a
+// MAC address takes, and the big-endian form of a 32-bit session token.
 #include "../src/core/hex.h"
 
 #include <cstdint>
@@ -57,6 +57,34 @@ void test_hexEncodeSeparated_ofNothingIsEmpty() {
     EXPECT_EQ(hexEncodeSeparated(in, 0, ':'), std::string(""));
 }
 
+void test_hexEncodeBE32_isEightDigitsMostSignificantFirst() {
+    TEST("hexEncodeBE32: eight digits, zero-padded, most significant first");
+    EXPECT_EQ(hexEncodeBE32(0x0007a1b2u), std::string("0007a1b2"));
+}
+
+void test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition() {
+    TEST("hexEncodeBE32: every digit in every position matches printf's %08x");
+    int mismatches = 0;
+    for (int position = 0; position < 8; position++) {
+        for (uint32_t digit = 0; digit < 16; digit++) {
+            const uint32_t value = digit << (4 * position);
+            char ref[9];
+            EXPECT_EQ(std::snprintf(ref, sizeof(ref), "%08x", value), 8);
+            if (hexEncodeBE32(value) != ref) mismatches++;
+        }
+    }
+    EXPECT_EQ(mismatches, 0);
+}
+
+void test_hexEncodeBE32_matchesPrintfForWholeValues() {
+    TEST("hexEncodeBE32: whole values match printf's %08x");
+    for (const uint32_t value : {0u, 1u, 0x12345678u, 0x80000001u, 0xdeadbeefu, 0xffffffffu}) {
+        char ref[9];
+        EXPECT_EQ(std::snprintf(ref, sizeof(ref), "%08x", value), 8);
+        EXPECT_EQ(hexEncodeBE32(value), std::string(ref));
+    }
+}
+
 } // namespace
 
 int main() {
@@ -67,6 +95,9 @@ int main() {
     test_hexEncodeSeparated_separatesBytesButNotTheEnds();
     test_hexEncodeSeparated_ofOneByteHasNoSeparator();
     test_hexEncodeSeparated_ofNothingIsEmpty();
+    test_hexEncodeBE32_isEightDigitsMostSignificantFirst();
+    test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition();
+    test_hexEncodeBE32_matchesPrintfForWholeValues();
 
     std::cout << "test_hex: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
