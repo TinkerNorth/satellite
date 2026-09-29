@@ -8,8 +8,9 @@
 #   bash scripts/vendored-osv-lockfile.sh [inventory.md] > vendored-osv.json
 #   osv-scanner --config=osv-scanner.toml --lockfile osv-scanner:vendored-osv.json
 #
-# A block without an Upstream or Pinned-commit line, or a pin that does not resolve, fails the
-# script, so no component can drop out of the scan unnoticed.
+# A block without an Upstream or Pinned-commit line, or a pin that names no commit in its
+# upstream (a missing tag, a mistyped SHA), fails the script, so no component can drop out of
+# the scan unnoticed.
 set -euo pipefail
 
 inventory="${1:-lib/VENDORED.md}"
@@ -34,11 +35,24 @@ component_pins() {
     '
 }
 
+# Fetches just that commit object (no trees, no blobs): GitHub answers "not our ref" for a SHA
+# the repository does not have, which a pin typo or a SHA from another repository would be.
+commit_in_upstream() {
+    local url="$1" sha="$2" scratch found=false
+    scratch=$(mktemp -d)
+    git -C "$scratch" init -q
+    if git -C "$scratch" fetch -q --depth=1 --filter=tree:0 "$url" "$sha" 2>/dev/null; then
+        found=true
+    fi
+    rm -rf "$scratch"
+    [ "$found" = true ]
+}
+
 # A tag's commit is the peeled ^{} line when the tag is annotated, else the tag's own line.
 resolve_commit() {
     local url="$1" pin="$2" refs peeled direct
     if [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
-        echo "$pin"
+        if commit_in_upstream "$url" "$pin"; then echo "$pin"; fi
         return
     fi
     refs=$(git ls-remote --tags "$url")

@@ -231,9 +231,18 @@ jobs:
           #   1   vulnerabilities found
           #   128 no package sources discovered (e.g. C/C++ vendored headers
           #       without a manifest). Treat as a non-fatal warning so the
-          #       scanner can be wired in incrementally per repo.
+          #       scanner can be wired in incrementally per repo, except when
+          #       a lockfile script was given: an empty lockfile scans nothing.
+          no_sources=false
           if [ "$rc" -eq 128 ] || \
              { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'No package sources found'; }; then
+            no_sources=true
+          fi
+          if [ "$no_sources" = true ] && [ -n "${{ inputs.osv_lockfile_script }}" ]; then
+            echo "::error::OSV-Scanner found no packages in the lockfile ${{ inputs.osv_lockfile_script }} wrote."
+            exit 1
+          fi
+          if [ "$no_sources" = true ]; then
             echo "::warning::OSV-Scanner found no package sources in the requested paths; treating as non-fatal."
             exit 0
           fi
