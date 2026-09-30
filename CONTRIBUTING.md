@@ -77,6 +77,123 @@ markers (open an issue instead). Durable design rationale belongs in
 `docs/` (architecture, protocol) or `SECURITY.md`, not in a comment
 essay at the top of a file.
 
+### Shape of the code
+
+These rules come from the Parchment library and are adapted where C++17 or
+the hexagonal layout make the literal form worse than the thing it is meant
+to achieve. They apply to `src/` and `tests/` alike, and they are the rules
+the three Dish clients follow, so a fact ported between a client and this
+server keeps its shape.
+
+- **As immutable and as static as possible.** `const` on every local and
+  parameter that is not reassigned, `constexpr` for a value known at compile
+  time, and file-static (or an anonymous namespace) for anything the rest of
+  the translation unit does not need. A value that never changes is a named
+  constant, never a literal in the middle of a function. A type that holds no
+  state is a set of free functions, not a class.
+
+- **Split values into simple, named steps.** One operation per line, with the
+  result in a named `const` that says what it is, even when that reads longer:
+
+  ```cpp
+  const bool forInstance = nameEqCi(q.name, instanceFqdn) && ownsType(q.type);
+  const bool forHost = nameEqCi(q.name, hostFqdn) && q.type == mdns::TYPE_A;
+  return mdns::questionMatchesService(q) || forInstance || forHost;
+  ```
+
+  not one five-term boolean. The names are the documentation, the debugger can
+  show each value, and a test can pin each step. A named `const bool` costs
+  nothing at runtime, on the hot path included.
+
+- **One function, one flow.** When a function would hold two algorithms chosen
+  by a condition, the condition dispatches to two named things that each do
+  one thing, and the dispatcher does nothing else. A `switch` over an enum
+  with no `default` is the preferred form, because the compiler then checks
+  that every case is handled. A guard clause is not an algorithm: do not
+  invent indirection where there is only one flow.
+
+  A function that stays long because splitting it would make it worse says so
+  at the top, in one or two lines. A long function with no such note is one
+  nobody has looked at.
+
+- **A chain of `if`s over one byte is a table.** A per-bit or per-index
+  mapping belongs in a `constexpr` array the code reads, not in a switch the
+  reader has to diff against its twin. The point is that two mappings of the
+  same thing cannot drift apart. The same goes for a route table: the
+  `register*Routes` function binds paths to named handlers and does nothing
+  else, so the list of routes reads as a list.
+
+- **A callback with a body gets a name.** A lambda is fine as a one-expression
+  forward, and fine as an argument to an algorithm that consumes it
+  immediately (`std::sort`, `std::find_if`). A lambda that carries an
+  algorithm becomes a named function, so it can be found, read and tested on
+  its own. A callback that is stored rather than called immediately (an
+  `httplib` route handler, a thread body, a `std::function` member) prefers a
+  named function and a pointer to it. This is Parchment's "no anonymous
+  methods" narrowed to what C++ can express.
+
+- **No singletons.** A stateless helper is a free function in the file that
+  owns it. There is no `instance()` and no function-local `static` holding
+  state. The one process-wide object is the app state declared in
+  `app/app_state.h` (`g_config` and its mutex, the counters the receiver
+  thread bumps at packet rate, the log ring), defined once per platform in
+  its `globals.cpp`; it is there because the receiver, the routes and the
+  tray are three threads over one state and the hot path cannot afford an
+  indirection to reach it. Nothing else is a global, and new code takes what
+  it needs as a parameter, which is also what makes it replaceable in a test
+  (`SessionService` and its ports are the model).
+
+- **No discarded results.** A value is either used or not produced. A
+  `static_cast<void>(x)` or `(void)x` exists only to quiet a warning about
+  something that should not be there, so the warning is the thing to fix.
+
+- **Member naming.** Members carry a TRAILING underscore (`mtx_`, `ports_`,
+  `next_`), which is what every class in `src/` uses. It is the same "state,
+  not scratch" signal Parchment's `m` prefix gives at the point of use.
+  Process-wide state is `g_`, and only in `app/app_state.h`.
+
+- **Prefer a test to a comment.** Behaviour that needs explaining gets a test
+  named for the behaviour. A comment is the last resort for a constraint that
+  genuinely cannot be tested (a platform quirk, a wire-format byte layout, a
+  lock order, an RFC clause), states why in one or two lines, and never
+  narrates what the next line does. The "why, not what" rule above is the
+  same rule from the other side.
+
+### Test-driven, every flow
+
+The suite under `tests/` uses the in-tree `TEST` / `EXPECT` / `EXPECT_EQ`
+macros from `tests/test_util.h`, one executable per file, registered through
+`satellite_add_pure_test` (or its route and platform siblings) in
+`CMakeLists.txt`. It is not a coverage exercise; it is how a flow is known to
+work at all.
+
+- **Red first.** Write the failing test, watch it fail for the reason you
+  expect, then write the code. A test that has never failed has not been
+  shown to test anything; when adding a test for behaviour that already
+  exists, break the behaviour on purpose and watch the test catch it.
+- **Cover every flow.** Each branch a function can take gets a `TEST` named
+  for the behaviour it pins, not for the function it calls. A block with its
+  own `TEST` label is the right tool when cases share a fixture; a separate
+  file is right when they need a different one.
+- **Assume nothing.** Where behaviour depends on a platform, a library
+  version or the wire, prove it with a probe before writing the code that
+  assumes it, and name the probe's finding in the test.
+- **Test where the behaviour lives.** `src/core/` is platform-free so it is
+  testable on every lane, including the two (`windows-mingw`, `windows-msvc`)
+  that cannot build the route tests. Logic that decides what a route or a
+  thread does belongs in `core/` as a pure function of what it was given, with
+  the socket, the file or the registry call left in the adapter that owns it.
+  A decision that needs `httplib::Server` to be tested is a decision with a
+  dependency it should not have.
+- **Knowledge written twice is checked by a test.** When the same fact lives
+  in two places (a wire constant and `docs/contract.md`, a JSON field the
+  server writes and the one the dashboard reads, a table and its twin in a
+  Dish client), a test walks one and requires the other, from the serialized
+  form rather than from a third list kept in the test.
+- **Tests follow the same shape rules.** A fixture is a named type, not a
+  lambda that builds one; a helper with a body gets a name; a test that is
+  longer than the thing it tests is usually two tests.
+
 ## Branching & PRs
 
 - All changes land on `main` via pull request; no direct pushes.
@@ -106,11 +223,16 @@ Security gates also run on every PR:
 
 | Workflow | What it does |
 |---|---|
-| `security.yml` | action-pin lint, vulnerability allowlist expiry, OSV-Scanner against `lib/` + `vigem/include/` (with the synthetic [`osv-scanner.toml`](osv-scanner.toml) lockfile), gitleaks secret scan, GitHub `dependency-review-action`, vendored-component freshness check (`lib/VENDORED.md` <= 90 days). |
+| `security.yml` | action-pin lint, vulnerability allowlist expiry, OSV-Scanner against the upstream commit each `lib/VENDORED.md` pin names (`scripts/vendored-osv-lockfile.sh`), gitleaks secret scan, GitHub `dependency-review-action`, vendored-component freshness check (`lib/VENDORED.md` <= 90 days). |
 | `codeql.yml` | CodeQL `cpp` analysis (security-extended + security-and-quality query packs). |
 
-A new high-severity CVE published against any vendored component causes
-the next PR to fail without code changes. To verify the gate locally
+An OSV advisory whose git range covers a vendored component's pinned
+commit fails the next PR, and the Monday run, without code changes. OSV
+cannot place every advisory on a release commit: libsodium tags its
+releases on a branch its fixes do not descend from, so CVE-2025-69277
+matches libsodium's master but neither 1.0.18-RELEASE nor 1.0.20-RELEASE,
+though both are affected. The hand review in "Updating a vendored
+component" covers what the gate cannot see. To verify the gate locally
 before pushing, see "Running security checks locally" below.
 
 ## Security
@@ -144,9 +266,11 @@ cpp-httplib, libsodium, or the ViGEm headers, in the same PR:
 
 1. Update the component block in `lib/VENDORED.md` (commit SHA / version
    tag, `Last-vendored:` set to today's date).
-2. Update the matching `[[PackageOverride]]` version in
-   [`osv-scanner.toml`](osv-scanner.toml).
-3. Re-run OSV-Scanner locally (see below) to confirm no new advisories.
+2. Run the OSV gate locally (see below): `scripts/vendored-osv-lockfile.sh`
+   must resolve every pin, and OSV-Scanner must report no advisories.
+3. Review what the gate cannot see: the upstream's GitHub security
+   advisories (`gh api repos/<owner>/<repo>/security-advisories`), NVD, and
+   every release note between the old pin and the new one.
 
 The `vendored-freshness` CI step fails if any `Last-vendored:` date is
 more than 90 days old, so quarterly refreshes happen even when no
@@ -188,8 +312,9 @@ for e in data.get('exceptions', []) or []:
         print('EXPIRED:', e); sys.exit(1)
 PY
 
-# OSV-Scanner against vendored components
-osv-scanner --recursive --skip-git --lockfile=osv-scanner.toml lib vigem/include
+# OSV-Scanner against the vendored components' pinned upstream commits
+bash scripts/vendored-osv-lockfile.sh > "${TMPDIR:-/tmp}/vendored-osv.json"
+osv-scanner --config=osv-scanner.toml --lockfile "osv-scanner:${TMPDIR:-/tmp}/vendored-osv.json"
 
 # Gitleaks
 gitleaks detect --no-banner --redact --source .

@@ -3,10 +3,10 @@
 #include "session_service.h"
 
 #include "core/audio/haptic_envelope.h"
+#include "core/hex.h"
 #include "ipv4_util.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 
 // std::random not libsodium, to keep the core libsodium-free. These values need
@@ -16,6 +16,8 @@
 
 using satellite::formatIPv4Nbo;
 using satellite::parseIPv4Nbo;
+
+static constexpr const char* CONNECTION_ID_PREFIX = "conn_";
 
 static uint32_t makeRandomToken() {
     static std::random_device rd;
@@ -461,13 +463,9 @@ SessionUpsertResult SessionService::upsertSession(
     Connection* conn = findByDeviceId(deviceId);
     if (conn == nullptr) {
         Connection c;
-        char idHex[9];
-        uint32_t idRand;
         do {
-            idRand = makeRandomToken();
-            snprintf(idHex, sizeof(idHex), "%08x", idRand);
-        } while (findByConnectionId(std::string("conn_") + idHex) != nullptr);
-        c.connectionId = std::string("conn_") + idHex;
+            c.connectionId = CONNECTION_ID_PREFIX + hexEncodeBE32(makeRandomToken());
+        } while (findByConnectionId(c.connectionId) != nullptr);
         c.deviceId = deviceId;
         c.connectedAt = now;
         c.token = generateUniqueToken();
@@ -974,6 +972,32 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     if (foundCtrl->micCapable()) { client_.sendMicLed(*foundConn, foundCtrl->index, state); }
 }
 
+// The caches above hold what the game last set, sent or not (a slot without the
+// cap still caches it), and an unchanged state is never sent twice: a client
+// that relaunched and re-PUT would not see it again, nor one set before the
+// session could be reached or while the slot lacked the cap. Rumble is a
+// command with a lifetime that refreshes on its own, and the audio lanes are
+// streams. The mic lamp also mutes the pad's microphone on a client, where the
+// user's own mute writes the same lamp: a replay is no new write from the game,
+// and would undo an unmute. None of those is replayed.
+void SessionService::resendFeedbackStateLocked(const Connection& conn) {
+    for (const auto& ctrl : conn.controllers) {
+        if (ctrl.active) resendControllerFeedbackStateLocked(conn, ctrl);
+    }
+}
+
+void SessionService::resendControllerFeedbackStateLocked(const Connection& conn,
+                                                         const Controller& ctrl) {
+    const bool resendLightbar = ctrl.lastLightbarValid && ctrl.lightbarCapable();
+    if (resendLightbar) {
+        client_.sendLightbar(conn, ctrl.index, ctrl.lightbarR, ctrl.lightbarG, ctrl.lightbarB);
+    }
+    const bool resendTriggerEffects = ctrl.lastTriggerEffectsValid && ctrl.triggerEffectsCapable();
+    if (resendTriggerEffects) client_.sendTriggerEffects(conn, ctrl.index, ctrl.lastTriggerEffects);
+    const bool resendPlayerLeds = ctrl.lastPlayerLedsValid && ctrl.playerLedsCapable();
+    if (resendPlayerLeds) client_.sendPlayerLeds(conn, ctrl.index, ctrl.playerLeds);
+}
+
 bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_t* stereo48k,
                                                    size_t frames) {
     if (stereo48k == nullptr || frames == 0) return false;
@@ -1341,17 +1365,29 @@ bool SessionService::getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SI
     return true;
 }
 
+// An authenticated datagram moves the replay window and proves the session
+// live. True for the session's first, which is the first moment its client can
+// be reached: a PUT drops the old token's address, and the new one is learned
+// from this datagram.
+static bool recordAuthenticatedDatagramLocked(Connection& conn, uint32_t counter) {
+    const bool firstDatagram = !conn.seenCounter;
+    conn.lastCounter = counter;
+    conn.seenCounter = true;
+    conn.lastPacketTime = std::chrono::steady_clock::now();
+    return firstDatagram;
+}
+
 void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
                                        const std::string& clientIP, uint16_t clientPort) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
-    it->second.lastCounter = counter;
-    it->second.seenCounter = true;
-    it->second.lastPacketTime = std::chrono::steady_clock::now();
-    it->second.clientIP = clientIP;
-    it->second.clientIPv4 = parseIPv4Nbo(clientIP);
+    Connection& conn = it->second;
+    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
+    conn.clientIP = clientIP;
+    conn.clientIPv4 = parseIPv4Nbo(clientIP);
     client_.updateClientAddr(token, clientIP, clientPort);
+    if (firstDatagram) resendFeedbackStateLocked(conn);
 }
 
 // Refresh Connection::clientIP only when the numeric IPv4 changes (common case
@@ -1368,11 +1404,10 @@ void SessionService::updatePostDecryptV4(uint32_t token, uint32_t counter,
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
     Connection& conn = it->second;
-    conn.lastCounter = counter;
-    conn.seenCounter = true;
-    conn.lastPacketTime = std::chrono::steady_clock::now();
+    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
     refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
     client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
+    if (firstDatagram) resendFeedbackStateLocked(conn);
 }
 
 bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter,
@@ -1384,11 +1419,10 @@ bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter
     if (it == connections_.end()) return false;
     Connection& conn = it->second;
 
-    conn.lastCounter = counter;
-    conn.seenCounter = true;
-    conn.lastPacketTime = std::chrono::steady_clock::now();
+    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
     refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
     client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
+    if (firstDatagram) resendFeedbackStateLocked(conn);
 
     if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
     Controller& ctrl = conn.controllers[ctrlIdx];
@@ -1398,67 +1432,77 @@ bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter
     return backend_.submitReport(ctrl.serialNo, report);
 }
 
+SessionService::ConnectionSnapshot::CtrlInfo
+SessionService::snapshotController(const Controller& ctrl) const {
+    ConnectionSnapshot::CtrlInfo info{};
+    info.index = ctrl.index;
+    info.serial = ctrl.serialNo;
+    info.active = true;
+    info.pluggedIn = backend_.isDevicePlugged(ctrl.serialNo);
+    info.controllerType = ctrl.controllerType;
+    info.touchpadMode = ctrl.touchpadMode;
+    info.batteryKnown = ctrl.lastBatteryValid;
+    info.batteryLevel = ctrl.lastBattery.level;
+    info.batteryStatus = ctrl.lastBattery.status;
+    info.motionCapable = ctrl.motionCapable();
+    info.motionActive = ctrl.lastMotionValid;
+    info.motionSink = ctrl.motionSinkActive;
+    info.motionSinkSupportedForType = backend_.supportsMotionForType(ctrl.controllerType);
+    info.backendId = backend_.backendIdForSerial(ctrl.serialNo);
+    info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
+    info.touchpadActive = ctrl.lastTouchpadValid;
+    info.lightbarCapable = ctrl.lightbarCapable();
+    info.lightbarKnown = ctrl.lastLightbarValid;
+    info.lightbarR = ctrl.lightbarR;
+    info.lightbarG = ctrl.lightbarG;
+    info.lightbarB = ctrl.lightbarB;
+    return info;
+}
+
+// The REST-open grace window counts as liveness so a fresh PUT doesn't flash
+// "not responding".
+DeviceLinkState SessionService::linkStateAt(const Connection& conn,
+                                            std::chrono::steady_clock::time_point now) {
+    const auto stallThreshold =
+        std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
+    const bool inGrace = now < conn.graceUntil;
+    const bool stalled = !inGrace && now - conn.lastPacketTime > stallThreshold;
+    return stalled ? DeviceLinkState::NotResponding : DeviceLinkState::Active;
+}
+
+SessionService::ConnectionSnapshot
+SessionService::snapshotConnection(uint32_t token, const Connection& conn,
+                                   std::chrono::steady_clock::time_point now) const {
+    ConnectionSnapshot cs;
+    cs.connectionId = conn.connectionId;
+    cs.token = token;
+    cs.deviceId = conn.deviceId;
+    cs.deviceName = conn.deviceName;
+    cs.clientIP = conn.clientIP;
+    cs.connectedAtEpoch =
+        std::chrono::duration_cast<std::chrono::seconds>(conn.connectedAt.time_since_epoch())
+            .count();
+    cs.epoch = conn.epoch;
+    cs.activeControllerCount = conn.activeControllerCount;
+    cs.mouseControlGranted = conn.mouseControlGranted;
+    cs.protocolVersion = conn.protocolVersion;
+    cs.linkState = linkStateAt(conn, now);
+    for (const auto& ctrl : conn.controllers) {
+        if (ctrl.active) cs.controllers.push_back(snapshotController(ctrl));
+    }
+    return cs;
+}
+
 SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() const {
     std::lock_guard<std::mutex> lk(mtx_);
     ConnectionsSnapshot snap;
     snap.totalControllers = 0;
     snap.maxControllers = MAX_BACKEND_CONTROLLERS;
     snap.backendAvailable = backend_.isBusOpen();
-
     const auto now = std::chrono::steady_clock::now();
-    const auto stallThreshold =
-        std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
-
-    for (auto& [tok, conn] : connections_) {
-        ConnectionSnapshot cs;
-        cs.connectionId = conn.connectionId;
-        cs.token = tok;
-        cs.deviceId = conn.deviceId;
-        cs.deviceName = conn.deviceName;
-        cs.clientIP = conn.clientIP;
-        cs.connectedAtEpoch =
-            std::chrono::duration_cast<std::chrono::seconds>(conn.connectedAt.time_since_epoch())
-                .count();
-        cs.epoch = conn.epoch;
-        cs.activeControllerCount = conn.activeControllerCount;
-        cs.mouseControlGranted = conn.mouseControlGranted;
-        cs.protocolVersion = conn.protocolVersion;
-        // The REST-open grace window counts as liveness so a fresh PUT doesn't
-        // flash "not responding".
-        const bool inGrace = now < conn.graceUntil;
-        cs.linkState = (!inGrace && now - conn.lastPacketTime > stallThreshold)
-                           ? DeviceLinkState::NotResponding
-                           : DeviceLinkState::Active;
-
-        for (auto& ctrl : conn.controllers) {
-            if (ctrl.active) {
-                ConnectionSnapshot::CtrlInfo info{};
-                info.index = ctrl.index;
-                info.serial = ctrl.serialNo;
-                info.active = true;
-                info.pluggedIn = backend_.isDevicePlugged(ctrl.serialNo);
-                info.controllerType = ctrl.controllerType;
-                info.touchpadMode = ctrl.touchpadMode;
-                info.batteryKnown = ctrl.lastBatteryValid;
-                info.batteryLevel = ctrl.lastBattery.level;
-                info.batteryStatus = ctrl.lastBattery.status;
-                info.motionCapable = ctrl.motionCapable();
-                info.motionActive = ctrl.lastMotionValid;
-                info.motionSink = ctrl.motionSinkActive;
-                info.motionSinkSupportedForType =
-                    backend_.supportsMotionForType(ctrl.controllerType);
-                info.backendId = backend_.backendIdForSerial(ctrl.serialNo);
-                info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
-                info.touchpadActive = ctrl.lastTouchpadValid;
-                info.lightbarCapable = ctrl.lightbarCapable();
-                info.lightbarKnown = ctrl.lastLightbarValid;
-                info.lightbarR = ctrl.lightbarR;
-                info.lightbarG = ctrl.lightbarG;
-                info.lightbarB = ctrl.lightbarB;
-                cs.controllers.push_back(info);
-                snap.totalControllers++;
-            }
-        }
+    for (const auto& [tok, conn] : connections_) {
+        ConnectionSnapshot cs = snapshotConnection(tok, conn, now);
+        snap.totalControllers += static_cast<int>(cs.controllers.size());
         snap.connections.push_back(std::move(cs));
     }
     return snap;

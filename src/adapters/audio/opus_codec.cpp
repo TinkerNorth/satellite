@@ -17,18 +17,20 @@ namespace {
 // The plan's formats, in one place. Both streams are 48 kHz, 20 ms, VBR with
 // in-band FEC requested; what differs is the application and the bitrate.
 //
-// Mic: 32 kbps mono under OPUS_APPLICATION_VOIP puts Opus in SILK mode, which
-// is the only mode that HAS in-band FEC -- the redundant low-rate copy of the
+// Mic: 32 kbps mono under OPUS_APPLICATION_VOIP encodes as SILK wideband on
+// band-limited input and as Hybrid fullband on broadband input. Both keep the
+// SILK layer, the only one with in-band FEC: the redundant low-rate copy of the
 // previous frame that lets a receiver recover a single lost packet instead of
 // guessing at it. The expected-loss hint is what makes the encoder actually
 // spend bits on that copy; without it the flag alone does nothing.
 //
 // Speaker: 96 kbps stereo under OPUS_APPLICATION_AUDIO, because this carries
 // game and chat audio a player listens to rather than speech a codec can model.
-// The loss hint below, not the application, is what picks the mode: it forces
-// SILK in, so BOTH streams encode as Hybrid fullband and both really do carry
+// In-band FEC and the loss hint below, together and not the application, are
+// what pick the mode: the pair forces SILK in, so the speaker encodes as Hybrid,
+// SILK under CELT, instead of CELT alone, and both streams really do carry
 // in-band FEC (measured on libopus 1.6.1: 8.4 dB recovery via decode_fec vs
-// -1.3 dB for blind PLC on the speaker stream). Dropping the hint to zero would
+// -1.3 dB for blind PLC on the speaker stream). Turning either one off would
 // hand the speaker to CELT and silently delete that FEC.
 const int OPUS_MIC_BITRATE_BPS = 32000;
 const int OPUS_SPEAKER_BITRATE_BPS = 96000;

@@ -1,31 +1,16 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "mdns_protocol.h"
+#include "core/byte_order.h"
 
 #include <algorithm>
 #include <cctype>
 
 namespace mdns {
 
-namespace {
-
-inline void putBE16(uint8_t* dst, uint16_t v) {
-    dst[0] = static_cast<uint8_t>(v >> 8);
-    dst[1] = static_cast<uint8_t>(v);
-}
-
-inline void putBE32(uint8_t* dst, uint32_t v) {
-    dst[0] = static_cast<uint8_t>(v >> 24);
-    dst[1] = static_cast<uint8_t>(v >> 16);
-    dst[2] = static_cast<uint8_t>(v >> 8);
-    dst[3] = static_cast<uint8_t>(v);
-}
-
-inline uint16_t readBE16(const uint8_t* src) {
-    return static_cast<uint16_t>(src[0]) << 8 | static_cast<uint16_t>(src[1]);
-}
-
-} // namespace
+using satellite::readBE16;
+using satellite::writeBE16;
+using satellite::writeBE32;
 
 size_t writeDnsName(uint8_t* out, size_t outCap, const std::string& dottedName) {
     if (out == nullptr) return 0;
@@ -298,11 +283,11 @@ RrCursor writeRrHeader(uint8_t* out, size_t outCap, size_t& pos, const std::stri
         c.ok = false;
         return c;
     }
-    putBE16(out + pos, type);
-    putBE16(out + pos + 2, cls);
-    putBE32(out + pos + 4, ttl);
+    writeBE16(out + pos, type);
+    writeBE16(out + pos + 2, cls);
+    writeBE32(out + pos + 4, ttl);
     c.rdlenOffset = pos + 8;
-    putBE16(out + pos + 8, 0); // placeholder; finalised later
+    writeBE16(out + pos + 8, 0); // placeholder; finalised later
     pos += 10;
     return c;
 }
@@ -310,7 +295,124 @@ RrCursor writeRrHeader(uint8_t* out, size_t outCap, size_t& pos, const std::stri
 void finalizeRr(uint8_t* out, RrCursor& c, size_t pos) {
     if (!c.ok) return;
     const size_t rdata = pos - (c.rdlenOffset + 2);
-    putBE16(out + c.rdlenOffset, static_cast<uint16_t>(rdata));
+    writeBE16(out + c.rdlenOffset, static_cast<uint16_t>(rdata));
+}
+
+} // namespace
+
+namespace {
+
+// The SRV rdata's fixed part: priority, weight, port, big-endian.
+std::vector<uint8_t> srvFixedRdata(const ResponseInputs& inputs) {
+    std::vector<uint8_t> fixed(6);
+    writeBE16(fixed.data() + 0, inputs.priority);
+    writeBE16(fixed.data() + 2, inputs.weight);
+    writeBE16(fixed.data() + 4, inputs.udpPort);
+    return fixed;
+}
+
+// The TXT rdata: one length-prefixed "key=value" per entry; empty TXT is a
+// single zero-length string (DNS-SD §6.1). False when an entry cannot be
+// length-prefixed, which is the same refusal for a response and a probe, so
+// the two never propose different bytes for the same name.
+bool txtRdata(const std::vector<std::pair<std::string, std::string>>& pairs,
+              std::vector<uint8_t>& out) {
+    out.clear();
+    if (pairs.empty()) {
+        out.push_back(0);
+        return true;
+    }
+    for (const auto& [k, v] : pairs) {
+        const std::string entry = k + "=" + v;
+        if (entry.size() > 255) return false;
+        out.push_back(static_cast<uint8_t>(entry.size()));
+        out.insert(out.end(), entry.begin(), entry.end());
+    }
+    return true;
+}
+
+// The bytes of one response record after its header. False when `outCap` has
+// no room.
+bool writeRdata(uint8_t* out, size_t outCap, size_t& pos, const std::vector<uint8_t>& rdata) {
+    if (pos + rdata.size() > outCap) return false;
+    std::memcpy(out + pos, rdata.data(), rdata.size());
+    pos += rdata.size();
+    return true;
+}
+
+struct ResponseNames {
+    std::string serviceType;
+    std::string instanceFqdn;
+    std::string hostFqdn;
+};
+
+ResponseNames responseNames(const ResponseInputs& inputs) {
+    ResponseNames n;
+    n.serviceType = SERVICE_TYPE_DOMAIN;
+    n.instanceFqdn = inputs.instanceName + "." + n.serviceType;
+    n.hostFqdn = inputs.hostName + ".local.";
+    return n;
+}
+
+// mDNS responses always carry QR=1 + AA=1 (RFC 6762 §18.2/§18.4); the
+// bytes never depend on unicast vs multicast, only the destination does.
+size_t writeResponseHeader(uint8_t* out, uint16_t txId, uint16_t answerCount) {
+    constexpr uint16_t FLAGS_RESPONSE_AUTHORITATIVE = 0x8400;
+    writeBE16(out + 0, txId);
+    writeBE16(out + 2, FLAGS_RESPONSE_AUTHORITATIVE);
+    writeBE16(out + 4, 0); // QDCOUNT
+    writeBE16(out + 6, answerCount);
+    writeBE16(out + 8, 0);  // NSCOUNT
+    writeBE16(out + 10, 0); // ARCOUNT
+    return 12;
+}
+
+bool writePtrRecord(uint8_t* out, size_t outCap, size_t& pos, const ResponseNames& names,
+                    uint32_t ttl) {
+    RrCursor c = writeRrHeader(out, outCap, pos, names.serviceType, TYPE_PTR, CLASS_IN, ttl);
+    if (!c.ok) return false;
+    const size_t n = writeDnsName(out + pos, outCap - pos, names.instanceFqdn);
+    if (n == 0) return false;
+    pos += n;
+    finalizeRr(out, c, pos);
+    return true;
+}
+
+bool writeSrvRecord(uint8_t* out, size_t outCap, size_t& pos, const ResponseNames& names,
+                    const ResponseInputs& inputs, uint32_t ttl) {
+    RrCursor c = writeRrHeader(out, outCap, pos, names.instanceFqdn, TYPE_SRV,
+                               CLASS_IN | CACHE_FLUSH_BIT, ttl);
+    if (!c.ok) return false;
+    if (!writeRdata(out, outCap, pos, srvFixedRdata(inputs))) return false;
+    const size_t n = writeDnsName(out + pos, outCap - pos, names.hostFqdn);
+    if (n == 0) return false;
+    pos += n;
+    finalizeRr(out, c, pos);
+    return true;
+}
+
+bool writeTxtRecord(uint8_t* out, size_t outCap, size_t& pos, const ResponseNames& names,
+                    const ResponseInputs& inputs, uint32_t ttl) {
+    RrCursor c = writeRrHeader(out, outCap, pos, names.instanceFqdn, TYPE_TXT,
+                               CLASS_IN | CACHE_FLUSH_BIT, ttl);
+    if (!c.ok) return false;
+    std::vector<uint8_t> txt;
+    if (!txtRdata(inputs.txtPairs, txt)) return false;
+    if (!writeRdata(out, outCap, pos, txt)) return false;
+    finalizeRr(out, c, pos);
+    return true;
+}
+
+bool writeARecord(uint8_t* out, size_t outCap, size_t& pos, const ResponseNames& names,
+                  const ResponseInputs& inputs, uint32_t ttl) {
+    RrCursor c =
+        writeRrHeader(out, outCap, pos, names.hostFqdn, TYPE_A, CLASS_IN | CACHE_FLUSH_BIT, ttl);
+    if (!c.ok) return false;
+    if (pos + 4 > outCap) return false;
+    std::memcpy(out + pos, inputs.ipv4, 4);
+    pos += 4;
+    finalizeRr(out, c, pos);
+    return true;
 }
 
 } // namespace
@@ -318,9 +420,7 @@ void finalizeRr(uint8_t* out, RrCursor& c, size_t pos) {
 size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const ResponseInputs& inputs) {
     if (out == nullptr || outCap < 12) return 0;
 
-    const std::string serviceType = SERVICE_TYPE_DOMAIN;
-    const std::string instanceFqdn = inputs.instanceName + "." + serviceType;
-    const std::string hostFqdn = inputs.hostName + ".local.";
+    const ResponseNames names = responseNames(inputs);
 
     // Goodbye announcements (RFC 6762 §10.1) re-send the records with TTL 0
     // so resolver caches drop the service immediately on shutdown.
@@ -338,75 +438,11 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
     // Every record suppressed → "send nothing" (RFC 6762 §7.1).
     if (answerCount == 0) return 0;
 
-    size_t pos = 0;
-    putBE16(out + pos, txId);
-    pos += 2;
-    // mDNS responses always carry QR=1 + AA=1 (RFC 6762 §18.2/§18.4); the
-    // bytes never depend on unicast vs multicast, only the destination does.
-    const uint16_t flags = 0x8400;
-    putBE16(out + pos, flags);
-    pos += 2;
-    putBE16(out + pos, 0); // QDCOUNT
-    pos += 2;
-    putBE16(out + pos, answerCount);
-    pos += 2;
-    putBE16(out + pos, 0); // NSCOUNT
-    pos += 2;
-    putBE16(out + pos, 0); // ARCOUNT
-    pos += 2;
-
-    if (emitPtr) {
-        auto c = writeRrHeader(out, outCap, pos, serviceType, TYPE_PTR, CLASS_IN, ttlService);
-        if (!c.ok) return 0;
-        const size_t n = writeDnsName(out + pos, outCap - pos, instanceFqdn);
-        if (n == 0) return 0;
-        pos += n;
-        finalizeRr(out, c, pos);
-    }
-    if (emitSrv) {
-        auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_SRV, CLASS_IN | CACHE_FLUSH_BIT,
-                               ttlHost);
-        if (!c.ok) return 0;
-        if (pos + 6 > outCap) return 0;
-        putBE16(out + pos, inputs.priority);
-        putBE16(out + pos + 2, inputs.weight);
-        putBE16(out + pos + 4, inputs.udpPort);
-        pos += 6;
-        const size_t n = writeDnsName(out + pos, outCap - pos, hostFqdn);
-        if (n == 0) return 0;
-        pos += n;
-        finalizeRr(out, c, pos);
-    }
-    // TXT: one length-prefixed "key=value" per entry; empty TXT = a single
-    // zero-length string (DNS-SD §6.1).
-    if (emitTxt) {
-        auto c = writeRrHeader(out, outCap, pos, instanceFqdn, TYPE_TXT, CLASS_IN | CACHE_FLUSH_BIT,
-                               ttlHost);
-        if (!c.ok) return 0;
-        if (inputs.txtPairs.empty()) {
-            if (pos + 1 > outCap) return 0;
-            out[pos++] = 0;
-        } else {
-            for (const auto& [k, v] : inputs.txtPairs) {
-                std::string entry = k + "=" + v;
-                if (entry.size() > 255) return 0;
-                if (pos + 1 + entry.size() > outCap) return 0;
-                out[pos++] = static_cast<uint8_t>(entry.size());
-                std::memcpy(out + pos, entry.data(), entry.size());
-                pos += entry.size();
-            }
-        }
-        finalizeRr(out, c, pos);
-    }
-    if (emitA) {
-        auto c =
-            writeRrHeader(out, outCap, pos, hostFqdn, TYPE_A, CLASS_IN | CACHE_FLUSH_BIT, ttlHost);
-        if (!c.ok) return 0;
-        if (pos + 4 > outCap) return 0;
-        std::memcpy(out + pos, inputs.ipv4, 4);
-        pos += 4;
-        finalizeRr(out, c, pos);
-    }
+    size_t pos = writeResponseHeader(out, txId, answerCount);
+    if (emitPtr && !writePtrRecord(out, outCap, pos, names, ttlService)) return 0;
+    if (emitSrv && !writeSrvRecord(out, outCap, pos, names, inputs, ttlHost)) return 0;
+    if (emitTxt && !writeTxtRecord(out, outCap, pos, names, inputs, ttlHost)) return 0;
+    if (emitA && !writeARecord(out, outCap, pos, names, inputs, ttlHost)) return 0;
     return pos;
 }
 
@@ -451,17 +487,17 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     if (proposed.empty()) return 0; // SRV + TXT are always present; defensive
 
     size_t pos = 0;
-    putBE16(out + pos, 0); // transaction ID: 0 for mDNS
+    writeBE16(out + pos, 0); // transaction ID: 0 for mDNS
     pos += 2;
-    putBE16(out + pos, 0); // flags: a plain query (QR=0)
+    writeBE16(out + pos, 0); // flags: a plain query (QR=0)
     pos += 2;
-    putBE16(out + pos, 1); // QDCOUNT: the single ANY question
+    writeBE16(out + pos, 1); // QDCOUNT: the single ANY question
     pos += 2;
-    putBE16(out + pos, 0); // ANCOUNT
+    writeBE16(out + pos, 0); // ANCOUNT
     pos += 2;
-    putBE16(out + pos, static_cast<uint16_t>(proposed.size())); // NSCOUNT: proposed records
+    writeBE16(out + pos, static_cast<uint16_t>(proposed.size())); // NSCOUNT: proposed records
     pos += 2;
-    putBE16(out + pos, 0); // ARCOUNT
+    writeBE16(out + pos, 0); // ARCOUNT
     pos += 2;
 
     // Question: instance FQDN, type ANY, QU bit set (CACHE_FLUSH_BIT in a
@@ -470,8 +506,8 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     if (qn == 0) return 0;
     pos += qn;
     if (pos + 4 > outCap) return 0;
-    putBE16(out + pos, TYPE_ANY);                       // everything held under this name
-    putBE16(out + pos + 2, CLASS_IN | CACHE_FLUSH_BIT); // QU bit set: unicast response
+    writeBE16(out + pos, TYPE_ANY);                       // everything held under this name
+    writeBE16(out + pos + 2, CLASS_IN | CACHE_FLUSH_BIT); // QU bit set: unicast response
     pos += 4;
 
     // Authority: proposed records, class IN with cache-flush bit CLEAR; that bit
@@ -501,35 +537,21 @@ std::vector<ProbeRecord> buildProposedRecords(const ResponseInputs& inputs) {
         srv.type = TYPE_SRV;
         srv.cls = CLASS_IN;
         srv.ttl = TTL_HOST;
-        uint8_t fixed[6];
-        putBE16(fixed + 0, inputs.priority);
-        putBE16(fixed + 2, inputs.weight);
-        putBE16(fixed + 4, inputs.udpPort);
-        srv.rdata.insert(srv.rdata.end(), fixed, fixed + 6);
+        srv.rdata = srvFixedRdata(inputs);
         uint8_t nameBuf[256];
         const size_t n = writeDnsName(nameBuf, sizeof(nameBuf), hostFqdn);
         if (n > 0) srv.rdata.insert(srv.rdata.end(), nameBuf, nameBuf + n);
         recs.push_back(std::move(srv));
     }
-    // TXT: identical rdata to encodeResponse so probe and announcement propose
-    // the same bytes (empty TXT → one 0 byte).
+    // TXT: the same bytes encodeResponse writes, from the same function, so a
+    // probe and an announcement can never propose different data for one name.
     {
         ProbeRecord txt;
         txt.name = instanceFqdn;
         txt.type = TYPE_TXT;
         txt.cls = CLASS_IN;
         txt.ttl = TTL_HOST;
-        if (inputs.txtPairs.empty()) {
-            txt.rdata.push_back(0);
-        } else {
-            for (const auto& [k, v] : inputs.txtPairs) {
-                std::string entry = k + "=" + v;
-                if (entry.size() > 255) continue;
-                txt.rdata.push_back(static_cast<uint8_t>(entry.size()));
-                txt.rdata.insert(txt.rdata.end(), entry.begin(), entry.end());
-            }
-        }
-        recs.push_back(std::move(txt));
+        if (txtRdata(inputs.txtPairs, txt.rdata)) recs.push_back(std::move(txt));
     }
     // A: 4 raw address bytes, only when the host owns a usable IPv4.
     if (inputs.ipv4 != nullptr) {
@@ -595,6 +617,34 @@ bool authorityHasRecordFor(const std::vector<ProbeRecord>& authority, const std:
         if (nameEqual(r.name, name)) return true;
     }
     return false;
+}
+
+bool nameEqCi(const std::string& x, const std::string& y) {
+    if (x.size() != y.size()) return false;
+    for (size_t i = 0; i < x.size(); ++i) {
+        const int a = std::tolower(static_cast<unsigned char>(x[i]));
+        const int b = std::tolower(static_cast<unsigned char>(y[i]));
+        if (a != b) return false;
+    }
+    return true;
+}
+
+// Match ANY (probes) plus the specific type of each owned record (ordinary
+// lookups).
+QueryMatch classifyQuestions(const std::vector<Question>& questions,
+                             const std::string& instanceFqdn, const std::string& hostFqdn) {
+    QueryMatch match;
+    for (const auto& q : questions) {
+        const bool ownsInstanceType =
+            q.type == TYPE_ANY || q.type == TYPE_SRV || q.type == TYPE_TXT;
+        const bool forInstance = nameEqCi(q.name, instanceFqdn) && ownsInstanceType;
+        const bool forHost = nameEqCi(q.name, hostFqdn) && (q.type == TYPE_ANY || q.type == TYPE_A);
+        if (questionMatchesService(q) || forInstance || forHost) {
+            match.matched = true;
+            match.wantUnicast = match.wantUnicast || q.unicastResponse;
+        }
+    }
+    return match;
 }
 
 } // namespace mdns

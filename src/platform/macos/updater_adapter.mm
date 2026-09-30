@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include "core/github_release.h"
+#include "core/hex.h"
 #include "core/version.h"
 
 #import <AppKit/AppKit.h>
@@ -16,6 +17,30 @@
 
 namespace {
 
+// A GitHub API GET: the user agent its per-UA rate-limit bucket keys off, and
+// the API version pin.
+NSMutableURLRequest* gitHubRequest(NSURL* url) {
+    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
+    req.timeoutInterval = 15.0;
+    NSString* ua = [NSString stringWithFormat:@"Satellite/%s (+updater)", SATELLITE_VERSION_STRING];
+    [req setValue:ua forHTTPHeaderField:@"User-Agent"];
+    [req setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
+    [req setValue:@"2022-11-28" forHTTPHeaderField:@"X-GitHub-Api-Version"];
+    return req;
+}
+
+// False for a non-2xx HTTP response, named in `err`; a response that is not
+// HTTP at all carries no status to reject.
+bool statusIsOk(NSURLResponse* resp, std::string& err) {
+    if (![resp isKindOfClass:[NSHTTPURLResponse class]]) return true;
+    const NSInteger status = ((NSHTTPURLResponse*)resp).statusCode;
+    if (status >= 200 && status < 300) return true;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "HTTP %ld", (long)status);
+    err = buf;
+    return false;
+}
+
 // Small responses (release metadata, SHA256SUMS) buffered to a string.
 bool httpGetToString(const std::string& url, std::string& out, std::string& err) {
     @autoreleasepool {
@@ -24,13 +49,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
             err = "Invalid URL";
             return false;
         }
-        NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:nsurl];
-        req.timeoutInterval = 15.0;
-        NSString* ua =
-            [NSString stringWithFormat:@"Satellite/%s (+updater)", SATELLITE_VERSION_STRING];
-        [req setValue:ua forHTTPHeaderField:@"User-Agent"];
-        [req setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
-        [req setValue:@"2022-11-28" forHTTPHeaderField:@"X-GitHub-Api-Version"];
+        NSMutableURLRequest* req = gitHubRequest(nsurl);
 
         // Synchronous semaphore wait is safe: already on a worker thread, so the UI doesn't block.
         __block NSData* body = nil;
@@ -52,15 +71,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
             err = std::string("Network error: ") + nserr.localizedDescription.UTF8String;
             return false;
         }
-        if ([resp isKindOfClass:[NSHTTPURLResponse class]]) {
-            NSInteger status = ((NSHTTPURLResponse*)resp).statusCode;
-            if (status < 200 || status >= 300) {
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), "HTTP %ld", (long)status);
-                err = buf;
-                return false;
-            }
-        }
+        if (!statusIsOk(resp, err)) return false;
         out.assign((const char*)body.bytes, body.length);
         return true;
     }
@@ -224,13 +235,7 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     std::fclose(f);
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256_Final(digest, &ctx);
-    static const char* kHex = "0123456789abcdef";
-    hexOut.clear();
-    hexOut.reserve(CC_SHA256_DIGEST_LENGTH * 2);
-    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
-        hexOut += kHex[digest[i] >> 4];
-        hexOut += kHex[digest[i] & 0xF];
-    }
+    hexOut = hexEncode(digest, sizeof(digest));
     return true;
 }
 

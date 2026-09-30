@@ -31,9 +31,9 @@ jobs:
     # The reusable workflow lives in this repo, so call by local relative path.
     uses: ./.github/workflows/_security.yml
     with:
-      osv_scan_paths: |
-        lib
-        vigem/include
+      # lib/ and vigem/include/ hold no manifest OSV-Scanner can read, so the
+      # vendored components are scanned by the upstream commit each pin names.
+      osv_lockfile_script: scripts/vendored-osv-lockfile.sh
       osv_config: osv-scanner.toml
       gitleaks_enabled: true
       dependency_review_enabled: true

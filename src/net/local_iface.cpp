@@ -126,11 +126,10 @@ static std::map<std::string, std::string> nlmCategoriesByAdapter() {
     return out;
 }
 
-std::vector<LocalInterface> enumerateInterfaces(bool withCategory) {
-    std::vector<LocalInterface> result;
-    std::vector<std::string> guids;
-
-    ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+// GetAdaptersAddresses' table, re-sized once when the first guess is short;
+// empty when the call fails.
+static std::vector<unsigned char> adapterAddresses() {
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
     ULONG size = 15000;
     std::vector<unsigned char> buffer(size);
     ULONG ret = GetAdaptersAddresses(AF_INET, flags, nullptr,
@@ -140,43 +139,59 @@ std::vector<LocalInterface> enumerateInterfaces(bool withCategory) {
         ret = GetAdaptersAddresses(AF_INET, flags, nullptr,
                                    reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()), &size);
     }
-    if (ret != NO_ERROR) { return result; }
+    if (ret != NO_ERROR) buffer.clear();
+    return buffer;
+}
 
-    for (IP_ADAPTER_ADDRESSES* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-         a != nullptr; a = a->Next) {
-        if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) { continue; }
-        std::string ip;
-        for (IP_ADAPTER_UNICAST_ADDRESS* u = a->FirstUnicastAddress; u != nullptr; u = u->Next) {
-            if (u->Address.lpSockaddr == nullptr || u->Address.lpSockaddr->sa_family != AF_INET) {
-                continue;
-            }
-            sockaddr_in* sa = reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr);
-            char buf[INET_ADDRSTRLEN] = {};
-            if (inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf)) != nullptr) {
-                ip = buf;
-                break;
-            }
+// The adapter's first IPv4 unicast address, or empty.
+static std::string firstIpv4Of(const IP_ADAPTER_ADDRESSES* a) {
+    for (const IP_ADAPTER_UNICAST_ADDRESS* u = a->FirstUnicastAddress; u != nullptr; u = u->Next) {
+        if (u->Address.lpSockaddr == nullptr || u->Address.lpSockaddr->sa_family != AF_INET) {
+            continue;
         }
-        if (ip.empty()) { continue; }
+        const sockaddr_in* sa = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr);
+        char buf[INET_ADDRSTRLEN] = {};
+        if (inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf)) != nullptr) return buf;
+    }
+    return "";
+}
 
-        LocalInterface f;
-        f.name = wideToUtf8(a->FriendlyName);
-        if (f.name.empty()) { f.name = (a->AdapterName != nullptr) ? a->AdapterName : ""; }
-        f.ipv4 = ip;
-        f.privateIp = isPrivateIPv4(ip);
-        bool typePhysical =
-            (a->IfType == IF_TYPE_ETHERNET_CSMACD || a->IfType == IF_TYPE_IEEE80211);
-        bool looksVirt = nameLooksVirtual(f.name) || nameLooksVirtual(wideToUtf8(a->Description));
-        f.physical = typePhysical && !looksVirt;
-        result.push_back(f);
+// What the dashboard shows for one adapter. Physical means a wired or Wi-Fi
+// interface type whose names do not read as a virtual one.
+static LocalInterface interfaceFor(const IP_ADAPTER_ADDRESSES* a, const std::string& ip) {
+    LocalInterface f;
+    f.name = wideToUtf8(a->FriendlyName);
+    if (f.name.empty()) f.name = (a->AdapterName != nullptr) ? a->AdapterName : "";
+    f.ipv4 = ip;
+    f.privateIp = isPrivateIPv4(ip);
+    const bool typePhysical =
+        (a->IfType == IF_TYPE_ETHERNET_CSMACD || a->IfType == IF_TYPE_IEEE80211);
+    const bool looksVirt = nameLooksVirtual(f.name) || nameLooksVirtual(wideToUtf8(a->Description));
+    f.physical = typePhysical && !looksVirt;
+    return f;
+}
+
+std::vector<LocalInterface> enumerateInterfaces(bool withCategory) {
+    std::vector<LocalInterface> result;
+    std::vector<std::string> guids;
+    const std::vector<unsigned char> buffer = adapterAddresses();
+    if (buffer.empty()) return result;
+
+    for (const IP_ADAPTER_ADDRESSES* a =
+             reinterpret_cast<const IP_ADAPTER_ADDRESSES*>(buffer.data());
+         a != nullptr; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        const std::string ip = firstIpv4Of(a);
+        if (ip.empty()) continue;
+        result.push_back(interfaceFor(a, ip));
         guids.push_back((a->AdapterName != nullptr) ? toUpperAscii(a->AdapterName) : std::string());
     }
 
     if (withCategory) {
-        std::map<std::string, std::string> cats = nlmCategoriesByAdapter();
+        const std::map<std::string, std::string> cats = nlmCategoriesByAdapter();
         for (size_t i = 0; i < result.size(); ++i) {
-            auto it = cats.find(guids[i]);
-            if (it != cats.end()) { result[i].category = it->second; }
+            const auto it = cats.find(guids[i]);
+            if (it != cats.end()) result[i].category = it->second;
         }
     }
     return result;
@@ -218,13 +233,73 @@ static std::wstring lowerWide(const wchar_t* w) {
     return s;
 }
 
+// An enabled inbound allow rule for `self` folds its profiles into the mask.
+static void noteSelfInboundRule(INetFwRule* rule, const std::wstring& self, int& ruleMask,
+                                bool& haveRule) {
+    NET_FW_RULE_DIRECTION dir = NET_FW_RULE_DIR_IN;
+    NET_FW_ACTION action = NET_FW_ACTION_BLOCK;
+    VARIANT_BOOL enabled = VARIANT_FALSE;
+    BSTR app = nullptr;
+    const bool inbound = SUCCEEDED(rule->get_Direction(&dir)) && dir == NET_FW_RULE_DIR_IN;
+    const bool allows = SUCCEEDED(rule->get_Action(&action)) && action == NET_FW_ACTION_ALLOW;
+    const bool on = SUCCEEDED(rule->get_Enabled(&enabled)) && enabled == VARIANT_TRUE;
+    const bool named = SUCCEEDED(rule->get_ApplicationName(&app)) && app != nullptr;
+    if (inbound && allows && on && named && lowerWide(app) == self) {
+        haveRule = true;
+        long profiles = 0;
+        if (SUCCEEDED(rule->get_Profiles(&profiles))) ruleMask |= static_cast<int>(profiles);
+    }
+    if (app != nullptr) SysFreeString(app);
+}
+
+// Every rule the policy holds, shown to noteSelfInboundRule. False when the
+// enumeration could not be reached at all, which the caller reports as
+// unsupported rather than as "no rule".
+static bool scanRulesForSelf(INetFwPolicy2* policy, const std::wstring& self, int& ruleMask,
+                             bool& haveRule) {
+    INetFwRules* rules = nullptr;
+    if (FAILED(policy->get_Rules(&rules)) || rules == nullptr) return false;
+    IUnknown* unk = nullptr;
+    if (FAILED(rules->get__NewEnum(&unk)) || unk == nullptr) {
+        rules->Release();
+        return false;
+    }
+    IEnumVARIANT* en = nullptr;
+    const bool haveEnum =
+        SUCCEEDED(unk->QueryInterface(__uuidof(IEnumVARIANT), reinterpret_cast<void**>(&en))) &&
+        en != nullptr;
+    if (haveEnum) {
+        VARIANT v;
+        VariantInit(&v);
+        ULONG got = 0;
+        while (en->Next(1, &v, &got) == S_OK && got == 1) {
+            if (v.vt == VT_DISPATCH && v.pdispVal != nullptr) {
+                INetFwRule* rule = nullptr;
+                if (SUCCEEDED(v.pdispVal->QueryInterface(__uuidof(INetFwRule),
+                                                         reinterpret_cast<void**>(&rule))) &&
+                    rule != nullptr) {
+                    noteSelfInboundRule(rule, self, ruleMask, haveRule);
+                    rule->Release();
+                }
+            }
+            VariantClear(&v);
+            VariantInit(&v);
+            got = 0;
+        }
+        en->Release();
+    }
+    unk->Release();
+    rules->Release();
+    return haveEnum;
+}
+
 bool selfInboundFirewallRules(int& ruleMask, bool& haveRule) {
     ruleMask = 0;
     haveRule = false;
 
     wchar_t exe[MAX_PATH] = {};
-    DWORD len = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) { return false; }
+    const DWORD len = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return false;
     const std::wstring self = lowerWide(exe);
 
     ComScope com;
@@ -234,56 +309,7 @@ bool selfInboundFirewallRules(int& ruleMask, bool& haveRule) {
         policy == nullptr) {
         return false;
     }
-
-    bool queried = false;
-    INetFwRules* rules = nullptr;
-    if (SUCCEEDED(policy->get_Rules(&rules)) && rules != nullptr) {
-        IUnknown* unk = nullptr;
-        if (SUCCEEDED(rules->get__NewEnum(&unk)) && unk != nullptr) {
-            IEnumVARIANT* en = nullptr;
-            if (SUCCEEDED(
-                    unk->QueryInterface(__uuidof(IEnumVARIANT), reinterpret_cast<void**>(&en))) &&
-                en != nullptr) {
-                queried = true;
-                VARIANT v;
-                VariantInit(&v);
-                ULONG got = 0;
-                while (en->Next(1, &v, &got) == S_OK && got == 1) {
-                    if (v.vt == VT_DISPATCH && v.pdispVal != nullptr) {
-                        INetFwRule* rule = nullptr;
-                        if (SUCCEEDED(v.pdispVal->QueryInterface(
-                                __uuidof(INetFwRule), reinterpret_cast<void**>(&rule))) &&
-                            rule != nullptr) {
-                            NET_FW_RULE_DIRECTION dir = NET_FW_RULE_DIR_IN;
-                            NET_FW_ACTION action = NET_FW_ACTION_BLOCK;
-                            VARIANT_BOOL enabled = VARIANT_FALSE;
-                            BSTR app = nullptr;
-                            long profiles = 0;
-                            if (SUCCEEDED(rule->get_Direction(&dir)) && dir == NET_FW_RULE_DIR_IN &&
-                                SUCCEEDED(rule->get_Action(&action)) &&
-                                action == NET_FW_ACTION_ALLOW &&
-                                SUCCEEDED(rule->get_Enabled(&enabled)) && enabled == VARIANT_TRUE &&
-                                SUCCEEDED(rule->get_ApplicationName(&app)) && app != nullptr &&
-                                lowerWide(app) == self) {
-                                haveRule = true;
-                                if (SUCCEEDED(rule->get_Profiles(&profiles))) {
-                                    ruleMask |= static_cast<int>(profiles);
-                                }
-                            }
-                            if (app != nullptr) { SysFreeString(app); }
-                            rule->Release();
-                        }
-                    }
-                    VariantClear(&v);
-                    VariantInit(&v);
-                    got = 0;
-                }
-                en->Release();
-            }
-            unk->Release();
-        }
-        rules->Release();
-    }
+    const bool queried = scanRulesForSelf(policy, self, ruleMask, haveRule);
     policy->Release();
     return queried;
 }

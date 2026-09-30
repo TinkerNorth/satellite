@@ -42,33 +42,115 @@ namespace crash = satellite::crash;
 }
 @end
 
+// Virtual gamepads need the com.apple.developer.hid.virtual.device
+// entitlement (production builds). Unentitled processes run the full protocol
+// stack with the historical inert-backend behavior.
+static void logBackendAvailability() {
+    if (MacHidGamepadAdapter::runtimeAvailable()) {
+        fprintf(stderr, "[satellite] macOS virtual-DualShock-4 backend available "
+                        "(IOHIDUserDevice).\n");
+    } else {
+        fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
+                        "(controller descriptors will apply as backendUnavailable).\n");
+    }
+}
+
+static bool startNetwork() {
+    if (netInit()) return true;
+    fprintf(stderr, "Failed to initialize network subsystem\n");
+    return false;
+}
+
+static bool startCrypto() {
+    if (sodiumInit()) return true;
+    fprintf(stderr, "Failed to initialize libsodium\n");
+    return false;
+}
+
+// The persisted config, with the autostart flag read from where the desktop
+// keeps it rather than from the file.
+static void loadConfigSeedingAutostart() {
+    g_config = loadConfig();
+    g_config.autoStart = getAutoStart();
+}
+
+// Read per frame, not cached: unlike the master switch these gate the wire
+// rather than the persona, so flipping one reaches a stream already playing
+// instead of waiting for a replug.
+static ControllerAudioPolicy audioPolicyFromConfig() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
+                                 g_config.controllerAudioHaptics};
+}
+
+static void persistConfig() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    saveConfig(g_config);
+}
+
+// Inside an .app bundle the binary lives at Contents/MacOS/; the web UI is
+// staged into Contents/Resources/web by CMake. A sibling web/ directory serves
+// non-bundle / dev builds.
+static std::string resolveWebDir() {
+    const std::string exeDir = getExeDir();
+    const std::string bundled = exeDir + "/../Resources/web";
+    struct stat st;
+    if (stat(bundled.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return bundled;
+    return exeDir + "/web";
+}
+
+// The service's threads, joined in the order they were started.
+struct Workers {
+    std::thread recv;
+    std::thread admin;
+    std::thread client;
+    std::thread disc;
+    std::thread mdns;
+};
+
+static Workers startWorkers(SessionService& svc, ClientAdapter& clientAdapter) {
+    Workers w;
+    w.recv = std::thread(receiverThread, std::ref(svc), std::ref(clientAdapter));
+    w.admin = std::thread(adminHttpThread, std::ref(svc));
+    w.client = std::thread(clientApiThread, std::ref(svc));
+    w.disc = std::thread(discoveryThread);
+    w.mdns = std::thread(mdnsResponderThread);
+    return w;
+}
+
+static void joinWorkers(Workers& w) {
+    w.recv.join();
+    w.admin.join();
+    w.client.join();
+    w.disc.join();
+    w.mdns.join();
+}
+
+// The AppKit run loop on the main thread, as an accessory (no Dock icon), until
+// applicationShouldTerminate: has flipped the flags.
+static void runApp(SatelliteAppDelegate* delegate) {
+    NSApplication* app = [NSApplication sharedApplication];
+    [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    [app setDelegate:delegate];
+    addTrayIcon();
+    // Reverse-pairing: a dish request raises a native notification +
+    // Accept/Reject alert so the operator never needs the web UI.
+    setPairRequestListener(notifyPairRequestMac);
+    [app run];
+    removeTrayIcon();
+}
+
 // No command line: everything is configured through the web UI and the
 // config file, so the entry point takes none.
+//
+// Long on purpose: the composition root. Every collaborator lives on this
+// stack in the order it must be constructed, and the shutdown below mirrors
+// that order; a helper per step would move the lifetimes out of sight.
 int main() {
     @autoreleasepool {
-        // Virtual gamepads need the com.apple.developer.hid.virtual.device
-        // entitlement (production builds). Unentitled processes run the full
-        // protocol stack with the historical inert-backend behavior.
-        if (MacHidGamepadAdapter::runtimeAvailable()) {
-            fprintf(stderr, "[satellite] macOS virtual-DualShock-4 backend available "
-                            "(IOHIDUserDevice).\n");
-        } else {
-            fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
-                            "(controller descriptors will apply as backendUnavailable).\n");
-        }
-
-        if (!netInit()) {
-            fprintf(stderr, "Failed to initialize network subsystem\n");
-            return 1;
-        }
-
-        if (!sodiumInit()) {
-            fprintf(stderr, "Failed to initialize libsodium\n");
-            return 1;
-        }
-
-        g_config = loadConfig();
-        g_config.autoStart = getAutoStart();
+        logBackendAvailability();
+        if (!startNetwork() || !startCrypto()) return 1;
+        loadConfigSeedingAutostart();
 
         // As on Linux: the only crash recorder here, and still gated on the
         // operator's opt-in plus a DSN this build actually carries.
@@ -84,71 +166,23 @@ int main() {
         satellite::audio::OpusCodecFactory audioCodecs;
         SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey,
                            &audioCodecs);
-
-        // Read per frame, not cached: unlike the master switch these gate the
-        // wire rather than the persona, so flipping one reaches a stream
-        // already playing instead of waiting for a replug.
-        svc.setAudioPolicy([] {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            return ControllerAudioPolicy{g_config.controllerAudioMic,
-                                         g_config.controllerAudioSpeaker,
-                                         g_config.controllerAudioHaptics};
-        });
+        svc.setAudioPolicy(audioPolicyFromConfig);
 
         MacOSUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
         UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
-        updateService.setPersistCallback([] {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            saveConfig(g_config);
-        });
+        updateService.setPersistCallback(persistConfig);
         g_updateService = &updateService;
-
-        // Inside an .app bundle the binary lives at Contents/MacOS/; the web
-        // UI is staged into Contents/Resources/web by CMake. Fall back to a
-        // sibling web/ directory for non-bundle / dev builds.
-        {
-            std::string exeDir = getExeDir();
-            std::string bundled = exeDir + "/../Resources/web";
-            struct stat st;
-            if (stat(bundled.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-                g_webDir = bundled;
-            } else {
-                g_webDir = exeDir + "/web";
-            }
-        }
-
+        g_webDir = resolveWebDir();
         updateService.start();
 
-        std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
-        std::thread adminTh(adminHttpThread, std::ref(svc));
-        std::thread clientTh(clientApiThread, std::ref(svc));
-        std::thread discTh(discoveryThread);
-        std::thread mdnsTh(mdnsResponderThread);
-
-        NSApplication* app = [NSApplication sharedApplication];
-        [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
-
+        Workers workers = startWorkers(svc, clientAdapter);
         SatelliteAppDelegate* delegate = [[SatelliteAppDelegate alloc] init];
-        [app setDelegate:delegate];
-
-        addTrayIcon();
-
-        // Reverse-pairing: a dish request raises a native notification +
-        // Accept/Reject alert so the operator never needs the web UI.
-        setPairRequestListener(notifyPairRequestMac);
-
-        [app run];
-        removeTrayIcon();
+        runApp(delegate);
 
         // applicationShouldTerminate: has already flipped the flags.
         updateService.stop();
         g_updateService = nullptr;
-
-        recvTh.join();
-        adminTh.join();
-        clientTh.join();
-        discTh.join();
-        mdnsTh.join();
+        joinWorkers(workers);
 
         svc.closeAllSessions();
         saveConfig(g_config);

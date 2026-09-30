@@ -84,6 +84,62 @@ bool registerAppUserModelID() {
     return true;
 }
 
+// One task on the list; the link is released once the collection holds it.
+static void addTask(IObjectCollection* coll, const std::wstring& target, const std::wstring& args,
+                    const wchar_t* title, const wchar_t* description, const std::wstring& iconExe) {
+    IShellLinkW* link = makeShellLink(target, args, title, description, iconExe, 0);
+    if (link == nullptr) return;
+    coll->AddObject(link);
+    link->Release();
+}
+
+// Via explorer.exe because SetPath requires an .exe, not a URL; this opens
+// the default browser.
+static std::wstring explorerPath() {
+    wchar_t explorerExe[MAX_PATH];
+    GetWindowsDirectoryW(explorerExe, MAX_PATH);
+    StringCchCatW(explorerExe, MAX_PATH, L"\\explorer.exe");
+    return explorerExe;
+}
+
+static std::wstring dashboardUrl() {
+    int webPort;
+    {
+        std::lock_guard<std::mutex> lk(g_configMtx);
+        webPort = g_config.webPort;
+    }
+    wchar_t urlBuf[64];
+    StringCchPrintfW(urlBuf, 64, L"http://localhost:%d", webPort);
+    return urlBuf;
+}
+
+// Resolved at runtime so it tracks the actual %LOCALAPPDATA% (roaming profiles).
+static bool logsFolder(std::wstring& out) {
+    PWSTR localAppData = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData)))
+        return false;
+    out = std::wstring(localAppData) + L"\\TinkerNorth\\Satellite\\logs";
+    CoTaskMemFree(localAppData);
+    return true;
+}
+
+// The three tasks: the dashboard, the logs folder, and an update check, which
+// launches a second satellite.exe with --check-updates that the singleton
+// mutex routes to the running instance's second-instance handler.
+static void addUserTasks(IObjectCollection* coll) {
+    const std::wstring exe = exePathWide();
+    const std::wstring explorer = explorerPath();
+    addTask(coll, explorer, dashboardUrl(), L"Open Web UI",
+            L"Open the Satellite dashboard in your browser", exe);
+    std::wstring logs;
+    if (logsFolder(logs)) {
+        addTask(coll, explorer, logs, L"Open Logs Folder", L"Show recent log files in Explorer",
+                exe);
+    }
+    addTask(coll, exe, L"--check-updates", L"Check for Updates",
+            L"Look for a newer Satellite release on GitHub", exe);
+}
+
 bool refreshJumpList() {
     ICustomDestinationList* dst = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_DestinationList, nullptr, CLSCTX_INPROC_SERVER,
@@ -92,7 +148,6 @@ bool refreshJumpList() {
         logMsg(LogLevel::WARN, "shell", "Jump list unavailable (legacy OS or COM not initialized)");
         return false;
     }
-
     // AUMID so the list lands in the pinned-app group, not the generic bucket.
     dst->SetAppID(kAppUserModelID);
 
@@ -112,51 +167,7 @@ bool refreshJumpList() {
         dst->Release();
         return false;
     }
-
-    std::wstring exe = exePathWide();
-    int webPort;
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        webPort = g_config.webPort;
-    }
-    wchar_t urlBuf[64];
-    StringCchPrintfW(urlBuf, 64, L"http://localhost:%d", webPort);
-
-    // Via explorer.exe because SetPath requires an .exe, not a URL; this opens
-    // the default browser.
-    wchar_t explorerExe[MAX_PATH];
-    GetWindowsDirectoryW(explorerExe, MAX_PATH);
-    StringCchCatW(explorerExe, MAX_PATH, L"\\explorer.exe");
-
-    IShellLinkW* openUi = makeShellLink(explorerExe, urlBuf, L"Open Web UI",
-                                        L"Open the Satellite dashboard in your browser", exe, 0);
-    if (openUi) {
-        coll->AddObject(openUi);
-        openUi->Release();
-    }
-
-    // Resolve at runtime so it tracks the actual %LOCALAPPDATA% (roaming profiles).
-    PWSTR localAppData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
-        std::wstring logsDir = std::wstring(localAppData) + L"\\TinkerNorth\\Satellite\\logs";
-        CoTaskMemFree(localAppData);
-        IShellLinkW* openLogs = makeShellLink(explorerExe, logsDir, L"Open Logs Folder",
-                                              L"Show recent log files in Explorer", exe, 0);
-        if (openLogs) {
-            coll->AddObject(openLogs);
-            openLogs->Release();
-        }
-    }
-
-    // Launches a second satellite.exe with --check-updates; the singleton mutex
-    // routes it to the running instance's second-instance handler.
-    IShellLinkW* checkUpdates =
-        makeShellLink(exe, L"--check-updates", L"Check for Updates",
-                      L"Look for a newer Satellite release on GitHub", exe, 0);
-    if (checkUpdates) {
-        coll->AddObject(checkUpdates);
-        checkUpdates->Release();
-    }
+    addUserTasks(coll);
 
     IObjectArray* arr = nullptr;
     if (SUCCEEDED(coll->QueryInterface(IID_PPV_ARGS(&arr))) && arr) {

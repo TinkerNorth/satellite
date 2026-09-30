@@ -52,6 +52,8 @@ class HelperClient : public IHidMaestroProvisioner {
     bool helloLocked();
     void stopLocked(bool sendShutdown);
     bool requestLocked(const std::string& line, std::string& response);
+    bool overlappedIoLocked(bool write, void* buf, DWORD len, DWORD& moved);
+    bool dropChannelLocked();
 
     mutable std::mutex mtx_;
     HANDLE pipe_ = INVALID_HANDLE_VALUE;

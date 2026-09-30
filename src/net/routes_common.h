@@ -8,8 +8,20 @@
 #include "core/catalog.h"
 #include "core/gamepad_backend.h"
 #include "core/json.h"
+#include "httplib.h"
 
 #include <string>
+
+// The one content type every API route answers with.
+inline constexpr const char* JSON_MIME = "application/json";
+
+void replyJson(httplib::Response& res, const std::string& body);
+
+// {"ok":true}: the answer to a command with nothing else to report.
+void replyOk(httplib::Response& res);
+
+// {"error":message} with the status that classifies it.
+void replyError(httplib::Response& res, int status, const std::string& message);
 
 // Lenient body parse: anything but a JSON object collapses to {}.
 satellite::Json parseBody(const std::string& body);

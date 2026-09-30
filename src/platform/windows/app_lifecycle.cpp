@@ -3,6 +3,8 @@
 #include "config.h"
 
 #include "adapters/crash_adapter.h"
+#include "autostart_rule.h"
+#include "core/log_ring.h"
 
 #include <DbgHelp.h>
 #include <knownfolders.h>
@@ -317,93 +319,109 @@ std::wstring todaysLogPath(const std::wstring& dir) {
     return dir + L"\\" + name;
 }
 
+HANDLE openAppendLog(const std::wstring& path) {
+    return CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+// The ring entries written since the last drain, oldest first; the same slot
+// math /api/logs uses, so a reader that fell behind the ring sees the oldest
+// it still holds. `lastSeq` advances to the count seen.
+std::vector<LogEntry> drainLogSince(uint64_t& lastSeq) {
+    std::vector<LogEntry> drained;
+    std::lock_guard<std::mutex> lk(g_logMtx); // serialise with logMsg() ring writes
+    for (const auto& slot :
+         satellite::logRingSlotsSince(LOG_RING_SIZE, g_logHead, g_logSeq, lastSeq)) {
+        drained.push_back(g_logRing[static_cast<size_t>(slot.index)]);
+    }
+    lastSeq = g_logSeq;
+    return drained;
+}
+
+std::string formatLogLine(const LogEntry& e) {
+    std::string line = isoTimestamp(e.timestamp);
+    line += " [";
+    line += levelStr(e.level);
+    line += "] [";
+    line += e.source;
+    line += "] ";
+    line += e.message;
+    line += "\r\n";
+    return line;
+}
+
+void appendLines(HANDLE h, const std::vector<LogEntry>& entries) {
+    for (const auto& e : entries) {
+        const std::string line = formatLogLine(e);
+        DWORD wrote = 0;
+        WriteFile(h, line.data(), static_cast<DWORD>(line.size()), &wrote, nullptr);
+    }
+    if (!entries.empty()) FlushFileBuffers(h);
+}
+
+// A file at the size cap moves aside under a counter suffix so the day's
+// earlier log isn't clobbered (satellite-20260525.log -> satellite-20260525.1.log).
+void rotateOversizedLog(const std::wstring& currentPath) {
+    for (int n = 1; n < 100; n++) {
+        wchar_t tail[16];
+        StringCchPrintfW(tail, ARRAYSIZE(tail), L".%d.log", n);
+        const std::wstring rotated = currentPath.substr(0, currentPath.size() - 4) + tail;
+        if (MoveFileExW(currentPath.c_str(), rotated.c_str(), MOVEFILE_REPLACE_EXISTING)) break;
+    }
+}
+
+bool atSizeCap(HANDLE h) {
+    LARGE_INTEGER size{};
+    return GetFileSizeEx(h, &size) && static_cast<size_t>(size.QuadPart) >= kMaxLogFileBytes;
+}
+
+// Rotation on a date change or the size cap: the handle comes back reopened
+// on the path now current, or INVALID_HANDLE_VALUE when that reopen failed.
+HANDLE rotateIfDue(HANDLE h, std::wstring& currentPath, const std::wstring& dir) {
+    if (atSizeCap(h)) {
+        CloseHandle(h);
+        rotateOversizedLog(currentPath);
+    } else {
+        const std::wstring fresh = todaysLogPath(dir);
+        if (fresh == currentPath) return h;
+        CloseHandle(h);
+        currentPath = fresh;
+    }
+    HANDLE reopened = openAppendLog(currentPath);
+    if (reopened != INVALID_HANDLE_VALUE) deleteOlderThan(dir, L".log", kLogRetentionDays);
+    return reopened;
+}
+
+void waitForLogWork() {
+    if (g_logWake != nullptr) {
+        WaitForSingleObject(g_logWake, 1000);
+    } else {
+        Sleep(1000);
+    }
+}
+
 void loggerLoop() {
     g_loggerThreadId = GetCurrentThreadId();
-    std::wstring dir = utf8ToWide(logDir());
+    const std::wstring dir = utf8ToWide(logDir());
     if (dir.empty()) return;
 
     deleteOlderThan(dir, L".log", kLogRetentionDays);
 
     uint64_t lastSeq = 0;
     std::wstring currentPath = todaysLogPath(dir);
-    HANDLE h =
-        CreateFileW(currentPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_DELETE,
-                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h = openAppendLog(currentPath);
     if (h == INVALID_HANDLE_VALUE) return;
 
     for (;;) {
         const bool flushRequested = g_logFlushPending.exchange(false, std::memory_order_acq_rel);
-        std::vector<LogEntry> drained;
-        uint64_t snapshotSeq;
-        {
-            std::lock_guard<std::mutex> lk(g_logMtx); // serialise with logMsg() ring writes
-            snapshotSeq = g_logSeq;
-            if (snapshotSeq > lastSeq) {
-                uint64_t count = std::min<uint64_t>(snapshotSeq - lastSeq, LOG_RING_SIZE);
-                drained.reserve(static_cast<size_t>(count));
-                int size = static_cast<int>(g_logRing.size());
-                // Newest entry is g_logHead-1; replay the oldest `count` first.
-                int start = (g_logHead - static_cast<int>(count) + size) % size;
-                for (uint64_t i = 0; i < count; i++) {
-                    int idx = (start + static_cast<int>(i)) % size;
-                    drained.push_back(g_logRing[idx]);
-                }
-            }
-        }
-
-        for (const auto& e : drained) {
-            std::string line = isoTimestamp(e.timestamp);
-            line += " [";
-            line += levelStr(e.level);
-            line += "] [";
-            line += e.source;
-            line += "] ";
-            line += e.message;
-            line += "\r\n";
-            DWORD wrote = 0;
-            WriteFile(h, line.data(), static_cast<DWORD>(line.size()), &wrote, nullptr);
-        }
-        if (!drained.empty()) FlushFileBuffers(h);
-        lastSeq = snapshotSeq;
+        appendLines(h, drainLogSince(lastSeq));
         if (flushRequested && g_logFlushed != nullptr) SetEvent(g_logFlushed);
 
-        // Rotation: date change or size cap. Reopen on the new path.
-        LARGE_INTEGER size{};
-        if (GetFileSizeEx(h, &size) && static_cast<size_t>(size.QuadPart) >= kMaxLogFileBytes) {
-            CloseHandle(h);
-            // Counter suffix so the day's earlier log isn't clobbered
-            // (satellite-20260525.log -> satellite-20260525.1.log).
-            for (int n = 1; n < 100; n++) {
-                wchar_t tail[16];
-                StringCchPrintfW(tail, ARRAYSIZE(tail), L".%d.log", n);
-                std::wstring rotated = currentPath.substr(0, currentPath.size() - 4) + tail;
-                if (MoveFileExW(currentPath.c_str(), rotated.c_str(), MOVEFILE_REPLACE_EXISTING))
-                    break;
-            }
-            h = CreateFileW(currentPath.c_str(), FILE_APPEND_DATA,
-                            FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
-                            FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (h == INVALID_HANDLE_VALUE) return;
-            deleteOlderThan(dir, L".log", kLogRetentionDays);
-        } else {
-            std::wstring fresh = todaysLogPath(dir);
-            if (fresh != currentPath) {
-                CloseHandle(h);
-                currentPath = fresh;
-                h = CreateFileW(currentPath.c_str(), FILE_APPEND_DATA,
-                                FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
-                if (h == INVALID_HANDLE_VALUE) return;
-                deleteOlderThan(dir, L".log", kLogRetentionDays);
-            }
-        }
+        h = rotateIfDue(h, currentPath, dir);
+        if (h == INVALID_HANDLE_VALUE) return;
 
         if (g_loggerStopRequested.load(std::memory_order_relaxed)) break;
-        if (g_logWake != nullptr) {
-            WaitForSingleObject(g_logWake, 1000);
-        } else {
-            Sleep(1000);
-        }
+        waitForLogWork();
     }
     CloseHandle(h);
 }
@@ -550,20 +568,32 @@ void applyRuntimeMitigations() {
     // coexist with unsigned in-process tooling.
 }
 
-static std::string stripQuotes(const std::string& s) {
-    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
-    return s;
+static
+
+    // The Run entry as stored, or empty when there is none.
+    std::string readRunEntry(HKEY key) {
+    DWORD type = 0, size = 0;
+    if (RegQueryValueExA(key, kRunValueName, nullptr, &type, nullptr, &size) != ERROR_SUCCESS ||
+        type != REG_SZ || size == 0) {
+        return "";
+    }
+    std::string existing;
+    existing.resize(size);
+    if (RegQueryValueExA(key, kRunValueName, nullptr, &type, reinterpret_cast<BYTE*>(&existing[0]),
+                         &size) != ERROR_SUCCESS) {
+        return "";
+    }
+    while (!existing.empty() && existing.back() == '\0') existing.pop_back();
+    return existing;
 }
 
+// Never deletes (the user toggle does that); the write rule is
+// runEntryNeedsWrite, which keeps an entry pointing at a DIFFERENT real exe.
 void reconcileAutoStart() {
-    // Never deletes (user toggle does that) and never overwrites an entry
-    // pointing at a DIFFERENT real exe (lets a side-loaded build coexist).
-    // Writes if absent, rewrites if the target is gone (self-heal), or
-    // re-normalises quoting/case if it already points at this exe.
     if (!g_config.autoStart) return;
 
     char exe[MAX_PATH];
-    DWORD len = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const DWORD len = GetModuleFileNameA(nullptr, exe, MAX_PATH);
     if (len == 0 || len == MAX_PATH) return;
 
     HKEY key = nullptr;
@@ -571,35 +601,13 @@ void reconcileAutoStart() {
                         nullptr, &key, nullptr) != ERROR_SUCCESS)
         return;
 
-    DWORD type = 0, size = 0;
-    std::string existing;
-    if (RegQueryValueExA(key, kRunValueName, nullptr, &type, nullptr, &size) == ERROR_SUCCESS &&
-        type == REG_SZ && size > 0) {
-        existing.resize(size);
-        if (RegQueryValueExA(key, kRunValueName, nullptr, &type,
-                             reinterpret_cast<BYTE*>(&existing[0]), &size) == ERROR_SUCCESS) {
-            while (!existing.empty() && existing.back() == '\0') existing.pop_back();
-        } else {
-            existing.clear();
-        }
-    }
-
-    bool shouldWrite = false;
-    if (existing.empty()) {
-        shouldWrite = true;
-    } else {
-        std::string existingPath = stripQuotes(existing);
-        if (_stricmp(existingPath.c_str(), exe) == 0) {
-            shouldWrite = true;
-        } else if (GetFileAttributesA(existingPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            shouldWrite = true;
-        } else {
-            shouldWrite = false;
-        }
-    }
-
-    if (shouldWrite) {
-        std::string quoted = std::string("\"") + exe + "\"";
+    const std::string existing = readRunEntry(key);
+    const std::string existingPath = stripQuotes(existing);
+    const bool existingTargetExists =
+        !existingPath.empty() &&
+        GetFileAttributesA(existingPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (runEntryNeedsWrite(existing, exe, existingTargetExists)) {
+        const std::string quoted = std::string("\"") + exe + "\"";
         RegSetValueExA(key, kRunValueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(quoted.c_str()),
                        static_cast<DWORD>(quoted.size() + 1));
     }

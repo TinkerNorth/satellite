@@ -300,8 +300,12 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
   See the matching `README.md` in each repo for the full text.
 - **Vendored-header scanners.** `satellite/lib/` and
   `satellite/vigem/include/` are not understood by ecosystem scanners.
-  We feed OSV-Scanner a synthetic `osv-scanner.toml` derived from
-  [`lib/VENDORED.md`](lib/VENDORED.md), and the
+  `scripts/vendored-osv-lockfile.sh` hands OSV-Scanner the upstream
+  commit each [`lib/VENDORED.md`](lib/VENDORED.md) pin names, so an OSV
+  advisory whose git range covers a pinned commit fails CI. OSV cannot
+  place every advisory on a release commit (libsodium tags its releases
+  on a branch its fixes do not descend from), so each refresh also
+  reviews the upstream's advisories by hand, and the
   `vendored-freshness` CI job fails if any `Last-vendored:` date is
   more than 90 days old. This is best-effort, not exhaustive; file an
   advisory if you spot a vendored component that's missing from

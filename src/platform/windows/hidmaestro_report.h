@@ -256,24 +256,12 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
     out[5] = st.pad.bRightTrigger;
     out[6] = st.seq;
 
+    // The DualShock 4's button word, split across two bytes: hat + face at 7,
+    // shoulders / menu / thumbs at 8.
     const uint16_t b = st.pad.wButtons;
-    uint8_t face = ds4HatFromButtons(b); // shared 0..7 + 8-released encoding
-    if (b & 0x4000) face |= 0x10;        // X     -> Square
-    if (b & 0x1000) face |= 0x20;        // A     -> Cross
-    if (b & 0x2000) face |= 0x40;        // B     -> Circle
-    if (b & 0x8000) face |= 0x80;        // Y     -> Triangle
-    out[7] = face;
-
-    uint8_t mid = 0;
-    if (b & 0x0100) mid |= 0x01;               // LB -> L1
-    if (b & 0x0200) mid |= 0x02;               // RB -> R1
-    if (st.pad.bLeftTrigger > 0) mid |= 0x04;  // L2 digital
-    if (st.pad.bRightTrigger > 0) mid |= 0x08; // R2 digital
-    if (b & 0x0020) mid |= 0x10;               // Back  -> Create
-    if (b & 0x0010) mid |= 0x20;               // Start -> Options
-    if (b & 0x0040) mid |= 0x40;               // LS -> L3
-    if (b & 0x0080) mid |= 0x80;               // RS -> R3
-    out[8] = mid;
+    const uint16_t buttons = sonyButtonsFromXusb(b, st.pad.bLeftTrigger, st.pad.bRightTrigger);
+    out[7] = static_cast<uint8_t>(buttons & 0xFF);
+    out[8] = static_cast<uint8_t>(buttons >> 8);
 
     uint8_t meta = 0;
     if (b & 0x0400) meta |= 0x01; // Guide -> PS
@@ -285,20 +273,13 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
     out[9] = meta;
 
     const MotionReport motion = sonyMotionFromWire(st.motion);
-    auto le16 = [&out](int off, int16_t v) {
-        out[off] = static_cast<uint8_t>(static_cast<uint16_t>(v) & 0xFF);
-        out[off + 1] = static_cast<uint8_t>(static_cast<uint16_t>(v) >> 8);
-    };
-    le16(15, motion.gyroX);
-    le16(17, motion.gyroY);
-    le16(19, motion.gyroZ);
-    le16(21, motion.accelX);
-    le16(23, motion.accelY);
-    le16(25, motion.accelZ);
-    out[27] = static_cast<uint8_t>(st.sensorTimestamp & 0xFF);
-    out[28] = static_cast<uint8_t>((st.sensorTimestamp >> 8) & 0xFF);
-    out[29] = static_cast<uint8_t>((st.sensorTimestamp >> 16) & 0xFF);
-    out[30] = static_cast<uint8_t>((st.sensorTimestamp >> 24) & 0xFF);
+    satellite::writeLE16(out + 15, static_cast<uint16_t>(motion.gyroX));
+    satellite::writeLE16(out + 17, static_cast<uint16_t>(motion.gyroY));
+    satellite::writeLE16(out + 19, static_cast<uint16_t>(motion.gyroZ));
+    satellite::writeLE16(out + 21, static_cast<uint16_t>(motion.accelX));
+    satellite::writeLE16(out + 23, static_cast<uint16_t>(motion.accelY));
+    satellite::writeLE16(out + 25, static_cast<uint16_t>(motion.accelZ));
+    satellite::writeLE32(out + 27, st.sensorTimestamp);
 
     const auto f0 = ds4PackTouchFinger(st.finger0, st.touchTrackingId0);
     const auto f1 = ds4PackTouchFinger(st.finger1, st.touchTrackingId1);
@@ -440,100 +421,120 @@ inline float switchRumbleAmplitude(const uint8_t* block) {
     return hf > lf ? hf : lf;
 }
 
-inline DecodedOutput decodeOutputPacket(GamepadIdentity identity, const OutputPacket& pkt) {
+// XInput SET_STATE: two motor bytes, widened to the 16-bit wire range.
+inline DecodedOutput decodeXboxOutput(const OutputPacket& pkt) {
     DecodedOutput out;
-    switch (identity) {
-    case GamepadIdentity::Xbox:
-        if (pkt.source == OUTPUT_SOURCE_XINPUT && pkt.size >= 4) {
-            out.hasRumble = true;
-            out.rumble.strongMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
-            out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[3]) * 257;
-        }
-        break;
-    case GamepadIdentity::DS4:
-        if (pkt.source == OUTPUT_SOURCE_HID_OUTPUT && pkt.reportId == DS4V2_OUTPUT_REPORT_ID) {
-            const Ds4OutputReport rpt = ds4ParseOutputReport(pkt.reportId, pkt.data, pkt.size);
-            if (rpt.valid && rpt.rumbleValid) {
-                out.hasRumble = true;
-                out.rumble = ds4RumbleFromOutput(rpt);
-            }
-            if (rpt.valid && rpt.lightbarValid) {
-                out.hasLightbar = true;
-                out.r = rpt.r;
-                out.g = rpt.g;
-                out.b = rpt.b;
-            }
-        }
-        break;
-    case GamepadIdentity::DualSense:
-        // DS5 output report 0x02, RID stripped (SDL DS5EffectsState_t /
-        // hid-playstation dualsense_output_report_common layout): valid_flag0
-        // at 0, valid_flag1 at 1, motors at 2/3 (right/weak precedes
-        // left/strong), mic-mute LED mode at 8, power-save control at 9, right
-        // trigger-effect block at 10-20, left at 21-31, valid_flag2 at 38,
-        // player LEDs at 43, lightbar RGB at 44-46.
-        if (pkt.source == OUTPUT_SOURCE_HID_OUTPUT && pkt.reportId == 0x02) {
-            if (pkt.size >= 4 && (pkt.data[0] & 0x03)) {
-                out.hasRumble = true;
-                out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
-                out.rumble.strongMagnitude = static_cast<uint16_t>(pkt.data[3]) * 257;
-            }
-            // valid_flag1 bit 0 = mic-mute-LED control enable. Byte 8 is the
-            // lamp mode; the states happen to be MIC_LED_STATE_* already
-            // (0 off, 1 solid, 2 the pad's own breathing pattern). Anything
-            // above PULSE is a mode this decoder has no name for, so it is
-            // dropped here rather than forwarded for the service to reject:
-            // an unknown lamp mode is not a mute state to guess at.
-            if (pkt.size >= 9 && (pkt.data[1] & 0x01) && pkt.data[8] < MIC_LED_STATE_COUNT) {
-                out.hasMicLed = true;
-                out.micLed = pkt.data[8];
-            }
-            // valid_flag0 bit 2 = right trigger effect, bit 3 = left.
-            if (pkt.size >= 32 && (pkt.data[0] & 0x04)) {
-                out.hasRightTriggerEffect = true;
-                std::memcpy(out.rightTriggerEffect, pkt.data + 10, TRIGGER_EFFECT_BLOCK_BYTES);
-            }
-            if (pkt.size >= 32 && (pkt.data[0] & 0x08)) {
-                out.hasLeftTriggerEffect = true;
-                std::memcpy(out.leftTriggerEffect, pkt.data + 21, TRIGGER_EFFECT_BLOCK_BYTES);
-            }
-            // valid_flag1 bit 4 = player-indicator control.
-            if (pkt.size >= 44 && (pkt.data[1] & 0x10)) {
-                out.hasPlayerLeds = true;
-                out.playerLeds = static_cast<uint8_t>(pkt.data[43] & 0x1F);
-            }
-            // Lightbar: valid_flag1 bit 2 is the documented control-enable
-            // (SDL/hid-playstation); the valid_flag2 bit-2 gate predates this
-            // decoder and is kept so whatever matched it keeps matching.
-            if (pkt.size >= 47 && ((pkt.data[1] & 0x04) || (pkt.data[38] & 0x04))) {
-                out.hasLightbar = true;
-                out.r = pkt.data[44];
-                out.g = pkt.data[45];
-                out.b = pkt.data[46];
-            }
-        }
-        break;
-    case GamepadIdentity::SwitchPro:
-        // Rumble subcommand 0x01 / stream 0x10, RID stripped: payload byte 0
-        // is the global packet counter, bytes 1-4 the left HD-rumble block,
-        // 5-8 the right. On 0x01 the subcommand id sits at byte 9 with its
-        // arguments from 10; subcommand 0x30 is the player-lights write whose
-        // low nibble is the solid-LED bitmask (high nibble = flash bits).
-        if (pkt.source == OUTPUT_SOURCE_HID_OUTPUT &&
-            (pkt.reportId == 0x01 || pkt.reportId == 0x10) && pkt.size >= 9) {
-            const float left = switchRumbleAmplitude(pkt.data + 1);
-            const float right = switchRumbleAmplitude(pkt.data + 5);
-            out.hasRumble = true;
-            out.rumble.strongMagnitude = static_cast<uint16_t>(left * 65535.0f);
-            out.rumble.weakMagnitude = static_cast<uint16_t>(right * 65535.0f);
-            if (pkt.reportId == 0x01 && pkt.size >= 11 && pkt.data[9] == 0x30) {
-                out.hasPlayerLeds = true;
-                out.playerLeds = static_cast<uint8_t>(pkt.data[10] & 0x0F);
-            }
-        }
-        break;
+    if (pkt.source == OUTPUT_SOURCE_XINPUT && pkt.size >= 4) {
+        out.hasRumble = true;
+        out.rumble.strongMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
+        out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[3]) * 257;
     }
     return out;
+}
+
+inline DecodedOutput decodeDs4Output(const OutputPacket& pkt) {
+    DecodedOutput out;
+    if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || pkt.reportId != DS4V2_OUTPUT_REPORT_ID)
+        return out;
+    const Ds4OutputReport rpt = ds4ParseOutputReport(pkt.reportId, pkt.data, pkt.size);
+    if (rpt.valid && rpt.rumbleValid) {
+        out.hasRumble = true;
+        out.rumble = ds4RumbleFromOutput(rpt);
+    }
+    if (rpt.valid && rpt.lightbarValid) {
+        out.hasLightbar = true;
+        out.r = rpt.r;
+        out.g = rpt.g;
+        out.b = rpt.b;
+    }
+    return out;
+}
+
+// DS5 output report 0x02, RID stripped (SDL DS5EffectsState_t /
+// hid-playstation dualsense_output_report_common layout): valid_flag0
+// at 0, valid_flag1 at 1, motors at 2/3 (right/weak precedes
+// left/strong), mic-mute LED mode at 8, power-save control at 9, right
+// trigger-effect block at 10-20, left at 21-31, valid_flag2 at 38,
+// player LEDs at 43, lightbar RGB at 44-46.
+inline DecodedOutput decodeDualSenseOutput(const OutputPacket& pkt) {
+    DecodedOutput out;
+    if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || pkt.reportId != 0x02) return out;
+    if (pkt.size >= 4 && (pkt.data[0] & 0x03)) {
+        out.hasRumble = true;
+        out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
+        out.rumble.strongMagnitude = static_cast<uint16_t>(pkt.data[3]) * 257;
+    }
+    // valid_flag1 bit 0 = mic-mute-LED control enable. Byte 8 is the
+    // lamp mode; the states happen to be MIC_LED_STATE_* already
+    // (0 off, 1 solid, 2 the pad's own breathing pattern). Anything
+    // above PULSE is a mode this decoder has no name for, so it is
+    // dropped here rather than forwarded for the service to reject:
+    // an unknown lamp mode is not a mute state to guess at.
+    if (pkt.size >= 9 && (pkt.data[1] & 0x01) && pkt.data[8] < MIC_LED_STATE_COUNT) {
+        out.hasMicLed = true;
+        out.micLed = pkt.data[8];
+    }
+    // valid_flag0 bit 2 = right trigger effect, bit 3 = left.
+    if (pkt.size >= 32 && (pkt.data[0] & 0x04)) {
+        out.hasRightTriggerEffect = true;
+        std::memcpy(out.rightTriggerEffect, pkt.data + 10, TRIGGER_EFFECT_BLOCK_BYTES);
+    }
+    if (pkt.size >= 32 && (pkt.data[0] & 0x08)) {
+        out.hasLeftTriggerEffect = true;
+        std::memcpy(out.leftTriggerEffect, pkt.data + 21, TRIGGER_EFFECT_BLOCK_BYTES);
+    }
+    // valid_flag1 bit 4 = player-indicator control.
+    if (pkt.size >= 44 && (pkt.data[1] & 0x10)) {
+        out.hasPlayerLeds = true;
+        out.playerLeds = static_cast<uint8_t>(pkt.data[43] & 0x1F);
+    }
+    // Lightbar: valid_flag1 bit 2 is the documented control-enable
+    // (SDL/hid-playstation); the valid_flag2 bit-2 gate predates this
+    // decoder and is kept so whatever matched it keeps matching.
+    if (pkt.size >= 47 && ((pkt.data[1] & 0x04) || (pkt.data[38] & 0x04))) {
+        out.hasLightbar = true;
+        out.r = pkt.data[44];
+        out.g = pkt.data[45];
+        out.b = pkt.data[46];
+    }
+    return out;
+}
+
+// Rumble subcommand 0x01 / stream 0x10, RID stripped: payload byte 0
+// is the global packet counter, bytes 1-4 the left HD-rumble block,
+// 5-8 the right. On 0x01 the subcommand id sits at byte 9 with its
+// arguments from 10; subcommand 0x30 is the player-lights write whose
+// low nibble is the solid-LED bitmask (high nibble = flash bits).
+inline DecodedOutput decodeSwitchProOutput(const OutputPacket& pkt) {
+    DecodedOutput out;
+    const bool rumbleReport = pkt.reportId == 0x01 || pkt.reportId == 0x10;
+    if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || !rumbleReport || pkt.size < 9) return out;
+    const float left = switchRumbleAmplitude(pkt.data + 1);
+    const float right = switchRumbleAmplitude(pkt.data + 5);
+    out.hasRumble = true;
+    out.rumble.strongMagnitude = static_cast<uint16_t>(left * 65535.0f);
+    out.rumble.weakMagnitude = static_cast<uint16_t>(right * 65535.0f);
+    if (pkt.reportId == 0x01 && pkt.size >= 11 && pkt.data[9] == 0x30) {
+        out.hasPlayerLeds = true;
+        out.playerLeds = static_cast<uint8_t>(pkt.data[10] & 0x0F);
+    }
+    return out;
+}
+
+// One decoder per identity; the switch is what the compiler checks when an
+// identity is added.
+inline DecodedOutput decodeOutputPacket(GamepadIdentity identity, const OutputPacket& pkt) {
+    switch (identity) {
+    case GamepadIdentity::Xbox:
+        return decodeXboxOutput(pkt);
+    case GamepadIdentity::DS4:
+        return decodeDs4Output(pkt);
+    case GamepadIdentity::DualSense:
+        return decodeDualSenseOutput(pkt);
+    case GamepadIdentity::SwitchPro:
+        return decodeSwitchProOutput(pkt);
+    }
+    return DecodedOutput{};
 }
 
 } // namespace hidmaestro

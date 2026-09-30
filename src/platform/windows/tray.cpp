@@ -5,6 +5,7 @@
 #include "resource.h"
 #include "shell_integration.h"
 #include "core/update_service.h"
+#include "tray_menu.h"
 #include "net/mdns_responder.h"
 #include "net/pairing.h"
 #include "net/pairing_service.h"
@@ -141,48 +142,41 @@ void updateTrayTooltip() {
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
 }
 
-void showTrayMenu(HWND hwnd) {
-    POINT pt;
-    GetCursorPos(&pt);
-    HMENU menu = CreatePopupMenu();
-
-    // Snapshot the index-to-deviceId map so WM_COMMAND can resolve the click.
-    auto pairReqs = pendingPairRequests();
+// One entry per pending dish, labelled for the operator; the index-to-deviceId
+// map is snapshotted so WM_COMMAND can resolve the click.
+static void appendPairRequestItems(HMENU menu) {
+    const auto pairReqs = pendingPairRequests();
     g_menuPairIds.clear();
     for (size_t i = 0; i < pairReqs.size(); i++) {
         const auto& r = pairReqs[i];
-        std::wstring label = L"Pairing: " +
-                             toWide(r.deviceName.empty() ? r.clientIP : r.deviceName) + L" (" +
-                             toWide(r.clientIP) + L")…";
+        const std::wstring label = L"Pairing: " +
+                                   toWide(r.deviceName.empty() ? r.clientIP : r.deviceName) +
+                                   L" (" + toWide(r.clientIP) + L")…";
         AppendMenuW(menu, MF_STRING, IDM_PAIR_REVIEW_BASE + static_cast<UINT>(i), label.c_str());
         g_menuPairIds.push_back(r.deviceId);
     }
     if (!g_menuPairIds.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+}
 
+// Rebuilt each open so the label reflects the current update state.
+static void appendUpdateItem(HMENU menu) {
+    const bool haveUpdater = g_updateService != nullptr;
+    const UpdateStatusSnapshot snap =
+        haveUpdater ? g_updateService->snapshot() : UpdateStatusSnapshot{};
+    const satellite::tray::UpdateMenuItem item = satellite::tray::updateMenuItemFor(
+        haveUpdater, snap.state, snap.info.available, toWide(snap.info.version));
+    AppendMenuW(menu, item.flags, item.id, item.label.c_str());
+}
+
+void showTrayMenu(HWND hwnd) {
+    POINT pt;
+    GetCursorPos(&pt);
+    HMENU menu = CreatePopupMenu();
+    appendPairRequestItems(menu);
     AppendMenuW(menu, MF_STRING, IDM_OPEN_UI, L"Open Web UI");
     AppendMenuW(menu, MF_STRING, IDM_DONATE, L"Donate");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-    // Rebuilt each open so the label reflects current update state.
-    if (g_updateService) {
-        UpdateStatusSnapshot snap = g_updateService->snapshot();
-        if (snap.state == UpdateState::Downloaded && snap.info.available) {
-            std::wstring label = L"Install Update " + toWide(snap.info.version);
-            AppendMenuW(menu, MF_STRING, IDM_INSTALL_UPDATE, label.c_str());
-        } else if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
-            std::wstring label = L"Download Update " + toWide(snap.info.version) + L"...";
-            AppendMenuW(menu, MF_STRING, IDM_INSTALL_UPDATE, label.c_str());
-        } else if (snap.state == UpdateState::Downloading || snap.state == UpdateState::Verifying) {
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, L"Downloading update...");
-        } else if (snap.state == UpdateState::Checking) {
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, L"Checking for updates...");
-        } else {
-            AppendMenuW(menu, MF_STRING, IDM_CHECK_UPDATES, L"Check for Updates...");
-        }
-    } else {
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, IDM_CHECK_UPDATES, L"Check for Updates...");
-    }
-
+    appendUpdateItem(menu);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_OPEN_LOGS, L"Open Logs Folder");
     AppendMenuW(menu, MF_STRING, IDM_REPORT_PROBLEM, L"Report a Problem...");
@@ -272,6 +266,155 @@ void notifyPairRequestWindows(const std::string& deviceId) {
     if (g_hwnd != nullptr) PostMessageW(g_hwnd, WM_PAIR_NOTIFY, 0, 0);
 }
 
+static void openDashboard() { openUrl(webUiUrl().c_str()); }
+static void openSettings() { openUrl(webUiUrl(L"/settings").c_str()); }
+
+// A GitHub issue with a URL-encoded body pre-filling the log/dump paths.
+static constexpr const wchar_t* REPORT_PROBLEM_URL =
+    L"https://github.com/TinkerNorth/satellite/issues/new"
+    L"?labels=bug"
+    L"&title=&body="
+    L"Describe%20the%20problem%3A%0A%0A%0A---%0A"
+    L"Logs%3A%20%25LOCALAPPDATA%25%5CTinkerNorth%5CSatellite%5Clogs%0A"
+    L"Crash%20dumps%3A%20%25LOCALAPPDATA%25%5CTinkerNorth%5CSatellite%5Cdumps%0A"
+    L"Please%20zip%20any%20relevant%20.log%20or%20.dmp%20files%20and%20attach.";
+
+static void openLogsFolder() {
+    const std::string dir = lifecycle::logDir();
+    if (dir.empty()) return;
+    const std::wstring wd = toWide(dir);
+    ShellExecuteW(nullptr, L"open", wd.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// A queued prompt means the clicked toast was a pairing request; else a staged
+// update goes to settings, otherwise the dashboard.
+static void onBalloonClick(HWND hwnd) {
+    std::deque<std::string> todo;
+    {
+        std::lock_guard<std::mutex> lk(g_pairQueueMtx);
+        todo.swap(g_pendingPrompts);
+    }
+    if (!todo.empty()) {
+        for (const auto& id : todo) showPairingDialogWindows(hwnd, id);
+        return;
+    }
+    if (g_updateService && g_updateService->snapshot().info.available) {
+        openSettings();
+        return;
+    }
+    openDashboard();
+}
+
+// v4: event is LOWORD(lp), not the whole lp (v3); comparing the whole lp
+// against WM_LBUTTONDBLCLK never matches under v4.
+static void onTrayIconEvent(HWND hwnd, UINT event) {
+    if (event == WM_LBUTTONDBLCLK || event == NIN_KEYSELECT) {
+        openDashboard();
+    } else if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP) {
+        showTrayMenu(hwnd);
+    } else if (event == NIN_BALLOONUSERCLICK) {
+        onBalloonClick(hwnd);
+    }
+}
+
+// A protocol-activated toast button launched a second process that forwarded
+// the satellite-pair: URI here.
+static void onCopyData(const COPYDATASTRUCT* cds) {
+    if (cds == nullptr || cds->dwData != PAIR_URI_COPYDATA || cds->lpData == nullptr) return;
+    const size_t n = cds->cbData > 0 ? cds->cbData - 1 : 0;
+    handlePairProtocolUri(std::string(static_cast<const char*>(cds->lpData), n));
+}
+
+// One pairing request, announced: the actionable toast when the OS offers it,
+// else a balloon whose click is handled via the g_pendingPrompts queue under
+// NIN_BALLOONUSERCLICK.
+static void announcePairRequest(const std::string& id) {
+    std::string name, ip, pin;
+    int secs = 0;
+    if (!pairRequestSnapshot(id, name, ip, pin, secs)) return;
+    if (showActionablePairToast(id, name, ip, pin)) return;
+    {
+        std::lock_guard<std::mutex> lk(g_pairQueueMtx);
+        if (std::find(g_pendingPrompts.begin(), g_pendingPrompts.end(), id) ==
+            g_pendingPrompts.end()) {
+            g_pendingPrompts.push_back(id);
+        }
+    }
+    shell_integration::showToast("Pairing request",
+                                 (name.empty() ? std::string("A device") : name) + " (" + ip +
+                                     ") wants to pair. Click to accept or reject.");
+}
+
+// Drained on the GUI thread (COM-initialised), so the WinRT toast works.
+static void onPairNotify() {
+    std::deque<std::string> todo;
+    {
+        std::lock_guard<std::mutex> lk(g_incomingMtx);
+        todo.swap(g_incoming);
+    }
+    for (const auto& id : todo) announcePairRequest(id);
+}
+
+static void onInstallUpdate() {
+    if (g_updateService == nullptr) return;
+    const UpdateStatusSnapshot s = g_updateService->snapshot();
+    if (s.state == UpdateState::Downloaded) {
+        g_updateService->requestInstall();
+    } else {
+        g_updateService->requestDownload();
+    }
+    openSettings();
+}
+
+static void onMenuCommand(HWND hwnd, UINT cmd) {
+    if (cmd >= IDM_PAIR_REVIEW_BASE &&
+        cmd < IDM_PAIR_REVIEW_BASE + static_cast<UINT>(g_menuPairIds.size())) {
+        showPairingDialogWindows(hwnd, g_menuPairIds[cmd - IDM_PAIR_REVIEW_BASE]);
+        return;
+    }
+    switch (cmd) {
+    default:
+        break;
+    case IDM_OPEN_UI:
+        openDashboard();
+        break;
+    case IDM_DONATE:
+        openUrl(webUiUrl(L"/donate").c_str());
+        break;
+    case IDM_OPEN_LOGS:
+        openLogsFolder();
+        break;
+    case IDM_REPORT_PROBLEM:
+        openUrl(REPORT_PROBLEM_URL);
+        break;
+    case IDM_CHECK_UPDATES:
+        if (g_updateService) g_updateService->requestCheck(/*userInitiated=*/true);
+        openSettings();
+        break;
+    case IDM_INSTALL_UPDATE:
+        onInstallUpdate();
+        break;
+    case IDM_EXIT:
+        PostQuitMessage(0);
+        break;
+    }
+}
+
+// Restart Manager (installer CloseApplications) and system shutdown go
+// through here; replying TRUE to WM_QUERYENDSESSION then exiting on
+// WM_ENDSESSION lets saveConfig run.
+static void onEndSession(WPARAM wp, LPARAM lp) {
+    if (!wp) return;
+    logMsg(LogLevel::INFO, "app",
+           (lp & ENDSESSION_CLOSEAPP) != 0 ? "Shutting down: Restart Manager close request"
+                                           : "Shutting down: session ending");
+    g_appRunning = false;
+    removeTrayIcon();
+    saveConfig(g_config);
+    PostQuitMessage(0);
+}
+
+// One handler per message; this is the table.
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // Explorer (re)created its taskbar (crash / RDP reconnect); re-add our icon
     // so we're not running-but-invisible.
@@ -279,164 +422,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         registerTrayIcon(hwnd);
         return 0;
     }
-
     switch (msg) {
-    case WM_TRAYICON: {
-        // v4: event is LOWORD(lp), not the whole lp (v3); comparing the whole lp
-        // against WM_LBUTTONDBLCLK never matches under v4.
-        UINT event = LOWORD(lp);
-        if (event == WM_LBUTTONDBLCLK || event == NIN_KEYSELECT) {
-            openUrl(webUiUrl().c_str());
-        } else if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP) {
-            showTrayMenu(hwnd);
-        } else if (event == NIN_BALLOONUSERCLICK) {
-            // A queued prompt means the clicked toast was a pairing request.
-            std::deque<std::string> todo;
-            {
-                std::lock_guard<std::mutex> lk(g_pairQueueMtx);
-                todo.swap(g_pendingPrompts);
-            }
-            if (!todo.empty()) {
-                for (const auto& id : todo) showPairingDialogWindows(hwnd, id);
-                return 0;
-            }
-            // Else: staged update goes to settings; otherwise the dashboard.
-            if (g_updateService) {
-                UpdateStatusSnapshot s = g_updateService->snapshot();
-                if (s.info.available) {
-                    openUrl(webUiUrl(L"/settings").c_str());
-                    return 0;
-                }
-            }
-            openUrl(webUiUrl().c_str());
-        }
+    case WM_TRAYICON:
+        onTrayIconEvent(hwnd, LOWORD(lp));
         return 0;
-    }
-
-    case WM_SECOND_INSTANCE: {
-        openUrl(webUiUrl().c_str());
+    case WM_SECOND_INSTANCE:
+        openDashboard();
         return 0;
-    }
-
-    case WM_POWERBROADCAST: {
+    case WM_POWERBROADCAST:
         if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND) requestMdnsRejoin();
         return TRUE;
-    }
-
-    case WM_COPYDATA: {
-        // A protocol-activated toast button launched a second process that
-        // forwarded the satellite-pair: URI here.
-        auto* cds = reinterpret_cast<COPYDATASTRUCT*>(lp);
-        if (cds != nullptr && cds->dwData == PAIR_URI_COPYDATA && cds->lpData != nullptr) {
-            const size_t n = cds->cbData > 0 ? cds->cbData - 1 : 0;
-            handlePairProtocolUri(std::string(static_cast<const char*>(cds->lpData), n));
-        }
+    case WM_COPYDATA:
+        onCopyData(reinterpret_cast<const COPYDATASTRUCT*>(lp));
         return TRUE;
-    }
-
-    case WM_PAIR_NOTIFY: {
-        // Drained on the GUI thread (COM-initialised), so the WinRT toast works.
-        std::deque<std::string> todo;
-        {
-            std::lock_guard<std::mutex> lk(g_incomingMtx);
-            todo.swap(g_incoming);
-        }
-        for (const auto& id : todo) {
-            std::string name, ip, pin;
-            int secs = 0;
-            if (!pairRequestSnapshot(id, name, ip, pin, secs)) continue;
-            // Prefer the actionable toast; else a balloon whose click is handled
-            // via the g_pendingPrompts queue under NIN_BALLOONUSERCLICK.
-            if (showActionablePairToast(id, name, ip, pin)) continue;
-            {
-                std::lock_guard<std::mutex> lk(g_pairQueueMtx);
-                if (std::find(g_pendingPrompts.begin(), g_pendingPrompts.end(), id) ==
-                    g_pendingPrompts.end()) {
-                    g_pendingPrompts.push_back(id);
-                }
-            }
-            shell_integration::showToast("Pairing request",
-                                         (name.empty() ? std::string("A device") : name) + " (" +
-                                             ip + ") wants to pair. Click to accept or reject.");
-        }
+    case WM_PAIR_NOTIFY:
+        onPairNotify();
         return 0;
-    }
-
-    case WM_COMMAND: {
-        const UINT cmd = LOWORD(wp);
-        if (cmd >= IDM_PAIR_REVIEW_BASE &&
-            cmd < IDM_PAIR_REVIEW_BASE + static_cast<UINT>(g_menuPairIds.size())) {
-            showPairingDialogWindows(hwnd, g_menuPairIds[cmd - IDM_PAIR_REVIEW_BASE]);
-            return 0;
-        }
-        switch (cmd) {
-        default:
-            break;
-        case IDM_OPEN_UI:
-            openUrl(webUiUrl().c_str());
-            break;
-        case IDM_DONATE:
-            openUrl(webUiUrl(L"/donate").c_str());
-            break;
-        case IDM_OPEN_LOGS: {
-            std::string dir = lifecycle::logDir();
-            if (!dir.empty()) {
-                std::wstring wd = toWide(dir);
-                ShellExecuteW(nullptr, L"open", wd.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            }
-            break;
-        }
-        case IDM_REPORT_PROBLEM: {
-            // GitHub issue with a URL-encoded body pre-filling the log/dump paths.
-            std::wstring url =
-                L"https://github.com/TinkerNorth/satellite/issues/new"
-                L"?labels=bug"
-                L"&title=&body="
-                L"Describe%20the%20problem%3A%0A%0A%0A---%0A"
-                L"Logs%3A%20%25LOCALAPPDATA%25%5CTinkerNorth%5CSatellite%5Clogs%0A"
-                L"Crash%20dumps%3A%20%25LOCALAPPDATA%25%5CTinkerNorth%5CSatellite%5Cdumps%0A"
-                L"Please%20zip%20any%20relevant%20.log%20or%20.dmp%20files%20and%20attach.";
-            openUrl(url.c_str());
-            break;
-        }
-        case IDM_CHECK_UPDATES:
-            if (g_updateService) g_updateService->requestCheck(/*userInitiated=*/true);
-            openUrl(webUiUrl(L"/settings").c_str());
-            break;
-        case IDM_INSTALL_UPDATE:
-            if (g_updateService) {
-                UpdateStatusSnapshot s = g_updateService->snapshot();
-                if (s.state == UpdateState::Downloaded) {
-                    g_updateService->requestInstall();
-                } else {
-                    g_updateService->requestDownload();
-                }
-                openUrl(webUiUrl(L"/settings").c_str());
-            }
-            break;
-        case IDM_EXIT:
-            PostQuitMessage(0);
-            break;
-        }
+    case WM_COMMAND:
+        onMenuCommand(hwnd, LOWORD(wp));
         return 0;
-    }
-
-    // Restart Manager (installer CloseApplications) and system shutdown go
-    // through here; replying TRUE then exiting on WM_ENDSESSION lets saveConfig run.
     case WM_QUERYENDSESSION:
         return TRUE;
     case WM_ENDSESSION:
-        if (wp) {
-            logMsg(LogLevel::INFO, "app",
-                   (lp & ENDSESSION_CLOSEAPP) != 0 ? "Shutting down: Restart Manager close request"
-                                                   : "Shutting down: session ending");
-            g_appRunning = false;
-            removeTrayIcon();
-            saveConfig(g_config);
-            PostQuitMessage(0);
-        }
+        onEndSession(wp, lp);
         return 0;
-
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;

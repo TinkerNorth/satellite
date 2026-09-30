@@ -2,13 +2,15 @@
 
 // Platform-independent crypto helpers hoisted out of the triplicated
 // src/platform/{windows,linux,macos}/crypto.cpp (D11): the pairing-PIN
-// rotation state machine, hex codecs, CSPRNG string helpers, and the X25519
-// pairing-key exchange. Everything here is libsodium-backed and identical on
-// every OS; the per-platform crypto.{h,cpp} keep only genuinely
-// platform-specific keystore storage (DPAPI vs POSIX keyfile) and re-export
-// this header so `#include "crypto.h"` callers compile unchanged.
+// rotation state machine, the strict hex decoder (the encoder is core/hex.h's,
+// re-exported here), CSPRNG string helpers, and the X25519 pairing-key
+// exchange. Everything here is libsodium-backed and identical on every OS; the
+// per-platform crypto.{h,cpp} keep only genuinely platform-specific keystore
+// storage (DPAPI vs POSIX keyfile) and re-export this header so
+// `#include "crypto.h"` callers compile unchanged.
 #pragma once
 
+#include "core/hex.h"
 #include "core/types.h"
 
 #include <cstdint>
@@ -41,8 +43,6 @@ PinSnapshot pinSnapshot();
 // testable without real sleeps. Mirrors SessionService::backdateForTest.
 void backdatePinClockForTest(int seconds);
 #endif
-
-std::string hexEncode(const uint8_t* data, size_t len);
 
 // Strict: exact length, hex digits only (no sscanf leniency).
 bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen);

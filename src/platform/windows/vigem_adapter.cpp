@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "vigem_adapter.h"
 
+#include "core/ds4_report.h"
 #include "core/touchpad_codec.h"
 #include "pointer_inject.h"
 #include "vigem.h"
@@ -180,81 +181,56 @@ bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     return submitXusbSync(bus, static_cast<unsigned long>(serial), slot->xsr, slot->event, &report);
 }
 
+// ViGEm's DS4 report is the DualShock 4 report the core packs for every DS4
+// shell, so the one button layout serves here too. These hold ViGEm's names to
+// that layout: if the bus header ever moved a bit, this would fail to compile
+// rather than mis-map a button.
+static_assert(sonyBitFor(0x4000) == DS4_BUTTON_SQUARE && sonyBitFor(0x1000) == DS4_BUTTON_CROSS &&
+                  sonyBitFor(0x2000) == DS4_BUTTON_CIRCLE &&
+                  sonyBitFor(0x8000) == DS4_BUTTON_TRIANGLE,
+              "face buttons: XUSB X/A/B/Y are the DS4's Square/Cross/Circle/Triangle");
+static_assert(sonyBitFor(0x0100) == DS4_BUTTON_SHOULDER_LEFT &&
+                  sonyBitFor(0x0200) == DS4_BUTTON_SHOULDER_RIGHT &&
+                  sonyBitFor(0x0020) == DS4_BUTTON_SHARE &&
+                  sonyBitFor(0x0010) == DS4_BUTTON_OPTIONS &&
+                  sonyBitFor(0x0040) == DS4_BUTTON_THUMB_LEFT &&
+                  sonyBitFor(0x0080) == DS4_BUTTON_THUMB_RIGHT,
+              "shoulders, menu pair and thumb clicks: XUSB bits are the DS4's");
+static_assert(SONY_BUTTON_L2 == DS4_BUTTON_TRIGGER_LEFT &&
+                  SONY_BUTTON_R2 == DS4_BUTTON_TRIGGER_RIGHT,
+              "the digital trigger bits sit where ViGEm expects them");
+static_assert(ds4HatFromButtons(0x0001) == DS4_BUTTON_DPAD_NORTH &&
+                  ds4HatFromButtons(0x0009) == DS4_BUTTON_DPAD_NORTHEAST &&
+                  ds4HatFromButtons(0x0008) == DS4_BUTTON_DPAD_EAST &&
+                  ds4HatFromButtons(0x000A) == DS4_BUTTON_DPAD_SOUTHEAST &&
+                  ds4HatFromButtons(0x0002) == DS4_BUTTON_DPAD_SOUTH &&
+                  ds4HatFromButtons(0x0006) == DS4_BUTTON_DPAD_SOUTHWEST &&
+                  ds4HatFromButtons(0x0004) == DS4_BUTTON_DPAD_WEST &&
+                  ds4HatFromButtons(0x0005) == DS4_BUTTON_DPAD_NORTHWEST &&
+                  ds4HatFromButtons(0x0000) == DS4_BUTTON_DPAD_NONE,
+              "the hat nibble is ViGEm's DS4_DPAD_DIRECTIONS");
+
 // Caller holds busMtx_. Folds `report` into the DS4 slot's running EX report and
 // submits it so any cached gyro/accel/touch rides along.
 bool ViGEmAdapter::submitDS4ReportLocked(uint32_t serial, const GamepadReport& report) {
     IoSlot& slot = io_[serial];
     if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
 
-    DS4_REPORT ds4;
-    DS4_REPORT_INIT(&ds4);
-
-    // Sticks: Xbox signed int16 -> DS4 unsigned byte; Y axes inverted.
-    ds4.bThumbLX = (BYTE)((((int)report.sThumbLX + 32768) * 255) / 65535);
-    ds4.bThumbLY = (BYTE)(255 - (((int)report.sThumbLY + 32768) * 255) / 65535);
-    ds4.bThumbRX = (BYTE)((((int)report.sThumbRX + 32768) * 255) / 65535);
-    ds4.bThumbRY = (BYTE)(255 - (((int)report.sThumbRY + 32768) * 255) / 65535);
-
-    ds4.bTriggerL = report.bLeftTrigger;
-    ds4.bTriggerR = report.bRightTrigger;
-
-    USHORT ds4btn = 0;
-    if (report.wButtons & 0x1000) ds4btn |= DS4_BUTTON_CROSS;          // A -> Cross
-    if (report.wButtons & 0x2000) ds4btn |= DS4_BUTTON_CIRCLE;         // B -> Circle
-    if (report.wButtons & 0x4000) ds4btn |= DS4_BUTTON_SQUARE;         // X -> Square
-    if (report.wButtons & 0x8000) ds4btn |= DS4_BUTTON_TRIANGLE;       // Y -> Triangle
-    if (report.wButtons & 0x0100) ds4btn |= DS4_BUTTON_SHOULDER_LEFT;  // LB
-    if (report.wButtons & 0x0200) ds4btn |= DS4_BUTTON_SHOULDER_RIGHT; // RB
-    if (report.wButtons & 0x0020) ds4btn |= DS4_BUTTON_SHARE;          // Back -> Share
-    if (report.wButtons & 0x0010) ds4btn |= DS4_BUTTON_OPTIONS;        // Start -> Options
-    if (report.wButtons & 0x0040) ds4btn |= DS4_BUTTON_THUMB_LEFT;     // LS
-    if (report.wButtons & 0x0080) ds4btn |= DS4_BUTTON_THUMB_RIGHT;    // RS
-
-    // D-Pad -> DS4 hat encoding
-    bool up = (report.wButtons & 0x0001) != 0;
-    bool down = (report.wButtons & 0x0002) != 0;
-    bool left = (report.wButtons & 0x0004) != 0;
-    bool right = (report.wButtons & 0x0008) != 0;
-
-    DS4_DPAD_DIRECTIONS dpad = DS4_BUTTON_DPAD_NONE;
-    if (up && right) {
-        dpad = DS4_BUTTON_DPAD_NORTHEAST;
-    } else if (up && left) {
-        dpad = DS4_BUTTON_DPAD_NORTHWEST;
-    } else if (down && right) {
-        dpad = DS4_BUTTON_DPAD_SOUTHEAST;
-    } else if (down && left) {
-        dpad = DS4_BUTTON_DPAD_SOUTHWEST;
-    } else if (up) {
-        dpad = DS4_BUTTON_DPAD_NORTH;
-    } else if (down) {
-        dpad = DS4_BUTTON_DPAD_SOUTH;
-    } else if (left) {
-        dpad = DS4_BUTTON_DPAD_WEST;
-    } else if (right) {
-        dpad = DS4_BUTTON_DPAD_EAST;
-    }
-
-    ds4.wButtons = ds4btn;
-    DS4_SET_DPAD(&ds4, dpad);
-
-    // Guide -> PS button (special byte bit 0)
-    if (report.wButtons & 0x0400) ds4.bSpecial |= 0x01;
-
-    // Fold into the running EX report (leading fields are DS4_REPORT-identical)
-    // and submit the whole thing so any cached gyro/accel rides along.
+    // The EX report's leading fields are DS4_REPORT-identical.
     auto& er = slot.ds4.report.Report;
-    er.bThumbLX = ds4.bThumbLX;
-    er.bThumbLY = ds4.bThumbLY;
-    er.bThumbRX = ds4.bThumbRX;
-    er.bThumbRY = ds4.bThumbRY;
-    er.wButtons = ds4.wButtons;
-    // Preserve the touchpad-click bit (bSpecial bit 1, owned by the touchpad
-    // path); the gamepad frame only sets the PS button (bit 0).
-    er.bSpecial =
-        static_cast<UCHAR>((ds4.bSpecial & ~0x02) | (slot.ds4.touchpadButton ? 0x02 : 0x00));
-    er.bTriggerL = ds4.bTriggerL;
-    er.bTriggerR = ds4.bTriggerR;
+    er.bThumbLX = ds4StickByte(report.sThumbLX);
+    er.bThumbLY = ds4StickByteInverted(report.sThumbLY);
+    er.bThumbRX = ds4StickByte(report.sThumbRX);
+    er.bThumbRY = ds4StickByteInverted(report.sThumbRY);
+    // The hat and the buttons as the one Sony layout has them. No digital L2/R2
+    // here: the bus synthesizes those from the analog triggers.
+    er.wButtons = sonyButtonsFromXusb(report.wButtons, 0, 0);
+    // Guide -> PS (bSpecial bit 0). Bit 1 is the touchpad click, owned by the
+    // touchpad path, so it is carried over rather than cleared.
+    const UCHAR ps = (report.wButtons & 0x0400) ? 0x01 : 0x00;
+    er.bSpecial = static_cast<UCHAR>(ps | (slot.ds4.touchpadButton ? 0x02 : 0x00));
+    er.bTriggerL = report.bLeftTrigger;
+    er.bTriggerR = report.bRightTrigger;
     return submitDS4Locked(serial);
 }
 
@@ -276,25 +252,6 @@ bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
 
     submitDS4Locked(serial);
     return slot.ds4.exSupported; // IMU fields only reach the host on the EX path
-}
-
-// DS4 HID battery byte: bit 4 (0x10) = cable connected, low nibble = level
-// (capacity ~ nibble*10). Nibble 11 + cable bit is the "fully charged" sentinel.
-static uint8_t ds4BatteryByte(const BatteryReport& report) {
-    int nibble = (report.level == BATTERY_LEVEL_UNKNOWN)
-                     ? 5 // mid-scale so the host still shows something
-                     : static_cast<int>(report.level) / 10;
-    if (nibble > 10) nibble = 10;
-
-    switch (report.status) {
-    case BATTERY_STATUS_CHARGING:
-        return static_cast<uint8_t>(0x10 | nibble); // cable connected + charging
-    case BATTERY_STATUS_FULL:
-    case BATTERY_STATUS_WIRED:
-        return static_cast<uint8_t>(0x10 | 11);
-    default: // discharging/unknown: on battery, no cable bit
-        return static_cast<uint8_t>(nibble);
-    }
 }
 
 bool ViGEmAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
