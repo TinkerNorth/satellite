@@ -30,43 +30,41 @@ bool sdkAvailable() {
 #endif
 }
 
-void init(bool userEnabled, const std::string& databaseDir) {
-    // Remembered even when the policy says no, so a later opt-in can arm
-    // without being handed the path again.
-    if (!databaseDir.empty()) { g_databaseDir = databaseDir; }
-
-    if (g_active) { return; }
-
-    const std::string envOverride = envDsn();
-    if (!shouldArm(compiledDsn(), envOverride.c_str(), userEnabled)) { return; }
-
 #ifdef SATELLITE_HAS_SENTRY
+namespace {
+
+#ifdef _WIN32
+// The crashpad backend is a separate process, staged beside satellite.exe by
+// CMake and shipped by the installer. The SDK's own lookup is relative to the
+// working directory, which a tray app launched from Explorer, or the service,
+// does not control. Empty when the exe path cannot be read.
+std::string crashpadHandlerPath() {
+    char exe[MAX_PATH];
+    const DWORD len = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return "";
+    std::string handler(exe, len);
+    const std::size_t cut = handler.find_last_of("\\/");
+    if (cut != std::string::npos) handler.erase(cut + 1);
+    return handler + "crashpad_handler.exe";
+}
+#endif
+
+// Ownership passes to sentry_init, which takes the options whether or not it
+// succeeds.
+sentry_options_t* buildOptions() {
     sentry_options_t* options = sentry_options_new();
 
     // Leave the DSN unset when only $SENTRY_DSN is present: the SDK reads the
     // environment itself, and setting an empty string here would override it.
-    if (compiledDsn()[0] != '\0') { sentry_options_set_dsn(options, compiledDsn()); }
+    if (compiledDsn()[0] != '\0') sentry_options_set_dsn(options, compiledDsn());
 
     // Not the working directory. A tray app launched from Explorer, or the
     // service, has no cwd worth writing run state into.
     sentry_options_set_database_path(options, g_databaseDir.c_str());
 
 #ifdef _WIN32
-    // The crashpad backend is a separate process, staged beside satellite.exe
-    // by CMake and shipped by the installer. The SDK's own lookup is relative
-    // to the working directory, which a tray app launched from Explorer, or
-    // the service, does not control.
-    {
-        char exe[MAX_PATH];
-        const DWORD len = GetModuleFileNameA(nullptr, exe, MAX_PATH);
-        if (len > 0 && len < MAX_PATH) {
-            std::string handler(exe, len);
-            const std::size_t cut = handler.find_last_of("\\/");
-            if (cut != std::string::npos) { handler.erase(cut + 1); }
-            handler += "crashpad_handler.exe";
-            sentry_options_set_handler_path(options, handler.c_str());
-        }
-    }
+    const std::string handler = crashpadHandlerPath();
+    if (!handler.empty()) sentry_options_set_handler_path(options, handler.c_str());
 #endif
 
     sentry_options_set_release(options, release());
@@ -88,8 +86,24 @@ void init(bool userEnabled, const std::string& databaseDir) {
     // everywhere ("If false (the default), the SDK won't add PII or other
     // sensitive data to the payload"). Calling it would not compile on any
     // platform satellite ships to, and would not change behaviour if it did.
+    return options;
+}
 
-    if (sentry_init(options) == 0) { g_active = true; }
+} // namespace
+#endif
+
+void init(bool userEnabled, const std::string& databaseDir) {
+    // Remembered even when the policy says no, so a later opt-in can arm
+    // without being handed the path again.
+    if (!databaseDir.empty()) g_databaseDir = databaseDir;
+
+    if (g_active) return;
+
+    const std::string envOverride = envDsn();
+    if (!shouldArm(compiledDsn(), envOverride.c_str(), userEnabled)) return;
+
+#ifdef SATELLITE_HAS_SENTRY
+    if (sentry_init(buildOptions()) == 0) g_active = true;
 #endif
 }
 
@@ -111,17 +125,17 @@ void shutdown() {
 
 bool active() { return g_active; }
 
-void breadcrumb(const char* category, const std::string& message) {
-    if (!g_active) { return; }
 #ifdef SATELLITE_HAS_SENTRY
+void breadcrumb(const char* category, const std::string& message) {
+    if (!g_active) return;
     sentry_value_t crumb = sentry_value_new_breadcrumb("error", message.c_str());
     sentry_value_set_by_key(crumb, "category", sentry_value_new_string(category));
     sentry_value_set_by_key(crumb, "level", sentry_value_new_string("fatal"));
     sentry_add_breadcrumb(crumb);
-#else
-    (void)category;
-    (void)message;
-#endif
 }
+#else
+// Without the SDK nothing ever arms, so a crumb has nowhere to go.
+void breadcrumb(const char*, const std::string&) {}
+#endif
 
 } // namespace satellite::crash

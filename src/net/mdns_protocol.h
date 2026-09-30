@@ -100,6 +100,21 @@ bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std:
 // True iff `question` is a PTR or ANY for `_satellite._udp.local.`. Case-folded.
 bool questionMatchesService(const Question& question);
 
+// Case-insensitive DNS-name compare (RFC 1035 §2.3.3); Bonjour/Avahi may
+// capitalise labels differently from us.
+bool nameEqCi(const std::string& x, const std::string& y);
+
+// Whether a query asks for anything this responder owns: the shared service
+// type (PTR or ANY), or, for §8.1 name defence, one of its own unique names,
+// so that answering asserts ownership and a peer probing the name backs off.
+// `wantUnicast` is the QU bit of any question that matched.
+struct QueryMatch {
+    bool matched = false;
+    bool wantUnicast = false;
+};
+QueryMatch classifyQuestions(const std::vector<Question>& questions,
+                             const std::string& instanceFqdn, const std::string& hostFqdn);
+
 // Build a PTR + SRV + TXT (+ optional A) response for our service. Instance
 // label is `<instanceName>._satellite._udp.local.`; SRV target `<hostName>.local.`.
 //

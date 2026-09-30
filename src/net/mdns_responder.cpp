@@ -102,17 +102,7 @@ bool interruptibleSleep(unsigned ms) {
     return g_appRunning.load();
 }
 
-// Case-insensitive DNS-name compare (RFC 1035 §2.3.3); Bonjour/Avahi may
-// capitalise labels differently from us.
-bool nameEqCi(const std::string& x, const std::string& y) {
-    if (x.size() != y.size()) return false;
-    for (size_t i = 0; i < x.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(x[i])) !=
-            std::tolower(static_cast<unsigned char>(y[i])))
-            return false;
-    }
-    return true;
-}
+using mdns::nameEqCi;
 
 // RFC 6762 §9 name-conflict disambiguation. Returns the next candidate by
 // appending " (2)" or incrementing an existing " (N)" suffix.
@@ -145,6 +135,16 @@ enum class ProbeEvent {
     Conflict,    // a peer RESPONSE answered our claimed name → §9 conflict
     LostTiebreak // a peer PROBE for our name and §8.2 says the peer wins
 };
+
+// The records of one name out of a probe's set, so §8.2 compares like for like.
+std::vector<mdns::ProbeRecord> recordsForName(const std::vector<mdns::ProbeRecord>& recs,
+                                              const std::string& fqdn) {
+    std::vector<mdns::ProbeRecord> sub;
+    for (const auto& r : recs) {
+        if (nameEqCi(r.name, fqdn)) sub.push_back(r);
+    }
+    return sub;
+}
 
 // Classify one packet seen during our probing window. `ours` is our proposed
 // set for the §8.2 tiebreak. §9: a RESPONSE answering a claimed name → Conflict.
@@ -192,16 +192,10 @@ ProbeEvent classifyProbePacket(const uint8_t* buf, size_t n, const std::string& 
     // name, else the §8.2.1 "list runs out" rule would let a host win merely
     // because the peer probed fewer names. Instance (SRV+TXT) and host (A) are
     // independent, so a peer probe touching either contests that name alone.
-    auto sideFor = [](const std::vector<mdns::ProbeRecord>& recs, const std::string& fqdn) {
-        std::vector<mdns::ProbeRecord> sub;
-        for (const auto& r : recs)
-            if (nameEqCi(r.name, fqdn)) sub.push_back(r);
-        return sub;
-    };
     for (const std::string& contested : {instanceFqdn, hostFqdn}) {
-        const std::vector<mdns::ProbeRecord> theirs = sideFor(authority, contested);
+        const std::vector<mdns::ProbeRecord> theirs = recordsForName(authority, contested);
         if (theirs.empty()) continue; // peer is not probing this name
-        const std::vector<mdns::ProbeRecord> oursForName = sideFor(ours, contested);
+        const std::vector<mdns::ProbeRecord> oursForName = recordsForName(ours, contested);
         const int cmp = mdns::compareRecordSets(oursForName, theirs);
         // cmp <0 → we lose → defer (§8.2); losing any name forces a deferral.
         // >0 win, ==0 identical (no conflict).
@@ -372,255 +366,281 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
 
 void requestMdnsRejoin() { g_mdnsRejoinRequested.store(true, std::memory_order_relaxed); }
 
-void mdnsResponderThread() {
-    if (!netInit()) return;
+namespace {
 
+// Everything the responder holds for the life of its socket.
+struct Responder {
+    SOCKET sock = INVALID_SOCKET;
+    ip_mreq mreq{};
+    in_addr ifAddr{};
+    uint8_t selfIp[4] = {};
+    bool haveSelfIp = false;
+    sockaddr_in groupAddr{};
+    std::string host;
+    std::string instance;
+};
+
+constexpr int RECV_TIMEOUT_MS = 200;
+constexpr int ANNOUNCEMENTS = 3;
+constexpr auto REJOIN_INTERVAL = std::chrono::seconds(30);
+
+// Port 5353 is usually already held by the OS responder (mDNSResponder /
+// avahi-daemon). SO_REUSEADDR + SO_REUSEPORT let us co-bind so multicast is
+// delivered to every listener, how mDNS apps coexist. INVALID_SOCKET when
+// another responder holds the port without REUSEPORT; non-fatal.
+SOCKET openResponderSocket() {
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) {
-        netShutdown();
-        return;
-    }
-
-    // Port 5353 is usually already held by the OS responder (mDNSResponder /
-    // avahi-daemon). SO_REUSEADDR + SO_REUSEPORT let us co-bind so multicast is
-    // delivered to every listener, how mDNS apps coexist.
-    int reuse = 1;
+    if (sock == INVALID_SOCKET) return INVALID_SOCKET;
+    const int reuse = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
                sizeof(reuse));
 #ifdef SO_REUSEPORT
     setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char*>(&reuse),
                sizeof(reuse));
 #endif
-
     sockaddr_in bindAddr{};
     bindAddr.sin_family = AF_INET;
     bindAddr.sin_addr.s_addr = INADDR_ANY;
     bindAddr.sin_port = htons(mdns::MULTICAST_PORT);
     if (bind(sock, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) == SOCKET_ERROR) {
-        // Another responder holds the port without REUSEPORT; non-fatal.
         logMsg(LogLevel::WARN, "mdns",
                "Could not bind UDP 5353; mDNS discovery disabled (broadcast still active)");
         closesocket(sock);
-        netShutdown();
-        return;
+        return INVALID_SOCKET;
     }
+    return sock;
+}
 
-    uint8_t selfIp[4];
-    bool haveSelfIp = boundIPv4(selfIp);
-    in_addr ifAddr{};
-    if (haveSelfIp) {
-        std::memcpy(&ifAddr.s_addr, selfIp, 4);
+// The interface the group is joined on: the bound address when one is known,
+// else any.
+void setInterfaceAddress(Responder& r, bool haveIp, const uint8_t ip[4]) {
+    r.haveSelfIp = haveIp;
+    if (haveIp) {
+        std::memcpy(r.selfIp, ip, 4);
+        std::memcpy(&r.ifAddr.s_addr, r.selfIp, 4);
     } else {
-        ifAddr.s_addr = INADDR_ANY;
+        r.ifAddr.s_addr = INADDR_ANY;
     }
+}
 
-    // Join the mDNS multicast group so the NIC delivers 224.0.0.251 traffic.
-    ip_mreq mreq{};
-    inet_pton(AF_INET, mdns::MULTICAST_GROUP_V4, &mreq.imr_multiaddr);
-    mreq.imr_interface = ifAddr;
-    if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
-                   sizeof(mreq)) == SOCKET_ERROR) {
-        logMsg(LogLevel::WARN, "mdns", "Could not join 224.0.0.251; mDNS discovery disabled");
-        closesocket(sock);
-        netShutdown();
-        return;
+// Join the mDNS multicast group so the NIC delivers 224.0.0.251 traffic, and
+// send from the same interface. False when the join is refused.
+bool joinMulticast(Responder& r) {
+    inet_pton(AF_INET, mdns::MULTICAST_GROUP_V4, &r.mreq.imr_multiaddr);
+    r.mreq.imr_interface = r.ifAddr;
+    if (setsockopt(r.sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&r.mreq),
+                   sizeof(r.mreq)) == SOCKET_ERROR) {
+        return false;
     }
-    setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&ifAddr),
-               sizeof(ifAddr));
+    setsockopt(r.sock, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&r.ifAddr),
+               sizeof(r.ifAddr));
+    return true;
+}
 
-    // RFC 6762 §11: mDNS packets use IP TTL 255 so a misconfigured router
-    // can't silently confine us; loop-back on so same-host clients see us.
-    int ttl = 255;
+void leaveMulticast(const Responder& r) {
+    setsockopt(r.sock, IPPROTO_IP, IP_DROP_MEMBERSHIP, reinterpret_cast<const char*>(&r.mreq),
+               sizeof(r.mreq));
+}
+
+// RFC 6762 §11: mDNS packets use IP TTL 255 so a misconfigured router can't
+// silently confine us; loop-back on so same-host clients see us. The recv
+// timeout is what lets the loop notice g_appRunning clearing promptly.
+void tuneResponderSocket(SOCKET sock) {
+    const int ttl = 255;
     setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, reinterpret_cast<const char*>(&ttl),
                sizeof(ttl));
-    int loop = 1;
+    const int loop = 1;
     setsockopt(sock, IPPROTO_IP, IP_MULTICAST_LOOP, reinterpret_cast<const char*>(&loop),
                sizeof(loop));
-
-    // 200 ms recv timeout so the loop notices g_appRunning clearing promptly.
-    netSetRecvTimeoutMs(sock, 200);
+    netSetRecvTimeoutMs(sock, RECV_TIMEOUT_MS);
     netDisableUdpConnReset(sock);
+}
 
+sockaddr_in multicastGroupAddress() {
     sockaddr_in groupAddr{};
     groupAddr.sin_family = AF_INET;
     groupAddr.sin_port = htons(mdns::MULTICAST_PORT);
     inet_pton(AF_INET, mdns::MULTICAST_GROUP_V4, &groupAddr.sin_addr);
+    return groupAddr;
+}
 
-    const std::string host = shortHostLabel();
+void closeResponder(Responder& r) {
+    leaveMulticast(r);
+    closesocket(r.sock);
+    netShutdown();
+}
 
-    // Claim the instance name via the §8.1/§8.2 probe sequence before
-    // announcing (see runProbeSequence; adds ~750 ms+ to startup).
-    const ProbeResult probe = runProbeSequence(sock, groupAddr, host, selfIp, haveSelfIp);
-    if (probe.shutdown) {
-        // g_appRunning cleared mid-probe; unwind without announcing.
-        g_mdnsResponderActive.store(false, std::memory_order_relaxed);
-        setsockopt(sock, IPPROTO_IP, IP_DROP_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
-                   sizeof(mreq));
-        closesocket(sock);
+// Startup announcement (RFC 6762 §8.3): multicast the unsolicited answer set
+// so running senders learn of us without re-querying. §8.3 wants 2-8
+// announcements ~1 s apart; we send three.
+void announceBurst(const Responder& r) {
+    mdns::ResponseInputs ann;
+    fillServiceInputs(ann, r.instance, r.host, r.haveSelfIp ? r.selfIp : nullptr);
+    uint8_t annBuf[1024];
+    const size_t annLen = mdns::encodeAnnouncement(annBuf, sizeof(annBuf), ann);
+    if (annLen == 0) return;
+    for (int i = 0; i < ANNOUNCEMENTS && g_appRunning; ++i) {
+        sendto(r.sock, reinterpret_cast<const char*>(annBuf), static_cast<int>(annLen), 0,
+               reinterpret_cast<const sockaddr*>(&r.groupAddr), sizeof(r.groupAddr));
+        if (i + 1 < ANNOUNCEMENTS) {
+            for (int s = 0; s < 10 && g_appRunning; ++s) netSleepMs(100);
+        }
+    }
+}
+
+// Re-join on a resume/network event, or when the bound address moved, then
+// re-announce. `force` is the event path; otherwise only a moved address
+// rejoins (mdns::evaluateRejoin).
+void rejoinMulticast(Responder& r, bool force) {
+    uint8_t newIp[4];
+    const bool haveNew = boundIPv4(newIp);
+    const mdns::RejoinDecision dec =
+        mdns::evaluateRejoin(force, r.haveSelfIp, r.selfIp, haveNew, newIp);
+    if (!dec.rejoin) return;
+    leaveMulticast(r);
+    setInterfaceAddress(r, haveNew, newIp);
+    if (!joinMulticast(r)) {
+        logMsg(LogLevel::WARN, "mdns",
+               "Could not rejoin 224.0.0.251; mDNS answers may stop until the next network event");
+    }
+    logMsg(LogLevel::INFO, "mdns",
+           dec.ipChanged ? "Bound address changed; rebound mDNS multicast and re-announcing"
+                         : "Resume/network event; rebound mDNS multicast and re-announcing");
+    announceBurst(r);
+}
+
+// One inbound packet: answered when it asks for something we own, unicast when
+// it set the QU bit, and silently dropped when Known-Answer suppression (§7.1)
+// leaves nothing to say.
+void answerQuery(const Responder& r, const uint8_t* buf, size_t n, const sockaddr_in& from) {
+    mdns::Header header;
+    std::vector<mdns::Question> questions;
+    std::vector<mdns::Answer> knownAnswers;
+    if (!mdns::parsePacket(buf, n, header, questions, knownAnswers)) return;
+
+    // Ignore responses (QR bit set); we only answer queries.
+    constexpr uint16_t QR_BIT = 0x8000;
+    if (header.flags & QR_BIT) return;
+
+    const std::string serviceType = mdns::SERVICE_TYPE_DOMAIN;
+    const std::string instanceFqdn = r.instance + "." + serviceType;
+    const std::string hostFqdn = r.host + ".local.";
+    const mdns::QueryMatch match = mdns::classifyQuestions(questions, instanceFqdn, hostFqdn);
+    if (!match.matched) return;
+
+    // A record is best-effort: with no LAN IP we still answer PTR+SRV+TXT
+    // and a proper client resolves `<host>.local.` itself.
+    uint8_t ipv4[4];
+    const bool haveIp = boundIPv4(ipv4);
+    mdns::ResponseInputs in;
+    fillServiceInputs(in, r.instance, r.host, haveIp ? ipv4 : nullptr);
+
+    // Known-Answer suppression (§7.1): drop any record the querier already
+    // holds with TTL >= ½ ours. PTR ages at TTL_SERVICE; SRV/TXT/A at TTL_HOST.
+    in.suppressPtr =
+        mdns::isKnownAnswerSuppressed(knownAnswers, serviceType, mdns::TYPE_PTR, mdns::TTL_SERVICE);
+    in.suppressSrv =
+        mdns::isKnownAnswerSuppressed(knownAnswers, instanceFqdn, mdns::TYPE_SRV, mdns::TTL_HOST);
+    in.suppressTxt =
+        mdns::isKnownAnswerSuppressed(knownAnswers, instanceFqdn, mdns::TYPE_TXT, mdns::TTL_HOST);
+    in.suppressA =
+        mdns::isKnownAnswerSuppressed(knownAnswers, hostFqdn, mdns::TYPE_A, mdns::TTL_HOST);
+
+    uint8_t out[1024];
+    // 0 = every record suppressed (§7.1 "send nothing") or buffer too
+    // small; either way, stay silent.
+    const size_t outLen = mdns::encodeResponse(out, sizeof(out), header.id, in);
+    if (outLen == 0) return;
+
+    // Unicast on the QU bit; else multicast so every cache on the segment updates.
+    const sockaddr_in& dest = match.wantUnicast ? from : r.groupAddr;
+    sendto(r.sock, reinterpret_cast<const char*>(out), static_cast<int>(outLen), 0,
+           reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+}
+
+// RFC 6762 §10.1 goodbye: a TTL-0 record set so caches drop the service
+// immediately instead of holding it until the TTL. Best-effort.
+void sendGoodbye(const Responder& r) {
+    uint8_t byeIp[4];
+    const bool haveByeIp = boundIPv4(byeIp);
+    mdns::ResponseInputs bye;
+    fillServiceInputs(bye, r.instance, r.host, haveByeIp ? byeIp : nullptr);
+    bye.goodbye = true;
+    uint8_t byeBuf[1024];
+    const size_t byeLen = mdns::encodeResponse(byeBuf, sizeof(byeBuf), 0, bye);
+    if (byeLen == 0) return;
+    sendto(r.sock, reinterpret_cast<const char*>(byeBuf), static_cast<int>(byeLen), 0,
+           reinterpret_cast<const sockaddr*>(&r.groupAddr), sizeof(r.groupAddr));
+}
+
+} // namespace
+
+// Long on purpose: the responder's whole lifecycle, bring-up to goodbye, in
+// one flow; each step is named above, and the unwind paths read in order here.
+void mdnsResponderThread() {
+    if (!netInit()) return;
+
+    Responder r;
+    r.sock = openResponderSocket();
+    if (r.sock == INVALID_SOCKET) {
         netShutdown();
         return;
     }
+    uint8_t selfIp[4];
+    const bool haveSelfIp = boundIPv4(selfIp);
+    setInterfaceAddress(r, haveSelfIp, selfIp);
+    if (!joinMulticast(r)) {
+        logMsg(LogLevel::WARN, "mdns", "Could not join 224.0.0.251; mDNS discovery disabled");
+        closesocket(r.sock);
+        netShutdown();
+        return;
+    }
+    tuneResponderSocket(r.sock);
+    r.groupAddr = multicastGroupAddress();
+    r.host = shortHostLabel();
+
+    // Claim the instance name via the §8.1/§8.2 probe sequence before
+    // announcing (see runProbeSequence; adds ~750 ms+ to startup).
+    const ProbeResult probe = runProbeSequence(r.sock, r.groupAddr, r.host, r.selfIp, r.haveSelfIp);
+    if (probe.shutdown) {
+        // g_appRunning cleared mid-probe; unwind without announcing.
+        g_mdnsResponderActive.store(false, std::memory_order_relaxed);
+        closeResponder(r);
+        return;
+    }
     // Final (possibly renamed) instance label.
-    const std::string instance = probe.instance;
+    r.instance = probe.instance;
     if (probe.gaveUp) {
         logMsg(LogLevel::ERR, "mdns",
                "mDNS probing gave up after 10 rename attempts; the segment is saturated "
                "with '_satellite._udp.local.' names; advertising anyway as '" +
-                   instance + "' (cache conflicts possible)");
+                   r.instance + "' (cache conflicts possible)");
     }
 
     logMsg(LogLevel::INFO, "mdns",
-           "mDNS responder up; advertising _satellite._udp.local. as '" + instance + "'");
+           "mDNS responder up; advertising _satellite._udp.local. as '" + r.instance + "'");
     g_mdnsResponderActive.store(true, std::memory_order_relaxed);
+    announceBurst(r);
 
-    // Startup announcement (RFC 6762 §8.3): multicast the unsolicited answer
-    // set so running senders learn of us without re-querying. §8.3 wants 2-8
-    // announcements ~1 s apart; we send three.
-    auto announceBurst = [&]() {
-        mdns::ResponseInputs ann;
-        fillServiceInputs(ann, instance, host, haveSelfIp ? selfIp : nullptr);
-        uint8_t annBuf[1024];
-        const size_t annLen = mdns::encodeAnnouncement(annBuf, sizeof(annBuf), ann);
-        if (annLen == 0) return;
-        constexpr int kAnnouncements = 3;
-        for (int i = 0; i < kAnnouncements && g_appRunning; ++i) {
-            sendto(sock, reinterpret_cast<const char*>(annBuf), static_cast<int>(annLen), 0,
-                   reinterpret_cast<const sockaddr*>(&groupAddr), sizeof(groupAddr));
-            if (i + 1 < kAnnouncements) {
-                for (int s = 0; s < 10 && g_appRunning; ++s) netSleepMs(100);
-            }
-        }
-    };
-
-    auto rejoinMulticast = [&](bool force) {
-        uint8_t newIp[4];
-        const bool haveNew = boundIPv4(newIp);
-        const mdns::RejoinDecision dec =
-            mdns::evaluateRejoin(force, haveSelfIp, selfIp, haveNew, newIp);
-        if (!dec.rejoin) return;
-        setsockopt(sock, IPPROTO_IP, IP_DROP_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
-                   sizeof(mreq));
-        if (haveNew) {
-            std::memcpy(selfIp, newIp, 4);
-            std::memcpy(&ifAddr.s_addr, selfIp, 4);
-        } else {
-            ifAddr.s_addr = INADDR_ANY;
-        }
-        haveSelfIp = haveNew;
-        mreq.imr_interface = ifAddr;
-        setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
-                   sizeof(mreq));
-        setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&ifAddr),
-                   sizeof(ifAddr));
-        logMsg(LogLevel::INFO, "mdns",
-               dec.ipChanged ? "Bound address changed; rebound mDNS multicast and re-announcing"
-                             : "Resume/network event; rebound mDNS multicast and re-announcing");
-        announceBurst();
-    };
-
-    announceBurst();
-
-    constexpr auto kRejoinInterval = std::chrono::seconds(30);
     auto lastRejoinCheck = std::chrono::steady_clock::now();
-
     while (g_appRunning) {
         const bool forcedRejoin = g_mdnsRejoinRequested.exchange(false, std::memory_order_relaxed);
         const auto nowTp = std::chrono::steady_clock::now();
-        if (forcedRejoin || nowTp - lastRejoinCheck >= kRejoinInterval) {
-            rejoinMulticast(forcedRejoin);
+        if (forcedRejoin || nowTp - lastRejoinCheck >= REJOIN_INTERVAL) {
+            rejoinMulticast(r, forcedRejoin);
             lastRejoinCheck = std::chrono::steady_clock::now();
         }
 
         sockaddr_in from{};
         socklen_t fromLen = sizeof(from);
         uint8_t buf[2048];
-        int n = static_cast<int>(recvfrom(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
-                                          reinterpret_cast<sockaddr*>(&from), &fromLen));
+        const int n = static_cast<int>(recvfrom(r.sock, reinterpret_cast<char*>(buf), sizeof(buf),
+                                                0, reinterpret_cast<sockaddr*>(&from), &fromLen));
         if (n <= 0) continue; // timeout or transient error
-
-        mdns::Header header;
-        std::vector<mdns::Question> questions;
-        std::vector<mdns::Answer> knownAnswers;
-        if (!mdns::parsePacket(buf, static_cast<size_t>(n), header, questions, knownAnswers))
-            continue;
-
-        // Ignore responses (QR bit set); we only answer queries.
-        constexpr uint16_t QR_BIT = 0x8000;
-        if (header.flags & QR_BIT) continue;
-
-        // Match the shared service type (PTR/ANY) OR, for §8.1 name defence, one
-        // of our own unique names. Answering the latter asserts ownership and
-        // makes a peer probing our name back off.
-        const std::string serviceType = mdns::SERVICE_TYPE_DOMAIN;
-        const std::string instanceFqdn = instance + "." + serviceType;
-        const std::string hostFqdn = host + ".local.";
-
-        bool matched = false;
-        bool wantUnicast = false;
-        for (const auto& q : questions) {
-            // Match ANY (probes) plus the specific type of each owned record
-            // (ordinary lookups).
-            const bool forInstance =
-                nameEqCi(q.name, instanceFqdn) &&
-                (q.type == mdns::TYPE_ANY || q.type == mdns::TYPE_SRV || q.type == mdns::TYPE_TXT);
-            const bool forHost =
-                nameEqCi(q.name, hostFqdn) && (q.type == mdns::TYPE_ANY || q.type == mdns::TYPE_A);
-            if (mdns::questionMatchesService(q) || forInstance || forHost) {
-                matched = true;
-                wantUnicast = wantUnicast || q.unicastResponse;
-            }
-        }
-        if (!matched) continue;
-
-        // A record is best-effort: with no LAN IP we still answer PTR+SRV+TXT
-        // and a proper client resolves `<host>.local.` itself.
-        uint8_t ipv4[4];
-        const bool haveIp = boundIPv4(ipv4);
-        mdns::ResponseInputs in;
-        fillServiceInputs(in, instance, host, haveIp ? ipv4 : nullptr);
-
-        // Known-Answer suppression (§7.1): drop any record the querier already
-        // holds with TTL >= ½ ours. PTR ages at TTL_SERVICE; SRV/TXT/A at TTL_HOST.
-        in.suppressPtr = mdns::isKnownAnswerSuppressed(knownAnswers, serviceType, mdns::TYPE_PTR,
-                                                       mdns::TTL_SERVICE);
-        in.suppressSrv = mdns::isKnownAnswerSuppressed(knownAnswers, instanceFqdn, mdns::TYPE_SRV,
-                                                       mdns::TTL_HOST);
-        in.suppressTxt = mdns::isKnownAnswerSuppressed(knownAnswers, instanceFqdn, mdns::TYPE_TXT,
-                                                       mdns::TTL_HOST);
-        in.suppressA =
-            mdns::isKnownAnswerSuppressed(knownAnswers, hostFqdn, mdns::TYPE_A, mdns::TTL_HOST);
-
-        uint8_t out[1024];
-        // 0 = every record suppressed (§7.1 "send nothing") or buffer too
-        // small; either way, stay silent.
-        size_t outLen = mdns::encodeResponse(out, sizeof(out), header.id, in);
-        if (outLen == 0) continue;
-
-        // Unicast on the QU bit; else multicast so every cache on the segment updates.
-        const sockaddr_in& dest = wantUnicast ? from : groupAddr;
-        sendto(sock, reinterpret_cast<const char*>(out), static_cast<int>(outLen), 0,
-               reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+        answerQuery(r, buf, static_cast<size_t>(n), from);
     }
 
-    // RFC 6762 §10.1 goodbye: a TTL-0 record set so caches drop the service
-    // immediately instead of holding it until the TTL. Best-effort.
     g_mdnsResponderActive.store(false, std::memory_order_relaxed);
-    {
-        uint8_t byeIp[4];
-        const bool haveByeIp = boundIPv4(byeIp);
-        mdns::ResponseInputs bye;
-        fillServiceInputs(bye, instance, host, haveByeIp ? byeIp : nullptr);
-        bye.goodbye = true;
-        uint8_t byeBuf[1024];
-        const size_t byeLen = mdns::encodeResponse(byeBuf, sizeof(byeBuf), 0, bye);
-        if (byeLen > 0) {
-            sendto(sock, reinterpret_cast<const char*>(byeBuf), static_cast<int>(byeLen), 0,
-                   reinterpret_cast<const sockaddr*>(&groupAddr), sizeof(groupAddr));
-        }
-    }
-
-    setsockopt(sock, IPPROTO_IP, IP_DROP_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
-               sizeof(mreq));
-    closesocket(sock);
-    netShutdown();
+    sendGoodbye(r);
+    closeResponder(r);
 }

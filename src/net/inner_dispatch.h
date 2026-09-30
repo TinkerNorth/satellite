@@ -5,6 +5,7 @@
 // receiver's UDP/crypto/globals surface.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 class SessionService;
@@ -23,3 +24,13 @@ struct DispatchResult {
 // `payload + msgLen`.
 DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_t msgType,
                                     const uint8_t* payload, uint16_t msgLen);
+
+// The four bytes every decrypted message starts with: type and payload
+// length, big-endian. False when the plaintext cannot hold the header or the
+// length runs past it, which is what a malformed datagram looks like once it
+// has decrypted.
+struct InnerHeader {
+    uint16_t msgType = 0;
+    uint16_t msgLen = 0;
+};
+bool parseInnerHeader(const uint8_t* plaintext, size_t ptLen, InnerHeader& out);

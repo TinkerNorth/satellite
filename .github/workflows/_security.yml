@@ -11,6 +11,7 @@ name: _security (reusable)
 #       with:
 #         osv_scan_paths: '.'                 # comma- or newline-separated
 #         osv_config: 'osv-scanner.toml'      # optional, repo-relative
+#         osv_lockfile_script: ''             # optional, repo-relative
 #         gitleaks_enabled: true
 #         dependency_review_enabled: true
 #         action_pin_lint_enabled: true
@@ -40,6 +41,11 @@ on:
         default: ""
       osv_config:
         description: "Path to an OSV-Scanner config file (`osv-scanner.toml`) carrying [[PackageOverrides]] / [[IgnoredVulns]] entries. Empty disables."
+        required: false
+        type: string
+        default: ""
+      osv_lockfile_script:
+        description: "Repo-relative bash script that prints an OSV-Scanner custom lockfile (the JSON shape of `osv-scanner --format json`, e.g. vendored code named by upstream commit); the job scans it with `--lockfile osv-scanner:`. Empty disables."
         required: false
         type: string
         default: ""
@@ -161,7 +167,7 @@ jobs:
           PY
 
   osv-scanner:
-    if: ${{ inputs.osv_scan_paths != '' || inputs.osv_config != '' }}
+    if: ${{ inputs.osv_scan_paths != '' || inputs.osv_config != '' || inputs.osv_lockfile_script != '' }}
     name: OSV-Scanner (vendored + manifest deps)
     runs-on: ubuntu-24.04
     steps:
@@ -196,6 +202,14 @@ jobs:
           if [ -n "${{ inputs.osv_config }}" ] && [ -f "${{ inputs.osv_config }}" ]; then
             args+=("--config=${{ inputs.osv_config }}")
           fi
+          if [ -n "${{ inputs.osv_lockfile_script }}" ]; then
+            lockfile="${RUNNER_TEMP}/osv-lockfile.json"
+            if ! bash "${{ inputs.osv_lockfile_script }}" > "$lockfile"; then
+              echo "::error::${{ inputs.osv_lockfile_script }} could not write the OSV-Scanner lockfile."
+              exit 1
+            fi
+            args+=("--lockfile=osv-scanner:${lockfile}")
+          fi
           paths_input=$(printf '%s' "${{ inputs.osv_scan_paths }}")
           while IFS= read -r p; do
             p="${p%%#*}"; p="${p%%[[:space:]]}"; p="${p##[[:space:]]}"
@@ -217,9 +231,18 @@ jobs:
           #   1   vulnerabilities found
           #   128 no package sources discovered (e.g. C/C++ vendored headers
           #       without a manifest). Treat as a non-fatal warning so the
-          #       scanner can be wired in incrementally per repo.
+          #       scanner can be wired in incrementally per repo, except when
+          #       a lockfile script was given: an empty lockfile scans nothing.
+          no_sources=false
           if [ "$rc" -eq 128 ] || \
              { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'No package sources found'; }; then
+            no_sources=true
+          fi
+          if [ "$no_sources" = true ] && [ -n "${{ inputs.osv_lockfile_script }}" ]; then
+            echo "::error::OSV-Scanner found no packages in the lockfile ${{ inputs.osv_lockfile_script }} wrote."
+            exit 1
+          fi
+          if [ "$no_sources" = true ]; then
             echo "::warning::OSV-Scanner found no package sources in the requested paths; treating as non-fatal."
             exit 0
           fi

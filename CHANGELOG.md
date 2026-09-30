@@ -3,6 +3,60 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+No protocol changes. Feedback on a ViGEm pad, a relaunched client's pad
+state, a crash a paired client could cause, and the vendored components.
+
+Two of the three ViGEm personas never carried a game's feedback right. The
+DS4 persona asked the driver for its notifications with a read-write request
+code where the driver dispatches a write-only one, so the very first wait
+failed and the worker returned: no rumble and no light bar ever came back
+from a ViGEm DS4 pad. The Xbox 360 persona read the driver's notification
+with the player-LED slot first, so a game's small motor arrived as the strong
+one and the LED slot as the weak one, and the DS4 layout had its two motors
+the other way round as well. The codes and layouts now match the driver's own
+source, and the tests drive each notification through the real adapter as
+the driver's bytes.
+
+A session's first authenticated datagram now brings each pad's light bar,
+trigger effects and player LEDs again. The satellite coalesces those states
+and re-sent one only when the game changed it, so a client that relaunched
+(Android, once the system had killed the app in the background) or a state a
+game set before the client's first datagram was routable stayed dark until
+the game moved. The mic lamp is deliberately left out: on the desktop clients
+it also mutes the pad's microphone amplifier, and a replay would undo the
+user's own unmute. RUMBLE is a command with its own refresh and audio is a
+stream, so neither is replayed. `docs/contract.md` says which states come
+again and why.
+
+A paired client could crash the satellite with a deeply nested JSON body:
+nlohmann/json copies, compares and dumps recursively, and a 30 KB body nested
+about 5000 deep overflowed the stack once `PUT /api/connections` copied its
+`hostFeatures` out. Bodies nested past 32 levels are now refused before
+anything copies them, by a linear pre-pass that runs before the document
+exists; the deepest document the satellite reads is 5 levels (GitHub's
+release list) and no client body is deeper than 4. A garbled or non-object
+body on that route is also refused with 400, as the contract says, where it
+used to read as the empty desired set: 200, and every pad unplugged.
+
+Vendored components: cpp-httplib 0.56.0 to 0.58.0, which carries 0.57's
+fixes for chunk-line request smuggling and unbounded trailers. The OSV gate
+had scanned nothing since it was written (OSV-Scanner finds no package source
+in vendored C++); it now scans each component by the upstream commit its pin
+names, fails on a pin upstream does not have or a lockfile that yields no
+packages, and CONTRIBUTING and SECURITY.md describe the gate that actually
+runs, including its one blind spot (libsodium tags releases on a branch its
+fixes do not descend from, so the hand review stays).
+
+Smaller: one hex encoder in core spells every key, salt, digest, id and MAC
+address the satellite writes as text (six hand-rolled copies retired, session
+tokens and connection ids included, byte for byte what they wrote before);
+the speaker stream's Opus mode and in-band FEC are pinned by tests (it
+encodes as Hybrid because in-band FEC and the loss hint are set together, and
+turning either off would hand it to CELT and delete that FEC); and the
+comments that described those two things wrongly are corrected.
+
 ## 2.1.1
 
 No protocol changes. Windows crash visibility, and an updater fix.

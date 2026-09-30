@@ -1,6 +1,8 @@
 ﻿// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../src/net/status_json.h"
 
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
 
@@ -173,6 +175,20 @@ static void test_sse_exact_shape() {
                     R"("replayDrop":5,"logSeq":42})"));
 }
 
+static void test_senderIpLabel() {
+    TEST("senderIpLabel: none until a packet has arrived, then the dotted quad");
+    EXPECT_EQ(satellite::senderIpLabel(0), std::string("none"));
+    const uint8_t octets[4] = {192, 168, 4, 20};
+    uint32_t nbo = 0;
+    std::memcpy(&nbo, octets, sizeof(nbo));
+    EXPECT_EQ(satellite::senderIpLabel(nbo), std::string("192.168.4.20"));
+}
+
+static void test_sseEventFraming() {
+    TEST("sseEvent frames one event the way EventSource reads it");
+    EXPECT_EQ(satellite::sseEvent("status", "{}"), std::string("event: status\ndata: {}\n\n"));
+}
+
 int main() {
     std::cout << "Running status JSON tests...\n\n";
     test_status_exact_shape();
@@ -181,6 +197,8 @@ int main() {
     test_debug_exact_shape();
     test_sse_exact_shape();
     test_counterBlocksStayOffTheHotSurfaces();
+    test_senderIpLabel();
+    test_sseEventFraming();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

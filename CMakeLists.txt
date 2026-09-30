@@ -1032,6 +1032,12 @@ satellite_add_pure_test(test_crash_reporting tests/test_crash_reporting.cpp
 satellite_add_pure_test(test_network_info tests/test_network_info.cpp src/core/network_info.cpp)
 satellite_add_pure_test(test_origin_guard tests/test_origin_guard.cpp)
 satellite_add_pure_test(test_status_json tests/test_status_json.cpp)
+satellite_add_pure_test(test_config_patch tests/test_config_patch.cpp)
+satellite_add_pure_test(test_log_ring tests/test_log_ring.cpp)
+satellite_add_pure_test(test_descriptor_json tests/test_descriptor_json.cpp)
+satellite_add_pure_test(test_byte_order tests/test_byte_order.cpp)
+satellite_add_pure_test(test_hex tests/test_hex.cpp)
+satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)

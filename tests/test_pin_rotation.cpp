@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Portable suite for net/pin_rotation.{h,cpp}, the D11 hoist of the logic the
 // three platform crypto.cpp files used to triplicate: PIN rotation semantics,
-// the hex codecs (including the strict malformed-hex rejection the
+// the hex decoder (including the strict malformed-hex rejection the
 // unification standardized on), CSPRNG string helpers, and the X25519
 // pairing-key exchange. Runs on EVERY lane (Linux, MinGW, MSVC, macOS) so a
 // platform can no longer drift its own copy — the platform suites keep their
@@ -15,7 +15,6 @@
 
 #include <sodium.h>
 
-#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -54,30 +53,12 @@ static void testRandomHelpers() {
     EXPECT_EQ(randomDigits(0), std::string(""));
 }
 
-static void testHexCodec() {
-    TEST("hexEncode: known vector");
-    const uint8_t in[] = {0x00, 0x0f, 0xa5, 0xff};
-    EXPECT_EQ(hexEncode(in, sizeof(in)), std::string("000fa5ff"));
-
-    TEST("hexEncode: empty input");
-    EXPECT_EQ(hexEncode(in, 0), std::string(""));
-
-    TEST("hexEncode: every byte value matches printf's %02x, and decodes back");
-    // The encoder is a nibble table, not printf; this pins it to the printf
-    // rendering the callers relied on before, one byte at a time, all 256.
+static void testHexDecoder() {
+    TEST("hexDecode: decodes every byte value hexEncode writes");
     uint8_t all[256];
     for (int i = 0; i < 256; i++) all[i] = static_cast<uint8_t>(i);
-    const std::string encoded = hexEncode(all, sizeof(all));
-    EXPECT_EQ(encoded.size(), size_t{512});
-    int mismatches = 0;
-    for (int i = 0; i < 256; i++) {
-        char ref[3];
-        EXPECT_EQ(std::snprintf(ref, sizeof(ref), "%02x", i), 2);
-        if (encoded.compare(static_cast<size_t>(i) * 2, 2, ref) != 0) mismatches++;
-    }
-    EXPECT_EQ(mismatches, 0);
     uint8_t back[256] = {0};
-    EXPECT(hexDecode(encoded, back, sizeof(back)));
+    EXPECT(hexDecode(hexEncode(all, sizeof(all)), back, sizeof(back)));
     EXPECT_EQ(std::memcmp(back, all, sizeof(all)), 0);
 
     TEST("hexDecode: roundtrip of hexEncode");
@@ -274,7 +255,7 @@ int main() {
     EXPECT(sodiumInit());
 
     testRandomHelpers();
-    testHexCodec();
+    testHexDecoder();
     testKeyExchange();
     testGenerateToken();
     testPinSnapshotInitial();

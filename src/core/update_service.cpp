@@ -181,66 +181,80 @@ void UpdateService::updatePreferences(const std::string& channel, bool autoCheck
     if (channelChanged) requestCheck(/*userInitiated=*/false);
 }
 
+// Waits for the next job and takes it. Install outranks download outranks
+// check, so a user who clicked install while a check was queued gets the
+// install.
+UpdateService::Job UpdateService::takeNextJob() {
+    std::unique_lock<std::mutex> lk(mtx_);
+    cv_.wait(lk, [&] { return stopping_ || pendingCheck_ || pendingDownload_ || pendingInstall_; });
+    if (stopping_) return Job::Stop;
+    if (pendingInstall_) {
+        pendingInstall_ = false;
+        return Job::Install;
+    }
+    if (pendingDownload_) {
+        pendingDownload_ = false;
+        return Job::Download;
+    }
+    pendingCheck_ = false;
+    return Job::Check;
+}
+
+// After a download: the auto-install preference queues the install, and only
+// when the download actually landed.
+void UpdateService::queueInstallIfWanted() {
+    bool autoInstall = false;
+    {
+        std::lock_guard<std::mutex> ck(configMtx_);
+        autoInstall = config_.autoInstall;
+    }
+    if (!autoInstall) return;
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (state_ == UpdateState::Downloaded) pendingInstall_ = true;
+}
+
+// After a check: the auto-download preference queues the download when there
+// is one and it can be installed from here, and a pending repair queues its
+// download when the release we already run is usable, or drops itself.
+void UpdateService::queueDownloadIfWanted() {
+    bool autoDownload = false;
+    {
+        std::lock_guard<std::mutex> ck(configMtx_);
+        autoDownload = config_.autoDownload;
+    }
+    std::lock_guard<std::mutex> lk(mtx_);
+    const bool selfInstallable = info_.installMethod == InstallMethod::SelfInstall;
+    if (autoDownload && state_ == UpdateState::UpdateAvailable && selfInstallable) {
+        pendingDownload_ = true;
+    }
+    if (repairPending_) {
+        const bool usable = !info_.version.empty() && selfInstallable;
+        if (usable) {
+            pendingDownload_ = true;
+        } else {
+            repairPending_ = false;
+        }
+    }
+}
+
 void UpdateService::workerLoop() {
     while (!stopping_) {
-        bool doCheckNow = false, doDownloadNow = false, doInstallNow = false;
-        {
-            std::unique_lock<std::mutex> lk(mtx_);
-            cv_.wait(lk, [&] {
-                return stopping_ || pendingCheck_ || pendingDownload_ || pendingInstall_;
-            });
-            if (stopping_) return;
-            if (pendingInstall_) {
-                pendingInstall_ = false;
-                doInstallNow = true;
-            } else if (pendingDownload_) {
-                pendingDownload_ = false;
-                doDownloadNow = true;
-            } else if (pendingCheck_) {
-                pendingCheck_ = false;
-                doCheckNow = true;
-            }
-        }
+        const Job job = takeNextJob();
         cancelFlag_ = false;
-        if (doInstallNow) {
+        switch (job) {
+        case Job::Stop:
+            return;
+        case Job::Install:
             doInstall();
-        } else if (doDownloadNow) {
+            break;
+        case Job::Download:
             doDownload();
-            bool autoInstall = false;
-            {
-                std::lock_guard<std::mutex> ck(configMtx_);
-                autoInstall = config_.autoInstall;
-            }
-            if (autoInstall) {
-                std::lock_guard<std::mutex> lk(mtx_);
-                if (state_ == UpdateState::Downloaded) pendingInstall_ = true;
-            }
-        } else if (doCheckNow) {
+            queueInstallIfWanted();
+            break;
+        case Job::Check:
             doCheck(userInitiatedCheck_);
-            bool autoDownload = false;
-            {
-                std::lock_guard<std::mutex> ck(configMtx_);
-                autoDownload = config_.autoDownload;
-            }
-            if (autoDownload) {
-                std::lock_guard<std::mutex> lk(mtx_);
-                if (state_ == UpdateState::UpdateAvailable &&
-                    info_.installMethod == InstallMethod::SelfInstall) {
-                    pendingDownload_ = true;
-                }
-            }
-            {
-                std::lock_guard<std::mutex> lk(mtx_);
-                if (repairPending_) {
-                    const bool usable =
-                        !info_.version.empty() && info_.installMethod == InstallMethod::SelfInstall;
-                    if (usable) {
-                        pendingDownload_ = true;
-                    } else {
-                        repairPending_ = false;
-                    }
-                }
-            }
+            queueDownloadIfWanted();
+            break;
         }
     }
 }
@@ -303,6 +317,21 @@ bool UpdateService::versionStrictlyNewer(const std::string& a, const std::string
     return satellite::compareSemver(a, b) > 0;
 }
 
+// The one transition every check ends in: state, error text and failed phase
+// under the lock, then the log line and the broadcast.
+void UpdateService::settleCheck(UpdateState state, const UpdateInfo& info, LogLevel level,
+                                const std::string& message, const std::string& error) {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        state_ = state;
+        info_ = info;
+        lastError_ = error;
+        failedPhase_ = state == UpdateState::Error ? UpdateState::Checking : UpdateState::Idle;
+    }
+    log_.logMsg(level, "updater", message);
+    fireBroadcast();
+}
+
 void UpdateService::doCheck(bool userInitiated) {
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -323,7 +352,7 @@ void UpdateService::doCheck(bool userInitiated) {
 
     UpdateInfo info;
     std::string err;
-    bool ok = updater_.fetchLatestRelease(channel, SATELLITE_VERSION, info, err);
+    const bool ok = updater_.fetchLatestRelease(channel, SATELLITE_VERSION, info, err);
 
     {
         std::lock_guard<std::mutex> ck(configMtx_);
@@ -332,57 +361,63 @@ void UpdateService::doCheck(bool userInitiated) {
     if (persistCb_) persistCb_();
 
     if (!ok) {
+        // A failed check keeps whatever info the last one left.
+        UpdateInfo kept;
         {
             std::lock_guard<std::mutex> lk(mtx_);
-            state_ = UpdateState::Error;
-            lastError_ = err.empty() ? "Update check failed (network or API error)" : err;
-            failedPhase_ = UpdateState::Checking;
+            kept = info_;
         }
-        log_.logMsg(LogLevel::WARN, "updater", "Check failed: " + err);
-        fireBroadcast();
+        settleCheck(UpdateState::Error, kept, LogLevel::WARN, "Check failed: " + err,
+                    err.empty() ? "Update check failed (network or API error)" : err);
         return;
     }
 
     info.available = versionStrictlyNewer(info.version, SATELLITE_VERSION);
-
     if (!info.available) {
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            state_ = UpdateState::UpToDate;
-            info_ = info;
-        }
-        log_.logMsg(LogLevel::INFO, "updater",
+        settleCheck(UpdateState::UpToDate, info, LogLevel::INFO,
                     "Up to date (current: " + std::string(SATELLITE_VERSION) +
-                        ", latest: " + info.version + ")");
-        fireBroadcast();
+                        ", latest: " + info.version + ")",
+                    "");
         return;
     }
-
-    if (!skipVer.empty() && satellite::compareSemver(info.version, skipVer) <= 0) {
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            info.available = false;
-            info_ = info;
-            state_ = UpdateState::UpToDate;
-        }
-        log_.logMsg(LogLevel::INFO, "updater",
-                    "Found " + info.version + " but skipVersion suppresses notification");
-        fireBroadcast();
+    const bool skipped = !skipVer.empty() && satellite::compareSemver(info.version, skipVer) <= 0;
+    if (skipped) {
+        info.available = false;
+        settleCheck(UpdateState::UpToDate, info, LogLevel::INFO,
+                    "Found " + info.version + " but skipVersion suppresses notification", "");
         return;
     }
-
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        info_ = info;
-        state_ = UpdateState::UpdateAvailable;
-    }
-    log_.logMsg(LogLevel::INFO, "updater",
-                "Update " + info.version + " available (" + info.assetName + ")");
-    fireBroadcast();
+    settleCheck(UpdateState::UpdateAvailable, info, LogLevel::INFO,
+                "Update " + info.version + " available (" + info.assetName + ")", "");
 }
 
-void UpdateService::doDownload() {
-    UpdateInfo info;
+// Whether one progress report is worth a broadcast: a whole percent when the
+// size is known, a quarter megabyte when it is not, so a slow link does not
+// flood the dashboard and a fast one still moves the bar.
+bool progressWorthBroadcasting(uint64_t doneBefore, uint64_t totalBefore, uint64_t doneNow,
+                               uint64_t totalNow) {
+    if (totalNow > 0) {
+        const uint64_t prevPct = totalBefore > 0 ? (doneBefore * 100) / totalBefore : 0;
+        const uint64_t newPct = (doneNow * 100) / totalNow;
+        return newPct != prevPct;
+    }
+    return doneNow - doneBefore >= 256 * 1024;
+}
+
+void UpdateService::onDownloadProgress(uint64_t soFar, uint64_t total) {
+    bool shouldBroadcast = false;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        shouldBroadcast = progressWorthBroadcasting(bytesDownloaded_, bytesTotal_, soFar, total);
+        bytesDownloaded_ = soFar;
+        bytesTotal_ = total > 0 ? total : bytesTotal_;
+    }
+    if (shouldBroadcast) fireBroadcast();
+}
+
+// Moves into Downloading, or settles where a download makes no sense: nothing
+// to download, or a release that is installed by hand. False when settled.
+bool UpdateService::beginDownload(UpdateInfo& info) {
     bool settled = false;
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -406,28 +441,18 @@ void UpdateService::doDownload() {
         }
     }
     fireBroadcast();
-    if (settled) return;
+    return !settled;
+}
+
+void UpdateService::doDownload() {
+    UpdateInfo info;
+    if (!beginDownload(info)) return;
     log_.logMsg(LogLevel::INFO, "updater", "Downloading " + info.assetName);
 
-    auto onProgress = [this](uint64_t soFar, uint64_t total) {
-        bool shouldBroadcast = false;
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            if (total > 0) {
-                uint64_t prevPct = bytesTotal_ > 0 ? (bytesDownloaded_ * 100) / bytesTotal_ : 0;
-                uint64_t newPct = (soFar * 100) / total;
-                if (newPct != prevPct) shouldBroadcast = true;
-            } else {
-                if (soFar - bytesDownloaded_ >= 256 * 1024) shouldBroadcast = true;
-            }
-            bytesDownloaded_ = soFar;
-            bytesTotal_ = total > 0 ? total : bytesTotal_;
-        }
-        if (shouldBroadcast) fireBroadcast();
-    };
-
     std::string localPath, err;
-    bool ok = updater_.downloadArtifact(info, onProgress, &cancelFlag_, localPath, err);
+    const bool ok = updater_.downloadArtifact(
+        info, [this](uint64_t soFar, uint64_t total) { onDownloadProgress(soFar, total); },
+        &cancelFlag_, localPath, err);
     if (!ok) {
         {
             std::lock_guard<std::mutex> lk(mtx_);

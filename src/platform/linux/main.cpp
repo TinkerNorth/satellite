@@ -93,6 +93,13 @@ static void netlinkWatcherThread() {
     }
 }
 
+// Stops accepting: the servers close and every worker loop sees the flag.
+static void stopServers() {
+    g_appRunning = false;
+    g_httpServer.stop();
+    if (g_clientServer) g_clientServer->stop();
+}
+
 // Block SIGINT/SIGTERM so the headless loop can sigwait them on the main thread
 // rather than default-terminating during a worker's blocking syscall (recvfrom,
 // accept). SIGPIPE is blocked too; it fires on httplib mid-write disconnects.
@@ -108,29 +115,132 @@ static void installHeadlessSignalHandling(sigset_t& set) {
 // Bridge SIGINT/SIGTERM into the GTK main loop (g_unix_signal_add pipes the
 // signal so this fires on the main loop, not the delivering thread).
 static gboolean onTraySignal(gpointer) {
-    g_appRunning = false;
-    g_httpServer.stop();
-    if (g_clientServer) g_clientServer->stop();
+    stopServers();
     gtk_main_quit();
     return G_SOURCE_REMOVE;
 }
 #endif
 
-// No command line: everything is configured through the web UI and the
-// config file, so the entry point takes none.
-int main() {
-    if (!netInit()) {
-        std::fprintf(stderr, "Failed to initialize network subsystem\n");
-        return 1;
-    }
+static bool startNetwork() {
+    if (netInit()) return true;
+    std::fprintf(stderr, "Failed to initialize network subsystem\n");
+    return false;
+}
 
-    if (!sodiumInit()) {
-        std::fprintf(stderr, "Failed to initialize libsodium\n");
-        return 1;
-    }
+static bool startCrypto() {
+    if (sodiumInit()) return true;
+    std::fprintf(stderr, "Failed to initialize libsodium\n");
+    return false;
+}
 
+// The persisted config, with the autostart flag read from where the desktop
+// keeps it rather than from the file.
+static void loadConfigSeedingAutostart() {
     g_config = loadConfig();
     g_config.autoStart = getAutoStart();
+}
+
+// Read per frame, not cached: unlike the master switch these gate the wire
+// rather than the persona, so flipping one reaches a stream already playing
+// instead of waiting for a replug.
+static ControllerAudioPolicy audioPolicyFromConfig() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
+                                 g_config.controllerAudioHaptics};
+}
+
+static void persistConfig() {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    saveConfig(g_config);
+}
+
+// web/ in priority order: side-by-side (dev), FHS-from-prefix, manual sudo
+// install, then package install; the dev location when none exists yet.
+static std::string resolveWebDir() {
+    const std::string exeDir = getExeDir();
+    const std::string candidates[] = {
+        exeDir + "/web",
+        exeDir + "/../share/satellite/web",
+        "/usr/local/share/satellite/web",
+        "/usr/share/satellite/web",
+    };
+    for (const auto& c : candidates) {
+        struct stat st;
+        if (stat(c.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return c;
+    }
+    return exeDir + "/web";
+}
+
+// The service's threads, joined in the order they were started.
+struct Workers {
+    std::thread recv;
+    std::thread admin;
+    std::thread client;
+    std::thread disc;
+    std::thread mdns;
+    std::thread netlink;
+};
+
+static Workers startWorkers(SessionService& svc, ClientAdapter& clientAdapter) {
+    Workers w;
+    w.recv = std::thread(receiverThread, std::ref(svc), std::ref(clientAdapter));
+    w.admin = std::thread(adminHttpThread, std::ref(svc));
+    w.client = std::thread(clientApiThread, std::ref(svc));
+    w.disc = std::thread(discoveryThread);
+    w.mdns = std::thread(mdnsResponderThread);
+    w.netlink = std::thread(netlinkWatcherThread);
+    return w;
+}
+
+static void joinWorkers(Workers& w) {
+    w.recv.join();
+    w.admin.join();
+    w.client.join();
+    w.disc.join();
+    w.mdns.join();
+    w.netlink.join();
+}
+
+// The tray-driven GTK loop on the main thread. False when the tray could not
+// come up (no display server, GTK init failure, a build without
+// SATELLITE_HAS_TRAY), in which case the headless loop runs instead.
+static bool runTrayLoop() {
+    if (!addTrayIcon()) return false;
+#ifdef SATELLITE_HAS_TRAY
+    // Ignore SIGPIPE (httplib disconnects); bridge SIGINT/SIGTERM to GTK.
+    signal(SIGPIPE, SIG_IGN);
+    g_unix_signal_add(SIGINT, onTraySignal, nullptr);
+    g_unix_signal_add(SIGTERM, onTraySignal, nullptr);
+    // Reverse-pairing: a dish request raises a native notification with
+    // Accept/Reject so the operator never has to open the web UI.
+    setPairRequestListener(notifyPairRequestLinux);
+    gtk_main();
+    removeTrayIcon();
+    return true;
+#else
+    return false;
+#endif
+}
+
+// The headless loop: the main thread waits for SIGINT or SIGTERM (SIGPIPE only
+// wakes it), then stops the servers so the workers can join.
+static void runHeadlessLoop() {
+    sigset_t sigset;
+    installHeadlessSignalHandling(sigset);
+    int sig = 0;
+    while (sigwait(&sigset, &sig) == 0 && sig == SIGPIPE) {}
+    stopServers();
+}
+
+// No command line: everything is configured through the web UI and the
+// config file, so the entry point takes none.
+//
+// Long on purpose: the composition root. Every collaborator lives on this
+// stack in the order it must be constructed, and the shutdown below mirrors
+// that order; a helper per step would move the lifetimes out of sight.
+int main() {
+    if (!startNetwork() || !startCrypto()) return 1;
+    loadConfigSeedingAutostart();
 
     // Nothing else claims the fatal signals on Linux, so this is the only
     // crash recorder satellite has here. It still arms only behind the
@@ -145,97 +255,24 @@ int main() {
     // service's audio paths are platform-neutral and stay wired the same way.
     satellite::audio::OpusCodecFactory audioCodecs;
     SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
-
-    // Read per frame, not cached: unlike the master switch these gate the wire
-    // rather than the persona, so flipping one reaches a stream already
-    // playing instead of waiting for a replug.
-    svc.setAudioPolicy([] {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
-                                     g_config.controllerAudioHaptics};
-    });
+    svc.setAudioPolicy(audioPolicyFromConfig);
 
     LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
     UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
-    updateService.setPersistCallback([] {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        saveConfig(g_config);
-    });
+    updateService.setPersistCallback(persistConfig);
     g_updateService = &updateService;
-
-    // Resolve web/ in priority order: side-by-side (dev), FHS-from-prefix,
-    // manual sudo install, then package install.
-    {
-        std::string exeDir = getExeDir();
-        struct stat st;
-        const std::string candidates[] = {
-            exeDir + "/web",
-            exeDir + "/../share/satellite/web",
-            "/usr/local/share/satellite/web",
-            "/usr/share/satellite/web",
-        };
-        for (const auto& c : candidates) {
-            if (stat(c.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-                g_webDir = c;
-                break;
-            }
-        }
-        if (g_webDir.empty()) g_webDir = exeDir + "/web";
-    }
-
+    g_webDir = resolveWebDir();
     updateService.start();
 
-    std::thread recvTh(receiverThread, std::ref(svc), std::ref(clientAdapter));
-    std::thread adminTh(adminHttpThread, std::ref(svc));
-    std::thread clientTh(clientApiThread, std::ref(svc));
-    std::thread discTh(discoveryThread);
-    std::thread mdnsTh(mdnsResponderThread);
-    std::thread netlinkTh(netlinkWatcherThread);
-
+    Workers workers = startWorkers(svc, clientAdapter);
     std::fprintf(stderr, "%s running; web UI at http://localhost:%d\n", APP_TITLE,
                  g_config.webPort);
 
-    // Tray-driven GTK loop; falls back to the headless sigwait loop with no
-    // display server, on GTK init failure, or when built without SATELLITE_HAS_TRAY.
-    bool trayActive = addTrayIcon();
-
-#ifdef SATELLITE_HAS_TRAY
-    if (trayActive) {
-        // Ignore SIGPIPE (httplib disconnects); bridge SIGINT/SIGTERM to GTK.
-        signal(SIGPIPE, SIG_IGN);
-        g_unix_signal_add(SIGINT, onTraySignal, nullptr);
-        g_unix_signal_add(SIGTERM, onTraySignal, nullptr);
-        // Reverse-pairing: a dish request raises a native notification with
-        // Accept/Reject so the operator never has to open the web UI.
-        setPairRequestListener(notifyPairRequestLinux);
-        gtk_main();
-        removeTrayIcon();
-    }
-#endif
-
-    if (!trayActive) {
-        sigset_t sigset;
-        installHeadlessSignalHandling(sigset);
-        int sig = 0;
-        while (true) {
-            if (sigwait(&sigset, &sig) != 0) break;
-            if (sig == SIGPIPE) continue;
-            break;
-        }
-        g_appRunning = false;
-        g_httpServer.stop();
-        if (g_clientServer) g_clientServer->stop();
-    }
+    if (!runTrayLoop()) runHeadlessLoop();
 
     updateService.stop();
     g_updateService = nullptr;
-
-    recvTh.join();
-    adminTh.join();
-    clientTh.join();
-    discTh.join();
-    mdnsTh.join();
-    netlinkTh.join();
+    joinWorkers(workers);
 
     svc.closeAllSessions();
     saveConfig(g_config);

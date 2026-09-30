@@ -4,6 +4,7 @@
 #include "config.h"
 #include "update_helper_script.h"
 #include "core/github_release.h"
+#include "core/hex.h"
 #include "core/version.h"
 
 #include <curl/curl.h>
@@ -221,14 +222,31 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     std::fclose(f);
     unsigned char digest[crypto_hash_sha256_BYTES];
     crypto_hash_sha256_final(&st, digest);
-    static const char* kHex = "0123456789abcdef";
-    hexOut.clear();
-    hexOut.reserve(crypto_hash_sha256_BYTES * 2);
-    for (size_t i = 0; i < sizeof(digest); i++) {
-        hexOut += kHex[digest[i] >> 4];
-        hexOut += kHex[digest[i] & 0xF];
-    }
+    hexOut = hexEncode(digest, sizeof(digest));
     return true;
+}
+
+} // namespace
+
+namespace {
+
+bool pathExists(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+bool envSet(const char* name) {
+    const char* v = std::getenv(name);
+    return v != nullptr && v[0] != '\0';
+}
+
+// Where the running binary really is, or empty when /proc is not readable.
+std::string selfExePath() {
+    char buf[PATH_MAX];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return "";
+    buf[n] = '\0';
+    return buf;
 }
 
 } // namespace
@@ -239,53 +257,39 @@ LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const 
     // that physically cannot be replaced.
     //
     // snapd exports $SNAP for strict and classic confinement alike.
-    if (const char* snap = std::getenv("SNAP"); snap != nullptr && snap[0] != '\0') {
-        return InstallType::Snap;
-    }
+    if (envSet("SNAP")) return InstallType::Snap;
     // /.flatpak-info is written by flatpak inside the sandbox. Preferred over
     // $FLATPAK_ID, which a child process inherits and can therefore outlive the
     // sandbox it describes.
-    {
-        struct stat st;
-        if (stat("/.flatpak-info", &st) == 0) return InstallType::Flatpak;
-    }
+    if (pathExists("/.flatpak-info")) return InstallType::Flatpak;
 
     // AppImage runtime guarantees $APPIMAGE; most reliable of the rest.
-    if (const char* env = std::getenv("APPIMAGE"); env != nullptr && env[0] != '\0') {
-        struct stat st;
-        if (stat(env, &st) == 0) return InstallType::AppImage;
-    }
+    if (envSet("APPIMAGE") && pathExists(std::getenv("APPIMAGE"))) return InstallType::AppImage;
 
     // Key off filesystem artefacts rather than spawning dpkg/rpm/pacman.
-    char buf[PATH_MAX];
-    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n > 0) {
-        buf[n] = '\0';
-        std::string p(buf);
-        struct stat st;
-
-        // AUR satellite-bin keeps the real binary in /opt and a /usr/bin shim.
-        if (p == "/opt/satellite/satellite.AppImage" ||
-            stat("/opt/satellite/satellite.AppImage", &st) == 0) {
-            return InstallType::Aur;
-        }
-
-        if (p == "/usr/bin/satellite" || p == "/usr/local/bin/satellite") {
-            // Discriminate dpkg vs rpm by which package DB exists.
-            const bool hasDpkg = (stat("/var/lib/dpkg/status", &st) == 0);
-            const bool hasRpm = (stat("/var/lib/rpm", &st) == 0);
-            if (hasRpm && !hasDpkg) return InstallType::Rpm;
-            if (hasDpkg && !hasRpm) return InstallType::Deb;
-            // Both present: tie-break to whichever package owns the file.
-            if (hasDpkg) {
-                std::string dpkgInfo = "/var/lib/dpkg/info/satellite.list";
-                if (stat(dpkgInfo.c_str(), &st) == 0) return InstallType::Deb;
-            }
-            if (hasRpm) return InstallType::Rpm;
-            return InstallType::Deb;
-        }
+    const std::string self = selfExePath();
+    if (self.empty()) return InstallType::Portable;
+    // AUR satellite-bin keeps the real binary in /opt and a /usr/bin shim.
+    if (self == "/opt/satellite/satellite.AppImage" ||
+        pathExists("/opt/satellite/satellite.AppImage")) {
+        return InstallType::Aur;
+    }
+    if (self == "/usr/bin/satellite" || self == "/usr/local/bin/satellite") {
+        return packagedInstallType();
     }
     return InstallType::Portable;
+}
+
+// dpkg or rpm, by which package database exists; with both present, whichever
+// owns the binary, dpkg's file list being the cheap check.
+LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::packagedInstallType() {
+    const bool hasDpkg = pathExists("/var/lib/dpkg/status");
+    const bool hasRpm = pathExists("/var/lib/rpm");
+    if (hasRpm && !hasDpkg) return InstallType::Rpm;
+    if (hasDpkg && !hasRpm) return InstallType::Deb;
+    if (hasDpkg && pathExists("/var/lib/dpkg/info/satellite.list")) return InstallType::Deb;
+    if (hasRpm) return InstallType::Rpm;
+    return InstallType::Deb;
 }
 
 LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)

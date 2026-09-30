@@ -8,6 +8,7 @@
 // (SessionCryptoTest) and dish-mac (DishCoreTests): they are the executable
 // form of docs/contract.md §Crypto. Any change here is a wire-protocol break,
 // never a refactor.
+#include "../src/core/hex.h"
 #include "../src/net/session_crypto.h"
 
 #include <sodium.h>
@@ -18,18 +19,6 @@
 #include <string>
 
 #include "test_util.h"
-
-// Local hex helper so this suite never touches a platform crypto.h.
-static std::string hexLower(const uint8_t* p, size_t n) {
-    static const char* const digits = "0123456789abcdef";
-    std::string s;
-    s.reserve(n * 2);
-    for (size_t i = 0; i < n; i++) {
-        s.push_back(digits[p[i] >> 4]);
-        s.push_back(digits[p[i] & 0x0F]);
-    }
-    return s;
-}
 
 // pairingKey = 01 02 .. 20 — the shared interop key all ends pin against.
 static const uint8_t SC_KEY[CRYPTO_KEY_SIZE] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
@@ -61,7 +50,7 @@ static void testSessionKeyDerivation() {
     // ikm = 01..20, salt = a1b2c3d4e5f60718, info = "satellite-session-v1" ||
     // 12345678. Any drift here is a cross-end break (dish derives the same).
     TEST("deriveSessionKey: pinned interop vector");
-    EXPECT_EQ(hexLower(k1, CRYPTO_KEY_SIZE),
+    EXPECT_EQ(hexEncode(k1, CRYPTO_KEY_SIZE),
               std::string("946f704cf07e2dde5e9995a70d3d103753b4687a7ed9656bc6481b06065a8584"));
 }
 

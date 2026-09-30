@@ -49,8 +49,7 @@ bool waitFor(const std::atomic<bool>& flag, int deadlineMs) {
 // Count HID devices with the DS4 v2 identity and our per-serial USB serial
 // string — the consumer-side view a game's input stack enumerates.
 int countVirtualPads(uint32_t serial, int deadlineMs, int expected) {
-    char serialStr[18];
-    ds4SerialString(serial, serialStr);
+    const std::string serialStr = ds4SerialString(serial);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(deadlineMs);
     int found = -1;
     do {
@@ -78,7 +77,7 @@ int countVirtualPads(uint32_t serial, int deadlineMs, int expected) {
                     CFStringGetCString((CFStringRef)ser, serBuf, sizeof(serBuf),
                                        kCFStringEncodingUTF8);
                 if (vidV == DS4V2_VENDOR_ID && pidV == DS4V2_PRODUCT_ID &&
-                    std::strcmp(serBuf, serialStr) == 0)
+                    std::strcmp(serBuf, serialStr.c_str()) == 0)
                     found++;
             }
             CFRelease(devs);

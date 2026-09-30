@@ -3,8 +3,9 @@
 Source-of-truth inventory for components vendored under
 `satellite/lib/` and `satellite/vigem/include/`. Ecosystem scanners
 (OSV-Scanner, Dependabot, Trivy) cannot deduce these by reading the
-source tree, so we maintain this file by hand and feed it to OSV-Scanner
-through `satellite/osv-scanner.toml`.
+source tree, so we maintain this file by hand, and
+`scripts/vendored-osv-lockfile.sh` hands OSV-Scanner the upstream commit
+each block's `Upstream` and `Pinned-commit` resolve to.
 
 Each component MUST list:
 
@@ -25,8 +26,8 @@ the 90-day freshness window.
 
 - Component: yhirose/cpp-httplib
 - Upstream: https://github.com/yhirose/cpp-httplib
-- Pinned-commit: v0.56.0
-- Last-vendored: 2026-09-20
+- Pinned-commit: v0.58.0
+- Last-vendored: 2026-09-29
 - License: MIT
 - Notes: vendored as a single header, byte-identical to the upstream tag
   (modulo CRLF in the working tree; git stores it LF). No local
@@ -40,6 +41,15 @@ the 90-day freshness window.
   writes on every tick and returns false when a write fails, so the new
   no-progress rule for content providers never trips; `Error` values shifted
   and are not used numerically; `CPPHTTPLIB_NO_EXCEPTIONS` is still honoured.
+  v0.56.0 -> v0.58.0 review (2026-09-29): the 0.57.0 server fixes come along
+  (a chunk-size line may carry nothing but a chunk-ext, which closes a
+  request-smuggling gap, and both the declared and the received trailers are
+  capped), as does 0.57.1's check that a client method is a token; an OpenSSL
+  connection now sends `close_notify` without waiting for the peer's, so an
+  idle keep-alive client no longer holds a worker or `Server::stop()`;
+  `100 Continue` now waits until the body is read and WebSocket upgrades run
+  `pre_request_handler`, and Satellite has no `Expect` handler and no
+  WebSocket route. No API Satellite calls changed.
 
 ## nlohmann/json (`lib/nlohmann/json.hpp`)
 
@@ -78,7 +88,7 @@ the 90-day freshness window.
 - Component: ViGEm/ViGEmClient (the SDK submodule of nefarius/ViGEmBus)
 - Upstream: https://github.com/ViGEm/ViGEmClient
 - Pinned-commit: v1.21.222.0 (driver ABI targeted: ViGEmBus v1.22.0)
-- Last-vendored: 2026-09-20 (upstream archived 2023-09-08 at b66d02d; each
+- Last-vendored: 2026-09-29 (upstream archived 2023-09-08 at b66d02d; each
   re-stamp is a check that nothing moved upstream, and nothing has)
 - License: MIT
 - Notes: **not** a verbatim upstream copy — a hand-maintained minimal
@@ -92,6 +102,16 @@ the 90-day freshness window.
   them** — that would silently reintroduce the motion-data bug. Re-verify
   by diffing intent, not bytes. The runtime driver itself is installed by
   ViGEmBus's own installer on the user's machine; we ship no driver code.
+  Review (2026-09-29) against the header ViGEmBus v1.22.0 builds with (its
+  `sdk` submodule, ViGEmClient cb8c9f4, whose `BusShared.h` is the same blob
+  as v1.21.222.0's and b66d02d's): the two notification requests had drifted
+  from it. `IOCTL_DS4_REQUEST_NOTIFICATION` is write-only (the driver's DMF
+  table matches the whole code, access bits included, and failed the
+  read-write code we sent, so DS4 rumble and lightbar never came back),
+  `XUSB_REQUEST_NOTIFICATION` carries `LargeMotor, SmallMotor, LedNumber` (we
+  read the LED slot as the small motor), and the DS4 notification carries the
+  small motor first. `test_vigem_adapter` now pins every IOCTL code, both
+  notification sizes and both layouts.
 
 ## HIDMaestro shared-memory protocol (`src/platform/windows/hidmaestro_wire.h`)
 

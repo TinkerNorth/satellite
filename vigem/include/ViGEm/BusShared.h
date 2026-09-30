@@ -28,7 +28,8 @@ DEFINE_GUID(GUID_DEVINTERFACE_BUSENUM_VIGEM,
 #define IOCTL_XUSB_REQUEST_NOTIFICATION BUSENUM_RW_IOCTL(IOCTL_VIGEM_BASE + 0x200)
 #define IOCTL_XUSB_SUBMIT_REPORT        BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x201)
 #define IOCTL_DS4_SUBMIT_REPORT         BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x202)
-#define IOCTL_DS4_REQUEST_NOTIFICATION  BUSENUM_RW_IOCTL(IOCTL_VIGEM_BASE + 0x203)
+// Write-only, unlike 0x200: the access bits are part of the code the driver's table matches.
+#define IOCTL_DS4_REQUEST_NOTIFICATION  BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x203)
 // CORRECTION (verified against nefarius/ViGEmBus and the ViGEmClient source):
 // there is NO separate "_EX" submit IOCTL. The extended 63-byte DS4 report
 // (gyro/accel/touchpad/battery) is submitted through the SAME
@@ -127,13 +128,14 @@ VOID FORCEINLINE DS4_SUBMIT_REPORT_INIT(PDS4_SUBMIT_REPORT Report, ULONG SerialN
 // Xbox 360 rumble / LED notification — long-running async request. The driver
 // completes the IOCTL whenever a process calls XInputSetState (rumble) or the
 // LED slot number changes for the target. The Size/SerialNo are filled by the
-// caller; LedNumber/LargeMotor/SmallMotor come back from the driver.
+// caller; LargeMotor/SmallMotor/LedNumber come back from the driver, which
+// writes them by name into its own layout, so this order is the driver's.
 typedef struct _XUSB_REQUEST_NOTIFICATION {
     ULONG Size;
     ULONG SerialNo;
-    UCHAR LedNumber;
     UCHAR LargeMotor;
     UCHAR SmallMotor;
+    UCHAR LedNumber;
 } XUSB_REQUEST_NOTIFICATION, *PXUSB_REQUEST_NOTIFICATION;
 
 VOID FORCEINLINE XUSB_REQUEST_NOTIFICATION_INIT(PXUSB_REQUEST_NOTIFICATION Notify, ULONG SerialNo) {
@@ -143,8 +145,8 @@ VOID FORCEINLINE XUSB_REQUEST_NOTIFICATION_INIT(PXUSB_REQUEST_NOTIFICATION Notif
 }
 
 // DualShock 4 rumble / lightbar notification — same async pattern. The driver
-// fills LargeMotor / SmallMotor / LightbarColor on every output report from
-// the host stack.
+// copies bytes 4-8 of every output report from the host stack (small motor,
+// large motor, lightbar RGB) into the fields below, in that order.
 typedef struct _DS4_LIGHTBAR_COLOR {
     UCHAR Red;
     UCHAR Green;
@@ -154,8 +156,8 @@ typedef struct _DS4_LIGHTBAR_COLOR {
 typedef struct _DS4_REQUEST_NOTIFICATION {
     ULONG Size;
     ULONG SerialNo;
-    UCHAR LargeMotor;
     UCHAR SmallMotor;
+    UCHAR LargeMotor;
     DS4_LIGHTBAR_COLOR LightbarColor;
 } DS4_REQUEST_NOTIFICATION, *PDS4_REQUEST_NOTIFICATION;
 

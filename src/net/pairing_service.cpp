@@ -3,8 +3,8 @@
 #include "pairing_service.h"
 #include "app/app_state.h"
 #include "config.h" // g_config, g_configMtx, saveConfig, getCurrentDate
+#include "core/hex.h"
 #include "core/types.h"
-#include "crypto.h" // hexEncode
 #include "pairing.h"
 
 #include <sodium.h>
@@ -71,3 +71,37 @@ bool confirmPairing(const std::string& deviceId) {
 }
 
 bool declinePairing(const std::string& deviceId) { return denyPairRequest(deviceId); }
+
+bool findPairedDevice(const std::string& deviceId, PairedDevice& out) {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    for (const auto& d : g_config.pairedDevices) {
+        if (d.id != deviceId) continue;
+        out = d;
+        return true;
+    }
+    return false;
+}
+
+void refreshPairedDeviceIdentity(const std::string& deviceId, const std::string& clientIP,
+                                 const std::string& deviceName) {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    for (auto& d : g_config.pairedDevices) {
+        if (d.id != deviceId) continue;
+        d.lastIP = clientIP;
+        d.name = deviceName;
+        saveConfig(g_config);
+        return;
+    }
+}
+
+bool forgetPairedDevice(const std::string& deviceId) {
+    std::lock_guard<std::mutex> lk(g_configMtx);
+    auto& devs = g_config.pairedDevices;
+    const size_t before = devs.size();
+    devs.erase(std::remove_if(devs.begin(), devs.end(),
+                              [&](const PairedDevice& d) { return d.id == deviceId; }),
+               devs.end());
+    const bool removed = devs.size() != before;
+    if (removed) saveConfig(g_config);
+    return removed;
+}

@@ -106,6 +106,16 @@ static bool isHex(const std::string& s, size_t chars) {
     return s.size() == chars && s.find_first_not_of("0123456789abcdef") == std::string::npos;
 }
 
+// A PUT /api/connections body whose hostFeatures object nests `depth` levels.
+static std::string hostFeaturesNested(size_t depth) {
+    std::string body = "{\"hostFeatures\":";
+    for (size_t level = 0; level < depth; ++level) body += "{\"a\":";
+    body += "true";
+    body.append(depth, '}');
+    body += "}";
+    return body;
+}
+
 static void putPairedDevice(const std::string& id, const std::string& keyHex) {
     PairedDevice d;
     d.id = id;
@@ -315,6 +325,18 @@ int main() {
             cli.Put("/api/connections", auth,
                     R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0}]})", "application/json");
         EXPECT(res && res->status == 400);
+    }
+    {
+        TEST("PUT /api/connections with a body that is not a JSON object: 400");
+        auto res = cli.Put("/api/connections", auth, "{\"controllers\":[", "application/json");
+        EXPECT(res && res->status == 400);
+    }
+    {
+        TEST("PUT /api/connections nesting hostFeatures 5000 deep: 400, and the server lives");
+        auto res = cli.Put("/api/connections", auth, hostFeaturesNested(5000), "application/json");
+        EXPECT(res && res->status == 400);
+        auto after = cli.Get("/api/server/capabilities");
+        EXPECT(after && after->status == 200);
     }
     {
         TEST("auth via body keys (deviceId/hmacProof) works without headers");

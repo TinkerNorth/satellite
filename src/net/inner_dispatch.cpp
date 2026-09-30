@@ -3,6 +3,7 @@
 // Split out of receiver.cpp so the length guards have no socket/crypto/globals
 // dependency and can be unit tested with raw byte buffers.
 #include "inner_dispatch.h"
+#include "core/byte_order.h"
 
 #include "core/session_service.h"
 
@@ -84,4 +85,11 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
         break;
     }
     return result;
+}
+
+bool parseInnerHeader(const uint8_t* plaintext, size_t ptLen, InnerHeader& out) {
+    if (ptLen < static_cast<size_t>(INNER_HEADER_SIZE)) return false;
+    out.msgType = satellite::readBE16(plaintext);
+    out.msgLen = satellite::readBE16(plaintext + 2);
+    return static_cast<size_t>(INNER_HEADER_SIZE) + out.msgLen <= ptLen;
 }

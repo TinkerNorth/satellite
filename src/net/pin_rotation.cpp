@@ -110,17 +110,6 @@ PinSnapshot pinSnapshot() {
     return s;
 }
 
-std::string hexEncode(const uint8_t* data, size_t len) {
-    static const char digits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(len * 2);
-    for (size_t i = 0; i < len; i++) {
-        out.push_back(digits[data[i] >> 4]);
-        out.push_back(digits[data[i] & 0x0F]);
-    }
-    return out;
-}
-
 static int hexNibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;

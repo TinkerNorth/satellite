@@ -159,93 +159,123 @@ bool GamepadAdapter::isBusOpen() const {
     return busOpen_;
 }
 
-int GamepadAdapter::openUinputDevice(uint32_t serial, GamepadIdentity identity) {
-    // O_RDWR (not O_WRONLY): the reader thread reads FF_UPLOAD/FF_ERASE/EV_FF back.
-    int fd = ::open("/dev/uinput", O_RDWR | O_NONBLOCK);
-    if (fd < 0) return -1;
-    const bool sw = identity == GamepadIdentity::SwitchPro;
+namespace {
 
-    if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
-    if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
-    if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
-    // Without EV_FF + FF_RUMBLE the kernel rejects every UI_FF_UPLOAD with
-    // -EOPNOTSUPP and SDL/Steam Input report the pad as "no haptics".
-    if (::ioctl(fd, UI_SET_EVBIT, EV_FF) < 0) goto fail;
-    if (::ioctl(fd, UI_SET_FFBIT, FF_RUMBLE) < 0) goto fail;
+// The evdev capability set every pad identity shares: the xpad button/axis
+// layout (the Switch Pro's own button set and digital ZL/ZR aside) plus
+// FF_RUMBLE, without which the kernel rejects every UI_FF_UPLOAD with
+// -EOPNOTSUPP and SDL/Steam Input report the pad as "no haptics".
+bool applyPadCapabilities(int fd, bool sw) {
+    for (int ev : {EV_KEY, EV_ABS, EV_SYN, EV_FF}) {
+        if (::ioctl(fd, UI_SET_EVBIT, ev) < 0) return false;
+    }
+    if (::ioctl(fd, UI_SET_FFBIT, FF_RUMBLE) < 0) return false;
 
     if (sw) {
         for (int btn : SWITCH_BUTTONS) {
-            if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
+            if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) return false;
         }
     } else {
         for (int btn : BUTTONS) {
-            if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
+            if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) return false;
         }
     }
 
     for (int ax : {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_HAT0X, ABS_HAT0Y}) {
-        if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
+        if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) return false;
     }
     // Switch Pro's ZL/ZR are digital buttons, not analog axes.
     if (!sw) {
         for (int ax : {ABS_Z, ABS_RZ}) {
-            if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
+            if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) return false;
         }
     }
 
     // range/flat/fuzz matches xpad driver defaults.
-    if (!setupAbs(fd, ABS_X, -32768, 32767, 128, 16)) goto fail;
-    if (!setupAbs(fd, ABS_Y, -32768, 32767, 128, 16)) goto fail;
-    if (!setupAbs(fd, ABS_RX, -32768, 32767, 128, 16)) goto fail;
-    if (!setupAbs(fd, ABS_RY, -32768, 32767, 128, 16)) goto fail;
+    if (!setupAbs(fd, ABS_X, -32768, 32767, 128, 16)) return false;
+    if (!setupAbs(fd, ABS_Y, -32768, 32767, 128, 16)) return false;
+    if (!setupAbs(fd, ABS_RX, -32768, 32767, 128, 16)) return false;
+    if (!setupAbs(fd, ABS_RY, -32768, 32767, 128, 16)) return false;
     if (!sw) {
-        if (!setupAbs(fd, ABS_Z, 0, 255, 0, 0)) goto fail;
-        if (!setupAbs(fd, ABS_RZ, 0, 255, 0, 0)) goto fail;
+        if (!setupAbs(fd, ABS_Z, 0, 255, 0, 0)) return false;
+        if (!setupAbs(fd, ABS_RZ, 0, 255, 0, 0)) return false;
     }
-    if (!setupAbs(fd, ABS_HAT0X, -1, 1, 0, 0)) goto fail;
-    if (!setupAbs(fd, ABS_HAT0Y, -1, 1, 0, 0)) goto fail;
+    return setupAbs(fd, ABS_HAT0X, -1, 1, 0, 0) && setupAbs(fd, ABS_HAT0Y, -1, 1, 0, 0);
+}
 
-    {
-        struct uinput_setup usetup{};
-        usetup.id.bustype = BUS_USB;
-        // VID/PID + name pick the identity SDL2/Steam Input recognize; the evdev
-        // button/axis set is shared (they remap face buttons per their own DB).
-        const char* name;
-        switch (identity) {
-        case GamepadIdentity::DS4:
-            usetup.id.vendor = DS4_VID;
-            usetup.id.product = DS4_PID;
-            usetup.id.version = 0x0100;
-            name = "Satellite Virtual DualShock 4";
-            break;
-        case GamepadIdentity::DualSense:
-            usetup.id.vendor = DUALSENSE_VID;
-            usetup.id.product = DUALSENSE_PID;
-            usetup.id.version = 0x0100;
-            name = "Satellite Virtual DualSense";
-            break;
-        case GamepadIdentity::SwitchPro:
-            usetup.id.vendor = SWITCHPRO_VID;
-            usetup.id.product = SWITCHPRO_PID;
-            usetup.id.version = 0x0001;
-            name = "Satellite Virtual Switch Pro Controller";
-            break;
-        default:
-            usetup.id.vendor = XBOX_VID;
-            usetup.id.product = XBOX_PID;
-            usetup.id.version = 0x0110;
-            name = "Satellite Virtual Xbox 360 Pad";
-            break;
-        }
-        usetup.ff_effects_max = 16; // matches the in-tree xpad driver
-        std::snprintf(usetup.name, sizeof(usetup.name), "%s #%u", name, serial);
-        if (::ioctl(fd, UI_DEV_SETUP, &usetup) < 0) goto fail;
+// VID/PID + name pick the identity SDL2/Steam Input recognize; the evdev
+// button/axis set is shared (they remap face buttons per their own DB).
+struct uinput_setup padSetupFor(GamepadIdentity identity, uint32_t serial) {
+    struct uinput_setup usetup{};
+    usetup.id.bustype = BUS_USB;
+    const char* name;
+    switch (identity) {
+    case GamepadIdentity::DS4:
+        usetup.id.vendor = DS4_VID;
+        usetup.id.product = DS4_PID;
+        usetup.id.version = 0x0100;
+        name = "Satellite Virtual DualShock 4";
+        break;
+    case GamepadIdentity::DualSense:
+        usetup.id.vendor = DUALSENSE_VID;
+        usetup.id.product = DUALSENSE_PID;
+        usetup.id.version = 0x0100;
+        name = "Satellite Virtual DualSense";
+        break;
+    case GamepadIdentity::SwitchPro:
+        usetup.id.vendor = SWITCHPRO_VID;
+        usetup.id.product = SWITCHPRO_PID;
+        usetup.id.version = 0x0001;
+        name = "Satellite Virtual Switch Pro Controller";
+        break;
+    default:
+        usetup.id.vendor = XBOX_VID;
+        usetup.id.product = XBOX_PID;
+        usetup.id.version = 0x0110;
+        name = "Satellite Virtual Xbox 360 Pad";
+        break;
     }
+    usetup.ff_effects_max = 16; // matches the in-tree xpad driver
+    std::snprintf(usetup.name, sizeof(usetup.name), "%s #%u", name, serial);
+    return usetup;
+}
 
-    if (::ioctl(fd, UI_DEV_CREATE) < 0) goto fail;
-    return fd;
+// The clickpad's evdev capability set: an indirect pointer whose whole
+// surface is one button (BUTTONPAD, as libinput treats the DS4 trackpad),
+// ABS_X/Y mirroring finger 0 and the ABS_MT_* two-finger stream, at the DS4's
+// native resolution; ABS_MT_SLOT caps at the two-contact pad.
+bool applyTouchpadCapabilities(int fd) {
+    for (int ev : {EV_KEY, EV_ABS, EV_SYN}) {
+        if (::ioctl(fd, UI_SET_EVBIT, ev) < 0) return false;
+    }
+    for (int prop : {INPUT_PROP_POINTER, INPUT_PROP_BUTTONPAD}) {
+        if (::ioctl(fd, UI_SET_PROPBIT, prop) < 0) return false;
+    }
+    for (int btn : {BTN_TOUCH, BTN_TOOL_FINGER, BTN_TOOL_DOUBLETAP, BTN_LEFT}) {
+        if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) return false;
+    }
+    for (int ax :
+         {ABS_X, ABS_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y}) {
+        if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) return false;
+    }
+    return setupAbs(fd, ABS_X, 0, DS4_TOUCHPAD_RES_X - 1, 0, 0) &&
+           setupAbs(fd, ABS_Y, 0, DS4_TOUCHPAD_RES_Y - 1, 0, 0) &&
+           setupAbs(fd, ABS_MT_SLOT, 0, 1, 0, 0) &&
+           setupAbs(fd, ABS_MT_TRACKING_ID, 0, 65535, 0, 0) &&
+           setupAbs(fd, ABS_MT_POSITION_X, 0, DS4_TOUCHPAD_RES_X - 1, 0, 0) &&
+           setupAbs(fd, ABS_MT_POSITION_Y, 0, DS4_TOUCHPAD_RES_Y - 1, 0, 0);
+}
 
-fail:
+} // namespace
+
+int GamepadAdapter::openUinputDevice(uint32_t serial, GamepadIdentity identity) {
+    // O_RDWR (not O_WRONLY): the reader thread reads FF_UPLOAD/FF_ERASE/EV_FF back.
+    const int fd = ::open("/dev/uinput", O_RDWR | O_NONBLOCK);
+    if (fd < 0) return -1;
+    const struct uinput_setup usetup = padSetupFor(identity, serial);
+    const bool created = applyPadCapabilities(fd, identity == GamepadIdentity::SwitchPro) &&
+                         ::ioctl(fd, UI_DEV_SETUP, &usetup) == 0 && ::ioctl(fd, UI_DEV_CREATE) == 0;
+    if (created) return fd;
     ::close(fd);
     return -1;
 }
@@ -295,49 +325,18 @@ fail:
 
 int GamepadAdapter::openTouchpadUinputDevice(uint32_t serial) {
     // Output-only node (no FF readback), so O_WRONLY suffices.
-    int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    const int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK);
     if (fd < 0) return -1;
-
-    if (::ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0) goto fail;
-    if (::ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) goto fail;
-    if (::ioctl(fd, UI_SET_EVBIT, EV_SYN) < 0) goto fail;
-    // POINTER = indirect pointing device; BUTTONPAD because the DS4 trackpad is
-    // a clickpad, so libinput treats the whole surface as one button.
-    if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_POINTER) < 0) goto fail;
-    if (::ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_BUTTONPAD) < 0) goto fail;
-
-    for (int btn : {BTN_TOUCH, BTN_TOOL_FINGER, BTN_TOOL_DOUBLETAP, BTN_LEFT}) {
-        if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) goto fail;
-    }
-    // ABS_X/Y mirror finger 0 (single-touch); ABS_MT_* carry the two-finger MT-B stream.
-    for (int ax :
-         {ABS_X, ABS_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y}) {
-        if (::ioctl(fd, UI_SET_ABSBIT, ax) < 0) goto fail;
-    }
-
-    // DS4 native touchpad resolution; ABS_MT_SLOT caps at the two-contact pad.
-    if (!setupAbs(fd, ABS_X, 0, DS4_TOUCHPAD_RES_X - 1, 0, 0)) goto fail;
-    if (!setupAbs(fd, ABS_Y, 0, DS4_TOUCHPAD_RES_Y - 1, 0, 0)) goto fail;
-    if (!setupAbs(fd, ABS_MT_SLOT, 0, 1, 0, 0)) goto fail;
-    if (!setupAbs(fd, ABS_MT_TRACKING_ID, 0, 65535, 0, 0)) goto fail;
-    if (!setupAbs(fd, ABS_MT_POSITION_X, 0, DS4_TOUCHPAD_RES_X - 1, 0, 0)) goto fail;
-    if (!setupAbs(fd, ABS_MT_POSITION_Y, 0, DS4_TOUCHPAD_RES_Y - 1, 0, 0)) goto fail;
-
-    {
-        struct uinput_setup usetup{};
-        usetup.id.bustype = BUS_USB;
-        usetup.id.vendor = DS4_VID;
-        usetup.id.product = DS4_PID;
-        usetup.id.version = 0x0100;
-        std::snprintf(usetup.name, sizeof(usetup.name),
-                      "Satellite Virtual DualShock 4 Touchpad #%u", serial);
-        if (::ioctl(fd, UI_DEV_SETUP, &usetup) < 0) goto fail;
-    }
-
-    if (::ioctl(fd, UI_DEV_CREATE) < 0) goto fail;
-    return fd;
-
-fail:
+    struct uinput_setup usetup{};
+    usetup.id.bustype = BUS_USB;
+    usetup.id.vendor = DS4_VID;
+    usetup.id.product = DS4_PID;
+    usetup.id.version = 0x0100;
+    std::snprintf(usetup.name, sizeof(usetup.name), "Satellite Virtual DualShock 4 Touchpad #%u",
+                  serial);
+    const bool created = applyTouchpadCapabilities(fd) && ::ioctl(fd, UI_DEV_SETUP, &usetup) == 0 &&
+                         ::ioctl(fd, UI_DEV_CREATE) == 0;
+    if (created) return fd;
     ::close(fd);
     return -1;
 }
@@ -796,6 +795,59 @@ void GamepadAdapter::stopReader(uint32_t serial) {
     mtx_.lock();
 }
 
+// UI_FF_UPLOAD registers an effect: its magnitudes are cached under the
+// kernel's effect id, then the request is acked (the kernel keeps it pending
+// until then).
+void GamepadAdapter::onFfUpload(uint32_t serial, int fd, int requestId) {
+    struct uinput_ff_upload upload{};
+    upload.request_id = requestId;
+    if (::ioctl(fd, UI_BEGIN_FF_UPLOAD, &upload) != 0) return;
+    upload.retval = 0;
+    if (upload.effect.type == FF_RUMBLE) {
+        const Device::EffectMags m{
+            upload.effect.u.rumble.strong_magnitude,
+            upload.effect.u.rumble.weak_magnitude,
+        };
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = devices_.find(serial);
+        if (it != devices_.end()) it->second.effects[upload.effect.id] = m;
+    }
+    endFfRequest(fd, UI_END_FF_UPLOAD, &upload, "UI_END_FF_UPLOAD", serial);
+}
+
+// UI_FF_ERASE frees an effect; acked too, or the kernel rejects future uploads.
+void GamepadAdapter::onFfErase(uint32_t serial, int fd, int requestId) {
+    struct uinput_ff_erase erase{};
+    erase.request_id = requestId;
+    if (::ioctl(fd, UI_BEGIN_FF_ERASE, &erase) != 0) return;
+    erase.retval = 0;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = devices_.find(serial);
+        if (it != devices_.end()) it->second.effects.erase(erase.effect_id);
+    }
+    endFfRequest(fd, UI_END_FF_ERASE, &erase, "UI_END_FF_ERASE", serial);
+}
+
+// EV_FF plays (value > 0) or stops (value == 0) a registered effect. A stop, or
+// an effect the kernel never uploaded, reaches the dish as zero magnitudes.
+void GamepadAdapter::onFfPlay(uint32_t serial, int effectId, int playValue) {
+    RumbleReport rr{};
+    RumbleCallback cb;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto dit = devices_.find(serial);
+        if (dit == devices_.end()) return;
+        auto eit = dit->second.effects.find(effectId);
+        if (playValue > 0 && eit != dit->second.effects.end()) {
+            rr.strongMagnitude = eit->second.strong;
+            rr.weakMagnitude = eit->second.weak;
+        }
+        cb = rumbleCb_;
+    }
+    if (cb) cb(serial, rr);
+}
+
 // The loop is profile-agnostic: FF_RUMBLE has the same shape on every
 // identity this adapter publishes, so the reader never needs to know which
 // one it serves.
@@ -806,72 +858,27 @@ void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd) {
         pfds[0].events = POLLIN;
         pfds[1].fd = wakeFd;
         pfds[1].events = POLLIN;
-        int rc = ::poll(pfds, 2, -1);
+        const int rc = ::poll(pfds, 2, -1);
         if (rc < 0) {
             if (errno == EINTR) continue;
             return;
         }
         if (pfds[1].revents & POLLIN) return; // unplug / closeBus
-
         if (!(pfds[0].revents & POLLIN)) continue;
 
         struct input_event ev{};
-        ssize_t n = ::read(fd, &ev, sizeof(ev));
+        const ssize_t n = ::read(fd, &ev, sizeof(ev));
         if (n != (ssize_t)sizeof(ev)) {
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) continue;
             return;
         }
 
-        // FF handshake: UI_FF_UPLOAD registers an effect (cache its magnitudes);
-        // UI_FF_ERASE frees one (must be acked or the kernel rejects future
-        // uploads); EV_FF plays/stops it (value>0 play, ==0 stop).
         if (ev.type == EV_UINPUT && ev.code == UI_FF_UPLOAD) {
-            struct uinput_ff_upload upload{};
-            upload.request_id = ev.value;
-            if (::ioctl(fd, UI_BEGIN_FF_UPLOAD, &upload) == 0) {
-                upload.retval = 0;
-                int effectId = upload.effect.id;
-                if (upload.effect.type == FF_RUMBLE) {
-                    Device::EffectMags m{
-                        upload.effect.u.rumble.strong_magnitude,
-                        upload.effect.u.rumble.weak_magnitude,
-                    };
-                    std::lock_guard<std::mutex> lk(mtx_);
-                    auto it = devices_.find(serial);
-                    if (it != devices_.end()) it->second.effects[effectId] = m;
-                }
-                endFfRequest(fd, UI_END_FF_UPLOAD, &upload, "UI_END_FF_UPLOAD", serial);
-            }
+            onFfUpload(serial, fd, ev.value);
         } else if (ev.type == EV_UINPUT && ev.code == UI_FF_ERASE) {
-            struct uinput_ff_erase erase{};
-            erase.request_id = ev.value;
-            if (::ioctl(fd, UI_BEGIN_FF_ERASE, &erase) == 0) {
-                erase.retval = 0;
-                {
-                    std::lock_guard<std::mutex> lk(mtx_);
-                    auto it = devices_.find(serial);
-                    if (it != devices_.end()) it->second.effects.erase(erase.effect_id);
-                }
-                endFfRequest(fd, UI_END_FF_ERASE, &erase, "UI_END_FF_ERASE", serial);
-            }
+            onFfErase(serial, fd, ev.value);
         } else if (ev.type == EV_FF) {
-            int effectId = ev.code;
-            int playValue = ev.value;
-            RumbleReport rr{};
-            RumbleCallback cb;
-            {
-                std::lock_guard<std::mutex> lk(mtx_);
-                auto dit = devices_.find(serial);
-                if (dit == devices_.end()) continue;
-                auto eit = dit->second.effects.find(effectId);
-                if (playValue > 0 && eit != dit->second.effects.end()) {
-                    rr.strongMagnitude = eit->second.strong;
-                    rr.weakMagnitude = eit->second.weak;
-                }
-                // playValue == 0 leaves magnitudes at 0 (stop).
-                cb = rumbleCb_;
-            }
-            if (cb) cb(serial, rr);
+            onFfPlay(serial, ev.code, ev.value);
         }
     }
 }

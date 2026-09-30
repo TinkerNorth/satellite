@@ -309,6 +309,13 @@ class SessionService {
 #endif
 
   private:
+    // getConnectionsSnapshot's steps, one connection and one controller at a
+    // time, under the lock the caller holds.
+    ConnectionSnapshot::CtrlInfo snapshotController(const Controller& ctrl) const;
+    ConnectionSnapshot snapshotConnection(uint32_t token, const Connection& conn,
+                                          std::chrono::steady_clock::time_point now) const;
+    static DeviceLinkState linkStateAt(const Connection& conn,
+                                       std::chrono::steady_clock::time_point now);
     IGamepadPort& backend_;
     IClientPort& client_;
     ILogPort& log_;
@@ -385,6 +392,11 @@ class SessionService {
     // packet left.
     bool forwardRumbleLocked(Connection& conn, Controller& ctrl, uint16_t wireDurationMs,
                              bool force);
+    // Every feedback state a session's pads hold (light bar, trigger effects,
+    // player LEDs) that their caps admit, sent again once its client can first
+    // be reached. Never the mic lamp, rumble or audio (see the definition).
+    void resendFeedbackStateLocked(const Connection& conn);
+    void resendControllerFeedbackStateLocked(const Connection& conn, const Controller& ctrl);
     // The pad's audio working set, allocated on first use (see ControllerAudio).
     ControllerAudio& ensureControllerAudioLocked(Controller& ctrl);
     Connection* findByDeviceId(const std::string& deviceId);

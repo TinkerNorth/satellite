@@ -6,6 +6,8 @@
 #include "../src/platform/windows/config.h"
 #include "../src/platform/windows/crypto.h"
 #include "../src/net/pairing_keys.h"
+#include "../src/platform/windows/autostart_rule.h"
+#include "../src/platform/windows/tray_menu.h"
 
 #include <cstdint>
 #include <cstring>
@@ -393,6 +395,66 @@ static void testResolvePairingSharedKey() {
     EXPECT(k5.empty());
 }
 
+static void testRunEntryRule() {
+    TEST("runEntryNeedsWrite: an absent entry is written");
+    EXPECT(lifecycle::runEntryNeedsWrite("", "C:\\a\\satellite.exe", false));
+
+    TEST("runEntryNeedsWrite: an entry already pointing at this exe is rewritten, whatever "
+         "its quoting or case");
+    EXPECT(lifecycle::runEntryNeedsWrite("\"C:\\A\\SATELLITE.EXE\"", "C:\\a\\satellite.exe", true));
+    EXPECT(lifecycle::runEntryNeedsWrite("C:\\a\\satellite.exe", "C:\\a\\satellite.exe", true));
+
+    TEST("runEntryNeedsWrite: another exe that still exists is left alone");
+    EXPECT(!lifecycle::runEntryNeedsWrite("\"C:\\other\\satellite.exe\"", "C:\\a\\satellite.exe",
+                                          true));
+
+    TEST("runEntryNeedsWrite: another exe that is gone is replaced");
+    EXPECT(lifecycle::runEntryNeedsWrite("\"C:\\gone\\satellite.exe\"", "C:\\a\\satellite.exe",
+                                         false));
+
+    TEST("stripQuotes: only a matched pair comes off");
+    EXPECT(lifecycle::stripQuotes("\"x\"") == "x");
+    EXPECT(lifecycle::stripQuotes("\"x") == "\"x");
+    EXPECT(lifecycle::stripQuotes("x") == "x");
+    EXPECT(lifecycle::stripQuotes("\"") == "\"");
+}
+
+static void testUpdateMenuItem() {
+    using satellite::tray::updateMenuItemFor;
+
+    TEST("update menu: with no updater wired, the check is greyed");
+    const auto none = updateMenuItemFor(false, UpdateState::Idle, false, L"");
+    EXPECT(none.id == IDM_CHECK_UPDATES && (none.flags & MF_GRAYED) != 0);
+
+    TEST("update menu: a downloaded release installs, named");
+    const auto downloaded = updateMenuItemFor(true, UpdateState::Downloaded, true, L"2.2.0");
+    EXPECT(downloaded.id == IDM_INSTALL_UPDATE);
+    EXPECT(downloaded.label == L"Install Update 2.2.0");
+    EXPECT((downloaded.flags & MF_GRAYED) == 0);
+
+    TEST("update menu: an available release downloads, named");
+    const auto available = updateMenuItemFor(true, UpdateState::UpdateAvailable, true, L"2.2.0");
+    EXPECT(available.id == IDM_INSTALL_UPDATE);
+    EXPECT(available.label == L"Download Update 2.2.0...");
+
+    TEST("update menu: UpdateAvailable without an asset to offer falls back to a check");
+    EXPECT(updateMenuItemFor(true, UpdateState::UpdateAvailable, false, L"").id ==
+           IDM_CHECK_UPDATES);
+
+    TEST("update menu: a download, a verify or a check in flight is greyed");
+    for (const UpdateState st :
+         {UpdateState::Downloading, UpdateState::Verifying, UpdateState::Checking}) {
+        const auto busy = updateMenuItemFor(true, st, false, L"");
+        EXPECT(busy.id == IDM_CHECK_UPDATES && (busy.flags & MF_GRAYED) != 0);
+    }
+
+    TEST("update menu: idle offers a live check");
+    const auto idle = updateMenuItemFor(true, UpdateState::Idle, false, L"");
+    EXPECT(idle.id == IDM_CHECK_UPDATES);
+    EXPECT((idle.flags & MF_GRAYED) == 0);
+    EXPECT(idle.label == L"Check for Updates...");
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -413,6 +475,8 @@ int main() {
     testGetCurrentDate();
     testHexCodec();
     testResolvePairingSharedKey();
+    testRunEntryRule();
+    testUpdateMenuItem();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

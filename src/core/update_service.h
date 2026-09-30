@@ -23,6 +23,12 @@
 
 class ILogPort;
 
+// Whether one download progress report is worth a broadcast: a whole percent
+// when the size is known, a quarter megabyte when it is not, so a slow link
+// does not flood the dashboard and a fast one still moves the bar.
+bool progressWorthBroadcasting(uint64_t doneBefore, uint64_t totalBefore, uint64_t doneNow,
+                               uint64_t totalNow);
+
 class UpdateService {
   public:
     using StatusCallback = std::function<void(const UpdateStatusSnapshot&)>;
@@ -74,8 +80,18 @@ class UpdateService {
     void timerLoop();
 
     // State-machine helpers, all invoked from the worker thread.
+    // The worker's jobs, in the order they outrank each other.
+    enum class Job { Stop, Install, Download, Check };
+    Job takeNextJob();
+    void queueInstallIfWanted();
+    void queueDownloadIfWanted();
+
     void doCheck(bool userInitiated);
+    void settleCheck(UpdateState state, const UpdateInfo& info, LogLevel level,
+                     const std::string& message, const std::string& error);
     void doDownload();
+    bool beginDownload(UpdateInfo& info);
+    void onDownloadProgress(uint64_t soFar, uint64_t total);
     void doVerify();
     void doInstall();
 

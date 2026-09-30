@@ -7,7 +7,7 @@
 // lossy and version-dependent, so pinning bytes would pin the library version;
 // what must not drift is that a 20 ms window in comes back out as a 20 ms
 // window, that a tone survives as a tone, that concealment produces audio for a
-// frame that never arrived, and above all that the mic stream really carries
+// frame that never arrived, and above all that both streams really carry
 // in-band FEC -- which is an encoder-setting question, and exactly the sort of
 // thing that silently stops being true.
 #include "../src/adapters/audio/opus_codec.h"
@@ -81,6 +81,34 @@ bool sameSamples(const std::vector<int16_t>& a, const std::vector<int16_t>& b) {
         if (a[i] != b[i]) return false;
     }
     return true;
+}
+
+// A stream as the loss harness drives it: its codec, the audio a 20 ms window
+// carries, and how many interleaved samples that window holds.
+struct LossyStream {
+    Stream stream;
+    void (*fill)(std::vector<int16_t>&, int);
+    size_t windowSamples;
+};
+
+const LossyStream MIC_UNDER_LOSS = {Stream::Mic, fillMicFrame, MIC_FRAME};
+const LossyStream SPEAKER_UNDER_LOSS = {Stream::Speaker, fillSpeakerFrame, SPEAKER_FRAME};
+
+// Long enough that the last frame the harness drops still has a carrier packet
+// after it. The speaker also moves from fullband to super-wideband Hybrid inside
+// this run (at frame 9 on libopus 1.6.1), so both of its Hybrid shapes are seen.
+const int LOSS_RUN_FRAMES = 14;
+
+// RFC 6716 section 3.1: the top five bits of a packet's first byte are its
+// configuration, and configurations 12 to 15 are Hybrid: SILK, the layer that
+// carries in-band FEC, below CELT.
+const int TOC_CONFIG_SHIFT = 3;
+const int FIRST_HYBRID_CONFIG = 12;
+const int LAST_HYBRID_CONFIG = 15;
+
+bool isHybridPacket(const uint8_t* packet) {
+    const int config = packet[0] >> TOC_CONFIG_SHIFT;
+    return config >= FIRST_HYBRID_CONFIG && config <= LAST_HYBRID_CONFIG;
 }
 
 void test_micRoundTrip_preservesFrameAndSignal() {
@@ -275,22 +303,22 @@ void test_conceal_producesAFrameForNothing() {
     EXPECT_EQ(dec->conceal(nullptr, MIC_FRAME), (size_t)0);
 }
 
-// Encode a run of mic frames, drop `lost`, and decode the run twice from
-// identical decoder state: once recovering the hole from the carrier packet's
-// in-band FEC, once concealing it blind. Whether the two outputs differ is
-// exactly "did packet lost+1 carry a redundant copy of frame lost".
-bool fecBeatsPlcForFrame(int lost, double& outFecEnergy, double& outSourceEnergy) {
-    auto enc = OpusStreamEncoder::create(Stream::Mic);
-    auto decFec = OpusStreamDecoder::create(Stream::Mic);
-    auto decPlc = OpusStreamDecoder::create(Stream::Mic);
+// Encode a run of the stream's frames, drop `lost`, and decode the run twice
+// from identical decoder state: once recovering the hole from the carrier
+// packet's in-band FEC, once concealing it blind. Whether the two outputs
+// differ is exactly "did packet lost+1 carry a redundant copy of frame lost".
+bool fecBeatsPlcForFrame(const LossyStream& s, int lost, double& outFecEnergy,
+                         double& outSourceEnergy) {
+    auto enc = OpusStreamEncoder::create(s.stream);
+    auto decFec = OpusStreamDecoder::create(s.stream);
+    auto decPlc = OpusStreamDecoder::create(s.stream);
     if (!enc || !decFec || !decPlc) return false;
 
-    const int kFrames = 14;
     std::vector<std::vector<uint8_t>> packets;
     std::vector<std::vector<int16_t>> sources;
-    for (int f = 0; f < kFrames; f++) {
+    for (int f = 0; f < LOSS_RUN_FRAMES; f++) {
         std::vector<int16_t> src;
-        fillMicFrame(src, f);
+        s.fill(src, f);
         uint8_t buf[MAX_PACKET];
         const size_t bytes = enc->encode(src.data(), MIC_FRAME, buf, sizeof(buf));
         if (bytes == 0) return false;
@@ -298,39 +326,37 @@ bool fecBeatsPlcForFrame(int lost, double& outFecEnergy, double& outSourceEnergy
         sources.push_back(src);
     }
 
-    std::vector<int16_t> fecOut(MIC_FRAME, 0);
-    std::vector<int16_t> plcOut(MIC_FRAME, 0);
-    std::vector<int16_t> scratch(MIC_FRAME, 0);
-    for (int f = 0; f < kFrames; f++) {
+    std::vector<int16_t> fecOut(s.windowSamples, 0);
+    std::vector<int16_t> plcOut(s.windowSamples, 0);
+    std::vector<int16_t> scratch(s.windowSamples, 0);
+    for (int f = 0; f < LOSS_RUN_FRAMES; f++) {
         if (f == lost) {
             // Recovered from packet f+1, which is what the jitter window hands
             // over as a gap's carrier. Order matters: the FEC copy is decoded
             // BEFORE the carrier's own frame.
             if (decFec->decodeFec(packets[f + 1].data(), packets[f + 1].size(), fecOut.data(),
-                                  fecOut.size()) != MIC_FRAME) {
+                                  MIC_FRAME) != MIC_FRAME) {
                 return false;
             }
-            if (decPlc->conceal(plcOut.data(), plcOut.size()) != MIC_FRAME) return false;
+            if (decPlc->conceal(plcOut.data(), MIC_FRAME) != MIC_FRAME) return false;
             continue;
         }
-        decFec->decode(packets[f].data(), packets[f].size(), scratch.data(), scratch.size());
-        decPlc->decode(packets[f].data(), packets[f].size(), scratch.data(), scratch.size());
+        decFec->decode(packets[f].data(), packets[f].size(), scratch.data(), MIC_FRAME);
+        decPlc->decode(packets[f].data(), packets[f].size(), scratch.data(), MIC_FRAME);
     }
 
-    outFecEnergy = energy(fecOut.data(), MIC_FRAME, 1, 0);
-    outSourceEnergy = energy(sources[lost].data(), MIC_FRAME, 1, 0);
+    outFecEnergy = energy(fecOut.data(), s.windowSamples, 1, 0);
+    outSourceEnergy = energy(sources[lost].data(), s.windowSamples, 1, 0);
     return !sameSamples(fecOut, plcOut);
 }
 
-void test_fecRecoversALostFrame() {
-    TEST("opus mic: FEC in the next packet recovers most lost frames; PLC alone cannot");
-    // Every frame in a run, not one: whether a given packet carries LBRR is an
-    // encoder decision made per packet, and a mode switch can make the two
-    // decode paths diverge for a frame on its own. A strict majority separates
-    // the two worlds cleanly -- measured at 7/8 with in-band FEC on and 2/8
-    // with it off, which is the regression this pins. Nothing else would catch
-    // it: a stream with no FEC encodes, decodes and sounds perfectly fine right
-    // up until the first packet goes missing.
+// Every frame in a run, not one: whether a given packet carries LBRR is an
+// encoder decision made per packet, and a mode switch can make the two decode
+// paths diverge for a frame on its own. A strict majority separates the two
+// worlds cleanly. Nothing else would catch the regression: a stream with no FEC
+// encodes, decodes and sounds perfectly fine right up until the first packet
+// goes missing.
+void expectFecRecoversMostLostFrames(const LossyStream& s) {
     const int first = 4;
     const int last = 11;
     const int trials = last - first + 1;
@@ -339,11 +365,11 @@ void test_fecRecoversALostFrame() {
     double sourceEnergy = 0.0;
     for (int lost = first; lost <= last; lost++) {
         double e = 0.0;
-        double s = 0.0;
-        if (fecBeatsPlcForFrame(lost, e, s)) {
+        double src = 0.0;
+        if (fecBeatsPlcForFrame(s, lost, e, src)) {
             recovered++;
             fecEnergy = e;
-            sourceEnergy = s;
+            sourceEnergy = src;
         }
     }
     EXPECT(recovered * 2 > trials);
@@ -354,6 +380,41 @@ void test_fecRecoversALostFrame() {
     EXPECT(sourceEnergy > 0.0);
     EXPECT(fecEnergy > sourceEnergy * 0.1);
     EXPECT(fecEnergy < sourceEnergy * 10.0);
+}
+
+void test_fecRecoversALostFrame() {
+    TEST("opus mic: FEC in the next packet recovers most lost frames; PLC alone cannot");
+    // Measured at 7/8 with in-band FEC on and 2/8 with it off.
+    expectFecRecoversMostLostFrames(MIC_UNDER_LOSS);
+}
+
+void test_speakerEncodesEveryPacketAsHybrid() {
+    TEST("opus speaker: every packet is Hybrid, never CELT-only, so each can carry FEC");
+    // The AUDIO application at 96 kbps stereo would pick CELT, which has no
+    // in-band FEC; the loss hint with FEC on is what forces SILK in. Measured on
+    // libopus 1.6.1: 14/14 Hybrid as configured, 14/14 CELT with either off.
+    auto enc = OpusStreamEncoder::create(Stream::Speaker);
+    EXPECT(enc != nullptr);
+    if (!enc) return;
+
+    std::vector<int16_t> src;
+    uint8_t packet[MAX_PACKET];
+    int hybrid = 0;
+    for (int f = 0; f < LOSS_RUN_FRAMES; f++) {
+        fillSpeakerFrame(src, f);
+        const size_t bytes = enc->encode(src.data(), MIC_FRAME, packet, sizeof(packet));
+        EXPECT(bytes > 0);
+        const bool encodedAsHybrid = bytes > 0 && isHybridPacket(packet);
+        if (encodedAsHybrid) hybrid++;
+    }
+    EXPECT_EQ(hybrid, LOSS_RUN_FRAMES);
+}
+
+void test_speakerFecRecoversALostFrame() {
+    TEST("opus speaker: FEC in the next packet recovers most lost frames; PLC alone cannot");
+    // Measured on libopus 1.6.1 at 8/8 as configured, 0/8 with either the loss
+    // hint or FEC off.
+    expectFecRecoversMostLostFrames(SPEAKER_UNDER_LOSS);
 }
 
 void test_decodeFecFallsBackToConcealment() {
@@ -530,6 +591,8 @@ int main() {
     test_decodeRefusesAPacketLongerThanTheWireWindow();
     test_conceal_producesAFrameForNothing();
     test_fecRecoversALostFrame();
+    test_speakerEncodesEveryPacketAsHybrid();
+    test_speakerFecRecoversALostFrame();
     test_decodeFecFallsBackToConcealment();
     test_factoryPinsTheStreamFormats();
     test_encoderRespectsTheOutputCeiling();

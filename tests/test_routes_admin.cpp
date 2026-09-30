@@ -721,6 +721,23 @@ int main() {
             Json j = parseJson(res2->body);
             EXPECT(j.contains("entries") && j["entries"].is_array() && j["entries"].empty());
         }
+
+        // The viewer sends back the `seq` it was given, so the entry written right after
+        // that reply has to be the first one in the next. It used to be skipped.
+        TEST("GET /api/logs?since=<seq>: the entry written after that seq is the first back");
+        logMsg(LogLevel::INFO, "route-test", "marker-after-seq");
+        auto res3 = cli.Get(("/api/logs?since=" + std::to_string(seq)).c_str());
+        EXPECT(res3 && res3->status == 200);
+        if (res3) {
+            Json j = parseJson(res3->body);
+            const bool haveEntries =
+                j.contains("entries") && j["entries"].is_array() && !j["entries"].empty();
+            EXPECT(haveEntries);
+            if (haveEntries) {
+                EXPECT(static_cast<uint64_t>(jsonInt(j["entries"][0], "seq")) == seq);
+                EXPECT(res3->body.find("marker-after-seq") != std::string::npos);
+            }
+        }
     }
 
     // ---- SSE endpoint presence -----------------------------------------------------

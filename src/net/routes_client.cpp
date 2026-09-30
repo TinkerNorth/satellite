@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Client API (sender-facing HTTPS) route handlers, moved verbatim from
-// webserver.cpp in the D10 decomposition. Handlers and builders used only by
-// this surface stay file-static; the route registrations were already written
-// against a local `server` reference, so no line inside the moved code
-// changed.
+// Client API (sender-facing HTTPS) route handlers. Each handler is a named
+// function and registerClientRoutes is the table that binds paths to them;
+// the JSON builders used only by this surface stay file-static.
 #include "routes_client.h"
 #include "routes_common.h"
 #include "crypto.h"
@@ -14,6 +12,8 @@
 #include "pairing_service.h"
 #include "session_crypto.h"
 #include "core/catalog.h"
+#include "core/descriptor_json.h"
+#include "core/hex.h"
 #include "core/json.h"
 #include "core/session_service.h"
 #include "core/version.h"
@@ -21,27 +21,26 @@
 
 #include <sodium.h>
 
+#include <algorithm>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+using satellite::capsJsonObj;
 using satellite::Json;
 using satellite::jsonBool;
 using satellite::jsonDump;
 using satellite::jsonObject;
 using satellite::JsonOut;
+using satellite::jsonRequestBody;
 using satellite::jsonStr;
 using satellite::jsonTryInt;
+using satellite::parseControllerDescriptors;
+using satellite::parseDescriptorObject;
+using satellite::saturateToByte;
 
-static JsonOut capsJsonObj(uint16_t caps) {
-    JsonOut j;
-    j["rumble"] = (caps & CAP_RUMBLE) != 0;
-    j["motion"] = (caps & CAP_MOTION) != 0;
-    j["analogTriggers"] = (caps & CAP_ANALOG_TRIGGERS) != 0;
-    j["lightbar"] = (caps & CAP_LIGHTBAR) != 0;
-    j["triggerEffects"] = (caps & CAP_TRIGGER_EFFECTS) != 0;
-    j["playerLeds"] = (caps & CAP_PLAYER_LEDS) != 0;
-    j["mic"] = (caps & CAP_MIC) != 0;
-    j["speaker"] = (caps & CAP_SPEAKER) != 0;
-    j["hapticAudio"] = (caps & CAP_HAPTIC_AUDIO) != 0;
-    return j;
-}
+using Request = httplib::Request;
+using Response = httplib::Response;
 
 struct ClientAuth {
     std::string deviceId;
@@ -49,58 +48,49 @@ struct ClientAuth {
     uint8_t pairingKey[CRYPTO_KEY_SIZE];
 };
 
-static std::string headerOrBody(const httplib::Request& req, const char* header,
-                                const char* bodyKey) {
-    auto hdr = req.headers.find(header);
+static std::string headerOrBody(const Request& req, const char* header, const char* bodyKey) {
+    const auto hdr = req.headers.find(header);
     if (hdr != req.headers.end() && !hdr->second.empty()) return hdr->second;
     if (!req.body.empty()) return jsonStr(parseBody(req.body), bodyKey);
     return "";
 }
 
-// Every authenticated client route requires a paired deviceId AND an hmacProof
-// of the pairing key, so a diverged key fails HERE with a terminal 401 instead
-// of a silently-undecryptable UDP session. The PairedDevice is copied by value
-// under g_configMtx so a concurrent unpair can't dangle it.
-static bool clientAuthed(const httplib::Request& req, httplib::Response& res, ClientAuth& out) {
-    out.deviceId = headerOrBody(req, "X-Device-Id", "deviceId");
-    const std::string proof = headerOrBody(req, "X-Hmac-Proof", "hmacProof");
-
-    const char* code = "NOT_PAIRED";
-    if (!out.deviceId.empty()) {
-        bool found = false;
-        {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            for (const auto& d : g_config.pairedDevices) {
-                if (d.id == out.deviceId) {
-                    out.device = d;
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if (found) {
-            if (hexDecode(out.device.sharedKeyHex, out.pairingKey, CRYPTO_KEY_SIZE) &&
-                verifyHmacProof(out.pairingKey, out.deviceId, proof)) {
-                return true;
-            }
-            code = "BAD_PROOF";
-        }
-    }
-
-    if (std::string(code) == "BAD_PROOF") {
+// The 401 every unauthenticated client call gets, counted by cause: a stranger
+// is NOT_PAIRED, a paired device with the wrong key is BAD_PROOF, and the two
+// never swap, so a stranger learns nothing about which ids are paired.
+static void rejectUnauthorized(const Request& req, Response& res, const char* code,
+                               const std::string& deviceId) {
+    const bool badProof = std::string(code) == "BAD_PROOF";
+    if (badProof) {
         satellite::g_wire.authBadProof.fetch_add(1, std::memory_order_relaxed);
     } else {
         satellite::g_wire.authNotPaired.fetch_add(1, std::memory_order_relaxed);
     }
     logMsg(LogLevel::WARN, "client",
            "401 unauthorized " + req.method + " " + req.path + " (" + code +
-               (out.deviceId.empty() ? ", no deviceId supplied" : ", deviceId " + out.deviceId) +
-               ")");
+               (deviceId.empty() ? ", no deviceId supplied" : ", deviceId " + deviceId) + ")");
     res.status = 401;
     JsonOut err;
     err["error"] = "unauthorized";
     err["code"] = code;
-    res.set_content(jsonDump(err), "application/json");
+    replyJson(res, jsonDump(err));
+}
+
+// Every authenticated client route requires a paired deviceId AND an hmacProof
+// of the pairing key, so a diverged key fails HERE with a terminal 401 instead
+// of a silently-undecryptable UDP session.
+static bool clientAuthed(const Request& req, Response& res, ClientAuth& out) {
+    out.deviceId = headerOrBody(req, "X-Device-Id", "deviceId");
+    const std::string proof = headerOrBody(req, "X-Hmac-Proof", "hmacProof");
+
+    const char* code = "NOT_PAIRED";
+    if (!out.deviceId.empty() && findPairedDevice(out.deviceId, out.device)) {
+        const bool proven = hexDecode(out.device.sharedKeyHex, out.pairingKey, CRYPTO_KEY_SIZE) &&
+                            verifyHmacProof(out.pairingKey, out.deviceId, proof);
+        if (proven) return true;
+        code = "BAD_PROOF";
+    }
+    rejectUnauthorized(req, res, code, out.deviceId);
     return false;
 }
 
@@ -108,7 +98,7 @@ static bool clientAuthed(const httplib::Request& req, httplib::Response& res, Cl
 // session on the client's offer; an absent field is a pre-versioning client and
 // reads as 1. Only an out-of-range offer is refused, with `supported` (the newest
 // this satellite speaks) telling the client which side must update.
-static bool protocolVersionOk(const std::string& body, httplib::Response& res, long& pv) {
+static bool protocolVersionOk(const std::string& body, Response& res, long& pv) {
     pv = 1;
     jsonTryInt(parseBody(body), "protocolVersion", pv);
     if (pv >= PROTOCOL_VERSION_MIN && pv <= PROTOCOL_VERSION) return true;
@@ -117,61 +107,8 @@ static bool protocolVersionOk(const std::string& body, httplib::Response& res, l
     err["error"] = "protocol version unsupported";
     err["supported"] = PROTOCOL_VERSION;
     err["supportedMin"] = PROTOCOL_VERSION_MIN;
-    res.set_content(jsonDump(err), "application/json");
+    replyJson(res, jsonDump(err));
     return false;
-}
-
-// `type` is REQUIRED: a descriptor without it would force a server-side default
-// type, the default-then-correct bug class this contract removes.
-static bool parseDescriptorObject(const Json& obj, bool requireIdx, ControllerDescriptor& d) {
-    long idx = 0;
-    if (jsonTryInt(obj, "ctrlIdx", idx)) {
-        if (idx < 0) return false;
-        d.ctrlIdx = idx > 255 ? 255 : static_cast<uint8_t>(idx);
-    } else if (requireIdx) {
-        return false;
-    }
-    long type = 0;
-    if (!jsonTryInt(obj, "type", type) || type < 0) return false;
-    // Out-of-range values pass through; the service reports invalidType per
-    // controller rather than failing the whole request.
-    d.type = type > 255 ? 255 : static_cast<uint8_t>(type);
-
-    d.caps = 0;
-    const Json caps = jsonObject(obj, "caps");
-    if (jsonBool(caps, "rumble")) d.caps |= CAP_RUMBLE;
-    if (jsonBool(caps, "motion")) d.caps |= CAP_MOTION;
-    if (jsonBool(caps, "analogTriggers")) d.caps |= CAP_ANALOG_TRIGGERS;
-    if (jsonBool(caps, "lightbar")) d.caps |= CAP_LIGHTBAR;
-    if (jsonBool(caps, "triggerEffects")) d.caps |= CAP_TRIGGER_EFFECTS;
-    if (jsonBool(caps, "playerLeds")) d.caps |= CAP_PLAYER_LEDS;
-    if (jsonBool(caps, "mic")) d.caps |= CAP_MIC;
-    if (jsonBool(caps, "speaker")) d.caps |= CAP_SPEAKER;
-    if (jsonBool(caps, "hapticAudio")) d.caps |= CAP_HAPTIC_AUDIO;
-
-    d.preferredBackend = jsonStr(obj, "preferredBackend");
-
-    const std::string mode = jsonStr(obj, "touchpadMode");
-    if (mode == "ds4") {
-        d.touchpadMode = TOUCHPAD_MODE_DS4;
-    } else if (mode == "mouse") {
-        d.touchpadMode = TOUCHPAD_MODE_MOUSE;
-    } else {
-        d.touchpadMode = TOUCHPAD_MODE_OFF;
-    }
-    return true;
-}
-
-static bool parseControllerDescriptors(const Json& body, std::vector<ControllerDescriptor>& out) {
-    auto it = body.find("controllers");
-    if (it == body.end() || !it->is_array()) return true; // absent → no descriptors
-    for (const auto& obj : *it) {
-        if (!obj.is_object()) continue; // ignore non-object array entries, as before
-        ControllerDescriptor d;
-        if (!parseDescriptorObject(obj, /*requireIdx=*/true, d)) return false;
-        out.push_back(d);
-    }
-    return true;
 }
 
 static JsonOut controllerApplyObj(const ControllerApplyResult& r) {
@@ -199,12 +136,9 @@ static JsonOut mouseControlObj(bool granted, const std::string& denyReason) {
 }
 
 static std::string buildUpsertResponseJson(const SessionUpsertResult& r) {
-    char tokenHex[9];
-    snprintf(tokenHex, sizeof(tokenHex), "%08x", r.token);
-
     JsonOut j;
     j["connectionId"] = r.connectionId;
-    j["token"] = std::string(tokenHex);
+    j["token"] = hexEncodeBE32(r.token);
     j["sessionSalt"] = hexEncode(r.sessionSalt, SESSION_SALT_SIZE);
     j["epoch"] = r.epoch;
     j["maxControllers"] = r.maxControllers;
@@ -218,6 +152,30 @@ static std::string buildUpsertResponseJson(const SessionUpsertResult& r) {
     return jsonDump(j);
 }
 
+static JsonOut sessionViewControllerObj(const SessionService::SessionView::CtrlView& c) {
+    JsonOut o;
+    o["ctrlIdx"] = c.ctrlIdx;
+    o["active"] = true;
+    o["appliedType"] = c.appliedType;
+    o["caps"] = capsJsonObj(c.caps);
+    o["touchpadMode"] = touchpadModeName(c.touchpadMode);
+    if (c.backendId.empty()) {
+        o["backend"] = nullptr;
+    } else {
+        o["backend"] = c.backendId;
+    }
+    if (c.preferredBackend.empty()) {
+        o["preferredBackend"] = nullptr;
+    } else {
+        o["preferredBackend"] = c.preferredBackend;
+    }
+    JsonOut motion;
+    motion["sinkSupportedForType"] = c.motionSinkSupportedForType;
+    motion["backendOk"] = c.motionBackendOk;
+    o["motion"] = std::move(motion);
+    return o;
+}
+
 static std::string buildSessionViewJson(const SessionService::SessionView& v) {
     JsonOut j;
     j["connectionId"] = v.connectionId;
@@ -226,29 +184,7 @@ static std::string buildSessionViewJson(const SessionService::SessionView& v) {
     j["protocolVersion"] = v.protocolVersion;
     j["maxControllers"] = MAX_BACKEND_CONTROLLERS;
     JsonOut controllers = JsonOut::array();
-    for (const auto& c : v.controllers) {
-        JsonOut o;
-        o["ctrlIdx"] = c.ctrlIdx;
-        o["active"] = true;
-        o["appliedType"] = c.appliedType;
-        o["caps"] = capsJsonObj(c.caps);
-        o["touchpadMode"] = touchpadModeName(c.touchpadMode);
-        if (c.backendId.empty()) {
-            o["backend"] = nullptr;
-        } else {
-            o["backend"] = c.backendId;
-        }
-        if (c.preferredBackend.empty()) {
-            o["preferredBackend"] = nullptr;
-        } else {
-            o["preferredBackend"] = c.preferredBackend;
-        }
-        JsonOut motion;
-        motion["sinkSupportedForType"] = c.motionSinkSupportedForType;
-        motion["backendOk"] = c.motionBackendOk;
-        o["motion"] = std::move(motion);
-        controllers.push_back(std::move(o));
-    }
+    for (const auto& c : v.controllers) controllers.push_back(sessionViewControllerObj(c));
     j["controllers"] = std::move(controllers);
     JsonOut hostFeatures;
     hostFeatures["mouseControl"] = mouseControlObj(v.mouseControlGranted, "");
@@ -258,15 +194,19 @@ static std::string buildSessionViewJson(const SessionService::SessionView& v) {
 
 // PUT /api/connections: the declarative upsert. Connect + full topology = ONE
 // call; re-PUT converges; partial success rides in the body, never the status.
-static void upsertConnectionRoute(SessionService& svc, const httplib::Request& req,
-                                  httplib::Response& res) {
+static void upsertConnectionRoute(SessionService& svc, const Request& req, Response& res) {
     if (!g_appRunning) {
-        res.status = 503;
-        res.set_content(R"({"error":"shutting down"})", "application/json");
+        replyError(res, 503, "shutting down");
         return;
     }
     ClientAuth auth;
     if (!clientAuthed(req, res, auth)) return;
+    // Read as {}, a garbled body would be the empty desired set and unplug every pad.
+    Json body;
+    if (!jsonRequestBody(req.body, body)) {
+        replyError(res, 400, "body must be a JSON object");
+        return;
+    }
     long pv = PROTOCOL_VERSION;
     if (!protocolVersionOk(req.body, res, pv)) return;
     if (pv < PROTOCOL_VERSION) {
@@ -276,7 +216,6 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
                    "): update the Dish app for the full feature set");
     }
 
-    Json body = parseBody(req.body);
     std::string deviceName = jsonStr(body, "deviceName");
     if (deviceName.empty()) deviceName = auth.device.name;
 
@@ -286,39 +225,135 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
                "PUT /api/connections: malformed controllers array (ctrlIdx and type are "
                "required) from " +
                    auth.deviceId);
-        res.status = 400;
-        res.set_content(R"({"error":"controllers entries require ctrlIdx and type"})",
-                        "application/json");
+        replyError(res, 400, "controllers entries require ctrlIdx and type");
         return;
     }
 
-    bool mouseRequested = jsonBool(jsonObject(body, "hostFeatures"), "mouseControl");
+    const bool mouseRequested = jsonBool(jsonObject(body, "hostFeatures"), "mouseControl");
 
-    auto result = svc.upsertSession(auth.deviceId, deviceName, req.remote_addr, auth.pairingKey,
-                                    descriptors, mouseRequested, static_cast<int>(pv));
+    const auto result =
+        svc.upsertSession(auth.deviceId, deviceName, req.remote_addr, auth.pairingKey, descriptors,
+                          mouseRequested, static_cast<int>(pv));
     if (!result.ok) {
-        res.status = 500;
-        JsonOut err;
-        err["error"] = result.error;
-        res.set_content(jsonDump(err), "application/json");
+        replyError(res, 500, result.error);
         return;
     }
+    refreshPairedDeviceIdentity(auth.deviceId, req.remote_addr, deviceName);
+    replyJson(res, buildUpsertResponseJson(result));
+}
 
-    // Refresh the paired record's last-seen identity (name can change on the
-    // client between sessions).
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        for (auto& d : g_config.pairedDevices) {
-            if (d.id == auth.deviceId) {
-                d.lastIP = req.remote_addr;
-                d.name = deviceName;
-                break;
-            }
-        }
-        saveConfig(g_config);
+// What one POST /api/pair carries. Read once; each path below takes what it
+// needs.
+struct PairRequest {
+    std::string deviceId;
+    std::string deviceName;
+    std::string pin;         // server-shown PIN (Path A)
+    std::string clientPin;   // dish-shown PIN (Path B)
+    std::string clientPkHex; // client's X25519 public key
+    std::string hmacProof;   // key-rotation proof
+    std::string clientIP;
+    long protocolVersion = PROTOCOL_VERSION;
+};
+
+static PairRequest readPairRequest(const Request& req) {
+    const Json body = parseBody(req.body);
+    PairRequest pr;
+    pr.deviceId = jsonStr(body, "deviceId");
+    pr.deviceName = jsonStr(body, "deviceName");
+    pr.pin = jsonStr(body, "pin");
+    pr.clientPin = jsonStr(body, "clientPin");
+    pr.clientPkHex = jsonStr(body, "publicKey");
+    pr.hmacProof = jsonStr(body, "hmacProof");
+    pr.clientIP = req.remote_addr;
+    return pr;
+}
+
+// Key rotation / re-pair with proof of the current key. False when the proof
+// does not hold (or the record vanished under it), in which case the caller
+// falls through to the PIN paths, identical to a fresh pairing attempt.
+static bool tryRotateKey(SessionService& svc, const PairRequest& pr, Response& res) {
+    PairedDevice dev;
+    uint8_t currentKey[CRYPTO_KEY_SIZE];
+    const bool proven = findPairedDevice(pr.deviceId, dev) &&
+                        hexDecode(dev.sharedKeyHex, currentKey, CRYPTO_KEY_SIZE) &&
+                        verifyHmacProof(currentKey, pr.deviceId, pr.hmacProof);
+    std::string newKeyHex;
+    const bool rotated = proven && rotatePairedDeviceKey(pr.deviceId, pr.clientIP, newKeyHex);
+    if (!rotated) {
+        logMsg(LogLevel::WARN, "pairing",
+               "Rejected proof-based re-pair for " + pr.deviceId + " (" + pr.clientIP + ")");
+        return false;
+    }
+    // The old key dies with the rotation, so any live session keyed on it
+    // must die too.
+    svc.closeSessionsForDevice(pr.deviceId, CLOSE_REASON_REPLACED);
+    logMsg(LogLevel::INFO, "pairing",
+           "Rotated pairing key for " + pr.deviceId + " (" + pr.clientIP + ")");
+    JsonOut ok;
+    ok["ok"] = true;
+    ok["message"] = "key rotated";
+    ok["sharedKey"] = newKeyHex;
+    ok["protocolVersion"] = pr.protocolVersion;
+    replyJson(res, jsonDump(ok));
+    return true;
+}
+
+// Path A: the dish entered the operator's server-generated PIN. True when it
+// answered, either way; false on a wrong PIN, which falls through.
+static bool pairWithServerPin(SessionService& svc, const PairRequest& pr, Response& res) {
+    uint8_t serverPk[32];
+    uint8_t serverSk[32];
+    generateKeyPair(serverPk, serverSk);
+
+    // Key resolved BEFORE the PIN: a successful verifyPin consumes and rotates
+    // the operator PIN, which a malformed key must not burn.
+    std::string sharedKeyHex;
+    const PairingKeyOutcome outcome =
+        resolvePairingSharedKey(pr.clientPkHex, serverPk, serverSk, sharedKeyHex);
+    if (outcome == PairingKeyOutcome::InvalidClientKey) {
+        sodium_memzero(serverSk, 32);
+        logMsg(LogLevel::WARN, "pairing",
+               "Rejected pairing: unusable client public key from " + pr.deviceId + " (" +
+                   pr.clientIP + ")");
+        replyJson(res, R"({"ok":false,"error":"invalid public key"})");
+        return true;
+    }
+    if (!verifyPin(pr.pin)) {
+        sodium_memzero(serverSk, 32);
+        return false;
     }
 
-    res.set_content(buildUpsertResponseJson(result), "application/json");
+    upsertPairedDevice(pr.deviceId, pr.deviceName, pr.clientIP, sharedKeyHex);
+    // A re-pair invalidates the previous key; a session still keyed on it
+    // would churn undecryptably, so close it now.
+    svc.closeSessionsForDevice(pr.deviceId, CLOSE_REASON_REPLACED);
+
+    const std::string serverPkHex = hexEncode(serverPk, 32);
+    sodium_memzero(serverSk, 32);
+    logMsg(LogLevel::INFO, "pairing",
+           "Paired device via server PIN: " + pr.deviceId + " (" + pr.clientIP + ")");
+    JsonOut ok;
+    ok["ok"] = true;
+    ok["message"] = "paired successfully";
+    if (outcome == PairingKeyOutcome::Derived) {
+        ok["serverPublicKey"] = serverPkHex;
+    } else {
+        ok["sharedKey"] = sharedKeyHex;
+    }
+    ok["protocolVersion"] = pr.protocolVersion;
+    replyJson(res, jsonDump(ok));
+    return true;
+}
+
+// Path B: register the dish's request; it then polls /api/pair/status. The
+// clientPin is never echoed server-side; the operator must read it off the
+// dish, which is what makes the accept meaningful.
+static void registerClientPinRequest(const PairRequest& pr, Response& res) {
+    submitPairRequest(pr.deviceId, pr.deviceName, pr.clientIP, pr.clientPin);
+    logMsg(LogLevel::INFO, "pairing",
+           "Pairing request from " + (pr.deviceName.empty() ? pr.deviceId : pr.deviceName) + " (" +
+               pr.clientIP + ") awaiting operator approval");
+    replyJson(res, R"({"ok":false,"pending":true,"message":"awaiting approval on the satellite"})");
 }
 
 // Dual-path device pairing over HTTPS.
@@ -329,144 +364,144 @@ static void upsertConnectionRoute(SessionService& svc, const httplib::Request& r
 // There is NO PIN-free already-paired short-circuit: handing the stored key to
 // anyone who learned a deviceId would let any LAN actor exfiltrate it.
 // Always 200 on the PIN paths; the sender classifies on `ok`/`pending`.
-static void pairRoute(SessionService& svc, const httplib::Request& req, httplib::Response& res) {
-    Json body = parseBody(req.body);
-    auto deviceId = jsonStr(body, "deviceId");
-    auto deviceName = jsonStr(body, "deviceName");
-    auto pin = jsonStr(body, "pin");               // server-shown PIN (Path A)
-    auto clientPin = jsonStr(body, "clientPin");   // dish-shown PIN (Path B)
-    auto clientPkHex = jsonStr(body, "publicKey"); // client's X25519 public key
-    auto hmacProof = jsonStr(body, "hmacProof");   // key-rotation proof
-    const std::string clientIP = req.remote_addr;
+static void pairRoute(SessionService& svc, const Request& req, Response& res) {
+    PairRequest pr = readPairRequest(req);
+    if (pr.deviceId.empty()) {
+        replyJson(res, R"({"ok":false,"error":"missing deviceId"})");
+        return;
+    }
+    if (!protocolVersionOk(req.body, res, pr.protocolVersion)) return;
+    if (!pr.hmacProof.empty() && tryRotateKey(svc, pr, res)) return;
+    if (!pr.pin.empty() && pairWithServerPin(svc, pr, res)) return;
+    if (!pr.clientPin.empty()) {
+        registerClientPinRequest(pr, res);
+        return;
+    }
+    logMsg(LogLevel::WARN, "pairing", "Invalid or empty PIN attempt from " + pr.clientIP);
+    replyJson(res, R"({"ok":false,"error":"invalid or expired PIN"})");
+}
 
+// Path-B poll. No device auth (not paired yet); the minted key is handed back
+// exactly once on approval (pollPairRequest clears it).
+static void pairStatusRoute(const Request& req, Response& res) {
+    const std::string deviceId = req.has_param("deviceId") ? req.get_param_value("deviceId") : "";
     if (deviceId.empty()) {
-        res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
+        res.status = 400;
+        replyJson(res, R"({"ok":false,"error":"missing deviceId"})");
         return;
     }
-    long pv = PROTOCOL_VERSION;
-    if (!protocolVersionOk(req.body, res, pv)) return;
-
-    // Key rotation / re-pair with proof of the current key. A failed proof
-    // falls through to the PIN paths, identical to a fresh pairing attempt.
-    if (!hmacProof.empty()) {
-        PairedDevice dev;
-        bool found = false;
-        {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            for (const auto& d : g_config.pairedDevices) {
-                if (d.id == deviceId) {
-                    dev = d;
-                    found = true;
-                    break;
-                }
-            }
-        }
-        uint8_t currentKey[CRYPTO_KEY_SIZE];
-        if (found && hexDecode(dev.sharedKeyHex, currentKey, CRYPTO_KEY_SIZE) &&
-            verifyHmacProof(currentKey, deviceId, hmacProof)) {
-            std::string newKeyHex;
-            rotatePairedDeviceKey(deviceId, clientIP, newKeyHex);
-            // The old key dies with the rotation, so any live session keyed on
-            // it must die too.
-            svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
-            logMsg(LogLevel::INFO, "pairing",
-                   "Rotated pairing key for " + deviceId + " (" + clientIP + ")");
-            JsonOut ok;
-            ok["ok"] = true;
-            ok["message"] = "key rotated";
-            ok["sharedKey"] = newKeyHex;
-            ok["protocolVersion"] = pv;
-            res.set_content(jsonDump(ok), "application/json");
-            return;
-        }
-        logMsg(LogLevel::WARN, "pairing",
-               "Rejected proof-based re-pair for " + deviceId + " (" + clientIP + ")");
-    }
-
-    // Path A: dish entered the operator's server-generated PIN.
-    if (!pin.empty()) {
-        uint8_t serverPk[32], serverSk[32];
-        generateKeyPair(serverPk, serverSk);
-
-        // Key resolved BEFORE the PIN: a successful verifyPin consumes and
-        // rotates the operator PIN, which a malformed key must not burn.
-        std::string sharedKeyHex;
-        PairingKeyOutcome outcome =
-            resolvePairingSharedKey(clientPkHex, serverPk, serverSk, sharedKeyHex);
-        if (outcome == PairingKeyOutcome::InvalidClientKey) {
-            sodium_memzero(serverSk, 32);
-            logMsg(LogLevel::WARN, "pairing",
-                   "Rejected pairing: unusable client public key from " + deviceId + " (" +
-                       clientIP + ")");
-            res.set_content(R"({"ok":false,"error":"invalid public key"})", "application/json");
-            return;
-        }
-
-        if (verifyPin(pin)) {
-            upsertPairedDevice(deviceId, deviceName, clientIP, sharedKeyHex);
-            // A re-pair invalidates the previous key; a session still keyed on
-            // it would churn undecryptably, so close it now.
-            svc.closeSessionsForDevice(deviceId, CLOSE_REASON_REPLACED);
-
-            std::string serverPkHex = hexEncode(serverPk, 32);
-            sodium_memzero(serverSk, 32);
-            logMsg(LogLevel::INFO, "pairing",
-                   "Paired device via server PIN: " + deviceId + " (" + clientIP + ")");
-            JsonOut ok;
-            ok["ok"] = true;
-            ok["message"] = "paired successfully";
-            if (outcome == PairingKeyOutcome::Derived) {
-                ok["serverPublicKey"] = serverPkHex;
-            } else {
-                ok["sharedKey"] = sharedKeyHex;
-            }
-            ok["protocolVersion"] = pv;
-            res.set_content(jsonDump(ok), "application/json");
-            return;
-        }
-        sodium_memzero(serverSk, 32);
-    }
-
-    // Path B: register the dish's request; it then polls /api/pair/status. The
-    // clientPin is never echoed server-side; the operator must read it off the
-    // dish, which is what makes the accept meaningful.
-    if (!clientPin.empty()) {
-        submitPairRequest(deviceId, deviceName, clientIP, clientPin);
-        logMsg(LogLevel::INFO, "pairing",
-               "Pairing request from " + (deviceName.empty() ? deviceId : deviceName) + " (" +
-                   clientIP + ") awaiting operator approval");
-        res.set_content(
-            R"({"ok":false,"pending":true,"message":"awaiting approval on the satellite"})",
-            "application/json");
+    std::string keyHex;
+    const PairRequestState st = pollPairRequest(deviceId, keyHex);
+    if (st == PairRequestState::Approved) {
+        JsonOut ok;
+        ok["ok"] = true;
+        ok["status"] = "approved";
+        ok["sharedKey"] = keyHex;
+        replyJson(res, jsonDump(ok));
         return;
     }
-
-    logMsg(LogLevel::WARN, "pairing", "Invalid or empty PIN attempt from " + clientIP);
-    res.set_content(R"({"ok":false,"error":"invalid or expired PIN"})", "application/json");
+    JsonOut r;
+    r["ok"] = false;
+    r["status"] = pairRequestStateName(st);
+    replyJson(res, jsonDump(r));
 }
 
 // DELETE /api/pair: client self-unpair (hmacProof-authed). Closes any live
 // session first (close-notify reason=unpaired rides the still-valid key).
-static void selfUnpairRoute(SessionService& svc, const httplib::Request& req,
-                            httplib::Response& res) {
+static void selfUnpairRoute(SessionService& svc, const Request& req, Response& res) {
     ClientAuth auth;
     if (!clientAuthed(req, res, auth)) return;
 
     svc.closeSessionsForDevice(auth.deviceId, CLOSE_REASON_UNPAIRED);
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        auto& devs = g_config.pairedDevices;
-        devs.erase(std::remove_if(devs.begin(), devs.end(),
-                                  [&](const PairedDevice& d) { return d.id == auth.deviceId; }),
-                   devs.end());
-        saveConfig(g_config);
+    const bool wasPaired = forgetPairedDevice(auth.deviceId);
+    logMsg(LogLevel::INFO, "pairing",
+           "Device self-unpaired: " + auth.deviceId +
+               (wasPaired ? "" : " (record already gone: an admin unpair raced it)"));
+    replyOk(res);
+}
+
+// GET /api/connections/:id: the reconcile endpoint, scoped to OWN session.
+static void sessionViewRoute(SessionService& svc, const Request& req, Response& res) {
+    ClientAuth auth;
+    if (!clientAuthed(req, res, auth)) return;
+    const auto view = svc.getSessionView(req.matches[1].str(), auth.deviceId);
+    if (!view.found) {
+        replyError(res, 404, "connection not found");
+        return;
     }
-    logMsg(LogLevel::INFO, "pairing", "Device self-unpaired: " + auth.deviceId);
-    res.set_content(R"({"ok":true})", "application/json");
+    replyJson(res, buildSessionViewJson(view));
+}
+
+// DELETE /api/connections/:id: graceful close of OWN session (no notify: the
+// closer already knows).
+static void closeSessionRoute(SessionService& svc, const Request& req, Response& res) {
+    ClientAuth auth;
+    if (!clientAuthed(req, res, auth)) return;
+    const int removed = svc.closeSessionById(req.matches[1].str(), auth.deviceId,
+                                             CLOSE_REASON_REPLACED, /*notify=*/false);
+    if (removed < 0) {
+        replyError(res, 404, "connection not found");
+        return;
+    }
+    JsonOut ok;
+    ok["ok"] = true;
+    ok["controllersRemoved"] = removed;
+    replyJson(res, jsonDump(ok));
+}
+
+// The controller index from a /controllers/:idx path, saturated to the byte
+// the wire carries.
+static uint8_t ctrlIdxFromPath(const Request& req) {
+    return saturateToByte(strtol(req.matches[2].str().c_str(), nullptr, 10));
+}
+
+// PUT /api/connections/:id/controllers/:idx: standalone single-descriptor
+// upsert (the FULL descriptor; ctrlIdx in the path wins). No version gate here:
+// the version is negotiated once, on the session PUT, and a sub-resource write
+// inherits its session's settled version.
+static void putControllerRoute(SessionService& svc, const Request& req, Response& res) {
+    ClientAuth auth;
+    if (!clientAuthed(req, res, auth)) return;
+    ControllerDescriptor d;
+    if (!parseDescriptorObject(parseBody(req.body), /*requireIdx=*/false, d)) {
+        replyError(res, 400, "descriptor requires type");
+        return;
+    }
+    d.ctrlIdx = ctrlIdxFromPath(req);
+    ControllerApplyResult ar;
+    uint16_t epoch = 0;
+    if (!svc.applyController(req.matches[1].str(), auth.deviceId, d, ar, epoch)) {
+        replyError(res, 404, "connection not found");
+        return;
+    }
+    JsonOut j;
+    j["epoch"] = epoch;
+    j["controller"] = controllerApplyObj(ar);
+    replyJson(res, jsonDump(j));
+}
+
+// DELETE /api/connections/:id/controllers/:idx: removes the SLOT only; the
+// session lives on (zero-controller sessions are valid).
+static void deleteControllerRoute(SessionService& svc, const Request& req, Response& res) {
+    ClientAuth auth;
+    if (!clientAuthed(req, res, auth)) return;
+    uint16_t epoch = 0;
+    if (!svc.removeController(req.matches[1].str(), auth.deviceId, ctrlIdxFromPath(req), epoch)) {
+        replyError(res, 404, "connection not found");
+        return;
+    }
+    JsonOut ok;
+    ok["ok"] = true;
+    ok["epoch"] = epoch;
+    replyJson(res, jsonDump(ok));
+}
+
+static void capabilitiesRoute(const Request&, Response& res) {
+    replyJson(res, buildCapabilitiesJson());
 }
 
 // Catalog routes are unauthenticated: the UI renders BEFORE pairing.
-static void catalogRoute(const httplib::Request& req, httplib::Response& res) {
+static void catalogRoute(const Request& req, Response& res) {
     const std::string locale =
         satellite::resolveCatalogLocale(req.get_header_value("Accept-Language"));
     const std::string etag = satellite::catalogETag(SATELLITE_VERSION, locale);
@@ -478,24 +513,17 @@ static void catalogRoute(const httplib::Request& req, httplib::Response& res) {
     }
     const std::string langJson = readFile(g_webDir + "/lang/" + locale + ".json");
     const std::string enJson = (locale == "en") ? langJson : readFile(g_webDir + "/lang/en.json");
-    res.set_content(satellite::buildCatalogJson(locale, langJson, enJson, SATELLITE_VERSION,
-                                                catalogBackendTraits()),
-                    "application/json");
+    replyJson(res, satellite::buildCatalogJson(locale, langJson, enJson, SATELLITE_VERSION,
+                                               catalogBackendTraits()));
 }
 
-static void catalogImageRoute(const httplib::Request& req, httplib::Response& res) {
+static void catalogImageRoute(const Request& req, Response& res) {
     const std::string slug = req.matches[1].str();
-    bool known = false;
-    for (const auto& s : satellite::catalogImageSlugs()) {
-        if (s == slug) {
-            known = true;
-            break;
-        }
-    }
-    std::string svg = known ? readFile(g_webDir + "/img/catalog/" + slug + ".svg") : "";
+    const auto slugs = satellite::catalogImageSlugs();
+    const bool known = std::find(slugs.begin(), slugs.end(), slug) != slugs.end();
+    const std::string svg = known ? readFile(g_webDir + "/img/catalog/" + slug + ".svg") : "";
     if (svg.empty()) {
-        res.status = 404;
-        res.set_content(R"({"error":"unknown catalog image"})", "application/json");
+        replyError(res, 404, "unknown catalog image");
         return;
     }
     const std::string etag = std::string("\"") + SATELLITE_VERSION + "\"";
@@ -511,135 +539,27 @@ static void catalogImageRoute(const httplib::Request& req, httplib::Response& re
 void registerClientRoutes(httplib::Server& server, SessionService& svc) {
     // POST /api/pair: PIN-gated (or hmacProof-gated rotation); no device auth
     // for the PIN paths (the device is not paired yet).
-    server.Post("/api/pair", [&svc](const httplib::Request& req, httplib::Response& res) {
-        pairRoute(svc, req, res);
-    });
-
-    // Path-B poll. No device auth (not paired yet); the minted key is handed
-    // back exactly once on approval (pollPairRequest clears it).
-    server.Get("/api/pair/status", [](const httplib::Request& req, httplib::Response& res) {
-        std::string deviceId;
-        if (req.has_param("deviceId")) deviceId = req.get_param_value("deviceId");
-        if (deviceId.empty()) {
-            res.status = 400;
-            res.set_content(R"({"ok":false,"error":"missing deviceId"})", "application/json");
-            return;
-        }
-        std::string keyHex;
-        PairRequestState st = pollPairRequest(deviceId, keyHex);
-        if (st == PairRequestState::Approved) {
-            JsonOut ok;
-            ok["ok"] = true;
-            ok["status"] = "approved";
-            ok["sharedKey"] = keyHex;
-            res.set_content(jsonDump(ok), "application/json");
-            return;
-        }
-        JsonOut r;
-        r["ok"] = false;
-        r["status"] = pairRequestStateName(st);
-        res.set_content(jsonDump(r), "application/json");
-    });
-
-    // DELETE /api/pair: client self-unpair (closes any live session first).
-    server.Delete("/api/pair", [&svc](const httplib::Request& req, httplib::Response& res) {
-        selfUnpairRoute(svc, req, res);
-    });
+    server.Post("/api/pair",
+                [&svc](const Request& req, Response& res) { pairRoute(svc, req, res); });
+    server.Get("/api/pair/status", pairStatusRoute);
+    server.Delete("/api/pair",
+                  [&svc](const Request& req, Response& res) { selfUnpairRoute(svc, req, res); });
 
     // PUT /api/connections: idempotent session upsert keyed on deviceId.
-    server.Put("/api/connections", [&svc](const httplib::Request& req, httplib::Response& res) {
-        upsertConnectionRoute(svc, req, res);
-    });
-
-    // GET /api/connections/:id: the reconcile endpoint, scoped to OWN session.
+    server.Put("/api/connections",
+               [&svc](const Request& req, Response& res) { upsertConnectionRoute(svc, req, res); });
     server.Get(R"(/api/connections/(\w+))",
-               [&svc](const httplib::Request& req, httplib::Response& res) {
-                   ClientAuth auth;
-                   if (!clientAuthed(req, res, auth)) return;
-                   auto view = svc.getSessionView(req.matches[1].str(), auth.deviceId);
-                   if (!view.found) {
-                       res.status = 404;
-                       res.set_content(R"({"error":"connection not found"})", "application/json");
-                       return;
-                   }
-                   res.set_content(buildSessionViewJson(view), "application/json");
-               });
-
-    // DELETE /api/connections/:id: graceful close of OWN session (no notify:
-    // the closer already knows).
+               [&svc](const Request& req, Response& res) { sessionViewRoute(svc, req, res); });
+    server.Delete(R"(/api/connections/(\w+))",
+                  [&svc](const Request& req, Response& res) { closeSessionRoute(svc, req, res); });
+    server.Put(R"(/api/connections/(\w+)/controllers/(\d+))",
+               [&svc](const Request& req, Response& res) { putControllerRoute(svc, req, res); });
     server.Delete(
-        R"(/api/connections/(\w+))", [&svc](const httplib::Request& req, httplib::Response& res) {
-            ClientAuth auth;
-            if (!clientAuthed(req, res, auth)) return;
-            int removed = svc.closeSessionById(req.matches[1].str(), auth.deviceId,
-                                               CLOSE_REASON_REPLACED, /*notify=*/false);
-            if (removed < 0) {
-                res.status = 404;
-                res.set_content(R"({"error":"connection not found"})", "application/json");
-                return;
-            }
-            JsonOut ok;
-            ok["ok"] = true;
-            ok["controllersRemoved"] = removed;
-            res.set_content(jsonDump(ok), "application/json");
-        });
-
-    // PUT /api/connections/:id/controllers/:idx: standalone single-descriptor
-    // upsert (the FULL descriptor; ctrlIdx in the path wins).
-    server.Put(R"(/api/connections/(\w+)/controllers/(\d+))", [&svc](const httplib::Request& req,
-                                                                     httplib::Response& res) {
-        ClientAuth auth;
-        if (!clientAuthed(req, res, auth)) return;
-        // No version gate here: the version is negotiated once, on the session
-        // PUT, and a sub-resource write inherits its session's settled version.
-        ControllerDescriptor d;
-        if (!parseDescriptorObject(parseBody(req.body), /*requireIdx=*/false, d)) {
-            res.status = 400;
-            res.set_content(R"({"error":"descriptor requires type"})", "application/json");
-            return;
-        }
-        long idx = strtol(req.matches[2].str().c_str(), nullptr, 10);
-        d.ctrlIdx = idx > 255 ? 255 : static_cast<uint8_t>(idx);
-        ControllerApplyResult ar;
-        uint16_t epoch = 0;
-        if (!svc.applyController(req.matches[1].str(), auth.deviceId, d, ar, epoch)) {
-            res.status = 404;
-            res.set_content(R"({"error":"connection not found"})", "application/json");
-            return;
-        }
-        JsonOut j;
-        j["epoch"] = epoch;
-        j["controller"] = controllerApplyObj(ar);
-        res.set_content(jsonDump(j), "application/json");
-    });
-
-    // DELETE /api/connections/:id/controllers/:idx: removes the SLOT only;
-    // the session lives on (zero-controller sessions are valid).
-    server.Delete(R"(/api/connections/(\w+)/controllers/(\d+))", [&svc](const httplib::Request& req,
-                                                                        httplib::Response& res) {
-        ClientAuth auth;
-        if (!clientAuthed(req, res, auth)) return;
-        long idx = strtol(req.matches[2].str().c_str(), nullptr, 10);
-        uint16_t epoch = 0;
-        if (!svc.removeController(req.matches[1].str(), auth.deviceId,
-                                  idx > 255 ? 255 : static_cast<uint8_t>(idx), epoch)) {
-            res.status = 404;
-            res.set_content(R"({"error":"connection not found"})", "application/json");
-            return;
-        }
-        JsonOut ok;
-        ok["ok"] = true;
-        ok["epoch"] = epoch;
-        res.set_content(jsonDump(ok), "application/json");
-    });
+        R"(/api/connections/(\w+)/controllers/(\d+))",
+        [&svc](const Request& req, Response& res) { deleteControllerRoute(svc, req, res); });
 
     // No auth on the read-only info surface: the client UI renders BEFORE pairing.
-    server.Get("/api/server/capabilities", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(buildCapabilitiesJson(), "application/json");
-    });
-    server.Get("/api/catalog",
-               [](const httplib::Request& req, httplib::Response& res) { catalogRoute(req, res); });
-    server.Get(
-        R"(/api/catalog/images/([\w-]+))",
-        [](const httplib::Request& req, httplib::Response& res) { catalogImageRoute(req, res); });
+    server.Get("/api/server/capabilities", capabilitiesRoute);
+    server.Get("/api/catalog", catalogRoute);
+    server.Get(R"(/api/catalog/images/([\w-]+))", catalogImageRoute);
 }

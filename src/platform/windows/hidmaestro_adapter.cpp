@@ -111,35 +111,23 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.lastSonySubmit = {};
 }
 
-bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
-    if (!isValidSerial(serial) || !supportsIdentity(identity)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (!busOpen_) return false;
-    if (!provisioner_.isReady() && !provisioner_.ensureReady()) return false;
+// Caller holds busMtx_. The audio-carrying persona when asked for, else, or
+// when that fails, the plain one: a pad without audio beats no pad at all.
+bool HidMaestroAdapter::provisionSlotLocked(uint32_t serial, GamepadIdentity identity,
+                                            bool wantAudio, hm::ProvisionResult& r) {
+    if (provisioner_.provision(serial, identity, wantAudio, r)) return true;
+    return wantAudio && provisioner_.provision(serial, identity, false, r);
+}
 
-    // Ask for the audio-carrying persona when the setting allows it and the
-    // identity has one. It can fail on its own (the composite rides a kernel
-    // USB transport that self-installs on first use, and that install can be
-    // declined or blocked), so a failure falls back to the plain persona: a
-    // pad without audio beats no pad at all.
-    const bool wantAudio =
-        hm::identityHasAudioPersona(identity) && audioEnabled_ && audioEnabled_();
-    // Before provisioning, because the snapshot has to predate the endpoint
-    // Windows is about to create and promote.
-    if (wantAudio && compositePlugBefore_) compositePlugBefore_();
-    hm::ProvisionResult r;
-    if (!provisioner_.provision(serial, identity, wantAudio, r)) {
-        if (!wantAudio || !provisioner_.provision(serial, identity, false, r)) return false;
-    }
-
-    IoSlot& slot = io_[serial];
-    slot.identity = identity;
+// Caller holds busMtx_. The helper's handles and views become the slot's; the
+// input view is the one the plug cannot do without.
+bool HidMaestroAdapter::adoptProvisionedLocked(uint32_t serial, IoSlot& slot,
+                                               const hm::ProvisionResult& r) {
     slot.inputSection = toHandle(r.inputSection);
     slot.inputEvent = toHandle(r.inputEvent);
     slot.companionEvent = toHandle(r.companionEvent);
     slot.outputSection = toHandle(r.outputSection);
     slot.outputEvent = toHandle(r.outputEvent);
-
     slot.inputView = static_cast<uint8_t*>(MapViewOfFile(
         slot.inputSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, hm::INPUT_SECTION_SIZE));
     if (slot.outputSection) {
@@ -147,22 +135,46 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
             MapViewOfFile(slot.outputSection, FILE_MAP_READ, 0, 0, hm::OUTPUT_SECTION_SIZE));
     }
     attachAudioLocked(slot, r);
-    if (slot.inputView == nullptr) {
-        releaseSlotLocked(slot);
-        provisioner_.deprovision(serial);
-        return false;
-    }
+    if (slot.inputView != nullptr) return true;
+    releaseSlotLocked(slot);
+    provisioner_.deprovision(serial);
+    return false;
+}
 
+// Caller holds busMtx_. One worker per lane the persona materialized.
+void HidMaestroAdapter::startSlotWorkersLocked(uint32_t serial, const IoSlot& slot) {
+    if (slot.outputView != nullptr) startOutputWorker(serial);
+    if (slot.speakerView != nullptr) startAudioWorker(serial, AudioLane::Speaker);
+    if (slot.hapticView != nullptr) startAudioWorker(serial, AudioLane::Haptic);
+}
+
+bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
+    if (!isValidSerial(serial) || !supportsIdentity(identity)) return false;
+    std::lock_guard<std::mutex> lk(busMtx_);
+    if (!busOpen_) return false;
+    if (!provisioner_.isReady() && !provisioner_.ensureReady()) return false;
+
+    // The composite rides a kernel USB transport that self-installs on first
+    // use, and that install can be declined or blocked, which is why asking for
+    // it can fail on its own and falls back to the plain persona.
+    const bool wantAudio =
+        hm::identityHasAudioPersona(identity) && audioEnabled_ && audioEnabled_();
+    // Before provisioning, because the snapshot has to predate the endpoint
+    // Windows is about to create and promote.
+    if (wantAudio && compositePlugBefore_) compositePlugBefore_();
+    hm::ProvisionResult r;
+    if (!provisionSlotLocked(serial, identity, wantAudio, r)) return false;
+
+    IoSlot& slot = io_[serial];
+    slot.identity = identity;
+    if (!adoptProvisionedLocked(serial, slot, r)) return false;
     slot.plugged.store(true, std::memory_order_release);
 
     // Neutral first frame so the pad isn't a stuck corner pre-first-report
     // (GamepadReport{} is centred on the signed XUSB scale; the Sony packers
     // centre their byte sticks from it).
     packAndWriteLocked(slot);
-
-    if (slot.outputView != nullptr) startOutputWorker(serial);
-    if (slot.speakerView != nullptr) startAudioWorker(serial, AudioLane::Speaker);
-    if (slot.hapticView != nullptr) startAudioWorker(serial, AudioLane::Haptic);
+    startSlotWorkersLocked(serial, slot);
     // Only when the composite really materialized: a persona that fell back to
     // input-only created no endpoint, so there is nothing to watch for.
     if (slot.speakerView != nullptr && compositePlugAfter_) compositePlugAfter_();
@@ -232,52 +244,54 @@ bool HidMaestroAdapter::isDevicePlugged(uint32_t serial) const {
     return io_[serial].plugged.load(std::memory_order_acquire);
 }
 
+// Microseconds since `last`, which becomes now; 0 on the first call so the
+// report clocks advance by real time between frames, not from the epoch.
+static int64_t microsSinceLastFrame(std::chrono::steady_clock::time_point& last) {
+    const auto now = std::chrono::steady_clock::now();
+    const bool first = last.time_since_epoch().count() == 0;
+    const int64_t us =
+        first ? 0 : std::chrono::duration_cast<std::chrono::microseconds>(now - last).count();
+    last = now;
+    return us;
+}
+
 // Caller holds busMtx_.
-bool HidMaestroAdapter::packAndWriteLocked(IoSlot& slot) {
-    if (slot.inputView == nullptr) return false;
-    bool withGip = false;
-    uint16_t len = 0;
+uint16_t HidMaestroAdapter::packFrameLocked(IoSlot& slot, bool& withGip) {
+    withGip = false;
     switch (slot.identity) {
     case GamepadIdentity::Xbox:
         hm::packX360Report(slot.ds4.pad, slot.payload);
         hm::packGip(slot.ds4.pad, slot.gip);
-        len = hm::X360_REPORT_BYTES;
         withGip = true;
-        break;
+        return hm::X360_REPORT_BYTES;
     case GamepadIdentity::DS4: {
-        const auto now = std::chrono::steady_clock::now();
-        if (slot.lastSonySubmit.time_since_epoch().count() != 0) {
-            const auto us =
-                std::chrono::duration_cast<std::chrono::microseconds>(now - slot.lastSonySubmit)
-                    .count();
-            slot.ds4.timestamp = static_cast<uint16_t>(slot.ds4.timestamp + (us * 3) / 16);
-        }
-        slot.lastSonySubmit = now;
+        // The DS4 timestamp ticks at 16/3 us; the frame counter is six bits.
+        const int64_t us = microsSinceLastFrame(slot.lastSonySubmit);
+        slot.ds4.timestamp = static_cast<uint16_t>(slot.ds4.timestamp + (us * 3) / 16);
         slot.ds4.frameCounter = static_cast<uint8_t>((slot.ds4.frameCounter + 1) & 0x3F);
         hm::packDs4Payload(slot.ds4, slot.payload);
-        len = hm::DS4_PAYLOAD_BYTES;
-        break;
+        return hm::DS4_PAYLOAD_BYTES;
     }
     case GamepadIdentity::DualSense: {
-        const auto now = std::chrono::steady_clock::now();
-        if (slot.lastSonySubmit.time_since_epoch().count() != 0) {
-            const auto us =
-                std::chrono::duration_cast<std::chrono::microseconds>(now - slot.lastSonySubmit)
-                    .count();
-            slot.ds5.sensorTimestamp += static_cast<uint32_t>(us * 3);
-        }
-        slot.lastSonySubmit = now;
+        // The DualSense sensor clock runs at 3 MHz.
+        const int64_t us = microsSinceLastFrame(slot.lastSonySubmit);
+        slot.ds5.sensorTimestamp += static_cast<uint32_t>(us * 3);
         slot.ds5.seq++;
         hm::packDs5Payload(slot.ds5, slot.payload);
-        len = hm::DS5_PAYLOAD_BYTES;
-        break;
+        return hm::DS5_PAYLOAD_BYTES;
     }
     case GamepadIdentity::SwitchPro:
         hm::packSwitchBody(slot.switchPad, slot.switchMotion, slot.payload);
-        len = hm::SWITCH_BODY_BYTES;
-        break;
+        return hm::SWITCH_BODY_BYTES;
     }
+    return 0;
+}
 
+// Caller holds busMtx_.
+bool HidMaestroAdapter::packAndWriteLocked(IoSlot& slot) {
+    if (slot.inputView == nullptr) return false;
+    bool withGip = false;
+    const uint16_t len = packFrameLocked(slot, withGip);
     if (!hm::writeInputFrame(slot.inputView, slot.payload, len, withGip ? slot.gip : nullptr))
         return false;
     if (slot.inputEvent) SetEvent(slot.inputEvent);
@@ -528,6 +542,40 @@ void HidMaestroAdapter::stopOutputWorker(uint32_t serial) {
     busMtx_.lock();
 }
 
+static bool carriesAnything(const hm::DecodedOutput& d) {
+    return d.hasRumble || d.hasLightbar || d.hasLeftTriggerEffect || d.hasRightTriggerEffect ||
+           d.hasPlayerLeds || d.hasMicLed;
+}
+
+HidMaestroAdapter::OutputCallbacks HidMaestroAdapter::snapshotOutputCallbacks() const {
+    std::lock_guard<std::mutex> lk(busMtx_);
+    return OutputCallbacks{rumbleCb_, lightbarCb_, triggerEffectsCb_, playerLedsCb_, micLedCb_};
+}
+
+// One decoded host packet handed to whoever is listening, outside busMtx_. The
+// trigger cache merges per-trigger valid flags because the report always
+// carries BOTH blocks downstream; it lives on the worker's stack, so a replug
+// starts from neutral effects, matching the fresh-actuator reset in
+// SessionService.
+void HidMaestroAdapter::deliverDecodedOutput(uint32_t serial, const hm::DecodedOutput& decoded,
+                                             TriggerEffectsReport& triggerEffects) {
+    const OutputCallbacks cb = snapshotOutputCallbacks();
+    if (decoded.hasRumble && cb.rumble) cb.rumble(serial, decoded.rumble);
+    if (decoded.hasLightbar && cb.lightbar) cb.lightbar(serial, decoded.r, decoded.g, decoded.b);
+    if (decoded.hasLeftTriggerEffect || decoded.hasRightTriggerEffect) {
+        if (decoded.hasLeftTriggerEffect) {
+            std::memcpy(triggerEffects.left, decoded.leftTriggerEffect, TRIGGER_EFFECT_BLOCK_BYTES);
+        }
+        if (decoded.hasRightTriggerEffect) {
+            std::memcpy(triggerEffects.right, decoded.rightTriggerEffect,
+                        TRIGGER_EFFECT_BLOCK_BYTES);
+        }
+        if (cb.triggerEffects) cb.triggerEffects(serial, triggerEffects);
+    }
+    if (decoded.hasPlayerLeds && cb.playerLeds) cb.playerLeds(serial, decoded.playerLeds);
+    if (decoded.hasMicLed && cb.micLed) cb.micLed(serial, decoded.micLed);
+}
+
 void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t lastSeq) {
     const uint8_t* view;
     HANDLE doorbell;
@@ -548,7 +596,6 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
     const DWORD timeoutMs = doorbell ? 500 : 8;
 
     TriggerEffectsReport triggerEffects{};
-
     while (true) {
         const DWORD rc = WaitForMultipleObjects(waitCount, waits, FALSE, timeoutMs);
         if (rc == WAIT_OBJECT_0) return; // cancelled
@@ -557,42 +604,7 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
         hm::OutputPacket pkt;
         while (hm::readNextOutputPacket(view, lastSeq, pkt)) {
             const hm::DecodedOutput decoded = hm::decodeOutputPacket(identity, pkt);
-            if (!decoded.hasRumble && !decoded.hasLightbar && !decoded.hasLeftTriggerEffect &&
-                !decoded.hasRightTriggerEffect && !decoded.hasPlayerLeds && !decoded.hasMicLed) {
-                continue;
-            }
-            RumbleCallback rcb;
-            LightbarCallback lcb;
-            TriggerEffectsCallback tcb;
-            PlayerLedsCallback pcb;
-            MicLedCallback mcb;
-            {
-                std::lock_guard<std::mutex> lk(busMtx_);
-                rcb = rumbleCb_;
-                lcb = lightbarCb_;
-                tcb = triggerEffectsCb_;
-                pcb = playerLedsCb_;
-                mcb = micLedCb_;
-            }
-            if (decoded.hasRumble && rcb) rcb(serial, decoded.rumble);
-            if (decoded.hasLightbar && lcb) lcb(serial, decoded.r, decoded.g, decoded.b);
-            if (decoded.hasLeftTriggerEffect || decoded.hasRightTriggerEffect) {
-                // Merge per-trigger valid flags into this worker's cache: the
-                // report always carries BOTH blocks downstream. The cache lives
-                // on the loop stack, so a replug starts from neutral effects,
-                // matching the fresh-actuator reset in SessionService.
-                if (decoded.hasLeftTriggerEffect) {
-                    std::memcpy(triggerEffects.left, decoded.leftTriggerEffect,
-                                TRIGGER_EFFECT_BLOCK_BYTES);
-                }
-                if (decoded.hasRightTriggerEffect) {
-                    std::memcpy(triggerEffects.right, decoded.rightTriggerEffect,
-                                TRIGGER_EFFECT_BLOCK_BYTES);
-                }
-                if (tcb) tcb(serial, triggerEffects);
-            }
-            if (decoded.hasPlayerLeds && pcb) pcb(serial, decoded.playerLeds);
-            if (decoded.hasMicLed && mcb) mcb(serial, decoded.micLed);
+            if (carriesAnything(decoded)) deliverDecodedOutput(serial, decoded, triggerEffects);
         }
     }
 }
