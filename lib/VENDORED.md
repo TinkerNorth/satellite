@@ -27,7 +27,7 @@ the 90-day freshness window.
 - Component: yhirose/cpp-httplib
 - Upstream: https://github.com/yhirose/cpp-httplib
 - Pinned-commit: v0.58.0
-- Last-vendored: 2026-09-29
+- Last-vendored: 2026-09-30
 - License: MIT
 - Notes: vendored as a single header, byte-identical to the upstream tag
   (modulo CRLF in the working tree; git stores it LF). No local
@@ -49,25 +49,28 @@ the 90-day freshness window.
   idle keep-alive client no longer holds a worker or `Server::stop()`;
   `100 Continue` now waits until the body is read and WebSocket upgrades run
   `pre_request_handler`, and Satellite has no `Expect` handler and no
-  WebSocket route. No API Satellite calls changed.
+  WebSocket route. No API Satellite calls changed. Re-checked 2026-09-30:
+  v0.58.0 is still the newest release and the header is byte-identical to
+  the tag's.
 
 ## nlohmann/json (`lib/nlohmann/json.hpp`)
 
 - Component: nlohmann/json
 - Upstream: https://github.com/nlohmann/json
 - Pinned-commit: v3.12.0
-- Last-vendored: 2026-09-19
+- Last-vendored: 2026-09-30
 - License: MIT
 - Notes: vendored as the single-header amalgamation. No local modifications.
   Used project-wide via `src/core/json.h` for response building and request /
-  config / GitHub-API parsing.
+  config / GitHub-API parsing. Re-checked 2026-09-30: v3.12.0 is still the
+  newest release and the header is byte-identical to its `json.hpp` asset.
 
 ## libsodium (`lib/libsodium/`)
 
 - Component: jedisct1/libsodium
 - Upstream: https://github.com/jedisct1/libsodium
 - Pinned-commit: 1.0.22-RELEASE
-- Last-vendored: 2026-09-20
+- Last-vendored: 2026-09-30
 - License: ISC
 - Notes: bundled MinGW prebuilt archives (`libsodium-mingw.tar.gz`,
   `libsodium-win32/`, `libsodium-win64/`) consumed by the Windows
@@ -80,15 +83,17 @@ the 90-day freshness window.
   directories are its contents unpacked. Until 2026-09-20 the archive was a
   2026-04-16 rebuild of the same version (identical headers, different
   `libsodium.a`/`libsodium-26.dll` bytes); it was replaced with the tagged
-  release bytes so the pin names what is actually here. 1.0.22 is still the
-  newest release.
+  release bytes so the pin names what is actually here. Re-checked
+  2026-09-30: 1.0.22 is still the newest release, the archive's SHA-256 is
+  the one above, and the two directories are its contents (the working
+  tree's line endings aside, which git normalises).
 
 ## ViGEm Bus Driver SDK (`vigem/include/ViGEm/`)
 
 - Component: ViGEm/ViGEmClient (the SDK submodule of nefarius/ViGEmBus)
 - Upstream: https://github.com/ViGEm/ViGEmClient
 - Pinned-commit: v1.21.222.0 (driver ABI targeted: ViGEmBus v1.22.0)
-- Last-vendored: 2026-09-29 (upstream archived 2023-09-08 at b66d02d; each
+- Last-vendored: 2026-09-30 (upstream archived 2023-09-08 at b66d02d; each
   re-stamp is a check that nothing moved upstream, and nothing has)
 - License: MIT
 - Notes: **not** a verbatim upstream copy — a hand-maintained minimal
@@ -118,7 +123,7 @@ the 90-day freshness window.
 - Component: hifihedgehog/HIDMaestro (driver shared-memory + report contracts)
 - Upstream: https://github.com/hifihedgehog/HIDMaestro
 - Pinned-commit: v1.9.0
-- Last-vendored: 2026-09-20
+- Last-vendored: 2026-09-30
 - License: MIT
 - Notes: not copied source — a hand-written re-statement of the driver's
   shared-memory contract (`driver/driver.h` `HIDMAESTRO_SHARED_INPUT` /
@@ -136,4 +141,7 @@ the 90-day freshness window.
   v1.7.0 -> v1.9.0 (2026-09-20): `driver/driver.h` and
   `Internal/SharedMemoryIO.cs` changed only in comment punctuation; every
   offset, size, ring constant and Source code is the same, so the pins here
-  are unchanged and the compatibility review is the diff itself.
+  are unchanged and the compatibility review is the diff itself. Re-checked
+  2026-09-30: v1.9.2 (2026-09-28) is out and moves the composite personas to
+  usbip-win2 0.9.8.1; not taken, a product call (OPEN_WORK 1.3), so v1.9.0
+  stays the pin and the bundled zip.
