@@ -37,9 +37,9 @@ $Redistributables = @(
         Filename = 'ViGEmBus_1.22.0_x64_x86_arm64.exe'
     }
     @{
-        Name     = 'HIDMaestro 1.9.0'
-        Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.9.0/HIDMaestro-v1.9.0.zip'
-        Filename = 'HIDMaestro-v1.9.0.zip'
+        Name     = 'HIDMaestro 1.9.2'
+        Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.9.2/HIDMaestro-v1.9.2.zip'
+        Filename = 'HIDMaestro-v1.9.2.zip'
     }
 )
 
