@@ -49,6 +49,18 @@ packages, and CONTRIBUTING and SECURITY.md describe the gate that actually
 runs, including its one blind spot (libsodium tags releases on a branch its
 fixes do not descend from, so the hand review stays).
 
+The bundled HIDMaestro SDK moves from 1.9.0 to 1.9.2 (driver INF 1.8.1.2248,
+so a machine on the 1.9.0 driver sees the outdated banner until the
+installer's helper reinstalls once). Its shared-memory contract and the four
+profiles the satellite plugs are byte for byte what 1.9.0 shipped; what
+moved is the USB transport under the composite personas: usbip-win2 0.9.8.1
+is bundled, a machine HIDMaestro put on 0.9.7.5 or 0.9.7.7 moves to it by
+itself in a Windows session where the host controller has not carried a
+device yet, and the SDK now speaks the 0.9.7.x, 0.9.8.0 and 0.9.8.1 request
+formats, so a usbip-win2 0.9.8.0 that another program installed (Handheld
+Companion's, for one) no longer refuses the DualSense and DualShock 4
+composite personas.
+
 Smaller: one hex encoder in core spells every key, salt, digest, id and MAC
 address the satellite writes as text (six hand-rolled copies retired, session
 tokens and connection ids included, byte for byte what they wrote before);

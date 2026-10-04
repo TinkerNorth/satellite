@@ -56,9 +56,9 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro
 
 - Component: hifihedgehog/HIDMaestro SDK release
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/releases/tag/v1.9.0
-- Pinned-version: `v1.9.0`
-- Filename: `HIDMaestro-v1.9.0.zip`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/releases/tag/v1.9.2
+- Pinned-version: `v1.9.2`
+- Filename: `HIDMaestro-v1.9.2.zip`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. Actively maintained; bump deliberately, re-verifying the
@@ -76,11 +76,15 @@ during setup (no reboot required). The uninstaller's
 driver packages.
 
 `HIDMaestro.Core.dll` also embeds a **second, kernel-mode** driver payload:
-the usbip-win2 0.9.7.5 installers (x64 and ARM64, each verified against the
+the usbip-win2 0.9.8.1 installers (x64 and ARM64, each verified against the
 upstream release hash at build time and again before it runs), the
 WHLK-certified USB transport, plus the transport's host-controller driver
-files unpacked so a machine an earlier release put on 0.9.7.7 is moved to
-0.9.7.5 in place, with no window and no USB device dropping. It is not
+files unpacked so a machine an earlier release put on 0.9.7.5 or 0.9.7.7 is
+moved to 0.9.8.1 in place, with no window and no USB device dropping, in a
+Windows session where the host controller has not carried a device yet.
+The SDK speaks the 0.9.7.x, 0.9.8.0 and 0.9.8.1 request formats and asks
+the installed driver which one it has, so a usbip-win2 another program
+installed is used as it is. It is not
 deployed at setup time and is not used by any input-only controller. HIDMaestro installs it the first time a *composite*
 persona is created, which is what Satellite asks for when the
 `controllerAudio` setting is on and the identity is a DualSense or
@@ -139,8 +143,8 @@ the number back:
 ```
 
 and put that value in `SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION`. For
-HIDMaestro (1.9.0 embeds driver `1.8.1.958`; the two January-dated
-`DriverVer` lines beside it belong to the embedded usbip-win2 INFs), read the
+HIDMaestro (1.9.2 embeds driver `1.8.1.2248`; the two other `DriverVer`
+lines beside it belong to the embedded usbip-win2 INFs), read the
 embedded INF version
 straight out of the staged assembly rather than guessing:
 

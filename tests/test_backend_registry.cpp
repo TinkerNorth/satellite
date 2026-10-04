@@ -604,22 +604,26 @@ static void test_driverVersionState_derivation() {
 static void test_bundled_pins_are_the_driver_binaries_not_the_installers() {
     TEST("driver_pins.h: the versions the banner compares are the driver binaries' own");
     EXPECT_EQ(std::string(SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION), std::string("1.21.442.0"));
-    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION), std::string("1.8.1.958"));
+    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION), std::string("1.8.1.2248"));
 
     TEST("driver_pins.h: the release versions are separate and are not compared");
     EXPECT_EQ(std::string(SATELLITE_VIGEMBUS_BUNDLED_VERSION), std::string("1.22.0"));
-    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_SDK_VERSION), std::string("1.9.0"));
+    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_SDK_VERSION), std::string("1.9.2"));
     EXPECT_EQ(
         std::string(driverVersionState("1.21.442.0", SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION)),
         std::string(DRIVER_VERSION_STATE_CURRENT));
     EXPECT_EQ(
-        std::string(driverVersionState("1.8.1.958", SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION)),
+        std::string(driverVersionState("1.8.1.2248", SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION)),
         std::string(DRIVER_VERSION_STATE_CURRENT));
-    // The driver the 1.7.0 SDK laid down (1.4.7.12) reads as outdated against
-    // this pin: that is the banner a machine sees until the installer's helper
-    // reinstalls, and the reason the pin is the INF version, not the SDK's.
+    // The drivers the 1.7.0 SDK (1.4.7.12) and the 1.9.0 SDK (1.8.1.958) laid
+    // down read as outdated against this pin: that is the banner a machine sees
+    // until the installer's helper reinstalls, and the reason the pin is the
+    // INF version, not the SDK's.
     EXPECT_EQ(
         std::string(driverVersionState("1.4.7.12", SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION)),
+        std::string(DRIVER_VERSION_STATE_OUTDATED));
+    EXPECT_EQ(
+        std::string(driverVersionState("1.8.1.958", SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION)),
         std::string(DRIVER_VERSION_STATE_OUTDATED));
 }
 

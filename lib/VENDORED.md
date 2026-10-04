@@ -122,8 +122,8 @@ the 90-day freshness window.
 
 - Component: hifihedgehog/HIDMaestro (driver shared-memory + report contracts)
 - Upstream: https://github.com/hifihedgehog/HIDMaestro
-- Pinned-commit: v1.9.0
-- Last-vendored: 2026-09-30
+- Pinned-commit: v1.9.2
+- Last-vendored: 2026-10-04
 - License: MIT
 - Notes: not copied source — a hand-written re-statement of the driver's
   shared-memory contract (`driver/driver.h` `HIDMAESTRO_SHARED_INPUT` /
@@ -141,7 +141,11 @@ the 90-day freshness window.
   v1.7.0 -> v1.9.0 (2026-09-20): `driver/driver.h` and
   `Internal/SharedMemoryIO.cs` changed only in comment punctuation; every
   offset, size, ring constant and Source code is the same, so the pins here
-  are unchanged and the compatibility review is the diff itself. Re-checked
-  2026-09-30: v1.9.2 (2026-09-28) is out and moves the composite personas to
-  usbip-win2 0.9.8.1; not taken, a product call (OPEN_WORK 1.3), so v1.9.0
-  stays the pin and the bundled zip.
+  are unchanged and the compatibility review is the diff itself.
+  v1.9.0 -> v1.9.2 (2026-10-04): the upstream compare touches nothing under
+  `driver/` and not `Internal/SharedMemoryIO.cs`, and the only profile that
+  moved is `valve/steam-controller-2.json`, which this backend never plugs,
+  so every pin here still holds. What changed is beside the contract: the
+  bundled USB transport for the composite personas is usbip-win2 0.9.8.1
+  (was 0.9.7.5), the client speaks the 0.9.7.x, 0.9.8.0 and 0.9.8.1 request
+  formats, and the SDK's own driver INF is 1.8.1.2248 (`driver_pins.h`).
