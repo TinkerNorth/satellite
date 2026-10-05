@@ -114,6 +114,10 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Script tests (redist staging + driver pin gate)
+        shell: pwsh
+        run: pwsh tests/test_fetch_redist.ps1
+
       - name: Fetch pinned redistributables
         shell: pwsh
         run: pwsh scripts/fetch-redist.ps1
@@ -125,6 +129,10 @@ jobs:
           if (-not (Test-Path "helper/hidmaestro/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish/satellite-hm-helper.exe")) {
             throw "dotnet publish did not produce satellite-hm-helper.exe"
           }
+
+      - name: Verify the helper carries the pinned SDK
+        shell: pwsh
+        run: pwsh scripts/verify-helper-sdk.ps1
 
       - name: Upload satellite.exe artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

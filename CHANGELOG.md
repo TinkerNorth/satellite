@@ -6,7 +6,8 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 ## Unreleased
 
 No protocol changes. Feedback on a ViGEm pad, a relaunched client's pad
-state, a crash a paired client could cause, and the vendored components.
+state, a crash a paired client could cause, the vendored components, and
+the HIDMaestro SDK a locally built installer ships.
 
 Two of the three ViGEm personas never carried a game's feedback right. The
 DS4 persona asked the driver for its notifications with a read-write request
@@ -60,6 +61,28 @@ device yet, and the SDK now speaks the 0.9.7.x, 0.9.8.0 and 0.9.8.1 request
 formats, so a usbip-win2 0.9.8.0 that another program installed (Handheld
 Companion's, for one) no longer refuses the DualSense and DualShock 4
 composite personas.
+
+A locally built installer could ship an older HIDMaestro SDK than its pins
+named. `scripts/fetch-redist.ps1` unpacked the SDK into `redist/hidmaestro/`
+only while that directory was empty, so a checkout that staged 1.7.0 in
+August kept it through the 1.9.0 and 1.9.2 bumps: the helper deployed driver
+1.4.7.12 while satellite.exe, pinned to 1.8.1.2248, reported `update
+available, this Satellite ships 1.8.1.2248` on the machine the installer had
+just set up, and the banner's install button, which runs that same helper,
+could not change it. The staging is now stamped with the zip it came from and
+re-staged when the pin moves; after staging, the script reads the
+`hidmaestro.inf` `DriverVer` out of the SDK assembly and fails when
+`driver_pins.h` disagrees; `satellite-hm-helper.exe sdk-version` prints the
+SDK and driver a built helper carries, and `scripts/verify-helper-sdk.ps1`
+holds the published helper to the same pins after every publish, locally and
+in CI. That last gate caught a second way to ship the old SDK: an incremental
+`dotnet publish` over a re-staged SDK copies the new assembly beside the
+helper but keeps the previous compile and single-file bundle, because the
+staged file's own timestamp is older than them; the local scripts now publish
+from a clean `bin/` and `obj/`. The setup log records each driver's detected
+version, the decision taken and the exit codes, which the log of the install
+that surfaced this did not. Releases built in CI were not affected: a fresh
+runner stages from the pinned zip and publishes from nothing.
 
 Smaller: one hex encoder in core spells every key, salt, digest, id and MAC
 address the satellite writes as text (six hand-rolled copies retired, session

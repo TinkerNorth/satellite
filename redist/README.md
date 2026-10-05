@@ -68,10 +68,22 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 Unlike ViGEmBus there is no standalone driver installer: the UMDF2 driver
 is embedded inside `HIDMaestro.Core.dll` and deploys itself (certificate +
 signing + pnputil) when invoked elevated. `fetch-redist.ps1` stages the SDK
-assemblies into `redist/hidmaestro/`; `helper/hidmaestro` builds them into
-the self-contained `satellite-hm-helper.exe` that the installer bundles,
-and `SatelliteSetup.exe` runs `satellite-hm-helper.exe install-driver`
-during setup (no reboot required). The uninstaller's
+assemblies into `redist/hidmaestro/` and stamps that directory with the
+zip they came from (`staged-from.sha256`), so a bumped pin re-stages on
+the next run instead of leaving the previous SDK in place; the directory
+used to be left alone whenever its files existed, and a helper built from
+it carried the 1.7.0 SDK through two pin bumps. `helper/hidmaestro`
+builds the staged assemblies into the self-contained
+`satellite-hm-helper.exe` that the installer bundles; publish it from a
+clean `bin/` and `obj/` (`scripts/build-installer.ps1` and
+`scripts/ci-local.ps1` do), because an incremental `dotnet publish` over a
+re-staged SDK keeps the previous compile and bundle when the staged
+assembly's timestamp is older than them. Then
+`SatelliteSetup.exe` runs `satellite-hm-helper.exe install-driver`
+during setup (no reboot required). `satellite-hm-helper.exe sdk-version`
+prints the SDK release a built helper carries and the `hidmaestro.inf`
+`DriverVer` that SDK embeds; `scripts/verify-helper-sdk.ps1` holds that
+to `driver_pins.h` after every publish. The uninstaller's
 `satellite-hm-helper.exe remove-driver` removes the virtual devices and
 driver packages.
 
@@ -106,11 +118,11 @@ adopt it as the bundled driver, the bump is:
 
 1. Update the URL + filename in [`scripts/fetch-redist.ps1`](../scripts/fetch-redist.ps1).
 2. Update the `#define ViGEmBus*` block at the top of [`installer.iss`](../installer.iss).
-3. Re-run `scripts/fetch-redist.ps1 -Force` to download the new asset, then
-   `Get-FileHash <file> -Algorithm SHA256` and replace the line in
-   `redist/SHA256SUMS` (the leading `*` is intentional: `sha256sum`'s
-   binary-mode marker, accepted by both `sha256sum -c` and PowerShell's
-   custom verifier in `fetch-redist.ps1`).
+3. Download the new asset, `Get-FileHash <file> -Algorithm SHA256` it and
+   replace the line in `redist/SHA256SUMS` (the leading `*` is intentional:
+   `sha256sum`'s binary-mode marker, accepted by both `sha256sum -c` and
+   PowerShell's custom verifier in `fetch-redist.ps1`), then re-run
+   `scripts/fetch-redist.ps1`: the staging follows the new zip by itself.
 4. Update the inventory block in this file.
 5. Build the installer end-to-end (`iscc installer.iss`) and smoke-test on
    a clean VM with no prior driver install, with an older one, and with
@@ -144,13 +156,17 @@ the number back:
 
 and put that value in `SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION`. For
 HIDMaestro (1.9.2 embeds driver `1.8.1.2248`; the two other `DriverVer`
-lines beside it belong to the embedded usbip-win2 INFs), read the
-embedded INF version
-straight out of the staged assembly rather than guessing:
+lines in the assembly belong to the embedded usbip-win2 INFs),
+`scripts/fetch-redist.ps1` reads the `hidmaestro.inf` `DriverVer` out of
+the staged assembly, prints it, and fails when
+`SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION` or
+`SATELLITE_HIDMAESTRO_SDK_VERSION` (against the zip's release number)
+disagree, so the bump is: set the pins, run the script, and let it say
+whether the zip agrees. `tests/test_fetch_redist.ps1` pins the parser,
+the staging and the gate; `windows-ci.yml` and `scripts/ci-local.ps1` run
+it. To read the value by hand:
 
 ```powershell
-Select-String -Path redist/hidmaestro/HIDMaestro.Core.dll -Pattern 'DriverVer\s*=\s*[0-9/]+,\s*([0-9.]+)' -AllMatches |
-  ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+. scripts/redist-functions.ps1
+Get-HmSdkDriverVersion redist/hidmaestro/HIDMaestro.Core.dll
 ```
-
-and put that value in `SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION`.
