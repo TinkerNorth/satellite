@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using HIDMaestro;
 
 namespace Satellite.HmHelper;
@@ -25,6 +27,7 @@ internal static class Program
                 > 0 when args[0] == "install-driver" => InstallDriver(),
                 > 0 when args[0] == "remove-driver" => RemoveDriver(),
                 > 0 when args[0] == "cleanup" => Cleanup(),
+                > 0 when args[0] == "sdk-version" => SdkVersion(),
                 _ => Usage(),
             };
         }
@@ -39,7 +42,7 @@ internal static class Program
     {
         Console.Error.WriteLine(
             "usage: satellite-hm-helper <serve --pipe <name> --parent-pid <pid>" +
-            " | service | broker | install-driver | remove-driver | cleanup>");
+            " | service | broker | install-driver | remove-driver | cleanup | sdk-version>");
         return 2;
     }
 
@@ -79,6 +82,40 @@ internal static class Program
         HMContext.RemoveAllVirtualControllers(preserveInstall: true);
         Console.WriteLine("HIDMaestro orphan sweep complete.");
         return 0;
+    }
+
+    private static int SdkVersion()
+    {
+        Assembly sdk = typeof(HMContext).Assembly;
+        string release = sdk.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                         ?? sdk.GetName().Version?.ToString()
+                         ?? "unknown";
+        Console.WriteLine($"sdk {release}");
+        Console.WriteLine($"driver {EmbeddedDriverVersion(sdk)}");
+        return 0;
+    }
+
+    private static readonly Regex DriverVerLine =
+        new(@"^\s*DriverVer\s*=\s*[0-9/]+\s*,\s*([0-9]+(?:\.[0-9]+)*)", RegexOptions.Compiled);
+
+    private static string EmbeddedDriverVersion(Assembly sdk)
+    {
+        string[] infs = sdk.GetManifestResourceNames()
+            .Where(n => n.EndsWith("hidmaestro.inf", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        string arch = $".{RuntimeInformation.ProcessArchitecture}.";
+        string name = infs.FirstOrDefault(n => n.Contains(arch, StringComparison.OrdinalIgnoreCase))
+            ?? infs.FirstOrDefault()
+            ?? throw new InvalidOperationException("the SDK embeds no hidmaestro.inf resource");
+        using Stream inf = sdk.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException($"{name} could not be opened");
+        using var reader = new StreamReader(inf, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        while (reader.ReadLine() is string line)
+        {
+            Match match = DriverVerLine.Match(line);
+            if (match.Success) return match.Groups[1].Value;
+        }
+        throw new InvalidOperationException($"{name} has no DriverVer line");
     }
 
     private static int Serve(string pipePath, int parentPid)

@@ -7,7 +7,9 @@
     green run there: clang-format (pinned 22.1.4) over CI's exact file set,
     the action-pin lint from _security.yml, configure + build + ctest via the
     windows-mingw preset (MSYS2 MINGW64, the toolchain CI installs), the
-    satellite.exe check, and the HIDMaestro helper publish.
+    satellite.exe check, the redist script tests (tests/test_fetch_redist.ps1),
+    the HIDMaestro helper publish and the helper's SDK check
+    (scripts/verify-helper-sdk.ps1).
 
         scripts/ci-local.ps1
         scripts/ci-local.ps1 -AllowMissing   # downgrade a missing tool to a notice
@@ -96,6 +98,10 @@ Get-ChildItem -Path .github\workflows -Recurse -File -Include *.yml, *.yaml | Fo
 if ($pinFail) { throw 'unpinned action reference' }
 Write-Output 'action pins: OK'
 
+Step 'Script tests (tests/test_fetch_redist.ps1)'
+& (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'tests\test_fetch_redist.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'test_fetch_redist.ps1 failed' }
+
 # windows-ci.yml runs inside the MSYS2 MINGW64 shell; get the same toolchain
 # by putting mingw64\bin first. Never ucrt64: different toolchain than CI's.
 $mingwBin = 'C:\msys64\mingw64\bin'
@@ -132,11 +138,16 @@ if (Get-Command dotnet -ErrorAction SilentlyContinue) {
     # project references; CI runs it right before the publish.
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'fetch-redist.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'fetch-redist.ps1 failed' }
+    foreach ($stale in @('helper/hidmaestro/bin', 'helper/hidmaestro/obj')) {
+        if (Test-Path $stale) { Remove-Item -Recurse -Force $stale }
+    }
     & dotnet publish helper/hidmaestro/satellite-hm-helper.csproj -c Release
     if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
     if (-not (Test-Path 'helper/hidmaestro/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish/satellite-hm-helper.exe')) {
         throw 'dotnet publish did not produce satellite-hm-helper.exe'
     }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'verify-helper-sdk.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'verify-helper-sdk.ps1 failed' }
 } else {
     Write-Output '::warning:: no .NET SDK on PATH; skipping the helper publish CI runs (install-deps.ps1 installs SDK 10).'
 }
