@@ -6,8 +6,13 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 ## Unreleased
 
 No protocol changes. Feedback on a ViGEm pad, a relaunched client's pad
-state, a crash a paired client could cause, the vendored components, and
-the HIDMaestro SDK a locally built installer ships.
+state, a crash a paired client could cause, the vendored components, the
+HIDMaestro SDK a locally built installer ships, and the dashboard's dish
+glyph.
+
+The dashboard's dish glyphs aimed up and to the left while their signal
+arcs sat at the upper right. The reflector now faces the signal in every
+state, and the Dish icon the dashboard shows for a paired phone follows.
 
 Two of the three ViGEm personas never carried a game's feedback right. The
 DS4 persona asked the driver for its notifications with a read-write request
