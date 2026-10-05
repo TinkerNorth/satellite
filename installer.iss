@@ -616,6 +616,8 @@ begin
     DetectedVigemVersion := GetInstalledVigemVersion;
     DetectedHm := IsHidMaestroInstalled;
     RebootNeeded := False;
+    Log('ViGEmBus: detected driver "' + DetectedVigemVersion + '", bundled driver ' + '{#ViGEmBusDriverVersion}' + ', mode ' + VigemMode);
+    Log('HIDMaestro: deployed=' + IntToStr(Ord(DetectedHm)) + ', bundled SDK ' + '{#HmVersion}' + ', mode ' + HmMode);
 
     // Two driver paragraphs now share the caption; shrink the list a little
     // so the taller label still fits the components page.
@@ -673,6 +675,7 @@ begin
             Sleep(VigemRetryDelayMs);
         end;
     until Attempt >= VigemMaxAttempts;
+    Log('ViGEmBus installer exit code ' + IntToStr(ResultCode));
 
     case ResultCode of
         0, 1638, 3011:
@@ -717,6 +720,7 @@ begin
                'installer to retry).', mbInformation);
         Exit;
     end;
+    Log('satellite-hm-helper install-driver exit code ' + IntToStr(ResultCode));
     if ResultCode <> 0 then
         DriverNotice('HIDMaestro driver deployment returned exit code ' +
                IntToStr(ResultCode) + '. Satellite will still install; ' +
@@ -735,9 +739,13 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
     if CurStep <> ssPostInstall then Exit;
     if ShouldRunViGEm then
-        RunBundledViGEm;
+        RunBundledViGEm
+    else
+        Log('ViGEmBus: install skipped');
     if ShouldRunHidMaestro then
-        RunHidMaestroDeploy;
+        RunHidMaestroDeploy
+    else
+        Log('HIDMaestro: deploy skipped');
     if ShouldRegisterBroker then
         RegisterBrokerService
     else

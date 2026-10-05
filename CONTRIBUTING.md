@@ -210,7 +210,7 @@ Build + style workflows run on every PR:
 |---|---|---|
 | `linux-ci.yml` | ubuntu-24.04 | clang-format check, tray-enabled + headless builds, ctest, AppIndicator link verification, fuzz smoke, Sentry SDK build, build-reproducibility gate (two Release builds must match byte for byte) |
 | `macos-ci.yml` | macos-15 | clang-format check, build + ctest, .app layout verification, uploads `satellite-macos-stub.app` |
-| `windows-ci.yml` | windows-latest | clang-format check, MinGW MSYS2 build, ctest, uploads `satellite.exe` |
+| `windows-ci.yml` | windows-latest | clang-format check, MinGW MSYS2 build, ctest, redist script tests (`tests/test_fetch_redist.ps1`), HIDMaestro helper publish held to `driver_pins.h`, uploads `satellite.exe` |
 
 All three workflows install clang-format **pinned to 22.1.4** so verdicts
 match across runners, run the same `scripts/check-format.sh` gate, and
@@ -278,12 +278,17 @@ upstream advisory has fired.
 
 ### Updating a runtime redistributable (`redist/`)
 
-`redist/` holds third-party installers that the Windows Inno Setup
-installer chains in at install time (currently just the ViGEmBus driver).
-These are not vendored under `lib/`: they're not source we compile
-against, they're prebuilt binaries from upstream that we re-distribute
-unchanged. The pin lives in [`redist/SHA256SUMS`](redist/SHA256SUMS) and
-the inventory is in [`redist/README.md`](redist/README.md).
+`redist/` holds third-party binaries that the Windows Inno Setup installer
+ships: the ViGEmBus driver installer, and the HIDMaestro SDK release that
+`helper/hidmaestro` builds `satellite-hm-helper.exe` from. These are not
+vendored under `lib/`: they're not source we compile against, they're
+prebuilt binaries from upstream that we re-distribute unchanged. The pin
+lives in [`redist/SHA256SUMS`](redist/SHA256SUMS) and the inventory is in
+[`redist/README.md`](redist/README.md). The staged SDK is held to
+`src/platform/windows/driver_pins.h` by `scripts/fetch-redist.ps1` and the
+published helper by `scripts/verify-helper-sdk.ps1`;
+`tests/test_fetch_redist.ps1` pins both and runs in `windows-ci.yml` and
+`scripts/ci-local.ps1`.
 
 The `vendored-freshness` 90-day check intentionally does not cover
 `redist/`. ViGEmBus is end-of-life upstream (repo archived 2023-11) and
