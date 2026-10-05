@@ -3,7 +3,7 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
+## 2.1.2
 
 No protocol changes. Feedback on a ViGEm pad, a relaunched client's pad
 state, a crash a paired client could cause, the vendored components, the
