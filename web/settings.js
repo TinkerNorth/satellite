@@ -167,6 +167,7 @@ async function initSettings() {
   // Re-seed the updates form from the next snapshot in case prefs changed in
   // another tab while we were on /dashboard.
   if (typeof updatesResetForm === 'function') updatesResetForm();
+  if (typeof ensureSSE === 'function') ensureSSE();
 
   try {
     const r = await fetch('/api/status');

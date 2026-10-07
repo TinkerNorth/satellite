@@ -48,13 +48,11 @@ static void onDonate(GtkMenuItem*, gpointer) { openLocalUrl("/donate"); }
 static void onUpdateClick(GtkMenuItem*, gpointer) {
     if (!g_updateService) return;
     UpdateStatusSnapshot s = g_updateService->snapshot();
-    if (s.state == UpdateState::Downloaded) {
+    if (s.state == UpdateState::Downloaded && s.info.available) {
         g_updateService->requestInstall();
-    } else if (s.state == UpdateState::UpdateAvailable) {
-        // Manual installs (Deb/Portable) can't run in-app.
-        if (s.info.installMethod == InstallMethod::SelfInstall) {
-            g_updateService->requestDownload();
-        }
+    } else if (s.state == UpdateState::UpdateAvailable && s.info.available &&
+               s.info.installMethod == InstallMethod::SelfInstall) {
+        g_updateService->requestDownload();
     } else {
         g_updateService->requestCheck(/*userInitiated=*/true);
     }

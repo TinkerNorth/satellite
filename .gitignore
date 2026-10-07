@@ -109,3 +109,4 @@ Desktop.ini
 /test_status_json
 /test_uinput_smoke
 /test_update_service
+/test_update_ui_contract

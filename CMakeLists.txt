@@ -1222,6 +1222,11 @@ target_compile_definitions(test_catalog PRIVATE
     WEB_IMG_ICONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/img/icons"
 )
 
+satellite_add_pure_test(test_update_ui_contract tests/test_update_ui_contract.cpp)
+target_compile_definitions(test_update_ui_contract PRIVATE
+    WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
+)
+
 # UpdateService spawns worker/timer threads, so this suite needs pthreads on
 # Linux/macOS (MinGW links winpthread implicitly).
 find_package(Threads REQUIRED)

@@ -20,27 +20,30 @@
   <div class="card" id="view-offline" style="display:none">
     <div class="offline-content">
       <div class="offline-icon"><img src="img/icons/satellite-master.svg" alt="Satellite" class="brand-icon brand-icon-lg"></div>
-      <h1 class="offline-title" data-i18n="offline.title">Server Unreachable</h1>
-      <p class="offline-message" data-i18n="offline.message">Cannot connect to the Satellite server. It may be stopped or restarting.</p>
+      <h1 class="offline-title" id="offline-title" data-i18n="offline.title">Server Unreachable</h1>
+      <p class="offline-message" id="offline-message" data-i18n="offline.message">Cannot connect to the Satellite server. It may be stopped or restarting.</p>
       <div class="offline-progress">
         <div class="offline-progress-bar"></div>
       </div>
-      <p class="offline-hint" data-i18n="offline.hint">Waiting for server… will reconnect automatically.</p>
+      <p class="offline-hint" id="offline-hint" data-i18n="offline.hint">Waiting for server… will reconnect automatically.</p>
     </div>
   </div>
 
   <template id="tpl-update-banner">
-    <div class="update-banner" id="update-banner" style="display:none">
+    <div class="update-banner" style="display:none">
       <div class="update-banner-icon"><img src="img/icons/lightning_bolt.svg" alt="" class="emoji-icon"></div>
       <div class="update-banner-body">
-        <div class="update-banner-title" id="update-banner-title">Update available</div>
-        <div class="update-banner-detail" id="update-banner-detail"></div>
-        <div class="update-banner-progress" id="update-banner-progress" style="display:none">
-          <div class="update-banner-progress-fill" id="update-banner-progress-fill"></div>
-          <div class="update-banner-progress-text" id="update-banner-progress-text">0%</div>
+        <div class="update-banner-title" aria-live="polite"></div>
+        <div class="update-banner-detail" hidden></div>
+        <pre class="update-manual-cmd" hidden></pre>
+        <div class="update-banner-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" hidden>
+          <div class="update-banner-progress-track"><div class="update-banner-progress-fill"></div></div>
+          <div class="update-banner-progress-text"><span class="update-banner-progress-label"></span><span class="update-banner-progress-pct"></span></div>
         </div>
+        <div class="update-banner-hint" hidden></div>
+        <div class="update-banner-alert" role="alert"></div>
       </div>
-      <div class="update-banner-actions" id="update-banner-actions"></div>
+      <div class="update-banner-actions"></div>
     </div>
   </template>
 
@@ -283,6 +286,7 @@
         <button class="btn btn-save" id="settings-btnCheck" onclick="updatesCheck()" data-i18n="settings.updates.check">Check for Updates</button>
         <button class="btn btn-save" id="settings-btnUpdatePrefs" onclick="updatesSavePrefs()" data-i18n="settings.updates.save-prefs" disabled>Save Prefs</button>
       </div>
+      <p class="settings-save-status" id="settings-update-prefs-status" role="status"></p>
 
       <div id="settings-update-slot" class="settings-update-slot"></div>
     </div>

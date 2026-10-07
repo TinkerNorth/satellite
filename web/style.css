@@ -1343,34 +1343,71 @@ h2.section-title { font-size: 12px; }
 }
 .update-banner-progress {
   margin-top: 8px;
-  position: relative;
-  height: 14px;
 }
-.update-banner-progress::before {
-  content: '';
-  position: absolute;
-  inset: 4px 0;
-  background: var(--outline);
+.update-banner-progress-track {
+  position: relative;
+  height: 6px;
   border-radius: 2px;
+  background: var(--outline);
+  overflow: hidden;
 }
 .update-banner-progress-fill {
-  position: absolute;
-  top: 4px;
-  left: 0;
-  height: 6px;
+  height: 100%;
   border-radius: 2px;
   background: linear-gradient(90deg, var(--primary), var(--primary-dim));
   width: 0%;
   transition: width 0.2s ease-out;
 }
+.update-banner-progress-indeterminate .update-banner-progress-fill {
+  width: 30%;
+  transition: none;
+  animation: update-progress-slide 1.5s ease-in-out infinite;
+}
+@keyframes update-progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(334%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-banner-progress-indeterminate .update-banner-progress-fill {
+    width: 100%;
+    opacity: 0.45;
+    animation: none;
+  }
+  .offline-icon,
+  .offline-progress-bar {
+    animation: none;
+  }
+}
 .update-banner-progress-text {
-  position: absolute;
-  right: 0;
-  top: 0;
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text);
   line-height: 14px;
+  color: var(--text-muted);
+}
+.update-banner-progress-pct {
+  margin-left: auto;
+  color: var(--text);
+}
+.update-banner-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.update-banner-alert {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--error);
+  word-break: break-word;
+}
+.update-banner-alert:not(:empty) {
+  margin-top: 6px;
+}
+.update-banner [hidden] {
+  display: none;
 }
 .update-banner-actions {
   display: flex;
@@ -1392,6 +1429,13 @@ h2.section-title { font-size: 12px; }
 .update-banner.update-banner-error .update-banner-title {
   color: var(--error);
 }
+.update-banner.update-banner-success {
+  background: rgba(34, 197, 94, 0.06);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.update-banner.update-banner-success .update-banner-title {
+  color: var(--success);
+}
 .update-manual-cmd {
   display: block;
   background: var(--surface);
@@ -1403,7 +1447,8 @@ h2.section-title { font-size: 12px; }
   font-size: 12px;
   color: var(--text);
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: normal;
+  overflow-wrap: anywhere;
   user-select: all;
 }
 
@@ -1618,6 +1663,9 @@ h2.section-title { font-size: 12px; }
 }
 
 .btn-icon.btn-danger .ldr-spinner { color: var(--error); }
+.btn-start .btn-with-loader .ldr-spinner,
+.btn-save .btn-with-loader .ldr-spinner { color: var(--on-primary); }
+.btn[aria-busy="true"]:disabled { opacity: 0.85; }
 
 .sse-reconnect-bar {
   margin-bottom: 12px;

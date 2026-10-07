@@ -7,7 +7,6 @@
 #include <string>
 
 // Error carries the failed phase so the UI can show which step failed.
-// Retrying from any error returns the machine to Idle.
 enum class UpdateState : uint8_t {
     Idle = 0,
     Checking,
@@ -82,6 +81,8 @@ struct UpdateStatusSnapshot {
 
     // Phase running when it hit Error. Idle when state != Error.
     UpdateState failedPhase = UpdateState::Idle;
+
+    bool dismissed = false;
 
     // Running value, may be ahead of persisted config until the next saveConfig().
     int64_t lastCheckEpoch = 0;

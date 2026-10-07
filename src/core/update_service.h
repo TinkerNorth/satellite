@@ -55,17 +55,18 @@ class UpdateService {
     void requestDownload();
     void requestRepair();
     void requestInstall();
+    void requestRetry();
     void cancelInFlight();
 
     UpdateStatusSnapshot snapshot() const;
 
-    // Single sink for status snapshots, called after every state transition.
+    // Single sink for status snapshots.
     void setStatusCallback(StatusCallback cb);
     void setPersistCallback(PersistCallback cb);
 
     // Future checks won't notify until something newer than `version` appears.
     void skipVersion(const std::string& version);
-    // "Remind me later": clears in-memory "available" but keeps lastSeenVersion.
+    // "Remind me later": marks the offered version dismissed and keeps lastSeenVersion.
     void dismiss();
     // Mutates Config + persists + triggers an immediate timer-eval so a freshly
     // enabled autoCheck fires within the minute.
@@ -83,15 +84,16 @@ class UpdateService {
     // The worker's jobs, in the order they outrank each other.
     enum class Job { Stop, Install, Download, Check };
     Job takeNextJob();
-    void queueInstallIfWanted();
-    void queueDownloadIfWanted();
+    void queueDownloadIfWanted(bool fetched);
 
-    void doCheck(bool userInitiated);
+    bool doCheck();
     void settleCheck(UpdateState state, const UpdateInfo& info, LogLevel level,
-                     const std::string& message, const std::string& error);
+                     const std::string& message);
+    void settleFailedCheck(const std::string& err);
     void doDownload();
     bool beginDownload(UpdateInfo& info);
     void onDownloadProgress(uint64_t soFar, uint64_t total);
+    void settleCancelledDownload();
     void doVerify();
     void doInstall();
 
@@ -99,7 +101,23 @@ class UpdateService {
     // be held.
     void fireBroadcast();
 
+    void acceptCheckLocked(bool userInitiated);
+    void acceptDownloadLocked();
+    void acceptInstallLocked();
+    void abandonDownloadLocked();
+    void enterStateLocked(UpdateState state);
+    bool checkQueuedLocked() const;
+    bool checkSupersededLocked() const;
+    bool isStagedLocked(const UpdateInfo& info) const;
+    UpdateStatusSnapshot snapshotLocked() const;
+
     static int64_t nowEpoch();
+
+    struct InstallerIdentity {
+        std::string version;
+        std::string assetName;
+        std::string assetSha256;
+    };
 
     IUpdaterPort& updater_;
     ILogPort& log_;
@@ -120,6 +138,8 @@ class UpdateService {
     uint64_t bytesDownloaded_ = 0;
     uint64_t bytesTotal_ = 0;
     std::string downloadedPath_;
+    InstallerIdentity staged_;
+    std::string dismissedVersion_;
     bool userInitiatedCheck_ = false;
 
     bool pendingCheck_ = false;

@@ -11,6 +11,7 @@
 using satellite::buildDebugJson;
 using satellite::buildSseStatusObject;
 using satellite::buildStatusJson;
+using satellite::buildUpdateJson;
 using satellite::jsonDump;
 using satellite::JsonOut;
 using satellite::StatusFields;
@@ -51,6 +52,79 @@ static StatusFields makeFields() {
     backend["available"] = true;
     f.backend = backend;
     return f;
+}
+
+static UpdateStatusSnapshot makeUpdateSnapshot() {
+    UpdateStatusSnapshot s;
+    s.state = UpdateState::Downloading;
+    s.currentVersion = "2.1.2";
+    s.platformId = "windows";
+    s.channel = "stable";
+    s.autoCheck = true;
+    s.autoDownload = false;
+    s.autoInstall = false;
+    s.lastCheckEpoch = 1759700000;
+    s.bytesDownloaded = 4200000;
+    s.totalBytes = 12000000;
+    s.failedPhase = UpdateState::Idle;
+    s.dismissed = false;
+    s.info.available = true;
+    s.info.version = "2.2.0";
+    s.info.channel = "stable";
+    s.info.assetName = "SatelliteSetup-2.2.0.exe";
+    s.info.assetUrl = "https://example.invalid/never-serialized";
+    s.info.assetSize = 12000000;
+    s.info.assetSha256 = "ab12";
+    s.info.htmlUrl = "https://github.com/TinkerNorth/satellite/releases/tag/2.2.0";
+    s.info.publishedAtEpoch = 1759600000;
+    s.info.installMethod = InstallMethod::SelfInstall;
+    s.info.releaseNotes = "Fixes";
+    return s;
+}
+
+static void test_update_exact_shape() {
+    TEST("buildUpdateJson: exact JSON shape and field order, dismissed right after failedPhase");
+    EXPECT_EQ(buildUpdateJson(makeUpdateSnapshot()),
+              std::string(
+                  R"({"state":"downloading","currentVersion":"2.1.2","platformId":"windows",)"
+                  R"("channel":"stable","autoCheck":true,"autoDownload":false,"autoInstall":false,)"
+                  R"("lastCheckEpoch":1759700000,"bytesDownloaded":4200000,"totalBytes":12000000,)"
+                  R"("message":"","failedPhase":"idle","dismissed":false,"info":{"available":true,)"
+                  R"("version":"2.2.0","channel":"stable","assetName":"SatelliteSetup-2.2.0.exe",)"
+                  R"("assetSize":12000000,"assetSha256":"ab12",)"
+                  R"("htmlUrl":"https://github.com/TinkerNorth/satellite/releases/tag/2.2.0",)"
+                  R"("publishedAtEpoch":1759600000,"installMethod":"self","manualInstruction":"",)"
+                  R"("releaseNotes":"Fixes"}})"));
+}
+
+static void test_update_carries_the_dismissal() {
+    TEST("buildUpdateJson: dismissed round-trips both values, after failedPhase");
+    UpdateStatusSnapshot s = makeUpdateSnapshot();
+    s.state = UpdateState::Downloaded;
+    s.dismissed = true;
+    EXPECT(buildUpdateJson(s).find(R"("failedPhase":"idle","dismissed":true,"info")") !=
+           std::string::npos);
+    s.dismissed = false;
+    EXPECT(buildUpdateJson(s).find(R"("failedPhase":"idle","dismissed":false,"info")") !=
+           std::string::npos);
+}
+
+static void test_update_names_the_phase_and_the_install_method() {
+    TEST("buildUpdateJson: an error names its failed phase");
+    UpdateStatusSnapshot s = makeUpdateSnapshot();
+    s.state = UpdateState::Error;
+    s.failedPhase = UpdateState::Installing;
+    s.message = "declined";
+    const std::string failed = buildUpdateJson(s);
+    EXPECT(failed.find(R"("state":"error")") != std::string::npos);
+    EXPECT(failed.find(R"("message":"declined","failedPhase":"installing")") != std::string::npos);
+
+    TEST("buildUpdateJson: a package-managed release says manual and carries its instruction");
+    s.info.installMethod = InstallMethod::Manual;
+    s.info.manualInstruction = "sudo apt upgrade satellite";
+    const std::string manual = buildUpdateJson(s);
+    EXPECT(manual.find(R"("installMethod":"manual")") != std::string::npos);
+    EXPECT(manual.find(R"("manualInstruction":"sudo apt upgrade satellite")") != std::string::npos);
 }
 
 static void test_status_exact_shape() {
@@ -199,6 +273,9 @@ int main() {
     test_counterBlocksStayOffTheHotSurfaces();
     test_senderIpLabel();
     test_sseEventFraming();
+    test_update_exact_shape();
+    test_update_carries_the_dismissal();
+    test_update_names_the_phase_and_the_install_method();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

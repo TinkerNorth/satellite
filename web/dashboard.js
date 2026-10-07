@@ -1,4 +1,5 @@
 let eventSource = null;
+let ssePausedWhileHidden = false;
 
 // Disable a button and swap its contents for a spinner (+ optional label).
 // Returns a restorer to call once the request settles.
@@ -11,11 +12,7 @@ function setButtonLoading(btn, label) {
   btn.setAttribute('aria-busy', 'true');
   // 12px fits inside the 32x32 .btn-icon; 14px reads next to a text label.
   const size = btn.classList.contains('btn-icon') ? 12 : 14;
-  if (label) {
-    btn.innerHTML = '<span class="btn-with-loader">' + spinnerSVG(size) + '<span>' + esc(label) + '</span></span>';
-  } else {
-    btn.innerHTML = '<span class="btn-with-loader">' + spinnerSVG(size) + '</span>';
-  }
+  btn.innerHTML = buttonLoaderHTML(size, label);
   return function restore() {
     btn.innerHTML = prevHTML;
     btn.disabled  = prevDisabled;
@@ -347,6 +344,8 @@ function initDashboard() {
     if (devList) devList.addEventListener('click', handleDeviceListClick);
     const pairList = document.getElementById('pair-request-list');
     if (pairList) pairList.addEventListener('click', handlePairRequestClick);
+    const driverActs = document.getElementById('driver-banner-actions');
+    if (driverActs) driverActs.addEventListener('click', handleDriverBannerClick);
     const pairBadge = document.getElementById('pair-badge');
     if (pairBadge) {
       pairBadge.addEventListener('click', () => {
@@ -412,6 +411,11 @@ function setSseReconnecting(on) {
 
 function startSSE() {
   stopSSE();
+  if (document.hidden) {
+    ssePausedWhileHidden = true;
+    return;
+  }
+  ssePausedWhileHidden = false;
   eventSource = new EventSource('/api/events');
 
   // Any successful delivery means the stream recovered; clear the bar.
@@ -494,6 +498,29 @@ function startSSE() {
 function stopSSE() {
   if (eventSource) { eventSource.close(); eventSource = null; }
 }
+
+function ensureSSE() {
+  if (!eventSource) startSSE();
+}
+
+function onSseVisibilityChange() {
+  if (document.hidden) pauseSSE();
+  else resumeSSE();
+}
+
+function pauseSSE() {
+  if (!eventSource) return;
+  stopSSE();
+  ssePausedWhileHidden = true;
+}
+
+function resumeSSE() {
+  if (!ssePausedWhileHidden || isOffline) return;
+  startSSE();
+  if (typeof updatesFetch === 'function') updatesFetch();
+}
+
+document.addEventListener('visibilitychange', onSseVisibilityChange);
 
 function updateStatus(d) {
   if (d.backend) {
@@ -876,6 +903,17 @@ function populateBackendGuide(err, icon, extras) {
 }
 
 const DRIVER_BANNER_BACKENDS = ['vigem', 'hidmaestro'];
+const DRIVER_CARRYING_UPDATE_STATES = [
+  UPDATE_STATE_AVAILABLE, UPDATE_STATE_DOWNLOADING, UPDATE_STATE_VERIFYING,
+  UPDATE_STATE_DOWNLOADED, UPDATE_STATE_INSTALLING,
+];
+const DRIVER_REPAIR_BLOCKED_STATES = [UPDATE_STATE_CHECKING, UPDATE_STATE_INSTALLING];
+const DRIVER_BANNER_HANDLERS = new Map([
+  ['install-driver', installHidmaestroDriver],
+  ['repair',         updatesRepair],
+  ['restart',        promptDriverRestart],
+  ['guide',          openBackendGuide],
+]);
 
 let driverInstallBusy = false;
 let driverInstallError = '';
@@ -889,6 +927,10 @@ async function installBundledDriver(backendId) {
   driverInstallBusy = false;
   driverInstallError = r.ok ? '' : ((r.data && r.data.error) || '');
   await checkBackendStatus();
+}
+
+function installHidmaestroDriver() {
+  installBundledDriver('hidmaestro');
 }
 
 function driverDisplayName(id) {
@@ -924,7 +966,7 @@ function renderDriverBanner() {
     ? DRIVER_BANNER_BACKENDS.map(id => lastBackends.find(b => b && b.id === id)).filter(Boolean)
     : [];
   if (rows.length !== DRIVER_BANNER_BACKENDS.length) {
-    banner.style.display = 'none';
+    patchDisplay(banner, 'none');
     return;
   }
 
@@ -935,14 +977,12 @@ function renderDriverBanner() {
 
   banner.classList.toggle('driver-warn', level === 'warn');
   banner.classList.toggle('driver-err', level === 'err');
-  banner.style.display = 'flex';
+  patchDisplay(banner, 'flex');
 
-  const title = document.getElementById('driver-banner-title');
-  if (title) {
-    title.textContent = level === 'err' ? t('drivers.title.missing')
-                      : level === 'warn' ? t('drivers.title.attention')
-                      : t('drivers.title.ok');
-  }
+  const title = level === 'err' ? t('drivers.title.missing')
+              : level === 'warn' ? t('drivers.title.attention')
+              : t('drivers.title.ok');
+  patchText(document.getElementById('driver-banner-title'), title);
 
   const list = document.getElementById('driver-list');
   if (list) {
@@ -955,52 +995,95 @@ function renderDriverBanner() {
   const detail = document.getElementById('driver-banner-detail');
   const acts = document.getElementById('driver-banner-actions');
   if (!detail || !acts) return;
-  acts.innerHTML = '';
   if (level === 'ok') {
-    detail.textContent = '';
+    patchText(detail, '');
+    updatesPatchActions(acts, []);
     return;
   }
 
   const upd = updatesState;
-  const updState = upd ? upd.state : null;
-  const updateCarriesDrivers = upd && upd.info && upd.info.installMethod === 'self' &&
-    (updState === UPDATE_STATE_AVAILABLE || updState === UPDATE_STATE_DOWNLOADING ||
-     updState === UPDATE_STATE_VERIFYING || updState === UPDATE_STATE_DOWNLOADED);
+  const carries = updateCarriesDrivers(upd);
+  patchText(detail, driverBannerDetail(restartPending, carries, upd));
+  updatesPatchActions(acts, driverBannerActions(rows, restartPending, carries, upd));
+}
 
-  if (restartPending) {
-    detail.textContent = t('drivers.detail.restart');
-  } else if (updateCarriesDrivers) {
-    detail.textContent = t('drivers.detail.via-update', [upd.info.version]);
-  } else {
-    detail.textContent = t('drivers.detail.rerun');
-  }
+function updateCarriesDrivers(upd) {
+  if (!upd || !upd.info || upd.info.installMethod !== 'self') return false;
+  const dismissedOffer = upd.state === UPDATE_STATE_AVAILABLE && !!upd.dismissed;
+  return DRIVER_CARRYING_UPDATE_STATES.includes(upd.state) && !dismissedOffer;
+}
 
+function driverBannerDetail(restartPending, carries, upd) {
+  const inline = updatesInlineTextFor(UPDATE_ORIGIN_DRIVERS);
+  if (inline) return inline;
+  if (driverInstallError) return t('drivers.error.install', [driverInstallError]);
+  if (restartPending) return t('drivers.detail.restart');
+  if (carries) return t('drivers.detail.via-update', [upd.info.version]);
+  return t('drivers.detail.rerun');
+}
+
+function driverBannerActions(rows, restartPending, carries, upd) {
   const hm = rows.find(b => b.id === 'hidmaestro');
-  const hmInstallable = !restartPending && hm &&
+  const hmInstallable = !restartPending && !!hm &&
     (hm.errorCode === 'DRIVER_MISSING' || hm.versionState === 'outdated');
-  if (hmInstallable) {
-    const btn = makeBtn('btn-start',
-      driverInstallBusy ? t('drivers.state.installing') : t('drivers.btn.install-driver'),
-      () => installBundledDriver('hidmaestro'));
-    btn.disabled = driverInstallBusy;
-    acts.appendChild(btn);
-  }
+  const dismissedInstall = carries && upd.state === UPDATE_STATE_DOWNLOADED && !!upd.dismissed;
+  const backendAlert = document.getElementById('backend-alert');
+  const guideOffered = !!backendAlert && backendAlert.classList.contains('show');
+  const actions = [];
+  if (hmInstallable) actions.push(driverInstallAction());
+  if (!carries && !restartPending) actions.push(driverRepairAction());
+  if (dismissedInstall && !restartPending) actions.push(driverRestartAction(upd));
+  if (guideOffered) actions.push(driverGuideAction());
+  return actions;
+}
 
-  if (driverInstallError) {
-    detail.textContent = t('drivers.error.install', [driverInstallError]);
-  }
+function driverInstallAction() {
+  const label = driverInstallBusy ? t('drivers.state.installing') : t('drivers.btn.install-driver');
+  return { act: 'install-driver', label, primary: true, busy: driverInstallBusy, disabled: driverInstallBusy };
+}
 
-  if (!updateCarriesDrivers && !restartPending) {
-    acts.appendChild(makeBtn('btn-start', t('drivers.btn.get-installer'), () => updatesRepair()));
-  }
+function driverRepairAction() {
+  const upd = updatesState;
+  const blocked = !!upd && DRIVER_REPAIR_BLOCKED_STATES.includes(upd.state);
+  return {
+    act: 'repair',
+    label: t('drivers.btn.get-installer'),
+    primary: true,
+    busy: updatesActionBusy(UPDATE_ORIGIN_DRIVERS, 'repair'),
+    disabled: blocked || updatesActionsLocked(),
+  };
+}
 
-  const alertShown = document.getElementById('backend-alert');
-  if (alertShown && alertShown.classList.contains('show')) {
-    acts.appendChild(makeBtn('btn-undo', t('backend.guide.toggle'), () => {
-      if (!backendGuideOpen) toggleBackendGuide();
-      alertShown.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }));
-  }
+function driverRestartAction(upd) {
+  const label = updatesIsReinstall(upd) ? t('updates.btn.restart-reinstall') : t('updates.btn.restart-install');
+  return {
+    act: 'restart',
+    label,
+    primary: true,
+    busy: updatesActionBusy(UPDATE_ORIGIN_DRIVERS, 'restart'),
+    disabled: updatesActionsLocked(),
+  };
+}
+
+function promptDriverRestart() {
+  updatesRestartClicked(UPDATE_ORIGIN_DRIVERS);
+}
+
+function driverGuideAction() {
+  return { act: 'guide', label: t('backend.guide.toggle'), primary: false, busy: false, disabled: false };
+}
+
+function handleDriverBannerClick(e) {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn || btn.disabled) return;
+  const handler = DRIVER_BANNER_HANDLERS.get(btn.dataset.act);
+  if (handler) handler();
+}
+
+function openBackendGuide() {
+  if (!backendGuideOpen) toggleBackendGuide();
+  const backendAlert = document.getElementById('backend-alert');
+  if (backendAlert) backendAlert.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function checkBackendStatus() {

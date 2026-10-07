@@ -8,13 +8,21 @@
 #include "../src/net/pairing_keys.h"
 #include "../src/platform/windows/autostart_rule.h"
 #include "../src/platform/windows/tray_menu.h"
+#include "../src/platform/windows/installer_launch_error.h"
+#include "../src/platform/windows/update_toast.h"
+#include "../src/core/update_service.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "test_util.h"
 
@@ -455,6 +463,184 @@ static void testUpdateMenuItem() {
     EXPECT(idle.label == L"Check for Updates...");
 }
 
+static void testInstallerLaunchError() {
+    using satellite::updater::installerLaunchError;
+
+    TEST("installer launch: a declined UAC prompt (GLE 1223) says the permission was declined");
+    EXPECT_EQ(installerLaunchError(1223),
+              std::string("The installer needs administrator permission, and the request was "
+                          "declined."));
+
+    TEST("installer launch: any other ShellExecuteEx failure keeps its error code");
+    EXPECT_EQ(installerLaunchError(2), std::string("ShellExecuteEx failed (GLE=2)"));
+}
+
+static UpdateStatusSnapshot updateAt(UpdateState state) {
+    UpdateStatusSnapshot snap;
+    snap.state = state;
+    snap.info.version = "2.2.0";
+    snap.info.available = state != UpdateState::Idle && state != UpdateState::UpToDate;
+    return snap;
+}
+
+static UpdateStatusSnapshot dismissedAt(UpdateState state) {
+    UpdateStatusSnapshot snap = updateAt(state);
+    snap.dismissed = true;
+    return snap;
+}
+
+static std::string toastPattern(const std::vector<UpdateStatusSnapshot>& broadcasts) {
+    satellite::tray::UpdateToastState toastState;
+    std::string pattern;
+    for (const UpdateStatusSnapshot& snap : broadcasts) {
+        pattern += satellite::tray::updateToastDue(toastState, snap) ? '!' : '.';
+    }
+    return pattern;
+}
+
+struct ToastCase {
+    const char* label;
+    std::vector<UpdateStatusSnapshot> broadcasts;
+    const char* pattern;
+};
+
+static void testUpdateToast() {
+    const UpdateStatusSnapshot offered = updateAt(UpdateState::UpdateAvailable);
+    const UpdateStatusSnapshot offeredDismissed = dismissedAt(UpdateState::UpdateAvailable);
+    const UpdateStatusSnapshot checking = updateAt(UpdateState::Checking);
+    const UpdateStatusSnapshot downloading = updateAt(UpdateState::Downloading);
+    const ToastCase cases[] = {
+        {"update toast: an offer toasts once, however often it is broadcast again",
+         {offered, offered, checking, offered},
+         "!..."},
+        {"update toast: remind me later, then Download and Cancel, stays quiet",
+         {offered, offeredDismissed, downloading, downloading, offered},
+         "!...."},
+        {"update toast: remind me later, then the next check that finds the update toasts once",
+         {offered, offeredDismissed, checking, offered, offered},
+         "!..!."},
+        {"update toast: a failed check after remind me later stays quiet through a cancelled "
+         "download, and the check after it reminds",
+         {offered, offeredDismissed, checking, offeredDismissed, downloading, offered, checking,
+          offered},
+         "!......!"},
+        {"update toast: Idle and UpToDate re-arm, so the next offer toasts",
+         {offered, updateAt(UpdateState::Idle), offered, updateAt(UpdateState::UpToDate), offered},
+         "!.!.!"},
+        {"update toast: a staged, a failed or a dismissed update never toasts",
+         {updateAt(UpdateState::Downloaded), updateAt(UpdateState::Error), offeredDismissed,
+          dismissedAt(UpdateState::Downloaded)},
+         "...."},
+    };
+    for (const ToastCase& toastCase : cases) {
+        TEST(toastCase.label);
+        EXPECT_EQ(toastPattern(toastCase.broadcasts), std::string(toastCase.pattern));
+    }
+}
+
+struct ToastProbeUpdater : IUpdaterPort {
+    std::atomic<bool> downloading{false};
+    bool fetchLatestRelease(const std::string& channel, const std::string&, UpdateInfo& out,
+                            std::string&) override {
+        out.version = "99.0.0";
+        out.channel = channel;
+        out.assetName = "SatelliteSetup-99.0.0.exe";
+        out.assetSize = 1024;
+        return true;
+    }
+    bool downloadArtifact(const UpdateInfo&, const std::function<void(uint64_t, uint64_t)>&,
+                          const std::atomic<bool>* cancel, std::string&,
+                          std::string& outError) override {
+        downloading = true;
+        for (int i = 0; i < 3000 && cancel != nullptr && !cancel->load(); i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        outError = "cancelled";
+        return false;
+    }
+    bool verifyArtifact(const std::string&, const UpdateInfo&, std::string&) override {
+        return true;
+    }
+    bool applyUpdate(const std::string&, const UpdateInfo&, std::string&) override { return true; }
+    std::string platformId() const override { return "windows"; }
+};
+
+struct ToastProbeLog : ILogPort {
+    void logMsg(LogLevel, const std::string&, const std::string&) override {}
+};
+
+struct ToastProbe {
+    std::mutex mtx;
+    satellite::tray::UpdateToastState toastState;
+    int toasts = 0;
+};
+
+static void probeToast(ToastProbe& probe, const UpdateStatusSnapshot& snap) {
+    std::lock_guard<std::mutex> lk(probe.mtx);
+    if (satellite::tray::updateToastDue(probe.toastState, snap)) probe.toasts++;
+}
+
+static int toastCount(ToastProbe& probe) {
+    std::lock_guard<std::mutex> lk(probe.mtx);
+    return probe.toasts;
+}
+
+static bool waitForToasts(ToastProbe& probe, int want) {
+    for (int i = 0; i < 3000 && toastCount(probe) < want; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return toastCount(probe) >= want;
+}
+
+static bool waitForDownloading(const ToastProbeUpdater& updater) {
+    for (int i = 0; i < 3000 && !updater.downloading.load(); i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return updater.downloading.load();
+}
+
+static void cancelThenStop(UpdateService& svc) {
+    svc.cancelInFlight();
+    svc.stop();
+}
+
+static void stopOnly(UpdateService& svc) { svc.stop(); }
+
+struct ToastEnding {
+    const char* label;
+    void (*end)(UpdateService&);
+};
+
+static void testUpdateToastWithTheRealService() {
+    const ToastEnding endings[] = {
+        {"update toast: with the real service, remind me later then Download and Cancel toasts "
+         "once",
+         cancelThenStop},
+        {"update toast: with the real service, remind me later then a download cancelled by "
+         "shutdown toasts once",
+         stopOnly},
+    };
+    for (const ToastEnding& ending : endings) {
+        TEST(ending.label);
+        ToastProbe probe;
+        ToastProbeUpdater updater;
+        ToastProbeLog log;
+        Config cfg;
+        std::mutex cfgMtx;
+        UpdateService svc(updater, log, cfg, cfgMtx);
+        svc.setStatusCallback(
+            [&probe](const UpdateStatusSnapshot& snap) { probeToast(probe, snap); });
+        svc.start();
+        svc.requestCheck(true);
+        EXPECT(waitForToasts(probe, 1));
+        svc.dismiss();
+        svc.requestDownload();
+        EXPECT(waitForDownloading(updater));
+        ending.end(svc);
+        EXPECT_EQ(toastCount(probe), 1);
+    }
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -477,6 +663,9 @@ int main() {
     testResolvePairingSharedKey();
     testRunEntryRule();
     testUpdateMenuItem();
+    testInstallerLaunchError();
+    testUpdateToast();
+    testUpdateToastWithTheRealService();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
