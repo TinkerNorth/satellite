@@ -32,6 +32,7 @@ using satellite::applyConfigPatch;
 using satellite::buildDebugJson;
 using satellite::buildSseStatusObject;
 using satellite::buildStatusJson;
+using satellite::buildUpdateJson;
 using satellite::configPatchLogLine;
 using satellite::ConfigPatchOutcome;
 using satellite::Json;
@@ -50,36 +51,8 @@ namespace crash = satellite::crash;
 using Request = httplib::Request;
 using Response = httplib::Response;
 
-// Keys must stay in sync with the web/ JS that consumes them.
-static std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
-    JsonOut j;
-    j["state"] = updateStateName(s.state);
-    j["currentVersion"] = s.currentVersion;
-    j["platformId"] = s.platformId;
-    j["channel"] = s.channel;
-    j["autoCheck"] = s.autoCheck;
-    j["autoDownload"] = s.autoDownload;
-    j["autoInstall"] = s.autoInstall;
-    j["lastCheckEpoch"] = s.lastCheckEpoch;
-    j["bytesDownloaded"] = s.bytesDownloaded;
-    j["totalBytes"] = s.totalBytes;
-    j["message"] = s.message;
-    j["failedPhase"] = updateStateName(s.failedPhase);
-    JsonOut info;
-    info["available"] = s.info.available;
-    info["version"] = s.info.version;
-    info["channel"] = s.info.channel;
-    info["assetName"] = s.info.assetName;
-    info["assetSize"] = s.info.assetSize;
-    info["assetSha256"] = s.info.assetSha256;
-    info["htmlUrl"] = s.info.htmlUrl;
-    info["publishedAtEpoch"] = s.info.publishedAtEpoch;
-    info["installMethod"] = s.info.installMethod == InstallMethod::SelfInstall ? "self" : "manual";
-    info["manualInstruction"] = s.info.manualInstruction;
-    info["releaseNotes"] = s.info.releaseNotes;
-    j["info"] = std::move(info);
-    return jsonDump(j);
-}
+static constexpr const char* CACHE_CONTROL = "Cache-Control";
+static constexpr const char* NO_CACHE = "no-cache";
 
 static JsonOut controllerBatteryObj(const SessionService::ConnectionSnapshot::CtrlInfo& ctrl) {
     JsonOut battery;
@@ -267,6 +240,10 @@ static UpdateService* updaterOr503(Response& res) {
     return g_updateService;
 }
 
+static void replyUpdateSnapshot(Response& res, const UpdateService& updater) {
+    replyJson(res, buildUpdateJson(updater.snapshot()));
+}
+
 // Rejects cross-origin / rebound requests before any route runs.
 static httplib::Server::HandlerResponse guardOrigin(const Request& req, Response& res) {
     const std::string host = req.get_header_value("Host");
@@ -294,6 +271,7 @@ static void serveIndex(const Request&, Response& res) {
         res.status = 404;
         return;
     }
+    res.set_header(CACHE_CONTROL, NO_CACHE);
     res.set_content(html, "text/html");
 }
 
@@ -396,59 +374,75 @@ static void versionRoute(const Request&, Response& res) {
 }
 
 static void updatesStatusRoute(const Request&, Response& res) {
-    if (UpdateService* updater = updaterOr503(res)) {
-        replyJson(res, buildUpdateJson(updater->snapshot()));
-    }
+    if (UpdateService* updater = updaterOr503(res)) replyUpdateSnapshot(res, *updater);
 }
 
 static void updatesCheckRoute(const Request&, Response& res) {
     if (UpdateService* updater = updaterOr503(res)) {
         updater->requestCheck(/*userInitiated=*/true);
-        replyOk(res);
+        replyUpdateSnapshot(res, *updater);
     }
 }
 
 static void updatesDownloadRoute(const Request&, Response& res) {
     if (UpdateService* updater = updaterOr503(res)) {
         updater->requestDownload();
-        replyOk(res);
+        replyUpdateSnapshot(res, *updater);
     }
 }
 
 static void updatesRepairRoute(const Request&, Response& res) {
     if (UpdateService* updater = updaterOr503(res)) {
         updater->requestRepair();
-        replyOk(res);
+        replyUpdateSnapshot(res, *updater);
     }
 }
 
 static void updatesInstallRoute(const Request&, Response& res) {
     if (UpdateService* updater = updaterOr503(res)) {
         updater->requestInstall();
-        replyOk(res);
+        replyUpdateSnapshot(res, *updater);
+    }
+}
+
+static void updatesRetryRoute(const Request&, Response& res) {
+    if (UpdateService* updater = updaterOr503(res)) {
+        updater->requestRetry();
+        replyUpdateSnapshot(res, *updater);
     }
 }
 
 // Cancel and dismiss are no-ops without an updater rather than errors: the
 // dashboard sends them on a state it may only have inferred.
 static void updatesCancelRoute(const Request&, Response& res) {
-    if (g_updateService) g_updateService->cancelInFlight();
-    replyOk(res);
+    UpdateService* const updater = g_updateService;
+    if (updater == nullptr) {
+        replyOk(res);
+        return;
+    }
+    updater->cancelInFlight();
+    replyUpdateSnapshot(res, *updater);
 }
 
 static void updatesDismissRoute(const Request&, Response& res) {
-    if (g_updateService) g_updateService->dismiss();
-    replyOk(res);
+    UpdateService* const updater = g_updateService;
+    if (updater == nullptr) {
+        replyOk(res);
+        return;
+    }
+    updater->dismiss();
+    replyUpdateSnapshot(res, *updater);
 }
 
 static void updatesSkipRoute(const Request& req, Response& res) {
     const std::string v = jsonStr(parseBody(req.body), "version");
-    if (v.empty() || !g_updateService) {
+    UpdateService* const updater = g_updateService;
+    if (v.empty() || updater == nullptr) {
         replyError(res, 400, "missing version");
         return;
     }
-    g_updateService->skipVersion(v);
-    replyOk(res);
+    updater->skipVersion(v);
+    replyUpdateSnapshot(res, *updater);
 }
 
 static void updatesPreferencesRoute(const Request& req, Response& res) {
@@ -465,7 +459,7 @@ static void updatesPreferencesRoute(const Request& req, Response& res) {
            "Update prefs: channel=" + channel + " autoCheck=" + (autoCheck ? "true" : "false") +
                " autoDownload=" + (autoDownload ? "true" : "false") +
                " autoInstall=" + (autoInstall ? "true" : "false"));
-    replyOk(res);
+    replyUpdateSnapshot(res, *updater);
 }
 
 // PINs are echoed here for the dashboard; safe because this is the
@@ -622,7 +616,7 @@ static bool streamEvents(SessionService& svc, httplib::DataSink& sink) {
 // SSE: one stream multiplexes status/connections/devices/update/pin/
 // pairRequests events.
 static void eventsRoute(SessionService& svc, const Request&, Response& res) {
-    res.set_header("Cache-Control", "no-cache");
+    res.set_header(CACHE_CONTROL, NO_CACHE);
     res.set_header("X-Accel-Buffering", "no");
     res.set_chunked_content_provider(
         "text/event-stream",
@@ -632,7 +626,7 @@ static void eventsRoute(SessionService& svc, const Request&, Response& res) {
 // Admin server: web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
     server.set_pre_routing_handler(guardOrigin);
-    server.set_mount_point("/", g_webDir);
+    server.set_mount_point("/", g_webDir, httplib::Headers{{CACHE_CONTROL, NO_CACHE}});
     server.Get("/", redirectToDashboard);
     server.Get("/dashboard", serveIndex);
     server.Get("/settings", serveIndex);
@@ -654,6 +648,7 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
     server.Post("/api/updates/download", updatesDownloadRoute);
     server.Post("/api/updates/repair", updatesRepairRoute);
     server.Post("/api/updates/install", updatesInstallRoute);
+    server.Post("/api/updates/retry", updatesRetryRoute);
     server.Post("/api/updates/cancel", updatesCancelRoute);
     server.Post("/api/updates/skip", updatesSkipRoute);
     server.Post("/api/updates/dismiss", updatesDismissRoute);

@@ -13,6 +13,7 @@
 // writes + autostart artifacts live there); g_webDir points at a tmp web root.
 #include "../src/core/json.h"
 #include "../src/core/session_service.h"
+#include "../src/core/update_service.h"
 #include "../src/net/pairing.h"
 #include "../src/net/routes_admin.h"
 #include "config.h" // bare platform seam: resolved per-OS by the test target
@@ -20,6 +21,7 @@
 
 #include <sys/stat.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -91,6 +93,36 @@ struct StubLog : ILogPort {
     void logMsg(LogLevel, const std::string&, const std::string&) override {}
 };
 
+struct StubUpdater : IUpdaterPort {
+    bool fetchOk = true;
+    bool fetchLatestRelease(const std::string& channel, const std::string&, UpdateInfo& out,
+                            std::string& outError) override {
+        if (!fetchOk) {
+            outError = "offline";
+            return false;
+        }
+        out.version = "99.0.0";
+        out.channel = channel;
+        out.assetName = "SatelliteSetup-99.0.0.exe";
+        out.assetSize = 1024;
+        return true;
+    }
+    bool downloadArtifact(const UpdateInfo&, const std::function<void(uint64_t, uint64_t)>&,
+                          const std::atomic<bool>*, std::string& outLocalPath,
+                          std::string&) override {
+        outLocalPath = "/tmp/satellite-routes-update";
+        return true;
+    }
+    bool verifyArtifact(const std::string&, const UpdateInfo&, std::string&) override {
+        return true;
+    }
+    bool applyUpdate(const std::string&, const UpdateInfo&, std::string& outError) override {
+        outError = "no installer in a route test";
+        return false;
+    }
+    std::string platformId() const override { return "test"; }
+};
+
 static Json parseJson(const std::string& body) {
     Json j;
     if (!jsonParse(body, j)) return Json();
@@ -103,6 +135,16 @@ static std::string storedKeyHex(const std::string& id) {
         if (d.id == id) return d.sharedKeyHex;
     }
     return "";
+}
+
+static std::string waitForUpdateState(httplib::Client& cli, const std::string& want) {
+    std::string state;
+    for (int i = 0; i < 300 && state != want; i++) {
+        auto res = cli.Get("/api/updates/status");
+        state = res ? jsonStr(parseJson(res->body), "state") : std::string();
+        if (state != want) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return state;
 }
 
 int main() {
@@ -195,6 +237,22 @@ int main() {
             EXPECT(res && res->status == 200);
             if (res) EXPECT(res->body.find("satellite-test-spa") != std::string::npos);
         }
+    }
+    {
+        TEST("a static file is served with Cache-Control: no-cache, so an update's scripts "
+             "reload");
+        {
+            std::ofstream f(g_webDir + "/app.js");
+            f << "var satelliteTestScript = 1;";
+        }
+        auto res = cli.Get("/app.js");
+        EXPECT(res && res->status == 200);
+        if (res) EXPECT_EQ(res->get_header_value("Cache-Control"), std::string("no-cache"));
+
+        TEST("the SPA fallback is served with Cache-Control: no-cache too");
+        auto spa = cli.Get("/settings");
+        EXPECT(spa && spa->status == 200);
+        if (spa) EXPECT_EQ(spa->get_header_value("Cache-Control"), std::string("no-cache"));
     }
 
     // ---- status / version / debug / backend -----------------------------------
@@ -507,6 +565,7 @@ int main() {
               {"POST", "/api/updates/check"},
               {"POST", "/api/updates/download"},
               {"POST", "/api/updates/install"},
+              {"POST", "/api/updates/retry"},
               {"POST", "/api/updates/preferences"}}) {
             auto res = std::string(method) == "GET" ? cli.Get(path)
                                                     : cli.Post(path, "{}", "application/json");
@@ -520,6 +579,91 @@ int main() {
         TEST("updates: skip without a version is a 400");
         auto res = cli.Post("/api/updates/skip", "{}", "application/json");
         EXPECT(res && res->status == 400);
+    }
+    {
+        TEST("updates: with an updater wired, POST check replies with the Checking snapshot");
+        StubUpdater updaterPort;
+        UpdateService updater(updaterPort, log, g_config, g_configMtx);
+        g_updateService = &updater;
+        auto check = cli.Post("/api/updates/check", "", "application/json");
+        EXPECT(check && check->status == 200);
+        if (check) EXPECT_EQ(jsonStr(parseJson(check->body), "state"), std::string("checking"));
+
+        TEST("updates: GET status reports the offer the worker found, with its dismissed flag");
+        updater.start();
+        EXPECT_EQ(waitForUpdateState(cli, "update-available"), std::string("update-available"));
+        updater.stop();
+        auto status = cli.Get("/api/updates/status");
+        EXPECT(status && status->status == 200);
+        if (status) {
+            const Json j = parseJson(status->body);
+            EXPECT(j.contains("dismissed") && j["dismissed"].is_boolean());
+            EXPECT_EQ(jsonBool(j, "dismissed"), false);
+        }
+
+        TEST("updates: POST download from update-available replies Downloading");
+        auto download = cli.Post("/api/updates/download", "", "application/json");
+        EXPECT(download && download->status == 200);
+        if (download) {
+            EXPECT_EQ(jsonStr(parseJson(download->body), "state"), std::string("downloading"));
+        }
+
+        TEST("updates: POST cancel of a queued download replies with the offer again");
+        auto cancel = cli.Post("/api/updates/cancel", "", "application/json");
+        EXPECT(cancel && cancel->status == 200);
+        if (cancel) {
+            EXPECT_EQ(jsonStr(parseJson(cancel->body), "state"), std::string("update-available"));
+        }
+
+        TEST("updates: POST dismiss replies with the offer marked dismissed");
+        auto dismiss = cli.Post("/api/updates/dismiss", "", "application/json");
+        EXPECT(dismiss && dismiss->status == 200);
+        if (dismiss) {
+            const Json j = parseJson(dismiss->body);
+            EXPECT_EQ(jsonStr(j, "state"), std::string("update-available"));
+            EXPECT_EQ(jsonBool(j, "dismissed"), true);
+        }
+
+        TEST("updates: POST install with nothing staged replies with the state it left alone");
+        auto install = cli.Post("/api/updates/install", "", "application/json");
+        EXPECT(install && install->status == 200);
+        if (install) {
+            EXPECT_EQ(jsonStr(parseJson(install->body), "state"), std::string("update-available"));
+        }
+
+        TEST("updates: POST preferences replies with the snapshot");
+        auto prefs = cli.Post("/api/updates/preferences",
+                              R"({"channel":"stable","autoCheck":true})", "application/json");
+        EXPECT(prefs && prefs->status == 200);
+        if (prefs) {
+            const Json j = parseJson(prefs->body);
+            EXPECT_EQ(jsonStr(j, "channel"), std::string("stable"));
+            EXPECT_EQ(jsonBool(j, "autoCheck"), true);
+            EXPECT_EQ(jsonStr(j, "state"), std::string("update-available"));
+        }
+
+        TEST("updates: POST skip replies with the cleared snapshot");
+        auto skip = cli.Post("/api/updates/skip", R"({"version":"99.0.0"})", "application/json");
+        EXPECT(skip && skip->status == 200);
+        if (skip) EXPECT_EQ(jsonStr(parseJson(skip->body), "state"), std::string("idle"));
+
+        TEST("updates: POST retry after a failed check replies Checking");
+        updaterPort.fetchOk = false;
+        auto failing = cli.Post("/api/updates/check", "", "application/json");
+        EXPECT(failing && failing->status == 200);
+        updater.start();
+        EXPECT_EQ(waitForUpdateState(cli, "error"), std::string("error"));
+        updater.stop();
+        auto retry = cli.Post("/api/updates/retry", "", "application/json");
+        EXPECT(retry && retry->status == 200);
+        if (retry) EXPECT_EQ(jsonStr(parseJson(retry->body), "state"), std::string("checking"));
+
+        TEST("updates: POST repair while a check is queued replies with that check");
+        auto repair = cli.Post("/api/updates/repair", "", "application/json");
+        EXPECT(repair && repair->status == 200);
+        if (repair) EXPECT_EQ(jsonStr(parseJson(repair->body), "state"), std::string("checking"));
+
+        g_updateService = nullptr;
     }
 
     // ---- PIN status ---------------------------------------------------------------
