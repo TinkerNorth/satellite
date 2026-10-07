@@ -6,55 +6,114 @@ function hideLoading() {
   document.getElementById('loading-overlay').classList.remove('active');
 }
 
-async function api(url, opts = {}) {
-  showLoading();
+async function apiRequest(url, opts = {}) {
   try {
     const r = await fetch(url, opts);
     const data = await r.json();
     return { ok: r.ok, status: r.status, data };
   } catch (e) {
     return { ok: false, status: 0, data: { error: 'Network error' } };
+  }
+}
+
+async function api(url, opts = {}) {
+  showLoading();
+  try {
+    return await apiRequest(url, opts);
   } finally {
     hideLoading();
   }
 }
 
-async function apiPost(url, body = {}) {
-  return api(url, {
+function jsonPostOptions(body) {
+  return {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
-  });
+  };
 }
+
+async function apiPost(url, body = {}) {
+  return api(url, jsonPostOptions(body));
+}
+
+async function apiPostQuiet(url, body, timeoutMs) {
+  const opts = Object.assign(jsonPostOptions(body), { signal: AbortSignal.timeout(timeoutMs) });
+  return apiRequest(url, opts);
+}
+
+function buttonLoaderHTML(size, label) {
+  const text = label ? '<span>' + esc(label) + '</span>' : '';
+  return '<span class="btn-with-loader">' + spinnerSVG(size) + text + '</span>';
+}
+
+const OFFLINE_POLL_MS = 3000;
 
 let offlinePollingTimer = null;
 let isOffline = false;
-let lastPathBeforeOffline = null;
+let locationBeforeOffline = null;
+let offlineSince = 0;
 
 function showOffline() {
   if (isOffline) return;
   isOffline = true;
   if (typeof stopSSE === 'function') stopSSE();
-  lastPathBeforeOffline = window.location.pathname;
+  locationBeforeOffline = window.location.pathname + window.location.search;
+  offlineSince = Date.now();
+  renderOfflineCopy();
   showView('view-offline');
   startOfflinePolling();
 }
 
 function startOfflinePolling() {
   stopOfflinePolling();
-  offlinePollingTimer = setInterval(async () => {
-    try {
-      const r = await fetch('/api/status', { signal: AbortSignal.timeout(3000) });
-      if (r.ok) {
-        stopOfflinePolling();
-        isOffline = false;
-        const restorePath = lastPathBeforeOffline || '/dashboard';
-        lastPathBeforeOffline = null;
-        window.history.replaceState({}, '', restorePath);
-        route();
-      }
-    } catch (e) { /* still offline; keep polling */ }
-  }, 3000);
+  offlinePollingTimer = setInterval(pollWhileOffline, OFFLINE_POLL_MS);
+}
+
+async function pollWhileOffline() {
+  renderOfflineCopy();
+  try {
+    const r = await fetch('/api/status', { signal: AbortSignal.timeout(OFFLINE_POLL_MS) });
+    if (r.ok && isOffline) await reconnectAfterOffline();
+  } catch (e) {}
+}
+
+async function reconnectAfterOffline() {
+  stopOfflinePolling();
+  isOffline = false;
+  const restoreLocation = locationBeforeOffline || '/dashboard';
+  locationBeforeOffline = null;
+  window.history.replaceState({}, '', restoreLocation);
+  const reloading = typeof updatesReloadIfRestarted === 'function' && await updatesReloadIfRestarted();
+  if (!reloading) route();
+}
+
+function offlineCopy() {
+  const restarting = typeof updatesRestartPending === 'function' && updatesRestartPending();
+  return restarting ? updatesRestartCopy(Date.now() - offlineSince) : ordinaryOfflineCopy();
+}
+
+function ordinaryOfflineCopy() {
+  return { title: t('offline.title'), message: t('offline.message'), hint: t('offline.hint') };
+}
+
+function renderOfflineCopy() {
+  const copy = offlineCopy();
+  setText('offline-title', copy.title);
+  setText('offline-message', copy.message);
+  setText('offline-hint', copy.hint);
+}
+
+function patchText(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+function setText(id, text) {
+  patchText(document.getElementById(id), text);
+}
+
+function patchDisplay(el, display) {
+  if (el && el.style.display !== display) el.style.display = display;
 }
 
 function stopOfflinePolling() {

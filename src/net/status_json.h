@@ -3,6 +3,7 @@
 
 #include "core/ipv4_util.h"
 #include "core/json.h"
+#include "core/update_types.h"
 #include "app/wire_stats.h"
 
 #include <cstdint>
@@ -188,6 +189,37 @@ inline JsonOut buildSseStatusObject(const StatusFields& f) {
     j["replayDrop"] = f.replayDrop;
     j["logSeq"] = f.logSeq;
     return j;
+}
+
+inline std::string buildUpdateJson(const UpdateStatusSnapshot& s) {
+    JsonOut j;
+    j["state"] = updateStateName(s.state);
+    j["currentVersion"] = s.currentVersion;
+    j["platformId"] = s.platformId;
+    j["channel"] = s.channel;
+    j["autoCheck"] = s.autoCheck;
+    j["autoDownload"] = s.autoDownload;
+    j["autoInstall"] = s.autoInstall;
+    j["lastCheckEpoch"] = s.lastCheckEpoch;
+    j["bytesDownloaded"] = s.bytesDownloaded;
+    j["totalBytes"] = s.totalBytes;
+    j["message"] = s.message;
+    j["failedPhase"] = updateStateName(s.failedPhase);
+    j["dismissed"] = s.dismissed;
+    JsonOut info;
+    info["available"] = s.info.available;
+    info["version"] = s.info.version;
+    info["channel"] = s.info.channel;
+    info["assetName"] = s.info.assetName;
+    info["assetSize"] = s.info.assetSize;
+    info["assetSha256"] = s.info.assetSha256;
+    info["htmlUrl"] = s.info.htmlUrl;
+    info["publishedAtEpoch"] = s.info.publishedAtEpoch;
+    info["installMethod"] = s.info.installMethod == InstallMethod::SelfInstall ? "self" : "manual";
+    info["manualInstruction"] = s.info.manualInstruction;
+    info["releaseNotes"] = s.info.releaseNotes;
+    j["info"] = std::move(info);
+    return jsonDump(j);
 }
 
 } // namespace satellite

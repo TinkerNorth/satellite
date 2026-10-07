@@ -18,6 +18,7 @@
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
 #include "updater_adapter.h"
+#include "update_toast.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 #include "adapters/crash_adapter.h"
@@ -205,21 +206,21 @@ void persistConfig() {
     saveConfig(g_config);
 }
 
-// Toast once when an update first appears: edge-triggered on the transition
-// to UpdateAvailable so an open settings page doesn't spam, re-armed on Idle
-// or UpToDate so the next one toasts again. Process-wide because the updater
-// worker calls this until stop() at shutdown.
-std::atomic<bool> g_toastedAvailable{false};
+struct UpdateToastGate {
+    std::mutex mtx;
+    satellite::tray::UpdateToastState state;
+};
 
-void onUpdateStatus(const UpdateStatusSnapshot& snap) {
-    if (snap.state == UpdateState::UpdateAvailable && snap.info.available) {
-        if (!g_toastedAvailable.exchange(true)) {
-            shell_integration::showToast(std::string("Satellite update ready"),
-                                         std::string("Version ") + snap.info.version +
-                                             " is available. Click to install.");
-        }
-    } else if (snap.state == UpdateState::Idle || snap.state == UpdateState::UpToDate) {
-        g_toastedAvailable.store(false);
+void onUpdateStatus(UpdateToastGate& gate, const UpdateStatusSnapshot& snap) {
+    bool due = false;
+    {
+        std::lock_guard<std::mutex> lk(gate.mtx);
+        due = satellite::tray::updateToastDue(gate.state, snap);
+    }
+    if (due) {
+        shell_integration::showToast(std::string("Satellite update ready"),
+                                     std::string("Version ") + snap.info.version +
+                                         " is available. Click to install.");
     }
     updateTrayTooltip();
 }
@@ -360,9 +361,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     WindowsUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
+    UpdateToastGate updateToastGate;
     UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
     updateService.setPersistCallback(persistConfig);
-    updateService.setStatusCallback(onUpdateStatus);
+    updateService.setStatusCallback([&updateToastGate](const UpdateStatusSnapshot& snap) {
+        onUpdateStatus(updateToastGate, snap);
+    });
     g_updateService = &updateService;
 
     g_hwnd = createTrayWindow(hInst);

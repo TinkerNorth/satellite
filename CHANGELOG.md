@@ -3,6 +3,51 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+No protocol changes. The in-app update flow, from Download to the new
+version.
+
+Clicking **Download** on a page opened from the tray or the update toast
+showed nothing until a refresh: only the dashboard subscribed to the live
+stream, so Settings fetched the update state once and never again, and a
+check started there sat on "Checking for updates…" for good. Settings now
+follows the stream too, every update button answers with the state it left
+the updater in, and the banner keeps its buttons across the once-a-second
+refresh, so a click is never lost and keyboard focus stays put.
+
+The banner walks the whole flow on the dashboard and in Settings: the check,
+the download with its progress (an open-ended bar when the size is unknown,
+and a note when no data arrives), verification, ready to install, the
+restart, and once the new version answers, "Satellite updated to X", or that
+the update did not finish. During the restart the page says Satellite is
+restarting instead of "Server Unreachable", and it reloads itself so the new
+version's page is the one on screen, also when the install was started from
+the tray. The web UI's files are now served with `Cache-Control: no-cache`,
+so that reload cannot pair the new page with cached scripts from the old
+version. A tab in the background pauses its live stream and catches up when
+it is shown again.
+
+Cancelling a download goes back to the available update instead of an
+error. **Try Again** retries the step that failed: the check, the download,
+or the installer launch, which no longer downloads the installer again.
+**Install Later** now hides the dashboard banner until the next check, as
+**Remind Me Later** does; Settings keeps showing both. Declining the Windows
+administrator prompt says so instead of `ShellExecuteEx failed (GLE=1223)`.
+The driver banner's **Download and install** shows that it is working while
+Satellite looks the release up, and says so if that fails.
+
+Satellite now remembers the installer it downloaded and verified. A check,
+manual or the daily one, used to throw it away and offer the same version for
+download again; now a check that finds that release keeps it ready to
+install, and so does one after the installer failed to launch. A daily check
+that fails while an update is already known keeps showing that update
+instead of hiding it behind an error.
+
+Every `POST /api/updates/*` action now replies with the update snapshot, and
+a request the updater accepted already shows its new state there. The
+snapshot carries `dismissed`, and `POST /api/updates/retry` is new.
+
 ## 2.1.2
 
 No protocol changes. Feedback on a ViGEm pad, a relaunched client's pad

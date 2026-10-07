@@ -550,7 +550,12 @@ contract is [`docs/contract.md`](docs/contract.md).
 Satellite ships with a built-in update checker that hits the GitHub Releases
 API on a 24-hour cadence (configurable in **Settings → Updates**). When a
 newer release is published, the dashboard shows a banner with **Download**,
-**Remind Me Later**, and **Skip This Version** actions. The tray menu's
+**Remind Me Later**, and **Skip This Version** actions. The banner, and the
+Updates section of Settings, then follow the update live: the download and its
+progress, verification, a ready-to-install prompt, the restart, and a
+confirmation once the new version is running (or a note that it did not
+finish). **Remind Me Later** and **Install Later** hide the dashboard banner
+until the next check; Settings keeps showing the update. The tray menu's
 *Check for Updates…* item reflects the same state and toggles to *Install
 Update X.Y.Z* once the artifact has been fetched and verified.
 
@@ -603,14 +608,18 @@ never fire.
 | POST   | `/api/updates/download`    | Fetch the artifact                             |
 | POST   | `/api/updates/install`     | Apply the downloaded artifact (will restart)   |
 | POST   | `/api/updates/repair`      | Re-fetch and re-run the current installer (drivers) |
+| POST   | `/api/updates/retry`       | Retry the step that failed: check, download or install |
 | POST   | `/api/updates/cancel`      | Cancel an in-flight download                   |
-| POST   | `/api/updates/dismiss`     | "Remind me later"; hides the banner            |
+| POST   | `/api/updates/dismiss`     | "Remind me later" / "Install later": sets `dismissed` until the next check |
 | POST   | `/api/updates/skip`        | `{version}`; never notify about this version again |
 | POST   | `/api/updates/preferences` | `{channel, autoCheck, autoDownload, autoInstall}` |
 
-The `/api/events` SSE stream carries an `update` event channel that
-pushes the same snapshot every tick, so the web UI stays current without
-polling.
+Every `POST /api/updates/*` action replies with the snapshot as it stands
+right after the request, so a request the updater accepted already shows
+its new state (`checking`, `downloading`, `installing`) and one it refused
+shows why. The `/api/events` SSE stream carries an `update` event channel
+that pushes the same snapshot every tick, so the web UI stays current
+without polling.
 
 ### Bumping the version
 
