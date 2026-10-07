@@ -88,9 +88,9 @@ static void promptForPairing(const std::string& deviceId) {
 - (void)updateAction:(id)sender {
     if (!g_updateService) return;
     UpdateStatusSnapshot s = g_updateService->snapshot();
-    if (s.state == UpdateState::Downloaded) {
+    if (s.state == UpdateState::Downloaded && s.info.available) {
         g_updateService->requestInstall();
-    } else if (s.state == UpdateState::UpdateAvailable &&
+    } else if (s.state == UpdateState::UpdateAvailable && s.info.available &&
                s.info.installMethod == InstallMethod::SelfInstall) {
         g_updateService->requestDownload();
     } else {

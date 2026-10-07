@@ -6,6 +6,7 @@
 #include "core/hex.h"
 #include "core/version.h"
 #include "globals.h"
+#include "installer_launch_error.h"
 
 #include <winhttp.h>
 #include <bcrypt.h>
@@ -532,11 +533,8 @@ bool WindowsUpdaterAdapter::applyUpdate(const std::string& localPath, const Upda
     sei.nShow = SW_SHOWNORMAL;
 
     if (!ShellExecuteExA(&sei)) {
-        DWORD e = GetLastError();
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), "ShellExecuteEx failed (GLE=%lu)",
-                      static_cast<unsigned long>(e));
-        outError = buf;
+        const DWORD lastError = GetLastError();
+        outError = satellite::updater::installerLaunchError(lastError);
         return false;
     }
     // Exit now so Inno's Restart Manager replaces the .exe immediately rather
