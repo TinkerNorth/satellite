@@ -1,4 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+// Written for ARC: blocks capture reply objects and nothing here retains or
+// releases by hand. CMake compiles OBJCXX without ARC unless told (see the
+// set_source_files_properties in CMakeLists.txt); refuse to build that way.
+#if !__has_feature(objc_arc)
+#error "compile the Objective-C++ sources with -fobjc-arc"
+#endif
+
 #include "tray.h"
 #include "config.h"
 #include "core/update_service.h"
