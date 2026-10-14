@@ -84,6 +84,13 @@ jobs:
           test -x satellite.app/Contents/MacOS/satellite
           test -f satellite.app/Contents/Resources/web/index.html
 
+      # The stub binary, headless, through its updater's 30 s settle and first
+      # check. 2.1.3 died exactly there (objc_msgSend on a reply pointer
+      # released before the worker read it: the Objective-C++ sources compiled
+      # without ARC), and no unit suite runs the binary long enough to see it.
+      - name: Smoke, alive through the first update check
+        run: bash scripts/smoke-alive.sh satellite.app/Contents/MacOS/satellite 45
+
       # CI builds are UNENTITLED: the IOHIDUserDevice backend requires the
       # com.apple.developer.hid.virtual.device entitlement (production,
       # signed builds), so this artifact's runtime probe falls back to the
