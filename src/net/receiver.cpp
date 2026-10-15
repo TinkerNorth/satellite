@@ -3,6 +3,7 @@
 // Hot loop is allocation-free and single-lock per gamepad packet; keep it so.
 #include "receiver.h"
 #include "inner_dispatch.h"
+#include "receive_wake.h"
 #include "crypto.h"
 #include "session_crypto.h"
 #include "core/byte_order.h"
@@ -32,6 +33,8 @@ constexpr int RECV_BUFFER_BYTES = 65536;
 constexpr int TOS_EXPEDITED = 0xB8;
 // The gamepad fast path needs ctrlIdx plus a whole report.
 constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 13;
+
+ReceiveWake g_receiveWake;
 
 // Session maintenance off the hot path: the motor-state tick every
 // RUMBLE_REFRESH_MS / 2 (so a held level is re-sent within one refresh
@@ -108,7 +111,9 @@ SOCKET openReceiverSocket(int port, bool& bindErrorLogged) {
     }
     bindErrorLogged = false;
 
+#ifndef _WIN32
     netSetRecvTimeoutMs(sock, RECV_TIMEOUT_MS);
+#endif
     const int rcvBuf = RECV_BUFFER_BYTES;
     setsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvBuf), sizeof(rcvBuf));
     const int tos = TOS_EXPEDITED;
@@ -274,12 +279,14 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
             continue;
         }
         client.setSocket(sock);
+        g_receiveWake.arm(sock, static_cast<uint16_t>(port));
         logMsg(LogLevel::INFO, "receiver", "Listening on UDP port " + std::to_string(port));
         g_listening = true;
         resetReceiverCounters();
 
         std::thread reaper(maintenanceLoop, std::ref(svc));
         receiveLoop(svc, sock);
+        g_receiveWake.disarm();
         stopListening(svc, client, sock, reaper);
     }
 
@@ -287,3 +294,5 @@ void receiverThread(SessionService& svc, ClientAdapter& client) {
     restoreReceiverPriority(mmcssHandle);
 #endif
 }
+
+void wakeReceiver() { g_receiveWake.wake(); }
