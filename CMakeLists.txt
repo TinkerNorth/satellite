@@ -135,6 +135,7 @@ set(SATELLITE_CORE_SOURCES
 # Currently-shared infrastructure (to be ported to POSIX in Stage 3).
 set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
+    src/net/datagram_receiver.cpp
     src/net/inner_dispatch.cpp
     src/net/webserver.cpp
     src/net/routes_common.cpp
@@ -1502,6 +1503,33 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME hidmaestro_adapter COMMAND test_hidmaestro_adapter)
+endif()
+
+if(WIN32)
+    add_executable(test_udp_receive
+        tests/test_udp_receive.cpp
+        src/net/datagram_receiver.cpp
+    )
+    target_include_directories(test_udp_receive PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_udp_receive PRIVATE
+        _WIN32_WINNT=0x0A00
+    )
+    target_link_libraries(test_udp_receive PRIVATE
+        ws2_32
+        winmm
+    )
+    satellite_test_warnings(test_udp_receive)
+    if(MINGW)
+        target_link_options(test_udp_receive PRIVATE -static)
+    endif()
+    set_target_properties(test_udp_receive PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME udp_receive COMMAND test_udp_receive)
+    add_test(NAME udp_receive_legacy COMMAND test_udp_receive --legacy)
+    set_tests_properties(udp_receive_legacy PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # Robustness fuzzing (opt-in, D-series fuzz harness): drives the receiver's

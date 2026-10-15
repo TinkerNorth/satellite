@@ -5,6 +5,7 @@
 #include "mdns_responder.h"
 #include "config.h"
 #include "machine_id.h"
+#include "net/datagram_receiver.h"
 #include "net/local_iface.h"
 #include "net/mdns_rejoin.h"
 
@@ -12,6 +13,7 @@
 #include <cctype>
 #include <cstring>
 #include <deque>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -215,8 +217,8 @@ struct ProbeResult {
 // returning the instance label the caller should advertise. Blocks for the
 // sequence duration (~750 ms minimum, longer on conflict / rate limiting),
 // in short slices so a shutdown is noticed promptly.
-ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const std::string& host,
-                             const uint8_t* selfIp, bool haveSelfIp) {
+ProbeResult runProbeSequence(SOCKET sock, DatagramReceiver& rx, const sockaddr_in& groupAddr,
+                             const std::string& host, const uint8_t* selfIp, bool haveSelfIp) {
     ProbeResult result;
     result.instance = host;
 
@@ -290,19 +292,14 @@ ProbeResult runProbeSequence(SOCKET sock, const sockaddr_in& groupAddr, const st
             sendto(sock, reinterpret_cast<const char*>(probeBuf), static_cast<int>(probeLen), 0,
                    reinterpret_cast<const sockaddr*>(&groupAddr), sizeof(groupAddr));
 
-            // Listen 250 ms (recvfrom timeout 200 ms) on a steady-clock
+            // Listen 250 ms (receive timeout 200 ms) on a steady-clock
             // deadline so every in-window packet is drained.
             const auto deadline =
                 std::chrono::steady_clock::now() + std::chrono::milliseconds(kProbeGapMs);
             while (g_appRunning && std::chrono::steady_clock::now() < deadline) {
-                sockaddr_in pfrom{};
-                socklen_t pfromLen = sizeof(pfrom);
-                uint8_t pbuf[2048];
-                const int pn =
-                    static_cast<int>(recvfrom(sock, reinterpret_cast<char*>(pbuf), sizeof(pbuf), 0,
-                                              reinterpret_cast<sockaddr*>(&pfrom), &pfromLen));
+                const int pn = rx.receive();
                 if (pn <= 0) continue; // timeout slice; re-check the deadline
-                const ProbeEvent ev = classifyProbePacket(pbuf, static_cast<size_t>(pn),
+                const ProbeEvent ev = classifyProbePacket(rx.data(), static_cast<size_t>(pn),
                                                           instanceFqdn, hostFqdn, ours);
                 if (ev == ProbeEvent::Conflict) {
                     conflict = true;
@@ -371,6 +368,7 @@ namespace {
 // Everything the responder holds for the life of its socket.
 struct Responder {
     SOCKET sock = INVALID_SOCKET;
+    std::optional<DatagramReceiver> rx;
     ip_mreq mreq{};
     in_addr ifAddr{};
     uint8_t selfIp[4] = {};
@@ -381,6 +379,7 @@ struct Responder {
 };
 
 constexpr int RECV_TIMEOUT_MS = 200;
+constexpr std::size_t RECV_DATAGRAM_BYTES = 2048;
 constexpr int ANNOUNCEMENTS = 3;
 constexpr auto REJOIN_INTERVAL = std::chrono::seconds(30);
 
@@ -443,8 +442,7 @@ void leaveMulticast(const Responder& r) {
 }
 
 // RFC 6762 §11: mDNS packets use IP TTL 255 so a misconfigured router can't
-// silently confine us; loop-back on so same-host clients see us. The recv
-// timeout is what lets the loop notice g_appRunning clearing promptly.
+// silently confine us; loop-back on so same-host clients see us.
 void tuneResponderSocket(SOCKET sock) {
     const int ttl = 255;
     setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, reinterpret_cast<const char*>(&ttl),
@@ -452,7 +450,6 @@ void tuneResponderSocket(SOCKET sock) {
     const int loop = 1;
     setsockopt(sock, IPPROTO_IP, IP_MULTICAST_LOOP, reinterpret_cast<const char*>(&loop),
                sizeof(loop));
-    netSetRecvTimeoutMs(sock, RECV_TIMEOUT_MS);
     netDisableUdpConnReset(sock);
 }
 
@@ -465,6 +462,7 @@ sockaddr_in multicastGroupAddress() {
 }
 
 void closeResponder(Responder& r) {
+    r.rx.reset();
     leaveMulticast(r);
     closesocket(r.sock);
     netShutdown();
@@ -596,12 +594,14 @@ void mdnsResponderThread() {
         return;
     }
     tuneResponderSocket(r.sock);
+    r.rx.emplace(r.sock, RECV_DATAGRAM_BYTES, RECV_TIMEOUT_MS);
     r.groupAddr = multicastGroupAddress();
     r.host = shortHostLabel();
 
     // Claim the instance name via the §8.1/§8.2 probe sequence before
     // announcing (see runProbeSequence; adds ~750 ms+ to startup).
-    const ProbeResult probe = runProbeSequence(r.sock, r.groupAddr, r.host, r.selfIp, r.haveSelfIp);
+    const ProbeResult probe =
+        runProbeSequence(r.sock, *r.rx, r.groupAddr, r.host, r.selfIp, r.haveSelfIp);
     if (probe.shutdown) {
         // g_appRunning cleared mid-probe; unwind without announcing.
         g_mdnsResponderActive.store(false, std::memory_order_relaxed);
@@ -631,13 +631,9 @@ void mdnsResponderThread() {
             lastRejoinCheck = std::chrono::steady_clock::now();
         }
 
-        sockaddr_in from{};
-        socklen_t fromLen = sizeof(from);
-        uint8_t buf[2048];
-        const int n = static_cast<int>(recvfrom(r.sock, reinterpret_cast<char*>(buf), sizeof(buf),
-                                                0, reinterpret_cast<sockaddr*>(&from), &fromLen));
+        const int n = r.rx->receive();
         if (n <= 0) continue; // timeout or transient error
-        answerQuery(r, buf, static_cast<size_t>(n), from);
+        answerQuery(r, r.rx->data(), static_cast<size_t>(n), r.rx->sender());
     }
 
     g_mdnsResponderActive.store(false, std::memory_order_relaxed);

@@ -2,6 +2,7 @@
 
 // Hot loop is allocation-free and single-lock per gamepad packet; keep it so.
 #include "receiver.h"
+#include "datagram_receiver.h"
 #include "inner_dispatch.h"
 #include "crypto.h"
 #include "session_crypto.h"
@@ -108,7 +109,6 @@ SOCKET openReceiverSocket(int port, bool& bindErrorLogged) {
     }
     bindErrorLogged = false;
 
-    netSetRecvTimeoutMs(sock, RECV_TIMEOUT_MS);
     const int rcvBuf = RECV_BUFFER_BYTES;
     setsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvBuf), sizeof(rcvBuf));
     const int tos = TOS_EXPEDITED;
@@ -231,18 +231,15 @@ inline void handleDatagram(SessionService& svc, uint8_t* buf, int n, const socka
 // truncate the tag and fail the AEAD rather than degrade.
 void receiveLoop(SessionService& svc, SOCKET sock) {
     uint64_t localMaxUs = 0;
+    DatagramReceiver rx(sock, UDP_DATAGRAM_MAX_BYTES, RECV_TIMEOUT_MS);
     while (g_appRunning) {
-        sockaddr_in sender{};
-        socklen_t slen = sizeof(sender);
-        uint8_t buf[UDP_DATAGRAM_MAX_BYTES];
-        const int n = static_cast<int>(recvfrom(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
-                                                reinterpret_cast<sockaddr*>(&sender), &slen));
+        const int n = rx.receive();
         if (n < MIN_DATAGRAM_BYTES) {
             // A timeout or a transient error reads as -1 and is not a runt.
             if (n >= 0) g_wire.rxRunt.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
-        handleDatagram(svc, buf, n, sender, localMaxUs);
+        handleDatagram(svc, rx.data(), n, rx.sender(), localMaxUs);
     }
 }
 
