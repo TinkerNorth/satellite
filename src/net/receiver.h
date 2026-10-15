@@ -7,3 +7,4 @@ class SessionService;
 class ClientAdapter;
 
 void receiverThread(SessionService& svc, ClientAdapter& client);
+void wakeReceiver();

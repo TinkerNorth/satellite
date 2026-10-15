@@ -283,6 +283,7 @@ void runMessageLoop() {
 // The updater stops before the http thread is joined so its SSE-broadcast
 // callback can't fire into a torn-down server.
 void stopServers(UpdateService& updateService) {
+    wakeReceiver();
     g_httpServer.stop();
     if (g_clientServer) g_clientServer->stop();
     updateService.stop();
