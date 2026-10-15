@@ -419,10 +419,15 @@ and `dish-mac` in the same PR / release cycle.
   Windows Error Reporting and the `crashpad_wer.dll` module can see). Each
   runs beside an already-running Satellite, keeps its Sentry state under
   `sentry\crash-test` and honours the *Share crash reports* switch. Expect a
-  `.dmp` under `%LOCALAPPDATA%\TinkerNorth\Satellite\dumps\` (from Windows
-  Error Reporting for the fast-fail), an *Application Error* event in Event
-  Viewer for anything Crashpad did not take over, and, on a release build
-  with the switch on, an event in Sentry.
+  `.dmp` under `%LOCALAPPDATA%\TinkerNorth\Satellite\dumps\` from
+  Satellite's own writer for the first two, and from Windows Error Reporting
+  for the fast-fail while Crashpad is not armed; an *Application Error* event
+  in Event Viewer for the fast-fail, and for the other two while Crashpad is
+  not armed; and, on a release build with the switch on, a report under
+  `sentry\crash-test\reports\` and an event in Sentry for all three. A source
+  build carries no DSN, so start it with `SENTRY_DSN` set to aim the test at
+  a scratch project. The fast-fail route needs Windows 10 version 2004
+  (build 19041) or later.
 - **Linux** synthesizes virtual gamepads through `/dev/uinput`. Optional
   tray icon via libayatana-appindicator (CMake auto-detects; falls back
   to a headless `sigwait` loop).

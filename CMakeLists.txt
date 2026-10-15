@@ -841,6 +841,20 @@ if(TARGET satellite)
             HINTS "${sentry_DIR}/../../bin" "${sentry_DIR}/../../tools/sentry-native"
             NO_DEFAULT_PATH)
         if(SATELLITE_CRASHPAD_WER)
+            get_target_property(SATELLITE_SENTRY_TYPE sentry::sentry TYPE)
+            get_target_property(SATELLITE_SENTRY_LIBRARY sentry::sentry IMPORTED_LOCATION_RELEASE)
+            if(SATELLITE_SENTRY_TYPE STREQUAL "STATIC_LIBRARY" AND SATELLITE_SENTRY_LIBRARY)
+                file(STRINGS "${SATELLITE_SENTRY_LIBRARY}" SATELLITE_SENTRY_REGISTERS_WER
+                    REGEX "RegisterWerModule@CrashpadClient" LIMIT_COUNT 1)
+                if(NOT SATELLITE_SENTRY_REGISTERS_WER)
+                    message(FATAL_ERROR
+                        "crashpad_wer.dll was found but sentry-native never registers it "
+                        "with Windows Error Reporting, so a fast-fail crash (stack cookie, "
+                        "CFG, CET) would never reach Sentry. The overlay port's "
+                        "fix-crashpad-wer.patch must define SENTRY_TRANSPORT_CRASHPAD_USE_WER "
+                        "for the sentry target.")
+                endif()
+            endif()
             add_custom_command(TARGET satellite POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${SATELLITE_CRASHPAD_WER}" "$<TARGET_FILE_DIR:satellite>"
