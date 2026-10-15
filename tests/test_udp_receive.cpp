@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "net/datagram_receiver.h"
+#include "net/receive_wake.h"
 
 #include <mmsystem.h>
 
@@ -263,6 +264,171 @@ void test_a_jittered_stream_loses_nothing() {
               << timeouts << " timeouts\n";
 }
 
+bool joinWithin(std::thread& t, const std::atomic<bool>& done, SOCKET& sock,
+                std::chrono::milliseconds limit) {
+    const auto end = std::chrono::steady_clock::now() + limit;
+    while (!done.load() && std::chrono::steady_clock::now() < end)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const bool finished = done.load();
+    if (!finished) {
+        closesocket(sock);
+        sock = INVALID_SOCKET;
+    }
+    t.join();
+    return finished;
+}
+
+struct BlockedReceive {
+    std::atomic<bool> done{false};
+    int n = 0;
+    int err = 0;
+    bool pendingAfter = false;
+    std::thread thread;
+};
+
+void receiveOnce(SOCKET sock, ReceiveWake& wake, BlockedReceive& r,
+                 std::chrono::milliseconds delay) {
+    r.thread = std::thread([sock, &wake, &r, delay] {
+        std::this_thread::sleep_for(delay);
+        char buf[64];
+        r.n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
+        r.err = r.n < 0 ? WSAGetLastError() : 0;
+        r.pendingAfter = ioPending();
+        wake.disarm();
+        r.done.store(true);
+    });
+}
+
+void test_waking_with_no_receiver_listening_returns_at_once() {
+    TEST("waking when no receiver is listening returns at once");
+    ReceiveWake wake;
+    const auto t0 = std::chrono::steady_clock::now();
+    wake.wake();
+    EXPECT(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(100));
+}
+
+void test_the_wake_datagram_ends_a_receive_with_no_timeout() {
+    TEST("the wake datagram ends a receive that has no timeout and leaves nothing pending");
+    sockaddr_in addr{};
+    SOCKET sock = bindLoopback(addr);
+    ReceiveWake wake;
+    wake.arm(sock, ntohs(addr.sin_port));
+    BlockedReceive r;
+    receiveOnce(sock, wake, r, std::chrono::milliseconds(0));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto t0 = std::chrono::steady_clock::now();
+    wake.wake();
+    const auto took = std::chrono::steady_clock::now() - t0;
+    EXPECT(joinWithin(r.thread, r.done, sock, std::chrono::seconds(5)));
+    EXPECT_EQ(r.n, 0);
+    EXPECT(!r.pendingAfter);
+    EXPECT(took < std::chrono::milliseconds(500));
+    closesocket(sock);
+}
+
+void test_a_wake_that_lands_before_the_receive_still_ends_it() {
+    TEST("a wake that lands before the receive starts still ends it");
+    sockaddr_in addr{};
+    SOCKET sock = bindLoopback(addr);
+    ReceiveWake wake;
+    wake.arm(sock, ntohs(addr.sin_port));
+    BlockedReceive r;
+    receiveOnce(sock, wake, r, std::chrono::milliseconds(50));
+    wake.wake();
+    EXPECT(joinWithin(r.thread, r.done, sock, std::chrono::seconds(5)));
+    EXPECT_EQ(r.n, 0);
+    EXPECT(!r.pendingAfter);
+    closesocket(sock);
+}
+
+void test_cancelling_ends_a_receive_the_wake_datagram_misses() {
+    TEST("when the wake datagram cannot arrive, cancelling ends the receive and the socket still "
+         "sends");
+    sockaddr_in addr{};
+    sockaddr_in decoyAddr{};
+    SOCKET sock = bindLoopback(addr);
+    const SOCKET decoy = bindLoopback(decoyAddr);
+    ReceiveWake wake;
+    wake.arm(sock, ntohs(decoyAddr.sin_port));
+    BlockedReceive r;
+    receiveOnce(sock, wake, r, std::chrono::milliseconds(0));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto t0 = std::chrono::steady_clock::now();
+    wake.wake();
+    const auto took = std::chrono::steady_clock::now() - t0;
+    EXPECT(joinWithin(r.thread, r.done, sock, std::chrono::seconds(5)));
+    EXPECT_EQ(r.n, -1);
+    EXPECT(r.err == WSAEINTR || r.err == WSA_OPERATION_ABORTED);
+    EXPECT(!r.pendingAfter);
+    EXPECT(took < std::chrono::seconds(1));
+    EXPECT_EQ(
+        sendto(sock, "x", 1, 0, reinterpret_cast<const sockaddr*>(&decoyAddr), sizeof(decoyAddr)),
+        1);
+    closesocket(decoy);
+    closesocket(sock);
+}
+
+void test_a_receive_with_no_timeout_loses_nothing_and_stops_on_wake() {
+    TEST("a receive with no timeout loses nothing under the jittered stream and stops on wake");
+    Loopback link;
+    ReceiveWake wake;
+    wake.arm(link.rx, ntohs(link.rxAddr.sin_port));
+    std::atomic<bool> running{true};
+    std::atomic<bool> stopped{false};
+    std::atomic<uint64_t> received{0};
+    std::set<uint32_t> delivered;
+    uint64_t duplicates = 0;
+    uint64_t malformed = 0;
+    uint64_t wrongSender = 0;
+    uint64_t empty = 0;
+    std::thread reader([&] {
+        while (running.load()) {
+            sockaddr_in sender{};
+            socklen_t slen = sizeof(sender);
+            uint8_t buf[READ_BYTES];
+            const int n = recvfrom(link.rx, reinterpret_cast<char*>(buf), sizeof(buf), 0,
+                                   reinterpret_cast<sockaddr*>(&sender), &slen);
+            if (n == 0) {
+                empty++;
+                continue;
+            }
+            uint32_t seq = 0;
+            if (n != DATAGRAM_BYTES || !holdsDatagram(buf, seq)) {
+                malformed++;
+                continue;
+            }
+            if (!delivered.insert(seq).second) duplicates++;
+            if (!sameAddress(sender, link.txAddr)) wrongSender++;
+            received.fetch_add(1);
+        }
+        wake.disarm();
+        stopped.store(true);
+    });
+    uint32_t sent = 0;
+    {
+        JitteredSender sender(link, STREAM_DURATION);
+        while (!sender.done()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        sender.stop();
+        sent = sender.sent();
+    }
+    const auto drainEnd = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (received.load() < sent && std::chrono::steady_clock::now() < drainEnd)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    running.store(false);
+    const auto t0 = std::chrono::steady_clock::now();
+    wake.wake();
+    const auto took = std::chrono::steady_clock::now() - t0;
+    EXPECT(joinWithin(reader, stopped, link.rx, std::chrono::seconds(5)));
+    EXPECT(sent > 0);
+    EXPECT_EQ(delivered.size(), static_cast<std::size_t>(sent));
+    EXPECT_EQ(duplicates, 0u);
+    EXPECT_EQ(malformed, 0u);
+    EXPECT_EQ(wrongSender, 0u);
+    EXPECT(empty <= 1);
+    EXPECT(took < std::chrono::milliseconds(500));
+    std::cout << "  no-timeout stream: " << sent << " sent, " << delivered.size() << " delivered\n";
+}
+
 struct LegacyRead {
     std::vector<uint8_t> buf = std::vector<uint8_t>(READ_BYTES, SENTINEL);
     sockaddr_in from{};
@@ -341,6 +507,11 @@ int runSuite() {
     test_destroying_the_receiver_leaves_nothing_outstanding();
     test_a_receiver_outliving_its_socket_still_drains();
     test_a_jittered_stream_loses_nothing();
+    test_waking_with_no_receiver_listening_returns_at_once();
+    test_the_wake_datagram_ends_a_receive_with_no_timeout();
+    test_a_wake_that_lands_before_the_receive_still_ends_it();
+    test_cancelling_ends_a_receive_the_wake_datagram_misses();
+    test_a_receive_with_no_timeout_loses_nothing_and_stops_on_wake();
     return g_fail > 0 ? 1 : 0;
 }
 

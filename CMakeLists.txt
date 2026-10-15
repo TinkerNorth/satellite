@@ -135,6 +135,7 @@ set(SATELLITE_CORE_SOURCES
 # Currently-shared infrastructure (to be ported to POSIX in Stage 3).
 set(SATELLITE_NET_SOURCES
     src/net/receiver.cpp
+    src/net/receive_wake.cpp
     src/net/datagram_receiver.cpp
     src/net/inner_dispatch.cpp
     src/net/webserver.cpp
@@ -1509,6 +1510,7 @@ if(WIN32)
     add_executable(test_udp_receive
         tests/test_udp_receive.cpp
         src/net/datagram_receiver.cpp
+        src/net/receive_wake.cpp
     )
     target_include_directories(test_udp_receive PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
