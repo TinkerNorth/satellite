@@ -3,6 +3,22 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.1.4
+
+No protocol changes. Controller input that reached the receiver just as its
+wait timed out could be lost.
+
+On Windows the UDP receiver waited for each datagram with a 10 ms timeout,
+only so it could notice when Satellite was closing. When a datagram arrived
+just as that timeout expired, Windows could take it off the socket and still
+report a timeout, so the receiver never saw it: a dropped button press or
+stick update. 2.1.3 also crashed once on the receive thread in a way that
+points at the same timed-out receive. The receiver now waits without a
+timeout, and Satellite wakes it explicitly when it closes, so each datagram
+takes the same path as before and the receiver no longer wakes a hundred
+times a second while idle. The mDNS responder, which does need its timeout,
+now keeps its receive pending across it instead of abandoning it.
+
 ## 2.1.3
 
 No protocol changes. The in-app update flow, from Download to the new
