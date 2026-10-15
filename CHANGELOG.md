@@ -3,6 +3,25 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.1.5
+
+No protocol changes. Crashes that Windows ends on the spot now reach the
+crash reports.
+
+Some crashes never reach a handler inside Satellite: a return address the
+processor's shadow stack rejects, a failed stack-cookie or control-flow
+check, heap corruption. Windows ends the process at once, and only Windows
+Error Reporting sees the crash, as with 2.1.3's crash on the receive thread.
+Satellite ships `crashpad_wer.dll` so that Windows Error Reporting can hand
+such a crash to the crash reporter, but the build left out the code that
+registers it with Windows, so it was never loaded and none of these crashes
+was reported. With *Share crash reports* on, Satellite now registers it at
+startup (Windows 10 version 2004 or later) and these crashes are reported
+like any other. Windows then leaves the minidump to the crash reporter,
+which keeps it under `%LOCALAPPDATA%\TinkerNorth\Satellite\sentry\` rather
+than in `dumps\`; the privacy policy now says so. A build that ships the
+module without registering it now fails.
+
 ## 2.1.4
 
 No protocol changes. Controller input that reached the receiver just as its

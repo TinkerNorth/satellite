@@ -1,6 +1,6 @@
 # Satellite: Privacy Policy
 
-**Effective date:** 2026-09-06.
+**Effective date:** 2026-10-15.
 **Canonical copy:** this file, at
 [`https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md`](https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md).
 The privacy index on [dish.tinkernorth.com](https://dish.tinkernorth.com/privacy/)
@@ -57,13 +57,16 @@ crash (a stack-protection or control-flow check firing, or an `abort()`)
 never reach Satellite's own handler; for those, Windows Error Reporting
 records an *Application Error* event in Event Viewer and writes its own
 minidump into the same `dumps\` folder, under the same cap of ten files.
+With crash reporting on, Windows hands such a crash to the Sentry SDK's
+handler instead (section 5) and writes no minidump of its own.
 Windows may also send Microsoft its own report of such a crash, exactly as it
 does for any other program on the PC; that is governed by the Windows
 diagnostics settings, not by Satellite's switch. With crash reporting on,
 the Sentry SDK keeps its run state and any report it has not yet delivered
 under `%LOCALAPPDATA%\TinkerNorth\Satellite\sentry\` on Windows and
-`~/.config/satellite/sentry/` on Linux. Delete either folder at any time;
-Satellite recreates it only when it needs it again.
+`~/.config/satellite/sentry/` on Linux; on Windows the handler's minidumps
+stay there after delivery too. Delete either folder at any time; Satellite
+recreates it only when it needs it again.
 
 **The web UI.** Settings, pairing and diagnostics live in a small web page
 Satellite serves to your own browser on `http://localhost:9877`. It answers
