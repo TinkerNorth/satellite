@@ -389,6 +389,8 @@
   "debug.stats.submitted-ok": "Submitted OK",
   "debug.stats.submit-errors": "Submit Errors",
   "debug.stats.drop-rate": "Drop Rate",
+  "debug.stats.pointer-injected": "Pointer frames injected",
+  "debug.stats.pointer-refused": "Pointer frames refused by host",
   "debug.audio.mic-accepted": "Mic frames accepted",
   "debug.audio.mic-decoded": "Mic frames decoded",
   "debug.audio.mic-fec": "Recovered by FEC",

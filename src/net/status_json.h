@@ -46,6 +46,7 @@ struct StatusFields {
     RxCounts rx;
     TxCounts tx;
     AudioStreamCounts audio;
+    PointerCounts pointer;
     uint64_t authNotPaired = 0;
     uint64_t authBadProof = 0;
     uint64_t sessionsReaped = 0;
@@ -154,6 +155,11 @@ inline std::string buildDebugJson(const StatusFields& f) {
     j["rx"] = rxCountsJson(f.rx);
     j["tx"] = txCountsJson(f.tx);
     j["audio"] = audioCountsJson(f.audio);
+
+    JsonOut pointer;
+    pointer["injected"] = f.pointer.injected;
+    pointer["refused"] = f.pointer.refused;
+    j["pointer"] = std::move(pointer);
 
     JsonOut auth;
     auth["notPaired"] = f.authNotPaired;

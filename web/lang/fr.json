@@ -366,6 +366,8 @@
   "debug.stats.submitted-ok": "Soumis avec succès",
   "debug.stats.submit-errors": "Erreurs de soumission",
   "debug.stats.drop-rate": "Taux de perte",
+  "debug.stats.pointer-injected": "Trames de pointeur injectées",
+  "debug.stats.pointer-refused": "Trames de pointeur refusées par l'hôte",
   "debug.audio.mic-accepted": "Trames micro acceptées",
   "debug.audio.mic-decoded": "Trames micro décodées",
   "debug.audio.mic-fec": "Récupérées par FEC",

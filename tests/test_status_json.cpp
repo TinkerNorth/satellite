@@ -43,6 +43,7 @@ static StatusFields makeFields() {
     f.rx = {1007, 60, 900, 4, 120, 500, 2, 1, 8, 9};
     f.tx = {600, 48000, 60, 12, 4, 2, 1, 520, 3, 3, 1, 6, 0, 0, 11};
     f.audio = {500, 2, 1, 498, 1, 1, 520, 40, 0, 3};
+    f.pointer = {77, 3};
     f.authNotPaired = 4;
     f.authBadProof = 2;
     f.sessionsReaped = 5;
@@ -198,16 +199,18 @@ static void test_counterBlocksStayOffTheHotSurfaces() {
     StatusFields f = makeFields();
     const std::string status = buildStatusJson(f);
     const std::string sse = jsonDump(buildSseStatusObject(f));
-    for (const char* key : {"\"rx\"", "\"tx\"", "\"audio\"", "\"auth\"", "peakLoopUs",
-                            "clientApiListening", "sessionsReaped", "maxControllers"}) {
+    for (const char* key :
+         {"\"rx\"", "\"tx\"", "\"audio\"", "\"pointer\"", "\"auth\"", "peakLoopUs",
+          "clientApiListening", "sessionsReaped", "maxControllers"}) {
         EXPECT(status.find(key) == std::string::npos);
         EXPECT(sse.find(key) == std::string::npos);
     }
 
     TEST("buildDebugJson carries every block");
     const std::string dbg = buildDebugJson(f);
-    for (const char* key : {"\"rx\"", "\"tx\"", "\"audio\"", "\"auth\"", "peakLoopUs",
-                            "clientApiListening", "sessionsReaped", "maxControllers", "webPort"}) {
+    for (const char* key :
+         {"\"rx\"", "\"tx\"", "\"audio\"", "\"pointer\"", "\"auth\"", "peakLoopUs",
+          "clientApiListening", "sessionsReaped", "maxControllers", "webPort"}) {
         EXPECT(dbg.find(key) != std::string::npos);
     }
 }
@@ -233,7 +236,8 @@ static void test_debug_exact_shape() {
             R"("micDropped":2,"micLate":1,"micDecoded":498,"micFecRecovered":1,)"
             R"("micConcealed":1,"speakerSent":520,"speakerSilenceSuppressed":40,)"
             R"("speakerEncodeFailed":0,"speakerLockContended":3,"hapticSent":0,"hapticSilenceSuppressed":0,)"
-            R"("hapticEncodeFailed":0,"hapticLockContended":0,"hapticReducedToRumble":0},"auth":{"notPaired":4,)"
+            R"("hapticEncodeFailed":0,"hapticLockContended":0,"hapticReducedToRumble":0},)"
+            R"("pointer":{"injected":77,"refused":3},"auth":{"notPaired":4,)"
             R"("badProof":2},"sessionsReaped":5})"));
 }
 

@@ -366,6 +366,8 @@
   "debug.stats.submitted-ok": "Enviados correctamente",
   "debug.stats.submit-errors": "Errores de envío",
   "debug.stats.drop-rate": "Tasa de descarte",
+  "debug.stats.pointer-injected": "Tramas de puntero inyectadas",
+  "debug.stats.pointer-refused": "Tramas de puntero rechazadas por el host",
   "debug.audio.mic-accepted": "Tramas de micrófono aceptadas",
   "debug.audio.mic-decoded": "Tramas de micrófono decodificadas",
   "debug.audio.mic-fec": "Recuperadas por FEC",

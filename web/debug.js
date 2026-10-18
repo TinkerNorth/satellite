@@ -106,6 +106,10 @@ const DEBUG_GROUPS = [
           const pct = total > 0 ? ((d.submitFail / total) * 100) : 0;
           return { text: pct.toFixed(2) + '%', cls: d.submitFail > 0 ? 'debug-err' : 'debug-ok' };
         } },
+      { id: 'pointer-injected', k: 'debug.stats.pointer-injected',
+        v: d => count(sub(d, 'pointer').injected) },
+      { id: 'pointer-refused', k: 'debug.stats.pointer-refused',
+        v: d => countCls(sub(d, 'pointer').refused, 'debug-err') },
     ],
   },
   {

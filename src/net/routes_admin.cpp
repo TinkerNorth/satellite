@@ -540,6 +540,7 @@ static void debugRoute(SessionService& svc, const Request&, Response& res) {
     f.maxControllers = MAX_BACKEND_CONTROLLERS;
     readWireStatus(f);
     f.audio = svc.audioCounts();
+    f.pointer = svc.pointerCounts();
     replyJson(res, buildDebugJson(f));
 }
 

@@ -14,6 +14,7 @@
 #include "shell_integration.h"
 
 #include "vigem_adapter.h"
+#include "pointer_inject.h"
 #include "audio_endpoint_com.h"
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
@@ -351,6 +352,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         [&audioDefaultGuard] { audioDefaultGuard.beforeCompositePlug(); },
         [&audioDefaultGuard] { audioDefaultGuard.afterCompositePlug(); });
     satellite::GamepadMux gamepadMux({&vigemAdapter, &hidMaestroAdapter});
+    g_pointerInjectDiagnostic = [](const std::string& detail) {
+        logMsg(LogLevel::WARN, "pointer", detail);
+    };
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
     // Controller audio's Opus codec, injected for the same reason as the key

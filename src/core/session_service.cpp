@@ -876,7 +876,16 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         if (prevValid && static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs) <= 0) {
             wheel = 0;
         }
-        return backend_.submitRelativeMouse(dx, dy, buttons, wheel);
+        const bool ok = backend_.submitRelativeMouse(dx, dy, buttons, wheel);
+        const bool buttonsChanged =
+            prevValid ? (prev.buttonPressed != report.buttonPressed ||
+                         prev.rightPressed != report.rightPressed ||
+                         prev.middlePressed != report.middlePressed)
+                      : (report.buttonPressed || report.rightPressed || report.middlePressed);
+        if (dx != 0 || dy != 0 || wheel != 0 || buttonsChanged) {
+            recordPointerInjectionLocked(conn, ok);
+        }
+        return ok;
     }
 
     case TOUCHPAD_MODE_DS4:
@@ -885,6 +894,37 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         // error; cached above.
         return backend_.submitTouchpad(ctrl.serialNo, report);
     }
+}
+
+void SessionService::recordPointerInjectionLocked(Connection& conn, bool ok) {
+    if (ok) {
+        pointerInjected_.fetch_add(1, std::memory_order_relaxed);
+        if (conn.pointerRefusalLogged) {
+            log_.logMsg(LogLevel::INFO, "service",
+                        "Host is accepting pointer input for " + conn.deviceName + " again after " +
+                            std::to_string(conn.pointerRefusedRun) +
+                            (conn.pointerRefusedRun == 1 ? " refused frame" : " refused frames"));
+        }
+        conn.pointerRefusedRun = 0;
+        conn.pointerRefusalLogged = false;
+        return;
+    }
+    pointerRefused_.fetch_add(1, std::memory_order_relaxed);
+    conn.pointerRefusedRun++;
+    if (conn.pointerRefusedRun != 1) return;
+    const auto now = std::chrono::steady_clock::now();
+    const bool loggedBefore = conn.pointerRefusalLoggedAt.time_since_epoch().count() != 0;
+    if (loggedBefore && now - conn.pointerRefusalLoggedAt <
+                            std::chrono::seconds(POINTER_REFUSAL_LOG_INTERVAL_SEC)) {
+        return;
+    }
+    conn.pointerRefusalLoggedAt = now;
+    conn.pointerRefusalLogged = true;
+    log_.logMsg(LogLevel::WARN, "service",
+                "Host refused to inject pointer input for " + conn.deviceName +
+                    "; the frames arrive but the OS drops them (on Windows this happens while "
+                    "the foreground window belongs to a process with higher privileges than "
+                    "Satellite)");
 }
 
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
@@ -1538,18 +1578,34 @@ int SessionService::reapTimedOut() {
 
     int reaped = 0;
     for (auto it = connections_.begin(); it != connections_.end();) {
+        Connection& conn = it->second;
+        const auto silentFor =
+            std::chrono::duration_cast<std::chrono::seconds>(now - conn.lastPacketTime);
         // The REST upsert counts as provisional liveness until graceUntil, so a
         // half-open session (UDP blocked) surfaces client-side instead of
         // flapping through here.
-        if (now - it->second.lastPacketTime > timeout && now > it->second.graceUntil) {
+        if (now - conn.lastPacketTime > timeout && now > conn.graceUntil) {
             log_.logMsg(LogLevel::INFO, "service",
-                        "Reaper: timed out connection for " + it->second.deviceName);
-            teardownConnection(it->second);
+                        "Reaper: timed out connection for " + conn.deviceName + " after " +
+                            std::to_string(silentFor.count()) + " s without a packet");
+            teardownConnection(conn);
             it = connections_.erase(it);
             reaped++;
-        } else {
-            ++it;
+            continue;
         }
+        if (linkStateAt(conn, now) == DeviceLinkState::NotResponding) {
+            if (!conn.stallLogged) {
+                conn.stallLogged = true;
+                const auto reapIn = timeout - silentFor;
+                log_.logMsg(LogLevel::WARN, "service",
+                            "Link to " + conn.deviceName + " has gone silent: no packet for " +
+                                std::to_string(silentFor.count()) + " s (reaper in " +
+                                std::to_string(reapIn.count()) + " s)");
+            }
+        } else {
+            conn.stallLogged = false;
+        }
+        ++it;
     }
     if (reaped > 0) closeBackendBusIfIdle();
     return reaped;
@@ -1579,6 +1635,13 @@ AudioStreamCounts SessionService::audioCounts() const {
     c.hapticEncodeFailed = audio_.hapticEncodeFailed.load(std::memory_order_relaxed);
     c.hapticLockContended = audio_.hapticLockContended.load(std::memory_order_relaxed);
     c.hapticReducedToRumble = audio_.hapticReducedToRumble.load(std::memory_order_relaxed);
+    return c;
+}
+
+PointerCounts SessionService::pointerCounts() const {
+    PointerCounts c;
+    c.injected = pointerInjected_.load(std::memory_order_relaxed);
+    c.refused = pointerRefused_.load(std::memory_order_relaxed);
     return c;
 }
 
@@ -1614,6 +1677,14 @@ void SessionService::setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
     ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).haptic.seq = seq;
+}
+
+void SessionService::backdatePointerRefusalLogForTest(uint32_t token, int secondsAgo) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return;
+    it->second.pointerRefusalLoggedAt =
+        std::chrono::steady_clock::now() - std::chrono::seconds(secondsAgo);
 }
 #endif
 

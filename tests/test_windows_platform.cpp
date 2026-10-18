@@ -10,6 +10,7 @@
 #include "../src/platform/windows/tray_menu.h"
 #include "../src/platform/windows/installer_launch_error.h"
 #include "../src/platform/windows/update_toast.h"
+#include "../src/platform/windows/pointer_inject.h"
 #include "../src/core/update_service.h"
 
 #include <atomic>
@@ -271,6 +272,23 @@ static void testGetCurrentDate() {
         EXPECT(s[4] == '-');
         EXPECT(s[7] == '-');
     }
+}
+
+static void testPointerRefusalMessage() {
+    TEST("pointerRefusalMessage: counts, error code and the foreground owner");
+    const std::string denied = pointerRefusalMessage(3, 0, 5, "steam.exe (pid 42) titled 'Steam'");
+    EXPECT(denied.find("injected 0 of 3") != std::string::npos);
+    EXPECT(denied.find("Win32 error 5") != std::string::npos);
+    EXPECT(denied.find("higher privileges") != std::string::npos);
+    EXPECT(denied.find("foreground window: steam.exe (pid 42) titled 'Steam'") !=
+           std::string::npos);
+
+    TEST(
+        "pointerRefusalMessage: other errors carry no privilege hint; an unknown owner is omitted");
+    const std::string other = pointerRefusalMessage(1, 0, 87, "");
+    EXPECT(other.find("Win32 error 87") != std::string::npos);
+    EXPECT(other.find("privileges") == std::string::npos);
+    EXPECT(other.find("foreground window") == std::string::npos);
 }
 
 static void testHexCodec() {
@@ -660,6 +678,7 @@ int main() {
     testGetExeDir();
     testGetCurrentDate();
     testHexCodec();
+    testPointerRefusalMessage();
     testResolvePairingSharedKey();
     testRunEntryRule();
     testUpdateMenuItem();

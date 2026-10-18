@@ -263,6 +263,7 @@ class SessionService {
     ConnectionsSnapshot getConnectionsSnapshot() const;
 
     AudioStreamCounts audioCounts() const;
+    PointerCounts pointerCounts() const;
 
     int activeSessionCount() const;
 
@@ -306,6 +307,7 @@ class SessionService {
     // reachable without encoding 65536 frames of audio to get there.
     void setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
     void setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
+    void backdatePointerRefusalLogForTest(uint32_t token, int secondsAgo);
 #endif
 
   private:
@@ -343,6 +345,8 @@ class SessionService {
         std::atomic<uint64_t> hapticReducedToRumble{0};
     };
     AudioCounters audio_;
+    std::atomic<uint64_t> pointerInjected_{0};
+    std::atomic<uint64_t> pointerRefused_{0};
     static void bumpAudio(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
@@ -414,6 +418,7 @@ class SessionService {
     void quarantineSerial(uint32_t serial);
     int countGlobalActiveControllers() const;
     void closeBackendBusIfIdle();
+    void recordPointerInjectionLocked(Connection& conn, bool ok);
     uint32_t generateUniqueToken();
     void deriveSessionKeyLocked(Connection& conn, const uint8_t pairingKey[CRYPTO_KEY_SIZE]);
 };
