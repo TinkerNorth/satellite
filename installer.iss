@@ -76,15 +76,9 @@
 ;  Compile-time switch (iscc):
 ;    /DUiAccess=1                signed builds only: satellite.exe requests
 ;                                uiAccess="true" (CMake SATELLITE_UIACCESS=ON),
-;                                which Windows honours only for a signed exe
-;                                under Program Files, so Setup then refuses
-;                                any other destination folder. An existing
-;                                install elsewhere is relocated: the folder
-;                                page reappears proposing {autopf}\Satellite
-;                                (silent runs and the in-app update take it),
-;                                and after the install the old copy's own
-;                                files are deleted and its folder removed if
-;                                that leaves it empty
+;                                so Setup accepts only a destination under
+;                                Program Files and relocates an install found
+;                                elsewhere (docs/packaging.md)
 ; ============================================================================
 
 #define MyAppName "Satellite"

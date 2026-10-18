@@ -27,21 +27,6 @@
     Critically, asInvoker is also what makes HKCU\Run autostart
     work: the shell's Run-key launcher cannot trigger UAC at logon,
     so any requireAdministrator manifest silently disables autostart.
-
-    SATELLITE_UIACCESS=ON is for the signed release build installed
-    under Program Files: UIAccess lets injected pointer input reach a
-    foreground window of a more privileged process, which UIPI
-    otherwise drops. Windows honours it only for an exe whose
-    Authenticode signature chains to a root in the local machine's
-    Trusted Root Certification Authorities store and which lives under
-    Program Files or Windows, and refuses to start any other copy, so
-    dev, portable and unsigned builds keep it OFF. Started by a
-    standard user, a UIAccess process runs at medium integrity plus
-    0x10; started from an administrator's filtered token, it runs at
-    high integrity without administrator rights and without a consent
-    prompt. Neither reaches system integrity UI. The level stays
-    asInvoker either way, so HKCU\Run autostart, ports 9876 to 9879
-    and 9443 and the HIDMaestro broker are unaffected.
   -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
