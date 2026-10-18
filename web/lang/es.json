@@ -401,6 +401,7 @@
   "debug.stats.http-port": "Puerto HTTP",
   "debug.host.client-api": "API de cliente (HTTPS)",
   "debug.host.mdns": "Respondedor mDNS",
+  "debug.host.ui-access": "Privilegio UIAccess",
   "debug.host.connections": "Conexiones activas",
   "debug.host.controllers": "Mandos virtuales",
   "debug.backends.kernel": "Modo kernel",

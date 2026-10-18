@@ -401,6 +401,7 @@
   "debug.stats.http-port": "HTTP port",
   "debug.host.client-api": "Klijent API (HTTPS)",
   "debug.host.mdns": "mDNS responder",
+  "debug.host.ui-access": "UIAccess privilegija",
   "debug.host.connections": "Aktivne veze",
   "debug.host.controllers": "Virtuelni kontroleri",
   "debug.backends.kernel": "Kernel način",

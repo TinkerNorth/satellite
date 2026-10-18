@@ -967,7 +967,7 @@ fields may be added at any time. Alongside the long-standing scalars (`listening
 | `pointer` | Host pointer injection for `TOUCHPAD_MODE_MOUSE` sessions: `injected` frames the OS accepted, `refused` frames it dropped. Windows refuses injected input while the foreground window belongs to a process with higher privileges than Satellite; the log names that window once per refusal run, and again when injection recovers |
 | `auth` | Client-API 401s, split `notPaired` / `badProof` |
 | `peakLoopUs` | True hot-path peak. `maxLoopUs` keeps its read-and-zero window semantics for benchmark tooling and reads 0 unless a new all-time record was set since the last read |
-| `webPort`, `mdnsResponderActive`, `clientApiListening`, `connections`, `controllers`, `maxControllers`, `sessionsReaped` | Host gauges |
+| `webPort`, `mdnsResponderActive`, `clientApiListening`, `uiAccess`, `connections`, `controllers`, `maxControllers`, `sessionsReaped` | Host gauges. `uiAccess` is true when the process holds Windows' UIAccess privilege (signed build installed under Program Files), which lets injected pointer input reach a foreground window of higher integrity; always false on Linux and macOS |
 
 
 The admin surface never sets descriptor fields (single-writer rule). The former

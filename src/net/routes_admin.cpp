@@ -535,6 +535,7 @@ static void debugRoute(SessionService& svc, const Request&, Response& res) {
     f.peakLoopUs = satellite::g_wire.observePeakLoopUs(maxUs);
     f.mdnsResponderActive = g_mdnsResponderActive.load();
     f.clientApiListening = (g_clientServer != nullptr);
+    f.uiAccess = g_uiAccess.load();
     f.connections = svc.activeSessionCount();
     f.controllers = svc.totalActiveControllers();
     f.maxControllers = MAX_BACKEND_CONTROLLERS;

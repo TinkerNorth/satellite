@@ -37,6 +37,7 @@ static StatusFields makeFields() {
     f.logSeq = 42;
     f.peakLoopUs = 9100;
     f.clientApiListening = true;
+    f.uiAccess = true;
     f.connections = 2;
     f.controllers = 3;
     f.maxControllers = 16;
@@ -225,8 +226,8 @@ static void test_debug_exact_shape() {
             R"("lastLoopUs":250,"maxLoopUs":9001,"peakLoopUs":9100,"senderIP":"192.168.)"
             R"(1.42","udpPort":9876,"webPort":9871,"decryptFail":3,"replayDrop":5,)"
             R"("backendAvailable":true,"backend":{"kind":"vigem","available":true},)"
-            R"("mdnsResponderActive":true,"clientApiListening":true,"connections":2,)"
-            R"("controllers":3,"maxControllers":16,"rx":{"input":1007,)"
+            R"("mdnsResponderActive":true,"clientApiListening":true,"uiAccess":true,)"
+            R"("connections":2,"controllers":3,"maxControllers":16,"rx":{"input":1007,)"
             R"("heartbeat":60,"motion":900,"battery":4,"pointer":120,"micAudio":500,)"
             R"("malformed":2,"unknownType":1,"runt":8,"unknownToken":9},)"
             R"("tx":{"packets":600,"bytes":48000,"heartbeatAck":60,"rumble":12,)"
@@ -267,6 +268,14 @@ static void test_sseEventFraming() {
     EXPECT_EQ(satellite::sseEvent("status", "{}"), std::string("event: status\ndata: {}\n\n"));
 }
 
+static void test_uiAccessRidesDebugOnly() {
+    TEST("uiAccess rides /api/debug only, never the status or SSE payloads");
+    const StatusFields f = makeFields();
+    EXPECT(buildDebugJson(f).find("\"uiAccess\"") != std::string::npos);
+    EXPECT(buildStatusJson(f).find("\"uiAccess\"") == std::string::npos);
+    EXPECT(jsonDump(buildSseStatusObject(f)).find("\"uiAccess\"") == std::string::npos);
+}
+
 int main() {
     std::cout << "Running status JSON tests...\n\n";
     test_status_exact_shape();
@@ -280,6 +289,7 @@ int main() {
     test_update_exact_shape();
     test_update_carries_the_dismissal();
     test_update_names_the_phase_and_the_install_method();
+    test_uiAccessRidesDebugOnly();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

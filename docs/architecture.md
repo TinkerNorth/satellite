@@ -555,6 +555,34 @@ elevated there anyway; no reboot). It does NOT deploy the usbip
 transport: that one waits for the first composite plug, so a host that
 never enables controller audio never acquires it.
 
+### UIAccess for pointer forwarding
+
+The touchpad-as-mouse path injects with `SendInput`, which UIPI confines
+to windows of equal or lower integrity. When a game exits and focus
+lands on a more privileged window, Windows silently discards the motion
+while the session and its counters stay healthy. The signed release
+build turns on the CMake option `SATELLITE_UIACCESS` (default OFF),
+which sets `uiAccess="true"` in the manifest generated from
+`satellite.manifest.in`. Windows grants UIAccess only when the manifest
+requests it, the exe is Authenticode-signed and it is installed under
+Program Files. A standard user's process then runs at medium+0x10
+integrity and an administrator's at high integrity, without admin rights
+and without a prompt; neither reaches system-integrity UI. `level` stays
+`asInvoker`, so the `HKCU\Run` autostart entry, the ports and the
+HIDMaestro broker are unchanged, and unsigned, development and portable
+builds keep `uiAccess="false"` and behave exactly as before. At high
+integrity the tray window lets Explorer's `TaskbarCreated`, the tray
+callback and the second-instance message through the UIPI message
+filter. The process logs its UIAccess state at startup, and `/api/debug`
+reports it as `uiAccess`.
+
+Routing pointer frames through the LocalSystem broker was evaluated and
+not pursued: a session-0 service cannot address the interactive desktop,
+so it would have to spawn a helper into the user's session and feed it
+every pointer frame over IPC, adding a hop to the hot path and creating
+an input path that is not bound to a signed image in a protected
+location, which is exactly what UIAccess binds it to.
+
 ## macOS backend: virtual DualShock 4 via IOHIDUserDevice
 
 The macOS backend publishes each plugged slot as a kernel HID device
