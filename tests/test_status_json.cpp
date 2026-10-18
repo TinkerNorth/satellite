@@ -202,7 +202,7 @@ static void test_counterBlocksStayOffTheHotSurfaces() {
     const std::string sse = jsonDump(buildSseStatusObject(f));
     for (const char* key :
          {"\"rx\"", "\"tx\"", "\"audio\"", "\"pointer\"", "\"auth\"", "peakLoopUs",
-          "clientApiListening", "sessionsReaped", "maxControllers"}) {
+          "clientApiListening", "uiAccess", "sessionsReaped", "maxControllers"}) {
         EXPECT(status.find(key) == std::string::npos);
         EXPECT(sse.find(key) == std::string::npos);
     }
@@ -211,7 +211,7 @@ static void test_counterBlocksStayOffTheHotSurfaces() {
     const std::string dbg = buildDebugJson(f);
     for (const char* key :
          {"\"rx\"", "\"tx\"", "\"audio\"", "\"pointer\"", "\"auth\"", "peakLoopUs",
-          "clientApiListening", "sessionsReaped", "maxControllers", "webPort"}) {
+          "clientApiListening", "uiAccess", "sessionsReaped", "maxControllers", "webPort"}) {
         EXPECT(dbg.find(key) != std::string::npos);
     }
 }
@@ -268,14 +268,6 @@ static void test_sseEventFraming() {
     EXPECT_EQ(satellite::sseEvent("status", "{}"), std::string("event: status\ndata: {}\n\n"));
 }
 
-static void test_uiAccessRidesDebugOnly() {
-    TEST("uiAccess rides /api/debug only, never the status or SSE payloads");
-    const StatusFields f = makeFields();
-    EXPECT(buildDebugJson(f).find("\"uiAccess\"") != std::string::npos);
-    EXPECT(buildStatusJson(f).find("\"uiAccess\"") == std::string::npos);
-    EXPECT(jsonDump(buildSseStatusObject(f)).find("\"uiAccess\"") == std::string::npos);
-}
-
 int main() {
     std::cout << "Running status JSON tests...\n\n";
     test_status_exact_shape();
@@ -289,7 +281,6 @@ int main() {
     test_update_exact_shape();
     test_update_carries_the_dismissal();
     test_update_names_the_phase_and_the_install_method();
-    test_uiAccessRidesDebugOnly();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

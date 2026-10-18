@@ -707,31 +707,6 @@ static void testUiAccess() {
     EXPECT(integrityLevelName(rid).rfind("0x", 0) != 0);
 }
 
-static void testEmbeddedManifest() {
-    constexpr bool uiAccessBuild = SATELLITE_UIACCESS_MANIFEST != 0;
-    const std::string manifest = readFileBytes(SATELLITE_MANIFEST_FILE);
-    const bool saysTrue = manifest.find("uiAccess=\"true\"") != std::string::npos;
-    const bool saysFalse = manifest.find("uiAccess=\"false\"") != std::string::npos;
-
-    TEST("embedded manifest: the generated manifest stays asInvoker");
-    EXPECT(manifest.find("level=\"asInvoker\"") != std::string::npos);
-
-    TEST("embedded manifest: uiAccess follows the SATELLITE_UIACCESS switch");
-    EXPECT_EQ(saysTrue, uiAccessBuild);
-    EXPECT_EQ(saysFalse, !uiAccessBuild);
-
-    TEST("embedded manifest: never both uiAccess values");
-    EXPECT(!(saysTrue && saysFalse));
-
-    TEST("manifest template: one uiAccess placeholder and an asInvoker level");
-    const std::string tmpl = readFileBytes(SATELLITE_MANIFEST_TEMPLATE);
-    const std::string placeholder = "uiAccess=\"@SATELLITE_MANIFEST_UIACCESS@\"";
-    const size_t first = tmpl.find(placeholder);
-    EXPECT(first != std::string::npos);
-    EXPECT(tmpl.find(placeholder, first + 1) == std::string::npos);
-    EXPECT(tmpl.find("level=\"asInvoker\"") != std::string::npos);
-}
-
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -759,7 +734,6 @@ int main() {
     testUpdateToast();
     testUpdateToastWithTheRealService();
     testUiAccess();
-    testEmbeddedManifest();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

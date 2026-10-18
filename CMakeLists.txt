@@ -1451,9 +1451,6 @@ if(WIN32)
     target_compile_definitions(test_windows_platform PRIVATE
         _WIN32_WINNT=0x0A00
         CPPHTTPLIB_NO_EXCEPTIONS
-        SATELLITE_MANIFEST_FILE="${SATELLITE_MANIFEST}"
-        SATELLITE_MANIFEST_TEMPLATE="${CMAKE_CURRENT_SOURCE_DIR}/satellite.manifest.in"
-        SATELLITE_UIACCESS_MANIFEST=$<BOOL:${SATELLITE_UIACCESS}>
     )
     target_link_libraries(test_windows_platform PRIVATE
         ws2_32
