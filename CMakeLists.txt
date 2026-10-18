@@ -76,6 +76,10 @@ endif()
 set(SATELLITE_SENTRY_DSN "" CACHE STRING
     "Sentry DSN. Empty (the default) disables crash reporting at compile time.")
 
+option(SATELLITE_UIACCESS
+    "Request the Windows UIAccess privilege in the embedded manifest (signed release installed under Program Files only)"
+    OFF)
+
 # Optional dependency, exactly like the tray: absent means the facade in
 # core/crash_reporting.cpp compiles to inert stubs and everything else still
 # builds. Windows (vcpkg) and macOS (Homebrew) resolve a packaged SDK through
@@ -271,6 +275,34 @@ if(WIN32)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/core/version_rc.h.in
         ${CMAKE_CURRENT_BINARY_DIR}/generated/version_rc.h
         @ONLY)
+
+    if(SATELLITE_UIACCESS)
+        set(SATELLITE_MANIFEST_UIACCESS true)
+    else()
+        set(SATELLITE_MANIFEST_UIACCESS false)
+    endif()
+    set(SATELLITE_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/generated/satellite.manifest)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/satellite.manifest.in
+        ${SATELLITE_MANIFEST}
+        @ONLY)
+    file(READ ${SATELLITE_MANIFEST} SATELLITE_MANIFEST_TEXT)
+    string(REGEX MATCHALL "uiAccess=\"[^\"]*\"" SATELLITE_MANIFEST_UIACCESS_ATTRS
+        "${SATELLITE_MANIFEST_TEXT}")
+    string(FIND "${SATELLITE_MANIFEST_TEXT}" "level=\"asInvoker\"" SATELLITE_MANIFEST_AS_INVOKER)
+    if(NOT SATELLITE_MANIFEST_UIACCESS_ATTRS STREQUAL "uiAccess=\"${SATELLITE_MANIFEST_UIACCESS}\""
+       OR SATELLITE_MANIFEST_AS_INVOKER EQUAL -1)
+        message(FATAL_ERROR
+            "${SATELLITE_MANIFEST} must carry exactly one uiAccess=\"${SATELLITE_MANIFEST_UIACCESS}\" "
+            "and level=\"asInvoker\" (found: ${SATELLITE_MANIFEST_UIACCESS_ATTRS}); "
+            "satellite.manifest.in no longer matches the SATELLITE_UIACCESS switch.")
+    endif()
+    if(SATELLITE_UIACCESS)
+        message(STATUS "satellite: UIAccess requested in the embedded manifest; satellite.exe "
+                       "must be Authenticode-signed and installed under Program Files, or "
+                       "Windows will not start it")
+    endif()
+    set_source_files_properties(${SATELLITE_RC} PROPERTIES OBJECT_DEPENDS ${SATELLITE_MANIFEST})
 
     add_executable(satellite WIN32
         ${SATELLITE_CORE_SOURCES}
@@ -1419,6 +1451,9 @@ if(WIN32)
     target_compile_definitions(test_windows_platform PRIVATE
         _WIN32_WINNT=0x0A00
         CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_MANIFEST_FILE="${SATELLITE_MANIFEST}"
+        SATELLITE_MANIFEST_TEMPLATE="${CMAKE_CURRENT_SOURCE_DIR}/satellite.manifest.in"
+        SATELLITE_UIACCESS_MANIFEST=$<BOOL:${SATELLITE_UIACCESS}>
     )
     target_link_libraries(test_windows_platform PRIVATE
         ws2_32
