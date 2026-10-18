@@ -24,7 +24,8 @@
 ;      excluded).
 ;    * Per-machine install only (PrivilegesRequired=admin): gates
 ;      ViGEmBus + firewall behind one UAC consent at install time, then
-;      the app itself runs asInvoker (see satellite.manifest).
+;      the app itself runs asInvoker (see satellite.manifest.in; signed
+;      builds also request uiAccess="true", see /DUiAccess=1 below).
 ;
 ;  ViGEmBus 1.22.0 (final upstream release, repo archived 2023-11) is
 ;  bundled as a prerequisite. 1.22.0 is the installer's own version; the
@@ -71,6 +72,13 @@
 ;    /REMOVEHIDMAESTRO=yes|no|auto  uninstall-time companion (see bottom)
 ;    /OTA                        signals an in-app self-update; we relaunch
 ;                                the binary via Restart Manager (no UI)
+;
+;  Compile-time switch (iscc):
+;    /DUiAccess=1                signed builds only: satellite.exe requests
+;                                uiAccess="true" (CMake SATELLITE_UIACCESS=ON),
+;                                which Windows honours only for a signed exe
+;                                under Program Files, so Setup then refuses
+;                                any other destination folder
 ; ============================================================================
 
 #define MyAppName "Satellite"
@@ -97,6 +105,12 @@
 #define HmVersion "1.9.2"
 #define HmHelperExe "satellite-hm-helper.exe"
 #define HmHelperSource "helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe"
+
+#ifdef UiAccess
+#define UiAccessFlag "True"
+#else
+#define UiAccessFlag "False"
+#endif
 
 [Setup]
 ; Stable AppId: never change this without a migration plan; it's how
@@ -128,7 +142,8 @@ WizardStyle=modern
 
 ; Admin is required to write to Program Files, add firewall rules, and
 ; install ViGEmBus, but the installed binary runs asInvoker (see
-; satellite.manifest). One UAC prompt at install, none at runtime.
+; satellite.manifest.in; signed builds add uiAccess="true", which needs no
+; prompt either). One UAC prompt at install, none at runtime.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -277,7 +292,8 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 ; is silent, and RestartApplications only restarts what Restart Manager
 ; closed -- the app closed itself before Setup started. runasoriginaluser
 ; keeps the relaunched app at the invoking user's integrity, matching how
-; the autostart entry runs it (see satellite.manifest: asInvoker).
+; the autostart entry runs it (see satellite.manifest.in: asInvoker, plus
+; uiAccess="true" in signed builds).
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: WantsOTARelaunch
 
 [UninstallRun]
@@ -729,9 +745,53 @@ begin
                '%TEMP% and re-run this installer to retry).', mbInformation);
 end;
 
+const
+    UiAccessBuild = {#UiAccessFlag};
+
+function IsUiAccessTrustedDir(const Dir: String): Boolean;
+var
+    D, Pf, Pf32: String;
+begin
+    D := AddBackslash(Dir);
+    Pf := AddBackslash(ExpandConstant('{commonpf}'));
+    Pf32 := AddBackslash(ExpandConstant('{commonpf32}'));
+    Result := SameText(Copy(D, 1, Length(Pf)), Pf) or SameText(Copy(D, 1, Length(Pf32)), Pf32);
+end;
+
+function UiAccessDirMessage: String;
+begin
+    Result := 'This signed build of Satellite runs with the Windows UIAccess'
+            + ' accessibility privilege, which Windows grants only to programs'
+            + ' installed under Program Files. Choose a folder under Program'
+            + ' Files, such as ' + ExpandConstant('{commonpf}\{#MyAppName}') + '.';
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+    Result := True;
+    if UiAccessBuild then begin
+        if (CurPageID = wpSelectDir) and not IsUiAccessTrustedDir(WizardDirValue) then begin
+            Log('UIAccess build: refusing destination outside Program Files: ' + WizardDirValue);
+            SuppressibleMsgBox(UiAccessDirMessage, mbError, MB_OK, IDOK);
+            Result := False;
+        end;
+    end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+    Dir: String;
 begin
     Result := '';
+    if UiAccessBuild then begin
+        Dir := ExpandConstant('{app}');
+        if not IsUiAccessTrustedDir(Dir) then begin
+            Log('UIAccess build: refusing install dir outside Program Files: ' + Dir);
+            Result := UiAccessDirMessage;
+            Exit;
+        end;
+        Log('UIAccess build: install dir is under Program Files: ' + Dir);
+    end;
     StopBrokerService;
 end;
 
