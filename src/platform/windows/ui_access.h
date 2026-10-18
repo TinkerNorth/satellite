@@ -61,13 +61,12 @@ inline std::string integrityLevelName(DWORD rid) {
 inline std::string describePointerInjection(bool uiAccess, DWORD rid) {
     const std::string level = integrityLevelName(rid);
     if (uiAccess) {
-        return "Pointer injection has UIAccess at " + level +
-               " integrity: injected pointer input reaches a foreground window of up to high "
-               "integrity";
+        return "Pointer injection has UIAccess (integrity level: " + level +
+               "): injected pointer input reaches a foreground window of up to high integrity";
     }
-    return "Pointer injection runs without UIAccess at " + level +
-           " integrity: Windows drops injected pointer input while the foreground window belongs "
-           "to a more privileged process; a signed build installed under Program Files lifts this";
+    return "Pointer injection runs without UIAccess (integrity level: " + level +
+           "): Windows drops injected pointer input while the foreground window belongs to a "
+           "more privileged process; a signed build installed under Program Files lifts this";
 }
 
 } // namespace uiaccess
