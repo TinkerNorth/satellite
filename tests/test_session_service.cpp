@@ -4034,6 +4034,119 @@ static void test_wireConstants() {
     EXPECT_EQ((int)CRYPTO_DIR_SERVER_TO_CLIENT, 1);
 }
 
+static void test_touchpad_refusedInjectionCountedAndLoggedOncePerRun() {
+    TEST("touchpad: a host that refuses pointer injection is counted and logged once per run");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1",
+                    "Pixel", /*mouseControl=*/true);
+    vigem.submitRelativeMouseReturnVal = false;
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)0);
+    EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
+    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
+    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1032)));
+    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1500, 1500, 1048)));
+    EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)3);
+    EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
+    EXPECT_EQ(log.countContaining("refused to inject pointer input for Pixel"), 1);
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 4);
+
+    TEST("touchpad: the first accepted frame after a refusal run logs the recovery and its length");
+    vigem.submitRelativeMouseReturnVal = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 2000, 2000, 1064)));
+    EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)1);
+    EXPECT_EQ(log.countContaining("accepting pointer input for Pixel again after 3 refused frames"),
+              1);
+
+    TEST("touchpad: a new refusal run inside the log interval is counted but not logged again");
+    vigem.submitRelativeMouseReturnVal = false;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 2500, 2500, 1080)));
+    EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)4);
+    EXPECT_EQ(log.countContaining("refused to inject pointer input"), 1);
+    vigem.submitRelativeMouseReturnVal = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 3000, 3000, 1096)));
+    EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)2);
+    EXPECT_EQ(log.countContaining("accepting pointer input"), 1);
+
+    TEST("touchpad: once the log interval has lapsed the next refusal run is logged");
+    svc.backdatePointerRefusalLogForTest(r.token, POINTER_REFUSAL_LOG_INTERVAL_SEC + 1);
+    vigem.submitRelativeMouseReturnVal = false;
+    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 3500, 3500, 1112)));
+    EXPECT_EQ(log.countContaining("refused to inject pointer input"), 2);
+}
+
+static void test_touchpad_idleFramesDoNotTouchTheRefusalRun() {
+    TEST("touchpad: idle frames neither count as injections nor end a refusal run");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1",
+                    "Pixel", /*mouseControl=*/true);
+    vigem.submitRelativeMouseReturnVal = false;
+    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
+    EXPECT_EQ(log.countContaining("refused to inject pointer input"), 1);
+    vigem.submitRelativeMouseReturnVal = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1032)));
+    EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
+    EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)1);
+    EXPECT_EQ(log.countContaining("accepting pointer input"), 0);
+    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1048)));
+    EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)1);
+    EXPECT_EQ(log.countContaining("accepting pointer input for Pixel again after 1 refused frame"),
+              1);
+
+    TEST("touchpad: a button edge with no motion is an injection attempt");
+    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1064, /*button=*/true)));
+    EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)2);
+}
+
+static void test_reap_logsASilentLinkOnceBeforeReaping() {
+    TEST("reap: a link that has gone silent is logged once with its silence and the time left");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = upsert(svc, {makeDesc(0)}, "dev1", "Pixel");
+    const int stalledSec = HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR + 1;
+    const int reapSec = HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_MAX;
+    svc.backdateForTest(r.token, stalledSec, 1);
+    EXPECT_EQ(svc.reapTimedOut(), 0);
+    EXPECT_EQ(log.countContaining("Link to Pixel has gone silent"), 1);
+    EXPECT(log.contains("no packet for " + std::to_string(stalledSec) + " s (reaper in " +
+                        std::to_string(reapSec - stalledSec) + " s)"));
+    EXPECT_EQ(svc.reapTimedOut(), 0);
+    EXPECT_EQ(log.countContaining("has gone silent"), 1);
+
+    TEST("reap: a packet clears the silence so a later stall is logged again");
+    svc.updatePostDecryptV4(r.token, 1, 0x0100007f, 5555);
+    EXPECT_EQ(svc.reapTimedOut(), 0);
+    svc.backdateForTest(r.token, stalledSec, 1);
+    EXPECT_EQ(svc.reapTimedOut(), 0);
+    EXPECT_EQ(log.countContaining("has gone silent"), 2);
+
+    TEST("reap: the reaper line carries the silence duration");
+    svc.backdateForTest(r.token, 60, 1);
+    EXPECT_EQ(svc.reapTimedOut(), 1);
+    EXPECT(log.contains("Reaper: timed out connection for Pixel after 60 s without a packet"));
+}
+
+static void test_reap_inGraceSilenceIsNotLogged() {
+    TEST("reap: a stale-but-in-grace session is not reported as silent");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    auto r = upsert(svc, {makeDesc(0)}, "dev1", "Pixel");
+    svc.backdateForTest(r.token, 60, -60);
+    EXPECT_EQ(svc.reapTimedOut(), 0);
+    EXPECT_EQ(log.countContaining("has gone silent"), 0);
+}
+
 int main() {
     test_upsert_createsSession();
     test_upsert_connectionIdIsConnAndEightHexDigits();
@@ -4088,6 +4201,8 @@ int main() {
     test_mouseControl_notRequestedNotGranted();
     test_touchpad_mouseStreamDroppedWithoutGrant();
     test_mouseControl_rePutWithoutRequestRevokes();
+    test_touchpad_refusedInjectionCountedAndLoggedOncePerRun();
+    test_touchpad_idleFramesDoNotTouchTheRefusalRun();
 
     test_serials_roundRobinAvoidsInstantReuse();
     test_serials_quarantineOnUnplugFailure();
@@ -4103,6 +4218,8 @@ int main() {
     test_reap_recentPacketsKeepAlive();
     test_linkState_graceCountsAsActive();
     test_snapshot_notRespondingState();
+    test_reap_logsASilentLinkOnceBeforeReaping();
+    test_reap_inGraceSilenceIsNotLogged();
 
     test_snapshot_pluggedInFromAdapterTruth();
     test_snapshot_carriesIdentityAndEpoch();

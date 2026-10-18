@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Build the Windows Inno Setup installer: dist\SatelliteSetup.exe
+    Build the Windows Inno Setup installer: dist\SatelliteSetup.exe (the
+    signed UIAccess variant with -UiAccess)
 
 .DESCRIPTION
     The seven steps release.yml's windows job runs, minus the CI-only signing
@@ -21,19 +22,33 @@
                                     /DMyAppVersion=<content of /VERSION>
                                     normalized exactly like release.yml
                                     normalizes the tag (strip a leading v and
-                                    any -rc/+build suffix)
+                                    any -rc/+build suffix), plus /DUiAccess=1
+                                    with -UiAccess
       [6] scripts\sign.ps1          signs SatelliteSetup.exe (same gating)
       [7] scripts\generate-sbom.ps1 emits dist\satellite-sbom.cdx.json
+
+    -UiAccess builds what release.yml builds when WIN_SIGN_CERT_BASE64 is set:
+    satellite.exe must request uiAccess="true" (built with the CMake option
+    -DSATELLITE_UIACCESS=ON) and signing credentials are mandatory, because
+    Windows refuses to start a uiAccess executable that is not signed or not
+    installed under Program Files. The resulting installer accepts only a
+    destination under Program Files.
 
     Requires: satellite.exe already built (scripts\build.ps1 first), Inno
     Setup 6, .NET SDK 10 (scripts\install-deps.ps1 installs both).
 
 .PARAMETER Iscc
     Path to ISCC.exe. Defaults to PATH, then the standard install locations.
+
+.PARAMETER UiAccess
+    Build the signed UIAccess installer (iscc /DUiAccess=1). Fails unless one
+    of SATELLITE_SIGN_THUMBPRINT, SATELLITE_SIGN_PFX or CLOUD_SIGN_TOOL is set
+    and satellite.exe carries uiAccess="true".
 #>
 [CmdletBinding()]
 param(
-    [string]$Iscc = ''
+    [string]$Iscc = '',
+    [switch]$UiAccess
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +59,16 @@ function Step([string]$Text) { Write-Output ''; Write-Output "=== $Text ===" }
 
 if (-not (Test-Path 'satellite.exe')) {
     throw "satellite.exe not found at the repo root. Run scripts\build.ps1 first."
+}
+
+if ($UiAccess) {
+    if (-not ($env:SATELLITE_SIGN_THUMBPRINT -or $env:SATELLITE_SIGN_PFX -or $env:CLOUD_SIGN_TOOL)) {
+        throw '-UiAccess needs signing credentials: Windows refuses to start an unsigned uiAccess satellite.exe. Set SATELLITE_SIGN_THUMBPRINT, SATELLITE_SIGN_PFX or CLOUD_SIGN_TOOL (see scripts\sign.ps1).'
+    }
+    $exeText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $repoRoot 'satellite.exe')))
+    if (-not $exeText.Contains('uiAccess="true"')) {
+        throw 'satellite.exe does not request uiAccess="true". Rebuild it with the CMake option -DSATELLITE_UIACCESS=ON before running with -UiAccess.'
+    }
 }
 
 # /VERSION is the authoritative version (version-consistency.yml). Normalize
@@ -84,7 +109,9 @@ if (-not ($env:SATELLITE_SIGN_THUMBPRINT -or $env:SATELLITE_SIGN_PFX -or $env:CL
     if ($LASTEXITCODE -ne 0) { throw 'signing satellite.exe failed' }
 }
 
-Step "[5/7] Compiling installer (iscc /DMyAppVersion=$version installer.iss)"
+$isccDefines = @("/DMyAppVersion=$version")
+if ($UiAccess) { $isccDefines += '/DUiAccess=1' }
+Step "[5/7] Compiling installer (iscc $($isccDefines -join ' ') installer.iss)"
 if (-not $Iscc) {
     $onPath = Get-Command iscc.exe -ErrorAction SilentlyContinue
     if ($onPath) { $Iscc = $onPath.Source }
@@ -100,7 +127,7 @@ if (-not $Iscc) {
     throw 'ISCC.exe not found on PATH or in standard install locations. Install Inno Setup 6: winget install JRSoftware.InnoSetup (or run scripts\install-deps.ps1).'
 }
 Write-Output "[INFO] Using ISCC: $Iscc"
-& $Iscc "/DMyAppVersion=$version" installer.iss
+& $Iscc @isccDefines installer.iss
 if ($LASTEXITCODE -ne 0) { throw 'iscc failed' }
 if (-not (Test-Path 'dist/SatelliteSetup.exe')) { throw 'iscc did not produce dist/SatelliteSetup.exe' }
 

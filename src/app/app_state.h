@@ -32,6 +32,7 @@ extern std::atomic<bool> g_listening;
 // True while the mDNS responder thread holds its multicast socket; false when
 // bind/join failed or the thread exited. Surfaced read-only in the web UI.
 extern std::atomic<bool> g_mdnsResponderActive;
+extern std::atomic<bool> g_uiAccess;
 
 // Telemetry counters (read by webserver SSE).
 extern std::atomic<uint64_t> g_packetCount;

@@ -18,7 +18,8 @@ on:
 #     Spectre), then runs Inno Setup to produce SatelliteSetup.exe, and proves
 #     the installer with a silent install/launch/repair/uninstall round-trip
 #     (driver skipped via /VIGEM=skip). Code-signed if WIN_SIGN_CERT_BASE64 +
-#     WIN_SIGN_PASSWORD are set.
+#     WIN_SIGN_PASSWORD are set; signed builds carry the UIAccess manifest and
+#     are smoke-tested from Program Files.
 #   * macOS:   builds the *stub* satellite.app (no virtual gamepad; see
 #     README "How it works"). Codesigned + notarized if Developer ID secrets
 #     are set.
@@ -208,7 +209,9 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $generator = ./scripts/windows-vs-generator.ps1
           $disp = ("${{ inputs.tag || github.ref_name }}") -replace '^v',''
-          cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp" -DSATELLITE_SENTRY_DSN="$env:SATELLITE_SENTRY_DSN"
+          $uiAccess = @()
+          if ($env:WIN_SIGN_CERT_BASE64) { $uiAccess = @('-DSATELLITE_UIACCESS=ON') }
+          cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp" -DSATELLITE_SENTRY_DSN="$env:SATELLITE_SENTRY_DSN" @uiAccess
           cmake --build --preset windows-msvc --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
           if (-not (Test-Path crashpad_handler.exe)) { throw "crashpad_handler.exe was not staged beside satellite.exe" }
@@ -264,6 +267,21 @@ jobs:
         shell: pwsh
         run: pwsh scripts/verify-helper-sdk.ps1
 
+      - name: Sign binaries before packaging (if cert configured)
+        if: ${{ env.WIN_SIGN_CERT_BASE64 != '' }}
+        env:
+          SATELLITE_SIGN_PFX_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
+        shell: pwsh
+        run: |
+          $cert = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
+          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WIN_SIGN_CERT_BASE64))
+          $env:SATELLITE_SIGN_PFX = $cert
+          ./scripts/sign.ps1 -Files satellite.exe, crashpad_handler.exe, crashpad_wer.dll, 'helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe'
+          $exe = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Resolve-Path satellite.exe).Path))
+          if (-not $exe.Contains('uiAccess="true"')) {
+            throw 'satellite.exe does not carry uiAccess="true"; the -DSATELLITE_UIACCESS=ON build did not take effect'
+          }
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress
 
@@ -271,7 +289,9 @@ jobs:
         shell: pwsh
         run: |
           $num = (("${{ inputs.tag || github.ref_name }}") -replace '^v','') -replace '[-+].*$',''
-          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=$num" installer.iss
+          $uiAccess = @()
+          if ($env:WIN_SIGN_CERT_BASE64) { $uiAccess = @('/DUiAccess=1') }
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=$num" @uiAccess installer.iss
           if (-not (Test-Path "dist/SatelliteSetup.exe")) {
             throw "iscc did not produce dist/SatelliteSetup.exe"
           }
@@ -298,7 +318,7 @@ jobs:
       # has no business succeeding-or-hanging inside a CI assertion.
       - name: Installer silent round-trip + launch smoke (no UI)
         shell: pwsh
-        run: ./scripts/test-installer-roundtrip.ps1 -Setup dist/SatelliteSetup.exe
+        run: ./scripts/test-installer-roundtrip.ps1 -Setup dist/SatelliteSetup.exe -UiAccess:([bool]$env:WIN_SIGN_CERT_BASE64)
 
       - name: Stage
         shell: bash

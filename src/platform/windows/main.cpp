@@ -14,11 +14,13 @@
 #include "shell_integration.h"
 
 #include "vigem_adapter.h"
+#include "pointer_inject.h"
 #include "audio_endpoint_com.h"
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
 #include "updater_adapter.h"
 #include "update_toast.h"
+#include "ui_access.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 #include "adapters/crash_adapter.h"
@@ -334,6 +336,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // Mirror logMsg() to a rolling file; the in-memory ring alone evaporates
     // before the user can report a crash.
     lifecycle::startFileLogger();
+    const bool uiAccess = uiaccess::tokenHasUiAccess();
+    g_uiAccess.store(uiAccess);
+    logMsg(LogLevel::INFO, "pointer",
+           uiaccess::describePointerInjection(uiAccess, uiaccess::tokenIntegrityRid()));
 
     // Session keys are derived via HKDF (net/session_crypto), injected so the
     // core stays libsodium-free. Both Windows backends sit behind one mux:
@@ -351,6 +357,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         [&audioDefaultGuard] { audioDefaultGuard.beforeCompositePlug(); },
         [&audioDefaultGuard] { audioDefaultGuard.afterCompositePlug(); });
     satellite::GamepadMux gamepadMux({&vigemAdapter, &hidMaestroAdapter});
+    g_pointerInjectDiagnostic = [](const std::string& detail) {
+        logMsg(LogLevel::WARN, "pointer", detail);
+    };
     ClientAdapter clientAdapter;
     LogAdapter logAdapter;
     // Controller audio's Opus codec, injected for the same reason as the key
