@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "core/config_json.h"
+#include "core/install_defaults.h"
 
 #include <cstdint>
 #include <iostream>
@@ -28,6 +29,7 @@ static void test_full_round_trip() {
     in.networkInterface = "eth0";
     in.allowPublicNetwork = true;
     in.controllerAudio = false;
+    in.installDefaultsStamp = "20261018-1";
     in.controllerAudioMic = false;
     in.controllerAudioSpeaker = false;
     in.controllerAudioHaptics = false;
@@ -64,6 +66,7 @@ static void test_full_round_trip() {
     EXPECT_EQ(out.updateCheckIntervalHours, in.updateCheckIntervalHours);
     EXPECT_EQ(out.lastCheckEpoch, in.lastCheckEpoch);
     EXPECT_EQ(out.lastSeenVersion, in.lastSeenVersion);
+    EXPECT_EQ(out.installDefaultsStamp, in.installDefaultsStamp);
     EXPECT_EQ(out.skipVersion, in.skipVersion);
     EXPECT_EQ(out.networkInterface, in.networkInterface);
     EXPECT_EQ(out.allowPublicNetwork, in.allowPublicNetwork);
@@ -201,6 +204,36 @@ static void test_legacy_pair_port_key_ignored() {
 // explicit false has to survive a save/load round-trip. Getting the absent case
 // wrong either turns audio off for everyone on upgrade or turns it on for a
 // user who switched it off.
+static void test_install_defaults_apply_once_per_stamp() {
+    TEST("applyInstallDefaults: no stamp means no change");
+    Config cfg;
+    EXPECT(!satellite::applyInstallDefaults(cfg, satellite::InstallDefaults{}));
+    EXPECT(cfg.autoCheck);
+    EXPECT(cfg.crashReporting);
+
+    TEST("applyInstallDefaults: a new stamp applies both choices and is recorded");
+    satellite::InstallDefaults d;
+    d.stamp = "20261018-1";
+    d.autoCheck = false;
+    d.crashReporting = false;
+    EXPECT(satellite::applyInstallDefaults(cfg, d));
+    EXPECT(!cfg.autoCheck);
+    EXPECT(!cfg.crashReporting);
+    EXPECT_EQ(cfg.installDefaultsStamp, std::string("20261018-1"));
+
+    TEST("applyInstallDefaults: the same stamp applies nothing, whatever its values");
+    cfg.autoCheck = true;
+    d.crashReporting = true;
+    EXPECT(!satellite::applyInstallDefaults(cfg, d));
+    EXPECT(cfg.autoCheck);
+    EXPECT(!cfg.crashReporting);
+
+    TEST("applyInstallDefaults: the recorded stamp survives a round-trip");
+    Config out;
+    satellite::parseConfigInto(satellite::serializeConfig(cfg), out);
+    EXPECT_EQ(out.installDefaultsStamp, cfg.installDefaultsStamp);
+}
+
 static void test_controller_audio_default_and_persistence() {
     TEST("controllerAudio defaults to on");
     const Config defaults;
@@ -351,6 +384,7 @@ int main() {
     test_shared_key_on_disk_name();
     test_legacy_pair_port_key_ignored();
     test_controller_audio_default_and_persistence();
+    test_install_defaults_apply_once_per_stamp();
     test_controller_audio_split_directions();
     test_last_check_epoch_64bit();
 

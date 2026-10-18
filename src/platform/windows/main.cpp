@@ -21,6 +21,7 @@
 #include "updater_adapter.h"
 #include "update_toast.h"
 #include "ui_access.h"
+#include "install_defaults_registry.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 #include "adapters/crash_adapter.h"
@@ -170,6 +171,8 @@ bool startCrypto() {
     return false;
 }
 
+static bool g_installDefaultsApplied = false;
+
 // On first run (no JSON yet) seed autostart from the registry so the
 // installer's task selection survives; the JSON is authoritative after that.
 void loadConfigSeedingAutostart() {
@@ -180,6 +183,10 @@ void loadConfigSeedingAutostart() {
     }
     g_config = loadConfig();
     if (firstRun) g_config.autoStart = getAutoStart();
+    if (satellite::applyInstallDefaults(g_config, installdefaults::readInstallDefaults())) {
+        saveConfig(g_config);
+        g_installDefaultsApplied = true;
+    }
 }
 
 // The settings the adapters read per plug and per frame rather than cache: the
@@ -336,6 +343,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // Mirror logMsg() to a rolling file; the in-memory ring alone evaporates
     // before the user can report a crash.
     lifecycle::startFileLogger();
+    if (g_installDefaultsApplied) {
+        logMsg(LogLevel::INFO, "config",
+               std::string("Applied the installer's privacy choices: update check ") +
+                   (g_config.autoCheck ? "on" : "off") + ", crash reports " +
+                   (g_config.crashReporting ? "on" : "off"));
+    }
     const bool uiAccess = uiaccess::tokenHasUiAccess();
     g_uiAccess.store(uiAccess);
     logMsg(LogLevel::INFO, "pointer",
