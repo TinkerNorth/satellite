@@ -72,6 +72,10 @@
 ;    /REMOVEHIDMAESTRO=yes|no|auto  uninstall-time companion (see bottom)
 ;    /OTA                        signals an in-app self-update; we relaunch
 ;                                the binary via Restart Manager (no UI)
+;    /UPDATECHECK=yes|no         first install: check GitHub for new versions
+;                                (default yes; the Privacy page asks otherwise)
+;    /CRASHREPORTS=yes|no        first install: send crash reports to Sentry
+;                                (default yes; the Privacy page asks otherwise)
 ;
 ;  Compile-time switch (iscc):
 ;    /DUiAccess=1                signed builds only: satellite.exe requests
@@ -260,6 +264,7 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 ; under the same cap as the app's own dumps.
 Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: expandsz; ValueName: "DumpFolder"; ValueData: "%LOCALAPPDATA%\TinkerNorth\Satellite\dumps"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: dword; ValueName: "DumpType"; ValueData: 1; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\TinkerNorth\Satellite\InstallDefaults"; ValueType: none; Flags: uninsdeletekey; Check: WritesInstallDefaults
 Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\{#MyAppExeName}"; ValueType: dword; ValueName: "DumpCount"; ValueData: 10; Flags: uninsdeletekey
 
 [Run]
@@ -457,6 +462,12 @@ var
     DetectedHm: Boolean;
     RebootNeeded: Boolean;
     StatusLabel: TNewStaticText;
+    PrivacyPage: TInputOptionWizardPage;
+    PrivacyLink: TNewStaticText;
+    PrivacyNote: TNewStaticText;
+    InstallStamp: String;
+    UpdateCheckSwitch: String;
+    CrashReportsSwitch: String;
 
 function ParseDriverSwitch(const Prefix: String): String;
 var
@@ -483,6 +494,111 @@ end;
 function ParseHmSwitch: String;
 begin
     Result := ParseDriverSwitch('/HIDMAESTRO=');
+end;
+
+const
+    PrivacyPolicyUrl = 'https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md';
+    InstallDefaultsKey = 'SOFTWARE\TinkerNorth\Satellite\InstallDefaults';
+
+function ParseYesNoSwitch(const Prefix: String): String;
+var
+    i, PrefixLen: Integer;
+    P, Up: String;
+begin
+    Result := '';
+    PrefixLen := Length(Prefix);
+    for i := 1 to ParamCount do begin
+        P := ParamStr(i);
+        Up := Uppercase(P);
+        if Copy(Up, 1, PrefixLen) = Prefix then
+            Result := Lowercase(Trim(Copy(P, PrefixLen + 1, MaxInt)));
+    end;
+    if (Result <> 'yes') and (Result <> 'no') then
+        Result := '';
+end;
+
+function WritesInstallDefaults: Boolean;
+begin
+    Result := (not WantsOTARelaunch) and (IsFirstInstall or (UpdateCheckSwitch <> '') or (CrashReportsSwitch <> ''));
+end;
+
+function PrivacyChoice(const SwitchValue: String; Index: Integer): Boolean;
+begin
+    if SwitchValue <> '' then
+        Result := (SwitchValue = 'yes')
+    else if PrivacyPage <> nil then
+        Result := PrivacyPage.Values[Index]
+    else
+        Result := True;
+end;
+
+function YesNo(Value: Boolean): String;
+begin
+    if Value then
+        Result := 'yes'
+    else
+        Result := 'no';
+end;
+
+procedure OpenPrivacyPolicy(Sender: TObject);
+var
+    ResultCode: Integer;
+begin
+    ShellExecAsOriginalUser('open', PrivacyPolicyUrl, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+end;
+
+procedure WriteInstallDefaults;
+var
+    UpdateCheck, CrashReports: Boolean;
+begin
+    UpdateCheck := PrivacyChoice(UpdateCheckSwitch, 0);
+    CrashReports := PrivacyChoice(CrashReportsSwitch, 1);
+    RegWriteStringValue(HKEY_LOCAL_MACHINE, InstallDefaultsKey, 'Stamp', InstallStamp);
+    RegWriteDWordValue(HKEY_LOCAL_MACHINE, InstallDefaultsKey, 'AutoCheckUpdates', Ord(UpdateCheck));
+    RegWriteDWordValue(HKEY_LOCAL_MACHINE, InstallDefaultsKey, 'CrashReports', Ord(CrashReports));
+    Log('Privacy: install defaults ' + InstallStamp + ': update check ' + YesNo(UpdateCheck) + ', crash reports ' + YesNo(CrashReports));
+end;
+
+procedure CreatePrivacyPage;
+begin
+    PrivacyPage := CreateInputOptionPage(wpSelectTasks, 'Privacy', 'What leaves this PC',
+        'Satellite runs on this PC and talks to your own Dish devices over your own network; TinkerNorth operates no server for it. '
+        + 'Two things can leave this PC, and you can turn each off here and later in Settings: a check against GitHub Releases for new versions, '
+        + 'and, when Satellite crashes, one crash report to Sentry carrying the stack trace and the Satellite and Windows versions. '
+        + 'Nothing else is sent: no telemetry, no analytics, no account.',
+        False, False);
+    PrivacyPage.Add('Check GitHub for new versions automatically');
+    PrivacyPage.Add('Send a crash report to Sentry when Satellite crashes');
+    PrivacyPage.Values[0] := True;
+    PrivacyPage.Values[1] := True;
+    if UpdateCheckSwitch <> '' then
+        PrivacyPage.Values[0] := (UpdateCheckSwitch = 'yes');
+    if CrashReportsSwitch <> '' then
+        PrivacyPage.Values[1] := (CrashReportsSwitch = 'yes');
+
+    PrivacyLink := TNewStaticText.Create(PrivacyPage);
+    PrivacyLink.Parent := PrivacyPage.Surface;
+    PrivacyLink.Caption := 'Full privacy policy: ' + PrivacyPolicyUrl;
+    PrivacyLink.Cursor := crHand;
+    PrivacyLink.Font.Color := clBlue;
+    PrivacyLink.Font.Style := [fsUnderline];
+    PrivacyLink.OnClick := @OpenPrivacyPolicy;
+    PrivacyPage.CheckListBox.Height := PrivacyPage.CheckListBox.Height - PrivacyLink.Height - ScaleY(12);
+    PrivacyLink.Left := PrivacyPage.CheckListBox.Left;
+    PrivacyLink.Top := PrivacyPage.CheckListBox.Top + PrivacyPage.CheckListBox.Height + ScaleY(8);
+
+    if not IsFirstInstall then begin
+        PrivacyPage.CheckListBox.Visible := False;
+        PrivacyNote := TNewStaticText.Create(PrivacyPage);
+        PrivacyNote.Parent := PrivacyPage.Surface;
+        PrivacyNote.AutoSize := False;
+        PrivacyNote.WordWrap := True;
+        PrivacyNote.Left := PrivacyPage.CheckListBox.Left;
+        PrivacyNote.Top := PrivacyPage.CheckListBox.Top;
+        PrivacyNote.Width := PrivacyPage.CheckListBox.Width;
+        PrivacyNote.Height := ScaleY(40);
+        PrivacyNote.Caption := 'This upgrade keeps your current choices. Change them any time under Settings in the Satellite dashboard.';
+    end;
 end;
 
 function GetInstalledVigemVersion: String;
@@ -687,6 +803,9 @@ begin
     // Read the persisted task choices so RegisterPreviousData can re-write them.
     PreviousAutostart := (GetPreviousData('Autostart', '0') = '1');
     PreviousDesktopIcon := (GetPreviousData('DesktopIcon', '0') = '1');
+    InstallStamp := GetDateTimeString('yyyymmddhhnnss', #0, #0) + '-' + IntToStr(Random(1000000));
+    UpdateCheckSwitch := ParseYesNoSwitch('/UPDATECHECK=');
+    CrashReportsSwitch := ParseYesNoSwitch('/CRASHREPORTS=');
 
     if UiAccessBuild then begin
         PreviousAppDir := ReadPreviousAppDir;
@@ -726,6 +845,7 @@ begin
             WizardForm.DirEdit.Text := ExpandConstant('{autopf}\{#MyAppName}');
         Log('UIAccess build: proposed destination for the relocation: ' + WizardForm.DirEdit.Text);
     end;
+    CreatePrivacyPage;
 end;
 
 const
@@ -911,6 +1031,8 @@ begin
         RemoveBrokerService;
     if (RelocateFrom <> '') and not IsSameDir(RelocateFrom, ExpandConstant('{app}')) then
         RemoveRelocatedCopy;
+    if WritesInstallDefaults then
+        WriteInstallDefaults;
 end;
 
 function NeedRestart: Boolean;
