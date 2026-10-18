@@ -1,6 +1,6 @@
 # Satellite: Privacy Policy
 
-**Effective date:** 2026-10-15.
+**Effective date:** 2026-10-18.
 **Canonical copy:** this file, at
 [`https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md`](https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md).
 The privacy index on [dish.tinkernorth.com](https://dish.tinkernorth.com/privacy/)
@@ -94,14 +94,18 @@ address, as it does for any request, and a standard user-agent string. No
 identifier is sent. On Windows and with the Linux AppImage, Satellite can
 also download and install the update after verifying its checksum; package
 manager installs only show you the command. Turn the check off under
-Settings, Updates, and nothing update-related leaves your PC.
+Settings, Updates, and nothing update-related leaves your PC. On Windows the
+installer asks about the check on first install; a silent install can pass
+`/UPDATECHECK=no`.
 
 ---
 
 ## 5. Crash reports (Sentry)
 
 **What is sent, and when.** Settings, Diagnostics, has a *Share crash reports*
-switch, on by default. With it on, an official release build that crashes
+switch, on by default; on Windows the installer asks about it on first install
+(`/CRASHREPORTS=no` for a silent install). With it on, an official release
+build that crashes
 sends one report to [Sentry](https://sentry.io), a crash-reporting service
 operated by Functional Software, Inc. (San Francisco, USA), which processes
 it on our behalf. The report is produced by the Sentry native SDK and
@@ -154,8 +158,9 @@ builds to Sentry at release time. They describe the program, not you.
 ## 6. Your choices
 
 - **Stop crash reports being sent.** Settings, Diagnostics, *Share crash
-  reports*, off.
-- **Stop the update check.** Settings, Updates.
+  reports*, off; or untick it on the Windows installer's Privacy page.
+- **Stop the update check.** Settings, Updates; or untick it on the Windows
+  installer's Privacy page.
 - **Unpair a device.** Removing a Dish client from the paired list deletes
   its key from the configuration.
 - **Uninstall.** The Windows uninstaller removes the program files. The
