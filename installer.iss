@@ -680,7 +680,7 @@ begin
     // knobs on upgrade (see ShouldShow*Task).
     Existing := '';
     RegQueryStringValue(HKEY_LOCAL_MACHINE,
-        'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1',
+        ExpandConstant('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1'),
         'DisplayVersion', Existing);
     IsFirstInstall := (Existing = '');
 
