@@ -675,11 +675,21 @@ static void testUiAccess() {
     TEST("integrityLevelName: an unknown level reads as hex");
     EXPECT_EQ(integrityLevelName(0x2345), std::string("0x2345"));
 
-    TEST("describePointerInjection: with UIAccess, the line names the level and the reach");
+    TEST("describePointerInjection: with UIAccess at high integrity, the line names the reach");
     const std::string granted = describePointerInjection(true, 0x3000);
     EXPECT(granted.find("has UIAccess") != std::string::npos);
     EXPECT(granted.find("(integrity level: high)") != std::string::npos);
+    EXPECT(granted.find("up to high integrity") != std::string::npos);
+    EXPECT(granted.find("does not reach elevated windows") == std::string::npos);
     EXPECT(granted.find("without UIAccess") == std::string::npos);
+
+    TEST("describePointerInjection: with UIAccess below high integrity, the line names the limit");
+    const std::string limited = describePointerInjection(true, 0x2010);
+    EXPECT(limited.find("has UIAccess") != std::string::npos);
+    EXPECT(limited.find("(integrity level: medium with UIAccess)") != std::string::npos);
+    EXPECT(limited.find("does not reach elevated windows") != std::string::npos);
+    EXPECT(limited.find("up to high integrity") == std::string::npos);
+    EXPECT(limited.find("without UIAccess") == std::string::npos);
 
     TEST("describePointerInjection: without UIAccess, the line names the level and the remedy");
     const std::string denied = describePointerInjection(false, 0x2000);
