@@ -199,9 +199,19 @@ manifest generated from `satellite.manifest.in` carries the attribute, and
   `RUNNER_TEMP`.
 
 A `/DUiAccess=1` installer refuses other folders on the Select Destination
-Location page and again just before installing, which covers silent runs and
-upgrades that never show that page. An existing install outside Program Files
-has to be uninstalled before a signed installer can replace it.
+Location page and again just before installing, which also catches a silent
+`/DIR=` outside Program Files. An existing install outside Program Files is
+relocated instead of refused: the Select Destination Location page appears
+even though this is an upgrade, proposing `C:\Program Files\Satellite`, and
+silent runs (the in-app updater included) take that folder. Setup closes a
+copy still running from the old folder, installs the new one, then deletes
+only the old copy's own files (`satellite.exe`, `crashpad_handler.exe`,
+`crashpad_wer.dll`, `satellite-hm-helper.exe`, `web\`, `LICENSE`, `README.md`
+and the old `unins000.*` uninstaller) and removes the old folder if that leaves
+it empty. Settings, logs and dumps under the user profile stay where they are;
+the app repoints its autostart entry itself once the old target is gone, and
+Setup re-adds the firewall rules and points the broker service at the new
+path.
 
 Both halves can be reproduced locally. `scripts\build-installer.ps1 -UiAccess`
 requires signing credentials (`SATELLITE_SIGN_THUMBPRINT`, `SATELLITE_SIGN_PFX`
