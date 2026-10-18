@@ -9,7 +9,8 @@
   <description>Satellite low-latency Xbox controller forwarding over LAN.</description>
 
   <!--
-    Privileges: asInvoker.
+    Privileges: asInvoker. CMake fills in uiAccess from the
+    SATELLITE_UIACCESS option, which defaults to OFF (false).
 
     The app does NOT need administrator at runtime. ViGEmBus's device
     interface has a permissive DACL by design (DS4Windows, BetterJoy
@@ -30,7 +31,7 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+        <requestedExecutionLevel level="asInvoker" uiAccess="@SATELLITE_MANIFEST_UIACCESS@" />
       </requestedPrivileges>
     </security>
   </trustInfo>

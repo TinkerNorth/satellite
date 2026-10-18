@@ -4,12 +4,14 @@
 // autostart tests touch HKCU\...\Run\satellite. Both side effects are made
 // hermetic via snapshot/restore so the tests are safe to run locally and in CI.
 #include "../src/platform/windows/config.h"
+#include "../src/platform/windows/ui_access.h"
 #include "../src/platform/windows/crypto.h"
 #include "../src/net/pairing_keys.h"
 #include "../src/platform/windows/autostart_rule.h"
 #include "../src/platform/windows/tray_menu.h"
 #include "../src/platform/windows/installer_launch_error.h"
 #include "../src/platform/windows/update_toast.h"
+#include "../src/platform/windows/pointer_inject.h"
 #include "../src/core/update_service.h"
 
 #include <atomic>
@@ -271,6 +273,23 @@ static void testGetCurrentDate() {
         EXPECT(s[4] == '-');
         EXPECT(s[7] == '-');
     }
+}
+
+static void testPointerRefusalMessage() {
+    TEST("pointerRefusalMessage: counts, error code and the foreground owner");
+    const std::string denied = pointerRefusalMessage(3, 0, 5, "steam.exe (pid 42) titled 'Steam'");
+    EXPECT(denied.find("injected 0 of 3") != std::string::npos);
+    EXPECT(denied.find("Win32 error 5") != std::string::npos);
+    EXPECT(denied.find("higher privileges") != std::string::npos);
+    EXPECT(denied.find("foreground window: steam.exe (pid 42) titled 'Steam'") !=
+           std::string::npos);
+
+    TEST(
+        "pointerRefusalMessage: other errors carry no privilege hint; an unknown owner is omitted");
+    const std::string other = pointerRefusalMessage(1, 0, 87, "");
+    EXPECT(other.find("Win32 error 87") != std::string::npos);
+    EXPECT(other.find("privileges") == std::string::npos);
+    EXPECT(other.find("foreground window") == std::string::npos);
 }
 
 static void testHexCodec() {
@@ -641,6 +660,53 @@ static void testUpdateToastWithTheRealService() {
     }
 }
 
+static void testUiAccess() {
+    using uiaccess::describePointerInjection;
+    using uiaccess::integrityLevelName;
+
+    TEST("integrityLevelName: each mandatory level reads by name");
+    EXPECT_EQ(integrityLevelName(0x1000), std::string("low"));
+    EXPECT_EQ(integrityLevelName(0x2000), std::string("medium"));
+    EXPECT_EQ(integrityLevelName(0x2010), std::string("medium with UIAccess"));
+    EXPECT_EQ(integrityLevelName(0x2100), std::string("medium plus"));
+    EXPECT_EQ(integrityLevelName(0x3000), std::string("high"));
+    EXPECT_EQ(integrityLevelName(0x4000), std::string("system"));
+
+    TEST("integrityLevelName: an unknown level reads as hex");
+    EXPECT_EQ(integrityLevelName(0x2345), std::string("0x2345"));
+
+    TEST("describePointerInjection: with UIAccess at high integrity, the line names the reach");
+    const std::string granted = describePointerInjection(true, 0x3000);
+    EXPECT(granted.find("has UIAccess") != std::string::npos);
+    EXPECT(granted.find("(integrity level: high)") != std::string::npos);
+    EXPECT(granted.find("up to high integrity") != std::string::npos);
+    EXPECT(granted.find("does not reach elevated windows") == std::string::npos);
+    EXPECT(granted.find("without UIAccess") == std::string::npos);
+
+    TEST("describePointerInjection: with UIAccess below high integrity, the line names the limit");
+    const std::string limited = describePointerInjection(true, 0x2010);
+    EXPECT(limited.find("has UIAccess") != std::string::npos);
+    EXPECT(limited.find("(integrity level: medium with UIAccess)") != std::string::npos);
+    EXPECT(limited.find("does not reach elevated windows") != std::string::npos);
+    EXPECT(limited.find("up to high integrity") == std::string::npos);
+    EXPECT(limited.find("without UIAccess") == std::string::npos);
+
+    TEST("describePointerInjection: without UIAccess, the line names the level and the remedy");
+    const std::string denied = describePointerInjection(false, 0x2000);
+    EXPECT(denied.find("without UIAccess") != std::string::npos);
+    EXPECT(denied.find("(integrity level: medium)") != std::string::npos);
+    EXPECT(denied.find("Program Files") != std::string::npos);
+    EXPECT(denied.find("has UIAccess") == std::string::npos);
+
+    TEST("tokenHasUiAccess: the test process runs without UIAccess");
+    EXPECT(!uiaccess::tokenHasUiAccess());
+
+    TEST("tokenIntegrityRid: the test process reports a named integrity level");
+    const DWORD rid = uiaccess::tokenIntegrityRid();
+    EXPECT(rid != 0);
+    EXPECT(integrityLevelName(rid).rfind("0x", 0) != 0);
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -660,12 +726,14 @@ int main() {
     testGetExeDir();
     testGetCurrentDate();
     testHexCodec();
+    testPointerRefusalMessage();
     testResolvePairingSharedKey();
     testRunEntryRule();
     testUpdateMenuItem();
     testInstallerLaunchError();
     testUpdateToast();
     testUpdateToastWithTheRealService();
+    testUiAccess();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

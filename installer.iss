@@ -24,7 +24,8 @@
 ;      excluded).
 ;    * Per-machine install only (PrivilegesRequired=admin): gates
 ;      ViGEmBus + firewall behind one UAC consent at install time, then
-;      the app itself runs asInvoker (see satellite.manifest).
+;      the app itself runs asInvoker (see satellite.manifest.in; signed
+;      builds also request uiAccess="true", see /DUiAccess=1 below).
 ;
 ;  ViGEmBus 1.22.0 (final upstream release, repo archived 2023-11) is
 ;  bundled as a prerequisite. 1.22.0 is the installer's own version; the
@@ -71,6 +72,13 @@
 ;    /REMOVEHIDMAESTRO=yes|no|auto  uninstall-time companion (see bottom)
 ;    /OTA                        signals an in-app self-update; we relaunch
 ;                                the binary via Restart Manager (no UI)
+;
+;  Compile-time switch (iscc):
+;    /DUiAccess=1                signed builds only: satellite.exe requests
+;                                uiAccess="true" (CMake SATELLITE_UIACCESS=ON),
+;                                so Setup accepts only a destination under
+;                                Program Files and relocates an install found
+;                                elsewhere (docs/packaging.md)
 ; ============================================================================
 
 #define MyAppName "Satellite"
@@ -98,6 +106,12 @@
 #define HmHelperExe "satellite-hm-helper.exe"
 #define HmHelperSource "helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe"
 
+#ifdef UiAccess
+#define UiAccessFlag "True"
+#else
+#define UiAccessFlag "False"
+#endif
+
 [Setup]
 ; Stable AppId: never change this without a migration plan; it's how
 ; Windows recognises in-place upgrades.
@@ -117,6 +131,9 @@ AppReadmeFile={#MyAppURL}#readme
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+#ifdef UiAccess
+DisableDirPage=no
+#endif
 OutputDir=dist
 OutputBaseFilename=SatelliteSetup
 SetupIconFile=icon.ico
@@ -128,7 +145,8 @@ WizardStyle=modern
 
 ; Admin is required to write to Program Files, add firewall rules, and
 ; install ViGEmBus, but the installed binary runs asInvoker (see
-; satellite.manifest). One UAC prompt at install, none at runtime.
+; satellite.manifest.in; signed builds add uiAccess="true", which needs no
+; prompt either). One UAC prompt at install, none at runtime.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -277,8 +295,9 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 ; is silent, and RestartApplications only restarts what Restart Manager
 ; closed -- the app closed itself before Setup started. runasoriginaluser
 ; keeps the relaunched app at the invoking user's integrity, matching how
-; the autostart entry runs it (see satellite.manifest: asInvoker).
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: WantsOTARelaunch
+; the autostart entry runs it (see satellite.manifest.in: asInvoker, plus
+; uiAccess="true" in signed builds).
+Filename: "{app}\{#MyAppExeName}"; Flags: shellexec nowait runasoriginaluser; Check: WantsOTARelaunch
 
 [UninstallRun]
 ; Best-effort graceful shutdown first (WM_CLOSE via taskkill), then
@@ -591,6 +610,68 @@ begin
             + ' transport is never installed.';
 end;
 
+const
+    UiAccessBuild = {#UiAccessFlag};
+
+var
+    PreviousAppDir: String;
+    RelocateFrom: String;
+
+function IsUiAccessTrustedDir(const Dir: String): Boolean;
+var
+    D, Pf, Pf32: String;
+begin
+    D := AddBackslash(Dir);
+    Pf := AddBackslash(ExpandConstant('{commonpf}'));
+    Pf32 := AddBackslash(ExpandConstant('{commonpf32}'));
+    Result := SameText(Copy(D, 1, Length(Pf)), Pf) or SameText(Copy(D, 1, Length(Pf32)), Pf32);
+end;
+
+function IsSameDir(const A, B: String): Boolean;
+begin
+    Result := SameText(AddBackslash(A), AddBackslash(B));
+end;
+
+function ReadPreviousAppDir: String;
+var
+    Key, Dir: String;
+begin
+    Key := ExpandConstant('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1');
+    Dir := '';
+    if not RegQueryStringValue(HKEY_LOCAL_MACHINE, Key, 'Inno Setup: App Path', Dir) or (Dir = '') then begin
+        Dir := '';
+        RegQueryStringValue(HKEY_LOCAL_MACHINE, Key, 'InstallLocation', Dir);
+    end;
+    Result := Dir;
+end;
+
+function UiAccessDirMessage: String;
+begin
+    Result := 'This signed build of Satellite runs with the Windows UIAccess'
+            + ' accessibility privilege, which Windows grants only to programs'
+            + ' installed under Program Files. Choose a folder under Program'
+            + ' Files, such as ' + ExpandConstant('{commonpf}\{#MyAppName}') + '.';
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+    Result := True;
+    if UiAccessBuild then begin
+        if (CurPageID = wpSelectDir) and not IsUiAccessTrustedDir(WizardDirValue) then begin
+            Log('UIAccess build: refusing destination outside Program Files: ' + WizardDirValue);
+            SuppressibleMsgBox(UiAccessDirMessage, mbError, MB_OK, IDOK);
+            Result := False;
+        end;
+    end;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+    Result := False;
+    if UiAccessBuild then
+        Result := (PageID = wpSelectDir) and (PreviousAppDir <> '') and (RelocateFrom = '');
+end;
+
 function InitializeSetup: Boolean;
 var
     Existing: String;
@@ -599,13 +680,21 @@ begin
     // knobs on upgrade (see ShouldShow*Task).
     Existing := '';
     RegQueryStringValue(HKEY_LOCAL_MACHINE,
-        'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1',
+        ExpandConstant('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1'),
         'DisplayVersion', Existing);
     IsFirstInstall := (Existing = '');
 
     // Read the persisted task choices so RegisterPreviousData can re-write them.
     PreviousAutostart := (GetPreviousData('Autostart', '0') = '1');
     PreviousDesktopIcon := (GetPreviousData('DesktopIcon', '0') = '1');
+
+    if UiAccessBuild then begin
+        PreviousAppDir := ReadPreviousAppDir;
+        if (PreviousAppDir <> '') and not IsUiAccessTrustedDir(PreviousAppDir) then begin
+            RelocateFrom := PreviousAppDir;
+            Log('UIAccess build: previous install is outside Program Files, relocating from ' + RelocateFrom);
+        end;
+    end;
     Result := True;
 end;
 
@@ -631,6 +720,12 @@ begin
     StatusLabel.Top := WizardForm.ComponentsList.Top + WizardForm.ComponentsList.Height + ScaleY(8);
     StatusLabel.Height := ScaleY(120);
     StatusLabel.Caption := StatusText;
+
+    if RelocateFrom <> '' then begin
+        if IsSameDir(WizardForm.DirEdit.Text, RelocateFrom) then
+            WizardForm.DirEdit.Text := ExpandConstant('{autopf}\{#MyAppName}');
+        Log('UIAccess build: proposed destination for the relocation: ' + WizardForm.DirEdit.Text);
+    end;
 end;
 
 const
@@ -729,10 +824,74 @@ begin
                '%TEMP% and re-run this installer to retry).', mbInformation);
 end;
 
+procedure CloseRelocatedApp;
+var
+    ResultCode: Integer;
+begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Log('UIAccess relocation: taskkill /IM {#MyAppExeName} -> ' + IntToStr(ResultCode));
+    if ResultCode = 0 then
+        Sleep(3000);
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Log('UIAccess relocation: taskkill /F /IM {#MyAppExeName} -> ' + IntToStr(ResultCode));
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+    Dir: String;
 begin
     Result := '';
+    if UiAccessBuild then begin
+        Dir := ExpandConstant('{app}');
+        if not IsUiAccessTrustedDir(Dir) then begin
+            Log('UIAccess build: refusing install dir outside Program Files: ' + Dir);
+            Result := UiAccessDirMessage;
+            Exit;
+        end;
+        Log('UIAccess build: install dir is under Program Files: ' + Dir);
+        if RelocateFrom <> '' then
+            CloseRelocatedApp;
+    end;
     StopBrokerService;
+end;
+
+procedure DeleteRelocatedFile(const Path: String);
+begin
+    if not FileExists(Path) then Exit;
+    if DeleteFile(Path) then
+        Log('UIAccess relocation: deleted ' + Path)
+    else
+        Log('UIAccess relocation: could not delete ' + Path);
+end;
+
+procedure RemoveRelocatedCopy;
+var
+    Dir: String;
+begin
+    Dir := AddBackslash(RelocateFrom);
+    if not DirExists(RemoveBackslashUnlessRoot(Dir)) then begin
+        Log('UIAccess relocation: previous folder is already gone: ' + RelocateFrom);
+        Exit;
+    end;
+    DeleteRelocatedFile(Dir + '{#MyAppExeName}');
+    DeleteRelocatedFile(Dir + 'crashpad_handler.exe');
+    DeleteRelocatedFile(Dir + 'crashpad_wer.dll');
+    DeleteRelocatedFile(Dir + 'LICENSE');
+    DeleteRelocatedFile(Dir + 'README.md');
+    DeleteRelocatedFile(Dir + '{#HmHelperExe}');
+    DeleteRelocatedFile(Dir + 'unins000.exe');
+    DeleteRelocatedFile(Dir + 'unins000.dat');
+    DeleteRelocatedFile(Dir + 'unins000.msg');
+    if DirExists(Dir + 'web') then begin
+        if DelTree(Dir + 'web', True, True, True) then
+            Log('UIAccess relocation: deleted ' + Dir + 'web')
+        else
+            Log('UIAccess relocation: could not fully delete ' + Dir + 'web');
+    end;
+    if RemoveDir(RemoveBackslashUnlessRoot(Dir)) then
+        Log('UIAccess relocation: removed the empty folder ' + RelocateFrom)
+    else
+        Log('UIAccess relocation: kept ' + RelocateFrom + ' (not empty)');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -750,6 +909,8 @@ begin
         RegisterBrokerService
     else
         RemoveBrokerService;
+    if (RelocateFrom <> '') and not IsSameDir(RelocateFrom, ExpandConstant('{app}')) then
+        RemoveRelocatedCopy;
 end;
 
 function NeedRestart: Boolean;

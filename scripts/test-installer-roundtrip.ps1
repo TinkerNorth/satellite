@@ -33,12 +33,20 @@
     Path to the compiled dist\SatelliteSetup.exe under test.
 
 .PARAMETER WorkRoot
-    Where the sandbox lives. Defaults to RUNNER_TEMP (CI) or TEMP.
+    Where the sandbox lives. Defaults to RUNNER_TEMP (CI) or TEMP. Ignored
+    with -UiAccess.
+
+.PARAMETER UiAccess
+    The installer under test was compiled with /DUiAccess=1 (signed UIAccess
+    build). Such an installer refuses any destination outside Program Files,
+    and Windows starts its satellite.exe only from there, so the sandbox moves
+    to "$env:ProgramFiles\Satellite Roundtrip <random>".
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Setup,
-    [string]$WorkRoot = ''
+    [string]$WorkRoot = '',
+    [switch]$UiAccess
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,7 +68,12 @@ $Setup = (Resolve-Path $Setup).Path
 if (-not $WorkRoot) { $WorkRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP } }
 # The space is on purpose: quoting bugs in the handoff or the uninstaller
 # show up here or in the field.
-$sandbox = Join-Path $WorkRoot ("satellite roundtrip " + [IO.Path]::GetRandomFileName().Split('.')[0])
+$random = [IO.Path]::GetRandomFileName().Split('.')[0]
+$sandbox = if ($UiAccess) {
+    Join-Path $env:ProgramFiles ("Satellite Roundtrip " + $random)
+} else {
+    Join-Path $WorkRoot ("satellite roundtrip " + $random)
+}
 $installDir = Join-Path $sandbox 'Satellite App'
 New-Item -ItemType Directory -Force -Path $sandbox | Out-Null
 

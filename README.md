@@ -147,7 +147,10 @@ beside it; Satellite in turn accepts the pipe only when its server is the
 registered service's process. If the service is missing (installed with
 `/HIDMAESTRO=skip`, or removed by hand), Satellite falls back to spawning the
 helper elevated for the session, which is the one case that still shows a
-UAC prompt. ViGEm-only sessions never involve either path.
+UAC prompt. ViGEm-only sessions never involve either path. Signed releases
+additionally carry Windows' UIAccess accessibility flag, so touchpad-as-mouse
+input keeps reaching the foreground window after a game exits; this requires
+the default `Program Files\Satellite` install.
 
 ### Controller audio
 

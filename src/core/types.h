@@ -277,6 +277,8 @@ inline const int MAX_BACKEND_CONTROLLERS = 16;
 // client instead of flapping through the reaper.
 inline const int REST_LIVENESS_GRACE_SEC = 15;
 
+inline const int POINTER_REFUSAL_LOG_INTERVAL_SEC = 10;
+
 // Catalog ids (GET /api/catalog) and descriptor `type` values. Adding a type =
 // new id + catalog entry; clients render unknown ids from catalog strings.
 inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
@@ -528,6 +530,11 @@ struct AudioStreamCounts {
     uint64_t hapticLockContended = 0;
     // Frames reduced to MSG_RUMBLE for a client without CAP_HAPTIC_AUDIO.
     uint64_t hapticReducedToRumble = 0;
+};
+
+struct PointerCounts {
+    uint64_t injected = 0;
+    uint64_t refused = 0;
 };
 
 // Motion report (sender to satellite, gyro + accel). Fixed full-scale wire
@@ -907,6 +914,10 @@ struct Connection {
     // in responses and surfaced to the dashboard so an old client is visibly
     // "works, but update for the full feature set".
     int protocolVersion = PROTOCOL_VERSION;
+    bool stallLogged = false;
+    uint32_t pointerRefusedRun = 0;
+    bool pointerRefusalLogged = false;
+    std::chrono::steady_clock::time_point pointerRefusalLoggedAt;
 };
 
 // Paired device info (persisted).
