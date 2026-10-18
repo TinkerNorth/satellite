@@ -678,13 +678,13 @@ static void testUiAccess() {
     TEST("describePointerInjection: with UIAccess, the line names the level and the reach");
     const std::string granted = describePointerInjection(true, 0x3000);
     EXPECT(granted.find("has UIAccess") != std::string::npos);
-    EXPECT(granted.find("at high integrity") != std::string::npos);
+    EXPECT(granted.find("(integrity level: high)") != std::string::npos);
     EXPECT(granted.find("without UIAccess") == std::string::npos);
 
     TEST("describePointerInjection: without UIAccess, the line names the level and the remedy");
     const std::string denied = describePointerInjection(false, 0x2000);
     EXPECT(denied.find("without UIAccess") != std::string::npos);
-    EXPECT(denied.find("at medium integrity") != std::string::npos);
+    EXPECT(denied.find("(integrity level: medium)") != std::string::npos);
     EXPECT(denied.find("Program Files") != std::string::npos);
     EXPECT(denied.find("has UIAccess") == std::string::npos);
 

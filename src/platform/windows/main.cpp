@@ -336,9 +336,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // Mirror logMsg() to a rolling file; the in-memory ring alone evaporates
     // before the user can report a crash.
     lifecycle::startFileLogger();
+    const bool uiAccess = uiaccess::tokenHasUiAccess();
+    g_uiAccess.store(uiAccess);
     logMsg(LogLevel::INFO, "pointer",
-           uiaccess::describePointerInjection(uiaccess::tokenHasUiAccess(),
-                                              uiaccess::tokenIntegrityRid()));
+           uiaccess::describePointerInjection(uiAccess, uiaccess::tokenIntegrityRid()));
 
     // Session keys are derived via HKDF (net/session_crypto), injected so the
     // core stays libsodium-free. Both Windows backends sit behind one mux:
