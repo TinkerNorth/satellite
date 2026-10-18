@@ -3,6 +3,37 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.1.6
+
+No protocol changes. The dish's touchpad mouse going dead after a game
+exits is now visible in the log and on the diagnostics page, and a signed
+build carries the fix.
+
+When a game closes, Windows can hand the focus to a window of a more
+privileged process, and from then on it drops the mouse input Satellite
+injects for the touchpad while everything in Satellite looks healthy: the
+session is up, the packets arrive, the virtual pad keeps taking reports.
+The pad seemed dead for the same reason: Steam Input had switched it to its
+desktop mouse-and-keyboard mapping, which Windows withheld in the same way.
+Satellite now counts the pointer frames Windows accepts and refuses, logs
+once per stretch of refused frames which window had the focus and once more
+when input gets through again, and shows both counts on the diagnostics
+page. A link that goes quiet is logged before the reaper removes it, with
+how long it has been silent.
+
+The fix is Windows' UIAccess accessibility privilege, which lets an
+application's injected input reach such a window. Windows grants it only to
+a signed executable installed under Program Files, so a signed Satellite
+build requests it in its manifest, logs at startup whether it holds it, and
+reports it on the diagnostics page; its installer accepts only a Program
+Files destination and moves an install found elsewhere there. Releases are
+not signed yet, and an unsigned build requests nothing and behaves as
+before.
+
+The installer asked about autostart and the desktop icon on every upgrade,
+because its check for a previous install never matched; it now asks on the
+first install only and keeps the earlier choices on an upgrade.
+
 ## 2.1.5
 
 No protocol changes. Crashes that Windows ends on the spot now reach the
