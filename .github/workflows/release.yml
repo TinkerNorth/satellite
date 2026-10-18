@@ -906,6 +906,7 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           generate_release_notes: true
+          body: "Code signing policy: https://github.com/TinkerNorth/satellite#code-signing-policy"
           draft: true
           files: release/**/*
           fail_on_unmatched_files: true

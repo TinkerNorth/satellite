@@ -993,6 +993,7 @@ struct Config {
     // release build additionally needs a DSN compiled in before this switch
     // can do anything -- see core/crash_reporting.h.
     bool crashReporting = true;
+    std::string installDefaultsStamp;
 };
 
 // The two wire gates above, sampled together. One read means one lock rather

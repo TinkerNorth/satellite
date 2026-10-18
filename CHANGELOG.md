@@ -30,6 +30,11 @@ Files destination and moves an install found elsewhere there. Releases are
 not signed yet, and an unsigned build requests nothing and behaves as
 before.
 
+The installer now shows what can leave the PC before anything is installed
+and lets you turn off the update check and crash reports right there; a
+silent install takes `/UPDATECHECK=no` and `/CRASHREPORTS=no`. Satellite
+applies the choice on its first start, and Settings keeps working as before.
+
 The installer asked about autostart and the desktop icon on every upgrade,
 because its check for a previous install never matched; it now asks on the
 first install only and keeps the earlier choices on an upgrade.

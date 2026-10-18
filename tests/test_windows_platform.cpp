@@ -5,6 +5,7 @@
 // hermetic via snapshot/restore so the tests are safe to run locally and in CI.
 #include "../src/platform/windows/config.h"
 #include "../src/platform/windows/ui_access.h"
+#include "../src/platform/windows/install_defaults_registry.h"
 #include "../src/platform/windows/crypto.h"
 #include "../src/net/pairing_keys.h"
 #include "../src/platform/windows/autostart_rule.h"
@@ -707,6 +708,36 @@ static void testUiAccess() {
     EXPECT(integrityLevelName(rid).rfind("0x", 0) != 0);
 }
 
+static void testInstallDefaultsRegistry() {
+    const wchar_t* subkey = L"Software\\TinkerNorth\\Satellite\\TestInstallDefaults";
+    RegDeleteTreeW(HKEY_CURRENT_USER, subkey);
+
+    TEST("readInstallDefaults: a missing key reads as no stamp and both switches on");
+    const auto missing = installdefaults::readInstallDefaults(HKEY_CURRENT_USER, subkey);
+    EXPECT(missing.stamp.empty());
+    EXPECT(missing.autoCheck);
+    EXPECT(missing.crashReporting);
+
+    TEST("readInstallDefaults: the installer's values come back as written");
+    HKEY key = nullptr;
+    EXPECT(RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key,
+                           nullptr) == ERROR_SUCCESS);
+    const wchar_t stamp[] = L"20261018123456-42";
+    RegSetValueExW(key, L"Stamp", 0, REG_SZ, reinterpret_cast<const BYTE*>(stamp), sizeof(stamp));
+    DWORD off = 0;
+    DWORD on = 1;
+    RegSetValueExW(key, L"AutoCheckUpdates", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&off),
+                   sizeof(off));
+    RegSetValueExW(key, L"CrashReports", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&on),
+                   sizeof(on));
+    RegCloseKey(key);
+    const auto written = installdefaults::readInstallDefaults(HKEY_CURRENT_USER, subkey);
+    EXPECT_EQ(written.stamp, std::string("20261018123456-42"));
+    EXPECT(!written.autoCheck);
+    EXPECT(written.crashReporting);
+    RegDeleteTreeW(HKEY_CURRENT_USER, subkey);
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -734,6 +765,7 @@ int main() {
     testUpdateToast();
     testUpdateToastWithTheRealService();
     testUiAccess();
+    testInstallDefaultsRegistry();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

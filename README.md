@@ -951,8 +951,32 @@ disclosure: [`SECURITY.md`](SECURITY.md).
 Satellite runs on your own PC and talks to your own Dish clients over your
 own network. Two things can leave the machine: the update check against
 GitHub Releases, and, with *Share crash reports* on, a crash report to
-Sentry. Both can be turned off in Settings. [`PRIVACY.md`](PRIVACY.md) has
-the full list of what is stored, what is sent, and to whom.
+Sentry. Both can be turned off in Settings, and the installer asks about both
+on first install (`/UPDATECHECK=no` and `/CRASHREPORTS=no` for a silent
+install). [`PRIVACY.md`](PRIVACY.md) has the full list of what is stored,
+what is sent, and to whom.
+
+## Code signing policy
+
+Free code signing on Windows provided by [SignPath.io](https://signpath.io),
+certificate by [SignPath Foundation](https://signpath.org). Signed releases
+start once SignPath Foundation approves the project; until then the installer
+is unsigned and SmartScreen warns on first run.
+
+Committers, reviewers and approvers:
+[@emir-hasanbegovic](https://github.com/emir-hasanbegovic), owner of the
+[TinkerNorth](https://github.com/orgs/TinkerNorth/people?query=role%3Aowner)
+organisation. Only the release workflow signs, from a tagged commit; no local
+build is ever signed. Signed artifacts: `SatelliteSetup.exe`, `satellite.exe`,
+`crashpad_handler.exe`, `crashpad_wer.dll` and `satellite-hm-helper.exe`.
+
+Privacy: two things can leave your PC, and both can be turned off in Settings
+and at install time: the update check against GitHub Releases and, with
+*Share crash reports* on, a crash report to Sentry. [`PRIVACY.md`](PRIVACY.md)
+lists what is stored and sent. Third-party components in the signed package:
+sentry-native and Crashpad, the crash reporter described in `PRIVACY.md`
+section 5, and the bundled ViGEmBus installer and HIDMaestro driver and
+helper, under the licences listed below.
 
 ## License
 

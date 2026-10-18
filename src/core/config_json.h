@@ -31,6 +31,7 @@ inline std::string serializeConfig(const Config& cfg) {
     j["controllerAudioHaptics"] = cfg.controllerAudioHaptics;
     j["controllerAudioKeepDefaultDevice"] = cfg.controllerAudioKeepDefaultDevice;
     j["crashReporting"] = cfg.crashReporting;
+    j["installDefaultsStamp"] = cfg.installDefaultsStamp;
 
     JsonOut devices = JsonOut::array();
     for (const auto& d : cfg.pairedDevices) {
@@ -115,6 +116,7 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     // back to the struct default (on), the same opt-out the Dish clients use.
     // An explicit false is honoured so an opt-out survives every reload.
     cfg.crashReporting = jsonBool(j, "crashReporting", cfg.crashReporting);
+    cfg.installDefaultsStamp = jsonStr(j, "installDefaultsStamp");
 
     parsePairedDevicesInto(j, cfg);
 }
