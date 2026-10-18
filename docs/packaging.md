@@ -156,3 +156,57 @@ Two traps worth knowing:
 HTTPS or networked validation fails, and none are published yet. Any Flathub
 submission would require at least one. To add them: publish PNGs, reference
 them at a tag (not a branch), and re-run validation without `--no-net`.
+
+## Windows: code signing and UIAccess
+
+Separate from the Linux constraint above, the Windows build has one of its
+own. Satellite forwards the phone's touchpad as mouse input through
+`SendInput`, and User Interface Privilege Isolation (UIPI) discards synthesized
+input aimed at a window of higher integrity, which is where focus can land
+after a game exits. Microsoft's documented way past UIPI is the manifest
+attribute `uiAccess="true"`, kept beside `level="asInvoker"`. Windows honours
+it only when all three of these hold:
+
+1. The executable's manifest requests `uiAccess="true"`.
+2. The executable carries an Authenticode signature that chains to a root in
+   the machine's Trusted Root Certification Authorities store.
+3. The executable is installed under Program Files (or Program Files (x86)).
+   The policy "User Account Control: Only elevate UIAccess applications that
+   are installed in secure locations" enforces this and is enabled by default.
+
+An executable that requests UIAccess but fails 2 or 3 is refused at process
+creation ("A referral was returned from the server"), so the attribute must
+never ship in a build that cannot meet them. When all three hold, the process
+gets the user's own non-elevated token with the UIAccess flag and no prompt:
+medium integrity raised by 0x10 for a standard user, high integrity without
+administrator rights for an administrator.
+
+The CMake option `SATELLITE_UIACCESS` (default `OFF`) decides whether the
+manifest generated from `satellite.manifest.in` carries the attribute, and
+`release.yml` keys the whole path on the `WIN_SIGN_CERT_BASE64` secret:
+
+- **Unsigned release** (no certificate, the current state): the
+  `asInvoker`-only build and installer shipped today, with artifacts carrying
+  the `-unsigned` suffix.
+- **Signed release** (`WIN_SIGN_CERT_BASE64` + `WIN_SIGN_PASSWORD`): the build
+  is configured with `-DSATELLITE_UIACCESS=ON`. `satellite.exe`,
+  `crashpad_handler.exe`, `crashpad_wer.dll` and `satellite-hm-helper.exe` are
+  signed with `scripts/sign.ps1` before packaging (it fails if a signature does
+  not validate), and the job fails unless `satellite.exe` contains
+  `uiAccess="true"`. Inno Setup compiles with `/DUiAccess=1`, so the installer
+  accepts only a destination under Program Files. `SatelliteSetup.exe` is then
+  signed, and the install/launch round-trip runs from Program Files instead of
+  `RUNNER_TEMP`.
+
+A `/DUiAccess=1` installer refuses other folders on the Select Destination
+Location page and again just before installing, which covers silent runs and
+upgrades that never show that page. An existing install outside Program Files
+has to be uninstalled before a signed installer can replace it.
+
+Both halves can be reproduced locally. `scripts\build-installer.ps1 -UiAccess`
+requires signing credentials (`SATELLITE_SIGN_THUMBPRINT`, `SATELLITE_SIGN_PFX`
+or `CLOUD_SIGN_TOOL`), checks that `satellite.exe` was built with
+`-DSATELLITE_UIACCESS=ON`, and passes `/DUiAccess=1` to `iscc`.
+`scripts\test-installer-roundtrip.ps1 -UiAccess` puts its sandbox under
+`%ProgramFiles%` instead of the temp directory. A self-signed certificate meets
+requirement 2 only on a machine whose Trusted Root store holds it.
