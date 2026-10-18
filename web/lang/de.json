@@ -422,6 +422,7 @@
   "debug.stats.http-port": "HTTP-Port",
   "debug.host.client-api": "Client-API (HTTPS)",
   "debug.host.mdns": "mDNS-Responder",
+  "debug.host.ui-access": "UIAccess-Berechtigung",
   "debug.host.connections": "Aktive Verbindungen",
   "debug.host.controllers": "Virtuelle Controller",
   "debug.backends.kernel": "Kernelmodus",

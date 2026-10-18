@@ -399,6 +399,7 @@
   "debug.stats.http-port": "Port HTTP",
   "debug.host.client-api": "API client (HTTPS)",
   "debug.host.mdns": "Répondeur mDNS",
+  "debug.host.ui-access": "Privilège UIAccess",
   "debug.host.connections": "Connexions actives",
   "debug.host.controllers": "Manettes virtuelles",
   "debug.backends.kernel": "Mode noyau",

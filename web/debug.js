@@ -184,6 +184,7 @@ const DEBUG_GROUPS = [
       { id: 'h-client-api', k: 'debug.host.client-api',
         v: d => boolRow(d.clientApiListening, true) },
       { id: 'h-mdns', k: 'debug.host.mdns', v: d => boolRow(d.mdnsResponderActive, true) },
+      { id: 'h-uiaccess', k: 'debug.host.ui-access', v: d => boolText(d.uiAccess) },
       { id: 'h-conns', k: 'debug.host.connections', v: d => count(d.connections) },
       { id: 'h-ctrls', k: 'debug.host.controllers', v: d => {
           if (typeof d.controllers !== 'number') return '—';

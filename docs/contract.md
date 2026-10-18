@@ -966,7 +966,7 @@ fields may be added at any time. Alongside the long-standing scalars (`listening
 | `audio` | Controller-audio stream health: `micAccepted` / `micLate` / `micDropped` partition every inbound frame, `micDecoded` + `micFecRecovered` + `micConcealed` count what reached the pad, `speakerSent` / `speakerSilenceSuppressed` / `speakerEncodeFailed` / `speakerLockContended` the speaker lane, and `hapticSent` / `hapticSilenceSuppressed` / `hapticEncodeFailed` / `hapticLockContended` the haptic lane plus `hapticReducedToRumble` for the windows that went out as RUMBLE instead |
 | `auth` | Client-API 401s, split `notPaired` / `badProof` |
 | `peakLoopUs` | True hot-path peak. `maxLoopUs` keeps its read-and-zero window semantics for benchmark tooling and reads 0 unless a new all-time record was set since the last read |
-| `webPort`, `mdnsResponderActive`, `clientApiListening`, `connections`, `controllers`, `maxControllers`, `sessionsReaped` | Host gauges |
+| `webPort`, `mdnsResponderActive`, `clientApiListening`, `uiAccess`, `connections`, `controllers`, `maxControllers`, `sessionsReaped` | Host gauges. `uiAccess` is true when the process holds Windows' UIAccess privilege (signed build installed under Program Files), which lets injected pointer input reach a foreground window of higher integrity; always false on Linux and macOS |
 
 
 The admin surface never sets descriptor fields (single-writer rule). The former

@@ -40,6 +40,7 @@ struct StatusFields {
     uint64_t logSeq = 0;
     uint64_t peakLoopUs = 0;
     bool clientApiListening = false;
+    bool uiAccess = false;
     int connections = 0;
     int controllers = 0;
     int maxControllers = 0;
@@ -147,6 +148,7 @@ inline std::string buildDebugJson(const StatusFields& f) {
     j["backend"] = f.backend;
     j["mdnsResponderActive"] = f.mdnsResponderActive;
     j["clientApiListening"] = f.clientApiListening;
+    j["uiAccess"] = f.uiAccess;
     j["connections"] = f.connections;
     j["controllers"] = f.controllers;
     j["maxControllers"] = f.maxControllers;
