@@ -10,6 +10,7 @@
 #include "net/pairing.h"
 #include "net/pairing_service.h"
 #include "toast.h"
+#include "ui_access.h"
 
 #include <strsafe.h>
 
@@ -27,6 +28,9 @@ static std::wstring g_lastTooltip;   // remember last text so we don't churn NIM
 // Registered window message broadcast by Explorer when the taskbar is
 // (re)created. Identifier is initialised lazily on first add.
 static UINT g_taskbarCreatedMsg = 0;
+
+// Ping from acquireSingleInstance: a second launch attempt; we open the web UI.
+static const UINT WM_SECOND_INSTANCE = WM_USER + 100;
 
 // index to deviceId for tray-menu pairing items. GUI-thread only; no lock.
 static std::vector<std::string> g_menuPairIds;
@@ -119,6 +123,11 @@ static void registerTrayIcon(HWND hwnd) {
 
 void addTrayIcon(HWND hwnd) {
     if (g_taskbarCreatedMsg == 0) g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    if (uiaccess::tokenHasUiAccess()) {
+        for (const UINT msg : {g_taskbarCreatedMsg, WM_TRAYICON, WM_SECOND_INSTANCE}) {
+            ChangeWindowMessageFilterEx(hwnd, msg, MSGFLT_ALLOW, nullptr);
+        }
+    }
     registerTrayIcon(hwnd);
 }
 
@@ -188,9 +197,6 @@ void showTrayMenu(HWND hwnd) {
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
 }
-
-// Ping from acquireSingleInstance: a second launch attempt; we open the web UI.
-static const UINT WM_SECOND_INSTANCE = WM_USER + 100;
 
 static void openUrl(const wchar_t* url) {
     ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);

@@ -4,6 +4,7 @@
 // autostart tests touch HKCU\...\Run\satellite. Both side effects are made
 // hermetic via snapshot/restore so the tests are safe to run locally and in CI.
 #include "../src/platform/windows/config.h"
+#include "../src/platform/windows/ui_access.h"
 #include "../src/platform/windows/crypto.h"
 #include "../src/net/pairing_keys.h"
 #include "../src/platform/windows/autostart_rule.h"
@@ -659,6 +660,68 @@ static void testUpdateToastWithTheRealService() {
     }
 }
 
+static void testUiAccess() {
+    using uiaccess::describePointerInjection;
+    using uiaccess::integrityLevelName;
+
+    TEST("integrityLevelName: each mandatory level reads by name");
+    EXPECT_EQ(integrityLevelName(0x1000), std::string("low"));
+    EXPECT_EQ(integrityLevelName(0x2000), std::string("medium"));
+    EXPECT_EQ(integrityLevelName(0x2010), std::string("medium with UIAccess"));
+    EXPECT_EQ(integrityLevelName(0x2100), std::string("medium plus"));
+    EXPECT_EQ(integrityLevelName(0x3000), std::string("high"));
+    EXPECT_EQ(integrityLevelName(0x4000), std::string("system"));
+
+    TEST("integrityLevelName: an unknown level reads as hex");
+    EXPECT_EQ(integrityLevelName(0x2345), std::string("0x2345"));
+
+    TEST("describePointerInjection: with UIAccess, the line names the level and the reach");
+    const std::string granted = describePointerInjection(true, 0x3000);
+    EXPECT(granted.find("has UIAccess") != std::string::npos);
+    EXPECT(granted.find("at high integrity") != std::string::npos);
+    EXPECT(granted.find("without UIAccess") == std::string::npos);
+
+    TEST("describePointerInjection: without UIAccess, the line names the level and the remedy");
+    const std::string denied = describePointerInjection(false, 0x2000);
+    EXPECT(denied.find("without UIAccess") != std::string::npos);
+    EXPECT(denied.find("at medium integrity") != std::string::npos);
+    EXPECT(denied.find("Program Files") != std::string::npos);
+    EXPECT(denied.find("has UIAccess") == std::string::npos);
+
+    TEST("tokenHasUiAccess: the test process runs without UIAccess");
+    EXPECT(!uiaccess::tokenHasUiAccess());
+
+    TEST("tokenIntegrityRid: the test process reports a named integrity level");
+    const DWORD rid = uiaccess::tokenIntegrityRid();
+    EXPECT(rid != 0);
+    EXPECT(integrityLevelName(rid).rfind("0x", 0) != 0);
+}
+
+static void testEmbeddedManifest() {
+    constexpr bool uiAccessBuild = SATELLITE_UIACCESS_MANIFEST != 0;
+    const std::string manifest = readFileBytes(SATELLITE_MANIFEST_FILE);
+    const bool saysTrue = manifest.find("uiAccess=\"true\"") != std::string::npos;
+    const bool saysFalse = manifest.find("uiAccess=\"false\"") != std::string::npos;
+
+    TEST("embedded manifest: the generated manifest stays asInvoker");
+    EXPECT(manifest.find("level=\"asInvoker\"") != std::string::npos);
+
+    TEST("embedded manifest: uiAccess follows the SATELLITE_UIACCESS switch");
+    EXPECT_EQ(saysTrue, uiAccessBuild);
+    EXPECT_EQ(saysFalse, !uiAccessBuild);
+
+    TEST("embedded manifest: never both uiAccess values");
+    EXPECT(!(saysTrue && saysFalse));
+
+    TEST("manifest template: one uiAccess placeholder and an asInvoker level");
+    const std::string tmpl = readFileBytes(SATELLITE_MANIFEST_TEMPLATE);
+    const std::string placeholder = "uiAccess=\"@SATELLITE_MANIFEST_UIACCESS@\"";
+    const size_t first = tmpl.find(placeholder);
+    EXPECT(first != std::string::npos);
+    EXPECT(tmpl.find(placeholder, first + 1) == std::string::npos);
+    EXPECT(tmpl.find("level=\"asInvoker\"") != std::string::npos);
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -685,6 +748,8 @@ int main() {
     testInstallerLaunchError();
     testUpdateToast();
     testUpdateToastWithTheRealService();
+    testUiAccess();
+    testEmbeddedManifest();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
