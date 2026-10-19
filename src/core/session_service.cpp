@@ -108,6 +108,7 @@ const Connection* SessionService::findByConnectionId(const std::string& connecti
 }
 
 bool SessionService::unplugAndRelease(uint32_t serial) {
+    releasePointerLocked(serial);
     if (backend_.unplugDevice(serial)) {
         releaseSerial(serial);
         return true;
@@ -137,6 +138,7 @@ uint32_t SessionService::allocateSerial() {
     for (size_t step = 0; step < MAX_BACKEND_CONTROLLERS; step++) {
         size_t i = (serialScanStart_ + step) % MAX_BACKEND_CONTROLLERS;
         if (!serialInUse_[i] && !serialQuarantined_[i]) {
+            pendingRumble_[i + 1].store(0, std::memory_order_release);
             serialInUse_[i] = true;
             serialScanStart_ = (i + 1) % MAX_BACKEND_CONTROLLERS;
             return static_cast<uint32_t>(i + 1); // 1-based
@@ -147,11 +149,13 @@ uint32_t SessionService::allocateSerial() {
 
 void SessionService::releaseSerial(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
+    pendingRumble_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = false;
 }
 
 void SessionService::quarantineSerial(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
+    pendingRumble_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = false;
     serialQuarantined_[serial - 1] = true;
 }
@@ -427,8 +431,13 @@ void SessionService::applyDescriptorLocked(Connection& conn, const ControllerDes
         return;
     }
 
-    // Same identity: converge caps/mode/type in place. No replug, no epoch bump
-    // (the applied topology is unchanged).
+    // A routing change must not carry a previous pointer contact into the new mode.
+    if (safeMode != ctrl.touchpadMode) {
+        releasePointerLocked(ctrl.serialNo);
+        ctrl.lastTouchpadValid = false;
+        ctrl.touchpadMouseRemX = 0.0f;
+        ctrl.touchpadMouseRemY = 0.0f;
+    }
     ctrl.controllerType = desc.type;
     ctrl.caps = desc.caps;
     ctrl.touchpadMode = safeMode;
@@ -478,6 +487,7 @@ SessionUpsertResult SessionService::upsertSession(
         // Same device re-PUTting: tell the old token best-effort, then rotate
         // token/key in place. The row and its pads survive, no unplug/replug churn.
         client_.sendSessionClose(*conn, CLOSE_REASON_REPLACED);
+        releaseConnectionPointerLocked(*conn);
         client_.removeClientAddr(conn->token);
         uint32_t newToken = generateUniqueToken();
         auto node = connections_.extract(conn->token);
@@ -674,21 +684,37 @@ void SessionService::handleHeartbeat(uint32_t token) {
                              conn.epoch, activeBitmapLocked(conn));
 }
 
-void SessionService::handleRumbleFromBackend(uint32_t serial, const RumbleReport& report,
-                                             uint16_t wireDurationMs) {
-    // try_to_lock, NEVER block: unplug paths join this notification worker while
-    // holding mtx_, so a blocking acquire here deadlocks. A dropped frame
-    // self-heals (rumble is coalesced and re-notified).
+static constexpr uint64_t RUMBLE_PENDING = uint64_t{1} << 48;
+
+static uint64_t packPendingRumble(const RumbleReport& report, const uint16_t durationMs) {
+    const uint64_t strong = report.strongMagnitude;
+    const uint64_t weak = static_cast<uint64_t>(report.weakMagnitude) << 16;
+    const uint64_t duration = static_cast<uint64_t>(durationMs) << 32;
+    return RUMBLE_PENDING | strong | weak | duration;
+}
+
+void SessionService::handleRumbleFromBackend(const uint32_t serial, const RumbleReport& report,
+                                             const uint16_t wireDurationMs) {
+    if (serial == 0 || serial > MAX_BACKEND_CONTROLLERS) return;
+    const uint64_t pending = packPendingRumble(report, wireDurationMs);
+    pendingRumble_[serial].store(pending, std::memory_order_release);
+    // Teardown joins this worker under mtx_; the maintenance tick drains a missed acquire.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
+    drainRumbleLocked(serial);
+}
 
-    // A miss is a stray event from a just-unplugged controller's worker.
-    Connection* foundConn = nullptr;
-    Controller* foundCtrl = nullptr;
-    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
-
-    foundCtrl->hidRumble = report;
-    forwardRumbleLocked(*foundConn, *foundCtrl, wireDurationMs, /*force=*/false);
+void SessionService::drainRumbleLocked(const uint32_t serial, int* const sent) {
+    const uint64_t pending = pendingRumble_[serial].exchange(0, std::memory_order_acq_rel);
+    if (pending == 0) return;
+    Connection* conn = nullptr;
+    Controller* ctrl = nullptr;
+    if (!findBySerialLocked(serial, conn, ctrl)) return;
+    ctrl->hidRumble.strongMagnitude = static_cast<uint16_t>(pending);
+    ctrl->hidRumble.weakMagnitude = static_cast<uint16_t>(pending >> 16);
+    const uint16_t durationMs = static_cast<uint16_t>(pending >> 32);
+    const bool forwarded = forwardRumbleLocked(*conn, *ctrl, durationMs, false);
+    if (forwarded && sent != nullptr) ++*sent;
 }
 
 bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
@@ -731,12 +757,20 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
     return true;
 }
 
-void SessionService::refreshIdleInput() { backend_.refreshIdleInput(); }
+void SessionService::refreshIdleInput() {
+    backend_.refreshIdleInput();
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (!pointerRetryPending_) return;
+    pointerRetryPending_ = !submitPointerLocked(0, 0, 0);
+}
 
 int SessionService::refreshRumble() {
     std::lock_guard<std::mutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();
     int sent = 0;
+    for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
+        drainRumbleLocked(serial, &sent);
+    }
     for (auto& [token, conn] : connections_) {
         for (auto& ctrl : conn.controllers) {
             if (!ctrl.active || ctrl.serialNo == 0) continue;
@@ -876,7 +910,9 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         if (prevValid && static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs) <= 0) {
             wheel = 0;
         }
-        const bool ok = backend_.submitRelativeMouse(dx, dy, buttons, wheel);
+        pointerButtons_[ctrl.serialNo] = buttons;
+        const bool ok = submitPointerLocked(dx, dy, wheel);
+        pointerRetryPending_ = !ok;
         const bool buttonsChanged =
             prevValid ? (prev.buttonPressed != report.buttonPressed ||
                          prev.rightPressed != report.rightPressed ||
@@ -893,6 +929,35 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         // A false from the default impl (Xbox pad / inert backend) is not an
         // error; cached above.
         return backend_.submitTouchpad(ctrl.serialNo, report);
+    }
+}
+
+bool SessionService::submitPointerLocked(const int dx, const int dy, const int wheel) {
+    MouseButtons buttons;
+    for (const auto& owner : pointerButtons_) {
+        buttons.left = buttons.left || owner.left;
+        buttons.right = buttons.right || owner.right;
+        buttons.middle = buttons.middle || owner.middle;
+    }
+    return backend_.submitRelativeMouse(dx, dy, buttons, wheel);
+}
+
+void SessionService::releasePointerLocked(const uint32_t serial) {
+    if (serial == 0 || serial > MAX_BACKEND_CONTROLLERS) return;
+    const MouseButtons held = pointerButtons_[serial];
+    const bool anyHeld = held.left || held.right || held.middle;
+    if (!anyHeld) return;
+    pointerButtons_[serial] = MouseButtons{};
+    pointerRetryPending_ = !submitPointerLocked(0, 0, 0);
+}
+
+void SessionService::releaseConnectionPointerLocked(Connection& conn) {
+    for (auto& ctrl : conn.controllers) {
+        if (!ctrl.active) continue;
+        releasePointerLocked(ctrl.serialNo);
+        ctrl.lastTouchpadValid = false;
+        ctrl.touchpadMouseRemX = 0.0f;
+        ctrl.touchpadMouseRemY = 0.0f;
     }
 }
 
