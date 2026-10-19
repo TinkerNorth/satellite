@@ -461,6 +461,17 @@ elseif(APPLE)
         ${SATELLITE_ADAPTER_SOURCES}
         ${SATELLITE_MAC_SOURCES}
     )
+    # The Objective-C++ sources are written for ARC (block captures, no manual
+    # retain/release), and CMake compiles OBJCXX without it unless told. Without
+    # ARC the updater's completion handler stored reply pointers that were
+    # released before the worker thread woke from its semaphore: objc_msgSend
+    # on a freed object, 31 s after launch, at the first update check.
+    set_source_files_properties(
+        src/platform/macos/main.mm
+        src/platform/macos/tray.mm
+        src/platform/macos/updater_adapter.mm
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc"
+    )
 
     target_include_directories(satellite PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
