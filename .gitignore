@@ -102,6 +102,7 @@ Desktop.ini
 /test_origin_guard
 /test_pairing
 /test_pin_rotation
+/test_pointer_frame
 /test_routes_admin
 /test_routes_client
 /test_semver

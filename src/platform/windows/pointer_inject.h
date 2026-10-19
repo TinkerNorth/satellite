@@ -13,7 +13,7 @@
 #include <functional>
 #include <string>
 
-#include "core/types.h"
+#include "core/pointer_frame.h"
 
 struct RelMouseButtonState {
     std::atomic<bool> left{false};
@@ -73,48 +73,53 @@ inline std::string describeForegroundWindowOwner() {
     return owner;
 }
 
-inline bool injectRelativeMouse(RelMouseButtonState& state, int dx, int dy,
-                                const MouseButtons& buttons, int wheelV) {
-    INPUT inputs[5] = {};
-    int n = 0;
-    if (dx != 0 || dy != 0) {
-        inputs[n].type = INPUT_MOUSE;
-        inputs[n].mi.dx = dx;
-        inputs[n].mi.dy = dy;
-        inputs[n].mi.dwFlags = MOUSEEVENTF_MOVE;
-        ++n;
+inline INPUT pointerInput(const satellite::PointerEvent& event) {
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    switch (event.kind) {
+    case satellite::PointerEventKind::Move:
+        input.mi.dx = event.x;
+        input.mi.dy = event.y;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE;
+        break;
+    case satellite::PointerEventKind::LeftButton:
+        input.mi.dwFlags = event.pressed ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        break;
+    case satellite::PointerEventKind::RightButton:
+        input.mi.dwFlags = event.pressed ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+        break;
+    case satellite::PointerEventKind::MiddleButton:
+        input.mi.dwFlags = event.pressed ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+        break;
+    case satellite::PointerEventKind::Wheel:
+        input.mi.mouseData = static_cast<DWORD>(event.y);
+        input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+        break;
     }
-    if (buttons.left != state.left.exchange(buttons.left)) {
-        inputs[n].type = INPUT_MOUSE;
-        inputs[n].mi.dwFlags = buttons.left ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
-        ++n;
-    }
-    if (buttons.right != state.right.exchange(buttons.right)) {
-        inputs[n].type = INPUT_MOUSE;
-        inputs[n].mi.dwFlags = buttons.right ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
-        ++n;
-    }
-    if (buttons.middle != state.middle.exchange(buttons.middle)) {
-        inputs[n].type = INPUT_MOUSE;
-        inputs[n].mi.dwFlags = buttons.middle ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
-        ++n;
-    }
-    if (wheelV != 0) {
-        inputs[n].type = INPUT_MOUSE;
-        inputs[n].mi.mouseData = static_cast<DWORD>(wheelV);
-        inputs[n].mi.dwFlags = MOUSEEVENTF_WHEEL;
-        ++n;
-    }
-    if (n == 0) return true; // idle frame: nothing to inject, still "handled"
-    const UINT injected = SendInput(static_cast<UINT>(n), inputs, sizeof(INPUT));
-    if (injected == static_cast<UINT>(n)) {
+    return input;
+}
+
+inline bool injectRelativeMouse(RelMouseButtonState& state, const int dx, const int dy,
+                                const MouseButtons& buttons, const int wheelV) {
+    const MouseButtons before{state.left.load(), state.right.load(), state.middle.load()};
+    const auto frame = satellite::planPointerFrame(before, buttons, dx, dy, wheelV);
+    if (frame.count == 0) return true;
+    std::array<INPUT, 5> inputs{};
+    for (size_t i = 0; i < frame.count; i++) inputs[i] = pointerInput(frame.events[i]);
+    const UINT requested = static_cast<UINT>(frame.count);
+    const UINT injected = SendInput(requested, inputs.data(), sizeof(INPUT));
+    const DWORD error = GetLastError();
+    const MouseButtons accepted = satellite::pointerButtonsAfter(frame, injected);
+    state.left.store(accepted.left);
+    state.right.store(accepted.right);
+    state.middle.store(accepted.middle);
+    if (injected == requested) {
         state.refusedRun.store(false, std::memory_order_relaxed);
         return true;
     }
-    const DWORD error = GetLastError();
     if (!state.refusedRun.exchange(true, std::memory_order_relaxed) && g_pointerInjectDiagnostic) {
-        g_pointerInjectDiagnostic(pointerRefusalMessage(static_cast<unsigned>(n), injected, error,
-                                                        describeForegroundWindowOwner()));
+        g_pointerInjectDiagnostic(
+            pointerRefusalMessage(requested, injected, error, describeForegroundWindowOwner()));
     }
     return false;
 }

@@ -352,6 +352,9 @@ class SessionService {
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
+    MouseButtons pointerButtons_[MAX_BACKEND_CONTROLLERS + 1]{};
+    bool pointerRetryPending_ = false;
+    std::atomic<uint64_t> pendingRumble_[MAX_BACKEND_CONTROLLERS + 1]{};
     // A serial whose unplug could not be confirmed is quarantined (never
     // reallocated) until the backend bus closes; a zombie target on it would
     // poison the next plug. Cleared whenever the bus is (re)opened from idle.
@@ -418,6 +421,10 @@ class SessionService {
     void quarantineSerial(uint32_t serial);
     int countGlobalActiveControllers() const;
     void closeBackendBusIfIdle();
+    bool submitPointerLocked(int dx, int dy, int wheel);
+    void releasePointerLocked(uint32_t serial);
+    void releaseConnectionPointerLocked(Connection& conn);
+    void drainRumbleLocked(uint32_t serial, int* sent = nullptr);
     void recordPointerInjectionLocked(Connection& conn, bool ok);
     uint32_t generateUniqueToken();
     void deriveSessionKeyLocked(Connection& conn, const uint8_t pairingKey[CRYPTO_KEY_SIZE]);
