@@ -4147,7 +4147,289 @@ static void test_reap_inGraceSilenceIsNotLogged() {
     EXPECT_EQ(log.countContaining("has gone silent"), 0);
 }
 
+struct PointerSessionFixture {
+    MockViGem backend_;
+    MockClient client_;
+    MockLog log_;
+    SessionService svc_{backend_, client_, log_};
+    SessionUpsertResult session_ = upsert(
+        svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "pointer", "D", true);
+
+    void holdButtons() {
+        TouchpadReport report = mkTouch(true, 1, 0, 0, 1000, true);
+        report.rightPressed = true;
+        report.middlePressed = true;
+        EXPECT(svc_.handleTouchpadData(session_.token, 0, report));
+    }
+
+    void expectReleased() const {
+        EXPECT(!backend_.lastMouseButton);
+        EXPECT(!backend_.lastMouseRight);
+        EXPECT(!backend_.lastMouseMiddle);
+    }
+};
+
+static void test_pointer_closeReleasesButtons() {
+    TEST("pointer: closing a session releases all injected buttons");
+    PointerSessionFixture f;
+    f.holdButtons();
+    EXPECT_EQ(
+        f.svc_.closeSessionById(f.session_.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    f.expectReleased();
+}
+
+static void test_pointer_timeoutReleasesButtons() {
+    TEST("pointer: timing out a session releases all injected buttons");
+    PointerSessionFixture f;
+    f.holdButtons();
+    f.svc_.backdateForTest(f.session_.token, 30, 30);
+    EXPECT_EQ(f.svc_.reapTimedOut(), 1);
+    f.expectReleased();
+}
+
+static void test_pointer_shutdownReleasesButtons() {
+    TEST("pointer: shutdown releases all injected buttons");
+    PointerSessionFixture f;
+    f.holdButtons();
+    f.svc_.closeAllSessions(CLOSE_REASON_SHUTDOWN);
+    f.expectReleased();
+}
+
+static void test_pointer_removeReleasesButtons() {
+    TEST("pointer: removing a controller releases its buttons");
+    PointerSessionFixture f;
+    f.holdButtons();
+    uint16_t epoch = 0;
+    EXPECT(f.svc_.removeController(f.session_.connectionId, "pointer", 0, epoch));
+    f.expectReleased();
+}
+
+static void test_pointer_modesReleaseButtons() {
+    for (const uint8_t mode : {TOUCHPAD_MODE_OFF, TOUCHPAD_MODE_DS4}) {
+        TEST("pointer: leaving mouse mode releases its buttons");
+        PointerSessionFixture f;
+        f.holdButtons();
+        ControllerApplyResult applied;
+        uint16_t epoch = 0;
+        const ControllerDescriptor desc = makeDesc(0, CONTROLLER_TYPE_XBOX, 0, mode);
+        EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
+        f.expectReleased();
+    }
+}
+
+static void test_pointer_grantRevocationReleasesButtons() {
+    TEST("pointer: revoking the session grant releases its buttons");
+    PointerSessionFixture f;
+    f.holdButtons();
+    const auto changed = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)},
+                                "pointer", "D", false);
+    EXPECT(!changed.mouseControlGranted);
+    f.expectReleased();
+}
+
+static void test_pointer_rotationReanchorsGesture() {
+    TEST("pointer: a replacement transport cannot continue the old gesture");
+    PointerSessionFixture f;
+    f.holdButtons();
+    const auto replacement = upsert(
+        f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "pointer", "D", true);
+    f.expectReleased();
+    EXPECT(f.svc_.handleTouchpadData(replacement.token, 0, mkTouch(true, 1, 30000, 30000, 1004)));
+    EXPECT_EQ(f.backend_.lastMouseDx, 0);
+    EXPECT_EQ(f.backend_.lastMouseDy, 0);
+}
+
+static void test_pointer_omittedSlotReleasesButtons() {
+    TEST("pointer: an omitted controller releases its old buttons");
+    PointerSessionFixture f;
+    f.holdButtons();
+    const auto replacement = upsert(f.svc_, {}, "pointer", "D", true);
+    EXPECT(replacement.controllers.empty());
+    f.expectReleased();
+}
+
+static void test_pointer_rejectedReplugPreservesOwnership() {
+    TEST("pointer: a rejected replacement leaves the existing controller's buttons held");
+    PointerSessionFixture f;
+    f.holdButtons();
+    f.backend_.pluginReturnVal = false;
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    const ControllerDescriptor desc =
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, 0, TOUCHPAD_MODE_MOUSE);
+    EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
+    EXPECT_EQ(applied.result, APPLY_ERR_REPLUG_FAIL);
+    EXPECT(f.backend_.lastMouseButton);
+    EXPECT(f.backend_.lastMouseRight);
+    EXPECT(f.backend_.lastMouseMiddle);
+}
+
+static void test_pointer_sharedOwnershipSurvivesRelease() {
+    TEST("pointer: another session's release does not release a held button");
+    PointerSessionFixture f;
+    f.holdButtons();
+    const auto other = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)},
+                              "other", "Other", true);
+    EXPECT(f.svc_.handleTouchpadData(other.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(f.backend_.lastMouseRight);
+    EXPECT(f.backend_.lastMouseMiddle);
+    EXPECT_EQ(
+        f.svc_.closeSessionById(f.session_.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    EXPECT(f.backend_.lastMouseButton);
+    EXPECT(!f.backend_.lastMouseRight);
+    EXPECT(!f.backend_.lastMouseMiddle);
+    EXPECT(f.svc_.handleTouchpadData(other.token, 0, mkTouch(false, 1, 0, 0, 1004)));
+    f.expectReleased();
+}
+
+static void test_pointer_twoSlotsOwnButtonsIndependently() {
+    TEST("pointer: each controller owns its own button contribution");
+    PointerSessionFixture f;
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    const ControllerDescriptor desc = makeDesc(1, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE);
+    EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
+    f.holdButtons();
+    EXPECT(f.svc_.handleTouchpadData(f.session_.token, 1, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(f.svc_.removeController(f.session_.connectionId, "pointer", 0, epoch));
+    EXPECT(f.backend_.lastMouseButton);
+    EXPECT(!f.backend_.lastMouseRight);
+    EXPECT(!f.backend_.lastMouseMiddle);
+    EXPECT(f.svc_.removeController(f.session_.connectionId, "pointer", 1, epoch));
+    f.expectReleased();
+}
+
+static void test_pointer_replugReleasesButtons() {
+    TEST("pointer: replacing a controller releases its old button contribution");
+    PointerSessionFixture f;
+    f.holdButtons();
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    const ControllerDescriptor desc =
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, 0, TOUCHPAD_MODE_MOUSE);
+    EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
+    EXPECT_EQ(applied.result, APPLY_OK);
+    f.expectReleased();
+}
+
+static void test_pointer_failedReleaseRetriesDuringMaintenance() {
+    TEST("pointer: a refused lifecycle release retries after the session is gone");
+    PointerSessionFixture f;
+    f.holdButtons();
+    f.backend_.submitRelativeMouseReturnVal = false;
+    EXPECT_EQ(
+        f.svc_.closeSessionById(f.session_.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    const int beforeRetry = f.backend_.submitRelativeMouseCalls;
+    f.backend_.submitRelativeMouseReturnVal = true;
+    f.svc_.refreshIdleInput();
+    EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+    f.expectReleased();
+    f.svc_.refreshIdleInput();
+    EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+}
+
+struct ContendedRumbleFixture {
+    MockViGem backend_;
+    MockClient client_;
+    MockLog log_;
+    SessionService svc_{backend_, client_, log_};
+    SessionUpsertResult session_ =
+        upsert(svc_, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE)});
+    uint32_t serial_ = backend_.pluggedSerials.back();
+    SessionUpsertResult other_ = upsert(svc_, {}, "other", "Other");
+    RumbleReport latest_{};
+    uint16_t durationMs_ = RUMBLE_WIRE_DURATION_MS;
+
+    void publish() { svc_.handleRumbleFromBackend(serial_, latest_, durationMs_); }
+    void publishWhileJoined() {
+        std::thread worker(&ContendedRumbleFixture::publish, this);
+        worker.join();
+    }
+    void contend() {
+        client_.onSessionClose = std::bind(&ContendedRumbleFixture::publishWhileJoined, this);
+        EXPECT_EQ(svc_.closeSessionById(other_.connectionId, "other", CLOSE_REASON_KICKED, true),
+                  0);
+        client_.onSessionClose = nullptr;
+    }
+};
+
+static void test_rumble_stopSurvivesContention() {
+    TEST("rumble: a stop received under contention supersedes held rumble");
+    ContendedRumbleFixture f;
+    RumbleReport start{};
+    start.strongMagnitude = 40000;
+    f.backend_.fireRumble(f.serial_, start);
+    f.contend();
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
+    EXPECT_EQ(f.svc_.refreshRumble(), 1);
+    EXPECT_EQ(f.client_.rumbleCalls, 2);
+    EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
+    EXPECT_EQ(f.svc_.refreshRumble(), 0);
+}
+
+static void test_rumble_latestNotificationWins() {
+    TEST("rumble: a newer notification supersedes a pending notification");
+    ContendedRumbleFixture f;
+    f.latest_.strongMagnitude = 50000;
+    f.contend();
+    f.backend_.fireRumble(f.serial_, RumbleReport{});
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
+    EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
+    EXPECT_EQ(f.svc_.refreshRumble(), 0);
+}
+
+static void test_rumble_contendedDurationIsPreserved() {
+    TEST("rumble: a pending notification retains both motors and its wire duration");
+    ContendedRumbleFixture f;
+    f.latest_.strongMagnitude = 35000;
+    f.latest_.weakMagnitude = 25000;
+    f.durationMs_ = 73;
+    f.contend();
+    EXPECT_EQ(f.svc_.refreshRumble(), 1);
+    EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 35000);
+    EXPECT_EQ(f.client_.lastRumble.weakMagnitude, 25000);
+    EXPECT_EQ(f.client_.lastRumble.durationMs, 73);
+}
+
+static void test_rumble_retiredSerialDiscardsPendingState() {
+    TEST("rumble: retired controller notifications never reach its replacement");
+    ContendedRumbleFixture f;
+    std::vector<ControllerDescriptor> occupied;
+    for (uint8_t slot = 0; slot < MAX_BACKEND_CONTROLLERS - 1; slot++) {
+        occupied.push_back(makeDesc(slot));
+    }
+    const auto blocker = upsert(f.svc_, occupied, "occupied", "Occupied");
+    EXPECT(blocker.ok);
+    EXPECT_EQ(f.svc_.availableSlots(), 0);
+    f.latest_.strongMagnitude = 50000;
+    f.contend();
+    EXPECT_EQ(f.svc_.closeSessionById(f.session_.connectionId, "dev1", CLOSE_REASON_KICKED, false),
+              1);
+    const auto replacement = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE)});
+    EXPECT(replacement.ok);
+    EXPECT_EQ(f.backend_.pluggedSerials.back(), f.serial_);
+    EXPECT_EQ(f.svc_.refreshRumble(), 0);
+    EXPECT_EQ(f.client_.rumbleCalls, 0);
+}
+
 int main() {
+    test_pointer_closeReleasesButtons();
+    test_pointer_timeoutReleasesButtons();
+    test_pointer_shutdownReleasesButtons();
+    test_pointer_removeReleasesButtons();
+    test_pointer_modesReleaseButtons();
+    test_pointer_grantRevocationReleasesButtons();
+    test_pointer_rotationReanchorsGesture();
+    test_pointer_omittedSlotReleasesButtons();
+    test_pointer_rejectedReplugPreservesOwnership();
+    test_pointer_sharedOwnershipSurvivesRelease();
+    test_pointer_twoSlotsOwnButtonsIndependently();
+    test_pointer_replugReleasesButtons();
+    test_pointer_failedReleaseRetriesDuringMaintenance();
+    test_rumble_stopSurvivesContention();
+    test_rumble_latestNotificationWins();
+    test_rumble_retiredSerialDiscardsPendingState();
+    test_rumble_contendedDurationIsPreserved();
     test_upsert_createsSession();
     test_upsert_connectionIdIsConnAndEightHexDigits();
     test_upsert_recordsProtocolVersion();

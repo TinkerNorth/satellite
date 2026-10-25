@@ -361,7 +361,21 @@ status, so the caller needs no locking.
 
 Both the receiver and HTTP threads call into `SessionService`, which
 protects all connection/controller state with a single `std::mutex`.
-Lock contention is negligible with ≤ 16 connections and ≤ 16 controllers.
+Driver lifecycle work can hold that mutex while joining backend workers.
+Rumble callbacks first publish the latest motor state and duration into a
+fixed atomic slot per backend serial, then try to acquire the service lock.
+The maintenance tick drains pending state before refreshing held rumble, so
+a stop survives contention without blocking a worker that teardown is joining.
+Serial retirement and allocation clear the slot before it can serve another
+controller. Audio remains a lossy stream and does not use this mailbox.
+
+Mouse-button ownership is per backend serial. The host receives the union of
+all controller-held buttons; removing one owner cannot release another owner's
+button. Session teardown or replacement, controller removal or replacement,
+and leaving mouse mode remove the corresponding contribution. A rejected
+injection retains a pending reconciliation for the maintenance tick. On Windows,
+only the prefix reported inserted by `SendInput` updates the adapter's button
+cache, so a refused release can be retried after the foreground changes.
 
 The ViGEm bus handle is owned by `ViGEmAdapter` (with its own mutex).
 Report submission (`DeviceIoControl`) is thread-safe per target. The
