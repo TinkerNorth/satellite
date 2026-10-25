@@ -13,6 +13,7 @@
 #include "../src/platform/windows/installer_launch_error.h"
 #include "../src/platform/windows/update_toast.h"
 #include "../src/platform/windows/pointer_inject.h"
+#include "../src/platform/windows/app_lifecycle.h"
 #include "../src/core/update_service.h"
 
 #include <atomic>
@@ -738,6 +739,78 @@ static void testInstallDefaultsRegistry() {
     RegDeleteTreeW(HKEY_CURRENT_USER, subkey);
 }
 
+struct TempLogDir {
+    std::wstring path;
+    TempLogDir() {
+        wchar_t tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        path = std::wstring(tmp) + L"satellite-test-logs-" + std::to_wstring(GetCurrentProcessId());
+        CreateDirectoryW(path.c_str(), nullptr);
+    }
+    ~TempLogDir() {
+        for (const auto& f : logFiles()) DeleteFileW(f.c_str());
+        RemoveDirectoryW(path.c_str());
+    }
+    std::vector<std::wstring> logFiles() const {
+        std::vector<std::wstring> out;
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = FindFirstFileW((path + L"\\*.log").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return out;
+        do { out.push_back(path + L"\\" + fd.cFileName); } while (FindNextFileW(h, &fd));
+        FindClose(h);
+        return out;
+    }
+    std::string utf8() const {
+        const int n =
+            WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string out(static_cast<size_t>(n), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, out.data(), n, nullptr, nullptr);
+        out.pop_back();
+        return out;
+    }
+};
+
+static std::string readWholeFile(const std::wstring& path) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return {};
+    std::string out;
+    char buf[4096];
+    DWORD got = 0;
+    while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) out.append(buf, got);
+    CloseHandle(h);
+    return out;
+}
+
+static std::string firstLogFileContent(const TempLogDir& dir) {
+    const auto files = dir.logFiles();
+    return files.empty() ? std::string() : readWholeFile(files[0]);
+}
+
+static void testFileLoggerFlush() {
+    TEST("flushFileLog: with no writer running it promises nothing");
+    EXPECT(!lifecycle::flushFileLog(10));
+
+    TempLogDir dir;
+    lifecycle::startFileLogger(dir.utf8());
+    const std::string first = "flush probe " + std::to_string(GetTickCount64());
+    logMsg(LogLevel::INFO, "test", first);
+
+    TEST("flushFileLog: returns once the lines logged before the call are in the file");
+    EXPECT(lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs));
+    EXPECT_EQ(dir.logFiles().size(), static_cast<size_t>(1));
+    const std::string afterFirst = firstLogFileContent(dir);
+    EXPECT(afterFirst.find("[INFO ] [test] " + first + "\r\n") != std::string::npos);
+
+    TEST("flushFileLog: a later flush delivers what was logged since the previous one");
+    logMsg(LogLevel::WARN, "test", "second probe");
+    EXPECT(lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs));
+    const std::string afterSecond = firstLogFileContent(dir);
+    EXPECT(afterSecond.find("[WARN ] [test] second probe\r\n") != std::string::npos);
+
+    lifecycle::stopFileLogger();
+}
+
 int main() {
     std::cout << "Running Windows platform tests...\n\n";
 
@@ -766,6 +839,7 @@ int main() {
     testUpdateToastWithTheRealService();
     testUiAccess();
     testInstallDefaultsRegistry();
+    testFileLoggerFlush();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

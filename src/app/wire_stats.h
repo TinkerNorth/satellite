@@ -58,6 +58,7 @@ struct WireStats {
     std::atomic<uint64_t> rxUnknownType{0};
     std::atomic<uint64_t> rxRunt{0};
     std::atomic<uint64_t> rxUnknownToken{0};
+    std::atomic<uint32_t> rxUnknownTokenSender{0};
 
     std::atomic<uint64_t> txPackets{0};
     std::atomic<uint64_t> txBytes{0};
@@ -228,6 +229,7 @@ struct WireStats {
 
     void reset() {
         forEachCounter([](std::atomic<uint64_t>& c) { c.store(0, std::memory_order_relaxed); });
+        rxUnknownTokenSender.store(0, std::memory_order_relaxed);
     }
 
   private:

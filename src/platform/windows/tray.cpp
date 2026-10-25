@@ -414,6 +414,7 @@ static void onEndSession(WPARAM wp, LPARAM lp) {
     logMsg(LogLevel::INFO, "app",
            (lp & ENDSESSION_CLOSEAPP) != 0 ? "Shutting down: Restart Manager close request"
                                            : "Shutting down: session ending");
+    lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs);
     g_appRunning = false;
     removeTrayIcon();
     saveConfig(g_config);

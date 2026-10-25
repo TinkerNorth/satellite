@@ -31,6 +31,11 @@ static void test_resetCoversEveryCounter() {
     EXPECT_EQ(totalOf(w), (uint64_t)(7 * fields));
     w.reset();
     EXPECT_EQ(totalOf(w), (uint64_t)0);
+
+    TEST("reset() also forgets the last unknown-token sender");
+    w.rxUnknownTokenSender.store(0x1701A8C0u);
+    w.reset();
+    EXPECT_EQ(w.rxUnknownTokenSender.load(), (uint32_t)0);
 }
 
 struct TypeSlot {

@@ -182,17 +182,6 @@ LONG chainOrDefault(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-bool flushFileLog(DWORD timeoutMs) {
-    if (!g_loggerStarted.load(std::memory_order_relaxed) || g_logWake == nullptr ||
-        g_logFlushed == nullptr || GetCurrentThreadId() == g_loggerThreadId) {
-        return false;
-    }
-    ResetEvent(g_logFlushed);
-    g_logFlushPending.store(true, std::memory_order_release);
-    SetEvent(g_logWake);
-    return WaitForSingleObject(g_logFlushed, timeoutMs) == WAIT_OBJECT_0;
-}
-
 struct DumpJob {
     EXCEPTION_POINTERS* ep;
     DWORD threadId;
@@ -236,7 +225,7 @@ void writeLocalDump(EXCEPTION_POINTERS* ep) {
 }
 
 LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
-    flushFileLog(2000);
+    flushFileLog(kLogFlushTimeoutMs);
     writeLocalDump(ep);
 
     // Hand off so WER, and Sentry's filter when crash reporting is armed,
@@ -248,7 +237,7 @@ void onAbortSignal(int signum) {
     const std::string msg = "abort() on thread " + std::to_string(GetCurrentThreadId());
     logMsg(LogLevel::ERR, "crash", msg);
     satellite::crash::breadcrumb("crash", msg);
-    flushFileLog(2000);
+    flushFileLog(kLogFlushTimeoutMs);
 
     CONTEXT ctx{};
     RtlCaptureContext(&ctx);
@@ -400,9 +389,8 @@ void waitForLogWork() {
     }
 }
 
-void loggerLoop() {
+void loggerLoop(const std::wstring dir) {
     g_loggerThreadId = GetCurrentThreadId();
-    const std::wstring dir = utf8ToWide(logDir());
     if (dir.empty()) return;
 
     deleteOlderThan(dir, L".log", kLogRetentionDays);
@@ -614,11 +602,11 @@ void reconcileAutoStart() {
     RegCloseKey(key);
 }
 
-void startFileLogger() {
+void startFileLogger(const std::string& dir) {
     if (g_loggerStarted.exchange(true)) return; // idempotent
     g_logWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_logFlushed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    g_loggerThread = std::thread(loggerLoop);
+    g_loggerThread = std::thread(loggerLoop, utf8ToWide(dir));
 }
 
 void stopFileLogger() {
@@ -626,6 +614,17 @@ void stopFileLogger() {
     g_loggerStopRequested.store(true, std::memory_order_relaxed);
     if (g_logWake != nullptr) SetEvent(g_logWake);
     g_loggerThread.join();
+}
+
+bool flushFileLog(DWORD timeoutMs) {
+    if (!g_loggerStarted.load(std::memory_order_relaxed) || g_logWake == nullptr ||
+        g_logFlushed == nullptr || GetCurrentThreadId() == g_loggerThreadId) {
+        return false;
+    }
+    ResetEvent(g_logFlushed);
+    g_logFlushPending.store(true, std::memory_order_release);
+    SetEvent(g_logWake);
+    return WaitForSingleObject(g_logFlushed, timeoutMs) == WAIT_OBJECT_0;
 }
 
 } // namespace lifecycle

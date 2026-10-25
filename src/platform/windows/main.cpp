@@ -342,7 +342,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
 
     // Mirror logMsg() to a rolling file; the in-memory ring alone evaporates
     // before the user can report a crash.
-    lifecycle::startFileLogger();
+    lifecycle::startFileLogger(lifecycle::logDir());
     if (g_installDefaultsApplied) {
         logMsg(LogLevel::INFO, "config",
                std::string("Applied the installer's privacy choices: update check ") +
