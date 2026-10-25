@@ -282,6 +282,15 @@ Topology mutation is REST-only (see `contract.md`); the registration
 opcodes 0x0004/0x0005/0x0008/0x000E no longer exist, so a spoofed or
 stale datagram can never plug, unplug, or retype a controller.
 
+Unknown-token drops are the one rejection that also reaches the log.
+The maintenance thread feeds the counter and the last sender into
+`core/unknown_token_log.h` once a second, which yields one line when a
+stretch of such datagrams begins (with the sender's address) and one when
+it has been quiet for the reaper's horizon (with how many were dropped).
+A dish still sending to a session from before a Satellite restart, or to
+one the reaper removed, therefore shows up in the log and not only on the
+diagnostics page.
+
 ### Hot-path discipline
 
 The gamepad packet path runs at controller-polling rate, so the receive

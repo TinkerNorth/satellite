@@ -8,6 +8,7 @@
 #include "session_crypto.h"
 #include "core/byte_order.h"
 #include "core/session_service.h"
+#include "core/unknown_token_log.h"
 #include "adapters/client_adapter.h"
 #include "app/wire_stats.h"
 
@@ -36,6 +37,14 @@ constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 13;
 
 ReceiveWake g_receiveWake;
 
+void reportUnknownTokenTraffic(satellite::UnknownTokenLog& unknownTokens) {
+    const uint64_t dropped = g_wire.rxUnknownToken.load(std::memory_order_relaxed);
+    const uint32_t sender = g_wire.rxUnknownTokenSender.load(std::memory_order_relaxed);
+    const satellite::UnknownTokenLogLine line =
+        unknownTokens.observe(dropped, sender, std::chrono::steady_clock::now());
+    if (!line.message.empty()) logMsg(line.level, "receiver", line.message);
+}
+
 // Session maintenance off the hot path: the motor-state tick every
 // RUMBLE_REFRESH_MS / 2 (so a held level is re-sent within one refresh
 // interval of becoming due), the idle-input re-publish on the same tick, the
@@ -43,6 +52,7 @@ ReceiveWake g_receiveWake;
 void maintenanceLoop(SessionService& svc) {
     const int tickMs = RUMBLE_REFRESH_MS / 2;
     int sinceReapMs = 0;
+    satellite::UnknownTokenLog unknownTokens;
     while (g_appRunning) {
         netSleepMs(tickMs);
         svc.refreshRumble();
@@ -55,6 +65,7 @@ void maintenanceLoop(SessionService& svc) {
             g_wire.sessionsReaped.fetch_add(static_cast<uint64_t>(reaped),
                                             std::memory_order_relaxed);
         }
+        reportUnknownTokenTraffic(unknownTokens);
     }
 }
 
@@ -173,6 +184,7 @@ inline void handleDatagram(SessionService& svc, uint8_t* buf, int n, const socka
     bool seenCounter = false;
     if (!svc.getDecryptInfo(token, key, lastCounter, &seenCounter)) {
         g_wire.rxUnknownToken.fetch_add(1, std::memory_order_relaxed);
+        g_wire.rxUnknownTokenSender.store(sender.sin_addr.s_addr, std::memory_order_relaxed);
         return;
     }
 

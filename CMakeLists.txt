@@ -1099,6 +1099,7 @@ satellite_add_pure_test(test_byte_order tests/test_byte_order.cpp)
 satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
+satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)
@@ -1448,6 +1449,8 @@ if(WIN32)
         src/core/config_io.cpp
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
+        src/platform/windows/app_lifecycle.cpp
+        src/adapters/crash_adapter.cpp
         src/net/pin_rotation.cpp
         src/net/pairing_keys.cpp
         ${SATELLITE_CORE_SOURCES}
@@ -1472,6 +1475,7 @@ if(WIN32)
         bcrypt
         crypt32
         winmm
+        dbghelp
     )
     satellite_test_warnings(test_windows_platform)
     if(MINGW)

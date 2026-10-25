@@ -3,6 +3,27 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+No protocol changes. Two things the log left unsaid are now in it.
+
+Windows shutting down or restarting with Satellite open never left a line
+in the log. The shutdown handler wrote its "Shutting down: session ending"
+line into the in-memory ring, and Windows ended the process before the
+writer thread's next once-a-second drain reached the file, so a log that
+stopped mid-session looked the same whether Satellite had crashed or the PC
+had been restarted. The handler now waits for the line to reach the disk
+before it returns. A log that ends without a "Shutting down" line now means
+the process, or the PC, died.
+
+A dish that keeps sending to a session Satellite no longer has, because
+Satellite was restarted or the session was reaped, was visible only as a
+counter on the diagnostics page. The receiver now logs once when such a
+stretch of datagrams begins, with the sender's address, and once when it
+ends, with how many were dropped. The dish opens a new session on its own
+once its heartbeats go unanswered, so the line explains a short gap rather
+than asking for action.
+
 ## 2.1.6
 
 No protocol changes. The dish's touchpad mouse going dead after a game

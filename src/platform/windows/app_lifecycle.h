@@ -58,10 +58,14 @@ void applyRuntimeMitigations();
 void reconcileAutoStart();
 
 // Spawn the log-file writer (drains the ring to a daily-rotated .log under
-// logDir(), 7-day retention). Idempotent; runs until stopFileLogger(), which
+// `dir`, 7-day retention). Idempotent; runs until stopFileLogger(), which
 // drains whatever is still queued before it returns.
-void startFileLogger();
+void startFileLogger(const std::string& dir);
 
 void stopFileLogger();
+
+inline constexpr DWORD kLogFlushTimeoutMs = 2000;
+
+bool flushFileLog(DWORD timeoutMs);
 
 } // namespace lifecycle
