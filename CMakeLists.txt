@@ -1075,6 +1075,7 @@ function(satellite_link_sodium name)
     endif()
 endfunction()
 
+satellite_add_pure_test(test_pointer_frame tests/test_pointer_frame.cpp)
 satellite_add_pure_test(test_ipv4_util tests/test_ipv4_util.cpp)
 satellite_add_pure_test(test_semver tests/test_semver.cpp)
 satellite_add_pure_test(test_mdns_rejoin tests/test_mdns_rejoin.cpp)
