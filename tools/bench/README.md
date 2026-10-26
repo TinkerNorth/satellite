@@ -126,3 +126,27 @@ total ≈ stage0(sampling) + stage1(android) + stage2(network) + stage3(satellit
 PC-measured stages 3+4 are ~0.02 ms combined. The dominant terms are the source poll
 interval (stage 0, intrinsic to the controller — same for everyone) and the network
 leg (stage 2). The relay's own software overhead is in the tens of microseconds.
+
+---
+
+## Lock path benchmark
+
+`bench_frame_path` (Windows only; `tools/bench/frame_path_bench.cpp`) sends real encrypted `MSG_GAMEPAD_DATA` datagrams through `SessionService` the way the receiver thread does and times each frame from arrival to submit. One spin-paced producer per dish seals each datagram with the key derived from what `upsertSession` returned, stamps it with `steady_clock` and pushes it into a 1,600-entry ring (the 64 KiB socket buffer); a full ring counts a drop. One receiver thread, `TIME_CRITICAL` and pinned to CPU 2 by default (the installed Satellite pins its own to CPU 0), takes the oldest frame across the rings and runs the receiver's steps in order: `getDecryptInfo`, the replay check, in-place `decryptPacket`, `parseInnerHeader`, `handleGamepadDataAndUpdate`. Latency is the clock read after that last call returns minus the stamp.
+
+The ports are mocks: `submitReport` spins `--submit-us` (the synchronous ViGEm call), `pluginDevice` sleeps `--plug-ms` (the Plug and Play wait, armed once the sessions are open) and `unplugDevice` sleeps 5 ms. S1 is dish A alone at 1 kHz. S2 is dish A at `--rate-a` plus dish B at `--rate-b`; neither runs a cold thread. S3 adds an `sse` thread (1 Hz: `getConnectionsSnapshot`, `linkStateForDevice` per dish, `activeSessionCount`) and a `maintenance` thread (10 Hz: `refreshRumble`, `refreshIdleInput`, `reapTimedOut` on every 10th tick). S4 adds a PUT for dish B at 1.0 s with a second controller, which plugs a new pad while the service holds its lock; B's producer then switches to the new token and key, and the frames still queued under the old token count as `refused`. Each scenario runs `--secs` seconds (default 3), `--reps` times (default 3) interleaved, after a discarded warm-up pass; the table shows the rep whose dish A p99.9 is the median.
+
+Build it with `cmake --build <build dir> --target bench_frame_path`; the binary lands at the repo root, and `--csv <path>` also writes the rows. `bench_frame_path --smoke` runs every scenario for 0.2 s with the cold-thread schedule compressed to fit, and ctest runs it as `frame_path_bench_smoke`; the exit code reflects the harness's own accounting (and usage errors), never a latency, and `--help` lists the options. The process keeps the default priority class and timer resolution, which the application raises, so compare runs of the same binary on the same machine.
+
+### Before: 2.1.7 lock path
+
+`--submit-us 15`, `--plug-ms 200`, everything else at its default (3 s per run, 3 reps, dish A 8000 Hz, dish B 75 Hz, receiver on CPU 2); AMD Ryzen 9 7900X 12-Core Processor, Release build. Latencies are in microseconds; `over 1 ms` counts frames slower than 1 ms; `longest gap` is the longest wait between two completed frames of that dish, in ms; `drops` counts ring overflows; `refused` counts frames whose token the service no longer knew.
+
+| scenario | dish | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops | refused |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| S1 | A | 1000 | 3000 | 15.4 | 16.0 | 17.4 | 46.0 | 0 | 1.030 | 0 | 0 |
+| S2 | A | 8000 | 24000 | 15.4 | 15.9 | 17.8 | 63.7 | 0 | 0.183 | 0 | 0 |
+| S2 | B | 75 | 225 | 15.4 | 31.0 | 32.6 | 32.6 | 0 | 13.353 | 0 | 0 |
+| S3 | A | 8000 | 24000 | 15.4 | 15.8 | 17.6 | 70.2 | 0 | 0.232 | 0 | 0 |
+| S3 | B | 75 | 225 | 15.5 | 30.9 | 31.2 | 31.2 | 0 | 13.349 | 0 | 0 |
+| S4 | A | 8000 | 23988 | 15.4 | 175346.5 | 199020.8 | 201541.4 | 1817 | 201.651 | 12 | 0 |
+| S4 | B | 75 | 210 | 15.4 | 30.9 | 22857.7 | 22857.7 | 2 | 236.161 | 0 | 15 |

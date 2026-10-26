@@ -1170,6 +1170,32 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     satellite_link_sodium(test_pin_rotation)
 endif()
 
+if(WIN32)
+    add_executable(bench_frame_path
+        tools/bench/frame_path_bench.cpp
+        src/core/session_service.cpp
+        src/net/inner_dispatch.cpp
+        src/net/session_crypto.cpp
+    )
+    target_include_directories(bench_frame_path PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(bench_frame_path PRIVATE
+        _WIN32_WINNT=0x0A00
+        BENCH_BUILD_TYPE="$<CONFIG>"
+    )
+    target_link_libraries(bench_frame_path PRIVATE advapi32)
+    satellite_test_warnings(bench_frame_path)
+    satellite_link_sodium(bench_frame_path)
+    if(MINGW)
+        target_link_options(bench_frame_path PRIVATE -static)
+    endif()
+    set_target_properties(bench_frame_path PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME frame_path_bench_smoke COMMAND bench_frame_path --smoke)
+endif()
+
 # macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,
 # input packing, output parsing, feature blobs, and the probe-status seam.
 # Pure/IOKit-free, but APPLE-gated: it exercises macOS platform headers.
