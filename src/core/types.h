@@ -777,27 +777,6 @@ struct ControllerApplyResult {
     std::string backendId;
 };
 
-// A controller's audio working set: the reorder window and the two codecs, one
-// pair per pad because both are stateful across frames. Allocated on the pad's
-// first audio frame in either direction and released with it -- an Opus decoder
-// alone is ~18 KB, which is far and away the largest thing a controller owns,
-// and most controllers never carry audio at all.
-struct ControllerAudio {
-    // Outbound MSG_SPEAKER_AUDIO and MSG_HAPTIC_AUDIO, one lane each. The
-    // backend hands over whatever its audio ring happened to hold, which is
-    // not necessarily one 20 ms window, so the leftover tail of a batch waits
-    // in `pending` for the rest of its frame. `seq` is per controller per lane
-    // and wraps; it marks gaps and late frames for the client and is not an
-    // ack sequence, nothing retransmits against it.
-    struct OutboundLane {
-        std::unique_ptr<IAudioEncoder> encoder;
-        std::vector<int16_t> pending; // < one frame of interleaved stereo
-        uint16_t seq = 0;
-    };
-    OutboundLane speaker;
-    OutboundLane haptic;
-};
-
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // backend serial (1..16), 0 = not plugged
@@ -850,10 +829,6 @@ struct Controller {
     // Mic-mute LED last forwarded; same coalesce shape again.
     uint8_t micLedState = MIC_LED_STATE_OFF;
     bool lastMicLedValid = false;
-    // Null until this slot actually carries audio; see ControllerAudio. Owning
-    // it here is what makes plug/unplug/replug the single lifetime story: the
-    // codecs die with the pad whose history they hold.
-    std::unique_ptr<ControllerAudio> audio;
 };
 
 struct HotSlot;

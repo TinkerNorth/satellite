@@ -228,17 +228,17 @@ void ClientAdapter::sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint
     sendEncryptedPacket(conn, inner, sizeof(inner));
 }
 
-void ClientAdapter::sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+void ClientAdapter::sendSpeakerAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                                      const uint8_t* opus, size_t opusLen) {
-    sendAudioMessage(conn, MSG_SPEAKER_AUDIO, ctrlIdx, seq, opus, opusLen);
+    sendAudioMessage(to, MSG_SPEAKER_AUDIO, ctrlIdx, seq, opus, opusLen);
 }
 
-void ClientAdapter::sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+void ClientAdapter::sendHapticAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                                     const uint8_t* opus, size_t opusLen) {
-    sendAudioMessage(conn, MSG_HAPTIC_AUDIO, ctrlIdx, seq, opus, opusLen);
+    sendAudioMessage(to, MSG_HAPTIC_AUDIO, ctrlIdx, seq, opus, opusLen);
 }
 
-void ClientAdapter::sendAudioMessage(const Connection& conn, uint16_t msgType, uint8_t ctrlIdx,
+void ClientAdapter::sendAudioMessage(const SessionEndpoint& to, uint16_t msgType, uint8_t ctrlIdx,
                                      uint16_t seq, const uint8_t* opus, size_t opusLen) {
     // Wire: ctrlIdx(1) + seq(u16 BE) + one Opus packet, the same shape for
     // every outbound audio lane. An empty packet would decode to nothing on
@@ -256,7 +256,7 @@ void ClientAdapter::sendAudioMessage(const Connection& conn, uint16_t msgType, u
     inner[3] = (uint8_t)(payloadLen);
     encodeAudioFrameHeader(inner + INNER_HEADER_SIZE, ctrlIdx, seq);
     std::memcpy(inner + INNER_HEADER_SIZE + AUDIO_WIRE_HEADER_BYTES, opus, opusLen);
-    sendEncryptedPacket(conn, inner, INNER_HEADER_SIZE + payloadLen);
+    sendSealed(to.token, to.key, *to.slot, inner, INNER_HEADER_SIZE + payloadLen);
 }
 
 void ClientAdapter::sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) {

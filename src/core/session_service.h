@@ -353,11 +353,9 @@ class SessionService {
         std::atomic<uint64_t> speakerSent{0};
         std::atomic<uint64_t> speakerSilenceSuppressed{0};
         std::atomic<uint64_t> speakerEncodeFailed{0};
-        std::atomic<uint64_t> speakerLockContended{0};
         std::atomic<uint64_t> hapticSent{0};
         std::atomic<uint64_t> hapticSilenceSuppressed{0};
         std::atomic<uint64_t> hapticEncodeFailed{0};
-        std::atomic<uint64_t> hapticLockContended{0};
         std::atomic<uint64_t> hapticReducedToRumble{0};
     };
     AudioCounters audio_;
@@ -401,7 +399,6 @@ class SessionService {
     mutable TrackedMutex mtx_{"service.state"}; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
-    std::atomic<uint64_t> pendingRumble_[MAX_BACKEND_CONTROLLERS + 1]{};
     // A serial whose unplug could not be confirmed is quarantined (never
     // reallocated) until the backend bus closes; a zombie target on it would
     // poison the next plug. Cleared whenever the bus is (re)opened from idle.
@@ -452,29 +449,40 @@ class SessionService {
     void finishTeardown(std::vector<RetiredSerial>& retired);
     void closeBusIfIdle(bool idle);
 
-    // Helpers below assume the caller holds mtx_.
-    // Backend serial to its owning connection + ACTIVE controller; false when
-    // nothing holds it (a stray event from a just-unplugged controller's
-    // worker). Every backend-sourced callback funnels through this.
-    bool findBySerialLocked(uint32_t serial, Connection*& outConn, Controller*& outCtrl);
     // Controller audio. Every half runs past every gate handleMicAudio /
     // handleSpeakerAudioFromBackend / handleHapticAudioFromBackend applies, so
     // they only ever see frames that belong to a bound, capable slot.
     // The two outbound lanes share one shape (stereo, 20 ms, own seq) and one
     // code path; this picks the encoder, the counters and the wire message.
     enum class OutboundAudioLane { Speaker, Haptic };
-    // Outbound: re-window whatever the backend handed over into whole 20 ms
-    // frames, encode each, send it. False means the frame could not be taken at
-    // all; a partial batch that is merely still short of a frame is a true.
-    bool encodeAndSendAudioLocked(Connection& conn, Controller& ctrl, OutboundAudioLane lane,
-                                  const int16_t* stereo48k, size_t frames);
-    // One 20 ms window onto the wire. A digitally-silent window is neither
-    // encoded nor sent and does NOT advance the seq; see the definition.
-    void sendAudioFrameLocked(Connection& conn, Controller& ctrl, OutboundAudioLane lane,
-                              ControllerAudio::OutboundLane& state, const int16_t* frame);
-    // Haptic windows for a sender without CAP_HAPTIC_AUDIO: reduce to motor
-    // strength, then out through the shared rumble path.
-    void reduceHapticWindowToRumbleLocked(Connection& conn, Controller& ctrl, const int16_t* frame);
+    struct AudioLane {
+        uint32_t gen = 0;
+        std::unique_ptr<IAudioEncoder> encoder;
+        std::vector<int16_t> pending;
+        uint16_t seq = 0;
+    };
+    struct AudioTarget {
+        uint32_t gen = 0;
+        uint16_t caps = 0;
+    };
+    enum class EndpointRead { Bound, Unbound, Changing };
+    AudioLane& audioLane(OutboundAudioLane lane, uint32_t serial, uint32_t gen);
+    bool readAudioTarget(uint32_t serial, AudioTarget& out) const;
+    EndpointRead readAudioEndpoint(uint32_t serial, uint32_t gen, SessionEndpoint& to,
+                                   uint8_t& ctrlIdx);
+    bool encodeAndSendAudio(OutboundAudioLane lane, uint32_t serial, const AudioTarget& target,
+                            const int16_t* stereo48k, size_t frames);
+    void sendAudioWindow(OutboundAudioLane lane, uint32_t serial, AudioLane& state,
+                         const int16_t* frame);
+    void reduceHapticWindow(uint32_t serial, uint32_t gen, const int16_t* frame);
+    std::array<AudioLane, MAX_BACKEND_CONTROLLERS + 1> speakerLanes_{};
+    std::array<AudioLane, MAX_BACKEND_CONTROLLERS + 1> hapticLanes_{};
+
+    // Helpers below assume the caller holds mtx_.
+    // Backend serial to its owning connection + ACTIVE controller; false when
+    // nothing holds it (a stray event from a just-unplugged controller's
+    // worker).
+    bool findBySerialLocked(uint32_t serial, Connection*& outConn, Controller*& outCtrl);
     // The one place MSG_RUMBLE leaves from: per-motor MAX of the HID motors and
     // the (unexpired) haptic reduction, coalesced against the last send.
     // `force` re-sends an unchanged level, which the haptic path needs to keep
@@ -487,8 +495,6 @@ class SessionService {
     // be reached. Never the mic lamp, rumble or audio (see the definition).
     void resendFeedbackStateLocked(const Connection& conn);
     void resendControllerFeedbackStateLocked(const Connection& conn, const Controller& ctrl);
-    // The pad's audio working set, allocated on first use (see ControllerAudio).
-    ControllerAudio& ensureControllerAudioLocked(Controller& ctrl);
     Connection* findByDeviceId(const std::string& deviceId);
     Connection* findByConnectionId(const std::string& connectionId);
     const Connection* findByConnectionId(const std::string& connectionId) const;
@@ -531,7 +537,6 @@ class SessionService {
     uint32_t takePointerStampLocked();
     void releasePointerLocked(Controller& ctrl);
     void releaseConnectionPointerLocked(Connection& conn);
-    void drainRumbleLocked(uint32_t serial, int* sent = nullptr);
     uint32_t generateUniqueToken();
     void publishSessionKeyLocked(Connection& conn, std::chrono::steady_clock::time_point now);
 };

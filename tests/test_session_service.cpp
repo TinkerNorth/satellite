@@ -390,18 +390,18 @@ struct MockClient : IClientPort {
         lastPlayerLedsCtrlIdx = ctrlIdx;
         lastPlayerLeds = ledMask;
     }
-    void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+    void sendSpeakerAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                           const uint8_t* opus, size_t opusLen) override {
         speakerAudioCalls++;
-        lastSpeakerAudioConnToken = conn.token;
+        lastSpeakerAudioConnToken = to.token;
         lastSpeakerAudioCtrlIdx = ctrlIdx;
         lastSpeakerAudioSeq = seq;
         lastSpeakerAudioOpus.assign(opus, opus + opusLen);
     }
-    void sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
-                         size_t opusLen) override {
+    void sendHapticAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
+                         const uint8_t* opus, size_t opusLen) override {
         hapticAudioCalls++;
-        lastHapticAudioConnToken = conn.token;
+        lastHapticAudioConnToken = to.token;
         lastHapticAudioCtrlIdx = ctrlIdx;
         lastHapticAudioSeq = seq;
         lastHapticAudioOpus.assign(opus, opus + opusLen);
@@ -3879,6 +3879,180 @@ static void test_hapticAudio_countersTrackBothRenderings() {
 // maintenance tick's job (SessionService::refreshRumble); the receive path
 // only coalesces while the client can still be running the last command.
 
+class EncodeLockProbe {
+  public:
+    void watch(SessionService* svc) { svc_ = svc; }
+
+    void probe() {
+        if (svc_ == nullptr) return;
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        SessionService* svc = svc_;
+        std::thread probe([svc, done] {
+            svc->activeSessionCount();
+            done->store(true);
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        encodes_++;
+        if (!done->load()) encodesUnderLock_++;
+        probes_.push_back(std::move(probe));
+    }
+
+    void finish() {
+        for (std::thread& t : probes_) t.join();
+        probes_.clear();
+    }
+
+    int encodes() const { return encodes_; }
+    int encodesUnderLock() const { return encodesUnderLock_; }
+
+  private:
+    SessionService* svc_ = nullptr;
+    std::vector<std::thread> probes_;
+    int encodes_ = 0;
+    int encodesUnderLock_ = 0;
+};
+
+struct ProbingCodecs : IAudioCodecFactory {
+    satellite::audio::OpusCodecFactory real;
+    EncodeLockProbe probe;
+
+    struct Probing : IAudioEncoder {
+        std::unique_ptr<IAudioEncoder> inner;
+        EncodeLockProbe& probe;
+        Probing(std::unique_ptr<IAudioEncoder> encoder, EncodeLockProbe& p)
+            : inner(std::move(encoder)), probe(p) {}
+        size_t encode(const int16_t* pcm, size_t frames, uint8_t* out, size_t maxOut) override {
+            probe.probe();
+            return inner->encode(pcm, frames, out, maxOut);
+        }
+    };
+
+    std::unique_ptr<IAudioDecoder> makeMicDecoder() override { return real.makeMicDecoder(); }
+    std::unique_ptr<IAudioEncoder> makeSpeakerEncoder() override {
+        auto encoder = real.makeSpeakerEncoder();
+        if (!encoder) return nullptr;
+        return std::make_unique<Probing>(std::move(encoder), probe);
+    }
+    std::unique_ptr<IAudioEncoder> makeHapticEncoder() override {
+        auto encoder = real.makeHapticEncoder();
+        if (!encoder) return nullptr;
+        return std::make_unique<Probing>(std::move(encoder), probe);
+    }
+};
+
+static void test_audioLanes_encodeOutsideTheServiceLock() {
+    TEST("audio lanes: the speaker and haptic encoders run with the service lock free");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    ProbingCodecs codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+    codecs.probe.watch(&svc);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER | CAP_HAPTIC_AUDIO)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    const auto hap = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    for (int i = 0; i < 3; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, spk.data(), AUDIO_FRAME_SAMPLES));
+        EXPECT(svc.handleHapticAudioFromBackend(serial0, hap.data(), AUDIO_FRAME_SAMPLES));
+    }
+    codecs.probe.finish();
+    EXPECT_EQ(codecs.probe.encodes(), 6);
+    EXPECT_EQ(codecs.probe.encodesUnderLock(), 0);
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ(client.hapticAudioCalls, 3);
+}
+
+static void test_audioLanes_neverDropForTheServiceLock() {
+    TEST("audio lanes: speaker and haptic frames go out while another thread holds mtx_");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER | CAP_HAPTIC_AUDIO)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    const auto hap = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    bool speaker = false;
+    bool haptic = false;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        speaker = svc.handleSpeakerAudioFromBackend(serial0, spk.data(), AUDIO_FRAME_SAMPLES);
+        haptic = svc.handleHapticAudioFromBackend(serial0, hap.data(), AUDIO_FRAME_SAMPLES);
+    }));
+    EXPECT(speaker);
+    EXPECT(haptic);
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ(client.hapticAudioCalls, 1);
+    const AudioStreamCounts counts = svc.audioCounts();
+    EXPECT_EQ(counts.speakerLockContended, uint64_t{0});
+    EXPECT_EQ(counts.hapticLockContended, uint64_t{0});
+}
+
+static void test_audioLanes_followASerialToItsNextSession() {
+    TEST("audio lanes: a serial that moves to another session sends there, numbered from 0");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    const uint16_t caps = CAP_SPEAKER | CAP_HAPTIC_AUDIO;
+    const auto first = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, caps)});
+    const uint32_t moving = serialOfSlot(svc, 0);
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    const auto hap = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    for (int i = 0; i < 3; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), AUDIO_FRAME_SAMPLES));
+        EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.lastSpeakerAudioConnToken, first.token);
+    EXPECT_EQ(client.lastHapticAudioConnToken, first.token);
+    const size_t half = AUDIO_FRAME_SAMPLES / 2;
+    EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), half));
+    EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), half));
+
+    TEST("audio lanes: a removed pad's serial takes no audio");
+    upsert(svc, {});
+    EXPECT(!svc.handleSpeakerAudioFromBackend(moving, spk.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT(!svc.handleHapticAudioFromBackend(moving, hap.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ(client.hapticAudioCalls, 3);
+
+    TEST("audio lanes: the new owner gets the serial's audio with none of the old lane's state");
+    std::vector<ControllerDescriptor> everySerial;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        everySerial.push_back(makeDesc(idx, CONTROLLER_TYPE_DUALSENSE, caps));
+    }
+    const auto second = upsert(svc, everySerial, "devB", "B");
+    int movedIdx = -1;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        PadInfo pad{};
+        EXPECT(snapshotPad(svc, "devB", idx, pad));
+        if (pad.serial == moving) movedIdx = idx;
+    }
+    EXPECT(movedIdx >= 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), half));
+    EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ(client.hapticAudioCalls, 3);
+    EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), half));
+    EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 4);
+    EXPECT_EQ(client.hapticAudioCalls, 4);
+    EXPECT_EQ(client.lastSpeakerAudioConnToken, second.token);
+    EXPECT_EQ(client.lastHapticAudioConnToken, second.token);
+    EXPECT_EQ((int)client.lastSpeakerAudioCtrlIdx, movedIdx);
+    EXPECT_EQ((int)client.lastHapticAudioCtrlIdx, movedIdx);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+    EXPECT_EQ((int)client.lastHapticAudioSeq, 0);
+}
+
 static void test_rumble_heldLevelIsRefreshedBeforeTheClientStops() {
     TEST("rumble: a held HID level is re-sent every RUMBLE_REFRESH_MS, unchanged");
     MockViGem vigem;
@@ -3981,34 +4155,45 @@ static void test_rumble_hapticStreamThatEndsIsStoppedByTheHost() {
     EXPECT_EQ((int)client.lastRumble.weakMagnitude, 0);
 }
 
-static void test_audioBackendCallbacks_dropNotBlock_whenLockHeld() {
-    TEST("mic LED / speaker: backend callbacks drop (never block) while mtx_ is held");
+static void test_audioBackendCallbacks_neverDropUnderTheServiceLock() {
+    TEST("mic LED / speaker: callbacks fired while mtx_ is held are delivered, never dropped");
     MockViGem vigem;
     MockClient client;
     MockLog log;
-    SessionService svc(vigem, client, log);
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
 
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC | CAP_SPEAKER)}, "devA", "A");
     const uint32_t serialA = vigem.pluggedSerials.back();
     auto rB = upsert(svc, {}, "devB", "B");
 
-    std::vector<int16_t> pcm(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
-    // Same production bug the rumble/lightbar test pins: unplug joins the
-    // notification worker while holding mtx_, so a blocking acquire in a
-    // backend callback deadlocks this join.
+    const auto pcm = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    std::atomic<bool> speakerSent{false};
+    std::atomic<bool> speakerBeforeRelease{false};
+    std::thread worker;
     client.onSessionClose = [&] {
-        std::thread worker([&] {
+        worker = std::thread([&] {
+            speakerSent.store(
+                svc.handleSpeakerAudioFromBackend(serialA, pcm.data(), AUDIO_FRAME_SAMPLES));
             vigem.fireMicLed(serialA, MIC_LED_STATE_ON);
-            vigem.fireSpeakerAudio(serialA, pcm.data(), AUDIO_FRAME_SAMPLES);
         });
-        worker.join();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!speakerSent.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        speakerBeforeRelease.store(speakerSent.load());
     };
     svc.closeSessionById(rB.connectionId, "", CLOSE_REASON_KICKED, /*notify=*/true);
     client.onSessionClose = nullptr;
-    EXPECT_EQ(client.micLedCalls, 0); // dropped, not delivered
+    worker.join();
+    EXPECT(speakerBeforeRelease.load());
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ(client.micLedCalls, 1);
+    const AudioStreamCounts counts = svc.audioCounts();
+    EXPECT_EQ(counts.speakerLockContended, uint64_t{0});
+    EXPECT_EQ(counts.speakerSent, uint64_t{1});
 
-    // The drop didn't poison the coalesce cache: the same value re-notified
-    // with the lock free goes out (self-heal).
+    TEST("mic LED: the coalesce cache took the delivered state, so a repeat stays quiet");
     vigem.fireMicLed(serialA, MIC_LED_STATE_ON);
     EXPECT_EQ(client.micLedCalls, 1);
 }
@@ -4044,8 +4229,8 @@ static void test_feedback_replugResetsCoalesce() {
     EXPECT_EQ(client.micLedCalls, 2);
 }
 
-static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
-    TEST("rumble/lightbar: backend callbacks drop (never block) while mtx_ is held");
+static void test_backendCallbacks_waitForTheServiceLockAndDeliver() {
+    TEST("rumble/lightbar: callbacks fired while mtx_ is held wait for it and are delivered");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -4057,24 +4242,27 @@ static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
 
     RumbleReport rr{};
     rr.strongMagnitude = 1000;
-    // onSessionClose fires while the closing thread holds mtx_. A worker
-    // thread invoking the backend callbacks then MUST fail its try_lock and
-    // return; a blocking acquire would deadlock this join (the production bug:
-    // unplug joins the notification worker while holding mtx_).
+    std::atomic<bool> delivered{false};
+    std::atomic<bool> deliveredBeforeRelease{true};
+    std::thread worker;
     client.onSessionClose = [&] {
-        std::thread worker([&] {
+        worker = std::thread([&] {
             vigem.fireRumble(serialA, rr);
             vigem.fireLightbar(serialA, 1, 2, 3);
+            delivered.store(true);
         });
-        worker.join();
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        deliveredBeforeRelease.store(delivered.load());
     };
     svc.closeSessionById(rB.connectionId, "", CLOSE_REASON_KICKED, /*notify=*/true);
     client.onSessionClose = nullptr;
-    EXPECT_EQ(client.rumbleCalls, 0); // dropped, not delivered
-    EXPECT_EQ(client.lightbarCalls, 0);
+    worker.join();
+    EXPECT(!deliveredBeforeRelease.load());
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ(client.lightbarCalls, 1);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 1000);
 
-    // The drop didn't poison the coalesce caches: the same values re-notified
-    // with the lock free go out (self-heal).
+    TEST("rumble/lightbar: the delivered values coalesce like any other");
     vigem.fireRumble(serialA, rr);
     vigem.fireLightbar(serialA, 1, 2, 3);
     EXPECT_EQ(client.rumbleCalls, 1);
@@ -4922,15 +5110,16 @@ struct ContendedRumbleFixture {
     uint16_t durationMs_ = RUMBLE_WIRE_DURATION_MS;
 
     void publish() { svc_.handleRumbleFromBackend(serial_, latest_, durationMs_); }
-    void publishWhileJoined() {
-        std::thread worker(&ContendedRumbleFixture::publish, this);
-        worker.join();
-    }
     void contend() {
-        client_.onSessionClose = std::bind(&ContendedRumbleFixture::publishWhileJoined, this);
+        std::thread worker;
+        client_.onSessionClose = [&] {
+            worker = std::thread(&ContendedRumbleFixture::publish, this);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        };
         EXPECT_EQ(svc_.closeSessionById(other_.connectionId, "other", CLOSE_REASON_KICKED, true),
                   0);
         client_.onSessionClose = nullptr;
+        worker.join();
     }
 };
 
@@ -4941,32 +5130,32 @@ static void test_rumble_stopSurvivesContention() {
     start.strongMagnitude = 40000;
     f.backend_.fireRumble(f.serial_, start);
     f.contend();
+    EXPECT_EQ(f.client_.rumbleCalls, 2);
+    EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
+    EXPECT_EQ(f.svc_.refreshRumble(), 0);
+    EXPECT_EQ(f.client_.rumbleCalls, 2);
+}
+
+static void test_rumble_latestNotificationWins() {
+    TEST("rumble: a newer notification supersedes one received under contention");
+    ContendedRumbleFixture f;
+    f.latest_.strongMagnitude = 50000;
+    f.contend();
     EXPECT_EQ(f.client_.rumbleCalls, 1);
-    EXPECT_EQ(f.svc_.refreshRumble(), 1);
+    f.backend_.fireRumble(f.serial_, RumbleReport{});
     EXPECT_EQ(f.client_.rumbleCalls, 2);
     EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
     EXPECT_EQ(f.svc_.refreshRumble(), 0);
 }
 
-static void test_rumble_latestNotificationWins() {
-    TEST("rumble: a newer notification supersedes a pending notification");
-    ContendedRumbleFixture f;
-    f.latest_.strongMagnitude = 50000;
-    f.contend();
-    f.backend_.fireRumble(f.serial_, RumbleReport{});
-    EXPECT_EQ(f.client_.rumbleCalls, 1);
-    EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
-    EXPECT_EQ(f.svc_.refreshRumble(), 0);
-}
-
 static void test_rumble_contendedDurationIsPreserved() {
-    TEST("rumble: a pending notification retains both motors and its wire duration");
+    TEST("rumble: a notification received under contention keeps both motors and its duration");
     ContendedRumbleFixture f;
     f.latest_.strongMagnitude = 35000;
     f.latest_.weakMagnitude = 25000;
     f.durationMs_ = 73;
     f.contend();
-    EXPECT_EQ(f.svc_.refreshRumble(), 1);
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
     EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 35000);
     EXPECT_EQ(f.client_.lastRumble.weakMagnitude, 25000);
     EXPECT_EQ(f.client_.lastRumble.durationMs, 73);
@@ -4984,13 +5173,16 @@ static void test_rumble_retiredSerialDiscardsPendingState() {
     EXPECT_EQ(f.svc_.availableSlots(), 0);
     f.latest_.strongMagnitude = 50000;
     f.contend();
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
+    EXPECT_EQ(f.client_.lastRumbleConnToken, f.session_.token);
     EXPECT_EQ(f.svc_.closeSessionById(f.session_.connectionId, "dev1", CLOSE_REASON_KICKED, false),
               1);
     const auto replacement = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE)});
     EXPECT(replacement.ok);
     EXPECT_EQ(f.backend_.pluggedSerials.back(), f.serial_);
     EXPECT_EQ(f.svc_.refreshRumble(), 0);
-    EXPECT_EQ(f.client_.rumbleCalls, 0);
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
+    EXPECT(f.client_.lastRumbleConnToken != replacement.token);
 }
 
 int main() {
@@ -5153,14 +5345,17 @@ int main() {
     test_hapticAudio_mixesWithHidRumbleByMax();
     test_hapticAudio_policyOffStopsBothRenderings();
     test_hapticAudio_countersTrackBothRenderings();
+    test_audioLanes_encodeOutsideTheServiceLock();
+    test_audioLanes_neverDropForTheServiceLock();
+    test_audioLanes_followASerialToItsNextSession();
     test_rumble_heldLevelIsRefreshedBeforeTheClientStops();
     test_rumble_coalesceNeverOutlivesTheClientsCommand();
     test_rumble_hapticStreamThatEndsIsStoppedByTheHost();
     test_audioCounts_trackTheMicStream();
     test_audioCounts_separateSuppressedSilenceFromSentFrames();
-    test_audioBackendCallbacks_dropNotBlock_whenLockHeld();
+    test_audioBackendCallbacks_neverDropUnderTheServiceLock();
     test_feedback_replugResetsCoalesce();
-    test_backendCallbacks_dropNotBlock_whenLockHeld();
+    test_backendCallbacks_waitForTheServiceLockAndDeliver();
     test_feedbackState_rotatedSessionGetsTheLightbarAgain();
     test_feedbackState_rotatedSessionGetsTriggerEffectsAndPlayerLedsAgain();
     test_feedbackState_micLampIsNotReplayedSinceItAlsoMutesTheMicrophone();

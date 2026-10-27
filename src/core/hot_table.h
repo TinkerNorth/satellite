@@ -46,6 +46,14 @@ inline constexpr uint16_t hotSessionEpoch(uint32_t word) { return static_cast<ui
 
 inline constexpr bool hotSessionMouse(uint32_t word) { return (word & HOT_SESSION_MOUSE) != 0; }
 
+inline constexpr uint32_t hotPadOwner(int slot, uint8_t ctrlIdx) {
+    return (static_cast<uint32_t>(slot + 1) << 8) | ctrlIdx;
+}
+
+inline constexpr int hotOwnerSlot(uint32_t owner) { return static_cast<int>(owner >> 8) - 1; }
+
+inline constexpr uint8_t hotOwnerIndex(uint32_t owner) { return static_cast<uint8_t>(owner); }
+
 template <typename T, size_t N> void storeWords(std::atomic<uint64_t> (&words)[N], const T& value) {
     static_assert(std::is_trivially_copyable_v<T> && sizeof(T) <= N * sizeof(uint64_t));
     uint64_t raw[N] = {};
@@ -233,7 +241,13 @@ struct RxSession {
 
 inline constexpr size_t RX_RECEIVE_PARTICIPANT = 0;
 inline constexpr size_t RX_MIC_PARTICIPANT = 1;
-inline constexpr size_t RX_PARTICIPANTS = 2;
+inline constexpr size_t RX_AUDIO_LANES = 2;
+inline constexpr size_t RX_PARTICIPANTS =
+    2 + RX_AUDIO_LANES * static_cast<size_t>(MAX_BACKEND_CONTROLLERS);
+
+inline constexpr size_t rxAudioParticipant(uint32_t serial, size_t lane) {
+    return 2 + (static_cast<size_t>(serial) - 1) * RX_AUDIO_LANES + lane;
+}
 
 class alignas(64) RxEpoch {
   public:
@@ -311,6 +325,7 @@ class HotTable {
   public:
     std::array<std::atomic<uint32_t>, MAX_SESSIONS> tokens{};
     std::array<HotSlot, MAX_SESSIONS> slots;
+    std::array<std::atomic<uint32_t>, MAX_BACKEND_CONTROLLERS + 1> padOwners{};
 
     int find(uint32_t token) const {
         if (token == 0) return -1;

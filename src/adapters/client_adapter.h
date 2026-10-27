@@ -23,10 +23,10 @@ class ClientAdapter : public IClientPort {
     void sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
                             const TriggerEffectsReport& report) override;
     void sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) override;
-    void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+    void sendSpeakerAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                           const uint8_t* opus, size_t opusLen) override;
-    void sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
-                         size_t opusLen) override;
+    void sendHapticAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
+                         const uint8_t* opus, size_t opusLen) override;
     void sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) override;
     void sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_t r, uint8_t g,
                       uint8_t b) override;
@@ -41,6 +41,6 @@ class ClientAdapter : public IClientPort {
                      size_t innerLen);
     void releaseGate(uint32_t token, const uint8_t* key, HotSlot& slot);
     // Shared body of the outbound audio lanes (speaker, haptics).
-    void sendAudioMessage(const Connection& conn, uint16_t msgType, uint8_t ctrlIdx, uint16_t seq,
-                          const uint8_t* opus, size_t opusLen);
+    void sendAudioMessage(const SessionEndpoint& to, uint16_t msgType, uint8_t ctrlIdx,
+                          uint16_t seq, const uint8_t* opus, size_t opusLen);
 };

@@ -213,12 +213,12 @@ class IClientPort {
     // Speaker audio (0x0013): ctrlIdx u8, seq u16 BE, then one 20 ms Opus
     // packet. Lossy by contract: no ack, no retransmit, no reordering on this
     // side; the receiver conceals gaps with Opus FEC/PLC.
-    virtual void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+    virtual void sendSpeakerAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                                   const uint8_t* opus, size_t opusLen) = 0;
 
     // HD haptics (0x0015): same shape as speaker audio, one 20 ms stereo Opus
     // packet of the pad's two actuator lanes. Same lossy doctrine.
-    virtual void sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+    virtual void sendHapticAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                                  const uint8_t* opus, size_t opusLen) = 0;
 
     // Mic-mute LED (0x0014), payload: ctrlIdx u8, state u8 (MIC_LED_STATE_*).
