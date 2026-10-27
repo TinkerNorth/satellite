@@ -10,6 +10,7 @@
 #include "globals.h"
 #include "config.h"
 #include "crypto.h"
+#include "file_log.h"
 #include "tray.h"
 #include "mac_hid_gamepad_adapter.h"
 #include "updater_adapter.h"
@@ -50,6 +51,7 @@ namespace crash = satellite::crash;
     if (!saved) {
         logMsg(LogLevel::WARN, "app", "The configuration was not saved before the app quit");
     }
+    lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs);
     return NSTerminateNow;
 }
 @end
@@ -158,6 +160,8 @@ int main() {
         // operator's opt-in plus a DSN this build actually carries.
         crash::init(g_configStore->current()->crashReporting, crash::databaseDirFor(configPath()));
 
+        lifecycle::startFileLogger(lifecycle::logDir());
+
         MacHidGamepadAdapter gamepadAdapter;
         ClientAdapter clientAdapter;
         // See the Windows main for why the codec is injected rather than built
@@ -185,6 +189,7 @@ int main() {
         joinWorkers(workers);
 
         svc.closeAllSessions();
+        lifecycle::stopFileLogger();
         g_configStore->stop();
 
         // Flush before exit; a pending envelope is lost otherwise.

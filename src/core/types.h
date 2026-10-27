@@ -1004,14 +1004,6 @@ struct ControllerAudioPolicy {
 };
 
 enum class LogLevel : uint8_t { INFO, WARN, ERR };
-inline const int LOG_RING_SIZE = 500;
-
-struct LogEntry {
-    std::chrono::system_clock::time_point timestamp;
-    LogLevel level;
-    std::string source;
-    std::string message;
-};
 
 // Host-feature deny reasons (protocol constants, never localized).
 inline const char* HOST_FEATURE_DENY_NOT_SUPPORTED = "notSupported";

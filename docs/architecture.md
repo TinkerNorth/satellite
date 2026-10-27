@@ -108,7 +108,7 @@ webserver.cpp ─────►  applyController() ────► ClientAdapte
   (HTTPS/admin)      removeController()      sendHeartbeatAck, sendSessionClose
                      closeSessionById()
                      handleGamepadData()  ──► LogAdapter (ILogPort)
-                     handleHeartbeat()        logMsg → ring buffer
+                     handleHeartbeat()        logMsg → log queue
                      getConnectionsSnapshot()
 ```
 
@@ -127,10 +127,10 @@ derive from.
 
 ### Key Design Principles
 
-- `core/` contains no Win32, Winsock, ViGEm, or `httplib` `#include`s, and
-  the invariant is enforced literally. Process-wide infrastructure globals
-  (config, log ring, telemetry atomics, the HTTP server handle, sockets) live
-  in `src/app/app_state.h`, a separate infra layer, never in `core/`.
+- `core/` contains no Win32, Winsock, ViGEm, or `httplib` `#include`s, and the
+  invariant is enforced literally. Process-wide infrastructure globals
+  (config, the log writer, telemetry atomics, the HTTP server handle, sockets)
+  live in `src/app/app_state.h`, a separate infra layer, never in `core/`.
 - `SessionService` is the sole owner of connection state, serial pool,
   and controller lifecycle, so teardown logic lives in one place.
 - Adapters are injected via constructor (dependency injection).
@@ -256,7 +256,8 @@ serial arrays. The remaining globals are:
 - Atomic telemetry counters (`g_packetCount`, `g_submitOk`, etc.)
 - `satellite::g_wire` (`app/wire_stats.h`): per-message wire counters, all
   incremented off the gamepad hot path (see "Hot-path discipline")
-- Log ring buffer (`g_logRing`, `g_logMtx`)
+- The log writer (`logWriter()`): its queue, its recent ring and the file
+  it writes (see "Logging Infrastructure")
 - Win32 plumbing (`g_hwnd`, `g_httpServer`, `g_appRunning`)
 
 ## Receiver Thread (Inbound UDP Adapter)
@@ -841,47 +842,47 @@ query made under `mtx_` waits behind a plug.
 
 Every lock the process shares is a `TrackedMutex` (`core/tracked_mutex.h`)
 under a stable name: `service.state`, `service.topology`, `config.snapshot`,
-`config.write`, `log`, `vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`,
+`config.write`, `vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`,
 `audio.guard`, `tray.icon`, `update.state`, `pairing.requests`, `pairing.pin`,
-`machine.id`, `uinput.devices` and `machid.devices`. A normal build compiles
-it to a `std::mutex` and a name pointer, and the thread roles and blocking
-markers below to nothing. A build with `SATELLITE_LOCK_STATS` (the lock
-tests and `bench_frame_path_lockstats`) records, per lock name and per thread
-role, acquisitions, contended acquisitions, failed `try_lock`s, the wait from
-the `lock` call to the acquisition and the hold from the acquisition to the
+`machine.id`, `uinput.devices` and `machid.devices`. Logging takes none (see
+"Logging Infrastructure"). A normal build compiles it to a `std::mutex` and a
+name pointer, and the thread roles and blocking markers below to nothing. A
+build with `SATELLITE_LOCK_STATS` (the lock tests and
+`bench_frame_path_lockstats`) records, per lock name and per thread role,
+acquisitions, contended acquisitions, failed `try_lock`s, the wait from the
+`lock` call to the acquisition and the hold from the acquisition to the
 `unlock`, with their maxima and log2 histograms. It also records an edge from
 every lock a thread holds to each lock it then calls `lock` on (a `try_lock`
 cannot wait, so it records none), and at every `blockingRegion(what)` marker
 the locks the thread holds there.
 
 Each long-lived thread names its role at entry with `ScopedThreadRole`:
-Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output
-and uinput reader threads), AudioWorker (HIDMaestro speaker and haptic
-drains), Logger, Update, Background (discovery, mDNS, the address watchers,
-the tooltip ticker, the audio guard's poller) and Gui. The HTTP servers' pool
-threads take HttpAdmin or HttpClient per request from each server's
-pre-routing handler. ConfigSaver is the config store's saver thread; Topology
-is reserved for a thread that does not exist yet. The markers are
-`config.save` (every `saveConfig`),
-`log.write` (the file log's write and flush), `helper.pipe` (every HIDMaestro
-helper pipe wait and launch), `tray.shell` (`Shell_NotifyIconW`),
-`audio.com` (the audio guard's COM calls), `backend.lifecycle` (every
-lifecycle call the service makes), `thread.join` (the joins in the receiver,
-the update service, the config store and the adapters) and `vigem.pnp` (the
-ViGEm bus open, plug and unplug waits).
+Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output and
+uinput reader threads), AudioWorker (HIDMaestro speaker and haptic drains),
+Logger, Update, Background (discovery, mDNS, the address watchers, the tooltip
+ticker, the audio guard's poller) and Gui. The HTTP servers' pool threads take
+HttpAdmin or HttpClient per request from each server's pre-routing handler.
+ConfigSaver is the config store's saver thread; Topology is reserved for a
+thread that does not exist yet. The markers are `config.save` (every
+`saveConfig`), `log.write` (the log writer's sink write and flush),
+`helper.pipe` (every HIDMaestro helper pipe wait and launch), `tray.shell`
+(`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls),
+`backend.lifecycle` (every lifecycle call the service makes), `thread.join`
+(the joins in the receiver, the update service, the config store and the
+adapters) and `vigem.pnp` (the ViGEm bus open, plug and unplug waits).
 
 `tests/test_lock_laws.cpp` runs the real service wired as in production (the
 HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,
-`LogAdapter`) with each thread in its production role. The receive thread
-drives every message kind through the steps of `receiver.cpp` and
-`inner_dispatch.cpp` while HttpClient, HttpAdmin, Maintenance and
-BackendWorker threads run upserts that plug and unplug, single-controller
-applies and removes, closes, unpairs, reaps, the dashboard JSON builders and
-the pairing service's config writes. On Windows a second run puts
-`ViGEmAdapter` over a fake driver and `HidMaestroAdapter` over the real
-`HelperClient`, which talks to an in-process helper on a real pipe, behind
-`GamepadMux`. The config lives in a temporary directory named by
-`SATELLITE_CONFIG_DIR`. The test then checks four laws:
+`LogAdapter`, and the log writer, over a sink that discards what it is given)
+with each thread in its production role. The receive thread drives every
+message kind through the steps of `receiver.cpp` and `inner_dispatch.cpp`
+while HttpClient, HttpAdmin, Maintenance and BackendWorker threads run upserts
+that plug and unplug, single-controller applies and removes, closes, unpairs,
+reaps, the dashboard JSON builders and the pairing service's config writes. On
+Windows a second run puts `ViGEmAdapter` over a fake driver and
+`HidMaestroAdapter` over the real `HelperClient`, which talks to an in-process
+helper on a real pipe, behind `GamepadMux`. The config lives in a temporary
+directory named by `SATELLITE_CONFIG_DIR`. The test then checks five laws:
 
 1. Receive: the locks a thread with the Receive role takes.
 2. Lifecycle: every backend lifecycle call (the mock's, the fake ViGEm
@@ -891,20 +892,21 @@ the pairing service's config writes. On Windows a second run puts
 3. Blocking: the locks held at each blocking marker.
 4. Order: the nesting edges form an acyclic graph, and every edge is on the
    list of today's order.
+5. Logger: the writer thread takes no lock at all, and it reaches
+   `log.write`, so the blocking law sees what it holds there: nothing.
 
 Each list is exactly what today's code does. The test fails when a lock, a
-pair or an edge appears that is not on its list, and also when one on the
-list no longer appears, so a list can only shrink and the change that fixes
-an entry deletes it. Every entry says why it is there. Debt is what later
-changes remove: the receive thread's `service.state` and `log`, the helper
-lock held across its pipe waits and logging under `service.state`. By design
-is what stays: anything held under `service.topology`, which exists to
-serialize lifecycle work, the documented order `service.topology`, then
-`service.state`, and the config store's own order, `config.write`, then
-`config.snapshot`.
-The test does not reach `tray.shell` or `audio.com`, whose calls act on the
-desktop, or `log.write`, since the file logger is not part of it, so those
-three markers have no entries yet.
+pair or an edge appears that is not on its list, and also when one on the list
+no longer appears, so a list can only shrink and the change that fixes an
+entry deletes it. Every entry says why it is there. Debt is what later changes
+remove: the receive thread's `service.state` and the helper lock held across
+its pipe waits. By design is what stays: anything held under
+`service.topology`, which exists to serialize lifecycle work, the documented
+order `service.topology`, then `service.state`, and the config store's own
+order, `config.write`, then `config.snapshot`. The test does not reach
+`tray.shell` or `audio.com`, whose calls act on the desktop, so those two
+markers have no entries yet. `log.write` has none because the writer holds
+nothing there.
 
 Reading the stats: a wait is time a thread spent inside `lock` before it
 owned the lock, so a wait on a lock the Receive role takes is time gamepad
@@ -1222,26 +1224,126 @@ documented in `mac_hid_gamepad_adapter.h`.
 
 ## Logging Infrastructure
 
-### Ring Buffer
+`logMsg(level, source, message)` is the one entry point, and `LogAdapter`
+forwards to it. It takes none of the process's locks, never waits for the
+writer and never allocates: it builds a fixed 512-byte record on the stack and
+pushes it into a bounded queue, and one writer thread does everything else.
+The receive thread can therefore log on its rare paths, and the service can
+log while it holds `service.state` or `service.topology`, without either
+becoming a lock edge, and no logger ever waits for the file or for a dashboard
+reader.
 
-A fixed-size in-memory ring buffer stores the last 500 log entries. Each
-entry has a monotonically increasing sequence number.
+### Record
 
-```cpp
-struct LogEntry {
-    std::chrono::system_clock::time_point timestamp;
-    LogLevel level;                              // INFO, WARN, ERR
-    std::string source;                          // subsystem name
-    std::string message;                         // human-readable text
-};
+`core/log_record.h`. A record holds the system-clock timestamp in
+nanoseconds, the level, a flags byte, the source (up to 31 bytes) and the
+message (the remaining 468 bytes), each with its length. A longer message is
+cut at a UTF-8 character boundary and ends in `...`, so a truncation is
+visible in the file and on the dashboard. The record is trivially copyable,
+so it crosses the queue and the ring as plain bytes.
 
-std::vector<LogEntry> g_logRing(500); // ring buffer (pre-allocated)
-int g_logHead = 0;                    // next write position
-uint64_t g_logSeq = 0;               // monotonic sequence counter
-TrackedMutex g_logMtx("log");         // protects all of the above
-```
+### Queue
 
-`logMsg(level, source, message)` appends to the ring under the mutex.
+`core/log_queue.h`. A bounded multi-producer, single-consumer queue of 4,096
+records, Vyukov's design: each cell carries a sequence number, a producer
+claims a position with one compare-and-swap on the enqueue counter, copies
+its record into the cell and publishes it by storing the cell's sequence
+with release; the consumer takes the cell whose sequence says it is full
+and hands it back for the next lap. A push never blocks and never
+allocates. When the queue is full it returns false and increments an atomic
+dropped counter.
+
+The writer sleeps on a `std::counting_semaphore` for up to 100 ms with an
+atomic `sleeping` flag set. A producer releases the semaphore only when the
+writer is sleeping and the record is WARN or ERR, the queue has passed a
+quarter of its capacity, or the push was refused; the first producer to
+flip `sleeping` back releases it once. An INFO line therefore costs a
+producer no system call and reaches the file within about 100 ms, and a
+warning or an error wakes the writer at once. The flag is Dekker's pattern,
+as in "Grace": the producer stores (its record and the urgent flag, or the
+enqueue position) and then loads `sleeping`; the writer stores `sleeping`
+and then checks the urgent flag, the depth and any flush or stop request
+before it waits. All of these are sequentially consistent, so either the
+writer sees the work and does not sleep, or the producer sees the sleeping
+writer and wakes it.
+
+### Writer
+
+`core/log_writer.{h,cpp}`, the single consumer, on a thread with the Logger
+role. Each pass drains what is there (at most a queue's worth), publishes
+every record to the recent ring, formats the file lines into one buffer
+(`2026-10-27T15:04:05.123 [WARN ] [service] message`, local time to the
+millisecond, CRLF on Windows and LF elsewhere), asks the sink whether
+rotation is due, writes the batch with one sink call and flushes the sink
+when the batch held a WARN or ERR line, a flush was asked for, the writer is
+stopping, or a second has passed since the last flush. Retention runs once
+when the writer starts and after every rotation. `blockingRegion("log.write")`
+marks the write and the flush; the writer holds no tracked lock there.
+
+The sink is an interface (`ILogSink`: write a batch, flush, rotate when due,
+purge old files), so the writer's logic is tested in core
+(`tests/test_log_writer.cpp`) against a fake sink and the platforms provide
+the file sinks: `platform/windows/file_log.cpp` and
+`platform/posix/file_log.cpp`, for Linux and macOS. All three write
+`satellite-YYYYMMDD.log`, roll to a new file at local midnight, move a file
+that reached 5 MB aside to `satellite-YYYYMMDD.1.log`, and delete `.log`
+files older than 7 days. The sink counts the bytes it wrote, so the rotation
+check touches no file. The directory is
+`%LOCALAPPDATA%\TinkerNorth\Satellite\logs` on Windows,
+`$XDG_STATE_HOME/satellite/logs` (by default `~/.local/state/satellite/logs`)
+on Linux and `~/Library/Logs/Satellite` on macOS. Each main starts the
+writer after `crash::init` and stops it after `closeAllSessions`; `stop`
+drains and flushes what is queued before it returns. macOS also flushes in
+`applicationShouldTerminate:`, because AppKit exits from there.
+
+The writer exists from the first `logMsg` and is never destroyed, so a
+thread that logs during process exit never touches a queue that is gone.
+Lines logged before a main starts the writer wait in the queue, up to its
+4,096 records.
+
+When the dropped counter has moved since the last pass, the writer writes
+`N log lines dropped` (WARN, source `log`) after the records that were
+queued when the pass began, which is where the refused lines would have
+gone, and before anything logged after them. The line goes to the ring as
+well.
+
+### Recent ring
+
+`core/log_ring.h`. The last 500 records, each slot a record and its
+sequence number stored as 64-bit words behind a per-slot seqlock, with the
+same write and read pattern as the hot table (see "Seqlock"). Only the
+writer writes it. It numbers records contiguously from 0 and publishes the
+count in an atomic after each one; that count is the dashboard's `logSeq`.
+A reader loads the count, copies each slot it wants, validates the slot's
+generation and stored sequence number, and skips a slot that tore, which
+only happens when the writer was overwriting it with a newer record, so the
+record it held has left the ring anyway. `buildLogsJson` copies the slots it
+needs and formats the JSON afterwards, holding nothing.
+
+### Flush
+
+`flushFileLog(timeout)` returns true only when every line logged before the
+call is on disk. It notes the queue's enqueue position, raises the flush
+target to it, wakes the writer, and waits on a second semaphore for the
+writer's acknowledgement, up to the deadline. The writer acknowledges once
+it has consumed through the target, written it and flushed the sink. A line
+the queue refused was never logged (its count line is). A failed write
+makes every flush that covers it return false as soon as the writer records
+the loss; a sink that blocks makes it return false at its deadline. With no
+writer running, or on the writer's own thread, it returns false at once.
+The caller waits; producers never do.
+
+### Crash path
+
+On Windows, `onTerminate` and `onAbortSignal` format their line into a
+stack buffer and write it straight to the open log file with no queue and no
+lock (the sink publishes its handle in an atomic for this), then flush it.
+They also push the record, marked ring-only, so the dashboard ring shows it
+without the writer writing it a second time; when no file is open, they push
+it as an ordinary record for the writer to write. `onAbortSignal` then flushes
+the queue, bounded by `kLogFlushTimeoutMs`, so the lines logged just before
+the crash follow the crash line in the file. A crash inside a log call can
+no longer hang the handler, as it could while `logMsg` took a mutex.
 
 ### Log Sources
 
@@ -1255,7 +1357,8 @@ TrackedMutex g_logMtx("log");         // protects all of the above
 
 ### API Integration
 
-- `GET /api/logs?since=N` returns entries with seq > N (incremental fetch)
+- `GET /api/logs?since=N` returns the entries numbered N and later that the
+  ring still holds, oldest first, and the `seq` to send as N next time
 - SSE stream (`GET /api/events`, admin) multiplexes six event types
   (`status`, `connections`, `devices`, `update`, `pin`, `pairRequests`)
   pushed every second; `status` includes `logSeq` so the frontend knows

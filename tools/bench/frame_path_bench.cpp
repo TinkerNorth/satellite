@@ -7,6 +7,7 @@
 #endif
 
 #include "config.h"
+#include "file_log.h"
 
 #include "fake_vigem_driver.h"
 
@@ -1939,6 +1940,38 @@ class ConfigSandbox {
     bool ready_ = false;
 };
 
+class BenchFileLog {
+  public:
+    BenchFileLog() {
+        wchar_t temp[MAX_PATH];
+        const DWORD length = GetTempPathW(MAX_PATH, temp);
+        if (length == 0 || length >= MAX_PATH) return;
+        dir_ = std::filesystem::path(std::wstring(temp, length)) /
+               ("satellite-bench-logs-" + std::to_string(GetCurrentProcessId()));
+        std::error_code ec;
+        std::filesystem::create_directories(dir_, ec);
+        if (ec) return;
+        const std::u8string utf8 = dir_.u8string();
+        lifecycle::startFileLogger(std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size()));
+        started_ = logWriter().running();
+    }
+
+    ~BenchFileLog() {
+        lifecycle::stopFileLogger();
+        std::error_code ec;
+        if (!dir_.empty()) std::filesystem::remove_all(dir_, ec);
+    }
+
+    BenchFileLog(const BenchFileLog&) = delete;
+    BenchFileLog& operator=(const BenchFileLog&) = delete;
+
+    bool ready() const { return started_; }
+
+  private:
+    std::filesystem::path dir_;
+    bool started_ = false;
+};
+
 std::vector<BackendMode> backendsFor(const Options& options) {
     if (options.smoke) return {BackendMode::Mock, BackendMode::Vigem};
     return {options.backend};
@@ -2060,6 +2093,11 @@ int main(int argc, char** argv) {
     const ConfigSandbox sandbox;
     if (!sandbox.ready()) {
         std::fprintf(stderr, "could not point SATELLITE_CONFIG_DIR at a temporary directory\n");
+        return 1;
+    }
+    const BenchFileLog fileLog;
+    if (!fileLog.ready()) {
+        std::fprintf(stderr, "could not start the log writer in a temporary directory\n");
         return 1;
     }
     if (micPackets().empty()) {

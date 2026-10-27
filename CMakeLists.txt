@@ -194,6 +194,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/gamepad_backend.cpp
     src/platform/windows/updater_adapter.cpp
     src/platform/windows/app_lifecycle.cpp
+    src/platform/windows/file_log.cpp
     src/platform/windows/shell_integration.cpp
 )
 
@@ -203,6 +204,7 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/globals.cpp
     src/platform/macos/config.cpp
     src/platform/posix/config_posix.cpp
+    src/platform/posix/file_log.cpp
     src/core/config_io.cpp
     src/platform/posix/crypto_posix.cpp
     src/platform/macos/tray.mm
@@ -217,6 +219,7 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/globals.cpp
     src/platform/linux/config.cpp
     src/platform/posix/config_posix.cpp
+    src/platform/posix/file_log.cpp
     src/core/config_io.cpp
     src/platform/posix/crypto_posix.cpp
     src/platform/linux/gamepad_backend.cpp
@@ -1328,6 +1331,7 @@ if(WIN32)
             src/app/audio_settings.cpp
             src/core/config_io.cpp
             src/core/config_store.cpp
+            src/core/log_writer.cpp
             src/core/session_service.cpp
             src/net/admin_json.cpp
             src/net/inner_dispatch.cpp
@@ -1335,6 +1339,7 @@ if(WIN32)
             src/net/pairing_service.cpp
             src/net/session_crypto.cpp
             src/platform/windows/config.cpp
+            src/platform/windows/file_log.cpp
             src/platform/windows/globals.cpp
             src/platform/windows/vigem_adapter.cpp
         )
@@ -1523,6 +1528,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         tests/test_linux_platform.cpp
         src/platform/linux/config.cpp
         src/platform/posix/config_posix.cpp
+        src/platform/posix/file_log.cpp
         src/core/config_io.cpp
         src/platform/linux/globals.cpp
         src/platform/linux/gamepad_adapter.cpp
@@ -1599,8 +1605,10 @@ if(APPLE)
         tests/test_macos_platform.cpp
         src/platform/macos/config.cpp
         src/platform/posix/config_posix.cpp
+        src/platform/posix/file_log.cpp
         src/core/config_io.cpp
         src/core/config_store.cpp
+        src/core/log_writer.cpp
         src/platform/macos/globals.cpp
         src/platform/posix/crypto_posix.cpp
         src/net/pin_rotation.cpp
@@ -1673,6 +1681,7 @@ if(WIN32)
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
         src/platform/windows/app_lifecycle.cpp
+        src/platform/windows/file_log.cpp
         src/adapters/crash_adapter.cpp
         src/net/pin_rotation.cpp
         src/net/pairing_keys.cpp

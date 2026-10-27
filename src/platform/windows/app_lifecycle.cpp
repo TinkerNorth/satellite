@@ -4,7 +4,7 @@
 
 #include "adapters/crash_adapter.h"
 #include "autostart_rule.h"
-#include "core/log_ring.h"
+#include "core/log_writer.h"
 #include "core/tracked_mutex.h"
 
 #include <DbgHelp.h>
@@ -15,18 +15,13 @@
 #include <werapi.h>
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
-#include <ctime>
 #include <exception>
 #include <fstream>
-#include <thread>
 #include <typeinfo>
 #include <vector>
-
-extern void logMsg(LogLevel level, const std::string& source, const std::string& message);
 
 namespace {
 
@@ -61,14 +56,7 @@ constexpr size_t kMaxDumpFiles = 10;
 // ever recorded in one of the two places. We chain instead.
 LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = nullptr;
 
-// Rolls on size or date change, whichever trips first.
-constexpr size_t kMaxLogFileBytes = 5 * 1024 * 1024;
-constexpr int kLogRetentionDays = 7;
-
 HANDLE g_singletonMutex = nullptr;
-
-std::atomic<bool> g_loggerStarted{false};
-std::thread g_loggerThread;
 
 wchar_t g_dumpDirW[MAX_PATH] = {};
 wchar_t g_dumpPathW[MAX_PATH] = {};
@@ -76,21 +64,7 @@ wchar_t g_dumpPathW[MAX_PATH] = {};
 using AbortHandler = void (*)(int);
 AbortHandler g_prevAbortHandler = nullptr;
 
-DWORD g_loggerThreadId = 0;
-HANDLE g_logWake = nullptr;
-HANDLE g_logFlushed = nullptr;
-std::atomic<bool> g_logFlushPending{false};
-std::atomic<bool> g_loggerStopRequested{false};
-
 constexpr DWORD kStatusFatalAppExit = 0x40000015;
-
-std::wstring utf8ToWide(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
 
 std::string wideToUtf8(const std::wstring& w) {
     if (w.empty()) return {};
@@ -148,31 +122,6 @@ void retainNewestN(const std::wstring& dir, const wchar_t* ext, size_t keep) {
         std::wstring full = dir + L"\\" + entries[i].name;
         DeleteFileW(full.c_str());
     }
-}
-
-// Delete files older than `days` regardless of count (log rotation cap).
-void deleteOlderThan(const std::wstring& dir, const wchar_t* ext, int days) {
-    std::wstring pattern = dir + L"\\*" + ext;
-    WIN32_FIND_DATAW fd{};
-    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-
-    FILETIME ftNow;
-    GetSystemTimeAsFileTime(&ftNow);
-    ULONGLONG now = (static_cast<ULONGLONG>(ftNow.dwHighDateTime) << 32) | ftNow.dwLowDateTime;
-    const ULONGLONG kFtPerDay = 10000000ULL * 60ULL * 60ULL * 24ULL;
-    ULONGLONG cutoff = now - static_cast<ULONGLONG>(days) * kFtPerDay;
-
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        ULONGLONG t = (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32) |
-                      fd.ftLastWriteTime.dwLowDateTime;
-        if (t < cutoff) {
-            std::wstring full = dir + L"\\" + fd.cFileName;
-            DeleteFileW(full.c_str());
-        }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
 }
 
 // Passes the exception on to whoever held the filter before us, or to the OS
@@ -234,10 +183,22 @@ LONG WINAPI dumpFilter(EXCEPTION_POINTERS* ep) {
     return chainOrDefault(ep);
 }
 
+void logCrashLine(const char* message) {
+    satellite::LogRecord record =
+        satellite::makeLogRecord(satellite::logClockNowNs(), LogLevel::ERR, "crash", message);
+    char line[satellite::LOG_LINE_CAPACITY];
+    satellite::LogLineFormatter formatter;
+    const size_t length = formatter.format(record, line, sizeof(line));
+    if (writeLogLineDirect(line, length)) record.flags = satellite::LOG_RECORD_RING_ONLY;
+    logWriter().submit(record);
+}
+
 void onAbortSignal(int signum) {
-    const std::string msg = "abort() on thread " + std::to_string(GetCurrentThreadId());
-    logMsg(LogLevel::ERR, "crash", msg);
-    satellite::crash::breadcrumb("crash", msg);
+    char message[64];
+    std::snprintf(message, sizeof(message), "abort() on thread %lu",
+                  static_cast<unsigned long>(GetCurrentThreadId()));
+    logCrashLine(message);
+    satellite::crash::breadcrumb("crash", message);
     flushFileLog(kLogFlushTimeoutMs);
 
     CONTEXT ctx{};
@@ -259,162 +220,20 @@ void onAbortSignal(int signum) {
 }
 
 void onTerminate() {
-    std::string reason = "no active exception";
+    char reason[satellite::LOG_MESSAGE_CAPACITY] = "no active exception";
     if (std::exception_ptr active = std::current_exception()) {
         try {
             std::rethrow_exception(active);
         } catch (const std::exception& e) {
-            reason = std::string(typeid(e).name()) + ": " + e.what();
-        } catch (...) { reason = "non-standard exception"; }
+            std::snprintf(reason, sizeof(reason), "%s: %s", typeid(e).name(), e.what());
+        } catch (...) { std::snprintf(reason, sizeof(reason), "%s", "non-standard exception"); }
     }
-    const std::string msg =
-        "std::terminate on thread " + std::to_string(GetCurrentThreadId()) + ": " + reason;
-    logMsg(LogLevel::ERR, "crash", msg);
-    satellite::crash::breadcrumb("crash", msg);
+    char message[satellite::LOG_MESSAGE_CAPACITY + 64];
+    std::snprintf(message, sizeof(message), "std::terminate on thread %lu: %s",
+                  static_cast<unsigned long>(GetCurrentThreadId()), reason);
+    logCrashLine(message);
+    satellite::crash::breadcrumb("crash", message);
     std::abort();
-}
-
-const char* levelStr(LogLevel l) {
-    switch (l) {
-    case LogLevel::INFO:
-        return "INFO ";
-    case LogLevel::WARN:
-        return "WARN ";
-    case LogLevel::ERR:
-        return "ERROR";
-    default:
-        return "INFO ";
-    }
-}
-
-std::string isoTimestamp(std::chrono::system_clock::time_point tp) {
-    std::time_t t = std::chrono::system_clock::to_time_t(tp);
-    std::tm tm{};
-    localtime_s(&tm, &t);
-    auto us = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()) % 1000;
-    char buf[40];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
-    char out[60];
-    StringCchPrintfA(out, sizeof(out), "%s.%03lld", buf, static_cast<long long>(us.count()));
-    return out;
-}
-
-std::wstring todaysLogPath(const std::wstring& dir) {
-    std::time_t now = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &now);
-    wchar_t name[32];
-    StringCchPrintfW(name, ARRAYSIZE(name), L"satellite-%04d%02d%02d.log", tm.tm_year + 1900,
-                     tm.tm_mon + 1, tm.tm_mday);
-    return dir + L"\\" + name;
-}
-
-HANDLE openAppendLog(const std::wstring& path) {
-    return CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-                       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-}
-
-// The ring entries written since the last drain, oldest first; the same slot
-// math /api/logs uses, so a reader that fell behind the ring sees the oldest
-// it still holds. `lastSeq` advances to the count seen.
-std::vector<LogEntry> drainLogSince(uint64_t& lastSeq) {
-    std::vector<LogEntry> drained;
-    std::lock_guard<TrackedMutex> lk(g_logMtx); // serialise with logMsg() ring writes
-    for (const auto& slot :
-         satellite::logRingSlotsSince(LOG_RING_SIZE, g_logHead, g_logSeq, lastSeq)) {
-        drained.push_back(g_logRing[static_cast<size_t>(slot.index)]);
-    }
-    lastSeq = g_logSeq;
-    return drained;
-}
-
-std::string formatLogLine(const LogEntry& e) {
-    std::string line = isoTimestamp(e.timestamp);
-    line += " [";
-    line += levelStr(e.level);
-    line += "] [";
-    line += e.source;
-    line += "] ";
-    line += e.message;
-    line += "\r\n";
-    return line;
-}
-
-void appendLines(HANDLE h, const std::vector<LogEntry>& entries) {
-    blockingRegion("log.write");
-    for (const auto& e : entries) {
-        const std::string line = formatLogLine(e);
-        DWORD wrote = 0;
-        WriteFile(h, line.data(), static_cast<DWORD>(line.size()), &wrote, nullptr);
-    }
-    if (!entries.empty()) FlushFileBuffers(h);
-}
-
-// A file at the size cap moves aside under a counter suffix so the day's
-// earlier log isn't clobbered (satellite-20260525.log -> satellite-20260525.1.log).
-void rotateOversizedLog(const std::wstring& currentPath) {
-    for (int n = 1; n < 100; n++) {
-        wchar_t tail[16];
-        StringCchPrintfW(tail, ARRAYSIZE(tail), L".%d.log", n);
-        const std::wstring rotated = currentPath.substr(0, currentPath.size() - 4) + tail;
-        if (MoveFileExW(currentPath.c_str(), rotated.c_str(), MOVEFILE_REPLACE_EXISTING)) break;
-    }
-}
-
-bool atSizeCap(HANDLE h) {
-    LARGE_INTEGER size{};
-    return GetFileSizeEx(h, &size) && static_cast<size_t>(size.QuadPart) >= kMaxLogFileBytes;
-}
-
-// Rotation on a date change or the size cap: the handle comes back reopened
-// on the path now current, or INVALID_HANDLE_VALUE when that reopen failed.
-HANDLE rotateIfDue(HANDLE h, std::wstring& currentPath, const std::wstring& dir) {
-    if (atSizeCap(h)) {
-        CloseHandle(h);
-        rotateOversizedLog(currentPath);
-    } else {
-        const std::wstring fresh = todaysLogPath(dir);
-        if (fresh == currentPath) return h;
-        CloseHandle(h);
-        currentPath = fresh;
-    }
-    HANDLE reopened = openAppendLog(currentPath);
-    if (reopened != INVALID_HANDLE_VALUE) deleteOlderThan(dir, L".log", kLogRetentionDays);
-    return reopened;
-}
-
-void waitForLogWork() {
-    if (g_logWake != nullptr) {
-        WaitForSingleObject(g_logWake, 1000);
-    } else {
-        Sleep(1000);
-    }
-}
-
-void loggerLoop(const std::wstring dir) {
-    ScopedThreadRole role(ThreadRole::Logger);
-    g_loggerThreadId = GetCurrentThreadId();
-    if (dir.empty()) return;
-
-    deleteOlderThan(dir, L".log", kLogRetentionDays);
-
-    uint64_t lastSeq = 0;
-    std::wstring currentPath = todaysLogPath(dir);
-    HANDLE h = openAppendLog(currentPath);
-    if (h == INVALID_HANDLE_VALUE) return;
-
-    for (;;) {
-        const bool flushRequested = g_logFlushPending.exchange(false, std::memory_order_acq_rel);
-        appendLines(h, drainLogSince(lastSeq));
-        if (flushRequested && g_logFlushed != nullptr) SetEvent(g_logFlushed);
-
-        h = rotateIfDue(h, currentPath, dir);
-        if (h == INVALID_HANDLE_VALUE) return;
-
-        if (g_loggerStopRequested.load(std::memory_order_relaxed)) break;
-        waitForLogWork();
-    }
-    CloseHandle(h);
 }
 
 } // namespace
@@ -603,31 +422,6 @@ void reconcileAutoStart() {
                        static_cast<DWORD>(quoted.size() + 1));
     }
     RegCloseKey(key);
-}
-
-void startFileLogger(const std::string& dir) {
-    if (g_loggerStarted.exchange(true)) return; // idempotent
-    g_logWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    g_logFlushed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    g_loggerThread = std::thread(loggerLoop, utf8ToWide(dir));
-}
-
-void stopFileLogger() {
-    if (!g_loggerThread.joinable()) return;
-    g_loggerStopRequested.store(true, std::memory_order_relaxed);
-    if (g_logWake != nullptr) SetEvent(g_logWake);
-    g_loggerThread.join();
-}
-
-bool flushFileLog(DWORD timeoutMs) {
-    if (!g_loggerStarted.load(std::memory_order_relaxed) || g_logWake == nullptr ||
-        g_logFlushed == nullptr || GetCurrentThreadId() == g_loggerThreadId) {
-        return false;
-    }
-    ResetEvent(g_logFlushed);
-    g_logFlushPending.store(true, std::memory_order_release);
-    SetEvent(g_logWake);
-    return WaitForSingleObject(g_logFlushed, timeoutMs) == WAIT_OBJECT_0;
 }
 
 } // namespace lifecycle

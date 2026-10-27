@@ -5,18 +5,17 @@
 #include "core/json.h"
 #include "core/log_ring.h"
 #include "core/session_service.h"
-#include "core/tracked_mutex.h"
 #include "core/types.h"
 
 #include <cstdio>
-#include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 using satellite::jsonDump;
 using satellite::JsonOut;
 using satellite::logEntryJson;
-using satellite::logRingSlotsSince;
+using satellite::LogRingEntry;
 
 namespace {
 
@@ -132,13 +131,14 @@ std::string buildDevicesJson(const SessionService& svc) {
 }
 
 std::string buildLogsJson(uint64_t since) {
-    std::lock_guard<TrackedMutex> lk(g_logMtx);
+    std::vector<LogRingEntry> copied;
+    const uint64_t seq = logWriter().recent().copySince(since, copied);
     JsonOut entries = JsonOut::array();
-    for (const auto& slot : logRingSlotsSince(LOG_RING_SIZE, g_logHead, g_logSeq, since)) {
-        entries.push_back(logEntryJson(slot.seq, g_logRing[static_cast<size_t>(slot.index)]));
+    for (const LogRingEntry& entry : copied) {
+        entries.push_back(logEntryJson(entry.seq, entry.record));
     }
     JsonOut j;
-    j["seq"] = g_logSeq;
+    j["seq"] = seq;
     j["entries"] = std::move(entries);
     return jsonDump(j);
 }

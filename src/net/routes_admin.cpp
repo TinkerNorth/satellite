@@ -26,7 +26,6 @@
 #include "status_json.h"
 
 #include <cstdlib>
-#include <mutex>
 #include <string>
 
 using satellite::applyConfigPatch;
@@ -118,10 +117,7 @@ static void readWireStatus(StatusFields& f) {
     f.sessionsReaped = w.sessionsReaped;
 }
 
-static uint64_t currentLogSeq() {
-    std::lock_guard<TrackedMutex> lk(g_logMtx);
-    return g_logSeq;
-}
+static uint64_t currentLogSeq() { return logWriter().recent().published(); }
 
 // The updater is wired per platform and null where it is not; a route that
 // needs it says so with a 503.

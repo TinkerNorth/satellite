@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -810,6 +811,12 @@ static void testFileLoggerFlush() {
     EXPECT(!lifecycle::flushFileLog(10));
 
     TempLogDir dir;
+    const std::wstring stale = dir.path + L"\\satellite-20000101.log";
+    std::ofstream(std::filesystem::path(stale)) << "stale\r\n";
+    std::error_code aged;
+    std::filesystem::last_write_time(
+        stale, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 8), aged);
+    EXPECT(!aged);
     lifecycle::startFileLogger(dir.utf8());
     const std::string first = "flush probe " + std::to_string(GetTickCount64());
     logMsg(LogLevel::INFO, "test", first);
@@ -819,6 +826,9 @@ static void testFileLoggerFlush() {
     EXPECT_EQ(dir.logFiles().size(), static_cast<size_t>(1));
     const std::string afterFirst = firstLogFileContent(dir);
     EXPECT(afterFirst.find("[INFO ] [test] " + first + "\r\n") != std::string::npos);
+
+    TEST("file logger: a log older than the 7-day retention is deleted when the writer starts");
+    EXPECT(GetFileAttributesW(stale.c_str()) == INVALID_FILE_ATTRIBUTES);
 
     TEST("flushFileLog: a later flush delivers what was logged since the previous one");
     logMsg(LogLevel::WARN, "test", "second probe");

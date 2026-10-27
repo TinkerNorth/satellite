@@ -12,6 +12,7 @@
 // Hermeticity: HOME and XDG_CONFIG_HOME point into a per-run tmpdir (config
 // writes + autostart artifacts live there); g_webDir points at a tmp web root.
 #include "../src/core/json.h"
+#include "../src/core/log_writer.h"
 #include "../src/core/session_service.h"
 #include "../src/core/update_service.h"
 #include "../src/net/pairing.h"
@@ -27,7 +28,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 
@@ -92,6 +95,15 @@ struct StubClient : IClientPort {
 struct StubLog : ILogPort {
     void logMsg(LogLevel, const std::string&, const std::string&) override {}
 };
+
+struct DiscardingLogSink : satellite::ILogSink {
+    bool write(std::string_view) override { return true; }
+    bool flush() override { return true; }
+    bool rotateIfDue() override { return false; }
+    void purge() override {}
+};
+
+constexpr std::chrono::seconds LOG_FLUSH_DEADLINE{5};
 
 struct StubUpdater : IUpdaterPort {
     bool fetchOk = true;
@@ -158,6 +170,7 @@ int main() {
     TempHome home;
     g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
     g_appRunning = true;
+    logWriter().start(std::make_unique<DiscardingLogSink>());
 
     // Minimal web root so the mount point + SPA fallback have something real.
     g_webDir = home.path + "/web";
@@ -844,6 +857,7 @@ int main() {
     {
         TEST("GET /api/logs: monotonic seq + a just-written marker entry");
         logMsg(LogLevel::INFO, "route-test", "marker-entry-xyzzy");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
         auto res = cli.Get("/api/logs");
         EXPECT(res && res->status == 200);
         uint64_t seq = 0;
@@ -867,6 +881,7 @@ int main() {
         // that reply has to be the first one in the next. It used to be skipped.
         TEST("GET /api/logs?since=<seq>: the entry written after that seq is the first back");
         logMsg(LogLevel::INFO, "route-test", "marker-after-seq");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
         auto res3 = cli.Get(("/api/logs?since=" + std::to_string(seq)).c_str());
         EXPECT(res3 && res3->status == 200);
         if (res3) {
@@ -900,6 +915,7 @@ int main() {
 
     server.stop();
     serverThread.join();
+    logWriter().stop();
     g_configStore.reset();
     home.cleanup();
 

@@ -8,6 +8,7 @@
 #include "core/byte_order.h"
 #include "core/hex.h"
 #include "core/json.h"
+#include "core/log_writer.h"
 #include "core/session_service.h"
 #include "core/tracked_mutex.h"
 #include "net/admin_json.h"
@@ -50,6 +51,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -78,7 +80,6 @@ struct LockPair {
 };
 
 const std::vector<LockName> RECEIVE_MAY_ACQUIRE = {
-    {"log", Allowance::Debt},
     {"service.state", Allowance::Debt},
 };
 
@@ -105,8 +106,6 @@ const std::vector<LockPair> BLOCKING_MAY_HOLD = {
 
 const std::vector<LockPair> ORDER_MAY_NEST = {
     {"config.write", "config.snapshot", Allowance::ByDesign},
-    {"service.state", "log", Allowance::Debt},
-    {"service.topology", "log", Allowance::ByDesign},
     {"service.topology", "service.state", Allowance::ByDesign},
 #ifdef _WIN32
     {"service.topology", "config.snapshot", Allowance::ByDesign},
@@ -147,6 +146,14 @@ constexpr double NANOS_PER_MICRO = 1000.0;
 
 using NameSet = std::set<std::string>;
 using PairSet = std::set<std::pair<std::string, std::string>>;
+
+class DiscardingLogSink : public satellite::ILogSink {
+  public:
+    bool write(std::string_view) override { return true; }
+    bool flush() override { return true; }
+    bool rotateIfDue() override { return false; }
+    void purge() override {}
+};
 
 ProcessBarrierFn productionBarrier() {
 #if defined(_WIN32)
@@ -1068,6 +1075,13 @@ PairSet pairsOf(const std::vector<lockstats::NamePair>& pairs) {
     return out;
 }
 
+uint64_t regionHits(const lockstats::Snapshot& snap, const std::string& region) {
+    for (const lockstats::RegionHit& hit : snap.regions) {
+        if (hit.region == region) return hit.hits;
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 NameSet heldDuring(const lockstats::Snapshot& snap, const std::string& region) {
     NameSet names;
@@ -1182,6 +1196,17 @@ void checkTheOrderLaw(const lockstats::Snapshot& snap) {
     expectExactly("order law: every nesting edge is in today's order", edges, ORDER_MAY_NEST);
 }
 
+void checkTheLoggerLaw(const lockstats::Snapshot& snap) {
+    TEST("logger law: the log writer takes no lock");
+    for (const lockstats::LockStats& lock : snap.locks) {
+        if (!lock.role(ThreadRole::Logger).touched()) continue;
+        std::cerr << "  logger law: the Logger role took " << lock.name << "\n";
+        EXPECT(false);
+    }
+    TEST("logger law: the log writer reached its sink, where the blocking law sees what it holds");
+    EXPECT(regionHits(snap, "log.write") > 0);
+}
+
 double micros(uint64_t nanos) { return static_cast<double>(nanos) / NANOS_PER_MICRO; }
 
 void report(const lockstats::Snapshot& snap) {
@@ -1273,6 +1298,8 @@ int main() {
     }
 
     lockstats::reset();
+    TEST("logger law: the log writer starts");
+    EXPECT(logWriter().start(std::make_unique<DiscardingLogSink>()));
     LifecycleWatch watch;
 #ifdef _WIN32
     timeBeginPeriod(1);
@@ -1283,6 +1310,7 @@ int main() {
     timeEndPeriod(1);
 #endif
     g_configStore.reset();
+    logWriter().stop();
     const lockstats::Snapshot snap = lockstats::snapshot();
     report(snap);
 
@@ -1292,6 +1320,7 @@ int main() {
     checkTheLifecycleLaw(watch, snap);
     checkTheBlockingLaw(snap);
     checkTheOrderLaw(snap);
+    checkTheLoggerLaw(snap);
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

@@ -3,6 +3,8 @@
 
 #include "globals.h"
 
+#include "file_log.h"
+
 namespace lifecycle {
 
 // %LOCALAPPDATA%\TinkerNorth\Satellite\dumps, created on demand.
@@ -56,16 +58,5 @@ void applyRuntimeMitigations();
 // Idempotent self-heal of the HKCU Run entry from the config's autoStart, in case
 // the installer wrote to the wrong user's hive or the exe moved.
 void reconcileAutoStart();
-
-// Spawn the log-file writer (drains the ring to a daily-rotated .log under
-// `dir`, 7-day retention). Idempotent; runs until stopFileLogger(), which
-// drains whatever is still queued before it returns.
-void startFileLogger(const std::string& dir);
-
-void stopFileLogger();
-
-inline constexpr DWORD kLogFlushTimeoutMs = 2000;
-
-bool flushFileLog(DWORD timeoutMs);
 
 } // namespace lifecycle

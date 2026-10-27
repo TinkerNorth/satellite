@@ -3,6 +3,7 @@
 #include "globals.h"
 #include "config.h"
 #include "crypto.h"
+#include "file_log.h"
 #include "gamepad_adapter.h"
 #include "netlink_rejoin.h"
 #include "process_barrier.h"
@@ -240,6 +241,8 @@ int main() {
     // operator's opt-in and a DSN this build actually carries.
     crash::init(g_configStore->current()->crashReporting, crash::databaseDirFor(configPath()));
 
+    lifecycle::startFileLogger(lifecycle::logDir());
+
     GamepadAdapter gamepadAdapter;
     ClientAdapter clientAdapter;
     // See the Windows main for why the codec is injected rather than built
@@ -267,6 +270,7 @@ int main() {
     joinWorkers(workers);
 
     svc.closeAllSessions();
+    lifecycle::stopFileLogger();
     g_configStore->stop();
 
     // Flush before exit; a pending envelope is lost if the transport never
