@@ -130,6 +130,25 @@ static void testConfigPath() {
     EXPECT(p.find("\\satellite\\config.json") != std::string::npos);
 }
 
+static void testConfigDirOverride() {
+    wchar_t temp[MAX_PATH];
+    const DWORD tempLen = GetTempPathW(MAX_PATH, temp);
+    const std::wstring dir = std::wstring(temp, tempLen) + L"satellite-config-override-test";
+    SetEnvironmentVariableW(L"SATELLITE_CONFIG_DIR", dir.c_str());
+    const std::string p = configPath();
+    const DWORD attrs = GetFileAttributesW(dir.c_str());
+    SetEnvironmentVariableW(L"SATELLITE_CONFIG_DIR", nullptr);
+    RemoveDirectoryW(dir.c_str());
+
+    const std::string tail = "\\satellite-config-override-test\\config.json";
+    TEST("configPath: SATELLITE_CONFIG_DIR names the directory");
+    EXPECT(p.size() > tail.size() && p.compare(p.size() - tail.size(), tail.size(), tail) == 0);
+    TEST("configPath: creates the named directory");
+    EXPECT(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    TEST("configPath: back under satellite\\config.json once the variable is gone");
+    EXPECT(configPath().find("\\satellite\\config.json") != std::string::npos);
+}
+
 static void testConfigRoundTrip() {
     ConfigFileSnapshot snap;
 
@@ -821,6 +840,7 @@ int main() {
 
     testConfigEscapingRoundTrip();
     testConfigPath();
+    testConfigDirOverride();
     testConfigRoundTrip();
     testAtomicWriteFile();
     testDiscoveryBroadcastConfig();

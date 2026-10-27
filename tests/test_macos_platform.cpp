@@ -105,6 +105,20 @@ static void testConfigPath() {
     EXPECT(fileExists(tmp.path + "/Library/Application Support/satellite"));
 }
 
+static void testConfigDirOverride() {
+    TempHome tmp;
+    const std::string dir = tmp.path + "/override";
+    setenv("SATELLITE_CONFIG_DIR", dir.c_str(), 1);
+    const std::string p = configPath();
+    TEST("configPath: SATELLITE_CONFIG_DIR names the directory");
+    EXPECT_EQ(p, dir + "/config.json");
+    TEST("configPath: creates the named directory");
+    EXPECT(fileExists(dir));
+    unsetenv("SATELLITE_CONFIG_DIR");
+    TEST("configPath: back under HOME/Library/Application Support once the variable is gone");
+    EXPECT(configPath().find(tmp.path + "/Library/Application Support/satellite/") == 0);
+}
+
 static void testAtomicWriteFile() {
     TempHome tmp;
     std::string path = tmp.path + "/atomic_test.json";
@@ -554,6 +568,7 @@ int main() {
 
     testConfigEscapingRoundTrip();
     testConfigPath();
+    testConfigDirOverride();
     testAtomicWriteFile();
     testConfigRoundTrip();
     testDiscoveryBroadcastConfig();

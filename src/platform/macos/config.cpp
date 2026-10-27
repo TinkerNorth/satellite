@@ -25,7 +25,11 @@ static std::string appSupportDir() {
     return dir;
 }
 
-std::string configPath() { return appSupportDir() + "/config.json"; }
+std::string configPath() {
+    std::string dir;
+    if (configDirOverride(dir)) return dir + "/config.json";
+    return appSupportDir() + "/config.json";
+}
 
 static std::string xmlEscape(const std::string& s) {
     std::string out;

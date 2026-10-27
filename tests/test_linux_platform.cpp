@@ -91,6 +91,20 @@ static void testConfigPath() {
     EXPECT(fileExists(tmp.path + "/satellite"));
 }
 
+static void testConfigDirOverride() {
+    TempXdg tmp;
+    const std::string dir = tmp.path + "/override";
+    setenv("SATELLITE_CONFIG_DIR", dir.c_str(), 1);
+    const std::string p = configPath();
+    TEST("configPath: SATELLITE_CONFIG_DIR names the directory");
+    EXPECT_EQ(p, dir + "/config.json");
+    TEST("configPath: creates the named directory");
+    EXPECT(fileExists(dir));
+    unsetenv("SATELLITE_CONFIG_DIR");
+    TEST("configPath: back under XDG_CONFIG_HOME once the variable is gone");
+    EXPECT(configPath().find(tmp.path + "/satellite/") == 0);
+}
+
 static void testAtomicWriteFile() {
     TempXdg tmp;
     std::string path = tmp.path + "/atomic_test.json";
@@ -548,6 +562,7 @@ int main() {
 
     testConfigEscapingRoundTrip();
     testConfigPath();
+    testConfigDirOverride();
     testAtomicWriteFile();
     testConfigRoundTrip();
     testDiscoveryBroadcastConfig();
