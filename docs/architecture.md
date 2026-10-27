@@ -245,9 +245,10 @@ address until then.
 ### State Ownership
 
 All connection and controller state is owned by `SessionService`: the
-cold state behind a single `std::mutex`, and the per-session state the
-gamepad path reads in a fixed table of slots that the cold path
-publishes to the receive thread. There are no global connection maps or
+cold state behind a `std::mutex`, with topology changes serialized by a
+second one, and the per-session state the gamepad path reads in a fixed
+table of slots that the cold path publishes to the receive thread (see
+"Thread Safety"). There are no global connection maps or
 serial arrays. The remaining globals are:
 
 - `g_config` / `g_configMtx`: application configuration
@@ -298,9 +299,9 @@ stretch of such datagrams begins (with the sender's address) and one when
 it has been quiet for the reaper's horizon (with how many were dropped).
 A dish still sending to a session from before a Satellite restart, or to
 one the reaper removed, therefore shows up in the log and not only on the
-diagnostics page. A session whose own topology is changing lands here too
-for the length of the change (see "A session during its own change"), so
-a stretch can open and close around a slow plug.
+diagnostics page. A session whose own topology changes lands here too, for
+a moment (see "A session during its own change"), so a stretch can open
+and close around a PUT.
 
 ### Hot-path discipline
 
@@ -356,8 +357,9 @@ The conceptual pipeline above lists `getDecryptInfo` /
 gamepad hot path the last two are the single fused call, and every other
 message records its datagram through `updatePostDecryptV4` before it is
 dispatched. Those other messages (motion, touchpad, battery, mic audio,
-the heartbeat) are still handled under `mtx_` on the receive thread; see
-the follow-ups under "Thread Safety".
+the heartbeat) are handled under `mtx_` on the receive thread, which no
+topology change holds across backend lifecycle work (see "Topology
+changes").
 
 ### Reaper
 
@@ -379,7 +381,11 @@ below are server-internal.
    the unlock), verify `X-Hmac-Proof` against the pairing key
 2. Parse the full descriptor set (`core/json.h`, nlohmann/json)
 3. `svc.upsertSession(...)`: converges topology, rotates token/salt/key,
-   derives the session key via the injected HKDF, returns applied state
+   derives the session key via the injected HKDF, returns applied state.
+   New pads are plugged first, the rotation and the new topology are
+   published together, and retired pads are unplugged last, so the old
+   token's pads keep working until the PUT publishes (see "Topology
+   changes")
 4. Serialize per-controller results + host-feature grants
 
 The session upsert succeeds independently of ViGEm. Per-controller
@@ -406,11 +412,12 @@ Two paths reach `SessionService`. The receive thread runs the frame path
 described under "Hot-path discipline". Everything else is the cold path:
 the HTTP threads (PUT, DELETE, snapshots), the maintenance thread
 (rumble tick, reaper), backend callbacks, and the receive thread itself
-for every non-gamepad message. The cold path serializes on one
+for every non-gamepad message. The cold path's state lock is a
 `std::mutex` (`mtx_`), which owns `connections_`, the serial pool and
-every controller field. The two paths share state only through the hot
-table, and the cold path can hold `mtx_` for as long as Plug and Play
-takes without the frame path noticing.
+every controller field; a second one (`topoMtx_`) serializes topology
+changes from start to finish. The two paths share state only through the
+hot table, and no cold operation holds `mtx_` while Plug and Play runs
+(see "Topology changes").
 
 ### The hot table
 
@@ -538,26 +545,107 @@ fence per frame instead.
   recorded into the slot's next owner. `getDecryptInfo` writes nothing
   and needs no bracket.
 - Every operation that changes a slot's published fields or a serial's
-  owner keeps one order, under `mtx_`: open the seqlock write
-  (generation odd), wait for grace, do the backend work (plug, unplug,
-  transactional replug: this is where Plug and Play waits, and the
-  receive thread is not waiting with it), store the new published
-  fields, close the write. `upsertSession` wraps the whole converge, key
-  rotation included; `applyController`, `removeController` and teardown
-  (close, kick, unpair, reap, shutdown) do the same. A PUT stores the
+  owner keeps one order: plug what is new, publish in one seqlock write
+  under `mtx_` (open the write, wait for grace, store the new published
+  fields, close the write), then unplug what was retired (see "Topology
+  changes"). No backend work happens inside a write. A PUT stores the
   session's packed token last, once the write has closed (a re-PUT
   replaces the old token there); a session being torn down has its
   packed token cleared first, before the write opens.
 
+### Topology changes
+
+Seven operations change topology: `upsertSession`, `applyController`,
+`removeController`, `closeSessionById`, `closeSessionsForDevice`,
+`closeAllSessions` and `reapTimedOut`. Each holds `topoMtx_` from start
+to finish, so they run one at a time, and `topoMtx_` is the only lock any
+of them holds across `ensureBusOpen`, `closeBus`, `pluginDevice`,
+`pluginDevicePreferring` or `unplugDevice`. `mtx_` stays the state lock
+and is held only for short sections between those calls: never across a
+backend lifecycle call, a thread join, a sleep or a wait, with one
+exception, the grace wait inside a publish, which lasts at most one
+in-flight frame because a frame never blocks. The lock order is
+`topoMtx_`, then `mtx_`; nothing acquires `topoMtx_` while holding
+`mtx_`. Nothing else takes `topoMtx_` at all: not the receive thread, not
+a backend callback, not a snapshot or a view, not the rumble or the
+idle-input tick. The reaper takes it with `try_lock` and reaps nothing on
+a tick when another topology change is running, so the maintenance thread
+never waits behind a plug; the session goes a second later.
+
+Each operation runs in the same phases, in read-copy-update order: build
+the new state where no reader can see it, publish it in one step, wait
+until no reader can still be using the old state, and only then reclaim
+what it retired. A plug therefore never touches a serial a reader can
+reach, and an unplug never touches one a reader might still be using.
+
+1. Plan, under `mtx_`. Validate the request and its owner, dedup the
+   descriptors, and decide for every controller index whether its pad is
+   kept, updated in place, added, replugged or removed. Serials for adds
+   and replugs are allocated here, a first PUT reserves its hot slot (the
+   session cap and `tooManySessions` are decided before anything is
+   plugged), and a PUT mints its token, salt and key.
+2. Plug, under `topoMtx_` only. Open the bus if the plan plugs anything,
+   then plug every new serial. No other thread can reach these serials
+   yet: the cold state does not name them and the hot table does not
+   publish them.
+3. Commit and publish, in one hold of `mtx_`. Apply the outcomes to the
+   cold state: a failed add releases its serial and reports
+   `pluginFailed`, a failed replug releases the new serial, leaves the old
+   pad untouched and reports `replugFailed`, the epoch bumps, a PUT sends
+   the close-notify to the old token and re-keys the row, and every pad
+   that leaves releases its held pointer buttons. Then one seqlock write
+   publishes the slot: begin, grace wait, the receive-owned reset if the
+   key rotated, the stores, end. From here no thread can reach a serial
+   the change retired: the frame path because of the grace wait, the cold
+   dispatch because it reads the cold state under `mtx_`.
+4. Unplug, under `topoMtx_` only: the removed pads and the old serial of
+   every replug.
+5. Settle, under `mtx_`. Release each retired serial whose unplug was
+   confirmed and quarantine the rest, decide whether the bus is now idle,
+   and build the result from the applied state and epoch.
+6. Close, under `topoMtx_` only: `closeBus` if the bus is idle, then,
+   under `mtx_`, clear the quarantine and log.
+
+Teardown (close, kick, unpair, reap, shutdown) has nothing to plug. Its
+commit sends the close-notify while the key and the address still exist,
+deactivates the pads, frees the slot through the seqlock (packed token
+first) and erases the row; phases 4 to 6 follow. A change that touches
+nothing a pad depends on, such as a PUT that only rotates the key, plugs
+and unplugs nothing.
+
+Two cases take a second round, both on a full bus. A replug with no free
+serial cannot plug before it unplugs, so it retires its pad in phase 3
+and plugs the new identity on the serial phase 5 freed: the unplug-first
+fallback the converge always had. An add whose serial only a removal in
+the same PUT can free waits for that removal the same way. The second
+round plugs under `topoMtx_` and commits and publishes again under
+`mtx_`. Between the rounds the pad is gone from the cold state and the
+hot table alike, and the epoch has already moved, so a heartbeat in that
+window reports the gap rather than a pad that is not there.
+
+What a reader sees between the phases: until phase 3, the old state,
+whole. The serials phase 1 allocated already count as in use
+(`availableSlots`), and a first PUT's session does not exist yet: no
+row, no packed token. During phase 2 every existing pad keeps working,
+on the old token for a PUT. Phase 3 switches the cold state under `mtx_`
+and the slot through the seqlock, so a frame of that session is refused
+only between the write's begin and end. After phase 3 the retired
+serials are unreachable but stay allocated until phase 5, so none is
+reused while its unplug is still in flight. Between phases 5 and 6 an
+idle bus is still open.
+
 ### A session during its own change
 
-The slot's generation is odd from the start of a change to its end, so
-that session's own datagrams are refused for the whole change: a PUT that
-waits 200 ms for Plug and Play drops 200 ms of that session's input (a
-re-PUT rotates the token anyway, so its old-token frames had no future).
-The receiver counts them as unknown-token drops. Every other session's
-frames keep flowing, and so does the receive thread: a refused datagram
-never reaches a handler that takes `mtx_`.
+A session's existing pads keep receiving frames through its own plug: the
+plug runs before the publish, while the slot still holds the old state.
+`applyController` and `removeController` keep the token, so the session's
+frames stop only inside the publish window, between the seqlock write's
+begin and end, which the grace wait bounds by one in-flight frame. A PUT
+rotates the token: frames on the old token are accepted until the PUT
+publishes, after its plugs and before its unplugs, and refused from then
+on, and frames on the new token are accepted once the dish has the
+response and switches. The receiver counts the refusals as unknown-token
+drops. Every other session's frames keep flowing throughout.
 
 ### First datagram
 
@@ -579,13 +667,19 @@ re-PUT from a device that has a session keeps its slot.
 
 ### The rest of the cold path
 
-Driver lifecycle work can hold `mtx_` while joining backend workers.
-Rumble callbacks first publish the latest motor state and duration into a
-fixed atomic slot per backend serial, then try to acquire the service lock.
-The maintenance tick drains pending state before refreshing held rumble, so
-a stop survives contention without blocking a worker that teardown is joining.
-Serial retirement and allocation clear the slot before it can serve another
-controller. Audio remains a lossy stream and does not use this mailbox.
+Driver lifecycle work never runs under `mtx_`, but a backend callback
+still only tries for it: an unplug joins its serial's notification worker
+while holding the adapter's own lock, and a cold-dispatch call can hold
+`mtx_` while it waits for that adapter lock, so a callback that blocked
+on `mtx_` would close a cycle. Rumble callbacks first publish the latest
+motor state and duration into a fixed atomic slot per backend serial, then
+try to acquire the service lock. The maintenance tick drains pending state
+before refreshing held rumble, so a stop survives contention without
+blocking a worker that teardown is joining. A slot whose serial no pad
+owns yet keeps its state, so a notification that arrives between a plug
+and its commit reaches the pad on the next tick. Serial retirement and
+allocation clear the slot before it can serve another controller. Audio
+remains a lossy stream and does not use this mailbox.
 
 Mouse-button ownership is per backend serial. The host receives the union of
 all controller-held buttons; removing one owner cannot release another owner's
@@ -606,18 +700,18 @@ Since the frame path no longer takes `mtx_`, `submitReport` runs
 concurrently with plugs and unplugs of other serials, serialized only by
 each adapter's own lock; ViGEm and HIDMaestro hold theirs across a plug,
 so on those backends a slow plug can still delay another session's
-submit inside the adapter.
+submit inside the adapter. Now that topology changes plug outside
+`mtx_`, the cold dispatch's submits and the snapshot's adapter queries
+meet plugs the same way, and one of them that waits inside the adapter
+does so holding `mtx_`.
 
 ### Follow-ups
 
 Not done yet:
 
-- Motion, touchpad, battery, mic audio and the heartbeat still take
-  `mtx_` on the receive thread, so one of them arriving while a cold
-  operation holds the lock stalls the receive thread, and every session's
-  frames behind it, for the rest of that operation.
 - Per-slot adapter locks, so that a plug in ViGEm or HIDMaestro stops
-  serializing every other serial's submit.
+  serializing every other serial's submit, the frame path's and the cold
+  dispatch's alike.
 - Coalescing of queued frames: after a stall the receive thread replays
   the backlog frame by frame instead of skipping to each pad's newest
   report.
