@@ -51,6 +51,10 @@ constexpr int SWITCH_BUTTONS[] = {BTN_A,      BTN_B,     BTN_C,    BTN_X,     BT
                                   BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL};
 constexpr int SWITCH_TRIGGER_ON = 30; // ZL/ZR are digital; press past the XInput threshold.
 
+inline bool isValidSerial(uint32_t serial) {
+    return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS;
+}
+
 bool emit(int fd, uint16_t type, uint16_t code, int32_t value) {
     struct input_event ev{};
     ev.type = type;
@@ -117,47 +121,27 @@ void endFfRequest(int fd, unsigned long request, void* arg, const char* what, ui
 GamepadAdapter::~GamepadAdapter() { closeBus(); }
 
 bool GamepadAdapter::ensureBusOpen() {
-    std::lock_guard<std::mutex> lk(mtx_);
     // "Bus" here is just the uinput node; per-device fds open per plugin.
     if (::access("/dev/uinput", W_OK) != 0) return false;
-    busOpen_ = true;
+    busOpen_.store(true, std::memory_order_release);
     return true;
 }
 
 void GamepadAdapter::closeBus() {
-    // Snapshot serials under the lock, then join outside it: joining while
-    // holding mtx_ deadlocks against the reader taking it for the rumble copy.
-    std::vector<uint32_t> serials;
+    for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) unplugDevice(serial);
+    int pointerFd = -1;
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        serials.reserve(devices_.size());
-        for (auto& [serial, _] : devices_) serials.push_back(serial);
-    }
-    for (uint32_t serial : serials) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        stopReader(serial);
-    }
-
-    std::lock_guard<std::mutex> lk(mtx_);
-    for (auto& [serial, dev] : devices_) {
-        if (dev.fd >= 0) destroyUinputNode(dev.fd, nodeName("gamepad", serial));
-        if (dev.motionFd >= 0) destroyUinputNode(dev.motionFd, nodeName("motion", serial));
-        if (dev.touchFd >= 0) destroyUinputNode(dev.touchFd, nodeName("touchpad", serial));
+        pointerFd = relMouseFd_;
+        relMouseFd_ = -1;
+        relMouseBtns_ = MouseButtons{};
     }
     // Pointer node is host-global, not per-controller.
-    if (relMouseFd_ >= 0) {
-        destroyUinputNode(relMouseFd_, "pointer node");
-        relMouseFd_ = -1;
-    }
-    relMouseBtns_ = MouseButtons{};
-    devices_.clear();
-    busOpen_ = false;
+    if (pointerFd >= 0) destroyUinputNode(pointerFd, "pointer node");
+    busOpen_.store(false, std::memory_order_release);
 }
 
-bool GamepadAdapter::isBusOpen() const {
-    std::lock_guard<std::mutex> lk(mtx_);
-    return busOpen_;
-}
+bool GamepadAdapter::isBusOpen() const { return busOpen_.load(std::memory_order_acquire); }
 
 namespace {
 
@@ -375,14 +359,17 @@ fail:
 }
 
 bool GamepadAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!busOpen_) return false;
-    if (devices_.count(serial)) return false;
+    if (!isValidSerial(serial)) return false;
+    if (!busOpen_.load(std::memory_order_acquire)) return false;
+    Device& dev = devices_[serial];
+    if (dev.plugged.load(std::memory_order_acquire)) return false;
     int fd = openUinputDevice(serial, identity);
     if (fd < 0) return false;
-    auto& dev = devices_[serial];
     dev.fd = fd;
     dev.identity = identity;
+    dev.touchTrackingId = 0;
+    dev.touchSlotId[0] = -1;
+    dev.touchSlotId[1] = -1;
 
     // DS4/DualSense have an IMU + touchpad; Switch Pro has an IMU, no touchpad.
     const bool ds4Family =
@@ -402,33 +389,34 @@ bool GamepadAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
         }
     }
     if (ds4Family) { dev.touchFd = openTouchpadUinputDevice(serial); }
+    dev.motionOk.store(dev.motionFd >= 0, std::memory_order_relaxed);
     startReader(serial, dev);
+    dev.plugged.store(true, std::memory_order_release);
     return true;
 }
 
 bool GamepadAdapter::unplugDevice(uint32_t serial) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = devices_.find(serial);
-    if (it == devices_.end()) return true; // never plugged, already gone
-    stopReader(serial);                    // joins reader thread; safe to take the fd after
-    it = devices_.find(serial);
-    if (it == devices_.end()) return true; // defensive: stopReader doesn't erase
-    if (it->second.fd >= 0) destroyUinputNode(it->second.fd, nodeName("gamepad", serial));
-    if (it->second.motionFd >= 0) {
-        destroyUinputNode(it->second.motionFd, nodeName("motion", serial));
+    if (!isValidSerial(serial)) return true;
+    Device& dev = devices_[serial];
+    if (!dev.plugged.exchange(false, std::memory_order_acq_rel)) {
+        return true; // never plugged, already gone
     }
-    if (it->second.touchFd >= 0) {
-        destroyUinputNode(it->second.touchFd, nodeName("touchpad", serial));
-    }
-    devices_.erase(it);
+    dev.motionOk.store(false, std::memory_order_relaxed);
+    stopReader(serial, dev); // joins reader thread; safe to take the fd after
+    if (dev.fd >= 0) destroyUinputNode(dev.fd, nodeName("gamepad", serial));
+    if (dev.motionFd >= 0) destroyUinputNode(dev.motionFd, nodeName("motion", serial));
+    if (dev.touchFd >= 0) destroyUinputNode(dev.touchFd, nodeName("touchpad", serial));
+    dev.fd = -1;
+    dev.motionFd = -1;
+    dev.touchFd = -1;
+    dev.effects.clear();
     // close(fd) destroys a uinput device synchronously even if UI_DEV_DESTROY
     // failed, so removal is confirmed by reaching here.
     return true;
 }
 
 bool GamepadAdapter::isDevicePlugged(uint32_t serial) const {
-    std::lock_guard<std::mutex> lk(mtx_);
-    return devices_.find(serial) != devices_.end();
+    return isValidSerial(serial) && devices_[serial].plugged.load(std::memory_order_acquire);
 }
 
 // XUSB wButtons bit layout (matches core/types.h convention).
@@ -456,24 +444,44 @@ int32_t clampS16(int32_t v) {
     if (v > 32767) return 32767;
     return v;
 }
+
+constexpr size_t MAX_BATCH_EVENTS = 32;
+
+struct EventBatch {
+    struct input_event events[MAX_BATCH_EVENTS]{};
+    size_t count = 0;
+
+    void add(uint16_t type, uint16_t code, int32_t value) {
+        if (count == MAX_BATCH_EVENTS) return;
+        struct input_event& ev = events[count++];
+        ev.type = type;
+        ev.code = code;
+        ev.value = value;
+    }
+
+    bool writeTo(int fd) const {
+        const size_t bytes = count * sizeof(struct input_event);
+        return ::write(fd, events, bytes) == static_cast<ssize_t>(bytes);
+    }
+};
 } // namespace
 
 bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = devices_.find(serial);
-    if (it == devices_.end() || it->second.fd < 0) return false;
-    int fd = it->second.fd;
-    if (it->second.identity == GamepadIdentity::SwitchPro) return submitSwitchLocked(fd, report);
+    if (!isValidSerial(serial)) return false;
+    const Device& dev = devices_[serial];
+    if (!dev.plugged.load(std::memory_order_acquire) || dev.fd < 0) return false;
+    const int fd = dev.fd;
+    if (dev.identity == GamepadIdentity::SwitchPro) return submitSwitch(fd, report);
 
-    bool ok = true;
+    EventBatch batch;
     // XUSB Y is positive-up; evdev Y is positive-down, so invert.
-    ok &= emit(fd, EV_ABS, ABS_X, report.sThumbLX);
-    ok &= emit(fd, EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
-    ok &= emit(fd, EV_ABS, ABS_RX, report.sThumbRX);
-    ok &= emit(fd, EV_ABS, ABS_RY, -clampS16(report.sThumbRY));
+    batch.add(EV_ABS, ABS_X, report.sThumbLX);
+    batch.add(EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
+    batch.add(EV_ABS, ABS_RX, report.sThumbRX);
+    batch.add(EV_ABS, ABS_RY, -clampS16(report.sThumbRY));
 
-    ok &= emit(fd, EV_ABS, ABS_Z, report.bLeftTrigger);
-    ok &= emit(fd, EV_ABS, ABS_RZ, report.bRightTrigger);
+    batch.add(EV_ABS, ABS_Z, report.bLeftTrigger);
+    batch.add(EV_ABS, ABS_RZ, report.bRightTrigger);
 
     int32_t hatX = 0, hatY = 0;
     if (report.wButtons & XUSB_DPAD_LEFT)
@@ -484,31 +492,31 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
         hatY = -1;
     else if (report.wButtons & XUSB_DPAD_DOWN)
         hatY = 1;
-    ok &= emit(fd, EV_ABS, ABS_HAT0X, hatX);
-    ok &= emit(fd, EV_ABS, ABS_HAT0Y, hatY);
+    batch.add(EV_ABS, ABS_HAT0X, hatX);
+    batch.add(EV_ABS, ABS_HAT0Y, hatY);
 
-    ok &= emit(fd, EV_KEY, BTN_A, (report.wButtons & XUSB_A) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_B, (report.wButtons & XUSB_B) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_X, (report.wButtons & XUSB_X) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_Y, (report.wButtons & XUSB_Y) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_TL, (report.wButtons & XUSB_LB) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_TR, (report.wButtons & XUSB_RB) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_SELECT, (report.wButtons & XUSB_BACK) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_START, (report.wButtons & XUSB_START) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_MODE, (report.wButtons & XUSB_GUIDE) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_THUMBL, (report.wButtons & XUSB_LS) ? 1 : 0);
-    ok &= emit(fd, EV_KEY, BTN_THUMBR, (report.wButtons & XUSB_RS) ? 1 : 0);
+    batch.add(EV_KEY, BTN_A, (report.wButtons & XUSB_A) ? 1 : 0);
+    batch.add(EV_KEY, BTN_B, (report.wButtons & XUSB_B) ? 1 : 0);
+    batch.add(EV_KEY, BTN_X, (report.wButtons & XUSB_X) ? 1 : 0);
+    batch.add(EV_KEY, BTN_Y, (report.wButtons & XUSB_Y) ? 1 : 0);
+    batch.add(EV_KEY, BTN_TL, (report.wButtons & XUSB_LB) ? 1 : 0);
+    batch.add(EV_KEY, BTN_TR, (report.wButtons & XUSB_RB) ? 1 : 0);
+    batch.add(EV_KEY, BTN_SELECT, (report.wButtons & XUSB_BACK) ? 1 : 0);
+    batch.add(EV_KEY, BTN_START, (report.wButtons & XUSB_START) ? 1 : 0);
+    batch.add(EV_KEY, BTN_MODE, (report.wButtons & XUSB_GUIDE) ? 1 : 0);
+    batch.add(EV_KEY, BTN_THUMBL, (report.wButtons & XUSB_LS) ? 1 : 0);
+    batch.add(EV_KEY, BTN_THUMBR, (report.wButtons & XUSB_RS) ? 1 : 0);
 
-    ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
-    return ok;
+    batch.add(EV_SYN, SYN_REPORT, 0);
+    return batch.writeTo(fd);
 }
 
-bool GamepadAdapter::submitSwitchLocked(int fd, const GamepadReport& report) {
-    bool ok = true;
-    ok &= emit(fd, EV_ABS, ABS_X, report.sThumbLX);
-    ok &= emit(fd, EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
-    ok &= emit(fd, EV_ABS, ABS_RX, report.sThumbRX);
-    ok &= emit(fd, EV_ABS, ABS_RY, -clampS16(report.sThumbRY));
+bool GamepadAdapter::submitSwitch(int fd, const GamepadReport& report) {
+    EventBatch batch;
+    batch.add(EV_ABS, ABS_X, report.sThumbLX);
+    batch.add(EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
+    batch.add(EV_ABS, ABS_RX, report.sThumbRX);
+    batch.add(EV_ABS, ABS_RY, -clampS16(report.sThumbRY));
 
     int32_t hatX = 0, hatY = 0;
     if (report.wButtons & XUSB_DPAD_LEFT)
@@ -519,36 +527,36 @@ bool GamepadAdapter::submitSwitchLocked(int fd, const GamepadReport& report) {
         hatY = -1;
     else if (report.wButtons & XUSB_DPAD_DOWN)
         hatY = 1;
-    ok &= emit(fd, EV_ABS, ABS_HAT0X, hatX);
-    ok &= emit(fd, EV_ABS, ABS_HAT0Y, hatY);
+    batch.add(EV_ABS, ABS_HAT0X, hatX);
+    batch.add(EV_ABS, ABS_HAT0Y, hatY);
 
     // SWITCH_BUTTONS[i] is SDL js index i; the wire source per index follows SDL's
     // Nintendo mapping (A/B + X/Y swapped; ZL/ZR digital from the triggers; capture
     // at js4 has no wire source).
     const uint16_t b = report.wButtons;
-    ok &= emit(fd, EV_KEY, BTN_A, (b & XUSB_B) ? 1 : 0);                               // js0  B
-    ok &= emit(fd, EV_KEY, BTN_B, (b & XUSB_A) ? 1 : 0);                               // js1  A
-    ok &= emit(fd, EV_KEY, BTN_C, (b & XUSB_X) ? 1 : 0);                               // js2  X
-    ok &= emit(fd, EV_KEY, BTN_X, (b & XUSB_Y) ? 1 : 0);                               // js3  Y
-    ok &= emit(fd, EV_KEY, BTN_Z, (b & XUSB_LB) ? 1 : 0);                              // js5  L
-    ok &= emit(fd, EV_KEY, BTN_TL, (b & XUSB_RB) ? 1 : 0);                             // js6  R
-    ok &= emit(fd, EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);   // js7  ZL
-    ok &= emit(fd, EV_KEY, BTN_TL2, report.bRightTrigger > SWITCH_TRIGGER_ON ? 1 : 0); // js8  ZR
-    ok &= emit(fd, EV_KEY, BTN_TR2, (b & XUSB_BACK) ? 1 : 0);                          // js9  minus
-    ok &= emit(fd, EV_KEY, BTN_SELECT, (b & XUSB_START) ? 1 : 0);                      // js10 plus
-    ok &= emit(fd, EV_KEY, BTN_START, (b & XUSB_GUIDE) ? 1 : 0);                       // js11 home
-    ok &= emit(fd, EV_KEY, BTN_MODE, (b & XUSB_LS) ? 1 : 0);   // js12 Lstick
-    ok &= emit(fd, EV_KEY, BTN_THUMBL, (b & XUSB_RS) ? 1 : 0); // js13 Rstick
+    batch.add(EV_KEY, BTN_A, (b & XUSB_B) ? 1 : 0);                               // js0  B
+    batch.add(EV_KEY, BTN_B, (b & XUSB_A) ? 1 : 0);                               // js1  A
+    batch.add(EV_KEY, BTN_C, (b & XUSB_X) ? 1 : 0);                               // js2  X
+    batch.add(EV_KEY, BTN_X, (b & XUSB_Y) ? 1 : 0);                               // js3  Y
+    batch.add(EV_KEY, BTN_Z, (b & XUSB_LB) ? 1 : 0);                              // js5  L
+    batch.add(EV_KEY, BTN_TL, (b & XUSB_RB) ? 1 : 0);                             // js6  R
+    batch.add(EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);   // js7  ZL
+    batch.add(EV_KEY, BTN_TL2, report.bRightTrigger > SWITCH_TRIGGER_ON ? 1 : 0); // js8  ZR
+    batch.add(EV_KEY, BTN_TR2, (b & XUSB_BACK) ? 1 : 0);                          // js9  minus
+    batch.add(EV_KEY, BTN_SELECT, (b & XUSB_START) ? 1 : 0);                      // js10 plus
+    batch.add(EV_KEY, BTN_START, (b & XUSB_GUIDE) ? 1 : 0);                       // js11 home
+    batch.add(EV_KEY, BTN_MODE, (b & XUSB_LS) ? 1 : 0);                           // js12 Lstick
+    batch.add(EV_KEY, BTN_THUMBL, (b & XUSB_RS) ? 1 : 0);                         // js13 Rstick
 
-    ok &= emit(fd, EV_SYN, SYN_REPORT, 0);
-    return ok;
+    batch.add(EV_SYN, SYN_REPORT, 0);
+    return batch.writeTo(fd);
 }
 
 bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = devices_.find(serial);
-    if (it == devices_.end() || it->second.motionFd < 0) return false;
-    int fd = it->second.motionFd;
+    if (!isValidSerial(serial)) return false;
+    const Device& dev = devices_[serial];
+    if (!dev.plugged.load(std::memory_order_acquire) || dev.motionFd < 0) return false;
+    int fd = dev.motionFd;
 
     // Raw int16 wire values emitted verbatim; the node's absinfo.resolution
     // carries the units (see openMotionUinputDevice).
@@ -579,17 +587,16 @@ bool GamepadAdapter::supportsMotionForType(uint8_t controllerType) const {
 bool GamepadAdapter::motionBackendOk(uint32_t serial) const {
     // An unknown serial (unplug/query race) reads true: false would surface as a
     // phantom "broken backend" badge in the web UI when there's nothing to report.
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = devices_.find(serial);
-    if (it == devices_.end()) return true;
-    return it->second.motionFd >= 0;
+    if (!isValidSerial(serial)) return true;
+    const Device& dev = devices_[serial];
+    if (!dev.plugged.load(std::memory_order_acquire)) return true;
+    return dev.motionOk.load(std::memory_order_relaxed);
 }
 
 bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = devices_.find(serial);
-    if (it == devices_.end() || it->second.touchFd < 0) return false;
-    Device& dev = it->second;
+    if (!isValidSerial(serial)) return false;
+    Device& dev = devices_[serial];
+    if (!dev.plugged.load(std::memory_order_acquire) || dev.touchFd < 0) return false;
     const int fd = dev.touchFd;
 
     bool ok = true;
@@ -631,12 +638,27 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
 }
 
 bool GamepadAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    // Pointer node is host-global, created lazily by the first sample.
-    if (relMouseFd_ < 0) {
-        relMouseFd_ = openRelMouseUinputDevice();
-        if (relMouseFd_ < 0) return false;
+    bool needsNode = false;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        needsNode = relMouseFd_ < 0;
     }
+    // Pointer node is host-global, created lazily by the first sample.
+    if (needsNode) {
+        const int created = openRelMouseUinputDevice();
+        if (created < 0) return false;
+        bool adopted = false;
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (relMouseFd_ < 0) {
+                relMouseFd_ = created;
+                adopted = true;
+            }
+        }
+        if (!adopted) destroyUinputNode(created, "pointer node");
+    }
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (relMouseFd_ < 0) return false;
     const int fd = relMouseFd_;
 
     bool ok = true;
@@ -749,7 +771,6 @@ void GamepadAdapter::setRumbleCallback(RumbleCallback cb) {
     rumbleCb_ = std::move(cb);
 }
 
-// Caller holds mtx_.
 void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
     int fds[2] = {-1, -1};
     if (::pipe(fds) != 0) return;
@@ -766,12 +787,7 @@ void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
         std::thread([this, serial, devFd, wakeFd] { readerLoop(serial, devFd, wakeFd); });
 }
 
-// Caller holds mtx_. Extract under the lock, drop it for the join, retake it:
-// joining inline deadlocks with the reader taking the lock for the rumble copy.
-void GamepadAdapter::stopReader(uint32_t serial) {
-    auto it = devices_.find(serial);
-    if (it == devices_.end()) return;
-    auto& dev = it->second;
+void GamepadAdapter::stopReader(uint32_t serial, Device& dev) {
     if (!dev.readerRunning.exchange(false, std::memory_order_acq_rel)) return;
     int wakeWrite = dev.wakePipeWrite;
     int wakeRead = dev.wakePipeRead;
@@ -788,11 +804,9 @@ void GamepadAdapter::stopReader(uint32_t serial) {
                          serial, std::strerror(errno));
         }
     }
-    mtx_.unlock();
     if (th.joinable()) th.join();
     if (wakeWrite >= 0) ::close(wakeWrite);
     if (wakeRead >= 0) ::close(wakeRead);
-    mtx_.lock();
 }
 
 // UI_FF_UPLOAD registers an effect: its magnitudes are cached under the
@@ -808,9 +822,7 @@ void GamepadAdapter::onFfUpload(uint32_t serial, int fd, int requestId) {
             upload.effect.u.rumble.strong_magnitude,
             upload.effect.u.rumble.weak_magnitude,
         };
-        std::lock_guard<std::mutex> lk(mtx_);
-        auto it = devices_.find(serial);
-        if (it != devices_.end()) it->second.effects[upload.effect.id] = m;
+        devices_[serial].effects[upload.effect.id] = m;
     }
     endFfRequest(fd, UI_END_FF_UPLOAD, &upload, "UI_END_FF_UPLOAD", serial);
 }
@@ -821,11 +833,7 @@ void GamepadAdapter::onFfErase(uint32_t serial, int fd, int requestId) {
     erase.request_id = requestId;
     if (::ioctl(fd, UI_BEGIN_FF_ERASE, &erase) != 0) return;
     erase.retval = 0;
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        auto it = devices_.find(serial);
-        if (it != devices_.end()) it->second.effects.erase(erase.effect_id);
-    }
+    devices_[serial].effects.erase(erase.effect_id);
     endFfRequest(fd, UI_END_FF_ERASE, &erase, "UI_END_FF_ERASE", serial);
 }
 
@@ -833,16 +841,15 @@ void GamepadAdapter::onFfErase(uint32_t serial, int fd, int requestId) {
 // an effect the kernel never uploaded, reaches the dish as zero magnitudes.
 void GamepadAdapter::onFfPlay(uint32_t serial, int effectId, int playValue) {
     RumbleReport rr{};
+    const Device& dev = devices_[serial];
+    auto eit = dev.effects.find(effectId);
+    if (playValue > 0 && eit != dev.effects.end()) {
+        rr.strongMagnitude = eit->second.strong;
+        rr.weakMagnitude = eit->second.weak;
+    }
     RumbleCallback cb;
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        auto dit = devices_.find(serial);
-        if (dit == devices_.end()) return;
-        auto eit = dit->second.effects.find(effectId);
-        if (playValue > 0 && eit != dit->second.effects.end()) {
-            rr.strongMagnitude = eit->second.strong;
-            rr.weakMagnitude = eit->second.weak;
-        }
         cb = rumbleCb_;
     }
     if (cb) cb(serial, rr);

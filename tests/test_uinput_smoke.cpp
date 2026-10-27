@@ -132,8 +132,8 @@ int main() {
     if (proxyDir != nullptr) ::setenv("SATELLITE_SYSFS_PROXY_DIR", proxyDir, 1);
 
     GamepadAdapter adapter;
-    constexpr uint32_t kXboxSerial = 9101;
-    constexpr uint32_t kDs4Serial = 9102;
+    constexpr uint32_t kXboxSerial = MAX_BACKEND_CONTROLLERS - 1;
+    constexpr uint32_t kDs4Serial = MAX_BACKEND_CONTROLLERS;
 
     TEST("bus opens");
     EXPECT(adapter.ensureBusOpen());

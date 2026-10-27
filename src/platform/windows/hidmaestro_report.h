@@ -294,7 +294,7 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
 // The 48-byte 0x30 body the driver's protocol responder streams at ~60 Hz
 // (it stamps timer/battery/vibrator bytes itself). Buttons follow SDL's
 // Nintendo mapping — A/B and X/Y swapped positionally, identical to the
-// Linux adapter's submitSwitchLocked — sticks are 12-bit packed around
+// Linux adapter's submitSwitch — sticks are 12-bit packed around
 // centre 0x800 with the factory-calibration half-range 0x600, and the IMU
 // rides three copies of one sample in the Switch sensor frame with the
 // fabricated-SPI calibration scales (4096 per g, 13371/936 per deg/s).
