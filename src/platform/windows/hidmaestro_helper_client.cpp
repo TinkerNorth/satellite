@@ -11,19 +11,34 @@
 #include <shellapi.h>
 #include <winsvc.h>
 
+#include <algorithm>
 #include <fstream>
+#include <memory>
 #include <random>
+#include <vector>
 
 namespace satellite {
 namespace hidmaestro {
 
 namespace {
 
-// Cold driver deploys inside a plug can run tens of seconds on slow machines;
-// the connect budget additionally covers a user hesitating at the UAC prompt.
-constexpr DWORD kConnectTimeoutMs = 120000;
-constexpr DWORD kRequestTimeoutMs = 120000;
-constexpr DWORD kBrokerConnectTimeoutMs = 10000;
+std::atomic<HelperClient*> g_connectOnInstall{nullptr};
+
+#ifdef SATELLITE_BUILD_TESTS
+std::atomic<uint64_t> g_pipeReads{0};
+void countPipeRead() { g_pipeReads.fetch_add(1, std::memory_order_relaxed); }
+#else
+void countPipeRead() {}
+#endif
+
+void notifyDriverInstalled() {
+    if (HelperClient* client = g_connectOnInstall.load(std::memory_order_acquire)) {
+        client->connectBrokerInBackground();
+    }
+}
+
+constexpr DWORD kInstallTimeoutMs = 120000;
+constexpr size_t kReplyLimitBytes = 64 * 1024;
 constexpr const wchar_t* kBrokerServiceName = L"SatelliteHmBroker";
 constexpr const wchar_t* kBrokerPipe = L"\\\\.\\pipe\\satellite-hm-broker";
 
@@ -154,7 +169,7 @@ bool installDriver(std::string& outError) {
         return false;
     }
 
-    const DWORD waited = WaitForSingleObject(sei.hProcess, kRequestTimeoutMs);
+    const DWORD waited = WaitForSingleObject(sei.hProcess, kInstallTimeoutMs);
     DWORD exitCode = 0;
     if (waited != WAIT_OBJECT_0) {
         CloseHandle(sei.hProcess);
@@ -171,48 +186,148 @@ bool installDriver(std::string& outError) {
         outError = "The helper finished but the driver is still not installed";
         return false;
     }
+    notifyDriverInstalled();
     return true;
 }
 
-HelperClient::~HelperClient() { shutdown(); }
+struct HelperChannel {
+    HelperChannel() = default;
+    HelperChannel(const HelperChannel&) = delete;
+    HelperChannel& operator=(const HelperChannel&) = delete;
+    ~HelperChannel() { close(); }
 
-bool HelperClient::installed() const { return helperBinaryPresent() && driverInstalled(); }
-
-bool HelperClient::isReady() const {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    return pipe_ != INVALID_HANDLE_VALUE;
-}
-
-bool HelperClient::ensureReady() {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    if (pipe_ != INVALID_HANDLE_VALUE) return true;
-    return startLocked();
-}
-
-void HelperClient::shutdown() {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    stopLocked(/*sendShutdown=*/true);
-}
-
-bool HelperClient::startLocked() {
-    const std::wstring helper = helperBinaryPath();
-    if (helper.empty() || GetFileAttributesW(helper.c_str()) == INVALID_FILE_ATTRIBUTES)
-        return false;
-    if (connectBrokerLocked()) {
-        logMsg(LogLevel::INFO, "hidmaestro", "Connected to the SatelliteHmBroker service");
+    bool attach(HANDLE pipeHandle, HANDLE processHandle) {
+        close();
+        pipe = pipeHandle;
+        process = processHandle;
+        ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (ioEvent == nullptr) {
+            close();
+            return false;
+        }
+        chunk.resize(kReplyLimitBytes);
         return true;
     }
-    if (!spawnHelperLocked()) return false;
-    logMsg(LogLevel::INFO, "hidmaestro", "Spawned an elevated helper for this session");
-    return true;
-}
 
-bool HelperClient::connectBrokerLocked() {
-    blockingRegion("helper.pipe");
-    if (!brokerServiceRegistered()) return false;
+    void close() {
+        if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe);
+        pipe = INVALID_HANDLE_VALUE;
+        if (ioEvent != nullptr) CloseHandle(ioEvent);
+        ioEvent = nullptr;
+        if (process != nullptr) {
+            if (WaitForSingleObject(process, 0) == WAIT_TIMEOUT) TerminateProcess(process, 1);
+            CloseHandle(process);
+            process = nullptr;
+        }
+        pending.clear();
+    }
+
+    bool alive() const {
+        return pipe != INVALID_HANDLE_VALUE &&
+               PeekNamedPipe(pipe, nullptr, 0, nullptr, nullptr, nullptr) != 0;
+    }
 
     HANDLE pipe = INVALID_HANDLE_VALUE;
-    const ULONGLONG deadline = GetTickCount64() + kBrokerConnectTimeoutMs;
+    HANDLE ioEvent = nullptr;
+    HANDLE process = nullptr;
+    std::string pending;
+    std::vector<char> chunk;
+};
+
+namespace {
+
+struct IoBudget {
+    ULONGLONG deadline;
+    HANDLE cancel;
+};
+
+IoBudget budgetFor(DWORD waitMs, HANDLE cancel) { return {GetTickCount64() + waitMs, cancel}; }
+
+DWORD msLeft(const IoBudget& budget) {
+    const ULONGLONG now = GetTickCount64();
+    return budget.deadline > now ? static_cast<DWORD>(budget.deadline - now) : 0;
+}
+
+bool pipeIo(HelperChannel& ch, bool write, void* buf, DWORD len, DWORD& moved,
+            const IoBudget& budget) {
+    OVERLAPPED ov{};
+    ov.hEvent = ch.ioEvent;
+    ResetEvent(ch.ioEvent);
+    const BOOL started = write ? WriteFile(ch.pipe, buf, len, nullptr, &ov)
+                               : ReadFile(ch.pipe, buf, len, nullptr, &ov);
+    if (!started && GetLastError() != ERROR_IO_PENDING) return false;
+    blockingRegion("helper.pipe");
+    if (!write) countPipeRead();
+    HANDLE waits[2] = {ch.ioEvent, budget.cancel};
+    const DWORD count = budget.cancel != nullptr ? 2 : 1;
+    if (WaitForMultipleObjects(count, waits, FALSE, msLeft(budget)) != WAIT_OBJECT_0) {
+        CancelIoEx(ch.pipe, &ov);
+        GetOverlappedResult(ch.pipe, &ov, &moved, TRUE);
+        return false;
+    }
+    return GetOverlappedResult(ch.pipe, &ov, &moved, FALSE) != 0;
+}
+
+bool readLine(HelperChannel& ch, std::string& line, const IoBudget& budget) {
+    size_t scanned = 0;
+    for (;;) {
+        const size_t end = ch.pending.find('\n', scanned);
+        if (end != std::string::npos) {
+            line.assign(ch.pending, 0, end);
+            ch.pending.erase(0, end + 1);
+            line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
+            return true;
+        }
+        scanned = ch.pending.size();
+        if (scanned > kReplyLimitBytes) return false;
+        DWORD moved = 0;
+        if (!pipeIo(ch, false, ch.chunk.data(), static_cast<DWORD>(ch.chunk.size()), moved,
+                    budget) ||
+            moved == 0) {
+            return false;
+        }
+        ch.pending.append(ch.chunk.data(), moved);
+    }
+}
+
+bool roundTrip(HelperChannel& ch, const std::string& request, std::string& response, DWORD waitMs,
+               HANDLE cancel) {
+    if (ch.pipe == INVALID_HANDLE_VALUE) return false;
+    const IoBudget budget = budgetFor(waitMs, cancel);
+    std::string out = request;
+    out.push_back('\n');
+    ch.pending.clear();
+    DWORD moved = 0;
+    if (!pipeIo(ch, true, out.data(), static_cast<DWORD>(out.size()), moved, budget) ||
+        moved != out.size()) {
+        return false;
+    }
+    return readLine(ch, response, budget);
+}
+
+bool handshake(HelperChannel& ch, DWORD waitMs, HANDLE cancel) {
+    std::string response;
+    if (!roundTrip(ch, "{\"op\":\"hello\",\"protocol\":1}", response, waitMs, cancel)) {
+        return false;
+    }
+    Json j;
+    return jsonParse(response, j) && jsonBool(j, "ok");
+}
+
+bool pauseUnlessCancelled(HANDLE cancel, DWORD ms) {
+    if (cancel == nullptr) {
+        Sleep(ms);
+        return true;
+    }
+    return WaitForSingleObject(cancel, ms) == WAIT_TIMEOUT;
+}
+
+HANDLE openBrokerPipe(HANDLE cancel) {
+    blockingRegion("helper.pipe");
+    if (!helperBinaryPresent() || !brokerServiceRegistered()) return INVALID_HANDLE_VALUE;
+
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    const ULONGLONG deadline = GetTickCount64() + HELPER_PIPE_WAIT_MS;
     bool startAttempted = false;
     while (true) {
         pipe = CreateFileW(kBrokerPipe, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
@@ -226,40 +341,140 @@ bool HelperClient::connectBrokerLocked() {
                 brokerServicePid(/*tryStart=*/true);
                 startAttempted = true;
             }
-            Sleep(250);
+            if (!pauseUnlessCancelled(cancel, 250)) return INVALID_HANDLE_VALUE;
         } else {
-            return false;
+            return INVALID_HANDLE_VALUE;
         }
-        if (GetTickCount64() >= deadline) return false;
+        if (GetTickCount64() >= deadline) return INVALID_HANDLE_VALUE;
     }
 
     ULONG serverPid = 0;
     if (!GetNamedPipeServerProcessId(pipe, &serverPid) || serverPid == 0 ||
         serverPid != brokerServicePid(/*tryStart=*/false)) {
         CloseHandle(pipe);
-        return false;
+        return INVALID_HANDLE_VALUE;
     }
+    return pipe;
+}
 
-    HANDLE ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (ioEvent == nullptr) {
-        CloseHandle(pipe);
-        return false;
+} // namespace
+
+HelperClient::HelperClient()
+    : cancel_(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+      connectDone_(CreateEventW(nullptr, TRUE, TRUE, nullptr)) {}
+
+HelperClient::~HelperClient() {
+    HelperClient* self = this;
+    g_connectOnInstall.compare_exchange_strong(self, nullptr);
+    shutdown();
+    CloseHandle(cancel_);
+    CloseHandle(connectDone_);
+}
+
+bool HelperClient::installed() const {
+#ifdef SATELLITE_BUILD_TESTS
+    if (transportsActive_) return true;
+#endif
+    return helperBinaryPresent() && driverInstalled();
+}
+
+bool HelperClient::isReady() const {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    if (channel_ != nullptr) return true;
+    const HelperChannel* staged = staged_.load(std::memory_order_acquire);
+    return staged != nullptr && staged->alive();
+}
+
+bool HelperClient::ensureReady() {
+    awaitBackgroundConnect();
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    adoptStagedLocked();
+    if (channel_ != nullptr) return true;
+    return startLocked();
+}
+
+void HelperClient::shutdown() {
+    SetEvent(cancel_);
+    blockingRegion("thread.join");
+    if (connectThread_.joinable()) connectThread_.join();
+    ResetEvent(cancel_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    delete staged_.exchange(nullptr, std::memory_order_acq_rel);
+    stopLocked(true);
+}
+
+void HelperClient::connectBrokerInBackground() {
+    if (channelUp_.load(std::memory_order_acquire)) return;
+    if (staged_.load(std::memory_order_acquire) != nullptr) return;
+    bool idle = false;
+    if (!connecting_.compare_exchange_strong(idle, true, std::memory_order_acq_rel)) return;
+    ResetEvent(connectDone_);
+    if (connectThread_.joinable()) connectThread_.join();
+    connectThread_ = std::thread([this] { connectBrokerAhead(); });
+}
+
+void HelperClient::connectBrokerAhead() {
+    ScopedThreadRole role(ThreadRole::Background);
+    if (installed()) {
+        auto channel = std::make_unique<HelperChannel>();
+        if (connectBroker(*channel)) {
+            delete staged_.exchange(channel.release(), std::memory_order_acq_rel);
+            logMsg(LogLevel::INFO, "hidmaestro",
+                   "Connected to the SatelliteHmBroker service ahead of the first plug");
+        }
     }
-    pipe_ = pipe;
-    ioEvent_ = ioEvent;
-    helperProcess_ = nullptr;
-    if (!helloLocked()) {
-        stopLocked(false);
-        return false;
+    SetEvent(connectDone_);
+    connecting_.store(false, std::memory_order_release);
+}
+
+void HelperClient::awaitBackgroundConnect() {
+    if (!connecting_.load(std::memory_order_acquire)) return;
+    blockingRegion("helper.pipe");
+    WaitForSingleObject(connectDone_, 2 * HELPER_PIPE_WAIT_MS + 5000);
+}
+
+void HelperClient::adoptStagedLocked() {
+    if (channel_ != nullptr) return;
+    std::unique_ptr<HelperChannel> staged(staged_.exchange(nullptr, std::memory_order_acq_rel));
+    if (staged != nullptr && staged->alive()) setChannelLocked(std::move(staged));
+}
+
+void HelperClient::setChannelLocked(std::unique_ptr<HelperChannel> channel) {
+    channel_ = std::move(channel);
+    channelUp_.store(channel_ != nullptr, std::memory_order_release);
+}
+
+bool HelperClient::startLocked() {
+    auto channel = std::make_unique<HelperChannel>();
+    if (connectBroker(*channel)) {
+        setChannelLocked(std::move(channel));
+        logMsg(LogLevel::INFO, "hidmaestro", "Connected to the SatelliteHmBroker service");
+        return true;
     }
+    if (!spawnHelper(*channel)) return false;
+    setChannelLocked(std::move(channel));
+    logMsg(LogLevel::INFO, "hidmaestro", "Spawned an elevated helper for this session");
     return true;
 }
 
-bool HelperClient::helloLocked() {
-    std::string response;
-    if (!requestLocked("{\"op\":\"hello\",\"protocol\":1}", response)) return false;
-    Json j;
-    return jsonParse(response, j) && jsonBool(j, "ok");
+bool HelperClient::openChannel(HelperChannel& channel, HANDLE pipe, HANDLE process, HANDLE cancel) {
+    if (!channel.attach(pipe, process)) return false;
+    if (handshake(channel, pipeWaitMs_.load(), cancel)) return true;
+    channel.close();
+    return false;
+}
+
+HANDLE HelperClient::openBroker() {
+#ifdef SATELLITE_BUILD_TESTS
+    if (transportsActive_) return transports_.broker ? transports_.broker() : INVALID_HANDLE_VALUE;
+#endif
+    return openBrokerPipe(cancel_);
+}
+
+bool HelperClient::connectBroker(HelperChannel& channel) {
+    HANDLE pipe = openBroker();
+    if (pipe == INVALID_HANDLE_VALUE) return false;
+    return openChannel(channel, pipe, nullptr, cancel_);
 }
 
 namespace {
@@ -306,7 +521,7 @@ bool awaitPipeClient(HANDLE pipe, HANDLE ioEvent, HANDLE process) {
     if (err == ERROR_PIPE_CONNECTED) return true;
     if (err != ERROR_IO_PENDING) return false;
     HANDLE waits[2] = {ioEvent, process};
-    const DWORD rc = WaitForMultipleObjects(2, waits, FALSE, kConnectTimeoutMs);
+    const DWORD rc = WaitForMultipleObjects(2, waits, FALSE, HELPER_PIPE_WAIT_MS);
     DWORD ignored = 0;
     if (rc == WAIT_OBJECT_0) return GetOverlappedResult(pipe, &ov, &ignored, FALSE) != 0;
     CancelIoEx(pipe, &ov);
@@ -322,7 +537,15 @@ bool pipeClientIs(HANDLE pipe, HANDLE process) {
 
 } // namespace
 
-bool HelperClient::spawnHelperLocked() {
+bool HelperClient::spawnHelper(HelperChannel& channel) {
+#ifdef SATELLITE_BUILD_TESTS
+    if (transportsActive_) {
+        HANDLE pipe = transports_.elevated ? transports_.elevated() : INVALID_HANDLE_VALUE;
+        if (pipe == INVALID_HANDLE_VALUE) return false;
+        return openChannel(channel, pipe, nullptr, nullptr);
+    }
+#endif
+    if (!helperBinaryPresent()) return false;
     const std::wstring pipeName = freshPipeName();
     HANDLE pipe = CreateNamedPipeW(
         pipeName.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
@@ -343,92 +566,33 @@ bool HelperClient::spawnHelperLocked() {
     }
 
     const bool connected = awaitPipeClient(pipe, ioEvent, process) && pipeClientIs(pipe, process);
+    CloseHandle(ioEvent);
     if (!connected) {
         TerminateProcess(process, 1);
         CloseHandle(process);
-        CloseHandle(ioEvent);
         CloseHandle(pipe);
         return false;
     }
-
-    pipe_ = pipe;
-    ioEvent_ = ioEvent;
-    helperProcess_ = process;
-
-    if (!helloLocked()) {
-        stopLocked(false);
-        return false;
-    }
-    return true;
+    return openChannel(channel, pipe, process, nullptr);
 }
 
 void HelperClient::stopLocked(bool sendShutdown) {
-    if (pipe_ != INVALID_HANDLE_VALUE && sendShutdown) {
+    if (channel_ != nullptr && sendShutdown) {
         std::string response;
         requestLocked("{\"op\":\"shutdown\"}", response);
         blockingRegion("helper.pipe");
-        if (helperProcess_) WaitForSingleObject(helperProcess_, 5000);
+        if (channel_ != nullptr && channel_->process != nullptr) {
+            WaitForSingleObject(channel_->process, 5000);
+        }
     }
-    if (pipe_ != INVALID_HANDLE_VALUE) CloseHandle(pipe_);
-    pipe_ = INVALID_HANDLE_VALUE;
-    if (ioEvent_) CloseHandle(ioEvent_);
-    ioEvent_ = nullptr;
-    if (helperProcess_) {
-        // The helper self-heals orphans on its next launch, so a wedged one is
-        // safe to kill rather than wait on.
-        if (WaitForSingleObject(helperProcess_, 0) == WAIT_TIMEOUT)
-            TerminateProcess(helperProcess_, 1);
-        CloseHandle(helperProcess_);
-        helperProcess_ = nullptr;
-    }
+    setChannelLocked(nullptr);
 }
 
-// Caller holds mtx_. One overlapped read or write on the pipe, bounded by the
-// request budget; `moved` is what completed.
-bool HelperClient::overlappedIoLocked(bool write, void* buf, DWORD len, DWORD& moved) {
-    OVERLAPPED ov{};
-    ov.hEvent = ioEvent_;
-    ResetEvent(ioEvent_);
-    const BOOL started =
-        write ? WriteFile(pipe_, buf, len, nullptr, &ov) : ReadFile(pipe_, buf, len, nullptr, &ov);
-    if (!started && GetLastError() != ERROR_IO_PENDING) return false;
-    blockingRegion("helper.pipe");
-    if (WaitForSingleObject(ioEvent_, kRequestTimeoutMs) != WAIT_OBJECT_0) {
-        CancelIoEx(pipe_, &ov);
-        GetOverlappedResult(pipe_, &ov, &moved, TRUE);
-        return false;
-    }
-    return GetOverlappedResult(pipe_, &ov, &moved, FALSE) != 0;
-}
-
-// Caller holds mtx_. Tears the channel down so the next ensureReady() starts a
-// fresh helper; always false, so a failing request can return it.
-bool HelperClient::dropChannelLocked() {
-    stopLocked(false);
-    return false;
-}
-
-// Caller holds mtx_. One newline-terminated JSON request, one newline-
-// terminated JSON response; any transport failure drops the channel.
 bool HelperClient::requestLocked(const std::string& line, std::string& response) {
-    if (pipe_ == INVALID_HANDLE_VALUE) return false;
-
-    std::string out = line;
-    out.push_back('\n');
-    DWORD moved = 0;
-    const bool sent = overlappedIoLocked(true, out.data(), static_cast<DWORD>(out.size()), moved) &&
-                      moved == out.size();
-    if (!sent) return dropChannelLocked();
-
-    response.clear();
-    char ch = 0;
-    while (true) {
-        if (!overlappedIoLocked(false, &ch, 1, moved) || moved != 1) return dropChannelLocked();
-        if (ch == '\n') break;
-        if (ch != '\r') response.push_back(ch);
-        if (response.size() > 64 * 1024) return dropChannelLocked();
-    }
-    return true;
+    if (channel_ == nullptr) return false;
+    if (roundTrip(*channel_, line, response, pipeWaitMs_.load(), nullptr)) return true;
+    setChannelLocked(nullptr);
+    return false;
 }
 
 bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool audio,
@@ -436,7 +600,8 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     const char* profile = profileForIdentity(identity, audio);
     if (profile == nullptr) return false;
     std::lock_guard<TrackedMutex> lk(mtx_);
-    if (pipe_ == INVALID_HANDLE_VALUE) return false;
+    adoptStagedLocked();
+    if (channel_ == nullptr) return false;
 
     JsonOut req;
     req["op"] = "plug";
@@ -475,24 +640,39 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     return out.inputSection != 0 && out.inputEvent != 0;
 }
 
+void connectBrokerWhenDriverInstalled(HelperClient* client) {
+    g_connectOnInstall.store(client, std::memory_order_release);
+}
+
 #ifdef SATELLITE_BUILD_TESTS
 bool HelperClient::adoptChannelForTest(HANDLE pipe) {
     std::lock_guard<TrackedMutex> lk(mtx_);
-    stopLocked(false);
-    HANDLE ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (ioEvent == nullptr) return false;
-    pipe_ = pipe;
-    ioEvent_ = ioEvent;
-    helperProcess_ = nullptr;
-    if (helloLocked()) return true;
-    stopLocked(false);
-    return false;
+    setChannelLocked(nullptr);
+    auto channel = std::make_unique<HelperChannel>();
+    if (!openChannel(*channel, pipe, nullptr, nullptr)) return false;
+    setChannelLocked(std::move(channel));
+    return true;
 }
+
+void HelperClient::setTransportsForTest(TestTransports transports) {
+    transports_ = std::move(transports);
+    transportsActive_ = true;
+}
+
+void HelperClient::setPipeWaitForTest(DWORD ms) { pipeWaitMs_.store(ms); }
+
+bool HelperClient::waitForBackgroundConnectForTest(DWORD ms) {
+    return WaitForSingleObject(connectDone_, ms) == WAIT_OBJECT_0;
+}
+
+uint64_t HelperClient::pipeReadsForTest() { return g_pipeReads.load(std::memory_order_relaxed); }
+
+void notifyDriverInstalledForTest() { notifyDriverInstalled(); }
 #endif
 
 bool HelperClient::deprovision(uint32_t serial) {
     std::lock_guard<TrackedMutex> lk(mtx_);
-    if (pipe_ == INVALID_HANDLE_VALUE) return false;
+    if (channel_ == nullptr) return false;
 
     JsonOut req;
     req["op"] = "unplug";

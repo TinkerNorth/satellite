@@ -350,6 +350,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // HIDMaestro for the rest and as the fallback when ViGEmBus is absent.
     ViGEmAdapter vigemAdapter;
     satellite::hidmaestro::HelperClient hmProvisioner;
+    satellite::hidmaestro::connectBrokerWhenDriverInstalled(&hmProvisioner);
+    hmProvisioner.connectBrokerInBackground();
     // Windows ranks a newly arrived endpoint above every device the user has
     // ever chosen, so materializing the pad hands it the whole desktop's audio.
     // Declared BEFORE the adapter that borrows it, so it is still alive while

@@ -1853,6 +1853,41 @@ if(WIN32)
 endif()
 
 if(WIN32)
+    add_executable(test_hidmaestro_helper_client
+        tests/test_hidmaestro_helper_client.cpp
+        src/platform/windows/hidmaestro_helper_client.cpp
+    )
+    target_include_directories(test_hidmaestro_helper_client PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_include_directories(test_hidmaestro_helper_client SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+    target_compile_definitions(test_hidmaestro_helper_client PRIVATE
+        _WIN32_WINNT=0x0A00
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+        SATELLITE_LOCK_STATS
+    )
+    target_link_libraries(test_hidmaestro_helper_client PRIVATE
+        ws2_32
+        user32
+        shell32
+        advapi32
+        Threads::Threads
+    )
+    satellite_test_warnings(test_hidmaestro_helper_client)
+    if(MINGW)
+        target_link_options(test_hidmaestro_helper_client PRIVATE -static)
+    endif()
+    set_target_properties(test_hidmaestro_helper_client PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME hidmaestro_helper_client COMMAND test_hidmaestro_helper_client)
+endif()
+
+if(WIN32)
     add_executable(test_udp_receive
         tests/test_udp_receive.cpp
         src/net/datagram_receiver.cpp

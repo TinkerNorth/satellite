@@ -89,7 +89,7 @@ const std::vector<LockName> LIFECYCLE_MAY_HOLD = {
 
 #ifdef _WIN32
 const std::vector<LockName> HELPER_PIPE_MAY_HOLD = {
-    {"hidmaestro.helper", Allowance::Debt},
+    {"hidmaestro.helper", Allowance::ByDesign},
     {"service.topology", Allowance::ByDesign},
 };
 #endif
@@ -99,7 +99,7 @@ const std::vector<LockPair> BLOCKING_MAY_HOLD = {
     {"backend.lifecycle", "service.topology", Allowance::ByDesign},
     {"crash.toggle", "config.effects", Allowance::ByDesign},
 #ifdef _WIN32
-    {"helper.pipe", "hidmaestro.helper", Allowance::Debt},
+    {"helper.pipe", "hidmaestro.helper", Allowance::ByDesign},
     {"helper.pipe", "service.topology", Allowance::ByDesign},
     {"thread.join", "service.topology", Allowance::ByDesign},
     {"vigem.pnp", "service.topology", Allowance::ByDesign},
@@ -1044,6 +1044,29 @@ class FakeHelper {
     std::atomic<int> unplugs_{0};
 };
 
+struct HelperLockUse {
+    uint64_t acquisitions = 0;
+    uint64_t insideTopology = 0;
+};
+
+HelperLockUse g_helperLockUse;
+
+uint64_t acquisitionsOf(const lockstats::Snapshot& snap, const std::string& lock) {
+    const lockstats::LockStats* stats = snap.find(lock);
+    if (stats == nullptr) return 0;
+    uint64_t total = 0;
+    for (const lockstats::RoleStats& role : stats->roles) total += role.acquisitions;
+    return total;
+}
+
+uint64_t nestedCount(const lockstats::Snapshot& snap, const std::string& outer,
+                     const std::string& inner) {
+    for (const lockstats::NamePair& edge : snap.edges) {
+        if (edge.first == outer && edge.second == inner) return edge.count;
+    }
+    return 0;
+}
+
 class CheckedProvisioner : public hm::IHidMaestroProvisioner {
   public:
     CheckedProvisioner(hm::HelperClient& helper, LifecycleWatch& watch)
@@ -1061,7 +1084,7 @@ class CheckedProvisioner : public hm::IHidMaestroProvisioner {
 
     bool ensureReady() override {
         watch_.check("helper ensureReady", true);
-        return helper_.isReady();
+        return helper_.ensureReady();
     }
 
     void shutdown() override {
@@ -1094,13 +1117,18 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
     pairInConfig({&w1, &w2, &w3, &w4, &wr});
 
     FakeHelper fake;
-    const HANDLE channel = fake.start();
+    std::atomic<int> connects{0};
     hm::HelperClient helper;
-    TEST("windows: the helper client talks to an in-process helper over a real pipe");
-    EXPECT(channel != INVALID_HANDLE_VALUE);
-    EXPECT(channel != INVALID_HANDLE_VALUE && helper.adoptChannelForTest(channel));
+    hm::HelperClient::TestTransports transports;
+    transports.broker = [&fake, &connects] {
+        connects++;
+        return fake.start();
+    };
+    helper.setTransportsForTest(std::move(transports));
+    helper.connectBrokerInBackground();
     CheckedProvisioner provisioner(helper, watch);
     g_driverWatch = &watch;
+    const lockstats::Snapshot beforeRun = lockstats::snapshot();
     {
         ViGEmAdapter vigem;
         HidMaestroAdapter hidMaestro(provisioner, controllerAudioEnabled);
@@ -1149,7 +1177,17 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
             FeedbackTick{});
         svc.closeAllSessions();
 
+        const lockstats::Snapshot afterRun = lockstats::snapshot();
+        g_helperLockUse.acquisitions = acquisitionsOf(afterRun, "hidmaestro.helper") -
+                                       acquisitionsOf(beforeRun, "hidmaestro.helper");
+        g_helperLockUse.insideTopology =
+            nestedCount(afterRun, "service.topology", "hidmaestro.helper") -
+            nestedCount(beforeRun, "service.topology", "hidmaestro.helper");
+
         expectTheRunReachedEverything("windows", run, false);
+        TEST("windows: the helper client connected once, in the background, to an in-process "
+             "helper over a real pipe");
+        EXPECT_EQ(connects.load(), 1);
         TEST("windows: the helper provisioned and removed pads");
         EXPECT(fake.plugs() > 0);
         EXPECT_EQ(fake.unplugs(), fake.plugs());
@@ -1292,6 +1330,11 @@ void checkTheOrderLaw(const lockstats::Snapshot& snap) {
     }
     EXPECT(!cyclic);
     expectExactly("order law: every nesting edge is in today's order", edges, ORDER_MAY_NEST);
+#ifdef _WIN32
+    TEST("order law: hidmaestro.helper is only ever taken inside service.topology");
+    EXPECT(g_helperLockUse.acquisitions > 0);
+    EXPECT_EQ(g_helperLockUse.insideTopology, g_helperLockUse.acquisitions);
+#endif
     TEST("order law: config.effects was taken, and never while service.state or "
          "service.topology was held");
     const lockstats::LockStats* effects = snap.find("config.effects");

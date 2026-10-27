@@ -1027,6 +1027,33 @@ through `packAndWrite`) take only the slot's flag; `submitMicAudioPcm`
 has a single writer, the mic worker, and takes neither. `busOpen_` is an
 atomic.
 
+`HelperClient`. Its lock, `hidmaestro.helper`, is a transaction lock: held
+across one request and its reply, it is held across pipe waits by design. Three
+rules make that harmless. Every wait on the pipe, the broker connection and the
+wait for a launched helper to connect is bounded at 10 s, and a request has one
+deadline for the write and the whole reply, so a helper that trickles bytes
+gets no longer than a silent one; a request that misses it fails the call and
+drops the channel, and the next plug starts a fresh helper. Every acquirer
+already holds `service.topology` or is the shutdown path, so the lock never
+has a waiter that was not already waiting for the topology change. And the
+connection to the broker service is made ahead of the first plug without the
+lock: a Background thread opens a channel of its own, says hello on it, and
+publishes it through an atomic, and the first plug adopts it in `ensureReady`
+(a channel whose peer died while it waited is dropped, and the plug connects as
+it did before). The thread starts at startup when the helper and the driver are
+installed, and again when the dashboard finishes installing the driver. It
+takes only the path that needs no prompt, the broker; the launch of an elevated
+helper stays in the plug. A plug that lands while the thread is connecting waits
+for it, since the broker serves one client at a time and a second connection
+would be answered `busy` and fall through to the prompt, and `shutdown` cancels
+a connect in flight. A reply is one line ended by a line feed, with no length
+in front of it, so the reader takes what the pipe holds with one read of up to
+64 KiB and splits on the line feed. A reply that arrives whole costs one read,
+where reading a byte at a time cost one per byte; the helper writes the body and
+the line feed as two flushed writes, so a reply usually costs two. A helper that
+does not exit after its shutdown request is killed rather than waited on,
+since it sweeps orphans on its next launch.
+
 `GamepadAdapter` (uinput). The devices are a fixed array indexed by
 serial, each with an atomic `plugged` and an atomic motion-node flag, in
 place of a map that every call had to look up under `mtx_`. Device
@@ -1077,15 +1104,15 @@ Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output and
 uinput reader threads), AudioWorker (HIDMaestro speaker and haptic drains),
 Logger, Pointer (the service's pointer thread), Mic (its mic worker), Update,
 Background (discovery, mDNS, the address watchers, the tooltip ticker, the
-audio guard's poller, the dashboard broadcaster) and Gui. The HTTP servers'
-pool threads take HttpAdmin or HttpClient per request from each server's
-pre-routing handler. ConfigSaver is the config store's saver thread; Topology
-is reserved for a thread that does not exist yet. The markers are
-`config.save` (every `saveConfig`), `autostart.write` (the autostart
-registration), `crash.toggle`
-(the crash SDK's arm and disarm), `log.write` (the log writer's sink write and
-flush), `helper.pipe` (every HIDMaestro helper pipe wait and launch),
-`tray.shell` (`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls),
+audio guard's poller, the helper client's connect to the broker, the dashboard
+broadcaster) and Gui. The HTTP servers' pool threads take HttpAdmin or
+HttpClient per request from each server's pre-routing handler. ConfigSaver is
+the config store's saver thread; Topology is reserved for a thread that does
+not exist yet. The markers are `config.save` (every `saveConfig`),
+`autostart.write` (the autostart registration), `crash.toggle` (the crash
+SDK's arm and disarm), `log.write` (the log writer's sink write and flush),
+`helper.pipe` (every HIDMaestro helper pipe wait and launch), `tray.shell`
+(`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls),
 `backend.lifecycle` (every lifecycle call the service makes), `thread.join`
 (the joins in the receiver, the update service, the config store, the
 dashboard broadcaster and the adapters) and `vigem.pnp` (the ViGEm bus open,
@@ -1105,9 +1132,11 @@ The service's pointer thread and mic worker take the mouse-mode touchpad
 frames and the mic packets the receive thread hands them, and the mock
 backend counts, by thread role, who injected each mouse report and who
 submitted each mic window. On Windows a second run puts `ViGEmAdapter` over a
-fake driver and `HidMaestroAdapter` over the real `HelperClient`, which talks
-to an in-process helper on a real pipe, behind `GamepadMux`. The config lives
-in a temporary directory named by `SATELLITE_CONFIG_DIR`. The test then
+fake driver and `HidMaestroAdapter` over the real `HelperClient`, which
+connects to an in-process helper on a real pipe from its background thread, as
+it does at startup, and adopts that connection at its first plug, behind
+`GamepadMux`. The config lives in a temporary directory named by
+`SATELLITE_CONFIG_DIR`. The test then
 checks seven laws:
 
 1. Receive: the locks a thread with the Receive role takes, which is none.
@@ -1116,8 +1145,11 @@ checks seven laws:
    holds nothing but `service.topology`; while the helper's pipe is in use,
    `hidmaestro.helper` as well.
 3. Blocking: the locks held at each blocking marker.
-4. Order: the nesting edges form an acyclic graph, and every edge is on the
-   list of today's order.
+4. Order: the nesting edges form an acyclic graph, every edge is on the list
+   of today's order, and `hidmaestro.helper` is only ever taken inside
+   `service.topology`: over the service's run, the helper lock's acquisitions
+   equal the nesting count of that pair. The shutdown path, which takes the
+   lock with no topology change, falls outside the run.
 5. Logger: the writer thread takes no lock at all, and it reaches
    `log.write`, so the blocking law sees what it holds there: nothing.
 6. Pointer: the pointer thread takes no lock at all, and it injected the
@@ -1129,14 +1161,14 @@ Each list is exactly what today's code does. The test fails when a lock, a
 pair or an edge appears that is not on its list, and also when one on the list
 no longer appears, so a list can only shrink and the change that fixes an
 entry deletes it. Every entry says why it is there. Debt is what later changes
-remove: the helper lock held across its pipe waits. By design is what
-stays: anything held under `service.topology`, which exists to serialize
-lifecycle work, the documented order `service.topology`, then
-`service.state`, the config store's own order, `config.write`, then
-`config.snapshot`, and the effects lock, `config.effects`, held across the
-autostart write and the crash toggle, above `config.snapshot`, and never taken
-while `service.state` or `service.topology` is held (the order law asserts
-it). The test does not reach
+remove, and none is left. By design is what stays: anything held under
+`service.topology`, which exists to serialize lifecycle work; the helper lock,
+a transaction lock held across one request and its reply (see "Backend
+locking"); the documented order `service.topology`, then `service.state`; the
+config store's own order, `config.write`, then `config.snapshot`; and the
+effects lock, `config.effects`, held across the autostart write and the crash
+toggle, above `config.snapshot`, and never taken while `service.state` or
+`service.topology` is held (the order law asserts it). The test does not reach
 `tray.shell` or `audio.com`, whose calls act on the desktop, so those two
 markers have no entries yet. `log.write` has none because the writer holds
 nothing there. The pointer and mic laws hold for the service and for the
@@ -1325,8 +1357,9 @@ lives in the bundled .NET helper (`helper/hidmaestro` →
 `satellite-hm-helper.exe`). The helper drives the HIDMaestro SDK and
 duplicates the per-controller section + event handles into the
 satellite process over a named pipe (`hidmaestro_helper_client.cpp`).
-Two transports reach it, tried in order on the FIRST HIDMaestro plug
-(never from a status probe):
+Two transports reach it, and neither runs from a status probe. The service is
+connected ahead of the first plug, on a background thread, because it needs no
+prompt; the launch is tried only by a plug, after the service:
 
 1. The **SatelliteHmBroker** service (`satellite-hm-helper.exe
    service`): LocalSystem, demand-start, registered by setup with the
@@ -1340,11 +1373,12 @@ Two transports reach it, tried in order on the FIRST HIDMaestro plug
    `QueryServiceStatusEx`, so a squatted pipe name is refused. One
    client session at a time (the SDK's orphan sweep is machine-global);
    a second is answered `busy`. The service exits after five idle
-   minutes and the trigger brings it back. No UAC prompt.
+   minutes without a client and the trigger brings it back; a connected
+   Satellite keeps it up. No UAC prompt.
 2. A helper spawned `runas` with a private, per-session pipe name (one
    UAC prompt; the connecting client's PID is verified against the
    spawned process). This is the fallback when the service is absent or
-   busy.
+   busy, and only a plug launches it.
 
 After that the per-frame hot path is native only. If the helper dies, submits keep working (the
 mapped sections outlive it); the next unplug reports unconfirmed and
