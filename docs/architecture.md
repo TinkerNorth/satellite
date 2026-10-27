@@ -419,6 +419,27 @@ sends the encrypted 0x000F before teardown.
 connections, controllers (with adapter-truth `pluggedIn`), and backend
 status, so the caller needs no locking.
 
+### Idle wakeups
+
+httplib's accept loop waits on its listening socket with a timeout, and on
+Windows that timeout defaults to 1 ms, so each idle server (the admin UI and
+the client API) woke about a thousand times a second to find nothing. CMake
+defines `CPPHTTPLIB_IDLE_INTERVAL_USECOND` as 100000 for every Windows target,
+so an idle server wakes about ten times a second. The macro is read in one
+place, `Server::listen_internal`: it is that `select`'s timeout, and the
+cadence of the task queue's `on_idle()`, which the vendored thread pool does
+not implement. A connection still wakes the accept at once, so accept latency
+is unchanged, and `Server::stop()` closes the listening socket, which ended
+the wait at once on the machine this was measured on (the idle test prints
+the stop time: under a millisecond), so the longer interval cost no shutdown
+time there; the most it could add elsewhere is one period, 100 ms. Keep-alive
+does not depend on it (an idle keep-alive connection polls with its own
+`CPPHTTPLIB_KEEPALIVE_TIMEOUT_CHECK_INTERVAL_USECOND`, 10 ms, untouched), and
+neither does the dashboard's event stream. Off Windows the default is 0, which
+makes the accept loop block in `accept` and never wake, so the definition is
+Windows-only: setting it there would turn a blocking accept into polling.
+`tests/test_httplib_idle.cpp` counts an idle server's wakeups.
+
 ## Thread Safety
 
 Two kinds of thread reach `SessionService`. The stream threads take no

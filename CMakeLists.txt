@@ -35,7 +35,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(WIN32)
-    add_compile_definitions(NOMINMAX)
+    add_compile_definitions(NOMINMAX CPPHTTPLIB_IDLE_INTERVAL_USECOND=100000)
 endif()
 
 # MSVC links the static CRT everywhere: vcpkg's x64-windows-static packages
@@ -1538,6 +1538,14 @@ satellite_add_pure_test(test_update_ui_contract tests/test_update_ui_contract.cp
 target_compile_definitions(test_update_ui_contract PRIVATE
     WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
 )
+
+satellite_add_pure_test(test_httplib_idle tests/test_httplib_idle.cpp)
+target_compile_definitions(test_httplib_idle PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+target_link_libraries(test_httplib_idle PRIVATE Threads::Threads)
+if(WIN32)
+    target_compile_definitions(test_httplib_idle PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries(test_httplib_idle PRIVATE ws2_32 winmm)
+endif()
 
 # UpdateService spawns worker/timer threads, so this suite needs pthreads on
 # Linux/macOS (MinGW links winpthread implicitly).
