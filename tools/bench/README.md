@@ -297,3 +297,40 @@ No scenario on either backend has a dish A frame over 1 ms or a ring drop, and d
 In S6, dish B's PUT holds `config` for about 1.6 ms while `refreshPairedDeviceIdentity` writes the file (1,574.6 us mock, 1,649.2 us vigem), yet the receive thread's longest wait on `config` is 4.5 us, because the defaults keep the two apart: the 50 Hz mic frames sit on a 20 ms grid from the start of the run, and the PUT due at 1.0 s, with its 200 ms plug, starts the save about 1.6 ms after a mic frame and ends it long before the next. With `--mic-hz 1000` a mic frame lands inside the save every time; the handler reads the config before its 75 packets/s limit, so even the frames it then drops take the lock. There the receive thread waited up to 893.8 us (mock) and 1,293.2 us (vigem) on `config`, the gamepad frames queued behind it waited as long, and dish A's worst frame in each of the six reps was between 0.5 and 1.7 ms; the reported vigem rep has 3 frames over 1 ms and a 1.395 ms gap. Dish B's refused frame in the mock row is one it sent on the old token during the save: the PUT replies only after the save, as `PUT /api/connections` does, so B switched keys about 1.6 ms later than in S4, and the lost frame doubled its longest gap.
 
 In S7 the four loggers contend for `log` with each other and with the logs reader, which holds it for up to 1.2 ms while it builds the JSON (1,160.6 us mock, 1,029.2 us vigem), and a logging thread waited up to 1,204.0 us. The receive thread logged nothing in those reps, so dish A never met the lock; a line logged on the receive path would wait behind the same build, and the mic handler logs its once-per-session lines while it holds `service.state`. In S8 the HttpAdmin rows are the eight dashboard readers and the sse thread, which take `service.state` 720 times and `config` 236 times per rep and hold either for at most 29.6 us; the receive thread met them twice in the mock rep, waiting up to 11.6 us on `service.state`, and not at all in the vigem rep. The PUT holds `service.topology` across the whole 200 ms plug in every scenario, which is by design: the receive path never takes it.
+
+---
+
+## Release measurements
+
+`.github/workflows/measurements.yml` turns the lock path benchmark into a record per release. It runs on pull requests that touch `src/**`, `tools/bench/**`, `tests/test_lock_laws.cpp` or `CMakeLists.txt`, by hand (`workflow_dispatch`), and from `release.yml` as the `measurements` job between `draft` and `publish`.
+
+One `windows-latest` job builds `bench_frame_path`, `bench_frame_path_lockstats` and `test_lock_laws` (MSVC, Release), runs `lock_laws`, then runs each bench target at its defaults with `--backend mock` and with `--backend vigem`, and once more per backend with `--mic-hz 1000`, of which only S6 is kept. `scripts/measurements-report.ps1` merges the eight JSON files into `measurements-<version>.json` and renders `measurements-<version>.md`: one table of dish A latency per scenario and mode, and one table of per-lock waits by thread role. The markdown is the job summary, both files are the `measurements` workflow artifact, and a release run attaches them to the draft release with `gh release upload --clobber`.
+
+- **Plug stall gate (fails the job).** In S4 to S8, dish A's longest gap in the reported (median) rep must stay under 50 ms, in every run: both bench targets, both backends, and S6 at `--mic-hz 1000`. A real stall lasts the whole 200 ms plug and a runner hiccup does not. A missing run, or a missing dish A row, fails too, because it cannot be judged. `publish` needs `measurements`, so a release that fails the gate stays a draft, and "Re-run failed jobs" repeats only the measurement.
+- **Trend (warnings only).** The report downloads `measurements-*.json` from the latest published release (`gh release download`; finding none is not an error) and warns, in the markdown and as `::warning::` annotations, when a p99.9 or a max is more than twice the previous value and more than 100 us higher. Shared runners are noisy, so this never fails a run.
+
+To produce the same files by hand, run each target once per backend, and once more per backend with `--mic-hz 1000`, each with `--json` into one directory (`raw`), then:
+
+```powershell
+gh release download --pattern 'measurements-*.json' --dir previous
+pwsh scripts/measurements-report.ps1 -InputDir raw -OutputDir out -Version dev -PreviousDir previous
+```
+
+The report exits 1 when the gate fails; `-PreviousDir` is optional. `-AllowPartial` accepts a directory that lacks some of the eight runs, and `-GapLimitMs`, `-TrendRatio` and `-TrendMinDeltaUs` move the thresholds. `tests/test_measurements_report.ps1` tests it, and also runs the built benches with `--smoke` to check the JSON they really write.
+
+### xinput_monitor
+
+`xinput_monitor` (Windows only, `tools/bench/xinput_monitor.cpp`) polls XInput slots 0 to 3 through `xinput1_4.dll` as fast as it can for `--secs` seconds (default 30). It prints, with wall-clock stamps in the format of Satellite's log, every slot connect and disconnect and every pause of at least `--gap-ms` (default 40) between two changes of a slot's `dwPacketNumber`, then per slot the updates, the longest pause and the pauses over the threshold. Keep a stick moving while it runs, because an idle pad is a pause too. The last line gives the number of sweeps and the longest time between two readings of a slot, which shows whether a pause could be the monitor's own stall. The bookkeeping lives in `tools/bench/pause_detector.h`, which `tests/test_pause_detector.cpp` runs against synthetic timelines.
+
+```sh
+cmake --build <build dir> --target xinput_monitor
+./xinput_monitor.exe --secs 60 --gap-ms 40
+```
+
+### smoke-windows-app.ps1
+
+`scripts/smoke-windows-app.ps1` launches a built `satellite.exe` with `SATELLITE_CONFIG_DIR` set to a fresh temporary directory and waits up to 20 s for UDP 9876 and TCP 9877 to be owned by that process. It reads `/api/status`, sends three unauthenticated 40-byte datagrams and requires `rx.unknownToken` in `/api/debug` to rise by at least three, stays up for `-StaySecs` (default 45, past the updater's 30 s settle), posts `WM_CLOSE` to its `ControllerForwardTray` window, and requires exit code 0 within 20 s and no `ERROR` line from that run in `%LOCALAPPDATA%\TinkerNorth\Satellite\logs`. `windows-msvc-ci.yml` runs it after the build. Exit codes: 0 passed, 1 failed, 2 refused because a Satellite is already running, since a second one would fight it over the singleton mutex, the ports and the tray icon.
+
+```powershell
+pwsh scripts/smoke-windows-app.ps1 -Exe satellite.exe -StaySecs 45
+```
