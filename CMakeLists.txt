@@ -984,6 +984,22 @@ set_target_properties(test_session_service PROPERTIES
 
 add_test(NAME session_service COMMAND test_session_service)
 
+add_executable(test_session_hot_path
+    tests/test_session_hot_path.cpp
+    ${SATELLITE_CORE_SOURCES}
+)
+target_include_directories(test_session_hot_path PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(test_session_hot_path PRIVATE SATELLITE_BUILD_TESTS)
+find_package(Threads REQUIRED)
+target_link_libraries(test_session_hot_path PRIVATE Threads::Threads)
+satellite_test_warnings(test_session_hot_path)
+set_target_properties(test_session_hot_path PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME session_hot_path COMMAND test_session_hot_path)
+
 # Exercises net/inner_dispatch.cpp: the per-message length guards that reject
 # truncated / oversized wire payloads before a decoder reads out of bounds.
 # inner_dispatch.cpp is socket-free, so this builds cleanly on every platform.
@@ -1100,6 +1116,9 @@ satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
+satellite_add_pure_test(test_hot_table tests/test_hot_table.cpp)
+find_package(Threads REQUIRED)
+target_link_libraries(test_hot_table PRIVATE Threads::Threads)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)

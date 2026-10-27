@@ -1,0 +1,435 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+#include "../src/core/session_service.h"
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <random>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "test_util.h"
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+constexpr int SESSION_COUNT = 2;
+constexpr uint8_t PADS_PER_SESSION = 8;
+constexpr int NO_OWNER = 0;
+constexpr int ZOMBIE_OWNER = -1;
+constexpr int PHASES = 3;
+constexpr int STRESS_PHASE = 0;
+constexpr int SLOW_PLUG_PHASE = 1;
+constexpr int DONE_PHASE = 2;
+constexpr auto STRESS_SPAN = std::chrono::seconds(1);
+constexpr int SLOW_PLUGS = 4;
+constexpr int SLOW_PLUG_MS = 50;
+constexpr auto BLOCKED_CALL_LIMIT = std::chrono::milliseconds(1);
+constexpr auto THREAD_TIMEOUT = std::chrono::seconds(60);
+constexpr uint32_t SENDER_IPV4 = 0x0100007fu;
+constexpr uint16_t SENDER_PORT = 40100;
+constexpr uint32_t PLUG_FAILURE_ONE_IN = 10;
+constexpr uint32_t UNPLUG_FAILURE_ONE_IN = 20;
+constexpr int REAP_SILENCE_SEC = 60;
+
+int ownerCode(int tag, int ctrlIdx) { return tag * 256 + ctrlIdx + 1; }
+
+std::string ownerName(int tag, int ctrlIdx) {
+    return std::to_string(tag) + ":" + std::to_string(ctrlIdx);
+}
+
+int parseOwner(const std::string& name) {
+    const size_t colon = name.find(':');
+    if (colon == std::string::npos) return ZOMBIE_OWNER;
+    return ownerCode(std::stoi(name.substr(0, colon)), std::stoi(name.substr(colon + 1)));
+}
+
+class OwnershipBackend : public IGamepadPort {
+  public:
+    std::atomic<int> slowPlugMs{0};
+    std::atomic<bool> flaky{true};
+    std::atomic<uint64_t> violations{0};
+    std::atomic<uint64_t> plugs{0};
+    std::atomic<uint64_t> unplugs{0};
+
+    bool ensureBusOpen() override {
+        busOpen_.store(true);
+        return true;
+    }
+
+    void closeBus() override {
+        for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
+            Serial& s = serials_[serial];
+            s.busy.store(true);
+            if (s.submitting.load()) violations++;
+            s.plugged.store(false);
+            s.owner.store(NO_OWNER);
+            s.busy.store(false);
+        }
+        busOpen_.store(false);
+    }
+
+    bool isBusOpen() const override { return busOpen_.load(); }
+
+    bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
+        return pluginDevicePreferring(serial, identity, std::string());
+    }
+
+    bool pluginDevicePreferring(uint32_t serial, GamepadIdentity,
+                                const std::string& preferredBackend) override {
+        if (!valid(serial)) return false;
+        Serial& s = serials_[serial];
+        s.busy.store(true);
+        if (s.submitting.load()) violations++;
+        if (s.plugged.load()) violations++;
+        const int sleepMs = slowPlugMs.load();
+        if (sleepMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        const bool ok = !flaky.load() || rng_() % PLUG_FAILURE_ONE_IN != 0;
+        if (ok) {
+            s.owner.store(parseOwner(preferredBackend));
+            s.plugged.store(true);
+            plugs++;
+        }
+        if (s.submitting.load()) violations++;
+        s.busy.store(false);
+        return ok;
+    }
+
+    bool unplugDevice(uint32_t serial) override {
+        if (!valid(serial)) return true;
+        Serial& s = serials_[serial];
+        s.busy.store(true);
+        if (s.submitting.load()) violations++;
+        const bool confirmed = !flaky.load() || rng_() % UNPLUG_FAILURE_ONE_IN != 0;
+        if (confirmed) {
+            s.plugged.store(false);
+            s.owner.store(NO_OWNER);
+        } else {
+            s.owner.store(ZOMBIE_OWNER);
+        }
+        if (s.submitting.load()) violations++;
+        s.busy.store(false);
+        unplugs++;
+        return confirmed;
+    }
+
+    bool isDevicePlugged(uint32_t serial) const override {
+        return valid(serial) && serials_[serial].plugged.load();
+    }
+
+    bool submitReport(uint32_t serial, const GamepadReport& report) override {
+        if (!valid(serial)) {
+            violations++;
+            return false;
+        }
+        Serial& s = serials_[serial];
+        s.submitting.store(true);
+        if (s.busy.load()) violations++;
+        if (!s.plugged.load()) violations++;
+        if (s.owner.load() != ownerCode(report.sThumbLX, report.sThumbLY)) violations++;
+        s.submitting.store(false);
+        return true;
+    }
+
+    void setRumbleCallback(RumbleCallback) override {}
+
+  private:
+    struct Serial {
+        std::atomic<bool> busy{false};
+        std::atomic<bool> submitting{false};
+        std::atomic<bool> plugged{false};
+        std::atomic<int> owner{NO_OWNER};
+    };
+
+    static bool valid(uint32_t serial) { return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS; }
+
+    std::array<Serial, MAX_BACKEND_CONTROLLERS + 1> serials_{};
+    std::atomic<bool> busOpen_{false};
+    std::mt19937 rng_{20261026u};
+};
+
+struct SilentClient : IClientPort {
+    void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
+    void removeClientAddr(uint32_t) override {}
+    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {}
+    void sendSessionClose(const Connection&, uint8_t) override {}
+    void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
+    void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
+    void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
+    void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
+    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
+};
+
+struct SilentLog : ILogPort {
+    void logMsg(LogLevel, const std::string&, const std::string&) override {}
+};
+
+struct Shared {
+    std::array<std::atomic<uint32_t>, SESSION_COUNT + 1> tokens{};
+    std::atomic<int> phase{STRESS_PHASE};
+    std::atomic<bool> stop{false};
+    std::atomic<bool> receiverDone{false};
+    std::atomic<bool> coldDone{false};
+    Clock::duration longest[PHASES] = {};
+    uint64_t submits[PHASES][SESSION_COUNT + 1] = {};
+    uint64_t lookupMisses[PHASES][SESSION_COUNT + 1] = {};
+    uint64_t keyMismatches = 0;
+    uint64_t calls = 0;
+    uint64_t coldOps = 0;
+    uint64_t coldRefusals = 0;
+};
+
+struct SessionState {
+    int tag = 0;
+    std::string deviceId;
+    std::string connectionId;
+    uint8_t pairingKey[CRYPTO_KEY_SIZE] = {};
+};
+
+void keyFor(int tag, uint8_t out[CRYPTO_KEY_SIZE]) {
+    for (int i = 0; i < CRYPTO_KEY_SIZE; i++) out[i] = static_cast<uint8_t>(tag * 16 + i);
+}
+
+void receiveLoop(SessionService& svc, Shared& sh) {
+    uint8_t expected[SESSION_COUNT + 1][CRYPTO_KEY_SIZE];
+    for (int tag = 1; tag <= SESSION_COUNT; tag++) keyFor(tag, expected[tag]);
+    uint32_t counter = 0;
+    while (!sh.stop.load(std::memory_order_acquire)) {
+        const int phase = sh.phase.load(std::memory_order_acquire);
+        for (int tag = 1; tag <= SESSION_COUNT; tag++) {
+            const uint32_t token = sh.tokens[tag].load(std::memory_order_acquire);
+            if (token == 0) continue;
+            uint8_t key[CRYPTO_KEY_SIZE];
+            uint32_t last = 0;
+            bool seen = false;
+            if (!svc.getDecryptInfo(token, key, last, &seen)) {
+                sh.lookupMisses[phase][tag]++;
+                continue;
+            }
+            if (std::memcmp(key, expected[tag], CRYPTO_KEY_SIZE) != 0) sh.keyMismatches++;
+            for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
+                GamepadReport report{};
+                report.sThumbLX = static_cast<int16_t>(tag);
+                report.sThumbLY = static_cast<int16_t>(idx);
+                const auto start = Clock::now();
+                const bool ok = svc.handleGamepadDataAndUpdate(token, ++counter, SENDER_IPV4,
+                                                               SENDER_PORT, idx, report);
+                const auto spent = Clock::now() - start;
+                if (spent > sh.longest[phase]) sh.longest[phase] = spent;
+                if (ok) sh.submits[phase][tag]++;
+                sh.calls++;
+            }
+        }
+    }
+    sh.receiverDone.store(true, std::memory_order_release);
+}
+
+ControllerDescriptor descriptorFor(int tag, uint8_t idx, uint8_t type) {
+    ControllerDescriptor d;
+    d.ctrlIdx = idx;
+    d.type = type;
+    d.preferredBackend = ownerName(tag, idx);
+    return d;
+}
+
+uint8_t randomType(std::mt19937& rng) {
+    return rng() % 2 == 0 ? CONTROLLER_TYPE_XBOX : CONTROLLER_TYPE_PLAYSTATION;
+}
+
+void markClosed(SessionState& st, Shared& sh) {
+    st.connectionId.clear();
+    sh.tokens[st.tag].store(0, std::memory_order_release);
+}
+
+void upsert(SessionService& svc, SessionState& st, Shared& sh,
+            const std::vector<ControllerDescriptor>& descriptors) {
+    const SessionUpsertResult r =
+        svc.upsertSession(st.deviceId, st.deviceId, "127.0.0.1", st.pairingKey, descriptors, false);
+    if (!r.ok) {
+        sh.coldRefusals++;
+        return;
+    }
+    st.connectionId = r.connectionId;
+    sh.tokens[st.tag].store(r.token, std::memory_order_release);
+}
+
+void randomUpsert(SessionService& svc, SessionState& st, Shared& sh, std::mt19937& rng) {
+    std::vector<ControllerDescriptor> descriptors;
+    for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
+        if (rng() % 2 == 0) descriptors.push_back(descriptorFor(st.tag, idx, randomType(rng)));
+    }
+    upsert(svc, st, sh, descriptors);
+}
+
+void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, std::mt19937& rng) {
+    if (st.connectionId.empty()) {
+        randomUpsert(svc, st, sh, rng);
+        return;
+    }
+    const uint8_t idx = static_cast<uint8_t>(rng() % PADS_PER_SESSION);
+    uint16_t epoch = 0;
+    switch (rng() % 6) {
+    case 0:
+        randomUpsert(svc, st, sh, rng);
+        break;
+    case 1:
+    case 2: {
+        ControllerApplyResult applied;
+        const auto desc = descriptorFor(st.tag, idx, randomType(rng));
+        if (!svc.applyController(st.connectionId, st.deviceId, desc, applied, epoch)) {
+            sh.coldRefusals++;
+        }
+        break;
+    }
+    case 3:
+        if (!svc.removeController(st.connectionId, st.deviceId, idx, epoch)) sh.coldRefusals++;
+        break;
+    case 4:
+        svc.closeSessionById(st.connectionId, st.deviceId, CLOSE_REASON_KICKED, false);
+        markClosed(st, sh);
+        break;
+    default: {
+        const uint32_t token = sh.tokens[st.tag].load(std::memory_order_relaxed);
+        svc.backdateForTest(token, REAP_SILENCE_SEC, 1);
+        svc.reapTimedOut();
+        break;
+    }
+    }
+    sh.coldOps++;
+}
+
+std::vector<ControllerDescriptor> everyPad(int tag) {
+    std::vector<ControllerDescriptor> descriptors;
+    for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
+        descriptors.push_back(descriptorFor(tag, idx, CONTROLLER_TYPE_XBOX));
+    }
+    return descriptors;
+}
+
+void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
+              std::array<SessionState, SESSION_COUNT + 1>& sessions) {
+    std::mt19937 rng(7u);
+    const auto stressEnd = Clock::now() + STRESS_SPAN;
+    while (Clock::now() < stressEnd) {
+        const int tag = 1 + static_cast<int>(rng() % SESSION_COUNT);
+        randomColdOp(svc, sessions[static_cast<size_t>(tag)], sh, rng);
+        for (int other = 1; other <= SESSION_COUNT; other++) {
+            SessionState& st = sessions[static_cast<size_t>(other)];
+            if (!st.connectionId.empty() && !svc.isDeviceConnected(st.deviceId)) {
+                markClosed(st, sh);
+            }
+        }
+    }
+
+    backend.flaky.store(false);
+    svc.closeAllSessions(CLOSE_REASON_SHUTDOWN);
+    for (int tag = 1; tag <= SESSION_COUNT; tag++) {
+        markClosed(sessions[static_cast<size_t>(tag)], sh);
+    }
+    SessionState& steady = sessions[1];
+    SessionState& changing = sessions[2];
+    upsert(svc, steady, sh, everyPad(steady.tag));
+    upsert(svc, changing, sh, {});
+
+    sh.phase.store(SLOW_PLUG_PHASE, std::memory_order_release);
+    backend.slowPlugMs.store(SLOW_PLUG_MS);
+    for (int i = 0; i < SLOW_PLUGS; i++) {
+        ControllerApplyResult applied;
+        uint16_t epoch = 0;
+        const auto desc = descriptorFor(changing.tag, 0, CONTROLLER_TYPE_XBOX);
+        svc.applyController(changing.connectionId, changing.deviceId, desc, applied, epoch);
+        svc.removeController(changing.connectionId, changing.deviceId, 0, epoch);
+    }
+    backend.slowPlugMs.store(0);
+    sh.phase.store(DONE_PHASE, std::memory_order_release);
+    sh.coldDone.store(true, std::memory_order_release);
+}
+
+bool waitFor(const std::atomic<bool>& flag) {
+    const auto deadline = Clock::now() + THREAD_TIMEOUT;
+    while (!flag.load(std::memory_order_acquire)) {
+        if (Clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+double micros(Clock::duration d) { return std::chrono::duration<double, std::micro>(d).count(); }
+
+void test_hotPath_coldOperationsNeverCrossFrames() {
+    TEST("hot path: topology churn on the cold path never lets a frame reach the wrong pad");
+    OwnershipBackend backend;
+    SilentClient client;
+    SilentLog log;
+    SessionService svc(backend, client, log);
+    Shared sh;
+    std::array<SessionState, SESSION_COUNT + 1> sessions;
+    for (int tag = 1; tag <= SESSION_COUNT; tag++) {
+        SessionState& st = sessions[static_cast<size_t>(tag)];
+        st.tag = tag;
+        st.deviceId = "dev" + std::to_string(tag);
+        keyFor(tag, st.pairingKey);
+        upsert(svc, st, sh, everyPad(tag));
+    }
+
+    std::thread receiver(receiveLoop, std::ref(svc), std::ref(sh));
+    std::thread cold(coldLoop, std::ref(svc), std::ref(backend), std::ref(sh), std::ref(sessions));
+    const bool coldFinished = waitFor(sh.coldDone);
+    sh.stop.store(true, std::memory_order_release);
+    const bool receiverFinished = waitFor(sh.receiverDone);
+    if (!coldFinished || !receiverFinished) {
+        std::cerr << "  FAIL [" << g_currentTest << "] a thread never finished (cold "
+                  << coldFinished << ", receiver " << receiverFinished << ")\n";
+        std::exit(1);
+    }
+    cold.join();
+    receiver.join();
+    svc.closeAllSessions(CLOSE_REASON_SHUTDOWN);
+
+    EXPECT_EQ(backend.violations.load(), 0u);
+    EXPECT_EQ(sh.keyMismatches, 0u);
+    EXPECT(sh.coldOps > 100);
+    EXPECT(backend.plugs.load() > 100);
+    EXPECT(sh.submits[STRESS_PHASE][1] > 0);
+    EXPECT(sh.submits[STRESS_PHASE][2] > 0);
+    EXPECT_EQ(svc.totalActiveControllers(), 0);
+    std::cout << "  stress: " << sh.coldOps << " cold ops (" << sh.coldRefusals << " refused), "
+              << backend.plugs.load() << " plugs, " << backend.unplugs.load() << " unplugs, "
+              << sh.calls << " hot calls, submits A " << sh.submits[STRESS_PHASE][1] << " B "
+              << sh.submits[STRESS_PHASE][2] << ", violations " << backend.violations.load()
+              << "\n";
+
+    TEST("hot path: a 50 ms plug for one session never blocks another session's frames");
+    EXPECT(sh.submits[SLOW_PLUG_PHASE][1] > 0);
+    EXPECT(sh.lookupMisses[SLOW_PLUG_PHASE][2] > 0);
+    EXPECT(sh.longest[SLOW_PLUG_PHASE] < BLOCKED_CALL_LIMIT);
+    std::cout << "  slow plugs: longest hot call " << micros(sh.longest[SLOW_PLUG_PHASE])
+              << " us across " << SLOW_PLUGS << " plugs of " << SLOW_PLUG_MS
+              << " ms; steady session submits " << sh.submits[SLOW_PLUG_PHASE][1]
+              << ", changing session lookups refused " << sh.lookupMisses[SLOW_PLUG_PHASE][2]
+              << "\n";
+}
+
+} // namespace
+
+int main() {
+    test_hotPath_coldOperationsNeverCrossFrames();
+
+    std::cout << "\n=== Test Results ===\n";
+    std::cout << "  Passed: " << g_pass << "\n";
+    std::cout << "  Failed: " << g_fail << "\n";
+    if (g_fail > 0) {
+        std::cout << "  STATUS: FAIL\n";
+        return 1;
+    }
+    std::cout << "  STATUS: ALL PASSED\n";
+    return 0;
+}
