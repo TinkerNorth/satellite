@@ -1302,41 +1302,61 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 if(WIN32)
-    add_executable(bench_frame_path
-        tools/bench/frame_path_bench.cpp
-        tools/bench/fake_vigem_driver.cpp
-        src/core/session_service.cpp
-        src/net/inner_dispatch.cpp
-        src/net/session_crypto.cpp
-        src/platform/windows/vigem_adapter.cpp
-    )
-    target_include_directories(bench_frame_path PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
-    )
-    target_include_directories(bench_frame_path SYSTEM PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/lib
-        ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
-    )
-    target_compile_definitions(bench_frame_path PRIVATE
-        _WIN32_WINNT=0x0A00
-        BENCH_BUILD_TYPE="$<CONFIG>"
-    )
-    target_link_libraries(bench_frame_path PRIVATE
-        advapi32
-        ws2_32
-        user32
-        setupapi
-    )
-    satellite_test_warnings(bench_frame_path)
-    satellite_link_sodium(bench_frame_path)
-    if(MINGW)
-        target_link_options(bench_frame_path PRIVATE -static)
-    endif()
-    set_target_properties(bench_frame_path PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    )
+    function(satellite_add_frame_path_bench name)
+        add_executable(${name}
+            tools/bench/frame_path_bench.cpp
+            tools/bench/fake_vigem_driver.cpp
+            src/adapters/audio/opus_codec.cpp
+            src/app/audio_settings.cpp
+            src/core/config_io.cpp
+            src/core/session_service.cpp
+            src/net/admin_json.cpp
+            src/net/inner_dispatch.cpp
+            src/net/pairing.cpp
+            src/net/pairing_service.cpp
+            src/net/session_crypto.cpp
+            src/platform/windows/config.cpp
+            src/platform/windows/globals.cpp
+            src/platform/windows/vigem_adapter.cpp
+        )
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        )
+        target_include_directories(${name} SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+            ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
+        )
+        target_compile_definitions(${name} PRIVATE
+            _WIN32_WINNT=0x0A00
+            CPPHTTPLIB_NO_EXCEPTIONS
+            BENCH_BUILD_TYPE="$<CONFIG>"
+        )
+        target_link_libraries(${name} PRIVATE
+            advapi32
+            ws2_32
+            user32
+            setupapi
+            shell32
+            ole32
+        )
+        satellite_test_warnings(${name})
+        satellite_link_sodium(${name})
+        satellite_link_opus(${name})
+        if(MINGW)
+            target_link_options(${name} PRIVATE -static)
+        endif()
+        set_target_properties(${name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+    endfunction()
+
+    satellite_add_frame_path_bench(bench_frame_path)
+    satellite_add_frame_path_bench(bench_frame_path_lockstats)
+    target_compile_definitions(bench_frame_path_lockstats PRIVATE SATELLITE_LOCK_STATS)
     add_test(NAME frame_path_bench_smoke COMMAND bench_frame_path --smoke)
+    add_test(NAME frame_path_bench_lockstats_smoke COMMAND bench_frame_path_lockstats --smoke
+        --json ${CMAKE_CURRENT_BINARY_DIR}/frame_path_bench_lockstats_smoke.json)
 endif()
 
 # macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,

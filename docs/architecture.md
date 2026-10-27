@@ -818,13 +818,13 @@ under a stable name: `service.state`, `service.topology`, `config`, `log`,
 `machine.id`, `uinput.devices` and `machid.devices`. A normal build compiles
 it to a `std::mutex` and a name pointer, and the thread roles and blocking
 markers below to nothing. A build with `SATELLITE_LOCK_STATS` (the lock
-tests) records, per lock name and per thread role, acquisitions, contended
-acquisitions, failed `try_lock`s, the wait from the `lock` call to the
-acquisition and the hold from the acquisition to the `unlock`, with their
-maxima and log2 histograms. It also records an edge from every lock a thread
-holds to each lock it then calls `lock` on (a `try_lock` cannot wait, so it
-records none), and at every `blockingRegion(what)` marker the locks the
-thread holds there.
+tests and `bench_frame_path_lockstats`) records, per lock name and per thread
+role, acquisitions, contended acquisitions, failed `try_lock`s, the wait from
+the `lock` call to the acquisition and the hold from the acquisition to the
+`unlock`, with their maxima and log2 histograms. It also records an edge from
+every lock a thread holds to each lock it then calls `lock` on (a `try_lock`
+cannot wait, so it records none), and at every `blockingRegion(what)` marker
+the locks the thread holds there.
 
 Each long-lived thread names its role at entry with `ScopedThreadRole`:
 Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output
@@ -874,14 +874,17 @@ pipe waits, logging under `service.state` and `service.state` taken under
 which exists to serialize lifecycle work, and the documented order
 `service.topology`, then `service.state`.
 The test does not reach `tray.shell` or `audio.com`, whose calls act on the
-desktop, so those two markers have no entries yet.
+desktop, or `log.write`, since the file logger is not part of it, so those
+three markers have no entries yet.
 
 Reading the stats: a wait is time a thread spent inside `lock` before it
 owned the lock, so a wait on a lock the Receive role takes is time gamepad
 frames queue behind; a hold is how long the owner kept it. The histograms
 are log2 buckets of nanoseconds, and a percentile is the upper edge of the
 bucket that holds it: a p99 of 2,097.2 us means the 99th percentile fell
-between 1,048.6 and 2,097.2 us.
+between 1,048.6 and 2,097.2 us. `bench_frame_path_lockstats` prints the same
+figures for every bench scenario, and its `--json` carries them from release
+to release (see `tools/bench/README.md`).
 
 ### Follow-ups
 
