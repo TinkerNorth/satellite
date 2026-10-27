@@ -46,6 +46,10 @@ class HelperClient : public IHidMaestroProvisioner {
                    ProvisionResult& out) override;
     bool deprovision(uint32_t serial) override;
 
+#ifdef SATELLITE_BUILD_TESTS
+    bool adoptChannelForTest(HANDLE pipe);
+#endif
+
   private:
     bool startLocked();
     bool connectBrokerLocked();

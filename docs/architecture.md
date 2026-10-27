@@ -245,7 +245,7 @@ address until then.
 ### State Ownership
 
 All connection and controller state is owned by `SessionService`: the
-cold state behind a `std::mutex`, with topology changes serialized by a
+cold state behind a mutex, with topology changes serialized by a
 second one, and the per-session state the gamepad path reads in a fixed
 table of slots that the cold path publishes to the receive thread (see
 "Thread Safety"). There are no global connection maps or
@@ -416,7 +416,7 @@ described under "Hot-path discipline". Everything else is the cold path:
 the HTTP threads (PUT, DELETE, snapshots), the maintenance thread
 (rumble tick, reaper), backend callbacks, and the receive thread itself
 for every non-gamepad message. The cold path's state lock is a
-`std::mutex` (`mtx_`), which owns `connections_`, the serial pool and
+mutex (`mtx_`), which owns `connections_`, the serial pool and
 every controller field; a second one (`topoMtx_`) serializes topology
 changes from start to finish. The two paths share state only through the
 hot table, and no cold operation holds `mtx_` while Plug and Play runs
@@ -809,6 +809,80 @@ plug or unplug on one serial no longer delays another serial's submit,
 whether it comes from the frame path or the cold dispatch, and no adapter
 query made under `mtx_` waits behind a plug.
 
+### Lock laws
+
+Every lock the process shares is a `TrackedMutex` (`core/tracked_mutex.h`)
+under a stable name: `service.state`, `service.topology`, `config`, `log`,
+`vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`, `audio.guard`,
+`tray.icon`, `update.state`, `pairing.requests`, `pairing.pin`,
+`machine.id`, `uinput.devices` and `machid.devices`. A normal build compiles
+it to a `std::mutex` and a name pointer, and the thread roles and blocking
+markers below to nothing. A build with `SATELLITE_LOCK_STATS` (the lock
+tests) records, per lock name and per thread role, acquisitions, contended
+acquisitions, failed `try_lock`s, the wait from the `lock` call to the
+acquisition and the hold from the acquisition to the `unlock`, with their
+maxima and log2 histograms. It also records an edge from every lock a thread
+holds to each lock it then calls `lock` on (a `try_lock` cannot wait, so it
+records none), and at every `blockingRegion(what)` marker the locks the
+thread holds there.
+
+Each long-lived thread names its role at entry with `ScopedThreadRole`:
+Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output
+and uinput reader threads), AudioWorker (HIDMaestro speaker and haptic
+drains), Logger, Update, Background (discovery, mDNS, the address watchers,
+the tooltip ticker, the audio guard's poller) and Gui. The HTTP servers' pool
+threads take HttpAdmin or HttpClient per request from each server's
+pre-routing handler. Topology and ConfigSaver are reserved for threads that
+do not exist yet. The markers are `config.save` (every `saveConfig`),
+`log.write` (the file log's write and flush), `helper.pipe` (every HIDMaestro
+helper pipe wait and launch), `tray.shell` (`Shell_NotifyIconW`),
+`audio.com` (the audio guard's COM calls), `backend.lifecycle` (every
+lifecycle call the service makes), `thread.join` (the joins in the receiver,
+the update service and the adapters) and `vigem.pnp` (the ViGEm bus open,
+plug and unplug waits).
+
+`tests/test_lock_laws.cpp` runs the real service wired as in production (the
+HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,
+`LogAdapter`) with each thread in its production role. The receive thread
+drives every message kind through the steps of `receiver.cpp` and
+`inner_dispatch.cpp` while HttpClient, HttpAdmin, Maintenance and
+BackendWorker threads run upserts that plug and unplug, single-controller
+applies and removes, closes, unpairs, reaps, the dashboard JSON builders and
+the pairing service's config writes. On Windows a second run puts
+`ViGEmAdapter` over a fake driver and `HidMaestroAdapter` over the real
+`HelperClient`, which talks to an in-process helper on a real pipe, behind
+`GamepadMux`. The config lives in a temporary directory named by
+`SATELLITE_CONFIG_DIR`. The test then checks four laws:
+
+1. Receive: the locks a thread with the Receive role takes.
+2. Lifecycle: every backend lifecycle call (the mock's, the fake ViGEm
+   driver's, the HIDMaestro provisioner's) runs inside a topology change and
+   holds nothing but `service.topology`; while the helper's pipe is in use,
+   `hidmaestro.helper` as well.
+3. Blocking: the locks held at each blocking marker.
+4. Order: the nesting edges form an acyclic graph, and every edge is on the
+   list of today's order.
+
+Each list is exactly what today's code does. The test fails when a lock, a
+pair or an edge appears that is not on its list, and also when one on the
+list no longer appears, so a list can only shrink and the change that fixes
+an entry deletes it. Every entry says why it is there. Debt is what later
+changes remove: the receive thread's `service.state`, `config` and `log`,
+the config lock held across its file write, the helper lock held across its
+pipe waits, logging under `service.state` and `service.state` taken under
+`config`. By design is what stays: anything held under `service.topology`,
+which exists to serialize lifecycle work, and the documented order
+`service.topology`, then `service.state`.
+The test does not reach `tray.shell` or `audio.com`, whose calls act on the
+desktop, so those two markers have no entries yet.
+
+Reading the stats: a wait is time a thread spent inside `lock` before it
+owned the lock, so a wait on a lock the Receive role takes is time gamepad
+frames queue behind; a hold is how long the owner kept it. The histograms
+are log2 buckets of nanoseconds, and a percentile is the upper edge of the
+bucket that holds it: a p99 of 2,097.2 us means the 99th percentile fell
+between 1,048.6 and 2,097.2 us.
+
 ### Follow-ups
 
 Not done yet:
@@ -1132,7 +1206,7 @@ struct LogEntry {
 std::vector<LogEntry> g_logRing(500); // ring buffer (pre-allocated)
 int g_logHead = 0;                    // next write position
 uint64_t g_logSeq = 0;               // monotonic sequence counter
-std::mutex g_logMtx;                  // protects all of the above
+TrackedMutex g_logMtx("log");         // protects all of the above
 ```
 
 `logMsg(level, source, message)` appends to the ring under the mutex.

@@ -475,6 +475,21 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     return out.inputSection != 0 && out.inputEvent != 0;
 }
 
+#ifdef SATELLITE_BUILD_TESTS
+bool HelperClient::adoptChannelForTest(HANDLE pipe) {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    stopLocked(false);
+    HANDLE ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ioEvent == nullptr) return false;
+    pipe_ = pipe;
+    ioEvent_ = ioEvent;
+    helperProcess_ = nullptr;
+    if (helloLocked()) return true;
+    stopLocked(false);
+    return false;
+}
+#endif
+
 bool HelperClient::deprovision(uint32_t serial) {
     std::lock_guard<TrackedMutex> lk(mtx_);
     if (pipe_ == INVALID_HANDLE_VALUE) return false;

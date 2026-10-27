@@ -1217,6 +1217,90 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     satellite_link_sodium(test_pin_rotation)
 endif()
 
+if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SATELLITE_LOCK_LAW_SOURCES
+        tests/test_lock_laws.cpp
+        src/adapters/audio/opus_codec.cpp
+        src/adapters/client_adapter.cpp
+        src/adapters/log_adapter.cpp
+        src/app/audio_settings.cpp
+        src/core/config_io.cpp
+        src/net/admin_json.cpp
+        src/net/inner_dispatch.cpp
+        src/net/pairing.cpp
+        src/net/pairing_service.cpp
+        src/net/session_crypto.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    if(WIN32)
+        add_executable(test_lock_laws
+            ${SATELLITE_LOCK_LAW_SOURCES}
+            src/platform/windows/globals.cpp
+            src/platform/windows/config.cpp
+            src/platform/windows/vigem_adapter.cpp
+            src/platform/windows/hidmaestro_adapter.cpp
+            src/platform/windows/hidmaestro_wire.cpp
+            src/platform/windows/hidmaestro_audio_wire.cpp
+            src/platform/windows/hidmaestro_helper_client.cpp
+        )
+        target_include_directories(test_lock_laws PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        )
+        target_include_directories(test_lock_laws SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+            ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
+        )
+        target_compile_definitions(test_lock_laws PRIVATE _WIN32_WINNT=0x0A00)
+        target_link_libraries(test_lock_laws PRIVATE
+            ws2_32
+            user32
+            shell32
+            ole32
+            advapi32
+            setupapi
+            winmm
+        )
+        if(MINGW)
+            target_link_options(test_lock_laws PRIVATE -static)
+        endif()
+    else()
+        if(APPLE)
+            set(SATELLITE_LOCK_LAW_PLATFORM macos)
+        else()
+            set(SATELLITE_LOCK_LAW_PLATFORM linux)
+        endif()
+        add_executable(test_lock_laws
+            ${SATELLITE_LOCK_LAW_SOURCES}
+            src/platform/${SATELLITE_LOCK_LAW_PLATFORM}/globals.cpp
+            src/platform/${SATELLITE_LOCK_LAW_PLATFORM}/config.cpp
+            src/platform/posix/config_posix.cpp
+        )
+        target_include_directories(test_lock_laws PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${SATELLITE_LOCK_LAW_PLATFORM}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
+        )
+        target_include_directories(test_lock_laws SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        )
+    endif()
+    target_compile_definitions(test_lock_laws PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+        SATELLITE_LOCK_STATS
+    )
+    satellite_test_warnings(test_lock_laws)
+    satellite_link_sodium(test_lock_laws)
+    satellite_link_opus(test_lock_laws)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_lock_laws PRIVATE Threads::Threads)
+    set_target_properties(test_lock_laws PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME lock_laws COMMAND test_lock_laws)
+endif()
+
 if(WIN32)
     add_executable(bench_frame_path
         tools/bench/frame_path_bench.cpp
