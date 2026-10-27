@@ -120,10 +120,7 @@ SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogP
 void SessionService::setAudioPolicy(AudioPolicyFn fn) { audioPolicy_ = std::move(fn); }
 
 ControllerAudioPolicy SessionService::audioPolicy() const {
-    // Deliberately unlocked, like keyDeriver_ and audioCodecs_: a backend may
-    // fire its speaker callback from inside a call that already holds mtx_
-    // (which is why the handler below uses try_to_lock), so taking the lock
-    // here would deadlock that path outright.
+    // Deliberately unlocked, like keyDeriver_ and audioCodecs_.
     return audioPolicy_ ? audioPolicy_() : ControllerAudioPolicy{};
 }
 
@@ -964,7 +961,7 @@ void SessionService::handleRumbleFromBackend(const uint32_t serial, const Rumble
     if (serial == 0 || serial > MAX_BACKEND_CONTROLLERS) return;
     const uint64_t pending = packPendingRumble(report, wireDurationMs);
     pendingRumble_[serial].store(pending, std::memory_order_release);
-    // Teardown joins this worker under mtx_; the maintenance tick drains a missed acquire.
+    // The maintenance tick drains a missed acquire.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
     drainRumbleLocked(serial);
@@ -1265,8 +1262,6 @@ void SessionService::recordPointerInjectionLocked(Connection& conn, bool ok) {
 }
 
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
-    // try_to_lock for the same reason as handleRumbleFromBackend: unplug joins
-    // this worker while holding mtx_; blocking here deadlocks.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
@@ -1292,8 +1287,6 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
 
 void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
                                                      const TriggerEffectsReport& report) {
-    // try_to_lock for the same reason as handleRumbleFromBackend: unplug joins
-    // this worker while holding mtx_; blocking here deadlocks.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
@@ -1384,9 +1377,7 @@ bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_
     // whole point of the switch -- an off speaker costs no Opus frames.
     if (!audioPolicy().speaker) return false;
 
-    // try_to_lock for the same reason as handleRumbleFromBackend: unplug joins
-    // this worker while holding mtx_; blocking here deadlocks. Dropping a
-    // speaker frame is a 20 ms gap the client's PLC already knows how to cover.
+    // Dropping a speaker frame is a 20 ms gap the client's PLC already knows how to cover.
     std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) {
         bumpAudio(audio_.speakerLockContended);

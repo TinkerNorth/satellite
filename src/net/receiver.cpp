@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// Hot loop is allocation-free and single-lock per gamepad packet; keep it so.
+// Hot loop is allocation-free and lock-free per gamepad packet; keep it so.
 #include "receiver.h"
 #include "inner_dispatch.h"
 #include "receive_wake.h"
@@ -178,7 +178,7 @@ inline void handleDatagram(SessionService& svc, uint8_t* buf, int n, const socka
     const uint32_t token = readBE32(buf);
     const uint32_t counter = readBE32(buf + 4);
 
-    // Look up connection key (brief lock).
+    // Look up connection key.
     uint8_t key[CRYPTO_KEY_SIZE];
     uint32_t lastCounter;
     bool seenCounter = false;
@@ -218,9 +218,7 @@ inline void handleDatagram(SessionService& svc, uint8_t* buf, int n, const socka
     }
     const uint8_t* payload = plaintext + INNER_HEADER_SIZE;
 
-    // Fast path: MSG_GAMEPAD_DATA hits the fused single-lock entry.
-    // Every other kind takes the cold two-lock path (sub-Hz, so the
-    // extra acquire is invisible).
+    // Fast path: MSG_GAMEPAD_DATA hits the fused lock-free entry.
     DispatchResult dr;
     if (inner.msgType == MSG_GAMEPAD_DATA && inner.msgLen >= GAMEPAD_DATA_MIN_LEN) {
         const uint8_t ctrlIdx = payload[0];

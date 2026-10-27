@@ -37,8 +37,7 @@ class SessionService {
     // The host's per-direction controller-audio gates, read per frame so the
     // dashboard toggle reaches a live stream rather than the next replug.
     // Wired once at startup and never reassigned afterwards, exactly like
-    // keyDeriver/audioCodecs -- reads take no lock, because a backend can fire
-    // its speaker callback from under mtx_. Absent means both directions on:
+    // keyDeriver/audioCodecs -- reads take no lock. Absent means both directions on:
     // unlike `controllerAudio`, which can install a kernel driver and so
     // defaults off when nobody answers, these are a routing preference and the
     // safe answer is the documented behaviour.
