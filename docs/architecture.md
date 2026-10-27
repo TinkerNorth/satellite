@@ -322,10 +322,13 @@ preserve:
   Per frame that is a
   scan of the packed tokens, two seqlock reads of a few words, two plain
   stores to the receive epoch, two to the slot (counter and time), and
-  the submit. The receive side runs no fence on Windows or Linux: the
-  cold side pays for the barrier instead (see "Grace"). Where no process
-  barrier is injected (macOS, every test, the bench) the receive thread
-  runs one full fence per frame.
+  the submit. On ViGEm, HIDMaestro and uinput the submit takes no
+  adapter-wide mutex either (see "Backend locking"); HIDMaestro's takes
+  its slot's input flag, one uncontended test-and-set unless the idle
+  re-publish is writing that slot. The receive side runs no fence on
+  Windows or Linux: the cold side pays for the barrier instead (see
+  "Grace"). Where no process barrier is injected (macOS, every test, the
+  bench) the receive thread runs one full fence per frame.
 - One receive thread. `getDecryptInfo`, `handleGamepadDataAndUpdate`,
   `handleGamepadData`, `updatePostDecryptV4` and `updatePostDecrypt` may
   be called by exactly one thread: the receive epoch and the slot fields
@@ -667,11 +670,11 @@ re-PUT from a device that has a session keeps its slot.
 
 ### The rest of the cold path
 
-Driver lifecycle work never runs under `mtx_`, but a backend callback
-still only tries for it: an unplug joins its serial's notification worker
-while holding the adapter's own lock, and a cold-dispatch call can hold
-`mtx_` while it waits for that adapter lock, so a callback that blocked
-on `mtx_` would close a cycle. Rumble callbacks first publish the latest
+Driver lifecycle work never runs under `mtx_`, and no adapter holds a
+lock of its own while it runs a callback, but a backend callback still
+only tries for `mtx_`, so a notification worker never waits behind the
+cold path and an unplug that joins the worker never waits behind `mtx_`
+either. Rumble callbacks first publish the latest
 motor state and duration into a fixed atomic slot per backend serial, then
 try to acquire the service lock. The maintenance tick drains pending state
 before refreshing held rumble, so a stop survives contention without
@@ -689,29 +692,131 @@ injection retains a pending reconciliation for the maintenance tick. On Windows,
 only the prefix reported inserted by `SendInput` updates the adapter's button
 cache, so a refused release can be retried after the foreground changes.
 
-The ViGEm bus handle is owned by `ViGEmAdapter` (with its own mutex).
-Report submission (`DeviceIoControl`) is thread-safe per target. The
-HIDMaestro slot table is owned by `HidMaestroAdapter` (its own mutex,
-held across the whole submit — the guarded section is a seqlock memcpy
-into a mapped view, so there is no blocking syscall worth dropping the
-lock for and no unplug can unmap a view mid-write). `GamepadMux` itself
-adds no lock: per-serial owners are atomics written at plug/unplug time.
-Since the frame path no longer takes `mtx_`, `submitReport` runs
-concurrently with plugs and unplugs of other serials, serialized only by
-each adapter's own lock; ViGEm and HIDMaestro hold theirs across a plug,
-so on those backends a slow plug can still delay another session's
-submit inside the adapter. Now that topology changes plug outside
-`mtx_`, the cold dispatch's submits and the snapshot's adapter queries
-meet plugs the same way, and one of them that waits inside the adapter
-does so holding `mtx_`.
+### Backend locking
+
+The service gives every adapter behind the port four guarantees, and the
+adapters rely on them instead of locking against one another's calls:
+
+1. Lifecycle calls are serialized. `ensureBusOpen`, `closeBus`,
+   `pluginDevice`, `pluginDevicePreferring` and `unplugDevice` run only
+   inside a topology change, under `topoMtx_`, so at most one is in
+   flight at a time across every adapter behind the mux. (An adapter's
+   destructor calls its own `closeBus` once every thread has stopped.)
+2. A serial's submits never overlap its own plug or unplug. No submit for
+   a serial is in flight while `pluginDevice` or `unplugDevice` runs for
+   it, and none starts after its `unplugDevice` begins until it is
+   plugged again: the plug runs before the publish that makes the serial
+   reachable, the unplug after the publish and grace wait that made it
+   unreachable, and the cold dispatch finds serials through the cold
+   state under `mtx_` (see "Topology changes").
+3. `closeBus` runs only when no pad is active anywhere, so no submit is
+   in flight during it. `ensureBusOpen` may run while other serials are
+   live and submitting.
+4. Submits have fixed threads. `submitReport`, `submitMotion`,
+   `submitTouchpad`, `submitBattery` and `submitMicAudioPcm` come only
+   from the receive thread, through the frame path or the cold dispatch.
+   `submitRelativeMouse` is host-global and always called under `mtx_`:
+   from the receive thread for a touchpad frame, from the maintenance
+   tick retrying a refused injection, and from a topology change
+   releasing the buttons a departing pad held. `refreshIdleInput` comes
+   from the maintenance thread with no service lock held.
+   `isDevicePlugged`, `motionBackendOk`, `backendIdForSerial`,
+   `isBusOpen` and `supportsMotionForType` may come from any thread.
+
+On top of those, the ViGEm, HIDMaestro and uinput adapters keep four
+rules, and the macOS adapter keeps the first and the last:
+
+1. No adapter mutex is held across a blocking call: a driver IOCTL that
+   waits (plug, unplug, wait-device-ready, the version check), helper
+   provisioning or deprovisioning, a driver-store query, uinput device
+   creation or destruction, a thread join, a sleep.
+2. A submit for a plugged serial takes no adapter-wide mutex. The
+   per-slot fields a submit reads are either immutable while the slot is
+   plugged (written before `plugged` is stored with release, changed only
+   after `unplugDevice` begins) or owned by the receive thread, the one
+   thread that submits. The bus handle is read through an atomic, and
+   every field another thread reads (`plugged`, and what `motionBackendOk`
+   reads: ViGEm's DS4 flag and EX latch, uinput's motion-node flag) is an
+   atomic.
+3. HIDMaestro's idle re-publish is the one other writer of a slot's input
+   section. It and the submits exclude each other per slot with a
+   `std::atomic_flag`: a submit takes it with `test_and_set(acquire)` in a
+   spin that yields, since the only possible holder is the idle tick, for
+   one pack and write; `refreshIdleInput` tries once and leaves a busy
+   slot to the next tick. Nothing else takes the flag, and it is never
+   held across a blocking call. The input section's seqlock has a single
+   writer by design, and two writers would publish frames that mix two
+   reports under an even sequence number.
+4. The adapter-wide mutex still guards what it guarded before (the worker
+   maps, the callbacks, lifecycle bookkeeping), in short sections only.
+
+`ViGEmAdapter`. `busHandle_` is a `std::atomic<HANDLE>`: `ensureBusOpen`
+opens and version-checks the bus without the lock and then stores the
+handle, and `closeBus` keeps its order (stop the notification workers,
+free the slot events, close the handle). `pluginDevice` reads the handle,
+runs the plug and wait-device-ready IOCTLs, prepares the slot (its event,
+the DS4 flag, the centred report) and runs the DS4 EX probe submit, all
+without the lock, since nothing can reach the slot until `plugged` is
+published; it then publishes `plugged` with release and starts the
+notification worker under `busMtx_`. `unplugDevice` stops the worker,
+whose join drops the lock, clears `plugged`, calls `unplugTarget` without
+the lock and clears the slot. The submits and the DS4 report fold take no
+lock. A slot's event is freed only in `closeBus` (guarantee 3), so no
+in-flight IOCTL uses one after it is freed. `isDevicePlugged`,
+`isBusOpen` and `motionBackendOk` read atomics.
+
+`HidMaestroAdapter`. Every provisioner call (`installed`, `isReady`,
+`ensureReady`, `provision`, `deprovision`, `shutdown`) runs without
+`busMtx_`, and so do the composite plug hooks. The hooks still never
+overlap, because plugs never do (guarantee 1), which is what keeps the
+default-endpoint guard's window from opening between its check and its
+snapshot. A plug adopts the provisioned handles and views, writes the
+neutral first frame, publishes `plugged` and starts the slot's workers in
+one short hold of `busMtx_`; a refused adoption deprovisions after the
+lock is released. An unplug
+clears `plugged`, stops the slot's workers (each join drops the lock) and
+unmaps the slot under `busMtx_`, then deprovisions without it.
+`refreshIdleInput` still holds `busMtx_` while it walks the slots, which
+keeps it off a slot an unplug or `closeBus` is unmapping, since both
+clear `plugged` under the same lock first. The input-section writers
+(`submitReport`, `submitMotion`, `submitTouchpad`, `submitBattery`, all
+through `packAndWrite`) take only the slot's flag; `submitMicAudioPcm`
+has a single writer and takes neither. `busOpen_` is an atomic.
+
+`GamepadAdapter` (uinput). The devices are a fixed array indexed by
+serial, each with an atomic `plugged` and an atomic motion-node flag, in
+place of a map that every call had to look up under `mtx_`. Device
+creation and destruction and the force-feedback reader's join run
+without `mtx_`, and so do the lazy creation and the destruction of the
+host-global pointer node. The per-serial submits take no lock;
+`submitRelativeMouse` holds `mtx_` only around its writes to the pointer
+node, which `closeBus` may be destroying. A gamepad report, the Switch Pro
+layout included, goes to the kernel as one `write()` of the whole event
+batch, the same events in the same order with `SYN_REPORT` last, where
+it used to cost one syscall per event. The reader thread owns its
+device's effect table while it runs and takes `mtx_` only to copy the
+rumble callback.
+
+`MacHidGamepadAdapter`. Device creation and activation, and the
+entitlement probe `ensureBusOpen` may run, happen without `mtx_`, and
+cancellation already waited outside it. The submits still run under
+`mtx_` (see "Locking" in the macOS backend section).
+
+`GamepadMux` adds no lock: per-serial owners are atomics written at plug
+and unplug time. On the ViGEm, HIDMaestro and uinput adapters a submit
+therefore takes no mutex between the receive thread and the driver, so a
+plug or unplug on one serial no longer delays another serial's submit,
+whether it comes from the frame path or the cold dispatch, and no adapter
+query made under `mtx_` waits behind a plug.
 
 ### Follow-ups
 
 Not done yet:
 
-- Per-slot adapter locks, so that a plug in ViGEm or HIDMaestro stops
-  serializing every other serial's submit, the frame path's and the cold
-  dispatch's alike.
+- Lock-free submits on macOS: `MacHidGamepadAdapter` still runs every
+  submit under its mutex, so a submit there can wait behind another
+  serial's submit or a plug's priming report (the backend is inert
+  without the HID virtual-device entitlement).
 - Coalescing of queued frames: after a stall the receive thread replays
   the backlog frame by frame instead of skipping to each pad's newest
   report.
@@ -992,16 +1097,22 @@ keeps its declared family to gate motion/touchpad/battery routing and
 
 ### Locking
 
-Unlike ViGEm (which drops its lock for the submit IOCTL), submits run
-entirely under the adapter mutex: a slot's `IOHIDUserDeviceRef` is only
+Unlike the ViGEm, HIDMaestro and uinput adapters, whose submits take no
+adapter-wide lock (see "Backend locking"), this adapter still runs its
+submits entirely under its mutex: a slot's `IOHIDUserDeviceRef` is only
 ever used while the slot is still in the map, so teardown can never
-release a ref under an in-flight submit. Teardown removes the slot from
-the map under the lock, then cancels the device and waits for its
-cancel handler OUTSIDE the lock (the set-report block takes the mutex
-briefly to snapshot callbacks — waiting while holding it would
-deadlock); an unconfirmed cancel returns false so `SessionService`
-quarantines the serial. The full protocol is documented in
-`mac_hid_gamepad_adapter.h`.
+release a ref under an in-flight submit. Lifecycle work follows the same
+rule as the other adapters, though, and never holds the mutex across a
+blocking call: a plug creates and activates the device without it and
+takes it only to prime the pad with one neutral report and add the slot
+to the map, and `ensureBusOpen` runs the entitlement probe, itself a
+device create, before it takes the mutex. Teardown removes the slot from
+the map under the lock, then cancels the device and waits for its cancel
+handler outside it (the set-report block takes only the callback hub's
+mutex, briefly, to snapshot callbacks); an unconfirmed cancel returns
+false so `SessionService` quarantines the serial. Taking the submits off
+the mutex is a follow-up (see "Follow-ups"). The full protocol is
+documented in `mac_hid_gamepad_adapter.h`.
 
 ## Logging Infrastructure
 
