@@ -1236,6 +1236,19 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     target_compile_definitions(test_pin_rotation PRIVATE SATELLITE_BUILD_TESTS)
     satellite_link_sodium(test_pin_rotation)
+
+    satellite_add_pure_test(test_client_adapter
+        tests/test_client_adapter.cpp
+        src/adapters/client_adapter.cpp
+        src/net/session_crypto.cpp
+    )
+    satellite_link_sodium(test_client_adapter)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_client_adapter PRIVATE Threads::Threads)
+    if(WIN32)
+        target_compile_definitions(test_client_adapter PRIVATE _WIN32_WINNT=0x0A00)
+        target_link_libraries(test_client_adapter PRIVATE ws2_32)
+    endif()
 endif()
 
 if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")

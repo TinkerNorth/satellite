@@ -454,7 +454,7 @@ class BenchClient : public IClientPort {
 
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {
+    void sendHeartbeatAck(const SessionEndpoint&, bool, uint8_t, uint16_t, uint16_t) override {
         heartbeatAcks_.fetch_add(1, std::memory_order_relaxed);
     }
     void sendSessionClose(const Connection&, uint8_t) override {}

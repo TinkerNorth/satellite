@@ -113,6 +113,9 @@ struct HotSlot {
     std::atomic<uint32_t> txCounter{0};
     std::atomic<bool> feedbackPending{false};
 
+    alignas(64) std::atomic<uint32_t> txGate{0};
+    std::atomic<uint64_t> txDeferredAck{0};
+
     void beginWrite() {
         gen.fetch_add(1, std::memory_order_acq_rel);
         std::atomic_thread_fence(std::memory_order_release);

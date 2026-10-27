@@ -900,6 +900,12 @@ struct Connection {
     std::chrono::steady_clock::time_point pointerRefusalLoggedAt;
 };
 
+struct SessionEndpoint {
+    uint32_t token = 0;
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    HotSlot* slot = nullptr;
+};
+
 // Paired device info (persisted).
 struct PairedDevice {
     std::string id;

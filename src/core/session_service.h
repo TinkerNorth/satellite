@@ -314,6 +314,14 @@ class SessionService {
     void backdatePointerRefusalLogForTest(uint32_t token, int secondsAgo);
     void bindReceiveThreadForTest();
     uint64_t foreignRxWritesForTest() const;
+    struct HeartbeatAckView {
+        bool found = false;
+        bool backendAvailable = false;
+        uint8_t totalActiveControllers = 0;
+        uint16_t epoch = 0;
+        uint16_t activeBitmap = 0;
+    };
+    HeartbeatAckView coldHeartbeatAckForTest(uint32_t token) const;
 #endif
 
   private:

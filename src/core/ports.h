@@ -185,7 +185,7 @@ class IClientPort {
 
     // Enriched heartbeat ack (0x0003). Payload: backendAvailable(1) +
     // totalActiveControllers(1) + epoch(u16 BE) + bitmap(u16 BE).
-    virtual void sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+    virtual void sendHeartbeatAck(const SessionEndpoint& to, bool backendAvailable,
                                   uint8_t totalActiveControllers, uint16_t epoch,
                                   uint16_t activeBitmap) = 0;
 

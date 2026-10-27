@@ -72,7 +72,7 @@ struct CountingLog : ILogPort {
 struct StubClient : IClientPort {
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {
+    void sendHeartbeatAck(const SessionEndpoint&, bool, uint8_t, uint16_t, uint16_t) override {
         heartbeatAcks++;
     }
     void sendSessionClose(const Connection&, uint8_t) override {}

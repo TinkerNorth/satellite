@@ -294,6 +294,7 @@ struct MockViGem : IGamepadPort {
 
 struct MockClient : IClientPort {
     int heartbeatAckCalls = 0;
+    uint32_t lastAckToken = 0;
     uint64_t lastAckAddr = 0;
     bool lastAckBackendAvailable = false;
     uint8_t lastAckTotalControllers = 0;
@@ -335,11 +336,12 @@ struct MockClient : IClientPort {
 
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+    void sendHeartbeatAck(const SessionEndpoint& to, bool backendAvailable,
                           uint8_t totalActiveControllers, uint16_t epoch,
                           uint16_t activeBitmap) override {
         heartbeatAckCalls++;
-        lastAckAddr = addressOf(conn);
+        lastAckToken = to.token;
+        lastAckAddr = to.slot->clientAddr.load(std::memory_order_acquire);
         lastAckBackendAvailable = backendAvailable;
         lastAckTotalControllers = totalActiveControllers;
         lastAckEpoch = epoch;
@@ -2368,6 +2370,88 @@ static bool finishesWhileServiceLockHeld(SessionService& svc, MockClient& client
     client.onSessionClose = nullptr;
     if (worker.joinable()) worker.join();
     return finishedUnderLock;
+}
+
+static void expectPublishedAckMatchesTheColdState(SessionService& svc, MockClient& client,
+                                                  uint32_t token, const std::string& after) {
+    TEST("heartbeat: the ack built from published state matches the cold state after " + after);
+    const int before = client.heartbeatAckCalls;
+    svc.handleHeartbeat(token);
+    const SessionService::HeartbeatAckView cold = svc.coldHeartbeatAckForTest(token);
+    EXPECT(cold.found);
+    EXPECT_EQ(client.heartbeatAckCalls, before + 1);
+    EXPECT_EQ(client.lastAckToken, token);
+    EXPECT_EQ(client.lastAckBackendAvailable, cold.backendAvailable);
+    EXPECT_EQ((int)client.lastAckTotalControllers, (int)cold.totalActiveControllers);
+    EXPECT_EQ(client.lastAckEpoch, cold.epoch);
+    EXPECT_EQ(client.lastAckBitmap, cold.activeBitmap);
+}
+
+static void test_heartbeat_publishedAckFollowsEveryTopologyChange() {
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto a = upsert(svc, {makeDesc(0), makeDesc(2)});
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "the first PUT");
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    EXPECT(svc.applyController(a.connectionId, "dev1", makeDesc(5, CONTROLLER_TYPE_PLAYSTATION),
+                               applied, epoch));
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a controller added on its own");
+    EXPECT(svc.removeController(a.connectionId, "dev1", 2, epoch));
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a controller removed on its own");
+    a = upsert(svc,
+               {makeDesc(0, CONTROLLER_TYPE_DUALSENSE), makeDesc(5, CONTROLLER_TYPE_PLAYSTATION)});
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a replug and a new key");
+    vigem.pluginReturnVal = false;
+    a = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX), makeDesc(5, CONTROLLER_TYPE_PLAYSTATION)});
+    vigem.pluginReturnVal = true;
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a failed replug");
+    EXPECT(svc.applyController(
+        a.connectionId, "dev1",
+        makeDesc(5, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4), applied, epoch));
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a caps-only update");
+    vigem.pluginReturnVal = false;
+    EXPECT(svc.applyController(a.connectionId, "dev1", makeDesc(5, CONTROLLER_TYPE_XBOX), applied,
+                               epoch));
+    vigem.pluginReturnVal = true;
+    EXPECT_EQ((int)applied.result, (int)APPLY_ERR_REPLUG_FAIL);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a failed replug on its own");
+    auto b = upsert(svc, {makeDesc(0), makeDesc(1), makeDesc(3)}, "devB", "B");
+    expectPublishedAckMatchesTheColdState(svc, client, b.token, "another session's first PUT");
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "another session's pads arrive");
+    EXPECT_EQ(svc.closeSessionById(b.connectionId, "", CLOSE_REASON_KICKED, false), 3);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "another session closes");
+    auto c = upsert(svc, {makeDesc(0)}, "devC", "C");
+    svc.backdateForTest(c.token, 60, 1);
+    EXPECT_EQ(svc.reapTimedOut(), 1);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "another session is reaped");
+    a = upsert(svc, {});
+    EXPECT(!vigem.busOpen);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "the bus closes");
+    a = upsert(svc, {makeDesc(4, CONTROLLER_TYPE_SWITCHPRO)});
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "the bus reopens");
+
+    TEST("heartbeat: a token the table does not hold gets no ack");
+    const int before = client.heartbeatAckCalls;
+    svc.handleHeartbeat(b.token);
+    EXPECT_EQ(client.heartbeatAckCalls, before);
+}
+
+static void test_receivePath_heartbeatNeverWaitsForTheServiceLock() {
+    TEST("receive path: a heartbeat is acked without waiting for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0), makeDesc(1)});
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] { svc.handleHeartbeat(r.token); }));
+    EXPECT_EQ(client.heartbeatAckCalls, 1);
+    EXPECT_EQ(client.lastAckToken, r.token);
+    EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b11);
 }
 
 static void test_receivePath_streamsNeverWaitForTheServiceLock() {
@@ -4773,6 +4857,8 @@ int main() {
     test_streamCaches_followThePadThroughReplug();
     test_streamCaches_survivePadUpdatesTheyDoNotDependOn();
     test_receivePath_streamsNeverWaitForTheServiceLock();
+    test_receivePath_heartbeatNeverWaitsForTheServiceLock();
+    test_heartbeat_publishedAckFollowsEveryTopologyChange();
     test_rumble_forwardsAndCoalesces();
     test_lightbar_gatedOnCap();
     test_triggerEffects_gatedOnCap();

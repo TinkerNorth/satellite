@@ -991,13 +991,33 @@ bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
 }
 
 void SessionService::handleHeartbeat(uint32_t token) {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return;
-
-    const Connection& conn = it->second;
-    client_.sendHeartbeatAck(conn, backend_.isBusOpen(), (uint8_t)countGlobalActiveControllers(),
-                             conn.epoch, activeBitmapLocked(conn));
+    rx_.enter();
+    const int index = hot_.find(token);
+    if (index >= 0) {
+        HotSlot& slot = hot_.slots[static_cast<size_t>(index)];
+        SessionEndpoint to;
+        to.slot = &slot;
+        uint32_t slotToken = 0;
+        uint32_t session = 0;
+        uint16_t bitmap = 0;
+        const bool stable = slot.read([&] {
+            slotToken = slot.token.load(std::memory_order_relaxed);
+            session = slot.session.load(std::memory_order_relaxed);
+            slot.loadKey(to.key);
+            bitmap = 0;
+            for (size_t i = 0; i < MAX_CONTROLLERS_PER_CONN; i++) {
+                const uint32_t word = slot.ctrl[i].load(std::memory_order_relaxed);
+                if ((word & HOT_CTRL_ACTIVE) != 0) bitmap |= static_cast<uint16_t>(1u << i);
+            }
+        });
+        if (stable && slotToken == token) {
+            to.token = token;
+            const int total = activePads_.load(std::memory_order_relaxed);
+            client_.sendHeartbeatAck(to, backend_.isBusOpen(), static_cast<uint8_t>(total),
+                                     hotSessionEpoch(session), bitmap);
+        }
+    }
+    rx_.exit();
 }
 
 static constexpr uint64_t RUMBLE_PENDING = uint64_t{1} << 48;
@@ -2192,6 +2212,19 @@ void SessionService::backdatePointerRefusalLogForTest(uint32_t token, int second
     if (it == connections_.end()) return;
     it->second.pointerRefusalLoggedAt =
         std::chrono::steady_clock::now() - std::chrono::seconds(secondsAgo);
+}
+
+SessionService::HeartbeatAckView SessionService::coldHeartbeatAckForTest(uint32_t token) const {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    HeartbeatAckView view;
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return view;
+    view.found = true;
+    view.backendAvailable = backend_.isBusOpen();
+    view.totalActiveControllers = static_cast<uint8_t>(countGlobalActiveControllers());
+    view.epoch = it->second.epoch;
+    view.activeBitmap = activeBitmapLocked(it->second);
+    return view;
 }
 
 void SessionService::bindReceiveThreadForTest() {
