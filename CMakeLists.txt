@@ -1141,6 +1141,10 @@ satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
+satellite_add_pure_test(test_pause_detector tests/test_pause_detector.cpp)
+target_include_directories(test_pause_detector PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/bench
+)
 satellite_add_pure_test(test_hot_table tests/test_hot_table.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(test_hot_table PRIVATE Threads::Threads)
@@ -1366,6 +1370,19 @@ if(WIN32)
     add_test(NAME frame_path_bench_smoke COMMAND bench_frame_path --smoke)
     add_test(NAME frame_path_bench_lockstats_smoke COMMAND bench_frame_path_lockstats --smoke
         --json ${CMAKE_CURRENT_BINARY_DIR}/frame_path_bench_lockstats_smoke.json)
+
+    add_executable(xinput_monitor tools/bench/xinput_monitor.cpp)
+    target_include_directories(xinput_monitor PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/bench
+    )
+    target_compile_definitions(xinput_monitor PRIVATE _WIN32_WINNT=0x0A00)
+    satellite_test_warnings(xinput_monitor)
+    if(MINGW)
+        target_link_options(xinput_monitor PRIVATE -static)
+    endif()
+    set_target_properties(xinput_monitor PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 endif()
 
 # macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,
