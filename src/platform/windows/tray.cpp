@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "tray.h"
+#include "tray_icon.h"
 #include "app_lifecycle.h"
 #include "config.h"
 #include "resource.h"
@@ -11,7 +12,6 @@
 #include "net/pairing_service.h"
 #include "toast.h"
 #include "ui_access.h"
-#include "core/tracked_mutex.h"
 
 #include <strsafe.h>
 
@@ -21,15 +21,6 @@
 #include <deque>
 #include <mutex>
 #include <string>
-
-static NOTIFYICONDATAW g_nid{};
-static TrackedMutex g_nidMtx("tray.icon"); // updateTooltip + WM_TRAYICON contend
-static bool g_nidGuidActive = false;       // true when NIF_GUID succeeded
-static std::wstring g_lastTooltip;         // remember last text so we don't churn NIM_MODIFY
-
-// Registered window message broadcast by Explorer when the taskbar is
-// (re)created. Identifier is initialised lazily on first add.
-static UINT g_taskbarCreatedMsg = 0;
 
 // Ping from acquireSingleInstance: a second launch attempt; we open the web UI.
 static const UINT WM_SECOND_INSTANCE = WM_USER + 100;
@@ -51,107 +42,19 @@ static std::wstring toWide(const std::string& s) {
     return w;
 }
 
-// szTip caps at 128 wchars and most shells truncate hover text near 64.
-static std::wstring composeTooltip() {
-    const std::shared_ptr<const Config> cfg = g_configStore->current();
-    const int udpPort = cfg->udpPort;
-    const int webPort = cfg->webPort;
-    bool listening = g_listening.load(std::memory_order_relaxed);
-
-    wchar_t buf[128];
-    if (listening) {
-        StringCchPrintfW(buf, ARRAYSIZE(buf), L"Satellite -- listening on :%d  (web UI :%d)",
-                         udpPort, webPort);
-    } else {
-        StringCchPrintfW(buf, ARRAYSIZE(buf), L"Satellite -- idle  (web UI :%d)", webPort);
-    }
-    return std::wstring(buf);
-}
-
-static void fillIdentity(NOTIFYICONDATAW& n, HWND hwnd) {
-    n.cbSize = sizeof(n);
-    n.hWnd = hwnd;
-    if (g_nidGuidActive) {
-        n.uFlags |= NIF_GUID;
-        n.guidItem = shell_integration::kTrayIconGuid;
-    } else {
-        n.uID = 1;
-    }
-}
-
-static void registerTrayIcon(HWND hwnd) {
-    std::lock_guard<TrackedMutex> lk(g_nidMtx);
-
-    g_nid = {};
-    g_nidGuidActive = true; // optimistic; cleared on failure below
-    fillIdentity(g_nid, hwnd);
-    g_nid.uFlags |= NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
-    g_nid.uCallbackMessage = WM_TRAYICON;
-
-    HICON hIcon = static_cast<HICON>(
-        LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
-                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
-    g_nid.hIcon =
-        (hIcon != nullptr) ? hIcon : LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
-
-    g_lastTooltip = composeTooltip();
-    StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
-
-    // NIF_GUID add can fail when the GUID is still registered to a stale exe
-    // path (Explorer won't remap silently). Delete + retry; if that also fails,
-    // drop NIF_GUID and lose cross-install identity.
-    blockingRegion("tray.shell");
-    if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) {
-        NOTIFYICONDATAW del{};
-        del.cbSize = sizeof(del);
-        del.uFlags = NIF_GUID;
-        del.guidItem = shell_integration::kTrayIconGuid;
-        Shell_NotifyIconW(NIM_DELETE, &del);
-        if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) {
-            g_nidGuidActive = false;
-            g_nid.uFlags &= ~NIF_GUID;
-            g_nid.uID = 1;
-            Shell_NotifyIconW(NIM_ADD, &g_nid); // last-resort legacy mode
-        }
-    }
-
-    // Must follow NIM_ADD. v4 changes WM_TRAYICON layout: LOWORD(lp)=event,
-    // HIWORD(lp)=uID, WPARAM=packed cursor x/y (see WM_TRAYICON handler).
-    g_nid.uVersion = NOTIFYICON_VERSION_4;
-    Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
-}
-
 void addTrayIcon(HWND hwnd) {
-    if (g_taskbarCreatedMsg == 0) g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    const UINT taskbarCreated = trayicon::taskbarCreatedMessage();
     if (uiaccess::tokenHasUiAccess()) {
-        for (const UINT msg : {g_taskbarCreatedMsg, WM_TRAYICON, WM_SECOND_INSTANCE}) {
+        for (const UINT msg : {taskbarCreated, WM_TRAYICON, WM_SECOND_INSTANCE}) {
             ChangeWindowMessageFilterEx(hwnd, msg, MSGFLT_ALLOW, nullptr);
         }
     }
-    registerTrayIcon(hwnd);
+    trayicon::add(hwnd);
 }
 
-void removeTrayIcon() {
-    std::lock_guard<TrackedMutex> lk(g_nidMtx);
-    blockingRegion("tray.shell");
-    Shell_NotifyIconW(NIM_DELETE, &g_nid);
-}
+void removeTrayIcon() { trayicon::remove(); }
 
-void updateTrayTooltip() {
-    std::lock_guard<TrackedMutex> lk(g_nidMtx);
-    std::wstring fresh = composeTooltip();
-    if (fresh == g_lastTooltip) return; // no Explorer round-trip if unchanged
-    g_lastTooltip = std::move(fresh);
-
-    NOTIFYICONDATAW upd{};
-    fillIdentity(upd, g_nid.hWnd);
-    upd.uFlags |= NIF_TIP | NIF_SHOWTIP;
-    StringCchCopyW(upd.szTip, ARRAYSIZE(upd.szTip), g_lastTooltip.c_str());
-    blockingRegion("tray.shell");
-    Shell_NotifyIconW(NIM_MODIFY, &upd);
-
-    StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
-}
+void updateTrayTooltip() { trayicon::requestRefresh(); }
 
 // One entry per pending dish, labelled for the operator; the index-to-deviceId
 // map is snapshotted so WM_COMMAND can resolve the click.
@@ -425,12 +328,8 @@ static void onEndSession(WPARAM wp, LPARAM lp) {
 
 // One handler per message; this is the table.
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    // Explorer (re)created its taskbar (crash / RDP reconnect); re-add our icon
-    // so we're not running-but-invisible.
-    if (g_taskbarCreatedMsg != 0 && msg == g_taskbarCreatedMsg) {
-        registerTrayIcon(hwnd);
-        return 0;
-    }
+    LRESULT handled = 0;
+    if (trayicon::handleMessage(hwnd, msg, wp, lp, handled)) return handled;
     switch (msg) {
     case WM_TRAYICON:
         onTrayIconEvent(hwnd, LOWORD(lp));

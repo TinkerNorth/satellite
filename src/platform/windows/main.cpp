@@ -62,17 +62,6 @@ void showFatalError(const wchar_t* title, const wchar_t* heading, const wchar_t*
     TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
 }
 
-// Refresh the tray tooltip every ~2s. Cheap: updateTrayTooltip skips the
-// NIM_MODIFY round-trip when the composed string is unchanged.
-void tooltipTickerThread() {
-    ScopedThreadRole role(ThreadRole::Background);
-    using namespace std::chrono_literals;
-    while (g_appRunning.load(std::memory_order_relaxed)) {
-        updateTrayTooltip();
-        std::this_thread::sleep_for(2s);
-    }
-}
-
 void addrChangeWatcherThread() {
     ScopedThreadRole role(ThreadRole::Background);
     while (g_appRunning.load(std::memory_order_relaxed)) {
@@ -242,7 +231,6 @@ struct Workers {
     std::thread client;
     std::thread disc;
     std::thread mdns;
-    std::thread tooltip;
     std::thread addr;
 };
 
@@ -253,7 +241,6 @@ Workers startWorkers(SessionService& svc, ClientAdapter& clientAdapter) {
     w.client = std::thread(clientApiThread, std::ref(svc));
     w.disc = std::thread(discoveryThread);
     w.mdns = std::thread(mdnsResponderThread);
-    w.tooltip = std::thread(tooltipTickerThread);
     w.addr = std::thread(addrChangeWatcherThread);
     return w;
 }
@@ -264,7 +251,6 @@ void joinWorkers(Workers& w) {
     w.client.join();
     w.disc.join();
     w.mdns.join();
-    w.tooltip.join();
     w.addr.join();
 }
 

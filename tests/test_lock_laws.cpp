@@ -29,6 +29,7 @@
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
 #include "hidmaestro_wire.h"
+#include "tray_icon.h"
 #include "vigem_adapter.h"
 #else
 #include <stdlib.h>
@@ -1195,6 +1196,136 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
     g_driverWatch = nullptr;
 }
 
+struct TrayShellCalls {
+    RoleCalls roles;
+    std::atomic<int> adds{0};
+    std::atomic<int> deletes{0};
+    std::atomic<int> tooltips{0};
+    std::atomic<int> balloons{0};
+};
+
+TrayShellCalls g_trayShell;
+
+constexpr UINT TRAY_REFRESH_MS = 20;
+constexpr int TRAY_POSTS = 30;
+constexpr auto TRAY_POST_TICK = std::chrono::milliseconds(3);
+constexpr auto TRAY_WAIT = std::chrono::seconds(10);
+
+BOOL WINAPI recordShellCall(DWORD op, PNOTIFYICONDATAW data) {
+    g_trayShell.roles.count();
+    if (op == NIM_ADD) {
+        g_trayShell.adds++;
+    } else if (op == NIM_DELETE) {
+        g_trayShell.deletes++;
+    } else if (op == NIM_MODIFY && (data->uFlags & NIF_INFO) != 0) {
+        g_trayShell.balloons++;
+    } else if (op == NIM_MODIFY) {
+        g_trayShell.tooltips++;
+    }
+    return TRUE;
+}
+
+LRESULT CALLBACK trayTestProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    LRESULT result = 0;
+    if (trayicon::handleMessage(hwnd, msg, wp, lp, result)) return result;
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+class TrayGui {
+  public:
+    TrayGui() : thread_([this] { run(); }) {
+        const Clock::time_point deadline = Clock::now() + TRAY_WAIT;
+        while (window_.load() == nullptr && Clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    ~TrayGui() {
+        PostThreadMessageW(threadId_.load(), WM_QUIT, 0, 0);
+        thread_.join();
+    }
+
+    TrayGui(const TrayGui&) = delete;
+    TrayGui& operator=(const TrayGui&) = delete;
+
+    HWND window() const { return window_.load(); }
+
+  private:
+    void run() {
+        ScopedThreadRole role(ThreadRole::Gui);
+        threadId_.store(GetCurrentThreadId());
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = trayTestProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"SatelliteLockLawTray";
+        RegisterClassW(&wc);
+        HWND hwnd =
+            CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Satellite lock law tray",
+                            WS_OVERLAPPED, 0, 0, 0, 0, nullptr, nullptr, wc.hInstance, nullptr);
+        trayicon::add(hwnd, TRAY_REFRESH_MS);
+        window_.store(hwnd);
+        MSG msg;
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        trayicon::remove();
+        DestroyWindow(hwnd);
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    }
+
+    std::atomic<HWND> window_{nullptr};
+    std::atomic<DWORD> threadId_{0};
+    std::thread thread_;
+};
+
+bool waitFor(const std::function<bool()>& done) {
+    const Clock::time_point deadline = Clock::now() + TRAY_WAIT;
+    while (!done()) {
+        if (Clock::now() > deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+void runTheTrayOnItsGuiThread() {
+    trayicon::setShellNotifyForTest(recordShellCall);
+    g_listening.store(false);
+    {
+        TrayGui gui;
+        TEST("tray: the icon comes up on the Gui thread");
+        EXPECT(gui.window() != nullptr);
+        EXPECT(waitFor([] { return g_trayShell.adds.load() >= 1; }));
+
+        TEST("tray: the window's timer retitles the icon with no other thread asking");
+        const int before = g_trayShell.tooltips.load();
+        g_listening.store(true);
+        EXPECT(waitFor([before] { return g_trayShell.tooltips.load() > before; }));
+
+        TEST("tray: other threads ask through the window and never touch the icon");
+        std::thread background([] {
+            ScopedThreadRole role(ThreadRole::Background);
+            for (int i = 0; i < TRAY_POSTS; ++i) {
+                g_listening.store(i % 2 == 0);
+                trayicon::requestRefresh();
+                std::this_thread::sleep_for(TRAY_POST_TICK);
+            }
+        });
+        std::thread update([] {
+            ScopedThreadRole role(ThreadRole::Update);
+            for (int i = 0; i < TRAY_POSTS; ++i) {
+                trayicon::showBalloon(L"Satellite update ready", L"Version 0.0.0 is available.");
+                std::this_thread::sleep_for(TRAY_POST_TICK);
+            }
+        });
+        background.join();
+        update.join();
+        EXPECT(waitFor([] { return g_trayShell.balloons.load() >= TRAY_POSTS; }));
+    }
+    trayicon::setShellNotifyForTest(nullptr);
+    g_listening.store(false);
+}
+
 #endif
 
 NameSet receiveAcquired(const lockstats::Snapshot& snap) {
@@ -1390,6 +1521,19 @@ void checkTheMicLaw(const lockstats::Snapshot& snap, const RoleCalls& mic) {
     EXPECT_EQ(mic.total(), mic.by(ThreadRole::Mic));
 }
 
+#ifdef _WIN32
+void checkTheTrayLaw() {
+    TEST("tray law: the Gui role made every Shell_NotifyIconW call, and no other thread did");
+    EXPECT(g_trayShell.roles.by(ThreadRole::Gui) > 0);
+    EXPECT_EQ(g_trayShell.roles.total(), g_trayShell.roles.by(ThreadRole::Gui));
+    TEST("tray law: the run added the icon, retitled it, raised balloons and removed it");
+    EXPECT(g_trayShell.adds.load() >= 1);
+    EXPECT(g_trayShell.tooltips.load() >= 2);
+    EXPECT(g_trayShell.balloons.load() >= TRAY_POSTS);
+    EXPECT(g_trayShell.deletes.load() >= 1);
+}
+#endif
+
 double micros(uint64_t nanos) { return static_cast<double>(nanos) / NANOS_PER_MICRO; }
 
 void report(const lockstats::Snapshot& snap) {
@@ -1491,6 +1635,7 @@ int main() {
     runTheServiceOnTheMockBackend(watch, sandbox, calls);
 #ifdef _WIN32
     runTheServiceOnTheWindowsBackends(watch);
+    runTheTrayOnItsGuiThread();
     timeEndPeriod(1);
 #endif
     g_configStore.reset();
@@ -1508,6 +1653,9 @@ int main() {
     checkTheLoggerLaw(snap);
     checkThePointerLaw(snap, calls.mouse);
     checkTheMicLaw(snap, calls.mic);
+#ifdef _WIN32
+    checkTheTrayLaw();
+#endif
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

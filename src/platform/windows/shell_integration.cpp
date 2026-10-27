@@ -6,6 +6,7 @@
 #include "config.h"
 #include "globals.h"
 #include "resource.h"
+#include "tray_icon.h"
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -178,29 +179,7 @@ bool refreshJumpList() {
 }
 
 void showToast(const std::string& title, const std::string& body) {
-    if (g_hwnd == nullptr) return;
-
-    // Wide variant so non-ASCII titles/bodies don't truncate at the ANSI boundary.
-    NOTIFYICONDATAW nid{};
-    nid.cbSize = sizeof(nid);
-    nid.hWnd = g_hwnd;
-    nid.uFlags = NIF_INFO | NIF_GUID;
-    nid.guidItem = kTrayIconGuid;
-    nid.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON | NIIF_RESPECT_QUIET_TIME;
-
-    HICON hLarge = static_cast<HICON>(
-        LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
-                   GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
-    if (hLarge) nid.hBalloonIcon = hLarge;
-
-    std::wstring wt = toWide(title);
-    std::wstring wb = toWide(body);
-    StringCchCopyW(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle), wt.c_str());
-    StringCchCopyW(nid.szInfo, ARRAYSIZE(nid.szInfo), wb.c_str());
-
-    Shell_NotifyIconW(NIM_MODIFY, &nid);
-
-    if (hLarge) DestroyIcon(hLarge);
+    trayicon::showBalloon(toWide(title), toWide(body));
 }
 
 } // namespace shell_integration

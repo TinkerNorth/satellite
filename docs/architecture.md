@@ -1085,8 +1085,8 @@ query made under `mtx_` waits behind a plug.
 Every lock the process shares is a `TrackedMutex` (`core/tracked_mutex.h`)
 under a stable name: `service.state`, `service.topology`, `config.snapshot`,
 `config.write`, `config.effects`, `events.broadcast`, `vigem.bus`,
-`hidmaestro.bus`, `hidmaestro.helper`, `audio.guard`, `tray.icon`,
-`update.state`, `pairing.requests`, `pairing.pin`, `machine.id`,
+`hidmaestro.bus`, `hidmaestro.helper`, `audio.guard`, `update.state`,
+`pairing.requests`, `pairing.pin`, `machine.id`,
 `uinput.devices` and `machid.devices`. Logging takes none (see
 "Logging Infrastructure"). A normal build compiles it to a `std::mutex` and a
 name pointer, and the thread roles and blocking markers below to nothing. A
@@ -1103,9 +1103,9 @@ Each long-lived thread names its role at entry with `ScopedThreadRole`:
 Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output and
 uinput reader threads), AudioWorker (HIDMaestro speaker and haptic drains),
 Logger, Pointer (the service's pointer thread), Mic (its mic worker), Update,
-Background (discovery, mDNS, the address watchers, the tooltip ticker, the
-audio guard's worker, the helper client's connect to the broker, the dashboard
-broadcaster) and Gui. The HTTP servers' pool threads take HttpAdmin or
+Background (discovery, mDNS, the address watchers, the audio guard's worker,
+the helper client's connect to the broker, the dashboard broadcaster) and Gui,
+the Windows message loop. The HTTP servers' pool threads take HttpAdmin or
 HttpClient per request from each server's pre-routing handler. ConfigSaver is
 the config store's saver thread; Topology is reserved for a thread that does
 not exist yet. The markers are `config.save` (every `saveConfig`),
@@ -1117,6 +1117,20 @@ thread's wait for the snapshot), `backend.lifecycle` (every lifecycle call the
 service makes), `thread.join` (the joins in the receiver, the update service,
 the config store, the dashboard broadcaster and the adapters) and `vigem.pnp`
 (the ViGEm bus open, plug and unplug waits).
+
+The tray has no lock, because the Gui thread owns it. `trayicon`
+(`tray_icon.cpp`) keeps the icon's state, and only its message handler
+touches that state or calls `Shell_NotifyIconW`. A `SetTimer` on the tray
+window retitles the tooltip every two seconds, where a ticker thread used to;
+a thread that wants it retitled sooner, the update service's status callback,
+posts `WM_REFRESH`, and `showToast`, which may be called from any thread,
+posts `WM_BALLOON` with the text. So every shell call, the balloons included,
+runs on the Gui thread between messages, and a tooltip that has not changed
+costs no shell call. Registering the icon asks for a stable identity
+(`NIF_GUID`), deletes a stale registration and retries when Explorer refuses
+the add, and falls back to a plain id; the callback version is set after the
+add, since version 4 puts the event in `LOWORD(lp)`. Explorer's
+`TaskbarCreated` registers the icon again.
 
 `tests/test_lock_laws.cpp` runs the real service wired as in production (the
 HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,
@@ -1136,8 +1150,10 @@ fake driver and `HidMaestroAdapter` over the real `HelperClient`, which
 connects to an in-process helper on a real pipe from its background thread, as
 it does at startup, and adopts that connection at its first plug, behind
 `GamepadMux`. The config lives in a temporary directory named by
-`SATELLITE_CONFIG_DIR`. The test then
-checks seven laws:
+`SATELLITE_CONFIG_DIR`. On Windows a last run puts the real tray unit
+on a thread with the Gui role, over a stand-in for the shell call that counts
+its callers by role, while a Background thread asks for tooltip refreshes and an
+Update thread raises balloons. The test then checks eight laws:
 
 1. Receive: the locks a thread with the Receive role takes, which is none.
 2. Lifecycle: every backend lifecycle call (the mock's, the fake ViGEm
@@ -1156,6 +1172,8 @@ checks seven laws:
    mouse, and no other thread did.
 7. Mic: the mic worker takes no lock at all, and it submitted the decoded
    mic audio, and no other thread did.
+8. Tray: the Gui role made every `Shell_NotifyIconW` call, and no other
+   thread did.
 
 Each list is exactly what today's code does. The test fails when a lock, a
 pair or an edge appears that is not on its list, and also when one on the list
@@ -1169,9 +1187,10 @@ config store's own order, `config.write`, then `config.snapshot`; and the
 effects lock, `config.effects`, held across the autostart write and the crash
 toggle, above `config.snapshot`, and never taken while `service.state` or
 `service.topology` is held (the order law asserts it). The test does not reach
-`tray.shell` or `audio.com`, whose calls act on the desktop, so those two
-markers have no entries yet. `log.write` has none because the writer holds
-nothing there. The pointer and mic laws hold for the service and for the
+`audio.com`, whose calls act on the desktop, so that marker has no entries yet;
+it reaches `tray.shell` through the stand-in, where the Gui thread holds
+nothing. `log.write` has none because the writer holds nothing there. The
+pointer and mic laws hold for the service and for the
 adapters the test runs. The uinput adapter, which it does not run, still
 takes `uinput.devices` in `submitRelativeMouse` around its writes to the
 pointer node, because `closeBus` may be destroying that node, so on Linux

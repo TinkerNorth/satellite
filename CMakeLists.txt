@@ -189,6 +189,7 @@ set(SATELLITE_WIN_SOURCES
     src/core/config_io.cpp
     src/platform/windows/crypto.cpp
     src/platform/windows/tray.cpp
+    src/platform/windows/tray_icon.cpp
     src/platform/windows/toast.cpp
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
@@ -1298,6 +1299,7 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             src/platform/windows/hidmaestro_wire.cpp
             src/platform/windows/hidmaestro_audio_wire.cpp
             src/platform/windows/hidmaestro_helper_client.cpp
+            src/platform/windows/tray_icon.cpp
         )
         target_include_directories(test_lock_laws PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
