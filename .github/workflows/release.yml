@@ -872,10 +872,10 @@ jobs:
       compile-generator: true
 
   # ─────────────────────────────────────────────────────────────────────
-  # publish: attach hardened bundle + SLSA provenance to the GitHub
-  # Release. Uploaded as a draft and flipped to published once every asset
-  # is in place: atomic for the zsync pattern and anyone scripting
-  # releases/latest.
+  # draft: attach hardened bundle + SLSA provenance to a draft GitHub
+  # Release. measurements adds its report and gates the release; publish
+  # flips the draft to published once every asset is in place: atomic for
+  # the zsync pattern and anyone scripting releases/latest.
   # ─────────────────────────────────────────────────────────────────────
   draft:
     name: Upload the draft GitHub Release
