@@ -9,7 +9,7 @@
     Dot-source this file; it defines functions only and runs nothing.
 #>
 
-$HmSdkAssemblies = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll')
+$HmSdkStagedFiles = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE')
 $HmInfCatalog = 'hidmaestro.cat'
 $HmStagingStampName = 'staged-from.sha256'
 $HmSdkVersionPin = 'SATELLITE_HIDMAESTRO_SDK_VERSION'

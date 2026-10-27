@@ -236,6 +236,7 @@ Source: "redist\{#ViGEmBusInstaller}"; DestDir: "{tmp}"; Flags: deleteafterinsta
 ; HIDMaestro helper: installed beside satellite.exe (the app spawns it for
 ; controller lifecycle), and also runs the driver deploy at ssPostInstall.
 Source: "{#HmHelperSource}"; DestDir: "{app}"; DestName: "{#HmHelperExe}"; Flags: ignoreversion sign; Components: hidmaestro
+Source: "redist\hidmaestro\LICENSE"; DestDir: "{app}"; DestName: "LICENSE-HIDMaestro.txt"; Flags: ignoreversion; Components: hidmaestro
 
 [Dirs]
 ; Pre-create the LocalAppData tree the app uses for dumps + logs, with
@@ -999,6 +1000,7 @@ begin
     DeleteRelocatedFile(Dir + 'LICENSE');
     DeleteRelocatedFile(Dir + 'README.md');
     DeleteRelocatedFile(Dir + '{#HmHelperExe}');
+    DeleteRelocatedFile(Dir + 'LICENSE-HIDMaestro.txt');
     DeleteRelocatedFile(Dir + 'unins000.exe');
     DeleteRelocatedFile(Dir + 'unins000.dat');
     DeleteRelocatedFile(Dir + 'unins000.msg');
