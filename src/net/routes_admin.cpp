@@ -78,19 +78,19 @@ static std::string buildPairRequestsJson() {
     return jsonDump(arr);
 }
 
-// The settings the status surfaces show, read under the config lock in one go.
+// The settings the status surfaces show, read from one config snapshot.
 static void readConfigStatus(StatusFields& f) {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    f.udpPort = g_config.udpPort;
-    f.webPort = g_config.webPort;
-    f.autoStart = g_config.autoStart;
-    f.discoveryBroadcastEnabled = g_config.discoveryBroadcastEnabled;
-    f.controllerAudio = g_config.controllerAudio;
-    f.controllerAudioMic = g_config.controllerAudioMic;
-    f.controllerAudioSpeaker = g_config.controllerAudioSpeaker;
-    f.controllerAudioHaptics = g_config.controllerAudioHaptics;
-    f.controllerAudioKeepDefaultDevice = g_config.controllerAudioKeepDefaultDevice;
-    f.crashReporting = g_config.crashReporting;
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    f.udpPort = cfg->udpPort;
+    f.webPort = cfg->webPort;
+    f.autoStart = cfg->autoStart;
+    f.discoveryBroadcastEnabled = cfg->discoveryBroadcastEnabled;
+    f.controllerAudio = cfg->controllerAudio;
+    f.controllerAudioMic = cfg->controllerAudioMic;
+    f.controllerAudioSpeaker = cfg->controllerAudioSpeaker;
+    f.controllerAudioHaptics = cfg->controllerAudioHaptics;
+    f.controllerAudioKeepDefaultDevice = cfg->controllerAudioKeepDefaultDevice;
+    f.crashReporting = cfg->crashReporting;
 }
 
 // The receiver thread's counters, as the dashboard reads them.
@@ -196,16 +196,13 @@ static void statusRoute(SessionService& svc, const Request&, Response& res) {
 }
 
 static void netinfoRoute(const Request&, Response& res) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
     NetworkInfo info;
-    std::string selected;
-    {
-        std::lock_guard<TrackedMutex> lk(g_configMtx);
-        info.udpPort = g_config.udpPort;
-        info.webPort = g_config.webPort;
-        info.discPort = g_config.discPort;
-        selected = g_config.networkInterface;
-        info.allowPublic = g_config.allowPublicNetwork;
-    }
+    const std::string selected = cfg->networkInterface;
+    info.udpPort = cfg->udpPort;
+    info.webPort = cfg->webPort;
+    info.discPort = cfg->discPort;
+    info.allowPublic = cfg->allowPublicNetwork;
     info.clientPort = DEFAULT_CLIENT_PORT;
     info.mdnsPort = mdns::MULTICAST_PORT;
     info.selected = selected;
@@ -230,29 +227,35 @@ static void netinfoRoute(const Request&, Response& res) {
 static void allowPublicRoute(const Request&, Response& res) {
     const bool ok = allowPublicFirewall();
     if (ok) {
-        std::lock_guard<TrackedMutex> lk(g_configMtx);
-        g_config.allowPublicNetwork = true;
-        saveConfig(g_config);
+        g_configStore->update([](Config& cfg) {
+            cfg.allowPublicNetwork = true;
+            return true;
+        });
     }
     JsonOut resp;
     resp["ok"] = ok;
     replyJson(res, jsonDump(resp));
 }
 
-// The form's patch, under the config lock for the whole of it so a concurrent
-// reader never sees half a POST. The response echoes the port in force, which
-// after a rejection is the one that was already stored.
+static bool patchConfig(Config& cfg, const Json& body, ConfigPatchOutcome& outcome) {
+    outcome = applyConfigPatch(body, cfg);
+    return true;
+}
+
+// The form's patch, published in one update so a concurrent reader never sees
+// half a POST. The response echoes the port in force, which after a rejection
+// is the one that was already stored.
 static void configRoute(const Request& req, Response& res) {
     const Json body = parseBody(req.body);
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    const ConfigPatchOutcome patch = applyConfigPatch(body, g_config);
-    if (patch.autoStartPresent) setAutoStart(g_config.autoStart);
-    if (patch.crashReportingPresent) crash::setEnabled(g_config.crashReporting);
-    saveConfig(g_config);
-    logMsg(LogLevel::INFO, "web", configPatchLogLine(g_config, patch.udpPortRejected));
+    ConfigPatchOutcome patch;
+    const std::shared_ptr<const Config> cfg =
+        g_configStore->update([&](Config& next) { return patchConfig(next, body, patch); });
+    if (patch.autoStartPresent) setAutoStart(cfg->autoStart);
+    if (patch.crashReportingPresent) crash::setEnabled(cfg->crashReporting);
+    logMsg(LogLevel::INFO, "web", configPatchLogLine(*cfg, patch.udpPortRejected));
     JsonOut resp;
     resp["ok"] = true;
-    resp["udpPort"] = g_config.udpPort;
+    resp["udpPort"] = cfg->udpPort;
     resp["udpPortRejected"] = patch.udpPortRejected;
     replyJson(res, jsonDump(resp));
 }

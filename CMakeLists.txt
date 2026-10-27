@@ -128,6 +128,7 @@ include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
+    src/core/config_store.cpp
     src/core/catalog.cpp
     src/core/backend_registry.cpp
     src/core/update_service.cpp
@@ -1123,7 +1124,8 @@ satellite_add_pure_test(test_codecs tests/test_codecs.cpp)
 satellite_add_pure_test(test_machine_id tests/test_machine_id.cpp)
 satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
 satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
-satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
+satellite_add_pure_test(test_update_service tests/test_update_service.cpp
+                        src/core/update_service.cpp src/core/config_store.cpp)
 satellite_add_pure_test(test_json tests/test_json.cpp)
 satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_crash_reporting tests/test_crash_reporting.cpp
@@ -1315,6 +1317,7 @@ if(WIN32)
             src/adapters/audio/opus_codec.cpp
             src/app/audio_settings.cpp
             src/core/config_io.cpp
+            src/core/config_store.cpp
             src/core/session_service.cpp
             src/net/admin_json.cpp
             src/net/inner_dispatch.cpp
@@ -1574,6 +1577,7 @@ if(APPLE)
         src/platform/macos/config.cpp
         src/platform/posix/config_posix.cpp
         src/core/config_io.cpp
+        src/core/config_store.cpp
         src/platform/macos/globals.cpp
         src/platform/posix/crypto_posix.cpp
         src/net/pin_rotation.cpp

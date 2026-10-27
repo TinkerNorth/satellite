@@ -53,7 +53,7 @@ void hardenDllSearchPath();
 // a warning on policies unavailable on older OS.
 void applyRuntimeMitigations();
 
-// Idempotent self-heal of the HKCU Run entry from g_config.autoStart, in case
+// Idempotent self-heal of the HKCU Run entry from the config's autoStart, in case
 // the installer wrote to the wrong user's hive or the exe moved.
 void reconcileAutoStart();
 

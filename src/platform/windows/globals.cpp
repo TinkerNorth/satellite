@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "globals.h"
 
-Config g_config;
-TrackedMutex g_configMtx("config");
+std::unique_ptr<ConfigStore> g_configStore;
 std::atomic<bool> g_appRunning{true};
 std::atomic<bool> g_listening{false};
 std::atomic<bool> g_mdnsResponderActive{false};

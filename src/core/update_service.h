@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 // OTA update orchestrator. Owns the UpdateState transition and drives an
-// IUpdaterPort for IO. Persists prefs via a callback + shared Config&, not a
-// port: config is infrastructure the adapters own, not domain state.
+// IUpdaterPort for IO. Reads and writes prefs through the shared ConfigStore,
+// not a port: config is infrastructure the adapters own, not domain state.
 //
 // Thread model: request*() are non-blocking and enqueue onto one worker thread
 // that runs fetch/download/verify/apply. A second timer thread polls each minute
@@ -10,6 +10,7 @@
 // callback fires outside the lock.
 #pragma once
 
+#include "core/config_store.h"
 #include "core/ports.h"
 #include "core/tracked_mutex.h"
 #include "core/types.h"
@@ -33,12 +34,8 @@ bool progressWorthBroadcasting(uint64_t doneBefore, uint64_t totalBefore, uint64
 class UpdateService {
   public:
     using StatusCallback = std::function<void(const UpdateStatusSnapshot&)>;
-    // Invoked after the service mutates Config fields so the caller can
-    // saveConfig(). Always invoked with the internal lock NOT held.
-    using PersistCallback = std::function<void()>;
 
-    UpdateService(IUpdaterPort& updater, ILogPort& log, Config& sharedConfig,
-                  TrackedMutex& configMtx);
+    UpdateService(IUpdaterPort& updater, ILogPort& log, ConfigStore& configStore);
     ~UpdateService();
 
     UpdateService(const UpdateService&) = delete;
@@ -63,7 +60,6 @@ class UpdateService {
 
     // Single sink for status snapshots.
     void setStatusCallback(StatusCallback cb);
-    void setPersistCallback(PersistCallback cb);
 
     // Future checks won't notify until something newer than `version` appears.
     void skipVersion(const std::string& version);
@@ -110,7 +106,7 @@ class UpdateService {
     bool checkQueuedLocked() const;
     bool checkSupersededLocked() const;
     bool isStagedLocked(const UpdateInfo& info) const;
-    UpdateStatusSnapshot snapshotLocked() const;
+    UpdateStatusSnapshot snapshotLocked(const Config& cfg) const;
 
     static int64_t nowEpoch();
 
@@ -122,8 +118,7 @@ class UpdateService {
 
     IUpdaterPort& updater_;
     ILogPort& log_;
-    Config& config_;
-    TrackedMutex& configMtx_; // protects config_ (held by webserver too)
+    ConfigStore& configStore_;
 
     mutable TrackedMutex mtx_{"update.state"};
     std::condition_variable_any cv_;
@@ -155,5 +150,4 @@ class UpdateService {
     bool started_ = false;
 
     StatusCallback statusCb_;
-    PersistCallback persistCb_;
 };

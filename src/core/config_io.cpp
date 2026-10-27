@@ -17,7 +17,7 @@ Config loadConfig() {
     return cfg;
 }
 
-void saveConfig(const Config& cfg) {
+bool saveConfig(const Config& cfg) {
     blockingRegion("config.save");
-    atomicWriteFile(configPath(), satellite::serializeConfig(cfg));
+    return atomicWriteFile(configPath(), satellite::serializeConfig(cfg));
 }

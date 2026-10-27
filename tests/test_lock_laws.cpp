@@ -78,7 +78,6 @@ struct LockPair {
 };
 
 const std::vector<LockName> RECEIVE_MAY_ACQUIRE = {
-    {"config", Allowance::Debt},
     {"log", Allowance::Debt},
     {"service.state", Allowance::Debt},
 };
@@ -96,7 +95,6 @@ const std::vector<LockName> HELPER_PIPE_MAY_HOLD = {
 
 const std::vector<LockPair> BLOCKING_MAY_HOLD = {
     {"backend.lifecycle", "service.topology", Allowance::ByDesign},
-    {"config.save", "config", Allowance::Debt},
 #ifdef _WIN32
     {"helper.pipe", "hidmaestro.helper", Allowance::Debt},
     {"helper.pipe", "service.topology", Allowance::ByDesign},
@@ -106,12 +104,12 @@ const std::vector<LockPair> BLOCKING_MAY_HOLD = {
 };
 
 const std::vector<LockPair> ORDER_MAY_NEST = {
-    {"config", "service.state", Allowance::Debt},
+    {"config.write", "config.snapshot", Allowance::ByDesign},
     {"service.state", "log", Allowance::Debt},
     {"service.topology", "log", Allowance::ByDesign},
     {"service.topology", "service.state", Allowance::ByDesign},
 #ifdef _WIN32
-    {"service.topology", "config", Allowance::ByDesign},
+    {"service.topology", "config.snapshot", Allowance::ByDesign},
     {"service.topology", "hidmaestro.bus", Allowance::ByDesign},
     {"service.topology", "hidmaestro.helper", Allowance::ByDesign},
     {"service.topology", "vigem.bus", Allowance::ByDesign},
@@ -292,9 +290,8 @@ SessionUpsertResult put(SessionService& svc, Dish& dish,
 }
 
 void pairInConfig(const std::vector<const Dish*>& dishes) {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    g_config = Config{};
-    g_config.controllerAudio = false;
+    Config cfg;
+    cfg.controllerAudio = false;
     for (const Dish* dish : dishes) {
         PairedDevice device;
         device.id = dish->id();
@@ -302,8 +299,9 @@ void pairInConfig(const std::vector<const Dish*>& dishes) {
         device.lastIP = dish->ip();
         device.pairedAt = "2026-10-27";
         device.sharedKeyHex = dish->keyHex();
-        g_config.pairedDevices.push_back(device);
+        cfg.pairedDevices.push_back(device);
     }
+    g_configStore = std::make_unique<ConfigStore>(std::move(cfg), saveConfig);
 }
 
 class LifecycleWatch {
@@ -780,6 +778,7 @@ void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& s
 
     expectTheRunReachedEverything("mock", run, true);
     TEST("mock: the pairing service saved the config into the sandbox");
+    EXPECT(g_configStore->flush(WAIT_LIMIT));
     EXPECT(sandbox.saved());
     TEST("mock: the backend saw lifecycle calls");
     EXPECT(watch.calls() > 0);
@@ -1274,6 +1273,7 @@ int main() {
     runTheServiceOnTheWindowsBackends(watch);
     timeEndPeriod(1);
 #endif
+    g_configStore.reset();
     const lockstats::Snapshot snap = lockstats::snapshot();
     report(snap);
 

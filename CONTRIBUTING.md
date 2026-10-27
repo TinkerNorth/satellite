@@ -135,7 +135,7 @@ server keeps its shape.
 - **No singletons.** A stateless helper is a free function in the file that
   owns it. There is no `instance()` and no function-local `static` holding
   state. The one process-wide object is the app state declared in
-  `app/app_state.h` (`g_config` and its mutex, the counters the receiver
+  `app/app_state.h` (`g_configStore`, the counters the receiver
   thread bumps at packet rate, the log ring), defined once per platform in
   its `globals.cpp`; it is there because the receiver, the routes and the
   tray are three threads over one state and the hot path cannot afford an

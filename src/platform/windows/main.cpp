@@ -108,8 +108,8 @@ void addrChangeWatcherThread() {
 bool crashForTestIfAsked(const std::string& cmd) {
     lifecycle::CrashTestKind kind = lifecycle::CrashTestKind::Exception;
     if (!lifecycle::parseCrashTestSwitch(cmd, kind)) return false;
-    g_config = loadConfig();
-    crash::init(g_config.crashReporting, lifecycle::sentryDir() + "\\crash-test");
+    const Config cfg = loadConfig();
+    crash::init(cfg.crashReporting, lifecycle::sentryDir() + "\\crash-test");
     lifecycle::rearmCrashFilterChain();
     lifecycle::crashForTest(kind);
     return true;
@@ -179,24 +179,27 @@ static bool g_installDefaultsApplied = false;
 
 // On first run (no JSON yet) seed autostart from the registry so the
 // installer's task selection survives; the JSON is authoritative after that.
-void loadConfigSeedingAutostart() {
+Config loadConfigSeedingAutostart() {
     bool firstRun;
     {
         std::ifstream probe(configPath());
         firstRun = !probe.is_open();
     }
-    g_config = loadConfig();
-    if (firstRun) g_config.autoStart = getAutoStart();
-    if (satellite::applyInstallDefaults(g_config, installdefaults::readInstallDefaults())) {
-        saveConfig(g_config);
-        g_installDefaultsApplied = true;
-    }
+    Config cfg = loadConfig();
+    if (firstRun) cfg.autoStart = getAutoStart();
+    return cfg;
 }
 
-// Under g_configMtx so saveConfig sees a consistent struct.
-void persistConfig() {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    saveConfig(g_config);
+bool applyInstallerChoices(Config& cfg, const satellite::InstallDefaults& defaults) {
+    g_installDefaultsApplied = satellite::applyInstallDefaults(cfg, defaults);
+    return g_installDefaultsApplied;
+}
+
+void createConfigStore(ILogPort& log) {
+    g_configStore = std::make_unique<ConfigStore>(loadConfigSeedingAutostart(), saveConfig, &log);
+    const satellite::InstallDefaults defaults = installdefaults::readInstallDefaults();
+    g_configStore->update(
+        [&defaults](Config& cfg) { return applyInstallerChoices(cfg, defaults); });
 }
 
 struct UpdateToastGate {
@@ -312,13 +315,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     if (!startWinsock()) return 1;
     if (!startCrypto()) return 1;
 
-    loadConfigSeedingAutostart();
+    LogAdapter logAdapter;
+    createConfigStore(logAdapter);
 
     // Crash reporting arms here rather than beside installCrashHandler(),
     // because it needs the operator's opt-in and that only exists once the
     // config has been read. Sentry installs its own top-level filter, so
     // satellite's goes back on top afterwards and chains to it.
-    crash::init(g_config.crashReporting, lifecycle::sentryDir());
+    crash::init(g_configStore->current()->crashReporting, lifecycle::sentryDir());
     lifecycle::rearmCrashFilterChain();
 
     // Constructive only: writes HKCU\Run when autostart is on, never deletes,
@@ -329,10 +333,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // before the user can report a crash.
     lifecycle::startFileLogger(lifecycle::logDir());
     if (g_installDefaultsApplied) {
+        const std::shared_ptr<const Config> cfg = g_configStore->current();
         logMsg(LogLevel::INFO, "config",
                std::string("Applied the installer's privacy choices: update check ") +
-                   (g_config.autoCheck ? "on" : "off") + ", crash reports " +
-                   (g_config.crashReporting ? "on" : "off"));
+                   (cfg->autoCheck ? "on" : "off") + ", crash reports " +
+                   (cfg->crashReporting ? "on" : "off"));
     }
     const bool uiAccess = uiaccess::tokenHasUiAccess();
     g_uiAccess.store(uiAccess);
@@ -359,7 +364,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         logMsg(LogLevel::WARN, "pointer", detail);
     };
     ClientAdapter clientAdapter;
-    LogAdapter logAdapter;
     // Controller audio's Opus codec, injected for the same reason as the key
     // deriver above: the core owns the stream shapes, not the library that
     // codes them. Stateless and scoped to main, so it outlives the service.
@@ -371,8 +375,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     WindowsUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
     UpdateToastGate updateToastGate;
-    UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
-    updateService.setPersistCallback(persistConfig);
+    UpdateService updateService(updaterAdapter, logAdapter, *g_configStore);
     updateService.setStatusCallback([&updateToastGate](const UpdateStatusSnapshot& snap) {
         onUpdateStatus(updateToastGate, snap);
     });
@@ -411,7 +414,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     crash::shutdown();
 
     removeTrayIcon();
-    saveConfig(g_config);
+    g_configStore->stop();
     timeEndPeriod(1);
     WSACleanup();
     if (SUCCEEDED(hrCoInit)) CoUninitialize();

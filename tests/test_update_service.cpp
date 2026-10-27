@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../src/core/update_service.h"
+#include "../src/core/config_store.h"
 #include "../src/core/ports.h"
 #include "../src/core/types.h"
 
@@ -183,21 +184,41 @@ static UpdateStatusSnapshot lastBroadcast(BroadcastLog& broadcasts) {
     return broadcasts.last;
 }
 
+class PersistCounter {
+  public:
+    ConfigStore::Persist hook() {
+        return [this](const Config& cfg) { return persisted(cfg); };
+    }
+
+    int calls() const { return calls_.load(); }
+
+  private:
+    bool persisted(const Config&) {
+        calls_++;
+        return true;
+    }
+
+    std::atomic<int> calls_{0};
+};
+
 struct Rig {
     MockUpdater up;
     RecordingLog log;
-    Config cfg;
-    TrackedMutex cfgMtx{"config"};
+    PersistCounter persists;
+    ConfigStore store{Config{}, persists.hook()};
     BroadcastLog broadcasts;
-    std::atomic<int> persistCalls{0};
-    UpdateService svc{up, log, cfg, cfgMtx};
+    UpdateService svc{up, log, store};
 
     Rig() {
         svc.setStatusCallback(
             [this](const UpdateStatusSnapshot& snap) { recordBroadcast(broadcasts, snap); });
-        svc.setPersistCallback([this] { persistCalls++; });
     }
 };
+
+static int persistsSettled(Rig& rig) {
+    rig.store.flush(std::chrono::seconds(5));
+    return rig.persists.calls();
+}
 
 struct WorkerHold {
     std::vector<UpdateState> at;
@@ -326,9 +347,8 @@ static void test_check_finds_update() {
     TEST("check: newer release transitions to UpdateAvailable with populated info");
     MockUpdater up;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::UpdateAvailable));
@@ -343,9 +363,8 @@ static void test_check_up_to_date() {
     MockUpdater up;
     up.fetchVersion = "0.0.1";
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(false);
     EXPECT(waitForState(svc, UpdateState::UpToDate));
@@ -358,9 +377,8 @@ static void test_check_network_error() {
     up.fetchOk = false;
     up.fetchError = "no network";
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::Error));
@@ -376,8 +394,8 @@ static void test_check_skip_version_suppresses() {
     MockLog log;
     Config cfg;
     cfg.skipVersion = "99.0.0";
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(cfg, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(false);
     EXPECT(waitForState(svc, UpdateState::UpToDate));
@@ -388,9 +406,8 @@ static void test_full_install_flow() {
     TEST("download→verify→install: happy path reaches Installing");
     MockUpdater up;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::UpdateAvailable));
@@ -405,9 +422,8 @@ static void test_download_failure() {
     MockUpdater up;
     up.downloadOk = false;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::UpdateAvailable));
@@ -421,9 +437,8 @@ static void test_verify_failure() {
     MockUpdater up;
     up.verifyOk = false;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::UpdateAvailable));
@@ -517,9 +532,8 @@ static void test_manual_method_does_not_download() {
     MockUpdater up;
     up.method = InstallMethod::Manual;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::UpdateAvailable));
@@ -533,9 +547,8 @@ static void test_download_queued_before_skip_settles_without_relocking() {
     TEST("doDownload: a download queued before skipVersion settles to Idle on a live worker");
     MockUpdater up;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     std::atomic<bool> holdWorker{true};
     std::atomic<bool> workerHeld{false};
     svc.setStatusCallback([&](const UpdateStatusSnapshot& snap) {
@@ -574,9 +587,8 @@ static void test_repair_ignores_manual_install_hosts() {
     up.fetchVersion = SATELLITE_VERSION;
     up.method = InstallMethod::Manual;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(Config{}, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::UpToDate));
@@ -592,56 +604,55 @@ static void test_auto_download_and_install_chain() {
     Config cfg;
     cfg.autoDownload = true;
     cfg.autoInstall = true;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
+    ConfigStore store(cfg, nullptr);
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(false);
     EXPECT(waitForState(svc, UpdateState::Installing));
 }
 
 static void test_update_preferences_persists() {
-    TEST("updatePreferences: writes config, clamps bad channel, fires persist callback");
+    TEST("updatePreferences: writes config, clamps bad channel, persists it");
     MockUpdater up;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
-    int persistCalls = 0;
-    svc.setPersistCallback([&] { persistCalls++; });
+    PersistCounter persists;
+    ConfigStore store(Config{}, persists.hook());
+    UpdateService svc(up, log, store);
 
     svc.updatePreferences("prerelease", true, true, false);
-    EXPECT(cfg.updateChannel == "prerelease");
-    EXPECT(cfg.autoCheck && cfg.autoDownload && !cfg.autoInstall);
-    EXPECT(persistCalls >= 1);
+    const std::shared_ptr<const Config> prerelease = store.current();
+    EXPECT(prerelease->updateChannel == "prerelease");
+    EXPECT(prerelease->autoCheck && prerelease->autoDownload && !prerelease->autoInstall);
+    EXPECT(store.flush(std::chrono::seconds(5)));
+    EXPECT(persists.calls() >= 1);
 
     svc.updatePreferences("garbage", false, false, false); // clamps to stable
-    EXPECT(cfg.updateChannel == std::string(UPDATE_CHANNEL_STABLE));
+    EXPECT(store.current()->updateChannel == std::string(UPDATE_CHANNEL_STABLE));
 }
 
 static void test_skip_version_clears_available() {
     TEST("skipVersion: matching the available version clears back to Idle + persists");
     MockUpdater up;
     MockLog log;
-    Config cfg;
-    TrackedMutex cfgMtx("config");
-    UpdateService svc(up, log, cfg, cfgMtx);
-    int persistCalls = 0;
-    svc.setPersistCallback([&] { persistCalls++; });
+    PersistCounter persists;
+    ConfigStore store(Config{}, persists.hook());
+    UpdateService svc(up, log, store);
     svc.start();
     svc.requestCheck(true);
     EXPECT(waitForState(svc, UpdateState::UpdateAvailable));
 
     svc.skipVersion("99.0.0");
-    EXPECT(cfg.skipVersion == "99.0.0");
+    EXPECT(store.current()->skipVersion == "99.0.0");
     EXPECT(waitForState(svc, UpdateState::Idle));
-    EXPECT(persistCalls >= 1);
+    EXPECT(store.flush(std::chrono::seconds(5)));
+    EXPECT(persists.calls() >= 1);
 }
 
 static void test_dismiss_keeps_an_available_update_on_offer() {
     TEST("dismiss: an available update stays UpdateAvailable, marked dismissed");
     Rig rig;
     EXPECT(freezeAfterCheck(rig, UpdateState::UpdateAvailable));
-    const int persistsBefore = rig.persistCalls;
+    const int persistsBefore = persistsSettled(rig);
     rig.svc.dismiss();
     const UpdateStatusSnapshot snap = rig.svc.snapshot();
     EXPECT(snap.state == UpdateState::UpdateAvailable);
@@ -649,8 +660,8 @@ static void test_dismiss_keeps_an_available_update_on_offer() {
     EXPECT(snap.info.version == "99.0.0");
 
     TEST("dismiss: records lastSeenVersion and persists it");
-    EXPECT(rig.cfg.lastSeenVersion == "99.0.0");
-    EXPECT(rig.persistCalls == persistsBefore + 1);
+    EXPECT(rig.store.current()->lastSeenVersion == "99.0.0");
+    EXPECT(persistsSettled(rig) == persistsBefore + 1);
 }
 
 static void test_dismiss_keeps_a_downloaded_update_staged() {
@@ -661,7 +672,7 @@ static void test_dismiss_keeps_a_downloaded_update_staged() {
     const UpdateStatusSnapshot snap = rig.svc.snapshot();
     EXPECT(snap.state == UpdateState::Downloaded);
     EXPECT(snap.dismissed);
-    EXPECT(rig.cfg.lastSeenVersion == "99.0.0");
+    EXPECT(rig.store.current()->lastSeenVersion == "99.0.0");
 
     TEST("dismiss: the dismissed download still installs on request");
     rig.svc.requestInstall();
@@ -678,11 +689,11 @@ static void test_dismiss_elsewhere_changes_nothing() {
     rig.svc.requestCheck(true);
     EXPECT(waitForCount(rig.up.fetchCalls, 2));
     EXPECT(frozenAt(rig, UpdateState::Error));
-    const int persistsBefore = rig.persistCalls;
+    const int persistsBefore = persistsSettled(rig);
     const int broadcastsBefore = broadcastCount(rig.broadcasts);
     rig.svc.dismiss();
-    EXPECT(rig.cfg.lastSeenVersion.empty());
-    EXPECT(rig.persistCalls == persistsBefore);
+    EXPECT(rig.store.current()->lastSeenVersion.empty());
+    EXPECT(persistsSettled(rig) == persistsBefore);
     EXPECT(broadcastCount(rig.broadcasts) == broadcastsBefore);
 
     TEST("dismiss: after a failed check it leaves the update undismissed for later");
@@ -1520,7 +1531,10 @@ static void test_auto_install_is_not_skipped_by_a_check_at_verify() {
          "install");
     WorkerHold hold;
     Rig rig;
-    rig.cfg.autoInstall = true;
+    rig.store.update([](Config& cfg) {
+        cfg.autoInstall = true;
+        return true;
+    });
     EXPECT(freezeOffered(rig));
     holdAt(rig, hold, {UpdateState::Downloaded, UpdateState::Installing});
     rig.svc.requestDownload();
@@ -1619,7 +1633,10 @@ static void test_a_failed_background_check_starts_no_auto_download() {
     TEST("auto-download: a background check that fails does not download the update it kept");
     Rig rig;
     EXPECT(freezeAfterCheck(rig, UpdateState::UpdateAvailable));
-    rig.cfg.autoDownload = true;
+    rig.store.update([](Config& cfg) {
+        cfg.autoDownload = true;
+        return true;
+    });
     rig.up.fetchOk = false;
     rig.svc.start();
     rig.svc.requestCheck(false);

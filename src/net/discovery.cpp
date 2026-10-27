@@ -19,14 +19,12 @@ struct BeaconConfig {
     int udpPort = 0;
 };
 
-// Snapshot under g_configMtx; the webserver mutates these from
-// POST /api/config under the same lock.
 BeaconConfig readBeaconConfig() {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
+    const std::shared_ptr<const Config> snapshot = g_configStore->current();
     BeaconConfig cfg;
-    cfg.enabled = g_config.discoveryBroadcastEnabled;
-    cfg.discPort = g_config.discPort;
-    cfg.udpPort = g_config.udpPort;
+    cfg.enabled = snapshot->discoveryBroadcastEnabled;
+    cfg.discPort = snapshot->discPort;
+    cfg.udpPort = snapshot->udpPort;
     return cfg;
 }
 

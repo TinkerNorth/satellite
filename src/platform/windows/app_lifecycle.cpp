@@ -581,7 +581,7 @@ static
 // Never deletes (the user toggle does that); the write rule is
 // runEntryNeedsWrite, which keeps an entry pointing at a DIFFERENT real exe.
 void reconcileAutoStart() {
-    if (!g_config.autoStart) return;
+    if (!g_configStore->current()->autoStart) return;
 
     char exe[MAX_PATH];
     const DWORD len = GetModuleFileNameA(nullptr, exe, MAX_PATH);

@@ -83,12 +83,14 @@ static void promptForPairing(const std::string& deviceId) {
 @implementation SatelliteTrayTarget
 
 - (void)openUI:(id)sender {
-    NSString* url = [NSString stringWithFormat:@"http://localhost:%d", g_config.webPort];
+    NSString* url =
+        [NSString stringWithFormat:@"http://localhost:%d", g_configStore->current()->webPort];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
 }
 
 - (void)donate:(id)sender {
-    NSString* url = [NSString stringWithFormat:@"http://localhost:%d/donate", g_config.webPort];
+    NSString* url = [NSString
+        stringWithFormat:@"http://localhost:%d/donate", g_configStore->current()->webPort];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
 }
 
@@ -103,7 +105,8 @@ static void promptForPairing(const std::string& deviceId) {
     } else {
         g_updateService->requestCheck(/*userInitiated=*/true);
     }
-    NSString* url = [NSString stringWithFormat:@"http://localhost:%d/settings", g_config.webPort];
+    NSString* url = [NSString
+        stringWithFormat:@"http://localhost:%d/settings", g_configStore->current()->webPort];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
     [self rebuildMenu];
 }

@@ -3,20 +3,8 @@
 
 #include "app/app_state.h"
 
-#include <mutex>
+ControllerAudioPolicy audioPolicyFromConfig() { return g_configStore->audioPolicy(); }
 
-ControllerAudioPolicy audioPolicyFromConfig() {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
-                                 g_config.controllerAudioHaptics};
-}
+bool controllerAudioEnabled() { return g_configStore->current()->controllerAudio; }
 
-bool controllerAudioEnabled() {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    return g_config.controllerAudio;
-}
-
-bool keepDefaultAudioDevice() {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    return g_config.controllerAudioKeepDefaultDevice;
-}
+bool keepDefaultAudioDevice() { return g_configStore->current()->controllerAudioKeepDefaultDevice; }

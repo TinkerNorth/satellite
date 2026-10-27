@@ -103,11 +103,7 @@ static std::wstring explorerPath() {
 }
 
 static std::wstring dashboardUrl() {
-    int webPort;
-    {
-        std::lock_guard<TrackedMutex> lk(g_configMtx);
-        webPort = g_config.webPort;
-    }
+    const int webPort = g_configStore->current()->webPort;
     wchar_t urlBuf[64];
     StringCchPrintfW(urlBuf, 64, L"http://localhost:%d", webPort);
     return urlBuf;

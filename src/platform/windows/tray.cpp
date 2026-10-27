@@ -16,6 +16,7 @@
 #include <strsafe.h>
 
 #include <algorithm>
+#include <chrono>
 #include <commctrl.h>
 #include <deque>
 #include <mutex>
@@ -52,12 +53,9 @@ static std::wstring toWide(const std::string& s) {
 
 // szTip caps at 128 wchars and most shells truncate hover text near 64.
 static std::wstring composeTooltip() {
-    int udpPort, webPort;
-    {
-        std::lock_guard<TrackedMutex> lk(g_configMtx);
-        udpPort = g_config.udpPort;
-        webPort = g_config.webPort;
-    }
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    const int udpPort = cfg->udpPort;
+    const int webPort = cfg->webPort;
     bool listening = g_listening.load(std::memory_order_relaxed);
 
     wchar_t buf[128];
@@ -207,11 +205,7 @@ static void openUrl(const wchar_t* url) {
 }
 
 static std::wstring webUiUrl(const wchar_t* path = L"") {
-    int webPort;
-    {
-        std::lock_guard<TrackedMutex> lk(g_configMtx);
-        webPort = g_config.webPort;
-    }
+    const int webPort = g_configStore->current()->webPort;
     wchar_t buf[128];
     StringCchPrintfW(buf, ARRAYSIZE(buf), L"http://localhost:%d%s", webPort, path);
     return std::wstring(buf);
@@ -412,7 +406,7 @@ static void onMenuCommand(HWND hwnd, UINT cmd) {
 
 // Restart Manager (installer CloseApplications) and system shutdown go
 // through here; replying TRUE to WM_QUERYENDSESSION then exiting on
-// WM_ENDSESSION lets saveConfig run.
+// WM_ENDSESSION lets the config flush run.
 static void onEndSession(WPARAM wp, LPARAM lp) {
     if (!wp) return;
     logMsg(LogLevel::INFO, "app",
@@ -421,7 +415,11 @@ static void onEndSession(WPARAM wp, LPARAM lp) {
     lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs);
     g_appRunning = false;
     removeTrayIcon();
-    saveConfig(g_config);
+    const bool saved =
+        g_configStore->flush(std::chrono::milliseconds(lifecycle::kLogFlushTimeoutMs));
+    if (!saved) {
+        logMsg(LogLevel::WARN, "app", "The configuration was not saved before the session ended");
+    }
     PostQuitMessage(0);
 }
 

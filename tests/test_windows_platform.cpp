@@ -665,9 +665,8 @@ static void testUpdateToastWithTheRealService() {
         ToastProbe probe;
         ToastProbeUpdater updater;
         ToastProbeLog log;
-        Config cfg;
-        TrackedMutex cfgMtx("config");
-        UpdateService svc(updater, log, cfg, cfgMtx);
+        ConfigStore store(Config{}, nullptr);
+        UpdateService svc(updater, log, store);
         svc.setStatusCallback(
             [&probe](const UpdateStatusSnapshot& snap) { probeToast(probe, snap); });
         svc.start();

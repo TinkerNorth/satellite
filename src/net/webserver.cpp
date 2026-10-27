@@ -15,11 +15,7 @@ void adminHttpThread(SessionService& svc) {
     ScopedThreadRole role(ThreadRole::HttpAdmin);
     registerAdminRoutes(g_httpServer, svc);
 
-    int webPort;
-    {
-        std::lock_guard<TrackedMutex> lk(g_configMtx);
-        webPort = g_config.webPort;
-    }
+    const int webPort = g_configStore->current()->webPort;
     logMsg(LogLevel::INFO, "web", "Admin web UI on 127.0.0.1:" + std::to_string(webPort));
     g_httpServer.listen("127.0.0.1", webPort);
 }

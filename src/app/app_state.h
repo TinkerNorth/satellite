@@ -3,6 +3,7 @@
 // Definitions live in the per-platform globals.cpp.
 #pragma once
 
+#include "core/config_store.h"
 #include "core/tracked_mutex.h"
 #include "core/types.h"
 #include "net/net_compat.h"
@@ -17,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -24,8 +26,7 @@
 #include <unordered_map>
 #include <vector>
 
-extern Config g_config;
-extern TrackedMutex g_configMtx;
+extern std::unique_ptr<ConfigStore> g_configStore;
 
 extern std::atomic<bool> g_appRunning;
 extern std::atomic<bool> g_listening;

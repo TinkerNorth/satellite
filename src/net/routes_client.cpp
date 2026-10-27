@@ -45,7 +45,7 @@ using Response = httplib::Response;
 
 struct ClientAuth {
     std::string deviceId;
-    PairedDevice device; // copy-by-value under g_configMtx, never a pointer
+    PairedDevice device;
     uint8_t pairingKey[CRYPTO_KEY_SIZE];
 };
 

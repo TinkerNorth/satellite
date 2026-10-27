@@ -46,6 +46,10 @@ namespace crash = satellite::crash;
     g_appRunning = false;
     g_httpServer.stop();
     if (g_clientServer) g_clientServer->stop();
+    const bool saved = g_configStore->flush(std::chrono::seconds(2));
+    if (!saved) {
+        logMsg(LogLevel::WARN, "app", "The configuration was not saved before the app quit");
+    }
     return NSTerminateNow;
 }
 @end
@@ -77,14 +81,10 @@ static bool startCrypto() {
 
 // The persisted config, with the autostart flag read from where the desktop
 // keeps it rather than from the file.
-static void loadConfigSeedingAutostart() {
-    g_config = loadConfig();
-    g_config.autoStart = getAutoStart();
-}
-
-static void persistConfig() {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    saveConfig(g_config);
+static Config loadConfigSeedingAutostart() {
+    Config cfg = loadConfig();
+    cfg.autoStart = getAutoStart();
+    return cfg;
 }
 
 // Inside an .app bundle the binary lives at Contents/MacOS/; the web UI is
@@ -150,15 +150,16 @@ int main() {
         ScopedThreadRole role(ThreadRole::Gui);
         logBackendAvailability();
         if (!startNetwork() || !startCrypto()) return 1;
-        loadConfigSeedingAutostart();
+        LogAdapter logAdapter;
+        g_configStore =
+            std::make_unique<ConfigStore>(loadConfigSeedingAutostart(), saveConfig, &logAdapter);
 
         // As on Linux: the only crash recorder here, and still gated on the
         // operator's opt-in plus a DSN this build actually carries.
-        crash::init(g_config.crashReporting, crash::databaseDirFor(configPath()));
+        crash::init(g_configStore->current()->crashReporting, crash::databaseDirFor(configPath()));
 
         MacHidGamepadAdapter gamepadAdapter;
         ClientAdapter clientAdapter;
-        LogAdapter logAdapter;
         // See the Windows main for why the codec is injected rather than built
         // into the core. IOHIDUserDevice has no audio endpoint to feed today,
         // but the service's audio paths are platform-neutral and stay wired
@@ -169,8 +170,7 @@ int main() {
         svc.setAudioPolicy(audioPolicyFromConfig);
 
         MacOSUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
-        UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
-        updateService.setPersistCallback(persistConfig);
+        UpdateService updateService(updaterAdapter, logAdapter, *g_configStore);
         g_updateService = &updateService;
         g_webDir = resolveWebDir();
         updateService.start();
@@ -185,7 +185,7 @@ int main() {
         joinWorkers(workers);
 
         svc.closeAllSessions();
-        saveConfig(g_config);
+        g_configStore->stop();
 
         // Flush before exit; a pending envelope is lost otherwise.
         crash::shutdown();

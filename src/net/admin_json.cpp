@@ -116,9 +116,9 @@ std::string buildConnectionsJson(const SessionService& svc) {
 // Paired devices + their live link state (paired | active | notResponding).
 // Shared by the admin route and the SSE devices event.
 std::string buildDevicesJson(const SessionService& svc) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
     JsonOut arr = JsonOut::array();
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    for (const auto& d : g_config.pairedDevices) {
+    for (const auto& d : cfg->pairedDevices) {
         const DeviceLinkState s = svc.linkStateForDevice(d.id);
         JsonOut o;
         o["id"] = d.id;

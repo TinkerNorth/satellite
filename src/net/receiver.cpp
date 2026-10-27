@@ -91,10 +91,7 @@ void restoreReceiverPriority(HANDLE mmcssHandle) {
 }
 #endif
 
-int configuredUdpPort() {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    return g_config.udpPort;
-}
+int configuredUdpPort() { return g_configStore->udpPort(); }
 
 // A bound, tuned receive socket, or INVALID_SOCKET with the failure logged
 // once per outage; the caller retries until the port is free.

@@ -2,7 +2,7 @@
 
 #include "pairing_service.h"
 #include "app/app_state.h"
-#include "config.h" // g_config, g_configMtx, saveConfig, getCurrentDate
+#include "config.h"
 #include "core/hex.h"
 #include "core/types.h"
 #include "pairing.h"
@@ -10,24 +10,6 @@
 #include <sodium.h>
 
 #include <algorithm>
-#include <mutex>
-
-void upsertPairedDevice(const std::string& deviceId, const std::string& deviceName,
-                        const std::string& clientIP, const std::string& sharedKeyHex) {
-    PairedDevice dev;
-    dev.id = deviceId;
-    dev.name = deviceName.empty() ? ("Device-" + deviceId.substr(0, 8)) : deviceName;
-    dev.lastIP = clientIP;
-    dev.pairedAt = getCurrentDate();
-    dev.sharedKeyHex = sharedKeyHex;
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    auto& devs = g_config.pairedDevices;
-    devs.erase(std::remove_if(devs.begin(), devs.end(),
-                              [&](const PairedDevice& d) { return d.id == deviceId; }),
-               devs.end());
-    devs.push_back(dev);
-    saveConfig(g_config);
-}
 
 namespace {
 // Mint a fresh 32-byte pairing key as hex; the caller persists it.
@@ -38,21 +20,70 @@ std::string mintPairingKeyHex() {
     sodium_memzero(key, sizeof(key));
     return hex;
 }
-} // namespace
 
-bool rotatePairedDeviceKey(const std::string& deviceId, const std::string& clientIP,
-                           std::string& outKeyHex) {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    for (auto& d : g_config.pairedDevices) {
+bool replaceDevice(Config& cfg, const PairedDevice& dev) {
+    auto& devs = cfg.pairedDevices;
+    devs.erase(std::remove_if(devs.begin(), devs.end(),
+                              [&](const PairedDevice& d) { return d.id == dev.id; }),
+               devs.end());
+    devs.push_back(dev);
+    return true;
+}
+
+bool removeDevice(Config& cfg, const std::string& deviceId, bool& removed) {
+    auto& devs = cfg.pairedDevices;
+    const size_t before = devs.size();
+    devs.erase(std::remove_if(devs.begin(), devs.end(),
+                              [&](const PairedDevice& d) { return d.id == deviceId; }),
+               devs.end());
+    removed = devs.size() != before;
+    return removed;
+}
+
+bool rekeyDevice(Config& cfg, const std::string& deviceId, const std::string& clientIP,
+                 std::string& outKeyHex, bool& rotated) {
+    for (auto& d : cfg.pairedDevices) {
         if (d.id != deviceId) continue;
         outKeyHex = mintPairingKeyHex();
         d.sharedKeyHex = outKeyHex;
         d.lastIP = clientIP;
         d.pairedAt = getCurrentDate();
-        saveConfig(g_config);
+        rotated = true;
         return true;
     }
     return false;
+}
+
+bool refreshDevice(Config& cfg, const std::string& deviceId, const std::string& clientIP,
+                   const std::string& deviceName) {
+    for (auto& d : cfg.pairedDevices) {
+        if (d.id != deviceId) continue;
+        if (d.lastIP == clientIP && d.name == deviceName) return false;
+        d.lastIP = clientIP;
+        d.name = deviceName;
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+void upsertPairedDevice(const std::string& deviceId, const std::string& deviceName,
+                        const std::string& clientIP, const std::string& sharedKeyHex) {
+    PairedDevice dev;
+    dev.id = deviceId;
+    dev.name = deviceName.empty() ? ("Device-" + deviceId.substr(0, 8)) : deviceName;
+    dev.lastIP = clientIP;
+    dev.pairedAt = getCurrentDate();
+    dev.sharedKeyHex = sharedKeyHex;
+    g_configStore->update([&dev](Config& cfg) { return replaceDevice(cfg, dev); });
+}
+
+bool rotatePairedDeviceKey(const std::string& deviceId, const std::string& clientIP,
+                           std::string& outKeyHex) {
+    bool rotated = false;
+    g_configStore->update(
+        [&](Config& cfg) { return rekeyDevice(cfg, deviceId, clientIP, outKeyHex, rotated); });
+    return rotated;
 }
 
 bool confirmPairing(const std::string& deviceId) {
@@ -73,8 +104,8 @@ bool confirmPairing(const std::string& deviceId) {
 bool declinePairing(const std::string& deviceId) { return denyPairRequest(deviceId); }
 
 bool findPairedDevice(const std::string& deviceId, PairedDevice& out) {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    for (const auto& d : g_config.pairedDevices) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    for (const auto& d : cfg->pairedDevices) {
         if (d.id != deviceId) continue;
         out = d;
         return true;
@@ -84,24 +115,12 @@ bool findPairedDevice(const std::string& deviceId, PairedDevice& out) {
 
 void refreshPairedDeviceIdentity(const std::string& deviceId, const std::string& clientIP,
                                  const std::string& deviceName) {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    for (auto& d : g_config.pairedDevices) {
-        if (d.id != deviceId) continue;
-        d.lastIP = clientIP;
-        d.name = deviceName;
-        saveConfig(g_config);
-        return;
-    }
+    g_configStore->update(
+        [&](Config& cfg) { return refreshDevice(cfg, deviceId, clientIP, deviceName); });
 }
 
 bool forgetPairedDevice(const std::string& deviceId) {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    auto& devs = g_config.pairedDevices;
-    const size_t before = devs.size();
-    devs.erase(std::remove_if(devs.begin(), devs.end(),
-                              [&](const PairedDevice& d) { return d.id == deviceId; }),
-               devs.end());
-    const bool removed = devs.size() != before;
-    if (removed) saveConfig(g_config);
+    bool removed = false;
+    g_configStore->update([&](Config& cfg) { return removeDevice(cfg, deviceId, removed); });
     return removed;
 }

@@ -105,6 +105,8 @@ constexpr int MAX_SUBMIT_US = 1'000'000;
 constexpr int MAX_PLUG_MS = 60'000;
 
 constexpr double PUT_AT_SECS = 1.0;
+constexpr auto SAVE_DEADLINE = std::chrono::seconds(5);
+constexpr const char* STALE_NAME_SUFFIX = " (before the rename)";
 constexpr double SSE_PERIOD_SECS = 1.0;
 constexpr double MAINTENANCE_PERIOD_SECS = 0.1;
 constexpr double HEARTBEAT_PERIOD_SECS = 2.0;
@@ -1121,7 +1123,7 @@ struct PutWorker {
     bool applied = false;
     bool saved = false;
     double durationMs = 0.0;
-    double saveMs = 0.0;
+    double refreshMs = 0.0;
 };
 
 bool configSaved() {
@@ -1143,8 +1145,7 @@ void runPut(PutWorker& worker) {
     worker.applied = result.ok && allApplied(result);
     if (worker.applied && worker.savesIdentity) {
         refreshPairedDeviceIdentity(spec.deviceId, spec.clientIp, spec.deviceName);
-        worker.saveMs = nanosToMillis(elapsedNanos(finished, Clock::now()));
-        worker.saved = configSaved();
+        worker.refreshMs = nanosToMillis(elapsedNanos(finished, Clock::now()));
     }
     if (worker.applied) publishSession(worker.dish, result);
 }
@@ -1215,7 +1216,8 @@ constexpr std::array<Scenario, 8> SCENARIOS{{
      true, 0, true, true, true, true, false, false, false, false},
     {"S6",
      "S4 plus dish A as a PlayStation pad with CAP_MIC streaming MSG_MIC_AUDIO (--mic-hz); "
-     "after its upsert dish B's PUT runs refreshPairedDeviceIdentity, which saves the config",
+     "after its upsert dish B's PUT runs refreshPairedDeviceIdentity with a new name, which "
+     "schedules a config save",
      true, 0, true, true, false, false, true, true, false, false},
     {"S7",
      "S5 plus four threads logging 2,000 lines a second each and a reader building the logs "
@@ -1273,7 +1275,7 @@ struct ScenarioResult {
     std::vector<std::string> warnings;
     bool putFired = false;
     double putMs = 0.0;
-    double saveMs = 0.0;
+    double refreshMs = 0.0;
     uint64_t logLines = 0;
     uint64_t reads = 0;
 };
@@ -1391,18 +1393,18 @@ DishPlan planForA(const Options& options, const Scenario& scenario) {
     return DishPlan{"A", 0, rateHz, motionHz, micHz, padType, padCaps, HEARTBEAT_FIRST_A_SECS};
 }
 
-void pairInConfig(const std::vector<std::unique_ptr<DishRun>>& dishes) {
-    std::lock_guard<TrackedMutex> lk(g_configMtx);
-    g_config = Config{};
+void pairInConfig(const std::vector<std::unique_ptr<DishRun>>& dishes, bool staleNames) {
+    Config cfg;
     for (const auto& dish : dishes) {
         PairedDevice device;
         device.id = dish->spec.deviceId;
-        device.name = dish->spec.deviceName;
+        device.name = staleNames ? dish->spec.deviceName + STALE_NAME_SUFFIX : dish->spec.deviceName;
         device.lastIP = dish->spec.clientIp;
         device.pairedAt = getCurrentDate();
         device.sharedKeyHex = hexEncode(dish->spec.pairingKey.data(), dish->spec.pairingKey.size());
-        g_config.pairedDevices.push_back(device);
+        cfg.pairedDevices.push_back(device);
     }
+    g_configStore = std::make_unique<ConfigStore>(std::move(cfg), saveConfig);
 }
 
 void resetLockStats() {
@@ -1457,9 +1459,11 @@ class ScenarioRun {
         service_.setAudioPolicy(audioPolicyFromConfig);
         dishes_.push_back(makeDish(planForA(options, scenario), plan.secs));
         if (scenario.withDishB) dishes_.push_back(makeDish(planForB(options), plan.secs));
-        pairInConfig(dishes_);
+        pairInConfig(dishes_, scenario.withIdentitySave);
         if (scenario.withIdentitySave) std::remove(configPath().c_str());
     }
+
+    ~ScenarioRun() { g_configStore.reset(); }
 
     ScenarioResult execute() {
         ScenarioResult result;
@@ -1594,6 +1598,9 @@ class ScenarioRun {
         receiver_->producersDone.store(true, std::memory_order_release);
         receiverThread_.join();
         for (std::thread& worker : coldThreads_) worker.join();
+        if (put_ != nullptr && put_->savesIdentity) {
+            put_->saved = g_configStore->flush(SAVE_DEADLINE) && configSaved();
+        }
     }
 
     void collect(ScenarioResult& result) const {
@@ -1619,7 +1626,7 @@ class ScenarioRun {
         if (put_ != nullptr) {
             result.putFired = put_->fired;
             result.putMs = put_->durationMs;
-            result.saveMs = put_->saveMs;
+            result.refreshMs = put_->refreshMs;
         }
     }
 
@@ -1694,7 +1701,7 @@ void reportRun(BackendMode backend, const Scenario& scenario, int rep, int reps,
         line += ";";
     }
     if (result.putFired) line += " put " + fixed(result.putMs, 1) + " ms";
-    if (result.saveMs > 0.0) line += " save " + fixed(result.saveMs, 1) + " ms";
+    if (result.refreshMs > 0.0) line += " refresh " + fixed(result.refreshMs, 3) + " ms";
     if (result.logLines != 0) line += " log lines " + std::to_string(result.logLines);
     if (result.reads != 0) line += " reads " + std::to_string(result.reads);
     std::fprintf(stderr, "%s\n", line.c_str());

@@ -144,7 +144,7 @@ infrastructure. `SessionService` needs gamepad, client, and log I/O, so those
 are ports (`IGamepadPort` / `IClientPort` / `ILogPort`); `UpdateService` adds
 `IUpdaterPort`. Configuration is not a port: the core never reads it. The
 webserver and `UpdateService` are themselves adapters/infrastructure and touch
-`g_config` (plus `loadConfig`/`saveConfig`) directly. Inverting that behind a
+`g_configStore` (plus `loadConfig`/`saveConfig`) directly. Inverting that behind a
 port would add a seam with no domain consumer. (An earlier unused `IConfigPort` /
 `ConfigAdapter` pair was removed for exactly this reason.)
 
@@ -251,7 +251,8 @@ table of slots that the cold path publishes to the receive thread (see
 "Thread Safety"). There are no global connection maps or
 serial arrays. The remaining globals are:
 
-- `g_config` / `g_configMtx`: application configuration
+- `g_configStore`: application configuration, published as immutable
+  snapshots (see "Configuration")
 - Atomic telemetry counters (`g_packetCount`, `g_submitOk`, etc.)
 - `satellite::g_wire` (`app/wire_stats.h`): per-message wire counters, all
   incremented off the gamepad hot path (see "Hot-path discipline")
@@ -380,8 +381,8 @@ below are server-internal.
 ### PUT /api/connections (client API)
 
 1. `clientAuthed()`: resolve the paired device by `X-Device-Id`, COPY the
-   `PairedDevice` by value under `g_configMtx` (never hold a pointer across
-   the unlock), verify `X-Hmac-Proof` against the pairing key
+   `PairedDevice` by value out of the current config snapshot, verify
+   `X-Hmac-Proof` against the pairing key
 2. Parse the full descriptor set (`core/json.h`, nlohmann/json)
 3. `svc.upsertSession(...)`: converges topology, rotates token/salt/key,
    derives the session key via the injected HKDF, returns applied state.
@@ -692,6 +693,33 @@ injection retains a pending reconciliation for the maintenance tick. On Windows,
 only the prefix reported inserted by `SendInput` updates the adapter's button
 cache, so a refused release can be retried after the foreground changes.
 
+### Configuration
+
+The config sits behind no lock a reader waits on. `ConfigStore`
+(`core/config_store.h`) publishes it as an immutable
+`std::shared_ptr<const Config>` snapshot, and `g_configStore` holds the one
+store. A reader calls `current()` once and reads what it needs from the
+snapshot: the call copies a pointer under `config.snapshot` and does nothing
+else, and a snapshot someone still holds never blocks anyone. A writer calls
+`update(mutate)`: under `config.write` it copies the current config, runs
+`mutate` on the copy, and publishes the copy only when `mutate` returns true.
+`update` never does I/O, so a writer applies its side effects (the autostart
+registry write, `crash::setEnabled`) after it returns, outside any lock, from
+the snapshot it got back. A mutation that changes nothing, such as
+`refreshPairedDeviceIdentity` on an ordinary reconnect, returns false and
+publishes and saves nothing. The receive thread takes no config lock at all:
+the three audio-policy flags and the UDP port are also published as atomics
+(`audioPolicy()`, `udpPort()`) on every publish.
+
+Saving belongs to the saver thread (`ConfigSaver`). It wakes on a newer
+generation, gives a burst of updates 200 ms to settle, then calls the persist
+function (`saveConfig`) once with the latest snapshot, outside every lock. A
+failed save is retried with a doubling backoff from 250 ms to 30 s and logged
+once per streak. `flush(deadline)` waits until the generation published
+before the call is saved and cuts the 200 ms short; the tray's end-session
+handler flushes with its 2 s deadline. `stop()` runs at shutdown, makes one
+last attempt without backoff and joins.
+
 ### Backend locking
 
 The service gives every adapter behind the port four guarantees, and the
@@ -812,9 +840,9 @@ query made under `mtx_` waits behind a plug.
 ### Lock laws
 
 Every lock the process shares is a `TrackedMutex` (`core/tracked_mutex.h`)
-under a stable name: `service.state`, `service.topology`, `config`, `log`,
-`vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`, `audio.guard`,
-`tray.icon`, `update.state`, `pairing.requests`, `pairing.pin`,
+under a stable name: `service.state`, `service.topology`, `config.snapshot`,
+`config.write`, `log`, `vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`,
+`audio.guard`, `tray.icon`, `update.state`, `pairing.requests`, `pairing.pin`,
 `machine.id`, `uinput.devices` and `machid.devices`. A normal build compiles
 it to a `std::mutex` and a name pointer, and the thread roles and blocking
 markers below to nothing. A build with `SATELLITE_LOCK_STATS` (the lock
@@ -832,14 +860,15 @@ and uinput reader threads), AudioWorker (HIDMaestro speaker and haptic
 drains), Logger, Update, Background (discovery, mDNS, the address watchers,
 the tooltip ticker, the audio guard's poller) and Gui. The HTTP servers' pool
 threads take HttpAdmin or HttpClient per request from each server's
-pre-routing handler. Topology and ConfigSaver are reserved for threads that
-do not exist yet. The markers are `config.save` (every `saveConfig`),
+pre-routing handler. ConfigSaver is the config store's saver thread; Topology
+is reserved for a thread that does not exist yet. The markers are
+`config.save` (every `saveConfig`),
 `log.write` (the file log's write and flush), `helper.pipe` (every HIDMaestro
 helper pipe wait and launch), `tray.shell` (`Shell_NotifyIconW`),
 `audio.com` (the audio guard's COM calls), `backend.lifecycle` (every
 lifecycle call the service makes), `thread.join` (the joins in the receiver,
-the update service and the adapters) and `vigem.pnp` (the ViGEm bus open,
-plug and unplug waits).
+the update service, the config store and the adapters) and `vigem.pnp` (the
+ViGEm bus open, plug and unplug waits).
 
 `tests/test_lock_laws.cpp` runs the real service wired as in production (the
 HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,
@@ -867,12 +896,12 @@ Each list is exactly what today's code does. The test fails when a lock, a
 pair or an edge appears that is not on its list, and also when one on the
 list no longer appears, so a list can only shrink and the change that fixes
 an entry deletes it. Every entry says why it is there. Debt is what later
-changes remove: the receive thread's `service.state`, `config` and `log`,
-the config lock held across its file write, the helper lock held across its
-pipe waits, logging under `service.state` and `service.state` taken under
-`config`. By design is what stays: anything held under `service.topology`,
-which exists to serialize lifecycle work, and the documented order
-`service.topology`, then `service.state`.
+changes remove: the receive thread's `service.state` and `log`, the helper
+lock held across its pipe waits and logging under `service.state`. By design
+is what stays: anything held under `service.topology`, which exists to
+serialize lifecycle work, the documented order `service.topology`, then
+`service.state`, and the config store's own order, `config.write`, then
+`config.snapshot`.
 The test does not reach `tray.shell` or `audio.com`, whose calls act on the
 desktop, or `log.write`, since the file logger is not part of it, so those
 three markers have no entries yet.
@@ -969,9 +998,9 @@ all three of its audio profiles (`dualsense-composite`,
 `controllerAudioMic` and `controllerAudioSpeaker` gate the WIRE instead,
 sampled per frame by `SessionService` through `setAudioPolicy`. That is
 why they reach a stream already playing where the master switch cannot:
-nothing is replugged, only routed. The sample is taken before `mtx_`,
-because the policy itself takes the config lock and the two must never
-nest; the callback slot itself is read unlocked, wired once at startup
+nothing is replugged, only routed. The sample takes no lock, because the
+policy reads atomics the config store refreshes on every publish; the
+callback slot itself is read unlocked, wired once at startup
 like `keyDeriver`/`audioCodecs`, since a backend can fire its speaker
 callback from inside a call that already holds `mtx_`. Absent keys read
 as on, so a config written before the split keeps the behaviour its owner
