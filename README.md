@@ -135,19 +135,21 @@ or re-run the installer for the running version.
 Creating a HIDMaestro virtual device needs administrator rights, and
 Satellite itself runs unelevated. Setup therefore registers the bundled
 `satellite-hm-helper.exe` as the **Satellite Controller Broker** service
-(`SatelliteHmBroker`, LocalSystem, demand-start). When a HIDMaestro
-controller connects, Satellite reaches the broker over a named pipe, the
-broker creates the device and hands the shared-memory handles back, and no
-elevation prompt appears, whether or not anyone is at the PC. The service
-starts on the first connection (Windows' named-pipe service trigger, or
-Satellite starting it directly, which setup permits) and exits after five
-idle minutes, so it costs nothing while no controller is plugged. The broker
-admits only interactive logons and only the installed `satellite.exe`
-beside it; Satellite in turn accepts the pipe only when its server is the
-registered service's process. If the service is missing (installed with
-`/HIDMAESTRO=skip`, or removed by hand), Satellite falls back to spawning the
-helper elevated for the session, which is the one case that still shows a
-UAC prompt. ViGEm-only sessions never involve either path. Signed releases
+(`SatelliteHmBroker`, LocalSystem, demand-start). Satellite reaches the
+broker over a named pipe as soon as it starts, and again after the dashboard
+installs the driver, so the first HIDMaestro controller finds the connection
+ready; the broker creates the device and hands the shared-memory handles
+back, and no elevation prompt appears, whether or not anyone is at the PC.
+The service starts on that first connection (Windows' named-pipe service
+trigger, or Satellite starting it directly, which setup permits), stays up
+while Satellite is connected, and exits after five idle minutes once Satellite
+has gone. The broker admits only interactive logons and only the installed
+`satellite.exe` beside it; Satellite in turn accepts the pipe only when its
+server is the registered service's process. If the service is missing
+(installed with `/HIDMAESTRO=skip`, or removed by hand), Satellite falls back
+to spawning the helper elevated for the session when a HIDMaestro controller
+connects, which is the one case that still shows a UAC prompt. ViGEm-only
+sessions never show one. Signed releases
 additionally carry Windows' UIAccess accessibility flag, so touchpad-as-mouse
 input keeps reaching the foreground window after a game exits; this requires
 the default `Program Files\Satellite` install.
@@ -649,9 +651,9 @@ The receiver runs six long-lived threads on every platform:
 | **mDNS responder** | Advertises `_satellite._udp.local.` on 5353           |
 
 Platforms add small helpers on top: a netlink interface watcher on Linux, an
-address-change watcher and the tray tooltip ticker on Windows. The updater
-and the per-device rumble listeners (see below) run on their own worker
-threads.
+address-change watcher on Windows, where a timer on the main thread's window
+keeps the tray tooltip current. The updater and the per-device rumble
+listeners (see below) run on their own worker threads.
 
 ## Why UDP?
 
