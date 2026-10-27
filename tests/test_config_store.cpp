@@ -33,6 +33,7 @@ constexpr auto SAVE_DELAY = 200ms;
 constexpr auto PROMPT_FLUSH = 150ms;
 constexpr int READER_THREADS = 4;
 constexpr int TORN_WRITES = 20000;
+constexpr uint64_t MIN_OVERLAPPING_READS = 2000;
 constexpr int WRITER_THREADS = 4;
 constexpr int INCREMENTS_PER_WRITER = 500;
 constexpr int FAILED_ATTEMPTS = 2;
@@ -230,8 +231,15 @@ void readCounters(ConfigStore& store, const std::atomic<bool>& stop, ReaderTally
     }
 }
 
-void writeCounters(ConfigStore& store, int count) {
-    for (int value = 1; value <= count; ++value) store.update(SetCounter{value});
+int writeCountersWhileRead(ConfigStore& store, const ReaderTally& tally, int count) {
+    const Clock::time_point giveUp = Clock::now() + SETTLE_LIMIT;
+    int value = 0;
+    while ((value < count || tally.reads.load(std::memory_order_relaxed) < MIN_OVERLAPPING_READS) &&
+           Clock::now() < giveUp) {
+        ++value;
+        store.update(SetCounter{value});
+    }
+    return value;
 }
 
 void incrementCounter(ConfigStore& store, int times) {
@@ -301,16 +309,16 @@ void test_readersNeverSeeATornSnapshot() {
     for (int i = 0; i < READER_THREADS; ++i) {
         readers.emplace_back(readCounters, std::ref(store), std::cref(stop), std::ref(tally));
     }
-    writeCounters(store, TORN_WRITES);
+    const int lastValue = writeCountersWhileRead(store, tally, TORN_WRITES);
     stop.store(true, std::memory_order_release);
     for (std::thread& reader : readers) reader.join();
-    EXPECT(tally.reads.load() > 0);
+    EXPECT(tally.reads.load() >= MIN_OVERLAPPING_READS);
     EXPECT_EQ(tally.torn.load(), uint64_t{0});
-    EXPECT_EQ(store.current()->udpPort, TORN_WRITES);
-    EXPECT_EQ(store.current()->webPort, TORN_WRITES);
+    EXPECT_EQ(store.current()->udpPort, lastValue);
+    EXPECT_EQ(store.current()->webPort, lastValue);
     EXPECT(store.flush(SETTLE_LIMIT));
     EXPECT_EQ(persister.torn(), 0);
-    EXPECT_EQ(persister.lastSaved(), TORN_WRITES);
+    EXPECT_EQ(persister.lastSaved(), lastValue);
 }
 
 void test_concurrentUpdatesAreNeverLost() {
