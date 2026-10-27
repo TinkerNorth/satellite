@@ -133,6 +133,7 @@ void ConfigStore::saverLoop() {
             persistedGeneration_ = saving;
             failures = 0;
             changed_.notify_all();
+            if (finalAttempt) break;
             continue;
         }
         ++failures;

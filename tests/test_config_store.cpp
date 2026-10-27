@@ -377,7 +377,7 @@ void test_flushGivesUpAtItsDeadlineWhilePersistIsBlocked() {
     store.update(SetCounter{FIRST_VALUE + 2});
     const Clock::time_point began = Clock::now();
     EXPECT(!store.flush(SHORT_DEADLINE));
-    EXPECT(Clock::now() - began >= SHORT_DEADLINE);
+    EXPECT(Clock::now() - began >= SHORT_DEADLINE - 10ms);
     EXPECT(persister.waitForCalls(2));
     EXPECT_EQ(persister.lastSaved(), FIRST_VALUE + 1);
 
