@@ -1030,5 +1030,7 @@ Version history:
 - 404 unknown resource (or a session that isn't yours).
 - 409 protocol version mismatch.
 - 503 shutting down; retry later.
+- 503 `{"error":"tooManySessions"}` from `PUT /api/connections` when the host already
+  holds 32 sessions and the caller has none of them; retry later.
 - Per-controller failures are 200s with per-controller result codes (partial success
   is normal, not an error).

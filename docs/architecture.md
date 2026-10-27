@@ -216,7 +216,6 @@ struct Controller {
     uint8_t  controllerType;     // device family actually plugged
     uint16_t caps;               // CAP_* word from the descriptor
     uint8_t  touchpadMode;       // per-slot routing (client-owned)
-    GamepadReport lastReport{};
 };
 
 struct Connection {
@@ -224,22 +223,32 @@ struct Connection {
     uint32_t    token = 0;       // rotates on every session PUT
     std::string deviceId;
     std::string deviceName;
-    uint8_t     sessionKey[32];  // HKDF(pairingKey, salt, token)
+    HotSlot*    hot = nullptr;   // the receive thread's view (core/hot_table.h)
+    int         slot = -1;       // index of `hot` in the service's hot table
+    std::string clientIP;        // the address the PUT came from
+    uint8_t     sessionKey[32];  // HKDF(pairingKey, salt, token); senders' copy
     uint8_t     sessionSalt[8];
-    uint32_t    lastCounter = 0; // replay protection (client → server)
     uint16_t    epoch = 0;       // bumps on every applied-topology change
-    std::chrono::steady_clock::time_point lastPacketTime;
     std::chrono::steady_clock::time_point graceUntil; // REST-open liveness grace
     std::array<Controller, 16> controllers;
     bool mouseControlGranted = false;
 };
 ```
 
+What the gamepad path needs per datagram is not in `Connection`: the
+replay counter, the last-packet time and the client's address live in
+the session's `HotSlot`, next to a published copy of the token, the key
+and one word per controller (see "Thread Safety"). The dashboard shows
+the slot's address once a datagram has taught it one, and the PUT's
+address until then.
+
 ### State Ownership
 
-All connection and controller state is owned by `SessionService` behind
-a single `std::mutex`. There are no global connection maps or serial
-arrays. The remaining globals are:
+All connection and controller state is owned by `SessionService`: the
+cold state behind a single `std::mutex`, and the per-session state the
+gamepad path reads in a fixed table of slots that the cold path
+publishes to the receive thread. There are no global connection maps or
+serial arrays. The remaining globals are:
 
 - `g_config` / `g_configMtx`: application configuration
 - Atomic telemetry counters (`g_packetCount`, `g_submitOk`, etc.)
@@ -262,7 +271,7 @@ recvfrom()
   ├─ n < 28 → drop (too small for header+inner+tag) [g_wire.rxRunt]
   │
   ├─ Extract token (bytes 0-3), counter (bytes 4-7)
-  │  └─ svc.getDecryptInfo(token) → not found → drop [g_wire.rxUnknownToken]
+  │  └─ svc.getDecryptInfo(token) → not found, or mid-change → drop [g_wire.rxUnknownToken]
   │  └─ counter <= lastCounter → drop (replay) [g_replayDrop]
   │
   ├─ Decrypt (ChaCha20-Poly1305)
@@ -289,27 +298,46 @@ stretch of such datagrams begins (with the sender's address) and one when
 it has been quiet for the reaper's horizon (with how many were dropped).
 A dish still sending to a session from before a Satellite restart, or to
 one the reaper removed, therefore shows up in the log and not only on the
-diagnostics page.
+diagnostics page. A session whose own topology is changing lands here too
+for the length of the change (see "A session during its own change"), so
+a stretch can open and close around a slow plug.
 
 ### Hot-path discipline
 
 The gamepad packet path runs at controller-polling rate, so the receive
-loop is kept allocation-free and minimally locked. If you touch
-`receiver.cpp` or `SessionService::handleGamepadDataAndUpdate`, preserve:
+loop is kept allocation-free and takes no lock. If you touch
+`receiver.cpp`, `core/hot_table.h` or the `SessionService` hot functions,
+preserve:
 
 - No heap on the hot path. `recvfrom` writes into a stack buffer, and
   decryption runs in place (`ciphertext == plaintext`, relying on
   libsodium's overlapping src/dst support), so the plaintext reuses the
   ciphertext bytes minus the 16-byte tag.
-- One lock for gamepad packets. A gamepad packet takes exactly one
-  `SessionService` mutex acquisition via `handleGamepadDataAndUpdate`
-  (decrypt-info lookup, post-decrypt update, and apply fused). Cold paths
-  (motion, touchpad, heartbeat, controller add/remove) still take two
-  locks; they're rare enough that fusing them isn't worth the API churn.
-- No per-packet string work. The sender's IPv4 address is threaded
-  down as a `uint32` in network byte order; `SessionService` refreshes
-  the human-readable cache only when the numeric address changes (no
-  `inet_ntop` / `std::string` allocation per packet).
+- No lock for gamepad packets, and no atomic read-modify-write inside
+  `SessionService` (the receiver's own telemetry counters are the only
+  ones on the path). `getDecryptInfo` and `handleGamepadDataAndUpdate`
+  read the session's slot in the hot table, never `connections_`, so a
+  gamepad frame does not touch `mtx_` whatever the cold path is doing.
+  Per frame that is a
+  scan of the packed tokens, two seqlock reads of a few words, two plain
+  stores to the receive epoch, two to the slot (counter and time), and
+  the submit. The receive side runs no fence on Windows or Linux: the
+  cold side pays for the barrier instead (see "Grace"). Where no process
+  barrier is injected (macOS, every test, the bench) the receive thread
+  runs one full fence per frame.
+- One receive thread. `getDecryptInfo`, `handleGamepadDataAndUpdate`,
+  `handleGamepadData`, `updatePostDecryptV4` and `updatePostDecrypt` may
+  be called by exactly one thread: the receive epoch and the slot fields
+  that thread owns have a single writer. In production that thread is the
+  receiver; a test plays it.
+- A refused frame is dropped, never retried. A failed seqlock read means
+  the session is changing under the frame; the call returns false and
+  the receiver counts the drop like any other. Nothing on the frame path
+  spins or waits.
+- No per-packet string work. The sender's IPv4 address and port are
+  packed into one 64-bit word and stored only when they change; the
+  dashboard formats the string when it asks, once a second, under the
+  cold lock.
 - Lock-free loop telemetry. `g_maxLoopUs` uses a thread-local
   high-water-mark so the atomic CAS loop is skipped on the ~99% of
   packets below the running per-second peak. Because that mark never
@@ -325,7 +353,11 @@ loop is kept allocation-free and minimally locked. If you touch
 
 The conceptual pipeline above lists `getDecryptInfo` /
 `updatePostDecrypt` / `handleGamepadData` as distinct steps; on the
-gamepad hot path these are the single fused call.
+gamepad hot path the last two are the single fused call, and every other
+message records its datagram through `updatePostDecryptV4` before it is
+dispatched. Those other messages (motion, touchpad, battery, mic audio,
+the heartbeat) are still handled under `mtx_` on the receive thread; see
+the follow-ups under "Thread Safety".
 
 ### Reaper
 
@@ -352,7 +384,9 @@ below are server-internal.
 
 The session upsert succeeds independently of ViGEm. Per-controller
 failures (`backendUnavailable`, `noSlots`, …) ride in the response body;
-partial success is normal, not an HTTP error.
+partial success is normal, not an HTTP error. The one refusal is the
+session cap: with every hot-table slot taken, a device without a session
+gets 503 `{"error":"tooManySessions"}` (see "Session cap").
 
 ### DELETE /api/connections/:id
 
@@ -368,9 +402,184 @@ status, so the caller needs no locking.
 
 ## Thread Safety
 
-Both the receiver and HTTP threads call into `SessionService`, which
-protects all connection/controller state with a single `std::mutex`.
-Driver lifecycle work can hold that mutex while joining backend workers.
+Two paths reach `SessionService`. The receive thread runs the frame path
+described under "Hot-path discipline". Everything else is the cold path:
+the HTTP threads (PUT, DELETE, snapshots), the maintenance thread
+(rumble tick, reaper), backend callbacks, and the receive thread itself
+for every non-gamepad message. The cold path serializes on one
+`std::mutex` (`mtx_`), which owns `connections_`, the serial pool and
+every controller field. The two paths share state only through the hot
+table, and the cold path can hold `mtx_` for as long as Plug and Play
+takes without the frame path noticing.
+
+### The hot table
+
+`core/hot_table.h` holds `MAX_SESSIONS` (32) fixed slots and a packed
+array of their tokens. A session takes a slot at its first PUT and keeps
+it, across re-PUTs, until teardown. The receive thread finds a token by
+scanning the packed array (128 bytes, two cache lines) and never touches
+a `Connection`. Each `HotSlot` is two parts, each starting on a cache
+line of its own, so the stores the receive thread makes every frame
+never share a line with the published fields it reads.
+
+Published: written only by the cold path, under `mtx_`, inside a seqlock
+write; read by the receive thread.
+
+| Field | Meaning |
+| --- | --- |
+| `gen` | Seqlock generation: even is stable, odd is being changed. |
+| `token` | The session's current token; 0 in a free slot. |
+| `keyEpoch` | Bumps on every key or token change (allocation, re-PUT), never on a topology-only change. |
+| `key[4]` | The 32-byte session key, as four words. |
+| `ctrl[16]` | One word per controller index: bit 31 is active, the low 8 bits the backend serial. |
+
+Receive-owned: written by the receive thread, read by the cold path with
+acquire loads.
+
+| Field | Meaning |
+| --- | --- |
+| `replayKeyEpoch` | The `keyEpoch` the replay state belongs to. Equal to `keyEpoch` once the current key has carried a datagram; until then `getDecryptInfo` reports no counter seen. |
+| `lastCounter` | The last accepted counter under that key. |
+| `lastPacketTicks` | `steady_clock` time of the last authenticated datagram, for link state and the reaper. |
+| `clientAddr` | The last datagram's IPv4 address (network order) shifted left 16 and or'ed with its port. 0 is unknown, and a send to it counts as unroutable. |
+| `feedbackPending` | Set by the first datagram under a key; the maintenance tick takes it (see "First datagram"). |
+| `txCounter` | The server-to-client nonce counter. Senders increment it under `mtx_`; a new key resets it, so the first send under it goes out as counter 1. |
+
+### Seqlock
+
+A cold write, with `mtx_` held:
+
+```cpp
+gen.fetch_add(1, std::memory_order_acq_rel);         // odd: readers refuse the slot
+std::atomic_thread_fence(std::memory_order_release);
+/* relaxed stores to the published fields */
+gen.fetch_add(1, std::memory_order_release);          // even: the new state, whole
+```
+
+A read, on the receive thread:
+
+```cpp
+g1 = gen.load(std::memory_order_acquire);             // odd: refuse
+/* relaxed loads of the fields this call needs */
+std::atomic_thread_fence(std::memory_order_acquire);
+g2 = gen.load(std::memory_order_relaxed);             // g1 != g2: refuse
+/* and the loaded token must be the token looked up */
+```
+
+A refused read drops the frame. The reader never retries, so no writer
+can starve it and it can never spin. The release fence after the opening
+increment is what keeps a reader that loaded a new field from also
+loading the old even generation; the increment alone does not order the
+stores that follow it on every architecture.
+
+### Grace
+
+A frame can pass its seqlock read just before a cold operation opens a
+write, then spend 15 µs in `submitReport` on a serial that operation is
+about to unplug. The receive epoch (`RxEpoch`) closes that window. The
+receive thread brackets every call that may submit or record a datagram:
+
+```cpp
+enter(): epoch = e + 1 (odd, release); compiler barrier; full fence only if no barrier was injected
+exit():  compiler barrier; epoch = e + 2 (even, release)
+```
+
+and every cold write waits for it straight after making the generation
+odd:
+
+```cpp
+waitQuiescent(): process barrier (or a full fence); e = epoch (acquire);
+                 if e is odd, yield until epoch != e
+```
+
+It is Dekker's pattern. The cold side stores the odd generation and then
+loads the epoch; the receive side stores the odd epoch and then loads
+the generation. With a full barrier between each side's store and load,
+at least one sees the other: either the cold side sees the frame in
+progress and waits for it to leave, or the frame sees the odd generation
+and refuses itself. Waiting for the epoch to change rather than to turn
+even means a steady stream of frames cannot starve the wait. The enter
+store is a release so that a cold thread that next sees a later frame's
+entry still synchronizes with the earlier frame's exit.
+
+The barrier is asymmetric because the two sides run at very different
+rates: the receive thread enters thousands of times a second, the cold
+side waits a few times a minute. `FlushProcessWriteBuffers` (Windows)
+and `membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED)` (Linux, registered at
+startup) interrupt every processor running a thread of the process and
+drain its store buffer, which makes the receive thread's plain epoch
+store as good as fenced at the one moment the cold side needs it, so
+the receive side gets by with a compiler barrier. The platform mains pass
+the function as the last `SessionService` constructor argument
+(`ProcessBarrierFn`, from `platform/windows/process_barrier.h` and
+`platform/linux/process_barrier.h`); core includes neither header. Where
+none is passed (macOS, a kernel that refuses the membarrier
+registration, every test, the bench) the receive thread pays one full
+fence per frame instead.
+
+### The rules
+
+- Exactly one thread calls the hot functions (see "Hot-path discipline").
+- Cold code never touches a published field outside a seqlock write, and
+  every seqlock write starts with the grace wait.
+- Cold code never writes a receive-owned field, with one exception and
+  two hand-offs. The exception: a new key (allocation or re-PUT) re-seeds
+  `clientAddr` to 0, `lastPacketTicks` to the PUT, `feedbackPending` and
+  `txCounter`, inside the seqlock write, after the grace wait, where no
+  frame can be writing them. That is what makes a send before the new
+  key's first datagram unroutable, as the address the old token learned
+  is no longer valid, and what keeps a fresh session from inheriting its
+  slot's previous liveness. The hand-offs: senders increment `txCounter`
+  under `mtx_`, and the maintenance tick takes `feedbackPending` with an
+  exchange. (The test seam `backdateForTest` also writes
+  `lastPacketTicks`, standing in for a receive thread that went quiet.)
+- The receive thread writes a slot only after a successful read and
+  inside its bracket, so a datagram that arrives mid-change is never
+  recorded into the slot's next owner. `getDecryptInfo` writes nothing
+  and needs no bracket.
+- Every operation that changes a slot's published fields or a serial's
+  owner keeps one order, under `mtx_`: open the seqlock write
+  (generation odd), wait for grace, do the backend work (plug, unplug,
+  transactional replug: this is where Plug and Play waits, and the
+  receive thread is not waiting with it), store the new published
+  fields, close the write. `upsertSession` wraps the whole converge, key
+  rotation included; `applyController`, `removeController` and teardown
+  (close, kick, unpair, reap, shutdown) do the same. A PUT stores the
+  session's packed token last, once the write has closed (a re-PUT
+  replaces the old token there); a session being torn down has its
+  packed token cleared first, before the write opens.
+
+### A session during its own change
+
+The slot's generation is odd from the start of a change to its end, so
+that session's own datagrams are refused for the whole change: a PUT that
+waits 200 ms for Plug and Play drops 200 ms of that session's input (a
+re-PUT rotates the token anyway, so its old-token frames had no future).
+The receiver counts them as unknown-token drops. Every other session's
+frames keep flowing, and so does the receive thread: a refused datagram
+never reaches a handler that takes `mtx_`.
+
+### First datagram
+
+The first datagram under a new key is the first moment its client can be
+reached. The receive thread cannot send from the frame path, so it sets
+`feedbackPending` (after the address, so the flag never runs ahead of
+it); the maintenance tick, every 100 ms and already under `mtx_`, takes
+the flag and resends the pads' light bar, trigger effects and player
+LEDs. The resend reaches the client up to 100 ms after its first datagram
+rather than with it.
+
+### Session cap
+
+The table is fixed at `MAX_SESSIONS` (32) sessions. A PUT for a device
+with no session, while every slot is taken, is refused before anything
+is created: `upsertSession` returns `tooManySessions`, and
+`PUT /api/connections` answers 503 with `{"error":"tooManySessions"}`. A
+re-PUT from a device that has a session keeps its slot.
+
+### The rest of the cold path
+
+Driver lifecycle work can hold `mtx_` while joining backend workers.
 Rumble callbacks first publish the latest motor state and duration into a
 fixed atomic slot per backend serial, then try to acquire the service lock.
 The maintenance tick drains pending state before refreshing held rumble, so
@@ -393,6 +602,29 @@ held across the whole submit — the guarded section is a seqlock memcpy
 into a mapped view, so there is no blocking syscall worth dropping the
 lock for and no unplug can unmap a view mid-write). `GamepadMux` itself
 adds no lock: per-serial owners are atomics written at plug/unplug time.
+Since the frame path no longer takes `mtx_`, `submitReport` runs
+concurrently with plugs and unplugs of other serials, serialized only by
+each adapter's own lock; ViGEm and HIDMaestro hold theirs across a plug,
+so on those backends a slow plug can still delay another session's
+submit inside the adapter.
+
+### Follow-ups
+
+Not done yet:
+
+- Motion, touchpad, battery, mic audio and the heartbeat still take
+  `mtx_` on the receive thread, so one of them arriving while a cold
+  operation holds the lock stalls the receive thread, and every session's
+  frames behind it, for the rest of that operation.
+- Per-slot adapter locks, so that a plug in ViGEm or HIDMaestro stops
+  serializing every other serial's submit.
+- Coalescing of queued frames: after a stall the receive thread replays
+  the backlog frame by frame instead of skipping to each pad's newest
+  report.
+- A sliding replay window: the replay check is a single high-water mark,
+  so a datagram reordered on the network is dropped as a replay.
+- Per-session sockets: every session shares one socket and one receive
+  thread.
 
 ## Windows second backend: HIDMaestro (user-mode UMDF2, plus one kernel transport for audio)
 
