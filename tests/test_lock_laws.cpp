@@ -7,6 +7,7 @@
 #include "app/audio_settings.h"
 #include "core/byte_order.h"
 #include "core/config_effects.h"
+#include "core/event_broadcaster.h"
 #include "core/hex.h"
 #include "core/json.h"
 #include "core/log_writer.h"
@@ -123,6 +124,8 @@ constexpr auto RECEIVE_TICK = std::chrono::microseconds(500);
 constexpr auto COLD_TICK = std::chrono::milliseconds(4);
 constexpr auto WORKER_TICK = std::chrono::milliseconds(2);
 constexpr auto PLUG_TIME = std::chrono::milliseconds(2);
+constexpr auto DASHBOARD_TICK = std::chrono::milliseconds(5);
+constexpr size_t DASHBOARD_STREAMS = 2;
 constexpr auto WAIT_LIMIT = std::chrono::seconds(60);
 constexpr int REAP_SILENCE_SEC = 60;
 constexpr uint32_t MOTION_EVERY = 2;
@@ -685,6 +688,7 @@ struct ColdTally {
     std::atomic<int> reaped{0};
     std::atomic<int> snapshots{0};
     std::atomic<int> feedback{0};
+    std::atomic<int> dashboardFrames{0};
 };
 
 using ColdRound = std::function<void(int round, ColdTally& tally)>;
@@ -700,6 +704,12 @@ void runAdmin(SessionService& svc, SettingsProbe& settings, const std::atomic<bo
         settings.post();
         std::this_thread::sleep_for(COLD_TICK);
     }
+}
+
+void runViewer(satellite::EventBroadcaster& dashboard, ColdTally& tally) {
+    ScopedThreadRole role(ThreadRole::HttpAdmin);
+    const std::unique_ptr<satellite::EventBroadcaster::Subscription> stream = dashboard.subscribe();
+    while (stream && stream->next()) tally.dashboardFrames++;
 }
 
 void runMaintenance(SessionService& svc, const std::atomic<bool>& stop, ColdTally& tally) {
@@ -737,6 +747,13 @@ class LawRun {
         std::thread maintenance([&] { runMaintenance(svc_, stop, tally_); });
         std::thread feedback;
         if (tickFeedback) feedback = std::thread([&] { runFeedback(tickFeedback, stop, tally_); });
+        satellite::EventBroadcaster dashboard(
+            [this] { return buildConnectionsJson(svc_) + buildDevicesJson(svc_); },
+            satellite::EventBroadcasterOptions{DASHBOARD_STREAMS, DASHBOARD_TICK, true});
+        std::vector<std::thread> viewers;
+        for (size_t i = 0; i < DASHBOARD_STREAMS; ++i) {
+            viewers.emplace_back([&] { runViewer(dashboard, tally_); });
+        }
         {
             ScopedThreadRole role(ThreadRole::HttpClient);
             for (int round = 0; round < COLD_ROUNDS; ++round) {
@@ -750,6 +767,8 @@ class LawRun {
         maintenance.join();
         admin.join();
         receive.join();
+        dashboard.close();
+        for (std::thread& viewer : viewers) viewer.join();
     }
 
     const ReceiveDriver& receiver() const { return receiver_; }
@@ -787,6 +806,8 @@ void expectTheRunReachedEverything(const std::string& phase, const LawRun& run, 
     TEST(phase + ": the settings route applied its effects, each holding only config.effects");
     EXPECT(run.settings().applied() > 0);
     EXPECT_EQ(run.settings().wrongHolds(), 0);
+    TEST(phase + ": the dashboard streams were fed frames by the broadcaster");
+    EXPECT(run.tally().dashboardFrames.load() > 0);
 }
 
 void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& sandbox,
@@ -1282,6 +1303,16 @@ void checkTheOrderLaw(const lockstats::Snapshot& snap) {
     }
 }
 
+void checkTheDashboardLaw(const lockstats::Snapshot& snap) {
+    TEST("dashboard law: the broadcaster built its ticks on the Background role, and the streams "
+         "took its frame lock on the HttpAdmin role");
+    const lockstats::LockStats* state = snap.find("service.state");
+    EXPECT(state != nullptr && state->role(ThreadRole::Background).acquisitions > 0);
+    const lockstats::LockStats* frame = snap.find("events.broadcast");
+    EXPECT(frame != nullptr && frame->role(ThreadRole::Background).acquisitions > 0);
+    EXPECT(frame != nullptr && frame->role(ThreadRole::HttpAdmin).acquisitions > 0);
+}
+
 void expectTheRoleTakesNoLock(const lockstats::Snapshot& snap, ThreadRole role, const char* law,
                               const std::string& name) {
     TEST(name);
@@ -1430,6 +1461,7 @@ int main() {
     checkTheLifecycleLaw(watch, snap);
     checkTheBlockingLaw(snap);
     checkTheOrderLaw(snap);
+    checkTheDashboardLaw(snap);
     checkTheLoggerLaw(snap);
     checkThePointerLaw(snap, calls.mouse);
     checkTheMicLaw(snap, calls.mic);

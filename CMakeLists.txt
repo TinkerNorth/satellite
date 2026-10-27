@@ -138,6 +138,7 @@ set(SATELLITE_CORE_SOURCES
     src/core/network_info.cpp
     src/core/crash_reporting.cpp
     src/core/log_writer.cpp
+    src/core/event_broadcaster.cpp
 )
 
 # Currently-shared infrastructure (to be ported to POSIX in Stage 3).
@@ -149,6 +150,7 @@ set(SATELLITE_NET_SOURCES
     src/net/webserver.cpp
     src/net/routes_common.cpp
     src/net/routes_admin.cpp
+    src/net/event_stream.cpp
     src/net/admin_json.cpp
     src/net/routes_client.cpp
     src/net/tls.cpp
@@ -1177,6 +1179,13 @@ target_link_libraries(test_config_effects PRIVATE Threads::Threads)
 satellite_add_pure_test(test_config_effects_plain tests/test_config_effects.cpp
                         src/core/config_store.cpp)
 target_link_libraries(test_config_effects_plain PRIVATE Threads::Threads)
+satellite_add_pure_test(test_event_broadcaster tests/test_event_broadcaster.cpp
+                        src/core/event_broadcaster.cpp)
+target_compile_definitions(test_event_broadcaster PRIVATE SATELLITE_LOCK_STATS)
+target_link_libraries(test_event_broadcaster PRIVATE Threads::Threads)
+satellite_add_pure_test(test_event_broadcaster_plain tests/test_event_broadcaster.cpp
+                        src/core/event_broadcaster.cpp)
+target_link_libraries(test_event_broadcaster_plain PRIVATE Threads::Threads)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)
@@ -1438,6 +1447,7 @@ endif()
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SATELLITE_ROUTE_TEST_COMMON_SOURCES
         src/net/routes_common.cpp
+        src/net/event_stream.cpp
         src/net/admin_json.cpp
         src/net/pairing.cpp
         src/net/pairing_keys.cpp
@@ -1545,6 +1555,15 @@ target_link_libraries(test_httplib_idle PRIVATE Threads::Threads)
 if(WIN32)
     target_compile_definitions(test_httplib_idle PRIVATE _WIN32_WINNT=0x0A00)
     target_link_libraries(test_httplib_idle PRIVATE ws2_32 winmm)
+endif()
+
+satellite_add_pure_test(test_event_stream tests/test_event_stream.cpp
+                        src/net/event_stream.cpp src/core/event_broadcaster.cpp)
+target_compile_definitions(test_event_stream PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+target_link_libraries(test_event_stream PRIVATE Threads::Threads)
+if(WIN32)
+    target_compile_definitions(test_event_stream PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries(test_event_stream PRIVATE ws2_32)
 endif()
 
 # UpdateService spawns worker/timer threads, so this suite needs pthreads on

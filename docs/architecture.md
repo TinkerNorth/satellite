@@ -419,6 +419,27 @@ sends the encrypted 0x000F before teardown.
 connections, controllers (with adapter-truth `pluggedIn`), and backend
 status, so the caller needs no locking.
 
+### GET /api/events (admin)
+
+The dashboard's stream used to build its snapshot on its own pool thread,
+once a second per open tab, and each build took `service.state` and a config
+snapshot. `EventBroadcaster` (`core/event_broadcaster.h`) now builds the tick
+once a second on one thread with the Background role, holding no lock, and
+publishes it as an immutable frame under a generation number. A stream
+(`net/event_stream.cpp`) waits on its subscription for a generation newer than
+the one it last wrote and writes the shared frame, so a stream held up by a
+slow client wakes to the latest frame and skips the ones it missed, and the
+broadcaster never waits for a stream. The thread runs only while a stream is
+attached: the first stream after an idle spell waits for a fresh build rather
+than being handed the last one, and a stream that joins mid-flow is handed the
+current frame at once. At most 8 streams run at once; a ninth `GET` gets 503
+`{"error":"too many event streams"}`, which the dashboard answers by retrying
+after 2 s. The broadcaster's one lock, `events.broadcast`, guards the frame and
+the count and nests with nothing. The route also replaces the server's task
+queue, so that the server stopping closes the broadcaster and wakes every
+waiting stream; `listen` would otherwise wait for streams that have no reason
+to end.
+
 ### Idle wakeups
 
 httplib's accept loop waits on its listening socket with a timeout, and on
@@ -449,7 +470,8 @@ hands what it cannot finish in place to a pointer thread and a mic
 worker, and the backend's audio workers encode and send controller audio
 the same way, taking `mtx_` only to mix a haptic window into rumble.
 Everything else is the cold path: the HTTP threads (PUT, DELETE,
-snapshots), the maintenance thread (rumble tick, reaper) and backend
+snapshots), the dashboard broadcaster (the snapshot its event streams
+share), the maintenance thread (rumble tick, reaper) and backend
 callbacks. The cold path's state lock is a mutex (`mtx_`), which owns
 `connections_`, the serial pool and every controller field; a second one
 (`topoMtx_`) serializes topology changes from start to finish. The two
@@ -469,7 +491,7 @@ exactly one thread that writes it.
 | Pointer (`core/pointer_worker.cpp`) | All pointer state: per serial, the held buttons, the last touchpad sample and the sub-pixel remainder; per session, the refusal run and its log lines; and the retry a refused injection leaves. It is the only caller of `submitRelativeMouse`. | No lock |
 | Mic (`core/mic_worker.cpp`) | Per serial, the reorder window and the Opus decoder, with its FEC and concealment; per session, the missing-endpoint log line. It is the only caller of `submitMicAudioPcm`. | No lock |
 | Backend audio workers (HIDMaestro's speaker and haptic drains, one per pad and lane) | Per serial and lane, the outbound lane: its encoder, its partial window and its `seq` (`speakerLanes_`, `hapticLanes_`). | `mtx_`, only to mix a haptic window into rumble |
-| Cold: HTTP, maintenance, backend callbacks | The cold state, under `mtx_`; topology changes, under `topoMtx_`. | `topoMtx_`, `mtx_` |
+| Cold: HTTP, maintenance, backend callbacks, the dashboard broadcaster | The cold state, under `mtx_`; topology changes, under `topoMtx_`. | `topoMtx_`, `mtx_` |
 
 The receive thread reaches the pointer thread through a single-producer
 ring of mouse-mode touchpad frames, and the mic worker through a
@@ -1035,9 +1057,10 @@ query made under `mtx_` waits behind a plug.
 
 Every lock the process shares is a `TrackedMutex` (`core/tracked_mutex.h`)
 under a stable name: `service.state`, `service.topology`, `config.snapshot`,
-`config.write`, `config.effects`, `vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`,
-`audio.guard`, `tray.icon`, `update.state`, `pairing.requests`, `pairing.pin`,
-`machine.id`, `uinput.devices` and `machid.devices`. Logging takes none (see
+`config.write`, `config.effects`, `events.broadcast`, `vigem.bus`,
+`hidmaestro.bus`, `hidmaestro.helper`, `audio.guard`, `tray.icon`,
+`update.state`, `pairing.requests`, `pairing.pin`, `machine.id`,
+`uinput.devices` and `machid.devices`. Logging takes none (see
 "Logging Infrastructure"). A normal build compiles it to a `std::mutex` and a
 name pointer, and the thread roles and blocking markers below to nothing. A
 build with `SATELLITE_LOCK_STATS` (the lock tests and
@@ -1054,18 +1077,19 @@ Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output and
 uinput reader threads), AudioWorker (HIDMaestro speaker and haptic drains),
 Logger, Pointer (the service's pointer thread), Mic (its mic worker), Update,
 Background (discovery, mDNS, the address watchers, the tooltip ticker, the
-audio guard's poller) and Gui. The HTTP servers' pool threads take
-HttpAdmin or HttpClient per request from each server's pre-routing handler.
-ConfigSaver is the config store's saver thread; Topology is reserved for a
-thread that does not exist yet. The markers are `config.save` (every
-`saveConfig`), `autostart.write` (the autostart registration), `crash.toggle`
+audio guard's poller, the dashboard broadcaster) and Gui. The HTTP servers'
+pool threads take HttpAdmin or HttpClient per request from each server's
+pre-routing handler. ConfigSaver is the config store's saver thread; Topology
+is reserved for a thread that does not exist yet. The markers are
+`config.save` (every `saveConfig`), `autostart.write` (the autostart
+registration), `crash.toggle`
 (the crash SDK's arm and disarm), `log.write` (the log writer's sink write and
-flush),
-`helper.pipe` (every HIDMaestro helper pipe wait and launch), `tray.shell`
-(`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls),
+flush), `helper.pipe` (every HIDMaestro helper pipe wait and launch),
+`tray.shell` (`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls),
 `backend.lifecycle` (every lifecycle call the service makes), `thread.join`
-(the joins in the receiver, the update service, the config store and the
-adapters) and `vigem.pnp` (the ViGEm bus open, plug and unplug waits).
+(the joins in the receiver, the update service, the config store, the
+dashboard broadcaster and the adapters) and `vigem.pnp` (the ViGEm bus open,
+plug and unplug waits).
 
 `tests/test_lock_laws.cpp` runs the real service wired as in production (the
 HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,
@@ -1075,7 +1099,8 @@ message kind through the steps of `receiver.cpp` and `inner_dispatch.cpp`
 while HttpClient, HttpAdmin, Maintenance and BackendWorker threads run upserts
 that plug and unplug, single-controller applies and removes, closes, unpairs,
 reaps, the dashboard JSON builders, the pairing service's config writes and the
-settings route's (a config update, then its effects).
+settings route's (a config update, then its effects). A dashboard broadcaster
+builds the same JSON for two streams on HttpAdmin threads.
 The service's pointer thread and mic worker take the mouse-mode touchpad
 frames and the mic packets the receive thread hands them, and the mock
 backend counts, by thread role, who injected each mouse report and who
@@ -1574,6 +1599,7 @@ no longer hang the handler, as it could while `logMsg` took a mutex.
   ring still holds, oldest first, and the `seq` to send as N next time
 - SSE stream (`GET /api/events`, admin) multiplexes six event types
   (`status`, `connections`, `devices`, `update`, `pin`, `pairRequests`)
-  pushed every second; `status` includes `logSeq` so the frontend knows
-  when new logs are available without polling the log endpoint
+  pushed every second, built once by the broadcaster whatever the number of
+  streams (see "GET /api/events"); `status` includes `logSeq` so the frontend
+  knows when new logs are available without polling the log endpoint
 

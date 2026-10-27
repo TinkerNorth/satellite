@@ -5,6 +5,7 @@
 // builders used only by this surface stay file-static.
 #include "routes_admin.h"
 #include "admin_json.h"
+#include "event_stream.h"
 #include "routes_common.h"
 #include "crypto.h"
 #include "config.h"
@@ -13,6 +14,7 @@
 #include "adapters/crash_adapter.h"
 #include "core/config_effects.h"
 #include "core/config_patch.h"
+#include "core/event_broadcaster.h"
 #include "core/json.h"
 #include "core/session_service.h"
 #include "core/tracked_mutex.h"
@@ -27,6 +29,7 @@
 #include "status_json.h"
 
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 using satellite::applyConfigPatch;
@@ -38,12 +41,14 @@ using satellite::ConfigEffects;
 using satellite::ConfigEffectSinks;
 using satellite::configPatchLogLine;
 using satellite::ConfigPatchOutcome;
+using satellite::EventBroadcaster;
 using satellite::Json;
 using satellite::jsonBool;
 using satellite::jsonDump;
 using satellite::JsonOut;
 using satellite::jsonStr;
 using satellite::senderIpLabel;
+using satellite::serveEventStreams;
 using satellite::sseEvent;
 using satellite::StatusFields;
 
@@ -489,30 +494,11 @@ static std::string sseTick(SessionService& svc) {
     return frame;
 }
 
-// One tick a second until the client goes away or the app shuts down.
-static bool streamEvents(SessionService& svc, httplib::DataSink& sink) {
-    while (g_appRunning) {
-        const std::string frame = sseTick(svc);
-        if (!sink.write(frame.c_str(), frame.size())) return false;
-        for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);
-    }
-    return false;
-}
-
-// SSE: one stream multiplexes status/connections/devices/update/pin/
-// pairRequests events.
-static void eventsRoute(SessionService& svc, const Request&, Response& res) {
-    res.set_header(CACHE_CONTROL, NO_CACHE);
-    res.set_header("X-Accel-Buffering", "no");
-    res.set_chunked_content_provider(
-        "text/event-stream",
-        [&svc](size_t /*offset*/, httplib::DataSink& sink) { return streamEvents(svc, sink); });
-}
-
 // Admin server: web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
     const auto effects = std::make_shared<ConfigEffects>(ConfigEffectSinks{
         [](bool on) { setAutoStart(on); }, [](bool on) { crash::setEnabled(on); }});
+    const auto streams = std::make_shared<EventBroadcaster>([&svc] { return sseTick(svc); });
     server.set_pre_routing_handler(guardOrigin);
     server.set_mount_point("/", g_webDir, httplib::Headers{{CACHE_CONTROL, NO_CACHE}});
     server.Get("/", redirectToDashboard);
@@ -560,6 +546,5 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         kickConnectionRoute(svc, req, res);
     });
     server.Get("/api/logs", logsRoute);
-    server.Get("/api/events",
-               [&svc](const Request& req, Response& res) { eventsRoute(svc, req, res); });
+    serveEventStreams(server, "/api/events", streams);
 }
