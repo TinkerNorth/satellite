@@ -1,9 +1,20 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#include "fake_vigem_driver.h"
+
 #include "core/byte_order.h"
+#include "core/gamepad_mux.h"
 #include "core/ipv4_util.h"
 #include "core/session_service.h"
 #include "net/inner_dispatch.h"
 #include "net/session_crypto.h"
+#include "vigem_adapter.h"
 
 #include <sodium.h>
 
@@ -18,17 +29,12 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
 #include <windows.h>
 
 #ifndef BENCH_BUILD_TYPE
@@ -44,17 +50,24 @@ using Nanos = std::chrono::nanoseconds;
 constexpr int64_t NANOS_PER_MICRO = 1'000;
 constexpr int64_t NANOS_PER_MILLI = 1'000'000;
 constexpr int64_t NANOS_PER_SECOND = 1'000'000'000;
+constexpr int64_t MICROS_PER_SECOND = 1'000'000;
 
 constexpr size_t HEADER_BYTES = static_cast<size_t>(HEADER_SIZE);
 constexpr size_t INNER_HEADER_BYTES = static_cast<size_t>(INNER_HEADER_SIZE);
 constexpr size_t TAG_BYTES = static_cast<size_t>(AUTH_TAG_SIZE);
 constexpr size_t REPORT_BYTES = sizeof(GamepadReport);
-constexpr size_t INNER_BYTES = INNER_HEADER_BYTES + 1 + REPORT_BYTES;
-constexpr size_t DATAGRAM_BYTES = HEADER_BYTES + INNER_BYTES + TAG_BYTES;
+constexpr size_t GAMEPAD_PAYLOAD_BYTES = 1 + REPORT_BYTES;
+constexpr size_t MOTION_PAYLOAD_BYTES = 1 + static_cast<size_t>(MOTION_WIRE_PAYLOAD_BYTES);
+constexpr size_t MOTION_AXES = 6;
+constexpr size_t MAX_INNER_BYTES =
+    INNER_HEADER_BYTES + std::max(GAMEPAD_PAYLOAD_BYTES, MOTION_PAYLOAD_BYTES);
+constexpr size_t FRAME_BYTES = HEADER_BYTES + MAX_INNER_BYTES + TAG_BYTES;
 constexpr size_t RECEIVE_BUFFER_BYTES = static_cast<size_t>(UDP_DATAGRAM_MAX_BYTES);
 constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 13;
 static_assert(GAMEPAD_DATA_MIN_LEN == 1 + REPORT_BYTES, "ctrlIdx plus one whole report");
-static_assert(DATAGRAM_BYTES <= RECEIVE_BUFFER_BYTES, "one datagram fits the receive buffer");
+static_assert(MOTION_AXES * sizeof(uint16_t) + sizeof(uint32_t) == MOTION_PAYLOAD_BYTES - 1,
+              "ctrlIdx, six axes and a timestamp delta");
+static_assert(FRAME_BYTES <= RECEIVE_BUFFER_BYTES, "one datagram fits the receive buffer");
 
 constexpr size_t RING_CAPACITY = 1600;
 constexpr size_t CACHE_LINE_BYTES = 64;
@@ -65,6 +78,7 @@ constexpr double SMOKE_SECS = 0.2;
 constexpr int DEFAULT_REPS = 3;
 constexpr int DEFAULT_RATE_A = 8000;
 constexpr int DEFAULT_RATE_B = 75;
+constexpr int DEFAULT_MOTION_HZ = 500;
 constexpr int DEFAULT_SUBMIT_US = 15;
 constexpr int DEFAULT_PLUG_MS = 200;
 constexpr int UNPLUG_MS = 5;
@@ -77,6 +91,9 @@ constexpr int MAX_PLUG_MS = 60'000;
 constexpr double PUT_AT_SECS = 1.0;
 constexpr double SSE_PERIOD_SECS = 1.0;
 constexpr double MAINTENANCE_PERIOD_SECS = 0.1;
+constexpr double HEARTBEAT_PERIOD_SECS = 2.0;
+constexpr double HEARTBEAT_FIRST_A_SECS = 0.3;
+constexpr double HEARTBEAT_FIRST_B_SECS = 1.3;
 constexpr uint64_t REAP_EVERY_TICKS = 10;
 constexpr int64_t START_DELAY_MS = 30;
 
@@ -150,14 +167,25 @@ int chooseReceiverCpu(int requested) {
     return NO_CPU;
 }
 
+enum class BackendMode { Mock, Vigem };
+
+const char* backendName(BackendMode mode) { return mode == BackendMode::Vigem ? "vigem" : "mock"; }
+
+const char* backendDescription(BackendMode mode) {
+    return mode == BackendMode::Vigem ? "vigem (ViGEmAdapter behind GamepadMux, fake driver layer)"
+                                      : "mock (the harness's own IGamepadPort)";
+}
+
 struct Options {
     double secs = DEFAULT_SECS;
     int reps = DEFAULT_REPS;
     int rateA = DEFAULT_RATE_A;
     int rateB = DEFAULT_RATE_B;
+    int motionHz = DEFAULT_MOTION_HZ;
     int submitUs = DEFAULT_SUBMIT_US;
     int plugMs = DEFAULT_PLUG_MS;
     int rxCpu = NO_CPU;
+    BackendMode backend = BackendMode::Mock;
     std::string csvPath;
     bool smoke = false;
     bool verbose = false;
@@ -188,11 +216,24 @@ bool parseIntInRange(const char* text, int lowest, int highest, int& out) {
     return true;
 }
 
+bool parseBackend(const char* text, BackendMode& out) {
+    const std::string name = text;
+    if (name == "mock")
+        out = BackendMode::Mock;
+    else if (name == "vigem")
+        out = BackendMode::Vigem;
+    else
+        return false;
+    return true;
+}
+
 bool applyValuedOption(Options& options, const std::string& name, const char* value) {
     if (name == "--secs") return parseDouble(value, options.secs) && options.secs >= MIN_SECS;
     if (name == "--reps") return parseIntInRange(value, 1, MAX_REPS, options.reps);
     if (name == "--rate-a") return parseIntInRange(value, 1, MAX_RATE_HZ, options.rateA);
     if (name == "--rate-b") return parseIntInRange(value, 1, MAX_RATE_HZ, options.rateB);
+    if (name == "--motion-hz") return parseIntInRange(value, 1, MAX_RATE_HZ, options.motionHz);
+    if (name == "--backend") return parseBackend(value, options.backend);
     if (name == "--submit-us") return parseIntInRange(value, 0, MAX_SUBMIT_US, options.submitUs);
     if (name == "--plug-ms") return parseIntInRange(value, 0, MAX_PLUG_MS, options.plugMs);
     if (name == "--rx-cpu") return parseIntInRange(value, 0, MAX_CPUS - 1, options.rxCpu);
@@ -239,14 +280,20 @@ void printUsage(std::FILE* out) {
                "  --secs <s>        seconds per run (default 3)\n"
                "  --reps <n>        interleaved repetitions, the median rep is reported "
                "(default 3)\n"
-               "  --rate-a <hz>     dish A rate in S2-S4 (default 8000)\n"
+               "  --rate-a <hz>     dish A rate in S2-S5 (default 8000)\n"
                "  --rate-b <hz>     dish B rate (default 75)\n"
-               "  --submit-us <us>  spin time of the mock submitReport (default 15)\n"
-               "  --plug-ms <ms>    sleep time of the mock pluginDevice (default 200)\n"
+               "  --motion-hz <hz>  dish A motion rate in S5 (default 500)\n"
+               "  --backend <name>  mock, or vigem for the real ViGEmAdapter over a fake driver "
+               "layer (default mock)\n"
+               "  --submit-us <us>  spin time of a submit: the mock's submitReport and "
+               "submitMotion, or the fake driver's submit calls (default 15)\n"
+               "  --plug-ms <ms>    sleep time of the mock pluginDevice or the fake driver's "
+               "plug (default 200)\n"
                "  --rx-cpu <n>      CPU of the receiver thread (default: the first CPU from 2 "
                "up)\n"
                "  --csv <path>      also write the table as CSV\n"
-               "  --smoke           every scenario once for 0.2 s, no warm-up pass\n"
+               "  --smoke           every scenario once for 0.2 s on both backends, no warm-up "
+               "pass\n"
                "  --verbose         print the service's log lines to stderr\n",
                out);
 }
@@ -261,6 +308,8 @@ class BenchGamepad : public IGamepadPort {
     void armPlugDelays() { delaysArmed_.store(true, std::memory_order_release); }
 
     uint64_t submitCalls() const { return submitCalls_.load(std::memory_order_relaxed); }
+
+    uint64_t motionCalls() const { return motionCalls_.load(std::memory_order_relaxed); }
 
     bool ensureBusOpen() override {
         busOpen_.store(true, std::memory_order_release);
@@ -287,6 +336,16 @@ class BenchGamepad : public IGamepadPort {
         return true;
     }
 
+    bool submitMotion(uint32_t, const MotionReport&) override {
+        motionCalls_.fetch_add(1, std::memory_order_relaxed);
+        spinFor(submitSpan_);
+        return true;
+    }
+
+    bool supportsMotionForType(uint8_t controllerType) const override {
+        return controllerTypeHasMotion(controllerType);
+    }
+
     void setRumbleCallback(RumbleCallback) override {}
 
   private:
@@ -300,13 +359,64 @@ class BenchGamepad : public IGamepadPort {
     std::atomic<bool> delaysArmed_{false};
     std::atomic<bool> busOpen_{false};
     std::atomic<uint64_t> submitCalls_{0};
+    std::atomic<uint64_t> motionCalls_{0};
 };
+
+class Backend {
+  public:
+    virtual ~Backend() = default;
+    virtual IGamepadPort& port() = 0;
+    virtual void arm() = 0;
+    virtual uint64_t submitCalls() const = 0;
+};
+
+class MockBackend : public Backend {
+  public:
+    MockBackend(int submitUs, int plugMs) : gamepad_(submitUs, plugMs) {}
+
+    IGamepadPort& port() override { return gamepad_; }
+
+    void arm() override { gamepad_.armPlugDelays(); }
+
+    uint64_t submitCalls() const override {
+        return gamepad_.submitCalls() + gamepad_.motionCalls();
+    }
+
+  private:
+    BenchGamepad gamepad_;
+};
+
+class VigemBackend : public Backend {
+  public:
+    VigemBackend(int submitUs, int plugMs) : mux_({&adapter_}) {
+        fake_vigem::configure(fake_vigem::Tuning{submitUs, plugMs, UNPLUG_MS});
+    }
+
+    IGamepadPort& port() override { return mux_; }
+
+    void arm() override { fake_vigem::arm(); }
+
+    uint64_t submitCalls() const override { return fake_vigem::submitCalls(); }
+
+  private:
+    ViGEmAdapter adapter_;
+    satellite::GamepadMux mux_;
+};
+
+std::unique_ptr<Backend> makeBackend(BackendMode mode, int submitUs, int plugMs) {
+    if (mode == BackendMode::Vigem) return std::make_unique<VigemBackend>(submitUs, plugMs);
+    return std::make_unique<MockBackend>(submitUs, plugMs);
+}
 
 class BenchClient : public IClientPort {
   public:
+    uint64_t heartbeatAcks() const { return heartbeatAcks_.load(std::memory_order_relaxed); }
+
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {}
+    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {
+        heartbeatAcks_.fetch_add(1, std::memory_order_relaxed);
+    }
     void sendSessionClose(const Connection&, uint8_t) override {}
     void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
@@ -315,6 +425,9 @@ class BenchClient : public IClientPort {
     void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
     void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
+
+  private:
+    std::atomic<uint64_t> heartbeatAcks_{0};
 };
 
 class BenchLog : public ILogPort {
@@ -333,7 +446,7 @@ class BenchLog : public ILogPort {
 struct Frame {
     TimePoint stamp;
     size_t length = 0;
-    std::array<uint8_t, DATAGRAM_BYTES> bytes{};
+    std::array<uint8_t, FRAME_BYTES> bytes{};
 };
 
 struct PaddedCounter {
@@ -373,6 +486,18 @@ class SpscRing {
     PaddedCounter tail_;
 };
 
+class SendLock {
+  public:
+    void lock() {
+        while (held_.exchange(true, std::memory_order_acquire)) YieldProcessor();
+    }
+
+    void unlock() { held_.store(false, std::memory_order_release); }
+
+  private:
+    std::atomic<bool> held_{false};
+};
+
 struct Credentials {
     uint32_t token = 0;
     std::array<uint8_t, CRYPTO_KEY_SIZE> key{};
@@ -385,6 +510,10 @@ struct DishSpec {
     std::string clientIp;
     uint16_t clientPort = 0;
     int rateHz = 0;
+    int motionHz = 0;
+    uint8_t padType = CONTROLLER_TYPE_XBOX;
+    uint16_t padCaps = 0;
+    double heartbeatFirstSecs = 0.0;
     std::array<uint8_t, CRYPTO_KEY_SIZE> pairingKey{};
 };
 
@@ -399,52 +528,93 @@ struct DishTally {
     uint64_t replayed = 0;
     uint64_t undecryptable = 0;
     uint64_t malformed = 0;
+    uint64_t motionHandled = 0;
+    uint64_t heartbeatsHandled = 0;
+};
+
+struct Stream {
+    explicit Stream(uint64_t frames) : plannedFrames(frames), ring(RING_CAPACITY) {}
+
+    const uint64_t plannedFrames;
+    SpscRing ring;
+    uint64_t produced = 0;
+    uint64_t ringDrops = 0;
+    uint64_t sealFailures = 0;
 };
 
 struct DishRun {
-    DishRun(DishSpec dishSpec, uint64_t frames)
+    DishRun(DishSpec dishSpec, uint64_t gamepadFrames, uint64_t motionFrames)
         : spec(std::move(dishSpec)), senderIPv4(satellite::parseIPv4Nbo(spec.clientIp)),
-          plannedFrames(frames), ring(RING_CAPACITY) {
-        tally.latencyNs.assign(frames, 0);
+          gamepad(gamepadFrames) {
+        tally.latencyNs.assign(gamepadFrames, 0);
+        if (motionFrames > 0) motion = std::make_unique<Stream>(motionFrames);
+    }
+
+    uint64_t produced() const { return gamepad.produced + (motion ? motion->produced : 0); }
+
+    uint64_t ringDrops() const { return gamepad.ringDrops + (motion ? motion->ringDrops : 0); }
+
+    uint64_t sealFailures() const {
+        return gamepad.sealFailures + (motion ? motion->sealFailures : 0);
     }
 
     const DishSpec spec;
     const uint32_t senderIPv4;
-    const uint64_t plannedFrames;
-    SpscRing ring;
+    Stream gamepad;
+    std::unique_ptr<Stream> motion;
     std::atomic<const Credentials*> credentials{nullptr};
     std::vector<std::unique_ptr<Credentials>> issued;
-    uint64_t produced = 0;
-    uint64_t ringDrops = 0;
-    uint64_t sealFailures = 0;
+    SendLock sendLock;
+    const Credentials* sealedWith = nullptr;
+    uint32_t counter = 0;
     DishTally tally;
 };
 
-DishSpec makeDishSpec(const char* name, int index, int rateHz) {
+struct DishPlan {
+    const char* name;
+    int index;
+    int rateHz;
+    int motionHz;
+    uint8_t padType;
+    uint16_t padCaps;
+    double heartbeatFirstSecs;
+};
+
+DishSpec makeDishSpec(const DishPlan& plan) {
     DishSpec spec;
-    spec.name = name;
-    spec.deviceId = std::string("bench-dish-") + name;
-    spec.deviceName = std::string("Bench dish ") + name;
-    spec.clientIp = "192.168.1." + std::to_string(100 + index);
-    spec.clientPort = static_cast<uint16_t>(FIRST_CLIENT_PORT + index);
-    spec.rateHz = rateHz;
+    spec.name = plan.name;
+    spec.deviceId = std::string("bench-dish-") + plan.name;
+    spec.deviceName = std::string("Bench dish ") + plan.name;
+    spec.clientIp = "192.168.1." + std::to_string(100 + plan.index);
+    spec.clientPort = static_cast<uint16_t>(FIRST_CLIENT_PORT + plan.index);
+    spec.rateHz = plan.rateHz;
+    spec.motionHz = plan.motionHz;
+    spec.padType = plan.padType;
+    spec.padCaps = plan.padCaps;
+    spec.heartbeatFirstSecs = plan.heartbeatFirstSecs;
     for (size_t i = 0; i < spec.pairingKey.size(); ++i) {
-        const int offset = PAIRING_KEY_BASE + index * PAIRING_KEY_STRIDE + static_cast<int>(i);
+        const int offset = PAIRING_KEY_BASE + plan.index * PAIRING_KEY_STRIDE + static_cast<int>(i);
         spec.pairingKey[i] = static_cast<uint8_t>(offset);
     }
     return spec;
 }
 
-std::unique_ptr<DishRun> makeDish(const char* name, int index, int rateHz, double secs) {
-    const uint64_t planned = std::max<uint64_t>(1, static_cast<uint64_t>(secs * rateHz));
-    return std::make_unique<DishRun>(makeDishSpec(name, index, rateHz), planned);
+uint64_t plannedCount(double secs, int rateHz) {
+    return std::max<uint64_t>(1, static_cast<uint64_t>(secs * rateHz));
 }
 
-ControllerDescriptor makeDescriptor(uint8_t ctrlIdx) {
+std::unique_ptr<DishRun> makeDish(const DishPlan& plan, double secs) {
+    const uint64_t gamepadFrames = plannedCount(secs, plan.rateHz);
+    const uint64_t motionFrames = plan.motionHz > 0 ? plannedCount(secs, plan.motionHz) : 0;
+    return std::make_unique<DishRun>(makeDishSpec(plan), gamepadFrames, motionFrames);
+}
+
+ControllerDescriptor makeDescriptor(uint8_t ctrlIdx, uint8_t type = CONTROLLER_TYPE_XBOX,
+                                    uint16_t caps = 0) {
     ControllerDescriptor descriptor;
     descriptor.ctrlIdx = ctrlIdx;
-    descriptor.type = CONTROLLER_TYPE_XBOX;
-    descriptor.caps = 0;
+    descriptor.type = type;
+    descriptor.caps = caps;
     descriptor.touchpadMode = TOUCHPAD_MODE_OFF;
     return descriptor;
 }
@@ -472,50 +642,126 @@ void publishSession(DishRun& dish, const SessionUpsertResult& result) {
     dish.credentials.store(published, std::memory_order_release);
 }
 
-bool sealFrame(const Credentials& credentials, uint32_t counter, Frame& frame) {
-    std::array<uint8_t, INNER_BYTES> inner{};
-    satellite::writeBE16(inner.data(), MSG_GAMEPAD_DATA);
-    satellite::writeBE16(inner.data() + 2, static_cast<uint16_t>(1 + REPORT_BYTES));
-    inner[INNER_HEADER_BYTES] = 0;
+enum class Kind { Gamepad, Motion, Heartbeat };
+
+struct Message {
+    Kind kind;
+    uint64_t sequence;
+};
+
+size_t writeInnerHeader(uint8_t* inner, uint16_t msgType, size_t payloadBytes) {
+    satellite::writeBE16(inner, msgType);
+    satellite::writeBE16(inner + 2, static_cast<uint16_t>(payloadBytes));
+    return INNER_HEADER_BYTES + payloadBytes;
+}
+
+size_t writeGamepadInner(uint32_t counter, uint8_t* inner) {
+    uint8_t* payload = inner + INNER_HEADER_BYTES;
+    payload[0] = 0;
     GamepadReport report;
     report.wButtons = static_cast<uint16_t>(counter);
     report.sThumbRX = static_cast<int16_t>(counter);
-    std::memcpy(inner.data() + INNER_HEADER_BYTES + 1, &report, REPORT_BYTES);
+    std::memcpy(payload + 1, &report, REPORT_BYTES);
+    return writeInnerHeader(inner, MSG_GAMEPAD_DATA, GAMEPAD_PAYLOAD_BYTES);
+}
+
+size_t writeMotionInner(const DishSpec& spec, uint64_t sequence, uint8_t* inner) {
+    uint8_t* payload = inner + INNER_HEADER_BYTES;
+    payload[0] = 0;
+    uint8_t* sample = payload + 1;
+    for (size_t axis = 0; axis < MOTION_AXES; ++axis) {
+        const auto value = static_cast<uint16_t>(sequence + axis);
+        satellite::writeLE16(sample + axis * sizeof(uint16_t), value);
+    }
+    const uint32_t deltaUs =
+        sequence == 0 ? 0 : static_cast<uint32_t>(MICROS_PER_SECOND / spec.motionHz);
+    satellite::writeLE32(sample + MOTION_AXES * sizeof(uint16_t), deltaUs);
+    return writeInnerHeader(inner, MSG_MOTION, MOTION_PAYLOAD_BYTES);
+}
+
+size_t writeInner(const DishSpec& spec, uint32_t counter, const Message& message, uint8_t* inner) {
+    switch (message.kind) {
+    case Kind::Gamepad:
+        return writeGamepadInner(counter, inner);
+    case Kind::Motion:
+        return writeMotionInner(spec, message.sequence, inner);
+    case Kind::Heartbeat:
+        return writeInnerHeader(inner, MSG_HEARTBEAT_PING, 0);
+    }
+    return 0;
+}
+
+bool sealFrame(const DishSpec& spec, const Credentials& credentials, uint32_t counter,
+               const Message& message, Frame& frame) {
+    std::array<uint8_t, MAX_INNER_BYTES> inner{};
+    const size_t innerBytes = writeInner(spec, counter, message, inner.data());
 
     satellite::writeBE32(frame.bytes.data(), credentials.token);
     satellite::writeBE32(frame.bytes.data() + 4, counter);
     unsigned long long cipherLen = 0;
     const bool sealed = encryptPacket(credentials.key.data(), CRYPTO_DIR_CLIENT_TO_SERVER, counter,
-                                      credentials.token, inner.data(), inner.size(),
+                                      credentials.token, inner.data(), innerBytes,
                                       frame.bytes.data() + HEADER_BYTES, &cipherLen);
     frame.length = HEADER_BYTES + static_cast<size_t>(cipherLen);
     return sealed;
 }
 
-void runProducer(DishRun& dish, TimePoint start) {
-    uint32_t counter = 0;
-    const Credentials* credentials = dish.credentials.load(std::memory_order_acquire);
-    for (uint64_t tick = 0; tick < dish.plannedFrames; ++tick) {
+void emit(DishRun& dish, Stream& stream, const Message& message) {
+    std::lock_guard<SendLock> hold(dish.sendLock);
+    const Credentials* latest = dish.credentials.load(std::memory_order_acquire);
+    if (latest != dish.sealedWith) {
+        dish.sealedWith = latest;
+        dish.counter = 0;
+    }
+    dish.counter += 1;
+    Frame frame;
+    if (!sealFrame(dish.spec, *latest, dish.counter, message, frame)) {
+        stream.sealFailures += 1;
+        return;
+    }
+    frame.stamp = Clock::now();
+    if (!stream.ring.tryPush(frame)) stream.ringDrops += 1;
+    stream.produced += 1;
+}
+
+struct HeartbeatPlan {
+    TimePoint first;
+    Nanos period;
+};
+
+void runGamepadProducer(DishRun& dish, TimePoint start, HeartbeatPlan heartbeats) {
+    TimePoint nextHeartbeat = heartbeats.first;
+    for (uint64_t tick = 0; tick < dish.gamepad.plannedFrames; ++tick) {
         const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.rateHz;
-        spinUntil(start + Nanos(offset));
-        const Credentials* latest = dish.credentials.load(std::memory_order_acquire);
-        if (latest != credentials) {
-            credentials = latest;
-            counter = 0;
+        const TimePoint due = start + Nanos(offset);
+        spinUntil(due);
+        while (nextHeartbeat <= due) {
+            emit(dish, dish.gamepad, Message{Kind::Heartbeat, 0});
+            nextHeartbeat += heartbeats.period;
         }
-        counter += 1;
-        Frame frame;
-        if (!sealFrame(*credentials, counter, frame)) {
-            dish.sealFailures += 1;
-            continue;
-        }
-        frame.stamp = Clock::now();
-        if (!dish.ring.tryPush(frame)) dish.ringDrops += 1;
-        dish.produced += 1;
+        emit(dish, dish.gamepad, Message{Kind::Gamepad, tick});
     }
 }
 
-enum class Verdict { Completed, Rejected, UnknownToken, Replayed, Undecryptable, Malformed };
+void runMotionProducer(DishRun& dish, TimePoint start) {
+    Stream& stream = *dish.motion;
+    for (uint64_t tick = 0; tick < stream.plannedFrames; ++tick) {
+        const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.motionHz;
+        spinUntil(start + Nanos(offset));
+        emit(dish, stream, Message{Kind::Motion, tick});
+    }
+}
+
+enum class Verdict {
+    Completed,
+    Rejected,
+    UnknownToken,
+    Replayed,
+    Undecryptable,
+    Malformed,
+    Motion,
+    Heartbeat
+};
 
 struct Handled {
     Verdict verdict;
@@ -523,6 +769,12 @@ struct Handled {
 };
 
 Handled discarded(Verdict verdict) { return Handled{verdict, TimePoint()}; }
+
+Verdict verdictForControl(uint16_t msgType) {
+    if (msgType == MSG_MOTION) return Verdict::Motion;
+    if (msgType == MSG_HEARTBEAT_PING) return Verdict::Heartbeat;
+    return Verdict::Malformed;
+}
 
 Handled handleDatagram(SessionService& service, uint8_t* buf, int n, uint32_t senderIPv4,
                        uint16_t senderPort) {
@@ -554,14 +806,20 @@ Handled handleDatagram(SessionService& service, uint8_t* buf, int n, uint32_t se
 
     const bool gamepadData =
         inner.msgType == MSG_GAMEPAD_DATA && inner.msgLen >= GAMEPAD_DATA_MIN_LEN;
-    if (!gamepadData) return discarded(Verdict::Malformed);
+    if (gamepadData) {
+        const uint8_t ctrlIdx = payload[0];
+        GamepadReport report;
+        std::memcpy(&report, payload + 1, sizeof(GamepadReport));
+        const bool accepted = service.handleGamepadDataAndUpdate(token, counter, senderIPv4,
+                                                                 senderPort, ctrlIdx, report);
+        return Handled{accepted ? Verdict::Completed : Verdict::Rejected, Clock::now()};
+    }
 
-    const uint8_t ctrlIdx = payload[0];
-    GamepadReport report;
-    std::memcpy(&report, payload + 1, sizeof(GamepadReport));
-    const bool accepted =
-        service.handleGamepadDataAndUpdate(token, counter, senderIPv4, senderPort, ctrlIdx, report);
-    return Handled{accepted ? Verdict::Completed : Verdict::Rejected, Clock::now()};
+    service.updatePostDecryptV4(token, counter, senderIPv4, senderPort);
+    const DispatchResult dispatched =
+        dispatchInnerMessage(service, token, inner.msgType, payload, inner.msgLen);
+    if (!dispatched.handled) return discarded(Verdict::Malformed);
+    return Handled{verdictForControl(inner.msgType), Clock::now()};
 }
 
 void recordCompleted(DishTally& tally, TimePoint done, TimePoint stamp) {
@@ -599,15 +857,26 @@ void recordHandled(DishTally& tally, const Handled& handled, TimePoint stamp) {
     case Verdict::Malformed:
         tally.malformed += 1;
         return;
+    case Verdict::Motion:
+        tally.motionHandled += 1;
+        return;
+    case Verdict::Heartbeat:
+        tally.heartbeatsHandled += 1;
+        return;
     }
 }
 
+struct Source {
+    DishRun* dish;
+    Stream* stream;
+};
+
 struct ReceiverContext {
-    ReceiverContext(SessionService& svc, std::vector<DishRun*> served, int pinTo)
-        : service(svc), dishes(std::move(served)), cpu(pinTo) {}
+    ReceiverContext(SessionService& svc, std::vector<Source> served, int pinTo)
+        : service(svc), sources(std::move(served)), cpu(pinTo) {}
 
     SessionService& service;
-    const std::vector<DishRun*> dishes;
+    const std::vector<Source> sources;
     const int cpu;
     std::atomic<bool> ready{false};
     std::atomic<bool> producersDone{false};
@@ -622,27 +891,36 @@ void configureReceiverThread(ReceiverContext& rx) {
     rx.raised = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0;
 }
 
-DishRun* oldestPending(const std::vector<DishRun*>& dishes) {
-    DishRun* oldest = nullptr;
+const Source* oldestPending(const std::vector<Source>& sources) {
+    const Source* oldest = nullptr;
     TimePoint oldestStamp = TimePoint::max();
-    for (DishRun* dish : dishes) {
-        const Frame* front = dish->ring.front();
+    for (const Source& source : sources) {
+        const Frame* front = source.stream->ring.front();
         if (front == nullptr || front->stamp >= oldestStamp) continue;
-        oldest = dish;
+        oldest = &source;
         oldestStamp = front->stamp;
     }
     return oldest;
 }
 
-void serveOldest(SessionService& service, DishRun& dish, uint8_t* buf) {
-    const Frame& front = *dish.ring.front();
+const Source* nextSource(const std::vector<Source>& sources) {
+    const Source* settled = nullptr;
+    for (;;) {
+        const Source* scanned = oldestPending(sources);
+        if (scanned == nullptr || scanned == settled) return scanned;
+        settled = scanned;
+    }
+}
+
+void serveOldest(SessionService& service, const Source& source, uint8_t* buf) {
+    const Frame& front = *source.stream->ring.front();
     const TimePoint stamp = front.stamp;
     const int length = static_cast<int>(front.length);
     std::memcpy(buf, front.bytes.data(), front.length);
-    dish.ring.pop();
+    source.stream->ring.pop();
     const Handled handled =
-        handleDatagram(service, buf, length, dish.senderIPv4, dish.spec.clientPort);
-    recordHandled(dish.tally, handled, stamp);
+        handleDatagram(service, buf, length, source.dish->senderIPv4, source.dish->spec.clientPort);
+    recordHandled(source.dish->tally, handled, stamp);
 }
 
 void runReceiver(ReceiverContext& rx) {
@@ -650,13 +928,13 @@ void runReceiver(ReceiverContext& rx) {
     rx.ready.store(true, std::memory_order_release);
     std::array<uint8_t, RECEIVE_BUFFER_BYTES> buf{};
     for (;;) {
-        DishRun* const next = oldestPending(rx.dishes);
+        const Source* const next = nextSource(rx.sources);
         if (next != nullptr) {
             serveOldest(rx.service, *next, buf.data());
             continue;
         }
         const bool finished = rx.producersDone.load(std::memory_order_acquire);
-        if (finished && oldestPending(rx.dishes) == nullptr) return;
+        if (finished && oldestPending(rx.sources) == nullptr) return;
         YieldProcessor();
     }
 }
@@ -737,7 +1015,9 @@ struct PutWorker {
 
 void runPut(PutWorker& worker) {
     std::this_thread::sleep_until(worker.due);
-    const std::vector<ControllerDescriptor> descriptors{makeDescriptor(0), makeDescriptor(1)};
+    const DishSpec& spec = worker.dish.spec;
+    const std::vector<ControllerDescriptor> descriptors{
+        makeDescriptor(0, spec.padType, spec.padCaps), makeDescriptor(1)};
     const TimePoint began = Clock::now();
     const SessionUpsertResult result = upsertDish(worker.service, worker.dish, descriptors);
     const TimePoint finished = Clock::now();
@@ -754,24 +1034,34 @@ struct Scenario {
     int dishARateHz;
     bool withColdReaders;
     bool withPut;
+    bool withMotion;
+    bool withHeartbeats;
 };
 
-constexpr std::array<Scenario, 4> SCENARIOS{{
-    {"S1", "dish A alone at 1000 Hz, no cold threads", false, SCENARIO_ONE_RATE_HZ, false, false},
-    {"S2", "dish A (--rate-a) plus dish B (--rate-b), no cold threads", true, 0, false, false},
+constexpr std::array<Scenario, 5> SCENARIOS{{
+    {"S1", "dish A alone at 1000 Hz, no cold threads", false, SCENARIO_ONE_RATE_HZ, false, false,
+     false, false},
+    {"S2", "dish A (--rate-a) plus dish B (--rate-b), no cold threads", true, 0, false, false,
+     false, false},
     {"S3", "S2 plus the sse thread (1 Hz) and the maintenance thread (10 Hz, reap every 10th tick)",
-     true, 0, true, false},
+     true, 0, true, false, false, false},
     {"S4", "S3 plus a PUT for dish B at 1.0 s that plugs a second controller under the lock", true,
-     0, true, true},
+     0, true, true, false, false},
+    {"S5",
+     "S4 plus dish A as a PlayStation pad with CAP_MOTION streaming MSG_MOTION (--motion-hz) and "
+     "a MSG_HEARTBEAT_PING from each dish every 2 s (A first at 0.3 s, B at 1.3 s)",
+     true, 0, true, true, true, true},
 }};
 
 struct RunPlan {
     double secs;
     double scheduleScale;
     int rxCpu;
+    BackendMode backend;
 };
 
 struct DishRow {
+    std::string backend;
     std::string scenario;
     std::string dish;
     int rateHz = 0;
@@ -784,6 +1074,8 @@ struct DishRow {
     double longestGapMs = 0.0;
     uint64_t drops = 0;
     uint64_t refused = 0;
+    uint64_t motion = 0;
+    uint64_t heartbeats = 0;
 };
 
 struct ScenarioResult {
@@ -805,7 +1097,7 @@ double percentileUs(const std::vector<uint32_t>& sorted, uint64_t basisPoints) {
     return nanosToMicros(static_cast<int64_t>(percentileNs(sorted, basisPoints)));
 }
 
-DishRow summarize(const Scenario& scenario, const DishRun& dish) {
+DishRow summarize(const Scenario& scenario, BackendMode backend, const DishRun& dish) {
     const DishTally& tally = dish.tally;
     const auto recorded = static_cast<std::ptrdiff_t>(
         std::min<uint64_t>(tally.completed, static_cast<uint64_t>(tally.latencyNs.size())));
@@ -813,6 +1105,7 @@ DishRow summarize(const Scenario& scenario, const DishRun& dish) {
     std::sort(sorted.begin(), sorted.end());
 
     DishRow row;
+    row.backend = backendName(backend);
     row.scenario = scenario.id;
     row.dish = dish.spec.name;
     row.rateHz = dish.spec.rateHz;
@@ -823,8 +1116,10 @@ DishRow summarize(const Scenario& scenario, const DishRun& dish) {
     row.maxUs = sorted.empty() ? 0.0 : nanosToMicros(static_cast<int64_t>(sorted.back()));
     row.overOneMs = tally.overOneMs;
     row.longestGapMs = nanosToMillis(tally.longestGapNs);
-    row.drops = dish.ringDrops;
+    row.drops = dish.ringDrops();
     row.refused = tally.refused;
+    row.motion = tally.motionHandled;
+    row.heartbeats = tally.heartbeatsHandled;
     return row;
 }
 
@@ -835,15 +1130,16 @@ std::string describe(const std::string& dish, const std::string& what, uint64_t 
 void checkDish(const DishRun& dish, bool rotated, std::vector<std::string>& problems) {
     const DishTally& tally = dish.tally;
     const std::string& name = dish.spec.name;
-    const uint64_t queued = dish.produced - dish.ringDrops;
+    const uint64_t queued = dish.produced() - dish.ringDrops();
     const uint64_t served = tally.completed + tally.refused + tally.rejected + tally.replayed +
-                            tally.undecryptable + tally.malformed;
+                            tally.undecryptable + tally.malformed + tally.motionHandled +
+                            tally.heartbeatsHandled;
     if (served != queued) {
         problems.push_back(describe(name, "frames reached the service but", served) + " " +
                            std::to_string(queued) + " were queued");
     }
-    if (dish.sealFailures != 0) {
-        problems.push_back(describe(name, "frames failed to encrypt", dish.sealFailures));
+    if (dish.sealFailures() != 0) {
+        problems.push_back(describe(name, "frames failed to encrypt", dish.sealFailures()));
     }
     if (tally.completed > tally.latencyNs.size()) {
         problems.push_back(describe(name, "frames did not fit the latency array", tally.completed));
@@ -873,20 +1169,33 @@ void checkColdWorkers(const SseWorker* sse, const MaintenanceWorker* maintenance
     }
 }
 
+DishPlan planForA(const Options& options, const Scenario& scenario) {
+    const int rateHz = scenario.dishARateHz > 0 ? scenario.dishARateHz : options.rateA;
+    const bool streamsMotion = scenario.withMotion;
+    const int motionHz = streamsMotion ? options.motionHz : 0;
+    const uint8_t padType = streamsMotion ? CONTROLLER_TYPE_PLAYSTATION : CONTROLLER_TYPE_XBOX;
+    const uint16_t padCaps = streamsMotion ? CAP_MOTION : uint16_t{0};
+    return DishPlan{"A", 0, rateHz, motionHz, padType, padCaps, HEARTBEAT_FIRST_A_SECS};
+}
+
+DishPlan planForB(const Options& options) {
+    return DishPlan{"B", 1, options.rateB, 0, CONTROLLER_TYPE_XBOX, 0, HEARTBEAT_FIRST_B_SECS};
+}
+
 class ScenarioRun {
   public:
     ScenarioRun(const Options& options, const Scenario& scenario, const RunPlan& plan)
-        : scenario_(scenario), plan_(plan), gamepad_(options.submitUs, options.plugMs),
-          log_(options.verbose), service_(gamepad_, client_, log_, deriveSessionKey) {
-        const int rateA = scenario.dishARateHz > 0 ? scenario.dishARateHz : options.rateA;
-        dishes_.push_back(makeDish("A", 0, rateA, plan.secs));
-        if (scenario.withDishB) dishes_.push_back(makeDish("B", 1, options.rateB, plan.secs));
+        : scenario_(scenario), plan_(plan),
+          backend_(makeBackend(plan.backend, options.submitUs, options.plugMs)),
+          log_(options.verbose), service_(backend_->port(), client_, log_, deriveSessionKey) {
+        dishes_.push_back(makeDish(planForA(options, scenario), plan.secs));
+        if (scenario.withDishB) dishes_.push_back(makeDish(planForB(options), plan.secs));
     }
 
     ScenarioResult execute() {
         ScenarioResult result;
         if (!openSessions(result)) return result;
-        gamepad_.armPlugDelays();
+        backend_->arm();
         startReceiver();
         const TimePoint start = Clock::now() + std::chrono::milliseconds(START_DELAY_MS);
         const TimePoint end = start + secondsToNanos(plan_.secs);
@@ -899,11 +1208,13 @@ class ScenarioRun {
 
   private:
     bool openSessions(ScenarioResult& result) {
-        const std::vector<ControllerDescriptor> descriptors{makeDescriptor(0)};
         for (const auto& dish : dishes_) {
+            const DishSpec& spec = dish->spec;
+            const std::vector<ControllerDescriptor> descriptors{
+                makeDescriptor(0, spec.padType, spec.padCaps)};
             const SessionUpsertResult opened = upsertDish(service_, *dish, descriptors);
             if (!opened.ok || !allApplied(opened)) {
-                result.problems.push_back("could not open the session for dish " + dish->spec.name);
+                result.problems.push_back("could not open the session for dish " + spec.name);
                 return false;
             }
             publishSession(*dish, opened);
@@ -911,23 +1222,37 @@ class ScenarioRun {
         return true;
     }
 
-    std::vector<DishRun*> dishPointers() const {
-        std::vector<DishRun*> pointers;
-        for (const auto& dish : dishes_) pointers.push_back(dish.get());
-        return pointers;
+    std::vector<Source> sources() const {
+        std::vector<Source> served;
+        for (const auto& dish : dishes_) {
+            served.push_back(Source{dish.get(), &dish->gamepad});
+            if (dish->motion) served.push_back(Source{dish.get(), dish->motion.get()});
+        }
+        return served;
     }
 
     void startReceiver() {
-        receiver_ = std::make_unique<ReceiverContext>(service_, dishPointers(), plan_.rxCpu);
+        receiver_ = std::make_unique<ReceiverContext>(service_, sources(), plan_.rxCpu);
         receiverThread_ = std::thread(runReceiver, std::ref(*receiver_));
         while (!receiver_->ready.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 
+    HeartbeatPlan heartbeatPlanFor(const DishRun& dish, TimePoint start) const {
+        const double scale = plan_.scheduleScale;
+        const Nanos period = secondsToNanos(HEARTBEAT_PERIOD_SECS * scale);
+        if (!scenario_.withHeartbeats) return HeartbeatPlan{TimePoint::max(), period};
+        return HeartbeatPlan{start + secondsToNanos(dish.spec.heartbeatFirstSecs * scale), period};
+    }
+
     void startProducers(TimePoint start) {
         for (const auto& dish : dishes_) {
-            producerThreads_.emplace_back(runProducer, std::ref(*dish), start);
+            producerThreads_.emplace_back(runGamepadProducer, std::ref(*dish), start,
+                                          heartbeatPlanFor(*dish, start));
+            if (dish->motion) {
+                producerThreads_.emplace_back(runMotionProducer, std::ref(*dish), start);
+            }
         }
     }
 
@@ -966,18 +1291,12 @@ class ScenarioRun {
     void collect(ScenarioResult& result) const {
         for (const auto& dish : dishes_) {
             const bool rotated = put_ != nullptr && dish.get() == &put_->dish;
-            result.rows.push_back(summarize(scenario_, *dish));
+            result.rows.push_back(summarize(scenario_, plan_.backend, *dish));
             checkDish(*dish, rotated, result.problems);
         }
         checkColdWorkers(sse_.get(), maintenance_.get(), put_.get(), dishes_.size(),
                          result.problems);
-        uint64_t completed = 0;
-        for (const auto& dish : dishes_) completed += dish->tally.completed;
-        if (gamepad_.submitCalls() != completed) {
-            result.problems.push_back("the mock saw " + std::to_string(gamepad_.submitCalls()) +
-                                      " submits for " + std::to_string(completed) +
-                                      " completed frames");
-        }
+        checkBackendTraffic(result);
         const bool configurable = plan_.rxCpu != NO_CPU;
         if (configurable && !receiver_->raised) {
             result.warnings.push_back("receiver thread priority not raised");
@@ -991,9 +1310,36 @@ class ScenarioRun {
         }
     }
 
+    void checkBackendTraffic(ScenarioResult& result) const {
+        uint64_t submitted = 0;
+        uint64_t motion = 0;
+        uint64_t heartbeats = 0;
+        for (const auto& dish : dishes_) {
+            submitted += dish->tally.completed + dish->tally.motionHandled;
+            motion += dish->tally.motionHandled;
+            heartbeats += dish->tally.heartbeatsHandled;
+        }
+        if (scenario_.withMotion && motion == 0) {
+            result.problems.push_back("no motion frame reached the service");
+        }
+        if (scenario_.withHeartbeats && heartbeats == 0) {
+            result.problems.push_back("no heartbeat reached the service");
+        }
+        if (backend_->submitCalls() != submitted) {
+            result.problems.push_back("the backend saw " + std::to_string(backend_->submitCalls()) +
+                                      " submits for " + std::to_string(submitted) +
+                                      " completed gamepad and motion frames");
+        }
+        if (client_.heartbeatAcks() != heartbeats) {
+            result.problems.push_back("the service acknowledged " +
+                                      std::to_string(client_.heartbeatAcks()) + " of " +
+                                      std::to_string(heartbeats) + " heartbeats");
+        }
+    }
+
     const Scenario& scenario_;
     const RunPlan plan_;
-    BenchGamepad gamepad_;
+    std::unique_ptr<Backend> backend_;
     BenchClient client_;
     BenchLog log_;
     SessionService service_;
@@ -1013,13 +1359,17 @@ std::string fixed(double value, int decimals) {
     return text.data();
 }
 
-void reportRun(const Scenario& scenario, int rep, int reps, const ScenarioResult& result) {
-    std::string line = std::string("[") + scenario.id + " rep " + std::to_string(rep + 1) + "/" +
-                       std::to_string(reps) + "]";
+void reportRun(BackendMode backend, const Scenario& scenario, int rep, int reps,
+               const ScenarioResult& result) {
+    std::string line = std::string("[") + backendName(backend) + " " + scenario.id + " rep " +
+                       std::to_string(rep + 1) + "/" + std::to_string(reps) + "]";
     for (const DishRow& row : result.rows) {
         line += " " + row.dish + ": frames " + std::to_string(row.frames) + " p99.9 " +
                 fixed(row.p999Us, 1) + " us max " + fixed(row.maxUs, 1) + " us drops " +
-                std::to_string(row.drops) + " refused " + std::to_string(row.refused) + ";";
+                std::to_string(row.drops) + " refused " + std::to_string(row.refused);
+        if (row.motion != 0) line += " motion " + std::to_string(row.motion);
+        if (row.heartbeats != 0) line += " beats " + std::to_string(row.heartbeats);
+        line += ";";
     }
     if (result.putFired) line += " put " + fixed(result.putMs, 1) + " ms";
     std::fprintf(stderr, "%s\n", line.c_str());
@@ -1040,16 +1390,16 @@ const ScenarioResult& medianRep(const std::vector<ScenarioResult>& reps) {
     return reps[order[(order.size() - 1) / 2]];
 }
 
-constexpr size_t COLUMN_COUNT = 12;
+constexpr size_t COLUMN_COUNT = 13;
 using Cells = std::array<std::string, COLUMN_COUNT>;
 
 constexpr std::array<const char*, COLUMN_COUNT> MARKDOWN_HEADERS{
-    "scenario", "dish",   "rate Hz",   "frames",         "p50 us", "p99 us",
-    "p99.9 us", "max us", "over 1 ms", "longest gap ms", "drops",  "refused"};
+    "backend",  "scenario", "dish",      "rate Hz",        "frames", "p50 us", "p99 us",
+    "p99.9 us", "max us",   "over 1 ms", "longest gap ms", "drops",  "refused"};
 
 constexpr std::array<const char*, COLUMN_COUNT> CSV_HEADERS{
-    "scenario", "dish",   "rate_hz",  "frames",         "p50_us", "p99_us",
-    "p99_9_us", "max_us", "over_1ms", "longest_gap_ms", "drops",  "refused"};
+    "backend",  "scenario", "dish",     "rate_hz",        "frames", "p50_us", "p99_us",
+    "p99_9_us", "max_us",   "over_1ms", "longest_gap_ms", "drops",  "refused"};
 
 Cells headerCells(const std::array<const char*, COLUMN_COUNT>& names) {
     Cells cells;
@@ -1058,7 +1408,8 @@ Cells headerCells(const std::array<const char*, COLUMN_COUNT>& names) {
 }
 
 Cells rowCells(const DishRow& row) {
-    return Cells{row.scenario,
+    return Cells{row.backend,
+                 row.scenario,
                  row.dish,
                  std::to_string(row.rateHz),
                  std::to_string(row.frames),
@@ -1084,7 +1435,7 @@ std::string joinCells(const Cells& cells, const std::string& separator) {
 std::string markdownLine(const Cells& cells) { return "| " + joinCells(cells, " | ") + " |"; }
 
 std::string markdownRule() {
-    constexpr size_t TEXT_COLUMNS = 2;
+    constexpr size_t TEXT_COLUMNS = 3;
     Cells cells;
     for (size_t i = 0; i < COLUMN_COUNT; ++i) cells[i] = i < TEXT_COLUMNS ? "---" : "---:";
     return markdownLine(cells);
@@ -1104,16 +1455,32 @@ bool writeCsv(const std::string& path, const std::vector<DishRow>& rows) {
     return static_cast<bool>(out);
 }
 
-void printBanner(const Options& options, int rxCpu) {
+std::vector<BackendMode> backendsFor(const Options& options) {
+    if (options.smoke) return {BackendMode::Mock, BackendMode::Vigem};
+    return {options.backend};
+}
+
+std::string describeBackends(const std::vector<BackendMode>& backends) {
+    std::string text;
+    for (const BackendMode backend : backends) {
+        if (!text.empty()) text += ", ";
+        text += backendDescription(backend);
+    }
+    return text;
+}
+
+void printBanner(const Options& options, const std::vector<BackendMode>& backends, int rxCpu) {
     const std::string receiver = rxCpu == NO_CPU ? "normal priority, unpinned (no CPU to spare)"
                                                  : "TIME_CRITICAL, cpu " + std::to_string(rxCpu);
     std::printf("frame_path_bench\n");
     std::printf("cpu: %s\n", cpuName().c_str());
     std::printf("build: %s\n", BENCH_BUILD_TYPE);
+    std::printf("backend: %s\n", describeBackends(backends).c_str());
     std::printf("submit-us: %d\n", options.submitUs);
     std::printf("plug-ms: %d\n", options.plugMs);
-    std::printf("rate-a: %d Hz, rate-b: %d Hz, secs: %g, reps: %d%s\n", options.rateA,
-                options.rateB, options.secs, options.reps, options.smoke ? " (smoke)" : "");
+    std::printf("rate-a: %d Hz, rate-b: %d Hz, motion: %d Hz, secs: %g, reps: %d%s\n",
+                options.rateA, options.rateB, options.motionHz, options.secs, options.reps,
+                options.smoke ? " (smoke)" : "");
     std::printf("receiver thread: %s\n\n", receiver.c_str());
     std::fflush(stdout);
 }
@@ -1131,24 +1498,24 @@ bool runScenarioOnce(const Options& options, const Scenario& scenario, const Run
                      int reps, ScenarioResult& out) {
     ScenarioRun run(options, scenario, plan);
     out = run.execute();
-    reportRun(scenario, rep, reps, out);
+    reportRun(plan.backend, scenario, rep, reps, out);
     return out.problems.empty();
 }
 
-bool warmUp(const Options& options, int rxCpu) {
-    const RunPlan plan{SMOKE_SECS, SMOKE_SECS / DEFAULT_SECS, rxCpu};
+bool warmUp(const Options& options, const std::vector<BackendMode>& backends, int rxCpu) {
     std::fprintf(stderr, "warm-up pass, results discarded\n");
     bool healthy = true;
-    for (const Scenario& scenario : SCENARIOS) {
-        ScenarioResult warmResult;
-        healthy = runScenarioOnce(options, scenario, plan, 0, 1, warmResult) && healthy;
+    for (const BackendMode backend : backends) {
+        const RunPlan plan{SMOKE_SECS, SMOKE_SECS / DEFAULT_SECS, rxCpu, backend};
+        for (const Scenario& scenario : SCENARIOS) {
+            ScenarioResult warmResult;
+            healthy = runScenarioOnce(options, scenario, plan, 0, 1, warmResult) && healthy;
+        }
     }
     return healthy;
 }
 
-bool measure(const Options& options, int rxCpu, std::vector<DishRow>& rows) {
-    const double scale = options.smoke ? SMOKE_SECS / DEFAULT_SECS : 1.0;
-    const RunPlan plan{options.secs, scale, rxCpu};
+bool measureBackend(const Options& options, const RunPlan& plan, std::vector<DishRow>& rows) {
     std::vector<std::vector<ScenarioResult>> byScenario(SCENARIOS.size());
     bool healthy = true;
     for (int rep = 0; rep < options.reps; ++rep) {
@@ -1163,6 +1530,19 @@ bool measure(const Options& options, int rxCpu, std::vector<DishRow>& rows) {
     for (const std::vector<ScenarioResult>& reps : byScenario) {
         const ScenarioResult& median = medianRep(reps);
         rows.insert(rows.end(), median.rows.begin(), median.rows.end());
+    }
+    return healthy;
+}
+
+bool measure(const Options& options, const std::vector<BackendMode>& backends, int rxCpu,
+             std::vector<DishRow>& rows) {
+    const double scale = options.smoke ? SMOKE_SECS / DEFAULT_SECS : 1.0;
+    bool healthy = true;
+    for (const BackendMode backend : backends) {
+        const RunPlan plan{options.secs, scale, rxCpu, backend};
+        const size_t before = rows.size();
+        healthy = measureBackend(options, plan, rows) && healthy;
+        if (rows.size() == before) return false;
     }
     return healthy;
 }
@@ -1190,12 +1570,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    const std::vector<BackendMode> backends = backendsFor(options);
     const int rxCpu = chooseReceiverCpu(options.rxCpu);
-    printBanner(options, rxCpu);
+    printBanner(options, backends, rxCpu);
 
-    bool healthy = options.smoke || warmUp(options, rxCpu);
+    bool healthy = options.smoke || warmUp(options, backends, rxCpu);
     std::vector<DishRow> rows;
-    healthy = measure(options, rxCpu, rows) && healthy;
+    healthy = measure(options, backends, rxCpu, rows) && healthy;
     if (rows.empty()) return 1;
 
     printMarkdown(rows);
