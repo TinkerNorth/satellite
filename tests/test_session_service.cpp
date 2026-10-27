@@ -82,6 +82,8 @@ struct MockViGem : IGamepadPort {
     bool lastMouseRight = false;
     bool lastMouseMiddle = false;
     int lastMouseWheel = 0;
+    std::vector<std::thread::id> mouseCallers;
+    std::vector<MouseButtons> mouseButtonLog;
     // Tests synthesize "the platform fired a notification" by invoking these via
     // fireRumble / fireLightbar.
     RumbleCallback capturedRumbleCb;
@@ -178,6 +180,8 @@ struct MockViGem : IGamepadPort {
     }
     bool submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) override {
         submitRelativeMouseCalls++;
+        mouseCallers.push_back(std::this_thread::get_id());
+        mouseButtonLog.push_back(buttons);
         lastMouseDx = dx;
         lastMouseDy = dy;
         lastMouseButton = buttons.left;
@@ -481,6 +485,13 @@ upsert(SessionService& svc, const std::vector<ControllerDescriptor>& descriptors
        bool mouseControl = false, int protocolVersion = PROTOCOL_VERSION) {
     return svc.upsertSession(devId, devName, "192.168.1.100", TEST_KEY, descriptors, mouseControl,
                              protocolVersion);
+}
+
+static bool routeTouch(SessionService& svc, uint32_t token, uint8_t index,
+                       const TouchpadReport& report) {
+    const bool routed = svc.handleTouchpadData(token, index, report);
+    const bool injected = svc.drainPointerForTest();
+    return routed && injected;
 }
 
 static void test_upsert_recordsProtocolVersion() {
@@ -1333,7 +1344,7 @@ static void test_touchpad_mouseStreamDroppedWithoutGrant() {
     tr.finger0.x = 100;
     tr.finger0.y = 100;
     tr.eventTimeMs = 1000;
-    EXPECT(!svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(!routeTouch(svc, r.token, 0, tr));
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
     // Still cached for the debug pane.
     auto snap = svc.getConnectionsSnapshot();
@@ -1353,7 +1364,7 @@ static void test_mouseControl_rePutWithoutRequestRevokes() {
     TouchpadReport tr{};
     tr.finger0.active = true;
     tr.eventTimeMs = 1000;
-    EXPECT(svc.handleTouchpadData(r1.token, 0, tr));
+    EXPECT(routeTouch(svc, r1.token, 0, tr));
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
 
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D",
@@ -1361,7 +1372,7 @@ static void test_mouseControl_rePutWithoutRequestRevokes() {
     EXPECT(!r2.mouseControlGranted);
     EXPECT(!svc.getSessionView(r2.connectionId, "dev1").mouseControlGranted);
     tr.eventTimeMs = 1004;
-    EXPECT(!svc.handleTouchpadData(r2.token, 0, tr)); // dropped, not routed
+    EXPECT(!routeTouch(svc, r2.token, 0, tr)); // dropped, not routed
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
 }
 
@@ -1807,18 +1818,18 @@ static void test_touchpad_mouseMode_deltaAndAnchoring() {
                     /*mouseControl=*/true);
 
     // First sample: no previous frame → no motion, but injected (anchored).
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000)));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 
     // Second sample, same trackingId, dt at the reference spacing → motion.
-    EXPECT(svc.handleTouchpadData(r.token, 0,
-                                  mkTouch(true, 1, 1000, 500, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS)));
+    EXPECT(routeTouch(svc, r.token, 0,
+                      mkTouch(true, 1, 1000, 500, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS)));
     EXPECT(vigem.lastMouseDx > 0);
     EXPECT(vigem.lastMouseDy > 0);
 
     // New trackingId (finger lifted, survivor compacted) → re-anchor, no jump.
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 2, -5000, -5000, 1012)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 2, -5000, -5000, 1012)));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -1832,14 +1843,12 @@ static void test_touchpad_mouseMode_dtScaling() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    svc.handleTouchpadData(r.token, 0,
-                           mkTouch(true, 1, 4000, 0, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 4000, 0, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS));
     int dxReference = vigem.lastMouseDx;
 
     // Same spatial step, twice the dt → roughly half the cursor delta.
-    svc.handleTouchpadData(r.token, 0,
-                           mkTouch(true, 1, 8000, 0, 1000 + 3 * TOUCHPAD_MOUSE_REFERENCE_MS));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 8000, 0, 1000 + 3 * TOUCHPAD_MOUSE_REFERENCE_MS));
     int dxDoubleDt = vigem.lastMouseDx;
     EXPECT(dxReference > 0);
     EXPECT(dxDoubleDt > 0);
@@ -1855,8 +1864,8 @@ static void test_touchpad_mouseMode_duplicateTimestampNoMotion() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 9000, 9000, 1000)); // same eventTime
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 9000, 9000, 1000)); // same eventTime
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -1870,9 +1879,9 @@ static void test_touchpad_mouseMode_gapReanchors() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    svc.handleTouchpadData(r.token, 0,
-                           mkTouch(true, 1, 8000, 8000, 1000 + TOUCHPAD_MOUSE_MAX_GAP_MS + 50));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0,
+               mkTouch(true, 1, 8000, 8000, 1000 + TOUCHPAD_MOUSE_MAX_GAP_MS + 50));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -1886,9 +1895,9 @@ static void test_touchpad_mouseMode_buttonLevel() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000, /*button=*/true));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000, /*button=*/true));
     EXPECT(vigem.lastMouseButton);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1004, /*button=*/false));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1004, /*button=*/false));
     EXPECT(!vigem.lastMouseButton);
 }
 
@@ -1901,7 +1910,7 @@ static void test_touchpad_mouseMode_clickWithoutTouch() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(false, 0, 0, 0, 1000, /*button=*/true)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(false, 0, 0, 0, 1000, /*button=*/true)));
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
     EXPECT(vigem.lastMouseButton);
     EXPECT_EQ(vigem.lastMouseDx, 0);
@@ -1921,14 +1930,14 @@ static void test_touchpad_mouseMode_extendedButtonsAndWheel() {
     tr.rightPressed = true;
     tr.middlePressed = true;
     tr.scrollV = 240;
-    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(routeTouch(svc, r.token, 0, tr));
     EXPECT(!vigem.lastMouseButton);
     EXPECT(vigem.lastMouseRight);
     EXPECT(vigem.lastMouseMiddle);
     EXPECT_EQ(vigem.lastMouseWheel, 240);
 
     TouchpadReport up = mkTouch(false, 0, 0, 0, 1004);
-    EXPECT(svc.handleTouchpadData(r.token, 0, up));
+    EXPECT(routeTouch(svc, r.token, 0, up));
     EXPECT(!vigem.lastMouseRight);
     EXPECT(!vigem.lastMouseMiddle);
     EXPECT_EQ(vigem.lastMouseWheel, 0);
@@ -1945,15 +1954,15 @@ static void test_touchpad_mouseMode_wheelDuplicateSuppressed() {
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
     TouchpadReport tr = mkTouch(false, 0, 0, 0, 1000);
     tr.scrollV = 120;
-    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(routeTouch(svc, r.token, 0, tr));
     EXPECT_EQ(vigem.lastMouseWheel, 120);
     // Byte-identical UDP duplicate: same eventTimeMs, same scroll. Neutralized.
-    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(routeTouch(svc, r.token, 0, tr));
     EXPECT_EQ(vigem.lastMouseWheel, 0);
     // A fresh frame with a newer stamp scrolls again.
     TouchpadReport next = mkTouch(false, 0, 0, 0, 1008);
     next.scrollV = -120;
-    EXPECT(svc.handleTouchpadData(r.token, 0, next));
+    EXPECT(routeTouch(svc, r.token, 0, next));
     EXPECT_EQ(vigem.lastMouseWheel, -120);
 }
 
@@ -1969,29 +1978,29 @@ static void test_touchpad_mouseMode_subPixelRemainder() {
     // 10 wire units / 4 ms ≈ 0.42 px per sample: truncation alone would never
     // move the cursor; the carried remainder must cross 1 px on the 3rd step.
     const uint32_t dt = TOUCHPAD_MOUSE_REFERENCE_MS;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000)); // anchor
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 10, -10, 1000 + dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000)); // anchor
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 10, -10, 1000 + dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     // A dt <= 0 resend emits no motion but must NOT drop the remainder…
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     // …so the next real step crosses ±1 px (0.42 × 3 ≈ 1.26).
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 30, -30, 1000 + 3 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 30, -30, 1000 + 3 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 1);
     EXPECT_EQ(vigem.lastMouseDy, -1);
 
     // A MAX_GAP re-anchor DOES drop the remainder: grow it to ~0.68, gap, then
     // step; from a clean slate the step stays sub-pixel (0.42), but a wrongly
     // kept remainder would cross 1 px (1.10).
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 40, -40, 1000 + 4 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 40, -40, 1000 + 4 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 0); // remainder now ≈ 0.68
     const uint32_t tGap = 1000 + 4 * dt + TOUCHPAD_MOUSE_MAX_GAP_MS + 1;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 50, -50, tGap));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 50, -50, tGap));
     EXPECT_EQ(vigem.lastMouseDx, 0); // re-anchored
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 60, -60, tGap + dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 60, -60, tGap + dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -4372,12 +4381,12 @@ static void test_touchpad_refusedInjectionCountedAndLoggedOncePerRun() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1",
                     "Pixel", /*mouseControl=*/true);
     vigem.submitRelativeMouseReturnVal = false;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)0);
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1032)));
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1500, 1500, 1048)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 1000, 1000, 1032)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 1500, 1500, 1048)));
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)3);
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
     EXPECT_EQ(log.countContaining("refused to inject pointer input for Pixel"), 1);
@@ -4385,25 +4394,25 @@ static void test_touchpad_refusedInjectionCountedAndLoggedOncePerRun() {
 
     TEST("touchpad: the first accepted frame after a refusal run logs the recovery and its length");
     vigem.submitRelativeMouseReturnVal = true;
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 2000, 2000, 1064)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 2000, 2000, 1064)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)1);
     EXPECT_EQ(log.countContaining("accepting pointer input for Pixel again after 3 refused frames"),
               1);
 
     TEST("touchpad: a new refusal run inside the log interval is counted but not logged again");
     vigem.submitRelativeMouseReturnVal = false;
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 2500, 2500, 1080)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 2500, 2500, 1080)));
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)4);
     EXPECT_EQ(log.countContaining("refused to inject pointer input"), 1);
     vigem.submitRelativeMouseReturnVal = true;
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 3000, 3000, 1096)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 3000, 3000, 1096)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)2);
     EXPECT_EQ(log.countContaining("accepting pointer input"), 1);
 
     TEST("touchpad: once the log interval has lapsed the next refusal run is logged");
     svc.backdatePointerRefusalLogForTest(r.token, POINTER_REFUSAL_LOG_INTERVAL_SEC + 1);
     vigem.submitRelativeMouseReturnVal = false;
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 3500, 3500, 1112)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 3500, 3500, 1112)));
     EXPECT_EQ(log.countContaining("refused to inject pointer input"), 2);
 }
 
@@ -4416,21 +4425,21 @@ static void test_touchpad_idleFramesDoNotTouchTheRefusalRun() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1",
                     "Pixel", /*mouseControl=*/true);
     vigem.submitRelativeMouseReturnVal = false;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
     EXPECT_EQ(log.countContaining("refused to inject pointer input"), 1);
     vigem.submitRelativeMouseReturnVal = true;
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1032)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 500, 500, 1032)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)1);
     EXPECT_EQ(log.countContaining("accepting pointer input"), 0);
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1048)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 1000, 1000, 1048)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)1);
     EXPECT_EQ(log.countContaining("accepting pointer input for Pixel again after 1 refused frame"),
               1);
 
     TEST("touchpad: a button edge with no motion is an injection attempt");
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1064, /*button=*/true)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 1000, 1000, 1064, /*button=*/true)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)2);
 }
 
@@ -4488,10 +4497,13 @@ struct PointerSessionFixture {
         TouchpadReport report = mkTouch(true, 1, 0, 0, 1000, true);
         report.rightPressed = true;
         report.middlePressed = true;
-        EXPECT(svc_.handleTouchpadData(session_.token, 0, report));
+        EXPECT(routeTouch(svc_, session_.token, 0, report));
     }
 
-    void expectReleased() const {
+    void settle() { svc_.drainPointerForTest(); }
+
+    void expectReleased() {
+        settle();
         EXPECT(!backend_.lastMouseButton);
         EXPECT(!backend_.lastMouseRight);
         EXPECT(!backend_.lastMouseMiddle);
@@ -4563,7 +4575,7 @@ static void test_pointer_rotationReanchorsGesture() {
     const auto replacement = upsert(
         f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "pointer", "D", true);
     f.expectReleased();
-    EXPECT(f.svc_.handleTouchpadData(replacement.token, 0, mkTouch(true, 1, 30000, 30000, 1004)));
+    EXPECT(routeTouch(f.svc_, replacement.token, 0, mkTouch(true, 1, 30000, 30000, 1004)));
     EXPECT_EQ(f.backend_.lastMouseDx, 0);
     EXPECT_EQ(f.backend_.lastMouseDy, 0);
 }
@@ -4588,6 +4600,7 @@ static void test_pointer_rejectedReplugPreservesOwnership() {
         makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, 0, TOUCHPAD_MODE_MOUSE);
     EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
     EXPECT_EQ(applied.result, APPLY_ERR_REPLUG_FAIL);
+    f.settle();
     EXPECT(f.backend_.lastMouseButton);
     EXPECT(f.backend_.lastMouseRight);
     EXPECT(f.backend_.lastMouseMiddle);
@@ -4599,15 +4612,16 @@ static void test_pointer_sharedOwnershipSurvivesRelease() {
     f.holdButtons();
     const auto other = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)},
                               "other", "Other", true);
-    EXPECT(f.svc_.handleTouchpadData(other.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(routeTouch(f.svc_, other.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
     EXPECT(f.backend_.lastMouseRight);
     EXPECT(f.backend_.lastMouseMiddle);
     EXPECT_EQ(
         f.svc_.closeSessionById(f.session_.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    f.settle();
     EXPECT(f.backend_.lastMouseButton);
     EXPECT(!f.backend_.lastMouseRight);
     EXPECT(!f.backend_.lastMouseMiddle);
-    EXPECT(f.svc_.handleTouchpadData(other.token, 0, mkTouch(false, 1, 0, 0, 1004)));
+    EXPECT(routeTouch(f.svc_, other.token, 0, mkTouch(false, 1, 0, 0, 1004)));
     f.expectReleased();
 }
 
@@ -4619,8 +4633,9 @@ static void test_pointer_twoSlotsOwnButtonsIndependently() {
     const ControllerDescriptor desc = makeDesc(1, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE);
     EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
     f.holdButtons();
-    EXPECT(f.svc_.handleTouchpadData(f.session_.token, 1, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(routeTouch(f.svc_, f.session_.token, 1, mkTouch(true, 1, 0, 0, 1000, true)));
     EXPECT(f.svc_.removeController(f.session_.connectionId, "pointer", 0, epoch));
+    f.settle();
     EXPECT(f.backend_.lastMouseButton);
     EXPECT(!f.backend_.lastMouseRight);
     EXPECT(!f.backend_.lastMouseMiddle);
@@ -4648,13 +4663,127 @@ static void test_pointer_failedReleaseRetriesDuringMaintenance() {
     f.backend_.submitRelativeMouseReturnVal = false;
     EXPECT_EQ(
         f.svc_.closeSessionById(f.session_.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    f.settle();
     const int beforeRetry = f.backend_.submitRelativeMouseCalls;
     f.backend_.submitRelativeMouseReturnVal = true;
     f.svc_.refreshIdleInput();
+    f.settle();
     EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
     f.expectReleased();
     f.svc_.refreshIdleInput();
+    f.settle();
     EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+}
+
+static void test_pointer_framesInjectInOrderOnThePointerThread() {
+    TEST("pointer: mouse frames reach the host in the order they arrived");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    const int frames = 60;
+    for (int i = 0; i < frames; i++) {
+        TouchpadReport tr =
+            mkTouch(true, 1, static_cast<int16_t>(i * 50), 0,
+                    1000 + static_cast<uint32_t>(i) * TOUCHPAD_MOUSE_REFERENCE_MS, i % 3 == 0);
+        tr.rightPressed = i % 2 == 0;
+        EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    }
+    EXPECT(svc.drainPointerForTest());
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, frames);
+    EXPECT_EQ((int)vigem.mouseButtonLog.size(), frames);
+    int outOfOrder = 0;
+    for (size_t i = 0; i < vigem.mouseButtonLog.size(); i++) {
+        const MouseButtons& seen = vigem.mouseButtonLog[i];
+        if (seen.left != (i % 3 == 0) || seen.right != (i % 2 == 0)) outOfOrder++;
+    }
+    EXPECT_EQ(outOfOrder, 0);
+
+    TEST("pointer: the injections run on the pointer thread, not the receive thread");
+    const std::thread::id pointer = svc.pointerThreadForTest();
+    EXPECT(pointer != std::thread::id{});
+    EXPECT(pointer != std::this_thread::get_id());
+    int foreign = 0;
+    for (const std::thread::id caller : vigem.mouseCallers) {
+        if (caller != pointer) foreign++;
+    }
+    EXPECT_EQ(foreign, 0);
+}
+
+static void test_pointer_refusedFrameRetriesDuringMaintenance() {
+    TEST("pointer: a refused frame leaves a retry for the maintenance tick");
+    PointerSessionFixture f;
+    f.backend_.submitRelativeMouseReturnVal = false;
+    EXPECT(!routeTouch(f.svc_, f.session_.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
+    const int beforeRetry = f.backend_.submitRelativeMouseCalls;
+    f.backend_.submitRelativeMouseReturnVal = true;
+    f.svc_.refreshIdleInput();
+    f.settle();
+    EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+    EXPECT(f.backend_.lastMouseButton);
+    EXPECT_EQ(f.backend_.lastMouseDx, 0);
+    EXPECT_EQ(f.backend_.lastMouseDy, 0);
+    f.svc_.refreshIdleInput();
+    f.settle();
+    EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+}
+
+static void test_pointer_nothingButThePointerThreadInjects() {
+    TEST("pointer: frames, releases and retries all inject from the pointer thread alone");
+    PointerSessionFixture f;
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer",
+                                  makeDesc(1, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE),
+                                  applied, epoch));
+    f.holdButtons();
+    EXPECT(routeTouch(f.svc_, f.session_.token, 1, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer",
+                                  makeDesc(1, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_OFF), applied,
+                                  epoch));
+    f.backend_.submitRelativeMouseReturnVal = false;
+    EXPECT(f.svc_.removeController(f.session_.connectionId, "pointer", 0, epoch));
+    f.settle();
+    f.backend_.submitRelativeMouseReturnVal = true;
+    f.svc_.refreshIdleInput();
+    f.expectReleased();
+    const auto other = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)},
+                              "pointer", "D", true);
+    EXPECT(routeTouch(f.svc_, other.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT_EQ(f.svc_.closeSessionById(other.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    f.svc_.closeAllSessions(CLOSE_REASON_SHUTDOWN);
+    f.expectReleased();
+    const std::thread::id pointer = f.svc_.pointerThreadForTest();
+    EXPECT(pointer != std::thread::id{});
+    EXPECT(f.backend_.mouseCallers.size() >= 6);
+    int foreign = 0;
+    for (const std::thread::id caller : f.backend_.mouseCallers) {
+        if (caller != pointer) foreign++;
+    }
+    EXPECT_EQ(foreign, 0);
+}
+
+static void test_receivePath_mouseFramesNeverWaitForTheServiceLock() {
+    TEST(
+        "receive path: a mouse-mode touchpad frame is routed without waiting for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    bool routed = false;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        routed = svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000, true));
+    }));
+    EXPECT(routed);
+    EXPECT(svc.drainPointerForTest());
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
+    EXPECT(vigem.lastMouseButton);
 }
 
 struct ContendedRumbleFixture {
@@ -4755,6 +4884,10 @@ int main() {
     test_pointer_twoSlotsOwnButtonsIndependently();
     test_pointer_replugReleasesButtons();
     test_pointer_failedReleaseRetriesDuringMaintenance();
+    test_pointer_framesInjectInOrderOnThePointerThread();
+    test_pointer_refusedFrameRetriesDuringMaintenance();
+    test_pointer_nothingButThePointerThreadInjects();
+    test_receivePath_mouseFramesNeverWaitForTheServiceLock();
     test_rumble_stopSurvivesContention();
     test_rumble_latestNotificationWins();
     test_rumble_retiredSerialDiscardsPendingState();

@@ -101,6 +101,7 @@ struct HotSlot {
     std::atomic<uint32_t> ctrl[MAX_CONTROLLERS_PER_CONN]{};
     std::atomic<uint32_t> padInfo[MAX_CONTROLLERS_PER_CONN]{};
     std::atomic<uint32_t> padGen[MAX_CONTROLLERS_PER_CONN]{};
+    std::atomic<uint32_t> padStamp[MAX_CONTROLLERS_PER_CONN]{};
     std::atomic<uint32_t> session{0};
     std::atomic<uint32_t> row{0};
     std::atomic<uint32_t> nameLength{0};
@@ -196,12 +197,6 @@ struct alignas(64) RxPad {
 
     uint32_t ownGen = 0;
     uint32_t ownFlags = 0;
-    TouchpadReport lastTouchpad{};
-    bool lastTouchpadValid = false;
-    uint8_t lastTouchpadMode = 0;
-    uint32_t lastTouchpadKeyEpoch = 0;
-    float touchpadMouseRemX = 0.0f;
-    float touchpadMouseRemY = 0.0f;
     int64_t micWindowStart = 0;
     uint16_t micPacketsInWindow = 0;
 

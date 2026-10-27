@@ -841,6 +841,7 @@ struct Controller {
     std::chrono::steady_clock::time_point hapticRumbleSentAt{};
     std::chrono::steady_clock::time_point hapticRumbleExpiresAt{};
     uint32_t plugGen = 0;
+    uint32_t pointerStamp = 0;
     uint8_t lightbarR = 0;
     uint8_t lightbarG = 0;
     uint8_t lightbarB = 0;
@@ -895,9 +896,6 @@ struct Connection {
     // "works, but update for the full feature set".
     int protocolVersion = PROTOCOL_VERSION;
     bool stallLogged = false;
-    uint32_t pointerRefusedRun = 0;
-    bool pointerRefusalLogged = false;
-    std::chrono::steady_clock::time_point pointerRefusalLoggedAt;
 };
 
 struct SessionEndpoint {

@@ -128,6 +128,7 @@ include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
+    src/core/pointer_worker.cpp
     src/core/config_store.cpp
     src/core/catalog.cpp
     src/core/backend_registry.cpp
@@ -1345,6 +1346,7 @@ if(WIN32)
             src/core/config_io.cpp
             src/core/config_store.cpp
             src/core/log_writer.cpp
+            src/core/pointer_worker.cpp
             src/core/session_service.cpp
             src/net/admin_json.cpp
             src/net/inner_dispatch.cpp

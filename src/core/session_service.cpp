@@ -34,6 +34,8 @@ uint32_t padInfoWord(const Controller& ctrl) {
 
 uint32_t padGenWord(const Controller& ctrl) { return ctrl.active ? ctrl.plugGen : 0u; }
 
+uint32_t padStampWord(const Controller& ctrl) { return ctrl.active ? ctrl.pointerStamp : 0u; }
+
 uint32_t sessionWord(const Connection& conn) {
     return hotSessionWord(conn.epoch, conn.mouseControlGranted);
 }
@@ -45,6 +47,7 @@ void publishControllers(const Connection& conn) {
         hot.ctrl[i].store(hotCtrlWord(ctrl.active, ctrl.serialNo), std::memory_order_relaxed);
         hot.padInfo[i].store(padInfoWord(ctrl), std::memory_order_relaxed);
         hot.padGen[i].store(padGenWord(ctrl), std::memory_order_relaxed);
+        hot.padStamp[i].store(padStampWord(ctrl), std::memory_order_relaxed);
     }
     hot.session.store(sessionWord(conn), std::memory_order_relaxed);
 }
@@ -57,6 +60,7 @@ bool controllersPublished(const Connection& conn) {
         if (hot.ctrl[i].load(std::memory_order_relaxed) != word) return false;
         if (hot.padInfo[i].load(std::memory_order_relaxed) != padInfoWord(ctrl)) return false;
         if (hot.padGen[i].load(std::memory_order_relaxed) != padGenWord(ctrl)) return false;
+        if (hot.padStamp[i].load(std::memory_order_relaxed) != padStampWord(ctrl)) return false;
     }
     return hot.session.load(std::memory_order_relaxed) == sessionWord(conn);
 }
@@ -225,7 +229,7 @@ const Connection* SessionService::findByConnectionId(const std::string& connecti
 void SessionService::retireConnectionLocked(Connection& conn, std::vector<RetiredSerial>& retired) {
     for (auto& ctrl : conn.controllers) {
         if (ctrl.active && ctrl.serialNo != 0) {
-            releasePointerLocked(ctrl.serialNo);
+            releasePointerLocked(ctrl);
             retired.push_back(RetiredSerial{ctrl.serialNo, false});
             ctrl.active = false;
             ctrl.serialNo = 0;
@@ -449,6 +453,7 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.audio.reset();
     ctrl.plugGen = ++nextPlugGen_;
     if (ctrl.plugGen == 0) ctrl.plugGen = ++nextPlugGen_;
+    ctrl.pointerStamp = takePointerStampLocked();
 }
 
 void SessionService::removePadLocked(Connection& conn, Controller& ctrl,
@@ -462,7 +467,7 @@ void SessionService::removePadLocked(Connection& conn, Controller& ctrl,
 void SessionService::vacatePadLocked(Connection& conn, Controller& ctrl,
                                      std::vector<RetiredSerial>& retired) {
     if (ctrl.serialNo != 0) {
-        releasePointerLocked(ctrl.serialNo);
+        releasePointerLocked(ctrl);
         retired.push_back(RetiredSerial{ctrl.serialNo, false});
     }
     ctrl.active = false;
@@ -638,7 +643,7 @@ void SessionService::commitPadLocked(Connection& conn, PadChange& pad,
 
 void SessionService::updatePadLocked(Controller& ctrl, const ControllerDescriptor& desc) {
     const uint8_t mode = safeTouchpadMode(desc.touchpadMode);
-    if (mode != ctrl.touchpadMode) releasePointerLocked(ctrl.serialNo);
+    if (mode != ctrl.touchpadMode) releasePointerLocked(ctrl);
     ctrl.controllerType = desc.type;
     ctrl.caps = desc.caps;
     ctrl.touchpadMode = mode;
@@ -697,7 +702,7 @@ void SessionService::replugPadLocked(Connection& conn, Controller& ctrl, PadChan
                         controllerTypeLabel(ctrl.controllerType));
         return;
     }
-    releasePointerLocked(ctrl.serialNo);
+    releasePointerLocked(ctrl);
     retired.push_back(RetiredSerial{ctrl.serialNo, false});
     ctrl.serialNo = pad.serial;
     takeDescriptorLocked(ctrl, pad.desc);
@@ -1096,9 +1101,7 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
 
 void SessionService::refreshIdleInput() {
     backend_.refreshIdleInput();
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    if (!pointerRetryPending_) return;
-    pointerRetryPending_ = !submitPointerLocked(0, 0, 0);
+    if (pointer_.retryPending()) pointer_.post(PointerCommand{});
 }
 
 int SessionService::refreshRumble() {
@@ -1160,10 +1163,12 @@ bool SessionService::readPad(uint32_t token, uint8_t ctrlIdx, PadRead& out) cons
         slotToken = slot.token.load(std::memory_order_relaxed);
         out.keyEpoch = slot.keyEpoch.load(std::memory_order_relaxed);
         out.session = slot.session.load(std::memory_order_relaxed);
+        out.row = slot.row.load(std::memory_order_relaxed);
         if (!knownIdx) return;
         word = slot.ctrl[ctrlIdx].load(std::memory_order_relaxed);
         out.info = slot.padInfo[ctrlIdx].load(std::memory_order_relaxed);
         out.gen = slot.padGen[ctrlIdx].load(std::memory_order_relaxed);
+        out.stamp = slot.padStamp[ctrlIdx].load(std::memory_order_relaxed);
     });
     if (!stable || slotToken != token) return false;
     out.slot = index;
@@ -1188,10 +1193,6 @@ RxPad& SessionService::rxPadFor(const PadRead& pad) {
     noteRxWrite();
     rx.ownGen = pad.gen;
     rx.ownFlags = 0;
-    rx.lastTouchpad = TouchpadReport{};
-    rx.lastTouchpadValid = false;
-    rx.touchpadMouseRemX = 0.0f;
-    rx.touchpadMouseRemY = 0.0f;
     rx.micWindowStart = 0;
     rx.micPacketsInWindow = 0;
     rx.beginWrite();
@@ -1228,68 +1229,6 @@ bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const Mot
     return delivered;
 }
 
-SessionService::PointerMotion SessionService::pointerMotion(const TouchpadReport& prev,
-                                                            bool prevValid,
-                                                            const TouchpadReport& report,
-                                                            float& remX, float& remY) {
-    PointerMotion motion;
-    // Delta only while finger 0 is down across both frames AND the
-    // trackingId matches: a lifted finger compacts the survivor into slot 0
-    // with a new id, and without the check the cursor teleports. Scale by
-    // REFERENCE_MS/dt so velocity is dt-independent (Android's first MOVE
-    // lands ~16 ms late, otherwise a visible first-touch jump).
-    const bool continuous = prevValid && prev.finger0.active && report.finger0.active &&
-                            prev.finger0.trackingId == report.finger0.trackingId;
-    if (continuous) {
-        // Unsigned subtract through int32_t handles the u32 uptime wrap and
-        // cheaply flags out-of-order packets (dt <= 0) in one branch.
-        const int32_t dt_ms = static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs);
-        if (dt_ms <= 0) {
-            // Duplicate/out-of-order: no motion to integrate. Preserve the
-            // remainder so a slow drag still accumulates across resends.
-        } else if (dt_ms > TOUCHPAD_MOUSE_MAX_GAP_MS) {
-            // Big gap (dish paused/backgrounded/stalled). Re-anchor: no
-            // motion, drop the remainder so a stale one doesn't catch up.
-            remX = 0.0f;
-            remY = 0.0f;
-        } else {
-            const int32_t dt_clamped =
-                dt_ms < TOUCHPAD_MOUSE_MIN_DT_MS ? TOUCHPAD_MOUSE_MIN_DT_MS : dt_ms;
-            const float scale =
-                static_cast<float>(TOUCHPAD_MOUSE_REFERENCE_MS) / static_cast<float>(dt_clamped);
-            const float fx = static_cast<float>(report.finger0.x - prev.finger0.x) *
-                                 TOUCHPAD_MOUSE_SENSITIVITY * scale +
-                             remX;
-            const float fy = static_cast<float>(report.finger0.y - prev.finger0.y) *
-                                 TOUCHPAD_MOUSE_SENSITIVITY * scale +
-                             remY;
-            motion.dx = static_cast<int>(fx);
-            motion.dy = static_cast<int>(fy);
-            // Keep the sub-pixel remainder so a slow drag still moves.
-            remX = fx - static_cast<float>(motion.dx);
-            remY = fy - static_cast<float>(motion.dy);
-        }
-    } else {
-        remX = 0.0f;
-        remY = 0.0f;
-    }
-    motion.buttons.left = report.buttonPressed;
-    motion.buttons.right = report.rightPressed;
-    motion.buttons.middle = report.middlePressed;
-    // The wheel is an event: a duplicated or out-of-order frame (same/older
-    // eventTimeMs) must not scroll twice. Fresh frames pass it through.
-    motion.wheel = report.scrollV;
-    if (prevValid && static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs) <= 0) {
-        motion.wheel = 0;
-    }
-    motion.buttonsChanged =
-        prevValid ? (prev.buttonPressed != report.buttonPressed ||
-                     prev.rightPressed != report.rightPressed ||
-                     prev.middlePressed != report.middlePressed)
-                  : (report.buttonPressed || report.rightPressed || report.middlePressed);
-    return motion;
-}
-
 bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
                                         const TouchpadReport& report) {
     rx_.enter();
@@ -1298,22 +1237,11 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         rx_.exit();
         return false;
     }
-    RxPad& rx = rxPadFor(pad);
     const uint8_t mode = hotPadMode(pad.info);
-
-    // Capture the previous sample BEFORE overwriting: relative-mouse mode needs
-    // the finger-0 delta between consecutive frames.
-    const TouchpadReport prev = rx.lastTouchpad;
-    const bool prevValid = rx.lastTouchpadValid && rx.lastTouchpadMode == mode &&
-                           rx.lastTouchpadKeyEpoch == pad.keyEpoch;
 
     // Cache for the web-UI debug pane regardless of routing mode / backend.
     noteRxWrite();
-    rx.lastTouchpad = report;
-    rx.lastTouchpadValid = true;
-    rx.lastTouchpadMode = mode;
-    rx.lastTouchpadKeyEpoch = pad.keyEpoch;
-    publishRxTouchpad(rx, report, mode, pad.keyEpoch);
+    publishRxTouchpad(rxPadFor(pad), report, mode, pad.keyEpoch);
 
     bool ok = false;
     switch (mode) {
@@ -1324,10 +1252,13 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
         // Host-input streams are only valid for session-granted features;
         // ungranted streams are dropped (cached above for the debug pane).
         if (hotSessionMouse(pad.session)) {
-            const PointerMotion motion =
-                pointerMotion(prev, prevValid, report, rx.touchpadMouseRemX, rx.touchpadMouseRemY);
-            rx_.exit();
-            return injectPointerFrame(token, ctrlIdx, pad, motion);
+            PointerFrame frame;
+            frame.serial = pad.serial;
+            frame.stamp = pad.stamp;
+            frame.slot = pad.slot;
+            frame.row = pad.row;
+            frame.report = report;
+            ok = pointer_.pushFrame(frame);
         }
         break;
 
@@ -1342,79 +1273,25 @@ bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
     return ok;
 }
 
-bool SessionService::injectPointerFrame(uint32_t token, uint8_t ctrlIdx, const PadRead& pad,
-                                        const PointerMotion& motion) {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
-    Connection& conn = it->second;
-    const Controller& ctrl = conn.controllers[ctrlIdx];
-    const bool bound = ctrl.active && ctrl.serialNo == pad.serial && ctrl.plugGen == pad.gen &&
-                       ctrl.touchpadMode == TOUCHPAD_MODE_MOUSE && conn.mouseControlGranted;
-    if (!bound) return false;
-    pointerButtons_[pad.serial] = motion.buttons;
-    const bool ok = submitPointerLocked(motion.dx, motion.dy, motion.wheel);
-    pointerRetryPending_ = !ok;
-    if (motion.dx != 0 || motion.dy != 0 || motion.wheel != 0 || motion.buttonsChanged) {
-        recordPointerInjectionLocked(conn, ok);
-    }
-    return ok;
+uint32_t SessionService::takePointerStampLocked() {
+    if (++nextPointerStamp_ == 0) ++nextPointerStamp_;
+    return nextPointerStamp_;
 }
 
-bool SessionService::submitPointerLocked(const int dx, const int dy, const int wheel) {
-    MouseButtons buttons;
-    for (const auto& owner : pointerButtons_) {
-        buttons.left = buttons.left || owner.left;
-        buttons.right = buttons.right || owner.right;
-        buttons.middle = buttons.middle || owner.middle;
-    }
-    return backend_.submitRelativeMouse(dx, dy, buttons, wheel);
-}
-
-void SessionService::releasePointerLocked(const uint32_t serial) {
-    if (serial == 0 || serial > MAX_BACKEND_CONTROLLERS) return;
-    const MouseButtons held = pointerButtons_[serial];
-    const bool anyHeld = held.left || held.right || held.middle;
-    if (!anyHeld) return;
-    pointerButtons_[serial] = MouseButtons{};
-    pointerRetryPending_ = !submitPointerLocked(0, 0, 0);
+void SessionService::releasePointerLocked(Controller& ctrl) {
+    if (ctrl.serialNo == 0 || ctrl.serialNo > MAX_BACKEND_CONTROLLERS) return;
+    ctrl.pointerStamp = takePointerStampLocked();
+    PointerCommand release;
+    release.kind = PointerCommand::Kind::Release;
+    release.serial = ctrl.serialNo;
+    release.stamp = ctrl.pointerStamp;
+    pointer_.post(release);
 }
 
 void SessionService::releaseConnectionPointerLocked(Connection& conn) {
     for (auto& ctrl : conn.controllers) {
-        if (ctrl.active) releasePointerLocked(ctrl.serialNo);
+        if (ctrl.active) releasePointerLocked(ctrl);
     }
-}
-
-void SessionService::recordPointerInjectionLocked(Connection& conn, bool ok) {
-    if (ok) {
-        pointerInjected_.fetch_add(1, std::memory_order_relaxed);
-        if (conn.pointerRefusalLogged) {
-            log_.logMsg(LogLevel::INFO, "service",
-                        "Host is accepting pointer input for " + conn.deviceName + " again after " +
-                            std::to_string(conn.pointerRefusedRun) +
-                            (conn.pointerRefusedRun == 1 ? " refused frame" : " refused frames"));
-        }
-        conn.pointerRefusedRun = 0;
-        conn.pointerRefusalLogged = false;
-        return;
-    }
-    pointerRefused_.fetch_add(1, std::memory_order_relaxed);
-    conn.pointerRefusedRun++;
-    if (conn.pointerRefusedRun != 1) return;
-    const auto now = std::chrono::steady_clock::now();
-    const bool loggedBefore = conn.pointerRefusalLoggedAt.time_since_epoch().count() != 0;
-    if (loggedBefore && now - conn.pointerRefusalLoggedAt <
-                            std::chrono::seconds(POINTER_REFUSAL_LOG_INTERVAL_SEC)) {
-        return;
-    }
-    conn.pointerRefusalLoggedAt = now;
-    conn.pointerRefusalLogged = true;
-    log_.logMsg(LogLevel::WARN, "service",
-                "Host refused to inject pointer input for " + conn.deviceName +
-                    "; the frames arrive but the OS drops them (on Windows this happens while "
-                    "the foreground window belongs to a process with higher privileges than "
-                    "Satellite)");
 }
 
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
@@ -2160,12 +2037,7 @@ AudioStreamCounts SessionService::audioCounts() const {
     return c;
 }
 
-PointerCounts SessionService::pointerCounts() const {
-    PointerCounts c;
-    c.injected = pointerInjected_.load(std::memory_order_relaxed);
-    c.refused = pointerRefused_.load(std::memory_order_relaxed);
-    return c;
-}
+PointerCounts SessionService::pointerCounts() const { return pointer_.counts(); }
 
 #ifdef SATELLITE_BUILD_TESTS
 void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
@@ -2210,8 +2082,12 @@ void SessionService::backdatePointerRefusalLogForTest(uint32_t token, int second
     std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
-    it->second.pointerRefusalLoggedAt =
-        std::chrono::steady_clock::now() - std::chrono::seconds(secondsAgo);
+    PointerCommand backdate;
+    backdate.kind = PointerCommand::Kind::BackdateRefusalLog;
+    backdate.slot = it->second.slot;
+    backdate.row = it->second.row;
+    backdate.seconds = secondsAgo;
+    pointer_.post(backdate);
 }
 
 SessionService::HeartbeatAckView SessionService::coldHeartbeatAckForTest(uint32_t token) const {
@@ -2226,6 +2102,10 @@ SessionService::HeartbeatAckView SessionService::coldHeartbeatAckForTest(uint32_
     view.activeBitmap = activeBitmapLocked(it->second);
     return view;
 }
+
+bool SessionService::drainPointerForTest() { return pointer_.drainForTest(); }
+
+std::thread::id SessionService::pointerThreadForTest() const { return pointer_.threadIdForTest(); }
 
 void SessionService::bindReceiveThreadForTest() {
     rxOwnerForTest_.store(std::this_thread::get_id(), std::memory_order_relaxed);

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "hot_table.h"
+#include "pointer_worker.h"
 #include "ports.h"
 #include "tracked_mutex.h"
 #include <array>
@@ -322,6 +323,8 @@ class SessionService {
         uint16_t activeBitmap = 0;
     };
     HeartbeatAckView coldHeartbeatAckForTest(uint32_t token) const;
+    bool drainPointerForTest();
+    std::thread::id pointerThreadForTest() const;
 #endif
 
   private:
@@ -360,8 +363,6 @@ class SessionService {
         std::atomic<uint64_t> hapticReducedToRumble{0};
     };
     AudioCounters audio_;
-    std::atomic<uint64_t> pointerInjected_{0};
-    std::atomic<uint64_t> pointerRefused_{0};
     static void bumpAudio(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
     HotTable hot_;
@@ -378,23 +379,14 @@ class SessionService {
         uint32_t serial = 0;
         uint32_t info = 0;
         uint32_t gen = 0;
-    };
-    struct PointerMotion {
-        int dx = 0;
-        int dy = 0;
-        int wheel = 0;
-        MouseButtons buttons;
-        bool buttonsChanged = false;
+        uint32_t stamp = 0;
+        uint32_t row = 0;
     };
     bool readPad(uint32_t token, uint8_t ctrlIdx, PadRead& out) const;
     RxPad& rxPadFor(const PadRead& pad);
     void noteRxWrite();
     bool sessionName(int slot, uint32_t keyEpoch, std::string& out) const;
-    static PointerMotion pointerMotion(const TouchpadReport& prev, bool prevValid,
-                                       const TouchpadReport& report, float& remX, float& remY);
     bool dropMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint8_t cause);
-    bool injectPointerFrame(uint32_t token, uint8_t ctrlIdx, const PadRead& pad,
-                            const PointerMotion& motion);
     bool deliverMicFrame(uint32_t token, uint8_t ctrlIdx, const PadRead& pad, uint16_t seq,
                          const uint8_t* opus, size_t opusLen);
     std::array<RxPad, MAX_BACKEND_CONTROLLERS + 1> rxPads_{};
@@ -404,13 +396,12 @@ class SessionService {
     std::atomic<std::thread::id> rxOwnerForTest_{};
     std::atomic<uint64_t> foreignRxWrites_{0};
 #endif
+    PointerWorker pointer_{backend_, log_, hot_};
 
     TrackedMutex topoMtx_{"service.topology"};
     mutable TrackedMutex mtx_{"service.state"}; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
-    MouseButtons pointerButtons_[MAX_BACKEND_CONTROLLERS + 1]{};
-    bool pointerRetryPending_ = false;
     std::atomic<uint64_t> pendingRumble_[MAX_BACKEND_CONTROLLERS + 1]{};
     // A serial whose unplug could not be confirmed is quarantined (never
     // reallocated) until the backend bus closes; a zombie target on it would
@@ -421,6 +412,7 @@ class SessionService {
     uint32_t serialScanStart_ = 0;
     uint32_t nextPlugGen_ = 0;
     uint32_t nextRow_ = 0;
+    uint32_t nextPointerStamp_ = 0;
 
     struct PadChange {
         enum class Kind : uint8_t { Refuse, Update, Add, Replug, ReplugInPlace, Remove };
@@ -543,11 +535,10 @@ class SessionService {
     void releaseSerial(uint32_t serial);
     void quarantineSerial(uint32_t serial);
     int countGlobalActiveControllers() const;
-    bool submitPointerLocked(int dx, int dy, int wheel);
-    void releasePointerLocked(uint32_t serial);
+    uint32_t takePointerStampLocked();
+    void releasePointerLocked(Controller& ctrl);
     void releaseConnectionPointerLocked(Connection& conn);
     void drainRumbleLocked(uint32_t serial, int* sent = nullptr);
-    void recordPointerInjectionLocked(Connection& conn, bool ok);
     uint32_t generateUniqueToken();
     void publishSessionKeyLocked(Connection& conn, std::chrono::steady_clock::time_point now);
 };
