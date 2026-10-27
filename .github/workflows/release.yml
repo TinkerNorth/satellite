@@ -877,8 +877,8 @@ jobs:
   # is in place: atomic for the zsync pattern and anyone scripting
   # releases/latest.
   # ─────────────────────────────────────────────────────────────────────
-  publish:
-    name: Publish to GitHub Releases
+  draft:
+    name: Upload the draft GitHub Release
     needs: [harden, provenance]
     timeout-minutes: 15
     runs-on: ubuntu-24.04
@@ -911,6 +911,25 @@ jobs:
           files: release/**/*
           fail_on_unmatched_files: true
 
+  measurements:
+    name: Release measurements
+    needs: [draft]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/measurements.yml
+    with:
+      version: ${{ inputs.tag || github.ref_name }}
+      upload_to_release: true
+      tag: ${{ inputs.tag || github.ref_name }}
+
+  publish:
+    name: Publish to GitHub Releases
+    needs: [draft, measurements]
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
       - name: Flip release from draft to published
         env:
           GH_TOKEN: ${{ github.token }}
