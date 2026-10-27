@@ -21,9 +21,9 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr auto PROBE_LIMIT = std::chrono::milliseconds(200);
-constexpr int SLOW_PLUG_MS = 50;
+constexpr int SLOW_PLUG_MS = 200;
 constexpr int SLOW_ROUNDS = 4;
-constexpr auto BLOCKED_CALL_LIMIT = std::chrono::milliseconds(1);
+constexpr auto BLOCKED_CALL_LIMIT = std::chrono::milliseconds(50);
 constexpr auto THREAD_TIMEOUT = std::chrono::seconds(60);
 constexpr uint64_t FRAMES_ON_NEW_TOKEN = 200;
 constexpr uint32_t SENDER_IPV4 = 0x0100007fu;
