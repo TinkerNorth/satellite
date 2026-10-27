@@ -89,6 +89,7 @@ struct MockViGem : IGamepadPort {
     // fireRumble / fireLightbar.
     RumbleCallback capturedRumbleCb;
     LightbarCallback capturedLightbarCb;
+    std::function<void(uint32_t)> onPlugged;
 
     // Identity recorded per serial at plug (several tests assert which pad was
     // plugged); lastIdentity is the most recent plug's.
@@ -124,8 +125,11 @@ struct MockViGem : IGamepadPort {
         lastIdentity = identity;
         identityBySerial[serial] = identity;
         pluggedSerials.push_back(serial);
-        std::lock_guard<std::mutex> lk(pluggedMtx);
-        if (pluginReturnVal) pluggedSet.insert(serial);
+        {
+            std::lock_guard<std::mutex> lk(pluggedMtx);
+            if (pluginReturnVal) pluggedSet.insert(serial);
+        }
+        if (pluginReturnVal && onPlugged) onPlugged(serial);
         return pluginReturnVal;
     }
     bool supportsIdentity(GamepadIdentity identity) const override {
@@ -312,6 +316,7 @@ struct MockClient : IClientPort {
     // Optional ordering probe, fired inside sendSessionClose (e.g. to assert
     // the notify precedes teardown's unplugs).
     std::function<void()> onSessionClose;
+    std::function<void(const Connection&)> onRumble;
 
     int rumbleCalls = 0;
     int lightbarCalls = 0;
@@ -359,6 +364,7 @@ struct MockClient : IClientPort {
         if (onSessionClose) onSessionClose();
     }
     void sendRumble(const Connection& conn, uint8_t ctrlIdx, const RumbleReport& report) override {
+        if (onRumble) onRumble(conn);
         rumbleCalls++;
         if (reaches(conn)) deliveredRumbles++;
         lastRumbleConnToken = conn.token;
@@ -5185,6 +5191,155 @@ static void test_rumble_retiredSerialDiscardsPendingState() {
     EXPECT(f.client_.lastRumbleConnToken != replacement.token);
 }
 
+static RumbleReport motorLevel(uint16_t strong, uint16_t weak = 0) {
+    RumbleReport report{};
+    report.strongMagnitude = strong;
+    report.weakMagnitude = weak;
+    return report;
+}
+
+struct RumbleDuringPlug {
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc{vigem, client, log};
+    SessionUpsertResult session = upsert(svc, {});
+
+    RumbleDuringPlug() { svc.updatePostDecryptV4(session.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT); }
+
+    void writeWhilePlugging(std::vector<RumbleReport> writes) {
+        vigem.onPlugged = [this, writes](uint32_t serial) {
+            for (const RumbleReport& report : writes) vigem.fireRumble(serial, report);
+        };
+    }
+
+    void plug(uint8_t type = CONTROLLER_TYPE_XBOX) {
+        ControllerApplyResult applied;
+        uint16_t epoch = 0;
+        EXPECT(svc.applyController(session.connectionId, "dev1", makeDesc(0, type, CAP_RUMBLE),
+                                   applied, epoch));
+        vigem.onPlugged = nullptr;
+    }
+};
+
+static void test_rumble_betweenPlugAndPublishReachesTheClientAtPublish() {
+    TEST("rumble: a level written between a pad's plug and its publish reaches the client at the "
+         "publish");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(40000, 12000)});
+    f.plug();
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    EXPECT_EQ(f.client.deliveredRumbles, 1);
+    EXPECT_EQ(f.client.lastRumbleConnToken, f.session.token);
+    EXPECT_EQ((int)f.client.lastRumbleCtrlIdx, 0);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 40000);
+    EXPECT_EQ((int)f.client.lastRumble.weakMagnitude, 12000);
+    EXPECT_EQ((int)f.client.lastRumble.durationMs, (int)RUMBLE_WIRE_DURATION_MS);
+}
+
+static void test_rumble_newestLevelBeforePublishWins() {
+    TEST("rumble: of several levels written before the publish, only the newest is forwarded");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(1000), motorLevel(2000, 300)});
+    f.plug();
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 2000);
+    EXPECT_EQ((int)f.client.lastRumble.weakMagnitude, 300);
+}
+
+static void test_rumble_stopBeforePublishForwardsNothing() {
+    TEST("rumble: a level stopped again before the publish forwards nothing");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(40000), motorLevel(0)});
+    f.plug();
+    EXPECT_EQ(f.client.rumbleCalls, 0);
+}
+
+static void test_rumble_levelCarriedAcrossPublishIsHeldRumble() {
+    TEST("rumble: the level carried across the publish is the pad's held level afterwards");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(40000)});
+    f.plug();
+    const uint32_t serial = f.vigem.pluggedSerials.back();
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    f.vigem.fireRumble(serial, motorLevel(40000));
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    f.vigem.fireRumble(serial, RumbleReport{});
+    EXPECT_EQ(f.client.rumbleCalls, 2);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 0);
+}
+
+static void test_rumble_betweenPlugAndPublishOfAReplugReachesTheClient() {
+    TEST("rumble: a level written while a replug's new pad plugs reaches the client at the "
+         "publish");
+    RumbleDuringPlug f;
+    f.plug(CONTROLLER_TYPE_XBOX);
+    EXPECT_EQ(f.client.rumbleCalls, 0);
+    f.writeWhilePlugging({motorLevel(25000)});
+    f.plug(CONTROLLER_TYPE_PLAYSTATION);
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 25000);
+}
+
+static void test_rumble_betweenPlugAndPublishOfAFreshSessionIsRefreshedOnceReachable() {
+    TEST("rumble: a level written while a fresh session's pad plugs reaches the client once it "
+         "can be reached");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    vigem.onPlugged = [&vigem](uint32_t serial) { vigem.fireRumble(serial, motorLevel(30000)); };
+    const auto session = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    vigem.onPlugged = nullptr;
+    EXPECT_EQ(client.deliveredRumbles, 0);
+
+    svc.updatePostDecryptV4(session.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    std::this_thread::sleep_for(std::chrono::milliseconds(RUMBLE_REFRESH_MS + 20));
+    EXPECT(svc.refreshRumble() >= 1);
+    EXPECT_EQ(client.deliveredRumbles, 1);
+    EXPECT_EQ(client.lastRumbleConnToken, session.token);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 30000);
+}
+
+static void test_rumble_levelCarriedAcrossARekeyIsSentOnlyOnceTheSlotHoldsTheNewToken() {
+    TEST("rumble: a level carried across a re-keying PUT is sent only once the slot holds the "
+         "session's new token");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto first = upsert(svc, {});
+    svc.updatePostDecryptV4(first.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    std::vector<std::pair<uint32_t, uint32_t>> tokens;
+    client.onRumble = [&tokens](const Connection& conn) {
+        tokens.emplace_back(conn.token, conn.hot->token.load(std::memory_order_acquire));
+    };
+    vigem.onPlugged = [&vigem](uint32_t serial) { vigem.fireRumble(serial, motorLevel(30000)); };
+    const auto second = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    vigem.onPlugged = nullptr;
+    EXPECT(second.token != first.token);
+    EXPECT_EQ(tokens.size(), size_t{1});
+    if (tokens.size() == 1) {
+        EXPECT_EQ(tokens[0].first, second.token);
+        EXPECT_EQ(tokens[0].second, second.token);
+    }
+}
+
+static void test_rumble_levelOnAFreeSerialIsNotInherited() {
+    TEST("rumble: a level written for a serial no pad holds is not inherited by the pad plugged "
+         "on it later");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    vigem.fireRumble(1, motorLevel(50000));
+    const auto session = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    EXPECT(session.ok);
+    EXPECT_EQ(vigem.pluggedSerials.back(), 1u);
+    EXPECT_EQ(client.rumbleCalls, 0);
+    EXPECT_EQ(svc.refreshRumble(), 0);
+}
+
 int main() {
     test_pointer_closeReleasesButtons();
     test_pointer_timeoutReleasesButtons();
@@ -5207,6 +5362,14 @@ int main() {
     test_rumble_latestNotificationWins();
     test_rumble_retiredSerialDiscardsPendingState();
     test_rumble_contendedDurationIsPreserved();
+    test_rumble_betweenPlugAndPublishReachesTheClientAtPublish();
+    test_rumble_newestLevelBeforePublishWins();
+    test_rumble_stopBeforePublishForwardsNothing();
+    test_rumble_levelCarriedAcrossPublishIsHeldRumble();
+    test_rumble_betweenPlugAndPublishOfAReplugReachesTheClient();
+    test_rumble_betweenPlugAndPublishOfAFreshSessionIsRefreshedOnceReachable();
+    test_rumble_levelCarriedAcrossARekeyIsSentOnlyOnceTheSlotHoldsTheNewToken();
+    test_rumble_levelOnAFreeSerialIsNotInherited();
     test_upsert_createsSession();
     test_upsert_connectionIdIsConnAndEightHexDigits();
     test_upsert_recordsProtocolVersion();

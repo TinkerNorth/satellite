@@ -40,6 +40,11 @@ uint32_t sessionWord(const Connection& conn) {
     return hotSessionWord(conn.epoch, conn.mouseControlGranted);
 }
 
+uint32_t packMotors(const RumbleReport& report) {
+    return static_cast<uint32_t>(report.strongMagnitude) |
+           (static_cast<uint32_t>(report.weakMagnitude) << 16);
+}
+
 void publishControllers(const Connection& conn, HotTable& table) {
     for (uint32_t serial = 1; serial <= static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS); serial++) {
         const uint32_t owner = table.padOwners[serial].load(std::memory_order_relaxed);
@@ -301,6 +306,7 @@ uint32_t SessionService::allocateSerial() {
     for (size_t step = 0; step < MAX_BACKEND_CONTROLLERS; step++) {
         size_t i = (serialScanStart_ + step) % MAX_BACKEND_CONTROLLERS;
         if (!serialInUse_[i] && !serialQuarantined_[i]) {
+            hidMotors_[i + 1].store(0, std::memory_order_release);
             serialInUse_[i] = true;
             serialScanStart_ = (i + 1) % MAX_BACKEND_CONTROLLERS;
             return static_cast<uint32_t>(i + 1); // 1-based
@@ -311,11 +317,13 @@ uint32_t SessionService::allocateSerial() {
 
 void SessionService::releaseSerial(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
+    hidMotors_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = false;
 }
 
 void SessionService::quarantineSerial(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
+    hidMotors_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = false;
     serialQuarantined_[serial - 1] = true;
 }
@@ -323,6 +331,7 @@ void SessionService::quarantineSerial(uint32_t serial) {
 bool SessionService::claimSerialLocked(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return false;
     if (serialInUse_[serial - 1] || serialQuarantined_[serial - 1]) return false;
+    hidMotors_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = true;
     return true;
 }
@@ -432,11 +441,13 @@ void SessionService::publishSessionLocked(Connection& conn,
     publishSessionKeyLocked(conn, now);
     write.close();
     hot_.publish(conn.slot, conn.token);
+    sendSeededRumbleLocked(conn);
 }
 
 void SessionService::publishControllersLocked(Connection& conn) {
     if (controllersPublished(conn)) return;
-    ConnectionWrite write(conn, rx_, hot_);
+    ConnectionWrite(conn, rx_, hot_).close();
+    sendSeededRumbleLocked(conn);
 }
 
 void SessionService::resetControllerStreamState(Controller& ctrl) {
@@ -672,6 +683,7 @@ void SessionService::bindPadLocked(Connection& conn, Controller& ctrl, const Pad
     ctrl.serialNo = pad.serial;
     ctrl.active = true;
     takeDescriptorLocked(ctrl, pad.desc);
+    seedRumbleLocked(ctrl);
     adjustActivePadsLocked(conn, 1);
     conn.epoch++;
 }
@@ -714,6 +726,7 @@ void SessionService::replugPadLocked(Connection& conn, Controller& ctrl, PadChan
     retired.push_back(RetiredSerial{ctrl.serialNo, false});
     ctrl.serialNo = pad.serial;
     takeDescriptorLocked(ctrl, pad.desc);
+    seedRumbleLocked(ctrl);
     log_.logMsg(LogLevel::INFO, "service",
                 "Replugged controller #" + std::to_string(pad.desc.ctrlIdx) + " as " +
                     controllerTypeLabel(pad.desc.type) + " (serial " +
@@ -1035,6 +1048,8 @@ void SessionService::handleHeartbeat(uint32_t token) {
 
 void SessionService::handleRumbleFromBackend(const uint32_t serial, const RumbleReport& report,
                                              const uint16_t wireDurationMs) {
+    if (serial == 0 || serial > static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS)) return;
+    hidMotors_[serial].store(packMotors(report), std::memory_order_release);
     std::lock_guard<TrackedMutex> lk(mtx_);
     Connection* conn = nullptr;
     Controller* ctrl = nullptr;
@@ -1082,6 +1097,21 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
 
     client_.sendRumble(conn, ctrl.index, stamped);
     return true;
+}
+
+void SessionService::seedRumbleLocked(Controller& ctrl) {
+    const uint32_t motors = hidMotors_[ctrl.serialNo].load(std::memory_order_acquire);
+    ctrl.hidRumble.strongMagnitude = static_cast<uint16_t>(motors);
+    ctrl.hidRumble.weakMagnitude = static_cast<uint16_t>(motors >> 16);
+}
+
+void SessionService::sendSeededRumbleLocked(Connection& conn) {
+    for (Controller& ctrl : conn.controllers) {
+        const bool held = ctrl.hidRumble.strongMagnitude != 0 || ctrl.hidRumble.weakMagnitude != 0;
+        if (ctrl.active && held && !ctrl.lastRumbleValid) {
+            forwardRumbleLocked(conn, ctrl, RUMBLE_WIRE_DURATION_MS, false);
+        }
+    }
 }
 
 void SessionService::refreshIdleInput() {

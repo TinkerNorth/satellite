@@ -388,6 +388,7 @@ class SessionService {
     std::array<RxPad, MAX_BACKEND_CONTROLLERS + 1> rxPads_{};
     std::array<RxSession, MAX_SESSIONS> rxSessions_{};
     std::atomic<int> activePads_{0};
+    std::array<std::atomic<uint32_t>, MAX_BACKEND_CONTROLLERS + 1> hidMotors_{};
 #ifdef SATELLITE_BUILD_TESTS
     std::atomic<std::thread::id> rxOwnerForTest_{};
     std::atomic<uint64_t> foreignRxWrites_{0};
@@ -490,6 +491,8 @@ class SessionService {
     // packet left.
     bool forwardRumbleLocked(Connection& conn, Controller& ctrl, uint16_t wireDurationMs,
                              bool force);
+    void seedRumbleLocked(Controller& ctrl);
+    void sendSeededRumbleLocked(Connection& conn);
     // Every feedback state a session's pads hold (light bar, trigger effects,
     // player LEDs) that their caps admit, sent again once its client can first
     // be reached. Never the mic lamp, rumble or audio (see the definition).

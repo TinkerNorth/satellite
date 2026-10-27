@@ -844,8 +844,19 @@ runs under `topoMtx_` alone, so the worker gets the lock and returns, and
 the join completes. No notification is dropped for contention and none
 waits in a mailbox: the newest rumble level reaches the client, with both
 motors and its duration, as it arrives. A notification for a serial no
-pad holds, one that arrives between a plug and its commit or after the
-unplug's publish, finds no pad and is dropped.
+pad holds, one that arrives after the unplug's publish, finds no pad and is
+dropped. One that arrives between a plug and its commit is not lost: the
+rumble callback first stores the game's latest HID motor level for the
+serial in an atomic, whether or not a pad holds it, the commit seeds a newly
+bound pad's HID rumble from that word, and the level goes out once the
+publish has closed, still under `mtx_`. It cannot go out earlier: a PUT
+swaps the connection's key before it commits, and a datagram sent then would
+take a counter of the old key under the new one. A fresh session cannot be
+reached yet, so there the send at the publish is dropped as unroutable and
+the held-level refresh carries the level once the first datagram has
+arrived. A serial's word is cleared when it is allocated, claimed, released
+or quarantined, so a retired pad's level never reaches the pad that takes
+its serial.
 
 Mouse-button ownership is per backend serial, and it lives on the pointer
 thread. The host receives the union of all controller-held buttons;
