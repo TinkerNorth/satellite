@@ -135,6 +135,7 @@ set(SATELLITE_CORE_SOURCES
     src/core/github_release.cpp
     src/core/network_info.cpp
     src/core/crash_reporting.cpp
+    src/core/log_writer.cpp
 )
 
 # Currently-shared infrastructure (to be ported to POSIX in Stage 3).
@@ -1148,6 +1149,11 @@ target_include_directories(test_pause_detector PRIVATE
 satellite_add_pure_test(test_hot_table tests/test_hot_table.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(test_hot_table PRIVATE Threads::Threads)
+target_link_libraries(test_log_ring PRIVATE Threads::Threads)
+satellite_add_pure_test(test_log_queue tests/test_log_queue.cpp)
+target_link_libraries(test_log_queue PRIVATE Threads::Threads)
+satellite_add_pure_test(test_log_writer tests/test_log_writer.cpp src/core/log_writer.cpp)
+target_link_libraries(test_log_writer PRIVATE Threads::Threads)
 satellite_add_pure_test(test_tracked_mutex tests/test_tracked_mutex.cpp)
 target_compile_definitions(test_tracked_mutex PRIVATE SATELLITE_LOCK_STATS)
 target_link_libraries(test_tracked_mutex PRIVATE Threads::Threads)

@@ -1003,7 +1003,7 @@ struct ControllerAudioPolicy {
     bool haptics = true;
 };
 
-enum class LogLevel { INFO, WARN, ERR };
+enum class LogLevel : uint8_t { INFO, WARN, ERR };
 inline const int LOG_RING_SIZE = 500;
 
 struct LogEntry {
