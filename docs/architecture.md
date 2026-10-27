@@ -950,9 +950,10 @@ adapters rely on them instead of locking against one another's calls:
    unreachable, and every thread that submits to a serial (the receive
    thread and the mic worker) finds it through the published slot inside
    its grace bracket (see "Topology changes").
-3. `closeBus` runs only when no pad is active anywhere, so no submit is
-   in flight during it. `ensureBusOpen` may run while other serials are
-   live and submitting.
+3. `closeBus` runs only when no pad is active anywhere, so no per-serial
+   submit is in flight during it. The host-global pointer submit may be, and
+   no adapter's `closeBus` touches the state it uses. `ensureBusOpen` may
+   run while other serials are live and submitting.
 4. Submits have fixed threads. `submitReport`, `submitMotion`,
    `submitTouchpad` and `submitBattery` come only from the receive
    thread, through the frame path or the cold dispatch.
@@ -1058,15 +1059,16 @@ since it sweeps orphans on its next launch.
 serial, each with an atomic `plugged` and an atomic motion-node flag, in
 place of a map that every call had to look up under `mtx_`. Device
 creation and destruction and the force-feedback reader's join run
-without `mtx_`, and so do the lazy creation and the destruction of the
-host-global pointer node. The per-serial submits take no lock;
-`submitRelativeMouse` holds `mtx_` only around its writes to the pointer
-node, which `closeBus` may be destroying. A gamepad report, the Switch Pro
-layout included, goes to the kernel as one `write()` of the whole event
-batch, the same events in the same order with `SYN_REPORT` last, where
-it used to cost one syscall per event. The reader thread owns its
-device's effect table while it runs and takes `mtx_` only to copy the
-rumble callback.
+without `mtx_`. The host-global pointer node is not part of the bus: the
+pointer thread creates it at its first sample and keeps it, `closeBus`
+leaves it alone, and the destructor destroys it once that thread has
+stopped, so the node and its button state have one owner at a time and
+`submitRelativeMouse` takes no lock, like the per-serial submits. A gamepad
+report, the Switch Pro layout included, goes to the kernel as one
+`write()` of the whole event batch, the same events in the same order with
+`SYN_REPORT` last, where it used to cost one syscall per event. The reader
+thread owns its device's effect table while it runs and takes `mtx_` only
+to copy the rumble callback.
 
 `MacHidGamepadAdapter`. Device creation and activation, and the
 entitlement probe `ensureBusOpen` may run, happen without `mtx_`, and
@@ -1190,12 +1192,7 @@ toggle, above `config.snapshot`, and never taken while `service.state` or
 `audio.com`, whose calls act on the desktop, so that marker has no entries yet;
 it reaches `tray.shell` through the stand-in, where the Gui thread holds
 nothing. `log.write` has none because the writer holds nothing there. The
-pointer and mic laws hold for the service and for the
-adapters the test runs. The uinput adapter, which it does not run, still
-takes `uinput.devices` in `submitRelativeMouse` around its writes to the
-pointer node, because `closeBus` may be destroying that node, so on Linux
-the pointer thread takes that one adapter lock, which every other holder
-keeps for a short section only.
+pointer and mic laws hold for the service and for the adapters the test runs.
 
 Reading the stats: a wait is time a thread spent inside `lock` before it
 owned the lock, so a wait on a lock the Receive role takes is time gamepad

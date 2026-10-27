@@ -118,7 +118,10 @@ void endFfRequest(int fd, unsigned long request, void* arg, const char* what, ui
 
 } // namespace
 
-GamepadAdapter::~GamepadAdapter() { closeBus(); }
+GamepadAdapter::~GamepadAdapter() {
+    closeBus();
+    if (relMouseFd_ >= 0) destroyUinputNode(relMouseFd_, "pointer node");
+}
 
 bool GamepadAdapter::ensureBusOpen() {
     // "Bus" here is just the uinput node; per-device fds open per plugin.
@@ -129,15 +132,6 @@ bool GamepadAdapter::ensureBusOpen() {
 
 void GamepadAdapter::closeBus() {
     for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) unplugDevice(serial);
-    int pointerFd = -1;
-    {
-        std::lock_guard<TrackedMutex> lk(mtx_);
-        pointerFd = relMouseFd_;
-        relMouseFd_ = -1;
-        relMouseBtns_ = MouseButtons{};
-    }
-    // Pointer node is host-global, not per-controller.
-    if (pointerFd >= 0) destroyUinputNode(pointerFd, "pointer node");
     busOpen_.store(false, std::memory_order_release);
 }
 
@@ -638,26 +632,8 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
 }
 
 bool GamepadAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) {
-    bool needsNode = false;
-    {
-        std::lock_guard<TrackedMutex> lk(mtx_);
-        needsNode = relMouseFd_ < 0;
-    }
     // Pointer node is host-global, created lazily by the first sample.
-    if (needsNode) {
-        const int created = openRelMouseUinputDevice();
-        if (created < 0) return false;
-        bool adopted = false;
-        {
-            std::lock_guard<TrackedMutex> lk(mtx_);
-            if (relMouseFd_ < 0) {
-                relMouseFd_ = created;
-                adopted = true;
-            }
-        }
-        if (!adopted) destroyUinputNode(created, "pointer node");
-    }
-    std::lock_guard<TrackedMutex> lk(mtx_);
+    if (relMouseFd_ < 0) relMouseFd_ = openRelMouseUinputDevice();
     if (relMouseFd_ < 0) return false;
     const int fd = relMouseFd_;
 

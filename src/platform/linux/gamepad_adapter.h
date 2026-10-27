@@ -121,7 +121,6 @@ class GamepadAdapter : public IGamepadPort {
 
     LightbarCallback lightbarCb_;
 
-    // Lazily created on first submitRelativeMouse, destroyed in closeBus.
     int relMouseFd_ = -1;
     MouseButtons relMouseBtns_;
 };
