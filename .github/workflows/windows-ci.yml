@@ -118,6 +118,10 @@ jobs:
         shell: pwsh
         run: pwsh tests/test_fetch_redist.ps1
 
+      - name: Script tests (measurements report)
+        shell: pwsh
+        run: pwsh tests/test_measurements_report.ps1
+
       - name: Fetch pinned redistributables
         shell: pwsh
         run: pwsh scripts/fetch-redist.ps1
