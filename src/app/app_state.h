@@ -3,6 +3,7 @@
 // Definitions live in the per-platform globals.cpp.
 #pragma once
 
+#include "core/tracked_mutex.h"
 #include "core/types.h"
 #include "net/net_compat.h"
 
@@ -24,7 +25,7 @@
 #include <vector>
 
 extern Config g_config;
-extern std::mutex g_configMtx;
+extern TrackedMutex g_configMtx;
 
 extern std::atomic<bool> g_appRunning;
 extern std::atomic<bool> g_listening;
@@ -56,7 +57,7 @@ extern std::string g_webDir;
 class UpdateService;
 extern UpdateService* g_updateService;
 
-extern std::mutex g_logMtx;
+extern TrackedMutex g_logMtx;
 extern std::vector<LogEntry> g_logRing;
 extern int g_logHead;     // next write position
 extern uint64_t g_logSeq; // monotonic sequence number (total logs ever written)

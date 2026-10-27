@@ -8,6 +8,7 @@
 #include "session_crypto.h"
 #include "core/byte_order.h"
 #include "core/session_service.h"
+#include "core/tracked_mutex.h"
 #include "core/unknown_token_log.h"
 #include "adapters/client_adapter.h"
 #include "app/wire_stats.h"
@@ -50,6 +51,7 @@ void reportUnknownTokenTraffic(satellite::UnknownTokenLog& unknownTokens) {
 // interval of becoming due), the idle-input re-publish on the same tick, the
 // reaper once a second.
 void maintenanceLoop(SessionService& svc) {
+    ScopedThreadRole role(ThreadRole::Maintenance);
     const int tickMs = RUMBLE_REFRESH_MS / 2;
     int sinceReapMs = 0;
     satellite::UnknownTokenLog unknownTokens;
@@ -90,7 +92,7 @@ void restoreReceiverPriority(HANDLE mmcssHandle) {
 #endif
 
 int configuredUdpPort() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     return g_config.udpPort;
 }
 
@@ -268,12 +270,14 @@ void stopListening(SessionService& svc, ClientAdapter& client, SOCKET sock, std:
     svc.closeAllSessions(CLOSE_REASON_SHUTDOWN);
     client.setSocket(INVALID_SOCKET);
     closesocket(sock);
+    blockingRegion("thread.join");
     reaper.join();
 }
 
 } // namespace
 
 void receiverThread(SessionService& svc, ClientAdapter& client) {
+    ScopedThreadRole role(ThreadRole::Receive);
 #ifdef _WIN32
     HANDLE mmcssHandle = raiseReceiverPriority();
 #endif

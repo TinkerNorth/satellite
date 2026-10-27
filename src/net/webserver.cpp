@@ -7,15 +7,17 @@
 #include "routes_admin.h"
 #include "routes_client.h"
 #include "tls.h"
+#include "core/tracked_mutex.h"
 #include "core/types.h"
 
 // Admin server: web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 void adminHttpThread(SessionService& svc) {
+    ScopedThreadRole role(ThreadRole::HttpAdmin);
     registerAdminRoutes(g_httpServer, svc);
 
     int webPort;
     {
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         webPort = g_config.webPort;
     }
     logMsg(LogLevel::INFO, "web", "Admin web UI on 127.0.0.1:" + std::to_string(webPort));
@@ -24,6 +26,7 @@ void adminHttpThread(SessionService& svc) {
 
 // Client API server: pairing + sessions + catalog. HTTPS (self-signed), 0.0.0.0.
 void clientApiThread(SessionService& svc) {
+    ScopedThreadRole role(ThreadRole::HttpClient);
     std::string certPath, keyPath;
     if (!ensureServerCert(certPath, keyPath)) {
         logMsg(LogLevel::ERR, "client", "Failed to generate TLS certificate; client API disabled");

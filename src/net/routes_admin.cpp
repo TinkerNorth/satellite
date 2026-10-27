@@ -14,6 +14,7 @@
 #include "core/json.h"
 #include "core/log_ring.h"
 #include "core/session_service.h"
+#include "core/tracked_mutex.h"
 #include "core/update_service.h"
 #include "core/update_types.h"
 #include "core/version.h"
@@ -149,7 +150,7 @@ static std::string buildConnectionsJson(const SessionService& svc) {
 // Shared by the admin route and the SSE devices event.
 static std::string buildDevicesJson(const SessionService& svc) {
     JsonOut arr = JsonOut::array();
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     for (const auto& d : g_config.pairedDevices) {
         const DeviceLinkState s = svc.linkStateForDevice(d.id);
         JsonOut o;
@@ -190,7 +191,7 @@ static std::string buildPairRequestsJson() {
 
 // The settings the status surfaces show, read under the config lock in one go.
 static void readConfigStatus(StatusFields& f) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     f.udpPort = g_config.udpPort;
     f.webPort = g_config.webPort;
     f.autoStart = g_config.autoStart;
@@ -229,7 +230,7 @@ static void readWireStatus(StatusFields& f) {
 }
 
 static uint64_t currentLogSeq() {
-    std::lock_guard<std::mutex> lk(g_logMtx);
+    std::lock_guard<TrackedMutex> lk(g_logMtx);
     return g_logSeq;
 }
 
@@ -246,6 +247,7 @@ static void replyUpdateSnapshot(Response& res, const UpdateService& updater) {
 
 // Rejects cross-origin / rebound requests before any route runs.
 static httplib::Server::HandlerResponse guardOrigin(const Request& req, Response& res) {
+    setThreadRole(ThreadRole::HttpAdmin);
     const std::string host = req.get_header_value("Host");
     if (!host.empty() && !satellite::isLoopbackHost(host)) {
         replyError(res, 403, "forbidden host");
@@ -308,7 +310,7 @@ static void netinfoRoute(const Request&, Response& res) {
     NetworkInfo info;
     std::string selected;
     {
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         info.udpPort = g_config.udpPort;
         info.webPort = g_config.webPort;
         info.discPort = g_config.discPort;
@@ -339,7 +341,7 @@ static void netinfoRoute(const Request&, Response& res) {
 static void allowPublicRoute(const Request&, Response& res) {
     const bool ok = allowPublicFirewall();
     if (ok) {
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         g_config.allowPublicNetwork = true;
         saveConfig(g_config);
     }
@@ -353,7 +355,7 @@ static void allowPublicRoute(const Request&, Response& res) {
 // after a rejection is the one that was already stored.
 static void configRoute(const Request& req, Response& res) {
     const Json body = parseBody(req.body);
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     const ConfigPatchOutcome patch = applyConfigPatch(body, g_config);
     if (patch.autoStartPresent) setAutoStart(g_config.autoStart);
     if (patch.crashReportingPresent) crash::setEnabled(g_config.crashReporting);
@@ -571,7 +573,7 @@ static void logsRoute(const Request& req, Response& res) {
     if (req.has_param("since")) {
         since = strtoull(req.get_param_value("since").c_str(), nullptr, 10);
     }
-    std::lock_guard<std::mutex> lk(g_logMtx);
+    std::lock_guard<TrackedMutex> lk(g_logMtx);
     JsonOut entries = JsonOut::array();
     for (const auto& slot : logRingSlotsSince(LOG_RING_SIZE, g_logHead, g_logSeq, since)) {
         entries.push_back(logEntryJson(slot.seq, g_logRing[static_cast<size_t>(slot.index)]));

@@ -11,6 +11,7 @@
 #include "net/pairing_service.h"
 #include "toast.h"
 #include "ui_access.h"
+#include "core/tracked_mutex.h"
 
 #include <strsafe.h>
 
@@ -21,9 +22,9 @@
 #include <string>
 
 static NOTIFYICONDATAW g_nid{};
-static std::mutex g_nidMtx;          // updateTooltip + WM_TRAYICON contend
-static bool g_nidGuidActive = false; // true when NIF_GUID succeeded
-static std::wstring g_lastTooltip;   // remember last text so we don't churn NIM_MODIFY
+static TrackedMutex g_nidMtx("tray.icon"); // updateTooltip + WM_TRAYICON contend
+static bool g_nidGuidActive = false;       // true when NIF_GUID succeeded
+static std::wstring g_lastTooltip;         // remember last text so we don't churn NIM_MODIFY
 
 // Registered window message broadcast by Explorer when the taskbar is
 // (re)created. Identifier is initialised lazily on first add.
@@ -53,7 +54,7 @@ static std::wstring toWide(const std::string& s) {
 static std::wstring composeTooltip() {
     int udpPort, webPort;
     {
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         udpPort = g_config.udpPort;
         webPort = g_config.webPort;
     }
@@ -81,7 +82,7 @@ static void fillIdentity(NOTIFYICONDATAW& n, HWND hwnd) {
 }
 
 static void registerTrayIcon(HWND hwnd) {
-    std::lock_guard<std::mutex> lk(g_nidMtx);
+    std::lock_guard<TrackedMutex> lk(g_nidMtx);
 
     g_nid = {};
     g_nidGuidActive = true; // optimistic; cleared on failure below
@@ -101,6 +102,7 @@ static void registerTrayIcon(HWND hwnd) {
     // NIF_GUID add can fail when the GUID is still registered to a stale exe
     // path (Explorer won't remap silently). Delete + retry; if that also fails,
     // drop NIF_GUID and lose cross-install identity.
+    blockingRegion("tray.shell");
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) {
         NOTIFYICONDATAW del{};
         del.cbSize = sizeof(del);
@@ -132,12 +134,13 @@ void addTrayIcon(HWND hwnd) {
 }
 
 void removeTrayIcon() {
-    std::lock_guard<std::mutex> lk(g_nidMtx);
+    std::lock_guard<TrackedMutex> lk(g_nidMtx);
+    blockingRegion("tray.shell");
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
 }
 
 void updateTrayTooltip() {
-    std::lock_guard<std::mutex> lk(g_nidMtx);
+    std::lock_guard<TrackedMutex> lk(g_nidMtx);
     std::wstring fresh = composeTooltip();
     if (fresh == g_lastTooltip) return; // no Explorer round-trip if unchanged
     g_lastTooltip = std::move(fresh);
@@ -146,6 +149,7 @@ void updateTrayTooltip() {
     fillIdentity(upd, g_nid.hWnd);
     upd.uFlags |= NIF_TIP | NIF_SHOWTIP;
     StringCchCopyW(upd.szTip, ARRAYSIZE(upd.szTip), g_lastTooltip.c_str());
+    blockingRegion("tray.shell");
     Shell_NotifyIconW(NIM_MODIFY, &upd);
 
     StringCchCopyW(g_nid.szTip, ARRAYSIZE(g_nid.szTip), g_lastTooltip.c_str());
@@ -205,7 +209,7 @@ static void openUrl(const wchar_t* url) {
 static std::wstring webUiUrl(const wchar_t* path = L"") {
     int webPort;
     {
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         webPort = g_config.webPort;
     }
     wchar_t buf[128];

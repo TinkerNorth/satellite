@@ -105,7 +105,7 @@ static std::wstring explorerPath() {
 static std::wstring dashboardUrl() {
     int webPort;
     {
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         webPort = g_config.webPort;
     }
     wchar_t urlBuf[64];

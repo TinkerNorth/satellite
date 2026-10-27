@@ -14,6 +14,7 @@
 #pragma once
 
 #include "audio_default_guard.h"
+#include "core/tracked_mutex.h"
 
 #include <winsock2.h>
 #include <windows.h>
@@ -86,7 +87,7 @@ class AudioDefaultGuard {
     bool endpointIsOursLocked(void* enumerator, const std::string& endpointId);
     void disableLocked(const std::string& why);
 
-    mutable std::mutex mtx_;
+    mutable TrackedMutex mtx_{"audio.guard"};
     Snapshot snapshot_;
     std::unordered_map<std::string, bool> oursCache_;
     bool enabled_ = true;

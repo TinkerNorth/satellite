@@ -2,6 +2,7 @@
 #include "core/config_io.h"
 
 #include "core/config_json.h"
+#include "core/tracked_mutex.h"
 
 #include <fstream>
 #include <iterator>
@@ -17,5 +18,6 @@ Config loadConfig() {
 }
 
 void saveConfig(const Config& cfg) {
+    blockingRegion("config.save");
     atomicWriteFile(configPath(), satellite::serializeConfig(cfg));
 }

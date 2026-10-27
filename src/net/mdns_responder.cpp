@@ -8,6 +8,7 @@
 #include "net/datagram_receiver.h"
 #include "net/local_iface.h"
 #include "net/mdns_rejoin.h"
+#include "core/tracked_mutex.h"
 
 #include <chrono>
 #include <cctype>
@@ -50,7 +51,7 @@ bool getLocalIPv4(uint8_t out[4]) {
 bool boundIPv4(uint8_t out[4]) {
     std::string sel;
     {
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         sel = g_config.networkInterface;
     }
     uint32_t ip = 0;
@@ -576,6 +577,7 @@ void sendGoodbye(const Responder& r) {
 // Long on purpose: the responder's whole lifecycle, bring-up to goodbye, in
 // one flow; each step is named above, and the unwind paths read in order here.
 void mdnsResponderThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     if (!netInit()) return;
 
     Responder r;

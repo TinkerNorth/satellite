@@ -5,6 +5,7 @@
 
 #include "core/gamepad_backend.h"
 #include "core/ports.h"
+#include "core/tracked_mutex.h"
 
 #include <atomic>
 #include <mutex>
@@ -110,7 +111,7 @@ class GamepadAdapter : public IGamepadPort {
     // buttons).
     bool submitSwitch(int fd, const GamepadReport& report);
 
-    mutable std::mutex mtx_;
+    mutable TrackedMutex mtx_{"uinput.devices"};
     std::atomic<bool> busOpen_{false};
     Device devices_[MAX_BACKEND_CONTROLLERS + 1];
 

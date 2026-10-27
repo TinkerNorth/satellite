@@ -2,7 +2,7 @@
 #include "globals.h"
 
 Config g_config;
-std::mutex g_configMtx;
+TrackedMutex g_configMtx("config");
 std::atomic<bool> g_appRunning{true};
 std::atomic<bool> g_listening{false};
 std::atomic<bool> g_mdnsResponderActive{false};
@@ -21,13 +21,13 @@ UpdateService* g_updateService = nullptr;
 std::atomic<uint64_t> g_decryptFail{0};
 std::atomic<uint64_t> g_replayDrop{0};
 
-std::mutex g_logMtx;
+TrackedMutex g_logMtx("log");
 std::vector<LogEntry> g_logRing(LOG_RING_SIZE);
 int g_logHead = 0;
 uint64_t g_logSeq = 0;
 
 void logMsg(LogLevel level, const std::string& source, const std::string& message) {
-    std::lock_guard<std::mutex> lk(g_logMtx);
+    std::lock_guard<TrackedMutex> lk(g_logMtx);
     auto& entry = g_logRing[g_logHead];
     entry.timestamp = std::chrono::system_clock::now();
     entry.level = level;

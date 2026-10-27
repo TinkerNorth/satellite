@@ -145,6 +145,7 @@ bool installDriver(std::string& outError) {
     sei.lpFile = helper.c_str();
     sei.lpParameters = L"install-driver";
     sei.nShow = SW_HIDE;
+    blockingRegion("helper.pipe");
     if (!ShellExecuteExW(&sei) || sei.hProcess == nullptr) {
         const DWORD err = GetLastError();
         outError = err == ERROR_CANCELLED
@@ -178,18 +179,18 @@ HelperClient::~HelperClient() { shutdown(); }
 bool HelperClient::installed() const { return helperBinaryPresent() && driverInstalled(); }
 
 bool HelperClient::isReady() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return pipe_ != INVALID_HANDLE_VALUE;
 }
 
 bool HelperClient::ensureReady() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     if (pipe_ != INVALID_HANDLE_VALUE) return true;
     return startLocked();
 }
 
 void HelperClient::shutdown() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     stopLocked(/*sendShutdown=*/true);
 }
 
@@ -207,6 +208,7 @@ bool HelperClient::startLocked() {
 }
 
 bool HelperClient::connectBrokerLocked() {
+    blockingRegion("helper.pipe");
     if (!brokerServiceRegistered()) return false;
 
     HANDLE pipe = INVALID_HANDLE_VALUE;
@@ -288,6 +290,7 @@ HANDLE launchHelper(const std::wstring& helper, const std::wstring& pipeName) {
     sei.lpFile = helper.c_str();
     sei.lpParameters = params.c_str();
     sei.nShow = SW_HIDE;
+    blockingRegion("helper.pipe");
     if (!ShellExecuteExW(&sei)) return nullptr;
     return sei.hProcess;
 }
@@ -295,6 +298,7 @@ HANDLE launchHelper(const std::wstring& helper, const std::wstring& pipeName) {
 // Waits for a client to connect to `pipe`, giving up when the helper exits
 // (UAC declined, crash) or the connect budget runs out.
 bool awaitPipeClient(HANDLE pipe, HANDLE ioEvent, HANDLE process) {
+    blockingRegion("helper.pipe");
     OVERLAPPED ov{};
     ov.hEvent = ioEvent;
     if (ConnectNamedPipe(pipe, &ov) != 0) return true;
@@ -362,6 +366,7 @@ void HelperClient::stopLocked(bool sendShutdown) {
     if (pipe_ != INVALID_HANDLE_VALUE && sendShutdown) {
         std::string response;
         requestLocked("{\"op\":\"shutdown\"}", response);
+        blockingRegion("helper.pipe");
         if (helperProcess_) WaitForSingleObject(helperProcess_, 5000);
     }
     if (pipe_ != INVALID_HANDLE_VALUE) CloseHandle(pipe_);
@@ -387,6 +392,7 @@ bool HelperClient::overlappedIoLocked(bool write, void* buf, DWORD len, DWORD& m
     const BOOL started =
         write ? WriteFile(pipe_, buf, len, nullptr, &ov) : ReadFile(pipe_, buf, len, nullptr, &ov);
     if (!started && GetLastError() != ERROR_IO_PENDING) return false;
+    blockingRegion("helper.pipe");
     if (WaitForSingleObject(ioEvent_, kRequestTimeoutMs) != WAIT_OBJECT_0) {
         CancelIoEx(pipe_, &ov);
         GetOverlappedResult(pipe_, &ov, &moved, TRUE);
@@ -429,7 +435,7 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
                              ProvisionResult& out) {
     const char* profile = profileForIdentity(identity, audio);
     if (profile == nullptr) return false;
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     if (pipe_ == INVALID_HANDLE_VALUE) return false;
 
     JsonOut req;
@@ -470,7 +476,7 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
 }
 
 bool HelperClient::deprovision(uint32_t serial) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     if (pipe_ == INVALID_HANDLE_VALUE) return false;
 
     JsonOut req;

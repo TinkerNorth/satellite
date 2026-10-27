@@ -5,6 +5,7 @@
 #include "adapters/crash_adapter.h"
 #include "autostart_rule.h"
 #include "core/log_ring.h"
+#include "core/tracked_mutex.h"
 
 #include <DbgHelp.h>
 #include <knownfolders.h>
@@ -318,7 +319,7 @@ HANDLE openAppendLog(const std::wstring& path) {
 // it still holds. `lastSeq` advances to the count seen.
 std::vector<LogEntry> drainLogSince(uint64_t& lastSeq) {
     std::vector<LogEntry> drained;
-    std::lock_guard<std::mutex> lk(g_logMtx); // serialise with logMsg() ring writes
+    std::lock_guard<TrackedMutex> lk(g_logMtx); // serialise with logMsg() ring writes
     for (const auto& slot :
          satellite::logRingSlotsSince(LOG_RING_SIZE, g_logHead, g_logSeq, lastSeq)) {
         drained.push_back(g_logRing[static_cast<size_t>(slot.index)]);
@@ -340,6 +341,7 @@ std::string formatLogLine(const LogEntry& e) {
 }
 
 void appendLines(HANDLE h, const std::vector<LogEntry>& entries) {
+    blockingRegion("log.write");
     for (const auto& e : entries) {
         const std::string line = formatLogLine(e);
         DWORD wrote = 0;
@@ -390,6 +392,7 @@ void waitForLogWork() {
 }
 
 void loggerLoop(const std::wstring dir) {
+    ScopedThreadRole role(ThreadRole::Logger);
     g_loggerThreadId = GetCurrentThreadId();
     if (dir.empty()) return;
 

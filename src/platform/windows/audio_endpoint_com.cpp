@@ -322,11 +322,12 @@ bool AudioDefaultGuard::endpointIsOursLocked(void* enumerator, const std::string
 }
 
 void AudioDefaultGuard::snapshotBeforePlug() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     snapshot_.clear();
     oursCache_.clear();
     if (!enabled_) return;
 
+    blockingRegion("audio.com");
     ComApartment com;
     if (!com.usable()) {
         disableLocked("CoInitializeEx failed");
@@ -387,10 +388,11 @@ bool AudioDefaultGuard::restoreRoleLocked(void* enumerator, Role role) {
 }
 
 RestorePass AudioDefaultGuard::restoreIfStolen() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     RestorePass pass;
     if (!enabled_ || !anyRoleCouldRestoreLater(snapshot_)) return pass;
 
+    blockingRegion("audio.com");
     ComApartment com;
     if (!com.usable()) {
         disableLocked("CoInitializeEx failed");
@@ -416,18 +418,18 @@ RestorePass AudioDefaultGuard::restoreIfStolen() {
 }
 
 void AudioDefaultGuard::reset() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     snapshot_.clear();
     oursCache_.clear();
 }
 
 bool AudioDefaultGuard::active() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return enabled_;
 }
 
 std::string AudioDefaultGuard::report() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     std::string out = enabled_ ? "active" : "disabled";
     out += ", restored " + std::to_string(restoredTotal_);
     out += ", failed " + std::to_string(failedTotal_);
@@ -455,6 +457,7 @@ PlugGuardRunner::~PlugGuardRunner() {
         stop_ = true;
     }
     cv_.notify_all();
+    blockingRegion("thread.join");
     if (thread_.joinable()) thread_.join();
 }
 
@@ -482,6 +485,7 @@ void PlugGuardRunner::afterCompositePlug() {
 }
 
 void PlugGuardRunner::worker() {
+    ScopedThreadRole role(ThreadRole::Background);
     std::unique_lock<std::mutex> lk(mtx_);
     while (true) {
         cv_.wait(lk, [this] { return armed_ || stop_; });

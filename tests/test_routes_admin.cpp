@@ -130,7 +130,7 @@ static Json parseJson(const std::string& body) {
 }
 
 static std::string storedKeyHex(const std::string& id) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     for (const auto& d : g_config.pairedDevices) {
         if (d.id == id) return d.sharedKeyHex;
     }
@@ -265,7 +265,7 @@ int main() {
             EXPECT(j.contains("listening") && j["listening"].is_boolean());
             long udpPort = 0;
             {
-                std::lock_guard<std::mutex> lk(g_configMtx);
+                std::lock_guard<TrackedMutex> lk(g_configMtx);
                 udpPort = g_config.udpPort;
             }
             EXPECT_EQ(jsonInt(j, "udpPort"), udpPort);
@@ -373,7 +373,7 @@ int main() {
             EXPECT_EQ(jsonInt(j, "udpPort"), 4242L);
             EXPECT_EQ(jsonBool(j, "udpPortRejected"), false);
         }
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         EXPECT_EQ(g_config.udpPort, 4242);
         EXPECT_EQ(g_config.discoveryBroadcastEnabled, false);
     }
@@ -391,7 +391,7 @@ int main() {
         TEST("POST /api/config: absent keys leave stored values untouched");
         auto res = cli.Post("/api/config", R"({"networkInterface":"lo0"})", "application/json");
         EXPECT(res && res->status == 200);
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         EXPECT_EQ(g_config.udpPort, 4242);
         EXPECT_EQ(g_config.discoveryBroadcastEnabled, false);
         EXPECT_EQ(g_config.networkInterface, std::string("lo0"));
@@ -401,7 +401,7 @@ int main() {
         auto off = cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
         EXPECT(off && off->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
+            std::lock_guard<TrackedMutex> lk(g_configMtx);
             EXPECT_EQ(g_config.controllerAudio, false);
         }
         auto status = cli.Get("/api/status");
@@ -418,7 +418,7 @@ int main() {
         EXPECT(on && on->status == 200);
         auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
         EXPECT(other && other->status == 200);
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         EXPECT_EQ(g_config.controllerAudio, true);
     }
     {
@@ -429,7 +429,7 @@ int main() {
                             "application/json");
         EXPECT(res && res->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
+            std::lock_guard<TrackedMutex> lk(g_configMtx);
             EXPECT_EQ(g_config.controllerAudioMic, false);
             EXPECT_EQ(g_config.controllerAudioSpeaker, true);
             EXPECT_EQ(g_config.controllerAudioHaptics, false);
@@ -487,7 +487,7 @@ int main() {
         auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
         EXPECT(other && other->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
+            std::lock_guard<TrackedMutex> lk(g_configMtx);
             EXPECT_EQ(g_config.controllerAudioMic, false);
             EXPECT_EQ(g_config.controllerAudioSpeaker, true);
         }
@@ -525,7 +525,7 @@ int main() {
                             "application/json");
         EXPECT(off && off->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
+            std::lock_guard<TrackedMutex> lk(g_configMtx);
             EXPECT_EQ(g_config.controllerAudioKeepDefaultDevice, false);
         }
         auto status = cli.Get("/api/status");
@@ -536,7 +536,7 @@ int main() {
         auto on = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":true})",
                            "application/json");
         EXPECT(on && on->status == 200);
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         EXPECT_EQ(g_config.controllerAudioKeepDefaultDevice, true);
     }
     {
@@ -553,7 +553,7 @@ int main() {
         auto res = cli.Post("/api/network/allow-public", "", "application/json");
         EXPECT(res && res->status == 200);
         if (res) EXPECT_EQ(jsonBool(parseJson(res->body), "ok"), false);
-        std::lock_guard<std::mutex> lk(g_configMtx);
+        std::lock_guard<TrackedMutex> lk(g_configMtx);
         EXPECT_EQ(g_config.allowPublicNetwork, false); // only set when the rules applied
     }
 

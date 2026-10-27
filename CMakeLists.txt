@@ -159,6 +159,10 @@ set(SATELLITE_NET_SOURCES
     src/net/local_iface.cpp
 )
 
+set(SATELLITE_APP_SOURCES
+    src/app/audio_settings.cpp
+)
+
 # Portable adapters (thin shims over platform-specific free functions).
 set(SATELLITE_ADAPTER_SOURCES
     src/adapters/log_adapter.cpp
@@ -307,6 +311,7 @@ if(WIN32)
     add_executable(satellite WIN32
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
+        ${SATELLITE_APP_SOURCES}
         ${SATELLITE_ADAPTER_SOURCES}
         ${SATELLITE_WIN_SOURCES}
         ${SATELLITE_RC}
@@ -458,6 +463,7 @@ elseif(APPLE)
     add_executable(satellite MACOSX_BUNDLE
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
+        ${SATELLITE_APP_SOURCES}
         ${SATELLITE_ADAPTER_SOURCES}
         ${SATELLITE_MAC_SOURCES}
     )
@@ -574,6 +580,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(satellite
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
+        ${SATELLITE_APP_SOURCES}
         ${SATELLITE_ADAPTER_SOURCES}
         ${SATELLITE_LINUX_SOURCES}
     )

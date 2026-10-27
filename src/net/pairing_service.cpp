@@ -20,7 +20,7 @@ void upsertPairedDevice(const std::string& deviceId, const std::string& deviceNa
     dev.lastIP = clientIP;
     dev.pairedAt = getCurrentDate();
     dev.sharedKeyHex = sharedKeyHex;
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     auto& devs = g_config.pairedDevices;
     devs.erase(std::remove_if(devs.begin(), devs.end(),
                               [&](const PairedDevice& d) { return d.id == deviceId; }),
@@ -42,7 +42,7 @@ std::string mintPairingKeyHex() {
 
 bool rotatePairedDeviceKey(const std::string& deviceId, const std::string& clientIP,
                            std::string& outKeyHex) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     for (auto& d : g_config.pairedDevices) {
         if (d.id != deviceId) continue;
         outKeyHex = mintPairingKeyHex();
@@ -73,7 +73,7 @@ bool confirmPairing(const std::string& deviceId) {
 bool declinePairing(const std::string& deviceId) { return denyPairRequest(deviceId); }
 
 bool findPairedDevice(const std::string& deviceId, PairedDevice& out) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     for (const auto& d : g_config.pairedDevices) {
         if (d.id != deviceId) continue;
         out = d;
@@ -84,7 +84,7 @@ bool findPairedDevice(const std::string& deviceId, PairedDevice& out) {
 
 void refreshPairedDeviceIdentity(const std::string& deviceId, const std::string& clientIP,
                                  const std::string& deviceName) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     for (auto& d : g_config.pairedDevices) {
         if (d.id != deviceId) continue;
         d.lastIP = clientIP;
@@ -95,7 +95,7 @@ void refreshPairedDeviceIdentity(const std::string& deviceId, const std::string&
 }
 
 bool forgetPairedDevice(const std::string& deviceId) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     auto& devs = g_config.pairedDevices;
     const size_t before = devs.size();
     devs.erase(std::remove_if(devs.begin(), devs.end(),

@@ -183,7 +183,10 @@ void SessionService::retireConnectionLocked(Connection& conn, std::vector<Retire
 }
 
 void SessionService::unplugRetired(std::vector<RetiredSerial>& retired) {
-    for (RetiredSerial& r : retired) r.unplugged = backend_.unplugDevice(r.serial);
+    for (RetiredSerial& r : retired) {
+        blockingRegion("backend.lifecycle");
+        r.unplugged = backend_.unplugDevice(r.serial);
+    }
 }
 
 void SessionService::settleRetiredLocked(std::vector<RetiredSerial>& retired) {
@@ -204,7 +207,7 @@ void SessionService::finishTeardown(std::vector<RetiredSerial>& retired) {
     unplugRetired(retired);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         settleRetiredLocked(retired);
         idle = busIdleLocked();
     }
@@ -259,8 +262,9 @@ bool SessionService::busIdleLocked() const {
 
 void SessionService::closeBusIfIdle(bool idle) {
     if (!idle) return;
+    blockingRegion("backend.lifecycle");
     backend_.closeBus();
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     std::memset(serialQuarantined_, 0, sizeof(serialQuarantined_));
     log_.logMsg(LogLevel::INFO, "service", "Backend bus closed (no active controllers)");
 }
@@ -535,12 +539,16 @@ void SessionService::plugPads(TopologyChange& change, bool secondRound) {
     bool wanted = false;
     for (const PadChange& pad : change.pads) wanted = wanted || plugsInRound(pad, secondRound);
     if (!wanted) return;
-    if (!backend_.isBusOpen() && backend_.ensureBusOpen()) change.busReopened = true;
+    if (!backend_.isBusOpen()) {
+        blockingRegion("backend.lifecycle");
+        if (backend_.ensureBusOpen()) change.busReopened = true;
+    }
     const bool busOpen = backend_.isBusOpen();
     for (PadChange& pad : change.pads) {
         if (!plugsInRound(pad, secondRound)) continue;
         pad.busDown = !busOpen;
         if (!busOpen) continue;
+        blockingRegion("backend.lifecycle");
         pad.plugged = backend_.pluginDevicePreferring(pad.serial, controllerIdentity(pad.desc.type),
                                                       pad.desc.preferredBackend);
     }
@@ -688,7 +696,7 @@ bool SessionService::allocateWaitingLocked(TopologyChange& change) {
 void SessionService::convergePads(Connection& conn, TopologyChange& change) {
     plugPads(change, false);
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         commitPadsLocked(conn, change, false);
         publishControllersLocked(conn);
     }
@@ -698,12 +706,12 @@ void SessionService::convergePads(Connection& conn, TopologyChange& change) {
 void SessionService::settlePadChange(Connection& conn, TopologyChange& change) {
     unplugRetired(change.retired);
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         settleRetiredLocked(change.retired);
         if (!allocateWaitingLocked(change)) return;
     }
     plugPads(change, true);
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     commitPadsLocked(conn, change, true);
     publishControllersLocked(conn);
 }
@@ -724,14 +732,14 @@ SessionUpsertResult SessionService::upsertSession(
     const std::string& deviceId, const std::string& deviceName, const std::string& clientIP,
     const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::vector<ControllerDescriptor>& descriptors,
     bool requestMouseControl, int protocolVersion) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     SessionUpsertResult res;
     const std::vector<ControllerDescriptor> desired = dedupDescriptors(descriptors);
     SessionMint mint;
     TopologyChange change;
     Connection* conn = nullptr;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         conn = findByDeviceId(deviceId);
         if (conn == nullptr && !reserveSessionLocked(deviceId, deviceName, mint)) {
             res.error = UPSERT_ERROR_TOO_MANY_SESSIONS;
@@ -742,7 +750,7 @@ SessionUpsertResult SessionService::upsertSession(
     }
     plugPads(change, false);
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         const auto now = std::chrono::steady_clock::now();
         conn = &adoptSessionLocked(conn, deviceName, mint);
         conn->deviceName = deviceName;
@@ -759,7 +767,7 @@ SessionUpsertResult SessionService::upsertSession(
     settlePadChange(*conn, change);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         res.ok = true;
         res.connectionId = conn->connectionId;
         res.token = conn->token;
@@ -784,11 +792,11 @@ SessionUpsertResult SessionService::upsertSession(
 bool SessionService::applyController(const std::string& connectionId, const std::string& deviceId,
                                      const ControllerDescriptor& desc,
                                      ControllerApplyResult& outResult, uint16_t& outEpoch) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     TopologyChange change;
     Connection* conn = nullptr;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         conn = findByConnectionId(connectionId);
         if (conn == nullptr || conn->deviceId != deviceId) return false;
         change.pads.emplace_back();
@@ -798,7 +806,7 @@ bool SessionService::applyController(const std::string& connectionId, const std:
     convergePads(*conn, change);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         outResult = applyResultLocked(*conn, change.pads.front());
         outEpoch = conn->epoch;
         idle = busIdleLocked();
@@ -809,11 +817,11 @@ bool SessionService::applyController(const std::string& connectionId, const std:
 
 bool SessionService::removeController(const std::string& connectionId, const std::string& deviceId,
                                       uint8_t ctrlIdx, uint16_t& outEpoch) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     TopologyChange change;
     Connection* conn = nullptr;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         conn = findByConnectionId(connectionId);
         if (conn == nullptr || conn->deviceId != deviceId) return false;
         const bool present =
@@ -823,7 +831,7 @@ bool SessionService::removeController(const std::string& connectionId, const std
     convergePads(*conn, change);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         outEpoch = conn->epoch;
         idle = busIdleLocked();
     }
@@ -833,7 +841,7 @@ bool SessionService::removeController(const std::string& connectionId, const std
 
 SessionService::SessionView SessionService::getSessionView(const std::string& connectionId,
                                                            const std::string& deviceId) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     SessionView view;
     const Connection* conn = findByConnectionId(connectionId);
     if (conn == nullptr) return view;
@@ -862,11 +870,11 @@ SessionService::SessionView SessionService::getSessionView(const std::string& co
 
 int SessionService::closeSessionById(const std::string& connectionId, const std::string& deviceId,
                                      uint8_t reason, bool notify) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     std::vector<RetiredSerial> retired;
     int removed = 0;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         Connection* conn = findByConnectionId(connectionId);
         if (conn == nullptr) return -1;
         if (!deviceId.empty() && conn->deviceId != deviceId) return -1;
@@ -885,11 +893,11 @@ int SessionService::closeSessionById(const std::string& connectionId, const std:
 }
 
 int SessionService::closeSessionsForDevice(const std::string& deviceId, uint8_t reason) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     std::vector<RetiredSerial> retired;
     int closed = 0;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         for (auto it = connections_.begin(); it != connections_.end();) {
             if (it->second.deviceId == deviceId) {
                 client_.sendSessionClose(it->second, reason);
@@ -909,10 +917,10 @@ int SessionService::closeSessionsForDevice(const std::string& deviceId, uint8_t 
 }
 
 void SessionService::closeAllSessions(uint8_t reason) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     std::vector<RetiredSerial> retired;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         for (auto& [tok, conn] : connections_) { client_.sendSessionClose(conn, reason); }
         for (auto& [tok, conn] : connections_) { retireConnectionLocked(conn, retired); }
         connections_.clear();
@@ -920,7 +928,7 @@ void SessionService::closeAllSessions(uint8_t reason) {
     unplugRetired(retired);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         settleRetiredLocked(retired);
         std::memset(serialInUse_, 0, sizeof(serialInUse_));
         std::memset(serialQuarantined_, 0, sizeof(serialQuarantined_));
@@ -938,7 +946,7 @@ bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
 }
 
 void SessionService::handleHeartbeat(uint32_t token) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
 
@@ -962,7 +970,7 @@ void SessionService::handleRumbleFromBackend(const uint32_t serial, const Rumble
     const uint64_t pending = packPendingRumble(report, wireDurationMs);
     pendingRumble_[serial].store(pending, std::memory_order_release);
     // The maintenance tick drains a missed acquire.
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
     drainRumbleLocked(serial);
 }
@@ -1023,13 +1031,13 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
 
 void SessionService::refreshIdleInput() {
     backend_.refreshIdleInput();
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     if (!pointerRetryPending_) return;
     pointerRetryPending_ = !submitPointerLocked(0, 0, 0);
 }
 
 int SessionService::refreshRumble() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();
     int sent = 0;
     for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
@@ -1077,7 +1085,7 @@ int SessionService::refreshRumble() {
 }
 
 bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const MotionReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return false;
     if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
@@ -1100,7 +1108,7 @@ bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const Mot
 
 bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
                                         const TouchpadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return false;
     if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
@@ -1262,7 +1270,7 @@ void SessionService::recordPointerInjectionLocked(Connection& conn, bool ok) {
 }
 
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
     Connection* foundConn = nullptr;
@@ -1287,7 +1295,7 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
 
 void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
                                                      const TriggerEffectsReport& report) {
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
     Connection* foundConn = nullptr;
@@ -1304,7 +1312,7 @@ void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
 }
 
 void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMask) {
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
     Connection* foundConn = nullptr;
@@ -1326,7 +1334,7 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     // forward a value the client would have to guess at.
     if (state >= MIC_LED_STATE_COUNT) return;
 
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) return;
 
     Connection* foundConn = nullptr;
@@ -1378,7 +1386,7 @@ bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_
     if (!audioPolicy().speaker) return false;
 
     // Dropping a speaker frame is a 20 ms gap the client's PLC already knows how to cover.
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) {
         bumpAudio(audio_.speakerLockContended);
         return false;
@@ -1405,7 +1413,7 @@ bool SessionService::handleHapticAudioFromBackend(uint32_t serial, const int16_t
     // that turned haptics off wants no haptics, not haptics-as-rumble.
     if (!audioPolicy().haptics) return false;
 
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> lk(mtx_, std::try_to_lock);
     if (!lk.owns_lock()) {
         bumpAudio(audio_.hapticLockContended);
         return false;
@@ -1493,7 +1501,7 @@ bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t se
     // client cannot see this setting.
     const bool hostWantsMic = audioPolicy().mic;
 
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     // No session: nothing to log against, and an unroutable token is exactly
     // what a stale or spoofed datagram looks like.
@@ -1703,7 +1711,7 @@ bool SessionService::encodeAndSendAudioLocked(Connection& conn, Controller& ctrl
 
 bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,
                                          const BatteryReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return false;
     if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
@@ -1859,7 +1867,7 @@ SessionService::snapshotConnection(uint32_t token, const Connection& conn,
 }
 
 SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     ConnectionsSnapshot snap;
     snap.totalControllers = 0;
     snap.maxControllers = MAX_BACKEND_CONTROLLERS;
@@ -1874,7 +1882,7 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
 }
 
 bool SessionService::isDeviceConnected(const std::string& deviceId) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     for (auto& [tok, c] : connections_) {
         if (c.deviceId == deviceId) return true;
     }
@@ -1882,7 +1890,7 @@ bool SessionService::isDeviceConnected(const std::string& deviceId) const {
 }
 
 DeviceLinkState SessionService::linkStateForDevice(const std::string& deviceId) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();
     for (auto& [tok, c] : connections_) {
         if (c.deviceId == deviceId) return linkStateAt(c, now);
@@ -1891,10 +1899,10 @@ DeviceLinkState SessionService::linkStateForDevice(const std::string& deviceId) 
 }
 
 int SessionService::reapTimedOut() {
-    std::unique_lock<std::mutex> topo(topoMtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> topo(topoMtx_, std::try_to_lock);
     if (!topo.owns_lock()) return 0;
     std::vector<RetiredSerial> retired;
-    std::unique_lock<std::mutex> lk(mtx_);
+    std::unique_lock<TrackedMutex> lk(mtx_);
     auto now = std::chrono::steady_clock::now();
     auto timeout = std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_MAX);
 
@@ -1937,7 +1945,7 @@ int SessionService::reapTimedOut() {
 bool SessionService::isBackendAvailable() const { return backend_.isBusOpen(); }
 
 int SessionService::activeSessionCount() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return static_cast<int>(connections_.size());
 }
 
@@ -1971,7 +1979,7 @@ PointerCounts SessionService::pointerCounts() const {
 #ifdef SATELLITE_BUILD_TESTS
 void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
                                      int graceSecondsAgo) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
     const auto now = std::chrono::steady_clock::now();
@@ -1981,7 +1989,7 @@ void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
 }
 
 void SessionService::resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
     // Exactly what handleMicAudio's window lapse does, without the second.
@@ -1990,21 +1998,21 @@ void SessionService::resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx) 
 }
 
 void SessionService::setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
     ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).speaker.seq = seq;
 }
 
 void SessionService::setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
     ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).haptic.seq = seq;
 }
 
 void SessionService::backdatePointerRefusalLogForTest(uint32_t token, int secondsAgo) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
     it->second.pointerRefusalLoggedAt =
@@ -2013,12 +2021,12 @@ void SessionService::backdatePointerRefusalLogForTest(uint32_t token, int second
 #endif
 
 int SessionService::totalActiveControllers() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return countGlobalActiveControllers();
 }
 
 int SessionService::availableSlots() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     int slots = 0;
     for (size_t i = 0; i < MAX_BACKEND_CONTROLLERS; i++) {
         if (!serialInUse_[i] && !serialQuarantined_[i]) slots++;

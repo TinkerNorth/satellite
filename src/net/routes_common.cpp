@@ -59,7 +59,7 @@ std::string buildBackendJson() { return buildBackendJson(probeBackend()); }
 // The `controllerAudio` setting under its own lock, so a caller does not have
 // to hold g_configMtx across a whole JSON build.
 static bool controllerAudioEnabled() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     return g_config.controllerAudio;
 }
 
@@ -68,7 +68,7 @@ static bool controllerAudioEnabled() {
 // the catalog stays static identity (its ETag is version+locale, so a runtime
 // setting must never reach it).
 static ControllerAudioPolicy controllerAudioPolicy() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
                                  g_config.controllerAudioHaptics};
 }

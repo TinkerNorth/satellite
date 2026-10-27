@@ -3,6 +3,7 @@
 #include "machine_id.h"
 #include "config.h" // configPath()
 #include "core/hex.h"
+#include "core/tracked_mutex.h"
 
 #include <sodium.h>
 
@@ -10,7 +11,7 @@
 #include <mutex>
 
 namespace {
-std::mutex g_machineIdMtx;
+TrackedMutex g_machineIdMtx("machine.id");
 std::string g_machineId;
 
 // Beside the config file, like tls.cpp's cert: per-install identity that must
@@ -24,7 +25,7 @@ std::string machineIdPath() {
 } // namespace
 
 std::string ensureMachineId() {
-    std::lock_guard<std::mutex> lk(g_machineIdMtx);
+    std::lock_guard<TrackedMutex> lk(g_machineIdMtx);
     if (!g_machineId.empty()) return g_machineId;
 
     const std::string path = machineIdPath();

@@ -19,6 +19,7 @@
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 #include "adapters/audio/opus_codec.h"
+#include "app/audio_settings.h"
 
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -53,6 +54,7 @@ namespace crash = satellite::crash;
 // rejoins when the bound IP actually changed. A wake that renegotiates the
 // link always emits RTM_NEWLINK/RTM_NEWADDR even when the address is reused.
 static void netlinkWatcherThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     using namespace std::chrono;
     auto lastSignal = steady_clock::time_point{};
     while (g_appRunning.load(std::memory_order_relaxed)) {
@@ -141,17 +143,8 @@ static void loadConfigSeedingAutostart() {
     g_config.autoStart = getAutoStart();
 }
 
-// Read per frame, not cached: unlike the master switch these gate the wire
-// rather than the persona, so flipping one reaches a stream already playing
-// instead of waiting for a replug.
-static ControllerAudioPolicy audioPolicyFromConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
-                                 g_config.controllerAudioHaptics};
-}
-
 static void persistConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     saveConfig(g_config);
 }
 
@@ -240,6 +233,7 @@ static void runHeadlessLoop() {
 // stack in the order it must be constructed, and the shutdown below mirrors
 // that order; a helper per step would move the lifetimes out of sight.
 int main() {
+    ScopedThreadRole role(ThreadRole::Gui);
     if (!startNetwork() || !startCrypto()) return 1;
     loadConfigSeedingAutostart();
 

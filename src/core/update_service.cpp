@@ -61,7 +61,7 @@ static RetryStep retryStepFor(UpdateState state, UpdateState failedPhase, bool r
 }
 
 UpdateService::UpdateService(IUpdaterPort& updater, ILogPort& log, Config& sharedConfig,
-                             std::mutex& configMtx)
+                             TrackedMutex& configMtx)
     : updater_(updater), log_(log), config_(sharedConfig), configMtx_(configMtx) {}
 
 UpdateService::~UpdateService() { stop(); }
@@ -78,7 +78,7 @@ void UpdateService::stop() {
     if (!started_) return;
     stopping_ = true;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         cancelFlag_ = true;
         cv_.notify_all();
     }
@@ -86,6 +86,7 @@ void UpdateService::stop() {
         std::lock_guard<std::mutex> lk(timerMtx_);
         timerCv_.notify_all();
     }
+    blockingRegion("thread.join");
     if (workerTh_.joinable()) workerTh_.join();
     if (timerTh_.joinable()) timerTh_.join();
     started_ = false;
@@ -93,7 +94,7 @@ void UpdateService::stop() {
 
 void UpdateService::requestCheck(bool userInitiated) {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         const bool checkQueued = checkQueuedLocked();
         if (checkQueued && userInitiated) userInitiatedCheck_ = true;
         if (checkQueued || workInFlight(state_)) return;
@@ -104,7 +105,7 @@ void UpdateService::requestCheck(bool userInitiated) {
 
 void UpdateService::requestDownload() {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (state_ != UpdateState::UpdateAvailable && state_ != UpdateState::Error) return;
         if (!info_.available) return;
         if (info_.installMethod == InstallMethod::Manual) return;
@@ -115,7 +116,7 @@ void UpdateService::requestDownload() {
 
 void UpdateService::requestRepair() {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (info_.installMethod == InstallMethod::Manual) return;
         if (checkQueuedLocked()) {
             repairPending_ = true;
@@ -136,7 +137,7 @@ void UpdateService::requestRepair() {
 
 void UpdateService::requestInstall() {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         const bool downloaded = state_ == UpdateState::Downloaded;
         const bool installFailed =
             state_ == UpdateState::Error && failedPhase_ == UpdateState::Installing;
@@ -148,7 +149,7 @@ void UpdateService::requestInstall() {
 }
 
 void UpdateService::requestRetry() {
-    std::unique_lock<std::mutex> lk(mtx_);
+    std::unique_lock<TrackedMutex> lk(mtx_);
     const RetryStep step = retryStepFor(state_, failedPhase_, info_.available);
     lk.unlock();
     switch (step) {
@@ -172,7 +173,7 @@ void UpdateService::requestRetry() {
 void UpdateService::cancelInFlight() {
     bool droppedQueued = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         cancelFlag_ = true;
         droppedQueued = pendingDownload_;
         if (droppedQueued) {
@@ -185,27 +186,27 @@ void UpdateService::cancelInFlight() {
 }
 
 UpdateStatusSnapshot UpdateService::snapshot() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return snapshotLocked();
 }
 
 void UpdateService::setStatusCallback(StatusCallback cb) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     statusCb_ = std::move(cb);
 }
 
 void UpdateService::setPersistCallback(PersistCallback cb) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     persistCb_ = std::move(cb);
 }
 
 void UpdateService::skipVersion(const std::string& version) {
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         config_.skipVersion = version;
     }
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (info_.version == version) {
             info_ = {};
             state_ = UpdateState::Idle;
@@ -221,13 +222,13 @@ void UpdateService::skipVersion(const std::string& version) {
 void UpdateService::dismiss() {
     std::string version;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (!dismissible(state_)) return;
         version = info_.version;
         dismissedVersion_ = version;
     }
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         config_.lastSeenVersion = version;
     }
     if (persistCb_) persistCb_();
@@ -238,7 +239,7 @@ void UpdateService::updatePreferences(const std::string& channel, bool autoCheck
                                       bool autoInstall) {
     bool channelChanged = false;
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         std::string ch = channel;
         if (ch != UPDATE_CHANNEL_STABLE && ch != UPDATE_CHANNEL_PRERELEASE) {
             ch = UPDATE_CHANNEL_STABLE;
@@ -257,7 +258,7 @@ void UpdateService::updatePreferences(const std::string& channel, bool autoCheck
 // Waits for the next job and takes it. Install outranks download outranks
 // check.
 UpdateService::Job UpdateService::takeNextJob() {
-    std::unique_lock<std::mutex> lk(mtx_);
+    std::unique_lock<TrackedMutex> lk(mtx_);
     cv_.wait(lk, [&] { return stopping_ || pendingCheck_ || pendingDownload_ || pendingInstall_; });
     if (stopping_) return Job::Stop;
     cancelFlag_ = false;
@@ -280,10 +281,10 @@ UpdateService::Job UpdateService::takeNextJob() {
 void UpdateService::queueDownloadIfWanted(bool fetched) {
     bool autoDownload = false;
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         autoDownload = config_.autoDownload;
     }
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     if (workInFlight(state_)) return;
     const bool selfInstallable = info_.installMethod == InstallMethod::SelfInstall;
     const bool offered = fetched && state_ == UpdateState::UpdateAvailable && selfInstallable;
@@ -295,6 +296,7 @@ void UpdateService::queueDownloadIfWanted(bool fetched) {
 }
 
 void UpdateService::workerLoop() {
+    ScopedThreadRole role(ThreadRole::Update);
     while (!stopping_) {
         const Job job = takeNextJob();
         switch (job) {
@@ -316,6 +318,7 @@ void UpdateService::workerLoop() {
 }
 
 void UpdateService::timerLoop() {
+    ScopedThreadRole role(ThreadRole::Update);
     using namespace std::chrono_literals;
     auto interruptibleSleep = [this](std::chrono::seconds d) {
         std::unique_lock<std::mutex> lk(timerMtx_);
@@ -325,7 +328,7 @@ void UpdateService::timerLoop() {
     while (!stopping_) {
         bool shouldCheck = false;
         {
-            std::lock_guard<std::mutex> ck(configMtx_);
+            std::lock_guard<TrackedMutex> ck(configMtx_);
             if (config_.autoCheck) {
                 int64_t age = nowEpoch() - config_.lastCheckEpoch;
                 int64_t intervalSec = static_cast<int64_t>(config_.updateCheckIntervalHours) * 3600;
@@ -343,7 +346,7 @@ void UpdateService::fireBroadcast() {
     UpdateStatusSnapshot snap;
     StatusCallback cb;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         snap = snapshotLocked();
         cb = statusCb_;
     }
@@ -412,7 +415,7 @@ UpdateStatusSnapshot UpdateService::snapshotLocked() const {
     s.dismissed = dismissible(state_) && versionDismissed;
     s.platformId = updater_.platformId();
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         s.lastCheckEpoch = config_.lastCheckEpoch;
         s.channel = config_.updateChannel;
         s.autoCheck = config_.autoCheck;
@@ -435,7 +438,7 @@ void UpdateService::settleCheck(UpdateState state, const UpdateInfo& info, LogLe
                                 const std::string& message) {
     bool staged = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (checkSupersededLocked()) return;
         staged = isStagedLocked(info);
         const UpdateState settled = staged ? UpdateState::Downloaded : state;
@@ -451,7 +454,7 @@ void UpdateService::settleCheck(UpdateState state, const UpdateInfo& info, LogLe
 
 void UpdateService::settleFailedCheck(const std::string& err) {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (checkSupersededLocked()) return;
         const bool knownIsStaged = isStagedLocked(info_);
         const UpdateState settled =
@@ -469,7 +472,7 @@ void UpdateService::settleFailedCheck(const std::string& err) {
 bool UpdateService::doCheck() {
     bool userInitiated = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         userInitiated = userInitiatedCheck_;
     }
     fireBroadcast();
@@ -478,7 +481,7 @@ bool UpdateService::doCheck() {
 
     std::string channel, skipVer;
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         channel = config_.updateChannel;
         skipVer = config_.skipVersion;
     }
@@ -488,7 +491,7 @@ bool UpdateService::doCheck() {
     const bool ok = updater_.fetchLatestRelease(channel, SATELLITE_VERSION, info, err);
 
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         config_.lastCheckEpoch = nowEpoch();
     }
     if (persistCb_) persistCb_();
@@ -534,7 +537,7 @@ bool progressWorthBroadcasting(uint64_t doneBefore, uint64_t totalBefore, uint64
 void UpdateService::onDownloadProgress(uint64_t soFar, uint64_t total) {
     bool shouldBroadcast = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         shouldBroadcast = progressWorthBroadcasting(bytesDownloaded_, bytesTotal_, soFar, total);
         bytesDownloaded_ = soFar;
         bytesTotal_ = total > 0 ? total : bytesTotal_;
@@ -548,7 +551,7 @@ void UpdateService::onDownloadProgress(uint64_t soFar, uint64_t total) {
 bool UpdateService::beginDownload(UpdateInfo& info) {
     bool settled = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (pendingCheck_) return false;
         info = info_;
         const bool repair = repairPending_;
@@ -589,7 +592,7 @@ void UpdateService::doDownload() {
     }
     if (!ok) {
         {
-            std::lock_guard<std::mutex> lk(mtx_);
+            std::lock_guard<TrackedMutex> lk(mtx_);
             if (state_ != UpdateState::Downloading) return;
             state_ = UpdateState::Error;
             lastError_ = err.empty() ? "Download failed" : err;
@@ -601,7 +604,7 @@ void UpdateService::doDownload() {
     }
 
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (state_ != UpdateState::Downloading) return;
         downloadedPath_ = localPath;
         state_ = UpdateState::Verifying;
@@ -613,7 +616,7 @@ void UpdateService::doDownload() {
 
 void UpdateService::settleCancelledDownload() {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (state_ != UpdateState::Downloading) return;
         abandonDownloadLocked();
     }
@@ -625,7 +628,7 @@ void UpdateService::doVerify() {
     UpdateInfo info;
     std::string localPath;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         info = info_;
         localPath = downloadedPath_;
     }
@@ -633,7 +636,7 @@ void UpdateService::doVerify() {
     bool ok = updater_.verifyArtifact(localPath, info, err);
     if (!ok) {
         {
-            std::lock_guard<std::mutex> lk(mtx_);
+            std::lock_guard<TrackedMutex> lk(mtx_);
             if (state_ != UpdateState::Verifying) return;
             state_ = UpdateState::Error;
             lastError_ = err.empty() ? "Signature/checksum verification failed" : err;
@@ -645,11 +648,11 @@ void UpdateService::doVerify() {
     }
     bool autoInstall = false;
     {
-        std::lock_guard<std::mutex> ck(configMtx_);
+        std::lock_guard<TrackedMutex> ck(configMtx_);
         autoInstall = config_.autoInstall;
     }
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (state_ != UpdateState::Verifying) return;
         state_ = UpdateState::Downloaded;
         staged_ = {info.version, info.assetName, info.assetSha256};
@@ -663,7 +666,7 @@ void UpdateService::doInstall() {
     UpdateInfo info;
     std::string localPath;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (state_ != UpdateState::Installing) return;
         info = info_;
         localPath = downloadedPath_;
@@ -675,7 +678,7 @@ void UpdateService::doInstall() {
     bool ok = updater_.applyUpdate(localPath, info, err);
     if (!ok) {
         {
-            std::lock_guard<std::mutex> lk(mtx_);
+            std::lock_guard<TrackedMutex> lk(mtx_);
             if (state_ != UpdateState::Installing) return;
             state_ = UpdateState::Error;
             lastError_ = err.empty() ? "Failed to launch installer" : err;

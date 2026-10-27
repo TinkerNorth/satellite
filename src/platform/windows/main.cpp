@@ -27,6 +27,7 @@
 #include "adapters/log_adapter.h"
 #include "adapters/crash_adapter.h"
 #include "adapters/audio/opus_codec.h"
+#include "app/audio_settings.h"
 
 #include "core/gamepad_mux.h"
 #include "core/session_service.h"
@@ -64,6 +65,7 @@ void showFatalError(const wchar_t* title, const wchar_t* heading, const wchar_t*
 // Refresh the tray tooltip every ~2s. Cheap: updateTrayTooltip skips the
 // NIM_MODIFY round-trip when the composed string is unchanged.
 void tooltipTickerThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     using namespace std::chrono_literals;
     while (g_appRunning.load(std::memory_order_relaxed)) {
         updateTrayTooltip();
@@ -72,6 +74,7 @@ void tooltipTickerThread() {
 }
 
 void addrChangeWatcherThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     while (g_appRunning.load(std::memory_order_relaxed)) {
         OVERLAPPED ov{};
         ov.hEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -190,29 +193,9 @@ void loadConfigSeedingAutostart() {
     }
 }
 
-// The settings the adapters read per plug and per frame rather than cache: the
-// dashboard toggle takes effect on the next pad (the audio persona, which a
-// pad already carrying audio keeps until it is replugged) or the next frame
-// (the wire directions, which gate the wire rather than the persona).
-bool controllerAudioEnabled() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return g_config.controllerAudio;
-}
-
-bool keepDefaultAudioDevice() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return g_config.controllerAudioKeepDefaultDevice;
-}
-
-ControllerAudioPolicy audioPolicyFromConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
-                                 g_config.controllerAudioHaptics};
-}
-
 // Under g_configMtx so saveConfig sees a consistent struct.
 void persistConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     saveConfig(g_config);
 }
 
@@ -311,6 +294,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     lifecycle::applyRuntimeMitigations();
     lifecycle::installCrashHandler();
     lifecycle::installTerminateHandler();
+    ScopedThreadRole role(ThreadRole::Gui);
 
     const std::string cmd = lpCmdLine != nullptr ? lpCmdLine : "";
     if (crashForTestIfAsked(cmd)) return 3;

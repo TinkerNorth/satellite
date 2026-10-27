@@ -187,7 +187,7 @@ struct Rig {
     MockUpdater up;
     RecordingLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx{"config"};
     BroadcastLog broadcasts;
     std::atomic<int> persistCalls{0};
     UpdateService svc{up, log, cfg, cfgMtx};
@@ -327,7 +327,7 @@ static void test_check_finds_update() {
     MockUpdater up;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(true);
@@ -344,7 +344,7 @@ static void test_check_up_to_date() {
     up.fetchVersion = "0.0.1";
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(false);
@@ -359,7 +359,7 @@ static void test_check_network_error() {
     up.fetchError = "no network";
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(true);
@@ -376,7 +376,7 @@ static void test_check_skip_version_suppresses() {
     MockLog log;
     Config cfg;
     cfg.skipVersion = "99.0.0";
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(false);
@@ -389,7 +389,7 @@ static void test_full_install_flow() {
     MockUpdater up;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(true);
@@ -406,7 +406,7 @@ static void test_download_failure() {
     up.downloadOk = false;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(true);
@@ -422,7 +422,7 @@ static void test_verify_failure() {
     up.verifyOk = false;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(true);
@@ -518,7 +518,7 @@ static void test_manual_method_does_not_download() {
     up.method = InstallMethod::Manual;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(true);
@@ -534,7 +534,7 @@ static void test_download_queued_before_skip_settles_without_relocking() {
     MockUpdater up;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     std::atomic<bool> holdWorker{true};
     std::atomic<bool> workerHeld{false};
@@ -575,7 +575,7 @@ static void test_repair_ignores_manual_install_hosts() {
     up.method = InstallMethod::Manual;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(true);
@@ -592,7 +592,7 @@ static void test_auto_download_and_install_chain() {
     Config cfg;
     cfg.autoDownload = true;
     cfg.autoInstall = true;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     svc.start();
     svc.requestCheck(false);
@@ -604,7 +604,7 @@ static void test_update_preferences_persists() {
     MockUpdater up;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     int persistCalls = 0;
     svc.setPersistCallback([&] { persistCalls++; });
@@ -623,7 +623,7 @@ static void test_skip_version_clears_available() {
     MockUpdater up;
     MockLog log;
     Config cfg;
-    std::mutex cfgMtx;
+    TrackedMutex cfgMtx("config");
     UpdateService svc(up, log, cfg, cfgMtx);
     int persistCalls = 0;
     svc.setPersistCallback([&] { persistCalls++; });

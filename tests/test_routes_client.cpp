@@ -123,12 +123,12 @@ static void putPairedDevice(const std::string& id, const std::string& keyHex) {
     d.lastIP = "127.0.0.1";
     d.pairedAt = "2026-07-16";
     d.sharedKeyHex = keyHex;
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     g_config.pairedDevices.push_back(d);
 }
 
 static std::string storedKeyHex(const std::string& id) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    std::lock_guard<TrackedMutex> lk(g_configMtx);
     for (const auto& d : g_config.pairedDevices) {
         if (d.id == id) return d.sharedKeyHex;
     }

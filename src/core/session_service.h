@@ -10,6 +10,7 @@
 
 #include "hot_table.h"
 #include "ports.h"
+#include "tracked_mutex.h"
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
@@ -354,8 +355,8 @@ class SessionService {
                         uint32_t counter, uint64_t clientAddr);
     void recordHotDatagram(uint32_t token, uint32_t counter, uint64_t clientAddr);
 
-    std::mutex topoMtx_;
-    mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
+    TrackedMutex topoMtx_{"service.topology"};
+    mutable TrackedMutex mtx_{"service.state"}; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
     MouseButtons pointerButtons_[MAX_BACKEND_CONTROLLERS + 1]{};

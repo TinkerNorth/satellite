@@ -49,6 +49,7 @@
 
 #include "core/gamepad_backend.h"
 #include "core/ports.h"
+#include "core/tracked_mutex.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -144,7 +145,7 @@ class MacHidGamepadAdapter : public IGamepadPort {
     bool submitLocked(Slot& slot); // pack + HandleReport; caller holds mtx_
     void handleOutputReport(uint32_t serial, uint32_t reportId, const uint8_t* data, size_t len);
 
-    mutable std::mutex mtx_;
+    mutable TrackedMutex mtx_{"machid.devices"};
     bool busOpen_ = false;
     std::unordered_map<uint32_t, std::unique_ptr<Slot>> slots_;
     // Slots whose cancel never confirmed. Out of slots_, so unreachable by any

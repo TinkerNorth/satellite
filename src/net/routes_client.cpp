@@ -16,6 +16,7 @@
 #include "core/hex.h"
 #include "core/json.h"
 #include "core/session_service.h"
+#include "core/tracked_mutex.h"
 #include "core/version.h"
 #include "app/wire_stats.h"
 
@@ -536,8 +537,14 @@ static void catalogImageRoute(const Request& req, Response& res) {
     res.set_content(svg, "image/svg+xml");
 }
 
+static httplib::Server::HandlerResponse nameClientThread(const Request&, Response&) {
+    setThreadRole(ThreadRole::HttpClient);
+    return httplib::Server::HandlerResponse::Unhandled;
+}
+
 // Client API server routes: pairing + sessions + catalog.
 void registerClientRoutes(httplib::Server& server, SessionService& svc) {
+    server.set_pre_routing_handler(nameClientThread);
     // POST /api/pair: PIN-gated (or hmacProof-gated rotation); no device auth
     // for the PIN paths (the device is not paired yet).
     server.Post("/api/pair",

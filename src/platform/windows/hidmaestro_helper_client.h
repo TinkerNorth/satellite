@@ -11,6 +11,7 @@
 #pragma once
 
 #include "hidmaestro_provisioner.h"
+#include "core/tracked_mutex.h"
 
 #include <winsock2.h>
 #include <windows.h>
@@ -55,7 +56,7 @@ class HelperClient : public IHidMaestroProvisioner {
     bool overlappedIoLocked(bool write, void* buf, DWORD len, DWORD& moved);
     bool dropChannelLocked();
 
-    mutable std::mutex mtx_;
+    mutable TrackedMutex mtx_{"hidmaestro.helper"};
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     HANDLE ioEvent_ = nullptr; // overlapped read/write completion, reused
     HANDLE helperProcess_ = nullptr;

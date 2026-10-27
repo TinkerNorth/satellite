@@ -647,7 +647,7 @@ static void testUpdateToastWithTheRealService() {
         ToastProbeUpdater updater;
         ToastProbeLog log;
         Config cfg;
-        std::mutex cfgMtx;
+        TrackedMutex cfgMtx("config");
         UpdateService svc(updater, log, cfg, cfgMtx);
         svc.setStatusCallback(
             [&probe](const UpdateStatusSnapshot& snap) { probeToast(probe, snap); });

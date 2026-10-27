@@ -10,6 +10,7 @@
 // The backdatePinClockForTest seam (previously macOS-only) is now available
 // to every platform's test build.
 #include "pin_rotation.h"
+#include "core/tracked_mutex.h"
 
 #include <sodium.h>
 
@@ -32,7 +33,7 @@ std::string randomDigits(int n) {
     return out;
 }
 
-static std::mutex g_pinMtx;
+static TrackedMutex g_pinMtx("pairing.pin");
 static std::string g_currentPin;
 static std::string g_previousPin;
 static std::chrono::steady_clock::time_point g_pinRotateAt;
@@ -66,7 +67,7 @@ static void rotatePinsIfDueLocked() {
 }
 
 bool verifyPin(const std::string& pin) {
-    std::lock_guard<std::mutex> lk(g_pinMtx);
+    std::lock_guard<TrackedMutex> lk(g_pinMtx);
     rotatePinsIfDueLocked();
     // Constant-time compare so timing can't leak how many leading digits
     // matched. sodium_memcmp needs equal lengths, so gate on size first.
@@ -88,14 +89,14 @@ bool verifyPin(const std::string& pin) {
 
 #ifdef SATELLITE_BUILD_TESTS
 void backdatePinClockForTest(int seconds) {
-    std::lock_guard<std::mutex> lk(g_pinMtx);
+    std::lock_guard<TrackedMutex> lk(g_pinMtx);
     g_pinRotateAt -= std::chrono::seconds(seconds);
     g_pinPairedAt -= std::chrono::seconds(seconds);
 }
 #endif
 
 PinSnapshot pinSnapshot() {
-    std::lock_guard<std::mutex> lk(g_pinMtx);
+    std::lock_guard<TrackedMutex> lk(g_pinMtx);
     rotatePinsIfDueLocked();
     const auto now = std::chrono::steady_clock::now();
     PinSnapshot s;

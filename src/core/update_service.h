@@ -11,6 +11,7 @@
 #pragma once
 
 #include "core/ports.h"
+#include "core/tracked_mutex.h"
 #include "core/types.h"
 #include "core/update_types.h"
 
@@ -37,7 +38,7 @@ class UpdateService {
     using PersistCallback = std::function<void()>;
 
     UpdateService(IUpdaterPort& updater, ILogPort& log, Config& sharedConfig,
-                  std::mutex& configMtx);
+                  TrackedMutex& configMtx);
     ~UpdateService();
 
     UpdateService(const UpdateService&) = delete;
@@ -122,10 +123,10 @@ class UpdateService {
     IUpdaterPort& updater_;
     ILogPort& log_;
     Config& config_;
-    std::mutex& configMtx_; // protects config_ (held by webserver too)
+    TrackedMutex& configMtx_; // protects config_ (held by webserver too)
 
-    mutable std::mutex mtx_;
-    std::condition_variable cv_;
+    mutable TrackedMutex mtx_{"update.state"};
+    std::condition_variable_any cv_;
     // Separate cv so stop() interrupts the timer's interval sleep at once
     // instead of waiting out the current 1 s slice. The timer never contends on
     // mtx_, so it gets its own mutex.
