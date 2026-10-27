@@ -3,6 +3,17 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.1.9
+
+No protocol changes. One licensing fix in the Windows installer.
+
+The installer now installs HIDMaestro's own license beside
+`satellite-hm-helper.exe` as `LICENSE-HIDMaestro.txt`. The helper is
+published self-contained, so `HIDMaestro.Core.dll` ships inside it and the
+MIT notice belongs with it. The text is staged out of the same hash-pinned
+release zip as the SDK assemblies, so a pin bump carries the matching one
+along by itself.
+
 ## 2.1.8
 
 No protocol changes. The client API gains one refusal, described last.
