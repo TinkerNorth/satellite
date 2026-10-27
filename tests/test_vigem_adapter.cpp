@@ -13,11 +13,15 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "test_util.h"
@@ -69,6 +73,41 @@ static bool completeOnce(std::vector<uint8_t>& pending, void* out, size_t size) 
     pending.clear();
     return true;
 }
+
+struct Gate {
+    std::mutex m;
+    std::condition_variable cv;
+    bool armed = false;
+    bool entered = false;
+};
+static Gate gate;
+
+static void armGate() {
+    std::lock_guard<std::mutex> lk(gate.m);
+    gate.armed = true;
+    gate.entered = false;
+}
+
+static void openGate() {
+    {
+        std::lock_guard<std::mutex> lk(gate.m);
+        gate.armed = false;
+    }
+    gate.cv.notify_all();
+}
+
+static bool waitUntilEntered(std::chrono::milliseconds budget) {
+    std::unique_lock<std::mutex> lk(gate.m);
+    return gate.cv.wait_for(lk, budget, [] { return gate.entered; });
+}
+
+static void passGate() {
+    std::unique_lock<std::mutex> lk(gate.m);
+    if (!gate.armed) return;
+    gate.entered = true;
+    gate.cv.notify_all();
+    gate.cv.wait(lk, [] { return !gate.armed; });
+}
 } // namespace fake
 
 // These signatures must match vigem.h / the adapter's extern decls exactly so
@@ -78,14 +117,17 @@ HANDLE openVigemBus() {
     return CreateEventW(nullptr, FALSE, FALSE, nullptr);
 }
 bool pluginTarget(HANDLE, ULONG) {
+    fake::passGate();
     fake::g.pluginXboxCalls++;
     return true;
 }
 bool pluginTargetDS4(HANDLE, ULONG) {
+    fake::passGate();
     fake::g.pluginDs4Calls++;
     return true;
 }
 bool unplugTarget(HANDLE, ULONG) {
+    fake::passGate();
     fake::g.unplugCalls++;
     return fake::g.unplugAccepts;
 }
@@ -584,6 +626,107 @@ static void test_motion_submit_rejected_for_xbox_and_unplugged() {
     a.closeBus();
 }
 
+struct Probe {
+    std::string name;
+    std::function<bool()> call;
+};
+
+constexpr auto PROBE_BUDGET = std::chrono::milliseconds(200);
+constexpr auto GATE_BUDGET = std::chrono::milliseconds(5000);
+
+static void runProbesWhileGated(const std::string& during, const std::vector<Probe>& receiveThread,
+                                const std::vector<Probe>& anyThread) {
+    std::vector<const Probe*> probes;
+    for (const Probe& p : receiveThread) probes.push_back(&p);
+    for (const Probe& p : anyThread) probes.push_back(&p);
+    std::vector<std::promise<bool>> answered(probes.size());
+    std::vector<std::future<bool>> answers;
+    for (std::promise<bool>& p : answered) answers.push_back(p.get_future());
+
+    const auto deadline = std::chrono::steady_clock::now() + PROBE_BUDGET;
+    std::vector<std::thread> threads;
+    threads.emplace_back([&] {
+        for (size_t i = 0; i < receiveThread.size(); i++) answered[i].set_value(probes[i]->call());
+    });
+    for (size_t i = receiveThread.size(); i < probes.size(); i++) {
+        threads.emplace_back([&, i] { answered[i].set_value(probes[i]->call()); });
+    }
+    for (size_t i = 0; i < probes.size(); i++) {
+        TEST(during + ": " + probes[i]->name + " returns within 200 ms");
+        EXPECT(answers[i].wait_until(deadline) == std::future_status::ready);
+    }
+    fake::openGate();
+    for (std::thread& t : threads) t.join();
+    for (size_t i = 0; i < probes.size(); i++) {
+        TEST(during + ": " + probes[i]->name + " answers as it does outside the plug");
+        EXPECT(answers[i].get());
+    }
+}
+
+static std::vector<Probe> receiveProbes(ViGEmAdapter& a, bool ds4) {
+    return {
+        {"submitReport(1)", [&a] { return a.submitReport(1, GamepadReport{}); }},
+        {"submitMotion(1)", [&a, ds4] { return a.submitMotion(1, MotionReport{}) == ds4; }},
+        {"submitTouchpad(1)", [&a, ds4] { return a.submitTouchpad(1, TouchpadReport{}) == ds4; }},
+        {"submitBattery(1)", [&a, ds4] { return a.submitBattery(1, BatteryReport{}) == ds4; }},
+    };
+}
+
+static std::vector<Probe> queryProbes(ViGEmAdapter& a, bool ds4) {
+    return {
+        {"isDevicePlugged(1)", [&a] { return a.isDevicePlugged(1); }},
+        {"motionBackendOk(1)", [&a, ds4] { return a.motionBackendOk(1) == ds4; }},
+        {"isBusOpen()", [&a] { return a.isBusOpen(); }},
+    };
+}
+
+static std::string identityName(GamepadIdentity identity) {
+    return identity == GamepadIdentity::DS4 ? "DS4" : "Xbox";
+}
+
+static void test_plugged_pad_answers_while_another_plugs(GamepadIdentity first,
+                                                         GamepadIdentity second) {
+    const std::string during = identityName(first) + " on serial 1, " + identityName(second) +
+                               " plug of serial 2 waiting in the driver";
+    fake::g.reset();
+    ViGEmAdapter a;
+    TEST(during + ": setup");
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(1, first));
+    fake::armGate();
+    std::thread plug([&a, second] { a.pluginDevice(2, second); });
+    TEST(during + ": the plug reaches the driver");
+    EXPECT(fake::waitUntilEntered(GATE_BUDGET));
+    const bool ds4 = first == GamepadIdentity::DS4;
+    runProbesWhileGated(during, receiveProbes(a, ds4), queryProbes(a, ds4));
+    plug.join();
+    TEST(during + ": serial 2 is plugged once the driver answers");
+    EXPECT(a.isDevicePlugged(2));
+    a.closeBus();
+}
+
+static void test_plugged_pad_answers_while_another_unplugs(GamepadIdentity first,
+                                                           GamepadIdentity second) {
+    const std::string during = identityName(first) + " on serial 1, " + identityName(second) +
+                               " unplug of serial 2 waiting in the driver";
+    fake::g.reset();
+    ViGEmAdapter a;
+    TEST(during + ": setup");
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(1, first));
+    EXPECT(a.pluginDevice(2, second));
+    fake::armGate();
+    std::thread unplug([&a] { a.unplugDevice(2); });
+    TEST(during + ": the unplug reaches the driver");
+    EXPECT(fake::waitUntilEntered(GATE_BUDGET));
+    const bool ds4 = first == GamepadIdentity::DS4;
+    runProbesWhileGated(during, receiveProbes(a, ds4), queryProbes(a, ds4));
+    unplug.join();
+    TEST(during + ": serial 2 is gone once the driver answers");
+    EXPECT(!a.isDevicePlugged(2));
+    a.closeBus();
+}
+
 int main() {
     std::cout << "=== test_vigem_adapter ===\n";
 
@@ -606,6 +749,10 @@ int main() {
     test_motion_submit_lands_on_ex_when_supported();
     test_motion_submit_not_delivered_when_ex_unsupported();
     test_motion_submit_rejected_for_xbox_and_unplugged();
+    test_plugged_pad_answers_while_another_plugs(GamepadIdentity::Xbox, GamepadIdentity::DS4);
+    test_plugged_pad_answers_while_another_plugs(GamepadIdentity::DS4, GamepadIdentity::Xbox);
+    test_plugged_pad_answers_while_another_unplugs(GamepadIdentity::Xbox, GamepadIdentity::DS4);
+    test_plugged_pad_answers_while_another_unplugs(GamepadIdentity::DS4, GamepadIdentity::Xbox);
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
