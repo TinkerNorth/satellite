@@ -780,6 +780,15 @@ void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& s
     TEST("mock: the pairing service saved the config into the sandbox");
     EXPECT(g_configStore->flush(WAIT_LIMIT));
     EXPECT(sandbox.saved());
+    TEST("mock: an unchanged identity refresh publishes nothing, a renamed one publishes the name");
+    const std::shared_ptr<const Config> settled = g_configStore->current();
+    refreshPairedDeviceIdentity(b.id(), b.ip(), b.name());
+    EXPECT(g_configStore->current() == settled);
+    const std::string renamed = "Renamed " + b.name();
+    refreshPairedDeviceIdentity(b.id(), b.ip(), renamed);
+    PairedDevice stored;
+    EXPECT(findPairedDevice(b.id(), stored));
+    EXPECT_EQ(stored.name, renamed);
     TEST("mock: the backend saw lifecycle calls");
     EXPECT(watch.calls() > 0);
 }

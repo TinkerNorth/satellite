@@ -1398,7 +1398,8 @@ void pairInConfig(const std::vector<std::unique_ptr<DishRun>>& dishes, bool stal
     for (const auto& dish : dishes) {
         PairedDevice device;
         device.id = dish->spec.deviceId;
-        device.name = staleNames ? dish->spec.deviceName + STALE_NAME_SUFFIX : dish->spec.deviceName;
+        device.name =
+            staleNames ? dish->spec.deviceName + STALE_NAME_SUFFIX : dish->spec.deviceName;
         device.lastIP = dish->spec.clientIp;
         device.pairedAt = getCurrentDate();
         device.sharedKeyHex = hexEncode(dish->spec.pairingKey.data(), dish->spec.pairingKey.size());
