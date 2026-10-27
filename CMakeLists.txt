@@ -145,6 +145,7 @@ set(SATELLITE_NET_SOURCES
     src/net/webserver.cpp
     src/net/routes_common.cpp
     src/net/routes_admin.cpp
+    src/net/admin_json.cpp
     src/net/routes_client.cpp
     src/net/tls.cpp
     src/net/machine_id.cpp
@@ -1272,6 +1273,7 @@ endif()
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SATELLITE_ROUTE_TEST_COMMON_SOURCES
         src/net/routes_common.cpp
+        src/net/admin_json.cpp
         src/net/pairing.cpp
         src/net/pairing_keys.cpp
         src/net/pairing_service.cpp
