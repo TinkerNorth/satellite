@@ -87,6 +87,14 @@ to `driver_pins.h` after every publish. The uninstaller's
 `satellite-hm-helper.exe remove-driver` removes the virtual devices and
 driver packages.
 
+The zip's own `LICENSE` is staged beside the assemblies and `installer.iss`
+installs it as `LICENSE-HIDMaestro.txt`. The helper is published
+self-contained, so `HIDMaestro.Core.dll` ships inside it, and MIT requires
+the notice to travel with the binary; upstream asked for this in
+[issue #141](https://github.com/TinkerNorth/satellite/issues/141). A pin
+bump carries the license along by itself, because the staging takes it from
+the same hash-pinned zip as the assemblies.
+
 `HIDMaestro.Core.dll` also embeds a **second, kernel-mode** driver payload:
 the usbip-win2 0.9.8.1 installers (x64 and ARM64, each verified against the
 upstream release hash at build time and again before it runs), the

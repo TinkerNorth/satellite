@@ -107,9 +107,9 @@ foreach ($Item in $Redistributables) {
 $HmZip = Join-Path $RedistDir $HmEntry.Filename
 $HmSdkDir = Join-Path $RedistDir 'hidmaestro'
 $StampLine = "$($ExpectedHashes[$HmEntry.Filename]) *$($HmEntry.Filename)"
-$Staged = Sync-HmSdkStaging -ZipPath $HmZip -SdkDir $HmSdkDir -Wanted $HmSdkAssemblies -StampLine $StampLine -Force:$Force
+$Staged = Sync-HmSdkStaging -ZipPath $HmZip -SdkDir $HmSdkDir -Wanted $HmSdkStagedFiles -StampLine $StampLine -Force:$Force
 if ($Staged) {
-    Write-Host "[OK]   redist/hidmaestro/ staged from $($HmEntry.Filename) ($($HmSdkAssemblies -join ', '))"
+    Write-Host "[OK]   redist/hidmaestro/ staged from $($HmEntry.Filename) ($($HmSdkStagedFiles -join ', '))"
 } else {
     Write-Host "[OK]   redist/hidmaestro/ already staged from $($HmEntry.Filename)"
 }

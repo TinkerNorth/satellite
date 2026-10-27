@@ -137,6 +137,7 @@ function NewFakeSdkZip([string]$Dir, [string]$ZipName, [string]$CoreDllText, [st
         'HIDMaestro.Core.dll'                          = $CoreDllText
         'HIDMaestroTest\Microsoft.Windows.SDK.NET.dll' = 'projection assembly'
         'HIDMaestroTest\WinRT.Runtime.dll'             = 'winrt runtime'
+        'LICENSE'                                      = 'hidmaestro license'
         'README.md'                                    = 'readme'
     }
     foreach ($member in $members.Keys) {
@@ -186,7 +187,7 @@ function StagedCoreText([string]$RedistDir) {
 }
 
 $realPinsHeader = Join-Path $repoRoot 'src\platform\windows\driver_pins.h'
-$wanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll')
+$wanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE')
 
 function TestSha256Sums {
     $dir = NewTempDir
@@ -354,6 +355,18 @@ function TestRepoPinsAgree {
     ExpectEq $Matches[1] $pins['SATELLITE_VIGEMBUS_BUNDLED_VERSION'] 'SBOM ViGEmBus version'
 }
 
+function TestInstallerShipsHmLicense {
+    Test 'installer.iss installs the staged HIDMaestro LICENSE beside the helper'
+    Expect ($HmSdkStagedFiles -contains 'LICENSE') 'the staging takes LICENSE out of the pinned zip'
+    $lines = @((Get-Content (Join-Path $repoRoot 'installer.iss')) |
+        Where-Object { $_ -like 'Source: "redist\hidmaestro\LICENSE"*' })
+    ExpectEq $lines.Count 1 'installer.iss has one Source line for the staged LICENSE'
+    $line = [string]($lines | Select-Object -First 1)
+    Expect ($line -like '*DestDir: "{app}"*') 'installed beside the helper'
+    Expect ($line -like '*DestName: "LICENSE-HIDMaestro.txt"*') 'installed as LICENSE-HIDMaestro.txt'
+    Expect ($line -like '*Components: hidmaestro*') 'ships with the HIDMaestro component'
+}
+
 function TestStaging {
     $dir = NewTempDir
     try {
@@ -469,6 +482,7 @@ TestInfDriverVersions
 TestHmSdkDriverVersion
 TestVersionsAndAsserts
 TestRepoPinsAgree
+TestInstallerShipsHmLicense
 TestStaging
 TestFetchRedistEndToEnd
 Write-Host ''
