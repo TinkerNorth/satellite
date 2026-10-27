@@ -96,9 +96,7 @@ class AudioDefaultGuard {
 };
 
 // Drives the guard around a composite plug. The polling lives on one
-// long-lived worker rather than a thread per plug: the plug path signals it
-// under the adapter's bus lock, and a restore that blocked there would stall
-// the pad it is trying to protect.
+// long-lived worker rather than a thread per plug.
 class PlugGuardRunner {
   public:
     using EnabledFn = std::function<bool()>;

@@ -15,12 +15,16 @@
 
 #include "../src/platform/windows/hidmaestro_adapter.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <functional>
+#include <future>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -86,6 +90,38 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     bool lastAudioRequested = false;
     std::map<uint32_t, Fake> live;
 
+    std::mutex gateMtx;
+    std::condition_variable gateCv;
+    bool gateArmed = false;
+    bool gateEntered = false;
+
+    void armGate() {
+        std::lock_guard<std::mutex> lk(gateMtx);
+        gateArmed = true;
+        gateEntered = false;
+    }
+
+    void openGate() {
+        {
+            std::lock_guard<std::mutex> lk(gateMtx);
+            gateArmed = false;
+        }
+        gateCv.notify_all();
+    }
+
+    bool waitUntilEntered(std::chrono::milliseconds budget) {
+        std::unique_lock<std::mutex> lk(gateMtx);
+        return gateCv.wait_for(lk, budget, [this] { return gateEntered; });
+    }
+
+    void passGate() {
+        std::unique_lock<std::mutex> lk(gateMtx);
+        if (!gateArmed) return;
+        gateEntered = true;
+        gateCv.notify_all();
+        gateCv.wait(lk, [this] { return !gateArmed; });
+    }
+
     ~FakeProvisioner() override {
         for (auto& [serial, f] : live) destroy(f);
         live.clear();
@@ -126,6 +162,7 @@ struct FakeProvisioner : IHidMaestroProvisioner {
 
     bool provision(uint32_t serial, GamepadIdentity identity, bool audio,
                    ProvisionResult& out) override {
+        passGate();
         provisionCalls++;
         lastIdentity = identity;
         lastAudioRequested = audio;
@@ -201,6 +238,7 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     }
 
     bool deprovision(uint32_t serial) override {
+        passGate();
         deprovisionCalls++;
         auto it = live.find(serial);
         if (it != live.end()) {
@@ -1184,6 +1222,213 @@ static void test_close_bus() {
     EXPECT(prov.shutdownCalls >= 1); // destructor ends the helper session
 }
 
+struct Probe {
+    std::string name;
+    std::function<bool()> call;
+};
+
+constexpr auto PROBE_BUDGET = std::chrono::milliseconds(200);
+constexpr auto GATE_BUDGET = std::chrono::milliseconds(5000);
+
+static void runProbesWhileGated(FakeProvisioner& prov, const std::string& during,
+                                const std::vector<Probe>& receiveThread,
+                                const std::vector<Probe>& anyThread) {
+    std::vector<const Probe*> probes;
+    for (const Probe& p : receiveThread) probes.push_back(&p);
+    for (const Probe& p : anyThread) probes.push_back(&p);
+    std::vector<std::promise<bool>> answered(probes.size());
+    std::vector<std::future<bool>> answers;
+    for (std::promise<bool>& p : answered) answers.push_back(p.get_future());
+
+    const auto deadline = std::chrono::steady_clock::now() + PROBE_BUDGET;
+    std::vector<std::thread> threads;
+    threads.emplace_back([&] {
+        for (size_t i = 0; i < receiveThread.size(); i++) answered[i].set_value(probes[i]->call());
+    });
+    for (size_t i = receiveThread.size(); i < probes.size(); i++) {
+        threads.emplace_back([&, i] { answered[i].set_value(probes[i]->call()); });
+    }
+    for (size_t i = 0; i < probes.size(); i++) {
+        TEST(during + ": " + probes[i]->name + " returns within 200 ms");
+        EXPECT(answers[i].wait_until(deadline) == std::future_status::ready);
+    }
+    prov.openGate();
+    for (std::thread& t : threads) t.join();
+    for (size_t i = 0; i < probes.size(); i++) {
+        TEST(during + ": " + probes[i]->name + " answers as it does outside the plug");
+        EXPECT(answers[i].get());
+    }
+}
+
+static std::vector<Probe> receiveProbes(HidMaestroAdapter& a, bool sony) {
+    return {
+        {"submitReport(1)", [&a] { return a.submitReport(1, GamepadReport{}); }},
+        {"submitMotion(1)", [&a, sony] { return a.submitMotion(1, MotionReport{}) == sony; }},
+        {"submitTouchpad(1)", [&a, sony] { return a.submitTouchpad(1, TouchpadReport{}) == sony; }},
+        {"submitBattery(1)", [&a, sony] { return a.submitBattery(1, BatteryReport{}) == sony; }},
+        {"submitMicAudioPcm(1)",
+         [&a, sony] {
+             const std::vector<int16_t> window(AUDIO_FRAME_SAMPLES, 100);
+             return a.submitMicAudioPcm(1, window.data(), window.size()) == sony;
+         }},
+    };
+}
+
+static std::vector<Probe> queryProbes(HidMaestroAdapter& a) {
+    return {
+        {"isDevicePlugged(1)", [&a] { return a.isDevicePlugged(1); }},
+        {"motionBackendOk(1)", [&a] { return a.motionBackendOk(1); }},
+        {"isBusOpen()", [&a] { return a.isBusOpen(); }},
+        {"refreshIdleInput()",
+         [&a] {
+             a.refreshIdleInput();
+             return true;
+         }},
+    };
+}
+
+static std::string identityName(GamepadIdentity identity) {
+    return identity == GamepadIdentity::Xbox ? "Xbox" : "DualSense";
+}
+
+static void test_plugged_pad_answers_while_another_provisions(GamepadIdentity first,
+                                                              GamepadIdentity second) {
+    const std::string during = identityName(first) + " on serial 1, " + identityName(second) +
+                               " plug of serial 2 waiting on the helper";
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, audioOn());
+    TEST(during + ": setup");
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, first));
+    prov.armGate();
+    std::thread plug([&adapter, second] { adapter.pluginDevice(2, second); });
+    TEST(during + ": the plug reaches the helper");
+    EXPECT(prov.waitUntilEntered(GATE_BUDGET));
+    runProbesWhileGated(prov, during, receiveProbes(adapter, first != GamepadIdentity::Xbox),
+                        queryProbes(adapter));
+    plug.join();
+    TEST(during + ": serial 2 is plugged once the helper answers");
+    EXPECT(adapter.isDevicePlugged(2));
+}
+
+static void test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity first,
+                                                                GamepadIdentity second) {
+    const std::string during = identityName(first) + " on serial 1, " + identityName(second) +
+                               " unplug of serial 2 waiting on the helper";
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, audioOn());
+    TEST(during + ": setup");
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, first));
+    EXPECT(adapter.pluginDevice(2, second));
+    prov.armGate();
+    std::thread unplug([&adapter] { adapter.unplugDevice(2); });
+    TEST(during + ": the unplug reaches the helper");
+    EXPECT(prov.waitUntilEntered(GATE_BUDGET));
+    runProbesWhileGated(prov, during, receiveProbes(adapter, first != GamepadIdentity::Xbox),
+                        queryProbes(adapter));
+    unplug.join();
+    TEST(during + ": serial 2 is gone once the helper answers");
+    EXPECT(!adapter.isDevicePlugged(2));
+}
+
+constexpr std::array<size_t, 9> DS5_PAD_FIELD_OFFSETS = {0, 1, 2, 3, 4, 5, 7, 8, 9};
+using PadFields = std::array<uint8_t, DS5_PAD_FIELD_OFFSETS.size()>;
+
+static PadFields padFieldsOf(const uint8_t* payload) {
+    PadFields fields{};
+    for (size_t i = 0; i < fields.size(); i++) fields[i] = payload[DS5_PAD_FIELD_OFFSETS[i]];
+    return fields;
+}
+
+static PadFields packedPadFields(const GamepadReport& pad) {
+    Ds5InputState state;
+    state.pad = pad;
+    uint8_t payload[DS5_PAYLOAD_BYTES];
+    packDs5Payload(state, payload);
+    return padFieldsOf(payload);
+}
+
+static bool readStableFrame(const uint8_t* section, uint8_t (&payload)[DS5_PAYLOAD_BYTES]) {
+    const uint32_t before = readSeqNo(section);
+    if ((before & 1u) != 0) return false;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    std::memcpy(payload, section + INPUT_DATA_OFFSET, DS5_PAYLOAD_BYTES);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return readSeqNo(section) == before;
+}
+
+static void test_idle_republish_never_tears_a_frame() {
+    TEST("idle re-publish racing submitReport on a DualSense: setup");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov);
+    adapter.setIdleReportIntervalForTest(std::chrono::milliseconds(0));
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+
+    GamepadReport low{};
+    low.sThumbLX = low.sThumbLY = low.sThumbRX = low.sThumbRY = -32768;
+    GamepadReport high{};
+    high.wButtons = 0xFFFF;
+    high.bLeftTrigger = high.bRightTrigger = 255;
+    high.sThumbLX = high.sThumbLY = high.sThumbRX = high.sThumbRY = 32767;
+    const PadFields lowFields = packedPadFields(low);
+    const PadFields highFields = packedPadFields(high);
+    TEST("idle re-publish racing submitReport: the two reports differ in every pad field");
+    bool differEverywhere = true;
+    for (size_t i = 0; i < lowFields.size(); i++) {
+        differEverywhere = differEverywhere && lowFields[i] != highFields[i];
+    }
+    EXPECT(differEverywhere);
+    EXPECT(adapter.submitReport(1, low));
+
+    const uint8_t* section = prov.inputSection(1);
+    std::atomic<bool> stop{false};
+    int64_t submitted = 0;
+    int64_t lows = 0;
+    int64_t highs = 0;
+    int64_t torn = 0;
+    std::thread submitter([&] {
+        int64_t n = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            adapter.submitReport(1, (n & 1) != 0 ? high : low);
+            n++;
+        }
+        submitted = n;
+    });
+    std::thread idler([&] {
+        while (!stop.load(std::memory_order_relaxed)) adapter.refreshIdleInput();
+    });
+    std::thread reader([&] {
+        uint8_t payload[DS5_PAYLOAD_BYTES];
+        while (!stop.load(std::memory_order_relaxed)) {
+            if (!readStableFrame(section, payload)) continue;
+            const PadFields seen = padFieldsOf(payload);
+            if (seen == lowFields) {
+                lows++;
+            } else if (seen == highFields) {
+                highs++;
+            } else {
+                torn++;
+            }
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    stop.store(true, std::memory_order_relaxed);
+    submitter.join();
+    idler.join();
+    reader.join();
+
+    const int64_t writes = static_cast<int64_t>(prov.inputSeq(1) / 2);
+    const int64_t idleWrites = writes - 2 - submitted;
+    TEST("idle re-publish racing submitReport: every stable frame carries exactly one report");
+    EXPECT_EQ(torn, int64_t{0});
+    EXPECT(lows > 0);
+    EXPECT(highs > 0);
+    TEST("idle re-publish racing submitReport: the idle tick really wrote the slot");
+    EXPECT(idleWrites > 0);
+}
+
 int main() {
     test_bus_open_probe_only();
     test_identity_support();
@@ -1212,6 +1457,15 @@ int main() {
     test_speaker_ring_concurrent_producer();
     test_audio_workers_stop_with_the_pad();
     test_close_bus();
+    test_plugged_pad_answers_while_another_provisions(GamepadIdentity::Xbox,
+                                                      GamepadIdentity::DualSense);
+    test_plugged_pad_answers_while_another_provisions(GamepadIdentity::DualSense,
+                                                      GamepadIdentity::Xbox);
+    test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity::Xbox,
+                                                        GamepadIdentity::DualSense);
+    test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity::DualSense,
+                                                        GamepadIdentity::Xbox);
+    test_idle_republish_never_tears_a_frame();
 
     std::cout << "hidmaestro_adapter: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;

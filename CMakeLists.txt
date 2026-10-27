@@ -1625,6 +1625,7 @@ if(WIN32)
     )
     target_compile_definitions(test_hidmaestro_adapter PRIVATE
         _WIN32_WINNT=0x0A00
+        SATELLITE_BUILD_TESTS
     )
     target_link_libraries(test_hidmaestro_adapter PRIVATE
         ws2_32

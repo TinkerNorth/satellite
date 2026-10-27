@@ -463,8 +463,7 @@ void PlugGuardRunner::beforeCompositePlug() {
     {
         // The window may close between this read and the snapshot, which only
         // means the earlier plug's promotions are done and a fresh snapshot is
-        // the right one; it cannot open, because only afterCompositePlug opens
-        // it and the adapter serialises the two hooks.
+        // the right one.
         std::lock_guard<std::mutex> lk(mtx_);
         if (windowOpen_) return;
     }
