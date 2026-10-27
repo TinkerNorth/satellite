@@ -342,9 +342,36 @@ class LifecycleWatch {
     NameSet unguarded_;
 };
 
+class RoleCalls {
+  public:
+    void count() {
+        calls_[static_cast<size_t>(currentThreadRole())].fetch_add(1, std::memory_order_relaxed);
+    }
+
+    uint64_t by(ThreadRole role) const {
+        return calls_[static_cast<size_t>(role)].load(std::memory_order_relaxed);
+    }
+
+    uint64_t total() const {
+        uint64_t sum = 0;
+        for (const std::atomic<uint64_t>& calls : calls_) {
+            sum += calls.load(std::memory_order_relaxed);
+        }
+        return sum;
+    }
+
+  private:
+    std::array<std::atomic<uint64_t>, THREAD_ROLE_COUNT> calls_{};
+};
+
+struct WorkerCalls {
+    RoleCalls mouse;
+    RoleCalls mic;
+};
+
 class LawBackend : public IGamepadPort {
   public:
-    explicit LawBackend(LifecycleWatch& watch) : watch_(watch) {}
+    LawBackend(LifecycleWatch& watch, WorkerCalls& calls) : watch_(watch), calls_(calls) {}
 
     bool ensureBusOpen() override {
         watch_.check("mock ensureBusOpen", true);
@@ -396,8 +423,17 @@ class LawBackend : public IGamepadPort {
         return isDevicePlugged(serial);
     }
 
-    bool submitRelativeMouse(int, int, const MouseButtons&, int) override { return true; }
+    bool submitRelativeMouse(int, int, const MouseButtons&, int) override {
+        calls_.mouse.count();
+        return true;
+    }
+
     bool supportsRelativeMouse() const override { return true; }
+
+    bool submitMicAudioPcm(uint32_t serial, const int16_t*, size_t) override {
+        calls_.mic.count();
+        return isDevicePlugged(serial);
+    }
 
     bool supportsMotionForType(uint8_t type) const override {
         return controllerTypeHasMotion(type);
@@ -425,6 +461,7 @@ class LawBackend : public IGamepadPort {
     }
 
     LifecycleWatch& watch_;
+    WorkerCalls& calls_;
     std::array<std::atomic<bool>, MAX_BACKEND_CONTROLLERS + 1> plugged_{};
     std::atomic<bool> busOpen_{false};
     RumbleCallback rumble_;
@@ -711,7 +748,8 @@ void expectTheRunReachedEverything(const std::string& phase, const LawRun& run, 
     if (feedback) EXPECT(run.tally().feedback.load() > 0);
 }
 
-void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& sandbox) {
+void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& sandbox,
+                                   WorkerCalls& calls) {
     Dish a("dish-a", 0x10, FIRST_PORT);
     Dish b("dish-b", 0x30, FIRST_PORT + 1);
     Dish c("dish-c", 0x50, FIRST_PORT + 2);
@@ -719,7 +757,7 @@ void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& s
     Dish r("dish-r", 0x90, FIRST_PORT + 4);
     pairInConfig({&a, &b, &c, &r});
 
-    LawBackend backend(watch);
+    LawBackend backend(watch, calls);
     ClientAdapter client;
     LogAdapter log;
     satellite::audio::OpusCodecFactory codecs;
@@ -1194,15 +1232,38 @@ void checkTheOrderLaw(const lockstats::Snapshot& snap) {
     expectExactly("order law: every nesting edge is in today's order", edges, ORDER_MAY_NEST);
 }
 
-void checkTheLoggerLaw(const lockstats::Snapshot& snap) {
-    TEST("logger law: the log writer takes no lock");
+void expectTheRoleTakesNoLock(const lockstats::Snapshot& snap, ThreadRole role, const char* law,
+                              const std::string& name) {
+    TEST(name);
     for (const lockstats::LockStats& lock : snap.locks) {
-        if (!lock.role(ThreadRole::Logger).touched()) continue;
-        std::cerr << "  logger law: the Logger role took " << lock.name << "\n";
+        if (!lock.role(role).touched()) continue;
+        std::cerr << "  " << law << ": the " << threadRoleName(role) << " role took " << lock.name
+                  << "\n";
         EXPECT(false);
     }
+}
+
+void checkTheLoggerLaw(const lockstats::Snapshot& snap) {
+    expectTheRoleTakesNoLock(snap, ThreadRole::Logger, "logger law",
+                             "logger law: the log writer takes no lock");
     TEST("logger law: the log writer reached its sink, where the blocking law sees what it holds");
     EXPECT(regionHits(snap, "log.write") > 0);
+}
+
+void checkThePointerLaw(const lockstats::Snapshot& snap, const RoleCalls& mouse) {
+    expectTheRoleTakesNoLock(snap, ThreadRole::Pointer, "pointer law",
+                             "pointer law: the pointer thread takes no lock");
+    TEST("pointer law: the pointer thread injected the mouse, and no other thread did");
+    EXPECT(mouse.by(ThreadRole::Pointer) > 0);
+    EXPECT_EQ(mouse.total(), mouse.by(ThreadRole::Pointer));
+}
+
+void checkTheMicLaw(const lockstats::Snapshot& snap, const RoleCalls& mic) {
+    expectTheRoleTakesNoLock(snap, ThreadRole::Mic, "mic law",
+                             "mic law: the mic worker takes no lock");
+    TEST("mic law: the mic worker submitted the decoded audio, and no other thread did");
+    EXPECT(mic.by(ThreadRole::Mic) > 0);
+    EXPECT_EQ(mic.total(), mic.by(ThreadRole::Mic));
 }
 
 double micros(uint64_t nanos) { return static_cast<double>(nanos) / NANOS_PER_MICRO; }
@@ -1299,10 +1360,11 @@ int main() {
     TEST("logger law: the log writer starts");
     EXPECT(logWriter().start(std::make_unique<DiscardingLogSink>()));
     LifecycleWatch watch;
+    WorkerCalls calls;
 #ifdef _WIN32
     timeBeginPeriod(1);
 #endif
-    runTheServiceOnTheMockBackend(watch, sandbox);
+    runTheServiceOnTheMockBackend(watch, sandbox, calls);
 #ifdef _WIN32
     runTheServiceOnTheWindowsBackends(watch);
     timeEndPeriod(1);
@@ -1319,6 +1381,8 @@ int main() {
     checkTheBlockingLaw(snap);
     checkTheOrderLaw(snap);
     checkTheLoggerLaw(snap);
+    checkThePointerLaw(snap, calls.mouse);
+    checkTheMicLaw(snap, calls.mic);
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";
