@@ -1045,8 +1045,8 @@ constexpr std::array<Scenario, 5> SCENARIOS{{
      false, false},
     {"S3", "S2 plus the sse thread (1 Hz) and the maintenance thread (10 Hz, reap every 10th tick)",
      true, 0, true, false, false, false},
-    {"S4", "S3 plus a PUT for dish B at 1.0 s that plugs a second controller under the lock", true,
-     0, true, true, false, false},
+    {"S4", "S3 plus a PUT for dish B at 1.0 s that plugs a second pad", true, 0, true, true, false,
+     false},
     {"S5",
      "S4 plus dish A as a PlayStation pad with CAP_MOTION streaming MSG_MOTION (--motion-hz) and "
      "a MSG_HEARTBEAT_PING from each dish every 2 s (A first at 0.3 s, B at 1.3 s)",
