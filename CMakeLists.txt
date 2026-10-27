@@ -182,6 +182,7 @@ set(SATELLITE_ADAPTER_SOURCES
 set(SATELLITE_WIN_SOURCES
     src/platform/windows/audio_default_guard.cpp
     src/platform/windows/audio_endpoint_com.cpp
+    src/platform/windows/audio_guard_worker.cpp
     src/platform/windows/main.cpp
     src/platform/windows/globals.cpp
     src/platform/windows/config.cpp
@@ -1231,6 +1232,9 @@ satellite_add_pure_test(test_hidmaestro_audio_wire tests/test_hidmaestro_audio_w
     src/platform/windows/hidmaestro_audio_wire.cpp)
 satellite_add_pure_test(test_audio_default_guard tests/test_audio_default_guard.cpp
     src/platform/windows/audio_default_guard.cpp)
+satellite_add_pure_test(test_audio_guard_worker tests/test_audio_guard_worker.cpp
+    src/platform/windows/audio_guard_worker.cpp)
+target_link_libraries(test_audio_guard_worker PRIVATE Threads::Threads)
 
 # Portable session-crypto interop suite (net/session_crypto.cpp): the pinned
 # RFC 5869 HKDF vector, the HMAC-proof vector, and the AEAD direction/counter/

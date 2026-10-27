@@ -8,7 +8,6 @@
 #include <propsys.h>
 #include <cfgmgr32.h>
 
-#include <chrono>
 #include <vector>
 
 extern void logMsg(LogLevel level, const std::string& source, const std::string& message);
@@ -301,15 +300,28 @@ bool endpointIsOurs(const std::string& endpointId, ChainResult* detail) {
     return result.isOurs();
 }
 
-void AudioDefaultGuard::disableLocked(const std::string& why) {
-    if (!enabled_) return;
-    enabled_ = false;
-    note_ = "disabled: " + why;
+void AudioDefaultGuard::disable(const std::string& why) {
+    {
+        std::lock_guard<TrackedMutex> lk(mtx_);
+        if (!enabled_) return;
+        enabled_ = false;
+        note_ = "disabled: " + why;
+    }
     logMsg(LogLevel::WARN, LOG_SOURCE,
            "Default-audio-endpoint guard disabled for this run (" + why + ")");
 }
 
-bool AudioDefaultGuard::endpointIsOursLocked(void* enumerator, const std::string& endpointId) {
+void AudioDefaultGuard::note(const std::string& text) {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    note_ = text;
+}
+
+int AudioDefaultGuard::failedCount() const {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    return failedTotal_;
+}
+
+bool AudioDefaultGuard::endpointIsOurs(void* enumerator, const std::string& endpointId) {
     const std::string key = normalizeDeviceId(endpointId);
     if (key.empty()) return false;
     auto it = oursCache_.find(key);
@@ -322,20 +334,19 @@ bool AudioDefaultGuard::endpointIsOursLocked(void* enumerator, const std::string
 }
 
 void AudioDefaultGuard::snapshotBeforePlug() {
-    std::lock_guard<TrackedMutex> lk(mtx_);
     snapshot_.clear();
     oursCache_.clear();
-    if (!enabled_) return;
+    if (!active()) return;
 
     blockingRegion("audio.com");
     ComApartment com;
     if (!com.usable()) {
-        disableLocked("CoInitializeEx failed");
+        disable("CoInitializeEx failed");
         return;
     }
     IMMDeviceEnumerator* enumerator = createEnumerator();
     if (!enumerator) {
-        disableLocked("MMDeviceEnumerator unavailable");
+        disable("MMDeviceEnumerator unavailable");
         return;
     }
 
@@ -346,20 +357,20 @@ void AudioDefaultGuard::snapshotBeforePlug() {
         RoleSnapshot& s = snapshot_.role(role);
         s.captured = true;
         s.priorId = id;
-        s.priorWasOurs = endpointIsOursLocked(enumerator, id);
+        s.priorWasOurs = endpointIsOurs(enumerator, id);
         ++captured;
     }
     enumerator->Release();
-    note_ = "snapshot: " + std::to_string(captured) + "/" + std::to_string(ROLE_COUNT) + " roles";
+    note("snapshot: " + std::to_string(captured) + "/" + std::to_string(ROLE_COUNT) + " roles");
 }
 
-bool AudioDefaultGuard::restoreRoleLocked(void* enumerator, Role role) {
+bool AudioDefaultGuard::restoreRole(void* enumerator, Role role) {
     const RoleSnapshot& s = snapshot_.role(role);
 
     RoleObservation obs;
     obs.haveCurrent =
         readDefaultId(static_cast<IMMDeviceEnumerator*>(enumerator), role, obs.currentId);
-    if (obs.haveCurrent) obs.currentIsOurs = endpointIsOursLocked(enumerator, obs.currentId);
+    if (obs.haveCurrent) obs.currentIsOurs = endpointIsOurs(enumerator, obs.currentId);
 
     const DefaultEndpointDecision decision = decideRestore(s, obs);
     if (decision.action != RestoreAction::Restore) return false;
@@ -369,17 +380,23 @@ bool AudioDefaultGuard::restoreRoleLocked(void* enumerator, Role role) {
     const bool ok = setDefaultEndpoint(decision.targetId, role, obs.currentId, verdict, setHr);
 
     if (ok) {
-        ++restoredTotal_;
+        {
+            std::lock_guard<TrackedMutex> lk(mtx_);
+            ++restoredTotal_;
+        }
         logMsg(LogLevel::INFO, LOG_SOURCE,
                std::string("Virtual pad took the default render endpoint (") + roleName(role) +
                    "); restored " + decision.targetId);
         return true;
     }
-    ++failedTotal_;
+    {
+        std::lock_guard<TrackedMutex> lk(mtx_);
+        ++failedTotal_;
+    }
     if (verdict != ProbeVerdict::Usable) {
-        disableLocked(std::string("IPolicyConfig validation: ") + probeVerdictName(verdict));
+        disable(std::string("IPolicyConfig validation: ") + probeVerdictName(verdict));
     } else {
-        note_ = std::string("SetDefaultEndpoint ") + hrText(setHr);
+        note(std::string("SetDefaultEndpoint ") + hrText(setHr));
         logMsg(LogLevel::WARN, LOG_SOURCE,
                std::string("Could not restore the default render endpoint (") + roleName(role) +
                    "): " + hrText(setHr));
@@ -388,39 +405,32 @@ bool AudioDefaultGuard::restoreRoleLocked(void* enumerator, Role role) {
 }
 
 RestorePass AudioDefaultGuard::restoreIfStolen() {
-    std::lock_guard<TrackedMutex> lk(mtx_);
     RestorePass pass;
-    if (!enabled_ || !anyRoleCouldRestoreLater(snapshot_)) return pass;
+    if (!active() || !anyRoleCouldRestoreLater(snapshot_)) return pass;
 
     blockingRegion("audio.com");
     ComApartment com;
     if (!com.usable()) {
-        disableLocked("CoInitializeEx failed");
+        disable("CoInitializeEx failed");
         return pass;
     }
     IMMDeviceEnumerator* enumerator = createEnumerator();
     if (!enumerator) {
-        disableLocked("MMDeviceEnumerator unavailable");
+        disable("MMDeviceEnumerator unavailable");
         return pass;
     }
 
-    const int failedBefore = failedTotal_;
+    const int failedBefore = failedCount();
     for (Role role : ALL_ROLES) {
-        if (!enabled_) break;
+        if (!active()) break;
         if (!couldRestoreLater(snapshot_.role(role))) continue;
-        if (restoreRoleLocked(enumerator, role)) ++pass.restored;
+        if (restoreRole(enumerator, role)) ++pass.restored;
     }
     enumerator->Release();
 
-    pass.failed = failedTotal_ - failedBefore;
-    pass.keepPolling = enabled_ && anyRoleCouldRestoreLater(snapshot_);
+    pass.failed = failedCount() - failedBefore;
+    pass.keepPolling = active() && anyRoleCouldRestoreLater(snapshot_);
     return pass;
-}
-
-void AudioDefaultGuard::reset() {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    snapshot_.clear();
-    oursCache_.clear();
 }
 
 bool AudioDefaultGuard::active() const {
@@ -437,79 +447,11 @@ std::string AudioDefaultGuard::report() const {
     return out;
 }
 
-// Promotion is not synchronous with the plug returning: usbip attach, usbccgp,
-// usbaudio.sys, the KS interface, AudioEndpointBuilder, then the heuristic
-// re-runs. Five seconds of 250 ms polls covers that with room to spare. The
-// loop runs the whole budget rather than stopping at the first restore, since
-// a second pad's endpoint arriving later in the same window is promoted too.
-namespace {
-const int GUARD_POLL_INTERVAL_MS = 250;
-const int GUARD_POLL_BUDGET = 20;
-} // namespace
+PlugGuardRunner::PlugGuardRunner(EnabledFn enabled) : worker_(guard_, std::move(enabled)) {}
 
-PlugGuardRunner::PlugGuardRunner(EnabledFn enabled) : enabled_(std::move(enabled)) {
-    thread_ = std::thread([this] { worker(); });
-}
+void PlugGuardRunner::beforeCompositePlug() { worker_.beforeCompositePlug(); }
 
-PlugGuardRunner::~PlugGuardRunner() {
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        stop_ = true;
-    }
-    cv_.notify_all();
-    blockingRegion("thread.join");
-    if (thread_.joinable()) thread_.join();
-}
-
-void PlugGuardRunner::beforeCompositePlug() {
-    if (enabled_ && !enabled_()) return;
-    {
-        // The window may close between this read and the snapshot, which only
-        // means the earlier plug's promotions are done and a fresh snapshot is
-        // the right one.
-        std::lock_guard<std::mutex> lk(mtx_);
-        if (windowOpen_) return;
-    }
-    guard_.reset();
-    guard_.snapshotBeforePlug();
-}
-
-void PlugGuardRunner::afterCompositePlug() {
-    if (enabled_ && !enabled_()) return;
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        armed_ = true;
-        windowOpen_ = true;
-    }
-    cv_.notify_one();
-}
-
-void PlugGuardRunner::worker() {
-    ScopedThreadRole role(ThreadRole::Background);
-    std::unique_lock<std::mutex> lk(mtx_);
-    while (true) {
-        cv_.wait(lk, [this] { return armed_ || stop_; });
-        if (stop_) return;
-        armed_ = false;
-        lk.unlock();
-
-        for (int i = 0; i < GUARD_POLL_BUDGET; i++) {
-            const RestorePass pass = guard_.restoreIfStolen();
-            if (!pass.keepPolling) break;
-            std::unique_lock<std::mutex> wait(mtx_);
-            // A new plug re-arms mid-window: restart the budget from that plug
-            // so its own promotion, up to five seconds out, is still inside it.
-            if (cv_.wait_for(wait, std::chrono::milliseconds(GUARD_POLL_INTERVAL_MS),
-                             [this] { return armed_ || stop_; })) {
-                break;
-            }
-        }
-
-        lk.lock();
-        if (stop_) return;
-        if (!armed_) windowOpen_ = false;
-    }
-}
+void PlugGuardRunner::afterCompositePlug() { worker_.afterCompositePlug(); }
 
 } // namespace audioguard
 } // namespace satellite

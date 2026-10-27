@@ -1104,7 +1104,7 @@ Receive, Maintenance, BackendWorker (ViGEm notification, HIDMaestro output and
 uinput reader threads), AudioWorker (HIDMaestro speaker and haptic drains),
 Logger, Pointer (the service's pointer thread), Mic (its mic worker), Update,
 Background (discovery, mDNS, the address watchers, the tooltip ticker, the
-audio guard's poller, the helper client's connect to the broker, the dashboard
+audio guard's worker, the helper client's connect to the broker, the dashboard
 broadcaster) and Gui. The HTTP servers' pool threads take HttpAdmin or
 HttpClient per request from each server's pre-routing handler. ConfigSaver is
 the config store's saver thread; Topology is reserved for a thread that does
@@ -1112,11 +1112,11 @@ not exist yet. The markers are `config.save` (every `saveConfig`),
 `autostart.write` (the autostart registration), `crash.toggle` (the crash
 SDK's arm and disarm), `log.write` (the log writer's sink write and flush),
 `helper.pipe` (every HIDMaestro helper pipe wait and launch), `tray.shell`
-(`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls),
-`backend.lifecycle` (every lifecycle call the service makes), `thread.join`
-(the joins in the receiver, the update service, the config store, the
-dashboard broadcaster and the adapters) and `vigem.pnp` (the ViGEm bus open,
-plug and unplug waits).
+(`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls, and the plug
+thread's wait for the snapshot), `backend.lifecycle` (every lifecycle call the
+service makes), `thread.join` (the joins in the receiver, the update service,
+the config store, the dashboard broadcaster and the adapters) and `vigem.pnp`
+(the ViGEm bus open, plug and unplug waits).
 
 `tests/test_lock_laws.cpp` runs the real service wired as in production (the
 HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,
@@ -1244,10 +1244,14 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
   DualSense, and the vtable-validation verdict. No `<windows.h>`, pinned
   by `tests/test_audio_default_guard.cpp` on every CI platform.
 - `platform/windows/audio_endpoint_com.{h,cpp}` — its I/O shell:
-  MMDevice reads, the cfgmgr32 parent walk, the one undocumented
-  `IPolicyConfig` write, and the worker that polls the guard after a
-  composite plug. Decides nothing; every failure is soft, because a
-  guard that cannot run must never fail a controller plug.
+  MMDevice reads, the cfgmgr32 parent walk and the one undocumented
+  `IPolicyConfig` write. Decides nothing; every failure is soft, because
+  a guard that cannot run must never fail a controller plug.
+- `platform/windows/audio_guard_worker.{h,cpp}` — the one thread that
+  makes every one of those COM calls, and the request and reply the plug
+  thread makes of it, over a `GuardBackend` interface that the COM shell
+  implements and the test fakes. No `<windows.h>`, pinned by
+  `tests/test_audio_guard_worker.cpp` on every CI platform.
 
 ### Controller audio, and the one kernel driver
 
@@ -1287,6 +1291,30 @@ is what made controller audio look like it forwarded everything. With the
 setting on Satellite puts the previous default back afterwards; it never
 stops the endpoint existing, because the pad speaker is the point of the
 feature.
+
+Every COM call the guard makes runs on one worker thread (Background role),
+never on the plug thread. The snapshot has to be of the state before the
+endpoint exists, so the plug thread posts the worker a snapshot request in
+`beforeCompositePlug` and waits for the reply for at most 2 s, holding none of
+the guard's locks; a worker that is slow or stuck in the audio service costs
+the plug that long and no more, and its snapshot is used whenever it lands
+(one that lands after the endpoint exists records the pad as the user's choice
+and leaves it, which is what having no snapshot does anyway).
+`afterCompositePlug` only signals. Promotion is not synchronous with the plug
+returning (usbip attach, usbccgp, usbaudio.sys, the KS interface,
+AudioEndpointBuilder, then the heuristic re-runs), so the worker polls for 20
+passes 250 ms apart, five seconds that cover it with room to spare. It runs
+the whole budget rather than stopping at the first restore, since a second
+pad's endpoint arriving later in the same window is promoted too, and a plug
+that arms it again mid-window restarts the budget from that plug so its own
+promotion is still inside it. A plug that lands while a window is open takes no
+new snapshot: the current default may already be the first pad, and a fresh
+snapshot would record it as the user's choice and defend it. The guard's own
+lock, `audio.guard`, guards only what other threads read (its enabled flag, its
+counters and its note) and is never held across a COM call; the snapshot and the
+cache of which endpoints are ours belong to the worker alone, and a latched
+failure (a vtable that failed validation once will fail it every time) is never
+retried.
 
 **This is not user-mode.** A composite persona is served over
 HIDMaestro's bundled WHLK-certified usbip-win2 kernel USB transport, which

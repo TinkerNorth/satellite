@@ -14,16 +14,14 @@
 #pragma once
 
 #include "audio_default_guard.h"
+#include "audio_guard_worker.h"
 #include "core/tracked_mutex.h"
 
 #include <winsock2.h>
 #include <windows.h>
 
-#include <condition_variable>
 #include <functional>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 
 namespace satellite {
@@ -55,12 +53,6 @@ bool endpointIsOurs(const std::string& endpointId, ChainResult* detail = nullptr
 // `probeEndpointId` must name a live endpoint, e.g. the current default.
 ProbeVerdict probePolicyConfig(const std::string& probeEndpointId);
 
-struct RestorePass {
-    int restored = 0;
-    int failed = 0;
-    bool keepPolling = false; // a later poll could still restore something
-};
-
 // Snapshot the default render endpoints before a composite plug, then call
 // restoreIfStolen() repeatedly over a bounded window afterwards. Promotion is
 // not synchronous with the plug returning (usbip attach, usbccgp, usbaudio.sys,
@@ -68,24 +60,19 @@ struct RestorePass {
 // single immediate check misses it; the timing is the caller's to choose. Each
 // pass restores whatever it finds stolen, and a second promotion inside the
 // window (a second pad) is restored again; only the caller's budget ends it.
-class AudioDefaultGuard {
+class AudioDefaultGuard : public GuardBackend {
   public:
-    void snapshotBeforePlug();
-    RestorePass restoreIfStolen();
-
-    // Drops the snapshot for a new plug. Deliberately does NOT clear the
-    // disabled latch: a machine whose IPolicyConfig failed validation once will
-    // fail it every time, and retrying means calling an unidentified vtable
-    // slot again.
-    void reset();
-
     bool active() const;
     std::string report() const;
 
   private:
-    bool restoreRoleLocked(void* enumerator, Role role);
-    bool endpointIsOursLocked(void* enumerator, const std::string& endpointId);
-    void disableLocked(const std::string& why);
+    void snapshotBeforePlug() override;
+    RestorePass restoreIfStolen() override;
+    bool restoreRole(void* enumerator, Role role);
+    bool endpointIsOurs(void* enumerator, const std::string& endpointId);
+    void disable(const std::string& why);
+    void note(const std::string& text);
+    int failedCount() const;
 
     mutable TrackedMutex mtx_{"audio.guard"};
     Snapshot snapshot_;
@@ -103,32 +90,17 @@ class PlugGuardRunner {
     using EnabledFn = std::function<bool()>;
 
     explicit PlugGuardRunner(EnabledFn enabled = {});
-    ~PlugGuardRunner();
     PlugGuardRunner(const PlugGuardRunner&) = delete;
     PlugGuardRunner& operator=(const PlugGuardRunner&) = delete;
 
-    // Both are safe to call under a caller's lock. beforeCompositePlug does the
-    // COM reads inline because the snapshot must be of the state BEFORE the
-    // endpoint exists; afterCompositePlug only signals. A plug that lands while
-    // an earlier plug's window is still open keeps that window's snapshot: the
-    // current default may already be the first pad, and a fresh snapshot would
-    // record it as the user's choice and defend it.
     void beforeCompositePlug();
     void afterCompositePlug();
 
     std::string report() const { return guard_.report(); }
 
   private:
-    void worker();
-
-    EnabledFn enabled_;
     AudioDefaultGuard guard_;
-    std::mutex mtx_;
-    std::condition_variable cv_;
-    bool armed_ = false;
-    bool windowOpen_ = false;
-    bool stop_ = false;
-    std::thread thread_;
+    GuardWorker worker_;
 };
 
 } // namespace audioguard
