@@ -220,6 +220,8 @@ struct Shared {
     uint64_t coldCalls = 0;
     uint64_t coldOps = 0;
     uint64_t coldRefusals = 0;
+    uint64_t valueChecks = 0;
+    uint64_t staleValues = 0;
 };
 
 struct SessionState {
@@ -268,7 +270,38 @@ void coldTraffic(SessionService& svc, Shared& sh, int tag, uint32_t token, uint8
     sh.coldCalls += 3;
 }
 
+int tagOf(const std::string& deviceId) {
+    for (int tag = 1; tag <= SESSION_COUNT; tag++) {
+        if (deviceId == "dev" + std::to_string(tag)) return tag;
+    }
+    return 0;
+}
+
+void checkSnapshotValues(SessionService& svc, Shared& sh) {
+    for (const auto& conn : svc.getConnectionsSnapshot().connections) {
+        const int tag = tagOf(conn.deviceId);
+        for (const auto& ctrl : conn.controllers) {
+            const int idx = ctrl.index;
+            if (ctrl.motionActive) {
+                sh.valueChecks++;
+                if (ctrl.motion.gyroX != tag || ctrl.motion.gyroY != idx) sh.staleValues++;
+            }
+            if (ctrl.batteryKnown) {
+                sh.valueChecks++;
+                if (ctrl.batteryLevel != tag * PADS_PER_SESSION + idx) sh.staleValues++;
+            }
+            if (ctrl.touchpadActive) {
+                sh.valueChecks++;
+                if (ctrl.touchpad.finger0.x != tag || ctrl.touchpad.finger0.y != idx) {
+                    sh.staleValues++;
+                }
+            }
+        }
+    }
+}
+
 void receiveLoop(SessionService& svc, const OwnershipBackend& backend, Shared& sh) {
+    svc.bindReceiveThreadForTest();
     uint8_t expected[SESSION_COUNT + 1][CRYPTO_KEY_SIZE];
     for (int tag = 1; tag <= SESSION_COUNT; tag++) keyFor(tag, expected[tag]);
     uint32_t counter = 0;
@@ -403,6 +436,7 @@ void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
     while (Clock::now() < stressEnd) {
         const int tag = 1 + static_cast<int>(rng() % SESSION_COUNT);
         randomColdOp(svc, sessions[static_cast<size_t>(tag)], sh, rng);
+        checkSnapshotValues(svc, sh);
         for (int other = 1; other <= SESSION_COUNT; other++) {
             SessionState& st = sessions[static_cast<size_t>(other)];
             if (!st.connectionId.empty() && !svc.isDeviceConnected(st.deviceId)) {
@@ -484,6 +518,14 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
     EXPECT(sh.submits[STRESS_PHASE][2] > 0);
     EXPECT(backend.coldSubmits.load() > 0);
     EXPECT_EQ(svc.totalActiveControllers(), 0);
+
+    TEST("hot path: the snapshot's cached stream values always belong to the pad they show");
+    EXPECT(sh.valueChecks > 0);
+    EXPECT_EQ(sh.staleValues, 0u);
+    TEST("hot path: only the receive thread writes the receive-owned pad state");
+    EXPECT_EQ(svc.foreignRxWritesForTest(), 0u);
+    std::cout << "  stream values: " << sh.valueChecks << " checked, " << sh.staleValues
+              << " stale, foreign writes " << svc.foreignRxWritesForTest() << "\n";
     std::cout << "  stress: " << sh.coldOps << " cold ops (" << sh.coldRefusals << " refused), "
               << backend.plugs.load() << " plugs, " << backend.unplugs.load() << " unplugs, "
               << sh.calls << " hot calls, " << sh.coldCalls << " cold-dispatch calls ("

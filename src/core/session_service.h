@@ -11,8 +11,10 @@
 #include "hot_table.h"
 #include "ports.h"
 #include "tracked_mutex.h"
+#include <array>
 #include <atomic>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <functional>
 
@@ -251,6 +253,8 @@ class SessionService {
             uint8_t lightbarR;
             uint8_t lightbarG;
             uint8_t lightbarB;
+            MotionReport motion;
+            TouchpadReport touchpad;
         };
         std::vector<CtrlInfo> controllers;
     };
@@ -308,12 +312,15 @@ class SessionService {
     void setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
     void setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
     void backdatePointerRefusalLogForTest(uint32_t token, int secondsAgo);
+    void bindReceiveThreadForTest();
+    uint64_t foreignRxWritesForTest() const;
 #endif
 
   private:
     // getConnectionsSnapshot's steps, one connection and one controller at a
     // time, under the lock the caller holds.
-    ConnectionSnapshot::CtrlInfo snapshotController(const Controller& ctrl) const;
+    ConnectionSnapshot::CtrlInfo snapshotController(const Connection& conn,
+                                                    const Controller& ctrl) const;
     ConnectionSnapshot snapshotConnection(uint32_t token, const Connection& conn,
                                           std::chrono::steady_clock::time_point now) const;
     static DeviceLinkState linkStateAt(const Connection& conn,
@@ -355,6 +362,41 @@ class SessionService {
                         uint32_t counter, uint64_t clientAddr);
     void recordHotDatagram(uint32_t token, uint32_t counter, uint64_t clientAddr);
 
+    struct PadRead {
+        int slot = -1;
+        uint32_t keyEpoch = 0;
+        uint32_t session = 0;
+        bool active = false;
+        uint32_t serial = 0;
+        uint32_t info = 0;
+        uint32_t gen = 0;
+    };
+    struct PointerMotion {
+        int dx = 0;
+        int dy = 0;
+        int wheel = 0;
+        MouseButtons buttons;
+        bool buttonsChanged = false;
+    };
+    bool readPad(uint32_t token, uint8_t ctrlIdx, PadRead& out) const;
+    RxPad& rxPadFor(const PadRead& pad);
+    void noteRxWrite();
+    bool sessionName(int slot, uint32_t keyEpoch, std::string& out) const;
+    static PointerMotion pointerMotion(const TouchpadReport& prev, bool prevValid,
+                                       const TouchpadReport& report, float& remX, float& remY);
+    bool dropMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint8_t cause);
+    bool injectPointerFrame(uint32_t token, uint8_t ctrlIdx, const PadRead& pad,
+                            const PointerMotion& motion);
+    bool deliverMicFrame(uint32_t token, uint8_t ctrlIdx, const PadRead& pad, uint16_t seq,
+                         const uint8_t* opus, size_t opusLen);
+    std::array<RxPad, MAX_BACKEND_CONTROLLERS + 1> rxPads_{};
+    std::array<RxSession, MAX_SESSIONS> rxSessions_{};
+    std::atomic<int> activePads_{0};
+#ifdef SATELLITE_BUILD_TESTS
+    std::atomic<std::thread::id> rxOwnerForTest_{};
+    std::atomic<uint64_t> foreignRxWrites_{0};
+#endif
+
     TrackedMutex topoMtx_{"service.topology"};
     mutable TrackedMutex mtx_{"service.state"}; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
@@ -369,6 +411,8 @@ class SessionService {
     // Round-robin scan start so a just-freed serial isn't reused while its PnP
     // removal may still be in flight.
     uint32_t serialScanStart_ = 0;
+    uint32_t nextPlugGen_ = 0;
+    uint32_t nextRow_ = 0;
 
     struct PadChange {
         enum class Kind : uint8_t { Refuse, Update, Add, Replug, ReplugInPlace, Remove };
@@ -483,6 +527,7 @@ class SessionService {
     void retireConnectionLocked(Connection& conn, std::vector<RetiredSerial>& retired);
     void settleRetiredLocked(std::vector<RetiredSerial>& retired);
     bool busIdleLocked() const;
+    void adjustActivePadsLocked(Connection& conn, int delta);
     void resetControllerStreamState(Controller& ctrl);
     uint16_t activeBitmapLocked(const Connection& conn) const;
     uint32_t allocateSerial();

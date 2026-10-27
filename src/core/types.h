@@ -503,7 +503,7 @@ inline const uint8_t MIC_LED_STATE_COUNT = 3;
 inline const int MIC_LED_WIRE_PAYLOAD_BYTES = 1;
 
 // Why a mic frame was dropped, recorded once per session per cause (see
-// Connection::micDropLogged). Bookkeeping, not a wire value: at 50 frames/s a
+// RxSession::micDropLogged). Bookkeeping, not a wire value: at 50 frames/s a
 // misconfigured client would otherwise turn one mistake into a log flood, and
 // silence would leave nothing to diagnose it with.
 inline const uint8_t MIC_DROP_LOG_NO_CONTROLLER = 0x01;
@@ -840,18 +840,7 @@ struct Controller {
     RumbleReport hapticRumble{};
     std::chrono::steady_clock::time_point hapticRumbleSentAt{};
     std::chrono::steady_clock::time_point hapticRumbleExpiresAt{};
-    MotionReport lastMotion{}; // cached for the web UI debug pane
-    bool lastMotionValid = false;
-    // True when the last motion sample reached the backend's IMU surface.
-    bool motionSinkActive = false;
-    BatteryReport lastBattery{};
-    bool lastBatteryValid = false;
-    TouchpadReport lastTouchpad{};
-    bool lastTouchpadValid = false;
-    // TOUCHPAD_MODE_MOUSE sub-pixel remainder. Reset on a fresh contact and on
-    // (re)plug; preserved across dt<=0 resends so slow drags still accumulate.
-    float touchpadMouseRemX = 0.0f;
-    float touchpadMouseRemY = 0.0f;
+    uint32_t plugGen = 0;
     uint8_t lightbarR = 0;
     uint8_t lightbarG = 0;
     uint8_t lightbarB = 0;
@@ -865,11 +854,6 @@ struct Controller {
     // Mic-mute LED last forwarded; same coalesce shape again.
     uint8_t micLedState = MIC_LED_STATE_OFF;
     bool lastMicLedValid = false;
-    // Fixed one-second window for inbound MSG_MIC_AUDIO (see
-    // MIC_AUDIO_MAX_PACKETS_PER_SEC). The first packet after a window lapses
-    // opens the next one, so an idle controller never banks an allowance.
-    std::chrono::steady_clock::time_point micWindowStart{};
-    uint16_t micPacketsInWindow = 0;
     // Null until this slot actually carries audio; see ControllerAudio. Owning
     // it here is what makes plug/unplug/replug the single lifetime story: the
     // codecs die with the pad whose history they hold.
@@ -888,6 +872,7 @@ struct Connection {
     std::string deviceName;
     HotSlot* hot = nullptr;
     int slot = -1;
+    uint32_t row = 0;
     std::string clientIP;
     // Per-session key = HKDF(pairingKey, sessionSalt, token), never the raw
     // pairing key, so counters restart at 1 with no cross-session nonce reuse.
@@ -905,9 +890,6 @@ struct Connection {
     // Server policy, returned in the PUT response. Streams for ungranted
     // features are dropped.
     bool mouseControlGranted = false;
-    // MIC_DROP_LOG_* causes already logged for this session, so a bad client
-    // gets one diagnosable line per cause instead of 50 a second.
-    uint8_t micDropLogged = 0;
     // The version this session settled on (the client's in-range offer). Echoed
     // in responses and surfaced to the dashboard so an old client is visibly
     // "works, but update for the full feature set".

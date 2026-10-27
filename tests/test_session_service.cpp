@@ -2022,6 +2022,178 @@ static void test_replug_resetsStreamCaches() {
     }
 }
 
+using PadInfo = SessionService::ConnectionSnapshot::CtrlInfo;
+
+static bool snapshotPad(SessionService& svc, const std::string& deviceId, uint8_t index,
+                        PadInfo& out) {
+    for (const auto& conn : svc.getConnectionsSnapshot().connections) {
+        if (conn.deviceId != deviceId) continue;
+        for (const auto& ctrl : conn.controllers) {
+            if (ctrl.index != index) continue;
+            out = ctrl;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void expectNoStreamState(const PadInfo& info) {
+    EXPECT(!info.motionActive);
+    EXPECT(!info.motionSink);
+    EXPECT(!info.batteryKnown);
+    EXPECT(!info.touchpadActive);
+    EXPECT_EQ(info.motion.gyroX, (int16_t)0);
+    EXPECT_EQ(info.motion.accelZ, (int16_t)0);
+    EXPECT_EQ(info.touchpad.finger0.x, (int16_t)0);
+    EXPECT_EQ(info.touchpad.finger0.y, (int16_t)0);
+}
+
+struct StreamSamples {
+    MotionReport motion{};
+    BatteryReport battery{};
+    TouchpadReport touchpad{};
+
+    explicit StreamSamples(int16_t seed) {
+        motion.gyroX = seed;
+        motion.accelZ = static_cast<int16_t>(-seed);
+        battery.level = static_cast<uint8_t>(seed % 100);
+        battery.status = BATTERY_STATUS_CHARGING;
+        touchpad.finger0.active = true;
+        touchpad.finger0.trackingId = 3;
+        touchpad.finger0.x = static_cast<int16_t>(seed * 2);
+        touchpad.finger0.y = static_cast<int16_t>(-seed * 2);
+        touchpad.eventTimeMs = 1000;
+    }
+
+    void send(SessionService& svc, uint32_t token, uint8_t index) const {
+        svc.handleMotionData(token, index, motion);
+        svc.handleBatteryUpdate(token, index, battery);
+        svc.handleTouchpadData(token, index, touchpad);
+    }
+
+    void expectIn(const PadInfo& info) const {
+        EXPECT(info.motionActive);
+        EXPECT_EQ(info.motion.gyroX, motion.gyroX);
+        EXPECT_EQ(info.motion.accelZ, motion.accelZ);
+        EXPECT(info.batteryKnown);
+        EXPECT_EQ((int)info.batteryLevel, (int)battery.level);
+        EXPECT_EQ((int)info.batteryStatus, (int)battery.status);
+        EXPECT(info.touchpadActive);
+        EXPECT_EQ(info.touchpad.finger0.x, touchpad.finger0.x);
+        EXPECT_EQ(info.touchpad.finger0.y, touchpad.finger0.y);
+    }
+};
+
+static void test_streamCaches_followThePadThroughReplug() {
+    TEST("stream caches: the snapshot shows the motion, battery and touchpad values its pad sent");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    const ControllerDescriptor ds4 =
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4);
+    auto r = upsert(svc, {ds4});
+    const StreamSamples first(321);
+    first.send(svc, r.token, 0);
+    PadInfo info{};
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    first.expectIn(info);
+    EXPECT(info.motionSink);
+
+    TEST("stream caches: a replugged pad starts with none of the old pad's values");
+    const uint32_t oldSerial = info.serial;
+    auto replugged =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MOTION, TOUCHPAD_MODE_DS4)});
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT(info.serial != oldSerial);
+    expectNoStreamState(info);
+    MotionReport next{};
+    next.gyroX = 9;
+    EXPECT(svc.handleMotionData(replugged.token, 0, next));
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT(info.motionActive);
+    EXPECT_EQ(info.motion.gyroX, (int16_t)9);
+    EXPECT(!info.batteryKnown);
+    EXPECT(!info.touchpadActive);
+
+    TEST("stream caches: a pad removed and added back at its index starts empty");
+    const StreamSamples second(77);
+    second.send(svc, replugged.token, 0);
+    upsert(svc, {});
+    auto readded = upsert(svc, {ds4});
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    expectNoStreamState(info);
+    second.send(svc, readded.token, 0);
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    second.expectIn(info);
+
+    TEST("stream caches: a serial that moves to another session carries nothing over");
+    const uint32_t movingSerial = info.serial;
+    upsert(svc, {});
+    std::vector<ControllerDescriptor> everySerial;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        everySerial.push_back(
+            makeDesc(idx, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4));
+    }
+    upsert(svc, everySerial, "devB", "B");
+    int checked = 0;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        PadInfo other{};
+        EXPECT(snapshotPad(svc, "devB", idx, other));
+        expectNoStreamState(other);
+        if (other.serial == movingSerial) checked++;
+    }
+    EXPECT_EQ(checked, 1);
+}
+
+static void test_streamCaches_survivePadUpdatesTheyDoNotDependOn() {
+    TEST("stream caches: a caps change keeps every cached value");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4)});
+    const StreamSamples samples(55);
+    samples.send(svc, r.token, 0);
+    PadInfo before{};
+    EXPECT(snapshotPad(svc, "dev1", 0, before));
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    EXPECT(svc.applyController(
+        r.connectionId, "dev1",
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION | CAP_LIGHTBAR, TOUCHPAD_MODE_DS4),
+        applied, epoch));
+    PadInfo info{};
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT_EQ(info.serial, before.serial);
+    samples.expectIn(info);
+
+    TEST("stream caches: a touchpad mode change starts the touchpad over and keeps the rest");
+    EXPECT(svc.applyController(
+        r.connectionId, "dev1",
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION | CAP_LIGHTBAR, TOUCHPAD_MODE_OFF),
+        applied, epoch));
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT_EQ(info.serial, before.serial);
+    EXPECT(info.motionActive);
+    EXPECT_EQ(info.motion.gyroX, samples.motion.gyroX);
+    EXPECT(info.batteryKnown);
+    EXPECT(!info.touchpadActive);
+
+    TEST("stream caches: a re-PUT keeps motion and battery and starts the touchpad over");
+    samples.send(svc, r.token, 0);
+    auto rotated = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION | CAP_LIGHTBAR,
+                                         TOUCHPAD_MODE_OFF)});
+    EXPECT(rotated.token != r.token);
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT_EQ(info.serial, before.serial);
+    EXPECT(info.motionActive);
+    EXPECT(info.batteryKnown);
+    EXPECT(!info.touchpadActive);
+}
+
 static void test_rumble_forwardsAndCoalesces() {
     TEST("rumble: backend event forwarded once, identical repeats coalesced");
     MockViGem vigem;
@@ -2173,6 +2345,71 @@ static uint32_t serialOfSlot(SessionService& svc, uint8_t index) {
         if (c.index == index) return c.serial;
     }
     return 0;
+}
+
+static bool finishesWhileServiceLockHeld(SessionService& svc, MockClient& client,
+                                         const std::function<void()>& work) {
+    const auto holder = upsert(svc, {}, "lock-holder", "Holder");
+    std::atomic<bool> done{false};
+    bool finishedUnderLock = false;
+    std::thread worker;
+    client.onSessionClose = [&] {
+        worker = std::thread([&] {
+            work();
+            done.store(true);
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        finishedUnderLock = done.load();
+    };
+    svc.closeSessionById(holder.connectionId, "", CLOSE_REASON_KICKED, true);
+    client.onSessionClose = nullptr;
+    if (worker.joinable()) worker.join();
+    return finishedUnderLock;
+}
+
+static void test_receivePath_streamsNeverWaitForTheServiceLock() {
+    TEST("receive path: motion, battery and pad-mode touchpad never wait for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4),
+                          makeDesc(1, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_OFF),
+                          makeDesc(2, CONTROLLER_TYPE_DUALSENSE, 0)});
+    const StreamSamples samples(12);
+    bool motion = false;
+    bool battery = false;
+    bool touchpad = false;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        motion = svc.handleMotionData(r.token, 0, samples.motion);
+        battery = svc.handleBatteryUpdate(r.token, 0, samples.battery);
+        touchpad = svc.handleTouchpadData(r.token, 0, samples.touchpad);
+        svc.handleTouchpadData(r.token, 1, samples.touchpad);
+    }));
+    EXPECT(motion);
+    EXPECT(battery);
+    EXPECT(touchpad);
+    EXPECT_EQ(vigem.submitMotionCalls, 1);
+    EXPECT_EQ(vigem.submitBatteryCalls, 1);
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+    PadInfo info{};
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    samples.expectIn(info);
+    EXPECT(snapshotPad(svc, "dev1", 1, info));
+    EXPECT(info.touchpadActive);
+
+    TEST("receive path: a refused mic frame is logged without waiting for the service lock");
+    const auto opus = opusFrame(32);
+    bool accepted = true;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        accepted = svc.handleMicAudio(r.token, 2, 1, opus.data(), opus.size());
+    }));
+    EXPECT(!accepted);
+    EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
 }
 
 static void test_micAudio_gatedOnCap() {
@@ -4533,6 +4770,9 @@ int main() {
     test_touchpad_mouseMode_wheelDuplicateSuppressed();
     test_touchpad_mouseMode_subPixelRemainder();
     test_replug_resetsStreamCaches();
+    test_streamCaches_followThePadThroughReplug();
+    test_streamCaches_survivePadUpdatesTheyDoNotDependOn();
+    test_receivePath_streamsNeverWaitForTheServiceLock();
     test_rumble_forwardsAndCoalesces();
     test_lightbar_gatedOnCap();
     test_triggerEffects_gatedOnCap();
