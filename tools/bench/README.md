@@ -126,3 +126,65 @@ total ≈ stage0(sampling) + stage1(android) + stage2(network) + stage3(satellit
 PC-measured stages 3+4 are ~0.02 ms combined. The dominant terms are the source poll
 interval (stage 0, intrinsic to the controller — same for everyone) and the network
 leg (stage 2). The relay's own software overhead is in the tens of microseconds.
+
+---
+
+## Lock path benchmark
+
+`bench_frame_path` (Windows only; `tools/bench/frame_path_bench.cpp`) sends real encrypted datagrams through `SessionService` the way the receiver thread does and times each `MSG_GAMEPAD_DATA` frame from arrival to submit. One spin-paced producer per dish seals each datagram with the key derived from what `upsertSession` returned, stamps it with `steady_clock` and pushes it into a 1,600-entry ring (the 64 KiB socket buffer); a full ring counts a drop. One receiver thread, `TIME_CRITICAL` and pinned to CPU 2 by default (the installed Satellite pins its own to CPU 0), takes the oldest frame across the rings and runs the receiver's steps in order: `getDecryptInfo`, the replay check, in-place `decryptPacket`, `parseInnerHeader`, then `handleGamepadDataAndUpdate` for gamepad data or `updatePostDecryptV4` and `dispatchInnerMessage` for any other message. Latency, recorded for gamepad frames only, is the clock read after the last of those calls returns minus the stamp.
+
+The default backend is a mock: `submitReport` and `submitMotion` spin `--submit-us` (the synchronous ViGEm call), `pluginDevice` sleeps `--plug-ms` (the Plug and Play wait, armed once the sessions are open) and `unplugDevice` sleeps 5 ms. `--backend vigem` swaps it for the real `ViGEmAdapter` behind `GamepadMux`, linked against a fake driver layer (`tools/bench/fake_vigem_driver.cpp`) whose plug, unplug and submit calls take those same times, so the adapter's own locking is part of what is timed. S1 is dish A alone at 1 kHz. S2 is dish A at `--rate-a` plus dish B at `--rate-b`; neither runs a cold thread. S3 adds an `sse` thread (1 Hz: `getConnectionsSnapshot`, `linkStateForDevice` per dish, `activeSessionCount`) and a `maintenance` thread (10 Hz: `refreshRumble`, `refreshIdleInput`, `reapTimedOut` on every 10th tick). S4 adds a PUT for dish B at 1.0 s with a second controller, which plugs a second pad; B's producer then switches to the new token and key, and any frames still queued under the old token count as `refused`. S5 is S4 plus the traffic that reaches the service through `dispatchInnerMessage`: dish A is declared as a PlayStation pad with `CAP_MOTION` and streams `MSG_MOTION` at `--motion-hz` (default 500) from its own producer and ring, and each dish sends a `MSG_HEARTBEAT_PING` every 2 s, A first at 0.3 s and B at 1.3 s. A dish's message types share one counter, so the receiver rescans until two scans agree on the oldest ring and never serves a motion frame after a later gamepad frame of the same dish, which the replay check would reject. Each scenario runs `--secs` seconds (default 3), `--reps` times (default 3) interleaved, after a discarded warm-up pass; the table shows the rep whose dish A p99.9 is the median, and it and the CSV carry a `backend` column (`mock` or `vigem`).
+
+Build it with `cmake --build <build dir> --target bench_frame_path`; the binary lands at the repo root, and `--csv <path>` also writes the rows. `bench_frame_path --smoke` runs every scenario for 0.2 s on both backends with the cold-thread schedule compressed to fit, and ctest runs it as `frame_path_bench_smoke`; the exit code reflects the harness's own accounting (and usage errors), never a latency, and `--help` lists the options. The process keeps the default priority class and timer resolution, which the application raises, so compare runs of the same binary on the same machine.
+
+### Before: 2.1.7 lock path
+
+`--submit-us 15`, `--plug-ms 200`, everything else at its default (3 s per run, 3 reps, dish A 8000 Hz, dish B 75 Hz, motion 500 Hz, receiver on CPU 2), one invocation per backend; AMD Ryzen 9 7900X 12-Core Processor, Release build. Latencies are in microseconds; `over 1 ms` counts frames slower than 1 ms; `longest gap` is the longest wait between two completed frames of that dish, in ms; `drops` counts ring overflows; `refused` counts frames whose token the service no longer knew.
+
+| backend | scenario | dish | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops | refused |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| mock | S1 | A | 1000 | 3000 | 15.4 | 16.0 | 18.3 | 52.1 | 0 | 1.037 | 0 | 0 |
+| mock | S2 | A | 8000 | 24000 | 15.4 | 15.9 | 18.3 | 48.3 | 0 | 0.213 | 0 | 0 |
+| mock | S2 | B | 75 | 225 | 15.5 | 31.0 | 36.0 | 36.0 | 0 | 13.349 | 0 | 0 |
+| mock | S3 | A | 8000 | 24000 | 15.4 | 15.9 | 18.1 | 54.7 | 0 | 0.182 | 0 | 0 |
+| mock | S3 | B | 75 | 225 | 15.5 | 30.9 | 32.8 | 32.8 | 0 | 13.351 | 0 | 0 |
+| mock | S4 | A | 8000 | 23988 | 15.4 | 175711.2 | 199121.9 | 201608.5 | 1829 | 201.718 | 12 | 0 |
+| mock | S4 | B | 75 | 210 | 15.5 | 1333.2 | 24691.9 | 24691.9 | 3 | 237.995 | 0 | 15 |
+| mock | S5 | A | 8000 | 23984 | 15.4 | 176571.4 | 199621.3 | 202069.8 | 1864 | 202.179 | 16 | 0 |
+| mock | S5 | B | 75 | 210 | 15.5 | 5075.0 | 27825.1 | 27825.1 | 3 | 241.128 | 0 | 15 |
+| vigem | S1 | A | 1000 | 3000 | 15.4 | 16.1 | 17.9 | 19.2 | 0 | 1.006 | 0 | 0 |
+| vigem | S2 | A | 8000 | 24000 | 15.4 | 16.0 | 17.7 | 81.2 | 0 | 0.191 | 0 | 0 |
+| vigem | S2 | B | 75 | 225 | 15.5 | 31.1 | 31.1 | 31.1 | 0 | 13.349 | 0 | 0 |
+| vigem | S3 | A | 8000 | 24000 | 15.4 | 16.0 | 17.8 | 74.1 | 0 | 0.185 | 0 | 0 |
+| vigem | S3 | B | 75 | 225 | 15.5 | 30.8 | 30.8 | 30.8 | 0 | 13.349 | 0 | 0 |
+| vigem | S4 | A | 8000 | 23987 | 15.4 | 175888.0 | 199185.9 | 201665.5 | 1830 | 201.775 | 13 | 0 |
+| vigem | S4 | B | 75 | 210 | 15.5 | 337.6 | 23693.5 | 23693.5 | 2 | 236.997 | 0 | 15 |
+| vigem | S5 | A | 8000 | 23987 | 15.5 | 176477.7 | 199229.9 | 201638.8 | 1842 | 201.748 | 13 | 0 |
+| vigem | S5 | B | 75 | 210 | 15.5 | 2516.4 | 25648.1 | 25648.1 | 3 | 238.951 | 0 | 15 |
+
+### After: this branch
+
+The same settings on the same machine, one invocation per backend, this branch's Release build.
+
+| backend | scenario | dish | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops | refused |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| mock | S1 | A | 1000 | 3000 | 15.4 | 16.0 | 17.9 | 73.8 | 0 | 1.059 | 0 | 0 |
+| mock | S2 | A | 8000 | 24000 | 15.4 | 15.8 | 17.7 | 86.8 | 0 | 0.196 | 0 | 0 |
+| mock | S2 | B | 75 | 225 | 15.5 | 30.7 | 30.8 | 30.8 | 0 | 13.349 | 0 | 0 |
+| mock | S3 | A | 8000 | 24000 | 15.4 | 15.8 | 17.7 | 86.4 | 0 | 0.196 | 0 | 0 |
+| mock | S3 | B | 75 | 225 | 15.5 | 30.8 | 32.7 | 32.7 | 0 | 13.351 | 0 | 0 |
+| mock | S4 | A | 8000 | 24000 | 15.4 | 15.9 | 17.5 | 65.7 | 0 | 0.197 | 0 | 0 |
+| mock | S4 | B | 75 | 225 | 15.5 | 31.0 | 42.5 | 42.5 | 0 | 13.349 | 0 | 0 |
+| mock | S5 | A | 8000 | 24000 | 15.4 | 15.9 | 30.5 | 85.1 | 0 | 0.199 | 0 | 0 |
+| mock | S5 | B | 75 | 225 | 15.5 | 45.9 | 45.9 | 45.9 | 0 | 13.364 | 0 | 0 |
+| vigem | S1 | A | 1000 | 3000 | 15.4 | 16.0 | 17.5 | 89.5 | 0 | 1.085 | 0 | 0 |
+| vigem | S2 | A | 8000 | 24000 | 15.4 | 15.9 | 17.7 | 92.9 | 0 | 0.203 | 0 | 0 |
+| vigem | S2 | B | 75 | 225 | 15.5 | 31.3 | 31.9 | 31.9 | 0 | 13.349 | 0 | 0 |
+| vigem | S3 | A | 8000 | 24000 | 15.4 | 15.8 | 18.1 | 89.4 | 0 | 0.199 | 0 | 0 |
+| vigem | S3 | B | 75 | 225 | 15.5 | 30.9 | 33.2 | 33.2 | 0 | 13.349 | 0 | 0 |
+| vigem | S4 | A | 8000 | 24000 | 15.4 | 15.9 | 17.7 | 88.5 | 0 | 0.198 | 0 | 0 |
+| vigem | S4 | B | 75 | 225 | 15.5 | 30.9 | 32.0 | 32.0 | 0 | 13.349 | 0 | 0 |
+| vigem | S5 | A | 8000 | 24000 | 15.4 | 30.6 | 32.9 | 85.9 | 0 | 0.196 | 0 | 0 |
+| vigem | S5 | B | 75 | 225 | 15.4 | 46.1 | 46.3 | 46.3 | 0 | 13.364 | 0 | 0 |
+
+In 2.1.7 both backends stall dish A for the whole of dish B's 200 ms plug in S4 and S5: the service held its mutex across the plug, so the receive thread waited on it and 1,829 to 1,864 frames came in over 1 ms, with 12 to 16 ring drops and a gap of about 202 ms. On this branch before the adapters changed, the mock backend was already clean, while ViGEm mode still stalled the same way (201.5 and 202.0 ms, 1,815 and 1,835 frames over 1 ms), because `ViGEmAdapter` held `busMtx_` across the plug IOCTLs and every submit took it. Now no scenario on either backend has a dish A frame over 1 ms or a ring drop; its worst frame is under 0.1 ms and its longest gap is what it is in the scenarios without a plug (about 0.2 ms at 8 kHz, 1.1 ms at S1's 1 kHz), while the plug still takes its 200 ms. The medians are unchanged at 15.4 us, the 15 us submit spin plus the path. S5's p99.9 near 30 us is a gamepad frame waiting behind one of dish A's 500 Hz motion submits on the one receive thread, which about 0.75% of its frames do, so its p99 lands either side of that line from run to run. Dish B's 15 refused frames are gone too: they were its frames from the plug's 200 ms, queued behind the stalled receive thread until the PUT had rotated the token, and they are now served on the old token while the plug runs.

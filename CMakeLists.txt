@@ -984,6 +984,37 @@ set_target_properties(test_session_service PROPERTIES
 
 add_test(NAME session_service COMMAND test_session_service)
 
+add_executable(test_session_hot_path
+    tests/test_session_hot_path.cpp
+    ${SATELLITE_CORE_SOURCES}
+)
+target_include_directories(test_session_hot_path PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(test_session_hot_path PRIVATE SATELLITE_BUILD_TESTS)
+find_package(Threads REQUIRED)
+target_link_libraries(test_session_hot_path PRIVATE Threads::Threads)
+satellite_test_warnings(test_session_hot_path)
+set_target_properties(test_session_hot_path PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME session_hot_path COMMAND test_session_hot_path)
+
+add_executable(test_session_topology
+    tests/test_session_topology.cpp
+    ${SATELLITE_CORE_SOURCES}
+)
+target_include_directories(test_session_topology PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(test_session_topology PRIVATE SATELLITE_BUILD_TESTS)
+target_link_libraries(test_session_topology PRIVATE Threads::Threads)
+satellite_test_warnings(test_session_topology)
+set_target_properties(test_session_topology PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME session_topology COMMAND test_session_topology)
+
 # Exercises net/inner_dispatch.cpp: the per-message length guards that reject
 # truncated / oversized wire payloads before a decoder reads out of bounds.
 # inner_dispatch.cpp is socket-free, so this builds cleanly on every platform.
@@ -1100,6 +1131,9 @@ satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
+satellite_add_pure_test(test_hot_table tests/test_hot_table.cpp)
+find_package(Threads REQUIRED)
+target_link_libraries(test_hot_table PRIVATE Threads::Threads)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)
@@ -1168,6 +1202,44 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     target_compile_definitions(test_pin_rotation PRIVATE SATELLITE_BUILD_TESTS)
     satellite_link_sodium(test_pin_rotation)
+endif()
+
+if(WIN32)
+    add_executable(bench_frame_path
+        tools/bench/frame_path_bench.cpp
+        tools/bench/fake_vigem_driver.cpp
+        src/core/session_service.cpp
+        src/net/inner_dispatch.cpp
+        src/net/session_crypto.cpp
+        src/platform/windows/vigem_adapter.cpp
+    )
+    target_include_directories(bench_frame_path PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_include_directories(bench_frame_path SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
+    )
+    target_compile_definitions(bench_frame_path PRIVATE
+        _WIN32_WINNT=0x0A00
+        BENCH_BUILD_TYPE="$<CONFIG>"
+    )
+    target_link_libraries(bench_frame_path PRIVATE
+        advapi32
+        ws2_32
+        user32
+        setupapi
+    )
+    satellite_test_warnings(bench_frame_path)
+    satellite_link_sodium(bench_frame_path)
+    if(MINGW)
+        target_link_options(bench_frame_path PRIVATE -static)
+    endif()
+    set_target_properties(bench_frame_path PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME frame_path_bench_smoke COMMAND bench_frame_path --smoke)
 endif()
 
 # macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,
@@ -1553,6 +1625,7 @@ if(WIN32)
     )
     target_compile_definitions(test_hidmaestro_adapter PRIVATE
         _WIN32_WINNT=0x0A00
+        SATELLITE_BUILD_TESTS
     )
     target_link_libraries(test_hidmaestro_adapter PRIVATE
         ws2_32

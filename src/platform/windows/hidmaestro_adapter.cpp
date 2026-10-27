@@ -17,6 +17,19 @@ inline bool isValidSerial(uint32_t serial) {
 
 inline HANDLE toHandle(uint64_t v) { return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(v)); }
 
+class InputClaim {
+  public:
+    explicit InputClaim(std::atomic_flag& busy) : busy_(busy) {
+        while (busy_.test_and_set(std::memory_order_acquire)) std::this_thread::yield();
+    }
+    ~InputClaim() { busy_.clear(std::memory_order_release); }
+    InputClaim(const InputClaim&) = delete;
+    InputClaim& operator=(const InputClaim&) = delete;
+
+  private:
+    std::atomic_flag& busy_;
+};
+
 } // namespace
 
 HidMaestroAdapter::HidMaestroAdapter(hm::IHidMaestroProvisioner& provisioner,
@@ -32,10 +45,10 @@ HidMaestroAdapter::~HidMaestroAdapter() {
 // (and its UAC prompt) is deferred to the first actual plug so a ViGEm-only
 // session never sees it.
 bool HidMaestroAdapter::ensureBusOpen() {
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busOpen_) return true;
-    busOpen_ = provisioner_.isReady() || provisioner_.installed();
-    return busOpen_;
+    if (busOpen_.load(std::memory_order_acquire)) return true;
+    const bool open = provisioner_.isReady() || provisioner_.installed();
+    busOpen_.store(open, std::memory_order_release);
+    return open;
 }
 
 void HidMaestroAdapter::closeBus() {
@@ -54,30 +67,30 @@ void HidMaestroAdapter::closeBus() {
         stopAudioWorker(serial, AudioLane::Haptic);
     }
 
-    std::lock_guard<std::mutex> lk(busMtx_);
-    for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
-        IoSlot& slot = io_[s];
-        if (slot.plugged.load(std::memory_order_acquire)) provisioner_.deprovision(s);
-        releaseSlotLocked(slot);
+    std::vector<uint32_t> provisioned;
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
+            IoSlot& slot = io_[s];
+            if (slot.plugged.load(std::memory_order_acquire)) provisioned.push_back(s);
+            releaseSlotLocked(slot);
+        }
     }
+    for (uint32_t s : provisioned) provisioner_.deprovision(s);
     // The helper stays resident: closeBus fires every time the session goes
     // idle, and respawning the elevated helper would mean a fresh UAC prompt
     // on every reconnect. It exits with satellite (parent watch) or in the
     // destructor.
-    busOpen_ = false;
+    busOpen_.store(false, std::memory_order_release);
 }
 
-bool HidMaestroAdapter::isBusOpen() const {
-    std::lock_guard<std::mutex> lk(busMtx_);
-    return busOpen_;
-}
+bool HidMaestroAdapter::isBusOpen() const { return busOpen_.load(std::memory_order_acquire); }
 
 bool HidMaestroAdapter::supportsIdentity(GamepadIdentity identity) const {
     return hm::profileForIdentity(identity) != nullptr;
 }
 
-// Caller holds busMtx_. Unmaps + closes everything; plugged must already be
-// false (no submit can be mid-write because submits hold busMtx_ too).
+// Caller holds busMtx_. Unmaps + closes everything; plugged must already be false.
 void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.plugged.store(false, std::memory_order_release);
     if (slot.inputView) UnmapViewOfFile(slot.inputView);
@@ -111,18 +124,17 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.lastSonySubmit = {};
 }
 
-// Caller holds busMtx_. The audio-carrying persona when asked for, else, or
+// The audio-carrying persona when asked for, else, or
 // when that fails, the plain one: a pad without audio beats no pad at all.
-bool HidMaestroAdapter::provisionSlotLocked(uint32_t serial, GamepadIdentity identity,
-                                            bool wantAudio, hm::ProvisionResult& r) {
+bool HidMaestroAdapter::provisionSlot(uint32_t serial, GamepadIdentity identity, bool wantAudio,
+                                      hm::ProvisionResult& r) {
     if (provisioner_.provision(serial, identity, wantAudio, r)) return true;
     return wantAudio && provisioner_.provision(serial, identity, false, r);
 }
 
 // Caller holds busMtx_. The helper's handles and views become the slot's; the
 // input view is the one the plug cannot do without.
-bool HidMaestroAdapter::adoptProvisionedLocked(uint32_t serial, IoSlot& slot,
-                                               const hm::ProvisionResult& r) {
+bool HidMaestroAdapter::adoptProvisionedLocked(IoSlot& slot, const hm::ProvisionResult& r) {
     slot.inputSection = toHandle(r.inputSection);
     slot.inputEvent = toHandle(r.inputEvent);
     slot.companionEvent = toHandle(r.companionEvent);
@@ -137,7 +149,6 @@ bool HidMaestroAdapter::adoptProvisionedLocked(uint32_t serial, IoSlot& slot,
     attachAudioLocked(slot, r);
     if (slot.inputView != nullptr) return true;
     releaseSlotLocked(slot);
-    provisioner_.deprovision(serial);
     return false;
 }
 
@@ -150,8 +161,7 @@ void HidMaestroAdapter::startSlotWorkersLocked(uint32_t serial, const IoSlot& sl
 
 bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
     if (!isValidSerial(serial) || !supportsIdentity(identity)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (!busOpen_) return false;
+    if (!busOpen_.load(std::memory_order_acquire)) return false;
     if (!provisioner_.isReady() && !provisioner_.ensureReady()) return false;
 
     // The composite rides a kernel USB transport that self-installs on first
@@ -159,25 +169,43 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     // it can fail on its own and falls back to the plain persona.
     const bool wantAudio =
         hm::identityHasAudioPersona(identity) && audioEnabled_ && audioEnabled_();
+    CompositePlugHook before;
+    CompositePlugHook after;
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        before = compositePlugBefore_;
+        after = compositePlugAfter_;
+    }
     // Before provisioning, because the snapshot has to predate the endpoint
     // Windows is about to create and promote.
-    if (wantAudio && compositePlugBefore_) compositePlugBefore_();
+    if (wantAudio && before) before();
     hm::ProvisionResult r;
-    if (!provisionSlotLocked(serial, identity, wantAudio, r)) return false;
+    if (!provisionSlot(serial, identity, wantAudio, r)) return false;
 
-    IoSlot& slot = io_[serial];
-    slot.identity = identity;
-    if (!adoptProvisionedLocked(serial, slot, r)) return false;
-    slot.plugged.store(true, std::memory_order_release);
-
-    // Neutral first frame so the pad isn't a stuck corner pre-first-report
-    // (GamepadReport{} is centred on the signed XUSB scale; the Sony packers
-    // centre their byte sticks from it).
-    packAndWriteLocked(slot);
-    startSlotWorkersLocked(serial, slot);
+    bool adopted = false;
+    bool composite = false;
+    {
+        std::lock_guard<std::mutex> lk(busMtx_);
+        IoSlot& slot = io_[serial];
+        slot.identity = identity;
+        adopted = adoptProvisionedLocked(slot, r);
+        if (adopted) {
+            // Neutral first frame so the pad isn't a stuck corner pre-first-report
+            // (GamepadReport{} is centred on the signed XUSB scale; the Sony packers
+            // centre their byte sticks from it).
+            packAndWrite(slot);
+            slot.plugged.store(true, std::memory_order_release);
+            startSlotWorkersLocked(serial, slot);
+            composite = slot.speakerView != nullptr;
+        }
+    }
+    if (!adopted) {
+        provisioner_.deprovision(serial);
+        return false;
+    }
     // Only when the composite really materialized: a persona that fell back to
     // input-only created no endpoint, so there is nothing to watch for.
-    if (slot.speakerView != nullptr && compositePlugAfter_) compositePlugAfter_();
+    if (composite && after) after();
     return true;
 }
 
@@ -221,17 +249,17 @@ void HidMaestroAdapter::attachAudioLocked(IoSlot& slot, const hm::ProvisionResul
 bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
     if (!isValidSerial(serial)) return true; // nothing to remove
 
+    bool wasPlugged = false;
     {
         std::lock_guard<std::mutex> lk(busMtx_);
+        IoSlot& slot = io_[serial];
+        wasPlugged = slot.plugged.load(std::memory_order_acquire);
+        slot.plugged.store(false, std::memory_order_release);
         stopOutputWorker(serial);
         stopAudioWorker(serial, AudioLane::Speaker);
         stopAudioWorker(serial, AudioLane::Haptic);
+        releaseSlotLocked(slot);
     }
-
-    std::lock_guard<std::mutex> lk(busMtx_);
-    IoSlot& slot = io_[serial];
-    const bool wasPlugged = slot.plugged.load(std::memory_order_acquire);
-    releaseSlotLocked(slot);
     if (!wasPlugged) return true;
     // False (helper gone / SDK teardown failed) means target state unknown:
     // the caller quarantines the serial, exactly like an unconfirmed ViGEm
@@ -255,8 +283,7 @@ static int64_t microsSinceLastFrame(std::chrono::steady_clock::time_point& last)
     return us;
 }
 
-// Caller holds busMtx_.
-uint16_t HidMaestroAdapter::packFrameLocked(IoSlot& slot, bool& withGip) {
+uint16_t HidMaestroAdapter::packFrame(IoSlot& slot, bool& withGip) {
     withGip = false;
     switch (slot.identity) {
     case GamepadIdentity::Xbox:
@@ -287,11 +314,10 @@ uint16_t HidMaestroAdapter::packFrameLocked(IoSlot& slot, bool& withGip) {
     return 0;
 }
 
-// Caller holds busMtx_.
-bool HidMaestroAdapter::packAndWriteLocked(IoSlot& slot) {
+bool HidMaestroAdapter::packAndWrite(IoSlot& slot) {
     if (slot.inputView == nullptr) return false;
     bool withGip = false;
-    const uint16_t len = packFrameLocked(slot, withGip);
+    const uint16_t len = packFrame(slot, withGip);
     if (!hm::writeInputFrame(slot.inputView, slot.payload, len, withGip ? slot.gip : nullptr))
         return false;
     if (slot.inputEvent) SetEvent(slot.inputEvent);
@@ -301,9 +327,9 @@ bool HidMaestroAdapter::packAndWriteLocked(IoSlot& slot) {
 
 bool HidMaestroAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed)) return false;
+    if (!slot.plugged.load(std::memory_order_acquire)) return false;
+    const InputClaim claim(slot.inputBusy);
 
     switch (slot.identity) {
     case GamepadIdentity::Xbox:
@@ -317,7 +343,7 @@ bool HidMaestroAdapter::submitReport(uint32_t serial, const GamepadReport& repor
         slot.switchPad = report;
         break;
     }
-    return packAndWriteLocked(slot);
+    return packAndWrite(slot);
 }
 
 void HidMaestroAdapter::refreshIdleInput() {
@@ -327,18 +353,19 @@ void HidMaestroAdapter::refreshIdleInput() {
         if (!slot.plugged.load(std::memory_order_relaxed)) continue;
         if (slot.identity != GamepadIdentity::DS4 && slot.identity != GamepadIdentity::DualSense)
             continue;
+        if (slot.inputBusy.test_and_set(std::memory_order_acquire)) continue;
         // lastSonySubmit is stamped by every pack, this one included, so the
         // cadence is "a frame at least this often", whoever supplied the last.
-        if (now - slot.lastSonySubmit < std::chrono::milliseconds(SONY_IDLE_REPORT_MS)) continue;
-        packAndWriteLocked(slot);
+        if (now - slot.lastSonySubmit >= idleReportInterval_) packAndWrite(slot);
+        slot.inputBusy.clear(std::memory_order_release);
     }
 }
 
 bool HidMaestroAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed)) return false;
+    if (!slot.plugged.load(std::memory_order_acquire)) return false;
+    const InputClaim claim(slot.inputBusy);
 
     switch (slot.identity) {
     case GamepadIdentity::DS4:
@@ -353,14 +380,14 @@ bool HidMaestroAdapter::submitMotion(uint32_t serial, const MotionReport& report
     default:
         return false;
     }
-    return packAndWriteLocked(slot);
+    return packAndWrite(slot);
 }
 
 bool HidMaestroAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed)) return false;
+    if (!slot.plugged.load(std::memory_order_acquire)) return false;
+    const InputClaim claim(slot.inputBusy);
 
     switch (slot.identity) {
     case GamepadIdentity::DS4:
@@ -374,16 +401,16 @@ bool HidMaestroAdapter::submitBattery(uint32_t serial, const BatteryReport& repo
         // bytes are stamped by the driver's streamer.
         return false;
     }
-    return packAndWriteLocked(slot);
+    return packAndWrite(slot);
 }
 
 bool HidMaestroAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed)) return false;
+    if (!slot.plugged.load(std::memory_order_acquire)) return false;
     if (slot.identity != GamepadIdentity::DS4 && slot.identity != GamepadIdentity::DualSense)
         return false;
+    const InputClaim claim(slot.inputBusy);
 
     // Bump tracking id on up->down so a consumer reads a new contact, not a
     // teleporting drag.
@@ -408,7 +435,7 @@ bool HidMaestroAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& re
         slot.ds5.finger1 = report.finger1;
         slot.ds5.touchpadButtonPressed = report.buttonPressed;
     }
-    return packAndWriteLocked(slot);
+    return packAndWrite(slot);
 }
 
 bool HidMaestroAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons,
@@ -486,9 +513,8 @@ bool HidMaestroAdapter::hasMicEndpoint(uint32_t serial) const {
 // endpoint, which is a normal state and not an error the sender should act on.
 bool HidMaestroAdapter::submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) {
     if (!isValidSerial(serial) || mono48k == nullptr || samples == 0) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed) || slot.micView == nullptr) return false;
+    if (!slot.plugged.load(std::memory_order_acquire) || slot.micView == nullptr) return false;
 
     slot.micScratch.clear();
     slot.micResampler.process(mono48k, samples, slot.micScratch);

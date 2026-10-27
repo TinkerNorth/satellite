@@ -271,6 +271,7 @@ inline const int HEARTBEAT_INTERVAL_SEC = 2;
 inline const int HEARTBEAT_MISS_MAX = 5;
 inline const int MAX_CONTROLLERS_PER_CONN = 16;
 inline const int MAX_BACKEND_CONTROLLERS = 16;
+inline const int MAX_SESSIONS = 32;
 
 // A fresh/rotated session counts the REST upsert as provisional liveness for
 // this long, so a half-open session (UDP blocked one way) surfaces on the
@@ -821,7 +822,6 @@ struct Controller {
     bool speakerCapable() const { return (caps & CAP_SPEAKER) != 0; }
     bool hapticAudioCapable() const { return (caps & CAP_HAPTIC_AUDIO) != 0; }
     bool rumbleCapable() const { return (caps & CAP_RUMBLE) != 0; }
-    GamepadReport lastReport{};
     // Last rumble forwarded; coalesces identical back-to-back updates so a game
     // holding the motors steady doesn't blast the wire. What goes out is the
     // per-motor MAX of the two sources below, so neither cancels the other.
@@ -876,6 +876,8 @@ struct Controller {
     std::unique_ptr<ControllerAudio> audio;
 };
 
+struct HotSlot;
+
 // Per paired client session. Keyed on deviceId and STABLE across reconnects: a
 // re-PUT rotates token/salt/sessionKey in place, never tears the row down.
 struct Connection {
@@ -884,20 +886,16 @@ struct Connection {
     uint32_t token = 0; // rotates on every session PUT; UDP routes by it
     std::string deviceId;
     std::string deviceName;
-    // Hot-path IPv4 in NETWORK byte order. Compared every packet; only on change
-    // do we re-format clientIP below, saving the per-packet inet_ntop + alloc.
-    uint32_t clientIPv4 = 0;
-    std::string clientIP; // cache of clientIPv4, refreshed lazily
+    HotSlot* hot = nullptr;
+    int slot = -1;
+    std::string clientIP;
     // Per-session key = HKDF(pairingKey, sessionSalt, token), never the raw
     // pairing key, so counters restart at 1 with no cross-session nonce reuse.
     uint8_t sessionKey[CRYPTO_KEY_SIZE] = {};
     uint8_t sessionSalt[SESSION_SALT_SIZE] = {};
-    uint32_t lastCounter = 0; // replay protection (client to server)
-    bool seenCounter = false;
     // Bumps on every applied-topology change; echoed in PUT/GET responses and
     // every heartbeat ack so the client can reconcile.
     uint16_t epoch = 0;
-    std::chrono::steady_clock::time_point lastPacketTime;
     std::chrono::steady_clock::time_point connectedAt;
     // REST-open provisional-liveness window; the reaper ignores the row until it
     // lapses (REST_LIVENESS_GRACE_SEC after each PUT).
@@ -1018,6 +1016,8 @@ struct LogEntry {
 // Host-feature deny reasons (protocol constants, never localized).
 inline const char* HOST_FEATURE_DENY_NOT_SUPPORTED = "notSupported";
 inline const char* HOST_FEATURE_DENY_BACKEND_UNAVAILABLE = "backendUnavailable";
+
+inline const char* UPSERT_ERROR_TOO_MANY_SESSIONS = "tooManySessions";
 
 // Outcome of the declarative session upsert (PUT /api/connections).
 struct SessionUpsertResult {

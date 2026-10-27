@@ -67,6 +67,8 @@ class GamepadAdapter : public IGamepadPort {
 
   private:
     struct Device {
+        std::atomic<bool> plugged{false};
+        std::atomic<bool> motionOk{false};
         int fd = -1;
         int motionFd = -1; // motion-capable types only; -1 for Xbox or on open failure
         GamepadIdentity identity = GamepadIdentity::Xbox;
@@ -96,8 +98,8 @@ class GamepadAdapter : public IGamepadPort {
     int openTouchpadUinputDevice(uint32_t serial);
     int openRelMouseUinputDevice();
 
-    void startReader(uint32_t serial, Device& dev); // caller holds mtx_
-    void stopReader(uint32_t serial);               // caller holds mtx_
+    void startReader(uint32_t serial, Device& dev);
+    void stopReader(uint32_t serial, Device& dev);
     void readerLoop(uint32_t serial, int fd, int wakeFd);
     // readerLoop's three kernel requests.
     void onFfUpload(uint32_t serial, int fd, int requestId);
@@ -105,12 +107,12 @@ class GamepadAdapter : public IGamepadPort {
     void onFfPlay(uint32_t serial, int effectId, int playValue);
 
     // Switch Pro has a distinct evdev layout (Nintendo A/B + X/Y swap, ZL/ZR as
-    // buttons); caller holds mtx_.
-    bool submitSwitchLocked(int fd, const GamepadReport& report);
+    // buttons).
+    bool submitSwitch(int fd, const GamepadReport& report);
 
     mutable std::mutex mtx_;
-    bool busOpen_ = false;
-    std::unordered_map<uint32_t, Device> devices_;
+    std::atomic<bool> busOpen_{false};
+    Device devices_[MAX_BACKEND_CONTROLLERS + 1];
 
     // Copied under mtx_ before each call so the reader doesn't hold the lock
     // across the user-supplied callback.

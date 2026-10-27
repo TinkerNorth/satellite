@@ -3,11 +3,6 @@
 // persistent event + submit buffer so a submit is one memcpy. IO is synchronous
 // (GetOverlappedResult TRUE): fire-and-forget was tried and the dish saw "no
 // input reaching the game".
-//
-// Locking: busMtx_ guards busHandle_, the notification-worker map, and slot
-// plugin/unplug. The submit path holds it only to validate + copy the handle,
-// then drops it for the IOCTL. Slot events are freed only in closeBus, after all
-// sync submits complete, so no in-flight IOCTL can use-after-free one.
 #pragma once
 
 #include "core/gamepad_backend.h"
@@ -62,7 +57,6 @@ class ViGEmAdapter : public IGamepadPort {
     // Only meaningful when slot.isDS4.
     struct DS4State {
         DS4_REPORT_EX report{};
-        bool exSupported = true;
         std::chrono::steady_clock::time_point lastSubmit{};
         uint8_t touchPacket = 0;
         uint8_t trackingId0 = 0;
@@ -86,13 +80,12 @@ class ViGEmAdapter : public IGamepadPort {
 
         DS4State ds4{}; // valid only when isDS4 && plugged
 
-        // Atomic so submitReport can read after dropping busMtx_; written under
-        // busMtx_ (plugin/unplug).
         std::atomic<bool> plugged{false};
-        bool isDS4 = false;
+        std::atomic<bool> isDS4{false};
+        std::atomic<bool> exSupported{true};
     };
 
-    HANDLE busHandle_ = INVALID_HANDLE_VALUE;
+    std::atomic<HANDLE> busHandle_{INVALID_HANDLE_VALUE};
     mutable std::mutex busMtx_;
 
     // Slot 0 unused so indexing matches wire-level serial numbers.
@@ -111,10 +104,10 @@ class ViGEmAdapter : public IGamepadPort {
     void notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel);
 
     // On the first EX rejection (pre-1.17 ViGEmBus), latch exSupported off and
-    // retry via basic DS4_REPORT so buttons/sticks still work. Caller holds busMtx_.
-    bool submitDS4Locked(uint32_t serial);
+    // retry via basic DS4_REPORT so buttons/sticks still work.
+    bool submitDS4(uint32_t serial, HANDLE bus);
 
-    // Fold a gamepad frame into the DS4 slot's EX report and submit it. Caller
-    // holds busMtx_; submitReport routes DS4 serials here.
-    bool submitDS4ReportLocked(uint32_t serial, const GamepadReport& report);
+    // Fold a gamepad frame into the DS4 slot's EX report and submit it.
+    // submitReport routes DS4 serials here.
+    bool submitDS4Report(uint32_t serial, HANDLE bus, const GamepadReport& report);
 };

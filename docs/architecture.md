@@ -216,7 +216,6 @@ struct Controller {
     uint8_t  controllerType;     // device family actually plugged
     uint16_t caps;               // CAP_* word from the descriptor
     uint8_t  touchpadMode;       // per-slot routing (client-owned)
-    GamepadReport lastReport{};
 };
 
 struct Connection {
@@ -224,22 +223,33 @@ struct Connection {
     uint32_t    token = 0;       // rotates on every session PUT
     std::string deviceId;
     std::string deviceName;
-    uint8_t     sessionKey[32];  // HKDF(pairingKey, salt, token)
+    HotSlot*    hot = nullptr;   // the receive thread's view (core/hot_table.h)
+    int         slot = -1;       // index of `hot` in the service's hot table
+    std::string clientIP;        // the address the PUT came from
+    uint8_t     sessionKey[32];  // HKDF(pairingKey, salt, token); senders' copy
     uint8_t     sessionSalt[8];
-    uint32_t    lastCounter = 0; // replay protection (client → server)
     uint16_t    epoch = 0;       // bumps on every applied-topology change
-    std::chrono::steady_clock::time_point lastPacketTime;
     std::chrono::steady_clock::time_point graceUntil; // REST-open liveness grace
     std::array<Controller, 16> controllers;
     bool mouseControlGranted = false;
 };
 ```
 
+What the gamepad path needs per datagram is not in `Connection`: the
+replay counter, the last-packet time and the client's address live in
+the session's `HotSlot`, next to a published copy of the token, the key
+and one word per controller (see "Thread Safety"). The dashboard shows
+the slot's address once a datagram has taught it one, and the PUT's
+address until then.
+
 ### State Ownership
 
-All connection and controller state is owned by `SessionService` behind
-a single `std::mutex`. There are no global connection maps or serial
-arrays. The remaining globals are:
+All connection and controller state is owned by `SessionService`: the
+cold state behind a `std::mutex`, with topology changes serialized by a
+second one, and the per-session state the gamepad path reads in a fixed
+table of slots that the cold path publishes to the receive thread (see
+"Thread Safety"). There are no global connection maps or
+serial arrays. The remaining globals are:
 
 - `g_config` / `g_configMtx`: application configuration
 - Atomic telemetry counters (`g_packetCount`, `g_submitOk`, etc.)
@@ -262,7 +272,7 @@ recvfrom()
   ├─ n < 28 → drop (too small for header+inner+tag) [g_wire.rxRunt]
   │
   ├─ Extract token (bytes 0-3), counter (bytes 4-7)
-  │  └─ svc.getDecryptInfo(token) → not found → drop [g_wire.rxUnknownToken]
+  │  └─ svc.getDecryptInfo(token) → not found, or mid-change → drop [g_wire.rxUnknownToken]
   │  └─ counter <= lastCounter → drop (replay) [g_replayDrop]
   │
   ├─ Decrypt (ChaCha20-Poly1305)
@@ -289,27 +299,49 @@ stretch of such datagrams begins (with the sender's address) and one when
 it has been quiet for the reaper's horizon (with how many were dropped).
 A dish still sending to a session from before a Satellite restart, or to
 one the reaper removed, therefore shows up in the log and not only on the
-diagnostics page.
+diagnostics page. A session whose own topology changes lands here too, for
+a moment (see "A session during its own change"), so a stretch can open
+and close around a PUT.
 
 ### Hot-path discipline
 
 The gamepad packet path runs at controller-polling rate, so the receive
-loop is kept allocation-free and minimally locked. If you touch
-`receiver.cpp` or `SessionService::handleGamepadDataAndUpdate`, preserve:
+loop is kept allocation-free and takes no lock. If you touch
+`receiver.cpp`, `core/hot_table.h` or the `SessionService` hot functions,
+preserve:
 
 - No heap on the hot path. `recvfrom` writes into a stack buffer, and
   decryption runs in place (`ciphertext == plaintext`, relying on
   libsodium's overlapping src/dst support), so the plaintext reuses the
   ciphertext bytes minus the 16-byte tag.
-- One lock for gamepad packets. A gamepad packet takes exactly one
-  `SessionService` mutex acquisition via `handleGamepadDataAndUpdate`
-  (decrypt-info lookup, post-decrypt update, and apply fused). Cold paths
-  (motion, touchpad, heartbeat, controller add/remove) still take two
-  locks; they're rare enough that fusing them isn't worth the API churn.
-- No per-packet string work. The sender's IPv4 address is threaded
-  down as a `uint32` in network byte order; `SessionService` refreshes
-  the human-readable cache only when the numeric address changes (no
-  `inet_ntop` / `std::string` allocation per packet).
+- No lock for gamepad packets, and no atomic read-modify-write inside
+  `SessionService` (the receiver's own telemetry counters are the only
+  ones on the path). `getDecryptInfo` and `handleGamepadDataAndUpdate`
+  read the session's slot in the hot table, never `connections_`, so a
+  gamepad frame does not touch `mtx_` whatever the cold path is doing.
+  Per frame that is a
+  scan of the packed tokens, two seqlock reads of a few words, two plain
+  stores to the receive epoch, two to the slot (counter and time), and
+  the submit. On ViGEm, HIDMaestro and uinput the submit takes no
+  adapter-wide mutex either (see "Backend locking"); HIDMaestro's takes
+  its slot's input flag, one uncontended test-and-set unless the idle
+  re-publish is writing that slot. The receive side runs no fence on
+  Windows or Linux: the cold side pays for the barrier instead (see
+  "Grace"). Where no process barrier is injected (macOS, every test, the
+  bench) the receive thread runs one full fence per frame.
+- One receive thread. `getDecryptInfo`, `handleGamepadDataAndUpdate`,
+  `handleGamepadData`, `updatePostDecryptV4` and `updatePostDecrypt` may
+  be called by exactly one thread: the receive epoch and the slot fields
+  that thread owns have a single writer. In production that thread is the
+  receiver; a test plays it.
+- A refused frame is dropped, never retried. A failed seqlock read means
+  the session is changing under the frame; the call returns false and
+  the receiver counts the drop like any other. Nothing on the frame path
+  spins or waits.
+- No per-packet string work. The sender's IPv4 address and port are
+  packed into one 64-bit word and stored only when they change; the
+  dashboard formats the string when it asks, once a second, under the
+  cold lock.
 - Lock-free loop telemetry. `g_maxLoopUs` uses a thread-local
   high-water-mark so the atomic CAS loop is skipped on the ~99% of
   packets below the running per-second peak. Because that mark never
@@ -325,7 +357,12 @@ loop is kept allocation-free and minimally locked. If you touch
 
 The conceptual pipeline above lists `getDecryptInfo` /
 `updatePostDecrypt` / `handleGamepadData` as distinct steps; on the
-gamepad hot path these are the single fused call.
+gamepad hot path the last two are the single fused call, and every other
+message records its datagram through `updatePostDecryptV4` before it is
+dispatched. Those other messages (motion, touchpad, battery, mic audio,
+the heartbeat) are handled under `mtx_` on the receive thread, which no
+topology change holds across backend lifecycle work (see "Topology
+changes").
 
 ### Reaper
 
@@ -347,12 +384,18 @@ below are server-internal.
    the unlock), verify `X-Hmac-Proof` against the pairing key
 2. Parse the full descriptor set (`core/json.h`, nlohmann/json)
 3. `svc.upsertSession(...)`: converges topology, rotates token/salt/key,
-   derives the session key via the injected HKDF, returns applied state
+   derives the session key via the injected HKDF, returns applied state.
+   New pads are plugged first, the rotation and the new topology are
+   published together, and retired pads are unplugged last, so the old
+   token's pads keep working until the PUT publishes (see "Topology
+   changes")
 4. Serialize per-controller results + host-feature grants
 
 The session upsert succeeds independently of ViGEm. Per-controller
 failures (`backendUnavailable`, `noSlots`, …) ride in the response body;
-partial success is normal, not an HTTP error.
+partial success is normal, not an HTTP error. The one refusal is the
+session cap: with every hot-table slot taken, a device without a session
+gets 503 `{"error":"tooManySessions"}` (see "Session cap").
 
 ### DELETE /api/connections/:id
 
@@ -368,15 +411,278 @@ status, so the caller needs no locking.
 
 ## Thread Safety
 
-Both the receiver and HTTP threads call into `SessionService`, which
-protects all connection/controller state with a single `std::mutex`.
-Driver lifecycle work can hold that mutex while joining backend workers.
-Rumble callbacks first publish the latest motor state and duration into a
-fixed atomic slot per backend serial, then try to acquire the service lock.
-The maintenance tick drains pending state before refreshing held rumble, so
-a stop survives contention without blocking a worker that teardown is joining.
-Serial retirement and allocation clear the slot before it can serve another
-controller. Audio remains a lossy stream and does not use this mailbox.
+Two paths reach `SessionService`. The receive thread runs the frame path
+described under "Hot-path discipline". Everything else is the cold path:
+the HTTP threads (PUT, DELETE, snapshots), the maintenance thread
+(rumble tick, reaper), backend callbacks, and the receive thread itself
+for every non-gamepad message. The cold path's state lock is a
+`std::mutex` (`mtx_`), which owns `connections_`, the serial pool and
+every controller field; a second one (`topoMtx_`) serializes topology
+changes from start to finish. The two paths share state only through the
+hot table, and no cold operation holds `mtx_` while Plug and Play runs
+(see "Topology changes").
+
+### The hot table
+
+`core/hot_table.h` holds `MAX_SESSIONS` (32) fixed slots and a packed
+array of their tokens. A session takes a slot at its first PUT and keeps
+it, across re-PUTs, until teardown. The receive thread finds a token by
+scanning the packed array (128 bytes, two cache lines) and never touches
+a `Connection`. Each `HotSlot` is two parts, each starting on a cache
+line of its own, so the stores the receive thread makes every frame
+never share a line with the published fields it reads.
+
+Published: written only by the cold path, under `mtx_`, inside a seqlock
+write; read by the receive thread.
+
+| Field | Meaning |
+| --- | --- |
+| `gen` | Seqlock generation: even is stable, odd is being changed. |
+| `token` | The session's current token; 0 in a free slot. |
+| `keyEpoch` | Bumps on every key or token change (allocation, re-PUT), never on a topology-only change. |
+| `key[4]` | The 32-byte session key, as four words. |
+| `ctrl[16]` | One word per controller index: bit 31 is active, the low 8 bits the backend serial. |
+
+Receive-owned: written by the receive thread, read by the cold path with
+acquire loads.
+
+| Field | Meaning |
+| --- | --- |
+| `replayKeyEpoch` | The `keyEpoch` the replay state belongs to. Equal to `keyEpoch` once the current key has carried a datagram; until then `getDecryptInfo` reports no counter seen. |
+| `lastCounter` | The last accepted counter under that key. |
+| `lastPacketTicks` | `steady_clock` time of the last authenticated datagram, for link state and the reaper. |
+| `clientAddr` | The last datagram's IPv4 address (network order) shifted left 16 and or'ed with its port. 0 is unknown, and a send to it counts as unroutable. |
+| `feedbackPending` | Set by the first datagram under a key; the maintenance tick takes it (see "First datagram"). |
+| `txCounter` | The server-to-client nonce counter. Senders increment it under `mtx_`; a new key resets it, so the first send under it goes out as counter 1. |
+
+### Seqlock
+
+A cold write, with `mtx_` held:
+
+```cpp
+gen.fetch_add(1, std::memory_order_acq_rel);         // odd: readers refuse the slot
+std::atomic_thread_fence(std::memory_order_release);
+/* relaxed stores to the published fields */
+gen.fetch_add(1, std::memory_order_release);          // even: the new state, whole
+```
+
+A read, on the receive thread:
+
+```cpp
+g1 = gen.load(std::memory_order_acquire);             // odd: refuse
+/* relaxed loads of the fields this call needs */
+std::atomic_thread_fence(std::memory_order_acquire);
+g2 = gen.load(std::memory_order_relaxed);             // g1 != g2: refuse
+/* and the loaded token must be the token looked up */
+```
+
+A refused read drops the frame. The reader never retries, so no writer
+can starve it and it can never spin. The release fence after the opening
+increment is what keeps a reader that loaded a new field from also
+loading the old even generation; the increment alone does not order the
+stores that follow it on every architecture.
+
+### Grace
+
+A frame can pass its seqlock read just before a cold operation opens a
+write, then spend 15 µs in `submitReport` on a serial that operation is
+about to unplug. The receive epoch (`RxEpoch`) closes that window. The
+receive thread brackets every call that may submit or record a datagram:
+
+```cpp
+enter(): epoch = e + 1 (odd, release); compiler barrier; full fence only if no barrier was injected
+exit():  compiler barrier; epoch = e + 2 (even, release)
+```
+
+and every cold write waits for it straight after making the generation
+odd:
+
+```cpp
+waitQuiescent(): process barrier (or a full fence); e = epoch (acquire);
+                 if e is odd, yield until epoch != e
+```
+
+It is Dekker's pattern. The cold side stores the odd generation and then
+loads the epoch; the receive side stores the odd epoch and then loads
+the generation. With a full barrier between each side's store and load,
+at least one sees the other: either the cold side sees the frame in
+progress and waits for it to leave, or the frame sees the odd generation
+and refuses itself. Waiting for the epoch to change rather than to turn
+even means a steady stream of frames cannot starve the wait. The enter
+store is a release so that a cold thread that next sees a later frame's
+entry still synchronizes with the earlier frame's exit.
+
+The barrier is asymmetric because the two sides run at very different
+rates: the receive thread enters thousands of times a second, the cold
+side waits a few times a minute. `FlushProcessWriteBuffers` (Windows)
+and `membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED)` (Linux, registered at
+startup) interrupt every processor running a thread of the process and
+drain its store buffer, which makes the receive thread's plain epoch
+store as good as fenced at the one moment the cold side needs it, so
+the receive side gets by with a compiler barrier. The platform mains pass
+the function as the last `SessionService` constructor argument
+(`ProcessBarrierFn`, from `platform/windows/process_barrier.h` and
+`platform/linux/process_barrier.h`); core includes neither header. Where
+none is passed (macOS, a kernel that refuses the membarrier
+registration, every test, the bench) the receive thread pays one full
+fence per frame instead.
+
+### The rules
+
+- Exactly one thread calls the hot functions (see "Hot-path discipline").
+- Cold code never touches a published field outside a seqlock write, and
+  every seqlock write starts with the grace wait.
+- Cold code never writes a receive-owned field, with one exception and
+  two hand-offs. The exception: a new key (allocation or re-PUT) re-seeds
+  `clientAddr` to 0, `lastPacketTicks` to the PUT, `feedbackPending` and
+  `txCounter`, inside the seqlock write, after the grace wait, where no
+  frame can be writing them. That is what makes a send before the new
+  key's first datagram unroutable, as the address the old token learned
+  is no longer valid, and what keeps a fresh session from inheriting its
+  slot's previous liveness. The hand-offs: senders increment `txCounter`
+  under `mtx_`, and the maintenance tick takes `feedbackPending` with an
+  exchange. (The test seam `backdateForTest` also writes
+  `lastPacketTicks`, standing in for a receive thread that went quiet.)
+- The receive thread writes a slot only after a successful read and
+  inside its bracket, so a datagram that arrives mid-change is never
+  recorded into the slot's next owner. `getDecryptInfo` writes nothing
+  and needs no bracket.
+- Every operation that changes a slot's published fields or a serial's
+  owner keeps one order: plug what is new, publish in one seqlock write
+  under `mtx_` (open the write, wait for grace, store the new published
+  fields, close the write), then unplug what was retired (see "Topology
+  changes"). No backend work happens inside a write. A PUT stores the
+  session's packed token last, once the write has closed (a re-PUT
+  replaces the old token there); a session being torn down has its
+  packed token cleared first, before the write opens.
+
+### Topology changes
+
+Seven operations change topology: `upsertSession`, `applyController`,
+`removeController`, `closeSessionById`, `closeSessionsForDevice`,
+`closeAllSessions` and `reapTimedOut`. Each holds `topoMtx_` from start
+to finish, so they run one at a time, and `topoMtx_` is the only lock any
+of them holds across `ensureBusOpen`, `closeBus`, `pluginDevice`,
+`pluginDevicePreferring` or `unplugDevice`. `mtx_` stays the state lock
+and is held only for short sections between those calls: never across a
+backend lifecycle call, a thread join, a sleep or a wait, with one
+exception, the grace wait inside a publish, which lasts at most one
+in-flight frame because a frame never blocks. The lock order is
+`topoMtx_`, then `mtx_`; nothing acquires `topoMtx_` while holding
+`mtx_`. Nothing else takes `topoMtx_` at all: not the receive thread, not
+a backend callback, not a snapshot or a view, not the rumble or the
+idle-input tick. The reaper takes it with `try_lock` and reaps nothing on
+a tick when another topology change is running, so the maintenance thread
+never waits behind a plug; the session goes a second later.
+
+Each operation runs in the same phases, in read-copy-update order: build
+the new state where no reader can see it, publish it in one step, wait
+until no reader can still be using the old state, and only then reclaim
+what it retired. A plug therefore never touches a serial a reader can
+reach, and an unplug never touches one a reader might still be using.
+
+1. Plan, under `mtx_`. Validate the request and its owner, dedup the
+   descriptors, and decide for every controller index whether its pad is
+   kept, updated in place, added, replugged or removed. Serials for adds
+   and replugs are allocated here, a first PUT reserves its hot slot (the
+   session cap and `tooManySessions` are decided before anything is
+   plugged), and a PUT mints its token, salt and key.
+2. Plug, under `topoMtx_` only. Open the bus if the plan plugs anything,
+   then plug every new serial. No other thread can reach these serials
+   yet: the cold state does not name them and the hot table does not
+   publish them.
+3. Commit and publish, in one hold of `mtx_`. Apply the outcomes to the
+   cold state: a failed add releases its serial and reports
+   `pluginFailed`, a failed replug releases the new serial, leaves the old
+   pad untouched and reports `replugFailed`, the epoch bumps, a PUT sends
+   the close-notify to the old token and re-keys the row, and every pad
+   that leaves releases its held pointer buttons. Then one seqlock write
+   publishes the slot: begin, grace wait, the receive-owned reset if the
+   key rotated, the stores, end. From here no thread can reach a serial
+   the change retired: the frame path because of the grace wait, the cold
+   dispatch because it reads the cold state under `mtx_`.
+4. Unplug, under `topoMtx_` only: the removed pads and the old serial of
+   every replug.
+5. Settle, under `mtx_`. Release each retired serial whose unplug was
+   confirmed and quarantine the rest, decide whether the bus is now idle,
+   and build the result from the applied state and epoch.
+6. Close, under `topoMtx_` only: `closeBus` if the bus is idle, then,
+   under `mtx_`, clear the quarantine and log.
+
+Teardown (close, kick, unpair, reap, shutdown) has nothing to plug. Its
+commit sends the close-notify while the key and the address still exist,
+deactivates the pads, frees the slot through the seqlock (packed token
+first) and erases the row; phases 4 to 6 follow. A change that touches
+nothing a pad depends on, such as a PUT that only rotates the key, plugs
+and unplugs nothing.
+
+Two cases take a second round, both on a full bus. A replug with no free
+serial cannot plug before it unplugs, so it retires its pad in phase 3
+and plugs the new identity on the serial phase 5 freed: the unplug-first
+fallback the converge always had. An add whose serial only a removal in
+the same PUT can free waits for that removal the same way. The second
+round plugs under `topoMtx_` and commits and publishes again under
+`mtx_`. Between the rounds the pad is gone from the cold state and the
+hot table alike, and the epoch has already moved, so a heartbeat in that
+window reports the gap rather than a pad that is not there.
+
+What a reader sees between the phases: until phase 3, the old state,
+whole. The serials phase 1 allocated already count as in use
+(`availableSlots`), and a first PUT's session does not exist yet: no
+row, no packed token. During phase 2 every existing pad keeps working,
+on the old token for a PUT. Phase 3 switches the cold state under `mtx_`
+and the slot through the seqlock, so a frame of that session is refused
+only between the write's begin and end. After phase 3 the retired
+serials are unreachable but stay allocated until phase 5, so none is
+reused while its unplug is still in flight. Between phases 5 and 6 an
+idle bus is still open.
+
+### A session during its own change
+
+A session's existing pads keep receiving frames through its own plug: the
+plug runs before the publish, while the slot still holds the old state.
+`applyController` and `removeController` keep the token, so the session's
+frames stop only inside the publish window, between the seqlock write's
+begin and end, which the grace wait bounds by one in-flight frame. A PUT
+rotates the token: frames on the old token are accepted until the PUT
+publishes, after its plugs and before its unplugs, and refused from then
+on, and frames on the new token are accepted once the dish has the
+response and switches. The receiver counts the refusals as unknown-token
+drops. Every other session's frames keep flowing throughout.
+
+### First datagram
+
+The first datagram under a new key is the first moment its client can be
+reached. The receive thread cannot send from the frame path, so it sets
+`feedbackPending` (after the address, so the flag never runs ahead of
+it); the maintenance tick, every 100 ms and already under `mtx_`, takes
+the flag and resends the pads' light bar, trigger effects and player
+LEDs. The resend reaches the client up to 100 ms after its first datagram
+rather than with it.
+
+### Session cap
+
+The table is fixed at `MAX_SESSIONS` (32) sessions. A PUT for a device
+with no session, while every slot is taken, is refused before anything
+is created: `upsertSession` returns `tooManySessions`, and
+`PUT /api/connections` answers 503 with `{"error":"tooManySessions"}`. A
+re-PUT from a device that has a session keeps its slot.
+
+### The rest of the cold path
+
+Driver lifecycle work never runs under `mtx_`, and no adapter holds a
+lock of its own while it runs a callback, but a backend callback still
+only tries for `mtx_`, so a notification worker never waits behind the
+cold path and an unplug that joins the worker never waits behind `mtx_`
+either. Rumble callbacks first publish the latest
+motor state and duration into a fixed atomic slot per backend serial, then
+try to acquire the service lock. The maintenance tick drains pending state
+before refreshing held rumble, so a stop survives contention without
+blocking a worker that teardown is joining. A slot whose serial no pad
+owns yet keeps its state, so a notification that arrives between a plug
+and its commit reaches the pad on the next tick. Serial retirement and
+allocation clear the slot before it can serve another controller. Audio
+remains a lossy stream and does not use this mailbox.
 
 Mouse-button ownership is per backend serial. The host receives the union of
 all controller-held buttons; removing one owner cannot release another owner's
@@ -386,13 +692,138 @@ injection retains a pending reconciliation for the maintenance tick. On Windows,
 only the prefix reported inserted by `SendInput` updates the adapter's button
 cache, so a refused release can be retried after the foreground changes.
 
-The ViGEm bus handle is owned by `ViGEmAdapter` (with its own mutex).
-Report submission (`DeviceIoControl`) is thread-safe per target. The
-HIDMaestro slot table is owned by `HidMaestroAdapter` (its own mutex,
-held across the whole submit — the guarded section is a seqlock memcpy
-into a mapped view, so there is no blocking syscall worth dropping the
-lock for and no unplug can unmap a view mid-write). `GamepadMux` itself
-adds no lock: per-serial owners are atomics written at plug/unplug time.
+### Backend locking
+
+The service gives every adapter behind the port four guarantees, and the
+adapters rely on them instead of locking against one another's calls:
+
+1. Lifecycle calls are serialized. `ensureBusOpen`, `closeBus`,
+   `pluginDevice`, `pluginDevicePreferring` and `unplugDevice` run only
+   inside a topology change, under `topoMtx_`, so at most one is in
+   flight at a time across every adapter behind the mux. (An adapter's
+   destructor calls its own `closeBus` once every thread has stopped.)
+2. A serial's submits never overlap its own plug or unplug. No submit for
+   a serial is in flight while `pluginDevice` or `unplugDevice` runs for
+   it, and none starts after its `unplugDevice` begins until it is
+   plugged again: the plug runs before the publish that makes the serial
+   reachable, the unplug after the publish and grace wait that made it
+   unreachable, and the cold dispatch finds serials through the cold
+   state under `mtx_` (see "Topology changes").
+3. `closeBus` runs only when no pad is active anywhere, so no submit is
+   in flight during it. `ensureBusOpen` may run while other serials are
+   live and submitting.
+4. Submits have fixed threads. `submitReport`, `submitMotion`,
+   `submitTouchpad`, `submitBattery` and `submitMicAudioPcm` come only
+   from the receive thread, through the frame path or the cold dispatch.
+   `submitRelativeMouse` is host-global and always called under `mtx_`:
+   from the receive thread for a touchpad frame, from the maintenance
+   tick retrying a refused injection, and from a topology change
+   releasing the buttons a departing pad held. `refreshIdleInput` comes
+   from the maintenance thread with no service lock held.
+   `isDevicePlugged`, `motionBackendOk`, `backendIdForSerial`,
+   `isBusOpen` and `supportsMotionForType` may come from any thread.
+
+On top of those, the ViGEm, HIDMaestro and uinput adapters keep four
+rules, and the macOS adapter keeps the first and the last:
+
+1. No adapter mutex is held across a blocking call: a driver IOCTL that
+   waits (plug, unplug, wait-device-ready, the version check), helper
+   provisioning or deprovisioning, a driver-store query, uinput device
+   creation or destruction, a thread join, a sleep.
+2. A submit for a plugged serial takes no adapter-wide mutex. The
+   per-slot fields a submit reads are either immutable while the slot is
+   plugged (written before `plugged` is stored with release, changed only
+   after `unplugDevice` begins) or owned by the receive thread, the one
+   thread that submits. The bus handle is read through an atomic, and
+   every field another thread reads (`plugged`, and what `motionBackendOk`
+   reads: ViGEm's DS4 flag and EX latch, uinput's motion-node flag) is an
+   atomic.
+3. HIDMaestro's idle re-publish is the one other writer of a slot's input
+   section. It and the submits exclude each other per slot with a
+   `std::atomic_flag`: a submit takes it with `test_and_set(acquire)` in a
+   spin that yields, since the only possible holder is the idle tick, for
+   one pack and write; `refreshIdleInput` tries once and leaves a busy
+   slot to the next tick. Nothing else takes the flag, and it is never
+   held across a blocking call. The input section's seqlock has a single
+   writer by design, and two writers would publish frames that mix two
+   reports under an even sequence number.
+4. The adapter-wide mutex still guards what it guarded before (the worker
+   maps, the callbacks, lifecycle bookkeeping), in short sections only.
+
+`ViGEmAdapter`. `busHandle_` is a `std::atomic<HANDLE>`: `ensureBusOpen`
+opens and version-checks the bus without the lock and then stores the
+handle, and `closeBus` keeps its order (stop the notification workers,
+free the slot events, close the handle). `pluginDevice` reads the handle,
+runs the plug and wait-device-ready IOCTLs, prepares the slot (its event,
+the DS4 flag, the centred report) and runs the DS4 EX probe submit, all
+without the lock, since nothing can reach the slot until `plugged` is
+published; it then publishes `plugged` with release and starts the
+notification worker under `busMtx_`. `unplugDevice` stops the worker,
+whose join drops the lock, clears `plugged`, calls `unplugTarget` without
+the lock and clears the slot. The submits and the DS4 report fold take no
+lock. A slot's event is freed only in `closeBus` (guarantee 3), so no
+in-flight IOCTL uses one after it is freed. `isDevicePlugged`,
+`isBusOpen` and `motionBackendOk` read atomics.
+
+`HidMaestroAdapter`. Every provisioner call (`installed`, `isReady`,
+`ensureReady`, `provision`, `deprovision`, `shutdown`) runs without
+`busMtx_`, and so do the composite plug hooks. The hooks still never
+overlap, because plugs never do (guarantee 1), which is what keeps the
+default-endpoint guard's window from opening between its check and its
+snapshot. A plug adopts the provisioned handles and views, writes the
+neutral first frame, publishes `plugged` and starts the slot's workers in
+one short hold of `busMtx_`; a refused adoption deprovisions after the
+lock is released. An unplug
+clears `plugged`, stops the slot's workers (each join drops the lock) and
+unmaps the slot under `busMtx_`, then deprovisions without it.
+`refreshIdleInput` still holds `busMtx_` while it walks the slots, which
+keeps it off a slot an unplug or `closeBus` is unmapping, since both
+clear `plugged` under the same lock first. The input-section writers
+(`submitReport`, `submitMotion`, `submitTouchpad`, `submitBattery`, all
+through `packAndWrite`) take only the slot's flag; `submitMicAudioPcm`
+has a single writer and takes neither. `busOpen_` is an atomic.
+
+`GamepadAdapter` (uinput). The devices are a fixed array indexed by
+serial, each with an atomic `plugged` and an atomic motion-node flag, in
+place of a map that every call had to look up under `mtx_`. Device
+creation and destruction and the force-feedback reader's join run
+without `mtx_`, and so do the lazy creation and the destruction of the
+host-global pointer node. The per-serial submits take no lock;
+`submitRelativeMouse` holds `mtx_` only around its writes to the pointer
+node, which `closeBus` may be destroying. A gamepad report, the Switch Pro
+layout included, goes to the kernel as one `write()` of the whole event
+batch, the same events in the same order with `SYN_REPORT` last, where
+it used to cost one syscall per event. The reader thread owns its
+device's effect table while it runs and takes `mtx_` only to copy the
+rumble callback.
+
+`MacHidGamepadAdapter`. Device creation and activation, and the
+entitlement probe `ensureBusOpen` may run, happen without `mtx_`, and
+cancellation already waited outside it. The submits still run under
+`mtx_` (see "Locking" in the macOS backend section).
+
+`GamepadMux` adds no lock: per-serial owners are atomics written at plug
+and unplug time. On the ViGEm, HIDMaestro and uinput adapters a submit
+therefore takes no mutex between the receive thread and the driver, so a
+plug or unplug on one serial no longer delays another serial's submit,
+whether it comes from the frame path or the cold dispatch, and no adapter
+query made under `mtx_` waits behind a plug.
+
+### Follow-ups
+
+Not done yet:
+
+- Lock-free submits on macOS: `MacHidGamepadAdapter` still runs every
+  submit under its mutex, so a submit there can wait behind another
+  serial's submit or a plug's priming report (the backend is inert
+  without the HID virtual-device entitlement).
+- Coalescing of queued frames: after a stall the receive thread replays
+  the backlog frame by frame instead of skipping to each pad's newest
+  report.
+- A sliding replay window: the replay check is a single high-water mark,
+  so a datagram reordered on the network is dropped as a replay.
+- Per-session sockets: every session shares one socket and one receive
+  thread.
 
 ## Windows second backend: HIDMaestro (user-mode UMDF2, plus one kernel transport for audio)
 
@@ -666,16 +1097,22 @@ keeps its declared family to gate motion/touchpad/battery routing and
 
 ### Locking
 
-Unlike ViGEm (which drops its lock for the submit IOCTL), submits run
-entirely under the adapter mutex: a slot's `IOHIDUserDeviceRef` is only
+Unlike the ViGEm, HIDMaestro and uinput adapters, whose submits take no
+adapter-wide lock (see "Backend locking"), this adapter still runs its
+submits entirely under its mutex: a slot's `IOHIDUserDeviceRef` is only
 ever used while the slot is still in the map, so teardown can never
-release a ref under an in-flight submit. Teardown removes the slot from
-the map under the lock, then cancels the device and waits for its
-cancel handler OUTSIDE the lock (the set-report block takes the mutex
-briefly to snapshot callbacks — waiting while holding it would
-deadlock); an unconfirmed cancel returns false so `SessionService`
-quarantines the serial. The full protocol is documented in
-`mac_hid_gamepad_adapter.h`.
+release a ref under an in-flight submit. Lifecycle work follows the same
+rule as the other adapters, though, and never holds the mutex across a
+blocking call: a plug creates and activates the device without it and
+takes it only to prime the pad with one neutral report and add the slot
+to the map, and `ensureBusOpen` runs the entitlement probe, itself a
+device create, before it takes the mutex. Teardown removes the slot from
+the map under the lock, then cancels the device and waits for its cancel
+handler outside it (the set-report block takes only the callback hub's
+mutex, briefly, to snapshot callbacks); an unconfirmed cancel returns
+false so `SessionService` quarantines the serial. Taking the submits off
+the mutex is a follow-up (see "Follow-ups"). The full protocol is
+documented in `mac_hid_gamepad_adapter.h`.
 
 ## Logging Infrastructure
 

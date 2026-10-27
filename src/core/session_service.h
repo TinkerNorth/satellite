@@ -8,6 +8,7 @@
 // returning the applied state. UDP never mutates topology (docs/contract.md).
 #pragma once
 
+#include "hot_table.h"
 #include "ports.h"
 #include <atomic>
 #include <mutex>
@@ -30,13 +31,13 @@ class SessionService {
     // no codec still validates, gates and rate-limits audio, it just has
     // nowhere to put the samples.
     SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
-                   KeyDeriver keyDeriver = {}, IAudioCodecFactory* audioCodecs = nullptr);
+                   KeyDeriver keyDeriver = {}, IAudioCodecFactory* audioCodecs = nullptr,
+                   ProcessBarrierFn processBarrier = nullptr);
 
     // The host's per-direction controller-audio gates, read per frame so the
     // dashboard toggle reaches a live stream rather than the next replug.
     // Wired once at startup and never reassigned afterwards, exactly like
-    // keyDeriver/audioCodecs -- reads take no lock, because a backend can fire
-    // its speaker callback from under mtx_. Absent means both directions on:
+    // keyDeriver/audioCodecs -- reads take no lock. Absent means both directions on:
     // unlike `controllerAudio`, which can install a kernel driver and so
     // defaults off when nobody answers, these are a routing preference and the
     // safe answer is the documented behaviour.
@@ -189,14 +190,12 @@ class SessionService {
                            uint16_t clientPort);
 
     // Hot-path variant: IPv4 in network byte order, skipping the per-packet
-    // string allocation; only re-formats Connection::clientIP when the IPv4
-    // actually changes (essentially never within a session).
+    // string allocation.
     void updatePostDecryptV4(uint32_t token, uint32_t counter, uint32_t ipv4NetworkOrder,
                              uint16_t clientPort);
 
-    // FUSED hot path: updatePostDecryptV4 + handleGamepadData under a SINGLE
-    // mtx_ acquisition (the unfused flow took it three times per packet, adding
-    // tail latency). True if the report was submitted successfully.
+    // FUSED hot path: updatePostDecryptV4 + handleGamepadData. True if the
+    // report was submitted successfully.
     bool handleGamepadDataAndUpdate(uint32_t token, uint32_t counter, uint32_t ipv4NetworkOrder,
                                     uint16_t clientPort, uint8_t ctrlIdx,
                                     const GamepadReport& report);
@@ -349,6 +348,13 @@ class SessionService {
     std::atomic<uint64_t> pointerRefused_{0};
     static void bumpAudio(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
+    HotTable hot_;
+    RxEpoch rx_;
+    bool submitHotFrame(uint32_t token, uint8_t ctrlIdx, const GamepadReport& report, bool record,
+                        uint32_t counter, uint64_t clientAddr);
+    void recordHotDatagram(uint32_t token, uint32_t counter, uint64_t clientAddr);
+
+    std::mutex topoMtx_;
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
@@ -362,6 +368,45 @@ class SessionService {
     // Round-robin scan start so a just-freed serial isn't reused while its PnP
     // removal may still be in flight.
     uint32_t serialScanStart_ = 0;
+
+    struct PadChange {
+        enum class Kind : uint8_t { Refuse, Update, Add, Replug, ReplugInPlace, Remove };
+        Kind kind = Kind::Refuse;
+        ControllerDescriptor desc;
+        uint8_t result = APPLY_OK;
+        uint8_t appliedType = CONTROLLER_TYPE_XBOX;
+        uint32_t serial = 0;
+        uint32_t retiring = 0;
+        bool waits = false;
+        bool busDown = false;
+        bool plugged = false;
+    };
+    struct RetiredSerial {
+        uint32_t serial = 0;
+        bool unplugged = false;
+    };
+    struct TopologyChange {
+        std::vector<PadChange> pads;
+        std::vector<RetiredSerial> retired;
+        bool busReopened = false;
+    };
+    struct SessionMint {
+        Connection row;
+        uint32_t token = 0;
+        uint8_t salt[SESSION_SALT_SIZE] = {};
+        uint8_t key[CRYPTO_KEY_SIZE] = {};
+    };
+    static std::vector<ControllerDescriptor>
+    dedupDescriptors(const std::vector<ControllerDescriptor>& descriptors);
+    static PadChange planRemoval(uint8_t ctrlIdx);
+    static void deferUnservedAdds(TopologyChange& change);
+    static bool plugsInRound(const PadChange& pad, bool secondRound);
+    void plugPads(TopologyChange& change, bool secondRound);
+    void convergePads(Connection& conn, TopologyChange& change);
+    void settlePadChange(Connection& conn, TopologyChange& change);
+    void unplugRetired(std::vector<RetiredSerial>& retired);
+    void finishTeardown(std::vector<RetiredSerial>& retired);
+    void closeBusIfIdle(bool idle);
 
     // Helpers below assume the caller holds mtx_.
     // Backend serial to its owning connection + ACTIVE controller; false when
@@ -409,23 +454,46 @@ class SessionService {
     Connection* findByDeviceId(const std::string& deviceId);
     Connection* findByConnectionId(const std::string& connectionId);
     const Connection* findByConnectionId(const std::string& connectionId) const;
-    void applyDescriptorLocked(Connection& conn, const ControllerDescriptor& desc,
-                               ControllerApplyResult& out);
-    void removeControllerLocked(Connection& conn, Controller& ctrl);
+    bool reserveSessionLocked(const std::string& deviceId, const std::string& deviceName,
+                              SessionMint& mint);
+    void mintSessionKeyLocked(const uint8_t pairingKey[CRYPTO_KEY_SIZE], SessionMint& mint);
+    Connection& adoptSessionLocked(Connection* existing, const std::string& deviceName,
+                                   SessionMint& mint);
+    void planSessionPadsLocked(const Connection& conn,
+                               const std::vector<ControllerDescriptor>& desired,
+                               TopologyChange& change);
+    void planPadLocked(const Connection& conn, const ControllerDescriptor& desc, PadChange& pad);
+    void commitPadsLocked(Connection& conn, TopologyChange& change, bool secondRound);
+    void commitPadLocked(Connection& conn, PadChange& pad, std::vector<RetiredSerial>& retired,
+                         bool secondRound);
+    void updatePadLocked(Controller& ctrl, const ControllerDescriptor& desc);
+    void addPadLocked(Connection& conn, Controller& ctrl, PadChange& pad);
+    void replugPadLocked(Connection& conn, Controller& ctrl, PadChange& pad,
+                         std::vector<RetiredSerial>& retired);
+    void refitPadLocked(Connection& conn, Controller& ctrl, PadChange& pad);
+    void removePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
+    void bindPadLocked(Connection& conn, Controller& ctrl, const PadChange& pad);
+    void vacatePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
+    void takeDescriptorLocked(Controller& ctrl, const ControllerDescriptor& desc);
+    bool allocateWaitingLocked(TopologyChange& change);
+    ControllerApplyResult applyResultLocked(const Connection& conn, const PadChange& pad) const;
+    void publishSessionLocked(Connection& conn, std::chrono::steady_clock::time_point now);
+    void publishControllersLocked(Connection& conn);
+    void retireConnectionLocked(Connection& conn, std::vector<RetiredSerial>& retired);
+    void settleRetiredLocked(std::vector<RetiredSerial>& retired);
+    bool busIdleLocked() const;
     void resetControllerStreamState(Controller& ctrl);
-    bool unplugAndRelease(uint32_t serial);
     uint16_t activeBitmapLocked(const Connection& conn) const;
-    void teardownConnection(Connection& conn);
     uint32_t allocateSerial();
+    bool claimSerialLocked(uint32_t serial);
     void releaseSerial(uint32_t serial);
     void quarantineSerial(uint32_t serial);
     int countGlobalActiveControllers() const;
-    void closeBackendBusIfIdle();
     bool submitPointerLocked(int dx, int dy, int wheel);
     void releasePointerLocked(uint32_t serial);
     void releaseConnectionPointerLocked(Connection& conn);
     void drainRumbleLocked(uint32_t serial, int* sent = nullptr);
     void recordPointerInjectionLocked(Connection& conn, bool ok);
     uint32_t generateUniqueToken();
-    void deriveSessionKeyLocked(Connection& conn, const uint8_t pairingKey[CRYPTO_KEY_SIZE]);
+    void publishSessionKeyLocked(Connection& conn, std::chrono::steady_clock::time_point now);
 };

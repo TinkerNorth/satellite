@@ -159,10 +159,11 @@ bool MacHidGamepadAdapter::runtimeAvailable() {
 }
 
 bool MacHidGamepadAdapter::ensureBusOpen() {
-    std::lock_guard<std::mutex> lk(mtx_);
     // The "bus" is the per-process ability to create IOHIDUserDevices;
     // individual devices are created per plugin, like uinput nodes.
-    busOpen_ = runtimeAvailable();
+    const bool available = runtimeAvailable();
+    std::lock_guard<std::mutex> lk(mtx_);
+    busOpen_ = available;
     return busOpen_;
 }
 
@@ -270,9 +271,11 @@ std::unique_ptr<MacHidGamepadAdapter::Slot> MacHidGamepadAdapter::makeSlot(uint3
 bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     if (!isValidSerial(serial)) return false;
 
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!busOpen_) return false;
-    if (slots_.count(serial) != 0) return false;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (!busOpen_) return false;
+        if (slots_.count(serial) != 0) return false;
+    }
 
     IOHIDUserDeviceRef dev = createDs4UserDevice(serial);
     if (dev == nullptr) {
@@ -288,7 +291,6 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
         CFRelease(dev);
         return false;
     }
-    slot->device = dev;
 
     // Both blocks are registered before activation per the IOHIDUserDevice
     // contract. Output reports (rumble + lightbar) from whatever game adopted
@@ -315,6 +317,9 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     IOHIDUserDeviceSetDispatchQueue(dev, slot->queue);
     IOHIDUserDeviceSetCancelHandler(dev, ^{ dispatch_semaphore_signal(cancelled); });
     IOHIDUserDeviceActivate(dev);
+
+    std::lock_guard<std::mutex> lk(mtx_);
+    slot->device = dev;
 
     // Prime with one neutral report (centred sticks, hat released, battery
     // wired-full) so the pad is not a stuck corner before the first frame,

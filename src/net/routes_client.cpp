@@ -235,7 +235,8 @@ static void upsertConnectionRoute(SessionService& svc, const Request& req, Respo
         svc.upsertSession(auth.deviceId, deviceName, req.remote_addr, auth.pairingKey, descriptors,
                           mouseRequested, static_cast<int>(pv));
     if (!result.ok) {
-        replyError(res, 500, result.error);
+        const bool full = result.error == UPSERT_ERROR_TOO_MANY_SESSIONS;
+        replyError(res, full ? 503 : 500, result.error);
         return;
     }
     refreshPairedDeviceIdentity(auth.deviceId, req.remote_addr, deviceName);

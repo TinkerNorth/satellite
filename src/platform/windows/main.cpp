@@ -22,6 +22,7 @@
 #include "update_toast.h"
 #include "ui_access.h"
 #include "install_defaults_registry.h"
+#include "process_barrier.h"
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 #include "adapters/crash_adapter.h"
@@ -379,7 +380,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // deriver above: the core owns the stream shapes, not the library that
     // codes them. Stateless and scoped to main, so it outlives the service.
     satellite::audio::OpusCodecFactory audioCodecs;
-    SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
+    SessionService svc(gamepadMux, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs,
+                       processbarrier::flushWriteBuffers);
     svc.setAudioPolicy(audioPolicyFromConfig);
 
     // OTA updater. Owner/repo are baked in (forking means changing this line).

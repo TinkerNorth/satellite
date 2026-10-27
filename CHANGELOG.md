@@ -3,6 +3,36 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## 2.1.8
+
+No protocol changes. The client API gains one refusal, described last.
+
+A dish connecting, adding a pad or going away no longer freezes every other
+dish's controllers. Plugging a virtual pad waits for Windows Plug and Play,
+or for the HIDMaestro helper, and Satellite held the lock that every
+controller's input passes through for that whole wait, so every other pad
+stopped for a fifth of a second or more and then caught up with a burst of
+stale input. The same happened when a session closed or timed out, and a
+heartbeat or a motion sample arriving during the wait stalled the input
+behind it as well. Input now passes through the service without taking a
+lock, and plugging and unplugging run outside every lock the input path can
+reach, in the service and in the ViGEmBus, HIDMaestro, uinput and macOS
+backends. A dish's own pads keep working while it adds
+another. In the loopback benchmark, with one dish streaming at 8,000 Hz
+while a second dish's connect plugs a pad, 1,830 of the first dish's frames
+arrived more than 1 ms late and the longest gap was 202 ms; now none is
+late and the slowest frame takes under 0.1 ms.
+
+When a session's first datagram arrives, its pads' light bar, trigger
+effects and player LEDs are sent again on the next 100 ms maintenance tick
+rather than at once. On Linux each controller report now reaches uinput in
+one write instead of about twenty.
+
+A `PUT /api/connections` for a new device while 32 sessions are open is now
+refused with 503 and `tooManySessions`. Each session holds one of 32 slots
+the input path reads without locking, twice the 16 virtual pads a host can
+carry, so no real setup reaches the limit.
+
 ## 2.1.7
 
 No protocol changes. Two things the log left unsaid are now in it.

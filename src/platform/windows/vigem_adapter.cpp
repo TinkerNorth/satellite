@@ -28,10 +28,11 @@ ViGEmAdapter::ViGEmAdapter() = default;
 ViGEmAdapter::~ViGEmAdapter() { closeBus(); }
 
 bool ViGEmAdapter::ensureBusOpen() {
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ != INVALID_HANDLE_VALUE) return true;
-    busHandle_ = openVigemBus();
-    return busHandle_ != INVALID_HANDLE_VALUE;
+    if (busHandle_.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE) return true;
+    const HANDLE bus = openVigemBus();
+    if (bus == INVALID_HANDLE_VALUE) return false;
+    busHandle_.store(bus, std::memory_order_release);
+    return true;
 }
 
 void ViGEmAdapter::closeBus() {
@@ -58,19 +59,16 @@ void ViGEmAdapter::closeBus() {
             CloseHandle(slot.event);
             slot.event = nullptr;
         }
-        slot.isDS4 = false;
+        slot.isDS4.store(false, std::memory_order_relaxed);
         slot.ds4 = {};
     }
 
-    if (busHandle_ != INVALID_HANDLE_VALUE) {
-        CloseHandle(busHandle_);
-        busHandle_ = INVALID_HANDLE_VALUE;
-    }
+    const HANDLE bus = busHandle_.exchange(INVALID_HANDLE_VALUE, std::memory_order_acq_rel);
+    if (bus != INVALID_HANDLE_VALUE) CloseHandle(bus);
 }
 
 bool ViGEmAdapter::isBusOpen() const {
-    std::lock_guard<std::mutex> lk(busMtx_);
-    return busHandle_ != INVALID_HANDLE_VALUE;
+    return busHandle_.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE;
 }
 
 // Per-serial OVERLAPPED hEvent for the slot's sync submits. Created signalled
@@ -82,16 +80,17 @@ static HANDLE makeSlotEvent() {
 bool ViGEmAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
     if (!isValidSerial(serial)) return false;
     const bool isDS4 = identity == GamepadIdentity::DS4;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    const HANDLE bus = busHandle_.load(std::memory_order_acquire);
+    if (bus == INVALID_HANDLE_VALUE) return false;
 
     const unsigned long tgt = static_cast<unsigned long>(serial);
-    const bool ok = isDS4 ? pluginTargetDS4(busHandle_, tgt) : pluginTarget(busHandle_, tgt);
+    const bool ok = isDS4 ? pluginTargetDS4(bus, tgt) : pluginTarget(bus, tgt);
     if (!ok) return false;
 
     IoSlot& slot = io_[serial];
     if (slot.event == nullptr) slot.event = makeSlotEvent();
-    slot.isDS4 = isDS4;
+    slot.isDS4.store(isDS4, std::memory_order_relaxed);
+    slot.exSupported.store(true, std::memory_order_relaxed);
     slot.ds4 = {};
 
     if (isDS4) {
@@ -102,13 +101,14 @@ bool ViGEmAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
         slot.ds4.report.Report.bThumbRY = 0x80;
         slot.ds4.report.Report.bBatteryLvl = 0x1B; // cable connected + fully charged
     }
-    slot.plugged.store(true, std::memory_order_release);
 
     // Probe the EX path now so motionBackendOk(serial) reflects real IMU-sink
-    // capability by the time the controller-add ACK is built (submitDS4Locked
+    // capability by the time the controller-add ACK is built (submitDS4
     // latches exSupported off if this ViGEmBus is too old). Best-effort.
-    if (isDS4) submitDS4Locked(serial);
+    if (isDS4) submitDS4(serial, bus);
 
+    std::lock_guard<std::mutex> lk(busMtx_);
+    slot.plugged.store(true, std::memory_order_release);
     startNotificationWorker(serial, isDS4);
     return true;
 }
@@ -128,13 +128,13 @@ bool ViGEmAdapter::unplugDevice(uint32_t serial) {
         stopNotificationWorker(serial);
     }
 
-    std::lock_guard<std::mutex> lk(busMtx_);
     IoSlot& slot = io_[serial];
+    const HANDLE bus = busHandle_.load(std::memory_order_acquire);
 
     // A closed bus has no live targets; the device is gone by definition.
-    if (busHandle_ == INVALID_HANDLE_VALUE) {
+    if (bus == INVALID_HANDLE_VALUE) {
         slot.plugged.store(false, std::memory_order_release);
-        slot.isDS4 = false;
+        slot.isDS4.store(false, std::memory_order_relaxed);
         slot.ds4 = {};
         return true;
     }
@@ -143,42 +143,32 @@ bool ViGEmAdapter::unplugDevice(uint32_t serial) {
     slot.plugged.store(false, std::memory_order_release);
 
     // Sync submits mean nothing holds slot.xsr/event now, so no drain wait.
-    const bool ok = unplugTarget(busHandle_, static_cast<unsigned long>(serial));
+    const bool ok = unplugTarget(bus, static_cast<unsigned long>(serial));
 
     // Keep slot.event for a possible replug; final close is in closeBus.
-    slot.isDS4 = false;
+    slot.isDS4.store(false, std::memory_order_relaxed);
     slot.ds4 = {};
     return ok;
 }
 
 bool ViGEmAdapter::isDevicePlugged(uint32_t serial) const {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    if (busHandle_.load(std::memory_order_acquire) == INVALID_HANDLE_VALUE) return false;
     return io_[serial].plugged.load(std::memory_order_acquire);
 }
 
 bool ViGEmAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
     if (!isValidSerial(serial)) return false;
-
-    // Route by the identity recorded at plug. DS4 folds into the running EX report
-    // and submits under the held lock; Xbox holds busMtx_ only to snapshot the
-    // handle + slot, then drops it for the IOCTL (buffer + event persist to closeBus).
-    HANDLE bus;
-    IoSlot* slot;
-    {
-        std::lock_guard<std::mutex> lk(busMtx_);
-        if (busHandle_ == INVALID_HANDLE_VALUE) return false;
-        slot = &io_[serial];
-        if (slot->isDS4) return submitDS4ReportLocked(serial, report);
-        if (!slot->plugged.load(std::memory_order_acquire) || slot->event == nullptr) return false;
-        bus = busHandle_;
-    }
+    const HANDLE bus = busHandle_.load(std::memory_order_acquire);
+    if (bus == INVALID_HANDLE_VALUE) return false;
+    IoSlot& slot = io_[serial];
+    if (!slot.plugged.load(std::memory_order_acquire) || slot.event == nullptr) return false;
+    if (slot.isDS4.load(std::memory_order_relaxed)) return submitDS4Report(serial, bus, report);
 
     // GamepadReport and XUSB_REPORT are binary-compatible: one memcpy, no copy.
     static_assert(sizeof(GamepadReport) == sizeof(XUSB_REPORT),
                   "GamepadReport and XUSB_REPORT must match");
-    return submitXusbSync(bus, static_cast<unsigned long>(serial), slot->xsr, slot->event, &report);
+    return submitXusbSync(bus, static_cast<unsigned long>(serial), slot.xsr, slot.event, &report);
 }
 
 // ViGEm's DS4 report is the DualShock 4 report the core packs for every DS4
@@ -210,11 +200,10 @@ static_assert(ds4HatFromButtons(0x0001) == DS4_BUTTON_DPAD_NORTH &&
                   ds4HatFromButtons(0x0000) == DS4_BUTTON_DPAD_NONE,
               "the hat nibble is ViGEm's DS4_DPAD_DIRECTIONS");
 
-// Caller holds busMtx_. Folds `report` into the DS4 slot's running EX report and
+// Folds `report` into the DS4 slot's running EX report and
 // submits it so any cached gyro/accel/touch rides along.
-bool ViGEmAdapter::submitDS4ReportLocked(uint32_t serial, const GamepadReport& report) {
+bool ViGEmAdapter::submitDS4Report(uint32_t serial, HANDLE bus, const GamepadReport& report) {
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
 
     // The EX report's leading fields are DS4_REPORT-identical.
     auto& er = slot.ds4.report.Report;
@@ -231,16 +220,17 @@ bool ViGEmAdapter::submitDS4ReportLocked(uint32_t serial, const GamepadReport& r
     er.bSpecial = static_cast<UCHAR>(ps | (slot.ds4.touchpadButton ? 0x02 : 0x00));
     er.bTriggerL = report.bLeftTrigger;
     er.bTriggerR = report.bRightTrigger;
-    return submitDS4Locked(serial);
+    return submitDS4(serial, bus);
 }
 
 bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    const HANDLE bus = busHandle_.load(std::memory_order_acquire);
+    if (bus == INVALID_HANDLE_VALUE) return false;
 
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
+    if (!slot.plugged.load(std::memory_order_acquire)) return false;
+    if (!slot.isDS4.load(std::memory_order_relaxed)) return false;
 
     auto& er = slot.ds4.report.Report;
     er.wGyroX = report.gyroX;
@@ -250,30 +240,33 @@ bool ViGEmAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
     er.wAccelY = report.accelY;
     er.wAccelZ = report.accelZ;
 
-    submitDS4Locked(serial);
-    return slot.ds4.exSupported; // IMU fields only reach the host on the EX path
+    submitDS4(serial, bus);
+    // IMU fields only reach the host on the EX path
+    return slot.exSupported.load(std::memory_order_relaxed);
 }
 
 bool ViGEmAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    const HANDLE bus = busHandle_.load(std::memory_order_acquire);
+    if (bus == INVALID_HANDLE_VALUE) return false;
 
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
+    if (!slot.plugged.load(std::memory_order_acquire)) return false;
+    if (!slot.isDS4.load(std::memory_order_relaxed)) return false;
 
     slot.ds4.report.Report.bBatteryLvl = ds4BatteryByte(report);
-    submitDS4Locked(serial);
-    return slot.ds4.exSupported;
+    submitDS4(serial, bus);
+    return slot.exSupported.load(std::memory_order_relaxed);
 }
 
 bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
-    if (busHandle_ == INVALID_HANDLE_VALUE) return false;
+    const HANDLE bus = busHandle_.load(std::memory_order_acquire);
+    if (bus == INVALID_HANDLE_VALUE) return false;
 
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4) return false;
+    if (!slot.plugged.load(std::memory_order_acquire)) return false;
+    if (!slot.isDS4.load(std::memory_order_relaxed)) return false;
     DS4State& st = slot.ds4;
     auto& er = st.report.Report;
 
@@ -308,8 +301,8 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
     else
         er.bSpecial = static_cast<UCHAR>(er.bSpecial & ~0x02);
 
-    submitDS4Locked(serial);
-    return st.exSupported;
+    submitDS4(serial, bus);
+    return slot.exSupported.load(std::memory_order_relaxed);
 }
 
 bool ViGEmAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) {
@@ -326,21 +319,18 @@ bool ViGEmAdapter::supportsMotionForType(uint8_t controllerType) const {
 // (false would surface a phantom "broken backend" badge).
 bool ViGEmAdapter::motionBackendOk(uint32_t serial) const {
     if (!isValidSerial(serial)) return true;
-    std::lock_guard<std::mutex> lk(busMtx_);
     const IoSlot& slot = io_[serial];
     if (!slot.plugged.load(std::memory_order_acquire)) return true;
-    if (!slot.isDS4) return false;
-    return slot.ds4.exSupported;
+    if (!slot.isDS4.load(std::memory_order_relaxed)) return false;
+    return slot.exSupported.load(std::memory_order_relaxed);
 }
 
-// Caller holds busMtx_; `serial` must be a plugged DS4 slot.
-bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
+bool ViGEmAdapter::submitDS4(uint32_t serial, HANDLE bus) {
     IoSlot& slot = io_[serial];
-    if (!slot.plugged.load(std::memory_order_relaxed) || !slot.isDS4 || slot.event == nullptr)
-        return false;
+    if (slot.event == nullptr) return false;
     DS4State& st = slot.ds4;
 
-    if (st.exSupported) {
+    if (slot.exSupported.load(std::memory_order_relaxed)) {
         // Advance the free-running DS4 timestamp (~5.33 us/unit, 16/3). Skipped
         // on the first submit.
         const auto now = std::chrono::steady_clock::now();
@@ -352,14 +342,14 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
         }
         st.lastSubmit = now;
 
-        if (submitDs4ExSync(busHandle_, (unsigned long)serial, slot.ds4Ex, slot.event, st.report)) {
+        if (submitDs4ExSync(bus, (unsigned long)serial, slot.ds4Ex, slot.event, st.report)) {
             return true;
         }
         // EX rejected (ViGEmBus < 1.17): latch EX off and fall through to basic
         // so buttons/sticks keep working (no IMU). The sync submit makes this
         // observable; fire-and-forget returns success on ERROR_IO_PENDING, so
         // the rejection would be missed and PlayStation input would die here.
-        st.exSupported = false;
+        slot.exSupported.store(false, std::memory_order_relaxed);
     }
 
     DS4_REPORT basic;
@@ -372,7 +362,7 @@ bool ViGEmAdapter::submitDS4Locked(uint32_t serial) {
     basic.bSpecial = st.report.Report.bSpecial;
     basic.bTriggerL = st.report.Report.bTriggerL;
     basic.bTriggerR = st.report.Report.bTriggerR;
-    return submitDs4Sync(busHandle_, (unsigned long)serial, slot.ds4Basic, slot.event, basic);
+    return submitDs4Sync(bus, (unsigned long)serial, slot.ds4Basic, slot.event, basic);
 }
 
 void ViGEmAdapter::setRumbleCallback(RumbleCallback cb) {
@@ -411,11 +401,7 @@ void ViGEmAdapter::stopNotificationWorker(uint32_t serial) {
 }
 
 void ViGEmAdapter::notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel) {
-    HANDLE bus;
-    {
-        std::lock_guard<std::mutex> lk(busMtx_);
-        bus = busHandle_;
-    }
+    const HANDLE bus = busHandle_.load(std::memory_order_acquire);
     if (bus == INVALID_HANDLE_VALUE) return;
 
     while (true) {

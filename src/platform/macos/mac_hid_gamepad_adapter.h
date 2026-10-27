@@ -21,7 +21,7 @@
 // routing exactly like the ViGEm and uinput adapters, and appliedType
 // semantics in SessionService are untouched.
 //
-// Locking protocol (mirrors vigem_adapter.h / linux gamepad_adapter.h):
+// Locking protocol:
 //   - mtx_ guards busOpen_, the slot map, and per-slot pack state.
 //   - The rumble/lightbar callbacks live in a shared CallbackHub with its own
 //     mutex; kernel blocks capture the hub WEAKLY and never `this`. A

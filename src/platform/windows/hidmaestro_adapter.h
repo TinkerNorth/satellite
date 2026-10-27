@@ -6,12 +6,6 @@
 // (driver install, SwDevice creation, section creation, handle duplication)
 // lives behind IHidMaestroProvisioner and only runs at plug/unplug time.
 //
-// Locking: busMtx_ guards slot plugin/unplug, the worker maps, and the
-// callbacks. Submits run entirely under it — the guarded section is a few
-// hundred nanoseconds of memcpy into the mapped view (unlike ViGEm's blocking
-// IOCTL there is nothing worth dropping the lock for), and holding it means a
-// concurrent unplug can never unmap a view mid-write.
-//
 // Controller audio adds per-serial workers (the speaker ring drain, and on a
 // DualSense the haptic ring drain) alongside the output-ring worker, with the
 // same doorbell/cancel/join lifecycle. Rate conversion between the persona's
@@ -62,8 +56,7 @@ class HidMaestroAdapter : public IGamepadPort {
 
     // Fired either side of a plug that actually asked for an audio-carrying
     // persona, so the default-endpoint guard can snapshot before the endpoint
-    // exists and start watching once it does. Both run under the bus lock, so
-    // the "after" hook must only signal, never wait.
+    // exists and start watching once it does.
     using CompositePlugHook = std::function<void()>;
     void setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after);
 
@@ -105,6 +98,12 @@ class HidMaestroAdapter : public IGamepadPort {
     bool submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) override;
     bool supportsRelativeMouse() const override { return true; }
     bool supportsMotionForType(uint8_t controllerType) const override;
+
+#ifdef SATELLITE_BUILD_TESTS
+    void setIdleReportIntervalForTest(std::chrono::milliseconds interval) {
+        idleReportInterval_ = interval;
+    }
+#endif
 
   private:
     struct OutputWorker {
@@ -164,6 +163,7 @@ class HidMaestroAdapter : public IGamepadPort {
         // Atomic so isDevicePlugged can read without data races; written under
         // busMtx_ (plugin/unplug).
         std::atomic<bool> plugged{false};
+        std::atomic_flag inputBusy = ATOMIC_FLAG_INIT;
     };
 
     satellite::hidmaestro::IHidMaestroProvisioner& provisioner_;
@@ -171,7 +171,8 @@ class HidMaestroAdapter : public IGamepadPort {
     CompositePlugHook compositePlugBefore_;
     CompositePlugHook compositePlugAfter_;
     mutable std::mutex busMtx_;
-    bool busOpen_ = false;
+    std::atomic<bool> busOpen_{false};
+    std::chrono::milliseconds idleReportInterval_{SONY_IDLE_REPORT_MS};
 
     std::array<IoSlot, MAX_BACKEND_CONTROLLERS + 1> io_;
 
@@ -220,16 +221,13 @@ class HidMaestroAdapter : public IGamepadPort {
     void attachAudioLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
 
     // Advance the Sony free-running clocks from wall time, pack the slot's
-    // merged state for its identity, and publish the frame. Caller holds
-    // busMtx_; the slot must be plugged.
-    bool packAndWriteLocked(IoSlot& slot);
+    // merged state for its identity, and publish the frame.
+    bool packAndWrite(IoSlot& slot);
     // The slot's merged state packed as its identity's report into slot.payload:
     // the length, and whether the Xbox companion slice rides along.
-    uint16_t packFrameLocked(IoSlot& slot, bool& withGip);
-    // pluginDevice's steps, all under busMtx_.
-    bool provisionSlotLocked(uint32_t serial, GamepadIdentity identity, bool wantAudio,
-                             satellite::hidmaestro::ProvisionResult& r);
-    bool adoptProvisionedLocked(uint32_t serial, IoSlot& slot,
-                                const satellite::hidmaestro::ProvisionResult& r);
+    uint16_t packFrame(IoSlot& slot, bool& withGip);
+    bool provisionSlot(uint32_t serial, GamepadIdentity identity, bool wantAudio,
+                       satellite::hidmaestro::ProvisionResult& r);
+    bool adoptProvisionedLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
     void startSlotWorkersLocked(uint32_t serial, const IoSlot& slot);
 };
