@@ -1165,7 +1165,7 @@ it does at startup, and adopts that connection at its first plug, behind
 `SATELLITE_CONFIG_DIR`. On Windows a last run puts the real tray unit
 on a thread with the Gui role, over a stand-in for the shell call that counts
 its callers by role, while a Background thread asks for tooltip refreshes and an
-Update thread raises balloons. The test then checks eight laws:
+Update thread raises balloons. The test then checks nine laws:
 
 1. Receive: the locks a thread with the Receive role takes, which is none.
 2. Lifecycle: every backend lifecycle call (the mock's, the fake ViGEm
@@ -1178,13 +1178,17 @@ Update thread raises balloons. The test then checks eight laws:
    `service.topology`: over the service's run, the helper lock's acquisitions
    equal the nesting count of that pair. The shutdown path, which takes the
    lock with no topology change, falls outside the run.
-5. Logger: the writer thread takes no lock at all, and it reaches
+5. Dashboard: the broadcaster built its ticks on a Background thread, which
+   took `service.state` there, and the streams took `events.broadcast` on
+   HttpAdmin threads. That lock is on none of the lists, so the order law
+   fails if it ever nests with another.
+6. Logger: the writer thread takes no lock at all, and it reaches
    `log.write`, so the blocking law sees what it holds there: nothing.
-6. Pointer: the pointer thread takes no lock at all, and it injected the
+7. Pointer: the pointer thread takes no lock at all, and it injected the
    mouse, and no other thread did.
-7. Mic: the mic worker takes no lock at all, and it submitted the decoded
+8. Mic: the mic worker takes no lock at all, and it submitted the decoded
    mic audio, and no other thread did.
-8. Tray: the Gui role made every `Shell_NotifyIconW` call, and no other
+9. Tray: the Gui role made every `Shell_NotifyIconW` call, and no other
    thread did.
 
 Each list is exactly what today's code does. The test fails when a lock, a
