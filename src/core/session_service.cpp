@@ -26,10 +26,58 @@ static uint32_t makeRandomToken() {
     return dist(gen);
 }
 
+namespace {
+
+void publishControllers(const Connection& conn) {
+    for (size_t i = 0; i < MAX_CONTROLLERS_PER_CONN; i++) {
+        const Controller& ctrl = conn.controllers[i];
+        conn.hot->ctrl[i].store(hotCtrlWord(ctrl.active, ctrl.serialNo), std::memory_order_relaxed);
+    }
+}
+
+class ConnectionWrite {
+  public:
+    ConnectionWrite(Connection& conn, const RxEpoch& rx) : conn_(conn), write_(*conn.hot, rx) {}
+    ~ConnectionWrite() { close(); }
+    ConnectionWrite(const ConnectionWrite&) = delete;
+    ConnectionWrite& operator=(const ConnectionWrite&) = delete;
+
+    void close() {
+        if (!open_) return;
+        open_ = false;
+        publishControllers(conn_);
+        write_.close();
+    }
+
+  private:
+    Connection& conn_;
+    HotWrite write_;
+    bool open_ = true;
+};
+
+void recordDatagram(HotSlot& slot, uint32_t keyEpoch, uint32_t counter, uint64_t clientAddr) {
+    if (slot.clientAddr.load(std::memory_order_relaxed) != clientAddr) {
+        slot.clientAddr.store(clientAddr, std::memory_order_release);
+    }
+    slot.lastCounter.store(counter, std::memory_order_relaxed);
+    slot.lastPacketTicks.store(hotTicks(std::chrono::steady_clock::now()),
+                               std::memory_order_relaxed);
+    if (slot.replayKeyEpoch.load(std::memory_order_relaxed) == keyEpoch) return;
+    slot.replayKeyEpoch.store(keyEpoch, std::memory_order_release);
+    slot.feedbackPending.store(true, std::memory_order_release);
+}
+
+std::chrono::steady_clock::time_point lastPacketAt(const Connection& conn) {
+    return hotTime(conn.hot->lastPacketTicks.load(std::memory_order_acquire));
+}
+
+} // namespace
+
 SessionService::SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
-                               KeyDeriver keyDeriver, IAudioCodecFactory* audioCodecs)
+                               KeyDeriver keyDeriver, IAudioCodecFactory* audioCodecs,
+                               ProcessBarrierFn processBarrier)
     : backend_(backend), client_(client), log_(log), keyDeriver_(std::move(keyDeriver)),
-      audioCodecs_(audioCodecs) {
+      audioCodecs_(audioCodecs), rx_(processBarrier) {
     // The `this`-capturing lambdas are safe: SessionService outlives the adapter,
     // and the adapter joins its notification workers before the callbacks fire.
     backend_.setRumbleCallback(
@@ -121,6 +169,8 @@ bool SessionService::unplugAndRelease(uint32_t serial) {
 }
 
 void SessionService::teardownConnection(Connection& conn) {
+    hot_.retire(conn.slot);
+    ConnectionWrite write(conn, rx_);
     for (auto& ctrl : conn.controllers) {
         if (ctrl.active && ctrl.serialNo != 0) {
             unplugAndRelease(ctrl.serialNo);
@@ -129,7 +179,9 @@ void SessionService::teardownConnection(Connection& conn) {
         }
     }
     conn.activeControllerCount = 0;
-    client_.removeClientAddr(conn.token);
+    conn.hot->token.store(0, std::memory_order_relaxed);
+    const uint8_t cleared[CRYPTO_KEY_SIZE] = {};
+    conn.hot->storeKey(cleared);
 }
 
 uint32_t SessionService::allocateSerial() {
@@ -191,8 +243,19 @@ void SessionService::deriveSessionKeyLocked(Connection& conn,
     }
 }
 
+void SessionService::publishSessionKeyLocked(Connection& conn,
+                                             std::chrono::steady_clock::time_point now) {
+    HotSlot& hot = *conn.hot;
+    hot.token.store(conn.token, std::memory_order_relaxed);
+    hot.keyEpoch.store(hot.keyEpoch.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    hot.storeKey(conn.sessionKey);
+    hot.txCounter.store(0, std::memory_order_relaxed);
+    hot.clientAddr.store(0, std::memory_order_relaxed);
+    hot.feedbackPending.store(false, std::memory_order_relaxed);
+    hot.lastPacketTicks.store(hotTicks(now), std::memory_order_relaxed);
+}
+
 void SessionService::resetControllerStreamState(Controller& ctrl) {
-    ctrl.lastReport = GamepadReport{};
     // A (re)plugged controller is a fresh actuator, so the next rumble/colour
     // must not be suppressed as "same as last".
     ctrl.lastRumble = RumbleReport{};
@@ -471,11 +534,21 @@ SessionUpsertResult SessionService::upsertSession(
     const auto now = std::chrono::steady_clock::now();
     Connection* conn = findByDeviceId(deviceId);
     if (conn == nullptr) {
+        const int slot = hot_.findFree();
+        if (slot < 0) {
+            log_.logMsg(LogLevel::WARN, "service",
+                        "Session refused for " + deviceName + ": all " +
+                            std::to_string(MAX_SESSIONS) + " session slots are in use");
+            res.error = UPSERT_ERROR_TOO_MANY_SESSIONS;
+            return res;
+        }
         Connection c;
         do {
             c.connectionId = CONNECTION_ID_PREFIX + hexEncodeBE32(makeRandomToken());
         } while (findByConnectionId(c.connectionId) != nullptr);
         c.deviceId = deviceId;
+        c.hot = &hot_.slots[static_cast<size_t>(slot)];
+        c.slot = slot;
         c.connectedAt = now;
         c.token = generateUniqueToken();
         uint32_t token = c.token;
@@ -488,7 +561,6 @@ SessionUpsertResult SessionService::upsertSession(
         // token/key in place. The row and its pads survive, no unplug/replug churn.
         client_.sendSessionClose(*conn, CLOSE_REASON_REPLACED);
         releaseConnectionPointerLocked(*conn);
-        client_.removeClientAddr(conn->token);
         uint32_t newToken = generateUniqueToken();
         auto node = connections_.extract(conn->token);
         node.key() = newToken;
@@ -499,22 +571,18 @@ SessionUpsertResult SessionService::upsertSession(
                     "Session rotated for " + deviceName + " (" + conn->connectionId + ")");
     }
 
+    ConnectionWrite write(*conn, rx_);
     conn->deviceName = deviceName;
     conn->clientIP = clientIP;
-    // Seed the numeric IPv4 cache for the first packet's "address changed?"
-    // check. Failure (0) is non-fatal; the next V4 update fills it.
-    conn->clientIPv4 = parseIPv4Nbo(clientIP);
     for (size_t i = 0; i < SESSION_SALT_SIZE; i += 4) {
         uint32_t r = makeRandomToken();
         std::memcpy(conn->sessionSalt + i, &r, 4);
     }
     deriveSessionKeyLocked(*conn, pairingKey);
-    conn->lastCounter = 0;
-    conn->seenCounter = false;
+    publishSessionKeyLocked(*conn, now);
     // Fresh token/salt/key = a fresh session, so a client that fixed (or
     // re-made) a mic-stream mistake gets a new diagnosable log line for it.
     conn->micDropLogged = 0;
-    conn->lastPacketTime = now;
     conn->graceUntil = now + std::chrono::seconds(REST_LIVENESS_GRACE_SEC);
     conn->protocolVersion = protocolVersion;
 
@@ -542,6 +610,8 @@ SessionUpsertResult SessionService::upsertSession(
         res.controllers.push_back(ar);
     }
     closeBackendBusIfIdle();
+    write.close();
+    hot_.publish(conn->slot, conn->token);
 
     res.ok = true;
     res.connectionId = conn->connectionId;
@@ -559,6 +629,7 @@ bool SessionService::applyController(const std::string& connectionId, const std:
     std::lock_guard<std::mutex> lk(mtx_);
     Connection* conn = findByConnectionId(connectionId);
     if (conn == nullptr || conn->deviceId != deviceId) return false;
+    ConnectionWrite write(*conn, rx_);
     applyDescriptorLocked(*conn, desc, outResult);
     closeBackendBusIfIdle();
     outEpoch = conn->epoch;
@@ -571,6 +642,7 @@ bool SessionService::removeController(const std::string& connectionId, const std
     Connection* conn = findByConnectionId(connectionId);
     if (conn == nullptr || conn->deviceId != deviceId) return false;
     if (ctrlIdx < MAX_CONTROLLERS_PER_CONN) {
+        ConnectionWrite write(*conn, rx_);
         removeControllerLocked(*conn, conn->controllers[ctrlIdx]);
         closeBackendBusIfIdle();
     }
@@ -662,16 +734,10 @@ void SessionService::closeAllSessions(uint8_t reason) {
 
 bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
                                        const GamepadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return false;
-
-    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
-    Controller& ctrl = it->second.controllers[ctrlIdx];
-    if (!ctrl.active) return false;
-
-    ctrl.lastReport = report;
-    return backend_.submitReport(ctrl.serialNo, report);
+    rx_.enter();
+    const bool ok = submitHotFrame(token, ctrlIdx, report, false, 0, 0);
+    rx_.exit();
+    return ok;
 }
 
 void SessionService::handleHeartbeat(uint32_t token) {
@@ -772,6 +838,11 @@ int SessionService::refreshRumble() {
         drainRumbleLocked(serial, &sent);
     }
     for (auto& [token, conn] : connections_) {
+        std::atomic<bool>& pending = conn.hot->feedbackPending;
+        if (pending.load(std::memory_order_acquire) &&
+            pending.exchange(false, std::memory_order_acq_rel)) {
+            resendFeedbackStateLocked(conn);
+        }
         for (auto& ctrl : conn.controllers) {
             if (!ctrl.active || ctrl.serialNo == 0) continue;
             const bool hidHeld =
@@ -1461,80 +1532,76 @@ bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,
 
 bool SessionService::getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
                                     uint32_t& outLastCounter, bool* outSeenCounter) const {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return false;
-    std::memcpy(outKey, it->second.sessionKey, CRYPTO_KEY_SIZE);
-    outLastCounter = it->second.lastCounter;
-    if (outSeenCounter != nullptr) *outSeenCounter = it->second.seenCounter;
+    const int index = hot_.find(token);
+    if (index < 0) return false;
+    const HotSlot& slot = hot_.slots[static_cast<size_t>(index)];
+    uint32_t slotToken = 0;
+    uint32_t keyEpoch = 0;
+    const bool stable = slot.read([&] {
+        slotToken = slot.token.load(std::memory_order_relaxed);
+        keyEpoch = slot.keyEpoch.load(std::memory_order_relaxed);
+        slot.loadKey(outKey);
+    });
+    if (!stable || slotToken != token) return false;
+    const bool seen = slot.replayKeyEpoch.load(std::memory_order_relaxed) == keyEpoch;
+    outLastCounter = seen ? slot.lastCounter.load(std::memory_order_relaxed) : 0;
+    if (outSeenCounter != nullptr) *outSeenCounter = seen;
     return true;
 }
 
-// An authenticated datagram moves the replay window and proves the session
-// live. True for the session's first, which is the first moment its client can
-// be reached: a PUT drops the old token's address, and the new one is learned
-// from this datagram.
-static bool recordAuthenticatedDatagramLocked(Connection& conn, uint32_t counter) {
-    const bool firstDatagram = !conn.seenCounter;
-    conn.lastCounter = counter;
-    conn.seenCounter = true;
-    conn.lastPacketTime = std::chrono::steady_clock::now();
-    return firstDatagram;
+void SessionService::recordHotDatagram(uint32_t token, uint32_t counter, uint64_t clientAddr) {
+    const int index = hot_.find(token);
+    if (index < 0) return;
+    HotSlot& slot = hot_.slots[static_cast<size_t>(index)];
+    uint32_t slotToken = 0;
+    uint32_t keyEpoch = 0;
+    const bool stable = slot.read([&] {
+        slotToken = slot.token.load(std::memory_order_relaxed);
+        keyEpoch = slot.keyEpoch.load(std::memory_order_relaxed);
+    });
+    if (stable && slotToken == token) recordDatagram(slot, keyEpoch, counter, clientAddr);
+}
+
+bool SessionService::submitHotFrame(uint32_t token, uint8_t ctrlIdx, const GamepadReport& report,
+                                    bool record, uint32_t counter, uint64_t clientAddr) {
+    const int index = hot_.find(token);
+    if (index < 0) return false;
+    HotSlot& slot = hot_.slots[static_cast<size_t>(index)];
+    const bool knownIdx = ctrlIdx < MAX_CONTROLLERS_PER_CONN;
+    uint32_t slotToken = 0;
+    uint32_t keyEpoch = 0;
+    uint32_t word = 0;
+    const bool stable = slot.read([&] {
+        slotToken = slot.token.load(std::memory_order_relaxed);
+        keyEpoch = slot.keyEpoch.load(std::memory_order_relaxed);
+        if (knownIdx) word = slot.ctrl[ctrlIdx].load(std::memory_order_relaxed);
+    });
+    if (!stable || slotToken != token) return false;
+    if (record) recordDatagram(slot, keyEpoch, counter, clientAddr);
+    if ((word & HOT_CTRL_ACTIVE) == 0) return false;
+    return backend_.submitReport(word & HOT_CTRL_SERIAL_MASK, report);
 }
 
 void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
                                        const std::string& clientIP, uint16_t clientPort) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return;
-    Connection& conn = it->second;
-    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
-    conn.clientIP = clientIP;
-    conn.clientIPv4 = parseIPv4Nbo(clientIP);
-    client_.updateClientAddr(token, clientIP, clientPort);
-    if (firstDatagram) resendFeedbackStateLocked(conn);
-}
-
-// Refresh Connection::clientIP only when the numeric IPv4 changes (common case
-// is one integer compare, no heap touch). Caller must hold mtx_.
-static void refreshClientIPCacheLocked(Connection& conn, uint32_t newIPv4) {
-    if (conn.clientIPv4 == newIPv4) return;
-    conn.clientIPv4 = newIPv4;
-    conn.clientIP = formatIPv4Nbo(newIPv4);
+    updatePostDecryptV4(token, counter, parseIPv4Nbo(clientIP), clientPort);
 }
 
 void SessionService::updatePostDecryptV4(uint32_t token, uint32_t counter,
                                          uint32_t ipv4NetworkOrder, uint16_t clientPort) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return;
-    Connection& conn = it->second;
-    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
-    refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
-    client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
-    if (firstDatagram) resendFeedbackStateLocked(conn);
+    rx_.enter();
+    recordHotDatagram(token, counter, packClientAddr(ipv4NetworkOrder, clientPort));
+    rx_.exit();
 }
 
 bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter,
                                                 uint32_t ipv4NetworkOrder, uint16_t clientPort,
                                                 uint8_t ctrlIdx, const GamepadReport& report) {
-    // ONE mtx_ acquisition for the whole packet (see header: tail latency).
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return false;
-    Connection& conn = it->second;
-
-    const bool firstDatagram = recordAuthenticatedDatagramLocked(conn, counter);
-    refreshClientIPCacheLocked(conn, ipv4NetworkOrder);
-    client_.updateClientAddrV4(token, ipv4NetworkOrder, clientPort);
-    if (firstDatagram) resendFeedbackStateLocked(conn);
-
-    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
-    Controller& ctrl = conn.controllers[ctrlIdx];
-    if (!ctrl.active) return false;
-
-    ctrl.lastReport = report;
-    return backend_.submitReport(ctrl.serialNo, report);
+    rx_.enter();
+    const bool ok = submitHotFrame(token, ctrlIdx, report, true, counter,
+                                   packClientAddr(ipv4NetworkOrder, clientPort));
+    rx_.exit();
+    return ok;
 }
 
 SessionService::ConnectionSnapshot::CtrlInfo
@@ -1571,7 +1638,7 @@ DeviceLinkState SessionService::linkStateAt(const Connection& conn,
     const auto stallThreshold =
         std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
     const bool inGrace = now < conn.graceUntil;
-    const bool stalled = !inGrace && now - conn.lastPacketTime > stallThreshold;
+    const bool stalled = !inGrace && now - lastPacketAt(conn) > stallThreshold;
     return stalled ? DeviceLinkState::NotResponding : DeviceLinkState::Active;
 }
 
@@ -1583,7 +1650,8 @@ SessionService::snapshotConnection(uint32_t token, const Connection& conn,
     cs.token = token;
     cs.deviceId = conn.deviceId;
     cs.deviceName = conn.deviceName;
-    cs.clientIP = conn.clientIP;
+    const uint64_t clientAddr = conn.hot->clientAddr.load(std::memory_order_acquire);
+    cs.clientIP = clientAddr != 0 ? formatIPv4Nbo(clientAddrIPv4(clientAddr)) : conn.clientIP;
     cs.connectedAtEpoch =
         std::chrono::duration_cast<std::chrono::seconds>(conn.connectedAt.time_since_epoch())
             .count();
@@ -1624,14 +1692,8 @@ bool SessionService::isDeviceConnected(const std::string& deviceId) const {
 DeviceLinkState SessionService::linkStateForDevice(const std::string& deviceId) const {
     std::lock_guard<std::mutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();
-    const auto stallThreshold =
-        std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_STALL_FACTOR);
     for (auto& [tok, c] : connections_) {
-        if (c.deviceId != deviceId) continue;
-        const bool inGrace = now < c.graceUntil;
-        return (!inGrace && now - c.lastPacketTime > stallThreshold)
-                   ? DeviceLinkState::NotResponding
-                   : DeviceLinkState::Active;
+        if (c.deviceId == deviceId) return linkStateAt(c, now);
     }
     return DeviceLinkState::Paired;
 }
@@ -1644,12 +1706,12 @@ int SessionService::reapTimedOut() {
     int reaped = 0;
     for (auto it = connections_.begin(); it != connections_.end();) {
         Connection& conn = it->second;
-        const auto silentFor =
-            std::chrono::duration_cast<std::chrono::seconds>(now - conn.lastPacketTime);
+        const auto lastPacket = lastPacketAt(conn);
+        const auto silentFor = std::chrono::duration_cast<std::chrono::seconds>(now - lastPacket);
         // The REST upsert counts as provisional liveness until graceUntil, so a
         // half-open session (UDP blocked) surfaces client-side instead of
         // flapping through here.
-        if (now - conn.lastPacketTime > timeout && now > conn.graceUntil) {
+        if (now - lastPacket > timeout && now > conn.graceUntil) {
             log_.logMsg(LogLevel::INFO, "service",
                         "Reaper: timed out connection for " + conn.deviceName + " after " +
                             std::to_string(silentFor.count()) + " s without a packet");
@@ -1717,7 +1779,8 @@ void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
     const auto now = std::chrono::steady_clock::now();
-    it->second.lastPacketTime = now - std::chrono::seconds(lastPacketSecondsAgo);
+    it->second.hot->lastPacketTicks.store(
+        hotTicks(now - std::chrono::seconds(lastPacketSecondsAgo)), std::memory_order_relaxed);
     it->second.graceUntil = now - std::chrono::seconds(graceSecondsAgo);
 }
 

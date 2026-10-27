@@ -2,6 +2,7 @@
 
 #include "client_adapter.h"
 #include "core/byte_order.h"
+#include "core/hot_table.h"
 
 #include "net/session_crypto.h"
 
@@ -11,46 +12,9 @@
 
 void ClientAdapter::setSocket(SOCKET sock) { sock_.store(sock, std::memory_order_release); }
 
-void ClientAdapter::updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) {
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+void ClientAdapter::updateClientAddr(uint32_t, const std::string&, uint16_t) {}
 
-    std::lock_guard<std::mutex> lk(addrMtx_);
-    addrs_[token] = addr;
-}
-
-void ClientAdapter::updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) {
-    // Already network byte order, so drop it straight in; avoids the string
-    // overload's heap allocation on the hot receive path.
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = ipv4NetworkOrder;
-
-    std::lock_guard<std::mutex> lk(addrMtx_);
-    addrs_[token] = addr;
-}
-
-void ClientAdapter::removeClientAddr(uint32_t token) {
-    std::lock_guard<std::mutex> lk(addrMtx_);
-    addrs_.erase(token);
-    txCounters_.erase(token);
-}
-
-bool ClientAdapter::getAddr(uint32_t token, sockaddr_in& out) {
-    std::lock_guard<std::mutex> lk(addrMtx_);
-    auto it = addrs_.find(token);
-    if (it == addrs_.end()) return false;
-    out = it->second;
-    return true;
-}
-
-uint32_t ClientAdapter::nextTxCounter(uint32_t token) {
-    std::lock_guard<std::mutex> lk(addrMtx_);
-    return ++txCounters_[token];
-}
+void ClientAdapter::removeClientAddr(uint32_t) {}
 
 void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* inner,
                                         size_t innerLen) {
@@ -69,15 +33,19 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
         return;
     }
 
-    sockaddr_in addr{};
-    if (!getAddr(conn.token, addr)) {
+    const uint64_t clientAddr = conn.hot->clientAddr.load(std::memory_order_acquire);
+    if (clientAddr == 0) {
         satellite::g_wire.txUnroutable.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(clientAddrPort(clientAddr));
+    addr.sin_addr.s_addr = clientAddrIPv4(clientAddr);
 
     // Monotonic per-token counter in the nonce; the direction byte keeps this
     // direction's nonces disjoint from the client's under the shared session key.
-    const uint32_t counter = nextTxCounter(conn.token);
+    const uint32_t counter = conn.hot->txCounter.fetch_add(1, std::memory_order_relaxed) + 1;
 
     // Sized so the whole datagram lands on UDP_DATAGRAM_MAX_BYTES: the control
     // messages are all under 30 bytes, but MSG_SPEAKER_AUDIO carries a 20 ms

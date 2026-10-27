@@ -285,14 +285,8 @@ struct MockViGem : IGamepadPort {
 };
 
 struct MockClient : IClientPort {
-    int updateAddrCalls = 0;
-    int updateAddrV4Calls = 0;
-    uint32_t lastV4Token = 0;
-    uint32_t lastV4IPv4Nbo = 0;
-    uint16_t lastV4Port = 0;
-    int removeAddrCalls = 0;
-
     int heartbeatAckCalls = 0;
+    uint64_t lastAckAddr = 0;
     bool lastAckBackendAvailable = false;
     uint8_t lastAckTotalControllers = 0;
     uint16_t lastAckEpoch = 0;
@@ -320,33 +314,24 @@ struct MockClient : IClientPort {
     // The real ClientAdapter reaches only a token whose address one of that
     // session's datagrams taught it, and drops a send to any other token as
     // unroutable. The delivered* counts are what a client can have received.
-    std::set<uint32_t> addressedTokens;
     int deliveredLightbars = 0;
     int deliveredTriggerEffects = 0;
     int deliveredPlayerLeds = 0;
     int deliveredMicLeds = 0;
     int deliveredRumbles = 0;
 
-    bool reaches(const Connection& conn) const { return addressedTokens.count(conn.token) != 0; }
+    static uint64_t addressOf(const Connection& conn) {
+        return conn.hot->clientAddr.load(std::memory_order_acquire);
+    }
+    bool reaches(const Connection& conn) const { return addressOf(conn) != 0; }
 
-    void updateClientAddr(uint32_t token, const std::string&, uint16_t) override {
-        updateAddrCalls++;
-        addressedTokens.insert(token);
-    }
-    void updateClientAddrV4(uint32_t token, uint32_t ipv4Nbo, uint16_t port) override {
-        updateAddrV4Calls++;
-        lastV4Token = token;
-        lastV4IPv4Nbo = ipv4Nbo;
-        lastV4Port = port;
-        addressedTokens.insert(token);
-    }
-    void removeClientAddr(uint32_t token) override {
-        removeAddrCalls++;
-        addressedTokens.erase(token);
-    }
-    void sendHeartbeatAck(const Connection&, bool backendAvailable, uint8_t totalActiveControllers,
-                          uint16_t epoch, uint16_t activeBitmap) override {
+    void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
+    void removeClientAddr(uint32_t) override {}
+    void sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+                          uint8_t totalActiveControllers, uint16_t epoch,
+                          uint16_t activeBitmap) override {
         heartbeatAckCalls++;
+        lastAckAddr = addressOf(conn);
         lastAckBackendAvailable = backendAvailable;
         lastAckTotalControllers = totalActiveControllers;
         lastAckEpoch = epoch;
@@ -1666,9 +1651,8 @@ static void test_fusedHotPath() {
     GamepadReport rpt{};
     rpt.sThumbLX = 7777;
     EXPECT(svc.handleGamepadDataAndUpdate(r.token, 5, 0x0100007f, 4242, 0, rpt));
-    EXPECT_EQ(client.updateAddrV4Calls, 1);
-    EXPECT_EQ(client.lastV4Token, r.token);
-    EXPECT_EQ(client.lastV4Port, (uint16_t)4242);
+    svc.handleHeartbeat(r.token);
+    EXPECT_EQ(client.lastAckAddr, packClientAddr(0x0100007f, 4242));
     uint8_t key[CRYPTO_KEY_SIZE];
     uint32_t ctr;
     svc.getDecryptInfo(r.token, key, ctr);
@@ -1689,7 +1673,8 @@ static void test_fusedHotPath_guards() {
     // Inactive controller: the packet still refreshes counter/addr (it
     // authenticated), only the submit is refused.
     EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 7, 0x0100007f, 1, 0, rpt));
-    EXPECT_EQ(client.updateAddrV4Calls, 1);
+    svc.handleHeartbeat(r.token);
+    EXPECT_EQ(client.lastAckAddr, packClientAddr(0x0100007f, 1));
     uint8_t key[CRYPTO_KEY_SIZE];
     uint32_t ctr;
     svc.getDecryptInfo(r.token, key, ctr);
@@ -3678,6 +3663,7 @@ static void test_feedbackState_rotatedSessionGetsTheLightbarAgain() {
 
     const auto second = pad.rePut();
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.deliveredLightbars, 2);
     EXPECT_EQ(pad.client.lastLightbarConnToken, second.token);
@@ -3692,6 +3678,7 @@ static void test_feedbackState_rotatedSessionGetsTriggerEffectsAndPlayerLedsAgai
 
     const auto second = pad.rePut();
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.deliveredTriggerEffects, 2);
     EXPECT_EQ(pad.client.lastTriggerEffectsConnToken, second.token);
@@ -3709,6 +3696,7 @@ static void test_feedbackState_micLampIsNotReplayedSinceItAlsoMutesTheMicrophone
 
     const auto second = pad.rePut();
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.deliveredMicLeds, 1);
     EXPECT_EQ(pad.client.micLedCalls, 1);
@@ -3724,8 +3712,9 @@ static void test_feedbackState_rumbleIsNotReplayed() {
 
     const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, ALL_STATE_CAPS | CAP_RUMBLE);
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    const int heldRefreshes = pad.svc.refreshRumble();
 
-    EXPECT_EQ(pad.client.rumbleCalls, 1);
+    EXPECT_EQ(pad.client.rumbleCalls, 1 + heldRefreshes);
 }
 
 static void test_feedbackState_freshSessionGetsWhatWasSetBeforeItsFirstDatagram() {
@@ -3739,6 +3728,7 @@ static void test_feedbackState_freshSessionGetsWhatWasSetBeforeItsFirstDatagram(
     EXPECT_EQ(client.deliveredLightbars, 0);
 
     svc.updatePostDecryptV4(r.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    svc.refreshRumble();
 
     EXPECT_EQ(client.deliveredLightbars, 1);
     EXPECT_EQ((int)client.lastLightbarR, 10);
@@ -3749,6 +3739,7 @@ static void test_feedbackState_onlyTheFirstDatagramResends() {
     LitPadSession pad;
     const auto second = pad.rePut();
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
     const int lightbarsAfterFirst = pad.client.lightbarCalls;
     const int playerLedsAfterFirst = pad.client.playerLedsCalls;
 
@@ -3757,6 +3748,7 @@ static void test_feedbackState_onlyTheFirstDatagramResends() {
     const bool submitted =
         pad.svc.handleGamepadDataAndUpdate(second.token, 3, CLIENT_IPV4_NBO, CLIENT_PORT, 0, rpt);
     EXPECT(submitted);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.lightbarCalls, lightbarsAfterFirst);
     EXPECT_EQ(pad.client.playerLedsCalls, playerLedsAfterFirst);
@@ -3770,6 +3762,7 @@ static void test_feedbackState_firstDatagramCarryingInputResends() {
 
     const bool submitted =
         pad.svc.handleGamepadDataAndUpdate(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT, 0, rpt);
+    pad.svc.refreshRumble();
 
     EXPECT(submitted);
     EXPECT_EQ(pad.client.deliveredLightbars, 2);
@@ -3782,6 +3775,7 @@ static void test_feedbackState_firstDatagramByStringAddressResends() {
     const auto second = pad.rePut();
 
     pad.svc.updatePostDecrypt(second.token, 1, "127.0.0.1", CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.deliveredLightbars, 2);
     EXPECT_EQ(pad.client.lastLightbarConnToken, second.token);
@@ -3793,6 +3787,7 @@ static void test_feedbackState_aCapTheRePutDroppedIsNotResent() {
     const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, 0);
 
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.lightbarCalls, 1);
     EXPECT_EQ(pad.client.triggerEffectsCalls, 1);
@@ -3808,6 +3803,7 @@ static void test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStay
     const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, CAPS_WITHOUT_TRIGGER_EFFECTS);
 
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.deliveredTriggerEffects, 1);
     EXPECT_EQ(pad.client.deliveredLightbars, 2);
@@ -3820,6 +3816,7 @@ static void test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway() {
     const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, CAPS_WITHOUT_PLAYER_LEDS);
 
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.deliveredPlayerLeds, 1);
     EXPECT_EQ(pad.client.deliveredLightbars, 2);
@@ -3835,6 +3832,7 @@ static void test_feedbackState_aCapTheRePutAddedBringsTheStateSetWhileItWasOff()
 
     const auto second = pad.rePut(CONTROLLER_TYPE_DUALSENSE, ALL_STATE_CAPS);
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.deliveredLightbars, 1);
     EXPECT_EQ(pad.client.lastLightbarConnToken, second.token);
@@ -3849,6 +3847,7 @@ static void test_feedbackState_aPadTheRePutRepluggedHasNothingToResend() {
     const auto second = pad.rePut(CONTROLLER_TYPE_PLAYSTATION, ALL_STATE_CAPS);
 
     pad.svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    pad.svc.refreshRumble();
 
     EXPECT_EQ(pad.client.lightbarCalls, 1);
     EXPECT_EQ(pad.client.triggerEffectsCalls, 1);
@@ -3869,6 +3868,7 @@ static void test_feedbackState_aSlotTheRePutDroppedIsNotResent() {
     const auto second = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_LIGHTBAR)});
 
     svc.updatePostDecryptV4(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    svc.refreshRumble();
 
     EXPECT_EQ(client.deliveredLightbars, 3);
     EXPECT_EQ((int)client.lastLightbarCtrlIdx, 0);

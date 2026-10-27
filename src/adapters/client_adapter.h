@@ -6,8 +6,6 @@
 #include "net/net_compat.h"
 
 #include <atomic>
-#include <unordered_map>
-#include <mutex>
 
 class ClientAdapter : public IClientPort {
   public:
@@ -15,9 +13,6 @@ class ClientAdapter : public IClientPort {
     void setSocket(SOCKET sock);
 
     void updateClientAddr(uint32_t token, const std::string& ip, uint16_t port) override;
-    // Hot path (one call per received UDP packet): writes the IPv4 directly
-    // into sin_addr, skipping the inet_pton + std::string round-trip.
-    void updateClientAddrV4(uint32_t token, uint32_t ipv4NetworkOrder, uint16_t port) override;
     void removeClientAddr(uint32_t token) override;
 
     void sendHeartbeatAck(const Connection& conn, bool backendAvailable,
@@ -38,18 +33,9 @@ class ClientAdapter : public IClientPort {
 
   private:
     std::atomic<SOCKET> sock_{INVALID_SOCKET};
-    std::mutex addrMtx_;
-    std::unordered_map<uint32_t, sockaddr_in> addrs_;
-    // Per-token server-to-client send counter (nonce material). Counters and the
-    // session key rotate together: a fresh token starts at 0 here and the first
-    // send goes out as counter 1.
-    std::unordered_map<uint32_t, uint32_t> txCounters_;
 
     void sendEncryptedPacket(const Connection& conn, const uint8_t* inner, size_t innerLen);
     // Shared body of the outbound audio lanes (speaker, haptics).
     void sendAudioMessage(const Connection& conn, uint16_t msgType, uint8_t ctrlIdx, uint16_t seq,
                           const uint8_t* opus, size_t opusLen);
-
-    bool getAddr(uint32_t token, sockaddr_in& out);
-    uint32_t nextTxCounter(uint32_t token);
 };

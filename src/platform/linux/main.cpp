@@ -5,6 +5,7 @@
 #include "crypto.h"
 #include "gamepad_adapter.h"
 #include "netlink_rejoin.h"
+#include "process_barrier.h"
 #include "tray.h"
 #include "updater_adapter.h"
 
@@ -254,7 +255,8 @@ int main() {
     // into the core. uinput has no audio endpoint to feed today, but the
     // service's audio paths are platform-neutral and stay wired the same way.
     satellite::audio::OpusCodecFactory audioCodecs;
-    SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs);
+    SessionService svc(gamepadAdapter, clientAdapter, logAdapter, deriveSessionKey, &audioCodecs,
+                       processbarrier::registerPrivateExpedited());
     svc.setAudioPolicy(audioPolicyFromConfig);
 
     LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");

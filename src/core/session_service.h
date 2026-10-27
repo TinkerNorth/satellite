@@ -8,6 +8,7 @@
 // returning the applied state. UDP never mutates topology (docs/contract.md).
 #pragma once
 
+#include "hot_table.h"
 #include "ports.h"
 #include <atomic>
 #include <mutex>
@@ -30,7 +31,8 @@ class SessionService {
     // no codec still validates, gates and rate-limits audio, it just has
     // nowhere to put the samples.
     SessionService(IGamepadPort& backend, IClientPort& client, ILogPort& log,
-                   KeyDeriver keyDeriver = {}, IAudioCodecFactory* audioCodecs = nullptr);
+                   KeyDeriver keyDeriver = {}, IAudioCodecFactory* audioCodecs = nullptr,
+                   ProcessBarrierFn processBarrier = nullptr);
 
     // The host's per-direction controller-audio gates, read per frame so the
     // dashboard toggle reaches a live stream rather than the next replug.
@@ -189,14 +191,12 @@ class SessionService {
                            uint16_t clientPort);
 
     // Hot-path variant: IPv4 in network byte order, skipping the per-packet
-    // string allocation; only re-formats Connection::clientIP when the IPv4
-    // actually changes (essentially never within a session).
+    // string allocation.
     void updatePostDecryptV4(uint32_t token, uint32_t counter, uint32_t ipv4NetworkOrder,
                              uint16_t clientPort);
 
-    // FUSED hot path: updatePostDecryptV4 + handleGamepadData under a SINGLE
-    // mtx_ acquisition (the unfused flow took it three times per packet, adding
-    // tail latency). True if the report was submitted successfully.
+    // FUSED hot path: updatePostDecryptV4 + handleGamepadData. True if the
+    // report was submitted successfully.
     bool handleGamepadDataAndUpdate(uint32_t token, uint32_t counter, uint32_t ipv4NetworkOrder,
                                     uint16_t clientPort, uint8_t ctrlIdx,
                                     const GamepadReport& report);
@@ -349,6 +349,12 @@ class SessionService {
     std::atomic<uint64_t> pointerRefused_{0};
     static void bumpAudio(std::atomic<uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
 
+    HotTable hot_;
+    RxEpoch rx_;
+    bool submitHotFrame(uint32_t token, uint8_t ctrlIdx, const GamepadReport& report, bool record,
+                        uint32_t counter, uint64_t clientAddr);
+    void recordHotDatagram(uint32_t token, uint32_t counter, uint64_t clientAddr);
+
     mutable std::mutex mtx_; // protects connections_, serial state, scan cursor
     std::unordered_map<uint32_t, Connection> connections_;
     bool serialInUse_[MAX_BACKEND_CONTROLLERS] = {};
@@ -428,4 +434,5 @@ class SessionService {
     void recordPointerInjectionLocked(Connection& conn, bool ok);
     uint32_t generateUniqueToken();
     void deriveSessionKeyLocked(Connection& conn, const uint8_t pairingKey[CRYPTO_KEY_SIZE]);
+    void publishSessionKeyLocked(Connection& conn, std::chrono::steady_clock::time_point now);
 };
