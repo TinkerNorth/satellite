@@ -231,6 +231,10 @@ struct RxSession {
     uint8_t micDropLogged = 0;
 };
 
+inline constexpr size_t RX_RECEIVE_PARTICIPANT = 0;
+inline constexpr size_t RX_MIC_PARTICIPANT = 1;
+inline constexpr size_t RX_PARTICIPANTS = 2;
+
 class alignas(64) RxEpoch {
   public:
     explicit RxEpoch(ProcessBarrierFn barrier = nullptr)
@@ -247,23 +251,56 @@ class alignas(64) RxEpoch {
         epoch_.store(epoch_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
     }
 
+    void enter(size_t participant) {
+        std::atomic<uint64_t>& epoch = epochOf(participant);
+        epoch.store(epoch.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        if (needFence_) std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
+
+    void exit(size_t participant) {
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        std::atomic<uint64_t>& epoch = epochOf(participant);
+        epoch.store(epoch.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+    }
+
     void waitQuiescent() const {
         if (barrier_ != nullptr) {
             barrier_();
         } else {
             std::atomic_thread_fence(std::memory_order_seq_cst);
         }
-        const uint64_t seen = epoch_.load(std::memory_order_acquire);
-        if ((seen & 1u) == 0) return;
-        while (epoch_.load(std::memory_order_acquire) == seen) std::this_thread::yield();
+        waitOut(epoch_);
+        for (const Participant& participant : others_) waitOut(participant.epoch);
     }
 
     uint64_t value() const { return epoch_.load(std::memory_order_acquire); }
 
+    uint64_t value(size_t participant) const {
+        return participant == RX_RECEIVE_PARTICIPANT
+                   ? epoch_.load(std::memory_order_acquire)
+                   : others_[participant - 1].epoch.load(std::memory_order_acquire);
+    }
+
   private:
+    struct alignas(64) Participant {
+        std::atomic<uint64_t> epoch{0};
+    };
+
+    static void waitOut(const std::atomic<uint64_t>& epoch) {
+        const uint64_t seen = epoch.load(std::memory_order_acquire);
+        if ((seen & 1u) == 0) return;
+        while (epoch.load(std::memory_order_acquire) == seen) std::this_thread::yield();
+    }
+
+    std::atomic<uint64_t>& epochOf(size_t participant) {
+        return participant == RX_RECEIVE_PARTICIPANT ? epoch_ : others_[participant - 1].epoch;
+    }
+
     std::atomic<uint64_t> epoch_{0};
     const ProcessBarrierFn barrier_;
     const bool needFence_;
+    std::array<Participant, RX_PARTICIPANTS - 1> others_{};
 };
 
 #ifdef _MSC_VER

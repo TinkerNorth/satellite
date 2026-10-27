@@ -27,6 +27,7 @@ enum class ThreadRole : uint8_t {
     Background,
     Gui,
     Pointer,
+    Mic,
     Other,
 };
 
@@ -60,6 +61,8 @@ constexpr const char* threadRoleName(ThreadRole role) {
         return "Gui";
     case ThreadRole::Pointer:
         return "Pointer";
+    case ThreadRole::Mic:
+        return "Mic";
     case ThreadRole::Other:
         return "Other";
     }

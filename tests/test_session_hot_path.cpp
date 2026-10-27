@@ -58,6 +58,7 @@ class OwnershipBackend : public IGamepadPort {
     std::atomic<uint64_t> plugs{0};
     std::atomic<uint64_t> unplugs{0};
     std::atomic<uint64_t> coldSubmits{0};
+    std::atomic<uint64_t> micSubmits{0};
 
     bool ensureBusOpen() override {
         busOpen_.store(true);
@@ -147,6 +148,15 @@ class OwnershipBackend : public IGamepadPort {
                            report.level % PADS_PER_SESSION);
     }
 
+    bool submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) override {
+        micSubmits++;
+        if (samples < 2) {
+            violations++;
+            return false;
+        }
+        return ownedSubmit(serial, mono48k[0], mono48k[1]);
+    }
+
     void setRumbleCallback(RumbleCallback) override {}
 
     uint64_t plugState() const { return plugState_.load(); }
@@ -158,7 +168,7 @@ class OwnershipBackend : public IGamepadPort {
   private:
     struct Serial {
         std::atomic<bool> busy{false};
-        std::atomic<bool> submitting{false};
+        std::atomic<int> submitting{0};
         std::atomic<bool> plugged{false};
         std::atomic<int> owner{NO_OWNER};
     };
@@ -171,11 +181,11 @@ class OwnershipBackend : public IGamepadPort {
             return false;
         }
         Serial& s = serials_[serial];
-        s.submitting.store(true);
+        s.submitting.fetch_add(1);
         if (s.busy.load()) violations++;
         if (!s.plugged.load()) violations++;
         if (s.owner.load() != ownerCode(tag, ctrlIdx)) violations++;
-        s.submitting.store(false);
+        s.submitting.fetch_sub(1);
         return true;
     }
 
@@ -204,6 +214,40 @@ struct SilentLog : ILogPort {
     void logMsg(LogLevel, const std::string&, const std::string&) override {}
 };
 
+class OwnerEchoDecoder : public IAudioDecoder {
+  public:
+    size_t decode(const uint8_t* opus, size_t opusLen, int16_t* pcm, size_t maxFrames) override {
+        if (opusLen < 2 || maxFrames < static_cast<size_t>(AUDIO_FRAME_SAMPLES)) return 0;
+        tag_ = opus[0];
+        idx_ = opus[1];
+        return conceal(pcm, maxFrames);
+    }
+
+    size_t conceal(int16_t* pcm, size_t maxFrames) override {
+        if (maxFrames < static_cast<size_t>(AUDIO_FRAME_SAMPLES)) return 0;
+        for (size_t i = 0; i < static_cast<size_t>(AUDIO_FRAME_SAMPLES); i++) pcm[i] = 0;
+        pcm[0] = static_cast<int16_t>(tag_);
+        pcm[1] = static_cast<int16_t>(idx_);
+        return static_cast<size_t>(AUDIO_FRAME_SAMPLES);
+    }
+
+    size_t decodeFec(const uint8_t* opus, size_t opusLen, int16_t* pcm, size_t maxFrames) override {
+        return decode(opus, opusLen, pcm, maxFrames);
+    }
+
+  private:
+    int tag_ = 0;
+    int idx_ = 0;
+};
+
+struct OwnerEchoCodecs : IAudioCodecFactory {
+    std::unique_ptr<IAudioDecoder> makeMicDecoder() override {
+        return std::make_unique<OwnerEchoDecoder>();
+    }
+    std::unique_ptr<IAudioEncoder> makeSpeakerEncoder() override { return nullptr; }
+    std::unique_ptr<IAudioEncoder> makeHapticEncoder() override { return nullptr; }
+};
+
 struct Shared {
     std::array<std::atomic<uint32_t>, SESSION_COUNT + 1> tokens{};
     std::atomic<int> phase{STRESS_PHASE};
@@ -222,6 +266,7 @@ struct Shared {
     uint64_t coldRefusals = 0;
     uint64_t valueChecks = 0;
     uint64_t staleValues = 0;
+    uint16_t micSeq[SESSION_COUNT + 1][PADS_PER_SESSION] = {};
 };
 
 struct SessionState {
@@ -267,7 +312,10 @@ void coldTraffic(SessionService& svc, Shared& sh, int tag, uint32_t token, uint8
     timed(sh, [&] { svc.handleTouchpadData(token, idx, touch); });
     record();
     timed(sh, [&] { svc.handleBatteryUpdate(token, idx, battery); });
-    sh.coldCalls += 3;
+    record();
+    const uint8_t owner[2] = {static_cast<uint8_t>(tag), idx};
+    timed(sh, [&] { svc.handleMicAudio(token, idx, sh.micSeq[tag][idx]++, owner, sizeof(owner)); });
+    sh.coldCalls += 4;
 }
 
 int tagOf(const std::string& deviceId) {
@@ -351,6 +399,7 @@ ControllerDescriptor descriptorFor(int tag, uint8_t idx, uint8_t type) {
     d.ctrlIdx = idx;
     d.type = type;
     d.touchpadMode = TOUCHPAD_MODE_DS4;
+    d.caps = CAP_MIC;
     d.preferredBackend = ownerName(tag, idx);
     return d;
 }
@@ -485,7 +534,8 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
     OwnershipBackend backend;
     SilentClient client;
     SilentLog log;
-    SessionService svc(backend, client, log);
+    OwnerEchoCodecs codecs;
+    SessionService svc(backend, client, log, {}, &codecs);
     Shared sh;
     std::array<SessionState, SESSION_COUNT + 1> sessions;
     for (int tag = 1; tag <= SESSION_COUNT; tag++) {
@@ -522,6 +572,9 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
     TEST("hot path: the snapshot's cached stream values always belong to the pad they show");
     EXPECT(sh.valueChecks > 0);
     EXPECT_EQ(sh.staleValues, 0u);
+    TEST("hot path: mic submits reach only their own plugged pad, never during its plug or unplug");
+    EXPECT(backend.micSubmits.load() > 0);
+    std::cout << "  mic: " << backend.micSubmits.load() << " submits\n";
     TEST("hot path: only the receive thread writes the receive-owned pad state");
     EXPECT_EQ(svc.foreignRxWritesForTest(), 0u);
     std::cout << "  stream values: " << sh.valueChecks << " checked, " << sh.staleValues

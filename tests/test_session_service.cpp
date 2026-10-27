@@ -83,6 +83,7 @@ struct MockViGem : IGamepadPort {
     bool lastMouseMiddle = false;
     int lastMouseWheel = 0;
     std::vector<std::thread::id> mouseCallers;
+    std::vector<std::thread::id> micCallers;
     std::vector<MouseButtons> mouseButtonLog;
     // Tests synthesize "the platform fired a notification" by invoking these via
     // fireRumble / fireLightbar.
@@ -235,6 +236,7 @@ struct MockViGem : IGamepadPort {
     }
     bool submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) override {
         submitMicAudioCalls++;
+        micCallers.push_back(std::this_thread::get_id());
         lastMicAudioSerial = serial;
         lastMicAudioSamples = samples;
         lastMicAudioPcm.assign(mono48k, mono48k + samples);
@@ -492,6 +494,13 @@ static bool routeTouch(SessionService& svc, uint32_t token, uint8_t index,
     const bool routed = svc.handleTouchpadData(token, index, report);
     const bool injected = svc.drainPointerForTest();
     return routed && injected;
+}
+
+static bool deliverMic(SessionService& svc, uint32_t token, uint8_t index, uint16_t seq,
+                       const uint8_t* opus, size_t opusLen) {
+    const bool handed = svc.handleMicAudio(token, index, seq, opus, opusLen);
+    const bool accepted = svc.drainMicForTest();
+    return handed && accepted;
 }
 
 static void test_upsert_recordsProtocolVersion() {
@@ -2515,16 +2524,16 @@ static void test_micAudio_gatedOnCap() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC),
                           makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const auto opus = opusFrame(64);
-    EXPECT(svc.handleMicAudio(r.token, 0, 1, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 1, opus.data(), opus.size()));
 
     // CAP_SPEAKER is the other direction and grants nothing here: caps
     // advertise the client's own actuator/source, one bit per direction.
-    EXPECT(!svc.handleMicAudio(r.token, 1, 1, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r.token, 1, 1, opus.data(), opus.size()));
     EXPECT(log.contains("never advertised the mic cap"));
 
     // Malformed packets are refused whatever the caps say.
-    EXPECT(!svc.handleMicAudio(r.token, 0, 2, opus.data(), 0));
-    EXPECT(!svc.handleMicAudio(r.token, 0, 2, nullptr, opus.size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 2, opus.data(), 0));
+    EXPECT(!deliverMic(svc, r.token, 0, 2, nullptr, opus.size()));
 }
 
 static void test_micAudio_unknownControllerAndToken() {
@@ -2537,14 +2546,14 @@ static void test_micAudio_unknownControllerAndToken() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     const auto opus = opusFrame(32);
 
-    EXPECT(!svc.handleMicAudio(r.token, 3, 0, opus.data(), opus.size()));   // never bound
-    EXPECT(!svc.handleMicAudio(r.token, 200, 0, opus.data(), opus.size())); // past the slot cap
+    EXPECT(!deliverMic(svc, r.token, 3, 0, opus.data(), opus.size()));   // never bound
+    EXPECT(!deliverMic(svc, r.token, 200, 0, opus.data(), opus.size())); // past the slot cap
     EXPECT(log.contains("no such bound controller"));
 
     // An unknown token has no session to log against; a stale or spoofed
     // datagram must not be able to write log lines.
     const int before = log.logCalls;
-    EXPECT(!svc.handleMicAudio(r.token ^ 0xFFFFFFFFu, 0, 0, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r.token ^ 0xFFFFFFFFu, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.logCalls, before);
 }
 
@@ -2563,13 +2572,13 @@ static void test_micAudio_rateLimitIsPerController() {
     // MIC_AUDIO_MAX_PACKETS_PER_SEC get through and the overflow is dropped.
     int accepted = 0;
     for (int i = 0; i < MIC_AUDIO_MAX_PACKETS_PER_SEC + 25; ++i) {
-        if (svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
+        if (deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
     }
     EXPECT_EQ(accepted, MIC_AUDIO_MAX_PACKETS_PER_SEC);
     EXPECT(log.contains("packets/s"));
 
     // A flooding slot must not starve its neighbour.
-    EXPECT(svc.handleMicAudio(r.token, 1, 0, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 1, 0, opus.data(), opus.size()));
 }
 
 static void test_micAudio_replugRestoresAllowance() {
@@ -2584,16 +2593,16 @@ static void test_micAudio_replugRestoresAllowance() {
     // Exactly the budget gets through; the packet after it is the first drop.
     int accepted = 0;
     for (int i = 0; i <= MIC_AUDIO_MAX_PACKETS_PER_SEC; ++i) {
-        if (svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
+        if (deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
     }
     EXPECT_EQ(accepted, MIC_AUDIO_MAX_PACKETS_PER_SEC);
-    EXPECT(!svc.handleMicAudio(r.token, 0, 999, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 999, opus.data(), opus.size()));
 
     // Identity change forces a replug. Carrying the spent window onto the fresh
     // actuator would swallow the first second of the new stream.
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_MIC)});
     auto back = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
-    EXPECT(svc.handleMicAudio(back.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, back.token, 0, 0, opus.data(), opus.size()));
 }
 
 static void test_micAudio_dropLoggedOncePerSessionPerCause() {
@@ -2608,13 +2617,13 @@ static void test_micAudio_dropLoggedOncePerSessionPerCause() {
 
     // 50 frames a second of the same mistake must not become 50 log lines.
     for (int i = 0; i < 20; ++i) {
-        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
 
     // A different cause is worth its own line, once.
     for (int i = 0; i < 20; ++i) {
-        EXPECT(!svc.handleMicAudio(r.token, 4, (uint16_t)i, opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 4, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("no such bound controller"), 1);
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
@@ -2622,7 +2631,7 @@ static void test_micAudio_dropLoggedOncePerSessionPerCause() {
     // A re-PUT rotates token/salt/key, so it is a new session: a repeat mistake
     // is diagnosable again instead of silently inheriting the old flag.
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, 0)});
-    EXPECT(!svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r2.token, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 2);
 }
 
@@ -2807,7 +2816,7 @@ static void test_audioPolicy_defaultsToBothOn() {
     EXPECT_EQ(client.speakerAudioCalls, 1);
 
     const auto opus = opusFrame(32);
-    EXPECT(svc.handleMicAudio(r.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 0, opus.data(), opus.size()));
 }
 
 static void test_audioPolicy_speakerOffStopsTheStream() {
@@ -2863,7 +2872,7 @@ static void test_audioPolicy_micOffDropsWithAReason() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     const auto opus = opusFrame(32);
     for (int i = 0; i < 20; i++) {
-        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 0);
 
@@ -2874,22 +2883,22 @@ static void test_audioPolicy_micOffDropsWithAReason() {
 
     TEST("audio policy: a capless sender is still told about its own mistake first");
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, 0)}, "devB", "B");
-    EXPECT(!svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r2.token, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
 
     TEST("audio policy: the mic gate is read per frame too");
     micOn = true;
-    EXPECT(svc.handleMicAudio(r.token, 0, 100, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 100, opus.data(), opus.size()));
 
     TEST("audio policy: a host-disabled mic frame consumes no rate-limit budget");
     // Checked before the window so a direction that is off cannot be used to
     // exhaust the budget a re-enabled one would need.
     micOn = false;
     for (int i = 0; i < MIC_AUDIO_MAX_PACKETS_PER_SEC * 2; i++) {
-        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)(200 + i), opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 0, (uint16_t)(200 + i), opus.data(), opus.size()));
     }
     micOn = true;
-    EXPECT(svc.handleMicAudio(r.token, 0, 900, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 900, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("packets/s"), 0);
 }
 
@@ -2915,7 +2924,7 @@ static void test_audioPolicy_directionsAreIndependent() {
     // What matters here is that the mic direction was never gated.
     const auto opus = opusFrame(32);
     for (uint16_t seq = 0; seq < 4; seq++) {
-        EXPECT(svc.handleMicAudio(r.token, 0, seq, opus.data(), opus.size()));
+        EXPECT(deliverMic(svc, r.token, 0, seq, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("controller microphone is off on the host"), 0);
 
@@ -2964,7 +2973,7 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
 
     for (int i = 0; i < 10; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
         EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
     }
     // One wire frame is one 20 ms window, mono, routed to the pad this slot
@@ -2981,11 +2990,11 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     // session for it, not one per frame.
     vigem.submitMicAudioReturnVal = false;
     const auto pkt = mic.next();
-    EXPECT(svc.handleMicAudio(r.token, 0, 10, pkt.data(), pkt.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 10, pkt.data(), pkt.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 11);
     EXPECT_EQ(log.countContaining("no microphone endpoint"), 1);
     const auto pkt2 = mic.next();
-    EXPECT(svc.handleMicAudio(r.token, 0, 11, pkt2.data(), pkt2.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 11, pkt2.data(), pkt2.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 12);
     EXPECT_EQ(log.countContaining("no microphone endpoint"), 1);
     vigem.submitMicAudioReturnVal = true;
@@ -3000,7 +3009,7 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     const int before = vigem.submitMicAudioCalls;
-    EXPECT(svc.handleMicAudio(r.token, 0, 12, twoFrames.data(), twoFrames.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 12, twoFrames.data(), twoFrames.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, before);
 }
 
@@ -3015,7 +3024,7 @@ static void test_micAudio_withoutCodecAcceptsAndDrops() {
     MicPacketSource mic;
     for (int i = 0; i < 4; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     // Accepted (it passed every gate) but nowhere to go. This is the pre-SAT-2
     // behaviour, kept deliberately so a build without a codec degrades to
@@ -3037,19 +3046,19 @@ static void test_micAudio_gapConcealedAndReorderHealed() {
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 4);
 
     // Frame 4 is lost. Packet 5 alone proves nothing (it could be a reorder),
     // so nothing is submitted yet: the 40 ms window is exactly the price of not
     // concealing a frame that was merely out of order.
-    EXPECT(svc.handleMicAudio(r.token, 0, 5, pkts[5].data(), pkts[5].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 5, pkts[5].data(), pkts[5].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 4);
 
     // Packet 6 lands 2 ahead of the missing one, which settles it: the gap is
     // filled (from packet 5's in-band FEC copy of frame 4), then 5 and 6 play.
-    EXPECT(svc.handleMicAudio(r.token, 0, 6, pkts[6].data(), pkts[6].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 6, pkts[6].data(), pkts[6].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 7);
     EXPECT_EQ(vigem.lastMicAudioSamples, (size_t)AUDIO_FRAME_SAMPLES);
     // The concealed frame is audio in its own right, not a hole padded with
@@ -3060,14 +3069,14 @@ static void test_micAudio_gapConcealedAndReorderHealed() {
     EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
 
     // A one-frame swap costs nothing: 8 before 7 waits, then both go together.
-    EXPECT(svc.handleMicAudio(r.token, 0, 8, pkts[8].data(), pkts[8].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 8, pkts[8].data(), pkts[8].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 7);
-    EXPECT(svc.handleMicAudio(r.token, 0, 7, pkts[7].data(), pkts[7].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 7, pkts[7].data(), pkts[7].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 9);
 
     // And the frame that finally turns up after its slot was concealed is
     // refused rather than played out of order.
-    EXPECT(!svc.handleMicAudio(r.token, 0, 4, pkts[4].data(), pkts[4].size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 4, pkts[4].data(), pkts[4].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 9);
 }
 
@@ -3088,7 +3097,7 @@ static void test_micAudio_streamsPastTheRateWindow() {
     for (int i = 0; i < frames; i++) {
         if (i % MIC_AUDIO_MAX_PACKETS_PER_SEC == 0) svc.resetMicRateWindowForTest(r.token, 0);
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, frames);
     EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
@@ -3110,7 +3119,7 @@ static void test_micAudio_seqWrapsMidStream() {
         svc.resetMicRateWindowForTest(r.token, 0);
         const uint16_t seq = (uint16_t)(0xFFFD + i);
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, seq, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, seq, pkt.data(), pkt.size()));
         EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
     }
 }
@@ -3133,13 +3142,13 @@ static void test_micAudio_codecStateIsPerControllerAndDiesWithThePad() {
     // window would read that as 40 frames in the past and drop it.
     for (int i = 0; i < 41; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 41);
     EXPECT_EQ(vigem.lastMicAudioSerial, serial0);
 
     const auto slot1 = mic.next();
-    EXPECT(svc.handleMicAudio(r.token, 1, 0, slot1.data(), slot1.size()));
+    EXPECT(deliverMic(svc, r.token, 1, 0, slot1.data(), slot1.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 42);
     EXPECT_EQ(vigem.lastMicAudioSerial, serial1);
 
@@ -3157,7 +3166,7 @@ static void test_micAudio_codecStateIsPerControllerAndDiesWithThePad() {
 
     MicPacketSource fresh;
     const auto restart = fresh.next();
-    EXPECT(svc.handleMicAudio(again.token, 0, 0, restart.data(), restart.size()));
+    EXPECT(deliverMic(svc, again.token, 0, 0, restart.data(), restart.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, before + 1);
     EXPECT_EQ(vigem.lastMicAudioSerial, serial0b);
     EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
@@ -3175,7 +3184,7 @@ static void test_micAudio_unboundSlotSubmitsNothing() {
     MicPacketSource mic;
     for (int i = 0; i < 5; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 5);
 
@@ -3183,15 +3192,129 @@ static void test_micAudio_unboundSlotSubmitsNothing() {
     // decode into: the codec state went with the pad.
     auto gone = upsert(svc, {});
     const auto strayPkt = mic.next();
-    EXPECT(!svc.handleMicAudio(gone.token, 0, 5, strayPkt.data(), strayPkt.size()));
+    EXPECT(!deliverMic(svc, gone.token, 0, 5, strayPkt.data(), strayPkt.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 5);
 
     // Rebinding gives a fresh stream, seq and all.
     auto back = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     MicPacketSource fresh;
     const auto pkt = fresh.next();
-    EXPECT(svc.handleMicAudio(back.token, 0, 0, pkt.data(), pkt.size()));
+    EXPECT(deliverMic(svc, back.token, 0, 0, pkt.data(), pkt.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 6);
+}
+
+struct CountingMicCodecs : IAudioCodecFactory {
+    satellite::audio::OpusCodecFactory real;
+    std::atomic<int> liveDecoders{0};
+
+    struct Counted : IAudioDecoder {
+        std::unique_ptr<IAudioDecoder> inner;
+        std::atomic<int>& live;
+        Counted(std::unique_ptr<IAudioDecoder> decoder, std::atomic<int>& counter)
+            : inner(std::move(decoder)), live(counter) {
+            live.fetch_add(1);
+        }
+        ~Counted() override { live.fetch_sub(1); }
+        size_t decode(const uint8_t* opus, size_t opusLen, int16_t* pcm,
+                      size_t maxFrames) override {
+            return inner->decode(opus, opusLen, pcm, maxFrames);
+        }
+        size_t conceal(int16_t* pcm, size_t maxFrames) override {
+            return inner->conceal(pcm, maxFrames);
+        }
+        size_t decodeFec(const uint8_t* opus, size_t opusLen, int16_t* pcm,
+                         size_t maxFrames) override {
+            return inner->decodeFec(opus, opusLen, pcm, maxFrames);
+        }
+    };
+
+    std::unique_ptr<IAudioDecoder> makeMicDecoder() override {
+        auto decoder = real.makeMicDecoder();
+        if (!decoder) return nullptr;
+        return std::make_unique<Counted>(std::move(decoder), liveDecoders);
+    }
+    std::unique_ptr<IAudioEncoder> makeSpeakerEncoder() override {
+        return real.makeSpeakerEncoder();
+    }
+    std::unique_ptr<IAudioEncoder> makeHapticEncoder() override { return real.makeHapticEncoder(); }
+};
+
+static void test_micAudio_decodesOnTheMicWorker() {
+    TEST("mic audio: packets decode and reach the pad on the mic worker, not the receive thread");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    for (int i = 0; i < 8; i++) {
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, static_cast<uint16_t>(i), pkt.data(), pkt.size()));
+    }
+    EXPECT(svc.drainMicForTest());
+    EXPECT_EQ(vigem.submitMicAudioCalls, 8);
+    const std::thread::id worker = svc.micThreadForTest();
+    EXPECT(worker != std::thread::id{});
+    EXPECT(worker != std::this_thread::get_id());
+    int foreign = 0;
+    for (const std::thread::id caller : vigem.micCallers) {
+        if (caller != worker) foreign++;
+    }
+    EXPECT_EQ(foreign, 0);
+}
+
+static void test_micAudio_decoderFollowsThePlugGeneration() {
+    TEST("mic audio: a pad's decoder lives as long as the plug it was made for");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    CountingMicCodecs codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    for (int i = 0; i < 3; i++) {
+        const auto pkt = mic.next();
+        EXPECT(deliverMic(svc, r.token, 0, static_cast<uint16_t>(i), pkt.data(), pkt.size()));
+    }
+    EXPECT_EQ(codecs.liveDecoders.load(), 1);
+
+    TEST("mic audio: a replug frees the old pad's decoder and the new pad gets its own");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_MIC)});
+    auto back = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    svc.drainMicForTest();
+    EXPECT_EQ(codecs.liveDecoders.load(), 0);
+    MicPacketSource fresh;
+    const auto pkt = fresh.next();
+    EXPECT(deliverMic(svc, back.token, 0, 0, pkt.data(), pkt.size()));
+    EXPECT_EQ(codecs.liveDecoders.load(), 1);
+
+    TEST("mic audio: removing the pad frees its decoder");
+    upsert(svc, {});
+    svc.drainMicForTest();
+    EXPECT_EQ(codecs.liveDecoders.load(), 0);
+}
+
+static void test_receivePath_micFramesNeverWaitForTheServiceLock() {
+    TEST("receive path: an accepted mic frame is handed on without waiting for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    const auto pkt = mic.next();
+    bool handed = false;
+    EXPECT(finishesWhileServiceLockHeld(
+        svc, client, [&] { handed = svc.handleMicAudio(r.token, 0, 0, pkt.data(), pkt.size()); }));
+    EXPECT(handed);
+    EXPECT(svc.drainMicForTest());
+    EXPECT_EQ(vigem.submitMicAudioCalls, 1);
+    EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
 }
 
 static void test_audioCounts_trackTheMicStream() {
@@ -3208,7 +3331,7 @@ static void test_audioCounts_trackTheMicStream() {
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
     }
     auto c = svc.audioCounts();
     EXPECT_EQ(c.micAccepted, (uint64_t)4);
@@ -3217,12 +3340,12 @@ static void test_audioCounts_trackTheMicStream() {
     EXPECT_EQ(c.micConcealed, (uint64_t)0);
     EXPECT_EQ(c.micLate, (uint64_t)0);
 
-    EXPECT(svc.handleMicAudio(r.token, 0, 5, pkts[5].data(), pkts[5].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 5, pkts[5].data(), pkts[5].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micAccepted, (uint64_t)5);
     EXPECT_EQ(c.micDecoded, (uint64_t)4);
 
-    EXPECT(svc.handleMicAudio(r.token, 0, 6, pkts[6].data(), pkts[6].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 6, pkts[6].data(), pkts[6].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micAccepted, (uint64_t)6);
     EXPECT_EQ(c.micFecRecovered, (uint64_t)1);
@@ -3231,13 +3354,13 @@ static void test_audioCounts_trackTheMicStream() {
     EXPECT_EQ(c.micDecoded + c.micFecRecovered + c.micConcealed,
               (uint64_t)vigem.submitMicAudioCalls);
 
-    EXPECT(!svc.handleMicAudio(r.token, 0, 4, pkts[4].data(), pkts[4].size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 4, pkts[4].data(), pkts[4].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micLate, (uint64_t)1);
     EXPECT_EQ(c.micAccepted, (uint64_t)6);
 
     TEST("audio counts: a gate rejection is a drop, never an accept");
-    EXPECT(!svc.handleMicAudio(r.token, 1, 0, pkts[0].data(), pkts[0].size()));
+    EXPECT(!deliverMic(svc, r.token, 1, 0, pkts[0].data(), pkts[0].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micDropped, (uint64_t)1);
     EXPECT_EQ(c.micAccepted, (uint64_t)6);
@@ -5016,6 +5139,9 @@ int main() {
     test_micAudio_seqWrapsMidStream();
     test_micAudio_codecStateIsPerControllerAndDiesWithThePad();
     test_micAudio_unboundSlotSubmitsNothing();
+    test_micAudio_decodesOnTheMicWorker();
+    test_micAudio_decoderFollowsThePlugGeneration();
+    test_receivePath_micFramesNeverWaitForTheServiceLock();
     test_speakerAudio_oneWindowBecomesOneWirePacket();
     test_speakerAudio_partialBatchesBuffer();
     test_speakerAudio_seqIsPerControllerAndWraps();

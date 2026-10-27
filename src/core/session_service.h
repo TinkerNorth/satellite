@@ -9,6 +9,7 @@
 #pragma once
 
 #include "hot_table.h"
+#include "mic_worker.h"
 #include "pointer_worker.h"
 #include "ports.h"
 #include "tracked_mutex.h"
@@ -325,6 +326,8 @@ class SessionService {
     HeartbeatAckView coldHeartbeatAckForTest(uint32_t token) const;
     bool drainPointerForTest();
     std::thread::id pointerThreadForTest() const;
+    bool drainMicForTest();
+    std::thread::id micThreadForTest() const;
 #endif
 
   private:
@@ -346,12 +349,7 @@ class SessionService {
     ControllerAudioPolicy audioPolicy() const;
 
     struct AudioCounters {
-        std::atomic<uint64_t> micAccepted{0};
         std::atomic<uint64_t> micDropped{0};
-        std::atomic<uint64_t> micLate{0};
-        std::atomic<uint64_t> micDecoded{0};
-        std::atomic<uint64_t> micFecRecovered{0};
-        std::atomic<uint64_t> micConcealed{0};
         std::atomic<uint64_t> speakerSent{0};
         std::atomic<uint64_t> speakerSilenceSuppressed{0};
         std::atomic<uint64_t> speakerEncodeFailed{0};
@@ -387,8 +385,8 @@ class SessionService {
     void noteRxWrite();
     bool sessionName(int slot, uint32_t keyEpoch, std::string& out) const;
     bool dropMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint8_t cause);
-    bool deliverMicFrame(uint32_t token, uint8_t ctrlIdx, const PadRead& pad, uint16_t seq,
-                         const uint8_t* opus, size_t opusLen);
+    bool handOverMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
+                          size_t opusLen);
     std::array<RxPad, MAX_BACKEND_CONTROLLERS + 1> rxPads_{};
     std::array<RxSession, MAX_SESSIONS> rxSessions_{};
     std::atomic<int> activePads_{0};
@@ -397,6 +395,7 @@ class SessionService {
     std::atomic<uint64_t> foreignRxWrites_{0};
 #endif
     PointerWorker pointer_{backend_, log_, hot_};
+    MicWorker mic_{backend_, log_, hot_, rx_, audioCodecs_};
 
     TrackedMutex topoMtx_{"service.topology"};
     mutable TrackedMutex mtx_{"service.state"}; // protects connections_, serial state, scan cursor
@@ -461,12 +460,6 @@ class SessionService {
     // Controller audio. Every half runs past every gate handleMicAudio /
     // handleSpeakerAudioFromBackend / handleHapticAudioFromBackend applies, so
     // they only ever see frames that belong to a bound, capable slot.
-    // Inbound: reorder window, then decode (FEC on a gap that has a carrier,
-    // concealment otherwise), then the pad's mic endpoint. False means the
-    // window refused the packet -- late, duplicate or malformed. `conn` owns
-    // `ctrl`; it carries the once-per-session log flags.
-    bool deliverMicAudioLocked(Connection& conn, Controller& ctrl, uint16_t seq,
-                               const uint8_t* opus, size_t opusLen);
     // The two outbound lanes share one shape (stereo, 20 ms, own seq) and one
     // code path; this picks the encoder, the counters and the wire message.
     enum class OutboundAudioLane { Speaker, Haptic };

@@ -180,6 +180,7 @@ void parseAndDispatch(uint32_t token, uint32_t counter, const uint8_t* plaintext
     } else {
         g_svc->updatePostDecryptV4(token, counter, senderIPv4, senderPort);
         const DispatchResult cold = dispatchInnerMessage(*g_svc, token, msgType, payload, msgLen);
+        g_svc->drainMicForTest();
         // The fused fast path above and the dispatcher's own length guard must
         // agree on what a gamepad frame is: anything routed here is not one.
         require(!cold.wasGamepadData, "dispatcher accepted a gamepad frame the fast path refused");

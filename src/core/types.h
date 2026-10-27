@@ -783,11 +783,6 @@ struct ControllerApplyResult {
 // alone is ~18 KB, which is far and away the largest thing a controller owns,
 // and most controllers never carry audio at all.
 struct ControllerAudio {
-    // Inbound MSG_MIC_AUDIO: reorder window feeding the decoder, whose gap
-    // events become FEC recoveries or concealment.
-    AudioJitterWindow micWindow;
-    std::unique_ptr<IAudioDecoder> micDecoder;
-
     // Outbound MSG_SPEAKER_AUDIO and MSG_HAPTIC_AUDIO, one lane each. The
     // backend hands over whatever its audio ring happened to hold, which is
     // not necessarily one 20 ms window, so the leftover tail of a batch waits

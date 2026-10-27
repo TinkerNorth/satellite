@@ -79,9 +79,7 @@ struct LockPair {
     Allowance why;
 };
 
-const std::vector<LockName> RECEIVE_MAY_ACQUIRE = {
-    {"service.state", Allowance::Debt},
-};
+const std::vector<LockName> RECEIVE_MAY_ACQUIRE = {};
 
 const std::vector<LockName> LIFECYCLE_MAY_HOLD = {
     {"service.topology", Allowance::ByDesign},

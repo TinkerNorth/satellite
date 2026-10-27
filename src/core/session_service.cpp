@@ -1568,7 +1568,7 @@ bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t se
     rx_.exit();
 
     if (cause != 0) return dropMicFrame(pad, ctrlIdx, cause);
-    return deliverMicFrame(token, ctrlIdx, pad, seq, opus, opusLen);
+    return handOverMicFrame(pad, ctrlIdx, seq, opus, opusLen);
 }
 
 bool SessionService::dropMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint8_t cause) {
@@ -1598,88 +1598,32 @@ bool SessionService::dropMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint8_t c
     return false;
 }
 
-bool SessionService::deliverMicFrame(uint32_t token, uint8_t ctrlIdx, const PadRead& pad,
-                                     uint16_t seq, const uint8_t* opus, size_t opusLen) {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
-    Controller& ctrl = it->second.controllers[ctrlIdx];
-    if (!ctrl.active || ctrl.plugGen != pad.gen) return false;
-    return deliverMicAudioLocked(it->second, ctrl, seq, opus, opusLen);
+bool SessionService::handOverMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint16_t seq,
+                                      const uint8_t* opus, size_t opusLen) {
+    if (opusLen > MIC_PACKET_MAX_BYTES) {
+        mic_.noteRejected();
+        return false;
+    }
+    MicPacket* packet = mic_.claim();
+    if (packet == nullptr) {
+        bumpAudio(audio_.micDropped);
+        return false;
+    }
+    packet->serial = pad.serial;
+    packet->gen = pad.gen;
+    packet->slot = pad.slot;
+    packet->ctrlIdx = ctrlIdx;
+    packet->keyEpoch = pad.keyEpoch;
+    packet->seq = seq;
+    packet->length = static_cast<uint16_t>(opusLen);
+    std::memcpy(packet->bytes, opus, opusLen);
+    mic_.publish();
+    return true;
 }
 
 ControllerAudio& SessionService::ensureControllerAudioLocked(Controller& ctrl) {
     if (!ctrl.audio) ctrl.audio = std::make_unique<ControllerAudio>();
     return *ctrl.audio;
-}
-
-bool SessionService::deliverMicAudioLocked(Connection& conn, Controller& ctrl, uint16_t seq,
-                                           const uint8_t* opus, size_t opusLen) {
-    ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
-    const AudioJitterWindow::Result pushed = audio.micWindow.push(seq, opus, opusLen);
-    // A frame whose slot has already been played (or concealed past) is worse
-    // than useless: splicing it in now would be an audible jump backwards.
-    if (pushed.accept != AudioJitterWindow::Accept::Ok) {
-        bumpAudio(audio_.micLate);
-        return false;
-    }
-    bumpAudio(audio_.micAccepted);
-    // Taken, but held for reordering. Nothing is due until the frame in front
-    // of it arrives or is proven lost.
-    if (pushed.count == 0) return true;
-
-    // Created here, not at plug: a slot that advertises CAP_MIC and never
-    // speaks should not carry a decoder around (see ControllerAudio).
-    if (!audio.micDecoder && audioCodecs_ != nullptr) {
-        audio.micDecoder = audioCodecs_->makeMicDecoder();
-    }
-    // No codec in this build, or the codec refused to allocate. The frame still
-    // passed every gate, so this is an accept-and-drop, not a rejection.
-    if (!audio.micDecoder) return true;
-
-    // Sized by the channel count rather than assuming mono: the decoder writes
-    // maxFrames * channels, so a buffer that only happened to be right because
-    // AUDIO_MIC_CHANNELS is 1 would become an overflow the day it isn't.
-    int16_t pcm[AUDIO_FRAME_SAMPLES * AUDIO_MIC_CHANNELS];
-    for (int i = 0; i < pushed.count; i++) {
-        const AudioJitterWindow::Event& ev = pushed.events[i];
-        size_t decoded = 0;
-        if (ev.kind == AudioJitterWindow::Event::Kind::Packet) {
-            decoded = audio.micDecoder->decode(ev.data, ev.len, pcm, AUDIO_FRAME_SAMPLES);
-            if (decoded > 0) bumpAudio(audio_.micDecoded);
-        } else if (ev.fecCarrier != nullptr) {
-            // The window hands over packet seq+1 precisely because Opus hides a
-            // redundant copy of seq inside it. Order is load-bearing: the FEC
-            // copy is decoded here, BEFORE the carrier's own frame, which the
-            // window emits next.
-            decoded = audio.micDecoder->decodeFec(ev.fecCarrier, ev.fecCarrierLen, pcm,
-                                                  AUDIO_FRAME_SAMPLES);
-            if (decoded > 0) bumpAudio(audio_.micFecRecovered);
-        } else {
-            decoded = audio.micDecoder->conceal(pcm, AUDIO_FRAME_SAMPLES);
-            if (decoded > 0) bumpAudio(audio_.micConcealed);
-        }
-        if (decoded == 0) continue;
-        // A backend with no mic endpoint on this serial returns false, which is
-        // not an error: senders keep streaming and the pad simply has nowhere
-        // to put it (IGamepadPort::submitMicAudioPcm). The client cannot see
-        // that either, so it gets one line per session, like the drop causes.
-        if (backend_.submitMicAudioPcm(ctrl.serialNo, pcm, decoded)) continue;
-        RxSession& session = rxSessions_[static_cast<size_t>(conn.slot)];
-        const uint32_t keyEpoch = conn.hot->keyEpoch.load(std::memory_order_relaxed);
-        if (session.keyEpoch != keyEpoch) {
-            session.keyEpoch = keyEpoch;
-            session.micDropLogged = 0;
-        }
-        if ((session.micDropLogged & MIC_DROP_LOG_NO_SINK) == 0) {
-            session.micDropLogged |= MIC_DROP_LOG_NO_SINK;
-            log_.logMsg(LogLevel::INFO, "service",
-                        "Mic audio from " + conn.deviceName + " controller #" +
-                            std::to_string(ctrl.index) +
-                            " decodes but the emulated pad has no microphone endpoint");
-        }
-    }
-    return true;
 }
 
 void SessionService::sendAudioFrameLocked(Connection& conn, Controller& ctrl,
@@ -2019,12 +1963,13 @@ int SessionService::activeSessionCount() const {
 
 AudioStreamCounts SessionService::audioCounts() const {
     AudioStreamCounts c;
-    c.micAccepted = audio_.micAccepted.load(std::memory_order_relaxed);
+    const MicCounts mic = mic_.counts();
+    c.micAccepted = mic.accepted;
     c.micDropped = audio_.micDropped.load(std::memory_order_relaxed);
-    c.micLate = audio_.micLate.load(std::memory_order_relaxed);
-    c.micDecoded = audio_.micDecoded.load(std::memory_order_relaxed);
-    c.micFecRecovered = audio_.micFecRecovered.load(std::memory_order_relaxed);
-    c.micConcealed = audio_.micConcealed.load(std::memory_order_relaxed);
+    c.micLate = mic.late;
+    c.micDecoded = mic.decoded;
+    c.micFecRecovered = mic.fecRecovered;
+    c.micConcealed = mic.concealed;
     c.speakerSent = audio_.speakerSent.load(std::memory_order_relaxed);
     c.speakerSilenceSuppressed = audio_.speakerSilenceSuppressed.load(std::memory_order_relaxed);
     c.speakerEncodeFailed = audio_.speakerEncodeFailed.load(std::memory_order_relaxed);
@@ -2104,6 +2049,10 @@ SessionService::HeartbeatAckView SessionService::coldHeartbeatAckForTest(uint32_
 }
 
 bool SessionService::drainPointerForTest() { return pointer_.drainForTest(); }
+
+bool SessionService::drainMicForTest() { return mic_.drainForTest(); }
+
+std::thread::id SessionService::micThreadForTest() const { return mic_.threadIdForTest(); }
 
 std::thread::id SessionService::pointerThreadForTest() const { return pointer_.threadIdForTest(); }
 
