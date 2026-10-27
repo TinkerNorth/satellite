@@ -459,7 +459,7 @@ bool HelperClient::startLocked() {
 
 bool HelperClient::openChannel(HelperChannel& channel, HANDLE pipe, HANDLE process, HANDLE cancel) {
     if (!channel.attach(pipe, process)) return false;
-    if (handshake(channel, pipeWaitMs_.load(), cancel)) return true;
+    if (handshake(channel, waitFor(HelperRequest::Hello), cancel)) return true;
     channel.close();
     return false;
 }
@@ -512,7 +512,7 @@ HANDLE launchHelper(const std::wstring& helper, const std::wstring& pipeName) {
 
 // Waits for a client to connect to `pipe`, giving up when the helper exits
 // (UAC declined, crash) or the connect budget runs out.
-bool awaitPipeClient(HANDLE pipe, HANDLE ioEvent, HANDLE process) {
+bool awaitPipeClient(HANDLE pipe, HANDLE ioEvent, HANDLE process, DWORD waitMs) {
     blockingRegion("helper.pipe");
     OVERLAPPED ov{};
     ov.hEvent = ioEvent;
@@ -521,7 +521,7 @@ bool awaitPipeClient(HANDLE pipe, HANDLE ioEvent, HANDLE process) {
     if (err == ERROR_PIPE_CONNECTED) return true;
     if (err != ERROR_IO_PENDING) return false;
     HANDLE waits[2] = {ioEvent, process};
-    const DWORD rc = WaitForMultipleObjects(2, waits, FALSE, HELPER_PIPE_WAIT_MS);
+    const DWORD rc = WaitForMultipleObjects(2, waits, FALSE, waitMs);
     DWORD ignored = 0;
     if (rc == WAIT_OBJECT_0) return GetOverlappedResult(pipe, &ov, &ignored, FALSE) != 0;
     CancelIoEx(pipe, &ov);
@@ -537,15 +537,23 @@ bool pipeClientIs(HANDLE pipe, HANDLE process) {
 
 } // namespace
 
+HANDLE HelperClient::launch(const std::wstring& pipeName) {
+#ifdef SATELLITE_BUILD_TESTS
+    if (transportsActive_) return transports_.launch ? transports_.launch(pipeName) : nullptr;
+#endif
+    return launchHelper(helperBinaryPath(), pipeName);
+}
+
+DWORD HelperClient::waitFor(HelperRequest request) const {
+    return request == HelperRequest::Provision ? provisionWaitMs_.load() : pipeWaitMs_.load();
+}
+
 bool HelperClient::spawnHelper(HelperChannel& channel) {
 #ifdef SATELLITE_BUILD_TESTS
-    if (transportsActive_) {
-        HANDLE pipe = transports_.elevated ? transports_.elevated() : INVALID_HANDLE_VALUE;
-        if (pipe == INVALID_HANDLE_VALUE) return false;
-        return openChannel(channel, pipe, nullptr, nullptr);
-    }
-#endif
+    if (!transportsActive_ && !helperBinaryPresent()) return false;
+#else
     if (!helperBinaryPresent()) return false;
+#endif
     const std::wstring pipeName = freshPipeName();
     HANDLE pipe = CreateNamedPipeW(
         pipeName.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
@@ -558,14 +566,15 @@ bool HelperClient::spawnHelper(HelperChannel& channel) {
         return false;
     }
 
-    HANDLE process = launchHelper(helperBinaryPath(), pipeName);
+    HANDLE process = launch(pipeName);
     if (process == nullptr) {
         CloseHandle(ioEvent);
         CloseHandle(pipe);
         return false;
     }
 
-    const bool connected = awaitPipeClient(pipe, ioEvent, process) && pipeClientIs(pipe, process);
+    const bool connected = awaitPipeClient(pipe, ioEvent, process, launchWaitMs_.load()) &&
+                           pipeClientIs(pipe, process);
     CloseHandle(ioEvent);
     if (!connected) {
         TerminateProcess(process, 1);
@@ -579,18 +588,19 @@ bool HelperClient::spawnHelper(HelperChannel& channel) {
 void HelperClient::stopLocked(bool sendShutdown) {
     if (channel_ != nullptr && sendShutdown) {
         std::string response;
-        requestLocked("{\"op\":\"shutdown\"}", response);
+        requestLocked(HelperRequest::Shutdown, "{\"op\":\"shutdown\"}", response);
         blockingRegion("helper.pipe");
         if (channel_ != nullptr && channel_->process != nullptr) {
-            WaitForSingleObject(channel_->process, 5000);
+            WaitForSingleObject(channel_->process, exitWaitMs_.load());
         }
     }
     setChannelLocked(nullptr);
 }
 
-bool HelperClient::requestLocked(const std::string& line, std::string& response) {
+bool HelperClient::requestLocked(HelperRequest request, const std::string& line,
+                                 std::string& response) {
     if (channel_ == nullptr) return false;
-    if (roundTrip(*channel_, line, response, pipeWaitMs_.load(), nullptr)) return true;
+    if (roundTrip(*channel_, line, response, waitFor(request), nullptr)) return true;
     setChannelLocked(nullptr);
     return false;
 }
@@ -608,7 +618,7 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     req["serial"] = serial;
     req["profile"] = profile;
     std::string response;
-    if (!requestLocked(jsonDump(req), response)) return false;
+    if (!requestLocked(HelperRequest::Provision, jsonDump(req), response)) return false;
 
     Json j;
     if (!jsonParse(response, j) || !jsonBool(j, "ok")) return false;
@@ -661,6 +671,12 @@ void HelperClient::setTransportsForTest(TestTransports transports) {
 
 void HelperClient::setPipeWaitForTest(DWORD ms) { pipeWaitMs_.store(ms); }
 
+void HelperClient::setProvisionWaitForTest(DWORD ms) { provisionWaitMs_.store(ms); }
+
+void HelperClient::setLaunchWaitForTest(DWORD ms) { launchWaitMs_.store(ms); }
+
+void HelperClient::setExitWaitForTest(DWORD ms) { exitWaitMs_.store(ms); }
+
 bool HelperClient::waitForBackgroundConnectForTest(DWORD ms) {
     return WaitForSingleObject(connectDone_, ms) == WAIT_OBJECT_0;
 }
@@ -678,7 +694,7 @@ bool HelperClient::deprovision(uint32_t serial) {
     req["op"] = "unplug";
     req["serial"] = serial;
     std::string response;
-    if (!requestLocked(jsonDump(req), response)) return false;
+    if (!requestLocked(HelperRequest::Deprovision, jsonDump(req), response)) return false;
     Json j;
     return jsonParse(response, j) && jsonBool(j, "ok");
 }

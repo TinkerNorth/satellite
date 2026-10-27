@@ -25,7 +25,11 @@ using Clock = std::chrono::steady_clock;
 using std::chrono::milliseconds;
 
 constexpr DWORD SHORT_WAIT_MS = 300;
+constexpr DWORD LONG_WAIT_MS = 5000;
+constexpr DWORD EXIT_WAIT_MS = 50;
+constexpr DWORD SLOW_MS = 1000;
 constexpr DWORD WARM_LIMIT_MS = 10000;
+constexpr DWORD REAL_SLOW_MS = 10500;
 constexpr auto TIMEOUT_SLACK = milliseconds(4000);
 
 const std::string HELLO_REPLY = R"({"ok":true,"helper":"test","audio":true,"broker":true})";
@@ -51,6 +55,21 @@ class FakeHelper {
         if (server_ != INVALID_HANDLE_VALUE) CloseHandle(server_);
         CloseHandle(stop_);
         CloseHandle(writeDone_);
+    }
+
+    HANDLE launchAs(const std::wstring& pipeName, DWORD delayMs) {
+        thread_ = std::thread([this, pipeName, delayMs] {
+            if (WaitForSingleObject(stop_, delayMs) == WAIT_OBJECT_0) return;
+            HANDLE client = CreateFileW(pipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                        OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+            if (client == INVALID_HANDLE_VALUE) return;
+            server_ = client;
+            serve();
+        });
+        HANDLE process = nullptr;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &process,
+                        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0);
+        return process;
     }
 
     HANDLE connect() {
@@ -160,6 +179,19 @@ FakeHelper::Handler silentHelper() {
     return [](FakeHelper& helper, const std::string&) { helper.pause(60000); };
 }
 
+FakeHelper::Handler slowPlug(DWORD delayMs) {
+    return [delayMs](FakeHelper& helper, const std::string& request) {
+        if (isHello(request)) {
+            helper.write(HELLO_REPLY + "\n");
+        } else if (request.find("\"plug\"") != std::string::npos) {
+            helper.pause(delayMs);
+            helper.write(PLUG_REPLY + "\n");
+        } else {
+            helper.write(OK_REPLY + "\n");
+        }
+    };
+}
+
 long long elapsedMs(Clock::time_point since) {
     return std::chrono::duration_cast<milliseconds>(Clock::now() - since).count();
 }
@@ -168,19 +200,22 @@ uint64_t readsSince(uint64_t before) { return hm::HelperClient::pipeReadsForTest
 
 struct Transports {
     std::atomic<int> broker{0};
-    std::atomic<int> elevated{0};
+    std::atomic<int> launches{0};
 };
 
+using LaunchFn = std::function<HANDLE(const std::wstring&)>;
+
 hm::HelperClient::TestTransports transportsFor(Transports& calls, std::function<HANDLE()> broker,
-                                               std::function<HANDLE()> elevated = {}) {
+                                               LaunchFn launch = {}) {
     hm::HelperClient::TestTransports transports;
     transports.broker = [&calls, broker = std::move(broker)]() -> HANDLE {
         calls.broker++;
         return broker ? broker() : INVALID_HANDLE_VALUE;
     };
-    transports.elevated = [&calls, elevated = std::move(elevated)]() -> HANDLE {
-        calls.elevated++;
-        return elevated ? elevated() : INVALID_HANDLE_VALUE;
+    transports.launch = [&calls,
+                         launch = std::move(launch)](const std::wstring& pipeName) -> HANDLE {
+        calls.launches++;
+        return launch ? launch(pipeName) : nullptr;
     };
     return transports;
 }
@@ -188,8 +223,22 @@ hm::HelperClient::TestTransports transportsFor(Transports& calls, std::function<
 } // namespace
 
 static void test_every_pipe_wait_is_bounded_at_ten_seconds() {
-    TEST("timeouts: every pipe wait is bounded at ten seconds");
+    TEST("timeouts: the short bound is ten seconds");
     EXPECT_EQ(hm::HELPER_PIPE_WAIT_MS, static_cast<DWORD>(10000));
+}
+
+static void test_each_request_carries_its_own_limit() {
+    TEST("limits: hello, unplug and shutdown keep the ten second bound");
+    EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Hello), static_cast<DWORD>(10000));
+    EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Deprovision), static_cast<DWORD>(10000));
+    EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Shutdown), static_cast<DWORD>(10000));
+
+    TEST("limits: a plug gets 120 s, for the transport install inside it");
+    EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Provision), static_cast<DWORD>(120000));
+    EXPECT_EQ(hm::HELPER_PROVISION_WAIT_MS, static_cast<DWORD>(120000));
+
+    TEST("limits: a launched helper gets 120 s to connect, for the person at the prompt");
+    EXPECT_EQ(hm::HELPER_LAUNCH_WAIT_MS, static_cast<DWORD>(120000));
 }
 
 static void test_a_reply_that_arrives_whole_costs_one_read() {
@@ -312,7 +361,7 @@ static void test_a_half_line_is_not_a_reply() {
         helper.pause(60000);
     }));
     hm::HelperClient client;
-    client.setPipeWaitForTest(SHORT_WAIT_MS);
+    client.setProvisionWaitForTest(SHORT_WAIT_MS);
     EXPECT(client.adoptChannelForTest(fake.connect()));
     const auto start = Clock::now();
     hm::ProvisionResult out;
@@ -330,7 +379,7 @@ static void test_the_deadline_covers_the_whole_reply() {
         }
     }));
     hm::HelperClient client;
-    client.setPipeWaitForTest(SHORT_WAIT_MS);
+    client.setProvisionWaitForTest(SHORT_WAIT_MS);
     EXPECT(client.adoptChannelForTest(fake.connect()));
     const auto start = Clock::now();
     hm::ProvisionResult out;
@@ -339,6 +388,180 @@ static void test_the_deadline_covers_the_whole_reply() {
     EXPECT(took >= static_cast<long long>(SHORT_WAIT_MS) - 50);
     EXPECT(took < 1500);
     EXPECT(!client.isReady());
+}
+
+static void test_a_slow_first_provision_succeeds_within_its_limit() {
+    TEST("limits: a plug that runs past the short bound still succeeds within its own limit");
+    FakeHelper fake(slowPlug(SLOW_MS));
+    hm::HelperClient client;
+    client.setPipeWaitForTest(SHORT_WAIT_MS);
+    client.setProvisionWaitForTest(LONG_WAIT_MS);
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    const auto start = Clock::now();
+    hm::ProvisionResult out;
+    EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
+    const long long took = elapsedMs(start);
+    EXPECT(took >= static_cast<long long>(SLOW_MS) - 50);
+    EXPECT(took < static_cast<long long>(LONG_WAIT_MS));
+    EXPECT_EQ(out.inputSection, static_cast<uint64_t>(1001));
+    EXPECT(client.isReady());
+
+    TEST("limits: an unplug beside that long plug limit is still held to the short bound");
+    FakeHelper stalling(answersHelloThen([](FakeHelper& helper) { helper.pause(60000); }));
+    hm::HelperClient other;
+    other.setPipeWaitForTest(SHORT_WAIT_MS);
+    other.setProvisionWaitForTest(LONG_WAIT_MS);
+    EXPECT(other.adoptChannelForTest(stalling.connect()));
+    const auto stalledAt = Clock::now();
+    EXPECT(!other.deprovision(3));
+    EXPECT(elapsedMs(stalledAt) < TIMEOUT_SLACK.count());
+    EXPECT(!other.isReady());
+    client.shutdown();
+}
+
+static void test_a_plug_that_stalls_still_fails_at_its_limit() {
+    TEST("limits: a plug that never answers fails at its own limit, not later");
+    FakeHelper fake(silentAfterHello());
+    hm::HelperClient client;
+    client.setPipeWaitForTest(SHORT_WAIT_MS);
+    client.setProvisionWaitForTest(800);
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    const auto start = Clock::now();
+    hm::ProvisionResult out;
+    EXPECT(!client.provision(3, GamepadIdentity::Xbox, false, out));
+    const long long took = elapsedMs(start);
+    EXPECT(took >= 750);
+    EXPECT(took < TIMEOUT_SLACK.count());
+    EXPECT(!client.isReady());
+}
+
+static void test_hello_and_shutdown_keep_the_short_bound_beside_a_long_plug() {
+    TEST("limits: a hello that is never answered fails at the short bound");
+    {
+        FakeHelper fake(silentHelper());
+        hm::HelperClient client;
+        client.setPipeWaitForTest(SHORT_WAIT_MS);
+        client.setProvisionWaitForTest(LONG_WAIT_MS);
+        const auto start = Clock::now();
+        EXPECT(!client.adoptChannelForTest(fake.connect()));
+        EXPECT(elapsedMs(start) < TIMEOUT_SLACK.count());
+        EXPECT(!client.isReady());
+    }
+
+    TEST("limits: a shutdown that is never answered gives up at the short bound");
+    {
+        FakeHelper fake(silentAfterHello());
+        hm::HelperClient client;
+        client.setPipeWaitForTest(SHORT_WAIT_MS);
+        client.setProvisionWaitForTest(LONG_WAIT_MS);
+        EXPECT(client.adoptChannelForTest(fake.connect()));
+        const auto start = Clock::now();
+        client.shutdown();
+        EXPECT(elapsedMs(start) < TIMEOUT_SLACK.count());
+        EXPECT(!client.isReady());
+    }
+}
+
+static void test_a_slow_launch_connect_succeeds_within_its_limit() {
+    TEST("limits: a launched helper slower than the short bound to connect still connects");
+    Transports calls;
+    FakeHelper launched(answersEverything());
+    hm::HelperClient client;
+    client.setPipeWaitForTest(SHORT_WAIT_MS);
+    client.setLaunchWaitForTest(LONG_WAIT_MS);
+    client.setExitWaitForTest(EXIT_WAIT_MS);
+    client.setTransportsForTest(transportsFor(calls, {}, [&launched](const std::wstring& name) {
+        return launched.launchAs(name, SLOW_MS);
+    }));
+    const auto start = Clock::now();
+    EXPECT(client.ensureReady());
+    const long long took = elapsedMs(start);
+    EXPECT(took >= static_cast<long long>(SLOW_MS) - 50);
+    EXPECT(took < static_cast<long long>(LONG_WAIT_MS));
+    EXPECT_EQ(calls.launches.load(), 1);
+    hm::ProvisionResult out;
+    EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
+    client.shutdown();
+}
+
+static void test_a_launch_that_never_connects_fails_at_its_limit() {
+    TEST("limits: a launched helper that never connects fails at the launch limit");
+    Transports calls;
+    FakeHelper launched(answersEverything());
+    hm::HelperClient client;
+    client.setPipeWaitForTest(SHORT_WAIT_MS);
+    client.setLaunchWaitForTest(800);
+    client.setExitWaitForTest(EXIT_WAIT_MS);
+    client.setTransportsForTest(transportsFor(calls, {}, [&launched](const std::wstring& name) {
+        return launched.launchAs(name, 60000);
+    }));
+    const auto start = Clock::now();
+    EXPECT(!client.ensureReady());
+    const long long took = elapsedMs(start);
+    EXPECT(took >= 750);
+    EXPECT(took < TIMEOUT_SLACK.count());
+    EXPECT_EQ(calls.launches.load(), 1);
+    EXPECT(!client.isReady());
+}
+
+static void test_the_shipped_limits_hold_in_real_time() {
+    struct Outcome {
+        bool ok = false;
+        long long tookMs = 0;
+    };
+    Outcome stalled;
+    Outcome plug;
+    Outcome launch;
+
+    std::thread stalledCall([&stalled] {
+        FakeHelper fake(silentAfterHello());
+        hm::HelperClient client;
+        client.adoptChannelForTest(fake.connect());
+        const auto start = Clock::now();
+        stalled.ok = client.deprovision(3);
+        stalled.tookMs = elapsedMs(start);
+    });
+    std::thread slowPlugCall([&plug] {
+        FakeHelper fake(slowPlug(REAL_SLOW_MS));
+        hm::HelperClient client;
+        client.adoptChannelForTest(fake.connect());
+        const auto start = Clock::now();
+        hm::ProvisionResult out;
+        plug.ok = client.provision(3, GamepadIdentity::Xbox, false, out);
+        plug.tookMs = elapsedMs(start);
+        client.shutdown();
+    });
+    std::thread slowLaunchCall([&launch] {
+        Transports calls;
+        FakeHelper launched(answersEverything());
+        hm::HelperClient client;
+        client.setExitWaitForTest(EXIT_WAIT_MS);
+        client.setTransportsForTest(transportsFor(calls, {}, [&launched](const std::wstring& name) {
+            return launched.launchAs(name, REAL_SLOW_MS);
+        }));
+        const auto start = Clock::now();
+        launch.ok = client.ensureReady();
+        launch.tookMs = elapsedMs(start);
+        client.shutdown();
+    });
+    stalledCall.join();
+    slowPlugCall.join();
+    slowLaunchCall.join();
+
+    TEST("limits (real time): a stalled unplug fails at ten seconds");
+    EXPECT(!stalled.ok);
+    EXPECT(stalled.tookMs >= 9500);
+    EXPECT(stalled.tookMs < 25000);
+
+    TEST("limits (real time): a plug that takes longer than ten seconds succeeds");
+    EXPECT(plug.ok);
+    EXPECT(plug.tookMs >= 10000);
+    EXPECT(plug.tookMs < 60000);
+
+    TEST("limits (real time): a launched helper that connects after ten seconds succeeds");
+    EXPECT(launch.ok);
+    EXPECT(launch.tookMs >= 10000);
+    EXPECT(launch.tookMs < 60000);
 }
 
 static void test_a_connection_made_ahead_serves_the_first_plug() {
@@ -352,7 +575,7 @@ static void test_a_connection_made_ahead_serves_the_first_plug() {
     EXPECT(client.waitForBackgroundConnectForTest(WARM_LIMIT_MS));
     EXPECT(client.isReady());
     EXPECT_EQ(calls.broker.load(), 1);
-    EXPECT_EQ(calls.elevated.load(), 0);
+    EXPECT_EQ(calls.launches.load(), 0);
 
     TEST("background connect: ensureReady takes the connection made ahead, with no second connect");
     EXPECT(client.ensureReady());
@@ -360,26 +583,27 @@ static void test_a_connection_made_ahead_serves_the_first_plug() {
     EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
     EXPECT_EQ(out.inputSection, static_cast<uint64_t>(1001));
     EXPECT_EQ(calls.broker.load(), 1);
-    EXPECT_EQ(calls.elevated.load(), 0);
+    EXPECT_EQ(calls.launches.load(), 0);
     client.shutdown();
 }
 
 static void test_the_connection_ahead_never_takes_the_elevation_prompt() {
     TEST("background connect: with no service to reach it gives up and never launches a helper");
     Transports calls;
-    FakeHelper elevated(answersEverything());
+    FakeHelper launched(answersEverything());
     hm::HelperClient client;
-    client.setTransportsForTest(
-        transportsFor(calls, {}, [&elevated] { return elevated.connect(); }));
+    client.setExitWaitForTest(EXIT_WAIT_MS);
+    client.setTransportsForTest(transportsFor(
+        calls, {}, [&launched](const std::wstring& name) { return launched.launchAs(name, 0); }));
     client.connectBrokerInBackground();
     EXPECT(client.waitForBackgroundConnectForTest(WARM_LIMIT_MS));
     EXPECT(!client.isReady());
     EXPECT_EQ(calls.broker.load(), 1);
-    EXPECT_EQ(calls.elevated.load(), 0);
+    EXPECT_EQ(calls.launches.load(), 0);
 
     TEST("background connect: the plug that needs a helper still falls back to the launch");
     EXPECT(client.ensureReady());
-    EXPECT_EQ(calls.elevated.load(), 1);
+    EXPECT_EQ(calls.launches.load(), 1);
     EXPECT(client.isReady());
     client.shutdown();
 }
@@ -399,7 +623,7 @@ static void test_a_plug_that_arrives_mid_connect_waits_for_it() {
     EXPECT(client.ensureReady());
     EXPECT(elapsedMs(start) >= 200);
     EXPECT_EQ(calls.broker.load(), 1);
-    EXPECT_EQ(calls.elevated.load(), 0);
+    EXPECT_EQ(calls.launches.load(), 0);
     client.shutdown();
 }
 
@@ -453,7 +677,7 @@ static void test_a_connection_that_died_while_idle_is_not_used() {
     EXPECT(!client.isReady());
     EXPECT(client.ensureReady());
     EXPECT_EQ(calls.broker.load(), 2);
-    EXPECT_EQ(calls.elevated.load(), 0);
+    EXPECT_EQ(calls.launches.load(), 0);
     hm::ProvisionResult out;
     EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
     client.shutdown();
@@ -529,6 +753,7 @@ static void test_the_connect_ahead_takes_no_lock() {
 
 int main() {
     test_every_pipe_wait_is_bounded_at_ten_seconds();
+    test_each_request_carries_its_own_limit();
     test_a_reply_that_arrives_whole_costs_one_read();
     test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces();
     test_a_carriage_return_before_the_line_feed_is_part_of_the_framing();
@@ -536,6 +761,11 @@ int main() {
     test_a_silent_helper_fails_the_call_at_the_deadline();
     test_a_half_line_is_not_a_reply();
     test_the_deadline_covers_the_whole_reply();
+    test_a_slow_first_provision_succeeds_within_its_limit();
+    test_a_plug_that_stalls_still_fails_at_its_limit();
+    test_hello_and_shutdown_keep_the_short_bound_beside_a_long_plug();
+    test_a_slow_launch_connect_succeeds_within_its_limit();
+    test_a_launch_that_never_connects_fails_at_its_limit();
     test_a_connection_made_ahead_serves_the_first_plug();
     test_the_connection_ahead_never_takes_the_elevation_prompt();
     test_a_plug_that_arrives_mid_connect_waits_for_it();
@@ -546,6 +776,7 @@ int main() {
 #ifdef SATELLITE_LOCK_STATS
     test_the_connect_ahead_takes_no_lock();
 #endif
+    test_the_shipped_limits_hold_in_real_time();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

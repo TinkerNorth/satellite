@@ -1030,30 +1030,40 @@ atomic.
 
 `HelperClient`. Its lock, `hidmaestro.helper`, is a transaction lock: held
 across one request and its reply, it is held across pipe waits by design. Three
-rules make that harmless. Every wait on the pipe, the broker connection and the
-wait for a launched helper to connect is bounded at 10 s, and a request has one
-deadline for the write and the whole reply, so a helper that trickles bytes
-gets no longer than a silent one; a request that misses it fails the call and
-drops the channel, and the next plug starts a fresh helper. Every acquirer
-already holds `service.topology` or is the shutdown path, so the lock never
-has a waiter that was not already waiting for the topology change. And the
-connection to the broker service is made ahead of the first plug without the
-lock: a Background thread opens a channel of its own, says hello on it, and
-publishes it through an atomic, and the first plug adopts it in `ensureReady`
-(a channel whose peer died while it waited is dropped, and the plug connects as
-it did before). The thread starts at startup when the helper and the driver are
-installed, and again when the dashboard finishes installing the driver. It
-takes only the path that needs no prompt, the broker; the launch of an elevated
-helper stays in the plug. A plug that lands while the thread is connecting waits
-for it, since the broker serves one client at a time and a second connection
-would be answered `busy` and fall through to the prompt, and `shutdown` cancels
-a connect in flight. A reply is one line ended by a line feed, with no length
-in front of it, so the reader takes what the pipe holds with one read of up to
-64 KiB and splits on the line feed. A reply that arrives whole costs one read,
-where reading a byte at a time cost one per byte; the helper writes the body and
-the line feed as two flushed writes, so a reply usually costs two. A helper that
-does not exit after its shutdown request is killed rather than waited on,
-since it sweeps orphans on its next launch.
+rules make that harmless. First, every wait is bounded, the bound belongs to the
+request, and a request has one deadline for its write and its whole reply, so a
+helper that trickles bytes gets no longer than a silent one. Hello, unplug and
+shutdown get 10 s (`HELPER_PIPE_WAIT_MS`), and so does the connection to the
+broker service: a peer that has not answered a one-line request in that long is
+stalled, and the topology change waits as long as the request does. A plug gets
+120 s (`HELPER_PROVISION_WAIT_MS`), because the first composite plug installs
+HIDMaestro's usbip transport inside the request, which takes tens of seconds on
+a slow machine and reports no progress. A launched helper gets 120 s to connect
+(`HELPER_LAUNCH_WAIT_MS`), because that wait covers a person at the UAC prompt
+and the helper's cold start, and it ends at once if the helper exits (declined,
+crashed). After its shutdown request a helper has 5 s to exit
+(`HELPER_EXIT_WAIT_MS`) and is then killed rather than waited on, since it
+sweeps orphans on its next launch. A request that misses its deadline fails the
+call and drops the channel, and the next plug starts a fresh helper. The two
+long waits belong to a plug and a launch, which only happen inside a topology
+change. Second, every acquirer already holds `service.topology` or is the
+shutdown path, so the lock never has a waiter that was not already waiting for
+the topology change. Third, the connection to the broker service is made ahead
+of the first plug without the lock: a Background thread opens a channel of its
+own, says hello on it, and publishes it through an atomic, and the first plug
+adopts it in `ensureReady` (a channel whose peer died while it waited is
+dropped, and the plug connects as it did before). The thread starts at startup
+when the helper and the driver are installed, and again when the dashboard
+finishes installing the driver. It takes only the path that needs no prompt, the
+broker; the launch of an elevated helper stays in the plug. A plug that lands
+while the thread is connecting waits for it, since the broker serves one client
+at a time and a second connection would be answered `busy` and fall through to
+the prompt, and `shutdown` cancels a connect in flight. A reply is one line
+ended by a line feed, with no length in front of it, so the reader takes what
+the pipe holds with one read of up to 64 KiB and splits on the line feed. A
+reply that arrives whole costs one read, where reading a byte at a time cost one
+per byte; the helper writes the body and the line feed as two flushed writes, so
+a reply usually costs two.
 
 `GamepadAdapter` (uinput). The devices are a fixed array indexed by
 serial, each with an atomic `plugged` and an atomic motion-node flag, in
