@@ -57,6 +57,7 @@ class OwnershipBackend : public IGamepadPort {
     std::atomic<uint64_t> violations{0};
     std::atomic<uint64_t> plugs{0};
     std::atomic<uint64_t> unplugs{0};
+    std::atomic<uint64_t> coldSubmits{0};
 
     bool ensureBusOpen() override {
         busOpen_.store(true);
@@ -86,6 +87,8 @@ class OwnershipBackend : public IGamepadPort {
         if (!valid(serial)) return false;
         Serial& s = serials_[serial];
         s.busy.store(true);
+        const uint64_t plugNumber = plugNumber_.fetch_add(1) + 1;
+        plugState_.store((plugNumber << 1) | 1u);
         if (s.submitting.load()) violations++;
         if (s.plugged.load()) violations++;
         const int sleepMs = slowPlugMs.load();
@@ -97,6 +100,7 @@ class OwnershipBackend : public IGamepadPort {
             plugs++;
         }
         if (s.submitting.load()) violations++;
+        plugState_.store(plugNumber << 1);
         s.busy.store(false);
         return ok;
     }
@@ -124,20 +128,32 @@ class OwnershipBackend : public IGamepadPort {
     }
 
     bool submitReport(uint32_t serial, const GamepadReport& report) override {
-        if (!valid(serial)) {
-            violations++;
-            return false;
-        }
-        Serial& s = serials_[serial];
-        s.submitting.store(true);
-        if (s.busy.load()) violations++;
-        if (!s.plugged.load()) violations++;
-        if (s.owner.load() != ownerCode(report.sThumbLX, report.sThumbLY)) violations++;
-        s.submitting.store(false);
-        return true;
+        return ownedSubmit(serial, report.sThumbLX, report.sThumbLY);
+    }
+
+    bool submitMotion(uint32_t serial, const MotionReport& report) override {
+        coldSubmits++;
+        return ownedSubmit(serial, report.gyroX, report.gyroY);
+    }
+
+    bool submitTouchpad(uint32_t serial, const TouchpadReport& report) override {
+        coldSubmits++;
+        return ownedSubmit(serial, report.finger0.x, report.finger0.y);
+    }
+
+    bool submitBattery(uint32_t serial, const BatteryReport& report) override {
+        coldSubmits++;
+        return ownedSubmit(serial, report.level / PADS_PER_SESSION,
+                           report.level % PADS_PER_SESSION);
     }
 
     void setRumbleCallback(RumbleCallback) override {}
+
+    uint64_t plugState() const { return plugState_.load(); }
+
+    static bool withinOnePlug(uint64_t before, uint64_t after) {
+        return before == after && (before & 1u) != 0;
+    }
 
   private:
     struct Serial {
@@ -149,8 +165,24 @@ class OwnershipBackend : public IGamepadPort {
 
     static bool valid(uint32_t serial) { return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS; }
 
+    bool ownedSubmit(uint32_t serial, int tag, int ctrlIdx) {
+        if (!valid(serial)) {
+            violations++;
+            return false;
+        }
+        Serial& s = serials_[serial];
+        s.submitting.store(true);
+        if (s.busy.load()) violations++;
+        if (!s.plugged.load()) violations++;
+        if (s.owner.load() != ownerCode(tag, ctrlIdx)) violations++;
+        s.submitting.store(false);
+        return true;
+    }
+
     std::array<Serial, MAX_BACKEND_CONTROLLERS + 1> serials_{};
     std::atomic<bool> busOpen_{false};
+    std::atomic<uint64_t> plugNumber_{0};
+    std::atomic<uint64_t> plugState_{0};
     std::mt19937 rng_{20261026u};
 };
 
@@ -181,8 +213,11 @@ struct Shared {
     Clock::duration longest[PHASES] = {};
     uint64_t submits[PHASES][SESSION_COUNT + 1] = {};
     uint64_t lookupMisses[PHASES][SESSION_COUNT + 1] = {};
+    uint64_t lookupsInPlug[PHASES][SESSION_COUNT + 1] = {};
+    uint64_t missesInPlug[PHASES][SESSION_COUNT + 1] = {};
     uint64_t keyMismatches = 0;
     uint64_t calls = 0;
+    uint64_t coldCalls = 0;
     uint64_t coldOps = 0;
     uint64_t coldRefusals = 0;
 };
@@ -198,7 +233,42 @@ void keyFor(int tag, uint8_t out[CRYPTO_KEY_SIZE]) {
     for (int i = 0; i < CRYPTO_KEY_SIZE; i++) out[i] = static_cast<uint8_t>(tag * 16 + i);
 }
 
-void receiveLoop(SessionService& svc, Shared& sh) {
+template <typename Call> void timed(Shared& sh, Call&& call) {
+    const int startedIn = sh.phase.load(std::memory_order_acquire);
+    const auto start = Clock::now();
+    call();
+    const auto spent = Clock::now() - start;
+    const int endedIn = sh.phase.load(std::memory_order_acquire);
+    for (int phase = startedIn; phase <= endedIn; phase++) {
+        if (spent > sh.longest[phase]) sh.longest[phase] = spent;
+    }
+}
+
+void coldTraffic(SessionService& svc, Shared& sh, int tag, uint32_t token, uint8_t idx,
+                 uint32_t& counter) {
+    MotionReport motion{};
+    motion.gyroX = static_cast<int16_t>(tag);
+    motion.gyroY = static_cast<int16_t>(idx);
+    TouchpadReport touch{};
+    touch.finger0.active = true;
+    touch.finger0.x = static_cast<int16_t>(tag);
+    touch.finger0.y = static_cast<int16_t>(idx);
+    BatteryReport battery{};
+    battery.level = static_cast<uint8_t>(tag * PADS_PER_SESSION + idx);
+    battery.status = BATTERY_STATUS_DISCHARGING;
+    const auto record = [&] {
+        timed(sh, [&] { svc.updatePostDecryptV4(token, ++counter, SENDER_IPV4, SENDER_PORT); });
+    };
+    record();
+    timed(sh, [&] { svc.handleMotionData(token, idx, motion); });
+    record();
+    timed(sh, [&] { svc.handleTouchpadData(token, idx, touch); });
+    record();
+    timed(sh, [&] { svc.handleBatteryUpdate(token, idx, battery); });
+    sh.coldCalls += 3;
+}
+
+void receiveLoop(SessionService& svc, const OwnershipBackend& backend, Shared& sh) {
     uint8_t expected[SESSION_COUNT + 1][CRYPTO_KEY_SIZE];
     for (int tag = 1; tag <= SESSION_COUNT; tag++) keyFor(tag, expected[tag]);
     uint32_t counter = 0;
@@ -210,7 +280,14 @@ void receiveLoop(SessionService& svc, Shared& sh) {
             uint8_t key[CRYPTO_KEY_SIZE];
             uint32_t last = 0;
             bool seen = false;
-            if (!svc.getDecryptInfo(token, key, last, &seen)) {
+            const uint64_t before = backend.plugState();
+            const bool found = svc.getDecryptInfo(token, key, last, &seen);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (OwnershipBackend::withinOnePlug(before, backend.plugState())) {
+                sh.lookupsInPlug[phase][tag]++;
+                if (!found) sh.missesInPlug[phase][tag]++;
+            }
+            if (!found) {
                 sh.lookupMisses[phase][tag]++;
                 continue;
             }
@@ -219,14 +296,18 @@ void receiveLoop(SessionService& svc, Shared& sh) {
                 GamepadReport report{};
                 report.sThumbLX = static_cast<int16_t>(tag);
                 report.sThumbLY = static_cast<int16_t>(idx);
-                const auto start = Clock::now();
-                const bool ok = svc.handleGamepadDataAndUpdate(token, ++counter, SENDER_IPV4,
-                                                               SENDER_PORT, idx, report);
-                const auto spent = Clock::now() - start;
-                if (spent > sh.longest[phase]) sh.longest[phase] = spent;
+                bool ok = false;
+                timed(sh, [&] {
+                    ok = svc.handleGamepadDataAndUpdate(token, ++counter, SENDER_IPV4, SENDER_PORT,
+                                                        idx, report);
+                });
                 if (ok) sh.submits[phase][tag]++;
                 sh.calls++;
+                coldTraffic(svc, sh, tag, token, idx, counter);
             }
+            timed(sh, [&] { svc.updatePostDecryptV4(token, ++counter, SENDER_IPV4, SENDER_PORT); });
+            timed(sh, [&] { svc.handleHeartbeat(token); });
+            sh.coldCalls++;
         }
     }
     sh.receiverDone.store(true, std::memory_order_release);
@@ -236,6 +317,7 @@ ControllerDescriptor descriptorFor(int tag, uint8_t idx, uint8_t type) {
     ControllerDescriptor d;
     d.ctrlIdx = idx;
     d.type = type;
+    d.touchpadMode = TOUCHPAD_MODE_DS4;
     d.preferredBackend = ownerName(tag, idx);
     return d;
 }
@@ -380,7 +462,7 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
         upsert(svc, st, sh, everyPad(tag));
     }
 
-    std::thread receiver(receiveLoop, std::ref(svc), std::ref(sh));
+    std::thread receiver(receiveLoop, std::ref(svc), std::cref(backend), std::ref(sh));
     std::thread cold(coldLoop, std::ref(svc), std::ref(backend), std::ref(sh), std::ref(sessions));
     const bool coldFinished = waitFor(sh.coldDone);
     sh.stop.store(true, std::memory_order_release);
@@ -400,22 +482,28 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
     EXPECT(backend.plugs.load() > 100);
     EXPECT(sh.submits[STRESS_PHASE][1] > 0);
     EXPECT(sh.submits[STRESS_PHASE][2] > 0);
+    EXPECT(backend.coldSubmits.load() > 0);
     EXPECT_EQ(svc.totalActiveControllers(), 0);
     std::cout << "  stress: " << sh.coldOps << " cold ops (" << sh.coldRefusals << " refused), "
               << backend.plugs.load() << " plugs, " << backend.unplugs.load() << " unplugs, "
-              << sh.calls << " hot calls, submits A " << sh.submits[STRESS_PHASE][1] << " B "
-              << sh.submits[STRESS_PHASE][2] << ", violations " << backend.violations.load()
-              << "\n";
+              << sh.calls << " hot calls, " << sh.coldCalls << " cold-dispatch calls ("
+              << backend.coldSubmits.load() << " reached the backend), submits A "
+              << sh.submits[STRESS_PHASE][1] << " B " << sh.submits[STRESS_PHASE][2]
+              << ", violations " << backend.violations.load() << "\n";
 
     TEST("hot path: a 50 ms plug for one session never blocks another session's frames");
     EXPECT(sh.submits[SLOW_PLUG_PHASE][1] > 0);
-    EXPECT(sh.lookupMisses[SLOW_PLUG_PHASE][2] > 0);
     EXPECT(sh.longest[SLOW_PLUG_PHASE] < BLOCKED_CALL_LIMIT);
-    std::cout << "  slow plugs: longest hot call " << micros(sh.longest[SLOW_PLUG_PHASE])
+    std::cout << "  slow plugs: longest receive-thread call " << micros(sh.longest[SLOW_PLUG_PHASE])
               << " us across " << SLOW_PLUGS << " plugs of " << SLOW_PLUG_MS
-              << " ms; steady session submits " << sh.submits[SLOW_PLUG_PHASE][1]
-              << ", changing session lookups refused " << sh.lookupMisses[SLOW_PLUG_PHASE][2]
-              << "\n";
+              << " ms; steady session submits " << sh.submits[SLOW_PLUG_PHASE][1] << "\n";
+
+    TEST("hot path: a session's own lookups are never refused while its plug runs");
+    EXPECT(sh.lookupsInPlug[SLOW_PLUG_PHASE][2] > 0);
+    EXPECT_EQ(sh.missesInPlug[SLOW_PLUG_PHASE][2], 0u);
+    std::cout << "  own plug: changing session lookups inside its plugs "
+              << sh.lookupsInPlug[SLOW_PLUG_PHASE][2] << ", refused "
+              << sh.missesInPlug[SLOW_PLUG_PHASE][2] << "\n";
 }
 
 } // namespace

@@ -1000,6 +1000,21 @@ set_target_properties(test_session_hot_path PROPERTIES
 )
 add_test(NAME session_hot_path COMMAND test_session_hot_path)
 
+add_executable(test_session_topology
+    tests/test_session_topology.cpp
+    ${SATELLITE_CORE_SOURCES}
+)
+target_include_directories(test_session_topology PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(test_session_topology PRIVATE SATELLITE_BUILD_TESTS)
+target_link_libraries(test_session_topology PRIVATE Threads::Threads)
+satellite_test_warnings(test_session_topology)
+set_target_properties(test_session_topology PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME session_topology COMMAND test_session_topology)
+
 # Exercises net/inner_dispatch.cpp: the per-message length guards that reject
 # truncated / oversized wire payloads before a decoder reads out of bounds.
 # inner_dispatch.cpp is socket-free, so this builds cleanly on every platform.

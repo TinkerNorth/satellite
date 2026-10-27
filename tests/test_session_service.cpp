@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -36,7 +37,7 @@ static bool identityHasTouchpad(GamepadIdentity id) {
 }
 
 struct MockViGem : IGamepadPort {
-    bool busOpen = false;
+    std::atomic<bool> busOpen{false};
     bool ensureBusReturnVal = true;
     bool pluginReturnVal = true;
     bool submitReturnVal = true;
@@ -67,6 +68,7 @@ struct MockViGem : IGamepadPort {
     // Adapter truth for isDevicePlugged, maintained by plugin/unplug; a test can
     // erase entries to simulate a target that vanished driver-side.
     std::set<uint32_t> pluggedSet;
+    mutable std::mutex pluggedMtx;
     GamepadReport lastSubmittedReport{};
     uint32_t lastMotionSerial = 0;
     MotionReport lastMotion{};
@@ -105,6 +107,7 @@ struct MockViGem : IGamepadPort {
     void closeBus() override {
         closeBusCalls++;
         busOpen = false;
+        std::lock_guard<std::mutex> lk(pluggedMtx);
         pluggedSet.clear();
     }
     bool isBusOpen() const override { return busOpen; }
@@ -118,6 +121,7 @@ struct MockViGem : IGamepadPort {
         lastIdentity = identity;
         identityBySerial[serial] = identity;
         pluggedSerials.push_back(serial);
+        std::lock_guard<std::mutex> lk(pluggedMtx);
         if (pluginReturnVal) pluggedSet.insert(serial);
         return pluginReturnVal;
     }
@@ -127,10 +131,14 @@ struct MockViGem : IGamepadPort {
     bool unplugDevice(uint32_t serial) override {
         unplugCalls++;
         unpluggedSerials.push_back(serial);
+        std::lock_guard<std::mutex> lk(pluggedMtx);
         pluggedSet.erase(serial);
         return unplugReturnVal;
     }
-    bool isDevicePlugged(uint32_t serial) const override { return pluggedSet.count(serial) != 0; }
+    bool isDevicePlugged(uint32_t serial) const override {
+        std::lock_guard<std::mutex> lk(pluggedMtx);
+        return pluggedSet.count(serial) != 0;
+    }
     bool submitReport(uint32_t serial, const GamepadReport& r) override {
         // Route the tally by the serial's plugged identity so "XUSB vs DS4"
         // stays observable under the unified submit.
