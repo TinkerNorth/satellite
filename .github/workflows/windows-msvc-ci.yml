@@ -92,6 +92,10 @@ jobs:
           if (-not (Test-Path crashpad_wer.dll)) { throw "crashpad_wer.dll was not staged beside satellite.exe" }
           Get-Item satellite.exe, crashpad_handler.exe, crashpad_wer.dll | Format-List Name, Length, LastWriteTime
 
+      - name: Smoke test the built app
+        shell: pwsh
+        run: ./scripts/smoke-windows-app.ps1
+
       # The hardening this lane exists for, read back from the PE: CFG in the
       # DLL characteristics and load config, CET shadow-stack compatibility in
       # the extended characteristics. dumpbin comes from the same toolset
