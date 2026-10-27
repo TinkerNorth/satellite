@@ -851,9 +851,19 @@ snapshot: the call copies a pointer under `config.snapshot` and does nothing
 else, and a snapshot someone still holds never blocks anyone. A writer calls
 `update(mutate)`: under `config.write` it copies the current config, runs
 `mutate` on the copy, and publishes the copy only when `mutate` returns true.
-`update` never does I/O, so a writer applies its side effects (the autostart
-registry write, `crash::setEnabled`) after it returns, outside any lock, from
-the snapshot it got back. A mutation that changes nothing, such as
+`update` never does I/O, so the two settings with a side effect (autostart and
+crash reporting) are applied after it returns, by `ConfigEffects`
+(`core/config_effects.h`), and not from the snapshot the writer got back: two
+POSTs racing each other could apply their snapshots in the wrong order and
+leave the registry saying what the older one chose. The applier takes
+`config.effects`, reads `current()` inside it and applies only the values that
+differ from what it applied last, so a settings POST ends with the effects of
+the latest snapshot and an update that changes nothing applies nothing.
+Nothing is assumed about the state the process started in, so the first apply
+applies both. `config.effects` serializes the side effects and nothing else:
+the receive thread never takes it, nothing else is held when it is taken, and
+it is held across the registry write and the crash toggle by design, because
+both can wait on the OS. A mutation that changes nothing, such as
 `refreshPairedDeviceIdentity` on an ordinary reconnect, returns false and
 publishes and saves nothing. The receive thread takes no config lock at all:
 the three audio-policy flags and the UDP port are also published as atomics
@@ -993,7 +1003,7 @@ query made under `mtx_` waits behind a plug.
 
 Every lock the process shares is a `TrackedMutex` (`core/tracked_mutex.h`)
 under a stable name: `service.state`, `service.topology`, `config.snapshot`,
-`config.write`, `vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`,
+`config.write`, `config.effects`, `vigem.bus`, `hidmaestro.bus`, `hidmaestro.helper`,
 `audio.guard`, `tray.icon`, `update.state`, `pairing.requests`, `pairing.pin`,
 `machine.id`, `uinput.devices` and `machid.devices`. Logging takes none (see
 "Logging Infrastructure"). A normal build compiles it to a `std::mutex` and a
@@ -1016,7 +1026,9 @@ audio guard's poller) and Gui. The HTTP servers' pool threads take
 HttpAdmin or HttpClient per request from each server's pre-routing handler.
 ConfigSaver is the config store's saver thread; Topology is reserved for a
 thread that does not exist yet. The markers are `config.save` (every
-`saveConfig`), `log.write` (the log writer's sink write and flush),
+`saveConfig`), `autostart.write` (the autostart registration), `crash.toggle`
+(the crash SDK's arm and disarm), `log.write` (the log writer's sink write and
+flush),
 `helper.pipe` (every HIDMaestro helper pipe wait and launch), `tray.shell`
 (`Shell_NotifyIconW`), `audio.com` (the audio guard's COM calls),
 `backend.lifecycle` (every lifecycle call the service makes), `thread.join`
@@ -1030,7 +1042,8 @@ with each thread in its production role. The receive thread drives every
 message kind through the steps of `receiver.cpp` and `inner_dispatch.cpp`
 while HttpClient, HttpAdmin, Maintenance and BackendWorker threads run upserts
 that plug and unplug, single-controller applies and removes, closes, unpairs,
-reaps, the dashboard JSON builders and the pairing service's config writes.
+reaps, the dashboard JSON builders, the pairing service's config writes and the
+settings route's (a config update, then its effects).
 The service's pointer thread and mic worker take the mouse-mode touchpad
 frames and the mic packets the receive thread hands them, and the mock
 backend counts, by thread role, who injected each mouse report and who
@@ -1062,8 +1075,11 @@ entry deletes it. Every entry says why it is there. Debt is what later changes
 remove: the helper lock held across its pipe waits. By design is what
 stays: anything held under `service.topology`, which exists to serialize
 lifecycle work, the documented order `service.topology`, then
-`service.state`, and the config store's own order, `config.write`, then
-`config.snapshot`. The test does not reach
+`service.state`, the config store's own order, `config.write`, then
+`config.snapshot`, and the effects lock, `config.effects`, held across the
+autostart write and the crash toggle, above `config.snapshot`, and never taken
+while `service.state` or `service.topology` is held (the order law asserts
+it). The test does not reach
 `tray.shell` or `audio.com`, whose calls act on the desktop, so those two
 markers have no entries yet. `log.write` has none because the writer holds
 nothing there. The pointer and mic laws hold for the service and for the

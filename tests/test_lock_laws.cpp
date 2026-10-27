@@ -6,6 +6,7 @@
 #include "adapters/log_adapter.h"
 #include "app/audio_settings.h"
 #include "core/byte_order.h"
+#include "core/config_effects.h"
 #include "core/hex.h"
 #include "core/json.h"
 #include "core/log_writer.h"
@@ -93,7 +94,9 @@ const std::vector<LockName> HELPER_PIPE_MAY_HOLD = {
 #endif
 
 const std::vector<LockPair> BLOCKING_MAY_HOLD = {
+    {"autostart.write", "config.effects", Allowance::ByDesign},
     {"backend.lifecycle", "service.topology", Allowance::ByDesign},
+    {"crash.toggle", "config.effects", Allowance::ByDesign},
 #ifdef _WIN32
     {"helper.pipe", "hidmaestro.helper", Allowance::Debt},
     {"helper.pipe", "service.topology", Allowance::ByDesign},
@@ -103,6 +106,7 @@ const std::vector<LockPair> BLOCKING_MAY_HOLD = {
 };
 
 const std::vector<LockPair> ORDER_MAY_NEST = {
+    {"config.effects", "config.snapshot", Allowance::ByDesign},
     {"config.write", "config.snapshot", Allowance::ByDesign},
     {"service.topology", "service.state", Allowance::ByDesign},
 #ifdef _WIN32
@@ -645,6 +649,36 @@ class ReceiveDriver {
     std::map<uint16_t, uint64_t> handled_;
 };
 
+class SettingsProbe {
+  public:
+    SettingsProbe()
+        : effects_(
+              satellite::ConfigEffectSinks{[this](bool) { check(); }, [this](bool) { check(); }}) {}
+
+    void post() {
+        g_configStore->update([](Config& cfg) {
+            cfg.autoStart = !cfg.autoStart;
+            cfg.crashReporting = !cfg.crashReporting;
+            return true;
+        });
+        effects_.apply(*g_configStore);
+    }
+
+    int applied() const { return applied_.load(); }
+    int wrongHolds() const { return wrongHolds_.load(); }
+
+  private:
+    void check() {
+        applied_++;
+        const std::vector<std::string> held = lockstats::heldByThisThread();
+        if (held != std::vector<std::string>{"config.effects"}) wrongHolds_++;
+    }
+
+    std::atomic<int> applied_{0};
+    std::atomic<int> wrongHolds_{0};
+    satellite::ConfigEffects effects_;
+};
+
 struct ColdTally {
     std::atomic<int> rounds{0};
     std::atomic<int> refused{0};
@@ -656,12 +690,14 @@ struct ColdTally {
 using ColdRound = std::function<void(int round, ColdTally& tally)>;
 using FeedbackTick = std::function<void(uint16_t level)>;
 
-void runAdmin(SessionService& svc, const std::atomic<bool>& stop, ColdTally& tally) {
+void runAdmin(SessionService& svc, SettingsProbe& settings, const std::atomic<bool>& stop,
+              ColdTally& tally) {
     ScopedThreadRole role(ThreadRole::HttpAdmin);
     while (!stop.load(std::memory_order_acquire)) {
         const bool built = !buildConnectionsJson(svc).empty() && !buildDevicesJson(svc).empty() &&
                            !buildLogsJson(0).empty();
         if (built) tally.snapshots++;
+        settings.post();
         std::this_thread::sleep_for(COLD_TICK);
     }
 }
@@ -697,7 +733,7 @@ class LawRun {
     void run(const ColdRound& coldRound, const FeedbackTick& tickFeedback) {
         std::atomic<bool> stop{false};
         std::thread receive([&] { receiver_.run(stop); });
-        std::thread admin([&] { runAdmin(svc_, stop, tally_); });
+        std::thread admin([&] { runAdmin(svc_, settings_, stop, tally_); });
         std::thread maintenance([&] { runMaintenance(svc_, stop, tally_); });
         std::thread feedback;
         if (tickFeedback) feedback = std::thread([&] { runFeedback(tickFeedback, stop, tally_); });
@@ -718,11 +754,13 @@ class LawRun {
 
     const ReceiveDriver& receiver() const { return receiver_; }
     const ColdTally& tally() const { return tally_; }
+    const SettingsProbe& settings() const { return settings_; }
 
   private:
     SessionService& svc_;
     ReceiveDriver receiver_;
     ColdTally tally_;
+    SettingsProbe settings_;
 };
 
 void putOrRefuse(SessionService& svc, Dish& dish, const std::vector<ControllerDescriptor>& pads,
@@ -746,6 +784,9 @@ void expectTheRunReachedEverything(const std::string& phase, const LawRun& run, 
     EXPECT(run.tally().reaped.load() > 0);
     EXPECT(run.tally().snapshots.load() > 0);
     if (feedback) EXPECT(run.tally().feedback.load() > 0);
+    TEST(phase + ": the settings route applied its effects, each holding only config.effects");
+    EXPECT(run.settings().applied() > 0);
+    EXPECT_EQ(run.settings().wrongHolds(), 0);
 }
 
 void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& sandbox,
@@ -1230,6 +1271,15 @@ void checkTheOrderLaw(const lockstats::Snapshot& snap) {
     }
     EXPECT(!cyclic);
     expectExactly("order law: every nesting edge is in today's order", edges, ORDER_MAY_NEST);
+    TEST("order law: config.effects was taken, and never while service.state or "
+         "service.topology was held");
+    const lockstats::LockStats* effects = snap.find("config.effects");
+    EXPECT(effects != nullptr && effects->role(ThreadRole::HttpAdmin).acquisitions > 0);
+    for (const char* outer : {"service.state", "service.topology"}) {
+        if (edges.count({outer, "config.effects"}) == 0) continue;
+        std::cerr << "  order law: " << outer << " was held while config.effects was taken\n";
+        EXPECT(false);
+    }
 }
 
 void expectTheRoleTakesNoLock(const lockstats::Snapshot& snap, ThreadRole role, const char* law,

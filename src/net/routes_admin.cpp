@@ -11,6 +11,7 @@
 #include "pairing.h"
 #include "pairing_service.h"
 #include "adapters/crash_adapter.h"
+#include "core/config_effects.h"
 #include "core/config_patch.h"
 #include "core/json.h"
 #include "core/session_service.h"
@@ -33,6 +34,8 @@ using satellite::buildDebugJson;
 using satellite::buildSseStatusObject;
 using satellite::buildStatusJson;
 using satellite::buildUpdateJson;
+using satellite::ConfigEffects;
+using satellite::ConfigEffectSinks;
 using satellite::configPatchLogLine;
 using satellite::ConfigPatchOutcome;
 using satellite::Json;
@@ -241,13 +244,12 @@ static bool patchConfig(Config& cfg, const Json& body, ConfigPatchOutcome& outco
 // The form's patch, published in one update so a concurrent reader never sees
 // half a POST. The response echoes the port in force, which after a rejection
 // is the one that was already stored.
-static void configRoute(const Request& req, Response& res) {
+static void configRoute(ConfigEffects& effects, const Request& req, Response& res) {
     const Json body = parseBody(req.body);
     ConfigPatchOutcome patch;
     const std::shared_ptr<const Config> cfg =
         g_configStore->update([&](Config& next) { return patchConfig(next, body, patch); });
-    if (patch.autoStartPresent) setAutoStart(cfg->autoStart);
-    if (patch.crashReportingPresent) crash::setEnabled(cfg->crashReporting);
+    effects.apply(*g_configStore);
     logMsg(LogLevel::INFO, "web", configPatchLogLine(*cfg, patch.udpPortRejected));
     JsonOut resp;
     resp["ok"] = true;
@@ -509,6 +511,8 @@ static void eventsRoute(SessionService& svc, const Request&, Response& res) {
 
 // Admin server: web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
+    const auto effects = std::make_shared<ConfigEffects>(ConfigEffectSinks{
+        [](bool on) { setAutoStart(on); }, [](bool on) { crash::setEnabled(on); }});
     server.set_pre_routing_handler(guardOrigin);
     server.set_mount_point("/", g_webDir, httplib::Headers{{CACHE_CONTROL, NO_CACHE}});
     server.Get("/", redirectToDashboard);
@@ -524,7 +528,8 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
                [&svc](const Request& req, Response& res) { statusRoute(svc, req, res); });
     server.Get("/api/netinfo", netinfoRoute);
     server.Post("/api/network/allow-public", allowPublicRoute);
-    server.Post("/api/config", configRoute);
+    server.Post("/api/config",
+                [effects](const Request& req, Response& res) { configRoute(*effects, req, res); });
     server.Get("/api/version", versionRoute);
 
     server.Get("/api/updates/status", updatesStatusRoute);

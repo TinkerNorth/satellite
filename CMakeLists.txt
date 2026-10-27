@@ -1170,6 +1170,13 @@ target_link_libraries(test_config_store PRIVATE Threads::Threads)
 satellite_add_pure_test(test_config_store_plain tests/test_config_store.cpp
                         src/core/config_store.cpp)
 target_link_libraries(test_config_store_plain PRIVATE Threads::Threads)
+satellite_add_pure_test(test_config_effects tests/test_config_effects.cpp
+                        src/core/config_store.cpp)
+target_compile_definitions(test_config_effects PRIVATE SATELLITE_LOCK_STATS)
+target_link_libraries(test_config_effects PRIVATE Threads::Threads)
+satellite_add_pure_test(test_config_effects_plain tests/test_config_effects.cpp
+                        src/core/config_store.cpp)
+target_link_libraries(test_config_effects_plain PRIVATE Threads::Threads)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)
