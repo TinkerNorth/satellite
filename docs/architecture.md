@@ -463,6 +463,10 @@ Windows-only: setting it there would turn a blocking accept into polling.
 
 ## Thread Safety
 
+[`threading.md`](threading.md) gives the history of this design, release by
+release, and the threads, locks and lock laws as one reference, and says how
+each is measured and enforced.
+
 Two kinds of thread reach `SessionService`. The stream threads take no
 service lock: the receive thread handles every message, the frame path
 described under "Hot-path discipline" and the cold dispatch alike, and
