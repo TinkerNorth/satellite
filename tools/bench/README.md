@@ -166,9 +166,9 @@ Build it with `cmake --build <build dir> --target bench_frame_path`; the binary 
 | vigem | S5 | A | 8000 | 23987 | 15.5 | 176477.7 | 199229.9 | 201638.8 | 1842 | 201.748 | 13 | 0 |
 | vigem | S5 | B | 75 | 210 | 15.5 | 2516.4 | 25648.1 | 25648.1 | 3 | 238.951 | 0 | 15 |
 
-### After: this branch
+### After: 2.1.8 frame path
 
-The same settings on the same machine, one invocation per backend, this branch's Release build.
+The same settings on the same machine, one invocation per backend, the Release build of the branch that became 2.1.8.
 
 | backend | scenario | dish | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops | refused |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -191,7 +191,7 @@ The same settings on the same machine, one invocation per backend, this branch's
 | vigem | S5 | A | 8000 | 24000 | 15.4 | 30.6 | 32.9 | 85.9 | 0 | 0.196 | 0 | 0 |
 | vigem | S5 | B | 75 | 225 | 15.4 | 46.1 | 46.3 | 46.3 | 0 | 13.364 | 0 | 0 |
 
-In 2.1.7 both backends stall dish A for the whole of dish B's 200 ms plug in S4 and S5: the service held its mutex across the plug, so the receive thread waited on it and 1,829 to 1,864 frames came in over 1 ms, with 12 to 16 ring drops and a gap of about 202 ms. On this branch before the adapters changed, the mock backend was already clean, while ViGEm mode still stalled the same way (201.5 and 202.0 ms, 1,815 and 1,835 frames over 1 ms), because `ViGEmAdapter` held `busMtx_` across the plug IOCTLs and every submit took it. Now no scenario on either backend has a dish A frame over 1 ms or a ring drop; its worst frame is under 0.1 ms and its longest gap is what it is in the scenarios without a plug (about 0.2 ms at 8 kHz, 1.1 ms at S1's 1 kHz), while the plug still takes its 200 ms. The medians are unchanged at 15.4 us, the 15 us submit spin plus the path. S5's p99.9 near 30 us is a gamepad frame waiting behind one of dish A's 500 Hz motion submits on the one receive thread, which about 0.75% of its frames do, so its p99 lands either side of that line from run to run. Dish B's 15 refused frames are gone too: they were its frames from the plug's 200 ms, queued behind the stalled receive thread until the PUT had rotated the token, and they are now served on the old token while the plug runs.
+In 2.1.7 both backends stall dish A for the whole of dish B's 200 ms plug in S4 and S5: the service held its mutex across the plug, so the receive thread waited on it and 1,829 to 1,864 frames came in over 1 ms, with 12 to 16 ring drops and a gap of about 202 ms. On the branch that became 2.1.8, before the adapters changed, the mock backend was already clean, while ViGEm mode still stalled the same way (201.5 and 202.0 ms, 1,815 and 1,835 frames over 1 ms), because `ViGEmAdapter` held `busMtx_` across the plug IOCTLs and every submit took it. Now no scenario on either backend has a dish A frame over 1 ms or a ring drop; its worst frame is under 0.1 ms and its longest gap is what it is in the scenarios without a plug (about 0.2 ms at 8 kHz, 1.1 ms at S1's 1 kHz), while the plug still takes its 200 ms. The medians are unchanged at 15.4 us, the 15 us submit spin plus the path. S5's p99.9 near 30 us is a gamepad frame waiting behind one of dish A's 500 Hz motion submits on the one receive thread, which about 0.75% of its frames do, so its p99 lands either side of that line from run to run. Dish B's 15 refused frames are gone too: they were its frames from the plug's 200 ms, queued behind the stalled receive thread until the PUT had rotated the token, and they are now served on the old token while the plug runs.
 
 ### Before: 2.1.8 cold paths
 
@@ -327,6 +327,139 @@ S7 again, on the same machine with the same settings, after `logMsg` stopped tak
 | vigem | S7 | service.state | HttpClient | 4 | 0 | 0 | 0.1 | 0.1 | 8.3 |
 
 No role waits on a log lock, because there is none: the four loggers (Background), the logs reader and the writer (Logger) take no lock at all, so S7's rows are exactly S5's, the HttpAdmin one being the sse thread. Before this change, measured in the same session with this branch's previous build, the loggers waited up to 1,019.2 us (mock) and 1,006.4 us (vigem) on `log`, 5,935 and 6,310 of their 24,000 acquisitions contended, and the reader held it for up to 1,005.5 us and 990.6 us while it built the JSON. Dish A's rows stay inside S5's spread, as they did: the receive thread logged nothing in either version's S7, so what changed is that a line it logs, or one the mic handler logs under `service.state`, no longer queues behind a reader or the file.
+
+### After: this branch
+
+S1 to S8 again, on the same machine and with the same settings as the 2.1.8 table (`--submit-us 15`, `--plug-ms 200`, everything else at its default; AMD Ryzen 9 7900X 12-Core Processor, Release build), now that the receive thread takes no lock for any message (see "Thread Safety" in `docs/architecture.md`). The runs are the ones a release makes (see "Release measurements" below): `bench_frame_path` and `bench_frame_path_lockstats`, each at its defaults with `--backend mock` and with `--backend vigem`, and once more per backend with `--mic-hz 1000`, of which only S6 is kept, every one with `--json`. The eight files went through `scripts/measurements-report.ps1`, and the plug stall gate passed: dish A's longest gap in S4 to S8, the 1 kHz S6 included, is 0.363 ms (ViGEm S4) against the 50 ms limit. The medians of S1 to S3 were 15.4 or 15.5 us in all eight runs, so no run was repeated. The tables hold the report's figures in the columns of the 2.1.8 tables: the latency table has dish A's rows only and comes from `bench_frame_path`, the lock table comes from `bench_frame_path_lockstats`, and the rows labelled `S6 (mic 1000 Hz)` are S6 from the `--mic-hz 1000` runs.
+
+| backend | scenario | dish | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops | refused |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| mock | S1 | A | 1000 | 3000 | 15.4 | 16.5 | 18.7 | 34.7 | 0 | 2.166 | 0 | 0 |
+| mock | S2 | A | 8000 | 24000 | 15.4 | 15.9 | 17.6 | 33.0 | 0 | 0.164 | 0 | 0 |
+| mock | S3 | A | 8000 | 24000 | 15.4 | 15.9 | 18.4 | 41.4 | 0 | 0.177 | 0 | 0 |
+| mock | S4 | A | 8000 | 24000 | 15.4 | 15.9 | 18.1 | 31.0 | 0 | 0.141 | 0 | 0 |
+| mock | S5 | A | 8000 | 24000 | 15.5 | 15.9 | 28.4 | 32.3 | 0 | 0.144 | 0 | 0 |
+| mock | S6 | A | 8000 | 24000 | 15.4 | 15.9 | 24.5 | 42.5 | 0 | 0.152 | 0 | 0 |
+| mock | S7 | A | 8000 | 24000 | 15.4 | 30.5 | 45.8 | 46.6 | 0 | 0.157 | 0 | 0 |
+| mock | S8 | A | 8000 | 24000 | 15.4 | 30.5 | 45.7 | 46.8 | 0 | 0.244 | 0 | 0 |
+| mock | S6 (mic 1000 Hz) | A | 8000 | 24000 | 15.4 | 15.9 | 20.2 | 35.5 | 0 | 0.201 | 0 | 0 |
+| vigem | S1 | A | 1000 | 3000 | 15.5 | 16.6 | 17.6 | 19.2 | 0 | 1.014 | 0 | 0 |
+| vigem | S2 | A | 8000 | 24000 | 15.4 | 15.9 | 20.4 | 46.8 | 0 | 0.156 | 0 | 0 |
+| vigem | S3 | A | 8000 | 24000 | 15.4 | 15.9 | 17.8 | 30.9 | 0 | 0.141 | 0 | 0 |
+| vigem | S4 | A | 8000 | 24000 | 15.4 | 15.9 | 17.9 | 253.6 | 0 | 0.363 | 0 | 0 |
+| vigem | S5 | A | 8000 | 24000 | 15.4 | 30.6 | 45.9 | 98.3 | 0 | 0.208 | 0 | 0 |
+| vigem | S6 | A | 8000 | 24000 | 15.4 | 16.1 | 34.0 | 37.2 | 0 | 0.148 | 0 | 0 |
+| vigem | S7 | A | 8000 | 24000 | 15.5 | 30.5 | 31.4 | 46.9 | 0 | 0.176 | 0 | 0 |
+| vigem | S8 | A | 8000 | 24000 | 15.5 | 16.8 | 30.7 | 175.1 | 0 | 0.284 | 0 | 0 |
+| vigem | S6 (mic 1000 Hz) | A | 8000 | 24000 | 15.4 | 16.1 | 31.0 | 35.6 | 0 | 0.145 | 0 | 0 |
+
+No dish A frame is over 1 ms in any row and no ring drops a frame, with the 200 ms plug running in S4 to S8 and in the 1 kHz S6 row, and the medians are the 15.4 or 15.5 us of the tables above. The longest gap in those rows is 0.363 ms (ViGEm S4), where the 2.1.7 table has 201.7 to 202.2 ms. The slowest single frames are 253.6 us (ViGEm S4), 175.1 us (ViGEm S8) and 98.3 us (ViGEm S5), one frame each of 24,000, against p99.9 values of 17.9, 30.7 and 45.9 us in the same rows. S1's mock row has a longest gap of 2.166 ms where its ViGEm row has 1.014 ms; no frame of that rep took more than 34.7 us, so a send was late and no receive was slow. S5, S7 and S8 put their p99 on either side of 30 us and their p99.9 between 28.4 and 45.9 us, as in the 2.1.8 table: a frame queued behind one or two submits on the one receive thread. S6's p99.9 is 24.5 and 34.0 us where the 2.1.8 table has 47.8 and 45.5, because a gamepad frame no longer queues behind a mic frame's Opus decode, which runs on the mic worker. Dish B's rows, not shown, have no refused frame and a longest gap between 13.349 and 13.365 ms in every scenario; the frame S6 refused on the old token while the PUT saved the config is gone, and so is the doubled gap that went with it.
+
+The locks touched in the reported rep of every scenario, from one `bench_frame_path_lockstats` invocation per backend and one more per backend with `--mic-hz 1000` (so its reps are not the ones above), one row per lock and thread role. Waits and holds are in microseconds, and the p99 wait is the upper edge of its log2 bucket.
+
+| backend | scenario | lock | role | acquisitions | contended | failed tries | max wait us | p99 wait us | max hold us |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| mock | S1 | config.write | ConfigSaver | 1 | 0 | 0 | 0.2 | 0.3 | 0.1 |
+| mock | S2 | config.write | ConfigSaver | 1 | 0 | 0 | 0.1 | 0.1 | 0.0 |
+| mock | S3 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 0.9 |
+| mock | S3 | service.state | Maintenance | 33 | 0 | 0 | 0.7 | 1.0 | 1.6 |
+| mock | S3 | service.state | HttpAdmin | 12 | 0 | 0 | 0.5 | 0.5 | 8.8 |
+| mock | S3 | config.write | ConfigSaver | 1 | 0 | 0 | 0.2 | 0.3 | 0.1 |
+| mock | S4 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.1 |
+| mock | S4 | service.topology | HttpClient | 1 | 0 | 0 | 0.3 | 0.5 | 201528.1 |
+| mock | S4 | service.state | Maintenance | 33 | 0 | 0 | 0.7 | 1.0 | 1.2 |
+| mock | S4 | service.state | HttpAdmin | 12 | 0 | 0 | 0.5 | 0.5 | 9.8 |
+| mock | S4 | service.state | HttpClient | 4 | 0 | 0 | 0.3 | 0.5 | 11.5 |
+| mock | S4 | config.write | ConfigSaver | 1 | 0 | 0 | 0.1 | 0.1 | 0.1 |
+| mock | S5 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.4 |
+| mock | S5 | service.topology | HttpClient | 1 | 0 | 0 | 0.3 | 0.5 | 201506.5 |
+| mock | S5 | service.state | Maintenance | 33 | 0 | 0 | 0.8 | 1.0 | 1.6 |
+| mock | S5 | service.state | HttpAdmin | 12 | 0 | 0 | 0.6 | 1.0 | 8.6 |
+| mock | S5 | service.state | HttpClient | 4 | 0 | 0 | 0.2 | 0.3 | 17.4 |
+| mock | S5 | config.write | ConfigSaver | 1 | 0 | 0 | 0.0 | 0.0 | 0.1 |
+| mock | S6 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.2 |
+| mock | S6 | service.topology | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 201508.8 |
+| mock | S6 | service.state | Maintenance | 33 | 0 | 0 | 0.6 | 1.0 | 1.5 |
+| mock | S6 | service.state | HttpAdmin | 12 | 0 | 0 | 0.4 | 0.5 | 8.6 |
+| mock | S6 | service.state | HttpClient | 4 | 0 | 0 | 0.4 | 0.5 | 13.2 |
+| mock | S6 | config.write | HttpClient | 1 | 0 | 0 | 0.1 | 0.1 | 7.0 |
+| mock | S6 | config.write | ConfigSaver | 3 | 0 | 0 | 0.1 | 0.1 | 0.5 |
+| mock | S6 | config.write | Other | 1 | 0 | 0 | 0.2 | 0.3 | 0.2 |
+| mock | S6 | config.snapshot | HttpClient | 1 | 0 | 0 | 0.1 | 0.1 | 0.1 |
+| mock | S7 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.9 |
+| mock | S7 | service.topology | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 201497.7 |
+| mock | S7 | service.state | Maintenance | 33 | 0 | 0 | 0.6 | 1.0 | 1.3 |
+| mock | S7 | service.state | HttpAdmin | 12 | 0 | 0 | 0.4 | 0.5 | 6.9 |
+| mock | S7 | service.state | HttpClient | 4 | 0 | 0 | 0.2 | 0.3 | 9.2 |
+| mock | S7 | config.write | ConfigSaver | 1 | 0 | 0 | 0.1 | 0.1 | 0.2 |
+| mock | S8 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.1 |
+| mock | S8 | service.topology | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 201525.0 |
+| mock | S8 | service.state | Maintenance | 33 | 16 | 0 | 32.4 | 32.8 | 1.9 |
+| mock | S8 | service.state | HttpAdmin | 720 | 24 | 0 | 27.9 | 32.8 | 11.4 |
+| mock | S8 | service.state | HttpClient | 4 | 0 | 0 | 0.5 | 0.5 | 23.6 |
+| mock | S8 | config.write | ConfigSaver | 1 | 0 | 0 | 0.2 | 0.3 | 0.0 |
+| mock | S8 | config.snapshot | HttpAdmin | 236 | 0 | 0 | 0.3 | 0.3 | 1.8 |
+| mock | S6 (mic 1000 Hz) | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.1 |
+| mock | S6 (mic 1000 Hz) | service.topology | HttpClient | 1 | 0 | 0 | 0.4 | 0.5 | 201501.9 |
+| mock | S6 (mic 1000 Hz) | service.state | Maintenance | 33 | 0 | 0 | 0.7 | 1.0 | 1.5 |
+| mock | S6 (mic 1000 Hz) | service.state | HttpAdmin | 12 | 0 | 0 | 0.5 | 0.5 | 10.1 |
+| mock | S6 (mic 1000 Hz) | service.state | HttpClient | 4 | 0 | 0 | 0.4 | 0.5 | 15.5 |
+| mock | S6 (mic 1000 Hz) | config.write | HttpClient | 1 | 0 | 0 | 0.0 | 0.0 | 7.4 |
+| mock | S6 (mic 1000 Hz) | config.write | ConfigSaver | 3 | 0 | 0 | 0.3 | 0.5 | 0.5 |
+| mock | S6 (mic 1000 Hz) | config.write | Other | 1 | 0 | 0 | 0.2 | 0.3 | 0.2 |
+| mock | S6 (mic 1000 Hz) | config.snapshot | HttpClient | 1 | 0 | 0 | 0.1 | 0.1 | 0.1 |
+| vigem | S3 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 0.8 |
+| vigem | S3 | service.state | Maintenance | 33 | 0 | 0 | 0.6 | 1.0 | 1.3 |
+| vigem | S3 | service.state | HttpAdmin | 12 | 0 | 0 | 0.4 | 0.5 | 9.3 |
+| vigem | S4 | vigem.bus | HttpClient | 1 | 0 | 0 | 0.4 | 0.5 | 37.6 |
+| vigem | S4 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 0.9 |
+| vigem | S4 | service.topology | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 201552.4 |
+| vigem | S4 | service.state | Maintenance | 33 | 0 | 0 | 0.5 | 0.5 | 1.2 |
+| vigem | S4 | service.state | HttpAdmin | 12 | 0 | 0 | 0.3 | 0.5 | 10.2 |
+| vigem | S4 | service.state | HttpClient | 4 | 0 | 0 | 0.1 | 0.1 | 7.9 |
+| vigem | S5 | vigem.bus | HttpClient | 1 | 0 | 0 | 0.5 | 0.5 | 40.1 |
+| vigem | S5 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.2 |
+| vigem | S5 | service.topology | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 201551.1 |
+| vigem | S5 | service.state | Maintenance | 33 | 0 | 0 | 0.9 | 1.0 | 1.3 |
+| vigem | S5 | service.state | HttpAdmin | 12 | 0 | 0 | 0.8 | 1.0 | 12.2 |
+| vigem | S5 | service.state | HttpClient | 4 | 0 | 0 | 0.2 | 0.3 | 9.0 |
+| vigem | S6 | vigem.bus | HttpClient | 1 | 0 | 0 | 0.3 | 0.5 | 47.0 |
+| vigem | S6 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.0 |
+| vigem | S6 | service.topology | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 201572.0 |
+| vigem | S6 | service.state | Maintenance | 33 | 0 | 0 | 0.8 | 1.0 | 1.4 |
+| vigem | S6 | service.state | HttpAdmin | 12 | 0 | 0 | 0.4 | 0.5 | 8.3 |
+| vigem | S6 | service.state | HttpClient | 4 | 0 | 0 | 0.1 | 0.1 | 19.7 |
+| vigem | S6 | config.write | HttpClient | 1 | 0 | 0 | 0.0 | 0.0 | 7.5 |
+| vigem | S6 | config.write | ConfigSaver | 3 | 0 | 0 | 0.2 | 0.3 | 0.5 |
+| vigem | S6 | config.write | Other | 1 | 0 | 0 | 0.4 | 0.5 | 0.1 |
+| vigem | S6 | config.snapshot | HttpClient | 1 | 0 | 0 | 0.0 | 0.0 | 0.2 |
+| vigem | S7 | vigem.bus | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 43.2 |
+| vigem | S7 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.0 |
+| vigem | S7 | service.topology | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 202060.8 |
+| vigem | S7 | service.state | Maintenance | 33 | 0 | 0 | 0.6 | 1.0 | 1.6 |
+| vigem | S7 | service.state | HttpAdmin | 12 | 0 | 0 | 0.4 | 0.5 | 6.7 |
+| vigem | S7 | service.state | HttpClient | 4 | 0 | 0 | 0.0 | 0.0 | 7.4 |
+| vigem | S8 | vigem.bus | HttpClient | 1 | 0 | 0 | 0.3 | 0.5 | 45.1 |
+| vigem | S8 | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 16.7 |
+| vigem | S8 | service.topology | HttpClient | 1 | 0 | 0 | 0.3 | 0.5 | 201564.9 |
+| vigem | S8 | service.state | Maintenance | 33 | 12 | 0 | 36.7 | 65.5 | 1.1 |
+| vigem | S8 | service.state | HttpAdmin | 720 | 32 | 0 | 33.2 | 32.8 | 11.9 |
+| vigem | S8 | service.state | HttpClient | 4 | 0 | 0 | 0.2 | 0.3 | 9.0 |
+| vigem | S8 | config.snapshot | HttpAdmin | 236 | 0 | 0 | 0.2 | 0.3 | 0.4 |
+| vigem | S6 (mic 1000 Hz) | vigem.bus | HttpClient | 1 | 0 | 0 | 0.2 | 0.3 | 39.9 |
+| vigem | S6 (mic 1000 Hz) | service.topology | Maintenance | 3 | 0 | 0 | 0.0 | 0.0 | 1.2 |
+| vigem | S6 (mic 1000 Hz) | service.topology | HttpClient | 1 | 0 | 0 | 0.3 | 0.5 | 202063.5 |
+| vigem | S6 (mic 1000 Hz) | service.state | Maintenance | 33 | 0 | 0 | 1.1 | 2.0 | 1.9 |
+| vigem | S6 (mic 1000 Hz) | service.state | HttpAdmin | 12 | 0 | 0 | 0.5 | 0.5 | 11.4 |
+| vigem | S6 (mic 1000 Hz) | service.state | HttpClient | 4 | 0 | 0 | 0.1 | 0.1 | 8.2 |
+| vigem | S6 (mic 1000 Hz) | config.write | HttpClient | 1 | 0 | 0 | 0.1 | 0.1 | 8.0 |
+| vigem | S6 (mic 1000 Hz) | config.write | ConfigSaver | 3 | 0 | 0 | 0.3 | 0.5 | 0.4 |
+| vigem | S6 (mic 1000 Hz) | config.write | Other | 1 | 0 | 0 | 0.3 | 0.5 | 0.2 |
+| vigem | S6 (mic 1000 Hz) | config.snapshot | HttpClient | 1 | 0 | 0 | 0.1 | 0.1 | 0.1 |
+
+The Receive role has no row in any scenario on either backend, the 1 kHz S6 included, and neither do Pointer, Mic or Logger: the receive thread, the pointer thread, the mic worker and the log writer took no lock. The 2.1.8 table has the receive thread taking `config` and `service.state` 150 times each in S6, `service.state` 1,503 times in S7 and in S8, and `log` once in S6, on both backends. S7 has no `log` rows at all, since the four loggers and the logs reader take no lock, so its rows are S5's. In S8 the eight dashboard readers and the sse thread (HttpAdmin) take `service.state` 720 times and `config.snapshot` 236 times a rep and hold either for at most 11.9 us; they contend with the maintenance thread for `service.state` (16 of its 33 acquisitions on mock and 12 on ViGEm, waiting up to 32.4 and 36.7 us) and never with the receive thread. In every scenario with a PUT, `service.topology` is held for the whole plug, 201.5 to 202.1 ms, which is by design and which nothing on the receive path takes; on ViGEm the PUT also takes `vigem.bus` for 37.6 to 47.0 us, around publishing the pad and not across its plug. `Other` is the bench's main thread, flushing the config store once after S6's PUT, and ConfigSaver is the saver thread.
+
+The `S6 (mic 1000 Hz)` rows are the case the 2.1.8 section found, a mic frame inside the config save every time. There dish A's worst frame was between 0.5 and 1.7 ms in each of the six reps, and the receive thread waited up to 893.8 us (mock) and 1,293.2 us (ViGEm) on `config`. Now the worst frame is 35.5 us (mock) and 35.6 us (ViGEm) in the reported reps and between 32.7 and 168.7 us in all twelve reps of the four 1 kHz runs, none of them over 1 ms, and the receive thread waits on nothing. The PUT's `refreshPairedDeviceIdentity`, which the bench times, returns in 6 to 13 us in the 24 reps of S6 across the eight runs, where it held `config` for 1,574.6 and 1,649.2 us across the write: it publishes a new snapshot under `config.write`, which the HttpClient rows show held for 7.0 to 8.0 us, and the saver thread writes the file outside every lock, holding `config.write` for at most 0.5 us at a time.
 
 ---
 
