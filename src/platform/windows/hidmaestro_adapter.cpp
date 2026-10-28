@@ -54,14 +54,14 @@ bool HidMaestroAdapter::ensureBusOpen() {
 void HidMaestroAdapter::closeBus() {
     std::vector<uint32_t> serials;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         serials.reserve(outputWorkers_.size() + speakerWorkers_.size() + hapticWorkers_.size());
         for (auto& [serial, _] : outputWorkers_) serials.push_back(serial);
         for (auto& [serial, _] : speakerWorkers_) serials.push_back(serial);
         for (auto& [serial, _] : hapticWorkers_) serials.push_back(serial);
     }
     for (uint32_t serial : serials) {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         stopOutputWorker(serial);
         stopAudioWorker(serial, AudioLane::Speaker);
         stopAudioWorker(serial, AudioLane::Haptic);
@@ -69,7 +69,7 @@ void HidMaestroAdapter::closeBus() {
 
     std::vector<uint32_t> provisioned;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
             IoSlot& slot = io_[s];
             if (slot.plugged.load(std::memory_order_acquire)) provisioned.push_back(s);
@@ -172,7 +172,7 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     CompositePlugHook before;
     CompositePlugHook after;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         before = compositePlugBefore_;
         after = compositePlugAfter_;
     }
@@ -185,7 +185,7 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     bool adopted = false;
     bool composite = false;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         IoSlot& slot = io_[serial];
         slot.identity = identity;
         adopted = adoptProvisionedLocked(slot, r);
@@ -251,7 +251,7 @@ bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
 
     bool wasPlugged = false;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         IoSlot& slot = io_[serial];
         wasPlugged = slot.plugged.load(std::memory_order_acquire);
         slot.plugged.store(false, std::memory_order_release);
@@ -347,7 +347,7 @@ bool HidMaestroAdapter::submitReport(uint32_t serial, const GamepadReport& repor
 }
 
 void HidMaestroAdapter::refreshIdleInput() {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     const auto now = std::chrono::steady_clock::now();
     for (IoSlot& slot : io_) {
         if (!slot.plugged.load(std::memory_order_relaxed)) continue;
@@ -448,61 +448,61 @@ bool HidMaestroAdapter::supportsMotionForType(uint8_t controllerType) const {
 }
 
 void HidMaestroAdapter::setRumbleCallback(RumbleCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     rumbleCb_ = std::move(cb);
 }
 
 void HidMaestroAdapter::setLightbarCallback(LightbarCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     lightbarCb_ = std::move(cb);
 }
 
 void HidMaestroAdapter::setTriggerEffectsCallback(TriggerEffectsCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     triggerEffectsCb_ = std::move(cb);
 }
 
 void HidMaestroAdapter::setPlayerLedsCallback(PlayerLedsCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     playerLedsCb_ = std::move(cb);
 }
 
 void HidMaestroAdapter::setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     compositePlugBefore_ = std::move(before);
     compositePlugAfter_ = std::move(after);
 }
 
 void HidMaestroAdapter::setSpeakerAudioCallback(SpeakerAudioCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     speakerAudioCb_ = std::move(cb);
 }
 
 void HidMaestroAdapter::setHapticAudioCallback(HapticAudioCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     hapticAudioCb_ = std::move(cb);
 }
 
 void HidMaestroAdapter::setMicLedCallback(MicLedCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     micLedCb_ = std::move(cb);
 }
 
 bool HidMaestroAdapter::hasSpeakerEndpoint(uint32_t serial) const {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     return io_[serial].speakerView != nullptr;
 }
 
 bool HidMaestroAdapter::hasHapticEndpoint(uint32_t serial) const {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     return io_[serial].hapticView != nullptr;
 }
 
 bool HidMaestroAdapter::hasMicEndpoint(uint32_t serial) const {
     if (!isValidSerial(serial)) return false;
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     return io_[serial].micView != nullptr;
 }
 
@@ -563,6 +563,7 @@ void HidMaestroAdapter::stopOutputWorker(uint32_t serial) {
     // Drop + reacquire busMtx_ around the join so the worker's own lock
     // acquisition (for the callback copy) doesn't deadlock.
     busMtx_.unlock();
+    blockingRegion("thread.join");
     if (w.th.joinable()) w.th.join();
     if (w.cancel) CloseHandle(w.cancel);
     busMtx_.lock();
@@ -574,7 +575,7 @@ static bool carriesAnything(const hm::DecodedOutput& d) {
 }
 
 HidMaestroAdapter::OutputCallbacks HidMaestroAdapter::snapshotOutputCallbacks() const {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     return OutputCallbacks{rumbleCb_, lightbarCb_, triggerEffectsCb_, playerLedsCb_, micLedCb_};
 }
 
@@ -603,11 +604,12 @@ void HidMaestroAdapter::deliverDecodedOutput(uint32_t serial, const hm::DecodedO
 }
 
 void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t lastSeq) {
+    ScopedThreadRole role(ThreadRole::BackendWorker);
     const uint8_t* view;
     HANDLE doorbell;
     GamepadIdentity identity;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         IoSlot& slot = io_[serial];
         view = slot.outputView;
         doorbell = slot.outputEvent;
@@ -660,6 +662,7 @@ void HidMaestroAdapter::stopAudioWorker(uint32_t serial, AudioLane lane) {
     // Drop + reacquire busMtx_ around the join for the same reason the output
     // worker does: the worker takes the lock to snapshot the callback.
     busMtx_.unlock();
+    blockingRegion("thread.join");
     if (w.th.joinable()) w.th.join();
     if (w.cancel) CloseHandle(w.cancel);
     busMtx_.lock();
@@ -673,12 +676,13 @@ void HidMaestroAdapter::stopAudioWorker(uint32_t serial, AudioLane lane) {
 // the ring, the doorbell and the callback differ.
 void HidMaestroAdapter::audioLoop(uint32_t serial, AudioLane lane, HANDLE cancel,
                                   uint32_t lastSeq) {
+    ScopedThreadRole role(ThreadRole::AudioWorker);
     const bool speaker = lane == AudioLane::Speaker;
     const uint8_t* view;
     HANDLE doorbell;
     int rateHz;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         IoSlot& slot = io_[serial];
         view = speaker ? slot.speakerView : slot.hapticView;
         doorbell = speaker ? slot.speakerEvent : slot.hapticEvent;
@@ -719,7 +723,7 @@ void HidMaestroAdapter::audioLoop(uint32_t serial, AudioLane lane, HANDLE cancel
 
             SpeakerAudioCallback cb;
             {
-                std::lock_guard<std::mutex> lk(busMtx_);
+                std::lock_guard<TrackedMutex> lk(busMtx_);
                 cb = speaker ? speakerAudioCb_ : hapticAudioCb_;
             }
             if (cb) cb(serial, pcm.data(), pcm.size() / AUDIO_SPEAKER_CHANNELS);

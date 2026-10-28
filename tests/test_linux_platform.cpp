@@ -3,11 +3,13 @@
 #include "../src/platform/linux/gamepad_adapter.h"
 #include "../src/platform/linux/netlink_rejoin.h"
 #include "../src/platform/linux/update_helper_script.h"
+#include "../src/platform/posix/file_log.h"
 
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include "test_util.h"
 
@@ -89,6 +92,20 @@ static void testConfigPath() {
 
     TEST("configPath: creates parent dirs");
     EXPECT(fileExists(tmp.path + "/satellite"));
+}
+
+static void testConfigDirOverride() {
+    TempXdg tmp;
+    const std::string dir = tmp.path + "/override";
+    setenv("SATELLITE_CONFIG_DIR", dir.c_str(), 1);
+    const std::string p = configPath();
+    TEST("configPath: SATELLITE_CONFIG_DIR names the directory");
+    EXPECT_EQ(p, dir + "/config.json");
+    TEST("configPath: creates the named directory");
+    EXPECT(fileExists(dir));
+    unsetenv("SATELLITE_CONFIG_DIR");
+    TEST("configPath: back under XDG_CONFIG_HOME once the variable is gone");
+    EXPECT(configPath().find(tmp.path + "/satellite/") == 0);
 }
 
 static void testAtomicWriteFile() {
@@ -299,6 +316,84 @@ static void testGetCurrentDate() {
     if (s.size() == 10) {
         EXPECT(s[4] == '-');
         EXPECT(s[7] == '-');
+    }
+}
+
+static std::vector<std::string> logFilesIn(const std::string& dir) {
+    std::vector<std::string> files;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->path().extension() == ".log") files.push_back(it->path().string());
+    }
+    return files;
+}
+
+static void expectFileLoggerFlushes(const std::string& dir) {
+    const std::string stale = dir + "/satellite-20000101.log";
+    std::ofstream(stale) << "stale\n";
+    std::error_code aged;
+    std::filesystem::last_write_time(
+        stale, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 8), aged);
+    EXPECT(!aged);
+
+    lifecycle::startFileLogger(dir);
+    logMsg(LogLevel::INFO, "test", "flush probe");
+
+    TEST("flushFileLog: returns once the lines logged before the call are in the file");
+    EXPECT(lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs));
+    const std::vector<std::string> files = logFilesIn(dir);
+    EXPECT_EQ(files.size(), size_t{1});
+    if (files.size() == 1) {
+        TEST("file logger: one satellite-YYYYMMDD.log per day, one line per entry");
+        const std::string name = std::filesystem::path(files[0]).filename().string();
+        EXPECT(name.rfind("satellite-", 0) == 0);
+        EXPECT_EQ(name.size(), std::string("satellite-YYYYMMDD.log").size());
+        EXPECT(slurp(files[0]).find("[INFO ] [test] flush probe\n") != std::string::npos);
+    }
+    TEST("file logger: a log older than the 7-day retention is deleted when the writer starts");
+    EXPECT(!fileExists(stale));
+
+    TEST("flushFileLog: a later flush delivers what was logged since the previous one");
+    logMsg(LogLevel::WARN, "test", "second probe");
+    EXPECT(lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs));
+    if (files.size() == 1) {
+        EXPECT(slurp(files[0]).find("[WARN ] [test] second probe\n") != std::string::npos);
+    }
+
+    lifecycle::stopFileLogger();
+}
+
+static void testFileLoggerFlush() {
+    TempXdg tmp;
+    setenv("XDG_STATE_HOME", tmp.path.c_str(), 1);
+
+    TEST("flushFileLog: with no writer running it promises nothing");
+    EXPECT(!lifecycle::flushFileLog(10));
+
+    TEST("logDir: $XDG_STATE_HOME/satellite/logs, created on demand");
+    const std::string dir = lifecycle::logDir();
+    EXPECT_EQ(dir, tmp.path + "/satellite/logs");
+    EXPECT(fileExists(dir));
+
+    expectFileLoggerFlushes(dir);
+    unsetenv("XDG_STATE_HOME");
+}
+
+static void testLogDirDefault() {
+    TempXdg tmp;
+    const char* home = getenv("HOME");
+    const bool hadHome = home != nullptr;
+    const std::string savedHome = hadHome ? home : "";
+    setenv("HOME", tmp.path.c_str(), 1);
+    unsetenv("XDG_STATE_HOME");
+
+    TEST("logDir: ~/.local/state/satellite/logs when XDG_STATE_HOME is unset");
+    EXPECT_EQ(lifecycle::logDir(), tmp.path + "/.local/state/satellite/logs");
+
+    if (hadHome) {
+        setenv("HOME", savedHome.c_str(), 1);
+    } else {
+        unsetenv("HOME");
     }
 }
 
@@ -548,6 +643,7 @@ int main() {
 
     testConfigEscapingRoundTrip();
     testConfigPath();
+    testConfigDirOverride();
     testAtomicWriteFile();
     testConfigRoundTrip();
     testDiscoveryBroadcastConfig();
@@ -557,6 +653,8 @@ int main() {
     testAutoStartIdempotent();
     testGetExeDir();
     testGetCurrentDate();
+    testFileLoggerFlush();
+    testLogDirDefault();
     testSubmitBatteryWritesProxyFile();
     testSubmitBatteryUnknownLevel();
     testSetLightbarCallbackWritesProxyFile();

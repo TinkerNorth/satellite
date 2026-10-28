@@ -9,6 +9,7 @@
 #include "app/wire_stats.h"
 
 #include <cstring>
+#include <thread>
 
 void ClientAdapter::setSocket(SOCKET sock) { sock_.store(sock, std::memory_order_release); }
 
@@ -16,8 +17,66 @@ void ClientAdapter::updateClientAddr(uint32_t, const std::string&, uint16_t) {}
 
 void ClientAdapter::removeClientAddr(uint32_t) {}
 
+namespace {
+
+constexpr uint64_t ACK_PRESENT = uint64_t{1} << 63;
+constexpr size_t ACK_PAYLOAD_BYTES = 6;
+
+uint64_t packAck(bool backendAvailable, uint8_t totalActiveControllers, uint16_t epoch,
+                 uint16_t activeBitmap) {
+    return ACK_PRESENT | (backendAvailable ? 1u : 0u) |
+           (static_cast<uint64_t>(totalActiveControllers) << 8) |
+           (static_cast<uint64_t>(epoch) << 16) | (static_cast<uint64_t>(activeBitmap) << 32);
+}
+
+bool tryHoldGate(HotSlot& slot) {
+    uint32_t free = 0;
+    return slot.txGate.compare_exchange_strong(free, 1, std::memory_order_seq_cst);
+}
+
+void holdGate(HotSlot& slot) {
+    while (!tryHoldGate(slot)) std::this_thread::yield();
+}
+
+} // namespace
+
 void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* inner,
                                         size_t innerLen) {
+    sendSealed(conn.token, conn.sessionKey, *conn.hot, inner, innerLen);
+}
+
+void ClientAdapter::sendSealed(uint32_t token, const uint8_t* key, HotSlot& slot,
+                               const uint8_t* inner, size_t innerLen) {
+    holdGate(slot);
+    sealAndSend(token, key, slot, inner, innerLen);
+    releaseGate(token, key, slot);
+}
+
+void ClientAdapter::releaseGate(uint32_t token, const uint8_t* key, HotSlot& slot) {
+    for (;;) {
+        const uint64_t ack = slot.txDeferredAck.exchange(0, std::memory_order_seq_cst);
+        if (ack != 0) {
+            uint8_t inner[INNER_HEADER_SIZE + ACK_PAYLOAD_BYTES];
+            inner[0] = (uint8_t)(MSG_HEARTBEAT_ACK >> 8);
+            inner[1] = (uint8_t)(MSG_HEARTBEAT_ACK);
+            inner[2] = 0;
+            inner[3] = (uint8_t)ACK_PAYLOAD_BYTES;
+            inner[4] = (uint8_t)(ack & 1u);
+            inner[5] = (uint8_t)(ack >> 8);
+            inner[6] = (uint8_t)(ack >> 24);
+            inner[7] = (uint8_t)(ack >> 16);
+            inner[8] = (uint8_t)(ack >> 40);
+            inner[9] = (uint8_t)(ack >> 32);
+            sealAndSend(token, key, slot, inner, sizeof(inner));
+        }
+        slot.txGate.store(0, std::memory_order_seq_cst);
+        if (slot.txDeferredAck.load(std::memory_order_seq_cst) == 0) return;
+        if (!tryHoldGate(slot)) return;
+    }
+}
+
+void ClientAdapter::sealAndSend(uint32_t token, const uint8_t* key, HotSlot& slot,
+                                const uint8_t* inner, size_t innerLen) {
     const uint16_t msgType = satellite::readBE16(inner);
     const SOCKET sock = sock_.load(std::memory_order_acquire);
     if (sock == INVALID_SOCKET) {
@@ -33,7 +92,7 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
         return;
     }
 
-    const uint64_t clientAddr = conn.hot->clientAddr.load(std::memory_order_acquire);
+    const uint64_t clientAddr = slot.clientAddr.load(std::memory_order_acquire);
     if (clientAddr == 0) {
         satellite::g_wire.txUnroutable.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -45,15 +104,15 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
 
     // Monotonic per-token counter in the nonce; the direction byte keeps this
     // direction's nonces disjoint from the client's under the shared session key.
-    const uint32_t counter = conn.hot->txCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+    const uint32_t counter = slot.txCounter.fetch_add(1, std::memory_order_relaxed) + 1;
 
     // Sized so the whole datagram lands on UDP_DATAGRAM_MAX_BYTES: the control
     // messages are all under 30 bytes, but MSG_SPEAKER_AUDIO carries a 20 ms
     // Opus packet and the ceiling has to hold a VBR spike, not the average.
     uint8_t ct[MAX_INNER_MESSAGE_BYTES + AUTH_TAG_SIZE];
     unsigned long long ctLen = 0;
-    if (!encryptPacket(conn.sessionKey, CRYPTO_DIR_SERVER_TO_CLIENT, counter, conn.token, inner,
-                       innerLen, ct, &ctLen)) {
+    if (!encryptPacket(key, CRYPTO_DIR_SERVER_TO_CLIENT, counter, token, inner, innerLen, ct,
+                       &ctLen)) {
         satellite::g_wire.txEncryptFailed.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -61,7 +120,7 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     uint8_t pkt[HEADER_SIZE + sizeof(ct)];
     static_assert(sizeof(pkt) == UDP_DATAGRAM_MAX_BYTES,
                   "the framed packet must land exactly on the datagram ceiling");
-    uint32_t t = conn.token;
+    uint32_t t = token;
     pkt[0] = (uint8_t)(t >> 24);
     pkt[1] = (uint8_t)(t >> 16);
     pkt[2] = (uint8_t)(t >> 8);
@@ -81,24 +140,16 @@ void ClientAdapter::sendEncryptedPacket(const Connection& conn, const uint8_t* i
     satellite::g_wire.recordOutbound(msgType, static_cast<size_t>(sent));
 }
 
-void ClientAdapter::sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+void ClientAdapter::sendHeartbeatAck(const SessionEndpoint& to, bool backendAvailable,
                                      uint8_t totalActiveControllers, uint16_t epoch,
                                      uint16_t activeBitmap) {
     // Wire: backendAvailable(1) + totalActiveControllers(1) + epoch(u16 BE) +
     // bitmap(u16 BE) = 6 bytes. The epoch/bitmap pair makes involuntary
     // server-side topology loss self-healing within one heartbeat.
-    uint8_t inner[INNER_HEADER_SIZE + 6];
-    inner[0] = (uint8_t)(MSG_HEARTBEAT_ACK >> 8);
-    inner[1] = (uint8_t)(MSG_HEARTBEAT_ACK);
-    inner[2] = 0;
-    inner[3] = 6;
-    inner[4] = backendAvailable ? 1 : 0;
-    inner[5] = totalActiveControllers;
-    inner[6] = (uint8_t)(epoch >> 8);
-    inner[7] = (uint8_t)(epoch);
-    inner[8] = (uint8_t)(activeBitmap >> 8);
-    inner[9] = (uint8_t)(activeBitmap);
-    sendEncryptedPacket(conn, inner, sizeof(inner));
+    HotSlot& slot = *to.slot;
+    slot.txDeferredAck.store(packAck(backendAvailable, totalActiveControllers, epoch, activeBitmap),
+                             std::memory_order_seq_cst);
+    if (tryHoldGate(slot)) releaseGate(to.token, to.key, slot);
 }
 
 void ClientAdapter::sendSessionClose(const Connection& conn, uint8_t reason) {
@@ -177,17 +228,17 @@ void ClientAdapter::sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint
     sendEncryptedPacket(conn, inner, sizeof(inner));
 }
 
-void ClientAdapter::sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+void ClientAdapter::sendSpeakerAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                                      const uint8_t* opus, size_t opusLen) {
-    sendAudioMessage(conn, MSG_SPEAKER_AUDIO, ctrlIdx, seq, opus, opusLen);
+    sendAudioMessage(to, MSG_SPEAKER_AUDIO, ctrlIdx, seq, opus, opusLen);
 }
 
-void ClientAdapter::sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+void ClientAdapter::sendHapticAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                                     const uint8_t* opus, size_t opusLen) {
-    sendAudioMessage(conn, MSG_HAPTIC_AUDIO, ctrlIdx, seq, opus, opusLen);
+    sendAudioMessage(to, MSG_HAPTIC_AUDIO, ctrlIdx, seq, opus, opusLen);
 }
 
-void ClientAdapter::sendAudioMessage(const Connection& conn, uint16_t msgType, uint8_t ctrlIdx,
+void ClientAdapter::sendAudioMessage(const SessionEndpoint& to, uint16_t msgType, uint8_t ctrlIdx,
                                      uint16_t seq, const uint8_t* opus, size_t opusLen) {
     // Wire: ctrlIdx(1) + seq(u16 BE) + one Opus packet, the same shape for
     // every outbound audio lane. An empty packet would decode to nothing on
@@ -205,7 +256,7 @@ void ClientAdapter::sendAudioMessage(const Connection& conn, uint16_t msgType, u
     inner[3] = (uint8_t)(payloadLen);
     encodeAudioFrameHeader(inner + INNER_HEADER_SIZE, ctrlIdx, seq);
     std::memcpy(inner + INNER_HEADER_SIZE + AUDIO_WIRE_HEADER_BYTES, opus, opusLen);
-    sendEncryptedPacket(conn, inner, INNER_HEADER_SIZE + payloadLen);
+    sendSealed(to.token, to.key, *to.slot, inner, INNER_HEADER_SIZE + payloadLen);
 }
 
 void ClientAdapter::sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) {

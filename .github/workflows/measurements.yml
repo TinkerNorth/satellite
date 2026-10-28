@@ -1,0 +1,197 @@
+name: Measurements
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version label for measurements-<version>.json and the job summary"
+        type: string
+        required: true
+      upload_to_release:
+        description: "Attach the two files to the release named by tag"
+        type: boolean
+        required: false
+        default: false
+      tag:
+        description: "Release tag to measure and to attach the files to"
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label (default: dev-<short commit>)"
+        type: string
+        required: false
+        default: ""
+      upload_to_release:
+        description: "Attach the two files to the release named by tag"
+        type: boolean
+        required: false
+        default: false
+      tag:
+        description: "Release tag to measure and to attach the files to (default: the ref the workflow runs on)"
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tools/bench/**"
+      - "tests/test_lock_laws.cpp"
+      - "CMakeLists.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Measure (MSVC + vcpkg, Release)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    concurrency:
+      group: measurements-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
+    steps:
+      - name: Check the inputs
+        shell: pwsh
+        env:
+          UPLOAD: ${{ inputs.upload_to_release }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:UPLOAD -eq 'true' -and -not $env:TAG) { throw 'upload_to_release needs a tag' }
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve the version label
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = $env:INPUT_VERSION -replace '^v', ''
+          if (-not $version) { $version = 'dev-' + $env:GITHUB_SHA.Substring(0, 7) }
+          if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z._+-]*$') { throw "version label '$version' may only hold letters, digits, '.', '_', '+' and '-'" }
+          Add-Content -Path $env:GITHUB_ENV -Value "MEASURE_VERSION=$version"
+
+      - name: Prepare vcpkg binary cache
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vcpkg-bincache | Out-Null
+          Add-Content $env:GITHUB_ENV "IMAGE_VERSION=$env:ImageVersion"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-bin-${{ runner.os }}-${{ env.IMAGE_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/ports/**') }}
+          restore-keys: |
+            vcpkg-bin-${{ runner.os }}-
+
+      - name: Configure (MSVC + vcpkg static, Release)
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          $generator = ./scripts/windows-vs-generator.ps1
+          cmake --preset windows-msvc -G $generator
+
+      - name: Build the benchmarks and the lock-law test
+        shell: pwsh
+        run: cmake --build --preset windows-msvc --target bench_frame_path bench_frame_path_lockstats test_lock_laws
+
+      - name: Lock laws
+        shell: pwsh
+        run: ctest --preset windows-msvc -R '^lock_laws$'
+
+      - name: Fetch the previous release's measurements
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          New-Item -ItemType Directory -Force previous-measurements | Out-Null
+          gh release download --pattern 'measurements-*.json' --dir previous-measurements
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '::notice::No earlier release carries measurements; the trend comparison is skipped.'
+          }
+          exit 0
+
+      - name: Run the benchmarks
+        id: bench
+        shell: pwsh
+        run: |
+          function Find-Binary([string]$Name) {
+              foreach ($dir in @('.', 'Release')) {
+                  $path = Join-Path $dir "$Name.exe"
+                  if (Test-Path $path) { return (Resolve-Path $path).Path }
+              }
+              throw "$Name.exe was not built"
+          }
+          New-Item -ItemType Directory -Force measurements-raw | Out-Null
+          $variants = @(
+              @{ Suffix = ''; Extra = @() },
+              @{ Suffix = '-mic1000'; Extra = @('--mic-hz', '1000') }
+          )
+          $failures = @()
+          foreach ($target in @('bench_frame_path', 'bench_frame_path_lockstats')) {
+              $exe = Find-Binary $target
+              foreach ($variant in $variants) {
+                  $extra = $variant.Extra
+                  foreach ($backend in @('mock', 'vigem')) {
+                      $json = "measurements-raw/$target-$backend$($variant.Suffix).json"
+                      Write-Host "::group::$target --backend $backend $($extra -join ' ')"
+                      & $exe --backend $backend @extra --json $json
+                      $code = $LASTEXITCODE
+                      Write-Host '::endgroup::'
+                      if ($code -ne 0) { $failures += "$target --backend $backend $($extra -join ' ') exited with $code" }
+                  }
+              }
+          }
+          if ($failures.Count -gt 0) { throw ($failures -join '; ') }
+
+      - name: Build the report and check the gates
+        id: report
+        if: ${{ !cancelled() && steps.bench.outcome != 'skipped' }}
+        shell: pwsh
+        run: ./scripts/measurements-report.ps1 -InputDir measurements-raw -OutputDir measurements -Version $env:MEASURE_VERSION -PreviousDir previous-measurements
+
+      - name: Upload the measurements
+        if: ${{ !cancelled() && steps.report.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: measurements
+          path: |
+            measurements/measurements-*.json
+            measurements/measurements-*.md
+          retention-days: 90
+          if-no-files-found: warn
+
+  attach:
+    name: Attach to the release
+    needs: [measure]
+    if: ${{ inputs.upload_to_release }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the measurements
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: measurements
+          path: measurements
+
+      - name: Upload to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" measurements/measurements-*.json measurements/measurements-*.md --clobber

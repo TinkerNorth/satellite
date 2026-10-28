@@ -67,14 +67,16 @@ struct FuzzGamepad : IGamepadPort {
 struct FuzzClient : IClientPort {
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {}
+    void sendHeartbeatAck(const SessionEndpoint&, bool, uint8_t, uint16_t, uint16_t) override {}
     void sendSessionClose(const Connection&, uint8_t) override {}
     void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
-    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
-    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendSpeakerAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                          size_t) override {}
+    void sendHapticAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                         size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
 };
 
@@ -180,6 +182,7 @@ void parseAndDispatch(uint32_t token, uint32_t counter, const uint8_t* plaintext
     } else {
         g_svc->updatePostDecryptV4(token, counter, senderIPv4, senderPort);
         const DispatchResult cold = dispatchInnerMessage(*g_svc, token, msgType, payload, msgLen);
+        g_svc->drainMicForTest();
         // The fused fast path above and the dispatcher's own length guard must
         // agree on what a gamepad frame is: anything routed here is not one.
         require(!cold.wasGamepadData, "dispatcher accepted a gamepad frame the fast path refused");

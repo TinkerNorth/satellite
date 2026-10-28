@@ -39,14 +39,16 @@ const uint8_t PAIRING_KEY[CRYPTO_KEY_SIZE] = {7,  8,  9,  10, 11, 12, 13, 14, 15
 struct SilentClient : IClientPort {
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {}
+    void sendHeartbeatAck(const SessionEndpoint&, bool, uint8_t, uint16_t, uint16_t) override {}
     void sendSessionClose(const Connection&, uint8_t) override {}
     void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
-    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
-    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendSpeakerAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                          size_t) override {}
+    void sendHapticAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                         size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
 };
 

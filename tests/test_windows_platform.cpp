@@ -14,12 +14,14 @@
 #include "../src/platform/windows/update_toast.h"
 #include "../src/platform/windows/pointer_inject.h"
 #include "../src/platform/windows/app_lifecycle.h"
+#include "../src/platform/windows/dir_tree.h"
 #include "../src/core/update_service.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -128,6 +130,57 @@ static void testConfigPath() {
     TEST("configPath: lives under satellite\\config.json");
     std::string p = configPath();
     EXPECT(p.find("\\satellite\\config.json") != std::string::npos);
+}
+
+static void testConfigDirOverride() {
+    wchar_t temp[MAX_PATH];
+    const DWORD tempLen = GetTempPathW(MAX_PATH, temp);
+    const std::wstring dir = std::wstring(temp, tempLen) + L"satellite-config-override-test";
+    SetEnvironmentVariableW(L"SATELLITE_CONFIG_DIR", dir.c_str());
+    const std::string p = configPath();
+    const DWORD attrs = GetFileAttributesW(dir.c_str());
+    SetEnvironmentVariableW(L"SATELLITE_CONFIG_DIR", nullptr);
+    RemoveDirectoryW(dir.c_str());
+
+    const std::string tail = "\\satellite-config-override-test\\config.json";
+    TEST("configPath: SATELLITE_CONFIG_DIR names the directory");
+    EXPECT(p.size() > tail.size() && p.compare(p.size() - tail.size(), tail.size(), tail) == 0);
+    TEST("configPath: creates the named directory");
+    EXPECT(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    TEST("configPath: back under satellite\\config.json once the variable is gone");
+    EXPECT(configPath().find("\\satellite\\config.json") != std::string::npos);
+}
+
+static void testEnsureDirectoryTree() {
+    wchar_t temp[MAX_PATH];
+    const DWORD tempLen = GetTempPathW(MAX_PATH, temp);
+    const std::wstring root = std::wstring(temp, tempLen) + L"satellite-tree-test";
+    const std::wstring leaf = root + L"\\a\\b\\c";
+    RemoveDirectoryW(leaf.c_str());
+    RemoveDirectoryW((root + L"\\a\\b").c_str());
+    RemoveDirectoryW((root + L"\\a").c_str());
+    RemoveDirectoryW(root.c_str());
+
+    TEST("ensureDirectoryTree: creates every missing level of a path");
+    EXPECT(lifecycle::ensureDirectoryTree(leaf));
+    const DWORD attrs = GetFileAttributesW(leaf.c_str());
+    EXPECT(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+
+    TEST("ensureDirectoryTree: an existing directory is accepted");
+    EXPECT(lifecycle::ensureDirectoryTree(leaf));
+
+    TEST("ensureDirectoryTree: a file in the way is refused");
+    const std::wstring file = root + L"\\in-the-way";
+    HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    EXPECT(!lifecycle::ensureDirectoryTree(file + L"\\below"));
+
+    DeleteFileW(file.c_str());
+    RemoveDirectoryW(leaf.c_str());
+    RemoveDirectoryW((root + L"\\a\\b").c_str());
+    RemoveDirectoryW((root + L"\\a").c_str());
+    RemoveDirectoryW(root.c_str());
 }
 
 static void testConfigRoundTrip() {
@@ -646,9 +699,8 @@ static void testUpdateToastWithTheRealService() {
         ToastProbe probe;
         ToastProbeUpdater updater;
         ToastProbeLog log;
-        Config cfg;
-        std::mutex cfgMtx;
-        UpdateService svc(updater, log, cfg, cfgMtx);
+        ConfigStore store(Config{}, nullptr);
+        UpdateService svc(updater, log, store);
         svc.setStatusCallback(
             [&probe](const UpdateStatusSnapshot& snap) { probeToast(probe, snap); });
         svc.start();
@@ -792,6 +844,12 @@ static void testFileLoggerFlush() {
     EXPECT(!lifecycle::flushFileLog(10));
 
     TempLogDir dir;
+    const std::wstring stale = dir.path + L"\\satellite-20000101.log";
+    std::ofstream(std::filesystem::path(stale)) << "stale\r\n";
+    std::error_code aged;
+    std::filesystem::last_write_time(
+        stale, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 8), aged);
+    EXPECT(!aged);
     lifecycle::startFileLogger(dir.utf8());
     const std::string first = "flush probe " + std::to_string(GetTickCount64());
     logMsg(LogLevel::INFO, "test", first);
@@ -801,6 +859,9 @@ static void testFileLoggerFlush() {
     EXPECT_EQ(dir.logFiles().size(), static_cast<size_t>(1));
     const std::string afterFirst = firstLogFileContent(dir);
     EXPECT(afterFirst.find("[INFO ] [test] " + first + "\r\n") != std::string::npos);
+
+    TEST("file logger: a log older than the 7-day retention is deleted when the writer starts");
+    EXPECT(GetFileAttributesW(stale.c_str()) == INVALID_FILE_ATTRIBUTES);
 
     TEST("flushFileLog: a later flush delivers what was logged since the previous one");
     logMsg(LogLevel::WARN, "test", "second probe");
@@ -821,6 +882,8 @@ int main() {
 
     testConfigEscapingRoundTrip();
     testConfigPath();
+    testConfigDirOverride();
+    testEnsureDirectoryTree();
     testConfigRoundTrip();
     testAtomicWriteFile();
     testDiscoveryBroadcastConfig();

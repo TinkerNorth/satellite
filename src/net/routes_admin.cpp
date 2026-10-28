@@ -4,16 +4,20 @@
 // and registerAdminRoutes is the table that binds paths to them; the JSON
 // builders used only by this surface stay file-static.
 #include "routes_admin.h"
+#include "admin_json.h"
+#include "event_stream.h"
 #include "routes_common.h"
 #include "crypto.h"
 #include "config.h"
 #include "pairing.h"
 #include "pairing_service.h"
 #include "adapters/crash_adapter.h"
+#include "core/config_effects.h"
 #include "core/config_patch.h"
+#include "core/event_broadcaster.h"
 #include "core/json.h"
-#include "core/log_ring.h"
 #include "core/session_service.h"
+#include "core/tracked_mutex.h"
 #include "core/update_service.h"
 #include "core/update_types.h"
 #include "core/version.h"
@@ -25,7 +29,7 @@
 #include "status_json.h"
 
 #include <cstdlib>
-#include <mutex>
+#include <memory>
 #include <string>
 
 using satellite::applyConfigPatch;
@@ -33,16 +37,18 @@ using satellite::buildDebugJson;
 using satellite::buildSseStatusObject;
 using satellite::buildStatusJson;
 using satellite::buildUpdateJson;
+using satellite::ConfigEffects;
+using satellite::ConfigEffectSinks;
 using satellite::configPatchLogLine;
 using satellite::ConfigPatchOutcome;
+using satellite::EventBroadcaster;
 using satellite::Json;
 using satellite::jsonBool;
 using satellite::jsonDump;
 using satellite::JsonOut;
 using satellite::jsonStr;
-using satellite::logEntryJson;
-using satellite::logRingSlotsSince;
 using satellite::senderIpLabel;
+using satellite::serveEventStreams;
 using satellite::sseEvent;
 using satellite::StatusFields;
 
@@ -53,115 +59,6 @@ using Response = httplib::Response;
 
 static constexpr const char* CACHE_CONTROL = "Cache-Control";
 static constexpr const char* NO_CACHE = "no-cache";
-
-static JsonOut controllerBatteryObj(const SessionService::ConnectionSnapshot::CtrlInfo& ctrl) {
-    JsonOut battery;
-    if (ctrl.batteryLevel == BATTERY_LEVEL_UNKNOWN) {
-        battery["level"] = nullptr;
-    } else {
-        battery["level"] = ctrl.batteryLevel;
-    }
-    battery["status"] = batteryStatusName(ctrl.batteryStatus);
-    return battery;
-}
-
-static JsonOut controllerSnapshotObj(const SessionService::ConnectionSnapshot::CtrlInfo& ctrl) {
-    // Only Live/Detached are surfaced today; transient states aren't yet
-    // threaded through SessionService. See ControllerState in core/types.h.
-    const char* ctrlState = ctrl.active ? controllerStateName(ControllerState::Live)
-                                        : controllerStateName(ControllerState::Detached);
-    JsonOut o;
-    o["controllerIndex"] = ctrl.index;
-    o["serialNo"] = ctrl.serial;
-    o["pluggedIn"] = ctrl.pluggedIn;
-    o["state"] = ctrlState;
-    o["controllerType"] = controllerTypeName(ctrl.controllerType);
-    o["controllerTypeLabel"] = controllerTypeLabel(ctrl.controllerType);
-    // Resolved here so the dashboard never rebuilds an asset path from the wire enum.
-    o["catalogSlug"] = controllerTypeCatalogSlug(ctrl.controllerType);
-    o["touchpadMode"] = touchpadModeName(ctrl.touchpadMode);
-    if (ctrl.backendId.empty()) {
-        o["backend"] = nullptr;
-    } else {
-        o["backend"] = ctrl.backendId;
-    }
-    if (ctrl.batteryKnown) {
-        o["battery"] = controllerBatteryObj(ctrl);
-    } else {
-        o["battery"] = nullptr;
-    }
-    o["motionCapable"] = ctrl.motionCapable;
-    o["motionActive"] = ctrl.motionActive;
-    o["motionSink"] = ctrl.motionSink;
-    // Backend has an IMU surface for this controller type; UI warns when
-    // motionCapable but not this (motion has nowhere to land, e.g. Xbox pad).
-    o["motionSinkSupportedForType"] = ctrl.motionSinkSupportedForType;
-    // IMU sink was created at plug-in; false flags a kernel-level failure
-    // (uinput perms, kernel too old) vs. just "no game subscribed".
-    o["motionBackendOk"] = ctrl.motionBackendOk;
-    o["touchpadActive"] = ctrl.touchpadActive;
-    o["lightbarCapable"] = ctrl.lightbarCapable;
-    if (ctrl.lightbarKnown) {
-        char rgb[8];
-        snprintf(rgb, sizeof(rgb), "#%02x%02x%02x", ctrl.lightbarR, ctrl.lightbarG, ctrl.lightbarB);
-        o["lightbar"] = std::string(rgb);
-    } else {
-        o["lightbar"] = nullptr;
-    }
-    return o;
-}
-
-// `state` fields serialise as lowercase enum names, the canonical wire form.
-// `connectedAtEpoch` is steady-clock seconds (boot-relative), not Unix epoch.
-static JsonOut connectionSnapshotObj(const SessionService::ConnectionSnapshot& cs) {
-    JsonOut c;
-    c["connectionId"] = cs.connectionId;
-    c["deviceId"] = cs.deviceId;
-    c["deviceName"] = cs.deviceName;
-    c["senderIP"] = cs.clientIP;
-    c["connectedAtEpoch"] = cs.connectedAtEpoch;
-    c["epoch"] = cs.epoch;
-    c["mouseControlGranted"] = cs.mouseControlGranted;
-    c["protocolVersion"] = cs.protocolVersion;
-    c["protocolCurrent"] = PROTOCOL_VERSION;
-    // Active or NotResponding here; /api/devices covers the Paired (offline) case.
-    c["state"] = deviceLinkStateName(cs.linkState);
-    JsonOut controllers = JsonOut::array();
-    for (const auto& ctrl : cs.controllers) controllers.push_back(controllerSnapshotObj(ctrl));
-    c["controllers"] = std::move(controllers);
-    c["activeControllerCount"] = cs.activeControllerCount;
-    return c;
-}
-
-static std::string buildConnectionsJson(const SessionService& svc) {
-    const auto snap = svc.getConnectionsSnapshot();
-    JsonOut connections = JsonOut::array();
-    for (const auto& cs : snap.connections) connections.push_back(connectionSnapshotObj(cs));
-    JsonOut j;
-    j["connections"] = std::move(connections);
-    j["totalControllers"] = snap.totalControllers;
-    j["maxControllers"] = snap.maxControllers;
-    j["backendAvailable"] = snap.backendAvailable;
-    return jsonDump(j);
-}
-
-// Paired devices + their live link state (paired | active | notResponding).
-// Shared by the admin route and the SSE devices event.
-static std::string buildDevicesJson(const SessionService& svc) {
-    JsonOut arr = JsonOut::array();
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    for (const auto& d : g_config.pairedDevices) {
-        const DeviceLinkState s = svc.linkStateForDevice(d.id);
-        JsonOut o;
-        o["id"] = d.id;
-        o["name"] = d.name;
-        o["lastIP"] = d.lastIP;
-        o["pairedAt"] = d.pairedAt;
-        o["state"] = deviceLinkStateName(s);
-        arr.push_back(std::move(o));
-    }
-    return jsonDump(arr);
-}
 
 static std::string buildPinJson() {
     const PinSnapshot s = pinSnapshot();
@@ -188,19 +85,19 @@ static std::string buildPairRequestsJson() {
     return jsonDump(arr);
 }
 
-// The settings the status surfaces show, read under the config lock in one go.
+// The settings the status surfaces show, read from one config snapshot.
 static void readConfigStatus(StatusFields& f) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    f.udpPort = g_config.udpPort;
-    f.webPort = g_config.webPort;
-    f.autoStart = g_config.autoStart;
-    f.discoveryBroadcastEnabled = g_config.discoveryBroadcastEnabled;
-    f.controllerAudio = g_config.controllerAudio;
-    f.controllerAudioMic = g_config.controllerAudioMic;
-    f.controllerAudioSpeaker = g_config.controllerAudioSpeaker;
-    f.controllerAudioHaptics = g_config.controllerAudioHaptics;
-    f.controllerAudioKeepDefaultDevice = g_config.controllerAudioKeepDefaultDevice;
-    f.crashReporting = g_config.crashReporting;
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    f.udpPort = cfg->udpPort;
+    f.webPort = cfg->webPort;
+    f.autoStart = cfg->autoStart;
+    f.discoveryBroadcastEnabled = cfg->discoveryBroadcastEnabled;
+    f.controllerAudio = cfg->controllerAudio;
+    f.controllerAudioMic = cfg->controllerAudioMic;
+    f.controllerAudioSpeaker = cfg->controllerAudioSpeaker;
+    f.controllerAudioHaptics = cfg->controllerAudioHaptics;
+    f.controllerAudioKeepDefaultDevice = cfg->controllerAudioKeepDefaultDevice;
+    f.crashReporting = cfg->crashReporting;
 }
 
 // The receiver thread's counters, as the dashboard reads them.
@@ -228,10 +125,7 @@ static void readWireStatus(StatusFields& f) {
     f.sessionsReaped = w.sessionsReaped;
 }
 
-static uint64_t currentLogSeq() {
-    std::lock_guard<std::mutex> lk(g_logMtx);
-    return g_logSeq;
-}
+static uint64_t currentLogSeq() { return logWriter().recent().published(); }
 
 // The updater is wired per platform and null where it is not; a route that
 // needs it says so with a 503.
@@ -246,6 +140,7 @@ static void replyUpdateSnapshot(Response& res, const UpdateService& updater) {
 
 // Rejects cross-origin / rebound requests before any route runs.
 static httplib::Server::HandlerResponse guardOrigin(const Request& req, Response& res) {
+    setThreadRole(ThreadRole::HttpAdmin);
     const std::string host = req.get_header_value("Host");
     if (!host.empty() && !satellite::isLoopbackHost(host)) {
         replyError(res, 403, "forbidden host");
@@ -305,16 +200,13 @@ static void statusRoute(SessionService& svc, const Request&, Response& res) {
 }
 
 static void netinfoRoute(const Request&, Response& res) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
     NetworkInfo info;
-    std::string selected;
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        info.udpPort = g_config.udpPort;
-        info.webPort = g_config.webPort;
-        info.discPort = g_config.discPort;
-        selected = g_config.networkInterface;
-        info.allowPublic = g_config.allowPublicNetwork;
-    }
+    const std::string selected = cfg->networkInterface;
+    info.udpPort = cfg->udpPort;
+    info.webPort = cfg->webPort;
+    info.discPort = cfg->discPort;
+    info.allowPublic = cfg->allowPublicNetwork;
     info.clientPort = DEFAULT_CLIENT_PORT;
     info.mdnsPort = mdns::MULTICAST_PORT;
     info.selected = selected;
@@ -339,29 +231,34 @@ static void netinfoRoute(const Request&, Response& res) {
 static void allowPublicRoute(const Request&, Response& res) {
     const bool ok = allowPublicFirewall();
     if (ok) {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        g_config.allowPublicNetwork = true;
-        saveConfig(g_config);
+        g_configStore->update([](Config& cfg) {
+            cfg.allowPublicNetwork = true;
+            return true;
+        });
     }
     JsonOut resp;
     resp["ok"] = ok;
     replyJson(res, jsonDump(resp));
 }
 
-// The form's patch, under the config lock for the whole of it so a concurrent
-// reader never sees half a POST. The response echoes the port in force, which
-// after a rejection is the one that was already stored.
-static void configRoute(const Request& req, Response& res) {
+static bool patchConfig(Config& cfg, const Json& body, ConfigPatchOutcome& outcome) {
+    outcome = applyConfigPatch(body, cfg);
+    return true;
+}
+
+// The form's patch, published in one update so a concurrent reader never sees
+// half a POST. The response echoes the port in force, which after a rejection
+// is the one that was already stored.
+static void configRoute(ConfigEffects& effects, const Request& req, Response& res) {
     const Json body = parseBody(req.body);
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    const ConfigPatchOutcome patch = applyConfigPatch(body, g_config);
-    if (patch.autoStartPresent) setAutoStart(g_config.autoStart);
-    if (patch.crashReportingPresent) crash::setEnabled(g_config.crashReporting);
-    saveConfig(g_config);
-    logMsg(LogLevel::INFO, "web", configPatchLogLine(g_config, patch.udpPortRejected));
+    ConfigPatchOutcome patch;
+    const std::shared_ptr<const Config> cfg =
+        g_configStore->update([&](Config& next) { return patchConfig(next, body, patch); });
+    effects.apply(*g_configStore);
+    logMsg(LogLevel::INFO, "web", configPatchLogLine(*cfg, patch.udpPortRejected));
     JsonOut resp;
     resp["ok"] = true;
-    resp["udpPort"] = g_config.udpPort;
+    resp["udpPort"] = cfg->udpPort;
     resp["udpPortRejected"] = patch.udpPortRejected;
     replyJson(res, jsonDump(resp));
 }
@@ -571,15 +468,7 @@ static void logsRoute(const Request& req, Response& res) {
     if (req.has_param("since")) {
         since = strtoull(req.get_param_value("since").c_str(), nullptr, 10);
     }
-    std::lock_guard<std::mutex> lk(g_logMtx);
-    JsonOut entries = JsonOut::array();
-    for (const auto& slot : logRingSlotsSince(LOG_RING_SIZE, g_logHead, g_logSeq, since)) {
-        entries.push_back(logEntryJson(slot.seq, g_logRing[static_cast<size_t>(slot.index)]));
-    }
-    JsonOut j;
-    j["seq"] = g_logSeq;
-    j["entries"] = std::move(entries);
-    replyJson(res, jsonDump(j));
+    replyJson(res, buildLogsJson(since));
 }
 
 // One SSE tick: every stream the dashboard multiplexes, in one write.
@@ -605,28 +494,11 @@ static std::string sseTick(SessionService& svc) {
     return frame;
 }
 
-// One tick a second until the client goes away or the app shuts down.
-static bool streamEvents(SessionService& svc, httplib::DataSink& sink) {
-    while (g_appRunning) {
-        const std::string frame = sseTick(svc);
-        if (!sink.write(frame.c_str(), frame.size())) return false;
-        for (int i = 0; i < 10 && g_appRunning; i++) netSleepMs(100);
-    }
-    return false;
-}
-
-// SSE: one stream multiplexes status/connections/devices/update/pin/
-// pairRequests events.
-static void eventsRoute(SessionService& svc, const Request&, Response& res) {
-    res.set_header(CACHE_CONTROL, NO_CACHE);
-    res.set_header("X-Accel-Buffering", "no");
-    res.set_chunked_content_provider(
-        "text/event-stream",
-        [&svc](size_t /*offset*/, httplib::DataSink& sink) { return streamEvents(svc, sink); });
-}
-
 // Admin server: web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
+    const auto effects = std::make_shared<ConfigEffects>(ConfigEffectSinks{
+        [](bool on) { setAutoStart(on); }, [](bool on) { crash::setEnabled(on); }});
+    const auto streams = std::make_shared<EventBroadcaster>([&svc] { return sseTick(svc); });
     server.set_pre_routing_handler(guardOrigin);
     server.set_mount_point("/", g_webDir, httplib::Headers{{CACHE_CONTROL, NO_CACHE}});
     server.Get("/", redirectToDashboard);
@@ -642,7 +514,8 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
                [&svc](const Request& req, Response& res) { statusRoute(svc, req, res); });
     server.Get("/api/netinfo", netinfoRoute);
     server.Post("/api/network/allow-public", allowPublicRoute);
-    server.Post("/api/config", configRoute);
+    server.Post("/api/config",
+                [effects](const Request& req, Response& res) { configRoute(*effects, req, res); });
     server.Get("/api/version", versionRoute);
 
     server.Get("/api/updates/status", updatesStatusRoute);
@@ -673,6 +546,5 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
         kickConnectionRoute(svc, req, res);
     });
     server.Get("/api/logs", logsRoute);
-    server.Get("/api/events",
-               [&svc](const Request& req, Response& res) { eventsRoute(svc, req, res); });
+    serveEventStreams(server, "/api/events", streams);
 }

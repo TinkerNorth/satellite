@@ -27,6 +27,7 @@
 #include "adapters/log_adapter.h"
 #include "adapters/crash_adapter.h"
 #include "adapters/audio/opus_codec.h"
+#include "app/audio_settings.h"
 
 #include "core/gamepad_mux.h"
 #include "core/session_service.h"
@@ -61,17 +62,8 @@ void showFatalError(const wchar_t* title, const wchar_t* heading, const wchar_t*
     TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
 }
 
-// Refresh the tray tooltip every ~2s. Cheap: updateTrayTooltip skips the
-// NIM_MODIFY round-trip when the composed string is unchanged.
-void tooltipTickerThread() {
-    using namespace std::chrono_literals;
-    while (g_appRunning.load(std::memory_order_relaxed)) {
-        updateTrayTooltip();
-        std::this_thread::sleep_for(2s);
-    }
-}
-
 void addrChangeWatcherThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     while (g_appRunning.load(std::memory_order_relaxed)) {
         OVERLAPPED ov{};
         ov.hEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -105,8 +97,8 @@ void addrChangeWatcherThread() {
 bool crashForTestIfAsked(const std::string& cmd) {
     lifecycle::CrashTestKind kind = lifecycle::CrashTestKind::Exception;
     if (!lifecycle::parseCrashTestSwitch(cmd, kind)) return false;
-    g_config = loadConfig();
-    crash::init(g_config.crashReporting, lifecycle::sentryDir() + "\\crash-test");
+    const Config cfg = loadConfig();
+    crash::init(cfg.crashReporting, lifecycle::sentryDir() + "\\crash-test");
     lifecycle::rearmCrashFilterChain();
     lifecycle::crashForTest(kind);
     return true;
@@ -176,44 +168,27 @@ static bool g_installDefaultsApplied = false;
 
 // On first run (no JSON yet) seed autostart from the registry so the
 // installer's task selection survives; the JSON is authoritative after that.
-void loadConfigSeedingAutostart() {
+Config loadConfigSeedingAutostart() {
     bool firstRun;
     {
         std::ifstream probe(configPath());
         firstRun = !probe.is_open();
     }
-    g_config = loadConfig();
-    if (firstRun) g_config.autoStart = getAutoStart();
-    if (satellite::applyInstallDefaults(g_config, installdefaults::readInstallDefaults())) {
-        saveConfig(g_config);
-        g_installDefaultsApplied = true;
-    }
+    Config cfg = loadConfig();
+    if (firstRun) cfg.autoStart = getAutoStart();
+    return cfg;
 }
 
-// The settings the adapters read per plug and per frame rather than cache: the
-// dashboard toggle takes effect on the next pad (the audio persona, which a
-// pad already carrying audio keeps until it is replugged) or the next frame
-// (the wire directions, which gate the wire rather than the persona).
-bool controllerAudioEnabled() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return g_config.controllerAudio;
+bool applyInstallerChoices(Config& cfg, const satellite::InstallDefaults& defaults) {
+    g_installDefaultsApplied = satellite::applyInstallDefaults(cfg, defaults);
+    return g_installDefaultsApplied;
 }
 
-bool keepDefaultAudioDevice() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return g_config.controllerAudioKeepDefaultDevice;
-}
-
-ControllerAudioPolicy audioPolicyFromConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
-                                 g_config.controllerAudioHaptics};
-}
-
-// Under g_configMtx so saveConfig sees a consistent struct.
-void persistConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    saveConfig(g_config);
+void createConfigStore(ILogPort& log) {
+    g_configStore = std::make_unique<ConfigStore>(loadConfigSeedingAutostart(), saveConfig, &log);
+    const satellite::InstallDefaults defaults = installdefaults::readInstallDefaults();
+    g_configStore->update(
+        [&defaults](Config& cfg) { return applyInstallerChoices(cfg, defaults); });
 }
 
 struct UpdateToastGate {
@@ -256,7 +231,6 @@ struct Workers {
     std::thread client;
     std::thread disc;
     std::thread mdns;
-    std::thread tooltip;
     std::thread addr;
 };
 
@@ -267,7 +241,6 @@ Workers startWorkers(SessionService& svc, ClientAdapter& clientAdapter) {
     w.client = std::thread(clientApiThread, std::ref(svc));
     w.disc = std::thread(discoveryThread);
     w.mdns = std::thread(mdnsResponderThread);
-    w.tooltip = std::thread(tooltipTickerThread);
     w.addr = std::thread(addrChangeWatcherThread);
     return w;
 }
@@ -278,7 +251,6 @@ void joinWorkers(Workers& w) {
     w.client.join();
     w.disc.join();
     w.mdns.join();
-    w.tooltip.join();
     w.addr.join();
 }
 
@@ -311,6 +283,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     lifecycle::applyRuntimeMitigations();
     lifecycle::installCrashHandler();
     lifecycle::installTerminateHandler();
+    ScopedThreadRole role(ThreadRole::Gui);
 
     const std::string cmd = lpCmdLine != nullptr ? lpCmdLine : "";
     if (crashForTestIfAsked(cmd)) return 3;
@@ -328,13 +301,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     if (!startWinsock()) return 1;
     if (!startCrypto()) return 1;
 
-    loadConfigSeedingAutostart();
+    LogAdapter logAdapter;
+    createConfigStore(logAdapter);
 
     // Crash reporting arms here rather than beside installCrashHandler(),
     // because it needs the operator's opt-in and that only exists once the
     // config has been read. Sentry installs its own top-level filter, so
     // satellite's goes back on top afterwards and chains to it.
-    crash::init(g_config.crashReporting, lifecycle::sentryDir());
+    crash::init(g_configStore->current()->crashReporting, lifecycle::sentryDir());
     lifecycle::rearmCrashFilterChain();
 
     // Constructive only: writes HKCU\Run when autostart is on, never deletes,
@@ -345,10 +319,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // before the user can report a crash.
     lifecycle::startFileLogger(lifecycle::logDir());
     if (g_installDefaultsApplied) {
+        const std::shared_ptr<const Config> cfg = g_configStore->current();
         logMsg(LogLevel::INFO, "config",
                std::string("Applied the installer's privacy choices: update check ") +
-                   (g_config.autoCheck ? "on" : "off") + ", crash reports " +
-                   (g_config.crashReporting ? "on" : "off"));
+                   (cfg->autoCheck ? "on" : "off") + ", crash reports " +
+                   (cfg->crashReporting ? "on" : "off"));
     }
     const bool uiAccess = uiaccess::tokenHasUiAccess();
     g_uiAccess.store(uiAccess);
@@ -361,6 +336,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // HIDMaestro for the rest and as the fallback when ViGEmBus is absent.
     ViGEmAdapter vigemAdapter;
     satellite::hidmaestro::HelperClient hmProvisioner;
+    satellite::hidmaestro::connectBrokerWhenDriverInstalled(&hmProvisioner);
+    hmProvisioner.connectBrokerInBackground();
     // Windows ranks a newly arrived endpoint above every device the user has
     // ever chosen, so materializing the pad hands it the whole desktop's audio.
     // Declared BEFORE the adapter that borrows it, so it is still alive while
@@ -375,7 +352,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
         logMsg(LogLevel::WARN, "pointer", detail);
     };
     ClientAdapter clientAdapter;
-    LogAdapter logAdapter;
     // Controller audio's Opus codec, injected for the same reason as the key
     // deriver above: the core owns the stream shapes, not the library that
     // codes them. Stateless and scoped to main, so it outlives the service.
@@ -387,8 +363,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // OTA updater. Owner/repo are baked in (forking means changing this line).
     WindowsUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
     UpdateToastGate updateToastGate;
-    UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
-    updateService.setPersistCallback(persistConfig);
+    UpdateService updateService(updaterAdapter, logAdapter, *g_configStore);
     updateService.setStatusCallback([&updateToastGate](const UpdateStatusSnapshot& snap) {
         onUpdateStatus(updateToastGate, snap);
     });
@@ -427,7 +402,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     crash::shutdown();
 
     removeTrayIcon();
-    saveConfig(g_config);
+    g_configStore->stop();
     timeEndPeriod(1);
     WSACleanup();
     if (SUCCEEDED(hrCoInit)) CoUninitialize();

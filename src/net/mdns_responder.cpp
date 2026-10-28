@@ -8,6 +8,7 @@
 #include "net/datagram_receiver.h"
 #include "net/local_iface.h"
 #include "net/mdns_rejoin.h"
+#include "core/tracked_mutex.h"
 
 #include <chrono>
 #include <cctype>
@@ -48,11 +49,7 @@ bool getLocalIPv4(uint8_t out[4]) {
 }
 
 bool boundIPv4(uint8_t out[4]) {
-    std::string sel;
-    {
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        sel = g_config.networkInterface;
-    }
+    const std::string sel = g_configStore->current()->networkInterface;
     uint32_t ip = 0;
     if (resolveBoundIPv4(sel, ip)) {
         std::memcpy(out, &ip, 4);
@@ -77,13 +74,14 @@ std::string shortHostLabel() {
 // `ipv4` (4 bytes, network order) is borrowed and must outlive `out`.
 void fillServiceInputs(mdns::ResponseInputs& out, const std::string& instanceLabel,
                        const std::string& hostLabel, const uint8_t* ipv4) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
     out.instanceName = instanceLabel;
     out.hostName = hostLabel;
-    out.udpPort = static_cast<uint16_t>(g_config.udpPort);
+    out.udpPort = static_cast<uint16_t>(cfg->udpPort);
     // `pair`/`http` both carry the single HTTPS client API port. `mid` is the
     // stable per-install id so the dish dedupes us across DHCP address changes.
     out.txtPairs = {
-        {"udp", std::to_string(g_config.udpPort)},
+        {"udp", std::to_string(cfg->udpPort)},
         {"pair", std::to_string(DEFAULT_CLIENT_PORT)},
         {"http", std::to_string(DEFAULT_CLIENT_PORT)},
         {"mid", ensureMachineId()},
@@ -576,6 +574,7 @@ void sendGoodbye(const Responder& r) {
 // Long on purpose: the responder's whole lifecycle, bring-up to goodbye, in
 // one flow; each step is named above, and the unwind paths read in order here.
 void mdnsResponderThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     if (!netInit()) return;
 
     Responder r;

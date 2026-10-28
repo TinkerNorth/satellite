@@ -82,10 +82,14 @@ struct MockViGem : IGamepadPort {
     bool lastMouseRight = false;
     bool lastMouseMiddle = false;
     int lastMouseWheel = 0;
+    std::vector<std::thread::id> mouseCallers;
+    std::vector<std::thread::id> micCallers;
+    std::vector<MouseButtons> mouseButtonLog;
     // Tests synthesize "the platform fired a notification" by invoking these via
     // fireRumble / fireLightbar.
     RumbleCallback capturedRumbleCb;
     LightbarCallback capturedLightbarCb;
+    std::function<void(uint32_t)> onPlugged;
 
     // Identity recorded per serial at plug (several tests assert which pad was
     // plugged); lastIdentity is the most recent plug's.
@@ -121,8 +125,11 @@ struct MockViGem : IGamepadPort {
         lastIdentity = identity;
         identityBySerial[serial] = identity;
         pluggedSerials.push_back(serial);
-        std::lock_guard<std::mutex> lk(pluggedMtx);
-        if (pluginReturnVal) pluggedSet.insert(serial);
+        {
+            std::lock_guard<std::mutex> lk(pluggedMtx);
+            if (pluginReturnVal) pluggedSet.insert(serial);
+        }
+        if (pluginReturnVal && onPlugged) onPlugged(serial);
         return pluginReturnVal;
     }
     bool supportsIdentity(GamepadIdentity identity) const override {
@@ -178,6 +185,8 @@ struct MockViGem : IGamepadPort {
     }
     bool submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) override {
         submitRelativeMouseCalls++;
+        mouseCallers.push_back(std::this_thread::get_id());
+        mouseButtonLog.push_back(buttons);
         lastMouseDx = dx;
         lastMouseDy = dy;
         lastMouseButton = buttons.left;
@@ -231,6 +240,7 @@ struct MockViGem : IGamepadPort {
     }
     bool submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) override {
         submitMicAudioCalls++;
+        micCallers.push_back(std::this_thread::get_id());
         lastMicAudioSerial = serial;
         lastMicAudioSamples = samples;
         lastMicAudioPcm.assign(mono48k, mono48k + samples);
@@ -294,6 +304,7 @@ struct MockViGem : IGamepadPort {
 
 struct MockClient : IClientPort {
     int heartbeatAckCalls = 0;
+    uint32_t lastAckToken = 0;
     uint64_t lastAckAddr = 0;
     bool lastAckBackendAvailable = false;
     uint8_t lastAckTotalControllers = 0;
@@ -305,6 +316,7 @@ struct MockClient : IClientPort {
     // Optional ordering probe, fired inside sendSessionClose (e.g. to assert
     // the notify precedes teardown's unplugs).
     std::function<void()> onSessionClose;
+    std::function<void(const Connection&)> onRumble;
 
     int rumbleCalls = 0;
     int lightbarCalls = 0;
@@ -335,11 +347,12 @@ struct MockClient : IClientPort {
 
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection& conn, bool backendAvailable,
+    void sendHeartbeatAck(const SessionEndpoint& to, bool backendAvailable,
                           uint8_t totalActiveControllers, uint16_t epoch,
                           uint16_t activeBitmap) override {
         heartbeatAckCalls++;
-        lastAckAddr = addressOf(conn);
+        lastAckToken = to.token;
+        lastAckAddr = to.slot->clientAddr.load(std::memory_order_acquire);
         lastAckBackendAvailable = backendAvailable;
         lastAckTotalControllers = totalActiveControllers;
         lastAckEpoch = epoch;
@@ -351,6 +364,7 @@ struct MockClient : IClientPort {
         if (onSessionClose) onSessionClose();
     }
     void sendRumble(const Connection& conn, uint8_t ctrlIdx, const RumbleReport& report) override {
+        if (onRumble) onRumble(conn);
         rumbleCalls++;
         if (reaches(conn)) deliveredRumbles++;
         lastRumbleConnToken = conn.token;
@@ -382,18 +396,18 @@ struct MockClient : IClientPort {
         lastPlayerLedsCtrlIdx = ctrlIdx;
         lastPlayerLeds = ledMask;
     }
-    void sendSpeakerAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq,
+    void sendSpeakerAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
                           const uint8_t* opus, size_t opusLen) override {
         speakerAudioCalls++;
-        lastSpeakerAudioConnToken = conn.token;
+        lastSpeakerAudioConnToken = to.token;
         lastSpeakerAudioCtrlIdx = ctrlIdx;
         lastSpeakerAudioSeq = seq;
         lastSpeakerAudioOpus.assign(opus, opus + opusLen);
     }
-    void sendHapticAudio(const Connection& conn, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
-                         size_t opusLen) override {
+    void sendHapticAudio(const SessionEndpoint& to, uint8_t ctrlIdx, uint16_t seq,
+                         const uint8_t* opus, size_t opusLen) override {
         hapticAudioCalls++;
-        lastHapticAudioConnToken = conn.token;
+        lastHapticAudioConnToken = to.token;
         lastHapticAudioCtrlIdx = ctrlIdx;
         lastHapticAudioSeq = seq;
         lastHapticAudioOpus.assign(opus, opus + opusLen);
@@ -479,6 +493,20 @@ upsert(SessionService& svc, const std::vector<ControllerDescriptor>& descriptors
        bool mouseControl = false, int protocolVersion = PROTOCOL_VERSION) {
     return svc.upsertSession(devId, devName, "192.168.1.100", TEST_KEY, descriptors, mouseControl,
                              protocolVersion);
+}
+
+static bool routeTouch(SessionService& svc, uint32_t token, uint8_t index,
+                       const TouchpadReport& report) {
+    const bool routed = svc.handleTouchpadData(token, index, report);
+    const bool injected = svc.drainPointerForTest();
+    return routed && injected;
+}
+
+static bool deliverMic(SessionService& svc, uint32_t token, uint8_t index, uint16_t seq,
+                       const uint8_t* opus, size_t opusLen) {
+    const bool handed = svc.handleMicAudio(token, index, seq, opus, opusLen);
+    const bool accepted = svc.drainMicForTest();
+    return handed && accepted;
 }
 
 static void test_upsert_recordsProtocolVersion() {
@@ -1331,7 +1359,7 @@ static void test_touchpad_mouseStreamDroppedWithoutGrant() {
     tr.finger0.x = 100;
     tr.finger0.y = 100;
     tr.eventTimeMs = 1000;
-    EXPECT(!svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(!routeTouch(svc, r.token, 0, tr));
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 0);
     // Still cached for the debug pane.
     auto snap = svc.getConnectionsSnapshot();
@@ -1351,7 +1379,7 @@ static void test_mouseControl_rePutWithoutRequestRevokes() {
     TouchpadReport tr{};
     tr.finger0.active = true;
     tr.eventTimeMs = 1000;
-    EXPECT(svc.handleTouchpadData(r1.token, 0, tr));
+    EXPECT(routeTouch(svc, r1.token, 0, tr));
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
 
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D",
@@ -1359,7 +1387,7 @@ static void test_mouseControl_rePutWithoutRequestRevokes() {
     EXPECT(!r2.mouseControlGranted);
     EXPECT(!svc.getSessionView(r2.connectionId, "dev1").mouseControlGranted);
     tr.eventTimeMs = 1004;
-    EXPECT(!svc.handleTouchpadData(r2.token, 0, tr)); // dropped, not routed
+    EXPECT(!routeTouch(svc, r2.token, 0, tr)); // dropped, not routed
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
 }
 
@@ -1805,18 +1833,18 @@ static void test_touchpad_mouseMode_deltaAndAnchoring() {
                     /*mouseControl=*/true);
 
     // First sample: no previous frame → no motion, but injected (anchored).
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000)));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 
     // Second sample, same trackingId, dt at the reference spacing → motion.
-    EXPECT(svc.handleTouchpadData(r.token, 0,
-                                  mkTouch(true, 1, 1000, 500, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS)));
+    EXPECT(routeTouch(svc, r.token, 0,
+                      mkTouch(true, 1, 1000, 500, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS)));
     EXPECT(vigem.lastMouseDx > 0);
     EXPECT(vigem.lastMouseDy > 0);
 
     // New trackingId (finger lifted, survivor compacted) → re-anchor, no jump.
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 2, -5000, -5000, 1012)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 2, -5000, -5000, 1012)));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -1830,14 +1858,12 @@ static void test_touchpad_mouseMode_dtScaling() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    svc.handleTouchpadData(r.token, 0,
-                           mkTouch(true, 1, 4000, 0, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 4000, 0, 1000 + TOUCHPAD_MOUSE_REFERENCE_MS));
     int dxReference = vigem.lastMouseDx;
 
     // Same spatial step, twice the dt → roughly half the cursor delta.
-    svc.handleTouchpadData(r.token, 0,
-                           mkTouch(true, 1, 8000, 0, 1000 + 3 * TOUCHPAD_MOUSE_REFERENCE_MS));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 8000, 0, 1000 + 3 * TOUCHPAD_MOUSE_REFERENCE_MS));
     int dxDoubleDt = vigem.lastMouseDx;
     EXPECT(dxReference > 0);
     EXPECT(dxDoubleDt > 0);
@@ -1853,8 +1879,8 @@ static void test_touchpad_mouseMode_duplicateTimestampNoMotion() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 9000, 9000, 1000)); // same eventTime
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 9000, 9000, 1000)); // same eventTime
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -1868,9 +1894,9 @@ static void test_touchpad_mouseMode_gapReanchors() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    svc.handleTouchpadData(r.token, 0,
-                           mkTouch(true, 1, 8000, 8000, 1000 + TOUCHPAD_MOUSE_MAX_GAP_MS + 50));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0,
+               mkTouch(true, 1, 8000, 8000, 1000 + TOUCHPAD_MOUSE_MAX_GAP_MS + 50));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -1884,9 +1910,9 @@ static void test_touchpad_mouseMode_buttonLevel() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000, /*button=*/true));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000, /*button=*/true));
     EXPECT(vigem.lastMouseButton);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1004, /*button=*/false));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1004, /*button=*/false));
     EXPECT(!vigem.lastMouseButton);
 }
 
@@ -1899,7 +1925,7 @@ static void test_touchpad_mouseMode_clickWithoutTouch() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(false, 0, 0, 0, 1000, /*button=*/true)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(false, 0, 0, 0, 1000, /*button=*/true)));
     EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
     EXPECT(vigem.lastMouseButton);
     EXPECT_EQ(vigem.lastMouseDx, 0);
@@ -1919,14 +1945,14 @@ static void test_touchpad_mouseMode_extendedButtonsAndWheel() {
     tr.rightPressed = true;
     tr.middlePressed = true;
     tr.scrollV = 240;
-    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(routeTouch(svc, r.token, 0, tr));
     EXPECT(!vigem.lastMouseButton);
     EXPECT(vigem.lastMouseRight);
     EXPECT(vigem.lastMouseMiddle);
     EXPECT_EQ(vigem.lastMouseWheel, 240);
 
     TouchpadReport up = mkTouch(false, 0, 0, 0, 1004);
-    EXPECT(svc.handleTouchpadData(r.token, 0, up));
+    EXPECT(routeTouch(svc, r.token, 0, up));
     EXPECT(!vigem.lastMouseRight);
     EXPECT(!vigem.lastMouseMiddle);
     EXPECT_EQ(vigem.lastMouseWheel, 0);
@@ -1943,15 +1969,15 @@ static void test_touchpad_mouseMode_wheelDuplicateSuppressed() {
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
     TouchpadReport tr = mkTouch(false, 0, 0, 0, 1000);
     tr.scrollV = 120;
-    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(routeTouch(svc, r.token, 0, tr));
     EXPECT_EQ(vigem.lastMouseWheel, 120);
     // Byte-identical UDP duplicate: same eventTimeMs, same scroll. Neutralized.
-    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    EXPECT(routeTouch(svc, r.token, 0, tr));
     EXPECT_EQ(vigem.lastMouseWheel, 0);
     // A fresh frame with a newer stamp scrolls again.
     TouchpadReport next = mkTouch(false, 0, 0, 0, 1008);
     next.scrollV = -120;
-    EXPECT(svc.handleTouchpadData(r.token, 0, next));
+    EXPECT(routeTouch(svc, r.token, 0, next));
     EXPECT_EQ(vigem.lastMouseWheel, -120);
 }
 
@@ -1967,29 +1993,29 @@ static void test_touchpad_mouseMode_subPixelRemainder() {
     // 10 wire units / 4 ms ≈ 0.42 px per sample: truncation alone would never
     // move the cursor; the carried remainder must cross 1 px on the 3rd step.
     const uint32_t dt = TOUCHPAD_MOUSE_REFERENCE_MS;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000)); // anchor
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 10, -10, 1000 + dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000)); // anchor
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 10, -10, 1000 + dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     // A dt <= 0 resend emits no motion but must NOT drop the remainder…
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 20, -20, 1000 + 2 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     // …so the next real step crosses ±1 px (0.42 × 3 ≈ 1.26).
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 30, -30, 1000 + 3 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 30, -30, 1000 + 3 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 1);
     EXPECT_EQ(vigem.lastMouseDy, -1);
 
     // A MAX_GAP re-anchor DOES drop the remainder: grow it to ~0.68, gap, then
     // step; from a clean slate the step stays sub-pixel (0.42), but a wrongly
     // kept remainder would cross 1 px (1.10).
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 40, -40, 1000 + 4 * dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 40, -40, 1000 + 4 * dt));
     EXPECT_EQ(vigem.lastMouseDx, 0); // remainder now ≈ 0.68
     const uint32_t tGap = 1000 + 4 * dt + TOUCHPAD_MOUSE_MAX_GAP_MS + 1;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 50, -50, tGap));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 50, -50, tGap));
     EXPECT_EQ(vigem.lastMouseDx, 0); // re-anchored
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 60, -60, tGap + dt));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 60, -60, tGap + dt));
     EXPECT_EQ(vigem.lastMouseDx, 0);
     EXPECT_EQ(vigem.lastMouseDy, 0);
 }
@@ -2020,6 +2046,178 @@ static void test_replug_resetsStreamCaches() {
         EXPECT(!snap.connections[0].controllers[0].motionActive);
         EXPECT(!snap.connections[0].controllers[0].batteryKnown);
     }
+}
+
+using PadInfo = SessionService::ConnectionSnapshot::CtrlInfo;
+
+static bool snapshotPad(SessionService& svc, const std::string& deviceId, uint8_t index,
+                        PadInfo& out) {
+    for (const auto& conn : svc.getConnectionsSnapshot().connections) {
+        if (conn.deviceId != deviceId) continue;
+        for (const auto& ctrl : conn.controllers) {
+            if (ctrl.index != index) continue;
+            out = ctrl;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void expectNoStreamState(const PadInfo& info) {
+    EXPECT(!info.motionActive);
+    EXPECT(!info.motionSink);
+    EXPECT(!info.batteryKnown);
+    EXPECT(!info.touchpadActive);
+    EXPECT_EQ(info.motion.gyroX, (int16_t)0);
+    EXPECT_EQ(info.motion.accelZ, (int16_t)0);
+    EXPECT_EQ(info.touchpad.finger0.x, (int16_t)0);
+    EXPECT_EQ(info.touchpad.finger0.y, (int16_t)0);
+}
+
+struct StreamSamples {
+    MotionReport motion{};
+    BatteryReport battery{};
+    TouchpadReport touchpad{};
+
+    explicit StreamSamples(int16_t seed) {
+        motion.gyroX = seed;
+        motion.accelZ = static_cast<int16_t>(-seed);
+        battery.level = static_cast<uint8_t>(seed % 100);
+        battery.status = BATTERY_STATUS_CHARGING;
+        touchpad.finger0.active = true;
+        touchpad.finger0.trackingId = 3;
+        touchpad.finger0.x = static_cast<int16_t>(seed * 2);
+        touchpad.finger0.y = static_cast<int16_t>(-seed * 2);
+        touchpad.eventTimeMs = 1000;
+    }
+
+    void send(SessionService& svc, uint32_t token, uint8_t index) const {
+        svc.handleMotionData(token, index, motion);
+        svc.handleBatteryUpdate(token, index, battery);
+        svc.handleTouchpadData(token, index, touchpad);
+    }
+
+    void expectIn(const PadInfo& info) const {
+        EXPECT(info.motionActive);
+        EXPECT_EQ(info.motion.gyroX, motion.gyroX);
+        EXPECT_EQ(info.motion.accelZ, motion.accelZ);
+        EXPECT(info.batteryKnown);
+        EXPECT_EQ((int)info.batteryLevel, (int)battery.level);
+        EXPECT_EQ((int)info.batteryStatus, (int)battery.status);
+        EXPECT(info.touchpadActive);
+        EXPECT_EQ(info.touchpad.finger0.x, touchpad.finger0.x);
+        EXPECT_EQ(info.touchpad.finger0.y, touchpad.finger0.y);
+    }
+};
+
+static void test_streamCaches_followThePadThroughReplug() {
+    TEST("stream caches: the snapshot shows the motion, battery and touchpad values its pad sent");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    const ControllerDescriptor ds4 =
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4);
+    auto r = upsert(svc, {ds4});
+    const StreamSamples first(321);
+    first.send(svc, r.token, 0);
+    PadInfo info{};
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    first.expectIn(info);
+    EXPECT(info.motionSink);
+
+    TEST("stream caches: a replugged pad starts with none of the old pad's values");
+    const uint32_t oldSerial = info.serial;
+    auto replugged =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MOTION, TOUCHPAD_MODE_DS4)});
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT(info.serial != oldSerial);
+    expectNoStreamState(info);
+    MotionReport next{};
+    next.gyroX = 9;
+    EXPECT(svc.handleMotionData(replugged.token, 0, next));
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT(info.motionActive);
+    EXPECT_EQ(info.motion.gyroX, (int16_t)9);
+    EXPECT(!info.batteryKnown);
+    EXPECT(!info.touchpadActive);
+
+    TEST("stream caches: a pad removed and added back at its index starts empty");
+    const StreamSamples second(77);
+    second.send(svc, replugged.token, 0);
+    upsert(svc, {});
+    auto readded = upsert(svc, {ds4});
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    expectNoStreamState(info);
+    second.send(svc, readded.token, 0);
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    second.expectIn(info);
+
+    TEST("stream caches: a serial that moves to another session carries nothing over");
+    const uint32_t movingSerial = info.serial;
+    upsert(svc, {});
+    std::vector<ControllerDescriptor> everySerial;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        everySerial.push_back(
+            makeDesc(idx, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4));
+    }
+    upsert(svc, everySerial, "devB", "B");
+    int checked = 0;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        PadInfo other{};
+        EXPECT(snapshotPad(svc, "devB", idx, other));
+        expectNoStreamState(other);
+        if (other.serial == movingSerial) checked++;
+    }
+    EXPECT_EQ(checked, 1);
+}
+
+static void test_streamCaches_survivePadUpdatesTheyDoNotDependOn() {
+    TEST("stream caches: a caps change keeps every cached value");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4)});
+    const StreamSamples samples(55);
+    samples.send(svc, r.token, 0);
+    PadInfo before{};
+    EXPECT(snapshotPad(svc, "dev1", 0, before));
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    EXPECT(svc.applyController(
+        r.connectionId, "dev1",
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION | CAP_LIGHTBAR, TOUCHPAD_MODE_DS4),
+        applied, epoch));
+    PadInfo info{};
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT_EQ(info.serial, before.serial);
+    samples.expectIn(info);
+
+    TEST("stream caches: a touchpad mode change starts the touchpad over and keeps the rest");
+    EXPECT(svc.applyController(
+        r.connectionId, "dev1",
+        makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION | CAP_LIGHTBAR, TOUCHPAD_MODE_OFF),
+        applied, epoch));
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT_EQ(info.serial, before.serial);
+    EXPECT(info.motionActive);
+    EXPECT_EQ(info.motion.gyroX, samples.motion.gyroX);
+    EXPECT(info.batteryKnown);
+    EXPECT(!info.touchpadActive);
+
+    TEST("stream caches: a re-PUT keeps motion and battery and starts the touchpad over");
+    samples.send(svc, r.token, 0);
+    auto rotated = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION | CAP_LIGHTBAR,
+                                         TOUCHPAD_MODE_OFF)});
+    EXPECT(rotated.token != r.token);
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    EXPECT_EQ(info.serial, before.serial);
+    EXPECT(info.motionActive);
+    EXPECT(info.batteryKnown);
+    EXPECT(!info.touchpadActive);
 }
 
 static void test_rumble_forwardsAndCoalesces() {
@@ -2175,6 +2373,153 @@ static uint32_t serialOfSlot(SessionService& svc, uint8_t index) {
     return 0;
 }
 
+static bool finishesWhileServiceLockHeld(SessionService& svc, MockClient& client,
+                                         const std::function<void()>& work) {
+    const auto holder = upsert(svc, {}, "lock-holder", "Holder");
+    std::atomic<bool> done{false};
+    bool finishedUnderLock = false;
+    std::thread worker;
+    client.onSessionClose = [&] {
+        worker = std::thread([&] {
+            work();
+            done.store(true);
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        finishedUnderLock = done.load();
+    };
+    svc.closeSessionById(holder.connectionId, "", CLOSE_REASON_KICKED, true);
+    client.onSessionClose = nullptr;
+    if (worker.joinable()) worker.join();
+    return finishedUnderLock;
+}
+
+static void expectPublishedAckMatchesTheColdState(SessionService& svc, MockClient& client,
+                                                  uint32_t token, const std::string& after) {
+    TEST("heartbeat: the ack built from published state matches the cold state after " + after);
+    const int before = client.heartbeatAckCalls;
+    svc.handleHeartbeat(token);
+    const SessionService::HeartbeatAckView cold = svc.coldHeartbeatAckForTest(token);
+    EXPECT(cold.found);
+    EXPECT_EQ(client.heartbeatAckCalls, before + 1);
+    EXPECT_EQ(client.lastAckToken, token);
+    EXPECT_EQ(client.lastAckBackendAvailable, cold.backendAvailable);
+    EXPECT_EQ((int)client.lastAckTotalControllers, (int)cold.totalActiveControllers);
+    EXPECT_EQ(client.lastAckEpoch, cold.epoch);
+    EXPECT_EQ(client.lastAckBitmap, cold.activeBitmap);
+}
+
+static void test_heartbeat_publishedAckFollowsEveryTopologyChange() {
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto a = upsert(svc, {makeDesc(0), makeDesc(2)});
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "the first PUT");
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    EXPECT(svc.applyController(a.connectionId, "dev1", makeDesc(5, CONTROLLER_TYPE_PLAYSTATION),
+                               applied, epoch));
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a controller added on its own");
+    EXPECT(svc.removeController(a.connectionId, "dev1", 2, epoch));
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a controller removed on its own");
+    a = upsert(svc,
+               {makeDesc(0, CONTROLLER_TYPE_DUALSENSE), makeDesc(5, CONTROLLER_TYPE_PLAYSTATION)});
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a replug and a new key");
+    vigem.pluginReturnVal = false;
+    a = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX), makeDesc(5, CONTROLLER_TYPE_PLAYSTATION)});
+    vigem.pluginReturnVal = true;
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a failed replug");
+    EXPECT(svc.applyController(
+        a.connectionId, "dev1",
+        makeDesc(5, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4), applied, epoch));
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a caps-only update");
+    vigem.pluginReturnVal = false;
+    EXPECT(svc.applyController(a.connectionId, "dev1", makeDesc(5, CONTROLLER_TYPE_XBOX), applied,
+                               epoch));
+    vigem.pluginReturnVal = true;
+    EXPECT_EQ((int)applied.result, (int)APPLY_ERR_REPLUG_FAIL);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "a failed replug on its own");
+    auto b = upsert(svc, {makeDesc(0), makeDesc(1), makeDesc(3)}, "devB", "B");
+    expectPublishedAckMatchesTheColdState(svc, client, b.token, "another session's first PUT");
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "another session's pads arrive");
+    EXPECT_EQ(svc.closeSessionById(b.connectionId, "", CLOSE_REASON_KICKED, false), 3);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "another session closes");
+    auto c = upsert(svc, {makeDesc(0)}, "devC", "C");
+    svc.backdateForTest(c.token, 60, 1);
+    EXPECT_EQ(svc.reapTimedOut(), 1);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "another session is reaped");
+    a = upsert(svc, {});
+    EXPECT(!vigem.busOpen);
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "the bus closes");
+    a = upsert(svc, {makeDesc(4, CONTROLLER_TYPE_SWITCHPRO)});
+    expectPublishedAckMatchesTheColdState(svc, client, a.token, "the bus reopens");
+
+    TEST("heartbeat: a token the table does not hold gets no ack");
+    const int before = client.heartbeatAckCalls;
+    svc.handleHeartbeat(b.token);
+    EXPECT_EQ(client.heartbeatAckCalls, before);
+}
+
+static void test_receivePath_heartbeatNeverWaitsForTheServiceLock() {
+    TEST("receive path: a heartbeat is acked without waiting for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0), makeDesc(1)});
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] { svc.handleHeartbeat(r.token); }));
+    EXPECT_EQ(client.heartbeatAckCalls, 1);
+    EXPECT_EQ(client.lastAckToken, r.token);
+    EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b11);
+}
+
+static void test_receivePath_streamsNeverWaitForTheServiceLock() {
+    TEST("receive path: motion, battery and pad-mode touchpad never wait for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4),
+                          makeDesc(1, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_OFF),
+                          makeDesc(2, CONTROLLER_TYPE_DUALSENSE, 0)});
+    const StreamSamples samples(12);
+    bool motion = false;
+    bool battery = false;
+    bool touchpad = false;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        motion = svc.handleMotionData(r.token, 0, samples.motion);
+        battery = svc.handleBatteryUpdate(r.token, 0, samples.battery);
+        touchpad = svc.handleTouchpadData(r.token, 0, samples.touchpad);
+        svc.handleTouchpadData(r.token, 1, samples.touchpad);
+    }));
+    EXPECT(motion);
+    EXPECT(battery);
+    EXPECT(touchpad);
+    EXPECT_EQ(vigem.submitMotionCalls, 1);
+    EXPECT_EQ(vigem.submitBatteryCalls, 1);
+    EXPECT_EQ(vigem.submitTouchpadCalls, 1);
+    PadInfo info{};
+    EXPECT(snapshotPad(svc, "dev1", 0, info));
+    samples.expectIn(info);
+    EXPECT(snapshotPad(svc, "dev1", 1, info));
+    EXPECT(info.touchpadActive);
+
+    TEST("receive path: a refused mic frame is logged without waiting for the service lock");
+    const auto opus = opusFrame(32);
+    bool accepted = true;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        accepted = svc.handleMicAudio(r.token, 2, 1, opus.data(), opus.size());
+    }));
+    EXPECT(!accepted);
+    EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
+}
+
 static void test_micAudio_gatedOnCap() {
     TEST("mic audio: accepted only from slots that advertised CAP_MIC");
     MockViGem vigem;
@@ -2185,16 +2530,16 @@ static void test_micAudio_gatedOnCap() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC),
                           makeDesc(1, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const auto opus = opusFrame(64);
-    EXPECT(svc.handleMicAudio(r.token, 0, 1, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 1, opus.data(), opus.size()));
 
     // CAP_SPEAKER is the other direction and grants nothing here: caps
     // advertise the client's own actuator/source, one bit per direction.
-    EXPECT(!svc.handleMicAudio(r.token, 1, 1, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r.token, 1, 1, opus.data(), opus.size()));
     EXPECT(log.contains("never advertised the mic cap"));
 
     // Malformed packets are refused whatever the caps say.
-    EXPECT(!svc.handleMicAudio(r.token, 0, 2, opus.data(), 0));
-    EXPECT(!svc.handleMicAudio(r.token, 0, 2, nullptr, opus.size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 2, opus.data(), 0));
+    EXPECT(!deliverMic(svc, r.token, 0, 2, nullptr, opus.size()));
 }
 
 static void test_micAudio_unknownControllerAndToken() {
@@ -2207,14 +2552,14 @@ static void test_micAudio_unknownControllerAndToken() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     const auto opus = opusFrame(32);
 
-    EXPECT(!svc.handleMicAudio(r.token, 3, 0, opus.data(), opus.size()));   // never bound
-    EXPECT(!svc.handleMicAudio(r.token, 200, 0, opus.data(), opus.size())); // past the slot cap
+    EXPECT(!deliverMic(svc, r.token, 3, 0, opus.data(), opus.size()));   // never bound
+    EXPECT(!deliverMic(svc, r.token, 200, 0, opus.data(), opus.size())); // past the slot cap
     EXPECT(log.contains("no such bound controller"));
 
     // An unknown token has no session to log against; a stale or spoofed
     // datagram must not be able to write log lines.
     const int before = log.logCalls;
-    EXPECT(!svc.handleMicAudio(r.token ^ 0xFFFFFFFFu, 0, 0, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r.token ^ 0xFFFFFFFFu, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.logCalls, before);
 }
 
@@ -2233,13 +2578,13 @@ static void test_micAudio_rateLimitIsPerController() {
     // MIC_AUDIO_MAX_PACKETS_PER_SEC get through and the overflow is dropped.
     int accepted = 0;
     for (int i = 0; i < MIC_AUDIO_MAX_PACKETS_PER_SEC + 25; ++i) {
-        if (svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
+        if (deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
     }
     EXPECT_EQ(accepted, MIC_AUDIO_MAX_PACKETS_PER_SEC);
     EXPECT(log.contains("packets/s"));
 
     // A flooding slot must not starve its neighbour.
-    EXPECT(svc.handleMicAudio(r.token, 1, 0, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 1, 0, opus.data(), opus.size()));
 }
 
 static void test_micAudio_replugRestoresAllowance() {
@@ -2254,16 +2599,16 @@ static void test_micAudio_replugRestoresAllowance() {
     // Exactly the budget gets through; the packet after it is the first drop.
     int accepted = 0;
     for (int i = 0; i <= MIC_AUDIO_MAX_PACKETS_PER_SEC; ++i) {
-        if (svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
+        if (deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size())) accepted++;
     }
     EXPECT_EQ(accepted, MIC_AUDIO_MAX_PACKETS_PER_SEC);
-    EXPECT(!svc.handleMicAudio(r.token, 0, 999, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 999, opus.data(), opus.size()));
 
     // Identity change forces a replug. Carrying the spent window onto the fresh
     // actuator would swallow the first second of the new stream.
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_MIC)});
     auto back = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
-    EXPECT(svc.handleMicAudio(back.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, back.token, 0, 0, opus.data(), opus.size()));
 }
 
 static void test_micAudio_dropLoggedOncePerSessionPerCause() {
@@ -2278,13 +2623,13 @@ static void test_micAudio_dropLoggedOncePerSessionPerCause() {
 
     // 50 frames a second of the same mistake must not become 50 log lines.
     for (int i = 0; i < 20; ++i) {
-        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
 
     // A different cause is worth its own line, once.
     for (int i = 0; i < 20; ++i) {
-        EXPECT(!svc.handleMicAudio(r.token, 4, (uint16_t)i, opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 4, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("no such bound controller"), 1);
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
@@ -2292,7 +2637,7 @@ static void test_micAudio_dropLoggedOncePerSessionPerCause() {
     // A re-PUT rotates token/salt/key, so it is a new session: a repeat mistake
     // is diagnosable again instead of silently inheriting the old flag.
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, 0)});
-    EXPECT(!svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r2.token, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 2);
 }
 
@@ -2477,7 +2822,7 @@ static void test_audioPolicy_defaultsToBothOn() {
     EXPECT_EQ(client.speakerAudioCalls, 1);
 
     const auto opus = opusFrame(32);
-    EXPECT(svc.handleMicAudio(r.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 0, opus.data(), opus.size()));
 }
 
 static void test_audioPolicy_speakerOffStopsTheStream() {
@@ -2533,7 +2878,7 @@ static void test_audioPolicy_micOffDropsWithAReason() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     const auto opus = opusFrame(32);
     for (int i = 0; i < 20; i++) {
-        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)i, opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 0, (uint16_t)i, opus.data(), opus.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 0);
 
@@ -2544,22 +2889,22 @@ static void test_audioPolicy_micOffDropsWithAReason() {
 
     TEST("audio policy: a capless sender is still told about its own mistake first");
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, 0)}, "devB", "B");
-    EXPECT(!svc.handleMicAudio(r2.token, 0, 0, opus.data(), opus.size()));
+    EXPECT(!deliverMic(svc, r2.token, 0, 0, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("never advertised the mic cap"), 1);
 
     TEST("audio policy: the mic gate is read per frame too");
     micOn = true;
-    EXPECT(svc.handleMicAudio(r.token, 0, 100, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 100, opus.data(), opus.size()));
 
     TEST("audio policy: a host-disabled mic frame consumes no rate-limit budget");
     // Checked before the window so a direction that is off cannot be used to
     // exhaust the budget a re-enabled one would need.
     micOn = false;
     for (int i = 0; i < MIC_AUDIO_MAX_PACKETS_PER_SEC * 2; i++) {
-        EXPECT(!svc.handleMicAudio(r.token, 0, (uint16_t)(200 + i), opus.data(), opus.size()));
+        EXPECT(!deliverMic(svc, r.token, 0, (uint16_t)(200 + i), opus.data(), opus.size()));
     }
     micOn = true;
-    EXPECT(svc.handleMicAudio(r.token, 0, 900, opus.data(), opus.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 900, opus.data(), opus.size()));
     EXPECT_EQ(log.countContaining("packets/s"), 0);
 }
 
@@ -2585,7 +2930,7 @@ static void test_audioPolicy_directionsAreIndependent() {
     // What matters here is that the mic direction was never gated.
     const auto opus = opusFrame(32);
     for (uint16_t seq = 0; seq < 4; seq++) {
-        EXPECT(svc.handleMicAudio(r.token, 0, seq, opus.data(), opus.size()));
+        EXPECT(deliverMic(svc, r.token, 0, seq, opus.data(), opus.size()));
     }
     EXPECT_EQ(log.countContaining("controller microphone is off on the host"), 0);
 
@@ -2634,7 +2979,7 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
 
     for (int i = 0; i < 10; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
         EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
     }
     // One wire frame is one 20 ms window, mono, routed to the pad this slot
@@ -2651,11 +2996,11 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     // session for it, not one per frame.
     vigem.submitMicAudioReturnVal = false;
     const auto pkt = mic.next();
-    EXPECT(svc.handleMicAudio(r.token, 0, 10, pkt.data(), pkt.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 10, pkt.data(), pkt.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 11);
     EXPECT_EQ(log.countContaining("no microphone endpoint"), 1);
     const auto pkt2 = mic.next();
-    EXPECT(svc.handleMicAudio(r.token, 0, 11, pkt2.data(), pkt2.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 11, pkt2.data(), pkt2.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 12);
     EXPECT_EQ(log.countContaining("no microphone endpoint"), 1);
     vigem.submitMicAudioReturnVal = true;
@@ -2670,7 +3015,7 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     const int before = vigem.submitMicAudioCalls;
-    EXPECT(svc.handleMicAudio(r.token, 0, 12, twoFrames.data(), twoFrames.size()));
+    EXPECT(deliverMic(svc, r.token, 0, 12, twoFrames.data(), twoFrames.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, before);
 }
 
@@ -2685,7 +3030,7 @@ static void test_micAudio_withoutCodecAcceptsAndDrops() {
     MicPacketSource mic;
     for (int i = 0; i < 4; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     // Accepted (it passed every gate) but nowhere to go. This is the pre-SAT-2
     // behaviour, kept deliberately so a build without a codec degrades to
@@ -2707,19 +3052,19 @@ static void test_micAudio_gapConcealedAndReorderHealed() {
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 4);
 
     // Frame 4 is lost. Packet 5 alone proves nothing (it could be a reorder),
     // so nothing is submitted yet: the 40 ms window is exactly the price of not
     // concealing a frame that was merely out of order.
-    EXPECT(svc.handleMicAudio(r.token, 0, 5, pkts[5].data(), pkts[5].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 5, pkts[5].data(), pkts[5].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 4);
 
     // Packet 6 lands 2 ahead of the missing one, which settles it: the gap is
     // filled (from packet 5's in-band FEC copy of frame 4), then 5 and 6 play.
-    EXPECT(svc.handleMicAudio(r.token, 0, 6, pkts[6].data(), pkts[6].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 6, pkts[6].data(), pkts[6].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 7);
     EXPECT_EQ(vigem.lastMicAudioSamples, (size_t)AUDIO_FRAME_SAMPLES);
     // The concealed frame is audio in its own right, not a hole padded with
@@ -2730,14 +3075,14 @@ static void test_micAudio_gapConcealedAndReorderHealed() {
     EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
 
     // A one-frame swap costs nothing: 8 before 7 waits, then both go together.
-    EXPECT(svc.handleMicAudio(r.token, 0, 8, pkts[8].data(), pkts[8].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 8, pkts[8].data(), pkts[8].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 7);
-    EXPECT(svc.handleMicAudio(r.token, 0, 7, pkts[7].data(), pkts[7].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 7, pkts[7].data(), pkts[7].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 9);
 
     // And the frame that finally turns up after its slot was concealed is
     // refused rather than played out of order.
-    EXPECT(!svc.handleMicAudio(r.token, 0, 4, pkts[4].data(), pkts[4].size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 4, pkts[4].data(), pkts[4].size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 9);
 }
 
@@ -2758,7 +3103,7 @@ static void test_micAudio_streamsPastTheRateWindow() {
     for (int i = 0; i < frames; i++) {
         if (i % MIC_AUDIO_MAX_PACKETS_PER_SEC == 0) svc.resetMicRateWindowForTest(r.token, 0);
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, frames);
     EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
@@ -2780,7 +3125,7 @@ static void test_micAudio_seqWrapsMidStream() {
         svc.resetMicRateWindowForTest(r.token, 0);
         const uint16_t seq = (uint16_t)(0xFFFD + i);
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, seq, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, seq, pkt.data(), pkt.size()));
         EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
     }
 }
@@ -2803,13 +3148,13 @@ static void test_micAudio_codecStateIsPerControllerAndDiesWithThePad() {
     // window would read that as 40 frames in the past and drop it.
     for (int i = 0; i < 41; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 41);
     EXPECT_EQ(vigem.lastMicAudioSerial, serial0);
 
     const auto slot1 = mic.next();
-    EXPECT(svc.handleMicAudio(r.token, 1, 0, slot1.data(), slot1.size()));
+    EXPECT(deliverMic(svc, r.token, 1, 0, slot1.data(), slot1.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 42);
     EXPECT_EQ(vigem.lastMicAudioSerial, serial1);
 
@@ -2827,7 +3172,7 @@ static void test_micAudio_codecStateIsPerControllerAndDiesWithThePad() {
 
     MicPacketSource fresh;
     const auto restart = fresh.next();
-    EXPECT(svc.handleMicAudio(again.token, 0, 0, restart.data(), restart.size()));
+    EXPECT(deliverMic(svc, again.token, 0, 0, restart.data(), restart.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, before + 1);
     EXPECT_EQ(vigem.lastMicAudioSerial, serial0b);
     EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
@@ -2845,7 +3190,7 @@ static void test_micAudio_unboundSlotSubmitsNothing() {
     MicPacketSource mic;
     for (int i = 0; i < 5; i++) {
         const auto pkt = mic.next();
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkt.data(), pkt.size()));
     }
     EXPECT_EQ(vigem.submitMicAudioCalls, 5);
 
@@ -2853,15 +3198,129 @@ static void test_micAudio_unboundSlotSubmitsNothing() {
     // decode into: the codec state went with the pad.
     auto gone = upsert(svc, {});
     const auto strayPkt = mic.next();
-    EXPECT(!svc.handleMicAudio(gone.token, 0, 5, strayPkt.data(), strayPkt.size()));
+    EXPECT(!deliverMic(svc, gone.token, 0, 5, strayPkt.data(), strayPkt.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 5);
 
     // Rebinding gives a fresh stream, seq and all.
     auto back = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     MicPacketSource fresh;
     const auto pkt = fresh.next();
-    EXPECT(svc.handleMicAudio(back.token, 0, 0, pkt.data(), pkt.size()));
+    EXPECT(deliverMic(svc, back.token, 0, 0, pkt.data(), pkt.size()));
     EXPECT_EQ(vigem.submitMicAudioCalls, 6);
+}
+
+struct CountingMicCodecs : IAudioCodecFactory {
+    satellite::audio::OpusCodecFactory real;
+    std::atomic<int> liveDecoders{0};
+
+    struct Counted : IAudioDecoder {
+        std::unique_ptr<IAudioDecoder> inner;
+        std::atomic<int>& live;
+        Counted(std::unique_ptr<IAudioDecoder> decoder, std::atomic<int>& counter)
+            : inner(std::move(decoder)), live(counter) {
+            live.fetch_add(1);
+        }
+        ~Counted() override { live.fetch_sub(1); }
+        size_t decode(const uint8_t* opus, size_t opusLen, int16_t* pcm,
+                      size_t maxFrames) override {
+            return inner->decode(opus, opusLen, pcm, maxFrames);
+        }
+        size_t conceal(int16_t* pcm, size_t maxFrames) override {
+            return inner->conceal(pcm, maxFrames);
+        }
+        size_t decodeFec(const uint8_t* opus, size_t opusLen, int16_t* pcm,
+                         size_t maxFrames) override {
+            return inner->decodeFec(opus, opusLen, pcm, maxFrames);
+        }
+    };
+
+    std::unique_ptr<IAudioDecoder> makeMicDecoder() override {
+        auto decoder = real.makeMicDecoder();
+        if (!decoder) return nullptr;
+        return std::make_unique<Counted>(std::move(decoder), liveDecoders);
+    }
+    std::unique_ptr<IAudioEncoder> makeSpeakerEncoder() override {
+        return real.makeSpeakerEncoder();
+    }
+    std::unique_ptr<IAudioEncoder> makeHapticEncoder() override { return real.makeHapticEncoder(); }
+};
+
+static void test_micAudio_decodesOnTheMicWorker() {
+    TEST("mic audio: packets decode and reach the pad on the mic worker, not the receive thread");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    for (int i = 0; i < 8; i++) {
+        const auto pkt = mic.next();
+        EXPECT(svc.handleMicAudio(r.token, 0, static_cast<uint16_t>(i), pkt.data(), pkt.size()));
+    }
+    EXPECT(svc.drainMicForTest());
+    EXPECT_EQ(vigem.submitMicAudioCalls, 8);
+    const std::thread::id worker = svc.micThreadForTest();
+    EXPECT(worker != std::thread::id{});
+    EXPECT(worker != std::this_thread::get_id());
+    int foreign = 0;
+    for (const std::thread::id caller : vigem.micCallers) {
+        if (caller != worker) foreign++;
+    }
+    EXPECT_EQ(foreign, 0);
+}
+
+static void test_micAudio_decoderFollowsThePlugGeneration() {
+    TEST("mic audio: a pad's decoder lives as long as the plug it was made for");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    CountingMicCodecs codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    for (int i = 0; i < 3; i++) {
+        const auto pkt = mic.next();
+        EXPECT(deliverMic(svc, r.token, 0, static_cast<uint16_t>(i), pkt.data(), pkt.size()));
+    }
+    EXPECT_EQ(codecs.liveDecoders.load(), 1);
+
+    TEST("mic audio: a replug frees the old pad's decoder and the new pad gets its own");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_MIC)});
+    auto back = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    svc.drainMicForTest();
+    EXPECT_EQ(codecs.liveDecoders.load(), 0);
+    MicPacketSource fresh;
+    const auto pkt = fresh.next();
+    EXPECT(deliverMic(svc, back.token, 0, 0, pkt.data(), pkt.size()));
+    EXPECT_EQ(codecs.liveDecoders.load(), 1);
+
+    TEST("mic audio: removing the pad frees its decoder");
+    upsert(svc, {});
+    svc.drainMicForTest();
+    EXPECT_EQ(codecs.liveDecoders.load(), 0);
+}
+
+static void test_receivePath_micFramesNeverWaitForTheServiceLock() {
+    TEST("receive path: an accepted mic frame is handed on without waiting for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    MicPacketSource mic;
+    const auto pkt = mic.next();
+    bool handed = false;
+    EXPECT(finishesWhileServiceLockHeld(
+        svc, client, [&] { handed = svc.handleMicAudio(r.token, 0, 0, pkt.data(), pkt.size()); }));
+    EXPECT(handed);
+    EXPECT(svc.drainMicForTest());
+    EXPECT_EQ(vigem.submitMicAudioCalls, 1);
+    EXPECT(vigem.lastMicAudioEnergy() > 10000.0);
 }
 
 static void test_audioCounts_trackTheMicStream() {
@@ -2878,7 +3337,7 @@ static void test_audioCounts_trackTheMicStream() {
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
-        EXPECT(svc.handleMicAudio(r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
+        EXPECT(deliverMic(svc, r.token, 0, (uint16_t)i, pkts[i].data(), pkts[i].size()));
     }
     auto c = svc.audioCounts();
     EXPECT_EQ(c.micAccepted, (uint64_t)4);
@@ -2887,12 +3346,12 @@ static void test_audioCounts_trackTheMicStream() {
     EXPECT_EQ(c.micConcealed, (uint64_t)0);
     EXPECT_EQ(c.micLate, (uint64_t)0);
 
-    EXPECT(svc.handleMicAudio(r.token, 0, 5, pkts[5].data(), pkts[5].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 5, pkts[5].data(), pkts[5].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micAccepted, (uint64_t)5);
     EXPECT_EQ(c.micDecoded, (uint64_t)4);
 
-    EXPECT(svc.handleMicAudio(r.token, 0, 6, pkts[6].data(), pkts[6].size()));
+    EXPECT(deliverMic(svc, r.token, 0, 6, pkts[6].data(), pkts[6].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micAccepted, (uint64_t)6);
     EXPECT_EQ(c.micFecRecovered, (uint64_t)1);
@@ -2901,13 +3360,13 @@ static void test_audioCounts_trackTheMicStream() {
     EXPECT_EQ(c.micDecoded + c.micFecRecovered + c.micConcealed,
               (uint64_t)vigem.submitMicAudioCalls);
 
-    EXPECT(!svc.handleMicAudio(r.token, 0, 4, pkts[4].data(), pkts[4].size()));
+    EXPECT(!deliverMic(svc, r.token, 0, 4, pkts[4].data(), pkts[4].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micLate, (uint64_t)1);
     EXPECT_EQ(c.micAccepted, (uint64_t)6);
 
     TEST("audio counts: a gate rejection is a drop, never an accept");
-    EXPECT(!svc.handleMicAudio(r.token, 1, 0, pkts[0].data(), pkts[0].size()));
+    EXPECT(!deliverMic(svc, r.token, 1, 0, pkts[0].data(), pkts[0].size()));
     c = svc.audioCounts();
     EXPECT_EQ(c.micDropped, (uint64_t)1);
     EXPECT_EQ(c.micAccepted, (uint64_t)6);
@@ -3426,6 +3885,180 @@ static void test_hapticAudio_countersTrackBothRenderings() {
 // maintenance tick's job (SessionService::refreshRumble); the receive path
 // only coalesces while the client can still be running the last command.
 
+class EncodeLockProbe {
+  public:
+    void watch(SessionService* svc) { svc_ = svc; }
+
+    void probe() {
+        if (svc_ == nullptr) return;
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        SessionService* svc = svc_;
+        std::thread probe([svc, done] {
+            svc->activeSessionCount();
+            done->store(true);
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        encodes_++;
+        if (!done->load()) encodesUnderLock_++;
+        probes_.push_back(std::move(probe));
+    }
+
+    void finish() {
+        for (std::thread& t : probes_) t.join();
+        probes_.clear();
+    }
+
+    int encodes() const { return encodes_; }
+    int encodesUnderLock() const { return encodesUnderLock_; }
+
+  private:
+    SessionService* svc_ = nullptr;
+    std::vector<std::thread> probes_;
+    int encodes_ = 0;
+    int encodesUnderLock_ = 0;
+};
+
+struct ProbingCodecs : IAudioCodecFactory {
+    satellite::audio::OpusCodecFactory real;
+    EncodeLockProbe probe;
+
+    struct Probing : IAudioEncoder {
+        std::unique_ptr<IAudioEncoder> inner;
+        EncodeLockProbe& probe;
+        Probing(std::unique_ptr<IAudioEncoder> encoder, EncodeLockProbe& p)
+            : inner(std::move(encoder)), probe(p) {}
+        size_t encode(const int16_t* pcm, size_t frames, uint8_t* out, size_t maxOut) override {
+            probe.probe();
+            return inner->encode(pcm, frames, out, maxOut);
+        }
+    };
+
+    std::unique_ptr<IAudioDecoder> makeMicDecoder() override { return real.makeMicDecoder(); }
+    std::unique_ptr<IAudioEncoder> makeSpeakerEncoder() override {
+        auto encoder = real.makeSpeakerEncoder();
+        if (!encoder) return nullptr;
+        return std::make_unique<Probing>(std::move(encoder), probe);
+    }
+    std::unique_ptr<IAudioEncoder> makeHapticEncoder() override {
+        auto encoder = real.makeHapticEncoder();
+        if (!encoder) return nullptr;
+        return std::make_unique<Probing>(std::move(encoder), probe);
+    }
+};
+
+static void test_audioLanes_encodeOutsideTheServiceLock() {
+    TEST("audio lanes: the speaker and haptic encoders run with the service lock free");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    ProbingCodecs codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+    codecs.probe.watch(&svc);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER | CAP_HAPTIC_AUDIO)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    const auto hap = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    for (int i = 0; i < 3; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(serial0, spk.data(), AUDIO_FRAME_SAMPLES));
+        EXPECT(svc.handleHapticAudioFromBackend(serial0, hap.data(), AUDIO_FRAME_SAMPLES));
+    }
+    codecs.probe.finish();
+    EXPECT_EQ(codecs.probe.encodes(), 6);
+    EXPECT_EQ(codecs.probe.encodesUnderLock(), 0);
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ(client.hapticAudioCalls, 3);
+}
+
+static void test_audioLanes_neverDropForTheServiceLock() {
+    TEST("audio lanes: speaker and haptic frames go out while another thread holds mtx_");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER | CAP_HAPTIC_AUDIO)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    const auto hap = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    bool speaker = false;
+    bool haptic = false;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        speaker = svc.handleSpeakerAudioFromBackend(serial0, spk.data(), AUDIO_FRAME_SAMPLES);
+        haptic = svc.handleHapticAudioFromBackend(serial0, hap.data(), AUDIO_FRAME_SAMPLES);
+    }));
+    EXPECT(speaker);
+    EXPECT(haptic);
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ(client.hapticAudioCalls, 1);
+    const AudioStreamCounts counts = svc.audioCounts();
+    EXPECT_EQ(counts.speakerLockContended, uint64_t{0});
+    EXPECT_EQ(counts.hapticLockContended, uint64_t{0});
+}
+
+static void test_audioLanes_followASerialToItsNextSession() {
+    TEST("audio lanes: a serial that moves to another session sends there, numbered from 0");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+
+    const uint16_t caps = CAP_SPEAKER | CAP_HAPTIC_AUDIO;
+    const auto first = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, caps)});
+    const uint32_t moving = serialOfSlot(svc, 0);
+    const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    const auto hap = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
+    for (int i = 0; i < 3; i++) {
+        EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), AUDIO_FRAME_SAMPLES));
+        EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), AUDIO_FRAME_SAMPLES));
+    }
+    EXPECT_EQ(client.lastSpeakerAudioConnToken, first.token);
+    EXPECT_EQ(client.lastHapticAudioConnToken, first.token);
+    const size_t half = AUDIO_FRAME_SAMPLES / 2;
+    EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), half));
+    EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), half));
+
+    TEST("audio lanes: a removed pad's serial takes no audio");
+    upsert(svc, {});
+    EXPECT(!svc.handleSpeakerAudioFromBackend(moving, spk.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT(!svc.handleHapticAudioFromBackend(moving, hap.data(), AUDIO_FRAME_SAMPLES));
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ(client.hapticAudioCalls, 3);
+
+    TEST("audio lanes: the new owner gets the serial's audio with none of the old lane's state");
+    std::vector<ControllerDescriptor> everySerial;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        everySerial.push_back(makeDesc(idx, CONTROLLER_TYPE_DUALSENSE, caps));
+    }
+    const auto second = upsert(svc, everySerial, "devB", "B");
+    int movedIdx = -1;
+    for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
+        PadInfo pad{};
+        EXPECT(snapshotPad(svc, "devB", idx, pad));
+        if (pad.serial == moving) movedIdx = idx;
+    }
+    EXPECT(movedIdx >= 0);
+    EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), half));
+    EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 3);
+    EXPECT_EQ(client.hapticAudioCalls, 3);
+    EXPECT(svc.handleSpeakerAudioFromBackend(moving, spk.data(), half));
+    EXPECT(svc.handleHapticAudioFromBackend(moving, hap.data(), half));
+    EXPECT_EQ(client.speakerAudioCalls, 4);
+    EXPECT_EQ(client.hapticAudioCalls, 4);
+    EXPECT_EQ(client.lastSpeakerAudioConnToken, second.token);
+    EXPECT_EQ(client.lastHapticAudioConnToken, second.token);
+    EXPECT_EQ((int)client.lastSpeakerAudioCtrlIdx, movedIdx);
+    EXPECT_EQ((int)client.lastHapticAudioCtrlIdx, movedIdx);
+    EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
+    EXPECT_EQ((int)client.lastHapticAudioSeq, 0);
+}
+
 static void test_rumble_heldLevelIsRefreshedBeforeTheClientStops() {
     TEST("rumble: a held HID level is re-sent every RUMBLE_REFRESH_MS, unchanged");
     MockViGem vigem;
@@ -3528,34 +4161,45 @@ static void test_rumble_hapticStreamThatEndsIsStoppedByTheHost() {
     EXPECT_EQ((int)client.lastRumble.weakMagnitude, 0);
 }
 
-static void test_audioBackendCallbacks_dropNotBlock_whenLockHeld() {
-    TEST("mic LED / speaker: backend callbacks drop (never block) while mtx_ is held");
+static void test_audioBackendCallbacks_neverDropUnderTheServiceLock() {
+    TEST("mic LED / speaker: callbacks fired while mtx_ is held are delivered, never dropped");
     MockViGem vigem;
     MockClient client;
     MockLog log;
-    SessionService svc(vigem, client, log);
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
 
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC | CAP_SPEAKER)}, "devA", "A");
     const uint32_t serialA = vigem.pluggedSerials.back();
     auto rB = upsert(svc, {}, "devB", "B");
 
-    std::vector<int16_t> pcm(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
-    // Same production bug the rumble/lightbar test pins: unplug joins the
-    // notification worker while holding mtx_, so a blocking acquire in a
-    // backend callback deadlocks this join.
+    const auto pcm = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
+    std::atomic<bool> speakerSent{false};
+    std::atomic<bool> speakerBeforeRelease{false};
+    std::thread worker;
     client.onSessionClose = [&] {
-        std::thread worker([&] {
+        worker = std::thread([&] {
+            speakerSent.store(
+                svc.handleSpeakerAudioFromBackend(serialA, pcm.data(), AUDIO_FRAME_SAMPLES));
             vigem.fireMicLed(serialA, MIC_LED_STATE_ON);
-            vigem.fireSpeakerAudio(serialA, pcm.data(), AUDIO_FRAME_SAMPLES);
         });
-        worker.join();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!speakerSent.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        speakerBeforeRelease.store(speakerSent.load());
     };
     svc.closeSessionById(rB.connectionId, "", CLOSE_REASON_KICKED, /*notify=*/true);
     client.onSessionClose = nullptr;
-    EXPECT_EQ(client.micLedCalls, 0); // dropped, not delivered
+    worker.join();
+    EXPECT(speakerBeforeRelease.load());
+    EXPECT_EQ(client.speakerAudioCalls, 1);
+    EXPECT_EQ(client.micLedCalls, 1);
+    const AudioStreamCounts counts = svc.audioCounts();
+    EXPECT_EQ(counts.speakerLockContended, uint64_t{0});
+    EXPECT_EQ(counts.speakerSent, uint64_t{1});
 
-    // The drop didn't poison the coalesce cache: the same value re-notified
-    // with the lock free goes out (self-heal).
+    TEST("mic LED: the coalesce cache took the delivered state, so a repeat stays quiet");
     vigem.fireMicLed(serialA, MIC_LED_STATE_ON);
     EXPECT_EQ(client.micLedCalls, 1);
 }
@@ -3591,8 +4235,8 @@ static void test_feedback_replugResetsCoalesce() {
     EXPECT_EQ(client.micLedCalls, 2);
 }
 
-static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
-    TEST("rumble/lightbar: backend callbacks drop (never block) while mtx_ is held");
+static void test_backendCallbacks_waitForTheServiceLockAndDeliver() {
+    TEST("rumble/lightbar: callbacks fired while mtx_ is held wait for it and are delivered");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -3604,24 +4248,27 @@ static void test_backendCallbacks_dropNotBlock_whenLockHeld() {
 
     RumbleReport rr{};
     rr.strongMagnitude = 1000;
-    // onSessionClose fires while the closing thread holds mtx_. A worker
-    // thread invoking the backend callbacks then MUST fail its try_lock and
-    // return; a blocking acquire would deadlock this join (the production bug:
-    // unplug joins the notification worker while holding mtx_).
+    std::atomic<bool> delivered{false};
+    std::atomic<bool> deliveredBeforeRelease{true};
+    std::thread worker;
     client.onSessionClose = [&] {
-        std::thread worker([&] {
+        worker = std::thread([&] {
             vigem.fireRumble(serialA, rr);
             vigem.fireLightbar(serialA, 1, 2, 3);
+            delivered.store(true);
         });
-        worker.join();
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        deliveredBeforeRelease.store(delivered.load());
     };
     svc.closeSessionById(rB.connectionId, "", CLOSE_REASON_KICKED, /*notify=*/true);
     client.onSessionClose = nullptr;
-    EXPECT_EQ(client.rumbleCalls, 0); // dropped, not delivered
-    EXPECT_EQ(client.lightbarCalls, 0);
+    worker.join();
+    EXPECT(!deliveredBeforeRelease.load());
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ(client.lightbarCalls, 1);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 1000);
 
-    // The drop didn't poison the coalesce caches: the same values re-notified
-    // with the lock free go out (self-heal).
+    TEST("rumble/lightbar: the delivered values coalesce like any other");
     vigem.fireRumble(serialA, rr);
     vigem.fireLightbar(serialA, 1, 2, 3);
     EXPECT_EQ(client.rumbleCalls, 1);
@@ -4051,12 +4698,12 @@ static void test_touchpad_refusedInjectionCountedAndLoggedOncePerRun() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1",
                     "Pixel", /*mouseControl=*/true);
     vigem.submitRelativeMouseReturnVal = false;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)0);
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1032)));
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1500, 1500, 1048)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 1000, 1000, 1032)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 1500, 1500, 1048)));
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)3);
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
     EXPECT_EQ(log.countContaining("refused to inject pointer input for Pixel"), 1);
@@ -4064,25 +4711,25 @@ static void test_touchpad_refusedInjectionCountedAndLoggedOncePerRun() {
 
     TEST("touchpad: the first accepted frame after a refusal run logs the recovery and its length");
     vigem.submitRelativeMouseReturnVal = true;
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 2000, 2000, 1064)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 2000, 2000, 1064)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)1);
     EXPECT_EQ(log.countContaining("accepting pointer input for Pixel again after 3 refused frames"),
               1);
 
     TEST("touchpad: a new refusal run inside the log interval is counted but not logged again");
     vigem.submitRelativeMouseReturnVal = false;
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 2500, 2500, 1080)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 2500, 2500, 1080)));
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)4);
     EXPECT_EQ(log.countContaining("refused to inject pointer input"), 1);
     vigem.submitRelativeMouseReturnVal = true;
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 3000, 3000, 1096)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 3000, 3000, 1096)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)2);
     EXPECT_EQ(log.countContaining("accepting pointer input"), 1);
 
     TEST("touchpad: once the log interval has lapsed the next refusal run is logged");
     svc.backdatePointerRefusalLogForTest(r.token, POINTER_REFUSAL_LOG_INTERVAL_SEC + 1);
     vigem.submitRelativeMouseReturnVal = false;
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 3500, 3500, 1112)));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 3500, 3500, 1112)));
     EXPECT_EQ(log.countContaining("refused to inject pointer input"), 2);
 }
 
@@ -4095,21 +4742,21 @@ static void test_touchpad_idleFramesDoNotTouchTheRefusalRun() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1",
                     "Pixel", /*mouseControl=*/true);
     vigem.submitRelativeMouseReturnVal = false;
-    svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000));
-    EXPECT(!svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
+    routeTouch(svc, r.token, 0, mkTouch(true, 1, 0, 0, 1000));
+    EXPECT(!routeTouch(svc, r.token, 0, mkTouch(true, 1, 500, 500, 1016)));
     EXPECT_EQ(log.countContaining("refused to inject pointer input"), 1);
     vigem.submitRelativeMouseReturnVal = true;
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 500, 500, 1032)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 500, 500, 1032)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)0);
     EXPECT_EQ(svc.pointerCounts().refused, (uint64_t)1);
     EXPECT_EQ(log.countContaining("accepting pointer input"), 0);
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1048)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 1000, 1000, 1048)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)1);
     EXPECT_EQ(log.countContaining("accepting pointer input for Pixel again after 1 refused frame"),
               1);
 
     TEST("touchpad: a button edge with no motion is an injection attempt");
-    EXPECT(svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 1000, 1000, 1064, /*button=*/true)));
+    EXPECT(routeTouch(svc, r.token, 0, mkTouch(true, 1, 1000, 1000, 1064, /*button=*/true)));
     EXPECT_EQ(svc.pointerCounts().injected, (uint64_t)2);
 }
 
@@ -4167,10 +4814,13 @@ struct PointerSessionFixture {
         TouchpadReport report = mkTouch(true, 1, 0, 0, 1000, true);
         report.rightPressed = true;
         report.middlePressed = true;
-        EXPECT(svc_.handleTouchpadData(session_.token, 0, report));
+        EXPECT(routeTouch(svc_, session_.token, 0, report));
     }
 
-    void expectReleased() const {
+    void settle() { svc_.drainPointerForTest(); }
+
+    void expectReleased() {
+        settle();
         EXPECT(!backend_.lastMouseButton);
         EXPECT(!backend_.lastMouseRight);
         EXPECT(!backend_.lastMouseMiddle);
@@ -4242,7 +4892,7 @@ static void test_pointer_rotationReanchorsGesture() {
     const auto replacement = upsert(
         f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "pointer", "D", true);
     f.expectReleased();
-    EXPECT(f.svc_.handleTouchpadData(replacement.token, 0, mkTouch(true, 1, 30000, 30000, 1004)));
+    EXPECT(routeTouch(f.svc_, replacement.token, 0, mkTouch(true, 1, 30000, 30000, 1004)));
     EXPECT_EQ(f.backend_.lastMouseDx, 0);
     EXPECT_EQ(f.backend_.lastMouseDy, 0);
 }
@@ -4267,6 +4917,7 @@ static void test_pointer_rejectedReplugPreservesOwnership() {
         makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, 0, TOUCHPAD_MODE_MOUSE);
     EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
     EXPECT_EQ(applied.result, APPLY_ERR_REPLUG_FAIL);
+    f.settle();
     EXPECT(f.backend_.lastMouseButton);
     EXPECT(f.backend_.lastMouseRight);
     EXPECT(f.backend_.lastMouseMiddle);
@@ -4278,15 +4929,16 @@ static void test_pointer_sharedOwnershipSurvivesRelease() {
     f.holdButtons();
     const auto other = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)},
                               "other", "Other", true);
-    EXPECT(f.svc_.handleTouchpadData(other.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(routeTouch(f.svc_, other.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
     EXPECT(f.backend_.lastMouseRight);
     EXPECT(f.backend_.lastMouseMiddle);
     EXPECT_EQ(
         f.svc_.closeSessionById(f.session_.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    f.settle();
     EXPECT(f.backend_.lastMouseButton);
     EXPECT(!f.backend_.lastMouseRight);
     EXPECT(!f.backend_.lastMouseMiddle);
-    EXPECT(f.svc_.handleTouchpadData(other.token, 0, mkTouch(false, 1, 0, 0, 1004)));
+    EXPECT(routeTouch(f.svc_, other.token, 0, mkTouch(false, 1, 0, 0, 1004)));
     f.expectReleased();
 }
 
@@ -4298,8 +4950,9 @@ static void test_pointer_twoSlotsOwnButtonsIndependently() {
     const ControllerDescriptor desc = makeDesc(1, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE);
     EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer", desc, applied, epoch));
     f.holdButtons();
-    EXPECT(f.svc_.handleTouchpadData(f.session_.token, 1, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(routeTouch(f.svc_, f.session_.token, 1, mkTouch(true, 1, 0, 0, 1000, true)));
     EXPECT(f.svc_.removeController(f.session_.connectionId, "pointer", 0, epoch));
+    f.settle();
     EXPECT(f.backend_.lastMouseButton);
     EXPECT(!f.backend_.lastMouseRight);
     EXPECT(!f.backend_.lastMouseMiddle);
@@ -4327,13 +4980,127 @@ static void test_pointer_failedReleaseRetriesDuringMaintenance() {
     f.backend_.submitRelativeMouseReturnVal = false;
     EXPECT_EQ(
         f.svc_.closeSessionById(f.session_.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    f.settle();
     const int beforeRetry = f.backend_.submitRelativeMouseCalls;
     f.backend_.submitRelativeMouseReturnVal = true;
     f.svc_.refreshIdleInput();
+    f.settle();
     EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
     f.expectReleased();
     f.svc_.refreshIdleInput();
+    f.settle();
     EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+}
+
+static void test_pointer_framesInjectInOrderOnThePointerThread() {
+    TEST("pointer: mouse frames reach the host in the order they arrived");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    const int frames = 60;
+    for (int i = 0; i < frames; i++) {
+        TouchpadReport tr =
+            mkTouch(true, 1, static_cast<int16_t>(i * 50), 0,
+                    1000 + static_cast<uint32_t>(i) * TOUCHPAD_MOUSE_REFERENCE_MS, i % 3 == 0);
+        tr.rightPressed = i % 2 == 0;
+        EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+    }
+    EXPECT(svc.drainPointerForTest());
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, frames);
+    EXPECT_EQ((int)vigem.mouseButtonLog.size(), frames);
+    int outOfOrder = 0;
+    for (size_t i = 0; i < vigem.mouseButtonLog.size(); i++) {
+        const MouseButtons& seen = vigem.mouseButtonLog[i];
+        if (seen.left != (i % 3 == 0) || seen.right != (i % 2 == 0)) outOfOrder++;
+    }
+    EXPECT_EQ(outOfOrder, 0);
+
+    TEST("pointer: the injections run on the pointer thread, not the receive thread");
+    const std::thread::id pointer = svc.pointerThreadForTest();
+    EXPECT(pointer != std::thread::id{});
+    EXPECT(pointer != std::this_thread::get_id());
+    int foreign = 0;
+    for (const std::thread::id caller : vigem.mouseCallers) {
+        if (caller != pointer) foreign++;
+    }
+    EXPECT_EQ(foreign, 0);
+}
+
+static void test_pointer_refusedFrameRetriesDuringMaintenance() {
+    TEST("pointer: a refused frame leaves a retry for the maintenance tick");
+    PointerSessionFixture f;
+    f.backend_.submitRelativeMouseReturnVal = false;
+    EXPECT(!routeTouch(f.svc_, f.session_.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
+    const int beforeRetry = f.backend_.submitRelativeMouseCalls;
+    f.backend_.submitRelativeMouseReturnVal = true;
+    f.svc_.refreshIdleInput();
+    f.settle();
+    EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+    EXPECT(f.backend_.lastMouseButton);
+    EXPECT_EQ(f.backend_.lastMouseDx, 0);
+    EXPECT_EQ(f.backend_.lastMouseDy, 0);
+    f.svc_.refreshIdleInput();
+    f.settle();
+    EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
+}
+
+static void test_pointer_nothingButThePointerThreadInjects() {
+    TEST("pointer: frames, releases and retries all inject from the pointer thread alone");
+    PointerSessionFixture f;
+    ControllerApplyResult applied;
+    uint16_t epoch = 0;
+    EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer",
+                                  makeDesc(1, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE),
+                                  applied, epoch));
+    f.holdButtons();
+    EXPECT(routeTouch(f.svc_, f.session_.token, 1, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT(f.svc_.applyController(f.session_.connectionId, "pointer",
+                                  makeDesc(1, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_OFF), applied,
+                                  epoch));
+    f.backend_.submitRelativeMouseReturnVal = false;
+    EXPECT(f.svc_.removeController(f.session_.connectionId, "pointer", 0, epoch));
+    f.settle();
+    f.backend_.submitRelativeMouseReturnVal = true;
+    f.svc_.refreshIdleInput();
+    f.expectReleased();
+    const auto other = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)},
+                              "pointer", "D", true);
+    EXPECT(routeTouch(f.svc_, other.token, 0, mkTouch(true, 1, 0, 0, 1000, true)));
+    EXPECT_EQ(f.svc_.closeSessionById(other.connectionId, "pointer", CLOSE_REASON_KICKED, true), 1);
+    f.svc_.closeAllSessions(CLOSE_REASON_SHUTDOWN);
+    f.expectReleased();
+    const std::thread::id pointer = f.svc_.pointerThreadForTest();
+    EXPECT(pointer != std::thread::id{});
+    EXPECT(f.backend_.mouseCallers.size() >= 6);
+    int foreign = 0;
+    for (const std::thread::id caller : f.backend_.mouseCallers) {
+        if (caller != pointer) foreign++;
+    }
+    EXPECT_EQ(foreign, 0);
+}
+
+static void test_receivePath_mouseFramesNeverWaitForTheServiceLock() {
+    TEST(
+        "receive path: a mouse-mode touchpad frame is routed without waiting for the service lock");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r =
+        upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, 0, TOUCHPAD_MODE_MOUSE)}, "dev1", "D", true);
+    bool routed = false;
+    EXPECT(finishesWhileServiceLockHeld(svc, client, [&] {
+        routed = svc.handleTouchpadData(r.token, 0, mkTouch(true, 1, 0, 0, 1000, true));
+    }));
+    EXPECT(routed);
+    EXPECT(svc.drainPointerForTest());
+    EXPECT_EQ(vigem.submitRelativeMouseCalls, 1);
+    EXPECT(vigem.lastMouseButton);
 }
 
 struct ContendedRumbleFixture {
@@ -4349,15 +5116,16 @@ struct ContendedRumbleFixture {
     uint16_t durationMs_ = RUMBLE_WIRE_DURATION_MS;
 
     void publish() { svc_.handleRumbleFromBackend(serial_, latest_, durationMs_); }
-    void publishWhileJoined() {
-        std::thread worker(&ContendedRumbleFixture::publish, this);
-        worker.join();
-    }
     void contend() {
-        client_.onSessionClose = std::bind(&ContendedRumbleFixture::publishWhileJoined, this);
+        std::thread worker;
+        client_.onSessionClose = [&] {
+            worker = std::thread(&ContendedRumbleFixture::publish, this);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        };
         EXPECT_EQ(svc_.closeSessionById(other_.connectionId, "other", CLOSE_REASON_KICKED, true),
                   0);
         client_.onSessionClose = nullptr;
+        worker.join();
     }
 };
 
@@ -4368,32 +5136,32 @@ static void test_rumble_stopSurvivesContention() {
     start.strongMagnitude = 40000;
     f.backend_.fireRumble(f.serial_, start);
     f.contend();
+    EXPECT_EQ(f.client_.rumbleCalls, 2);
+    EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
+    EXPECT_EQ(f.svc_.refreshRumble(), 0);
+    EXPECT_EQ(f.client_.rumbleCalls, 2);
+}
+
+static void test_rumble_latestNotificationWins() {
+    TEST("rumble: a newer notification supersedes one received under contention");
+    ContendedRumbleFixture f;
+    f.latest_.strongMagnitude = 50000;
+    f.contend();
     EXPECT_EQ(f.client_.rumbleCalls, 1);
-    EXPECT_EQ(f.svc_.refreshRumble(), 1);
+    f.backend_.fireRumble(f.serial_, RumbleReport{});
     EXPECT_EQ(f.client_.rumbleCalls, 2);
     EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
     EXPECT_EQ(f.svc_.refreshRumble(), 0);
 }
 
-static void test_rumble_latestNotificationWins() {
-    TEST("rumble: a newer notification supersedes a pending notification");
-    ContendedRumbleFixture f;
-    f.latest_.strongMagnitude = 50000;
-    f.contend();
-    f.backend_.fireRumble(f.serial_, RumbleReport{});
-    EXPECT_EQ(f.client_.rumbleCalls, 1);
-    EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 0);
-    EXPECT_EQ(f.svc_.refreshRumble(), 0);
-}
-
 static void test_rumble_contendedDurationIsPreserved() {
-    TEST("rumble: a pending notification retains both motors and its wire duration");
+    TEST("rumble: a notification received under contention keeps both motors and its duration");
     ContendedRumbleFixture f;
     f.latest_.strongMagnitude = 35000;
     f.latest_.weakMagnitude = 25000;
     f.durationMs_ = 73;
     f.contend();
-    EXPECT_EQ(f.svc_.refreshRumble(), 1);
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
     EXPECT_EQ(f.client_.lastRumble.strongMagnitude, 35000);
     EXPECT_EQ(f.client_.lastRumble.weakMagnitude, 25000);
     EXPECT_EQ(f.client_.lastRumble.durationMs, 73);
@@ -4411,13 +5179,165 @@ static void test_rumble_retiredSerialDiscardsPendingState() {
     EXPECT_EQ(f.svc_.availableSlots(), 0);
     f.latest_.strongMagnitude = 50000;
     f.contend();
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
+    EXPECT_EQ(f.client_.lastRumbleConnToken, f.session_.token);
     EXPECT_EQ(f.svc_.closeSessionById(f.session_.connectionId, "dev1", CLOSE_REASON_KICKED, false),
               1);
     const auto replacement = upsert(f.svc_, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE)});
     EXPECT(replacement.ok);
     EXPECT_EQ(f.backend_.pluggedSerials.back(), f.serial_);
     EXPECT_EQ(f.svc_.refreshRumble(), 0);
-    EXPECT_EQ(f.client_.rumbleCalls, 0);
+    EXPECT_EQ(f.client_.rumbleCalls, 1);
+    EXPECT(f.client_.lastRumbleConnToken != replacement.token);
+}
+
+static RumbleReport motorLevel(uint16_t strong, uint16_t weak = 0) {
+    RumbleReport report{};
+    report.strongMagnitude = strong;
+    report.weakMagnitude = weak;
+    return report;
+}
+
+struct RumbleDuringPlug {
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc{vigem, client, log};
+    SessionUpsertResult session = upsert(svc, {});
+
+    RumbleDuringPlug() { svc.updatePostDecryptV4(session.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT); }
+
+    void writeWhilePlugging(std::vector<RumbleReport> writes) {
+        vigem.onPlugged = [this, writes](uint32_t serial) {
+            for (const RumbleReport& report : writes) vigem.fireRumble(serial, report);
+        };
+    }
+
+    void plug(uint8_t type = CONTROLLER_TYPE_XBOX) {
+        ControllerApplyResult applied;
+        uint16_t epoch = 0;
+        EXPECT(svc.applyController(session.connectionId, "dev1", makeDesc(0, type, CAP_RUMBLE),
+                                   applied, epoch));
+        vigem.onPlugged = nullptr;
+    }
+};
+
+static void test_rumble_betweenPlugAndPublishReachesTheClientAtPublish() {
+    TEST("rumble: a level written between a pad's plug and its publish reaches the client at the "
+         "publish");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(40000, 12000)});
+    f.plug();
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    EXPECT_EQ(f.client.deliveredRumbles, 1);
+    EXPECT_EQ(f.client.lastRumbleConnToken, f.session.token);
+    EXPECT_EQ((int)f.client.lastRumbleCtrlIdx, 0);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 40000);
+    EXPECT_EQ((int)f.client.lastRumble.weakMagnitude, 12000);
+    EXPECT_EQ((int)f.client.lastRumble.durationMs, (int)RUMBLE_WIRE_DURATION_MS);
+}
+
+static void test_rumble_newestLevelBeforePublishWins() {
+    TEST("rumble: of several levels written before the publish, only the newest is forwarded");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(1000), motorLevel(2000, 300)});
+    f.plug();
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 2000);
+    EXPECT_EQ((int)f.client.lastRumble.weakMagnitude, 300);
+}
+
+static void test_rumble_stopBeforePublishForwardsNothing() {
+    TEST("rumble: a level stopped again before the publish forwards nothing");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(40000), motorLevel(0)});
+    f.plug();
+    EXPECT_EQ(f.client.rumbleCalls, 0);
+}
+
+static void test_rumble_levelCarriedAcrossPublishIsHeldRumble() {
+    TEST("rumble: the level carried across the publish is the pad's held level afterwards");
+    RumbleDuringPlug f;
+    f.writeWhilePlugging({motorLevel(40000)});
+    f.plug();
+    const uint32_t serial = f.vigem.pluggedSerials.back();
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    f.vigem.fireRumble(serial, motorLevel(40000));
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    f.vigem.fireRumble(serial, RumbleReport{});
+    EXPECT_EQ(f.client.rumbleCalls, 2);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 0);
+}
+
+static void test_rumble_betweenPlugAndPublishOfAReplugReachesTheClient() {
+    TEST("rumble: a level written while a replug's new pad plugs reaches the client at the "
+         "publish");
+    RumbleDuringPlug f;
+    f.plug(CONTROLLER_TYPE_XBOX);
+    EXPECT_EQ(f.client.rumbleCalls, 0);
+    f.writeWhilePlugging({motorLevel(25000)});
+    f.plug(CONTROLLER_TYPE_PLAYSTATION);
+    EXPECT_EQ(f.client.rumbleCalls, 1);
+    EXPECT_EQ((int)f.client.lastRumble.strongMagnitude, 25000);
+}
+
+static void test_rumble_betweenPlugAndPublishOfAFreshSessionIsRefreshedOnceReachable() {
+    TEST("rumble: a level written while a fresh session's pad plugs reaches the client once it "
+         "can be reached");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    vigem.onPlugged = [&vigem](uint32_t serial) { vigem.fireRumble(serial, motorLevel(30000)); };
+    const auto session = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    vigem.onPlugged = nullptr;
+    EXPECT_EQ(client.deliveredRumbles, 0);
+
+    svc.updatePostDecryptV4(session.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    std::this_thread::sleep_for(std::chrono::milliseconds(RUMBLE_REFRESH_MS + 20));
+    EXPECT(svc.refreshRumble() >= 1);
+    EXPECT_EQ(client.deliveredRumbles, 1);
+    EXPECT_EQ(client.lastRumbleConnToken, session.token);
+    EXPECT_EQ((int)client.lastRumble.strongMagnitude, 30000);
+}
+
+static void test_rumble_levelCarriedAcrossARekeyIsSentOnlyOnceTheSlotHoldsTheNewToken() {
+    TEST("rumble: a level carried across a re-keying PUT is sent only once the slot holds the "
+         "session's new token");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto first = upsert(svc, {});
+    svc.updatePostDecryptV4(first.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT);
+    std::vector<std::pair<uint32_t, uint32_t>> tokens;
+    client.onRumble = [&tokens](const Connection& conn) {
+        tokens.emplace_back(conn.token, conn.hot->token.load(std::memory_order_acquire));
+    };
+    vigem.onPlugged = [&vigem](uint32_t serial) { vigem.fireRumble(serial, motorLevel(30000)); };
+    const auto second = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    vigem.onPlugged = nullptr;
+    EXPECT(second.token != first.token);
+    EXPECT_EQ(tokens.size(), size_t{1});
+    if (tokens.size() == 1) {
+        EXPECT_EQ(tokens[0].first, second.token);
+        EXPECT_EQ(tokens[0].second, second.token);
+    }
+}
+
+static void test_rumble_levelOnAFreeSerialIsNotInherited() {
+    TEST("rumble: a level written for a serial no pad holds is not inherited by the pad plugged "
+         "on it later");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    vigem.fireRumble(1, motorLevel(50000));
+    const auto session = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    EXPECT(session.ok);
+    EXPECT_EQ(vigem.pluggedSerials.back(), 1u);
+    EXPECT_EQ(client.rumbleCalls, 0);
+    EXPECT_EQ(svc.refreshRumble(), 0);
 }
 
 int main() {
@@ -4434,10 +5354,22 @@ int main() {
     test_pointer_twoSlotsOwnButtonsIndependently();
     test_pointer_replugReleasesButtons();
     test_pointer_failedReleaseRetriesDuringMaintenance();
+    test_pointer_framesInjectInOrderOnThePointerThread();
+    test_pointer_refusedFrameRetriesDuringMaintenance();
+    test_pointer_nothingButThePointerThreadInjects();
+    test_receivePath_mouseFramesNeverWaitForTheServiceLock();
     test_rumble_stopSurvivesContention();
     test_rumble_latestNotificationWins();
     test_rumble_retiredSerialDiscardsPendingState();
     test_rumble_contendedDurationIsPreserved();
+    test_rumble_betweenPlugAndPublishReachesTheClientAtPublish();
+    test_rumble_newestLevelBeforePublishWins();
+    test_rumble_stopBeforePublishForwardsNothing();
+    test_rumble_levelCarriedAcrossPublishIsHeldRumble();
+    test_rumble_betweenPlugAndPublishOfAReplugReachesTheClient();
+    test_rumble_betweenPlugAndPublishOfAFreshSessionIsRefreshedOnceReachable();
+    test_rumble_levelCarriedAcrossARekeyIsSentOnlyOnceTheSlotHoldsTheNewToken();
+    test_rumble_levelOnAFreeSerialIsNotInherited();
     test_upsert_createsSession();
     test_upsert_connectionIdIsConnAndEightHexDigits();
     test_upsert_recordsProtocolVersion();
@@ -4533,6 +5465,11 @@ int main() {
     test_touchpad_mouseMode_wheelDuplicateSuppressed();
     test_touchpad_mouseMode_subPixelRemainder();
     test_replug_resetsStreamCaches();
+    test_streamCaches_followThePadThroughReplug();
+    test_streamCaches_survivePadUpdatesTheyDoNotDependOn();
+    test_receivePath_streamsNeverWaitForTheServiceLock();
+    test_receivePath_heartbeatNeverWaitsForTheServiceLock();
+    test_heartbeat_publishedAckFollowsEveryTopologyChange();
     test_rumble_forwardsAndCoalesces();
     test_lightbar_gatedOnCap();
     test_triggerEffects_gatedOnCap();
@@ -4557,6 +5494,9 @@ int main() {
     test_micAudio_seqWrapsMidStream();
     test_micAudio_codecStateIsPerControllerAndDiesWithThePad();
     test_micAudio_unboundSlotSubmitsNothing();
+    test_micAudio_decodesOnTheMicWorker();
+    test_micAudio_decoderFollowsThePlugGeneration();
+    test_receivePath_micFramesNeverWaitForTheServiceLock();
     test_speakerAudio_oneWindowBecomesOneWirePacket();
     test_speakerAudio_partialBatchesBuffer();
     test_speakerAudio_seqIsPerControllerAndWraps();
@@ -4568,14 +5508,17 @@ int main() {
     test_hapticAudio_mixesWithHidRumbleByMax();
     test_hapticAudio_policyOffStopsBothRenderings();
     test_hapticAudio_countersTrackBothRenderings();
+    test_audioLanes_encodeOutsideTheServiceLock();
+    test_audioLanes_neverDropForTheServiceLock();
+    test_audioLanes_followASerialToItsNextSession();
     test_rumble_heldLevelIsRefreshedBeforeTheClientStops();
     test_rumble_coalesceNeverOutlivesTheClientsCommand();
     test_rumble_hapticStreamThatEndsIsStoppedByTheHost();
     test_audioCounts_trackTheMicStream();
     test_audioCounts_separateSuppressedSilenceFromSentFrames();
-    test_audioBackendCallbacks_dropNotBlock_whenLockHeld();
+    test_audioBackendCallbacks_neverDropUnderTheServiceLock();
     test_feedback_replugResetsCoalesce();
-    test_backendCallbacks_dropNotBlock_whenLockHeld();
+    test_backendCallbacks_waitForTheServiceLockAndDeliver();
     test_feedbackState_rotatedSessionGetsTheLightbarAgain();
     test_feedbackState_rotatedSessionGetsTriggerEffectsAndPlayerLedsAgain();
     test_feedbackState_micLampIsNotReplayedSinceItAlsoMutesTheMicrophone();

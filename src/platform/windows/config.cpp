@@ -1,9 +1,34 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "config.h"
 
+static std::string narrowPath(const std::wstring& w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
+                                nullptr, nullptr);
+    std::string s(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
+                        nullptr);
+    return s;
+}
+
+static bool configDirOverride(std::wstring& dir) {
+    const DWORD needed = GetEnvironmentVariableW(L"SATELLITE_CONFIG_DIR", nullptr, 0);
+    if (needed <= 1) return false;
+    std::wstring value(needed, L'\0');
+    const DWORD written = GetEnvironmentVariableW(L"SATELLITE_CONFIG_DIR", value.data(), needed);
+    if (written == 0 || written >= needed) return false;
+    value.resize(written);
+    dir = value;
+    return true;
+}
+
 // SHGetKnownFolderPath (FOLDERID_*) supersedes the deprecated SHGetFolderPath
 // (CSIDL_*). Converted to narrow at the boundary; config paths are ASCII.
 std::string configPath() {
+    std::wstring dir;
+    if (configDirOverride(dir)) {
+        CreateDirectoryW(dir.c_str(), nullptr);
+        return narrowPath(dir + L"\\config.json");
+    }
     PWSTR raw = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &raw)) && raw) {
         std::wstring w(raw);
@@ -11,12 +36,7 @@ std::string configPath() {
         w += L"\\satellite";
         CreateDirectoryW(w.c_str(), nullptr);
         w += L"\\config.json";
-        int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
-                                    nullptr, nullptr);
-        std::string s(n, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
-                            nullptr);
-        return s;
+        return narrowPath(w);
     }
     return "config.json";
 }

@@ -4,6 +4,8 @@
 
 #include "core/crash_reporting.h"
 
+#include <atomic>
+
 #ifdef SATELLITE_HAS_SENTRY
 #include <sentry.h>
 #ifdef _WIN32
@@ -16,7 +18,7 @@
 namespace satellite::crash {
 
 namespace {
-bool g_active = false;
+std::atomic<bool> g_active{false};
 // Remembered from init() so a live flip can re-arm without the admin route
 // having to know where satellite keeps its state.
 std::string g_databaseDir;

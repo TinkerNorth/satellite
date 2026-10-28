@@ -28,20 +28,63 @@ static uint32_t makeRandomToken() {
 
 namespace {
 
-void publishControllers(const Connection& conn) {
+uint32_t padInfoWord(const Controller& ctrl) {
+    return ctrl.active ? hotPadInfo(ctrl.caps, ctrl.controllerType, ctrl.touchpadMode) : 0u;
+}
+
+uint32_t padGenWord(const Controller& ctrl) { return ctrl.active ? ctrl.plugGen : 0u; }
+
+uint32_t padStampWord(const Controller& ctrl) { return ctrl.active ? ctrl.pointerStamp : 0u; }
+
+uint32_t sessionWord(const Connection& conn) {
+    return hotSessionWord(conn.epoch, conn.mouseControlGranted);
+}
+
+uint32_t packMotors(const RumbleReport& report) {
+    return static_cast<uint32_t>(report.strongMagnitude) |
+           (static_cast<uint32_t>(report.weakMagnitude) << 16);
+}
+
+void publishControllers(const Connection& conn, HotTable& table) {
+    for (uint32_t serial = 1; serial <= static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS); serial++) {
+        const uint32_t owner = table.padOwners[serial].load(std::memory_order_relaxed);
+        if (owner == 0 || hotOwnerSlot(owner) != conn.slot) continue;
+        const Controller& ctrl = conn.controllers[hotOwnerIndex(owner)];
+        if (!ctrl.active || ctrl.serialNo != serial) {
+            table.padOwners[serial].store(0, std::memory_order_release);
+        }
+    }
     for (size_t i = 0; i < MAX_CONTROLLERS_PER_CONN; i++) {
         const Controller& ctrl = conn.controllers[i];
-        conn.hot->ctrl[i].store(hotCtrlWord(ctrl.active, ctrl.serialNo), std::memory_order_relaxed);
+        if (!ctrl.active || ctrl.serialNo == 0 ||
+            ctrl.serialNo > static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS)) {
+            continue;
+        }
+        table.padOwners[ctrl.serialNo].store(hotPadOwner(conn.slot, static_cast<uint8_t>(i)),
+                                             std::memory_order_release);
     }
+    HotSlot& hot = *conn.hot;
+    for (size_t i = 0; i < MAX_CONTROLLERS_PER_CONN; i++) {
+        const Controller& ctrl = conn.controllers[i];
+        hot.ctrl[i].store(hotCtrlWord(ctrl.active, ctrl.serialNo), std::memory_order_relaxed);
+        hot.padInfo[i].store(padInfoWord(ctrl), std::memory_order_relaxed);
+        hot.padGen[i].store(padGenWord(ctrl), std::memory_order_relaxed);
+        hot.padStamp[i].store(padStampWord(ctrl), std::memory_order_relaxed);
+    }
+    hot.session.store(sessionWord(conn), std::memory_order_relaxed);
 }
 
 bool controllersPublished(const Connection& conn) {
+    const HotSlot& hot = *conn.hot;
     for (size_t i = 0; i < MAX_CONTROLLERS_PER_CONN; i++) {
         const Controller& ctrl = conn.controllers[i];
         const uint32_t word = hotCtrlWord(ctrl.active, ctrl.serialNo);
-        if (conn.hot->ctrl[i].load(std::memory_order_relaxed) != word) return false;
+        if (hot.ctrl[i].load(std::memory_order_relaxed) != word) return false;
+        if (hot.padInfo[i].load(std::memory_order_relaxed) != padInfoWord(ctrl)) return false;
+        if (hot.padGen[i].load(std::memory_order_relaxed) != padGenWord(ctrl)) return false;
+        if (hot.padStamp[i].load(std::memory_order_relaxed) != padStampWord(ctrl)) return false;
     }
-    return true;
+    return hot.session.load(std::memory_order_relaxed) == sessionWord(conn);
 }
 
 uint8_t safeTouchpadMode(uint8_t mode) {
@@ -50,7 +93,8 @@ uint8_t safeTouchpadMode(uint8_t mode) {
 
 class ConnectionWrite {
   public:
-    ConnectionWrite(Connection& conn, const RxEpoch& rx) : conn_(conn), write_(*conn.hot, rx) {}
+    ConnectionWrite(Connection& conn, const RxEpoch& rx, HotTable& table)
+        : conn_(conn), table_(table), write_(*conn.hot, rx) {}
     ~ConnectionWrite() { close(); }
     ConnectionWrite(const ConnectionWrite&) = delete;
     ConnectionWrite& operator=(const ConnectionWrite&) = delete;
@@ -58,12 +102,13 @@ class ConnectionWrite {
     void close() {
         if (!open_) return;
         open_ = false;
-        publishControllers(conn_);
+        publishControllers(conn_, table_);
         write_.close();
     }
 
   private:
     Connection& conn_;
+    HotTable& table_;
     HotWrite write_;
     bool open_ = true;
 };
@@ -82,6 +127,47 @@ void recordDatagram(HotSlot& slot, uint32_t keyEpoch, uint32_t counter, uint64_t
 
 std::chrono::steady_clock::time_point lastPacketAt(const Connection& conn) {
     return hotTime(conn.hot->lastPacketTicks.load(std::memory_order_acquire));
+}
+
+constexpr int RX_READ_ATTEMPTS = 64;
+constexpr int AUDIO_READ_ATTEMPTS = 64;
+
+void publishRxMotion(RxPad& rx, const MotionReport& report, bool delivered) {
+    rx.ownFlags |= RX_PAD_MOTION;
+    rx.ownFlags =
+        delivered ? (rx.ownFlags | RX_PAD_MOTION_SINK) : (rx.ownFlags & ~RX_PAD_MOTION_SINK);
+    rx.beginWrite();
+    storeWords(rx.motion, report);
+    rx.flags.store(rx.ownFlags, std::memory_order_relaxed);
+    rx.endWrite();
+}
+
+void publishRxBattery(RxPad& rx, const BatteryReport& report) {
+    rx.ownFlags |= RX_PAD_BATTERY;
+    rx.beginWrite();
+    rx.battery.store(static_cast<uint32_t>(report.level) |
+                         (static_cast<uint32_t>(report.status) << 8),
+                     std::memory_order_relaxed);
+    rx.flags.store(rx.ownFlags, std::memory_order_relaxed);
+    rx.endWrite();
+}
+
+void publishRxTouchpad(RxPad& rx, const TouchpadReport& report, uint8_t mode, uint32_t keyEpoch) {
+    rx.ownFlags |= RX_PAD_TOUCHPAD;
+    rx.beginWrite();
+    storeWords(rx.touchpad, report);
+    rx.touchpadMode.store(mode, std::memory_order_relaxed);
+    rx.touchpadKeyEpoch.store(keyEpoch, std::memory_order_relaxed);
+    rx.flags.store(rx.ownFlags, std::memory_order_relaxed);
+    rx.endWrite();
+}
+
+bool readRxPad(const RxPad& rx, RxPadView& out) {
+    for (int attempt = 0; attempt < RX_READ_ATTEMPTS; attempt++) {
+        if (rx.read(out)) return true;
+        std::this_thread::yield();
+    }
+    return false;
 }
 
 } // namespace
@@ -168,22 +254,25 @@ const Connection* SessionService::findByConnectionId(const std::string& connecti
 void SessionService::retireConnectionLocked(Connection& conn, std::vector<RetiredSerial>& retired) {
     for (auto& ctrl : conn.controllers) {
         if (ctrl.active && ctrl.serialNo != 0) {
-            releasePointerLocked(ctrl.serialNo);
+            releasePointerLocked(ctrl);
             retired.push_back(RetiredSerial{ctrl.serialNo, false});
             ctrl.active = false;
             ctrl.serialNo = 0;
         }
     }
-    conn.activeControllerCount = 0;
+    adjustActivePadsLocked(conn, -conn.activeControllerCount);
     hot_.retire(conn.slot);
-    ConnectionWrite write(conn, rx_);
+    ConnectionWrite write(conn, rx_, hot_);
     conn.hot->token.store(0, std::memory_order_relaxed);
     const uint8_t cleared[CRYPTO_KEY_SIZE] = {};
     conn.hot->storeKey(cleared);
 }
 
 void SessionService::unplugRetired(std::vector<RetiredSerial>& retired) {
-    for (RetiredSerial& r : retired) r.unplugged = backend_.unplugDevice(r.serial);
+    for (RetiredSerial& r : retired) {
+        blockingRegion("backend.lifecycle");
+        r.unplugged = backend_.unplugDevice(r.serial);
+    }
 }
 
 void SessionService::settleRetiredLocked(std::vector<RetiredSerial>& retired) {
@@ -204,7 +293,7 @@ void SessionService::finishTeardown(std::vector<RetiredSerial>& retired) {
     unplugRetired(retired);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         settleRetiredLocked(retired);
         idle = busIdleLocked();
     }
@@ -217,7 +306,7 @@ uint32_t SessionService::allocateSerial() {
     for (size_t step = 0; step < MAX_BACKEND_CONTROLLERS; step++) {
         size_t i = (serialScanStart_ + step) % MAX_BACKEND_CONTROLLERS;
         if (!serialInUse_[i] && !serialQuarantined_[i]) {
-            pendingRumble_[i + 1].store(0, std::memory_order_release);
+            hidMotors_[i + 1].store(0, std::memory_order_release);
             serialInUse_[i] = true;
             serialScanStart_ = (i + 1) % MAX_BACKEND_CONTROLLERS;
             return static_cast<uint32_t>(i + 1); // 1-based
@@ -228,13 +317,13 @@ uint32_t SessionService::allocateSerial() {
 
 void SessionService::releaseSerial(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
-    pendingRumble_[serial].store(0, std::memory_order_release);
+    hidMotors_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = false;
 }
 
 void SessionService::quarantineSerial(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
-    pendingRumble_[serial].store(0, std::memory_order_release);
+    hidMotors_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = false;
     serialQuarantined_[serial - 1] = true;
 }
@@ -242,7 +331,7 @@ void SessionService::quarantineSerial(uint32_t serial) {
 bool SessionService::claimSerialLocked(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return false;
     if (serialInUse_[serial - 1] || serialQuarantined_[serial - 1]) return false;
-    pendingRumble_[serial].store(0, std::memory_order_release);
+    hidMotors_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = true;
     return true;
 }
@@ -253,14 +342,20 @@ int SessionService::countGlobalActiveControllers() const {
     return total;
 }
 
+void SessionService::adjustActivePadsLocked(Connection& conn, int delta) {
+    conn.activeControllerCount += delta;
+    activePads_.fetch_add(delta, std::memory_order_relaxed);
+}
+
 bool SessionService::busIdleLocked() const {
     return backend_.isBusOpen() && countGlobalActiveControllers() == 0;
 }
 
 void SessionService::closeBusIfIdle(bool idle) {
     if (!idle) return;
+    blockingRegion("backend.lifecycle");
     backend_.closeBus();
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     std::memset(serialQuarantined_, 0, sizeof(serialQuarantined_));
     log_.logMsg(LogLevel::INFO, "service", "Backend bus closed (no active controllers)");
 }
@@ -287,6 +382,7 @@ bool SessionService::reserveSessionLocked(const std::string& deviceId,
     row.deviceId = deviceId;
     row.hot = &hot_.slots[static_cast<size_t>(slot)];
     row.slot = slot;
+    row.row = ++nextRow_;
     row.connectedAt = std::chrono::steady_clock::now();
     return true;
 }
@@ -335,19 +431,23 @@ void SessionService::publishSessionKeyLocked(Connection& conn,
     hot.clientAddr.store(0, std::memory_order_relaxed);
     hot.feedbackPending.store(false, std::memory_order_relaxed);
     hot.lastPacketTicks.store(hotTicks(now), std::memory_order_relaxed);
+    hot.row.store(conn.row, std::memory_order_relaxed);
+    hot.storeName(conn.deviceName);
 }
 
 void SessionService::publishSessionLocked(Connection& conn,
                                           std::chrono::steady_clock::time_point now) {
-    ConnectionWrite write(conn, rx_);
+    ConnectionWrite write(conn, rx_, hot_);
     publishSessionKeyLocked(conn, now);
     write.close();
     hot_.publish(conn.slot, conn.token);
+    sendSeededRumbleLocked(conn);
 }
 
 void SessionService::publishControllersLocked(Connection& conn) {
     if (controllersPublished(conn)) return;
-    ConnectionWrite write(conn, rx_);
+    ConnectionWrite(conn, rx_, hot_).close();
+    sendSeededRumbleLocked(conn);
 }
 
 void SessionService::resetControllerStreamState(Controller& ctrl) {
@@ -371,29 +471,9 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lastPlayerLedsValid = false;
     ctrl.micLedState = MIC_LED_STATE_OFF;
     ctrl.lastMicLedValid = false;
-    // A fresh pad starts with a fresh mic allowance; carrying a spent window
-    // across a replug would swallow the first second of the new stream.
-    ctrl.micWindowStart = std::chrono::steady_clock::time_point{};
-    ctrl.micPacketsInWindow = 0;
-    // The codecs and the reorder window belong to the pad that WAS here. A
-    // decoder carries the previous pad's filter state and concealment history,
-    // and a sequence number carried across would make the new stream look like
-    // a 40 ms reorder of the old one. Dropping the whole thing also returns the
-    // memory (see ControllerAudio) rather than holding it for a pad that may
-    // never speak.
-    ctrl.audio.reset();
-    // Controller structs persist across remove/re-add, so stale samples would
-    // show phantom "active" state and a MOUSE first sample would delta against a
-    // pre-readd finger (cursor jump).
-    ctrl.lastMotion = MotionReport{};
-    ctrl.lastMotionValid = false;
-    ctrl.motionSinkActive = false;
-    ctrl.lastBattery = BatteryReport{};
-    ctrl.lastBatteryValid = false;
-    ctrl.lastTouchpad = TouchpadReport{};
-    ctrl.lastTouchpadValid = false;
-    ctrl.touchpadMouseRemX = 0.0f;
-    ctrl.touchpadMouseRemY = 0.0f;
+    ctrl.plugGen = ++nextPlugGen_;
+    if (ctrl.plugGen == 0) ctrl.plugGen = ++nextPlugGen_;
+    ctrl.pointerStamp = takePointerStampLocked();
 }
 
 void SessionService::removePadLocked(Connection& conn, Controller& ctrl,
@@ -401,18 +481,17 @@ void SessionService::removePadLocked(Connection& conn, Controller& ctrl,
     log_.logMsg(LogLevel::INFO, "service",
                 "Controller #" + std::to_string(ctrl.index) + " removed from " + conn.deviceName);
     vacatePadLocked(conn, ctrl, retired);
-    ctrl.audio.reset();
 }
 
 void SessionService::vacatePadLocked(Connection& conn, Controller& ctrl,
                                      std::vector<RetiredSerial>& retired) {
     if (ctrl.serialNo != 0) {
-        releasePointerLocked(ctrl.serialNo);
+        releasePointerLocked(ctrl);
         retired.push_back(RetiredSerial{ctrl.serialNo, false});
     }
     ctrl.active = false;
     ctrl.serialNo = 0;
-    conn.activeControllerCount--;
+    adjustActivePadsLocked(conn, -1);
     conn.epoch++;
 }
 
@@ -535,12 +614,16 @@ void SessionService::plugPads(TopologyChange& change, bool secondRound) {
     bool wanted = false;
     for (const PadChange& pad : change.pads) wanted = wanted || plugsInRound(pad, secondRound);
     if (!wanted) return;
-    if (!backend_.isBusOpen() && backend_.ensureBusOpen()) change.busReopened = true;
+    if (!backend_.isBusOpen()) {
+        blockingRegion("backend.lifecycle");
+        if (backend_.ensureBusOpen()) change.busReopened = true;
+    }
     const bool busOpen = backend_.isBusOpen();
     for (PadChange& pad : change.pads) {
         if (!plugsInRound(pad, secondRound)) continue;
         pad.busDown = !busOpen;
         if (!busOpen) continue;
+        blockingRegion("backend.lifecycle");
         pad.plugged = backend_.pluginDevicePreferring(pad.serial, controllerIdentity(pad.desc.type),
                                                       pad.desc.preferredBackend);
     }
@@ -579,12 +662,7 @@ void SessionService::commitPadLocked(Connection& conn, PadChange& pad,
 
 void SessionService::updatePadLocked(Controller& ctrl, const ControllerDescriptor& desc) {
     const uint8_t mode = safeTouchpadMode(desc.touchpadMode);
-    if (mode != ctrl.touchpadMode) {
-        releasePointerLocked(ctrl.serialNo);
-        ctrl.lastTouchpadValid = false;
-        ctrl.touchpadMouseRemX = 0.0f;
-        ctrl.touchpadMouseRemY = 0.0f;
-    }
+    if (mode != ctrl.touchpadMode) releasePointerLocked(ctrl);
     ctrl.controllerType = desc.type;
     ctrl.caps = desc.caps;
     ctrl.touchpadMode = mode;
@@ -605,7 +683,8 @@ void SessionService::bindPadLocked(Connection& conn, Controller& ctrl, const Pad
     ctrl.serialNo = pad.serial;
     ctrl.active = true;
     takeDescriptorLocked(ctrl, pad.desc);
-    conn.activeControllerCount++;
+    seedRumbleLocked(ctrl);
+    adjustActivePadsLocked(conn, 1);
     conn.epoch++;
 }
 
@@ -643,10 +722,11 @@ void SessionService::replugPadLocked(Connection& conn, Controller& ctrl, PadChan
                         controllerTypeLabel(ctrl.controllerType));
         return;
     }
-    releasePointerLocked(ctrl.serialNo);
+    releasePointerLocked(ctrl);
     retired.push_back(RetiredSerial{ctrl.serialNo, false});
     ctrl.serialNo = pad.serial;
     takeDescriptorLocked(ctrl, pad.desc);
+    seedRumbleLocked(ctrl);
     log_.logMsg(LogLevel::INFO, "service",
                 "Replugged controller #" + std::to_string(pad.desc.ctrlIdx) + " as " +
                     controllerTypeLabel(pad.desc.type) + " (serial " +
@@ -688,7 +768,7 @@ bool SessionService::allocateWaitingLocked(TopologyChange& change) {
 void SessionService::convergePads(Connection& conn, TopologyChange& change) {
     plugPads(change, false);
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         commitPadsLocked(conn, change, false);
         publishControllersLocked(conn);
     }
@@ -698,12 +778,12 @@ void SessionService::convergePads(Connection& conn, TopologyChange& change) {
 void SessionService::settlePadChange(Connection& conn, TopologyChange& change) {
     unplugRetired(change.retired);
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         settleRetiredLocked(change.retired);
         if (!allocateWaitingLocked(change)) return;
     }
     plugPads(change, true);
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     commitPadsLocked(conn, change, true);
     publishControllersLocked(conn);
 }
@@ -724,14 +804,14 @@ SessionUpsertResult SessionService::upsertSession(
     const std::string& deviceId, const std::string& deviceName, const std::string& clientIP,
     const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::vector<ControllerDescriptor>& descriptors,
     bool requestMouseControl, int protocolVersion) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     SessionUpsertResult res;
     const std::vector<ControllerDescriptor> desired = dedupDescriptors(descriptors);
     SessionMint mint;
     TopologyChange change;
     Connection* conn = nullptr;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         conn = findByDeviceId(deviceId);
         if (conn == nullptr && !reserveSessionLocked(deviceId, deviceName, mint)) {
             res.error = UPSERT_ERROR_TOO_MANY_SESSIONS;
@@ -742,14 +822,13 @@ SessionUpsertResult SessionService::upsertSession(
     }
     plugPads(change, false);
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         const auto now = std::chrono::steady_clock::now();
         conn = &adoptSessionLocked(conn, deviceName, mint);
         conn->deviceName = deviceName;
         conn->clientIP = clientIP;
         std::memcpy(conn->sessionSalt, mint.salt, SESSION_SALT_SIZE);
         std::memcpy(conn->sessionKey, mint.key, CRYPTO_KEY_SIZE);
-        conn->micDropLogged = 0;
         conn->graceUntil = now + std::chrono::seconds(REST_LIVENESS_GRACE_SEC);
         conn->protocolVersion = protocolVersion;
         conn->mouseControlGranted = requestMouseControl && backend_.supportsRelativeMouse();
@@ -759,7 +838,7 @@ SessionUpsertResult SessionService::upsertSession(
     settlePadChange(*conn, change);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         res.ok = true;
         res.connectionId = conn->connectionId;
         res.token = conn->token;
@@ -784,11 +863,11 @@ SessionUpsertResult SessionService::upsertSession(
 bool SessionService::applyController(const std::string& connectionId, const std::string& deviceId,
                                      const ControllerDescriptor& desc,
                                      ControllerApplyResult& outResult, uint16_t& outEpoch) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     TopologyChange change;
     Connection* conn = nullptr;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         conn = findByConnectionId(connectionId);
         if (conn == nullptr || conn->deviceId != deviceId) return false;
         change.pads.emplace_back();
@@ -798,7 +877,7 @@ bool SessionService::applyController(const std::string& connectionId, const std:
     convergePads(*conn, change);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         outResult = applyResultLocked(*conn, change.pads.front());
         outEpoch = conn->epoch;
         idle = busIdleLocked();
@@ -809,11 +888,11 @@ bool SessionService::applyController(const std::string& connectionId, const std:
 
 bool SessionService::removeController(const std::string& connectionId, const std::string& deviceId,
                                       uint8_t ctrlIdx, uint16_t& outEpoch) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     TopologyChange change;
     Connection* conn = nullptr;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         conn = findByConnectionId(connectionId);
         if (conn == nullptr || conn->deviceId != deviceId) return false;
         const bool present =
@@ -823,7 +902,7 @@ bool SessionService::removeController(const std::string& connectionId, const std
     convergePads(*conn, change);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         outEpoch = conn->epoch;
         idle = busIdleLocked();
     }
@@ -833,7 +912,7 @@ bool SessionService::removeController(const std::string& connectionId, const std
 
 SessionService::SessionView SessionService::getSessionView(const std::string& connectionId,
                                                            const std::string& deviceId) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     SessionView view;
     const Connection* conn = findByConnectionId(connectionId);
     if (conn == nullptr) return view;
@@ -862,11 +941,11 @@ SessionService::SessionView SessionService::getSessionView(const std::string& co
 
 int SessionService::closeSessionById(const std::string& connectionId, const std::string& deviceId,
                                      uint8_t reason, bool notify) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     std::vector<RetiredSerial> retired;
     int removed = 0;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         Connection* conn = findByConnectionId(connectionId);
         if (conn == nullptr) return -1;
         if (!deviceId.empty() && conn->deviceId != deviceId) return -1;
@@ -885,11 +964,11 @@ int SessionService::closeSessionById(const std::string& connectionId, const std:
 }
 
 int SessionService::closeSessionsForDevice(const std::string& deviceId, uint8_t reason) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     std::vector<RetiredSerial> retired;
     int closed = 0;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         for (auto it = connections_.begin(); it != connections_.end();) {
             if (it->second.deviceId == deviceId) {
                 client_.sendSessionClose(it->second, reason);
@@ -909,10 +988,10 @@ int SessionService::closeSessionsForDevice(const std::string& deviceId, uint8_t 
 }
 
 void SessionService::closeAllSessions(uint8_t reason) {
-    std::lock_guard<std::mutex> topo(topoMtx_);
+    std::lock_guard<TrackedMutex> topo(topoMtx_);
     std::vector<RetiredSerial> retired;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         for (auto& [tok, conn] : connections_) { client_.sendSessionClose(conn, reason); }
         for (auto& [tok, conn] : connections_) { retireConnectionLocked(conn, retired); }
         connections_.clear();
@@ -920,7 +999,7 @@ void SessionService::closeAllSessions(uint8_t reason) {
     unplugRetired(retired);
     bool idle = false;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         settleRetiredLocked(retired);
         std::memset(serialInUse_, 0, sizeof(serialInUse_));
         std::memset(serialQuarantined_, 0, sizeof(serialQuarantined_));
@@ -938,47 +1017,46 @@ bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
 }
 
 void SessionService::handleHeartbeat(uint32_t token) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return;
-
-    const Connection& conn = it->second;
-    client_.sendHeartbeatAck(conn, backend_.isBusOpen(), (uint8_t)countGlobalActiveControllers(),
-                             conn.epoch, activeBitmapLocked(conn));
-}
-
-static constexpr uint64_t RUMBLE_PENDING = uint64_t{1} << 48;
-
-static uint64_t packPendingRumble(const RumbleReport& report, const uint16_t durationMs) {
-    const uint64_t strong = report.strongMagnitude;
-    const uint64_t weak = static_cast<uint64_t>(report.weakMagnitude) << 16;
-    const uint64_t duration = static_cast<uint64_t>(durationMs) << 32;
-    return RUMBLE_PENDING | strong | weak | duration;
+    rx_.enter();
+    const int index = hot_.find(token);
+    if (index >= 0) {
+        HotSlot& slot = hot_.slots[static_cast<size_t>(index)];
+        SessionEndpoint to;
+        to.slot = &slot;
+        uint32_t slotToken = 0;
+        uint32_t session = 0;
+        uint16_t bitmap = 0;
+        const bool stable = slot.read([&] {
+            slotToken = slot.token.load(std::memory_order_relaxed);
+            session = slot.session.load(std::memory_order_relaxed);
+            slot.loadKey(to.key);
+            bitmap = 0;
+            for (size_t i = 0; i < MAX_CONTROLLERS_PER_CONN; i++) {
+                const uint32_t word = slot.ctrl[i].load(std::memory_order_relaxed);
+                if ((word & HOT_CTRL_ACTIVE) != 0) bitmap |= static_cast<uint16_t>(1u << i);
+            }
+        });
+        if (stable && slotToken == token) {
+            to.token = token;
+            const int total = activePads_.load(std::memory_order_relaxed);
+            client_.sendHeartbeatAck(to, backend_.isBusOpen(), static_cast<uint8_t>(total),
+                                     hotSessionEpoch(session), bitmap);
+        }
+    }
+    rx_.exit();
 }
 
 void SessionService::handleRumbleFromBackend(const uint32_t serial, const RumbleReport& report,
                                              const uint16_t wireDurationMs) {
-    if (serial == 0 || serial > MAX_BACKEND_CONTROLLERS) return;
-    const uint64_t pending = packPendingRumble(report, wireDurationMs);
-    pendingRumble_[serial].store(pending, std::memory_order_release);
-    // The maintenance tick drains a missed acquire.
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) return;
-    drainRumbleLocked(serial);
-}
-
-void SessionService::drainRumbleLocked(const uint32_t serial, int* const sent) {
-    if (pendingRumble_[serial].load(std::memory_order_acquire) == 0) return;
+    if (serial == 0 || serial > static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS)) return;
+    hidMotors_[serial].store(packMotors(report), std::memory_order_release);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     Connection* conn = nullptr;
     Controller* ctrl = nullptr;
     if (!findBySerialLocked(serial, conn, ctrl)) return;
-    const uint64_t pending = pendingRumble_[serial].exchange(0, std::memory_order_acq_rel);
-    if (pending == 0) return;
-    ctrl->hidRumble.strongMagnitude = static_cast<uint16_t>(pending);
-    ctrl->hidRumble.weakMagnitude = static_cast<uint16_t>(pending >> 16);
-    const uint16_t durationMs = static_cast<uint16_t>(pending >> 32);
-    const bool forwarded = forwardRumbleLocked(*conn, *ctrl, durationMs, false);
-    if (forwarded && sent != nullptr) ++*sent;
+    ctrl->hidRumble.strongMagnitude = report.strongMagnitude;
+    ctrl->hidRumble.weakMagnitude = report.weakMagnitude;
+    forwardRumbleLocked(*conn, *ctrl, wireDurationMs, false);
 }
 
 bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
@@ -1021,20 +1099,30 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
     return true;
 }
 
+void SessionService::seedRumbleLocked(Controller& ctrl) {
+    const uint32_t motors = hidMotors_[ctrl.serialNo].load(std::memory_order_acquire);
+    ctrl.hidRumble.strongMagnitude = static_cast<uint16_t>(motors);
+    ctrl.hidRumble.weakMagnitude = static_cast<uint16_t>(motors >> 16);
+}
+
+void SessionService::sendSeededRumbleLocked(Connection& conn) {
+    for (Controller& ctrl : conn.controllers) {
+        const bool held = ctrl.hidRumble.strongMagnitude != 0 || ctrl.hidRumble.weakMagnitude != 0;
+        if (ctrl.active && held && !ctrl.lastRumbleValid) {
+            forwardRumbleLocked(conn, ctrl, RUMBLE_WIRE_DURATION_MS, false);
+        }
+    }
+}
+
 void SessionService::refreshIdleInput() {
     backend_.refreshIdleInput();
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!pointerRetryPending_) return;
-    pointerRetryPending_ = !submitPointerLocked(0, 0, 0);
+    if (pointer_.retryPending()) pointer_.post(PointerCommand{});
 }
 
 int SessionService::refreshRumble() {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();
     int sent = 0;
-    for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
-        drainRumbleLocked(serial, &sent);
-    }
     for (auto& [token, conn] : connections_) {
         std::atomic<bool>& pending = conn.hot->feedbackPending;
         if (pending.load(std::memory_order_acquire) &&
@@ -1076,194 +1164,150 @@ int SessionService::refreshRumble() {
     return sent;
 }
 
+bool SessionService::readPad(uint32_t token, uint8_t ctrlIdx, PadRead& out) const {
+    const int index = hot_.find(token);
+    if (index < 0) return false;
+    const HotSlot& slot = hot_.slots[static_cast<size_t>(index)];
+    const bool knownIdx = ctrlIdx < MAX_CONTROLLERS_PER_CONN;
+    uint32_t slotToken = 0;
+    uint32_t word = 0;
+    const bool stable = slot.read([&] {
+        slotToken = slot.token.load(std::memory_order_relaxed);
+        out.keyEpoch = slot.keyEpoch.load(std::memory_order_relaxed);
+        out.session = slot.session.load(std::memory_order_relaxed);
+        out.row = slot.row.load(std::memory_order_relaxed);
+        if (!knownIdx) return;
+        word = slot.ctrl[ctrlIdx].load(std::memory_order_relaxed);
+        out.info = slot.padInfo[ctrlIdx].load(std::memory_order_relaxed);
+        out.gen = slot.padGen[ctrlIdx].load(std::memory_order_relaxed);
+        out.stamp = slot.padStamp[ctrlIdx].load(std::memory_order_relaxed);
+    });
+    if (!stable || slotToken != token) return false;
+    out.slot = index;
+    out.serial = word & HOT_CTRL_SERIAL_MASK;
+    out.active = (word & HOT_CTRL_ACTIVE) != 0 && out.serial >= 1 &&
+                 out.serial <= static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS);
+    return true;
+}
+
+void SessionService::noteRxWrite() {
+#ifdef SATELLITE_BUILD_TESTS
+    const std::thread::id owner = rxOwnerForTest_.load(std::memory_order_relaxed);
+    if (owner != std::thread::id{} && owner != std::this_thread::get_id()) {
+        foreignRxWrites_.fetch_add(1, std::memory_order_relaxed);
+    }
+#endif
+}
+
+RxPad& SessionService::rxPadFor(const PadRead& pad) {
+    RxPad& rx = rxPads_[pad.serial];
+    if (rx.ownGen == pad.gen) return rx;
+    noteRxWrite();
+    rx.ownGen = pad.gen;
+    rx.ownFlags = 0;
+    rx.micWindowStart = 0;
+    rx.micPacketsInWindow = 0;
+    rx.beginWrite();
+    rx.gen.store(pad.gen, std::memory_order_relaxed);
+    rx.flags.store(0, std::memory_order_relaxed);
+    rx.endWrite();
+    return rx;
+}
+
+bool SessionService::sessionName(int slot, uint32_t keyEpoch, std::string& out) const {
+    const HotSlot& hot = hot_.slots[static_cast<size_t>(slot)];
+    uint32_t epoch = 0;
+    const bool stable = hot.read([&] {
+        epoch = hot.keyEpoch.load(std::memory_order_relaxed);
+        out = hot.loadName();
+    });
+    return stable && epoch == keyEpoch;
+}
+
 bool SessionService::handleMotionData(uint32_t token, uint8_t ctrlIdx, const MotionReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return false;
-    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
-
-    Controller& ctrl = it->second.controllers[ctrlIdx];
-    if (!ctrl.active) return false;
-
-    // Cache for the web-UI debug pane regardless of backend acceptance.
-    ctrl.lastMotion = report;
-    ctrl.lastMotionValid = true;
-
-    // Deliberately do NOT gate on ctrl.motionCapable() (CAP_MOTION): the
-    // protocol says motion is best-effort and the receiver MUST accept
-    // MSG_MOTION even from a dish that never advertised the cap. A backend
-    // without an IMU surface returning false is not an error.
-    const bool delivered = backend_.submitMotion(ctrl.serialNo, report);
-    ctrl.motionSinkActive = delivered;
+    rx_.enter();
+    PadRead pad;
+    bool delivered = false;
+    if (readPad(token, ctrlIdx, pad) && pad.active) {
+        // Deliberately do NOT gate on ctrl.motionCapable() (CAP_MOTION): the
+        // protocol says motion is best-effort and the receiver MUST accept
+        // MSG_MOTION even from a dish that never advertised the cap. A backend
+        // without an IMU surface returning false is not an error.
+        delivered = backend_.submitMotion(pad.serial, report);
+        noteRxWrite();
+        publishRxMotion(rxPadFor(pad), report, delivered);
+    }
+    rx_.exit();
     return delivered;
 }
 
 bool SessionService::handleTouchpadData(uint32_t token, uint8_t ctrlIdx,
                                         const TouchpadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return false;
-    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
-
-    Connection& conn = it->second;
-    Controller& ctrl = conn.controllers[ctrlIdx];
-    if (!ctrl.active) return false;
-
-    // Capture the previous sample BEFORE overwriting: relative-mouse mode needs
-    // the finger-0 delta between consecutive frames.
-    const TouchpadReport prev = ctrl.lastTouchpad;
-    const bool prevValid = ctrl.lastTouchpadValid;
+    rx_.enter();
+    PadRead pad;
+    if (!readPad(token, ctrlIdx, pad) || !pad.active) {
+        rx_.exit();
+        return false;
+    }
+    const uint8_t mode = hotPadMode(pad.info);
 
     // Cache for the web-UI debug pane regardless of routing mode / backend.
-    ctrl.lastTouchpad = report;
-    ctrl.lastTouchpadValid = true;
+    noteRxWrite();
+    publishRxTouchpad(rxPadFor(pad), report, mode, pad.keyEpoch);
 
-    switch (ctrl.touchpadMode) {
+    bool ok = false;
+    switch (mode) {
     case TOUCHPAD_MODE_OFF:
-        return false; // cached above, nothing else
+        break;
 
-    case TOUCHPAD_MODE_MOUSE: {
+    case TOUCHPAD_MODE_MOUSE:
         // Host-input streams are only valid for session-granted features;
         // ungranted streams are dropped (cached above for the debug pane).
-        if (!conn.mouseControlGranted) return false;
-
-        // Delta only while finger 0 is down across both frames AND the
-        // trackingId matches: a lifted finger compacts the survivor into slot 0
-        // with a new id, and without the check the cursor teleports. Scale by
-        // REFERENCE_MS/dt so velocity is dt-independent (Android's first MOVE
-        // lands ~16 ms late, otherwise a visible first-touch jump).
-        int dx = 0;
-        int dy = 0;
-        const bool continuous = prevValid && prev.finger0.active && report.finger0.active &&
-                                prev.finger0.trackingId == report.finger0.trackingId;
-        if (continuous) {
-            // Unsigned subtract through int32_t handles the u32 uptime wrap and
-            // cheaply flags out-of-order packets (dt <= 0) in one branch.
-            const int32_t dt_ms = static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs);
-            if (dt_ms <= 0) {
-                // Duplicate/out-of-order: no motion to integrate. Preserve the
-                // remainder so a slow drag still accumulates across resends.
-            } else if (dt_ms > TOUCHPAD_MOUSE_MAX_GAP_MS) {
-                // Big gap (dish paused/backgrounded/stalled). Re-anchor: no
-                // motion, drop the remainder so a stale one doesn't catch up.
-                ctrl.touchpadMouseRemX = 0.0f;
-                ctrl.touchpadMouseRemY = 0.0f;
-            } else {
-                const int32_t dt_clamped =
-                    dt_ms < TOUCHPAD_MOUSE_MIN_DT_MS ? TOUCHPAD_MOUSE_MIN_DT_MS : dt_ms;
-                const float scale = static_cast<float>(TOUCHPAD_MOUSE_REFERENCE_MS) /
-                                    static_cast<float>(dt_clamped);
-                const float fx = static_cast<float>(report.finger0.x - prev.finger0.x) *
-                                     TOUCHPAD_MOUSE_SENSITIVITY * scale +
-                                 ctrl.touchpadMouseRemX;
-                const float fy = static_cast<float>(report.finger0.y - prev.finger0.y) *
-                                     TOUCHPAD_MOUSE_SENSITIVITY * scale +
-                                 ctrl.touchpadMouseRemY;
-                dx = static_cast<int>(fx);
-                dy = static_cast<int>(fy);
-                // Keep the sub-pixel remainder so a slow drag still moves.
-                ctrl.touchpadMouseRemX = fx - static_cast<float>(dx);
-                ctrl.touchpadMouseRemY = fy - static_cast<float>(dy);
-            }
-        } else {
-            ctrl.touchpadMouseRemX = 0.0f;
-            ctrl.touchpadMouseRemY = 0.0f;
+        if (hotSessionMouse(pad.session)) {
+            PointerFrame frame;
+            frame.serial = pad.serial;
+            frame.stamp = pad.stamp;
+            frame.slot = pad.slot;
+            frame.row = pad.row;
+            frame.report = report;
+            ok = pointer_.pushFrame(frame);
         }
-        MouseButtons buttons;
-        buttons.left = report.buttonPressed;
-        buttons.right = report.rightPressed;
-        buttons.middle = report.middlePressed;
-        // The wheel is an event: a duplicated or out-of-order frame (same/older
-        // eventTimeMs) must not scroll twice. Fresh frames pass it through.
-        int wheel = report.scrollV;
-        if (prevValid && static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs) <= 0) {
-            wheel = 0;
-        }
-        pointerButtons_[ctrl.serialNo] = buttons;
-        const bool ok = submitPointerLocked(dx, dy, wheel);
-        pointerRetryPending_ = !ok;
-        const bool buttonsChanged =
-            prevValid ? (prev.buttonPressed != report.buttonPressed ||
-                         prev.rightPressed != report.rightPressed ||
-                         prev.middlePressed != report.middlePressed)
-                      : (report.buttonPressed || report.rightPressed || report.middlePressed);
-        if (dx != 0 || dy != 0 || wheel != 0 || buttonsChanged) {
-            recordPointerInjectionLocked(conn, ok);
-        }
-        return ok;
-    }
+        break;
 
     case TOUCHPAD_MODE_DS4:
     default:
         // A false from the default impl (Xbox pad / inert backend) is not an
         // error; cached above.
-        return backend_.submitTouchpad(ctrl.serialNo, report);
+        ok = backend_.submitTouchpad(pad.serial, report);
+        break;
     }
+    rx_.exit();
+    return ok;
 }
 
-bool SessionService::submitPointerLocked(const int dx, const int dy, const int wheel) {
-    MouseButtons buttons;
-    for (const auto& owner : pointerButtons_) {
-        buttons.left = buttons.left || owner.left;
-        buttons.right = buttons.right || owner.right;
-        buttons.middle = buttons.middle || owner.middle;
-    }
-    return backend_.submitRelativeMouse(dx, dy, buttons, wheel);
+uint32_t SessionService::takePointerStampLocked() {
+    if (++nextPointerStamp_ == 0) ++nextPointerStamp_;
+    return nextPointerStamp_;
 }
 
-void SessionService::releasePointerLocked(const uint32_t serial) {
-    if (serial == 0 || serial > MAX_BACKEND_CONTROLLERS) return;
-    const MouseButtons held = pointerButtons_[serial];
-    const bool anyHeld = held.left || held.right || held.middle;
-    if (!anyHeld) return;
-    pointerButtons_[serial] = MouseButtons{};
-    pointerRetryPending_ = !submitPointerLocked(0, 0, 0);
+void SessionService::releasePointerLocked(Controller& ctrl) {
+    if (ctrl.serialNo == 0 || ctrl.serialNo > MAX_BACKEND_CONTROLLERS) return;
+    ctrl.pointerStamp = takePointerStampLocked();
+    PointerCommand release;
+    release.kind = PointerCommand::Kind::Release;
+    release.serial = ctrl.serialNo;
+    release.stamp = ctrl.pointerStamp;
+    pointer_.post(release);
 }
 
 void SessionService::releaseConnectionPointerLocked(Connection& conn) {
     for (auto& ctrl : conn.controllers) {
-        if (!ctrl.active) continue;
-        releasePointerLocked(ctrl.serialNo);
-        ctrl.lastTouchpadValid = false;
-        ctrl.touchpadMouseRemX = 0.0f;
-        ctrl.touchpadMouseRemY = 0.0f;
+        if (ctrl.active) releasePointerLocked(ctrl);
     }
-}
-
-void SessionService::recordPointerInjectionLocked(Connection& conn, bool ok) {
-    if (ok) {
-        pointerInjected_.fetch_add(1, std::memory_order_relaxed);
-        if (conn.pointerRefusalLogged) {
-            log_.logMsg(LogLevel::INFO, "service",
-                        "Host is accepting pointer input for " + conn.deviceName + " again after " +
-                            std::to_string(conn.pointerRefusedRun) +
-                            (conn.pointerRefusedRun == 1 ? " refused frame" : " refused frames"));
-        }
-        conn.pointerRefusedRun = 0;
-        conn.pointerRefusalLogged = false;
-        return;
-    }
-    pointerRefused_.fetch_add(1, std::memory_order_relaxed);
-    conn.pointerRefusedRun++;
-    if (conn.pointerRefusedRun != 1) return;
-    const auto now = std::chrono::steady_clock::now();
-    const bool loggedBefore = conn.pointerRefusalLoggedAt.time_since_epoch().count() != 0;
-    if (loggedBefore && now - conn.pointerRefusalLoggedAt <
-                            std::chrono::seconds(POINTER_REFUSAL_LOG_INTERVAL_SEC)) {
-        return;
-    }
-    conn.pointerRefusalLoggedAt = now;
-    conn.pointerRefusalLogged = true;
-    log_.logMsg(LogLevel::WARN, "service",
-                "Host refused to inject pointer input for " + conn.deviceName +
-                    "; the frames arrive but the OS drops them (on Windows this happens while "
-                    "the foreground window belongs to a process with higher privileges than "
-                    "Satellite)");
 }
 
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) return;
+    std::lock_guard<TrackedMutex> lk(mtx_);
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
@@ -1287,8 +1331,7 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
 
 void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
                                                      const TriggerEffectsReport& report) {
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) return;
+    std::lock_guard<TrackedMutex> lk(mtx_);
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
@@ -1304,8 +1347,7 @@ void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
 }
 
 void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMask) {
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) return;
+    std::lock_guard<TrackedMutex> lk(mtx_);
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
@@ -1326,8 +1368,7 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     // forward a value the client would have to guess at.
     if (state >= MIC_LED_STATE_COUNT) return;
 
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) return;
+    std::lock_guard<TrackedMutex> lk(mtx_);
 
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
@@ -1372,64 +1413,40 @@ bool SessionService::handleSpeakerAudioFromBackend(uint32_t serial, const int16_
                                                    size_t frames) {
     if (stereo48k == nullptr || frames == 0) return false;
 
-    // Sampled before mtx_ is taken: the policy reads the config lock, and the
-    // two must never nest. Dropping here rather than at encode time is the
-    // whole point of the switch -- an off speaker costs no Opus frames.
     if (!audioPolicy().speaker) return false;
 
-    // Dropping a speaker frame is a 20 ms gap the client's PLC already knows how to cover.
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) {
-        bumpAudio(audio_.speakerLockContended);
-        return false;
-    }
-
-    Connection* foundConn = nullptr;
-    Controller* foundCtrl = nullptr;
-    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return false;
+    AudioTarget target;
+    if (!readAudioTarget(serial, target)) return false;
 
     // Emit only to senders that advertised CAP_SPEAKER; encoding for a client
     // that would drop the frame is pure wasted CPU.
-    if (!foundCtrl->speakerCapable()) return false;
+    if ((target.caps & CAP_SPEAKER) == 0) return false;
 
-    return encodeAndSendAudioLocked(*foundConn, *foundCtrl, OutboundAudioLane::Speaker, stereo48k,
-                                    frames);
+    return encodeAndSendAudio(OutboundAudioLane::Speaker, serial, target, stereo48k, frames);
 }
 
 bool SessionService::handleHapticAudioFromBackend(uint32_t serial, const int16_t* stereo48k,
                                                   size_t frames) {
     if (stereo48k == nullptr || frames == 0) return false;
 
-    // Same order as the speaker: the gate is sampled before mtx_ (it reads the
-    // config lock; the two never nest), and it covers BOTH renderings. A host
-    // that turned haptics off wants no haptics, not haptics-as-rumble.
     if (!audioPolicy().haptics) return false;
 
-    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
-    if (!lk.owns_lock()) {
-        bumpAudio(audio_.hapticLockContended);
-        return false;
-    }
-
-    Connection* foundConn = nullptr;
-    Controller* foundCtrl = nullptr;
-    if (!findBySerialLocked(serial, foundConn, foundCtrl)) return false;
+    AudioTarget target;
+    if (!readAudioTarget(serial, target)) return false;
 
     // The waveform to a sender that can play it; a reduction to whoever can
     // only rumble; nothing to a sender with neither. Never both: a client
     // playing the waveform is already rendering the effect, and a motor
     // shaking alongside its own voice coils would double it.
-    if (foundCtrl->hapticAudioCapable()) {
-        return encodeAndSendAudioLocked(*foundConn, *foundCtrl, OutboundAudioLane::Haptic,
-                                        stereo48k, frames);
+    if ((target.caps & CAP_HAPTIC_AUDIO) != 0) {
+        return encodeAndSendAudio(OutboundAudioLane::Haptic, serial, target, stereo48k, frames);
     }
-    if (!foundCtrl->rumbleCapable()) return false;
+    if ((target.caps & CAP_RUMBLE) == 0) return false;
 
     // Re-window into whole 20 ms frames exactly as the encode path does, so
     // the reduction sees the same windows the waveform would have been cut
     // into. A partial tail waits for the rest of its frame.
-    ControllerAudio& audio = ensureControllerAudioLocked(*foundCtrl);
-    ControllerAudio::OutboundLane& lane = audio.haptic;
+    AudioLane& lane = audioLane(OutboundAudioLane::Haptic, serial, target.gen);
     const size_t frameSamples = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS;
     size_t consumed = 0;
     if (!lane.pending.empty()) {
@@ -1439,12 +1456,11 @@ bool SessionService::handleHapticAudioFromBackend(uint32_t serial, const int16_t
         lane.pending.insert(lane.pending.end(), stereo48k, stereo48k + take);
         consumed = take / AUDIO_HAPTIC_CHANNELS;
         if (lane.pending.size() < frameSamples) return true;
-        reduceHapticWindowToRumbleLocked(*foundConn, *foundCtrl, lane.pending.data());
+        reduceHapticWindow(serial, target.gen, lane.pending.data());
         lane.pending.clear();
     }
     while (frames - consumed >= static_cast<size_t>(AUDIO_FRAME_SAMPLES)) {
-        reduceHapticWindowToRumbleLocked(*foundConn, *foundCtrl,
-                                         stereo48k + consumed * AUDIO_HAPTIC_CHANNELS);
+        reduceHapticWindow(serial, target.gen, stereo48k + consumed * AUDIO_HAPTIC_CHANNELS);
         consumed += AUDIO_FRAME_SAMPLES;
     }
     if (consumed < frames) {
@@ -1454,14 +1470,17 @@ bool SessionService::handleHapticAudioFromBackend(uint32_t serial, const int16_t
     return true;
 }
 
-void SessionService::reduceHapticWindowToRumbleLocked(Connection& conn, Controller& ctrl,
-                                                      const int16_t* frame) {
-    bumpAudio(audio_.hapticReducedToRumble);
+void SessionService::reduceHapticWindow(uint32_t serial, uint32_t gen, const int16_t* frame) {
     const RumbleReport level =
         satellite::audio::hapticWindowToRumble(frame, static_cast<size_t>(AUDIO_FRAME_SAMPLES));
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    Connection* conn = nullptr;
+    Controller* ctrl = nullptr;
+    if (!findBySerialLocked(serial, conn, ctrl) || ctrl->plugGen != gen) return;
+    bumpAudio(audio_.hapticReducedToRumble);
     const auto now = std::chrono::steady_clock::now();
-    ctrl.hapticRumble = level;
-    ctrl.hapticRumbleExpiresAt =
+    ctrl->hapticRumble = level;
+    ctrl->hapticRumbleExpiresAt =
         now + std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS);
 
     // The client runs each MSG_RUMBLE for its duration. A haptic-only level
@@ -1470,16 +1489,16 @@ void SessionService::reduceHapticWindowToRumbleLocked(Connection& conn, Controll
     // duration instead, or a game holding plain rumble under a haptic burst
     // would lose it when the burst ended.
     const bool hidContributes =
-        ctrl.hidRumble.strongMagnitude != 0 || ctrl.hidRumble.weakMagnitude != 0;
+        ctrl->hidRumble.strongMagnitude != 0 || ctrl->hidRumble.weakMagnitude != 0;
     const uint16_t durationMs =
         hidContributes ? RUMBLE_WIRE_DURATION_MS : satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS;
     // A steady non-zero level must be re-sent before the client's timer runs
     // out, coalescing or not.
     const bool steadyNonZero = level.strongMagnitude != 0 || level.weakMagnitude != 0;
-    const bool refreshDue = now - ctrl.hapticRumbleSentAt >=
+    const bool refreshDue = now - ctrl->hapticRumbleSentAt >=
                             std::chrono::milliseconds(satellite::audio::HAPTIC_RUMBLE_REFRESH_MS);
-    if (forwardRumbleLocked(conn, ctrl, durationMs, /*force=*/steadyNonZero && refreshDue)) {
-        ctrl.hapticRumbleSentAt = now;
+    if (forwardRumbleLocked(*conn, *ctrl, durationMs, /*force=*/steadyNonZero && refreshDue)) {
+        ctrl->hapticRumbleSentAt = now;
     }
 }
 
@@ -1487,139 +1506,173 @@ bool SessionService::handleMicAudio(uint32_t token, uint8_t ctrlIdx, uint16_t se
                                     const uint8_t* opus, size_t opusLen) {
     if (opus == nullptr || opusLen == 0) return false;
 
-    // Sampled before mtx_, as in handleSpeakerAudioFromBackend. Read once and
-    // carried into the gate below so the drop still gets its one log line: a
-    // client whose mic goes nowhere deserves a reason in the log, and the
-    // client cannot see this setting.
     const bool hostWantsMic = audioPolicy().mic;
 
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
+    rx_.enter();
+    PadRead pad;
     // No session: nothing to log against, and an unroutable token is exactly
     // what a stale or spoofed datagram looks like.
-    if (it == connections_.end()) return false;
-    Connection& conn = it->second;
+    if (!readPad(token, ctrlIdx, pad)) {
+        rx_.exit();
+        return false;
+    }
 
-    auto dropOnce = [&](uint8_t cause, const std::string& why) {
-        bumpAudio(audio_.micDropped);
-        if ((conn.micDropLogged & cause) == 0) {
-            conn.micDropLogged |= cause;
-            log_.logMsg(LogLevel::WARN, "service",
-                        "Mic audio from " + conn.deviceName + " controller #" +
-                            std::to_string(ctrlIdx) + " dropped: " + why);
+    uint8_t cause = 0;
+    if (!pad.active) {
+        cause = MIC_DROP_LOG_NO_CONTROLLER;
+    } else if ((hotPadCaps(pad.info) & CAP_MIC) == 0) {
+        // Caps advertise the client's own source: a sender that never claimed a
+        // microphone has no business streaming one, so this is a gate and not a
+        // best-effort hint (unlike MSG_MOTION, which is accepted uncapped).
+        cause = MIC_DROP_LOG_NO_CAP;
+    } else if (!hostWantsMic) {
+        // Host-side off switch. Checked after the cap so a misconfigured client
+        // still gets told about its own mistake first, and before the rate-limit
+        // window so a disabled direction does not quietly consume budget.
+        cause = MIC_DROP_LOG_HOST_DISABLED;
+    } else {
+        // Fixed one-second window: cheap, and the stream is a steady 50 packets/s
+        // so there is no burst shape worth a token bucket. A client running hot
+        // loses the overflow, not the session.
+        RxPad& rx = rxPadFor(pad);
+        const auto now = std::chrono::steady_clock::now();
+        if (rx.micPacketsInWindow == 0 ||
+            now - hotTime(rx.micWindowStart) >= std::chrono::seconds(1)) {
+            rx.micWindowStart = hotTicks(now);
+            rx.micPacketsInWindow = 0;
         }
-        return false;
-    };
-
-    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN || !conn.controllers[ctrlIdx].active) {
-        return dropOnce(MIC_DROP_LOG_NO_CONTROLLER, "no such bound controller");
-    }
-    Controller& ctrl = conn.controllers[ctrlIdx];
-
-    // Caps advertise the client's own source: a sender that never claimed a
-    // microphone has no business streaming one, so this is a gate and not a
-    // best-effort hint (unlike MSG_MOTION, which is accepted uncapped).
-    if (!ctrl.micCapable()) {
-        return dropOnce(MIC_DROP_LOG_NO_CAP, "sender never advertised the mic cap");
-    }
-
-    // Host-side off switch. Checked after the cap so a misconfigured client
-    // still gets told about its own mistake first, and before the rate-limit
-    // window so a disabled direction does not quietly consume budget.
-    if (!hostWantsMic) {
-        return dropOnce(MIC_DROP_LOG_HOST_DISABLED, "controller microphone is off on the host");
-    }
-
-    // Fixed one-second window: cheap, and the stream is a steady 50 packets/s
-    // so there is no burst shape worth a token bucket. A client running hot
-    // loses the overflow, not the session.
-    const auto now = std::chrono::steady_clock::now();
-    if (ctrl.micPacketsInWindow == 0 || now - ctrl.micWindowStart >= std::chrono::seconds(1)) {
-        ctrl.micWindowStart = now;
-        ctrl.micPacketsInWindow = 0;
-    }
-    if (ctrl.micPacketsInWindow >= MIC_AUDIO_MAX_PACKETS_PER_SEC) {
-        return dropOnce(MIC_DROP_LOG_RATE_LIMIT, "more than " +
-                                                     std::to_string(MIC_AUDIO_MAX_PACKETS_PER_SEC) +
-                                                     " packets/s");
-    }
-    ctrl.micPacketsInWindow++;
-
-    return deliverMicAudioLocked(conn, ctrl, seq, opus, opusLen);
-}
-
-ControllerAudio& SessionService::ensureControllerAudioLocked(Controller& ctrl) {
-    if (!ctrl.audio) ctrl.audio = std::make_unique<ControllerAudio>();
-    return *ctrl.audio;
-}
-
-bool SessionService::deliverMicAudioLocked(Connection& conn, Controller& ctrl, uint16_t seq,
-                                           const uint8_t* opus, size_t opusLen) {
-    ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
-    const AudioJitterWindow::Result pushed = audio.micWindow.push(seq, opus, opusLen);
-    // A frame whose slot has already been played (or concealed past) is worse
-    // than useless: splicing it in now would be an audible jump backwards.
-    if (pushed.accept != AudioJitterWindow::Accept::Ok) {
-        bumpAudio(audio_.micLate);
-        return false;
-    }
-    bumpAudio(audio_.micAccepted);
-    // Taken, but held for reordering. Nothing is due until the frame in front
-    // of it arrives or is proven lost.
-    if (pushed.count == 0) return true;
-
-    // Created here, not at plug: a slot that advertises CAP_MIC and never
-    // speaks should not carry a decoder around (see ControllerAudio).
-    if (!audio.micDecoder && audioCodecs_ != nullptr) {
-        audio.micDecoder = audioCodecs_->makeMicDecoder();
-    }
-    // No codec in this build, or the codec refused to allocate. The frame still
-    // passed every gate, so this is an accept-and-drop, not a rejection.
-    if (!audio.micDecoder) return true;
-
-    // Sized by the channel count rather than assuming mono: the decoder writes
-    // maxFrames * channels, so a buffer that only happened to be right because
-    // AUDIO_MIC_CHANNELS is 1 would become an overflow the day it isn't.
-    int16_t pcm[AUDIO_FRAME_SAMPLES * AUDIO_MIC_CHANNELS];
-    for (int i = 0; i < pushed.count; i++) {
-        const AudioJitterWindow::Event& ev = pushed.events[i];
-        size_t decoded = 0;
-        if (ev.kind == AudioJitterWindow::Event::Kind::Packet) {
-            decoded = audio.micDecoder->decode(ev.data, ev.len, pcm, AUDIO_FRAME_SAMPLES);
-            if (decoded > 0) bumpAudio(audio_.micDecoded);
-        } else if (ev.fecCarrier != nullptr) {
-            // The window hands over packet seq+1 precisely because Opus hides a
-            // redundant copy of seq inside it. Order is load-bearing: the FEC
-            // copy is decoded here, BEFORE the carrier's own frame, which the
-            // window emits next.
-            decoded = audio.micDecoder->decodeFec(ev.fecCarrier, ev.fecCarrierLen, pcm,
-                                                  AUDIO_FRAME_SAMPLES);
-            if (decoded > 0) bumpAudio(audio_.micFecRecovered);
+        if (rx.micPacketsInWindow >= MIC_AUDIO_MAX_PACKETS_PER_SEC) {
+            cause = MIC_DROP_LOG_RATE_LIMIT;
         } else {
-            decoded = audio.micDecoder->conceal(pcm, AUDIO_FRAME_SAMPLES);
-            if (decoded > 0) bumpAudio(audio_.micConcealed);
-        }
-        if (decoded == 0) continue;
-        // A backend with no mic endpoint on this serial returns false, which is
-        // not an error: senders keep streaming and the pad simply has nowhere
-        // to put it (IGamepadPort::submitMicAudioPcm). The client cannot see
-        // that either, so it gets one line per session, like the drop causes.
-        if (backend_.submitMicAudioPcm(ctrl.serialNo, pcm, decoded)) continue;
-        if ((conn.micDropLogged & MIC_DROP_LOG_NO_SINK) == 0) {
-            conn.micDropLogged |= MIC_DROP_LOG_NO_SINK;
-            log_.logMsg(LogLevel::INFO, "service",
-                        "Mic audio from " + conn.deviceName + " controller #" +
-                            std::to_string(ctrl.index) +
-                            " decodes but the emulated pad has no microphone endpoint");
+            rx.micPacketsInWindow++;
         }
     }
+    rx_.exit();
+
+    if (cause != 0) return dropMicFrame(pad, ctrlIdx, cause);
+    return handOverMicFrame(pad, ctrlIdx, seq, opus, opusLen);
+}
+
+bool SessionService::dropMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint8_t cause) {
+    bumpAudio(audio_.micDropped);
+    RxSession& session = rxSessions_[static_cast<size_t>(pad.slot)];
+    if (session.keyEpoch != pad.keyEpoch) {
+        session.keyEpoch = pad.keyEpoch;
+        session.micDropLogged = 0;
+    }
+    if ((session.micDropLogged & cause) != 0) return false;
+    std::string name;
+    if (!sessionName(pad.slot, pad.keyEpoch, name)) return false;
+    session.micDropLogged |= cause;
+    std::string why;
+    if (cause == MIC_DROP_LOG_NO_CONTROLLER) {
+        why = "no such bound controller";
+    } else if (cause == MIC_DROP_LOG_NO_CAP) {
+        why = "sender never advertised the mic cap";
+    } else if (cause == MIC_DROP_LOG_HOST_DISABLED) {
+        why = "controller microphone is off on the host";
+    } else {
+        why = "more than " + std::to_string(MIC_AUDIO_MAX_PACKETS_PER_SEC) + " packets/s";
+    }
+    log_.logMsg(LogLevel::WARN, "service",
+                "Mic audio from " + name + " controller #" + std::to_string(ctrlIdx) +
+                    " dropped: " + why);
+    return false;
+}
+
+bool SessionService::handOverMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint16_t seq,
+                                      const uint8_t* opus, size_t opusLen) {
+    if (opusLen > MIC_PACKET_MAX_BYTES) {
+        mic_.noteRejected();
+        return false;
+    }
+    MicPacket* packet = mic_.claim();
+    if (packet == nullptr) {
+        bumpAudio(audio_.micDropped);
+        return false;
+    }
+    packet->serial = pad.serial;
+    packet->gen = pad.gen;
+    packet->slot = pad.slot;
+    packet->ctrlIdx = ctrlIdx;
+    packet->keyEpoch = pad.keyEpoch;
+    packet->seq = seq;
+    packet->length = static_cast<uint16_t>(opusLen);
+    std::memcpy(packet->bytes, opus, opusLen);
+    mic_.publish();
     return true;
 }
 
-void SessionService::sendAudioFrameLocked(Connection& conn, Controller& ctrl,
-                                          OutboundAudioLane lane,
-                                          ControllerAudio::OutboundLane& state,
-                                          const int16_t* frame) {
+SessionService::AudioLane& SessionService::audioLane(OutboundAudioLane lane, uint32_t serial,
+                                                     uint32_t gen) {
+    AudioLane& state =
+        lane == OutboundAudioLane::Speaker ? speakerLanes_[serial] : hapticLanes_[serial];
+    if (state.gen == gen) return state;
+    state.gen = gen;
+    state.encoder.reset();
+    state.pending.clear();
+    state.seq = 0;
+    return state;
+}
+
+bool SessionService::readAudioTarget(uint32_t serial, AudioTarget& out) const {
+    if (serial == 0 || serial > static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS)) return false;
+    for (int attempt = 0; attempt < AUDIO_READ_ATTEMPTS; attempt++) {
+        const uint32_t owner = hot_.padOwners[serial].load(std::memory_order_acquire);
+        const int slot = hotOwnerSlot(owner);
+        const uint8_t ctrlIdx = hotOwnerIndex(owner);
+        if (slot < 0 || slot >= MAX_SESSIONS || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
+        const HotSlot& hot = hot_.slots[static_cast<size_t>(slot)];
+        uint32_t word = 0;
+        uint32_t info = 0;
+        uint32_t gen = 0;
+        const bool stable = hot.read([&] {
+            word = hot.ctrl[ctrlIdx].load(std::memory_order_relaxed);
+            info = hot.padInfo[ctrlIdx].load(std::memory_order_relaxed);
+            gen = hot.padGen[ctrlIdx].load(std::memory_order_relaxed);
+        });
+        if (!stable) {
+            std::this_thread::yield();
+            continue;
+        }
+        if ((word & HOT_CTRL_ACTIVE) == 0 || (word & HOT_CTRL_SERIAL_MASK) != serial) return false;
+        out.gen = gen;
+        out.caps = hotPadCaps(info);
+        return true;
+    }
+    return false;
+}
+
+SessionService::EndpointRead SessionService::readAudioEndpoint(uint32_t serial, uint32_t gen,
+                                                               SessionEndpoint& to,
+                                                               uint8_t& ctrlIdx) {
+    const uint32_t owner = hot_.padOwners[serial].load(std::memory_order_acquire);
+    const int slot = hotOwnerSlot(owner);
+    ctrlIdx = hotOwnerIndex(owner);
+    if (slot < 0 || slot >= MAX_SESSIONS || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) {
+        return EndpointRead::Unbound;
+    }
+    HotSlot& hot = hot_.slots[static_cast<size_t>(slot)];
+    uint32_t token = 0;
+    uint32_t word = 0;
+    uint32_t padGen = 0;
+    const bool stable = hot.read([&] {
+        token = hot.token.load(std::memory_order_relaxed);
+        word = hot.ctrl[ctrlIdx].load(std::memory_order_relaxed);
+        padGen = hot.padGen[ctrlIdx].load(std::memory_order_relaxed);
+        hot.loadKey(to.key);
+    });
+    if (!stable) return EndpointRead::Changing;
+    const bool bound = token != 0 && (word & HOT_CTRL_ACTIVE) != 0 &&
+                       (word & HOT_CTRL_SERIAL_MASK) == serial && padGen == gen;
+    if (!bound) return EndpointRead::Unbound;
+    to.token = token;
+    to.slot = &hot;
+    return EndpointRead::Bound;
+}
+
+void SessionService::sendAudioWindow(OutboundAudioLane lane, uint32_t serial, AudioLane& state,
+                                     const int16_t* frame) {
     const bool speaker = lane == OutboundAudioLane::Speaker;
     const int channels = speaker ? AUDIO_SPEAKER_CHANNELS : AUDIO_HAPTIC_CHANNELS;
 
@@ -1649,22 +1702,31 @@ void SessionService::sendAudioFrameLocked(Connection& conn, Controller& ctrl,
         bumpAudio(speaker ? audio_.speakerEncodeFailed : audio_.hapticEncodeFailed);
         return;
     }
-    if (speaker) {
-        bumpAudio(audio_.speakerSent);
-        client_.sendSpeakerAudio(conn, ctrl.index, seq, packet, bytes);
-    } else {
-        bumpAudio(audio_.hapticSent);
-        client_.sendHapticAudio(conn, ctrl.index, seq, packet, bytes);
+    const size_t participant = rxAudioParticipant(serial, speaker ? 0 : 1);
+    for (int attempt = 0; attempt < AUDIO_READ_ATTEMPTS; attempt++) {
+        rx_.enter(participant);
+        SessionEndpoint to;
+        uint8_t ctrlIdx = 0;
+        const EndpointRead read = readAudioEndpoint(serial, state.gen, to, ctrlIdx);
+        if (read == EndpointRead::Bound && speaker) {
+            bumpAudio(audio_.speakerSent);
+            client_.sendSpeakerAudio(to, ctrlIdx, seq, packet, bytes);
+        } else if (read == EndpointRead::Bound) {
+            bumpAudio(audio_.hapticSent);
+            client_.sendHapticAudio(to, ctrlIdx, seq, packet, bytes);
+        }
+        rx_.exit(participant);
+        if (read != EndpointRead::Changing) return;
+        std::this_thread::yield();
     }
 }
 
-bool SessionService::encodeAndSendAudioLocked(Connection& conn, Controller& ctrl,
-                                              OutboundAudioLane lane, const int16_t* stereo48k,
-                                              size_t frames) {
+bool SessionService::encodeAndSendAudio(OutboundAudioLane lane, uint32_t serial,
+                                        const AudioTarget& target, const int16_t* stereo48k,
+                                        size_t frames) {
     const bool speaker = lane == OutboundAudioLane::Speaker;
     const int channels = speaker ? AUDIO_SPEAKER_CHANNELS : AUDIO_HAPTIC_CHANNELS;
-    ControllerAudio& audio = ensureControllerAudioLocked(ctrl);
-    ControllerAudio::OutboundLane& state = speaker ? audio.speaker : audio.haptic;
+    AudioLane& state = audioLane(lane, serial, target.gen);
     if (!state.encoder && audioCodecs_ != nullptr) {
         state.encoder =
             speaker ? audioCodecs_->makeSpeakerEncoder() : audioCodecs_->makeHapticEncoder();
@@ -1685,14 +1747,14 @@ bool SessionService::encodeAndSendAudioLocked(Connection& conn, Controller& ctrl
         state.pending.insert(state.pending.end(), stereo48k, stereo48k + take);
         consumed = take / channels;
         if (state.pending.size() < frameSamples) return true; // still short of a window
-        sendAudioFrameLocked(conn, ctrl, lane, state, state.pending.data());
+        sendAudioWindow(lane, serial, state, state.pending.data());
         state.pending.clear();
     }
 
     // Whole windows go straight from the caller's buffer; the steady state
     // (exactly one window per call) never copies.
     while (frames - consumed >= static_cast<size_t>(AUDIO_FRAME_SAMPLES)) {
-        sendAudioFrameLocked(conn, ctrl, lane, state, stereo48k + consumed * channels);
+        sendAudioWindow(lane, serial, state, stereo48k + consumed * channels);
         consumed += AUDIO_FRAME_SAMPLES;
     }
     if (consumed < frames) {
@@ -1703,23 +1765,20 @@ bool SessionService::encodeAndSendAudioLocked(Connection& conn, Controller& ctrl
 
 bool SessionService::handleBatteryUpdate(uint32_t token, uint8_t ctrlIdx,
                                          const BatteryReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    auto it = connections_.find(token);
-    if (it == connections_.end()) return false;
-    if (ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return false;
-
-    Controller& ctrl = it->second.controllers[ctrlIdx];
-    if (!ctrl.active) return false;
-
     // 0xFF is the documented "unknown" sentinel; 101..254 is malformed.
     if (report.level != BATTERY_LEVEL_UNKNOWN && report.level > 100) return false;
     if (report.status >= BATTERY_STATUS_COUNT) return false;
 
-    ctrl.lastBattery = report;
-    ctrl.lastBatteryValid = true;
-
-    backend_.submitBattery(ctrl.serialNo, report); // no-op on backends without a battery surface
-    return true;
+    rx_.enter();
+    PadRead pad;
+    const bool accepted = readPad(token, ctrlIdx, pad) && pad.active;
+    if (accepted) {
+        backend_.submitBattery(pad.serial, report); // no-op on backends without a battery surface
+        noteRxWrite();
+        publishRxBattery(rxPadFor(pad), report);
+    }
+    rx_.exit();
+    return accepted;
 }
 
 bool SessionService::getDecryptInfo(uint32_t token, uint8_t outKey[CRYPTO_KEY_SIZE],
@@ -1797,7 +1856,7 @@ bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter
 }
 
 SessionService::ConnectionSnapshot::CtrlInfo
-SessionService::snapshotController(const Controller& ctrl) const {
+SessionService::snapshotController(const Connection& conn, const Controller& ctrl) const {
     ConnectionSnapshot::CtrlInfo info{};
     info.index = ctrl.index;
     info.serial = ctrl.serialNo;
@@ -1805,21 +1864,34 @@ SessionService::snapshotController(const Controller& ctrl) const {
     info.pluggedIn = backend_.isDevicePlugged(ctrl.serialNo);
     info.controllerType = ctrl.controllerType;
     info.touchpadMode = ctrl.touchpadMode;
-    info.batteryKnown = ctrl.lastBatteryValid;
-    info.batteryLevel = ctrl.lastBattery.level;
-    info.batteryStatus = ctrl.lastBattery.status;
+    info.batteryLevel = BATTERY_LEVEL_UNKNOWN;
+    info.batteryStatus = BATTERY_STATUS_UNKNOWN;
     info.motionCapable = ctrl.motionCapable();
-    info.motionActive = ctrl.lastMotionValid;
-    info.motionSink = ctrl.motionSinkActive;
     info.motionSinkSupportedForType = backend_.supportsMotionForType(ctrl.controllerType);
     info.backendId = backend_.backendIdForSerial(ctrl.serialNo);
     info.motionBackendOk = backend_.motionBackendOk(ctrl.serialNo);
-    info.touchpadActive = ctrl.lastTouchpadValid;
     info.lightbarCapable = ctrl.lightbarCapable();
     info.lightbarKnown = ctrl.lastLightbarValid;
     info.lightbarR = ctrl.lightbarR;
     info.lightbarG = ctrl.lightbarG;
     info.lightbarB = ctrl.lightbarB;
+    RxPadView rx;
+    const bool known = ctrl.serialNo >= 1 &&
+                       ctrl.serialNo <= static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS) &&
+                       readRxPad(rxPads_[ctrl.serialNo], rx) && rx.gen == ctrl.plugGen;
+    if (!known) return info;
+    info.motionActive = (rx.flags & RX_PAD_MOTION) != 0;
+    info.motionSink = (rx.flags & RX_PAD_MOTION_SINK) != 0;
+    if (info.motionActive) info.motion = rx.motion;
+    info.batteryKnown = (rx.flags & RX_PAD_BATTERY) != 0;
+    if (info.batteryKnown) {
+        info.batteryLevel = rx.battery.level;
+        info.batteryStatus = rx.battery.status;
+    }
+    const uint32_t keyEpoch = conn.hot->keyEpoch.load(std::memory_order_relaxed);
+    info.touchpadActive = (rx.flags & RX_PAD_TOUCHPAD) != 0 &&
+                          rx.touchpadMode == ctrl.touchpadMode && rx.touchpadKeyEpoch == keyEpoch;
+    if (info.touchpadActive) info.touchpad = rx.touchpad;
     return info;
 }
 
@@ -1853,13 +1925,13 @@ SessionService::snapshotConnection(uint32_t token, const Connection& conn,
     cs.protocolVersion = conn.protocolVersion;
     cs.linkState = linkStateAt(conn, now);
     for (const auto& ctrl : conn.controllers) {
-        if (ctrl.active) cs.controllers.push_back(snapshotController(ctrl));
+        if (ctrl.active) cs.controllers.push_back(snapshotController(conn, ctrl));
     }
     return cs;
 }
 
 SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     ConnectionsSnapshot snap;
     snap.totalControllers = 0;
     snap.maxControllers = MAX_BACKEND_CONTROLLERS;
@@ -1874,7 +1946,7 @@ SessionService::ConnectionsSnapshot SessionService::getConnectionsSnapshot() con
 }
 
 bool SessionService::isDeviceConnected(const std::string& deviceId) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     for (auto& [tok, c] : connections_) {
         if (c.deviceId == deviceId) return true;
     }
@@ -1882,7 +1954,7 @@ bool SessionService::isDeviceConnected(const std::string& deviceId) const {
 }
 
 DeviceLinkState SessionService::linkStateForDevice(const std::string& deviceId) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();
     for (auto& [tok, c] : connections_) {
         if (c.deviceId == deviceId) return linkStateAt(c, now);
@@ -1891,10 +1963,10 @@ DeviceLinkState SessionService::linkStateForDevice(const std::string& deviceId) 
 }
 
 int SessionService::reapTimedOut() {
-    std::unique_lock<std::mutex> topo(topoMtx_, std::try_to_lock);
+    std::unique_lock<TrackedMutex> topo(topoMtx_, std::try_to_lock);
     if (!topo.owns_lock()) return 0;
     std::vector<RetiredSerial> retired;
-    std::unique_lock<std::mutex> lk(mtx_);
+    std::unique_lock<TrackedMutex> lk(mtx_);
     auto now = std::chrono::steady_clock::now();
     auto timeout = std::chrono::seconds(HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_MAX);
 
@@ -1937,41 +2009,35 @@ int SessionService::reapTimedOut() {
 bool SessionService::isBackendAvailable() const { return backend_.isBusOpen(); }
 
 int SessionService::activeSessionCount() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return static_cast<int>(connections_.size());
 }
 
 AudioStreamCounts SessionService::audioCounts() const {
     AudioStreamCounts c;
-    c.micAccepted = audio_.micAccepted.load(std::memory_order_relaxed);
+    const MicCounts mic = mic_.counts();
+    c.micAccepted = mic.accepted;
     c.micDropped = audio_.micDropped.load(std::memory_order_relaxed);
-    c.micLate = audio_.micLate.load(std::memory_order_relaxed);
-    c.micDecoded = audio_.micDecoded.load(std::memory_order_relaxed);
-    c.micFecRecovered = audio_.micFecRecovered.load(std::memory_order_relaxed);
-    c.micConcealed = audio_.micConcealed.load(std::memory_order_relaxed);
+    c.micLate = mic.late;
+    c.micDecoded = mic.decoded;
+    c.micFecRecovered = mic.fecRecovered;
+    c.micConcealed = mic.concealed;
     c.speakerSent = audio_.speakerSent.load(std::memory_order_relaxed);
     c.speakerSilenceSuppressed = audio_.speakerSilenceSuppressed.load(std::memory_order_relaxed);
     c.speakerEncodeFailed = audio_.speakerEncodeFailed.load(std::memory_order_relaxed);
-    c.speakerLockContended = audio_.speakerLockContended.load(std::memory_order_relaxed);
     c.hapticSent = audio_.hapticSent.load(std::memory_order_relaxed);
     c.hapticSilenceSuppressed = audio_.hapticSilenceSuppressed.load(std::memory_order_relaxed);
     c.hapticEncodeFailed = audio_.hapticEncodeFailed.load(std::memory_order_relaxed);
-    c.hapticLockContended = audio_.hapticLockContended.load(std::memory_order_relaxed);
     c.hapticReducedToRumble = audio_.hapticReducedToRumble.load(std::memory_order_relaxed);
     return c;
 }
 
-PointerCounts SessionService::pointerCounts() const {
-    PointerCounts c;
-    c.injected = pointerInjected_.load(std::memory_order_relaxed);
-    c.refused = pointerRefused_.load(std::memory_order_relaxed);
-    return c;
-}
+PointerCounts SessionService::pointerCounts() const { return pointer_.counts(); }
 
 #ifdef SATELLITE_BUILD_TESTS
 void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
                                      int graceSecondsAgo) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
     const auto now = std::chrono::steady_clock::now();
@@ -1981,44 +2047,85 @@ void SessionService::backdateForTest(uint32_t token, int lastPacketSecondsAgo,
 }
 
 void SessionService::resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+    const Controller& ctrl = it->second.controllers[ctrlIdx];
+    if (!ctrl.active) return;
+    RxPad& rx = rxPads_[ctrl.serialNo];
+    if (rx.ownGen != ctrl.plugGen) return;
     // Exactly what handleMicAudio's window lapse does, without the second.
-    it->second.controllers[ctrlIdx].micWindowStart = std::chrono::steady_clock::time_point{};
-    it->second.controllers[ctrlIdx].micPacketsInWindow = 0;
+    rx.micWindowStart = 0;
+    rx.micPacketsInWindow = 0;
 }
 
 void SessionService::setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
-    ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).speaker.seq = seq;
+    const Controller& ctrl = it->second.controllers[ctrlIdx];
+    if (!ctrl.active) return;
+    audioLane(OutboundAudioLane::Speaker, ctrl.serialNo, ctrl.plugGen).seq = seq;
 }
 
 void SessionService::setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
-    ensureControllerAudioLocked(it->second.controllers[ctrlIdx]).haptic.seq = seq;
+    const Controller& ctrl = it->second.controllers[ctrlIdx];
+    if (!ctrl.active) return;
+    audioLane(OutboundAudioLane::Haptic, ctrl.serialNo, ctrl.plugGen).seq = seq;
 }
 
 void SessionService::backdatePointerRefusalLogForTest(uint32_t token, int secondsAgo) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = connections_.find(token);
     if (it == connections_.end()) return;
-    it->second.pointerRefusalLoggedAt =
-        std::chrono::steady_clock::now() - std::chrono::seconds(secondsAgo);
+    PointerCommand backdate;
+    backdate.kind = PointerCommand::Kind::BackdateRefusalLog;
+    backdate.slot = it->second.slot;
+    backdate.row = it->second.row;
+    backdate.seconds = secondsAgo;
+    pointer_.post(backdate);
+}
+
+SessionService::HeartbeatAckView SessionService::coldHeartbeatAckForTest(uint32_t token) const {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    HeartbeatAckView view;
+    auto it = connections_.find(token);
+    if (it == connections_.end()) return view;
+    view.found = true;
+    view.backendAvailable = backend_.isBusOpen();
+    view.totalActiveControllers = static_cast<uint8_t>(countGlobalActiveControllers());
+    view.epoch = it->second.epoch;
+    view.activeBitmap = activeBitmapLocked(it->second);
+    return view;
+}
+
+bool SessionService::drainPointerForTest() { return pointer_.drainForTest(); }
+
+bool SessionService::drainMicForTest() { return mic_.drainForTest(); }
+
+std::thread::id SessionService::micThreadForTest() const { return mic_.threadIdForTest(); }
+
+std::thread::id SessionService::pointerThreadForTest() const { return pointer_.threadIdForTest(); }
+
+void SessionService::bindReceiveThreadForTest() {
+    rxOwnerForTest_.store(std::this_thread::get_id(), std::memory_order_relaxed);
+}
+
+uint64_t SessionService::foreignRxWritesForTest() const {
+    return foreignRxWrites_.load(std::memory_order_relaxed);
 }
 #endif
 
 int SessionService::totalActiveControllers() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return countGlobalActiveControllers();
 }
 
 int SessionService::availableSlots() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     int slots = 0;
     for (size_t i = 0; i < MAX_BACKEND_CONTROLLERS; i++) {
         if (!serialInUse_[i] && !serialQuarantined_[i]) slots++;

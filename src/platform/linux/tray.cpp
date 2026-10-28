@@ -34,7 +34,7 @@ static std::string g_lastUpdateVersion;
 static void openLocalUrl(const char* path) {
     char cmd[128];
     std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d%s >/dev/null 2>&1 &",
-                  g_config.webPort, path);
+                  g_configStore->current()->webPort, path);
     if (std::system(cmd) != 0) {
         std::fprintf(stderr, "satellite: tray failed to spawn xdg-open for %s\n",
                      path[0] != '\0' ? path : "/");

@@ -12,6 +12,7 @@
 // Hermeticity: HOME and XDG_CONFIG_HOME point into a per-run tmpdir (config
 // writes + autostart artifacts live there); g_webDir points at a tmp web root.
 #include "../src/core/json.h"
+#include "../src/core/log_writer.h"
 #include "../src/core/session_service.h"
 #include "../src/core/update_service.h"
 #include "../src/net/pairing.h"
@@ -27,7 +28,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 
@@ -77,14 +80,16 @@ struct StubGamepad : IGamepadPort {
 struct StubClient : IClientPort {
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {}
+    void sendHeartbeatAck(const SessionEndpoint&, bool, uint8_t, uint16_t, uint16_t) override {}
     void sendSessionClose(const Connection&, uint8_t) override { closeNotifies++; }
     void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
-    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
-    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendSpeakerAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                          size_t) override {}
+    void sendHapticAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                         size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
     int closeNotifies = 0;
 };
@@ -92,6 +97,15 @@ struct StubClient : IClientPort {
 struct StubLog : ILogPort {
     void logMsg(LogLevel, const std::string&, const std::string&) override {}
 };
+
+struct DiscardingLogSink : satellite::ILogSink {
+    bool write(std::string_view) override { return true; }
+    bool flush() override { return true; }
+    bool rotateIfDue() override { return false; }
+    void purge() override {}
+};
+
+constexpr std::chrono::seconds LOG_FLUSH_DEADLINE{5};
 
 struct StubUpdater : IUpdaterPort {
     bool fetchOk = true;
@@ -130,8 +144,8 @@ static Json parseJson(const std::string& body) {
 }
 
 static std::string storedKeyHex(const std::string& id) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    for (const auto& d : g_config.pairedDevices) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    for (const auto& d : cfg->pairedDevices) {
         if (d.id == id) return d.sharedKeyHex;
     }
     return "";
@@ -156,7 +170,9 @@ int main() {
     }
 
     TempHome home;
+    g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
     g_appRunning = true;
+    logWriter().start(std::make_unique<DiscardingLogSink>());
 
     // Minimal web root so the mount point + SPA fallback have something real.
     g_webDir = home.path + "/web";
@@ -263,11 +279,7 @@ int main() {
         if (res) {
             Json j = parseJson(res->body);
             EXPECT(j.contains("listening") && j["listening"].is_boolean());
-            long udpPort = 0;
-            {
-                std::lock_guard<std::mutex> lk(g_configMtx);
-                udpPort = g_config.udpPort;
-            }
+            const long udpPort = g_configStore->current()->udpPort;
             EXPECT_EQ(jsonInt(j, "udpPort"), udpPort);
             EXPECT_EQ(jsonStr(j, "senderIP"), std::string("none"));
             EXPECT(j.contains("backend") && j["backend"].is_object());
@@ -373,9 +385,9 @@ int main() {
             EXPECT_EQ(jsonInt(j, "udpPort"), 4242L);
             EXPECT_EQ(jsonBool(j, "udpPortRejected"), false);
         }
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        EXPECT_EQ(g_config.udpPort, 4242);
-        EXPECT_EQ(g_config.discoveryBroadcastEnabled, false);
+        const std::shared_ptr<const Config> cfg = g_configStore->current();
+        EXPECT_EQ(cfg->udpPort, 4242);
+        EXPECT_EQ(cfg->discoveryBroadcastEnabled, false);
     }
     {
         TEST("POST /api/config: out-of-range udpPort rejected, not clamped");
@@ -391,18 +403,18 @@ int main() {
         TEST("POST /api/config: absent keys leave stored values untouched");
         auto res = cli.Post("/api/config", R"({"networkInterface":"lo0"})", "application/json");
         EXPECT(res && res->status == 200);
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        EXPECT_EQ(g_config.udpPort, 4242);
-        EXPECT_EQ(g_config.discoveryBroadcastEnabled, false);
-        EXPECT_EQ(g_config.networkInterface, std::string("lo0"));
+        const std::shared_ptr<const Config> cfg = g_configStore->current();
+        EXPECT_EQ(cfg->udpPort, 4242);
+        EXPECT_EQ(cfg->discoveryBroadcastEnabled, false);
+        EXPECT_EQ(cfg->networkInterface, std::string("lo0"));
     }
     {
         TEST("POST /api/config: controllerAudio applies and shows up in /api/status");
         auto off = cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
         EXPECT(off && off->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            EXPECT_EQ(g_config.controllerAudio, false);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
+            EXPECT_EQ(cfg->controllerAudio, false);
         }
         auto status = cli.Get("/api/status");
         EXPECT(status && status->status == 200);
@@ -418,8 +430,8 @@ int main() {
         EXPECT(on && on->status == 200);
         auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
         EXPECT(other && other->status == 200);
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        EXPECT_EQ(g_config.controllerAudio, true);
+        const std::shared_ptr<const Config> cfg = g_configStore->current();
+        EXPECT_EQ(cfg->controllerAudio, true);
     }
     {
         TEST("POST /api/config: each audio direction applies on its own");
@@ -429,11 +441,11 @@ int main() {
                             "application/json");
         EXPECT(res && res->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            EXPECT_EQ(g_config.controllerAudioMic, false);
-            EXPECT_EQ(g_config.controllerAudioSpeaker, true);
-            EXPECT_EQ(g_config.controllerAudioHaptics, false);
-            EXPECT_EQ(g_config.controllerAudio, true);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
+            EXPECT_EQ(cfg->controllerAudioMic, false);
+            EXPECT_EQ(cfg->controllerAudioSpeaker, true);
+            EXPECT_EQ(cfg->controllerAudioHaptics, false);
+            EXPECT_EQ(cfg->controllerAudio, true);
         }
 
         TEST("GET /api/status carries both directions, so the form can seed itself");
@@ -487,9 +499,9 @@ int main() {
         auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
         EXPECT(other && other->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            EXPECT_EQ(g_config.controllerAudioMic, false);
-            EXPECT_EQ(g_config.controllerAudioSpeaker, true);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
+            EXPECT_EQ(cfg->controllerAudioMic, false);
+            EXPECT_EQ(cfg->controllerAudioSpeaker, true);
         }
 
         TEST("the master switch off forces every field false in capabilities");
@@ -525,8 +537,8 @@ int main() {
                             "application/json");
         EXPECT(off && off->status == 200);
         {
-            std::lock_guard<std::mutex> lk(g_configMtx);
-            EXPECT_EQ(g_config.controllerAudioKeepDefaultDevice, false);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
+            EXPECT_EQ(cfg->controllerAudioKeepDefaultDevice, false);
         }
         auto status = cli.Get("/api/status");
         EXPECT(status && status->status == 200);
@@ -536,8 +548,8 @@ int main() {
         auto on = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":true})",
                            "application/json");
         EXPECT(on && on->status == 200);
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        EXPECT_EQ(g_config.controllerAudioKeepDefaultDevice, true);
+        const std::shared_ptr<const Config> cfg = g_configStore->current();
+        EXPECT_EQ(cfg->controllerAudioKeepDefaultDevice, true);
     }
     {
         TEST("POST /api/config: autoStart round-trips through the platform hook");
@@ -553,8 +565,8 @@ int main() {
         auto res = cli.Post("/api/network/allow-public", "", "application/json");
         EXPECT(res && res->status == 200);
         if (res) EXPECT_EQ(jsonBool(parseJson(res->body), "ok"), false);
-        std::lock_guard<std::mutex> lk(g_configMtx);
-        EXPECT_EQ(g_config.allowPublicNetwork, false); // only set when the rules applied
+        const std::shared_ptr<const Config> cfg = g_configStore->current();
+        EXPECT_EQ(cfg->allowPublicNetwork, false); // only set when the rules applied
     }
 
     // ---- updater routes (updater absent -> honest 503s) --------------------------
@@ -583,7 +595,7 @@ int main() {
     {
         TEST("updates: with an updater wired, POST check replies with the Checking snapshot");
         StubUpdater updaterPort;
-        UpdateService updater(updaterPort, log, g_config, g_configMtx);
+        UpdateService updater(updaterPort, log, *g_configStore);
         g_updateService = &updater;
         auto check = cli.Post("/api/updates/check", "", "application/json");
         EXPECT(check && check->status == 200);
@@ -847,6 +859,7 @@ int main() {
     {
         TEST("GET /api/logs: monotonic seq + a just-written marker entry");
         logMsg(LogLevel::INFO, "route-test", "marker-entry-xyzzy");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
         auto res = cli.Get("/api/logs");
         EXPECT(res && res->status == 200);
         uint64_t seq = 0;
@@ -870,6 +883,7 @@ int main() {
         // that reply has to be the first one in the next. It used to be skipped.
         TEST("GET /api/logs?since=<seq>: the entry written after that seq is the first back");
         logMsg(LogLevel::INFO, "route-test", "marker-after-seq");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
         auto res3 = cli.Get(("/api/logs?since=" + std::to_string(seq)).c_str());
         EXPECT(res3 && res3->status == 200);
         if (res3) {
@@ -903,6 +917,8 @@ int main() {
 
     server.stop();
     serverThread.join();
+    logWriter().stop();
+    g_configStore.reset();
     home.cleanup();
 
     std::cout << "\n=== Test Results ===\n";

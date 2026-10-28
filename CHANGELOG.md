@@ -3,6 +3,85 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+No protocol changes.
+Saving settings, writing the log and keeping the dashboard open no longer
+delay a controller's input, and Linux and macOS now keep log files.
+
+In 2.1.8 a gamepad report took no lock, but the other messages a dish sends
+still did, and so did some of the work Satellite does beside them. A
+microphone packet read the audio settings behind the lock that a save of
+the config file held while it wrote the file, every log line took a lock
+that the log view shared, and each open dashboard tab built its own copy of
+the dashboard behind the service lock every second. The worst of these, a
+config save while the microphone streamed 1,000 packets a second, made the
+first dish's slowest frame take between 0.5 and 1.7 ms in the loopback
+benchmark. The receive thread now takes no lock for any message. Microphone
+audio is decoded, and touchpad movement turned into mouse input, on threads
+of their own; the settings are an immutable snapshot that a saver thread
+writes out; the log is written by one thread through a queue; and the
+dashboard is built once a second whatever the number of tabs. With the same
+save and the same microphone the first dish's slowest frame is now under
+0.2 ms, and in no scenario of the benchmark does the receive thread wait on
+a lock.
+
+Linux and macOS now keep a log file, as Windows does. Satellite writes
+`satellite-YYYYMMDD.log` in `~/.local/state/satellite/logs` on Linux
+(`$XDG_STATE_HOME/satellite/logs` when that is set to an absolute path) and
+in `~/Library/Logs/Satellite` on macOS, starts a new file at each local
+midnight, sets a file aside as `satellite-YYYYMMDD.1.log` when it passes
+5 MB, and deletes files more than 7 days old. Until now those two platforms
+kept only the last 500 lines in memory, for the dashboard.
+
+`SATELLITE_CONFIG_DIR`, when it names a directory, makes Satellite keep
+`config.json`, its TLS certificate and its machine id there instead of in
+the per-user folder, on every platform. The tests and the benchmark set it
+so that they never touch the settings of the Satellite you run.
+
+A dish that reconnects from the same address under the same name no longer
+rewrites the config file. A change that is made is saved within about
+200 ms of the last one, so a run of toggles on the settings page costs one
+write, and a save that fails is retried after a pause that doubles from a
+quarter of a second to 30 seconds and is logged once.
+
+Satellite connects to the HIDMaestro broker service when it starts, and
+again after the dashboard installs the driver, so the first DualSense or
+Switch Pro pad no longer pays for the connection when it is plugged; an
+elevated helper is still started by the plug that needs one. Each request
+to the helper now has its own time limit and one deadline for the request
+and its whole reply: 10 seconds to say hello, to unplug a pad and to shut
+down, and for the broker connection; 120 seconds to plug a pad, because a
+composite pad's first plug can install the USB audio transport inside the
+request; and 120 seconds for a helper started with a prompt to launch and
+connect. A helper that misses a limit is dropped and the next plug starts a
+fresh one, and a helper that has not exited 5 seconds after its shutdown
+request is killed.
+
+The dashboard keeps at most 8 event streams open. A ninth tab's request is
+answered with 503 and `too many event streams`, and the dashboard retries
+it after 2 seconds.
+
+On Linux the virtual mouse that the touchpad drives is created when the
+touchpad first moves the pointer, and now stays registered until Satellite
+exits. It used to be removed when the last virtual pad went away and
+created again at the next touch.
+
+Each release now carries a measurements report. After the build, the
+release workflow runs the lock path benchmark on a Windows runner and
+attaches `measurements-<version>.md` and `measurements-<version>.json` to
+the release: the first dish's latency in eight scenarios on both backends,
+and how long each lock was waited on by each thread. A release whose
+benchmark shows a dish stalled for 50 ms or more while another dish plugs a
+pad stays a draft, and a 99.9th percentile or a maximum that is more than
+twice the previous release's, and more than 100 us above it, is flagged as
+a warning.
+
+On Windows, Satellite now creates its whole folder under the local app data
+directory when it is missing. It used to create only the last two levels, so
+a Windows account other than the one that ran the installer, or a portable
+copy, got no log file and no crash dump.
+
 ## 2.1.9
 
 No protocol changes. One licensing fix in the Windows installer.

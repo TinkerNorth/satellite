@@ -162,7 +162,7 @@ bool MacHidGamepadAdapter::ensureBusOpen() {
     // The "bus" is the per-process ability to create IOHIDUserDevices;
     // individual devices are created per plugin, like uinput nodes.
     const bool available = runtimeAvailable();
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     busOpen_ = available;
     return busOpen_;
 }
@@ -170,7 +170,7 @@ bool MacHidGamepadAdapter::ensureBusOpen() {
 void MacHidGamepadAdapter::closeBus() {
     std::vector<uint32_t> serials;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         serials.reserve(slots_.size());
         for (auto& [serial, _] : slots_) serials.push_back(serial);
     }
@@ -187,12 +187,12 @@ void MacHidGamepadAdapter::closeBus() {
                      unconfirmed);
     }
 
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     busOpen_ = false;
 }
 
 bool MacHidGamepadAdapter::isBusOpen() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return busOpen_;
 }
 
@@ -272,7 +272,7 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     if (!isValidSerial(serial)) return false;
 
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         if (!busOpen_) return false;
         if (slots_.count(serial) != 0) return false;
     }
@@ -318,7 +318,7 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     IOHIDUserDeviceSetCancelHandler(dev, ^{ dispatch_semaphore_signal(cancelled); });
     IOHIDUserDeviceActivate(dev);
 
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     slot->device = dev;
 
     // Prime with one neutral report (centred sticks, hat released, battery
@@ -354,7 +354,7 @@ bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
 
     std::unique_ptr<Slot> slot;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         auto it = slots_.find(serial);
         if (it == slots_.end()) return true; // never plugged, already gone
         slot = std::move(it->second);
@@ -379,7 +379,7 @@ bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
                      "satellite: IOHIDUserDevice cancel timed out for serial=%u; "
                      "serial will be quarantined\n",
                      serial);
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         quarantined_.push_back(std::move(slot));
         return false;
     }
@@ -390,7 +390,7 @@ bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
 }
 
 bool MacHidGamepadAdapter::isDevicePlugged(uint32_t serial) const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     return slots_.find(serial) != slots_.end();
 }
 
@@ -417,7 +417,7 @@ bool MacHidGamepadAdapter::submitLocked(Slot& slot) {
 }
 
 bool MacHidGamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = slots_.find(serial);
     if (it == slots_.end()) return false;
     it->second->state.pad = report;
@@ -425,7 +425,7 @@ bool MacHidGamepadAdapter::submitReport(uint32_t serial, const GamepadReport& re
 }
 
 bool MacHidGamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = slots_.find(serial);
     if (it == slots_.end() || !it->second->isDS4) return false;
     // Wire scale == DS4 raw scale; the calibration feature report makes
@@ -448,14 +448,14 @@ bool MacHidGamepadAdapter::motionBackendOk(uint32_t serial) const {
     // a phantom "broken backend" badge; plugged Xbox-typed slots have no IMU
     // surface (parity with ViGEm); plugged DS4 slots always do, because the
     // IMU rides the one input report rather than a separate sink.
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = slots_.find(serial);
     if (it == slots_.end()) return true;
     return it->second->isDS4;
 }
 
 bool MacHidGamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = slots_.find(serial);
     if (it == slots_.end() || !it->second->isDS4) return false;
     it->second->state.batteryByte = ds4BatteryByte(report);
@@ -463,7 +463,7 @@ bool MacHidGamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& r
 }
 
 bool MacHidGamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     auto it = slots_.find(serial);
     if (it == slots_.end() || !it->second->isDS4) return false;
     Slot& slot = *it->second;

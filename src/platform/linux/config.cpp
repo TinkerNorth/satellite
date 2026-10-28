@@ -23,7 +23,11 @@ static std::string appConfigDir() {
     return dir;
 }
 
-std::string configPath() { return appConfigDir() + "/config.json"; }
+std::string configPath() {
+    std::string dir;
+    if (configDirOverride(dir)) return dir + "/config.json";
+    return appConfigDir() + "/config.json";
+}
 
 static std::string autostartDir() {
     std::string dir = xdgConfigHome() + "/autostart";

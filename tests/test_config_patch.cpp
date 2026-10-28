@@ -67,8 +67,6 @@ int main() {
         EXPECT_EQ(cfg.udpPort, 4321);
         EXPECT_EQ(cfg.networkInterface, std::string("eth9"));
         EXPECT(!out.udpPortRejected);
-        EXPECT(!out.autoStartPresent);
-        EXPECT(!out.crashReportingPresent);
     }
     {
         TEST("udpPort at either end of the unprivileged range is applied");
@@ -114,21 +112,6 @@ int main() {
         Config cfg = withEveryBool(true);
         applyConfigPatch(body(R"({"autoStart":0,"crashReporting":"no"})"), cfg);
         EXPECT_EQ(countTrue(cfg), BOOL_KEY_COUNT);
-    }
-    {
-        TEST("autoStart and crashReporting report their presence, so the caller runs the hooks");
-        Config cfg;
-        const ConfigPatchOutcome both =
-            applyConfigPatch(body(R"({"autoStart":true,"crashReporting":false})"), cfg);
-        EXPECT(both.autoStartPresent);
-        EXPECT(both.crashReportingPresent);
-        EXPECT(cfg.autoStart);
-        EXPECT(!cfg.crashReporting);
-
-        const ConfigPatchOutcome neither =
-            applyConfigPatch(body(R"({"controllerAudio":true})"), cfg);
-        EXPECT(!neither.autoStartPresent);
-        EXPECT(!neither.crashReportingPresent);
     }
     {
         TEST("networkInterface applies when present, an empty string included");

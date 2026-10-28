@@ -6,6 +6,7 @@
 #include "config.h"
 #include "discovery_beacon.h"
 #include "machine_id.h"
+#include "core/tracked_mutex.h"
 
 #include <mutex>
 #include <string>
@@ -18,14 +19,12 @@ struct BeaconConfig {
     int udpPort = 0;
 };
 
-// Snapshot under g_configMtx; the webserver mutates these from
-// POST /api/config under the same lock.
 BeaconConfig readBeaconConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
+    const std::shared_ptr<const Config> snapshot = g_configStore->current();
     BeaconConfig cfg;
-    cfg.enabled = g_config.discoveryBroadcastEnabled;
-    cfg.discPort = g_config.discPort;
-    cfg.udpPort = g_config.udpPort;
+    cfg.enabled = snapshot->discoveryBroadcastEnabled;
+    cfg.discPort = snapshot->discPort;
+    cfg.udpPort = snapshot->udpPort;
     return cfg;
 }
 
@@ -48,6 +47,7 @@ void sendBeacon(SOCKET sock, sockaddr_in& dest, const char* hostname, const Beac
 } // namespace
 
 void discoveryThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     if (!netInit()) return;
 
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
