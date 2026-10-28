@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "app_lifecycle.h"
+#include "dir_tree.h"
 #include "config.h"
 
 #include "adapters/crash_adapter.h"
@@ -86,10 +87,9 @@ std::wstring ensureSubdirW(const wchar_t* sub) {
 
     out += L"\\";
     out += kAppFolder;
-    CreateDirectoryW(out.c_str(), nullptr); // ok if exists
     out += L"\\";
     out += sub;
-    CreateDirectoryW(out.c_str(), nullptr);
+    ensureDirectoryTree(out);
     return out;
 }
 

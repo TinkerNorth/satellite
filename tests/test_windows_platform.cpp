@@ -14,6 +14,7 @@
 #include "../src/platform/windows/update_toast.h"
 #include "../src/platform/windows/pointer_inject.h"
 #include "../src/platform/windows/app_lifecycle.h"
+#include "../src/platform/windows/dir_tree.h"
 #include "../src/core/update_service.h"
 
 #include <atomic>
@@ -148,6 +149,38 @@ static void testConfigDirOverride() {
     EXPECT(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
     TEST("configPath: back under satellite\\config.json once the variable is gone");
     EXPECT(configPath().find("\\satellite\\config.json") != std::string::npos);
+}
+
+static void testEnsureDirectoryTree() {
+    wchar_t temp[MAX_PATH];
+    const DWORD tempLen = GetTempPathW(MAX_PATH, temp);
+    const std::wstring root = std::wstring(temp, tempLen) + L"satellite-tree-test";
+    const std::wstring leaf = root + L"\\a\\b\\c";
+    RemoveDirectoryW(leaf.c_str());
+    RemoveDirectoryW((root + L"\\a\\b").c_str());
+    RemoveDirectoryW((root + L"\\a").c_str());
+    RemoveDirectoryW(root.c_str());
+
+    TEST("ensureDirectoryTree: creates every missing level of a path");
+    EXPECT(lifecycle::ensureDirectoryTree(leaf));
+    const DWORD attrs = GetFileAttributesW(leaf.c_str());
+    EXPECT(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+
+    TEST("ensureDirectoryTree: an existing directory is accepted");
+    EXPECT(lifecycle::ensureDirectoryTree(leaf));
+
+    TEST("ensureDirectoryTree: a file in the way is refused");
+    const std::wstring file = root + L"\\in-the-way";
+    HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    EXPECT(!lifecycle::ensureDirectoryTree(file + L"\\below"));
+
+    DeleteFileW(file.c_str());
+    RemoveDirectoryW(leaf.c_str());
+    RemoveDirectoryW((root + L"\\a\\b").c_str());
+    RemoveDirectoryW((root + L"\\a").c_str());
+    RemoveDirectoryW(root.c_str());
 }
 
 static void testConfigRoundTrip() {
@@ -850,6 +883,7 @@ int main() {
     testConfigEscapingRoundTrip();
     testConfigPath();
     testConfigDirOverride();
+    testEnsureDirectoryTree();
     testConfigRoundTrip();
     testAtomicWriteFile();
     testDiscoveryBroadcastConfig();

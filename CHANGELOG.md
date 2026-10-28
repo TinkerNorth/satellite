@@ -77,6 +77,11 @@ pad stays a draft, and a 99.9th percentile or a maximum that is more than
 twice the previous release's, and more than 100 us above it, is flagged as
 a warning.
 
+On Windows, Satellite now creates its whole folder under the local app data
+directory when it is missing. It used to create only the last two levels, so
+a Windows account other than the one that ran the installer, or a portable
+copy, got no log file and no crash dump.
+
 ## 2.1.9
 
 No protocol changes. One licensing fix in the Windows installer.
