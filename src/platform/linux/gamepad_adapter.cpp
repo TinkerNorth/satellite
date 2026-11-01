@@ -118,7 +118,10 @@ void endFfRequest(int fd, unsigned long request, void* arg, const char* what, ui
 
 } // namespace
 
-GamepadAdapter::~GamepadAdapter() { closeBus(); }
+GamepadAdapter::~GamepadAdapter() {
+    closeBus();
+    if (relMouseFd_ >= 0) destroyUinputNode(relMouseFd_, "pointer node");
+}
 
 bool GamepadAdapter::ensureBusOpen() {
     // "Bus" here is just the uinput node; per-device fds open per plugin.
@@ -129,15 +132,6 @@ bool GamepadAdapter::ensureBusOpen() {
 
 void GamepadAdapter::closeBus() {
     for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) unplugDevice(serial);
-    int pointerFd = -1;
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        pointerFd = relMouseFd_;
-        relMouseFd_ = -1;
-        relMouseBtns_ = MouseButtons{};
-    }
-    // Pointer node is host-global, not per-controller.
-    if (pointerFd >= 0) destroyUinputNode(pointerFd, "pointer node");
     busOpen_.store(false, std::memory_order_release);
 }
 
@@ -638,26 +632,8 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
 }
 
 bool GamepadAdapter::submitRelativeMouse(int dx, int dy, const MouseButtons& buttons, int wheelV) {
-    bool needsNode = false;
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        needsNode = relMouseFd_ < 0;
-    }
     // Pointer node is host-global, created lazily by the first sample.
-    if (needsNode) {
-        const int created = openRelMouseUinputDevice();
-        if (created < 0) return false;
-        bool adopted = false;
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            if (relMouseFd_ < 0) {
-                relMouseFd_ = created;
-                adopted = true;
-            }
-        }
-        if (!adopted) destroyUinputNode(created, "pointer node");
-    }
-    std::lock_guard<std::mutex> lk(mtx_);
+    if (relMouseFd_ < 0) relMouseFd_ = openRelMouseUinputDevice();
     if (relMouseFd_ < 0) return false;
     const int fd = relMouseFd_;
 
@@ -741,7 +717,7 @@ bool GamepadAdapter::submitBattery(uint32_t serial, const BatteryReport& report)
 void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
     LightbarCallback cb;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         cb = lightbarCb_;
     }
     if (cb) cb(serial, r, g, b);
@@ -750,7 +726,7 @@ void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g
 
 void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
     // Rarely fires on uinput (no RGB readback) but keeps parity with ViGEm.
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     LightbarCallback inner = std::move(cb);
     lightbarCb_ = [inner](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         char buf[16];
@@ -767,7 +743,7 @@ void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
 }
 
 void GamepadAdapter::setRumbleCallback(RumbleCallback cb) {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<TrackedMutex> lk(mtx_);
     rumbleCb_ = std::move(cb);
 }
 
@@ -804,6 +780,7 @@ void GamepadAdapter::stopReader(uint32_t serial, Device& dev) {
                          serial, std::strerror(errno));
         }
     }
+    blockingRegion("thread.join");
     if (th.joinable()) th.join();
     if (wakeWrite >= 0) ::close(wakeWrite);
     if (wakeRead >= 0) ::close(wakeRead);
@@ -849,7 +826,7 @@ void GamepadAdapter::onFfPlay(uint32_t serial, int effectId, int playValue) {
     }
     RumbleCallback cb;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<TrackedMutex> lk(mtx_);
         cb = rumbleCb_;
     }
     if (cb) cb(serial, rr);
@@ -859,6 +836,7 @@ void GamepadAdapter::onFfPlay(uint32_t serial, int effectId, int playValue) {
 // identity this adapter publishes, so the reader never needs to know which
 // one it serves.
 void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd) {
+    ScopedThreadRole role(ThreadRole::BackendWorker);
     while (true) {
         struct pollfd pfds[2]{};
         pfds[0].fd = fd;

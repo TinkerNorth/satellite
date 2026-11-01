@@ -29,6 +29,7 @@ ViGEmAdapter::~ViGEmAdapter() { closeBus(); }
 
 bool ViGEmAdapter::ensureBusOpen() {
     if (busHandle_.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE) return true;
+    blockingRegion("vigem.pnp");
     const HANDLE bus = openVigemBus();
     if (bus == INVALID_HANDLE_VALUE) return false;
     busHandle_.store(bus, std::memory_order_release);
@@ -39,16 +40,16 @@ void ViGEmAdapter::closeBus() {
     // Stop notification workers first: they hold pending IOCTLs on busHandle_.
     std::vector<uint32_t> serials;
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         serials.reserve(notifWorkers_.size());
         for (auto& [serial, _] : notifWorkers_) serials.push_back(serial);
     }
     for (uint32_t serial : serials) {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         stopNotificationWorker(serial);
     }
 
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
 
     // Sync submits have all completed, so no IOCTL is in flight; safe to free
     // each slot's persistent event.
@@ -84,6 +85,7 @@ bool ViGEmAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
     if (bus == INVALID_HANDLE_VALUE) return false;
 
     const unsigned long tgt = static_cast<unsigned long>(serial);
+    blockingRegion("vigem.pnp");
     const bool ok = isDS4 ? pluginTargetDS4(bus, tgt) : pluginTarget(bus, tgt);
     if (!ok) return false;
 
@@ -107,7 +109,7 @@ bool ViGEmAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
     // latches exSupported off if this ViGEmBus is too old). Best-effort.
     if (isDS4) submitDS4(serial, bus);
 
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     slot.plugged.store(true, std::memory_order_release);
     startNotificationWorker(serial, isDS4);
     return true;
@@ -124,7 +126,7 @@ bool ViGEmAdapter::unplugDevice(uint32_t serial) {
 
     // Stop the worker first; explicit cancel keeps the unplug path deterministic.
     {
-        std::lock_guard<std::mutex> lk(busMtx_);
+        std::lock_guard<TrackedMutex> lk(busMtx_);
         stopNotificationWorker(serial);
     }
 
@@ -143,6 +145,7 @@ bool ViGEmAdapter::unplugDevice(uint32_t serial) {
     slot.plugged.store(false, std::memory_order_release);
 
     // Sync submits mean nothing holds slot.xsr/event now, so no drain wait.
+    blockingRegion("vigem.pnp");
     const bool ok = unplugTarget(bus, static_cast<unsigned long>(serial));
 
     // Keep slot.event for a possible replug; final close is in closeBus.
@@ -366,12 +369,12 @@ bool ViGEmAdapter::submitDS4(uint32_t serial, HANDLE bus) {
 }
 
 void ViGEmAdapter::setRumbleCallback(RumbleCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     rumbleCb_ = std::move(cb);
 }
 
 void ViGEmAdapter::setLightbarCallback(LightbarCallback cb) {
-    std::lock_guard<std::mutex> lk(busMtx_);
+    std::lock_guard<TrackedMutex> lk(busMtx_);
     lightbarCb_ = std::move(cb);
 }
 
@@ -395,12 +398,14 @@ void ViGEmAdapter::stopNotificationWorker(uint32_t serial) {
     // Drop + reacquire busMtx_ around the join so the worker's own lock
     // acquisition (for the rumble callback copy) doesn't deadlock.
     busMtx_.unlock();
+    blockingRegion("thread.join");
     if (w.th.joinable()) w.th.join();
     if (w.cancel) CloseHandle(w.cancel);
     busMtx_.lock();
 }
 
 void ViGEmAdapter::notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel) {
+    ScopedThreadRole role(ThreadRole::BackendWorker);
     const HANDLE bus = busHandle_.load(std::memory_order_acquire);
     if (bus == INVALID_HANDLE_VALUE) return;
 
@@ -414,7 +419,7 @@ void ViGEmAdapter::notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel) 
             RumbleCallback rcb;
             LightbarCallback lcb;
             {
-                std::lock_guard<std::mutex> lk(busMtx_);
+                std::lock_guard<TrackedMutex> lk(busMtx_);
                 rcb = rumbleCb_;
                 lcb = lightbarCb_;
             }
@@ -428,7 +433,7 @@ void ViGEmAdapter::notificationLoop(uint32_t serial, bool isDS4, HANDLE cancel) 
             rr.weakMagnitude = static_cast<uint16_t>(n.SmallMotor) * 257;
             RumbleCallback cb;
             {
-                std::lock_guard<std::mutex> lk(busMtx_);
+                std::lock_guard<TrackedMutex> lk(busMtx_);
                 cb = rumbleCb_;
             }
             if (cb) cb(serial, rr);

@@ -4,3 +4,4 @@
 #include <string>
 
 std::string homeDir();
+bool configDirOverride(std::string& dir);

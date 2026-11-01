@@ -8,13 +8,8 @@
 
 namespace satellite {
 
-// What POST /api/config changed that the caller has to act on beyond saving.
-// The platform hooks (the autostart registration, the crash SDK's consent)
-// are the route's to run, since core cannot reach them.
 struct ConfigPatchOutcome {
     bool udpPortRejected = false;
-    bool autoStartPresent = false;
-    bool crashReportingPresent = false;
 };
 
 // The unprivileged port range; anything else is refused, never clamped.
@@ -38,10 +33,7 @@ inline ConfigPatchOutcome applyConfigPatch(const Json& body, Config& cfg) {
     }
 
     bool flag = false;
-    if (jsonTryBool(body, "autoStart", flag)) {
-        cfg.autoStart = flag;
-        out.autoStartPresent = true;
-    }
+    if (jsonTryBool(body, "autoStart", flag)) cfg.autoStart = flag;
     // Present-only so a partial POST cannot silently flip discovery off.
     if (jsonTryBool(body, "discoveryBroadcastEnabled", flag)) cfg.discoveryBroadcastEnabled = flag;
     // Takes effect on the next controller plug: an audio persona already
@@ -58,10 +50,7 @@ inline ConfigPatchOutcome applyConfigPatch(const Json& body, Config& cfg) {
     }
     // Consent reaches the SDK now rather than at the next restart, because
     // withdrawing it has to stop the very next crash from being sent.
-    if (jsonTryBool(body, "crashReporting", flag)) {
-        cfg.crashReporting = flag;
-        out.crashReportingPresent = true;
-    }
+    if (jsonTryBool(body, "crashReporting", flag)) cfg.crashReporting = flag;
     if (body.contains("networkInterface")) {
         cfg.networkInterface = jsonStr(body, "networkInterface");
     }

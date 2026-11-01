@@ -80,14 +80,16 @@ struct StubGamepad : IGamepadPort {
 struct StubClient : IClientPort {
     void updateClientAddr(uint32_t, const std::string&, uint16_t) override {}
     void removeClientAddr(uint32_t) override {}
-    void sendHeartbeatAck(const Connection&, bool, uint8_t, uint16_t, uint16_t) override {}
+    void sendHeartbeatAck(const SessionEndpoint&, bool, uint8_t, uint16_t, uint16_t) override {}
     void sendSessionClose(const Connection&, uint8_t) override { closeNotifies++; }
     void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
     void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
-    void sendSpeakerAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
-    void sendHapticAudio(const Connection&, uint8_t, uint16_t, const uint8_t*, size_t) override {}
+    void sendSpeakerAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                          size_t) override {}
+    void sendHapticAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
+                         size_t) override {}
     void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
     int closeNotifies = 0;
 };
@@ -123,13 +125,15 @@ static void putPairedDevice(const std::string& id, const std::string& keyHex) {
     d.lastIP = "127.0.0.1";
     d.pairedAt = "2026-07-16";
     d.sharedKeyHex = keyHex;
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    g_config.pairedDevices.push_back(d);
+    g_configStore->update([&d](Config& cfg) {
+        cfg.pairedDevices.push_back(d);
+        return true;
+    });
 }
 
 static std::string storedKeyHex(const std::string& id) {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    for (const auto& d : g_config.pairedDevices) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    for (const auto& d : cfg->pairedDevices) {
         if (d.id == id) return d.sharedKeyHex;
     }
     return "";
@@ -155,6 +159,7 @@ int main() {
     }
 
     TempHome home;
+    g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
     g_appRunning = true;
 
     StubGamepad gamepad;
@@ -318,6 +323,26 @@ int main() {
             EXPECT_EQ(jsonStr(j2, "connectionId"), connId);
             EXPECT(jsonStr(j2, "token") != firstToken);
         }
+    }
+    {
+        TEST("a re-PUT from the same address under the same name publishes no new config");
+        const std::shared_ptr<const Config> settled = g_configStore->current();
+        auto res = cli.Put("/api/connections", auth,
+                           R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
+                           "application/json");
+        EXPECT(res && res->status == 200);
+        EXPECT(g_configStore->current() == settled);
+    }
+    {
+        TEST("a re-PUT under a new name publishes the new name");
+        auto res = cli.Put("/api/connections", auth,
+                           R"({"protocolVersion":2,"deviceName":"Renamed Tester",
+                               "controllers":[{"ctrlIdx":0,"type":0}]})",
+                           "application/json");
+        EXPECT(res && res->status == 200);
+        PairedDevice stored;
+        EXPECT(findPairedDevice(devId, stored));
+        EXPECT_EQ(stored.name, std::string("Renamed Tester"));
     }
     {
         TEST("malformed controllers array (missing type): 400");
@@ -813,6 +838,7 @@ int main() {
 
     server.stop();
     serverThread.join();
+    g_configStore.reset();
     home.cleanup();
 
     std::cout << "\n=== Test Results ===\n";

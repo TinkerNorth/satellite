@@ -35,7 +35,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(WIN32)
-    add_compile_definitions(NOMINMAX)
+    add_compile_definitions(NOMINMAX CPPHTTPLIB_IDLE_INTERVAL_USECOND=100000)
 endif()
 
 # MSVC links the static CRT everywhere: vcpkg's x64-windows-static packages
@@ -128,12 +128,17 @@ include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 # Core domain (portable, no OS deps).
 set(SATELLITE_CORE_SOURCES
     src/core/session_service.cpp
+    src/core/pointer_worker.cpp
+    src/core/mic_worker.cpp
+    src/core/config_store.cpp
     src/core/catalog.cpp
     src/core/backend_registry.cpp
     src/core/update_service.cpp
     src/core/github_release.cpp
     src/core/network_info.cpp
     src/core/crash_reporting.cpp
+    src/core/log_writer.cpp
+    src/core/event_broadcaster.cpp
 )
 
 # Currently-shared infrastructure (to be ported to POSIX in Stage 3).
@@ -145,6 +150,8 @@ set(SATELLITE_NET_SOURCES
     src/net/webserver.cpp
     src/net/routes_common.cpp
     src/net/routes_admin.cpp
+    src/net/event_stream.cpp
+    src/net/admin_json.cpp
     src/net/routes_client.cpp
     src/net/tls.cpp
     src/net/machine_id.cpp
@@ -159,6 +166,10 @@ set(SATELLITE_NET_SOURCES
     src/net/local_iface.cpp
 )
 
+set(SATELLITE_APP_SOURCES
+    src/app/audio_settings.cpp
+)
+
 # Portable adapters (thin shims over platform-specific free functions).
 set(SATELLITE_ADAPTER_SOURCES
     src/adapters/log_adapter.cpp
@@ -171,12 +182,14 @@ set(SATELLITE_ADAPTER_SOURCES
 set(SATELLITE_WIN_SOURCES
     src/platform/windows/audio_default_guard.cpp
     src/platform/windows/audio_endpoint_com.cpp
+    src/platform/windows/audio_guard_worker.cpp
     src/platform/windows/main.cpp
     src/platform/windows/globals.cpp
     src/platform/windows/config.cpp
     src/core/config_io.cpp
     src/platform/windows/crypto.cpp
     src/platform/windows/tray.cpp
+    src/platform/windows/tray_icon.cpp
     src/platform/windows/toast.cpp
     src/platform/windows/vigem.cpp
     src/platform/windows/vigem_adapter.cpp
@@ -187,6 +200,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/gamepad_backend.cpp
     src/platform/windows/updater_adapter.cpp
     src/platform/windows/app_lifecycle.cpp
+    src/platform/windows/file_log.cpp
     src/platform/windows/shell_integration.cpp
 )
 
@@ -196,6 +210,7 @@ set(SATELLITE_MAC_SOURCES
     src/platform/macos/globals.cpp
     src/platform/macos/config.cpp
     src/platform/posix/config_posix.cpp
+    src/platform/posix/file_log.cpp
     src/core/config_io.cpp
     src/platform/posix/crypto_posix.cpp
     src/platform/macos/tray.mm
@@ -210,6 +225,7 @@ set(SATELLITE_LINUX_SOURCES
     src/platform/linux/globals.cpp
     src/platform/linux/config.cpp
     src/platform/posix/config_posix.cpp
+    src/platform/posix/file_log.cpp
     src/core/config_io.cpp
     src/platform/posix/crypto_posix.cpp
     src/platform/linux/gamepad_backend.cpp
@@ -307,6 +323,7 @@ if(WIN32)
     add_executable(satellite WIN32
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
+        ${SATELLITE_APP_SOURCES}
         ${SATELLITE_ADAPTER_SOURCES}
         ${SATELLITE_WIN_SOURCES}
         ${SATELLITE_RC}
@@ -458,6 +475,7 @@ elseif(APPLE)
     add_executable(satellite MACOSX_BUNDLE
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
+        ${SATELLITE_APP_SOURCES}
         ${SATELLITE_ADAPTER_SOURCES}
         ${SATELLITE_MAC_SOURCES}
     )
@@ -574,6 +592,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(satellite
         ${SATELLITE_CORE_SOURCES}
         ${SATELLITE_NET_SOURCES}
+        ${SATELLITE_APP_SOURCES}
         ${SATELLITE_ADAPTER_SOURCES}
         ${SATELLITE_LINUX_SOURCES}
     )
@@ -1115,7 +1134,8 @@ satellite_add_pure_test(test_codecs tests/test_codecs.cpp)
 satellite_add_pure_test(test_machine_id tests/test_machine_id.cpp)
 satellite_add_pure_test(test_discovery tests/test_discovery.cpp)
 satellite_add_pure_test(test_github_release tests/test_github_release.cpp src/core/github_release.cpp)
-satellite_add_pure_test(test_update_service tests/test_update_service.cpp src/core/update_service.cpp)
+satellite_add_pure_test(test_update_service tests/test_update_service.cpp
+                        src/core/update_service.cpp src/core/config_store.cpp)
 satellite_add_pure_test(test_json tests/test_json.cpp)
 satellite_add_pure_test(test_config_json tests/test_config_json.cpp)
 satellite_add_pure_test(test_crash_reporting tests/test_crash_reporting.cpp
@@ -1131,9 +1151,43 @@ satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
+satellite_add_pure_test(test_pause_detector tests/test_pause_detector.cpp)
+target_include_directories(test_pause_detector PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/bench
+)
 satellite_add_pure_test(test_hot_table tests/test_hot_table.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(test_hot_table PRIVATE Threads::Threads)
+target_link_libraries(test_log_ring PRIVATE Threads::Threads)
+satellite_add_pure_test(test_log_queue tests/test_log_queue.cpp)
+target_link_libraries(test_log_queue PRIVATE Threads::Threads)
+satellite_add_pure_test(test_log_writer tests/test_log_writer.cpp src/core/log_writer.cpp)
+target_link_libraries(test_log_writer PRIVATE Threads::Threads)
+satellite_add_pure_test(test_tracked_mutex tests/test_tracked_mutex.cpp)
+target_compile_definitions(test_tracked_mutex PRIVATE SATELLITE_LOCK_STATS)
+target_link_libraries(test_tracked_mutex PRIVATE Threads::Threads)
+satellite_add_pure_test(test_tracked_mutex_plain tests/test_tracked_mutex.cpp)
+target_link_libraries(test_tracked_mutex_plain PRIVATE Threads::Threads)
+satellite_add_pure_test(test_config_store tests/test_config_store.cpp src/core/config_store.cpp)
+target_compile_definitions(test_config_store PRIVATE SATELLITE_LOCK_STATS)
+target_link_libraries(test_config_store PRIVATE Threads::Threads)
+satellite_add_pure_test(test_config_store_plain tests/test_config_store.cpp
+                        src/core/config_store.cpp)
+target_link_libraries(test_config_store_plain PRIVATE Threads::Threads)
+satellite_add_pure_test(test_config_effects tests/test_config_effects.cpp
+                        src/core/config_store.cpp)
+target_compile_definitions(test_config_effects PRIVATE SATELLITE_LOCK_STATS)
+target_link_libraries(test_config_effects PRIVATE Threads::Threads)
+satellite_add_pure_test(test_config_effects_plain tests/test_config_effects.cpp
+                        src/core/config_store.cpp)
+target_link_libraries(test_config_effects_plain PRIVATE Threads::Threads)
+satellite_add_pure_test(test_event_broadcaster tests/test_event_broadcaster.cpp
+                        src/core/event_broadcaster.cpp)
+target_compile_definitions(test_event_broadcaster PRIVATE SATELLITE_LOCK_STATS)
+target_link_libraries(test_event_broadcaster PRIVATE Threads::Threads)
+satellite_add_pure_test(test_event_broadcaster_plain tests/test_event_broadcaster.cpp
+                        src/core/event_broadcaster.cpp)
+target_link_libraries(test_event_broadcaster_plain PRIVATE Threads::Threads)
 satellite_add_pure_test(test_backend_registry tests/test_backend_registry.cpp
     src/core/backend_registry.cpp)
 satellite_add_pure_test(test_driver_inf tests/test_driver_inf.cpp)
@@ -1179,6 +1233,9 @@ satellite_add_pure_test(test_hidmaestro_audio_wire tests/test_hidmaestro_audio_w
     src/platform/windows/hidmaestro_audio_wire.cpp)
 satellite_add_pure_test(test_audio_default_guard tests/test_audio_default_guard.cpp
     src/platform/windows/audio_default_guard.cpp)
+satellite_add_pure_test(test_audio_guard_worker tests/test_audio_guard_worker.cpp
+    src/platform/windows/audio_guard_worker.cpp)
+target_link_libraries(test_audio_guard_worker PRIVATE Threads::Threads)
 
 # Portable session-crypto interop suite (net/session_crypto.cpp): the pinned
 # RFC 5869 HKDF vector, the HMAC-proof vector, and the AEAD direction/counter/
@@ -1202,44 +1259,180 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     target_compile_definitions(test_pin_rotation PRIVATE SATELLITE_BUILD_TESTS)
     satellite_link_sodium(test_pin_rotation)
+
+    satellite_add_pure_test(test_client_adapter
+        tests/test_client_adapter.cpp
+        src/adapters/client_adapter.cpp
+        src/net/session_crypto.cpp
+    )
+    satellite_link_sodium(test_client_adapter)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_client_adapter PRIVATE Threads::Threads)
+    if(WIN32)
+        target_compile_definitions(test_client_adapter PRIVATE _WIN32_WINNT=0x0A00)
+        target_link_libraries(test_client_adapter PRIVATE ws2_32)
+    endif()
+endif()
+
+if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SATELLITE_LOCK_LAW_SOURCES
+        tests/test_lock_laws.cpp
+        src/adapters/audio/opus_codec.cpp
+        src/adapters/client_adapter.cpp
+        src/adapters/log_adapter.cpp
+        src/app/audio_settings.cpp
+        src/core/config_io.cpp
+        src/net/admin_json.cpp
+        src/net/inner_dispatch.cpp
+        src/net/pairing.cpp
+        src/net/pairing_service.cpp
+        src/net/session_crypto.cpp
+        ${SATELLITE_CORE_SOURCES}
+    )
+    if(WIN32)
+        add_executable(test_lock_laws
+            ${SATELLITE_LOCK_LAW_SOURCES}
+            src/platform/windows/globals.cpp
+            src/platform/windows/config.cpp
+            src/platform/windows/vigem_adapter.cpp
+            src/platform/windows/hidmaestro_adapter.cpp
+            src/platform/windows/hidmaestro_wire.cpp
+            src/platform/windows/hidmaestro_audio_wire.cpp
+            src/platform/windows/hidmaestro_helper_client.cpp
+            src/platform/windows/tray_icon.cpp
+        )
+        target_include_directories(test_lock_laws PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        )
+        target_include_directories(test_lock_laws SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+            ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
+        )
+        target_compile_definitions(test_lock_laws PRIVATE _WIN32_WINNT=0x0A00)
+        target_link_libraries(test_lock_laws PRIVATE
+            ws2_32
+            user32
+            shell32
+            ole32
+            advapi32
+            setupapi
+            winmm
+        )
+        if(MINGW)
+            target_link_options(test_lock_laws PRIVATE -static)
+        endif()
+    else()
+        if(APPLE)
+            set(SATELLITE_LOCK_LAW_PLATFORM macos)
+        else()
+            set(SATELLITE_LOCK_LAW_PLATFORM linux)
+        endif()
+        add_executable(test_lock_laws
+            ${SATELLITE_LOCK_LAW_SOURCES}
+            src/platform/${SATELLITE_LOCK_LAW_PLATFORM}/globals.cpp
+            src/platform/${SATELLITE_LOCK_LAW_PLATFORM}/config.cpp
+            src/platform/posix/config_posix.cpp
+        )
+        target_include_directories(test_lock_laws PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${SATELLITE_LOCK_LAW_PLATFORM}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/posix
+        )
+        target_include_directories(test_lock_laws SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+        )
+    endif()
+    target_compile_definitions(test_lock_laws PRIVATE
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+        SATELLITE_LOCK_STATS
+    )
+    satellite_test_warnings(test_lock_laws)
+    satellite_link_sodium(test_lock_laws)
+    satellite_link_opus(test_lock_laws)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_lock_laws PRIVATE Threads::Threads)
+    set_target_properties(test_lock_laws PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME lock_laws COMMAND test_lock_laws)
 endif()
 
 if(WIN32)
-    add_executable(bench_frame_path
-        tools/bench/frame_path_bench.cpp
-        tools/bench/fake_vigem_driver.cpp
-        src/core/session_service.cpp
-        src/net/inner_dispatch.cpp
-        src/net/session_crypto.cpp
-        src/platform/windows/vigem_adapter.cpp
+    function(satellite_add_frame_path_bench name)
+        add_executable(${name}
+            tools/bench/frame_path_bench.cpp
+            tools/bench/fake_vigem_driver.cpp
+            src/adapters/audio/opus_codec.cpp
+            src/app/audio_settings.cpp
+            src/core/config_io.cpp
+            src/core/config_store.cpp
+            src/core/log_writer.cpp
+            src/core/mic_worker.cpp
+            src/core/pointer_worker.cpp
+            src/core/session_service.cpp
+            src/net/admin_json.cpp
+            src/net/inner_dispatch.cpp
+            src/net/pairing.cpp
+            src/net/pairing_service.cpp
+            src/net/session_crypto.cpp
+            src/platform/windows/config.cpp
+            src/platform/windows/file_log.cpp
+            src/platform/windows/globals.cpp
+            src/platform/windows/vigem_adapter.cpp
+        )
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        )
+        target_include_directories(${name} SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib
+            ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
+        )
+        target_compile_definitions(${name} PRIVATE
+            _WIN32_WINNT=0x0A00
+            CPPHTTPLIB_NO_EXCEPTIONS
+            BENCH_BUILD_TYPE="$<CONFIG>"
+        )
+        target_link_libraries(${name} PRIVATE
+            advapi32
+            ws2_32
+            user32
+            setupapi
+            shell32
+            ole32
+        )
+        satellite_test_warnings(${name})
+        satellite_link_sodium(${name})
+        satellite_link_opus(${name})
+        if(MINGW)
+            target_link_options(${name} PRIVATE -static)
+        endif()
+        set_target_properties(${name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+    endfunction()
+
+    satellite_add_frame_path_bench(bench_frame_path)
+    satellite_add_frame_path_bench(bench_frame_path_lockstats)
+    target_compile_definitions(bench_frame_path_lockstats PRIVATE SATELLITE_LOCK_STATS)
+    add_test(NAME frame_path_bench_smoke COMMAND bench_frame_path --smoke)
+    add_test(NAME frame_path_bench_lockstats_smoke COMMAND bench_frame_path_lockstats --smoke
+        --json ${CMAKE_CURRENT_BINARY_DIR}/frame_path_bench_lockstats_smoke.json)
+
+    add_executable(xinput_monitor tools/bench/xinput_monitor.cpp)
+    target_include_directories(xinput_monitor PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/bench
     )
-    target_include_directories(bench_frame_path PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
-    )
-    target_include_directories(bench_frame_path SYSTEM PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/lib
-        ${CMAKE_CURRENT_SOURCE_DIR}/vigem/include
-    )
-    target_compile_definitions(bench_frame_path PRIVATE
-        _WIN32_WINNT=0x0A00
-        BENCH_BUILD_TYPE="$<CONFIG>"
-    )
-    target_link_libraries(bench_frame_path PRIVATE
-        advapi32
-        ws2_32
-        user32
-        setupapi
-    )
-    satellite_test_warnings(bench_frame_path)
-    satellite_link_sodium(bench_frame_path)
+    target_compile_definitions(xinput_monitor PRIVATE _WIN32_WINNT=0x0A00)
+    satellite_test_warnings(xinput_monitor)
     if(MINGW)
-        target_link_options(bench_frame_path PRIVATE -static)
+        target_link_options(xinput_monitor PRIVATE -static)
     endif()
-    set_target_properties(bench_frame_path PROPERTIES
+    set_target_properties(xinput_monitor PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
-    add_test(NAME frame_path_bench_smoke COMMAND bench_frame_path --smoke)
 endif()
 
 # macOS DS4 v2 report codec (platform/macos/ds4_report.h): descriptor pins,
@@ -1260,6 +1453,8 @@ endif()
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SATELLITE_ROUTE_TEST_COMMON_SOURCES
         src/net/routes_common.cpp
+        src/net/event_stream.cpp
+        src/net/admin_json.cpp
         src/net/pairing.cpp
         src/net/pairing_keys.cpp
         src/net/pairing_service.cpp
@@ -1360,6 +1555,23 @@ target_compile_definitions(test_update_ui_contract PRIVATE
     WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
 )
 
+satellite_add_pure_test(test_httplib_idle tests/test_httplib_idle.cpp)
+target_compile_definitions(test_httplib_idle PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+target_link_libraries(test_httplib_idle PRIVATE Threads::Threads)
+if(WIN32)
+    target_compile_definitions(test_httplib_idle PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries(test_httplib_idle PRIVATE ws2_32 winmm)
+endif()
+
+satellite_add_pure_test(test_event_stream tests/test_event_stream.cpp
+                        src/net/event_stream.cpp src/core/event_broadcaster.cpp)
+target_compile_definitions(test_event_stream PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+target_link_libraries(test_event_stream PRIVATE Threads::Threads)
+if(WIN32)
+    target_compile_definitions(test_event_stream PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries(test_event_stream PRIVATE ws2_32)
+endif()
+
 # UpdateService spawns worker/timer threads, so this suite needs pthreads on
 # Linux/macOS (MinGW links winpthread implicitly).
 find_package(Threads REQUIRED)
@@ -1373,6 +1585,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         tests/test_linux_platform.cpp
         src/platform/linux/config.cpp
         src/platform/posix/config_posix.cpp
+        src/platform/posix/file_log.cpp
         src/core/config_io.cpp
         src/platform/linux/globals.cpp
         src/platform/linux/gamepad_adapter.cpp
@@ -1449,7 +1662,10 @@ if(APPLE)
         tests/test_macos_platform.cpp
         src/platform/macos/config.cpp
         src/platform/posix/config_posix.cpp
+        src/platform/posix/file_log.cpp
         src/core/config_io.cpp
+        src/core/config_store.cpp
+        src/core/log_writer.cpp
         src/platform/macos/globals.cpp
         src/platform/posix/crypto_posix.cpp
         src/net/pin_rotation.cpp
@@ -1522,6 +1738,7 @@ if(WIN32)
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
         src/platform/windows/app_lifecycle.cpp
+        src/platform/windows/file_log.cpp
         src/adapters/crash_adapter.cpp
         src/net/pin_rotation.cpp
         src/net/pairing_keys.cpp
@@ -1639,6 +1856,41 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME hidmaestro_adapter COMMAND test_hidmaestro_adapter)
+endif()
+
+if(WIN32)
+    add_executable(test_hidmaestro_helper_client
+        tests/test_hidmaestro_helper_client.cpp
+        src/platform/windows/hidmaestro_helper_client.cpp
+    )
+    target_include_directories(test_hidmaestro_helper_client PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_include_directories(test_hidmaestro_helper_client SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    )
+    target_compile_definitions(test_hidmaestro_helper_client PRIVATE
+        _WIN32_WINNT=0x0A00
+        CPPHTTPLIB_NO_EXCEPTIONS
+        SATELLITE_BUILD_TESTS
+        SATELLITE_LOCK_STATS
+    )
+    target_link_libraries(test_hidmaestro_helper_client PRIVATE
+        ws2_32
+        user32
+        shell32
+        advapi32
+        Threads::Threads
+    )
+    satellite_test_warnings(test_hidmaestro_helper_client)
+    if(MINGW)
+        target_link_options(test_hidmaestro_helper_client PRIVATE -static)
+    endif()
+    set_target_properties(test_hidmaestro_helper_client PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME hidmaestro_helper_client COMMAND test_hidmaestro_helper_client)
 endif()
 
 if(WIN32)

@@ -5,7 +5,7 @@
 std::string configPath();
 
 Config loadConfig();
-void saveConfig(const Config& cfg);
+bool saveConfig(const Config& cfg);
 
 bool atomicWriteFile(const std::string& path, const std::string& bytes);
 

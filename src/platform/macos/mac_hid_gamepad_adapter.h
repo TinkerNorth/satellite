@@ -22,7 +22,7 @@
 // semantics in SessionService are untouched.
 //
 // Locking protocol:
-//   - mtx_ guards busOpen_, the slot map, and per-slot pack state.
+//   - mtx_ guards the slot map and per-slot pack state.
 //   - The rumble/lightbar callbacks live in a shared CallbackHub with its own
 //     mutex; kernel blocks capture the hub WEAKLY and never `this`. A
 //     cancel-timeout quarantine leaks the device (and its blocks) past
@@ -49,9 +49,11 @@
 
 #include "core/gamepad_backend.h"
 #include "core/ports.h"
+#include "core/tracked_mutex.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -144,8 +146,8 @@ class MacHidGamepadAdapter : public IGamepadPort {
     bool submitLocked(Slot& slot); // pack + HandleReport; caller holds mtx_
     void handleOutputReport(uint32_t serial, uint32_t reportId, const uint8_t* data, size_t len);
 
-    mutable std::mutex mtx_;
-    bool busOpen_ = false;
+    mutable TrackedMutex mtx_{"machid.devices"};
+    std::atomic<bool> busOpen_{false};
     std::unordered_map<uint32_t, std::unique_ptr<Slot>> slots_;
     // Slots whose cancel never confirmed. Out of slots_, so unreachable by any
     // submit; their kernel refs are never released (see the locking protocol).

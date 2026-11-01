@@ -27,8 +27,8 @@ bool confirmPairing(const std::string& deviceId);
 // Decline a pending request. True iff one existed.
 bool declinePairing(const std::string& deviceId);
 
-// The stored record for a device, copied out under the config lock so a
-// concurrent unpair cannot dangle it. False when the device is not paired.
+// The stored record for a device, copied out of the current config snapshot so
+// a concurrent unpair cannot dangle it. False when the device is not paired.
 bool findPairedDevice(const std::string& deviceId, PairedDevice& out);
 
 // The last-seen identity a session PUT refreshes: the name can change on

@@ -503,7 +503,7 @@ inline const uint8_t MIC_LED_STATE_COUNT = 3;
 inline const int MIC_LED_WIRE_PAYLOAD_BYTES = 1;
 
 // Why a mic frame was dropped, recorded once per session per cause (see
-// Connection::micDropLogged). Bookkeeping, not a wire value: at 50 frames/s a
+// RxSession::micDropLogged). Bookkeeping, not a wire value: at 50 frames/s a
 // misconfigured client would otherwise turn one mistake into a log flood, and
 // silence would leave nothing to diagnose it with.
 inline const uint8_t MIC_DROP_LOG_NO_CONTROLLER = 0x01;
@@ -777,32 +777,6 @@ struct ControllerApplyResult {
     std::string backendId;
 };
 
-// A controller's audio working set: the reorder window and the two codecs, one
-// pair per pad because both are stateful across frames. Allocated on the pad's
-// first audio frame in either direction and released with it -- an Opus decoder
-// alone is ~18 KB, which is far and away the largest thing a controller owns,
-// and most controllers never carry audio at all.
-struct ControllerAudio {
-    // Inbound MSG_MIC_AUDIO: reorder window feeding the decoder, whose gap
-    // events become FEC recoveries or concealment.
-    AudioJitterWindow micWindow;
-    std::unique_ptr<IAudioDecoder> micDecoder;
-
-    // Outbound MSG_SPEAKER_AUDIO and MSG_HAPTIC_AUDIO, one lane each. The
-    // backend hands over whatever its audio ring happened to hold, which is
-    // not necessarily one 20 ms window, so the leftover tail of a batch waits
-    // in `pending` for the rest of its frame. `seq` is per controller per lane
-    // and wraps; it marks gaps and late frames for the client and is not an
-    // ack sequence, nothing retransmits against it.
-    struct OutboundLane {
-        std::unique_ptr<IAudioEncoder> encoder;
-        std::vector<int16_t> pending; // < one frame of interleaved stereo
-        uint16_t seq = 0;
-    };
-    OutboundLane speaker;
-    OutboundLane haptic;
-};
-
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // backend serial (1..16), 0 = not plugged
@@ -840,18 +814,8 @@ struct Controller {
     RumbleReport hapticRumble{};
     std::chrono::steady_clock::time_point hapticRumbleSentAt{};
     std::chrono::steady_clock::time_point hapticRumbleExpiresAt{};
-    MotionReport lastMotion{}; // cached for the web UI debug pane
-    bool lastMotionValid = false;
-    // True when the last motion sample reached the backend's IMU surface.
-    bool motionSinkActive = false;
-    BatteryReport lastBattery{};
-    bool lastBatteryValid = false;
-    TouchpadReport lastTouchpad{};
-    bool lastTouchpadValid = false;
-    // TOUCHPAD_MODE_MOUSE sub-pixel remainder. Reset on a fresh contact and on
-    // (re)plug; preserved across dt<=0 resends so slow drags still accumulate.
-    float touchpadMouseRemX = 0.0f;
-    float touchpadMouseRemY = 0.0f;
+    uint32_t plugGen = 0;
+    uint32_t pointerStamp = 0;
     uint8_t lightbarR = 0;
     uint8_t lightbarG = 0;
     uint8_t lightbarB = 0;
@@ -865,15 +829,6 @@ struct Controller {
     // Mic-mute LED last forwarded; same coalesce shape again.
     uint8_t micLedState = MIC_LED_STATE_OFF;
     bool lastMicLedValid = false;
-    // Fixed one-second window for inbound MSG_MIC_AUDIO (see
-    // MIC_AUDIO_MAX_PACKETS_PER_SEC). The first packet after a window lapses
-    // opens the next one, so an idle controller never banks an allowance.
-    std::chrono::steady_clock::time_point micWindowStart{};
-    uint16_t micPacketsInWindow = 0;
-    // Null until this slot actually carries audio; see ControllerAudio. Owning
-    // it here is what makes plug/unplug/replug the single lifetime story: the
-    // codecs die with the pad whose history they hold.
-    std::unique_ptr<ControllerAudio> audio;
 };
 
 struct HotSlot;
@@ -888,6 +843,7 @@ struct Connection {
     std::string deviceName;
     HotSlot* hot = nullptr;
     int slot = -1;
+    uint32_t row = 0;
     std::string clientIP;
     // Per-session key = HKDF(pairingKey, sessionSalt, token), never the raw
     // pairing key, so counters restart at 1 with no cross-session nonce reuse.
@@ -905,17 +861,17 @@ struct Connection {
     // Server policy, returned in the PUT response. Streams for ungranted
     // features are dropped.
     bool mouseControlGranted = false;
-    // MIC_DROP_LOG_* causes already logged for this session, so a bad client
-    // gets one diagnosable line per cause instead of 50 a second.
-    uint8_t micDropLogged = 0;
     // The version this session settled on (the client's in-range offer). Echoed
     // in responses and surfaced to the dashboard so an old client is visibly
     // "works, but update for the full feature set".
     int protocolVersion = PROTOCOL_VERSION;
     bool stallLogged = false;
-    uint32_t pointerRefusedRun = 0;
-    bool pointerRefusalLogged = false;
-    std::chrono::steady_clock::time_point pointerRefusalLoggedAt;
+};
+
+struct SessionEndpoint {
+    uint32_t token = 0;
+    uint8_t key[CRYPTO_KEY_SIZE] = {};
+    HotSlot* slot = nullptr;
 };
 
 // Paired device info (persisted).
@@ -1003,15 +959,7 @@ struct ControllerAudioPolicy {
     bool haptics = true;
 };
 
-enum class LogLevel { INFO, WARN, ERR };
-inline const int LOG_RING_SIZE = 500;
-
-struct LogEntry {
-    std::chrono::system_clock::time_point timestamp;
-    LogLevel level;
-    std::string source;
-    std::string message;
-};
+enum class LogLevel : uint8_t { INFO, WARN, ERR };
 
 // Host-feature deny reasons (protocol constants, never localized).
 inline const char* HOST_FEATURE_DENY_NOT_SUPPORTED = "notSupported";

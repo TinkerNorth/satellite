@@ -5,6 +5,7 @@
 
 #include <fcntl.h>
 #include <pwd.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -18,6 +19,14 @@ std::string homeDir() {
     if (h != nullptr && *h != 0) return h;
     struct passwd* pw = getpwuid(getuid());
     return (pw != nullptr && pw->pw_dir != nullptr) ? pw->pw_dir : "/tmp";
+}
+
+bool configDirOverride(std::string& dir) {
+    const char* value = getenv("SATELLITE_CONFIG_DIR");
+    if (value == nullptr || *value == 0) return false;
+    dir = value;
+    mkdir(dir.c_str(), 0755);
+    return true;
 }
 
 bool atomicWriteFile(const std::string& path, const std::string& bytes) {

@@ -17,6 +17,7 @@
 #include "core/audio/audio_resampler.h"
 #include "core/gamepad_backend.h"
 #include "core/ports.h"
+#include "core/tracked_mutex.h"
 #include "hidmaestro_audio_wire.h"
 #include "hidmaestro_provisioner.h"
 #include "pointer_inject.h"
@@ -170,7 +171,7 @@ class HidMaestroAdapter : public IGamepadPort {
     AudioEnabledFn audioEnabled_;
     CompositePlugHook compositePlugBefore_;
     CompositePlugHook compositePlugAfter_;
-    mutable std::mutex busMtx_;
+    mutable TrackedMutex busMtx_{"hidmaestro.bus"};
     std::atomic<bool> busOpen_{false};
     std::chrono::milliseconds idleReportInterval_{SONY_IDLE_REPORT_MS};
 

@@ -3,6 +3,7 @@
 #include "globals.h"
 #include "config.h"
 #include "crypto.h"
+#include "file_log.h"
 #include "gamepad_adapter.h"
 #include "netlink_rejoin.h"
 #include "process_barrier.h"
@@ -19,6 +20,7 @@
 #include "adapters/client_adapter.h"
 #include "adapters/log_adapter.h"
 #include "adapters/audio/opus_codec.h"
+#include "app/audio_settings.h"
 
 #include "core/session_service.h"
 #include "core/update_service.h"
@@ -53,6 +55,7 @@ namespace crash = satellite::crash;
 // rejoins when the bound IP actually changed. A wake that renegotiates the
 // link always emits RTM_NEWLINK/RTM_NEWADDR even when the address is reused.
 static void netlinkWatcherThread() {
+    ScopedThreadRole role(ThreadRole::Background);
     using namespace std::chrono;
     auto lastSignal = steady_clock::time_point{};
     while (g_appRunning.load(std::memory_order_relaxed)) {
@@ -136,23 +139,10 @@ static bool startCrypto() {
 
 // The persisted config, with the autostart flag read from where the desktop
 // keeps it rather than from the file.
-static void loadConfigSeedingAutostart() {
-    g_config = loadConfig();
-    g_config.autoStart = getAutoStart();
-}
-
-// Read per frame, not cached: unlike the master switch these gate the wire
-// rather than the persona, so flipping one reaches a stream already playing
-// instead of waiting for a replug.
-static ControllerAudioPolicy audioPolicyFromConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    return ControllerAudioPolicy{g_config.controllerAudioMic, g_config.controllerAudioSpeaker,
-                                 g_config.controllerAudioHaptics};
-}
-
-static void persistConfig() {
-    std::lock_guard<std::mutex> lk(g_configMtx);
-    saveConfig(g_config);
+static Config loadConfigSeedingAutostart() {
+    Config cfg = loadConfig();
+    cfg.autoStart = getAutoStart();
+    return cfg;
 }
 
 // web/ in priority order: side-by-side (dev), FHS-from-prefix, manual sudo
@@ -240,17 +230,21 @@ static void runHeadlessLoop() {
 // stack in the order it must be constructed, and the shutdown below mirrors
 // that order; a helper per step would move the lifetimes out of sight.
 int main() {
+    ScopedThreadRole role(ThreadRole::Gui);
     if (!startNetwork() || !startCrypto()) return 1;
-    loadConfigSeedingAutostart();
+    LogAdapter logAdapter;
+    g_configStore =
+        std::make_unique<ConfigStore>(loadConfigSeedingAutostart(), saveConfig, &logAdapter);
 
     // Nothing else claims the fatal signals on Linux, so this is the only
     // crash recorder satellite has here. It still arms only behind the
     // operator's opt-in and a DSN this build actually carries.
-    crash::init(g_config.crashReporting, crash::databaseDirFor(configPath()));
+    crash::init(g_configStore->current()->crashReporting, crash::databaseDirFor(configPath()));
+
+    lifecycle::startFileLogger(lifecycle::logDir());
 
     GamepadAdapter gamepadAdapter;
     ClientAdapter clientAdapter;
-    LogAdapter logAdapter;
     // See the Windows main for why the codec is injected rather than built
     // into the core. uinput has no audio endpoint to feed today, but the
     // service's audio paths are platform-neutral and stay wired the same way.
@@ -260,15 +254,14 @@ int main() {
     svc.setAudioPolicy(audioPolicyFromConfig);
 
     LinuxUpdaterAdapter updaterAdapter("TinkerNorth", "satellite");
-    UpdateService updateService(updaterAdapter, logAdapter, g_config, g_configMtx);
-    updateService.setPersistCallback(persistConfig);
+    UpdateService updateService(updaterAdapter, logAdapter, *g_configStore);
     g_updateService = &updateService;
     g_webDir = resolveWebDir();
     updateService.start();
 
     Workers workers = startWorkers(svc, clientAdapter);
     std::fprintf(stderr, "%s running; web UI at http://localhost:%d\n", APP_TITLE,
-                 g_config.webPort);
+                 g_configStore->current()->webPort);
 
     if (!runTrayLoop()) runHeadlessLoop();
 
@@ -277,7 +270,8 @@ int main() {
     joinWorkers(workers);
 
     svc.closeAllSessions();
-    saveConfig(g_config);
+    lifecycle::stopFileLogger();
+    g_configStore->stop();
 
     // Flush before exit; a pending envelope is lost if the transport never
     // gets to run.

@@ -36,7 +36,7 @@ condition_variable csignal cstdarg cstddef cstdint cstdio cstdlib cstring
 ctime cwchar deque exception filesystem format forward_list fstream
 functional future initializer_list iomanip ios iosfwd iostream istream
 iterator limits list locale map memory mutex new numbers numeric optional
-ostream queue random ranges ratio regex set shared_mutex span sstream stack
+ostream queue random ranges ratio regex semaphore set shared_mutex span sstream stack
 stdexcept streambuf string string_view system_error thread tuple type_traits
 typeindex typeinfo unordered_map unordered_set utility variant vector version
 assert.h ctype.h errno.h float.h inttypes.h limits.h locale.h math.h signal.h

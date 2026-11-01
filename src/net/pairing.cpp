@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "pairing.h"
+#include "core/tracked_mutex.h"
 
 #include <algorithm>
 #include <chrono>
@@ -18,7 +19,7 @@ struct PendingPair {
     std::chrono::steady_clock::time_point createdAt;
 };
 
-std::mutex g_pairMtx;
+TrackedMutex g_pairMtx("pairing.requests");
 std::vector<PendingPair> g_pending;
 
 // Fired when a new request arrives so the platform can raise a native prompt.
@@ -73,7 +74,7 @@ void submitPairRequest(const std::string& deviceId, const std::string& deviceNam
                        const std::string& clientIP, const std::string& clientPin) {
     std::function<void(const std::string&)> notify;
     {
-        std::lock_guard<std::mutex> lk(g_pairMtx);
+        std::lock_guard<TrackedMutex> lk(g_pairMtx);
         pruneLocked();
 
         if (auto* existing = findLocked(deviceId)) {
@@ -102,7 +103,7 @@ void submitPairRequest(const std::string& deviceId, const std::string& deviceNam
 }
 
 bool denyPairRequest(const std::string& deviceId) {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
+    std::lock_guard<TrackedMutex> lk(g_pairMtx);
     auto* p = findLocked(deviceId);
     if (p == nullptr) return false;
     eraseLocked(deviceId);
@@ -110,7 +111,7 @@ bool denyPairRequest(const std::string& deviceId) {
 }
 
 PairRequestState pollPairRequest(const std::string& deviceId, std::string& outSharedKeyHex) {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
+    std::lock_guard<TrackedMutex> lk(g_pairMtx);
     pruneLocked();
 
     auto* p = findLocked(deviceId);
@@ -127,7 +128,7 @@ PairRequestState pollPairRequest(const std::string& deviceId, std::string& outSh
 }
 
 std::vector<PairRequestView> pendingPairRequests() {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
+    std::lock_guard<TrackedMutex> lk(g_pairMtx);
     pruneLocked();
 
     std::vector<PairRequestView> out;
@@ -144,7 +145,7 @@ std::vector<PairRequestView> pendingPairRequests() {
 
 bool pairRequestSnapshot(const std::string& deviceId, std::string& outDeviceName,
                          std::string& outClientIP, std::string& outPin, int& outSecondsRemaining) {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
+    std::lock_guard<TrackedMutex> lk(g_pairMtx);
     pruneLocked();
     auto* p = findLocked(deviceId);
     if (p == nullptr || p->state != PairRequestState::Pending) return false;
@@ -161,7 +162,7 @@ bool pairRequestSnapshot(const std::string& deviceId, std::string& outDeviceName
 
 bool acceptPairRequestConfirmed(const std::string& deviceId, const std::string& mintedKeyHex,
                                 std::string& outDeviceName, std::string& outClientIP) {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
+    std::lock_guard<TrackedMutex> lk(g_pairMtx);
     pruneLocked();
     auto* p = findLocked(deviceId);
     if (p == nullptr || p->state != PairRequestState::Pending) return false;
@@ -173,12 +174,12 @@ bool acceptPairRequestConfirmed(const std::string& deviceId, const std::string& 
 }
 
 void setPairRequestListener(std::function<void(const std::string&)> cb) {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
+    std::lock_guard<TrackedMutex> lk(g_pairMtx);
     g_onNewRequest = std::move(cb);
 }
 
 void resetPairRequestsForTest() {
-    std::lock_guard<std::mutex> lk(g_pairMtx);
+    std::lock_guard<TrackedMutex> lk(g_pairMtx);
     g_pending.clear();
     g_onNewRequest = nullptr;
 }

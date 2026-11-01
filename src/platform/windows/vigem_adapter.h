@@ -7,6 +7,7 @@
 
 #include "core/gamepad_backend.h"
 #include "core/ports.h"
+#include "core/tracked_mutex.h"
 #include "pointer_inject.h"
 
 #include <winsock2.h>
@@ -86,7 +87,7 @@ class ViGEmAdapter : public IGamepadPort {
     };
 
     std::atomic<HANDLE> busHandle_{INVALID_HANDLE_VALUE};
-    mutable std::mutex busMtx_;
+    mutable TrackedMutex busMtx_{"vigem.bus"};
 
     // Slot 0 unused so indexing matches wire-level serial numbers.
     std::array<IoSlot, MAX_BACKEND_CONTROLLERS + 1> io_;
