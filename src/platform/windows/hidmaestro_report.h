@@ -7,12 +7,12 @@
 // vigem_submit_policy.h and core/ds4_report.h) so every packer is verified on
 // every CI platform; the I/O shell is hidmaestro_adapter.cpp.
 //
-// Byte layouts are pinned to HIDMaestro v1.9.2's shipped profiles (their
+// Byte layouts are pinned to HIDMaestro v2.1.0's shipped profiles (their
 // descriptors are unchanged since v1.7.0; only prose fields moved):
 // xbox-360-wired (18-byte no-RID report + the 14-byte GIP slice),
 // dualshock-4-v2 (DS4 v2 USB report 0x01 — identical to core/ds4_report.h),
-// dualsense (DS5 USB report 0x01), and switch-pro (the 48-byte 0x30 body the
-// driver's protocol responder streams).
+// dualsense (DS5 USB report 0x01), and switch-pro (the 48-byte state block
+// the SDK's protocol host builds its 0x30 reports from).
 #pragma once
 
 #include "hidmaestro_wire.h"
@@ -167,26 +167,37 @@ inline void packGip(const GamepadReport& pad, uint8_t out[INPUT_GIP_LENGTH]) {
 
 // ── Sony IMU scale ─────────────────────────────────────────────────────────
 //
-// The HIDMaestro driver serves a neutral Sony calibration stub whose divisor
-// math lands consumers on 20 LSB per deg/s and 10000 LSB per g. From the wire
-// MotionReport LSBs (2000/32767 deg/s, 4/32767 g) both conversions reduce to
-// the same x40000/32767 — saturated, so full-scale wire motion clips at
-// ~1638 deg/s / ~3.28 g instead of wrapping.
-inline int16_t sonyImuFromWire(int16_t v) {
-    const int scaled = (static_cast<int>(v) * 40000) / 32767;
+// HIDMaestro answers a Sony pad's calibration read from its sony-dualsense /
+// sony-dualshock4 models: the identity table, 16 LSB per deg/s and 8192 LSB
+// per g. The wire MotionReport is 2000/32767 deg/s and 4/32767 g per LSB.
+inline constexpr int SONY_GYRO_LSB_PER_DEG_S = 16;
+inline constexpr int SONY_ACCEL_LSB_PER_G = 8192;
+inline constexpr int SONY_WIRE_FULL_SCALE_DEG_S = 2000;
+inline constexpr int SONY_WIRE_FULL_SCALE_G = 4;
+
+inline int16_t sonyImuCounts(int16_t v, int lsbPerUnit, int wireFullScale) {
+    const int scaled = (static_cast<int>(v) * lsbPerUnit * wireFullScale) / 32767;
     if (scaled > 32767) return 32767;
     if (scaled < -32768) return -32768;
     return static_cast<int16_t>(scaled);
 }
 
+inline int16_t sonyGyroFromWire(int16_t v) {
+    return sonyImuCounts(v, SONY_GYRO_LSB_PER_DEG_S, SONY_WIRE_FULL_SCALE_DEG_S);
+}
+
+inline int16_t sonyAccelFromWire(int16_t v) {
+    return sonyImuCounts(v, SONY_ACCEL_LSB_PER_G, SONY_WIRE_FULL_SCALE_G);
+}
+
 inline MotionReport sonyMotionFromWire(const MotionReport& m) {
     MotionReport out = m;
-    out.gyroX = sonyImuFromWire(m.gyroX);
-    out.gyroY = sonyImuFromWire(m.gyroY);
-    out.gyroZ = sonyImuFromWire(m.gyroZ);
-    out.accelX = sonyImuFromWire(m.accelX);
-    out.accelY = sonyImuFromWire(m.accelY);
-    out.accelZ = sonyImuFromWire(m.accelZ);
+    out.gyroX = sonyGyroFromWire(m.gyroX);
+    out.gyroY = sonyGyroFromWire(m.gyroY);
+    out.gyroZ = sonyGyroFromWire(m.gyroZ);
+    out.accelX = sonyAccelFromWire(m.accelX);
+    out.accelY = sonyAccelFromWire(m.accelY);
+    out.accelZ = sonyAccelFromWire(m.accelZ);
     return out;
 }
 
@@ -291,8 +302,10 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
 
 // ── switch-pro ─────────────────────────────────────────────────────────────
 //
-// The 48-byte 0x30 body the driver's protocol responder streams at ~60 Hz
-// (it stamps timer/battery/vibrator bytes itself). Buttons follow SDL's
+// The 48-byte state block the SDK's protocol host streams as report 0x30 on
+// its 15 ms clock (it stamps timer/battery/vibrator bytes itself); the helper
+// feeds it to the SDK, since the host also answers the Switch handshake from
+// the same section Satellite would otherwise write. Buttons follow SDL's
 // Nintendo mapping — A/B and X/Y swapped positionally, identical to the
 // Linux adapter's submitSwitch — sticks are 12-bit packed around
 // centre 0x800 with the factory-calibration half-range 0x600, and the IMU

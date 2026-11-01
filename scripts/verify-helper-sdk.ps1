@@ -41,3 +41,12 @@ $Reported = ConvertFrom-HelperSdkVersionOutput $Lines
 $Name = Split-Path -Leaf $Helper
 Assert-HmSdkMatchesPins -Subject $Name -SdkVersion $Reported.Sdk -DriverVersion $Reported.Driver -Pins (Get-DriverPins $PinsHeader)
 Write-Host "[OK]   $Name carries HIDMaestro SDK $($Reported.Sdk), driver INF $($Reported.Driver); driver_pins.h agrees"
+
+$ProfilesDir = Join-Path (Split-Path -Parent $Helper) $HmSatelliteProfilesDir
+foreach ($Copy in $HmSatelliteProfileCopies) {
+    $File = Join-Path $ProfilesDir "$Copy.json"
+    if (-not (Test-Path $File)) { throw "$File is missing; dotnet publish exports it from the staged SDK" }
+}
+& $Helper check-profiles --dir $ProfilesDir
+if ($LASTEXITCODE -ne 0) { throw "$Name check-profiles exited $LASTEXITCODE" }
+Write-Host "[OK]   $ProfilesDir holds the stream-free copies of the Sony profiles and the SDK loads them"

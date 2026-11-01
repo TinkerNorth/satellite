@@ -9,7 +9,10 @@
     Dot-source this file; it defines functions only and runs nothing.
 #>
 
-$HmSdkStagedFiles = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE')
+$HmSdkStagedFiles = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')
+$HmSatelliteProfilesDir = 'hidmaestro-profiles'
+$HmSatelliteProfileCopies = @('satellite-dualsense', 'satellite-dualsense-composite', 'satellite-dualshock-4-v2', 'satellite-dualshock-4-v2-composite', 'satellite-switch-pro')
+$HmCatalogProfilesDir = 'profiles'
 $HmInfCatalog = 'hidmaestro.cat'
 $HmStagingStampName = 'staged-from.sha256'
 $HmSdkVersionPin = 'SATELLITE_HIDMAESTRO_SDK_VERSION'
@@ -23,15 +26,57 @@ function Get-RedistTable {
             Filename = 'ViGEmBus_1.22.0_x64_x86_arm64.exe'
         }
         @{
-            Name     = 'HIDMaestro 1.9.2'
-            Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.9.2/HIDMaestro-v1.9.2.zip'
-            Filename = 'HIDMaestro-v1.9.2.zip'
+            Name     = 'HIDMaestro 2.1.0'
+            Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v2.1.0/HIDMaestro-v2.1.0.zip'
+            Filename = 'HIDMaestro-v2.1.0.zip'
+        }
+        @{
+            Name           = 'HIDMaestro 2.1.0 catalog profile switch-pro'
+            Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/nintendo/switch-pro.json'
+            Filename       = 'HIDMaestro-v2.1.0-switch-pro.json'
+            CatalogProfile = 'switch-pro'
         }
     )
 }
 
 function Get-HmRedistEntry([array]$Table) {
-    return ($Table | Where-Object { $_.Name -like 'HIDMaestro *' } | Select-Object -First 1)
+    return ($Table | Where-Object { $_.Filename -match '^HIDMaestro-v\d+\.\d+\.\d+\.zip$' } | Select-Object -First 1)
+}
+
+function Get-HmCatalogProfileEntries([array]$Table) {
+    return ,@($Table | Where-Object { $_.ContainsKey('CatalogProfile') })
+}
+
+function Get-HmCatalogProfileVersion([string]$Filename) {
+    if ($Filename -notmatch '^HIDMaestro-v(\d+\.\d+\.\d+)-([a-z0-9-]+)\.json$') {
+        throw "$Filename is not named HIDMaestro-v<MAJOR.MINOR.PATCH>-<profile>.json"
+    }
+    return @{ Version = $Matches[1]; Profile = $Matches[2] }
+}
+
+function Assert-HmCatalogProfileEntry([hashtable]$Entry, [hashtable]$Pins) {
+    $named = Get-HmCatalogProfileVersion $Entry.Filename
+    Assert-HmSdkVersionPinned -Subject "The redist table's $($Entry.Filename)" -SdkVersion $named.Version -Pins $Pins
+    if ($named.Profile -ne $Entry.CatalogProfile) {
+        throw "$($Entry.Filename) is named for profile '$($named.Profile)' but stages '$($Entry.CatalogProfile)'"
+    }
+    if ($Entry.Url -notlike "*/v$($named.Version)/profiles/*/$($Entry.CatalogProfile).json") {
+        throw "$($Entry.Filename) does not download profiles/*/$($Entry.CatalogProfile).json at the v$($named.Version) tag: $($Entry.Url)"
+    }
+}
+
+function Sync-HmCatalogProfiles([string]$RedistDir, [string]$SdkDir, [array]$Entries) {
+    $dir = Join-Path $SdkDir $HmCatalogProfilesDir
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    $staged = @()
+    foreach ($entry in $Entries) {
+        $source = Join-Path $RedistDir $entry.Filename
+        if (-not (Test-Path $source)) { throw "$source is missing; fetch it first" }
+        $target = Join-Path $dir "$($entry.CatalogProfile).json"
+        Copy-Item $source $target -Force
+        $staged += $target
+    }
+    return $staged
 }
 
 function Read-Sha256Sums {

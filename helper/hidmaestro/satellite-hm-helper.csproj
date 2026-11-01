@@ -25,6 +25,7 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Version>1.0.0</Version>
     <HmSdkDir Condition="'$(HmSdkDir)' == ''">$(MSBuildThisFileDirectory)..\..\redist\hidmaestro\</HmSdkDir>
   </PropertyGroup>
@@ -36,6 +37,20 @@
     <Reference Include="HIDMaestro.Core">
       <HintPath>$(HmSdkDir)HIDMaestro.Core.dll</HintPath>
     </Reference>
+    <ProjectReference Include="..\hidmaestro-core\satellite-hm-helper-core.csproj" />
   </ItemGroup>
+
+  <!-- The published helper writes Satellite's stream-free copies of the Sony
+       catalog profiles beside itself from the SDK it was just built with, then
+       loads them back through that SDK; the installer ships the directory. -->
+  <Target Name="ExportSatelliteProfiles" AfterTargets="Publish">
+    <PropertyGroup>
+      <SatelliteHelperExe>$([MSBuild]::NormalizePath('$(PublishDir)', '$(AssemblyName).exe'))</SatelliteHelperExe>
+      <SatelliteProfilesDir>$([MSBuild]::NormalizePath('$(PublishDir)', 'hidmaestro-profiles'))</SatelliteProfilesDir>
+    </PropertyGroup>
+    <RemoveDir Directories="$(SatelliteProfilesDir)" />
+    <Exec Command="&quot;$(SatelliteHelperExe)&quot; export-profiles --out &quot;$(SatelliteProfilesDir)&quot; --catalog &quot;$(HmSdkDir)profiles&quot;" />
+    <Exec Command="&quot;$(SatelliteHelperExe)&quot; check-profiles --dir &quot;$(SatelliteProfilesDir)&quot;" />
+  </Target>
 
 </Project>

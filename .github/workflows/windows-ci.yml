@@ -126,6 +126,14 @@ jobs:
         shell: pwsh
         run: pwsh scripts/fetch-redist.ps1
 
+      # The helper's SDK-free logic (the frame mailbox the Switch Pro state
+      # rides, the stream-free Sony profile copies, the section names) is a
+      # library with its own tests; the publish below then exports the copies
+      # with the real SDK and loads them back.
+      - name: Helper unit tests (dotnet test)
+        shell: pwsh
+        run: dotnet test helper/hidmaestro-core.tests/satellite-hm-helper-core.tests.csproj -c Release
+
       - name: Build HIDMaestro helper (dotnet publish)
         shell: pwsh
         run: |

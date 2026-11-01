@@ -138,6 +138,7 @@ function NewFakeSdkZip([string]$Dir, [string]$ZipName, [string]$CoreDllText, [st
         'HIDMaestroTest\Microsoft.Windows.SDK.NET.dll' = 'projection assembly'
         'HIDMaestroTest\WinRT.Runtime.dll'             = 'winrt runtime'
         'LICENSE'                                      = 'hidmaestro license'
+        'THIRD-PARTY-NOTICES.txt'                      = 'third-party notices'
         'README.md'                                    = 'readme'
     }
     foreach ($member in $members.Keys) {
@@ -187,7 +188,7 @@ function StagedCoreText([string]$RedistDir) {
 }
 
 $realPinsHeader = Join-Path $repoRoot 'src\platform\windows\driver_pins.h'
-$wanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE')
+$wanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')
 
 function TestSha256Sums {
     $dir = NewTempDir
@@ -333,6 +334,38 @@ function TestVersionsAndAsserts {
     Test 'ConvertFrom-HelperSdkVersionOutput: a missing line is refused'
     ExpectThrows { ConvertFrom-HelperSdkVersionOutput @('sdk 1.9.2') } 'driver'
     ExpectThrows { ConvertFrom-HelperSdkVersionOutput @() } 'sdk'
+
+    Test 'Get-HmCatalogProfileVersion: a staged catalog profile file names its release and its profile'
+    $named = Get-HmCatalogProfileVersion 'HIDMaestro-v2.1.0-switch-pro.json'
+    ExpectEq $named.Version '2.1.0' 'version'
+    ExpectEq $named.Profile 'switch-pro' 'profile'
+    ExpectThrows { Get-HmCatalogProfileVersion 'switch-pro.json' } 'HIDMaestro-v<MAJOR.MINOR.PATCH>-<profile>.json'
+    ExpectThrows { Get-HmCatalogProfileVersion 'HIDMaestro-v2.1.0.zip' } 'HIDMaestro-v2.1.0.zip'
+
+    $catalogPins = @{ 'SATELLITE_HIDMAESTRO_SDK_VERSION' = '2.1.0'; 'SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION' = '2.1.0.1716' }
+    $entry = @{
+        Name           = 'HIDMaestro 2.1.0 catalog profile switch-pro'
+        Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/nintendo/switch-pro.json'
+        Filename       = 'HIDMaestro-v2.1.0-switch-pro.json'
+        CatalogProfile = 'switch-pro'
+    }
+    Test 'Assert-HmCatalogProfileEntry: a file named for the pinned release and its profile, fetched at that tag, passes'
+    Assert-HmCatalogProfileEntry -Entry $entry -Pins $catalogPins
+    $script:pass++
+
+    Test 'Assert-HmCatalogProfileEntry: another release in the name is refused by the pin'
+    $drift = $entry.Clone(); $drift.Filename = 'HIDMaestro-v2.0.3-switch-pro.json'
+    ExpectThrows { Assert-HmCatalogProfileEntry -Entry $drift -Pins $catalogPins } 'SATELLITE_HIDMAESTRO_SDK_VERSION'
+
+    Test 'Assert-HmCatalogProfileEntry: a name that disagrees with the profile it stages is refused'
+    $wrong = $entry.Clone(); $wrong.CatalogProfile = 'dualsense'
+    ExpectThrows { Assert-HmCatalogProfileEntry -Entry $wrong -Pins $catalogPins } 'dualsense'
+
+    Test 'Assert-HmCatalogProfileEntry: a URL off the pinned tag or another file is refused'
+    $tag = $entry.Clone(); $tag.Url = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/master/profiles/nintendo/switch-pro.json'
+    ExpectThrows { Assert-HmCatalogProfileEntry -Entry $tag -Pins $catalogPins } 'v2.1.0'
+    $file = $entry.Clone(); $file.Url = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/nintendo/switch-pro-usb.json'
+    ExpectThrows { Assert-HmCatalogProfileEntry -Entry $file -Pins $catalogPins } 'switch-pro.json'
 }
 
 function TestRepoPinsAgree {
@@ -348,6 +381,16 @@ function TestRepoPinsAgree {
     $sums = Read-Sha256Sums (Join-Path $repoRoot 'redist\SHA256SUMS')
     Expect $sums.ContainsKey($hm.Filename) 'SHA256SUMS lists the HIDMaestro zip'
     Expect $sums.ContainsKey($vigem.Filename) 'SHA256SUMS lists the ViGEmBus installer'
+
+    Test 'the redist table stages one catalog profile per heartbeat copy, named for the pinned release and listed in SHA256SUMS'
+    $catalog = Get-HmCatalogProfileEntries $table
+    ExpectEq $catalog.Count 1 'one catalog profile entry'
+    foreach ($entry in $catalog) {
+        Assert-HmCatalogProfileEntry -Entry $entry -Pins $pins
+        $script:pass++
+        Expect $sums.ContainsKey($entry.Filename) "SHA256SUMS lists $($entry.Filename)"
+        Expect ($HmSatelliteProfileCopies -contains ('satellite-' + $entry.CatalogProfile)) "satellite-$($entry.CatalogProfile) is among the copies"
+    }
     $sbom = Get-Content (Join-Path $repoRoot 'scripts\generate-sbom.ps1') -Raw
     Expect ($sbom -match 'pkg:generic/hidmaestro@(\d+\.\d+\.\d+)') 'SBOM has a HIDMaestro purl'
     ExpectEq $Matches[1] $pins['SATELLITE_HIDMAESTRO_SDK_VERSION'] 'SBOM HIDMaestro version'
@@ -356,15 +399,56 @@ function TestRepoPinsAgree {
 }
 
 function TestInstallerShipsHmLicense {
+    $installer = @(Get-Content (Join-Path $repoRoot 'installer.iss'))
+
     Test 'installer.iss installs the staged HIDMaestro LICENSE beside the helper'
     Expect ($HmSdkStagedFiles -contains 'LICENSE') 'the staging takes LICENSE out of the pinned zip'
-    $lines = @((Get-Content (Join-Path $repoRoot 'installer.iss')) |
-        Where-Object { $_ -like 'Source: "redist\hidmaestro\LICENSE"*' })
+    $lines = @($installer | Where-Object { $_ -like 'Source: "redist\hidmaestro\LICENSE"*' })
     ExpectEq $lines.Count 1 'installer.iss has one Source line for the staged LICENSE'
     $line = [string]($lines | Select-Object -First 1)
     Expect ($line -like '*DestDir: "{app}"*') 'installed beside the helper'
     Expect ($line -like '*DestName: "LICENSE-HIDMaestro.txt"*') 'installed as LICENSE-HIDMaestro.txt'
     Expect ($line -like '*Components: hidmaestro*') 'ships with the HIDMaestro component'
+
+    Test 'installer.iss installs the staged third-party notices beside the license'
+    Expect ($HmSdkStagedFiles -contains 'THIRD-PARTY-NOTICES.txt') 'the staging takes THIRD-PARTY-NOTICES.txt out of the pinned zip'
+    $lines = @($installer | Where-Object { $_ -like 'Source: "redist\hidmaestro\THIRD-PARTY-NOTICES.txt"*' })
+    ExpectEq $lines.Count 1 'installer.iss has one Source line for the staged notices'
+    $line = [string]($lines | Select-Object -First 1)
+    Expect ($line -like '*DestDir: "{app}"*') 'installed beside the helper'
+    Expect ($line -like '*DestName: "THIRD-PARTY-NOTICES-HIDMaestro.txt"*') 'installed as THIRD-PARTY-NOTICES-HIDMaestro.txt'
+    Expect ($line -like '*Components: hidmaestro*') 'ships with the HIDMaestro component'
+    Expect (($installer | Where-Object { $_ -like "*DeleteRelocatedFile(Dir + 'THIRD-PARTY-NOTICES-HIDMaestro.txt')*" }).Count -eq 1) 'a relocated install drops the notices too'
+}
+
+function TestInstallerShipsSatelliteProfiles {
+    $installer = @(Get-Content (Join-Path $repoRoot 'installer.iss'))
+
+    Test 'installer.iss installs the profile copies the helper exports beside itself'
+    ExpectEq (@($installer | Where-Object { $_ -like "#define HmProfilesDir `"$HmSatelliteProfilesDir`"" }).Count) 1 'the folder name is the helper''s'
+    $lines = @($installer | Where-Object { $_ -like 'Source: "{#HmHelperDir}\{#HmProfilesDir}\*.json"*' })
+    ExpectEq $lines.Count 1 'one Source line for the exported copies'
+    $line = [string]($lines | Select-Object -First 1)
+    Expect ($line -like '*DestDir: "{app}\{#HmProfilesDir}"*') 'installed in the folder beside the helper'
+    Expect ($line -like '*Components: hidmaestro*') 'ships with the HIDMaestro component'
+    Expect (($installer | Where-Object { $_ -like "*DelTree(Dir + '{#HmProfilesDir}'*" }).Count -eq 1) 'a relocated install drops the folder too'
+
+    Test 'the copy names the verifier expects are the ones the helper exports'
+    $source = Get-Content (Join-Path $repoRoot 'helper\hidmaestro-core\SatelliteProfiles.cs') -Raw
+    Expect ($source -match '(?s)StreamFreeCopies = new\[\]\s*\{(.*?)\}') 'SatelliteProfiles.cs lists the stream-free copies'
+    $ids = @([regex]::Matches($Matches[1], '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+    Expect ($source -match '(?s)HeartbeatCopies = new\[\]\s*\{(.*?)\}') 'SatelliteProfiles.cs lists the heartbeat copies'
+    $heartbeat = @([regex]::Matches($Matches[1], '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+    $ids += $heartbeat
+    Expect ($source -match 'CopyPrefix = "([^"]+)"') 'SatelliteProfiles.cs names the prefix'
+    $prefix = $Matches[1]
+    ExpectEq ($HmSatelliteProfileCopies -join ',') (($ids | ForEach-Object { $prefix + $_ }) -join ',') 'redist-functions.ps1 and SatelliteProfiles.cs agree'
+    Expect ($source -match 'DirectoryName = "([^"]+)"') 'SatelliteProfiles.cs names the folder'
+    ExpectEq $Matches[1] $HmSatelliteProfilesDir 'redist-functions.ps1 and SatelliteProfiles.cs agree on the folder'
+    Expect ($source -match 'CatalogDirectoryName = "([^"]+)"') 'SatelliteProfiles.cs names the staged catalog folder'
+    ExpectEq $Matches[1] $HmCatalogProfilesDir 'redist-functions.ps1 and SatelliteProfiles.cs agree on the catalog folder'
+    $staged = @(Get-HmCatalogProfileEntries (Get-RedistTable) | ForEach-Object { $_.CatalogProfile })
+    ExpectEq ($staged -join ',') ($heartbeat -join ',') 'every heartbeat copy has its catalog file staged, and nothing else is'
 }
 
 function TestStaging {
@@ -415,6 +499,21 @@ function TestStaging {
         $zipBad = NewFakeSdkZip $dir 'HIDMaestro-vBad.zip' (HmInf '1.0.0.0') -Omit @('WinRT.Runtime.dll')
         ExpectThrows { Sync-HmSdkStaging -ZipPath $zipBad -SdkDir $sdkDir -Wanted $wanted -StampLine 'bad *HIDMaestro-vBad.zip' } 'WinRT.Runtime.dll'
         ExpectEq (Test-HmStagingCurrent -SdkDir $sdkDir -Wanted $wanted -StampLine $stampB) $false 'a failed staging is not current'
+
+        Test 'Sync-HmCatalogProfiles: each fetched catalog profile lands under the staging as <profile>.json'
+        $entries = @(@{ Filename = 'HIDMaestro-vX-switch-pro.json'; CatalogProfile = 'switch-pro' })
+        Set-Content -Path (Join-Path $dir 'HIDMaestro-vX-switch-pro.json') -Value '{"id":"switch-pro"}' -Encoding ascii
+        $staged = @(Sync-HmCatalogProfiles -RedistDir $dir -SdkDir $sdkDir -Entries $entries)
+        ExpectEq $staged.Count 1 'one file staged'
+        ExpectEq ([string](Get-Content (Join-Path $sdkDir 'profiles\switch-pro.json') -Raw)).Trim() '{"id":"switch-pro"}' 'the file is the fetched one'
+
+        Test 'Sync-HmCatalogProfiles: a newer fetched file replaces the staged one'
+        Set-Content -Path (Join-Path $dir 'HIDMaestro-vX-switch-pro.json') -Value '{"id":"switch-pro","v":2}' -Encoding ascii
+        Sync-HmCatalogProfiles -RedistDir $dir -SdkDir $sdkDir -Entries $entries | Out-Null
+        ExpectEq ([string](Get-Content (Join-Path $sdkDir 'profiles\switch-pro.json') -Raw)).Trim() '{"id":"switch-pro","v":2}' 'replaced'
+
+        Test 'Sync-HmCatalogProfiles: a catalog profile that was never fetched is refused by path'
+        ExpectThrows { Sync-HmCatalogProfiles -RedistDir $dir -SdkDir $sdkDir -Entries @(@{ Filename = 'HIDMaestro-vX-missing.json'; CatalogProfile = 'missing' }) } 'HIDMaestro-vX-missing.json'
     } finally {
         Remove-Item -Recurse -Force $dir
     }
@@ -426,11 +525,16 @@ function TestFetchRedistEndToEnd {
         $table = Get-RedistTable
         $hm = Get-HmRedistEntry $table
         $vigem = $table | Where-Object { $_.Name -like 'ViGEmBus *' } | Select-Object -First 1
+        $catalog = @(Get-HmCatalogProfileEntries $table)
         $sdkPin = Get-HmSdkVersionFromZipName $hm.Filename
         $header = Join-Path $dir 'driver_pins.h'
         Set-Content -Path (Join-Path $dir $vigem.Filename) -Value 'not an installer' -Encoding ascii
+        foreach ($entry in $catalog) {
+            Set-Content -Path (Join-Path $dir $entry.Filename) -Value ('{"id":"' + $entry.CatalogProfile + '"}') -Encoding ascii
+        }
+        $fetched = @($vigem.Filename, $hm.Filename) + @($catalog | ForEach-Object { $_.Filename })
         NewFakeSdkZip $dir $hm.Filename (SdkLayout '1.8.1.2248') | Out-Null
-        WriteSums $dir @($vigem.Filename, $hm.Filename)
+        WriteSums $dir $fetched
         WritePinsHeader $header $sdkPin '1.8.1.2248'
 
         Test 'fetch-redist.ps1: stages the pinned zip and reports the driver INF it embeds'
@@ -439,6 +543,9 @@ function TestFetchRedistEndToEnd {
         Expect ($run.Output -like '*1.8.1.2248*') 'prints the embedded DriverVer'
         Expect (Test-Path (Join-Path $dir 'hidmaestro\HIDMaestro.Core.dll')) 'assembly staged'
         Expect (Test-Path (Get-HmStagingStampPath (Join-Path $dir 'hidmaestro'))) 'stamp written'
+        foreach ($entry in $catalog) {
+            Expect (Test-Path (Join-Path $dir "hidmaestro\profiles\$($entry.CatalogProfile).json")) "catalog profile $($entry.CatalogProfile) staged"
+        }
 
         Test 'fetch-redist.ps1: a second run with nothing changed stages nothing'
         $run = InvokeFetchRedist $dir $header 'again'
@@ -447,7 +554,7 @@ function TestFetchRedistEndToEnd {
 
         Test 'fetch-redist.ps1: a bumped zip is re-staged on the next run without -Force'
         NewFakeSdkZip $dir $hm.Filename (SdkLayout '1.9.9.9') | Out-Null
-        WriteSums $dir @($vigem.Filename, $hm.Filename)
+        WriteSums $dir $fetched
         WritePinsHeader $header $sdkPin '1.9.9.9'
         $run = InvokeFetchRedist $dir $header 'bump'
         ExpectEq $run.Code 0 "exit code; output: $($run.Output)"
@@ -483,6 +590,7 @@ TestHmSdkDriverVersion
 TestVersionsAndAsserts
 TestRepoPinsAgree
 TestInstallerShipsHmLicense
+TestInstallerShipsSatelliteProfiles
 TestStaging
 TestFetchRedistEndToEnd
 Write-Host ''

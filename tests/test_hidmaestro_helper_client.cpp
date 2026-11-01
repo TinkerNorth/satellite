@@ -35,7 +35,11 @@ constexpr auto TIMEOUT_SLACK = milliseconds(4000);
 const std::string HELLO_REPLY = R"({"ok":true,"helper":"test","audio":true,"broker":true})";
 const std::string OK_REPLY = R"({"ok":true})";
 const std::string PLUG_REPLY =
+    R"({"ok":true,"index":3,"transportIndex":7,"input":1001,"inputEvent":1002,"companionEvent":0,"output":1003,"outputEvent":1004})";
+const std::string PLUG_REPLY_WITHOUT_TRANSPORT_INDEX =
     R"({"ok":true,"index":3,"input":1001,"inputEvent":1002,"companionEvent":0,"output":1003,"outputEvent":1004})";
+const std::string PLUG_REPLY_WITHOUT_INPUT =
+    R"({"ok":true,"index":3,"transportIndex":3,"output":1003,"outputEvent":1004})";
 
 bool isHello(const std::string& request) { return request.find("\"hello\"") != std::string::npos; }
 
@@ -251,9 +255,38 @@ static void test_a_reply_that_arrives_whole_costs_one_read() {
     EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
     EXPECT_EQ(readsSince(before), static_cast<uint64_t>(1));
     EXPECT_EQ(out.controllerIndex, static_cast<uint32_t>(3));
+    EXPECT_EQ(out.transportIndex, static_cast<uint32_t>(7));
     EXPECT_EQ(out.inputSection, static_cast<uint64_t>(1001));
     EXPECT_EQ(out.outputEvent, static_cast<uint64_t>(1004));
     client.shutdown();
+}
+
+static void test_a_reply_names_where_the_frames_go() {
+    TEST("plug reply: a helper that names no transport index is read as the slot's");
+    {
+        FakeHelper fake(answersHelloThen(
+            [](FakeHelper& helper) { helper.write(PLUG_REPLY_WITHOUT_TRANSPORT_INDEX + "\n"); }));
+        hm::HelperClient client;
+        EXPECT(client.adoptChannelForTest(fake.connect()));
+        hm::ProvisionResult out;
+        EXPECT(client.provision(3, GamepadIdentity::DualSense, false, out));
+        EXPECT_EQ(out.controllerIndex, static_cast<uint32_t>(3));
+        EXPECT_EQ(out.transportIndex, static_cast<uint32_t>(3));
+        client.shutdown();
+    }
+
+    TEST("plug reply: no frame section or doorbell means no plug, whatever else came back");
+    {
+        FakeHelper fake(answersHelloThen(
+            [](FakeHelper& helper) { helper.write(PLUG_REPLY_WITHOUT_INPUT + "\n"); }));
+        hm::HelperClient client;
+        EXPECT(client.adoptChannelForTest(fake.connect()));
+        hm::ProvisionResult out;
+        EXPECT(!client.provision(3, GamepadIdentity::SwitchPro, false, out));
+        EXPECT_EQ(out.inputSection, static_cast<uint64_t>(0));
+        EXPECT_EQ(out.outputSection, static_cast<uint64_t>(1003));
+        client.shutdown();
+    }
 }
 
 static void test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces() {
@@ -755,6 +788,7 @@ int main() {
     test_every_pipe_wait_is_bounded_at_ten_seconds();
     test_each_request_carries_its_own_limit();
     test_a_reply_that_arrives_whole_costs_one_read();
+    test_a_reply_names_where_the_frames_go();
     test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces();
     test_a_carriage_return_before_the_line_feed_is_part_of_the_framing();
     test_a_reply_with_no_end_is_refused_at_the_size_limit();

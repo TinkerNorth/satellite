@@ -56,14 +56,27 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro
 
 - Component: hifihedgehog/HIDMaestro SDK release
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/releases/tag/v1.9.2
-- Pinned-version: `v1.9.2`
-- Filename: `HIDMaestro-v1.9.2.zip`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/releases/tag/v2.1.0
+- Pinned-version: `v2.1.0`
+- Filename: `HIDMaestro-v2.1.0.zip`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. Actively maintained; bump deliberately, re-verifying the
   shared-memory layout pins in `src/platform/windows/hidmaestro_wire.h`
   (see `lib/VENDORED.md`) before adopting a new release.
+
+### HIDMaestro catalog profile `switch-pro`
+
+- Component: hifihedgehog/HIDMaestro `profiles/nintendo/switch-pro.json`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/nintendo/switch-pro.json
+- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+  refuses a file named for another release)
+- Filename: `HIDMaestro-v2.1.0-switch-pro.json`
+- SHA-256: see `SHA256SUMS`
+- License: MIT
+- EOL: no. The text the SDK zip embeds, fetched as a file because the
+  helper's Switch Pro copy needs the protocol keys the SDK's serializer
+  does not write (see the profile copies below).
 
 Unlike ViGEmBus there is no standalone driver installer: the UMDF2 driver
 is embedded inside `HIDMaestro.Core.dll` and deploys itself (certificate +
@@ -80,35 +93,89 @@ clean `bin/` and `obj/` (`scripts/build-installer.ps1` and
 re-staged SDK keeps the previous compile and bundle when the staged
 assembly's timestamp is older than them. Then
 `SatelliteSetup.exe` runs `satellite-hm-helper.exe install-driver`
-during setup (no reboot required). `satellite-hm-helper.exe sdk-version`
-prints the SDK release a built helper carries and the `hidmaestro.inf`
-`DriverVer` that SDK embeds; `scripts/verify-helper-sdk.ps1` holds that
-to `driver_pins.h` after every publish. The uninstaller's
-`satellite-hm-helper.exe remove-driver` removes the virtual devices and
-driver packages.
+during setup (no reboot required): since HIDMaestro 2.0 that upgrades an
+older driver in place, or installs this build's packages beside it while
+another program's controllers still use the old one, and never downgrades a
+newer one (`HMContext.LastDriverInstall` says which, and the helper prints
+it). `satellite-hm-helper.exe sdk-version` prints the SDK release a built
+helper carries and the `hidmaestro.inf` `DriverVer` that SDK embeds;
+`scripts/verify-helper-sdk.ps1` holds that to `driver_pins.h` after every
+publish. The uninstaller's `satellite-hm-helper.exe remove-driver` runs
+HIDMaestro's own removal (`HMUninstall.Run`, the same code as the
+`HIDMaestroUninstall.exe` in the release zip): every virtual controller, the
+driver packages, the certificate and the registry keys go, the shared
+Windows keys are put back, and the removal is refused with exit code 2
+while another HIDMaestro program is running, which the installer reports.
+Exit code 3 means removed with a file Windows deletes at the next start.
+`--include-usbip` also takes what usbip-win2's own installer left (its
+root-hub filter restarts every USB 3 root hub), which the installer never
+passes.
 
-The zip's own `LICENSE` is staged beside the assemblies and `installer.iss`
-installs it as `LICENSE-HIDMaestro.txt`. The helper is published
+The zip's own `LICENSE` and `THIRD-PARTY-NOTICES.txt` are staged beside
+the assemblies and `installer.iss` installs them as `LICENSE-HIDMaestro.txt`
+and `THIRD-PARTY-NOTICES-HIDMaestro.txt`. The helper is published
 self-contained, so `HIDMaestro.Core.dll` ships inside it, and MIT requires
 the notice to travel with the binary; upstream asked for this in
 [issue #141](https://github.com/TinkerNorth/satellite/issues/141). A pin
-bump carries the license along by itself, because the staging takes it from
-the same hash-pinned zip as the assemblies.
+bump carries both along by itself, because the staging takes them from the
+same hash-pinned zip as the assemblies.
+
+The publish also writes `hidmaestro-profiles\` beside the helper:
+Satellite's copies of five catalog profiles, as `satellite-<id>`, written
+by `satellite-hm-helper.exe export-profiles` and loaded back by
+`check-profiles`, which fails the publish on any load issue, a missing
+device model or a changed descriptor; `installer.iss` installs the folder,
+and the helper refuses to plug a profile whose copy is not loaded rather
+than fall back to the catalog entry. The four Sony profiles Satellite
+writes natively (`dualsense`, `dualsense-composite`, `dualshock-4-v2`,
+`dualshock-4-v2-composite`) are read out of the SDK the helper was just
+built with and lose their `stream` key: since 2.0 those profiles carry a
+4 ms idle repeat that the SDK runs itself, writing a frame into the
+controller's input section whether or not the program submitted one, which
+would race Satellite's own writer on the same seqlock. The Switch Pro is
+the other way round: the SDK's protocol host answers the Switch handshake
+and streams report 0x30 from a 48-byte state block, so the helper hands
+satellite a frame mailbox of the input section's layout and relays each
+block to `SubmitRawReport`. Its copy, `satellite-switch-pro`, comes from
+the catalog file `profiles/nintendo/switch-pro.json` fetched at the pinned
+tag (`HIDMaestro-v<ver>-switch-pro.json` in `SHA256SUMS`, staged as
+`redist/hidmaestro/profiles/switch-pro.json`), because the SDK's own
+serializer leaves the protocol keys out; its one change is the simple
+report (0x3F) sent on the device clock instead of on change. Steam's
+Switch driver, like SDL 2.x, keeps a Bluetooth pad whose first report was
+0x3F in simple mode and drops the pad after three seconds without a packet
+(`SDL_hidapi_switch.c`, release-2.30.x, the "Bluetooth may have
+disconnected" branch); in simple mode the catalog profile sends only when
+the state changes, so an idle pad vanished from Steam. The heartbeat
+restores the 15 ms 0x3F stream the 1.x driver had before the handshake.
+`helper/hidmaestro-core` holds the mailbox reader and the profile
+transforms, with their own `dotnet test` suite.
+`satellite-hm-helper.exe selftest`, run as administrator on a machine with
+the driver, creates each profile and checks all of this against the real
+SDK and driver: that the catalog `dualsense` streams on its own, that the
+Sony copies and `xbox-360-wired` do not, that the Switch Pro copy streams
+0x3F before any handshake and 0x30 after a host selects full mode and 0x3F
+again after it selects simple mode, that it refuses a 47-byte block and
+keeps streaming after a 48-byte one, that the Sony copies answer their
+calibration and pairing feature reports through the UMDF2 driver, and that
+every section name the helper opens is one the SDK lists for the
+controller's transport index.
 
 `HIDMaestro.Core.dll` also embeds a **second, kernel-mode** driver payload:
-the usbip-win2 0.9.8.1 installers (x64 and ARM64, each verified against the
-upstream release hash at build time and again before it runs), the
-WHLK-certified USB transport, plus the transport's host-controller driver
-files unpacked so a machine an earlier release put on 0.9.7.5 or 0.9.7.7 is
-moved to 0.9.8.1 in place, with no window and no USB device dropping, in a
-Windows session where the host controller has not carried a device yet.
-The SDK speaks the 0.9.7.x, 0.9.8.0 and 0.9.8.1 request formats and asks
-the installed driver which one it has, so a usbip-win2 another program
-installed is used as it is. It is not
-deployed at setup time and is not used by any input-only controller. HIDMaestro installs it the first time a *composite*
-persona is created, which is what Satellite asks for when the
-`controllerAudio` setting is on and the identity is a DualSense or
-DualShock 4 v2 (those personas carry the pad's real USB-audio function).
+usbip-win2 0.9.8.1's host-controller driver package (x64 and ARM64, each
+verified against the upstream release hash at build time and again before
+it is used), the WHLK-certified USB transport. Since HIDMaestro 2.0.1 the
+SDK installs that host controller from its own package and never runs
+usbip-win2's installer, so no USB root hub restarts; a host controller an
+earlier release put on 0.9.7.5 or 0.9.7.7 is moved to 0.9.8.1 in place in a
+Windows session where it has not carried a device yet. The SDK speaks the
+0.9.7.x, 0.9.8.0 and 0.9.8.1 request formats and asks the installed driver
+which one it has, so a usbip-win2 another program installed is used as it
+is. It is not deployed at setup time and is not used by any input-only
+controller. HIDMaestro installs it the first time a *composite* persona is
+created, which is what Satellite asks for when the `controllerAudio`
+setting is on and the identity is a DualSense or DualShock 4 v2 (those
+personas carry the pad's real USB-audio function).
 `HMContext.IsUsbipBackendAvailable` / `HMContext.InstallUsbipBackend()` are
 the SDK's probe and install entry points, and the helper calls them
 explicitly so a blocked install is a reportable plug failure rather than a
@@ -137,11 +204,15 @@ adopt it as the bundled driver, the bump is:
    the same version (`scripts/test-installer-roundtrip.ps1` covers the
    silent path with both drivers skipped).
 
-The same recipe applies to a HIDMaestro bump, plus one extra step: diff the
-new release's `driver/driver.h` and `SharedMemoryIO.cs` against the layout
-constants in `src/platform/windows/hidmaestro_wire.h` (`test_hidmaestro_wire`
-pins them) — the shared-memory protocol carries no version field, so the
-pin bump IS the compatibility review.
+The same recipe applies to a HIDMaestro bump, plus three extra steps: diff
+the new release's `driver/driver.h` and `SharedMemoryIO.cs` against the
+layout constants in `src/platform/windows/hidmaestro_wire.h`
+(`test_hidmaestro_wire` pins them) — the input and output layouts carry no
+version field, so the pin bump IS the compatibility review; read the
+publish's `check-profiles` output, which is the SDK loading the exported
+Sony copies; and run `satellite-hm-helper.exe selftest` elevated on a
+machine with the driver, which is the only place the idle repeat, the
+Switch Pro state block and the transport index can be observed.
 
 Either bump also updates `src/platform/windows/driver_pins.h`, which is what
 the dashboard's driver banner compares the installed drivers against
@@ -163,7 +234,7 @@ the number back:
 ```
 
 and put that value in `SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION`. For
-HIDMaestro (1.9.2 embeds driver `1.8.1.2248`; the two other `DriverVer`
+HIDMaestro (2.1.0 embeds driver `2.1.0.1716`; the two other `DriverVer`
 lines in the assembly belong to the embedded usbip-win2 INFs),
 `scripts/fetch-redist.ps1` reads the `hidmaestro.inf` `DriverVer` out of
 the staged assembly, prints it, and fails when

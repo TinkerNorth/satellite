@@ -176,15 +176,45 @@ static void test_gip_roundtrip() {
 }
 
 static void test_sony_imu_rescale() {
-    TEST("sonyImuFromWire — x40000/32767 with saturation");
-    EXPECT_EQ(sonyImuFromWire(0), (int16_t)0);
-    // 1 deg/s on the wire = 16.38 LSB -> 20 raw LSB under the stub calibration.
-    EXPECT_EQ(sonyImuFromWire(16), (int16_t)19);
-    EXPECT_EQ(sonyImuFromWire(-16), (int16_t)-19);
-    EXPECT_EQ(sonyImuFromWire(32767), (int16_t)32767); // saturates, no wrap
-    EXPECT_EQ(sonyImuFromWire(-32768), (int16_t)-32768);
-    EXPECT_EQ(sonyImuFromWire(26843), (int16_t)32767); // just past the clip knee
-    EXPECT_EQ(sonyImuFromWire(26000), (int16_t)31739);
+    TEST("the Sony scale pins the sony-dualsense / sony-dualshock4 model calibration: "
+         "gyro +/-8000 at speed 500, accel +/-8192");
+    EXPECT_EQ(SONY_GYRO_LSB_PER_DEG_S, (8000 - -8000) / (500 + 500));
+    EXPECT_EQ(SONY_ACCEL_LSB_PER_G, (8192 - -8192) / 2);
+    EXPECT_EQ(SONY_WIRE_FULL_SCALE_DEG_S, 2000);
+    EXPECT_EQ(SONY_WIRE_FULL_SCALE_G, 4);
+
+    TEST("sonyGyroFromWire — 2000 deg/s of wire becomes 32000 counts, saturated, no wrap");
+    EXPECT_EQ(sonyGyroFromWire(0), (int16_t)0);
+    EXPECT_EQ(sonyGyroFromWire(32767), (int16_t)32000);
+    EXPECT_EQ(sonyGyroFromWire(-32768), (int16_t)-32000);
+    EXPECT_EQ(sonyGyroFromWire(16384), (int16_t)16000); // 1000 deg/s = 16000 counts
+    EXPECT_EQ(sonyGyroFromWire(16), (int16_t)15);
+    EXPECT_EQ(sonyGyroFromWire(-16), (int16_t)-15);
+
+    TEST("sonyAccelFromWire — 1 g of wire becomes 8192 counts, verbatim but for the last count");
+    EXPECT_EQ(sonyAccelFromWire(0), (int16_t)0);
+    EXPECT_EQ(sonyAccelFromWire(8192), (int16_t)8192);
+    EXPECT_EQ(sonyAccelFromWire(-8192), (int16_t)-8192);
+    EXPECT_EQ(sonyAccelFromWire(1000), (int16_t)1000);
+    EXPECT_EQ(sonyAccelFromWire(-1000), (int16_t)-1000);
+    EXPECT_EQ(sonyAccelFromWire(32767), (int16_t)32767);
+    EXPECT_EQ(sonyAccelFromWire(-32768), (int16_t)-32768);
+
+    TEST("sonyMotionFromWire — gyro axes take the gyro scale, accel axes the accel scale");
+    MotionReport m{};
+    m.gyroX = 32767;
+    m.gyroY = -16384;
+    m.gyroZ = 16;
+    m.accelX = 8192;
+    m.accelY = -32768;
+    m.accelZ = 1000;
+    const MotionReport out = sonyMotionFromWire(m);
+    EXPECT_EQ(out.gyroX, (int16_t)32000);
+    EXPECT_EQ(out.gyroY, (int16_t)-16000);
+    EXPECT_EQ(out.gyroZ, (int16_t)15);
+    EXPECT_EQ(out.accelX, (int16_t)8192);
+    EXPECT_EQ(out.accelY, (int16_t)-32768);
+    EXPECT_EQ(out.accelZ, (int16_t)1000);
 }
 
 static void test_ds4_payload() {
@@ -207,11 +237,12 @@ static void test_ds4_payload() {
     EXPECT_EQ(out[5] & 0x04, 0x04);
     EXPECT_EQ(out[7], (uint8_t)200);
     EXPECT_EQ(out[8], (uint8_t)0);
-    EXPECT_EQ(out[11], (uint8_t)0x1B);               // battery (full byte 12)
-    EXPECT_EQ(s16at(out, 12), sonyImuFromWire(100)); // gyroX (full 13), rescaled
-    EXPECT_EQ(out[29], (uint8_t)0x1B);               // hid-sony battery mirror (full 30)
-    EXPECT_EQ(out[32], (uint8_t)1);                  // one touch frame declared (full 33)
-    EXPECT_EQ(out[34] & 0x80, 0x80);                 // finger 0 inactive
+    EXPECT_EQ(out[11], (uint8_t)0x1B);                // battery (full byte 12)
+    EXPECT_EQ(s16at(out, 12), sonyGyroFromWire(100)); // gyroX (full 13), rescaled
+    EXPECT_EQ(s16at(out, 12), (int16_t)97);
+    EXPECT_EQ(out[29], (uint8_t)0x1B); // hid-sony battery mirror (full 30)
+    EXPECT_EQ(out[32], (uint8_t)1);    // one touch frame declared (full 33)
+    EXPECT_EQ(out[34] & 0x80, 0x80);   // finger 0 inactive
 }
 
 static void test_ds5_payload_neutral() {
@@ -260,9 +291,11 @@ static void test_ds5_payload_buttons_motion_touch() {
     EXPECT_EQ(out[8], (uint8_t)(0x01 /*L1*/ | 0x08 /*R2 digital*/ | 0x10 /*Create*/));
     EXPECT_EQ(out[9], (uint8_t)(0x01 /*PS*/ | 0x02 /*touchpad click*/));
     EXPECT_EQ(out[5], (uint8_t)55);
-    EXPECT_EQ(s16at(out, 17), sonyImuFromWire(-200)); // gyroY (full 18)
-    EXPECT_EQ(s16at(out, 25), sonyImuFromWire(1000)); // accelZ (full 26)
-    EXPECT_EQ(out[27], (uint8_t)0x04);                // timestamp LE (full 28)
+    EXPECT_EQ(s16at(out, 17), sonyGyroFromWire(-200)); // gyroY (full 18)
+    EXPECT_EQ(s16at(out, 17), (int16_t)-195);
+    EXPECT_EQ(s16at(out, 25), sonyAccelFromWire(1000)); // accelZ (full 26)
+    EXPECT_EQ(s16at(out, 25), (int16_t)1000);
+    EXPECT_EQ(out[27], (uint8_t)0x04); // timestamp LE (full 28)
     EXPECT_EQ(out[30], (uint8_t)0x01);
     EXPECT_EQ(out[32], (uint8_t)5); // finger 0 active, id 5
     const int touchX = out[33] | ((out[34] & 0x0F) << 8);
