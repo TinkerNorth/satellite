@@ -162,9 +162,8 @@ bool MacHidGamepadAdapter::ensureBusOpen() {
     // The "bus" is the per-process ability to create IOHIDUserDevices;
     // individual devices are created per plugin, like uinput nodes.
     const bool available = runtimeAvailable();
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    busOpen_ = available;
-    return busOpen_;
+    busOpen_.store(available, std::memory_order_release);
+    return available;
 }
 
 void MacHidGamepadAdapter::closeBus() {
@@ -187,14 +186,10 @@ void MacHidGamepadAdapter::closeBus() {
                      unconfirmed);
     }
 
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    busOpen_ = false;
+    busOpen_.store(false, std::memory_order_release);
 }
 
-bool MacHidGamepadAdapter::isBusOpen() const {
-    std::lock_guard<TrackedMutex> lk(mtx_);
-    return busOpen_;
-}
+bool MacHidGamepadAdapter::isBusOpen() const { return busOpen_.load(std::memory_order_acquire); }
 
 namespace {
 
@@ -273,7 +268,7 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
 
     {
         std::lock_guard<TrackedMutex> lk(mtx_);
-        if (!busOpen_) return false;
+        if (!busOpen_.load(std::memory_order_acquire)) return false;
         if (slots_.count(serial) != 0) return false;
     }
 
