@@ -279,6 +279,7 @@ struct Options {
     int plugMs = DEFAULT_PLUG_MS;
     int rxCpu = NO_CPU;
     BackendMode backend = BackendMode::Mock;
+    Pacing coldPacing = Pacing::Hybrid;
     std::string csvPath;
     std::string jsonPath;
     bool smoke = false;
@@ -321,6 +322,19 @@ bool parseBackend(const char* text, BackendMode& out) {
     return true;
 }
 
+bool parsePacing(const char* text, Pacing& out) {
+    const std::string name = text;
+    if (name == "hybrid")
+        out = Pacing::Hybrid;
+    else if (name == "spin")
+        out = Pacing::Spin;
+    else
+        return false;
+    return true;
+}
+
+const char* pacingName(Pacing pacing) { return pacing == Pacing::Hybrid ? "hybrid" : "spin"; }
+
 bool applyValuedOption(Options& options, const std::string& name, const char* value) {
     if (name == "--secs") return parseDouble(value, options.secs) && options.secs >= MIN_SECS;
     if (name == "--reps") return parseIntInRange(value, 1, MAX_REPS, options.reps);
@@ -329,6 +343,7 @@ bool applyValuedOption(Options& options, const std::string& name, const char* va
     if (name == "--motion-hz") return parseIntInRange(value, 1, MAX_RATE_HZ, options.motionHz);
     if (name == "--mic-hz") return parseIntInRange(value, 1, MAX_RATE_HZ, options.micHz);
     if (name == "--backend") return parseBackend(value, options.backend);
+    if (name == "--pace") return parsePacing(value, options.coldPacing);
     if (name == "--submit-us") return parseIntInRange(value, 0, MAX_SUBMIT_US, options.submitUs);
     if (name == "--plug-ms") return parseIntInRange(value, 0, MAX_PLUG_MS, options.plugMs);
     if (name == "--rx-cpu") return parseIntInRange(value, 0, MAX_CPUS - 1, options.rxCpu);
@@ -391,6 +406,9 @@ void printUsage(std::FILE* out) {
                "plug (default 200)\n"
                "  --rx-cpu <n>      CPU of the receiver thread (default: the first CPU from 2 "
                "up)\n"
+               "  --pace <name>     hybrid (default: every producer but the measured dish's "
+               "sleeps on a timer to 800 us before its deadline, then spins) or spin (every "
+               "producer spins, as the 2.1.8 bench did)\n"
                "  --csv <path>      also write the table as CSV\n"
                "  --json <path>     also write the table, and in a lock-stats build the lock "
                "figures, as JSON\n"
@@ -624,6 +642,7 @@ struct DishSpec {
     uint16_t padCaps = 0;
     double heartbeatFirstSecs = 0.0;
     Pacing gamepadPacing = Pacing::Spin;
+    Pacing coldPacing = Pacing::Hybrid;
     std::array<uint8_t, CRYPTO_KEY_SIZE> pairingKey{};
 };
 
@@ -701,6 +720,7 @@ struct DishPlan {
     uint8_t padType;
     uint16_t padCaps;
     double heartbeatFirstSecs;
+    Pacing coldPacing;
 };
 
 DishSpec makeDishSpec(const DishPlan& plan) {
@@ -716,7 +736,8 @@ DishSpec makeDishSpec(const DishPlan& plan) {
     spec.padType = plan.padType;
     spec.padCaps = plan.padCaps;
     spec.heartbeatFirstSecs = plan.heartbeatFirstSecs;
-    spec.gamepadPacing = plan.index == MEASURED_DISH_INDEX ? Pacing::Spin : Pacing::Hybrid;
+    spec.gamepadPacing = plan.index == MEASURED_DISH_INDEX ? Pacing::Spin : plan.coldPacing;
+    spec.coldPacing = plan.coldPacing;
     for (size_t i = 0; i < spec.pairingKey.size(); ++i) {
         const int offset = PAIRING_KEY_BASE + plan.index * PAIRING_KEY_STRIDE + static_cast<int>(i);
         spec.pairingKey[i] = static_cast<uint8_t>(offset);
@@ -911,7 +932,7 @@ void runGamepadProducer(DishRun& dish, TimePoint start, HeartbeatPlan heartbeats
 
 void runMotionProducer(DishRun& dish, TimePoint start) {
     Stream& stream = *dish.motion;
-    const DeadlineWait wait(Pacing::Hybrid);
+    const DeadlineWait wait(dish.spec.coldPacing);
     for (uint64_t tick = 0; tick < stream.plannedFrames; ++tick) {
         const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.motionHz;
         wait.until(start + Nanos(offset));
@@ -921,7 +942,7 @@ void runMotionProducer(DishRun& dish, TimePoint start) {
 
 void runMicProducer(DishRun& dish, TimePoint start) {
     Stream& stream = *dish.mic;
-    const DeadlineWait wait(Pacing::Hybrid);
+    const DeadlineWait wait(dish.spec.coldPacing);
     for (uint64_t tick = 0; tick < stream.plannedFrames; ++tick) {
         const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.micHz;
         wait.until(start + Nanos(offset));
@@ -1505,7 +1526,15 @@ DishPlan planForA(const Options& options, const Scenario& scenario) {
     const uint16_t motionCaps = streamsMotion ? CAP_MOTION : uint16_t{0};
     const uint16_t micCaps = streamsMic ? CAP_MIC : uint16_t{0};
     const auto padCaps = static_cast<uint16_t>(motionCaps | micCaps);
-    return DishPlan{"A", 0, rateHz, motionHz, micHz, padType, padCaps, HEARTBEAT_FIRST_A_SECS};
+    return DishPlan{"A",
+                    0,
+                    rateHz,
+                    motionHz,
+                    micHz,
+                    padType,
+                    padCaps,
+                    HEARTBEAT_FIRST_A_SECS,
+                    options.coldPacing};
 }
 
 void pairInConfig(const std::vector<std::unique_ptr<DishRun>>& dishes, bool staleNames) {
@@ -1562,7 +1591,15 @@ std::vector<LockRow> lockRowsFor(const Scenario& scenario, BackendMode backend) 
 }
 
 DishPlan planForB(const Options& options) {
-    return DishPlan{"B", 1, options.rateB, 0, 0, CONTROLLER_TYPE_XBOX, 0, HEARTBEAT_FIRST_B_SECS};
+    return DishPlan{"B",
+                    1,
+                    options.rateB,
+                    0,
+                    0,
+                    CONTROLLER_TYPE_XBOX,
+                    0,
+                    HEARTBEAT_FIRST_B_SECS,
+                    options.coldPacing};
 }
 
 class ScenarioRun {
@@ -1996,6 +2033,7 @@ bool writeJson(const std::string& path, const Options& options, int rxCpu,
     settings["plugMs"] = options.plugMs;
     settings["rxCpu"] = rxCpu;
     settings["smoke"] = options.smoke;
+    settings["pace"] = pacingName(options.coldPacing);
     satellite::JsonOut rowArray = satellite::JsonOut::array();
     for (const DishRow& row : rows) rowArray.push_back(rowJson(row));
     satellite::JsonOut repArray = satellite::JsonOut::array();
@@ -2110,9 +2148,10 @@ void printBanner(const Options& options, const std::vector<BackendMode>& backend
     std::printf("backend: %s\n", describeBackends(backends).c_str());
     std::printf("submit-us: %d\n", options.submitUs);
     std::printf("plug-ms: %d\n", options.plugMs);
-    std::printf("rate-a: %d Hz, rate-b: %d Hz, motion: %d Hz, mic: %d Hz, secs: %g, reps: %d%s\n",
+    std::printf("rate-a: %d Hz, rate-b: %d Hz, motion: %d Hz, mic: %d Hz, secs: %g, reps: %d%s, "
+                "pace: %s\n",
                 options.rateA, options.rateB, options.motionHz, options.micHz, options.secs,
-                options.reps, options.smoke ? " (smoke)" : "");
+                options.reps, options.smoke ? " (smoke)" : "", pacingName(options.coldPacing));
     std::printf("lock stats: %s\n", LOCK_STATS_BUILD ? "recorded" : "not compiled in");
     std::printf("config: %s\n", configPath().c_str());
     std::printf("receiver thread: %s\n\n", receiver.c_str());
