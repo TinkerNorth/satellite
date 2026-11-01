@@ -54,6 +54,15 @@ fi
 
 # Regenerate metadata from scratch (cheap at our scale).
 createrepo_c --update --no-database "$repo_dir"
+for rpm in "${rpms[@]}"; do
+    version="$(basename "$rpm")"
+    version="${version#satellite-}"
+    version="${version%%-*}"
+    if ! gzip -dc "$repo_dir"/repodata/*-primary.xml.gz | grep -q "ver=\"${version}\""; then
+        echo "::error::repodata does not list satellite ${version}" >&2
+        exit 1
+    fi
+done
 
 # ── 3. Sign repomd.xml ──────────────────────────────────────────────────────
 gpg --batch --yes --default-key "$GPG_KEY_ID" --detach-sign --armor \

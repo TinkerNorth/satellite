@@ -344,7 +344,7 @@ jobs:
           cp /home/builder/satellite-bin/*.pkg.tar.zst /home/builder/satellite-bin/*.pkg.tar.zst.sig "$repo_dir/"
           (
             cd "$repo_dir"
-            repo-add --sign --key "$GPG_KEY_ID" satellite.db.tar.gz ./*.pkg.tar.zst
+            repo-add --sign --key "$GPG_KEY_ID" --prevent-downgrade satellite.db.tar.gz ./*.pkg.tar.zst
             for link in $(find . -maxdepth 1 -type l); do
               target="$(readlink -f "$link")"
               rm "$link"
@@ -352,6 +352,18 @@ jobs:
             done
           )
           ls -l "$repo_dir"
+
+      - name: Verify the database advertises this version
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if ! tar -tzf pages/arch/x86_64/satellite.db.tar.gz | grep -qx "satellite-bin-${version}-1/desc"; then
+            echo "::error::satellite.db does not list satellite-bin ${version}"
+            exit 1
+          fi
 
       - name: Commit + push
         if: steps.gate.outputs.skip != 'true'
