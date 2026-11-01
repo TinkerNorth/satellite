@@ -65,6 +65,15 @@ mkdir -p "$arch_dir"
         > "dists/${SUITE}/${COMPONENT}/binary-${ARCH}/Packages"
     gzip -kf "dists/${SUITE}/${COMPONENT}/binary-${ARCH}/Packages"
 )
+for deb in "${debs[@]}"; do
+    version="$(basename "$deb")"
+    version="${version#satellite_}"
+    version="${version%%_*}"
+    if ! grep -qx "Version: ${version}" "$arch_dir/Packages"; then
+        echo "::error::Packages does not list satellite ${version}" >&2
+        exit 1
+    fi
+done
 
 # ── 3. Generate the per-suite Release manifest ──────────────────────────────
 # `apt-ftparchive release` walks the suite dir and emits checksums for every
