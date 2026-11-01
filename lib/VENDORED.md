@@ -155,7 +155,12 @@ the 90-day freshness window.
   0x30 stream run in the SDK's protocol host from a 48-byte state block
   (the body `packSwitchBody` already produced), so the helper relays
   Satellite's block to `SubmitRawReport` instead of letting Satellite write
-  the section. The four Sony profiles carry a 4 ms `stream`, an SDK idle
+  the section; the catalog's simple report (0x3F) goes out on change only,
+  which leaves an idle pad silent and makes Steam's SDL2-era Switch driver
+  drop it after three seconds, so the helper's `satellite-switch-pro` copy
+  (cut from the pinned `profiles/nintendo/switch-pro.json`, see
+  `redist/README.md`) sends it on the 15 ms clock instead, as the 1.x
+  driver did before a handshake. The four Sony profiles carry a 4 ms `stream`, an SDK idle
   repeat that writes the input section whether or not anything was
   submitted; the helper ships copies without it (`helper/hidmaestro-core`
   `SatelliteProfiles`, exported from the SDK at publish and loaded back

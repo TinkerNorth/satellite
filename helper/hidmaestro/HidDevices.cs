@@ -79,6 +79,13 @@ internal static class HidDevices
         }
     }
 
+    public static bool WriteOutput(string path, byte[] report)
+    {
+        using SafeFileHandle h = CreateFile(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+        if (h.IsInvalid) return false;
+        return WriteFile(h, report, report.Length, out int written, 0) && written == report.Length;
+    }
+
     private static HIDD_ATTRIBUTES? Attributes(string path)
     {
         using SafeFileHandle h = CreateFile(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
@@ -161,4 +168,7 @@ internal static class HidDevices
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern SafeFileHandle CreateFile(string path, uint access, uint share, nint security, uint disposition,
                                                     uint flags, nint template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool WriteFile(SafeFileHandle handle, byte[] buffer, int bytes, out int written, nint overlapped);
 }

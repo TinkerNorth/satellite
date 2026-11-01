@@ -20,15 +20,43 @@ public sealed class SatelliteProfilesTests
         }
         """;
 
+    private const string SwitchPro = """
+        {
+          "id": "switch-pro",
+          "name": "Nintendo Switch Pro Controller",
+          "vid": "0x057E",
+          "notes": "upstream notes",
+          "stateBlock": { "size": 48, "fields": [] },
+          "inputReports": [
+            { "name": "full", "reportId": "0x30", "size": 49, "while": "protocolSeen && inputMode in 30,31", "send": "clock", "program": [] },
+            { "name": "simple", "reportId": "0x3F", "size": 12, "while": "!protocolSeen || inputMode==3F", "send": "change", "program": [] }
+          ],
+          "protocol": { "input": { "clock": { "periodMs": 15, "origin": "attach" } } }
+        }
+        """;
+
     [Fact]
-    public void TheFourSonyProfilesSatelliteWritesNativelyGetCopies()
+    public void TheCopiesAreTheFourSonyProfilesAndTheSwitchPro()
     {
         Assert.Equal(
             new[] { "dualsense", "dualsense-composite", "dualshock-4-v2", "dualshock-4-v2-composite" },
             SatelliteProfiles.StreamFreeCopies);
-        foreach (string id in SatelliteProfiles.StreamFreeCopies) Assert.True(SatelliteProfiles.NeedsCopy(id));
-        Assert.False(SatelliteProfiles.NeedsCopy("switch-pro"));
+        Assert.Equal(new[] { "switch-pro" }, SatelliteProfiles.HeartbeatCopies);
+        Assert.Equal(
+            new[] { "dualsense", "dualsense-composite", "dualshock-4-v2", "dualshock-4-v2-composite", "switch-pro" },
+            SatelliteProfiles.Copies);
+        foreach (string id in SatelliteProfiles.Copies) Assert.True(SatelliteProfiles.NeedsCopy(id));
         Assert.False(SatelliteProfiles.NeedsCopy("xbox-360-wired"));
+    }
+
+    [Fact]
+    public void TheSonyCopiesComeFromTheSdkAndTheSwitchProFromTheCatalogFile()
+    {
+        foreach (string id in SatelliteProfiles.StreamFreeCopies) Assert.Equal(CopySource.Sdk, SatelliteProfiles.SourceOf(id));
+        Assert.Equal(CopySource.CatalogFile, SatelliteProfiles.SourceOf("switch-pro"));
+        Assert.Throws<ArgumentException>(() => SatelliteProfiles.SourceOf("xbox-360-wired"));
+        Assert.Equal("switch-pro.json", SatelliteProfiles.CatalogFileName("switch-pro"));
+        Assert.Equal("profiles", SatelliteProfiles.CatalogDirectoryName);
     }
 
     [Fact]
@@ -37,7 +65,8 @@ public sealed class SatelliteProfilesTests
         Assert.Equal("satellite-dualsense", SatelliteProfiles.CopyId("dualsense"));
         Assert.Equal("satellite-dualsense.json", SatelliteProfiles.FileName("dualsense"));
         Assert.Equal("satellite-dualshock-4-v2-composite", SatelliteProfiles.ResolveId("dualshock-4-v2-composite"));
-        Assert.Equal("switch-pro", SatelliteProfiles.ResolveId("switch-pro"));
+        Assert.Equal("satellite-switch-pro", SatelliteProfiles.ResolveId("switch-pro"));
+        Assert.Equal("xbox-360-wired", SatelliteProfiles.ResolveId("xbox-360-wired"));
         Assert.Equal("hidmaestro-profiles", SatelliteProfiles.DirectoryName);
     }
 
@@ -67,8 +96,7 @@ public sealed class SatelliteProfilesTests
 
         foreach (KeyValuePair<string, JsonNode?> pair in original)
         {
-            if (pair.Key is "stream") continue;
-            if (pair.Key is "id" or "notes") continue;
+            if (pair.Key is "stream" or "id" or "notes") continue;
             Assert.True(JsonNode.DeepEquals(pair.Value, copy[pair.Key]), pair.Key);
         }
         Assert.Equal(original.Count - 1, copy.Count);
@@ -97,15 +125,62 @@ public sealed class SatelliteProfilesTests
     }
 
     [Fact]
-    public void StripStreamRefusesAnotherProfilesJson()
+    public void SimpleReportOnClockChangesOnlyTheSimpleReportsSendRule()
+    {
+        JsonObject original = JsonNode.Parse(SwitchPro)!.AsObject();
+        JsonObject copy = JsonNode.Parse(SatelliteProfiles.SimpleReportOnClock(SwitchPro, "switch-pro"))!.AsObject();
+
+        JsonArray reports = copy["inputReports"]!.AsArray();
+        JsonObject full = reports[0]!.AsObject();
+        JsonObject simple = reports[1]!.AsObject();
+        Assert.Equal("clock", simple["send"]!.GetValue<string>());
+        Assert.Equal("0x3F", simple["reportId"]!.GetValue<string>());
+        Assert.Equal("!protocolSeen || inputMode==3F", simple["while"]!.GetValue<string>());
+        Assert.True(JsonNode.DeepEquals(original["inputReports"]![0], full));
+        Assert.Equal("satellite-switch-pro", copy["id"]!.GetValue<string>());
+        Assert.Equal(SatelliteProfiles.Notes("switch-pro"), copy["notes"]!.GetValue<string>());
+        Assert.Contains("three seconds", SatelliteProfiles.Notes("switch-pro"));
+        foreach (KeyValuePair<string, JsonNode?> pair in original)
+        {
+            if (pair.Key is "inputReports" or "id" or "notes") continue;
+            Assert.True(JsonNode.DeepEquals(pair.Value, copy[pair.Key]), pair.Key);
+        }
+        Assert.Equal(original.Count, copy.Count);
+    }
+
+    [Fact]
+    public void SimpleReportOnClockRefusesAProfileWithoutASimpleReport()
+    {
+        JsonObject original = JsonNode.Parse(SwitchPro)!.AsObject();
+        original["inputReports"]!.AsArray().RemoveAt(1);
+        Assert.Throws<ArgumentException>(() => SatelliteProfiles.SimpleReportOnClock(original.ToJsonString(), "switch-pro"));
+
+        original.Remove("inputReports");
+        Assert.Throws<ArgumentException>(() => SatelliteProfiles.SimpleReportOnClock(original.ToJsonString(), "switch-pro"));
+    }
+
+    [Fact]
+    public void TransformPicksTheTransformForTheProfile()
+    {
+        JsonObject sony = JsonNode.Parse(SatelliteProfiles.Transform(Catalog, "dualsense"))!.AsObject();
+        JsonObject nintendo = JsonNode.Parse(SatelliteProfiles.Transform(SwitchPro, "switch-pro"))!.AsObject();
+
+        Assert.Null(sony["stream"]);
+        Assert.Equal("clock", nintendo["inputReports"]![1]!["send"]!.GetValue<string>());
+        Assert.Throws<ArgumentException>(() => SatelliteProfiles.Transform(Catalog, "xbox-360-wired"));
+    }
+
+    [Fact]
+    public void ATransformRefusesAnotherProfilesJson()
     {
         ArgumentException refused = Assert.Throws<ArgumentException>(() => SatelliteProfiles.StripStream(Catalog, "dualshock-4-v2"));
         Assert.Contains("dualsense", refused.Message);
         Assert.Contains("dualshock-4-v2", refused.Message);
+        Assert.Throws<ArgumentException>(() => SatelliteProfiles.SimpleReportOnClock(Catalog, "switch-pro"));
     }
 
     [Fact]
-    public void StripStreamRefusesJsonThatIsNotAProfile()
+    public void ATransformRefusesJsonThatIsNotAProfile()
     {
         Assert.Throws<ArgumentException>(() => SatelliteProfiles.StripStream("[1, 2]", "dualsense"));
         Assert.Throws<ArgumentException>(() => SatelliteProfiles.StripStream("{ \"name\": \"no id\" }", "dualsense"));

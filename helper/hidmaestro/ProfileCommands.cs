@@ -9,24 +9,31 @@ namespace Satellite.HmHelper;
 
 internal static class ProfileCommands
 {
-    private static readonly string[] NativeProfiles = { "switch-pro", "xbox-360-wired" };
+    private static readonly string[] NativeProfiles = { "xbox-360-wired" };
 
     public static string InstalledDirectory => Path.Combine(AppContext.BaseDirectory, SatelliteProfiles.DirectoryName);
 
-    public static int Export(string outDir)
+    public static int Export(string outDir, string catalogDir)
     {
         Directory.CreateDirectory(outDir);
         ProfileDatabase catalog = ProfileDatabase.LoadEmbedded();
-        foreach (string id in SatelliteProfiles.StreamFreeCopies)
+        foreach (string id in SatelliteProfiles.Copies)
         {
-            ControllerProfile profile = catalog.All.FirstOrDefault(p => p.Id == id)
-                ?? throw new InvalidOperationException($"the HIDMaestro catalog has no profile '{id}'");
-            string json = JsonSerializer.Serialize(profile, typeof(ControllerProfile), HMLayoutJsonOptions.Default);
+            string json = SatelliteProfiles.SourceOf(id) == CopySource.Sdk
+                ? SdkJson(catalog, id)
+                : File.ReadAllText(Path.Combine(catalogDir, SatelliteProfiles.CatalogFileName(id)));
             string path = Path.Combine(outDir, SatelliteProfiles.FileName(id));
-            File.WriteAllText(path, SatelliteProfiles.StripStream(json, id), new UTF8Encoding(false));
+            File.WriteAllText(path, SatelliteProfiles.Transform(json, id), new UTF8Encoding(false));
             Console.WriteLine($"exported {path}");
         }
         return 0;
+    }
+
+    private static string SdkJson(ProfileDatabase catalog, string id)
+    {
+        ControllerProfile profile = catalog.All.FirstOrDefault(p => p.Id == id)
+            ?? throw new InvalidOperationException($"the HIDMaestro catalog has no profile '{id}'");
+        return JsonSerializer.Serialize(profile, typeof(ControllerProfile), HMLayoutJsonOptions.Default);
     }
 
     public static int Check(string dir)
@@ -39,13 +46,13 @@ internal static class ProfileCommands
             Console.Error.WriteLine($"FAIL {issue}");
             failures++;
         }
-        foreach (string id in SatelliteProfiles.StreamFreeCopies)
+        foreach (string id in SatelliteProfiles.Copies)
         {
             HMProfile? copy = profiles.Resolve(ctx, id, out string? refusal);
             string? problem = CopyProblem(copy, ctx.GetProfile(id), refusal);
             if (problem == null)
             {
-                Console.WriteLine($"ok   {SatelliteProfiles.CopyId(id)}: {copy!.Name}, {Describe(copy.DeviceModelSource)}");
+                Console.WriteLine($"ok   {SatelliteProfiles.CopyId(id)}: {copy!.Name}, builds its own reports: {copy.BuildsItsOwnReports}, {Describe(copy.DeviceModelSource)}");
                 continue;
             }
             Console.Error.WriteLine($"FAIL {SatelliteProfiles.CopyId(id)}: {problem}");
@@ -74,10 +81,11 @@ internal static class ProfileCommands
         if (copy == null) return refusal ?? "not loaded";
         if (original == null) return "the catalog profile it copies is not loaded";
         if (copy.DeviceModelProblem != null) return $"device model problem: {copy.DeviceModelProblem}";
-        if (!copy.HasDeviceModel) return "no device model, so no feature answers";
-        if (copy.BuildsItsOwnReports) return "builds its own reports, which Satellite's native writer cannot feed";
+        if (!copy.HasDeviceModel) return "no device model";
+        if (copy.BuildsItsOwnReports != original.BuildsItsOwnReports) return "builds its own reports differently from the catalog profile";
         if (copy.DescriptorHex != original.DescriptorHex) return "descriptor differs from the catalog's";
         if (copy.VendorId != original.VendorId || copy.ProductId != original.ProductId) return "VID/PID differ from the catalog's";
+        if (copy.Connection != original.Connection) return "the connection differs from the catalog's";
         if (copy.RequiresUsbipBackend != original.RequiresUsbipBackend) return "the USB transport need differs from the catalog's";
         if (copy.InputReportSize != original.InputReportSize) return "the input report size differs from the catalog's";
         return null;

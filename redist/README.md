@@ -65,6 +65,19 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
   shared-memory layout pins in `src/platform/windows/hidmaestro_wire.h`
   (see `lib/VENDORED.md`) before adopting a new release.
 
+### HIDMaestro catalog profile `switch-pro`
+
+- Component: hifihedgehog/HIDMaestro `profiles/nintendo/switch-pro.json`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/nintendo/switch-pro.json
+- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+  refuses a file named for another release)
+- Filename: `HIDMaestro-v2.1.0-switch-pro.json`
+- SHA-256: see `SHA256SUMS`
+- License: MIT
+- EOL: no. The text the SDK zip embeds, fetched as a file because the
+  helper's Switch Pro copy needs the protocol keys the SDK's serializer
+  does not write (see the profile copies below).
+
 Unlike ViGEmBus there is no standalone driver installer: the UMDF2 driver
 is embedded inside `HIDMaestro.Core.dll` and deploys itself (certificate +
 signing + pnputil) when invoked elevated. `fetch-redist.ps1` stages the SDK
@@ -108,29 +121,45 @@ bump carries both along by itself, because the staging takes them from the
 same hash-pinned zip as the assemblies.
 
 The publish also writes `hidmaestro-profiles\` beside the helper:
-Satellite's copies of the four Sony catalog profiles it writes natively
-(`dualsense`, `dualsense-composite`, `dualshock-4-v2`,
-`dualshock-4-v2-composite`, as `satellite-<id>`), exported from the SDK the
-helper was just built with (`satellite-hm-helper.exe export-profiles`) with
-their `stream` key removed. Since 2.0 those profiles carry a 4 ms idle
-repeat that the SDK runs itself, writing a frame into the controller's
-input section whether or not the program submitted one, which would race
-Satellite's own writer on the same seqlock. `check-profiles` loads the
-copies back through the SDK and fails the publish on any load issue, a
-missing device model or a changed descriptor, and `installer.iss` installs
-the folder. The helper refuses to plug a Sony profile whose copy is not
-loaded rather than fall back to the streaming catalog entry. The Switch Pro
-is the other way round: the SDK's protocol host answers the Switch
-handshake and streams report 0x30 from a 48-byte state block, so the helper
-hands satellite a frame mailbox of the input section's layout and relays
-each block to `SubmitRawReport` (`helper/hidmaestro-core` holds the reader
-and the profile transform, with their own `dotnet test` suite).
+Satellite's copies of five catalog profiles, as `satellite-<id>`, written
+by `satellite-hm-helper.exe export-profiles` and loaded back by
+`check-profiles`, which fails the publish on any load issue, a missing
+device model or a changed descriptor; `installer.iss` installs the folder,
+and the helper refuses to plug a profile whose copy is not loaded rather
+than fall back to the catalog entry. The four Sony profiles Satellite
+writes natively (`dualsense`, `dualsense-composite`, `dualshock-4-v2`,
+`dualshock-4-v2-composite`) are read out of the SDK the helper was just
+built with and lose their `stream` key: since 2.0 those profiles carry a
+4 ms idle repeat that the SDK runs itself, writing a frame into the
+controller's input section whether or not the program submitted one, which
+would race Satellite's own writer on the same seqlock. The Switch Pro is
+the other way round: the SDK's protocol host answers the Switch handshake
+and streams report 0x30 from a 48-byte state block, so the helper hands
+satellite a frame mailbox of the input section's layout and relays each
+block to `SubmitRawReport`. Its copy, `satellite-switch-pro`, comes from
+the catalog file `profiles/nintendo/switch-pro.json` fetched at the pinned
+tag (`HIDMaestro-v<ver>-switch-pro.json` in `SHA256SUMS`, staged as
+`redist/hidmaestro/profiles/switch-pro.json`), because the SDK's own
+serializer leaves the protocol keys out; its one change is the simple
+report (0x3F) sent on the device clock instead of on change. Steam's
+Switch driver, like SDL 2.x, keeps a Bluetooth pad whose first report was
+0x3F in simple mode and drops the pad after three seconds without a packet
+(`SDL_hidapi_switch.c`, release-2.30.x, the "Bluetooth may have
+disconnected" branch); in simple mode the catalog profile sends only when
+the state changes, so an idle pad vanished from Steam. The heartbeat
+restores the 15 ms 0x3F stream the 1.x driver had before the handshake.
+`helper/hidmaestro-core` holds the mailbox reader and the profile
+transforms, with their own `dotnet test` suite.
 `satellite-hm-helper.exe selftest`, run as administrator on a machine with
 the driver, creates each profile and checks all of this against the real
 SDK and driver: that the catalog `dualsense` streams on its own, that the
-copies and `xbox-360-wired` do not, that the Switch Pro refuses a 47-byte
-block and streams after a 48-byte one, and that every section name the
-helper opens is one the SDK lists for the controller's transport index.
+Sony copies and `xbox-360-wired` do not, that the Switch Pro copy streams
+0x3F before any handshake and 0x30 after a host selects full mode and 0x3F
+again after it selects simple mode, that it refuses a 47-byte block and
+keeps streaming after a 48-byte one, that the Sony copies answer their
+calibration and pairing feature reports through the UMDF2 driver, and that
+every section name the helper opens is one the SDK lists for the
+controller's transport index.
 
 `HIDMaestro.Core.dll` also embeds a **second, kernel-mode** driver payload:
 usbip-win2 0.9.8.1's host-controller driver package (x64 and ARM64, each

@@ -49,7 +49,7 @@
       <SatelliteProfilesDir>$([MSBuild]::NormalizePath('$(PublishDir)', 'hidmaestro-profiles'))</SatelliteProfilesDir>
     </PropertyGroup>
     <RemoveDir Directories="$(SatelliteProfilesDir)" />
-    <Exec Command="&quot;$(SatelliteHelperExe)&quot; export-profiles --out &quot;$(SatelliteProfilesDir)&quot;" />
+    <Exec Command="&quot;$(SatelliteHelperExe)&quot; export-profiles --out &quot;$(SatelliteProfilesDir)&quot; --catalog &quot;$(HmSdkDir)profiles&quot;" />
     <Exec Command="&quot;$(SatelliteHelperExe)&quot; check-profiles --dir &quot;$(SatelliteProfilesDir)&quot;" />
   </Target>
 

@@ -64,6 +64,8 @@ $Redistributables = Get-RedistTable
 $HmEntry = Get-HmRedistEntry $Redistributables
 $HmSdkVersion = Get-HmSdkVersionFromZipName $HmEntry.Filename
 Assert-HmSdkVersionPinned -Subject "The redist table's $($HmEntry.Filename)" -SdkVersion $HmSdkVersion -Pins $Pins
+$HmCatalogEntries = Get-HmCatalogProfileEntries $Redistributables
+foreach ($Entry in $HmCatalogEntries) { Assert-HmCatalogProfileEntry -Entry $Entry -Pins $Pins }
 
 $ExpectedHashes = Read-Sha256Sums $SumFile
 
@@ -118,6 +120,9 @@ $CoreDll = Join-Path $HmSdkDir 'HIDMaestro.Core.dll'
 $DriverVersion = Get-HmSdkDriverVersion $CoreDll
 Assert-HmSdkMatchesPins -Subject 'redist/hidmaestro/HIDMaestro.Core.dll' -SdkVersion $HmSdkVersion -DriverVersion $DriverVersion -Pins $Pins
 Write-Host "[OK]   HIDMaestro SDK $HmSdkVersion embeds driver INF $DriverVersion; driver_pins.h agrees"
+
+$CatalogStaged = Sync-HmCatalogProfiles -RedistDir $RedistDir -SdkDir $HmSdkDir -Entries $HmCatalogEntries
+Write-Host "[OK]   redist/hidmaestro/$HmCatalogProfilesDir/ holds the v$HmSdkVersion catalog profiles the helper copies ($(($CatalogStaged | ForEach-Object { Split-Path -Leaf $_ }) -join ', '))"
 
 if ($AnyDownloaded) {
     Write-Host ''

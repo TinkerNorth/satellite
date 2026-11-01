@@ -8,6 +8,7 @@ namespace Satellite.HmHelper;
 internal static class SelfTest
 {
     private const int WatchMs = 500;
+    private const uint MinClockFrames = 20;
     private const string KeyPrefix = "satellite:selftest:";
     private static readonly TimeSpan HidChildBudget = TimeSpan.FromSeconds(10);
     private static readonly byte[] SonyIdentityCalibration =
@@ -93,13 +94,15 @@ internal static class SelfTest
 
     private static void SwitchPro(HMContext ctx, int slot, Action<string> say, Action<bool, string> check)
     {
-        using HMController controller = Create(ctx, "switch-pro", slot, say, check);
-        check(controller.Profile.BuildsItsOwnReports, "switch-pro builds its own reports, so the helper relays Satellite's state block to the SDK");
+        string profileId = SatelliteProfiles.CopyId("switch-pro");
+        HMProfile profile = ctx.GetProfile(profileId) ?? throw new InvalidOperationException($"no profile '{profileId}'");
+        IReadOnlyList<string> before = HidDevices.Paths(profile.VendorId, profile.ProductId);
+        using HMController controller = Create(ctx, profileId, slot, say, check);
+        check(controller.Profile.BuildsItsOwnReports, $"{profileId} builds its own reports, so the helper relays Satellite's state block to the SDK");
         using var input = new InputSectionView(controller.TransportIndex);
 
-        uint before = input.SeqNo;
-        Thread.Sleep(WatchMs);
-        say($"switch-pro: {(input.SeqNo - before) / 2} frames in {WatchMs} ms before any state");
+        uint frames = FramesWithin(input, WatchMs);
+        check(frames >= MinClockFrames, $"{profileId}: the simple report streams on the clock before any host speaks the protocol, {frames} frames in {WatchMs} ms, report 0x{input.ExtendedReportId:X2}");
 
         try
         {
@@ -111,13 +114,48 @@ internal static class SelfTest
             check(ex.Message.Contains("48"), $"a 47-byte state block is refused, naming the size: {ex.Message}");
         }
 
-        before = input.SeqNo;
         var block = new byte[48];
         block[2] = 0x04;
         controller.SubmitRawReport(block);
-        Thread.Sleep(WatchMs);
-        uint after = (input.SeqNo - before) / 2;
-        check(after >= 1, $"a 48-byte state block is accepted and the SDK writes the input section itself: {after} frames in {WatchMs} ms");
+        frames = FramesWithin(input, WatchMs);
+        check(frames >= MinClockFrames, $"a 48-byte state block is accepted and the SDK keeps writing the input section itself: {frames} frames in {WatchMs} ms");
+
+        string? path = HidDevices.WaitForNewPath(profile.VendorId, profile.ProductId, before, HidChildBudget);
+        check(path != null, $"{profileId}: Windows exposes a new {profile.VendorId:X4}:{profile.ProductId:X4} HID device for it");
+        if (path == null) return;
+
+        check(HidDevices.WriteOutput(path, SwitchSubcommand(1, 0x03, 0x30)), $"{profileId}: a host can select full mode (0x30) through the HID device");
+        frames = FramesWithin(input, WatchMs);
+        check(frames >= MinClockFrames && input.ExtendedReportId == 0x30, $"{profileId}: full mode streams report 0x30 on the clock, {frames} frames in {WatchMs} ms, report 0x{input.ExtendedReportId:X2}");
+
+        check(HidDevices.WriteOutput(path, SwitchSubcommand(2, 0x03, 0x3F)), $"{profileId}: a host can select simple mode (0x3F) through the HID device");
+        frames = FramesWithin(input, WatchMs);
+        check(frames >= MinClockFrames && input.ExtendedReportId == 0x3F, $"{profileId}: simple mode still streams report 0x3F on the clock, {frames} frames in {WatchMs} ms, report 0x{input.ExtendedReportId:X2}, so an SDL2-era host never sees three silent seconds");
+    }
+
+    private static byte[] SwitchSubcommand(byte packet, byte id, byte argument)
+    {
+        var report = new byte[49];
+        report[0] = 0x01;
+        report[1] = packet;
+        report[2] = 0x00;
+        report[3] = 0x01;
+        report[4] = 0x40;
+        report[5] = 0x40;
+        report[6] = 0x00;
+        report[7] = 0x01;
+        report[8] = 0x40;
+        report[9] = 0x40;
+        report[10] = id;
+        report[11] = argument;
+        return report;
+    }
+
+    private static uint FramesWithin(InputSectionView input, int ms)
+    {
+        uint before = input.SeqNo;
+        Thread.Sleep(ms);
+        return (input.SeqNo - before) / 2;
     }
 
     private static void FeatureAnswers(HMContext ctx, string profileId, int slot, byte calibrationReport, byte pairingReport,
@@ -164,6 +202,10 @@ internal static class SelfTest
         }
 
         public uint SeqNo => (uint)Marshal.ReadInt32(_view, FrameMailbox.SeqNoOffset);
+
+        public byte ExtendedReportId => Marshal.ReadByte(_view, ExtendedDataOffset);
+
+        private const int ExtendedDataOffset = 282;
 
         public void Dispose()
         {

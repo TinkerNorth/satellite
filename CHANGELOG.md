@@ -24,7 +24,10 @@ controller type, relays the Switch Pro's state block to the SDK, whose
 protocol host now answers the Switch handshake and streams report 0x30,
 and ships copies of the four Sony profiles it writes natively with the
 SDK's new 4 ms idle repeat left out, so nothing but Satellite writes those
-sections. The Sony motion scale follows HIDMaestro's calibration table,
+sections. Its Switch Pro copy sends the simple report on the device clock
+instead of only on change: Steam keeps a Bluetooth Switch pad in simple
+mode and drops it after three seconds without a report, so an idle Switch
+Pro disappeared from Steam. The Sony motion scale follows HIDMaestro's calibration table,
 16 counts per degree per second and 8192 per g, where the old driver's stub
 implied 20 and 10000. The uninstaller runs HIDMaestro's own removal, which
 refuses while another HIDMaestro program is running and says so, and
