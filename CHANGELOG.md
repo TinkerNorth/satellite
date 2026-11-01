@@ -3,7 +3,7 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
+## 2.1.10
 
 No protocol changes.
 Saving settings, writing the log and keeping the dashboard open no longer
