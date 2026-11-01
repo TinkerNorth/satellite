@@ -106,9 +106,11 @@
 
 ; --- Bundled HIDMaestro helper (see redist/README.md; built by
 ;     `dotnet publish helper/hidmaestro` from the pinned SDK release) ---
-#define HmVersion "1.9.2"
+#define HmVersion "2.1.0"
 #define HmHelperExe "satellite-hm-helper.exe"
-#define HmHelperSource "helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe"
+#define HmHelperDir "helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish"
+#define HmHelperSource HmHelperDir + "\" + HmHelperExe
+#define HmProfilesDir "hidmaestro-profiles"
 
 #ifdef UiAccess
 #define UiAccessFlag "True"
@@ -236,7 +238,11 @@ Source: "redist\{#ViGEmBusInstaller}"; DestDir: "{tmp}"; Flags: deleteafterinsta
 ; HIDMaestro helper: installed beside satellite.exe (the app spawns it for
 ; controller lifecycle), and also runs the driver deploy at ssPostInstall.
 Source: "{#HmHelperSource}"; DestDir: "{app}"; DestName: "{#HmHelperExe}"; Flags: ignoreversion sign; Components: hidmaestro
+; Satellite's stream-free copies of the Sony profiles, exported by the helper
+; from the SDK it was published with; the helper loads them from this folder.
+Source: "{#HmHelperDir}\{#HmProfilesDir}\*.json"; DestDir: "{app}\{#HmProfilesDir}"; Flags: ignoreversion; Components: hidmaestro
 Source: "redist\hidmaestro\LICENSE"; DestDir: "{app}"; DestName: "LICENSE-HIDMaestro.txt"; Flags: ignoreversion; Components: hidmaestro
+Source: "redist\hidmaestro\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; DestName: "THIRD-PARTY-NOTICES-HIDMaestro.txt"; Flags: ignoreversion; Components: hidmaestro
 
 [Dirs]
 ; Pre-create the LocalAppData tree the app uses for dumps + logs, with
@@ -710,7 +716,8 @@ begin
             + ' Satellite Controller Broker service so no elevation prompt is'
             + ' needed when a controller connects.' + #13#10;
     if DetectedHm then
-        Result := Result + 'Already deployed here; the bundled v' + '{#HmVersion}' + ' payload will refresh it.'
+        Result := Result + 'Already deployed here; the bundled v' + '{#HmVersion}' + ' upgrades an older driver'
+                + ' (beside it while another program''s controllers still use it) and never downgrades a newer one.'
     else
         Result := Result + 'Not detected here. The bundled v' + '{#HmVersion}' + ' will be deployed.';
     if HmMode = 'skip' then
@@ -1001,6 +1008,13 @@ begin
     DeleteRelocatedFile(Dir + 'README.md');
     DeleteRelocatedFile(Dir + '{#HmHelperExe}');
     DeleteRelocatedFile(Dir + 'LICENSE-HIDMaestro.txt');
+    DeleteRelocatedFile(Dir + 'THIRD-PARTY-NOTICES-HIDMaestro.txt');
+    if DirExists(Dir + '{#HmProfilesDir}') then begin
+        if DelTree(Dir + '{#HmProfilesDir}', True, True, True) then
+            Log('UIAccess relocation: deleted ' + Dir + '{#HmProfilesDir}')
+        else
+            Log('UIAccess relocation: could not fully delete ' + Dir + '{#HmProfilesDir}');
+    end;
     DeleteRelocatedFile(Dir + 'unins000.exe');
     DeleteRelocatedFile(Dir + 'unins000.dat');
     DeleteRelocatedFile(Dir + 'unins000.msg');
@@ -1180,13 +1194,27 @@ begin
         ShouldRemove := MsgBox(
             'Also remove the HIDMaestro driver?' + #13#10 + #13#10 +
             'Other apps (PadForge and other HIDMaestro consumers) may share ' +
-            'this driver. Removing it will break them until they redeploy ' +
-            'it themselves.' + #13#10 + #13#10 +
+            'this driver. The removal is refused while one of them is running, ' +
+            'and the others install the driver again the next time they need ' +
+            'it.' + #13#10 + #13#10 +
             'Click No if you''re unsure.',
             mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
 
-    if ShouldRemove then
-        Exec(HelperPath, 'remove-driver', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if not ShouldRemove then Exit;
+    if not Exec(HelperPath, 'remove-driver', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+        Log('satellite-hm-helper remove-driver could not be started');
+        Exit;
+    end;
+    Log('satellite-hm-helper remove-driver exit code ' + IntToStr(ResultCode));
+    if UninstallSilent then Exit;
+    if ResultCode = 2 then
+        MsgBox('Another program that uses HIDMaestro is running, so the driver was ' +
+               'left in place. Close that program and run HIDMaestroUninstall.exe ' +
+               'from the HIDMaestro release, or reinstall Satellite and uninstall ' +
+               'it again.', mbInformation, MB_OK)
+    else if (ResultCode <> 0) and (ResultCode <> 3) then
+        MsgBox('HIDMaestro removal did not finish (exit code ' + IntToStr(ResultCode) +
+               '). The uninstall log under %TEMP% has the details.', mbInformation, MB_OK);
 end;
 
 procedure MaybeRemoveVigem;

@@ -18,7 +18,7 @@ Runs as a system tray application with a built-in web UI for configuration. No c
 
 **Sender** polls a physical Xbox controller via XInput at ~250 Hz and streams 12-byte `XUSB_REPORT` packets over UDP.
 
-**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual controller — Xbox 360 / DualShock 4 through the ViGEmBus kernel driver (direct `DeviceIoControl`, no DLLs in between), and DualSense / Switch Pro (plus the same two as fallback) through the HIDMaestro user-mode driver (a seqlock write into the driver's shared-memory section, no managed code on the frame path).
+**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual controller — Xbox 360 / DualShock 4 through the ViGEmBus kernel driver (direct `DeviceIoControl`, no DLLs in between), and DualSense / Switch Pro (plus the same two as fallback) through the HIDMaestro user-mode driver (a seqlock write into the driver's shared-memory section, no managed code on the frame path; the Switch Pro's 48-byte state block takes the same write into a mailbox the bundled helper relays to HIDMaestro's protocol host, which answers the Switch handshake and streams the reports).
 
 The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()` (ViGEm) or `recvfrom()` → seqlock `memcpy()` → `SetEvent()` (HIDMaestro).
 

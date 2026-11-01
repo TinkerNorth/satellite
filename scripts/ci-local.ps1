@@ -138,6 +138,8 @@ if (Get-Command dotnet -ErrorAction SilentlyContinue) {
     # project references; CI runs it right before the publish.
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'fetch-redist.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'fetch-redist.ps1 failed' }
+    & dotnet test helper/hidmaestro-core.tests/satellite-hm-helper-core.tests.csproj -c Release
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet test helper/hidmaestro-core.tests failed' }
     foreach ($stale in @('helper/hidmaestro/bin', 'helper/hidmaestro/obj')) {
         if (Test-Path $stale) { Remove-Item -Recurse -Force $stale }
     }

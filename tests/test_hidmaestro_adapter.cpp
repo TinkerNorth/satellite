@@ -555,7 +555,7 @@ static void test_ds4_submit_merges_motion_touch_battery() {
     const uint8_t* data = prov.inputData(2);
     EXPECT_EQ(u32at(prov.inputSection(2), INPUT_DATASIZE_OFFSET), (uint32_t)DS4_PAYLOAD_BYTES);
     const int16_t gyro = static_cast<int16_t>(data[12] | (data[13] << 8));
-    EXPECT_EQ(gyro, sonyImuFromWire(100));
+    EXPECT_EQ(gyro, sonyGyroFromWire(100));
 
     TouchpadReport touch{};
     touch.finger0.active = true;
@@ -574,7 +574,7 @@ static void test_ds4_submit_merges_motion_touch_battery() {
     GamepadReport rpt{};
     rpt.wButtons = 0x1000;
     EXPECT(adapter.submitReport(2, rpt));
-    EXPECT_EQ(static_cast<int16_t>(data[12] | (data[13] << 8)), sonyImuFromWire(100));
+    EXPECT_EQ(static_cast<int16_t>(data[12] | (data[13] << 8)), sonyGyroFromWire(100));
     EXPECT_EQ(data[11], (uint8_t)3);
     EXPECT_EQ(data[4] & 0x20, 0x20); // Cross
 }
@@ -597,7 +597,7 @@ static void test_ds5_submit() {
     MotionReport motion{};
     motion.accelZ = 500;
     EXPECT(adapter.submitMotion(4, motion));
-    EXPECT_EQ(static_cast<int16_t>(data[25] | (data[26] << 8)), sonyImuFromWire(500));
+    EXPECT_EQ(static_cast<int16_t>(data[25] | (data[26] << 8)), sonyAccelFromWire(500));
 
     TouchpadReport touch{};
     touch.finger0.active = true;

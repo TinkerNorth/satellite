@@ -9,7 +9,9 @@
     Dot-source this file; it defines functions only and runs nothing.
 #>
 
-$HmSdkStagedFiles = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE')
+$HmSdkStagedFiles = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')
+$HmSatelliteProfilesDir = 'hidmaestro-profiles'
+$HmSatelliteProfileCopies = @('satellite-dualsense', 'satellite-dualsense-composite', 'satellite-dualshock-4-v2', 'satellite-dualshock-4-v2-composite')
 $HmInfCatalog = 'hidmaestro.cat'
 $HmStagingStampName = 'staged-from.sha256'
 $HmSdkVersionPin = 'SATELLITE_HIDMAESTRO_SDK_VERSION'
@@ -23,9 +25,9 @@ function Get-RedistTable {
             Filename = 'ViGEmBus_1.22.0_x64_x86_arm64.exe'
         }
         @{
-            Name     = 'HIDMaestro 1.9.2'
-            Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.9.2/HIDMaestro-v1.9.2.zip'
-            Filename = 'HIDMaestro-v1.9.2.zip'
+            Name     = 'HIDMaestro 2.1.0'
+            Url      = 'https://github.com/hifihedgehog/HIDMaestro/releases/download/v2.1.0/HIDMaestro-v2.1.0.zip'
+            Filename = 'HIDMaestro-v2.1.0.zip'
         }
     )
 }

@@ -111,3 +111,7 @@ Desktop.ini
 /test_uinput_smoke
 /test_update_service
 /test_update_ui_contract
+/helper/hidmaestro-core/bin/
+/helper/hidmaestro-core/obj/
+/helper/hidmaestro-core.tests/bin/
+/helper/hidmaestro-core.tests/obj/

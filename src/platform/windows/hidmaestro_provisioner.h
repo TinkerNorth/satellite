@@ -24,6 +24,7 @@ namespace hidmaestro {
 // outputEvent are best-effort (rumble return path degrades to none).
 struct ProvisionResult {
     uint32_t controllerIndex = 0;
+    uint32_t transportIndex = 0;
     uint64_t inputSection = 0;
     uint64_t inputEvent = 0;
     uint64_t companionEvent = 0;

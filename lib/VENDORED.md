@@ -122,22 +122,54 @@ the 90-day freshness window.
 
 - Component: hifihedgehog/HIDMaestro (driver shared-memory + report contracts)
 - Upstream: https://github.com/hifihedgehog/HIDMaestro
-- Pinned-commit: v1.9.2
-- Last-vendored: 2026-10-04
+- Pinned-commit: v2.1.0
+- Last-vendored: 2026-11-01
 - License: MIT
 - Notes: not copied source — a hand-written re-statement of the driver's
   shared-memory contract (`driver/driver.h` `HIDMAESTRO_SHARED_INPUT` /
   `HIDMAESTRO_SHARED_OUTPUT` and `SharedMemoryIO.cs`): section layouts,
   seqlock discipline, output-ring geometry and Source codes, plus the
   per-profile report byte layouts in `hidmaestro_report.h`
-  (xbox-360-wired, dualshock-4-v2, dualsense, switch-pro) and the neutral
-  Sony calibration scale (20 LSB/deg/s, 10000 LSB/g) the driver's
-  feature-report stubs imply. The protocol carries NO version field, so a
-  pin bump REQUIRES diffing those upstream files against the constants
-  here (`test_hidmaestro_wire` / `test_hidmaestro_report` pin them; the
-  section sizes 362 / 16904 are the runtime layout check). The runtime
-  driver itself deploys via the bundled `satellite-hm-helper.exe` from the
-  hash-pinned release zip (see `redist/README.md`); we ship no driver code.
+  (xbox-360-wired, dualshock-4-v2, dualsense, switch-pro) and the Sony
+  calibration scale (16 LSB/deg/s, 8192 LSB/g) the SDK's
+  `profiles/models/sony-dualsense.json` and `sony-dualshock4.json` answer.
+  The input and output layouts carry NO version field (v2.0.0 added a
+  separate per-controller `Global\HIDMaestroVersion<N>` section, plus
+  `InputAck`, `Signal` and remove events, which the SDK creates and this
+  backend never opens), so a pin bump REQUIRES diffing those upstream files
+  against the constants here (`test_hidmaestro_wire` /
+  `test_hidmaestro_report` pin them; the section sizes 362 / 16904 are the
+  runtime layout check). The runtime driver itself deploys via the bundled
+  `satellite-hm-helper.exe` from the hash-pinned release zip (see
+  `redist/README.md`); we ship no driver code.
+  v1.9.2 -> v2.1.0 (2026-11-01): `HIDMAESTRO_SHARED_INPUT` and
+  `HIDMAESTRO_SHARED_OUTPUT` are byte-identical (362 / 8 + 64 x 264) and
+  every Source code is the same, so the wire pins hold. What moved is
+  around the sections. The driver holds no device code: a Sony pad's
+  calibration, pairing and firmware answers come from the profile's model,
+  compiled by the SDK at create and served only to a controller the SDK
+  created, and the stub the 1.9.2 driver answered (+/-10000 everywhere, so
+  20 LSB/deg/s and 10000 LSB/g) became the identity table (+/-8000 gyro,
+  +/-8192 accel, speed 500), so `sonyGyroFromWire` / `sonyAccelFromWire`
+  replace the old x40000/32767. The Switch Pro handshake, SPI image and
+  0x30 stream run in the SDK's protocol host from a 48-byte state block
+  (the body `packSwitchBody` already produced), so the helper relays
+  Satellite's block to `SubmitRawReport` instead of letting Satellite write
+  the section. The four Sony profiles carry a 4 ms `stream`, an SDK idle
+  repeat that writes the input section whether or not anything was
+  submitted; the helper ships copies without it (`helper/hidmaestro-core`
+  `SatelliteProfiles`, exported from the SDK at publish and loaded back
+  through it). A controller's sections sit at the SDK's transport index
+  (`HMController.TransportIndex`), which is the slot only while no other
+  program holds that number. `RemoveAllVirtualControllers` now removes the
+  devices of exited programs only, `InstallDriver` upgrades in place or
+  beside a running program's older driver and never downgrades
+  (`HMContext.LastDriverInstall`), and `HMUninstall.Run` is the removal,
+  refused while another HIDMaestro program runs. The SDK's own driver INF is
+  2.1.0.1716 (`driver_pins.h`); 2.0.0 to 2.0.3 share 2.0.0.2201 and a 2.0.x
+  SDK runs on the 2.1.0 driver. `satellite-hm-helper.exe selftest`, run
+  elevated, checks the idle repeat, the stream-free copies, the Switch Pro
+  state block and the section names against the installed driver.
   v1.7.0 -> v1.9.0 (2026-09-20): `driver/driver.h` and
   `Internal/SharedMemoryIO.cs` changed only in comment punctuation; every
   offset, size, ring constant and Source code is the same, so the pins here

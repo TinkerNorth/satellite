@@ -627,6 +627,8 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
         return jsonTryI64(j, key, v) && v > 0 ? static_cast<uint64_t>(v) : 0;
     };
     out.controllerIndex = static_cast<uint32_t>(jsonInt(j, "index", 0));
+    out.transportIndex =
+        static_cast<uint32_t>(jsonInt(j, "transportIndex", static_cast<int>(out.controllerIndex)));
     out.inputSection = handleField("input");
     out.inputEvent = handleField("inputEvent");
     out.companionEvent = handleField("companionEvent");
@@ -647,7 +649,11 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     out.micChannels = static_cast<int>(jsonInt(j, "micChannels", 0));
     out.micRateHz = static_cast<int>(jsonInt(j, "micRateHz", 0));
 
-    return out.inputSection != 0 && out.inputEvent != 0;
+    if (out.inputSection == 0 || out.inputEvent == 0) return false;
+    logMsg(LogLevel::INFO, "hidmaestro",
+           "Serial " + std::to_string(serial) + " plugged as " + profile +
+               " at HIDMaestro transport index " + std::to_string(out.transportIndex));
+    return true;
 }
 
 void connectBrokerWhenDriverInstalled(HelperClient* client) {

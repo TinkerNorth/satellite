@@ -138,6 +138,7 @@ function NewFakeSdkZip([string]$Dir, [string]$ZipName, [string]$CoreDllText, [st
         'HIDMaestroTest\Microsoft.Windows.SDK.NET.dll' = 'projection assembly'
         'HIDMaestroTest\WinRT.Runtime.dll'             = 'winrt runtime'
         'LICENSE'                                      = 'hidmaestro license'
+        'THIRD-PARTY-NOTICES.txt'                      = 'third-party notices'
         'README.md'                                    = 'readme'
     }
     foreach ($member in $members.Keys) {
@@ -187,7 +188,7 @@ function StagedCoreText([string]$RedistDir) {
 }
 
 $realPinsHeader = Join-Path $repoRoot 'src\platform\windows\driver_pins.h'
-$wanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE')
+$wanted = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')
 
 function TestSha256Sums {
     $dir = NewTempDir
@@ -356,15 +357,49 @@ function TestRepoPinsAgree {
 }
 
 function TestInstallerShipsHmLicense {
+    $installer = @(Get-Content (Join-Path $repoRoot 'installer.iss'))
+
     Test 'installer.iss installs the staged HIDMaestro LICENSE beside the helper'
     Expect ($HmSdkStagedFiles -contains 'LICENSE') 'the staging takes LICENSE out of the pinned zip'
-    $lines = @((Get-Content (Join-Path $repoRoot 'installer.iss')) |
-        Where-Object { $_ -like 'Source: "redist\hidmaestro\LICENSE"*' })
+    $lines = @($installer | Where-Object { $_ -like 'Source: "redist\hidmaestro\LICENSE"*' })
     ExpectEq $lines.Count 1 'installer.iss has one Source line for the staged LICENSE'
     $line = [string]($lines | Select-Object -First 1)
     Expect ($line -like '*DestDir: "{app}"*') 'installed beside the helper'
     Expect ($line -like '*DestName: "LICENSE-HIDMaestro.txt"*') 'installed as LICENSE-HIDMaestro.txt'
     Expect ($line -like '*Components: hidmaestro*') 'ships with the HIDMaestro component'
+
+    Test 'installer.iss installs the staged third-party notices beside the license'
+    Expect ($HmSdkStagedFiles -contains 'THIRD-PARTY-NOTICES.txt') 'the staging takes THIRD-PARTY-NOTICES.txt out of the pinned zip'
+    $lines = @($installer | Where-Object { $_ -like 'Source: "redist\hidmaestro\THIRD-PARTY-NOTICES.txt"*' })
+    ExpectEq $lines.Count 1 'installer.iss has one Source line for the staged notices'
+    $line = [string]($lines | Select-Object -First 1)
+    Expect ($line -like '*DestDir: "{app}"*') 'installed beside the helper'
+    Expect ($line -like '*DestName: "THIRD-PARTY-NOTICES-HIDMaestro.txt"*') 'installed as THIRD-PARTY-NOTICES-HIDMaestro.txt'
+    Expect ($line -like '*Components: hidmaestro*') 'ships with the HIDMaestro component'
+    Expect (($installer | Where-Object { $_ -like "*DeleteRelocatedFile(Dir + 'THIRD-PARTY-NOTICES-HIDMaestro.txt')*" }).Count -eq 1) 'a relocated install drops the notices too'
+}
+
+function TestInstallerShipsSatelliteProfiles {
+    $installer = @(Get-Content (Join-Path $repoRoot 'installer.iss'))
+
+    Test 'installer.iss installs the profile copies the helper exports beside itself'
+    ExpectEq (@($installer | Where-Object { $_ -like "#define HmProfilesDir `"$HmSatelliteProfilesDir`"" }).Count) 1 'the folder name is the helper''s'
+    $lines = @($installer | Where-Object { $_ -like 'Source: "{#HmHelperDir}\{#HmProfilesDir}\*.json"*' })
+    ExpectEq $lines.Count 1 'one Source line for the exported copies'
+    $line = [string]($lines | Select-Object -First 1)
+    Expect ($line -like '*DestDir: "{app}\{#HmProfilesDir}"*') 'installed in the folder beside the helper'
+    Expect ($line -like '*Components: hidmaestro*') 'ships with the HIDMaestro component'
+    Expect (($installer | Where-Object { $_ -like "*DelTree(Dir + '{#HmProfilesDir}'*" }).Count -eq 1) 'a relocated install drops the folder too'
+
+    Test 'the copy names the verifier expects are the ones the helper exports'
+    $source = Get-Content (Join-Path $repoRoot 'helper\hidmaestro-core\SatelliteProfiles.cs') -Raw
+    Expect ($source -match '(?s)StreamFreeCopies = new\[\]\s*\{(.*?)\}') 'SatelliteProfiles.cs lists the copies'
+    $ids = @([regex]::Matches($Matches[1], '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+    Expect ($source -match 'CopyPrefix = "([^"]+)"') 'SatelliteProfiles.cs names the prefix'
+    $prefix = $Matches[1]
+    ExpectEq ($HmSatelliteProfileCopies -join ',') (($ids | ForEach-Object { $prefix + $_ }) -join ',') 'redist-functions.ps1 and SatelliteProfiles.cs agree'
+    Expect ($source -match 'DirectoryName = "([^"]+)"') 'SatelliteProfiles.cs names the folder'
+    ExpectEq $Matches[1] $HmSatelliteProfilesDir 'redist-functions.ps1 and SatelliteProfiles.cs agree on the folder'
 }
 
 function TestStaging {
@@ -483,6 +518,7 @@ TestHmSdkDriverVersion
 TestVersionsAndAsserts
 TestRepoPinsAgree
 TestInstallerShipsHmLicense
+TestInstallerShipsSatelliteProfiles
 TestStaging
 TestFetchRedistEndToEnd
 Write-Host ''

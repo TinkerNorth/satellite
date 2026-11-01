@@ -3,6 +3,36 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+No protocol changes.
+The Windows installer moves from HIDMaestro 1.9.2 to 2.1.0, so Satellite
+runs beside other HIDMaestro programs instead of removing their controllers
+and replacing their driver.
+
+HIDMaestro 2.0 lets several programs share its driver: each touches only
+its own controllers, a deploy upgrades an older driver in place or installs
+beside it while another program's controllers still use it, and nothing
+downgrades a newer one. The helper Satellite shipped was built on 1.9.2 and
+predates those rules: its first plug removed every HIDMaestro controller on
+the machine, its install replaced a newer driver with its own, and on a 2.x
+driver its DualSense and DualShock 4 answered no calibration or firmware
+read while its Switch Pro sent nothing. The helper now carries SDK 2.1.0
+(driver 2.1.0.1716). It names a controller's shared sections by the
+transport index the SDK assigns, keeps one identity per dish slot and
+controller type, relays the Switch Pro's state block to the SDK, whose
+protocol host now answers the Switch handshake and streams report 0x30,
+and ships copies of the four Sony profiles it writes natively with the
+SDK's new 4 ms idle repeat left out, so nothing but Satellite writes those
+sections. The Sony motion scale follows HIDMaestro's calibration table,
+16 counts per degree per second and 8192 per g, where the old driver's stub
+implied 20 and 10000. The uninstaller runs HIDMaestro's own removal, which
+refuses while another HIDMaestro program is running and says so, and
+HIDMaestro's third-party notices are installed beside its license.
+`satellite-hm-helper.exe selftest`, run as administrator, checks the idle
+repeat, the profile copies, the Switch Pro state block and the section
+names against the installed driver.
+
 ## 2.1.10
 
 No protocol changes.
