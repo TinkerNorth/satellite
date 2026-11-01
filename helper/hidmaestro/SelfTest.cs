@@ -9,6 +9,10 @@ internal static class SelfTest
 {
     private const int WatchMs = 500;
     private const string KeyPrefix = "satellite:selftest:";
+    private static readonly TimeSpan HidChildBudget = TimeSpan.FromSeconds(10);
+    private static readonly byte[] SonyIdentityCalibration =
+        Convert.FromHexString("000000000000401FC0E0401FC0E0401FC0E0F401F401002000E0002000E0002000E0");
+    private static readonly byte[] SonyPairingMacPrefix = { 0x02, 0x48, 0x4D, 0x00, 0x00 };
 
     public static int Run(string? logPath)
     {
@@ -49,6 +53,9 @@ internal static class SelfTest
             Check(frames == 0, $"xbox-360-wired: nothing but Satellite writes its input section, {frames} frames in {WatchMs} ms");
 
             SwitchPro(ctx, 4, Say, Check);
+
+            FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualsense"), 5, calibrationReport: 0x05, pairingReport: 0x09, Say, Check);
+            FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualshock-4-v2"), 6, calibrationReport: 0x02, pairingReport: 0x12, Say, Check);
         }
         catch (Exception ex)
         {
@@ -111,6 +118,30 @@ internal static class SelfTest
         Thread.Sleep(WatchMs);
         uint after = (input.SeqNo - before) / 2;
         check(after >= 1, $"a 48-byte state block is accepted and the SDK writes the input section itself: {after} frames in {WatchMs} ms");
+    }
+
+    private static void FeatureAnswers(HMContext ctx, string profileId, int slot, byte calibrationReport, byte pairingReport,
+                                       Action<string> say, Action<bool, string> check)
+    {
+        HMProfile profile = ctx.GetProfile(profileId) ?? throw new InvalidOperationException($"no profile '{profileId}'");
+        IReadOnlyList<string> before = HidDevices.Paths(profile.VendorId, profile.ProductId);
+        using HMController controller = Create(ctx, profileId, slot, say, check);
+        string? path = HidDevices.WaitForNewPath(profile.VendorId, profile.ProductId, before, HidChildBudget);
+        check(path != null, $"{profileId}: Windows exposes a new {profile.VendorId:X4}:{profile.ProductId:X4} HID device for it");
+        if (path == null) return;
+
+        byte[]? calibration = HidDevices.GetFeature(path, calibrationReport, 41);
+        string hex = calibration == null ? "no answer" : Convert.ToHexString(calibration, 0, Math.Min(calibration.Length, 41));
+        check(calibration != null && calibration.Length >= 41 && calibration[0] == calibrationReport &&
+              calibration.AsSpan(1, SonyIdentityCalibration.Length).SequenceEqual(SonyIdentityCalibration),
+              $"{profileId}: feature 0x{calibrationReport:X2} is the Sony model's identity calibration ({hex})");
+
+        byte[]? pairing = HidDevices.GetFeature(path, pairingReport, 20);
+        string mac = pairing == null ? "no answer" : Convert.ToHexString(pairing, 0, Math.Min(pairing.Length, 7));
+        check(pairing != null && pairing.Length >= 7 && pairing[0] == pairingReport &&
+              pairing.AsSpan(1, SonyPairingMacPrefix.Length).SequenceEqual(SonyPairingMacPrefix) &&
+              pairing[6] == controller.TransportIndex,
+              $"{profileId}: feature 0x{pairingReport:X2} carries the pairing MAC ending in the transport index ({mac})");
     }
 
     private sealed class InputSectionView : IDisposable
