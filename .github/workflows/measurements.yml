@@ -137,6 +137,7 @@ jobs:
               @{ Suffix = ''; Extra = @() },
               @{ Suffix = '-mic1000'; Extra = @('--mic-hz', '1000') }
           )
+          $plugMs = 500
           $failures = @()
           foreach ($target in @('bench_frame_path', 'bench_frame_path_lockstats')) {
               $exe = Find-Binary $target
@@ -144,8 +145,8 @@ jobs:
                   $extra = $variant.Extra
                   foreach ($backend in @('mock', 'vigem')) {
                       $json = "measurements-raw/$target-$backend$($variant.Suffix).json"
-                      Write-Host "::group::$target --backend $backend $($extra -join ' ')"
-                      & $exe --backend $backend @extra --json $json
+                      Write-Host "::group::$target --backend $backend --plug-ms $plugMs $($extra -join ' ')"
+                      & $exe --backend $backend --plug-ms $plugMs @extra --json $json
                       $code = $LASTEXITCODE
                       Write-Host '::endgroup::'
                       if ($code -ne 0) { $failures += "$target --backend $backend $($extra -join ' ') exited with $code" }

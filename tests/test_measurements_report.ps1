@@ -85,50 +85,87 @@ function BenchRow([string]$Backend, [string]$Scenario, [string]$Dish, [hashtable
         motion       = 0
         mic          = 0
         heartbeats   = 0
+        rep          = 1
     }
     foreach ($key in $Set.Keys) { $row[$key] = $Set[$key] }
     return $row
 }
 
-function LockRow([string]$Backend, [string]$Scenario, [string]$Lock, [string]$Role, [double]$MaxWait) {
+function RepRows($Row) {
+    $first = [ordered]@{}
+    foreach ($key in $Row.Keys) { $first[$key] = $Row[$key] }
+    $first.rep = 0
+    $first.p999Us = [double]$Row.p999Us + 0.4
+    $first.maxUs = [double]$Row.maxUs + 2.0
+    $first.longestGapMs = [double]$Row.longestGapMs + 0.05
+    $second = [ordered]@{}
+    foreach ($key in $Row.Keys) { $second[$key] = $Row[$key] }
+    $third = [ordered]@{}
+    foreach ($key in $Row.Keys) { $third[$key] = $Row[$key] }
+    $third.rep = 2
+    $third.p50Us = [double]$Row.p50Us - 0.1
+    $third.p999Us = [double]$Row.p999Us - 0.3
+    $third.overOneMs = [long]$Row.overOneMs + 1
+    return @($first, $second, $third)
+}
+
+function LockRow([string]$Backend, [string]$Scenario, [string]$Lock, [string]$Role, [double]$MaxWait, [long]$Acquisitions = 150, [long]$FailedTries = 0, [double]$MaxHold = 60.7) {
     return [ordered]@{
         backend      = $Backend
         scenario     = $Scenario
         lock         = $Lock
         role         = $Role
-        acquisitions = 150
+        acquisitions = $Acquisitions
         contended    = 2
-        failedTries  = 0
+        failedTries  = $FailedTries
         maxWaitUs    = $MaxWait
         p99WaitUs    = 0.5
-        maxHoldUs    = 60.7
+        maxHoldUs    = $MaxHold
     }
+}
+
+function PlugKey([string]$Target, [string]$Backend, [int]$MicHz) {
+    return "plug|$Target|$Backend|$MicHz"
+}
+
+function LockKey([string]$Target, [string]$Backend, [int]$MicHz) {
+    return "locks|$Target|$Backend|$MicHz"
 }
 
 function BenchJson([string]$Target, [string]$Backend, [int]$MicHz, [hashtable]$Changes) {
     $lockStats = $Target -eq 'bench_frame_path_lockstats'
     $rows = @()
+    $reps = @()
     $locks = @()
+    $withReps = -not $Changes.ContainsKey('noReps')
     foreach ($scenario in $scenarioIds) {
         foreach ($dish in @('A', 'B')) {
             if ($dish -eq 'B' -and $scenario -eq 'S1') { continue }
             $set = $Changes[(ChangeKey $Target $Backend $MicHz $scenario $dish)]
             if ($null -eq $set) { $set = @{} }
-            $rows += , (BenchRow $Backend $scenario $dish $set)
+            $row = BenchRow $Backend $scenario $dish $set
+            $rows += , $row
+            if ($withReps) { foreach ($repRow in (RepRows $row)) { $reps += , $repRow } }
         }
         if ($lockStats -and $scenario -in @('S6', 'S7', 'S8')) {
-            $locks += , (LockRow $Backend $scenario 'config' 'Receive' 4.5)
-            $locks += , (LockRow $Backend $scenario 'service.state' 'Receive' 0.1)
+            $locks += , (LockRow $Backend $scenario 'config.write' 'ConfigSaver' 4.5)
+            $locks += , (LockRow $Backend $scenario 'service.state' 'HttpAdmin' 0.1)
+            $locks += , (LockRow $Backend $scenario 'service.topology' 'HttpClient' 0.0 1 0 515264.3)
         }
     }
+    $injected = $Changes[(LockKey $Target $Backend $MicHz)]
+    if ($null -ne $injected) { foreach ($lock in $injected) { $locks += , $lock } }
+    $plugMs = $Changes[(PlugKey $Target $Backend $MicHz)]
+    if ($null -eq $plugMs) { $plugMs = 500 }
     $settings = [ordered]@{
         secs = 3.0; reps = 3; rateA = 8000; rateB = 75; motionHz = 500; micHz = $MicHz
-        submitUs = 15; plugMs = 200; rxCpu = 2; smoke = $false
+        submitUs = 15; plugMs = $plugMs; rxCpu = 2; smoke = $false
     }
     $doc = [ordered]@{
         bench = 'frame_path_bench'; cpu = 'Test CPU 9000'; build = 'Release'
         lockStats = $lockStats; settings = $settings; rows = $rows; locks = $locks
     }
+    if ($withReps) { $doc['reps'] = $reps }
     return ($doc | ConvertTo-Json -Depth 6)
 }
 
@@ -148,7 +185,7 @@ function WriteFullSet([string]$Dir, [hashtable]$Changes = @{}, [string[]]$Skip =
 
 function RunReport([string]$In, [string]$Out, [string]$Version, [string]$Prev = '', [bool]$Partial = $false) {
     $result = @(Invoke-MeasurementsReport -InputDir $In -OutputDir $Out -Version $Version -PreviousDir $Prev `
-        -Commit 'abcdef0123456789' -GapLimitMs 50 -TrendRatio 2 -TrendMinDeltaUs 100 -AllowPartial $Partial 6>$null)
+        -Commit 'abcdef0123456789' -GapPlugFraction 0.5 -TrendRatio 2 -TrendMinDeltaUs 100 -AllowPartial $Partial 6>$null)
     return $result[-1]
 }
 
@@ -194,6 +231,13 @@ function TestVersionAndFormatting {
 
     Test 'Get-VersionSortKey: 2.1.10 sorts after 2.1.9'
     Expect ((Get-VersionSortKey 'measurements-2.1.10.json') -gt (Get-VersionSortKey 'measurements-2.1.9.json')) 'numeric, not text, order'
+
+    Test 'Get-FractionPhrase and Format-Span: the limit reads as words, one value or a range'
+    ExpectEq (Get-FractionPhrase 0.5) 'half' 'half'
+    ExpectEq (Get-FractionPhrase 0.25) '25%' 'a quarter'
+    ExpectEq (Format-Span @(250.0, 250.0)) '250 ms' 'one value'
+    ExpectEq (Format-Span @(250.0, 100.0)) '100 to 250 ms' 'a range'
+    ExpectEq (Format-Span @()) '' 'nothing'
 }
 
 function TestReadBenchFile {
@@ -207,19 +251,20 @@ function TestReadBenchFile {
         ExpectEq $run.Rows.Count 15 'S1 has dish A alone, S2 to S8 have both dishes'
         ExpectEq $run.Locks.Count 0 'no lock rows without the stats build'
         ExpectEq $run.Cpu 'Test CPU 9000' 'cpu'
+        ExpectEq $run.Rows[0].plugMs 500 'every row carries the plug of its run'
 
         Test 'Read-BenchFile: the stats build carries its lock rows'
         $run = Read-BenchFile (Join-Path $dir 'bench_frame_path_lockstats-vigem.json')
         ExpectEq $run.Target 'bench_frame_path_lockstats' 'target'
-        ExpectEq $run.Locks.Count 6 'two locks in each of S6 to S8'
-        ExpectEq $run.Locks[0].role 'Receive' 'role'
+        ExpectEq $run.Locks.Count 9 'three locks in each of S6 to S8'
+        ExpectEq $run.Locks[0].role 'ConfigSaver' 'role'
 
         Test 'Read-BenchFile: a --mic-hz 1000 run keeps S6 only, rows and locks'
         $run = Read-BenchFile (Join-Path $dir 'bench_frame_path_lockstats-mock-mic1000.json')
         ExpectEq $run.Variant 'mic1000' 'variant'
         ExpectEq $run.Rows.Count 2 'S6 dish A and B'
         ExpectEq $run.Rows[0].scenario 'S6' 'scenario'
-        ExpectEq $run.Locks.Count 2 'S6 locks'
+        ExpectEq $run.Locks.Count 3 'S6 locks'
 
         Test 'Read-BenchFile: numbers come out as numbers whichever PowerShell parsed them'
         $row = (Read-BenchFile (Join-Path $dir 'bench_frame_path-mock.json')).Rows[0]
@@ -253,6 +298,10 @@ function TestReadBenchFileRefusals {
         WriteText $path ($good -replace '"micHz"', '"mic"')
         ExpectThrows { Read-BenchFile $path } 'settings.micHz'
 
+        Test 'Read-BenchFile: a run that does not say its plug is refused, because the gate is relative to it'
+        WriteText $path ($good -replace '"plugMs"', '"plug"')
+        ExpectThrows { Read-BenchFile $path } 'settings.plugMs'
+
         Test 'Read-BenchFile: a row missing a figure the gate or the tables need is refused by name'
         WriteText $path ($good -replace '"longestGapMs"', '"longestGap"')
         ExpectThrows { Read-BenchFile $path } 'without longestGapMs'
@@ -275,11 +324,11 @@ function TestMerge {
 
         Test 'New-Measurements: every file lands in one flat document'
         $merged = New-Measurements $runs '9.9.9' 'abc' '2026-01-01T00:00:00Z'
-        ExpectEq $merged.schema 1 'schema'
+        ExpectEq $merged.schema 2 'schema'
         ExpectEq $merged.version '9.9.9' 'version'
         ExpectEq $merged.sources.Count 8 'eight sources'
         ExpectEq $merged.latency.Count 68 '4 default runs of 15 rows plus 4 mic runs of 2 rows'
-        ExpectEq $merged.locks.Count 16 '2 stats runs of 6 default lock rows plus 2 of 2 mic lock rows'
+        ExpectEq $merged.locks.Count 24 '2 stats runs of 9 default lock rows plus 2 of 3 mic lock rows'
         ExpectEq $merged.machine.cpu 'Test CPU 9000' 'machine'
         ExpectEq $merged.settings.micHz 50 'settings come from a default run'
 
@@ -304,29 +353,65 @@ function TestGate {
         $rows = @((New-Measurements @(Read-BenchDirectory $in) '9.9.9' '' 'now').latency)
 
         Test 'Get-StallGate: quiet runs pass, one result for every PUT scenario of every run'
-        $gate = Get-StallGate $rows 50 $true
+        $gate = Get-StallGate $rows 0.5 $true
         ExpectEq $gate.passed $true 'passed'
         ExpectEq $gate.failures.Count 0 'no failures'
         ExpectEq $gate.results.Count 24 '4 runs x S4..S8 plus 4 mic runs x S6'
+        ExpectEq $gate.runs.Count 8 'one summary for each of the 8 runs'
+        ExpectEq $gate.results[0].plugMs 500 'the plug of the run'
+        ExpectEq $gate.results[0].limitMs 250 'half of it'
 
-        Test 'Get-StallGate: a 200 ms plug stall in S5 on one backend fails that row and no other'
-        $changes = @{ (ChangeKey 'bench_frame_path' 'vigem' 50 'S5' 'A') = @{ longestGapMs = 201.718 } }
+        Test 'Get-StallGate: a stall of the whole 500 ms plug in S5 on one backend fails that row and no other'
+        $changes = @{ (ChangeKey 'bench_frame_path' 'vigem' 50 'S5' 'A') = @{ longestGapMs = 501.718 } }
         WriteFullSet (Join-Path $dir 'stall') $changes
         $stalled = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'stall')) '9.9.9' '' 'now').latency)
-        $gate = Get-StallGate $stalled 50 $true
+        $gate = Get-StallGate $stalled 0.5 $true
         ExpectEq $gate.passed $false 'failed'
         ExpectEq $gate.failures.Count 1 'exactly one failure'
-        Expect ($gate.failures[0] -like '*bench_frame_path vigem default S5 dish A*201.7 ms*') 'names the run, scenario and gap'
+        Expect ($gate.failures[0] -like '*bench_frame_path vigem default S5 dish A*501.7 ms*') 'names the run, scenario and gap'
+        Expect ($gate.failures[0] -like '*is not under 250 ms, half of the 500 ms plug*') 'names the limit and where it comes from'
 
-        Test 'Get-StallGate: the limit is strict, 49.999 ms passes and 50 ms fails'
-        $edge = @{ (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 49.999 } }
+        Test 'Get-StallGate: the limit is strict, 249.999 ms passes and 250 ms fails'
+        $edge = @{ (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 249.999 } }
         WriteFullSet (Join-Path $dir 'edge') $edge
         $rowsEdge = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'edge')) '9.9.9' '' 'now').latency)
-        ExpectEq (Get-StallGate $rowsEdge 50 $true).passed $true 'just under'
-        $edge = @{ (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 50.0 } }
+        ExpectEq (Get-StallGate $rowsEdge 0.5 $true).passed $true 'just under'
+        $edge = @{ (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 250.0 } }
         WriteFullSet (Join-Path $dir 'edge') $edge
         $rowsEdge = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'edge')) '9.9.9' '' 'now').latency)
-        ExpectEq (Get-StallGate $rowsEdge 50 $true).passed $false 'at the limit'
+        ExpectEq (Get-StallGate $rowsEdge 0.5 $true).passed $false 'at the limit'
+
+        Test 'Get-StallGate: a noisy runner passes, 26 ms gaps without a plug and a 40 ms gap with one are inside the allowance'
+        $noisy = @{
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S3' 'A') = @{ longestGapMs = 26.386 }
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S2' 'A') = @{ longestGapMs = 6.712 }
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S5' 'A') = @{ longestGapMs = 40.0 }
+        }
+        WriteFullSet (Join-Path $dir 'noisy') $noisy
+        $rowsNoisy = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'noisy')) '9.9.9' '' 'now').latency)
+        $gate = Get-StallGate $rowsNoisy 0.5 $true
+        ExpectEq $gate.passed $true 'passes'
+        $mockRun = @($gate.runs | Where-Object { $_.target -eq 'bench_frame_path' -and $_.backend -eq 'mock' -and $_.variant -eq 'default' })[0]
+        ExpectEq $mockRun.noiseFloorMs 26.386 'the noise floor of the mock run'
+        ExpectEq $mockRun.noiseFloorScenario 'S3' 'where it was seen'
+        $vigemRun = @($gate.runs | Where-Object { $_.target -eq 'bench_frame_path' -and $_.backend -eq 'vigem' -and $_.variant -eq 'default' })[0]
+        ExpectEq $vigemRun.noiseFloorMs 6.712 'the noise floor of the vigem run'
+        ExpectEq $vigemRun.longestGapMs 40 'the longest gap with a PUT'
+        ExpectEq $vigemRun.scenario 'S5' 'where it was seen'
+        ExpectEq $vigemRun.limitMs 250 'its limit'
+
+        Test 'Get-StallGate: a 300 ms gap with a PUT in a 500 ms plug run fails and names the noise floor beside it'
+        $slow = @{
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S6' 'A') = @{ longestGapMs = 300.0 }
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S3' 'A') = @{ longestGapMs = 21.105 }
+        }
+        WriteFullSet (Join-Path $dir 'slow') $slow
+        $rowsSlow = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'slow')) '9.9.9' '' 'now').latency)
+        $gate = Get-StallGate $rowsSlow 0.5 $true
+        ExpectEq $gate.passed $false 'failed'
+        ExpectEq $gate.failures.Count 1 'one failure'
+        Expect ($gate.failures[0] -like '*bench_frame_path vigem default S6 dish A: longest gap 300.0 ms is not under 250 ms*') 'names the run and the gap'
+        Expect ($gate.failures[0] -like '*; the runner noise floor of this run is 21.1 ms') 'ends with the noise floor'
 
         Test 'Get-StallGate: scenarios without a PUT and dish B are not gated'
         $quiet = @{
@@ -336,26 +421,57 @@ function TestGate {
         }
         WriteFullSet (Join-Path $dir 'quiet') $quiet
         $rowsQuiet = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'quiet')) '9.9.9' '' 'now').latency)
-        ExpectEq (Get-StallGate $rowsQuiet 50 $true).passed $true 'passes'
+        ExpectEq (Get-StallGate $rowsQuiet 0.5 $true).passed $true 'passes'
 
         Test 'Get-StallGate: the lock-stats build is held to the same limit'
-        $stats = @{ (ChangeKey 'bench_frame_path_lockstats' 'mock' 50 'S7' 'A') = @{ longestGapMs = 120.0 } }
+        $stats = @{ (ChangeKey 'bench_frame_path_lockstats' 'mock' 50 'S7' 'A') = @{ longestGapMs = 300.0 } }
         WriteFullSet (Join-Path $dir 'stats') $stats
         $rowsStats = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'stats')) '9.9.9' '' 'now').latency)
-        $gate = Get-StallGate $rowsStats 50 $true
+        $gate = Get-StallGate $rowsStats 0.5 $true
         ExpectEq $gate.failures.Count 1 'one failure'
         Expect ($gate.failures[0] -like '*bench_frame_path_lockstats mock default S7*') 'names the stats build'
 
         Test 'Get-StallGate: the --mic-hz 1000 run is gated on S6, and its other scenarios are ignored'
         $mic = @{
-            (ChangeKey 'bench_frame_path' 'vigem' 1000 'S6' 'A') = @{ longestGapMs = 90.0 }
+            (ChangeKey 'bench_frame_path' 'vigem' 1000 'S6' 'A') = @{ longestGapMs = 300.0 }
             (ChangeKey 'bench_frame_path' 'vigem' 1000 'S5' 'A') = @{ longestGapMs = 500.0 }
         }
         WriteFullSet (Join-Path $dir 'mic') $mic
         $rowsMic = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'mic')) '9.9.9' '' 'now').latency)
-        $gate = Get-StallGate $rowsMic 50 $true
+        $gate = Get-StallGate $rowsMic 0.5 $true
         ExpectEq $gate.failures.Count 1 'only S6 counts'
         Expect ($gate.failures[0] -like '*bench_frame_path vigem mic1000 S6 dish A*') 'names the mic run'
+        $micRun = @($gate.runs | Where-Object { $_.variant -eq 'mic1000' -and $_.backend -eq 'vigem' -and $_.target -eq 'bench_frame_path' })[0]
+        ExpectEq ($null -eq $micRun.noiseFloorMs) $true 'the mic run keeps no S1 to S3, so it has no floor'
+
+        Test 'Get-StallGate: every run is judged against its own plug'
+        $plugs = @{
+            (PlugKey 'bench_frame_path' 'mock' 50) = 200
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 120.0 }
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S4' 'A') = @{ longestGapMs = 120.0 }
+        }
+        WriteFullSet (Join-Path $dir 'plugs') $plugs
+        $rowsPlugs = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'plugs')) '9.9.9' '' 'now').latency)
+        $gate = Get-StallGate $rowsPlugs 0.5 $true
+        ExpectEq $gate.failures.Count 1 'only the 200 ms plug run fails'
+        Expect ($gate.failures[0] -like '*bench_frame_path mock default S4 dish A: longest gap 120.0 ms is not under 100 ms, half of the 200 ms plug*') 'its limit is 100 ms'
+
+        Test 'Get-StallGate: a run without a plug cannot be judged'
+        $none = @{ (PlugKey 'bench_frame_path' 'mock' 50) = 0 }
+        WriteFullSet (Join-Path $dir 'none') $none
+        $rowsNone = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'none')) '9.9.9' '' 'now').latency)
+        $gate = Get-StallGate $rowsNone 0.5 $true
+        ExpectEq $gate.passed $false 'failed'
+        ExpectEq $gate.failures.Count 1 'one failure'
+        Expect ($gate.failures[0] -like 'bench_frame_path mock default ran with a plug of 0 ms*') 'says why'
+        ExpectEq $gate.results.Count 19 'the other 19 results are still there'
+
+        Test 'Get-StallGate: the fraction moves the limit'
+        $half = @{ (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 300.0 } }
+        WriteFullSet (Join-Path $dir 'fraction') $half
+        $rowsFraction = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'fraction')) '9.9.9' '' 'now').latency)
+        ExpectEq (Get-StallGate $rowsFraction 0.5 $true).passed $false 'half the plug is 250 ms'
+        ExpectEq (Get-StallGate $rowsFraction 0.75 $true).passed $true 'three quarters is 375 ms'
     } finally {
         Remove-Item -Recurse -Force $dir
     }
@@ -367,11 +483,11 @@ function TestGateCompleteness {
         Test 'Get-StallGate: a run that is missing fails the gate unless partial sets are allowed'
         WriteFullSet (Join-Path $dir 'partial') @{} @('bench_frame_path_lockstats-vigem-mic1000.json')
         $rows = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'partial')) '9.9.9' '' 'now').latency)
-        $gate = Get-StallGate $rows 50 $true
+        $gate = Get-StallGate $rows 0.5 $true
         ExpectEq $gate.passed $false 'failed'
         ExpectEq $gate.failures.Count 1 'one failure'
         Expect ($gate.failures[0] -like 'missing run: bench_frame_path_lockstats vigem mic1000') 'names the run'
-        ExpectEq (Get-StallGate $rows 50 $false).passed $true 'partial set allowed'
+        ExpectEq (Get-StallGate $rows 0.5 $false).passed $true 'partial set allowed'
 
         Test 'Get-StallGate: a PUT scenario without a dish A row cannot pass'
         $text = BenchJson 'bench_frame_path' 'mock' 50 @{}
@@ -380,9 +496,102 @@ function TestGateCompleteness {
         WriteFullSet (Join-Path $dir 'hole')
         WriteText (Join-Path $dir 'hole\bench_frame_path-mock.json') ($doc | ConvertTo-Json -Depth 6)
         $holes = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'hole')) '9.9.9' '' 'now').latency)
-        $gate = Get-StallGate $holes 50 $false
+        $gate = Get-StallGate $holes 0.5 $false
         ExpectEq $gate.passed $false 'failed'
         Expect ($gate.failures[0] -like '*has no dish A row for S5*') 'names the scenario'
+    } finally {
+        Remove-Item -Recurse -Force $dir
+    }
+}
+
+function TestNoiseFloor {
+    $dir = NewTempDir
+    try {
+        $changes = @{
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S1' 'A') = @{ longestGapMs = 1.1 }
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S2' 'A') = @{ longestGapMs = 7.5 }
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S3' 'A') = @{ longestGapMs = 21.4 }
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S3' 'B') = @{ longestGapMs = 90.0 }
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 30.0 }
+        }
+        WriteFullSet (Join-Path $dir 'in') $changes
+        $rows = @((New-Measurements @(Read-BenchDirectory (Join-Path $dir 'in')) '9.9.9' '' 'now').latency)
+
+        Test 'Get-NoiseFloor: the longest dish A gap in S1 to S3, never dish B and never a scenario with a PUT'
+        $floor = Get-NoiseFloor $rows 'bench_frame_path mock default'
+        ExpectEq $floor.longestGapMs 21.4 'S3 is the longest of S1 to S3'
+        ExpectEq $floor.scenario 'S3' 'scenario'
+
+        Test 'Get-NoiseFloor: each run has its own, and a tie goes to the earlier scenario'
+        $floor = Get-NoiseFloor $rows 'bench_frame_path vigem default'
+        ExpectEq $floor.longestGapMs 0.2 'the quiet run'
+        ExpectEq $floor.scenario 'S2' 'scenario'
+        $floor = Get-NoiseFloor $rows 'bench_frame_path_lockstats mock default'
+        ExpectEq $floor.longestGapMs 0.2 'the stats build of the same backend'
+
+        Test 'Get-NoiseFloor: a run that keeps neither S2 nor S3 has none'
+        ExpectEq ($null -eq (Get-NoiseFloor $rows 'bench_frame_path mock mic1000')) $true 'the mic variant keeps S6 only'
+    } finally {
+        Remove-Item -Recurse -Force $dir
+    }
+}
+
+function TestLockGate {
+    $dir = NewTempDir
+    try {
+        $in = Join-Path $dir 'in'
+        WriteFullSet $in
+        $measured = New-Measurements @(Read-BenchDirectory $in) '9.9.9' '' 'now'
+        $rows = @($measured.latency)
+        $locks = @($measured.locks)
+
+        Test 'Get-LockLawGate: locks taken by the cold roles pass, and every lock row is counted'
+        $gate = Get-LockLawGate $rows $locks
+        ExpectEq $gate.passed $true 'passed'
+        ExpectEq $gate.checked 24 'lock rows'
+        ExpectEq $gate.failures.Count 0 'no failures'
+
+        Test 'Get-LockLawGate: an acquisition by the Receive role fails, naming the run, the scenario, the role and the lock'
+        $receive = @{ (LockKey 'bench_frame_path_lockstats' 'vigem' 50) = @( (LockRow 'vigem' 'S7' 'service.state' 'Receive' 0.3 3) ) }
+        WriteFullSet (Join-Path $dir 'receive') $receive
+        $bad = New-Measurements @(Read-BenchDirectory (Join-Path $dir 'receive')) '9.9.9' '' 'now'
+        $gate = Get-LockLawGate @($bad.latency) @($bad.locks)
+        ExpectEq $gate.passed $false 'failed'
+        ExpectEq $gate.failures.Count 1 'exactly one failure'
+        ExpectEq $gate.failures[0] 'bench_frame_path_lockstats vigem default S7: the Receive role acquired service.state 3 times' 'text'
+
+        Test 'Get-LockLawGate: the Pointer and Mic roles are held to the same law, and one acquisition reads as one time'
+        $others = @{
+            (LockKey 'bench_frame_path_lockstats' 'mock' 50) = @(
+                (LockRow 'mock' 'S6' 'config.write' 'Pointer' 0.1 1),
+                (LockRow 'mock' 'S8' 'log' 'Mic' 0.1 2)
+            )
+        }
+        WriteFullSet (Join-Path $dir 'others') $others
+        $bad = New-Measurements @(Read-BenchDirectory (Join-Path $dir 'others')) '9.9.9' '' 'now'
+        $gate = Get-LockLawGate @($bad.latency) @($bad.locks)
+        ExpectEq $gate.failures.Count 2 'two failures'
+        ExpectEq $gate.failures[0] 'bench_frame_path_lockstats mock default S6: the Pointer role acquired config.write 1 time' 'pointer'
+        ExpectEq $gate.failures[1] 'bench_frame_path_lockstats mock default S8: the Mic role acquired log 2 times' 'mic'
+
+        Test 'Get-LockLawGate: failed try_locks are not acquisitions'
+        $tries = @{ (LockKey 'bench_frame_path_lockstats' 'vigem' 50) = @( (LockRow 'vigem' 'S6' 'service.state' 'Receive' 0.0 0 2) ) }
+        WriteFullSet (Join-Path $dir 'tries') $tries
+        $tried = New-Measurements @(Read-BenchDirectory (Join-Path $dir 'tries')) '9.9.9' '' 'now'
+        ExpectEq (Get-LockLawGate @($tried.latency) @($tried.locks)).passed $true 'passes'
+
+        Test 'Get-LockLawGate: a lock-stats run that recorded no lock at all cannot be judged'
+        $gate = Get-LockLawGate $rows @()
+        ExpectEq $gate.passed $false 'failed'
+        ExpectEq $gate.failures.Count 4 'all four lock-stats runs'
+        Expect ($gate.failures[0] -like 'bench_frame_path_lockstats mock default recorded no lock at all*') 'names the run'
+
+        Test 'Get-LockLawGate: a set without a lock-stats run has nothing to check and says so'
+        $latencyOnly = @($rows | Where-Object { $_.target -eq 'bench_frame_path' })
+        $gate = Get-LockLawGate $latencyOnly @()
+        ExpectEq $gate.passed $true 'passes'
+        ExpectEq $gate.checked 0 'nothing checked'
+        Expect ((Format-LockGateMarkdown $gate) -like '*No lock-stats run was supplied*') 'the markdown says so'
     } finally {
         Remove-Item -Recurse -Force $dir
     }
@@ -492,14 +701,53 @@ function TestMarkdown {
         Expect ($md -like '# Satellite 9.9.9 measurements*') 'title'
         Expect ($md.Contains('commit `abcdef0`')) 'short commit'
         Expect ($md -like '*Test CPU 9000, Release build*') 'machine line'
-        Expect ($md -like '*PASS: dish A''s longest gap stays under 50 ms*') 'gate verdict'
+        Expect ($md -like '*PASS: dish A''s longest gap stays under half of the plug in every scenario with a PUT (limit 250 ms for a plug of 500 ms; the longest was 0.200 ms, mock S4 in bench_frame_path).*') 'gate verdict'
+        Expect ($md -like '*| run | mode | longest gap with a PUT ms | limit ms | runner noise floor ms |*') 'gate table headers'
+        Expect ($md -like '*| bench_frame_path | mock | 0.200 (S4) | 250 | 0.200 (S2) |*') 'a gate row, with the runner noise floor beside it'
+        Expect ($md -like '*| bench_frame_path (mic 1000 Hz) | vigem | 0.200 (S6) | 250 | - |*') 'a mic run has no floor'
+        Expect ($md -like '*## Lock law gate*PASS: the Receive, Pointer and Mic roles took no lock in any scenario (24 lock rows checked).*') 'lock gate verdict'
         Expect ($md -like '*No earlier release carries measurements*') 'no previous release'
         Expect ($md -like '*| scenario | mode | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops |*') 'latency headers'
         Expect ($md -like '*| S5 | vigem | 8000 | 24000 | 15.4 | 15.9 | 17.7 | 60.5 | 0 | 0.200 | 0 |*') 'a latency row'
         Expect ($md -like '*| S6 (mic 1000 Hz) | mock | 8000 |*') 'the mic variant row'
         Expect ($md -like '*| mode | scenario | lock | role | acquisitions | contended | failed tries | max wait us | p99 wait us | max hold us |*') 'lock headers'
-        Expect ($md -like '*| mock | S6 | config | Receive | 150 | 2 | 0 | 4.5 | 0.5 | 60.7 |*') 'a lock row'
+        Expect ($md -like '*| mock | S6 | config.write | ConfigSaver | 150 | 2 | 0 | 4.5 | 0.5 | 60.7 |*') 'a lock row'
         Expect ($md -notlike '*| B |*') 'dish B stays out of the table'
+
+        Test 'the headline tells a game player what the relay costs and what it holds itself to'
+        Expect ($md -like '*## What a game sees*') 'headline heading'
+        Expect ($md -like '*simulated 15 us driver submit and a 500 ms plug*') 'the settings in words'
+        Expect ($md -like '*- **Added latency per input** (vigem adapter path, S2 at 8000 Hz): 15.4 us at the median and 15.9 us at the 99th percentile, and the best of 3 reps puts the 99.9th percentile at 17.4 us. The median is 0.4% of a 240 Hz frame and 0.1% of a 60 Hz frame.*') 'added latency line'
+        Expect ($md -like '*- **Input cadence:** 8000 updates a second sustained for 3 s with 0 drops.*') 'cadence line'
+        Expect ($md -like '*- **While another player connects** (S4 to S8, both adapters): the first player''s input paused at most 0.200 ms (mock S4), 4.8% of a 240 Hz frame and 1.2% of a 60 Hz frame; the worst single rep across those scenarios was 0.250 ms. A receive thread that waited out the plug would pause 500 ms, 30.0 frames at 60 Hz.*') 'connect pause line'
+        Expect ($md -like '*- **Runner noise floor:** with no plug in play the runner itself paused the harness up to 0.200 ms (mock S2); a gap under that line is the machine, not Satellite.*') 'noise floor line'
+        Expect ($md -like '*## What we hold ourselves to*') 'lock heading'
+        Expect ($md -like '*- **Locks on the input path:** 0. The Receive, Pointer and Mic threads acquired that many locks across 24 lock rows (lock law gate PASS).*') 'locks line'
+        Expect ($md -like '*- **Longest hold of a short lock:** 60.7 us, config.write by ConfigSaver in mock S6.*') 'longest short hold line'
+        Expect ($md -like '*- **Longest hold of a transaction lock, held across the plug by design:** 515.3 ms, service.topology by HttpClient in mock S6, for a 500 ms plug.*') 'transaction hold line'
+        Expect ($md -like '*- **Longest wait for a lock by any thread:** 4.5 us, ConfigSaver on config.write in mock S6.*') 'longest wait line'
+        Expect ($md -like '*- **Plug stall gate:** PASS.*') 'stall gate line'
+
+        Test 'the across-reps table carries the best latency rep and the worst stall rep per scenario'
+        Expect ($md -like '*## Across reps*') 'reps heading'
+        Expect ($md -like '*| scenario | mode | reps | p50 us best | p99 us best | p99.9 us best | max us best | longest gap ms worst | over 1 ms worst | drops worst |*') 'reps headers'
+        Expect ($md -like '*| S5 | vigem | 3 | 15.3 | 15.9 | 17.4 | 60.5 | 0.250 | 1 | 0 |*') 'a reps row'
+        $json = ReadJson (Join-Path $dir 'out\measurements-9.9.9.json')
+        ExpectEq $json.schema 2 'schema version'
+        ExpectEq $json.headline.inputCost.p50Us 15.4 'headline p50 in the JSON'
+        ExpectEq $json.headline.inputCost.bestP999Us 17.4 'headline best p99.9 in the JSON'
+        ExpectEq $json.headline.connectPause.worstAcrossRepsMs 0.25 'headline worst rep gap in the JSON'
+        ExpectEq $json.headline.locks.inputPathAcquisitions 0 'headline input-path acquisitions'
+        ExpectEq @($json.reps).Count (4 * 15 * 3 + 4 * 2 * 3) 'rep rows kept: 15 rows times 3 reps in each default run, 2 rows times 3 in each mic run'
+
+        Test 'bench files without per-rep rows still report, with the reported rep standing alone'
+        WriteFullSet (Join-Path $dir 'single') @{ noReps = $true }
+        $code = RunReport (Join-Path $dir 'single') (Join-Path $dir 'out-single') '9.9.9' ''
+        ExpectEq $code 0 'exit code'
+        $md = [IO.File]::ReadAllText((Join-Path $dir 'out-single\measurements-9.9.9.md'))
+        Expect ($md -like '*The bench files carry no per-rep rows, so the reported rep stands alone.*') 'single rep note'
+        Expect ($md -like '*15.4 us at the median and 15.9 us at the 99th percentile. The median is*') 'no best-of-reps clause'
+        Expect ($md -like '*paused at most 0.200 ms (mock S4), 4.8% of a 240 Hz frame and 1.2% of a 60 Hz frame. A receive thread*') 'no worst-rep clause'
 
         Test 'the dish A table keeps scenario order, mock before vigem, the mic variant last'
         $order = [regex]::Matches($md, '(?m)^\| (S\d(?: \(mic 1000 Hz\))?) \| (mock|vigem) \| \d+ \| 24000|^\| (S1) \| (mock|vigem) \| 1000 \|') | ForEach-Object { ($_.Value -split '\|')[1].Trim() + ' ' + ($_.Value -split '\|')[2].Trim() }
@@ -517,16 +765,31 @@ function TestMarkdown {
         Expect ($md -like '*| S5 | vigem | 8000 | 24000 | 15.4 | 15.9 | 17.7 | 60.5 | 0 | 0.200 | 0 | 17.7 | 60.5 |*') 'previous values in the row'
 
         Test 'a failed gate is spelled out in the markdown and the JSON'
-        $changes = @{ (ChangeKey 'bench_frame_path' 'vigem' 50 'S5' 'A') = @{ longestGapMs = 201.718 } }
+        $changes = @{ (ChangeKey 'bench_frame_path' 'vigem' 50 'S5' 'A') = @{ longestGapMs = 501.718 } }
         WriteFullSet (Join-Path $dir 'bad') $changes
         $code = RunReport (Join-Path $dir 'bad') (Join-Path $dir 'out3') '9.9.9' ''
         ExpectEq $code 1 'exit code'
         $md = [IO.File]::ReadAllText((Join-Path $dir 'out3\measurements-9.9.9.md'))
-        Expect ($md -like '*FAIL: dish A''s longest gap must stay under 50 ms*') 'verdict'
-        Expect ($md -like '*- bench_frame_path vigem default S5 dish A: longest gap 201.7 ms is not under 50 ms*') 'bullet'
+        Expect ($md -like '*FAIL: dish A''s longest gap must stay under half of the plug in every scenario with a PUT.*') 'verdict'
+        Expect ($md -like '*- bench_frame_path vigem default S5 dish A: longest gap 501.7 ms is not under 250 ms, half of the 500 ms plug; the runner noise floor of this run is 0.2 ms*') 'bullet'
         $json = ReadJson (Join-Path $dir 'out3\measurements-9.9.9.json')
         ExpectEq $json.gate.passed $false 'gate.passed'
         ExpectEq $json.gate.failures.Count 1 'gate.failures'
+        ExpectEq $json.lockGate.passed $true 'the lock gate is judged on its own'
+
+        Test 'a lock law violation is spelled out in the markdown and the JSON'
+        $locked = @{ (LockKey 'bench_frame_path_lockstats' 'vigem' 50) = @( (LockRow 'vigem' 'S7' 'service.state' 'Receive' 0.3 3) ) }
+        WriteFullSet (Join-Path $dir 'locked') $locked
+        $code = RunReport (Join-Path $dir 'locked') (Join-Path $dir 'out4') '9.9.9' ''
+        ExpectEq $code 1 'exit code'
+        $md = [IO.File]::ReadAllText((Join-Path $dir 'out4\measurements-9.9.9.md'))
+        Expect ($md -like '*PASS: dish A''s longest gap stays under half of the plug*') 'the stall gate still passes'
+        Expect ($md -like '*FAIL: the Receive, Pointer and Mic roles must take no lock in any scenario.*') 'verdict'
+        Expect ($md -like '*- bench_frame_path_lockstats vigem default S7: the Receive role acquired service.state 3 times*') 'bullet'
+        $json = ReadJson (Join-Path $dir 'out4\measurements-9.9.9.json')
+        ExpectEq $json.lockGate.passed $false 'lockGate.passed'
+        ExpectEq $json.lockGate.failures.Count 1 'lockGate.failures'
+        ExpectEq $json.gate.passed $true 'gate.passed'
     } finally {
         Remove-Item -Recurse -Force $dir
     }
@@ -544,13 +807,17 @@ function TestOutputFiles {
         Expect (Test-Path (Join-Path $dir 'nested\out\measurements-2.1.9.json')) 'json'
         Expect (Test-Path (Join-Path $dir 'nested\out\measurements-2.1.9.md')) 'markdown'
         $json = ReadJson (Join-Path $dir 'nested\out\measurements-2.1.9.json')
-        ExpectEq $json.schema 1 'schema'
+        ExpectEq $json.schema 2 'schema'
         ExpectEq $json.version '2.1.9' 'version'
         ExpectEq $json.commit 'abcdef0123456789' 'commit'
         ExpectEq $json.gate.passed $true 'gate'
-        ExpectEq $json.gate.limitMs 50 'limit recorded'
+        ExpectEq $json.gate.plugFraction 0.5 'fraction recorded'
+        ExpectEq $json.gate.runs.Count 8 'a summary for each run'
+        ExpectEq $json.lockGate.passed $true 'lock gate'
+        ExpectEq $json.lockGate.checked 24 'lock rows checked'
+        ExpectEq $json.latency[0].plugMs 500 'each row carries its plug'
         ExpectEq $json.latency.Count 68 'rows'
-        ExpectEq $json.locks.Count 16 'lock rows'
+        ExpectEq $json.locks.Count 24 'lock rows'
         ExpectEq $json.trend.warnings.Count 0 'trend recorded'
         Expect (([IO.File]::ReadAllBytes((Join-Path $dir 'nested\out\measurements-2.1.9.json')))[0] -ne 0xEF) 'no byte order mark'
 
@@ -591,16 +858,50 @@ function TestScriptProcess {
         $run = InvokeReportScript $argv
         ExpectEq $run.Code 0 "exit code; output: $(Neutral $run.Output)"
         Expect (Test-Path (Join-Path $out 'measurements-9.9.9.json')) 'json'
-        Expect ($run.Output -like '*plug stall gate: PASS*') 'verdict on the console'
+        Expect ($run.Output -like '*plug stall gate: PASS (limit 250 ms, half of the plug)*') 'verdict on the console'
+        Expect ($run.Output -like '*runner noise floor, bench_frame_path mock: 0.200 ms (S2)*') "noise floor on the console; output: $(Neutral $run.Output)"
+        Expect ($run.Output -like '*lock law gate: PASS (24 lock rows checked)*') 'lock gate on the console'
 
         Test 'measurements-report.ps1: a plug stall exits 1 with an error annotation, files still written'
-        $changes = @{ (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 201.7 } }
+        $changes = @{ (ChangeKey 'bench_frame_path' 'mock' 50 'S4' 'A') = @{ longestGapMs = 501.7 } }
         WriteFullSet (Join-Path $dir 'bad') $changes
         $badOut = Join-Path $dir 'badout'
         $run = InvokeReportScript @('-InputDir', (Quote (Join-Path $dir 'bad')), '-OutputDir', (Quote $badOut), '-Version', '9.9.9')
         ExpectEq $run.Code 1 'exit code'
-        Expect ($run.Output -like '*::error title=Plug stall gate::bench_frame_path mock default S4 dish A: longest gap 201.7 ms is not under 50 ms*') "annotation; output: $(Neutral $run.Output)"
+        Expect ($run.Output -like '*::error title=Plug stall gate::bench_frame_path mock default S4 dish A: longest gap 501.7 ms is not under 250 ms, half of the 500 ms plug*') "annotation; output: $(Neutral $run.Output)"
         Expect (Test-Path (Join-Path $badOut 'measurements-9.9.9.md')) 'markdown still written'
+
+        Test 'measurements-report.ps1: a noisy runner passes, 26 ms without a plug and 40 ms with one, and the noise floor is printed'
+        $noisy = @{
+            (ChangeKey 'bench_frame_path' 'mock' 50 'S3' 'A') = @{ longestGapMs = 26.386 }
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S5' 'A') = @{ longestGapMs = 40.0 }
+        }
+        WriteFullSet (Join-Path $dir 'noisy') $noisy
+        $run = InvokeReportScript @('-InputDir', (Quote (Join-Path $dir 'noisy')), '-OutputDir', (Quote (Join-Path $dir 'noisyout')), '-Version', '9.9.9')
+        ExpectEq $run.Code 0 "exit code; output: $(Neutral $run.Output)"
+        Expect ($run.Output -like '*runner noise floor, bench_frame_path mock: 26.386 ms (S3)*') "the noise is reported; output: $(Neutral $run.Output)"
+        Expect ($run.Output -notlike '*::error*') 'no error annotation'
+
+        Test 'measurements-report.ps1: a 300 ms gap with a PUT in a 500 ms plug exits 1 and the annotation carries the noise floor'
+        $slowPut = @{
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S6' 'A') = @{ longestGapMs = 300.0 }
+            (ChangeKey 'bench_frame_path' 'vigem' 50 'S3' 'A') = @{ longestGapMs = 21.105 }
+        }
+        WriteFullSet (Join-Path $dir 'slowput') $slowPut
+        $run = InvokeReportScript @('-InputDir', (Quote (Join-Path $dir 'slowput')), '-OutputDir', (Quote (Join-Path $dir 'slowputout')), '-Version', '9.9.9')
+        ExpectEq $run.Code 1 'exit code'
+        Expect ($run.Output -like '*::error title=Plug stall gate::bench_frame_path vigem default S6 dish A: longest gap 300.0 ms is not under 250 ms, half of the 500 ms plug; the runner noise floor of this run is 21.1 ms*') "annotation; output: $(Neutral $run.Output)"
+
+        Test 'measurements-report.ps1: a lock taken by the Receive role exits 1 with an error that names the role, the lock and the scenario'
+        $locked = @{ (LockKey 'bench_frame_path_lockstats' 'vigem' 50) = @( (LockRow 'vigem' 'S7' 'service.state' 'Receive' 0.3 3) ) }
+        WriteFullSet (Join-Path $dir 'locked') $locked
+        $lockedOut = Join-Path $dir 'lockedout'
+        $run = InvokeReportScript @('-InputDir', (Quote (Join-Path $dir 'locked')), '-OutputDir', (Quote $lockedOut), '-Version', '9.9.9')
+        ExpectEq $run.Code 1 'exit code'
+        Expect ($run.Output -like '*::error title=Lock law gate::bench_frame_path_lockstats vigem default S7: the Receive role acquired service.state 3 times*') "annotation; output: $(Neutral $run.Output)"
+        Expect ($run.Output -like '*lock law gate: FAIL*') 'verdict on the console'
+        Expect ($run.Output -like '*plug stall gate: PASS*') 'the stall gate is judged on its own'
+        Expect (Test-Path (Join-Path $lockedOut 'measurements-9.9.9.md')) 'markdown still written'
 
         Test 'measurements-report.ps1: trend warnings are annotations and leave the exit code alone'
         $prev = Join-Path $dir 'prev'
@@ -622,9 +923,9 @@ function TestScriptProcess {
         $run = InvokeReportScript @('-InputDir', (Quote $part), '-OutputDir', (Quote (Join-Path $dir 'partout')), '-Version', '9.9.9', '-AllowPartial')
         ExpectEq $run.Code 0 'allowed'
 
-        Test 'measurements-report.ps1: -GapLimitMs moves the gate'
-        $run = InvokeReportScript @('-InputDir', (Quote (Join-Path $dir 'bad')), '-OutputDir', (Quote (Join-Path $dir 'wide')), '-Version', '9.9.9', '-GapLimitMs', '250')
-        ExpectEq $run.Code 0 'a 201.7 ms gap is under 250 ms'
+        Test 'measurements-report.ps1: -GapPlugFraction moves the gate'
+        $run = InvokeReportScript @('-InputDir', (Quote (Join-Path $dir 'bad')), '-OutputDir', (Quote (Join-Path $dir 'wide')), '-Version', '9.9.9', '-GapPlugFraction', '1.5')
+        ExpectEq $run.Code 0 'a 501.7 ms gap is under one and a half plugs'
 
         Test 'measurements-report.ps1: bad input exits 1 with the reason as an error annotation'
         $run = InvokeReportScript @('-InputDir', (Quote (Join-Path $dir 'nope')), '-OutputDir', (Quote $out), '-Version', '9.9.9')
@@ -684,6 +985,11 @@ function TestRealBenchSchema {
             Expect (@($run.Rows | Where-Object { $_.longestGapMs -le 0 -or $_.p999Us -le 0 }).Count -eq 0) 'every figure the report reads is filled in'
             $wantLocks = $target -eq 'bench_frame_path_lockstats'
             ExpectEq ($run.Locks.Count -gt 0) $wantLocks 'lock rows exist exactly in the stats build'
+            ExpectEq $run.Rows[0].plugMs 200 'the smoke run uses the default plug'
+            if ($wantLocks) {
+                $lockGate = Get-LockLawGate $run.Rows $run.Locks
+                ExpectEq $lockGate.passed $true "the receive, pointer and mic roles of the real bench take no lock; $($lockGate.failures -join '; ')"
+            }
         }
     } finally {
         Remove-Item -Recurse -Force $dir
@@ -699,6 +1005,8 @@ try {
     TestMerge
     TestGate
     TestGateCompleteness
+    TestNoiseFloor
+    TestLockGate
     TestTrendRule
     TestTrendComparison
     TestPreviousSelection
