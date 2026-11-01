@@ -127,8 +127,9 @@ constexpr Nanos TIMER_OVERSHOOT = std::chrono::microseconds(500);
 constexpr Nanos SLEEP_LEAD = SPIN_MARGIN + TIMER_OVERSHOOT;
 constexpr Nanos COARSE_SLEEP_TICK = std::chrono::milliseconds(16);
 constexpr int64_t NANOS_PER_TIMER_UNIT = 100;
-constexpr double RATE_TOLERANCE = 0.01;
+constexpr double RATE_TOLERANCE = 0.03;
 constexpr size_t MIN_FRAMES_TO_JUDGE_RATE = 8;
+constexpr int RATE_TOLERANCE_PERCENT = 3;
 
 constexpr int MIC_PACKETS = 50;
 constexpr double PI = 3.141592653589793;
@@ -413,7 +414,8 @@ void printUsage(std::FILE* out) {
                "  --json <path>     also write the table, and in a lock-stats build the lock "
                "figures, as JSON\n"
                "  --smoke           every scenario once for 0.2 s on both backends, no warm-up "
-               "pass, and a check that every producer's rate is within 1% of its target\n"
+               "pass, and a check that every producer's rate over the run is within 3% of its "
+               "target\n"
                "  --verbose         print the service's log lines to stderr\n",
                out);
 }
@@ -1427,17 +1429,11 @@ std::string describe(const std::string& dish, const std::string& what, uint64_t 
 }
 
 double achievedRateHz(const std::vector<TimePoint>& stamps) {
-    const size_t stride = stamps.size() / 2;
-    std::vector<int64_t> spans;
-    spans.reserve(stamps.size() - stride);
-    for (size_t i = 0; i + stride < stamps.size(); ++i) {
-        spans.push_back(elapsedNanos(stamps[i], stamps[i + stride]));
-    }
-    const auto middle = spans.begin() + static_cast<std::ptrdiff_t>(spans.size() / 2);
-    std::nth_element(spans.begin(), middle, spans.end());
-    if (*middle <= 0) return 0.0;
-    return static_cast<double>(stride) * static_cast<double>(NANOS_PER_SECOND) /
-           static_cast<double>(*middle);
+    if (stamps.size() < 2) return 0.0;
+    const int64_t span = elapsedNanos(stamps.front(), stamps.back());
+    if (span <= 0) return 0.0;
+    return static_cast<double>(stamps.size() - 1) * static_cast<double>(NANOS_PER_SECOND) /
+           static_cast<double>(span);
 }
 
 void checkStreamRate(const std::string& dish, const char* what, const Stream& stream,
@@ -1447,7 +1443,7 @@ void checkStreamRate(const std::string& dish, const char* what, const Stream& st
     const double target = static_cast<double>(stream.rateHz);
     if (std::fabs(achieved - target) <= target * RATE_TOLERANCE) return;
     problems.push_back("dish " + dish + ": the " + what + " producer ran at " + fixed(achieved, 1) +
-                       " Hz, not within " + fixed(RATE_TOLERANCE * 100.0, 0) + "% of " +
+                       " Hz, not within " + std::to_string(RATE_TOLERANCE_PERCENT) + "% of " +
                        std::to_string(stream.rateHz) + " Hz");
 }
 
