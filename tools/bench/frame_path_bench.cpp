@@ -122,10 +122,20 @@ constexpr int DASHBOARD_READERS = 8;
 constexpr double DASHBOARD_PERIOD_SECS = 0.1;
 constexpr uint64_t LOGS_SINCE_START = 0;
 
+constexpr Nanos SPIN_MARGIN = std::chrono::microseconds(300);
+constexpr Nanos TIMER_OVERSHOOT = std::chrono::microseconds(500);
+constexpr Nanos SLEEP_LEAD = SPIN_MARGIN + TIMER_OVERSHOOT;
+constexpr Nanos COARSE_SLEEP_TICK = std::chrono::milliseconds(16);
+constexpr int64_t NANOS_PER_TIMER_UNIT = 100;
+constexpr double RATE_TOLERANCE = 0.01;
+constexpr size_t MIN_FRAMES_TO_JUDGE_RATE = 8;
+
 constexpr int MIC_PACKETS = 50;
 constexpr double PI = 3.141592653589793;
 constexpr double TONE_HZ = 440.0;
 constexpr double TONE_AMPLITUDE = 8000.0;
+
+constexpr int MEASURED_DISH_INDEX = 0;
 
 constexpr int NO_CPU = -1;
 constexpr int FIRST_PREFERRED_CPU = 2;
@@ -161,6 +171,58 @@ void spinUntil(TimePoint due) {
 }
 
 void spinFor(Nanos span) { spinUntil(Clock::now() + span); }
+
+enum class Pacing { Spin, Hybrid };
+
+class DeadlineWait {
+  public:
+    explicit DeadlineWait(Pacing pacing)
+        : hybrid_(pacing == Pacing::Hybrid),
+          timer_(hybrid_ ? CreateWaitableTimerExW(nullptr, nullptr,
+                                                  CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                                  TIMER_ALL_ACCESS)
+                         : nullptr) {}
+
+    ~DeadlineWait() {
+        if (timer_ != nullptr) CloseHandle(timer_);
+    }
+
+    DeadlineWait(const DeadlineWait&) = delete;
+    DeadlineWait& operator=(const DeadlineWait&) = delete;
+
+    void until(TimePoint due) const {
+        if (hybrid_) sleepUntil(due - SLEEP_LEAD);
+        spinUntil(due);
+    }
+
+  private:
+    void sleepUntil(TimePoint wake) const {
+        const Nanos remaining = wake - Clock::now();
+        if (remaining <= Nanos::zero()) return;
+        if (timer_ != nullptr)
+            sleepOnTimer(remaining);
+        else
+            sleepCoarsely(remaining);
+    }
+
+    void sleepOnTimer(Nanos span) const {
+        LARGE_INTEGER relative;
+        relative.QuadPart = -(span.count() / NANOS_PER_TIMER_UNIT);
+        if (SetWaitableTimer(timer_, &relative, 0, nullptr, nullptr, FALSE)) {
+            WaitForSingleObject(timer_, INFINITE);
+        }
+    }
+
+    static void sleepCoarsely(Nanos span) {
+        if (span <= COARSE_SLEEP_TICK) return;
+        const auto millis =
+            std::chrono::duration_cast<std::chrono::milliseconds>(span - COARSE_SLEEP_TICK);
+        Sleep(static_cast<DWORD>(millis.count()));
+    }
+
+    const bool hybrid_;
+    const HANDLE timer_;
+};
 
 std::string trimmed(const std::string& text) {
     const size_t first = text.find_first_not_of(' ');
@@ -333,7 +395,7 @@ void printUsage(std::FILE* out) {
                "  --json <path>     also write the table, and in a lock-stats build the lock "
                "figures, as JSON\n"
                "  --smoke           every scenario once for 0.2 s on both backends, no warm-up "
-               "pass\n"
+               "pass, and a check that every producer's rate is within 1% of its target\n"
                "  --verbose         print the service's log lines to stderr\n",
                out);
 }
@@ -561,6 +623,7 @@ struct DishSpec {
     uint8_t padType = CONTROLLER_TYPE_XBOX;
     uint16_t padCaps = 0;
     double heartbeatFirstSecs = 0.0;
+    Pacing gamepadPacing = Pacing::Spin;
     std::array<uint8_t, CRYPTO_KEY_SIZE> pairingKey{};
 };
 
@@ -581,10 +644,14 @@ struct DishTally {
 };
 
 struct Stream {
-    explicit Stream(uint64_t frames) : plannedFrames(frames), ring(RING_CAPACITY) {}
+    Stream(uint64_t frames, int hz) : plannedFrames(frames), rateHz(hz), ring(RING_CAPACITY) {
+        stamps.reserve(frames);
+    }
 
     const uint64_t plannedFrames;
+    const int rateHz;
     SpscRing ring;
+    std::vector<TimePoint> stamps;
     uint64_t produced = 0;
     uint64_t ringDrops = 0;
     uint64_t sealFailures = 0;
@@ -593,10 +660,10 @@ struct Stream {
 struct DishRun {
     DishRun(DishSpec dishSpec, uint64_t gamepadFrames, uint64_t motionFrames, uint64_t micFrames)
         : spec(std::move(dishSpec)), senderIPv4(satellite::parseIPv4Nbo(spec.clientIp)),
-          gamepad(gamepadFrames) {
+          gamepad(gamepadFrames, spec.rateHz) {
         tally.latencyNs.assign(gamepadFrames, 0);
-        if (motionFrames > 0) motion = std::make_unique<Stream>(motionFrames);
-        if (micFrames > 0) mic = std::make_unique<Stream>(micFrames);
+        if (motionFrames > 0) motion = std::make_unique<Stream>(motionFrames, spec.motionHz);
+        if (micFrames > 0) mic = std::make_unique<Stream>(micFrames, spec.micHz);
     }
 
     uint64_t produced() const {
@@ -649,6 +716,7 @@ DishSpec makeDishSpec(const DishPlan& plan) {
     spec.padType = plan.padType;
     spec.padCaps = plan.padCaps;
     spec.heartbeatFirstSecs = plan.heartbeatFirstSecs;
+    spec.gamepadPacing = plan.index == MEASURED_DISH_INDEX ? Pacing::Spin : Pacing::Hybrid;
     for (size_t i = 0; i < spec.pairingKey.size(); ++i) {
         const int offset = PAIRING_KEY_BASE + plan.index * PAIRING_KEY_STRIDE + static_cast<int>(i);
         spec.pairingKey[i] = static_cast<uint8_t>(offset);
@@ -818,6 +886,7 @@ void emit(DishRun& dish, Stream& stream, const Message& message) {
     frame.stamp = Clock::now();
     if (!stream.ring.tryPush(frame)) stream.ringDrops += 1;
     stream.produced += 1;
+    if (message.kind != Kind::Heartbeat) stream.stamps.push_back(frame.stamp);
 }
 
 struct HeartbeatPlan {
@@ -826,11 +895,12 @@ struct HeartbeatPlan {
 };
 
 void runGamepadProducer(DishRun& dish, TimePoint start, HeartbeatPlan heartbeats) {
+    const DeadlineWait wait(dish.spec.gamepadPacing);
     TimePoint nextHeartbeat = heartbeats.first;
     for (uint64_t tick = 0; tick < dish.gamepad.plannedFrames; ++tick) {
         const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.rateHz;
         const TimePoint due = start + Nanos(offset);
-        spinUntil(due);
+        wait.until(due);
         while (nextHeartbeat <= due) {
             emit(dish, dish.gamepad, Message{Kind::Heartbeat, 0});
             nextHeartbeat += heartbeats.period;
@@ -841,18 +911,20 @@ void runGamepadProducer(DishRun& dish, TimePoint start, HeartbeatPlan heartbeats
 
 void runMotionProducer(DishRun& dish, TimePoint start) {
     Stream& stream = *dish.motion;
+    const DeadlineWait wait(Pacing::Hybrid);
     for (uint64_t tick = 0; tick < stream.plannedFrames; ++tick) {
         const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.motionHz;
-        spinUntil(start + Nanos(offset));
+        wait.until(start + Nanos(offset));
         emit(dish, stream, Message{Kind::Motion, tick});
     }
 }
 
 void runMicProducer(DishRun& dish, TimePoint start) {
     Stream& stream = *dish.mic;
+    const DeadlineWait wait(Pacing::Hybrid);
     for (uint64_t tick = 0; tick < stream.plannedFrames; ++tick) {
         const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.micHz;
-        spinUntil(start + Nanos(offset));
+        wait.until(start + Nanos(offset));
         emit(dish, stream, Message{Kind::Mic, tick});
     }
 }
@@ -1237,6 +1309,7 @@ struct RunPlan {
     double scheduleScale;
     int rxCpu;
     BackendMode backend;
+    bool checkRates;
 };
 
 struct DishRow {
@@ -1256,6 +1329,7 @@ struct DishRow {
     uint64_t motion = 0;
     uint64_t mic = 0;
     uint64_t heartbeats = 0;
+    int rep = 0;
 };
 
 struct LockRow {
@@ -1321,8 +1395,46 @@ DishRow summarize(const Scenario& scenario, BackendMode backend, const DishRun& 
     return row;
 }
 
+std::string fixed(double value, int decimals) {
+    std::array<char, 64> text{};
+    std::snprintf(text.data(), text.size(), "%.*f", decimals, value);
+    return text.data();
+}
+
 std::string describe(const std::string& dish, const std::string& what, uint64_t count) {
     return "dish " + dish + ": " + std::to_string(count) + " " + what;
+}
+
+double achievedRateHz(const std::vector<TimePoint>& stamps) {
+    const size_t stride = stamps.size() / 2;
+    std::vector<int64_t> spans;
+    spans.reserve(stamps.size() - stride);
+    for (size_t i = 0; i + stride < stamps.size(); ++i) {
+        spans.push_back(elapsedNanos(stamps[i], stamps[i + stride]));
+    }
+    const auto middle = spans.begin() + static_cast<std::ptrdiff_t>(spans.size() / 2);
+    std::nth_element(spans.begin(), middle, spans.end());
+    if (*middle <= 0) return 0.0;
+    return static_cast<double>(stride) * static_cast<double>(NANOS_PER_SECOND) /
+           static_cast<double>(*middle);
+}
+
+void checkStreamRate(const std::string& dish, const char* what, const Stream& stream,
+                     std::vector<std::string>& problems) {
+    if (stream.stamps.size() < MIN_FRAMES_TO_JUDGE_RATE) return;
+    const double achieved = achievedRateHz(stream.stamps);
+    const double target = static_cast<double>(stream.rateHz);
+    if (std::fabs(achieved - target) <= target * RATE_TOLERANCE) return;
+    problems.push_back("dish " + dish + ": the " + what + " producer ran at " + fixed(achieved, 1) +
+                       " Hz, not within " + fixed(RATE_TOLERANCE * 100.0, 0) + "% of " +
+                       std::to_string(stream.rateHz) + " Hz");
+}
+
+void checkProducerRates(const DishRun& dish, std::vector<std::string>& problems) {
+    const std::string& name = dish.spec.name;
+    checkStreamRate(name, "gamepad", dish.gamepad, problems);
+    if (dish.motion) checkStreamRate(name, "motion", *dish.motion, problems);
+    if (dish.mic) checkStreamRate(name, "mic", *dish.mic, problems);
 }
 
 void checkDish(const DishRun& dish, bool rotated, std::vector<std::string>& problems) {
@@ -1612,6 +1724,7 @@ class ScenarioRun {
             const bool rotated = put_ != nullptr && dish.get() == &put_->dish;
             result.rows.push_back(summarize(scenario_, plan_.backend, *dish));
             checkDish(*dish, rotated, result.problems);
+            if (plan_.checkRates) checkProducerRates(*dish, result.problems);
         }
         checkColdWorkers(sse_.get(), maintenance_.get(), put_.get(), dishes_.size(),
                          result.problems);
@@ -1684,12 +1797,6 @@ class ScenarioRun {
     std::vector<std::thread> producerThreads_;
     std::vector<std::thread> coldThreads_;
 };
-
-std::string fixed(double value, int decimals) {
-    std::array<char, 64> text{};
-    std::snprintf(text.data(), text.size(), "%.*f", decimals, value);
-    return text.data();
-}
 
 void reportRun(BackendMode backend, const Scenario& scenario, int rep, int reps,
                const ScenarioResult& result) {
@@ -1856,6 +1963,7 @@ satellite::JsonOut rowJson(const DishRow& row) {
     j["motion"] = row.motion;
     j["mic"] = row.mic;
     j["heartbeats"] = row.heartbeats;
+    j["rep"] = row.rep;
     return j;
 }
 
@@ -1875,7 +1983,8 @@ satellite::JsonOut lockJson(const LockRow& row) {
 }
 
 bool writeJson(const std::string& path, const Options& options, int rxCpu,
-               const std::vector<DishRow>& rows, const std::vector<LockRow>& locks) {
+               const std::vector<DishRow>& rows, const std::vector<DishRow>& reps,
+               const std::vector<LockRow>& locks) {
     satellite::JsonOut settings;
     settings["secs"] = options.secs;
     settings["reps"] = options.reps;
@@ -1889,6 +1998,8 @@ bool writeJson(const std::string& path, const Options& options, int rxCpu,
     settings["smoke"] = options.smoke;
     satellite::JsonOut rowArray = satellite::JsonOut::array();
     for (const DishRow& row : rows) rowArray.push_back(rowJson(row));
+    satellite::JsonOut repArray = satellite::JsonOut::array();
+    for (const DishRow& row : reps) repArray.push_back(rowJson(row));
     satellite::JsonOut lockArray = satellite::JsonOut::array();
     for (const LockRow& row : locks) lockArray.push_back(lockJson(row));
     satellite::JsonOut j;
@@ -1898,6 +2009,7 @@ bool writeJson(const std::string& path, const Options& options, int rxCpu,
     j["lockStats"] = LOCK_STATS_BUILD;
     j["settings"] = std::move(settings);
     j["rows"] = std::move(rowArray);
+    j["reps"] = std::move(repArray);
     j["locks"] = std::move(lockArray);
     std::ofstream out(path);
     if (!out) return false;
@@ -1954,7 +2066,8 @@ class BenchFileLog {
         std::filesystem::create_directories(dir_, ec);
         if (ec) return;
         const std::u8string utf8 = dir_.u8string();
-        lifecycle::startFileLogger(std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size()));
+        lifecycle::startFileLogger(
+            std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size()));
         started_ = logWriter().running();
     }
 
@@ -2027,7 +2140,7 @@ bool warmUp(const Options& options, const std::vector<BackendMode>& backends, in
     std::fprintf(stderr, "warm-up pass, results discarded\n");
     bool healthy = true;
     for (const BackendMode backend : backends) {
-        const RunPlan plan{SMOKE_SECS, SMOKE_SECS / DEFAULT_SECS, rxCpu, backend};
+        const RunPlan plan{SMOKE_SECS, SMOKE_SECS / DEFAULT_SECS, rxCpu, backend, false};
         for (const Scenario& scenario : SCENARIOS) {
             ScenarioResult warmResult;
             healthy = runScenarioOnce(options, scenario, plan, 0, 1, warmResult) && healthy;
@@ -2036,8 +2149,13 @@ bool warmUp(const Options& options, const std::vector<BackendMode>& backends, in
     return healthy;
 }
 
-bool measureBackend(const Options& options, const RunPlan& plan, std::vector<DishRow>& rows,
-                    std::vector<LockRow>& locks) {
+struct Measured {
+    std::vector<DishRow> rows;
+    std::vector<DishRow> reps;
+    std::vector<LockRow> locks;
+};
+
+bool measureBackend(const Options& options, const RunPlan& plan, Measured& out) {
     std::vector<std::vector<ScenarioResult>> byScenario(SCENARIOS.size());
     bool healthy = true;
     for (int rep = 0; rep < options.reps; ++rep) {
@@ -2046,26 +2164,30 @@ bool measureBackend(const Options& options, const RunPlan& plan, std::vector<Dis
             healthy =
                 runScenarioOnce(options, SCENARIOS[s], plan, rep, options.reps, result) && healthy;
             if (result.rows.empty()) return false;
+            for (DishRow& row : result.rows) row.rep = rep;
             byScenario[s].push_back(std::move(result));
         }
     }
     for (const std::vector<ScenarioResult>& reps : byScenario) {
         const ScenarioResult& median = medianRep(reps);
-        rows.insert(rows.end(), median.rows.begin(), median.rows.end());
-        locks.insert(locks.end(), median.locks.begin(), median.locks.end());
+        out.rows.insert(out.rows.end(), median.rows.begin(), median.rows.end());
+        out.locks.insert(out.locks.end(), median.locks.begin(), median.locks.end());
+        for (const ScenarioResult& rep : reps) {
+            out.reps.insert(out.reps.end(), rep.rows.begin(), rep.rows.end());
+        }
     }
     return healthy;
 }
 
 bool measure(const Options& options, const std::vector<BackendMode>& backends, int rxCpu,
-             std::vector<DishRow>& rows, std::vector<LockRow>& locks) {
+             Measured& out) {
     const double scale = options.smoke ? SMOKE_SECS / DEFAULT_SECS : 1.0;
     bool healthy = true;
     for (const BackendMode backend : backends) {
-        const RunPlan plan{options.secs, scale, rxCpu, backend};
-        const size_t before = rows.size();
-        healthy = measureBackend(options, plan, rows, locks) && healthy;
-        if (rows.size() == before) return false;
+        const RunPlan plan{options.secs, scale, rxCpu, backend, options.smoke};
+        const size_t before = out.rows.size();
+        healthy = measureBackend(options, plan, out) && healthy;
+        if (out.rows.size() == before) return false;
     }
     return healthy;
 }
@@ -2112,17 +2234,19 @@ int main(int argc, char** argv) {
     printBanner(options, backends, rxCpu);
 
     bool healthy = options.smoke || warmUp(options, backends, rxCpu);
-    std::vector<DishRow> rows;
-    std::vector<LockRow> locks;
-    healthy = measure(options, backends, rxCpu, rows, locks) && healthy;
-    if (rows.empty()) return 1;
+    Measured measured;
+    healthy = measure(options, backends, rxCpu, measured) && healthy;
+    if (measured.rows.empty()) return 1;
+    const std::vector<DishRow>& rows = measured.rows;
+    const std::vector<LockRow>& locks = measured.locks;
 
     printMarkdown(rows);
     printLockMarkdown(locks);
     printLegend(options);
     std::fflush(stdout);
 
-    if (!options.jsonPath.empty() && !writeJson(options.jsonPath, options, rxCpu, rows, locks)) {
+    if (!options.jsonPath.empty() &&
+        !writeJson(options.jsonPath, options, rxCpu, rows, measured.reps, locks)) {
         std::fprintf(stderr, "could not write %s\n", options.jsonPath.c_str());
         return 1;
     }
