@@ -451,6 +451,22 @@ function TestInstallerShipsSatelliteProfiles {
     ExpectEq ($staged -join ',') ($heartbeat -join ',') 'every heartbeat copy has its catalog file staged, and nothing else is'
 }
 
+function TestInstallerBrokerSddl {
+    Test 'installer.iss: the broker service security descriptor is SDDL that sc sdset accepts'
+    $lines = @((Get-Content (Join-Path $repoRoot 'installer.iss')) | Where-Object { $_ -match "^\s*BrokerServiceSddl = '[^']+';" })
+    ExpectEq $lines.Count 1 'one BrokerServiceSddl constant'
+    $sddl = ([string]($lines | Select-Object -First 1)) -replace "^\s*BrokerServiceSddl = '([^']+)';.*$", '$1'
+    $raw = $null
+    try { $raw = New-Object System.Security.AccessControl.RawSecurityDescriptor $sddl } catch { }
+    Expect ($null -ne $raw) "the SDDL parses: $sddl"
+    if ($null -eq $raw) { return }
+    ExpectEq $raw.DiscretionaryAcl.Count 4 'four DACL entries: SYSTEM, Administrators, interactive users, services'
+    ExpectEq $raw.SystemAcl.Count 1 'one audit entry'
+    $iu = $raw.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier.Value -eq 'S-1-5-4' } | Select-Object -First 1
+    Expect ($null -ne $iu) 'interactive users have an entry'
+    Expect (($iu.AccessMask -band 0x10) -ne 0) 'interactive users may start the service, which is how satellite reaches the broker without a prompt'
+}
+
 function TestStaging {
     $dir = NewTempDir
     try {
@@ -591,6 +607,7 @@ TestVersionsAndAsserts
 TestRepoPinsAgree
 TestInstallerShipsHmLicense
 TestInstallerShipsSatelliteProfiles
+TestInstallerBrokerSddl
 TestStaging
 TestFetchRedistEndToEnd
 Write-Host ''
