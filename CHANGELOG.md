@@ -71,11 +71,16 @@ Each release now carries a measurements report. After the build, the
 release workflow runs the lock path benchmark on a Windows runner and
 attaches `measurements-<version>.md` and `measurements-<version>.json` to
 the release: the first dish's latency in eight scenarios on both backends,
-and how long each lock was waited on by each thread. A release whose
-benchmark shows a dish stalled for 50 ms or more while another dish plugs a
-pad stays a draft, and a 99.9th percentile or a maximum that is more than
-twice the previous release's, and more than 100 us above it, is flagged as
-a warning.
+how long each lock was waited on by each thread, and a headline for anyone
+who plays: the latency Satellite adds to each input, also as a share of a
+frame, the input rate it sustained, the longest pause another player's
+connection caused, and the number of locks on the input path, which is
+zero. A release whose
+benchmark shows a dish stalled for half of a 500 ms plug, 250 ms, while
+another dish plugs a pad, or the receive, pointer or microphone thread
+taking any lock, stays a draft, and a 99.9th percentile or a maximum that is
+more than twice the previous release's, and more than 100 us above it, is
+flagged as a warning.
 
 On Windows, Satellite now creates its whole folder under the local app data
 directory when it is missing. It used to create only the last two levels, so
