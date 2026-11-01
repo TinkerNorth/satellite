@@ -3,7 +3,7 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
+## 2.1.11
 
 No protocol changes.
 The Windows installer moves from HIDMaestro 1.9.2 to 2.1.0, so Satellite
@@ -35,6 +35,11 @@ HIDMaestro's third-party notices are installed beside its license.
 `satellite-hm-helper.exe selftest`, run as administrator, checks the idle
 repeat, the profile copies, the Switch Pro state block and the section
 names against the installed driver.
+
+The Satellite Controller Broker service now gets the security descriptor the
+installer always meant to set. A malformed string had made every install
+skip that step, so the service ran with Windows' default descriptor and
+interactive users could not start it themselves.
 
 ## 2.1.10
 
