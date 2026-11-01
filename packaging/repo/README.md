@@ -34,12 +34,17 @@ sudo dnf install satellite
 
 ## How publishing works in CI
 
-The `release.yml` workflow runs an `apt-publish` and `rpm-publish` job
-after the main `publish` job succeeds. Both:
+The `publish-repos.yml` workflow holds the `apt-publish`, `rpm-publish`
+and `arch-publish` jobs. `release.yml` calls it after the main `publish`
+job succeeds, and it can be run by hand for a release that is already
+published (`gh workflow run publish-repos.yml --ref main -f tag=X.Y.Z`),
+which is how a release whose repository publish failed or was skipped is
+repaired. The first two jobs:
 
 1. Check out the `gh-pages` branch into a working directory.
 2. Run [`build-apt-repo.sh`](build-apt-repo.sh) or [`build-dnf-repo.sh`](build-dnf-repo.sh)
-   against the artifacts in `release/`, which:
+   against the release's own `.deb` / `.rpm`, downloaded into `release/`
+   and checked against the release's `SHA256SUMS`, which:
    - Drops the new `.deb` / `.rpm` into the pool / arch tree.
    - Regenerates the index metadata (`apt-ftparchive` / `createrepo_c`).
    - GPG-signs the result with the repo signing key.

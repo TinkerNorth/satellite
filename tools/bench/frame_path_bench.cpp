@@ -127,9 +127,8 @@ constexpr Nanos TIMER_OVERSHOOT = std::chrono::microseconds(500);
 constexpr Nanos SLEEP_LEAD = SPIN_MARGIN + TIMER_OVERSHOOT;
 constexpr Nanos COARSE_SLEEP_TICK = std::chrono::milliseconds(16);
 constexpr int64_t NANOS_PER_TIMER_UNIT = 100;
-constexpr double RATE_TOLERANCE = 0.03;
-constexpr size_t MIN_FRAMES_TO_JUDGE_RATE = 8;
-constexpr int RATE_TOLERANCE_PERCENT = 3;
+constexpr size_t MIN_FRAMES_TO_JUDGE_PACING = 8;
+constexpr Nanos MAX_MEDIAN_LATENESS = std::chrono::milliseconds(1);
 
 constexpr int MIC_PACKETS = 50;
 constexpr double PI = 3.141592653589793;
@@ -165,6 +164,10 @@ double nanosToMillis(int64_t nanos) {
 
 int64_t elapsedNanos(TimePoint from, TimePoint to) {
     return std::chrono::duration_cast<Nanos>(to - from).count();
+}
+
+int64_t deadlineOffsetNanos(uint64_t tick, int rateHz) {
+    return static_cast<int64_t>(tick) * NANOS_PER_SECOND / rateHz;
 }
 
 void spinUntil(TimePoint due) {
@@ -414,8 +417,8 @@ void printUsage(std::FILE* out) {
                "  --json <path>     also write the table, and in a lock-stats build the lock "
                "figures, as JSON\n"
                "  --smoke           every scenario once for 0.2 s on both backends, no warm-up "
-               "pass, and a check that every producer's rate over the run is within 3% of its "
-               "target\n"
+               "pass, and a check that every producer sent each frame at or after its deadline "
+               "and its median frame within 1 ms of it\n"
                "  --verbose         print the service's log lines to stderr\n",
                out);
 }
@@ -921,8 +924,7 @@ void runGamepadProducer(DishRun& dish, TimePoint start, HeartbeatPlan heartbeats
     const DeadlineWait wait(dish.spec.gamepadPacing);
     TimePoint nextHeartbeat = heartbeats.first;
     for (uint64_t tick = 0; tick < dish.gamepad.plannedFrames; ++tick) {
-        const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.rateHz;
-        const TimePoint due = start + Nanos(offset);
+        const TimePoint due = start + Nanos(deadlineOffsetNanos(tick, dish.spec.rateHz));
         wait.until(due);
         while (nextHeartbeat <= due) {
             emit(dish, dish.gamepad, Message{Kind::Heartbeat, 0});
@@ -936,8 +938,7 @@ void runMotionProducer(DishRun& dish, TimePoint start) {
     Stream& stream = *dish.motion;
     const DeadlineWait wait(dish.spec.coldPacing);
     for (uint64_t tick = 0; tick < stream.plannedFrames; ++tick) {
-        const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.motionHz;
-        wait.until(start + Nanos(offset));
+        wait.until(start + Nanos(deadlineOffsetNanos(tick, dish.spec.motionHz)));
         emit(dish, stream, Message{Kind::Motion, tick});
     }
 }
@@ -946,8 +947,7 @@ void runMicProducer(DishRun& dish, TimePoint start) {
     Stream& stream = *dish.mic;
     const DeadlineWait wait(dish.spec.coldPacing);
     for (uint64_t tick = 0; tick < stream.plannedFrames; ++tick) {
-        const int64_t offset = static_cast<int64_t>(tick) * NANOS_PER_SECOND / dish.spec.micHz;
-        wait.until(start + Nanos(offset));
+        wait.until(start + Nanos(deadlineOffsetNanos(tick, dish.spec.micHz)));
         emit(dish, stream, Message{Kind::Mic, tick});
     }
 }
@@ -1332,7 +1332,7 @@ struct RunPlan {
     double scheduleScale;
     int rxCpu;
     BackendMode backend;
-    bool checkRates;
+    bool checkPacing;
 };
 
 struct DishRow {
@@ -1428,30 +1428,53 @@ std::string describe(const std::string& dish, const std::string& what, uint64_t 
     return "dish " + dish + ": " + std::to_string(count) + " " + what;
 }
 
-double achievedRateHz(const std::vector<TimePoint>& stamps) {
-    if (stamps.size() < 2) return 0.0;
-    const int64_t span = elapsedNanos(stamps.front(), stamps.back());
-    if (span <= 0) return 0.0;
-    return static_cast<double>(stamps.size() - 1) * static_cast<double>(NANOS_PER_SECOND) /
-           static_cast<double>(span);
+struct Lateness {
+    int64_t earliestNs;
+    int64_t medianNs;
+    int64_t latestNs;
+};
+
+Lateness latenessOf(const Stream& stream, TimePoint start) {
+    std::vector<int64_t> late;
+    late.reserve(stream.stamps.size());
+    for (size_t tick = 0; tick < stream.stamps.size(); ++tick) {
+        const TimePoint due = start + Nanos(deadlineOffsetNanos(tick, stream.rateHz));
+        late.push_back(elapsedNanos(due, stream.stamps[tick]));
+    }
+    const auto [earliest, latest] = std::minmax_element(late.begin(), late.end());
+    const int64_t earliestNs = *earliest;
+    const int64_t latestNs = *latest;
+    const auto middle = late.begin() + static_cast<std::ptrdiff_t>(late.size() / 2);
+    std::nth_element(late.begin(), middle, late.end());
+    return Lateness{earliestNs, *middle, latestNs};
 }
 
-void checkStreamRate(const std::string& dish, const char* what, const Stream& stream,
-                     std::vector<std::string>& problems) {
-    if (stream.stamps.size() < MIN_FRAMES_TO_JUDGE_RATE) return;
-    const double achieved = achievedRateHz(stream.stamps);
-    const double target = static_cast<double>(stream.rateHz);
-    if (std::fabs(achieved - target) <= target * RATE_TOLERANCE) return;
-    problems.push_back("dish " + dish + ": the " + what + " producer ran at " + fixed(achieved, 1) +
-                       " Hz, not within " + std::to_string(RATE_TOLERANCE_PERCENT) + "% of " +
-                       std::to_string(stream.rateHz) + " Hz");
+std::string micros(int64_t nanos) { return fixed(static_cast<double>(nanos) / 1000.0, 1) + " us"; }
+
+void checkStreamPacing(const std::string& dish, const char* what, const Stream& stream,
+                       TimePoint start, std::vector<std::string>& problems) {
+    if (stream.stamps.size() != stream.plannedFrames) return;
+    if (stream.stamps.size() < MIN_FRAMES_TO_JUDGE_PACING) return;
+    const Lateness late = latenessOf(stream, start);
+    const std::string producer = "dish " + dish + ": the " + what + " producer";
+    if (late.earliestNs < 0) {
+        problems.push_back(producer + " sent a frame " + micros(-late.earliestNs) +
+                           " before its deadline");
+    }
+    if (late.medianNs > MAX_MEDIAN_LATENESS.count()) {
+        const auto limit =
+            std::chrono::duration_cast<std::chrono::milliseconds>(MAX_MEDIAN_LATENESS);
+        problems.push_back(producer + " sent its median frame " + micros(late.medianNs) +
+                           " after its deadline (latest " + micros(late.latestNs) + "), over the " +
+                           std::to_string(limit.count()) + " ms a working pacer keeps");
+    }
 }
 
-void checkProducerRates(const DishRun& dish, std::vector<std::string>& problems) {
+void checkProducerPacing(const DishRun& dish, TimePoint start, std::vector<std::string>& problems) {
     const std::string& name = dish.spec.name;
-    checkStreamRate(name, "gamepad", dish.gamepad, problems);
-    if (dish.motion) checkStreamRate(name, "motion", *dish.motion, problems);
-    if (dish.mic) checkStreamRate(name, "mic", *dish.mic, problems);
+    checkStreamPacing(name, "gamepad", dish.gamepad, start, problems);
+    if (dish.motion) checkStreamPacing(name, "motion", *dish.motion, start, problems);
+    if (dish.mic) checkStreamPacing(name, "mic", *dish.mic, start, problems);
 }
 
 void checkDish(const DishRun& dish, bool rotated, std::vector<std::string>& problems) {
@@ -1671,6 +1694,7 @@ class ScenarioRun {
     }
 
     void startProducers(TimePoint start) {
+        start_ = start;
         for (const auto& dish : dishes_) {
             producerThreads_.emplace_back(runGamepadProducer, std::ref(*dish), start,
                                           heartbeatPlanFor(*dish, start));
@@ -1757,7 +1781,7 @@ class ScenarioRun {
             const bool rotated = put_ != nullptr && dish.get() == &put_->dish;
             result.rows.push_back(summarize(scenario_, plan_.backend, *dish));
             checkDish(*dish, rotated, result.problems);
-            if (plan_.checkRates) checkProducerRates(*dish, result.problems);
+            if (plan_.checkPacing) checkProducerPacing(*dish, start_, result.problems);
         }
         checkColdWorkers(sse_.get(), maintenance_.get(), put_.get(), dishes_.size(),
                          result.problems);
@@ -1829,6 +1853,7 @@ class ScenarioRun {
     std::thread receiverThread_;
     std::vector<std::thread> producerThreads_;
     std::vector<std::thread> coldThreads_;
+    TimePoint start_{};
 };
 
 void reportRun(BackendMode backend, const Scenario& scenario, int rep, int reps,

@@ -159,7 +159,7 @@ jobs:
         id: report
         if: ${{ !cancelled() && steps.bench.outcome != 'skipped' }}
         shell: pwsh
-        run: ./scripts/measurements-report.ps1 -InputDir measurements-raw -OutputDir measurements -Version $env:MEASURE_VERSION -PreviousDir previous-measurements
+        run: ./scripts/measurements-report.ps1 -InputDir measurements-raw -OutputDir measurements -Version $env:MEASURE_VERSION -PreviousDir previous-measurements -Commit (git rev-parse HEAD)
 
       - name: Upload the measurements
         if: ${{ !cancelled() && steps.report.outcome != 'skipped' }}

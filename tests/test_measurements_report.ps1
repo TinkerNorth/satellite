@@ -976,6 +976,15 @@ function TestRealBenchSchema {
             $null = $proc.Handle
             $proc.WaitForExit()
             ExpectEq $proc.ExitCode 0 'the smoke run succeeds'
+            if ($proc.ExitCode -ne 0) {
+                foreach ($stream in @('out', 'err')) {
+                    $lines = @(Get-Content (Join-Path $dir "$target.$stream"))
+                    if ($lines.Count -eq 0) { continue }
+                    $keep = if ($stream -eq 'err') { 60 } else { 20 }
+                    Write-Host "  --- $target --smoke ${stream}: last $([Math]::Min($lines.Count, $keep)) of $($lines.Count) lines"
+                    $lines | Select-Object -Last $keep | ForEach-Object { Write-Host "  | $_" }
+                }
+            }
             $run = Read-BenchFile $json
             ExpectEq $run.Target $target 'target from the lockStats flag'
             ExpectEq $run.Variant 'default' 'variant from micHz'
