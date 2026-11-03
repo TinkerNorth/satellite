@@ -28,14 +28,6 @@ name: _release_harden (reusable)
 #
 # The caller then feeds `needs.harden.outputs.hashes` to the SLSA generic
 # generator and publishes the `release-bundle` artifact.
-#
-# Pin map (owner/repo @ tag → 40-char SHA), verify on update with
-#   gh api repos/<owner>/<repo>/git/ref/tags/<tag>:
-#   actions/download-artifact     @ v8.0.1  → 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-#   actions/upload-artifact       @ v7.0.1  → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-#   anchore/scan-action           @ v7.4.0  → e1165082ffb1fe366ebaf02d8526e7c4989ea9d2
-#   anchore/sbom-action           @ v0.24.0 → e22c389904149dbc22b58101806040fa8d37a610
-#   github/codeql-action          @ v4.38.0 → b96794f015dfd88f77b49b1c93e0fa7110f94c63
 
 on:
   workflow_call:
