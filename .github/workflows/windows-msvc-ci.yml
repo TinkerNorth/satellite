@@ -10,11 +10,6 @@ name: Windows MSVC CI
 #
 # This job does NOT publish; it proves the hardened build stays green. Promoting
 # it to the shipping artifact is a one-job swap in release.yml's `windows` job.
-#
-# Pin map (checkout/upload-artifact match windows-ci.yml):
-#   actions/checkout        @ v7.0.0 → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-#   actions/upload-artifact @ v7.0.1 → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-#   actions/cache           @ v4.3.0 → 0057852bfaa89a56745cba8c7296529d2fc39830
 
 on:
   push:

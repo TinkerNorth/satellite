@@ -5,9 +5,6 @@ name: Security
 # Pulls the shared jobs from satellite/.github/workflows/_security.yml
 # (action-pin lint, allowlist-expiry, OSV-Scanner, dependency-review,
 # gitleaks). CodeQL lives in codeql.yml because it has its own matrix.
-#
-# Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
-#   actions/checkout @ v7.0.0 → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
 on:
   push:

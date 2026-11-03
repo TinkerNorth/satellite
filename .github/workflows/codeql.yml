@@ -5,11 +5,6 @@ name: CodeQL
 # `cpp` covers all three platform builds. The matrix below picks the Linux
 # build because it's the cheapest and exercises the full set of
 # core/net/adapters/platform sources via the Linux platform target.
-#
-# Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
-#   actions/checkout         @ v7.0.0  → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-#   github/codeql-action/init    @ v4.38.0 → b96794f015dfd88f77b49b1c93e0fa7110f94c63
-#   github/codeql-action/analyze @ v4.38.0 → b96794f015dfd88f77b49b1c93e0fa7110f94c63
 
 on:
   push:

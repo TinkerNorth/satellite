@@ -57,14 +57,6 @@ on:
 # Prerelease tags (1.2.3-rc.1) publish marked as prerelease and skip the
 # APT/DNF repos; package managers never see them.
 #
-# Pin map (verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`):
-#   actions/checkout                @ v7.0.0  → 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-#   actions/setup-dotnet            @ v6.0.0  → a98b56852c35b8e3190ac28c8c2271da59106c68
-#   actions/upload-artifact         @ v7.0.1  → 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-#   actions/download-artifact       @ v8.0.1  → 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-#   softprops/action-gh-release     @ v3.0.2  → 3d0d9888cb7fd7b750713d6e236d1fcb99157228
-#   slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml
-#                                   @ v2.1.0  → f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
 #   (scan/SBOM/cosign pins live in _release_harden.yml)
 
 # Least privilege at the top; each job widens only what it needs. A workflow
