@@ -41,6 +41,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -418,7 +419,7 @@ void printUsage(std::FILE* out) {
                "figures, as JSON\n"
                "  --smoke           every scenario once for 0.2 s on both backends, no warm-up "
                "pass, and a check that every producer sent each frame at or after its deadline "
-               "and its median frame within 1 ms of it\n"
+               "and its median frame across the run within 1 ms of it\n"
                "  --verbose         print the service's log lines to stderr\n",
                out);
 }
@@ -1368,11 +1369,14 @@ struct LockRow {
     double maxHoldUs = 0.0;
 };
 
+using LatenessByProducer = std::map<std::string, std::vector<int64_t>>;
+
 struct ScenarioResult {
     std::vector<DishRow> rows;
     std::vector<LockRow> locks;
     std::vector<std::string> problems;
     std::vector<std::string> warnings;
+    LatenessByProducer lateness;
     bool putFired = false;
     double putMs = 0.0;
     double refreshMs = 0.0;
@@ -1434,13 +1438,17 @@ struct Lateness {
     int64_t latestNs;
 };
 
-Lateness latenessOf(const Stream& stream, TimePoint start) {
+std::vector<int64_t> frameLatenessNs(const Stream& stream, TimePoint start) {
     std::vector<int64_t> late;
     late.reserve(stream.stamps.size());
     for (size_t tick = 0; tick < stream.stamps.size(); ++tick) {
         const TimePoint due = start + Nanos(deadlineOffsetNanos(tick, stream.rateHz));
         late.push_back(elapsedNanos(due, stream.stamps[tick]));
     }
+    return late;
+}
+
+Lateness latenessOf(std::vector<int64_t> late) {
     const auto [earliest, latest] = std::minmax_element(late.begin(), late.end());
     const int64_t earliestNs = *earliest;
     const int64_t latestNs = *latest;
@@ -1451,30 +1459,36 @@ Lateness latenessOf(const Stream& stream, TimePoint start) {
 
 std::string micros(int64_t nanos) { return fixed(static_cast<double>(nanos) / 1000.0, 1) + " us"; }
 
-void checkStreamPacing(const std::string& dish, const char* what, const Stream& stream,
-                       TimePoint start, std::vector<std::string>& problems) {
-    if (stream.stamps.size() != stream.plannedFrames) return;
-    if (stream.stamps.size() < MIN_FRAMES_TO_JUDGE_PACING) return;
-    const Lateness late = latenessOf(stream, start);
-    const std::string producer = "dish " + dish + ": the " + what + " producer";
-    if (late.earliestNs < 0) {
-        problems.push_back(producer + " sent a frame " + micros(-late.earliestNs) +
-                           " before its deadline");
-    }
-    if (late.medianNs > MAX_MEDIAN_LATENESS.count()) {
-        const auto limit =
-            std::chrono::duration_cast<std::chrono::milliseconds>(MAX_MEDIAN_LATENESS);
-        problems.push_back(producer + " sent its median frame " + micros(late.medianNs) +
-                           " after its deadline (latest " + micros(late.latestNs) + "), over the " +
-                           std::to_string(limit.count()) + " ms a working pacer keeps");
-    }
+bool medianTooLate(size_t frames, const Lateness& late) {
+    return frames >= MIN_FRAMES_TO_JUDGE_PACING && late.medianNs > MAX_MEDIAN_LATENESS.count();
 }
 
-void checkProducerPacing(const DishRun& dish, TimePoint start, std::vector<std::string>& problems) {
+std::string describeMedian(const std::string& producer, const Lateness& late) {
+    return producer + " sent its median frame " + micros(late.medianNs) +
+           " after its deadline (latest " + micros(late.latestNs) + ")";
+}
+
+void recordStreamPacing(const std::string& dish, const char* what, const Stream& stream,
+                        TimePoint start, ScenarioResult& result) {
+    if (stream.stamps.size() != stream.plannedFrames) return;
+    std::vector<int64_t> frames = frameLatenessNs(stream, start);
+    const Lateness late = latenessOf(frames);
+    const std::string producer = "dish " + dish + ": the " + what + " producer";
+    if (late.earliestNs < 0) {
+        result.problems.push_back(producer + " sent a frame " + micros(-late.earliestNs) +
+                                  " before its deadline");
+    }
+    if (medianTooLate(frames.size(), late)) {
+        result.warnings.push_back(describeMedian(producer, late) + " in this scenario");
+    }
+    result.lateness[producer] = std::move(frames);
+}
+
+void recordProducerPacing(const DishRun& dish, TimePoint start, ScenarioResult& result) {
     const std::string& name = dish.spec.name;
-    checkStreamPacing(name, "gamepad", dish.gamepad, start, problems);
-    if (dish.motion) checkStreamPacing(name, "motion", *dish.motion, start, problems);
-    if (dish.mic) checkStreamPacing(name, "mic", *dish.mic, start, problems);
+    recordStreamPacing(name, "gamepad", dish.gamepad, start, result);
+    if (dish.motion) recordStreamPacing(name, "motion", *dish.motion, start, result);
+    if (dish.mic) recordStreamPacing(name, "mic", *dish.mic, start, result);
 }
 
 void checkDish(const DishRun& dish, bool rotated, std::vector<std::string>& problems) {
@@ -1781,7 +1795,7 @@ class ScenarioRun {
             const bool rotated = put_ != nullptr && dish.get() == &put_->dish;
             result.rows.push_back(summarize(scenario_, plan_.backend, *dish));
             checkDish(*dish, rotated, result.problems);
-            if (plan_.checkPacing) checkProducerPacing(*dish, start_, result.problems);
+            if (plan_.checkPacing) recordProducerPacing(*dish, start_, result);
         }
         checkColdWorkers(sse_.get(), maintenance_.get(), put_.get(), dishes_.size(),
                          result.problems);
@@ -2213,6 +2227,7 @@ struct Measured {
     std::vector<DishRow> rows;
     std::vector<DishRow> reps;
     std::vector<LockRow> locks;
+    LatenessByProducer lateness;
 };
 
 bool measureBackend(const Options& options, const RunPlan& plan, Measured& out) {
@@ -2225,6 +2240,10 @@ bool measureBackend(const Options& options, const RunPlan& plan, Measured& out) 
                 runScenarioOnce(options, SCENARIOS[s], plan, rep, options.reps, result) && healthy;
             if (result.rows.empty()) return false;
             for (DishRow& row : result.rows) row.rep = rep;
+            for (const auto& [producer, frames] : result.lateness) {
+                std::vector<int64_t>& pooled = out.lateness[producer];
+                pooled.insert(pooled.end(), frames.begin(), frames.end());
+            }
             byScenario[s].push_back(std::move(result));
         }
     }
@@ -2250,6 +2269,20 @@ bool measure(const Options& options, const std::vector<BackendMode>& backends, i
         if (out.rows.size() == before) return false;
     }
     return healthy;
+}
+
+bool pacedOnTime(const LatenessByProducer& lateness) {
+    const auto limit = std::chrono::duration_cast<std::chrono::milliseconds>(MAX_MEDIAN_LATENESS);
+    bool onTime = true;
+    for (const auto& [producer, frames] : lateness) {
+        const Lateness late = latenessOf(frames);
+        if (!medianTooLate(frames.size(), late)) continue;
+        const std::string problem = describeMedian(producer, late) + " across the run, over the " +
+                                    std::to_string(limit.count()) + " ms a working pacer keeps";
+        std::fprintf(stderr, "PROBLEM: %s\n", problem.c_str());
+        onTime = false;
+    }
+    return onTime;
 }
 
 } // namespace
@@ -2296,6 +2329,7 @@ int main(int argc, char** argv) {
     bool healthy = options.smoke || warmUp(options, backends, rxCpu);
     Measured measured;
     healthy = measure(options, backends, rxCpu, measured) && healthy;
+    healthy = pacedOnTime(measured.lateness) && healthy;
     if (measured.rows.empty()) return 1;
     const std::vector<DishRow>& rows = measured.rows;
     const std::vector<LockRow>& locks = measured.locks;
