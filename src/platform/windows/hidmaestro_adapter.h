@@ -74,6 +74,7 @@ class HidMaestroAdapter : public IGamepadPort {
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
+    bool submitInput(uint32_t serial, const InputReport& input) override;
     // Re-publishes every plugged Sony pad that has gone SONY_IDLE_REPORT_MS
     // without a frame, clocks advanced, state unchanged (see the constant).
     void refreshIdleInput() override;
@@ -152,7 +153,7 @@ class HidMaestroAdapter : public IGamepadPort {
         // ViGEm DS4 EX merge).
         Ds4InputState ds4{};
         satellite::hidmaestro::Ds5InputState ds5{};
-        GamepadReport switchPad{};
+        InputReport switchInput{};
         MotionReport switchMotion{};
         bool fingerDown0 = false;
         bool fingerDown1 = false;

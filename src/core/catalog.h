@@ -6,6 +6,7 @@
 // string-in/string-out so it unit tests without platform code.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,11 @@ struct CatalogBackendTraits {
     bool switchProMotionSupported = false;
     std::string switchProMotionRequires;
     bool switchProPlayerLedsSupported = false;
+    // The EXT_BUTTON_* bits each type's preferred materializer renders.
+    uint32_t xboxExtButtons = 0;
+    uint32_t ds4ExtButtons = 0;
+    uint32_t dualsenseExtButtons = 0;
+    uint32_t switchProExtButtons = 0;
     bool mouseControlSupported = false;
     // rumble is RECEIVE (host streams rumble back); keyboardControl is SEND
     // (host injects keystrokes). A backend reports what it can't do so the

@@ -13,7 +13,14 @@ names: the four back paddles, the "…" button (misc1), the trackpad and
 trigger clicks and the touch sensors (the contract's Extended buttons
 section has the bits). Satellite reads INPUT by its length, so every shipped
 Dish keeps sending 13 bytes and keeps working, and nothing Satellite sends
-changes. No controller type uses the word yet.
+changes.
+
+The Switch Pro's Capture button works. A Dish at protocol 4 sends its pad's
+Capture, Share or "…" button as misc1, and a virtual Switch Pro presses
+Capture, on HIDMaestro (Windows) and on uinput (Linux). The catalog gains an
+`extendedButtons` type feature and `/api/server/capabilities` an
+`extendedButtons` list per backend and type, naming the extended buttons each
+type renders; every other type renders none yet.
 
 A game's DualSense rumble now reaches the real controller without also
 turning its light bar off. Newer DualSense firmware rumble packets (the

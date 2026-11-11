@@ -116,6 +116,9 @@ struct BackendControllerSupport {
     // carries them (the DualShock 4 v2 function is headset-only), so only its
     // composite persona can source MSG_HAPTIC_AUDIO.
     bool hapticAudio = false;
+    // The EXT_BUTTON_* bits this backend's persona for the type has a place
+    // for; every other bit of the INPUT word is dropped.
+    uint32_t extButtons = 0;
 };
 
 // Static identity of a backend, independent of host availability. `support`

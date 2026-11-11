@@ -104,6 +104,7 @@ static void test_catalogJson_structure() {
     traits.ds4SpeakerSupported = true;
     traits.dualsenseMicSupported = true;
     traits.dualsenseSpeakerSupported = true;
+    traits.switchProExtButtons = EXT_BUTTON_MISC1;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;
@@ -177,6 +178,13 @@ static void test_catalogJson_structure() {
         EXPECT(types[0].find("\"speaker\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[3].find("\"mic\":{\"supported\":false}") != std::string::npos);
         EXPECT(types[3].find("\"speaker\":{\"supported\":false}") != std::string::npos);
+        // Extended buttons: the Switch Pro renders misc1 as Capture; the rest
+        // have nowhere to put one.
+        EXPECT(types[3].find("\"extendedButtons\":{\"supported\":true,\"buttons\":[\"misc1\"]}") !=
+               std::string::npos);
+        for (size_t i = 0; i < 3; i++) {
+            EXPECT(types[i].find("\"extendedButtons\":{\"supported\":false}") != std::string::npos);
+        }
         // emulates: physical-pad hint per offered type, protocol constants (ordered
         // sdlType then usb). What a future client-side matcher keys a default off.
         EXPECT(types[0].find("\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}") !=
@@ -445,6 +453,7 @@ static void test_catalogJson_goldenShape_uinput() {
     traits.dualsenseTouchpadSupported = true;
     traits.dualsenseLightbarSupported = true;
     traits.switchProMotionSupported = true;
+    traits.switchProExtButtons = EXT_BUTTON_MISC1;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;
@@ -456,13 +465,32 @@ static void test_catalogJson_goldenShape_uinput() {
     // emulates, hostFeatures) is pinned without coupling to localized copy.
     const std::string golden =
         R"({"locale":"en","protocolVersion":4,"serverVersion":"1.6.0","catalogVersion":2,"controllerTypes":[)"
-        R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
-        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4","054c:09cc"]}},)"
-        R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
-        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
+        R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
+        R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4","054c:09cc"]}},)"
+        R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":false}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
+        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":true,"buttons":["misc1"]}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
         R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";
     const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
     EXPECT_EQ(json, golden);
+}
+
+static void test_extendedButtons_listsTheSlugsATypeRenders() {
+    TEST(
+        "buildCatalogJson: extendedButtons lists a type's slugs in bit order, none is unsupported");
+    CatalogBackendTraits traits;
+    traits.offersXbox = true;
+    traits.offersSwitchPro = true;
+    traits.switchProExtButtons = EXT_BUTTON_MISC1 | EXT_BUTTON_RIGHT_PADDLE1;
+    Json catalog;
+    EXPECT(jsonParse(buildCatalogJson("en", "", "", "1.6.0", traits), catalog));
+    const Json& types = catalog["controllerTypes"];
+    EXPECT_EQ(types.size(), size_t{2});
+    if (types.size() == 2) {
+        const Json& none = types[0]["features"]["extendedButtons"];
+        EXPECT(none == Json::parse(R"({"supported":false})"));
+        const Json& some = types[1]["features"]["extendedButtons"];
+        EXPECT(some == Json::parse(R"({"supported":true,"buttons":["rightPaddle1","misc1"]})"));
+    }
 }
 
 static void test_catalogVersion_present() {
@@ -541,6 +569,7 @@ int main() {
     test_audioFeatureSlugsNotLocalized();
     test_emulatesOnlyOnOfferedTypes();
     test_catalogJson_goldenShape_uinput();
+    test_extendedButtons_listsTheSlugsATypeRenders();
     test_catalogVersion_present();
     test_localeCompletenessGate();
     test_localizedCatalogsRenderLocalizedNames();

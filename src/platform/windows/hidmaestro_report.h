@@ -335,10 +335,11 @@ inline int16_t switchImuRaw(float value, float scale) {
     return static_cast<int16_t>(scaled);
 }
 
-inline void packSwitchBody(const GamepadReport& pad, const MotionReport& motion,
+inline void packSwitchBody(const InputReport& input, const MotionReport& motion,
                            uint8_t out[SWITCH_BODY_BYTES]) {
     std::memset(out, 0, SWITCH_BODY_BYTES);
 
+    const GamepadReport& pad = input.pad;
     const uint16_t b = pad.wButtons;
     uint8_t right = 0;
     if (b & 0x4000) right |= 0x01;                               // X (west)  -> Y
@@ -350,11 +351,12 @@ inline void packSwitchBody(const GamepadReport& pad, const MotionReport& motion,
     out[2] = right;
 
     uint8_t shared = 0;
-    if (b & 0x0020) shared |= 0x01; // Back  -> Minus
-    if (b & 0x0010) shared |= 0x02; // Start -> Plus
-    if (b & 0x0080) shared |= 0x04; // RS -> right stick click
-    if (b & 0x0040) shared |= 0x08; // LS -> left stick click
-    if (b & 0x0400) shared |= 0x10; // Guide -> Home
+    if (b & 0x0020) shared |= 0x01;                          // Back  -> Minus
+    if (b & 0x0010) shared |= 0x02;                          // Start -> Plus
+    if (b & 0x0080) shared |= 0x04;                          // RS -> right stick click
+    if (b & 0x0040) shared |= 0x08;                          // LS -> left stick click
+    if (b & 0x0400) shared |= 0x10;                          // Guide -> Home
+    if (input.extButtons & EXT_BUTTON_MISC1) shared |= 0x20; // misc1 -> Capture
     out[3] = shared;
 
     uint8_t left = 0;

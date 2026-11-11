@@ -1028,10 +1028,10 @@ unmaps the slot under `busMtx_`, then deprovisions without it.
 `refreshIdleInput` still holds `busMtx_` while it walks the slots, which
 keeps it off a slot an unplug or `closeBus` is unmapping, since both
 clear `plugged` under the same lock first. The input-section writers
-(`submitReport`, `submitMotion`, `submitTouchpad`, `submitBattery`, all
-through `packAndWrite`) take only the slot's flag; `submitMicAudioPcm`
-has a single writer, the mic worker, and takes neither. `busOpen_` is an
-atomic.
+(`submitInput`, which `submitReport` forwards to, `submitMotion`,
+`submitTouchpad`, `submitBattery`, all through `packAndWrite`) take only
+the slot's flag; `submitMicAudioPcm` has a single writer, the mic worker,
+and takes neither. `busOpen_` is an atomic.
 
 `HelperClient`. Its lock, `hidmaestro.helper`, is a transaction lock: held
 across one request and its reply, it is held across pipe waits by design. Three

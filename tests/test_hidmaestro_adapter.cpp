@@ -681,6 +681,27 @@ static void test_switch_submit() {
     EXPECT(!adapter.submitBattery(5, batt));
 }
 
+static void test_switch_capture_from_misc1() {
+    TEST("SwitchPro — misc1 holds Capture through motion, and a frame without it lets go");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(5, GamepadIdentity::SwitchPro));
+
+    const uint8_t* data = prov.inputData(5);
+    InputReport input{};
+    input.extButtons = EXT_BUTTON_MISC1;
+    EXPECT(adapter.submitInput(5, input));
+    EXPECT_EQ(data[3], (uint8_t)0x20);
+
+    MotionReport motion{};
+    EXPECT(adapter.submitMotion(5, motion));
+    EXPECT_EQ(data[3], (uint8_t)0x20);
+
+    EXPECT(adapter.submitReport(5, GamepadReport{}));
+    EXPECT_EQ(data[3], (uint8_t)0);
+}
+
 static void test_motion_support_matrix() {
     TEST("supportsMotionForType — everything but Xbox");
     FakeProvisioner prov;
@@ -1441,6 +1462,7 @@ int main() {
     test_ds5_submit();
     test_idle_sony_pads_keep_reporting();
     test_switch_submit();
+    test_switch_capture_from_misc1();
     test_motion_support_matrix();
     test_rumble_worker_xbox();
     test_rumble_and_lightbar_worker_ds4();

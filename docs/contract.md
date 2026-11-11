@@ -349,7 +349,10 @@ requested type). The singular `backend` object stays the preferred-available bac
 keep working unchanged. Each entry's `controllers` lists the types that backend can
 materialize, with its feature surface for that type (`motionRequires` is the structured
 requires code for THAT backend, which is not necessarily the one the catalog quotes —
-see the catalog layering rule below) and a derived submit-latency estimate. Ids `vigem`
+see the catalog layering rule below) and a derived submit-latency estimate.
+`extendedButtons` (additive, protocol 4) lists the slugs of the extended buttons that
+backend's persona for the type renders, in bit order, and is an empty list where it has
+room for none (see Extended buttons). Ids `vigem`
 / `hidmaestro` / `uinput` / `machid` / `none` and all error codes are protocol
 constants, never localized.
 
@@ -570,7 +573,10 @@ to present it (static, localized) → **capabilities** = what is true right now
   `lightbar`, `touchpad`, `triggerEffects` (DualSense adaptive-trigger passthrough,
   RECEIVE), `playerLeds` (player-indicator LEDs, RECEIVE), `mic` (the pad's own
   microphone endpoint, SEND), `speaker` (the pad's own speaker/headset endpoint,
-  RECEIVE) and `hapticAudio` (the DualSense HD-haptics lanes, RECEIVE; protocol 3).
+  RECEIVE), `hapticAudio` (the DualSense HD-haptics lanes, RECEIVE; protocol 3) and
+  `extendedButtons` (the INPUT extended buttons the type renders, SEND; protocol 4).
+  `extendedButtons` carries a `buttons` array of their slugs in bit order (see Extended
+  buttons); a type that renders none is `supported: false` and lists none.
   `triggerEffects` and `playerLeds` reflect whether the type's preferred
   materializer surfaces the game's raw output reports; `mic`/`speaker` reflect whether
   it can materialize a pad that carries real audio endpoints (see Controller audio);
@@ -744,7 +750,22 @@ settled 4    : ctrlIdx(1) + GamepadReport(12) + extButtons(u32 LE)  = 17 B
 - Cap: `extendedButtons` (0x0200) is the client's claim that its pad sources the word, per
   the house rule. Like `motion`, it is not a receive gate: the word is read whatever the
   cap says, and the echo shows a client whether the server knows the cap.
-- What a type renders is its own: a type with nowhere to put a button drops it.
+- What a type renders is its own, and a type drops every bit it has nowhere to put.
+  The catalog's `extendedButtons` type feature lists what each type's preferred
+  materializer renders, and `capabilities.backends[].controllers[].extendedButtons`
+  lists it per backend:
+
+| Type | Backend | Renders |
+|---|---|---|
+| Switch Pro | HIDMaestro | `misc1` as Capture: bit 0x20 of the shared button byte of report 0x30 |
+| Switch Pro | uinput | `misc1` as Capture: `BTN_Y`, which SDL numbers button 4 on this node and its Linux database row for the pad reads as `misc1:b4` (the row is quoted below) |
+| every other type | every backend | nothing |
+
+The uinput Switch Pro is a `BUS_USB` 057e:2009 node whose fourteen keys are the contiguous
+codes from `BTN_A`, so SDL numbers `BTN_Y` button 4, and SDL's Linux row for the pad, the
+same in SDL3 (`src/joystick/SDL_gamepad_db.h`) and SDL2 (`src/joystick/SDL_gamecontrollerdb.h`)
+and taken on SDL's version-less match since the node's version is not the row's, reads:
+`030000007e0500000920000011810000,Nintendo Switch Pro Controller,a:b0,b:b1,back:b9,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b11,leftshoulder:b5,leftstick:b12,lefttrigger:b7,leftx:a0,lefty:a1,misc1:b4,rightshoulder:b6,rightstick:b13,righttrigger:b8,rightx:a2,righty:a3,start:b10,x:b3,y:b2,hint:!SDL_GAMECONTROLLER_USE_BUTTON_LABELS:=1,`
 
 | Bit | Slug | SDL | On a physical pad |
 |---|---|---|---|

@@ -118,7 +118,7 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.micSeq = 0;
     slot.ds4 = {};
     slot.ds5 = {};
-    slot.switchPad = {};
+    slot.switchInput = {};
     slot.switchMotion = {};
     slot.fingerDown0 = slot.fingerDown1 = false;
     slot.lastSonySubmit = {};
@@ -308,7 +308,7 @@ uint16_t HidMaestroAdapter::packFrame(IoSlot& slot, bool& withGip) {
         return hm::DS5_PAYLOAD_BYTES;
     }
     case GamepadIdentity::SwitchPro:
-        hm::packSwitchBody(slot.switchPad, slot.switchMotion, slot.payload);
+        hm::packSwitchBody(slot.switchInput, slot.switchMotion, slot.payload);
         return hm::SWITCH_BODY_BYTES;
     }
     return 0;
@@ -326,6 +326,12 @@ bool HidMaestroAdapter::packAndWrite(IoSlot& slot) {
 }
 
 bool HidMaestroAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
+    InputReport input;
+    input.pad = report;
+    return submitInput(serial, input);
+}
+
+bool HidMaestroAdapter::submitInput(uint32_t serial, const InputReport& input) {
     if (!isValidSerial(serial)) return false;
     IoSlot& slot = io_[serial];
     if (!slot.plugged.load(std::memory_order_acquire)) return false;
@@ -334,13 +340,13 @@ bool HidMaestroAdapter::submitReport(uint32_t serial, const GamepadReport& repor
     switch (slot.identity) {
     case GamepadIdentity::Xbox:
     case GamepadIdentity::DS4:
-        slot.ds4.pad = report;
+        slot.ds4.pad = input.pad;
         break;
     case GamepadIdentity::DualSense:
-        slot.ds5.pad = report;
+        slot.ds5.pad = input.pad;
         break;
     case GamepadIdentity::SwitchPro:
-        slot.switchPad = report;
+        slot.switchInput = input;
         break;
     }
     return packAndWrite(slot);
