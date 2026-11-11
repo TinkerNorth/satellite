@@ -683,6 +683,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         if(APPINDICATOR_FOUND)
             pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
             target_compile_definitions(satellite PRIVATE SATELLITE_HAS_TRAY=1)
+            target_sources(satellite PRIVATE src/platform/linux/tray_indicator.cpp)
             target_include_directories(satellite PRIVATE
                 ${APPINDICATOR_INCLUDE_DIRS} ${GTK3_INCLUDE_DIRS})
             target_link_directories(satellite PRIVATE
@@ -1613,6 +1614,29 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME linux_platform COMMAND test_linux_platform)
+
+    # The tray's indicator factory, built only where the tray is: it is the one
+    # place the AppIndicator constructor is named, so a library whose
+    # constructor is deprecated fails this target under -Werror.
+    if(APPINDICATOR_FOUND)
+        add_executable(test_tray_indicator
+            tests/test_tray_indicator.cpp
+            src/platform/linux/tray_indicator.cpp
+        )
+        target_include_directories(test_tray_indicator PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${APPINDICATOR_INCLUDE_DIRS} ${GTK3_INCLUDE_DIRS}
+        )
+        target_link_directories(test_tray_indicator PRIVATE
+            ${APPINDICATOR_LIBRARY_DIRS} ${GTK3_LIBRARY_DIRS})
+        target_link_libraries(test_tray_indicator PRIVATE
+            ${APPINDICATOR_LIBRARIES} ${GTK3_LIBRARIES})
+        satellite_test_warnings(test_tray_indicator)
+        set_target_properties(test_tray_indicator PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        add_test(NAME tray_indicator COMMAND test_tray_indicator)
+    endif()
 
     # Real-kernel uinput smoke test: plugs virtual pads through the production
     # adapter and reads them back from /dev/input as a game would, including

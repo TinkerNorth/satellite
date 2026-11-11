@@ -9,6 +9,7 @@
 #include "core/update_service.h"
 #include "net/pairing.h"
 #include "net/pairing_service.h"
+#include "tray_indicator.h"
 
 #include <libayatana-appindicator/app-indicator.h>
 #include <glib-unix.h>
@@ -164,8 +165,7 @@ bool addTrayIcon() {
     notify_init(APP_TITLE);
 #endif
 
-    g_indicator =
-        app_indicator_new("satellite", "input-gaming", APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    g_indicator = newStatusIndicator("satellite", "input-gaming");
     if (g_indicator == nullptr) return false;
     app_indicator_set_status(g_indicator, APP_INDICATOR_STATUS_ACTIVE);
     app_indicator_set_title(g_indicator, APP_TITLE);
