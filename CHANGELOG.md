@@ -18,6 +18,12 @@ which has a touchpad, and the touchpad hints now name both the DualSense and
 the DualShock 4.
 Battery wording in the dashboard and contract now says what the clients
 send: the lower of the device's battery and the controller's battery.
+Satellite now builds on Linux distributions that ship the newer
+libayatana-appindicator (Debian 13 and later). That release marks the
+function the tray used to create its icon as deprecated, and Satellite's
+builds treat warnings as errors, so the tray failed to compile there. The
+tray now creates its icon through the library's own properties, which every
+release supports, and a test pins what the icon is created with.
 
 ## 2.1.11
 
