@@ -253,7 +253,7 @@ static void test_isDigitalSilence() {
     EXPECT(isDigitalSilence(zeros.data(), 0));
 
     TEST("isDigitalSilence: it only reads the samples it was given");
-    std::vector<int16_t> tail = zeros;
+    std::vector<int16_t> tail(zeros.size(), 0);
     tail.back() = 999;
     EXPECT(isDigitalSilence(tail.data(), tail.size() - 1));
     EXPECT(!isDigitalSilence(tail.data(), tail.size()));

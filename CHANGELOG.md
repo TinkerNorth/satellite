@@ -24,6 +24,12 @@ function the tray used to create its icon as deprecated, and Satellite's
 builds treat warnings as errors, so the tray failed to compile there. The
 tray now creates its icon through the library's own properties, which every
 release supports, and a test pins what the icon is created with.
+The receiver test suite now compiles under GCC 14 (Debian 13 and later),
+which rejected one line of it as an out-of-bounds write with warnings
+treated as errors. The line was safe: the buffer it wrote to is a full audio
+frame, and the suite passes under AddressSanitizer with bounds-checked
+standard containers. GCC lost track of the buffer's size across a copy, so
+the test now builds that buffer from the frame size directly.
 
 ## 2.1.11
 
