@@ -220,8 +220,9 @@ function batteryIconFile(b, lvl) {
   return 'battery-critical.svg';
 }
 
-// Derived from ctrl.battery ({ level: 0..100|null, status } or null). A wired
-// controller falls back to the host machine's battery (100% on a desktop).
+// Derived from ctrl.battery ({ level: 0..100|null, status } or null). The
+// client reports the lower of its own device battery and the controller's
+// battery, so the chip can show the phone's charge when it is the lower one.
 function batteryChip(ctrl) {
   const b = ctrl.battery;
   if (!b) {

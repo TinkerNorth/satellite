@@ -680,6 +680,11 @@ Up (client → server):
 | 0x000C | POINTER (v2, 19B) | ctrlIdx(1) + fingerFlags(1: b0 f0 active, b1 f1 active) + buttons(1: b0 left/click, b1 right, b2 middle) + f0 id(1)+x(i16 LE)+y(i16 LE) + f1 id(1)+x(i16 LE)+y(i16 LE) + eventTimeMs(u32 LE) + scrollV(i16 LE, 120 per wheel notch, an event: resends carry 0) |
 | 0x0012 | MIC_AUDIO | ctrlIdx(1) + seq(u16 BE) + opusPacket(rest, >= 1 byte): one 20 ms Opus packet from the pad's microphone, mono 48 kHz. Accepted only from senders whose descriptor advertised `mic`. See Controller audio. |
 
+BATTERY carries the lower of the sending device's own battery (phone, tablet,
+laptop) and the controller's battery. A controller with no battery, or an
+unknown level, sends the device's; the on-screen pad sends the device's.
+The server stores the sample as sent and does not compare the two.
+
 Down (server → client):
 
 | Opcode | Name | Payload |
