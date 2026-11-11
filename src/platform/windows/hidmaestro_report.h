@@ -476,7 +476,7 @@ inline DecodedOutput decodeDualSenseOutput(const OutputPacket& pkt) {
     // valid_flag2 bit 2 COMPATIBLE_VIBRATION2, which 2.24+ firmware
     // rumble packets (SDL, hid-playstation) set instead of / beside them.
     const bool flag0Rumble = pkt.size >= 4 && (pkt.data[0] & 0x03);
-    const bool flag2Rumble = pkt.size >= 39 && pkt.size >= 4 && (pkt.data[38] & 0x04);
+    const bool flag2Rumble = pkt.size >= 39 && (pkt.data[38] & 0x04);
     if (flag0Rumble || flag2Rumble) {
         out.hasRumble = true;
         out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
