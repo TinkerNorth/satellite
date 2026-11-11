@@ -1,6 +1,6 @@
 # Dish ↔ Satellite protocol contract
 
-Version: protocol 3 · 2026-09-19. This document is the single source of truth for the
+Version: protocol 4 · 2026-11-11. This document is the single source of truth for the
 client ↔ server contract. It replaces the former `protocol.md`, `connection-api.md`
 (this repo) and `wire-format.md` (dish-android). Both ends implement against this file.
 
@@ -168,7 +168,8 @@ Request:
       "type": 0,
       "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false,
                 "triggerEffects": false, "playerLeds": false,
-                "mic": false, "speaker": false, "hapticAudio": false },
+                "mic": false, "speaker": false, "hapticAudio": false,
+                "extendedButtons": false },
       "touchpadMode": "off",
       "preferredBackend": null
     }
@@ -253,7 +254,8 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
     { "ctrlIdx": 0, "active": true, "appliedType": 0, "backend": "vigem",
       "caps": { "rumble": true, "motion": true, "analogTriggers": true, "lightbar": false,
                 "triggerEffects": false, "playerLeds": false,
-                "mic": false, "speaker": false, "hapticAudio": false },
+                "mic": false, "speaker": false, "hapticAudio": false,
+                "extendedButtons": false },
       "touchpadMode": "off", "preferredBackend": null,
       "motion": { "sinkSupportedForType": true, "backendOk": true } }
   ],
@@ -672,7 +674,8 @@ Up (client → server):
 
 | Opcode | Name | Payload |
 |--------|------|---------|
-| 0x0001 | INPUT | ctrlIdx(1) + GamepadReport(12, XUSB layout, LE) |
+| 0x0001 | INPUT (v1, 13B) | ctrlIdx(1) + GamepadReport(12, XUSB layout, LE) |
+| 0x0001 | INPUT (v4, 17B) | ctrlIdx(1) + GamepadReport(12, XUSB layout, LE) + extButtons(u32 LE). See Extended buttons. |
 | 0x0002 | HEARTBEAT | empty |
 | 0x000A | MOTION | ctrlIdx(1) + gyroX/Y/Z(3×i16 LE) + accelX/Y/Z(3×i16 LE) + timestampDeltaUs(u32 LE) |
 | 0x000B | BATTERY | ctrlIdx(1) + level(1: 0..100 or 0xFF unknown) + status(1: 0 unknown,1 discharging,2 charging,3 full,4 wired) |
@@ -720,6 +723,47 @@ Corrected stream semantics (errors in the former docs, preserved here):
 - MOTION scale: gyro ±2000 deg/s, accel ±4 g over int16; right-handed frame, +X right,
   +Y up, +Z toward player. Senders apply the rotation; receivers do not.
 - Telemetry streams stay lossy/incremental by design; do NOT add reliability layers.
+
+### Extended buttons (0x0001, protocol 4)
+
+`wButtons` is full (see the mic-mute button under Controller audio), so protocol 4 gives
+INPUT a second word for the buttons an XInput pad does not have:
+
+```
+settled 1..3 : ctrlIdx(1) + GamepadReport(12)                       = 13 B
+settled 4    : ctrlIdx(1) + GamepadReport(12) + extButtons(u32 LE)  = 17 B
+```
+
+- Sender: a session settled at 4 sends 17 B on every slot; the frame shape keys on the
+  settled version, as 0x000C's does. The bits are levels, like `wButtons`: each frame
+  carries every button held at that moment, so letting go of one clears its bit.
+- Receiver: the frame is read by length. 17 B or more reads the word, 13..16 B reads it as
+  0, and anything shorter is malformed. A satellite older than protocol 4 reads the first
+  13 B and ignores the rest, so a client that sends the tail to one by mistake loses only
+  the tail.
+- Cap: `extendedButtons` (0x0200) is the client's claim that its pad sources the word, per
+  the house rule. Like `motion`, it is not a receive gate: the word is read whatever the
+  cap says, and the echo shows a client whether the server knows the cap.
+- What a type renders is its own: a type with nowhere to put a button drops it.
+
+| Bit | Slug | SDL | On a physical pad |
+|---|---|---|---|
+| 0x0001 | `rightPaddle1` | `RIGHT_PADDLE1` | Xbox Elite P1, DualSense Edge right back button, Steam Controller R4 (2015: right grip) |
+| 0x0002 | `leftPaddle1` | `LEFT_PADDLE1` | Elite P3, Edge left back button, Steam L4 (2015: left grip) |
+| 0x0004 | `rightPaddle2` | `RIGHT_PADDLE2` | Elite P2, Edge right Fn, Steam R5 |
+| 0x0008 | `leftPaddle2` | `LEFT_PADDLE2` | Elite P4, Edge left Fn, Steam L5 |
+| 0x0010 | `misc1` | `MISC1` | Switch Capture, Xbox Share, the Steam "…" button. Never the PS5 mic button, which stays `wButtons` 0x0800 |
+| 0x0020 | `leftPadClick` | `TOUCHPAD` (2026 Steam Controller) | the Steam left trackpad's click, when the client's trackpad routing does not consume it |
+| 0x0040 | `rightPadClick` | `MISC2` (2026 Steam Controller) | the Steam right trackpad's click, likewise |
+| 0x0080 | `leftTriggerClick` | `MISC3` | the Steam left trigger's full-pull click |
+| 0x0100 | `rightTriggerClick` | `MISC4` | the Steam right trigger's full-pull click |
+| 0x0200 | `leftStickTouch` | capsense `LEFT_STICK` | a touch on the left stick (2026 Steam Controller) |
+| 0x0400 | `rightStickTouch` | capsense `RIGHT_STICK` | a touch on the right stick |
+| 0x0800 | `leftGripTouch` | capsense `LEFT_GRIP` | a hand on the left grip |
+| 0x1000 | `rightGripTouch` | capsense `RIGHT_GRIP` | a hand on the right grip |
+
+Bits 0x2000 and up are reserved: senders write 0 and receivers ignore them. Slugs are
+protocol constants, never localized.
 
 ### Enriched heartbeat ack: the reconcile loop
 
@@ -833,7 +877,8 @@ the traffic it saw before.
 bit left, `0x0800`, which is now the DualSense mic-mute button. Only the DualSense
 identity maps it into the emulated pad's input report; every other identity ignores it
 (no other emulated pad has a mute button). The bit is state, not an edge, like every
-other button in the word.
+other button in the word. With it the word is full: every further button rides the
+extended-buttons word (see Extended buttons).
 
 **Mute is the client's to enforce (privacy invariant).** Muted means ZERO MIC_AUDIO
 packets on the wire, not silent ones: the client stops delivering capture, and it also
@@ -982,16 +1027,16 @@ relative)**, not Unix epoch.
 
 ## Versioning
 
-`protocolVersion` (integer, currently **3**) rides in every pairing/session request and
+`protocolVersion` (integer, currently **4**) rides in every pairing/session request and
 response. The server ACCEPTS the whole `[supportedMin, supported]` range (currently
-**[1, 3]**), settles each session on the client's offer, and echoes that settled
+**[1, 4]**), settles each session on the client's offer, and echoes that settled
 version in the pairing/session responses; absent means 1 (a pre-versioning client).
 The settled version keys the session's wire frames: a v1 session streams the 16-byte
-TOUCHPAD frame, a v2 session the 19-byte POINTER frame (the receiver also disambiguates
-by length, so mixed generations coexist).
+TOUCHPAD frame, a v2 session the 19-byte POINTER frame, and a v4 session the 17-byte
+INPUT frame (the receiver also disambiguates by length, so mixed generations coexist).
 
 An offer OUTSIDE the range is rejected with 409
-`{"error":"protocol version unsupported","supported":3,"supportedMin":1}`. `supported`
+`{"error":"protocol version unsupported","supported":4,"supportedMin":1}`. `supported`
 is the newest version the server speaks: a client seeing `supported` above its own
 current version must tell the user to update the app; below its own minimum, to update
 the satellite. Version negotiation happens ONLY on pairing and the session PUT;
@@ -1027,6 +1072,10 @@ Version history:
   because 2 shipped, and a released version is not extended in place. A version-2
   client still gains from a version-3 host: it never advertises `hapticAudio`, so the
   host reduces the lanes to RUMBLE 0x0009 for it, which is a version-2 message.
+- **4**: INPUT 0x0001 gains the extended-buttons word, 17 B instead of 13, and the
+  descriptor gains the cap `extendedButtons` (see Extended buttons). The receiver reads
+  INPUT by length, so a client at 1..3 keeps sending 13 B and keeps working; nothing the
+  server sends changed shape.
 
 ## Error model
 

@@ -16,6 +16,7 @@ using satellite::CAP_NAMES;
 using satellite::capsFromJson;
 using satellite::capsJsonObj;
 using satellite::Json;
+using satellite::jsonBool;
 using satellite::jsonDump;
 using satellite::parseControllerDescriptors;
 using satellite::parseDescriptorObject;
@@ -32,14 +33,14 @@ Json parse(const std::string& text) {
 constexpr size_t CAP_COUNT = sizeof(CAP_NAMES) / sizeof(CAP_NAMES[0]);
 constexpr uint16_t ALL_CAPS = CAP_RUMBLE | CAP_MOTION | CAP_ANALOG_TRIGGERS | CAP_LIGHTBAR |
                               CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC | CAP_SPEAKER |
-                              CAP_HAPTIC_AUDIO;
+                              CAP_HAPTIC_AUDIO | CAP_EXTENDED_BUTTONS;
 
 } // namespace
 
 int main() {
     {
         TEST("the caps table names every wire bit exactly once");
-        EXPECT_EQ(CAP_COUNT, static_cast<size_t>(9));
+        EXPECT_EQ(CAP_COUNT, static_cast<size_t>(10));
         uint16_t seen = 0;
         for (const auto& cap : CAP_NAMES) {
             EXPECT((seen & cap.bit) == 0);
@@ -59,7 +60,14 @@ int main() {
         EXPECT_EQ(jsonDump(capsJsonObj(ALL_CAPS)),
                   std::string(R"({"rumble":true,"motion":true,"analogTriggers":true,)"
                               R"("lightbar":true,"triggerEffects":true,"playerLeds":true,)"
-                              R"("mic":true,"speaker":true,"hapticAudio":true})"));
+                              R"("mic":true,"speaker":true,"hapticAudio":true,)"
+                              R"("extendedButtons":true})"));
+    }
+    {
+        TEST("the extendedButtons cap is bit 0x0200 under its wire name, both ways");
+        EXPECT_EQ(CAP_EXTENDED_BUTTONS, 0x0200);
+        EXPECT_EQ(capsFromJson(parse(R"({"extendedButtons":true})")), CAP_EXTENDED_BUTTONS);
+        EXPECT(jsonBool(parse(jsonDump(capsJsonObj(CAP_EXTENDED_BUTTONS))), "extendedButtons"));
     }
     {
         TEST("an unknown caps key is ignored, and a missing one reads as off");

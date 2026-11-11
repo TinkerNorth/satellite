@@ -147,7 +147,7 @@ constexpr uint8_t TOUCH_TRACKING_ID = 7;
 constexpr uint32_t TOUCH_MS_PER_FRAME = 8;
 constexpr uint16_t FIRST_PORT = 41000;
 constexpr uint32_t SENDER_IPV4 = 0x0100007fu;
-constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 1 + sizeof(GamepadReport);
+constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 1 + INPUT_WIRE_PAYLOAD_BYTES_V1;
 constexpr double NANOS_PER_MICRO = 1000.0;
 
 using NameSet = std::set<std::string>;
@@ -634,10 +634,9 @@ class ReceiveDriver {
         const uint8_t* payload = plaintext + INNER_HEADER_SIZE;
         if (inner.msgType == MSG_GAMEPAD_DATA && inner.msgLen >= GAMEPAD_DATA_MIN_LEN) {
             const uint8_t ctrlIdx = payload[0];
-            GamepadReport report;
-            std::memcpy(&report, payload + 1, sizeof(GamepadReport));
+            const InputReport input = decodeInputReport(payload + 1, inner.msgLen - 1u);
             svc_.handleGamepadDataAndUpdate(token, counter, SENDER_IPV4, senderPort, ctrlIdx,
-                                            report);
+                                            input);
             handled_[inner.msgType]++;
             return;
         }

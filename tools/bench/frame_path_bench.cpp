@@ -70,7 +70,7 @@ constexpr size_t HEADER_BYTES = static_cast<size_t>(HEADER_SIZE);
 constexpr size_t INNER_HEADER_BYTES = static_cast<size_t>(INNER_HEADER_SIZE);
 constexpr size_t TAG_BYTES = static_cast<size_t>(AUTH_TAG_SIZE);
 constexpr size_t REPORT_BYTES = sizeof(GamepadReport);
-constexpr size_t GAMEPAD_PAYLOAD_BYTES = 1 + REPORT_BYTES;
+constexpr size_t GAMEPAD_PAYLOAD_BYTES = 1 + static_cast<size_t>(INPUT_WIRE_PAYLOAD_BYTES_V4);
 constexpr size_t MOTION_PAYLOAD_BYTES = 1 + static_cast<size_t>(MOTION_WIRE_PAYLOAD_BYTES);
 constexpr size_t MOTION_AXES = 6;
 constexpr size_t OPUS_PACKET_LIMIT = 256;
@@ -80,8 +80,7 @@ constexpr size_t MAX_INNER_BYTES =
     INNER_HEADER_BYTES + std::max({GAMEPAD_PAYLOAD_BYTES, MOTION_PAYLOAD_BYTES, MIC_PAYLOAD_BYTES});
 constexpr size_t FRAME_BYTES = HEADER_BYTES + MAX_INNER_BYTES + TAG_BYTES;
 constexpr size_t RECEIVE_BUFFER_BYTES = static_cast<size_t>(UDP_DATAGRAM_MAX_BYTES);
-constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 13;
-static_assert(GAMEPAD_DATA_MIN_LEN == 1 + REPORT_BYTES, "ctrlIdx plus one whole report");
+constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 1 + INPUT_WIRE_PAYLOAD_BYTES_V1;
 static_assert(MOTION_AXES * sizeof(uint16_t) + sizeof(uint32_t) == MOTION_PAYLOAD_BYTES - 1,
               "ctrlIdx, six axes and a timestamp delta");
 static_assert(FRAME_BYTES <= RECEIVE_BUFFER_BYTES, "one datagram fits the receive buffer");
@@ -815,6 +814,7 @@ size_t writeGamepadInner(uint32_t counter, uint8_t* inner) {
     report.wButtons = static_cast<uint16_t>(counter);
     report.sThumbRX = static_cast<int16_t>(counter);
     std::memcpy(payload + 1, &report, REPORT_BYTES);
+    satellite::writeLE32(payload + 1 + REPORT_BYTES, counter & EXT_BUTTON_LEFT_PADDLE1);
     return writeInnerHeader(inner, MSG_GAMEPAD_DATA, GAMEPAD_PAYLOAD_BYTES);
 }
 
@@ -1011,10 +1011,9 @@ Handled handleDatagram(SessionService& service, uint8_t* buf, int n, uint32_t se
         inner.msgType == MSG_GAMEPAD_DATA && inner.msgLen >= GAMEPAD_DATA_MIN_LEN;
     if (gamepadData) {
         const uint8_t ctrlIdx = payload[0];
-        GamepadReport report;
-        std::memcpy(&report, payload + 1, sizeof(GamepadReport));
+        const InputReport input = decodeInputReport(payload + 1, inner.msgLen - 1u);
         const bool accepted = service.handleGamepadDataAndUpdate(token, counter, senderIPv4,
-                                                                 senderPort, ctrlIdx, report);
+                                                                 senderPort, ctrlIdx, input);
         return Handled{accepted ? Verdict::Completed : Verdict::Rejected, Clock::now()};
     }
 

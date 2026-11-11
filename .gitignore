@@ -94,6 +94,7 @@ Desktop.ini
 /test_discovery
 /test_firewall_status
 /test_github_release
+/test_input_report
 /test_ipv4_util
 /test_json
 /test_machine_id

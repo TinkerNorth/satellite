@@ -62,6 +62,12 @@ class IGamepadPort {
     // recorded at plug.
     virtual bool submitReport(uint32_t serial, const GamepadReport& report) = 0;
 
+    // The whole INPUT frame, the one the core submits. A backend with nowhere
+    // to put an extended button keeps this default, which drops the word.
+    virtual bool submitInput(uint32_t serial, const InputReport& input) {
+        return submitReport(serial, input.pad);
+    }
+
     // The maintenance tick, off the hot path (the reaper thread, every
     // RUMBLE_REFRESH_MS / 2). Every Dish client sends INPUT on change only,
     // while a real pad reports continuously, and some consumers depend on

@@ -31,6 +31,8 @@ struct MockPort : IGamepadPort {
     int pluginCalls = 0;
     int unplugCalls = 0;
     int submitCalls = 0;
+    int inputCalls = 0;
+    uint32_t lastExtButtons = 0;
     int motionCalls = 0;
     int batteryCalls = 0;
     int touchpadCalls = 0;
@@ -82,6 +84,12 @@ struct MockPort : IGamepadPort {
     bool submitReport(uint32_t serial, const GamepadReport&) override {
         submitCalls++;
         lastSerial = serial;
+        return true;
+    }
+    bool submitInput(uint32_t serial, const InputReport& input) override {
+        inputCalls++;
+        lastSerial = serial;
+        lastExtButtons = input.extButtons;
         return true;
     }
     bool submitMotion(uint32_t serial, const MotionReport&) override {
@@ -255,6 +263,24 @@ static void test_per_serial_routing() {
     EXPECT(!mux.submitReport(9, rpt));
     EXPECT_EQ(a.submitCalls, 1);
     EXPECT_EQ(b.submitCalls, 1);
+}
+
+static void test_input_reaches_the_owner_whole() {
+    TEST("an INPUT frame reaches the owning child with its extended buttons");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+    EXPECT(mux.pluginDevice(1, GamepadIdentity::Xbox));
+    EXPECT(mux.pluginDevice(2, GamepadIdentity::DualSense));
+
+    InputReport input{};
+    input.extButtons = EXT_BUTTON_LEFT_PADDLE1 | EXT_BUTTON_MISC1;
+    EXPECT(mux.submitInput(2, input));
+    EXPECT_EQ(b.inputCalls, 1);
+    EXPECT_EQ(b.lastExtButtons, EXT_BUTTON_LEFT_PADDLE1 | EXT_BUTTON_MISC1);
+    EXPECT_EQ(a.inputCalls, 0);
+    EXPECT(!mux.submitInput(9, input));
+    EXPECT_EQ(b.inputCalls, 1);
 }
 
 static void test_idle_refresh_reaches_every_child() {
@@ -499,6 +525,7 @@ int main() {
     test_plug_fails_when_no_child_accepts();
     test_plug_rejects_invalid_serials();
     test_per_serial_routing();
+    test_input_reaches_the_owner_whole();
     test_idle_refresh_reaches_every_child();
     test_unplug_clears_owner();
     test_unplug_unconfirmed_keeps_owner();

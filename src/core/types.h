@@ -120,7 +120,8 @@ inline const char* controllerStateName(ControllerState s) {
 // v3 added the HAPTIC_AUDIO return path (0x0015 + CAP_HAPTIC_AUDIO). No frame
 // shape changed, so a v2 session sees byte-identical traffic; the bump exists
 // because v2 shipped, and a released version is not extended in place.
-inline const int PROTOCOL_VERSION = 3;
+// v4 appended the extended-buttons word to MSG_GAMEPAD_DATA (17 bytes).
+inline const int PROTOCOL_VERSION = 4;
 inline const int PROTOCOL_VERSION_MIN = 1;
 
 // Protocol message types (UDP streams + authenticated notifications only;
@@ -210,6 +211,8 @@ inline const uint16_t CAP_SPEAKER = 0x0080; // accepts the MSG_SPEAKER_AUDIO ret
 // on USB with its audio function reachable). A client that would only ever
 // reduce it to motor strength leaves this off and lets the host do that.
 inline const uint16_t CAP_HAPTIC_AUDIO = 0x0100; // accepts the MSG_HAPTIC_AUDIO return path
+// A claim, not a receive gate (like CAP_MOTION): the word is read by length.
+inline const uint16_t CAP_EXTENDED_BUTTONS = 0x0200; // sources the INPUT extended-buttons word
 
 // Wire form is the lowercase string (protocol constant, never localized).
 inline const uint8_t APPLY_OK = 0;
@@ -383,6 +386,66 @@ struct GamepadReport {
     int16_t sThumbRY = 0;
 };
 static_assert(sizeof(GamepadReport) == 12, "GamepadReport must be 12 bytes");
+
+// The extended-buttons word (protocol 4): the buttons an XInput pad does not
+// have, in SDL's vocabulary. Levels, like wButtons. The PS5 mic button is not
+// misc1 here: it stays WBUTTON_MIC_MUTE.
+inline const uint32_t EXT_BUTTON_RIGHT_PADDLE1 = 0x0001;
+inline const uint32_t EXT_BUTTON_LEFT_PADDLE1 = 0x0002;
+inline const uint32_t EXT_BUTTON_RIGHT_PADDLE2 = 0x0004;
+inline const uint32_t EXT_BUTTON_LEFT_PADDLE2 = 0x0008;
+inline const uint32_t EXT_BUTTON_MISC1 = 0x0010;
+inline const uint32_t EXT_BUTTON_LEFT_PAD_CLICK = 0x0020;
+inline const uint32_t EXT_BUTTON_RIGHT_PAD_CLICK = 0x0040;
+inline const uint32_t EXT_BUTTON_LEFT_TRIGGER_CLICK = 0x0080;
+inline const uint32_t EXT_BUTTON_RIGHT_TRIGGER_CLICK = 0x0100;
+inline const uint32_t EXT_BUTTON_LEFT_STICK_TOUCH = 0x0200;
+inline const uint32_t EXT_BUTTON_RIGHT_STICK_TOUCH = 0x0400;
+inline const uint32_t EXT_BUTTON_LEFT_GRIP_TOUCH = 0x0800;
+inline const uint32_t EXT_BUTTON_RIGHT_GRIP_TOUCH = 0x1000;
+
+// The wire names of the extended buttons (protocol constants, never
+// localized), in bit order.
+struct ExtButtonName {
+    const char* name;
+    uint32_t bit;
+};
+inline constexpr ExtButtonName EXT_BUTTON_NAMES[] = {
+    {"rightPaddle1", EXT_BUTTON_RIGHT_PADDLE1},
+    {"leftPaddle1", EXT_BUTTON_LEFT_PADDLE1},
+    {"rightPaddle2", EXT_BUTTON_RIGHT_PADDLE2},
+    {"leftPaddle2", EXT_BUTTON_LEFT_PADDLE2},
+    {"misc1", EXT_BUTTON_MISC1},
+    {"leftPadClick", EXT_BUTTON_LEFT_PAD_CLICK},
+    {"rightPadClick", EXT_BUTTON_RIGHT_PAD_CLICK},
+    {"leftTriggerClick", EXT_BUTTON_LEFT_TRIGGER_CLICK},
+    {"rightTriggerClick", EXT_BUTTON_RIGHT_TRIGGER_CLICK},
+    {"leftStickTouch", EXT_BUTTON_LEFT_STICK_TOUCH},
+    {"rightStickTouch", EXT_BUTTON_RIGHT_STICK_TOUCH},
+    {"leftGripTouch", EXT_BUTTON_LEFT_GRIP_TOUCH},
+    {"rightGripTouch", EXT_BUTTON_RIGHT_GRIP_TOUCH},
+};
+
+// MSG_GAMEPAD_DATA payload length after the 1-byte ctrlIdx: the report, and
+// from protocol 4 the extended-buttons word (u32 LE) after it. The receiver
+// decodes by length, so a 13..16-byte frame reads as no extended buttons and
+// both generations land in the same InputReport.
+inline const int INPUT_WIRE_PAYLOAD_BYTES_V1 = 12;
+inline const int INPUT_WIRE_PAYLOAD_BYTES_V4 = 16;
+
+struct InputReport {
+    GamepadReport pad{};
+    uint32_t extButtons = 0;
+};
+
+// `p` holds the `len` bytes after ctrlIdx, len >= INPUT_WIRE_PAYLOAD_BYTES_V1.
+inline InputReport decodeInputReport(const uint8_t* p, size_t len) {
+    InputReport r;
+    std::memcpy(&r.pad, p, sizeof(GamepadReport));
+    const bool carriesWord = len >= static_cast<size_t>(INPUT_WIRE_PAYLOAD_BYTES_V4);
+    r.extButtons = carriesWord ? satellite::readLE32(p + INPUT_WIRE_PAYLOAD_BYTES_V1) : 0;
+    return r;
+}
 
 // Rumble (game to controller, return path). Magnitudes are u16 to match
 // XINPUT_VIBRATION scale (0..65535); on Linux uinput these map to FF_RUMBLE

@@ -376,13 +376,13 @@ void receiveLoop(SessionService& svc, const OwnershipBackend& backend, Shared& s
             }
             if (std::memcmp(key, expected[tag], CRYPTO_KEY_SIZE) != 0) sh.keyMismatches++;
             for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
-                GamepadReport report{};
-                report.sThumbLX = static_cast<int16_t>(tag);
-                report.sThumbLY = static_cast<int16_t>(idx);
+                InputReport input{};
+                input.pad.sThumbLX = static_cast<int16_t>(tag);
+                input.pad.sThumbLY = static_cast<int16_t>(idx);
                 bool ok = false;
                 timed(sh, [&] {
                     ok = svc.handleGamepadDataAndUpdate(token, ++counter, SENDER_IPV4, SENDER_PORT,
-                                                        idx, report);
+                                                        idx, input);
                 });
                 if (ok) sh.submits[phase][tag]++;
                 sh.calls++;

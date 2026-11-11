@@ -487,7 +487,7 @@ struct HotStream {
 
 void streamPadZero(SessionService& svc, const SlowPlugBackend& backend, HotStream& stream) {
     uint32_t counter = 0;
-    GamepadReport report{};
+    const InputReport input{};
     stream.started.store(true, std::memory_order_release);
     while (!stream.stop.load(std::memory_order_acquire)) {
         const uint32_t token = stream.token.load();
@@ -497,7 +497,7 @@ void streamPadZero(SessionService& svc, const SlowPlugBackend& backend, HotStrea
         uint32_t lastCounter = 0;
         const bool ok =
             svc.getDecryptInfo(token, key, lastCounter) &&
-            svc.handleGamepadDataAndUpdate(token, ++counter, SENDER_IPV4, SENDER_PORT, 0, report);
+            svc.handleGamepadDataAndUpdate(token, ++counter, SENDER_IPV4, SENDER_PORT, 0, input);
         std::atomic_thread_fence(std::memory_order_acquire);
         const uint64_t after = backend.plugState();
         const bool onNextToken = token == expected && stream.nextToken.load() == expected;

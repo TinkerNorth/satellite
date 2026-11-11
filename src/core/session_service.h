@@ -113,7 +113,7 @@ class SessionService {
     // Packet handling (called by UDP adapter).
 
     // True if the report was submitted successfully.
-    bool handleGamepadData(uint32_t token, uint8_t ctrlIdx, const GamepadReport& report);
+    bool handleGamepadData(uint32_t token, uint8_t ctrlIdx, const InputReport& input);
 
     // Sends the enriched heartbeat ACK (status + epoch + bitmap).
     void handleHeartbeat(uint32_t token);
@@ -202,8 +202,7 @@ class SessionService {
     // FUSED hot path: updatePostDecryptV4 + handleGamepadData. True if the
     // report was submitted successfully.
     bool handleGamepadDataAndUpdate(uint32_t token, uint32_t counter, uint32_t ipv4NetworkOrder,
-                                    uint16_t clientPort, uint8_t ctrlIdx,
-                                    const GamepadReport& report);
+                                    uint16_t clientPort, uint8_t ctrlIdx, const InputReport& input);
 
     // Thread-safe snapshot of all connections for JSON serialization.
     struct ConnectionSnapshot {
@@ -363,7 +362,7 @@ class SessionService {
 
     HotTable hot_;
     RxEpoch rx_;
-    bool submitHotFrame(uint32_t token, uint8_t ctrlIdx, const GamepadReport& report, bool record,
+    bool submitHotFrame(uint32_t token, uint8_t ctrlIdx, const InputReport& input, bool record,
                         uint32_t counter, uint64_t clientAddr);
     void recordHotDatagram(uint32_t token, uint32_t counter, uint64_t clientAddr);
 
