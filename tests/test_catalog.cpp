@@ -19,6 +19,11 @@
 
 using namespace satellite;
 
+namespace {
+constexpr uint32_t EDGE_PADDLES = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE1 |
+                                  EXT_BUTTON_RIGHT_PADDLE2 | EXT_BUTTON_LEFT_PADDLE2;
+} // namespace
+
 static std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
@@ -105,12 +110,23 @@ static void test_catalogJson_structure() {
     traits.dualsenseMicSupported = true;
     traits.dualsenseSpeakerSupported = true;
     traits.switchProExtButtons = EXT_BUTTON_MISC1;
+    traits.dualsenseEdgeMotionSupported = true;
+    traits.dualsenseEdgeMotionRequires = "hidmaestro>=1.7";
+    traits.dualsenseEdgeTouchpadSupported = true;
+    traits.dualsenseEdgeLightbarSupported = true;
+    traits.dualsenseEdgeTriggerEffectsSupported = true;
+    traits.dualsenseEdgePlayerLedsSupported = true;
+    traits.dualsenseEdgeMicSupported = true;
+    traits.dualsenseEdgeSpeakerSupported = true;
+    traits.dualsenseEdgeHapticAudioSupported = true;
+    traits.dualsenseEdgeExtButtons = EDGE_PADDLES;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;
     traits.offersDS4 = true;
     traits.offersDualSense = true;
     traits.offersSwitchPro = true;
+    traits.offersDualSenseEdge = true;
 
     const std::string enJson = readFileAll(langPath("en"));
     EXPECT(!enJson.empty());
@@ -125,8 +141,8 @@ static void test_catalogJson_structure() {
     // Catalog ids ARE the wire enum values (0 = xbox360, 1 = ds4).
     std::vector<long> ids;
     auto types = controllerTypeElems(json, ids);
-    EXPECT_EQ(types.size(), size_t{4});
-    if (types.size() == 4) {
+    EXPECT_EQ(types.size(), size_t{5});
+    if (types.size() == 5) {
         EXPECT_EQ(ids[0], 0L);
         EXPECT(types[0].find("\"slug\":\"xbox360\"") != std::string::npos);
         EXPECT_EQ(ids[1], 1L);
@@ -195,6 +211,20 @@ static void test_catalogJson_structure() {
         EXPECT(types[2].find("\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0ce6\"]}") !=
                std::string::npos);
         EXPECT(types[3].find("\"emulates\":{\"sdlType\":\"switchpro\",\"usb\":[\"057e:2009\"]}") !=
+               std::string::npos);
+        // The DualSense Edge: the DualSense's surface plus its four back
+        // buttons, emulating only the Edge itself.
+        EXPECT_EQ(ids[4], 4L);
+        EXPECT(types[4].find("\"slug\":\"dualsenseedge\"") != std::string::npos);
+        EXPECT(types[4].find("/api/catalog/images/dualsenseedge") != std::string::npos);
+        EXPECT(types[4].find("\"requires\":\"hidmaestro>=1.7\"") != std::string::npos);
+        EXPECT(types[4].find("\"touchpad\":{\"supported\":true,\"modes\":[\"ds4\"]}") !=
+               std::string::npos);
+        EXPECT(types[4].find("\"hapticAudio\":{\"supported\":true}") != std::string::npos);
+        EXPECT(types[4].find(
+                   "\"extendedButtons\":{\"supported\":true,\"buttons\":[\"rightPaddle1\","
+                   "\"leftPaddle1\",\"rightPaddle2\",\"leftPaddle2\"]}") != std::string::npos);
+        EXPECT(types[4].find("\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0df2\"]}") !=
                std::string::npos);
     }
 
@@ -299,12 +329,13 @@ static void test_catalogJson_escapesLocalizedStrings() {
 static void test_imageSlugs_matchCatalogIds() {
     TEST("catalogImageSlugs: slug order matches catalog ids (image route contract)");
     const auto& slugs = catalogImageSlugs();
-    EXPECT_EQ(slugs.size(), size_t{4});
-    if (slugs.size() == 4) {
-        EXPECT_EQ(slugs[0], std::string("xbox360"));   // id 0
-        EXPECT_EQ(slugs[1], std::string("ds4"));       // id 1
-        EXPECT_EQ(slugs[2], std::string("dualsense")); // id 2
-        EXPECT_EQ(slugs[3], std::string("switchpro")); // id 3
+    EXPECT_EQ(slugs.size(), size_t{5});
+    if (slugs.size() == 5) {
+        EXPECT_EQ(slugs[0], std::string("xbox360"));       // id 0
+        EXPECT_EQ(slugs[1], std::string("ds4"));           // id 1
+        EXPECT_EQ(slugs[2], std::string("dualsense"));     // id 2
+        EXPECT_EQ(slugs[3], std::string("switchpro"));     // id 3
+        EXPECT_EQ(slugs[4], std::string("dualsenseedge")); // id 4
     }
 }
 
@@ -368,12 +399,14 @@ static void test_emulatesNotLocalized() {
     traits.offersDS4 = true;
     traits.offersDualSense = true;
     traits.offersSwitchPro = true;
+    traits.offersDualSenseEdge = true;
     const std::string enJson = readFileAll(langPath("en"));
     const std::string needles[] = {
         "\"emulates\":{\"sdlType\":\"xbox360\",\"usb\":[\"045e:028e\"]}",
         "\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\",\"054c:09cc\"]}",
         "\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0ce6\"]}",
         "\"emulates\":{\"sdlType\":\"switchpro\",\"usb\":[\"057e:2009\"]}",
+        "\"emulates\":{\"sdlType\":\"ps5\",\"usb\":[\"054c:0df2\"]}",
     };
     for (const auto& locale : catalogLocales()) {
         const std::string langJson = readFileAll(langPath(locale));
@@ -442,7 +475,7 @@ static void test_emulatesOnlyOnOfferedTypes() {
 }
 
 static void test_catalogJson_goldenShape_uinput() {
-    TEST("buildCatalogJson: uinput all-four golden shape (empty lang = deterministic body)");
+    TEST("buildCatalogJson: uinput all-five golden shape (empty lang = deterministic body)");
     // The real uinput trait set (routes_common.cpp): all four identities, ds4-like
     // motion/touchpad/lightbar, host mouse + rumble, no motion requires code.
     CatalogBackendTraits traits;
@@ -454,12 +487,16 @@ static void test_catalogJson_goldenShape_uinput() {
     traits.dualsenseLightbarSupported = true;
     traits.switchProMotionSupported = true;
     traits.switchProExtButtons = EXT_BUTTON_MISC1;
+    traits.dualsenseEdgeMotionSupported = true;
+    traits.dualsenseEdgeTouchpadSupported = true;
+    traits.dualsenseEdgeExtButtons = EDGE_PADDLES;
     traits.mouseControlSupported = true;
     traits.rumbleSupported = true;
     traits.offersXbox = true;
     traits.offersDS4 = true;
     traits.offersDualSense = true;
     traits.offersSwitchPro = true;
+    traits.offersDualSenseEdge = true;
     // Empty lang â†’ name/shortName/description resolve to their key markers, so the
     // whole body is deterministic and the full structure (order, ids, slugs, features,
     // emulates, hostFeatures) is pinned without coupling to localized copy.
@@ -468,7 +505,8 @@ static void test_catalogJson_goldenShape_uinput() {
         R"({"id":0,"slug":"xbox360","name":"catalog.type.xbox360.name","shortName":"catalog.type.xbox360.shortName","description":"catalog.type.xbox360.description","image":{"href":"/api/catalog/images/xbox360","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":false},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":false}},"emulates":{"sdlType":"xbox360","usb":["045e:028e"]}},)"
         R"({"id":1,"slug":"ds4","name":"catalog.type.ds4.name","shortName":"catalog.type.ds4.shortName","description":"catalog.type.ds4.description","image":{"href":"/api/catalog/images/ds4","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":false}},"emulates":{"sdlType":"ps4","usb":["054c:05c4","054c:09cc"]}},)"
         R"({"id":2,"slug":"dualsense","name":"catalog.type.dualsense.name","shortName":"catalog.type.dualsense.shortName","description":"catalog.type.dualsense.description","image":{"href":"/api/catalog/images/dualsense","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":true},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":false}},"emulates":{"sdlType":"ps5","usb":["054c:0ce6"]}},)"
-        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":true,"buttons":["misc1"]}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}}],)"
+        R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":true,"buttons":["misc1"]}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}},)"
+        R"({"id":4,"slug":"dualsenseedge","name":"catalog.type.dualsenseedge.name","shortName":"catalog.type.dualsenseedge.shortName","description":"catalog.type.dualsenseedge.description","image":{"href":"/api/catalog/images/dualsenseedge","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":true,"buttons":["rightPaddle1","leftPaddle1","rightPaddle2","leftPaddle2"]}},"emulates":{"sdlType":"ps5","usb":["054c:0df2"]}}],)"
         R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";
     const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
     EXPECT_EQ(json, golden);
@@ -491,6 +529,32 @@ static void test_extendedButtons_listsTheSlugsATypeRenders() {
         const Json& some = types[1]["features"]["extendedButtons"];
         EXPECT(some == Json::parse(R"({"supported":true,"buttons":["rightPaddle1","misc1"]})"));
     }
+}
+
+static void test_dualSenseEdgeIsNeverTheDefault() {
+    TEST("buildCatalogJson: the DualSense Edge is listed after every other type, so never first");
+    CatalogBackendTraits traits;
+    traits.offersXbox = true;
+    traits.offersDS4 = true;
+    traits.offersDualSense = true;
+    traits.offersSwitchPro = true;
+    traits.offersDualSenseEdge = true;
+    std::vector<long> ids;
+    const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
+    EXPECT_EQ(controllerTypeElems(json, ids).size(), size_t{5});
+    if (!ids.empty()) EXPECT_EQ(ids.back(), static_cast<long>(CONTROLLER_TYPE_DUALSENSE_EDGE));
+}
+
+static void test_stringKeysCoverEveryType() {
+    TEST("catalogStringKeys: every catalog type has its name, shortName and description");
+    const auto& keys = catalogStringKeys();
+    for (const auto& slug : catalogImageSlugs()) {
+        for (const char* field : {"name", "shortName", "description"}) {
+            const std::string key = "catalog.type." + slug + "." + field;
+            EXPECT(std::find(keys.begin(), keys.end(), key) != keys.end());
+        }
+    }
+    EXPECT_EQ(keys.size(), catalogImageSlugs().size() * 3);
 }
 
 static void test_catalogVersion_present() {
@@ -570,6 +634,8 @@ int main() {
     test_emulatesOnlyOnOfferedTypes();
     test_catalogJson_goldenShape_uinput();
     test_extendedButtons_listsTheSlugsATypeRenders();
+    test_dualSenseEdgeIsNeverTheDefault();
+    test_stringKeysCoverEveryType();
     test_catalogVersion_present();
     test_localeCompletenessGate();
     test_localizedCatalogsRenderLocalizedNames();

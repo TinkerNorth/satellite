@@ -22,6 +22,22 @@ Capture, on HIDMaestro (Windows) and on uinput (Linux). The catalog gains an
 `extendedButtons` list per backend and type, naming the extended buttons each
 type renders; every other type renders none yet.
 
+New controller type 4, the DualSense Edge (`dualsenseedge`), on HIDMaestro
+(Windows) and uinput (Linux): a DualSense whose four back buttons carry the
+paddles a Dish at protocol 4 sends, rightPaddle1 and leftPaddle1 on the back
+buttons and rightPaddle2 and leftPaddle2 on the Fn buttons. On Windows it is
+HIDMaestro's dualsense-edge persona, with its composite for controller audio
+and haptics like the DualSense, and the helper ships stream-free copies of
+both Edge profiles beside the other Sony ones. On Linux it is a 054c:0df2
+node with BTN_GRIPR, BTN_GRIPL, BTN_GRIPR2 and BTN_GRIPL2, the keys SDL3's
+own device mapping reads as paddles when no gamecontrollerdb row claims the
+pad (SDL ships none for the Edge on USB; SDL2 reads no paddles from these
+keys). No Linux Edge has met hardware yet, so its paddles await that
+verification. The catalog lists it last and it emulates only the Edge
+itself, so no client picks it by default; ViGEm and macOS do not offer it. A
+Dish at protocol 3 can already pick it and gets an Edge whose back buttons
+stay up.
+
 A game's DualSense rumble now reaches the real controller without also
 turning its light bar off. Newer DualSense firmware rumble packets (the
 kind SDL games send) carry a mode flag in the same byte this decoder

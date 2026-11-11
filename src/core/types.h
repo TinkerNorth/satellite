@@ -289,7 +289,8 @@ inline const uint8_t CONTROLLER_TYPE_XBOX = 0;
 inline const uint8_t CONTROLLER_TYPE_PLAYSTATION = 1; // DualShock 4
 inline const uint8_t CONTROLLER_TYPE_DUALSENSE = 2;
 inline const uint8_t CONTROLLER_TYPE_SWITCHPRO = 3;
-inline const uint8_t CONTROLLER_TYPE_COUNT = 4;
+inline const uint8_t CONTROLLER_TYPE_DUALSENSE_EDGE = 4;
+inline const uint8_t CONTROLLER_TYPE_COUNT = 5;
 
 inline const char* controllerTypeName(uint8_t type) {
     switch (type) {
@@ -301,13 +302,15 @@ inline const char* controllerTypeName(uint8_t type) {
         return "dualsense";
     case CONTROLLER_TYPE_SWITCHPRO:
         return "switchpro";
+    case CONTROLLER_TYPE_DUALSENSE_EDGE:
+        return "dualsenseedge";
     default:
         return "xbox";
     }
 }
 
 // Catalog slug vocabulary (catalogImageSlugs) diverges from the wire names above;
-// dualsense/switchpro coincide by accident, not contract.
+// dualsense/switchpro/dualsenseedge coincide by accident, not contract.
 inline const char* controllerTypeCatalogSlug(uint8_t type) {
     switch (type) {
     case CONTROLLER_TYPE_XBOX:
@@ -318,6 +321,8 @@ inline const char* controllerTypeCatalogSlug(uint8_t type) {
         return "dualsense";
     case CONTROLLER_TYPE_SWITCHPRO:
         return "switchpro";
+    case CONTROLLER_TYPE_DUALSENSE_EDGE:
+        return "dualsenseedge";
     default:
         return "xbox360";
     }
@@ -333,6 +338,8 @@ inline const char* controllerTypeLabel(uint8_t type) {
         return "DualSense";
     case CONTROLLER_TYPE_SWITCHPRO:
         return "Switch Pro";
+    case CONTROLLER_TYPE_DUALSENSE_EDGE:
+        return "DualSense Edge";
     default:
         return "Xbox";
     }
@@ -341,7 +348,13 @@ inline const char* controllerTypeLabel(uint8_t type) {
 // Materialization identity (VID/PID + HID family). Drives plug/submit selection
 // and the replug-on-identity-change gate; crossing identities needs a fresh
 // virtual device. Separate from the feature predicates below.
-enum class GamepadIdentity : uint8_t { Xbox = 0, DS4 = 1, DualSense = 2, SwitchPro = 3 };
+enum class GamepadIdentity : uint8_t {
+    Xbox = 0,
+    DS4 = 1,
+    DualSense = 2,
+    SwitchPro = 3,
+    DualSenseEdge = 4
+};
 
 inline GamepadIdentity controllerIdentity(uint8_t type) {
     switch (type) {
@@ -351,6 +364,8 @@ inline GamepadIdentity controllerIdentity(uint8_t type) {
         return GamepadIdentity::DualSense;
     case CONTROLLER_TYPE_SWITCHPRO:
         return GamepadIdentity::SwitchPro;
+    case CONTROLLER_TYPE_DUALSENSE_EDGE:
+        return GamepadIdentity::DualSenseEdge;
     default:
         return GamepadIdentity::Xbox;
     }
@@ -360,11 +375,12 @@ inline GamepadIdentity controllerIdentity(uint8_t type) {
 // touchpad; Xbox has neither.
 inline bool controllerTypeHasMotion(uint8_t type) {
     return type == CONTROLLER_TYPE_PLAYSTATION || type == CONTROLLER_TYPE_DUALSENSE ||
-           type == CONTROLLER_TYPE_SWITCHPRO;
+           type == CONTROLLER_TYPE_SWITCHPRO || type == CONTROLLER_TYPE_DUALSENSE_EDGE;
 }
 
 inline bool controllerTypeHasTouchpad(uint8_t type) {
-    return type == CONTROLLER_TYPE_PLAYSTATION || type == CONTROLLER_TYPE_DUALSENSE;
+    return type == CONTROLLER_TYPE_PLAYSTATION || type == CONTROLLER_TYPE_DUALSENSE ||
+           type == CONTROLLER_TYPE_DUALSENSE_EDGE;
 }
 
 // The one free bit in the XINPUT-shaped wButtons word: XINPUT defines every
@@ -403,6 +419,8 @@ inline const uint32_t EXT_BUTTON_LEFT_STICK_TOUCH = 0x0200;
 inline const uint32_t EXT_BUTTON_RIGHT_STICK_TOUCH = 0x0400;
 inline const uint32_t EXT_BUTTON_LEFT_GRIP_TOUCH = 0x0800;
 inline const uint32_t EXT_BUTTON_RIGHT_GRIP_TOUCH = 0x1000;
+inline const uint32_t EXT_BUTTON_PADDLES = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE1 |
+                                           EXT_BUTTON_RIGHT_PADDLE2 | EXT_BUTTON_LEFT_PADDLE2;
 
 // The wire names of the extended buttons (protocol constants, never
 // localized), in bit order.

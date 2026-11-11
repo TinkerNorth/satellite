@@ -202,18 +202,22 @@ static void test_translations_keep_the_placeholders() {
 }
 
 // The dashboard names the controller types that carry a touchpad surface; the
-// names must be the ones the server writes into controllerType.
+// names must be the ones the server writes into controllerType, for every type
+// the server says has one.
 static void test_touchpad_surface_types_are_wire_names() {
-    TEST("dashboard touchpad-surface set names the DualShock 4 and DualSense wire types");
+    TEST("dashboard touchpad-surface set names every touchpad type by its wire name");
     const std::string source = readFileAll(webPath("dashboard.js"));
     const std::regex pattern("TOUCHPAD_SURFACE_TYPES\\s*=\\s*new Set\\(\\[([^\\]]*)\\]");
     std::smatch list;
     EXPECT(std::regex_search(source, list, pattern));
     const std::regex quoted("'([^']+)'");
     const std::set<std::string> named = distinct(firstGroups(list[1].str(), quoted));
-    const std::set<std::string> expected = {controllerTypeName(CONTROLLER_TYPE_PLAYSTATION),
-                                            controllerTypeName(CONTROLLER_TYPE_DUALSENSE)};
+    std::set<std::string> expected;
+    for (uint8_t type = 0; type < CONTROLLER_TYPE_COUNT; ++type) {
+        if (controllerTypeHasTouchpad(type)) expected.insert(controllerTypeName(type));
+    }
     EXPECT(named == expected);
+    EXPECT_EQ(expected.size(), static_cast<size_t>(3));
 }
 
 int main() {

@@ -18,7 +18,7 @@ Runs as a system tray application with a built-in web UI for configuration. No c
 
 **Sender** polls a physical Xbox controller via XInput at ~250 Hz and streams 12-byte `XUSB_REPORT` packets over UDP.
 
-**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual controller — Xbox 360 / DualShock 4 through the ViGEmBus kernel driver (direct `DeviceIoControl`, no DLLs in between), and DualSense / Switch Pro (plus the same two as fallback) through the HIDMaestro user-mode driver (a seqlock write into the driver's shared-memory section, no managed code on the frame path; the Switch Pro's 48-byte state block takes the same write into a mailbox the bundled helper relays to HIDMaestro's protocol host, which answers the Switch handshake and streams the reports).
+**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual controller — Xbox 360 / DualShock 4 through the ViGEmBus kernel driver (direct `DeviceIoControl`, no DLLs in between), and DualSense / DualSense Edge / Switch Pro (plus the same two as fallback) through the HIDMaestro user-mode driver (a seqlock write into the driver's shared-memory section, no managed code on the frame path; the Switch Pro's 48-byte state block takes the same write into a mailbox the bundled helper relays to HIDMaestro's protocol host, which answers the Switch handshake and streams the reports).
 
 The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()` (ViGEm) or `recvfrom()` → seqlock `memcpy()` → `SetEvent()` (HIDMaestro).
 
@@ -48,7 +48,7 @@ The return path carries rumble the other direction. When a game on the receiver 
 ## Prerequisites
 
 ### Receiver machine
-- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense + Switch Pro; user-mode for input, no reboot — see [Controller audio](#controller-audio) for the one case that also loads a kernel USB transport). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
+- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense, DualSense Edge + Switch Pro; user-mode for input, no reboot — see [Controller audio](#controller-audio) for the one case that also loads a kernel USB transport). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
 - **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup). Or:
 - **macOS 10.15+** with a build carrying the `com.apple.developer.hid.virtual.device` entitlement (production builds): controllers are synthesized as virtual DualShock 4 pads via `IOHIDUserDevice`. Unentitled builds (CI artifacts, local compiles) run as development/web-UI servers only; controller descriptors apply as `backendUnavailable`.
 
@@ -76,8 +76,8 @@ Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth
   detected status before you continue.
 - Deploy the HIDMaestro driver (optional-but-default component). It is a
   user-mode UMDF2 driver embedded in the bundled `satellite-hm-helper.exe`;
-  deployment is idempotent and needs no reboot. It adds virtual DualSense
-  and Switch Pro controller types, and covers DualShock 4 / Xbox 360 when
+  deployment is idempotent and needs no reboot. It adds virtual DualSense,
+  DualSense Edge and Switch Pro controller types, and covers DualShock 4 / Xbox 360 when
   ViGEmBus is absent. Setup installs no kernel driver for it; the one
   component that does is controller audio, and it installs on first use
   rather than at setup time (see [Controller audio](#controller-audio)).

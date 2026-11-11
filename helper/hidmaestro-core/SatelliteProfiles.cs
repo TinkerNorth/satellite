@@ -20,6 +20,8 @@ public static class SatelliteProfiles
     {
         "dualsense",
         "dualsense-composite",
+        "dualsense-edge",
+        "dualsense-edge-composite",
         "dualshock-4-v2",
         "dualshock-4-v2-composite",
     };

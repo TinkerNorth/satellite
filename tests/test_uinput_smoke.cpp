@@ -20,6 +20,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <sys/ioctl.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -48,9 +50,19 @@ static std::string g_currentTest;
         }                                                                                          \
     } while (0)
 
+// Kernel ABI values, absent from headers older than the grip keys (Ubuntu
+// 24.04 ships 6.8's).
+#ifndef BTN_GRIPL
+#define BTN_GRIPL 0x224
+#define BTN_GRIPR 0x225
+#define BTN_GRIPL2 0x226
+#define BTN_GRIPR2 0x227
+#endif
+
 namespace {
 
 constexpr int kSkipExitCode = 77;
+constexpr size_t kBitsPerLong = 8 * sizeof(unsigned long);
 // Matches the file-local constant in gamepad_adapter.cpp (XUSB wButtons bit
 // for the A face button).
 constexpr uint16_t kXusbA = 0x1000;
@@ -104,6 +116,11 @@ bool waitForKeyEvent(int fd, uint16_t code, int32_t value, int deadlineMs) {
     return false;
 }
 
+bool hasKey(const unsigned long* keys, int code) {
+    const size_t index = static_cast<size_t>(code);
+    return ((keys[index / kBitsPerLong] >> (index % kBitsPerLong)) & 1UL) != 0;
+}
+
 bool waitFor(const std::atomic<bool>& flag, int deadlineMs) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(deadlineMs);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -132,6 +149,7 @@ int main() {
     if (proxyDir != nullptr) ::setenv("SATELLITE_SYSFS_PROXY_DIR", proxyDir, 1);
 
     GamepadAdapter adapter;
+    constexpr uint32_t kEdgeSerial = MAX_BACKEND_CONTROLLERS - 3;
     constexpr uint32_t kSwitchSerial = MAX_BACKEND_CONTROLLERS - 2;
     constexpr uint32_t kXboxSerial = MAX_BACKEND_CONTROLLERS - 1;
     constexpr uint32_t kDs4Serial = MAX_BACKEND_CONTROLLERS;
@@ -250,6 +268,49 @@ int main() {
     EXPECT(waitForKeyEvent(switchFd, BTN_Y, 0, 2000));
     if (switchFd >= 0) ::close(switchFd);
     EXPECT(adapter.unplugDevice(kSwitchSerial));
+
+    TEST("DualSense Edge: a 054c:0df2 node with motion and touch nodes and the four grip keys");
+    EXPECT(adapter.pluginDevice(kEdgeSerial, GamepadIdentity::DualSenseEdge));
+    const std::string edgeNode = findEventNodeByName(
+        "Satellite Virtual DualSense Edge #" + std::to_string(kEdgeSerial), 3000);
+    EXPECT(!edgeNode.empty());
+    EXPECT(!findEventNodeByName("Satellite Virtual DualShock 4 Motion Sensors #" +
+                                    std::to_string(kEdgeSerial),
+                                3000)
+                .empty());
+    EXPECT(!findEventNodeByName(
+                "Satellite Virtual DualShock 4 Touchpad #" + std::to_string(kEdgeSerial), 3000)
+                .empty());
+    const int edgeFd =
+        edgeNode.empty() ? -1 : ::open(edgeNode.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    EXPECT(edgeFd >= 0);
+    struct input_id edgeId{};
+    EXPECT(edgeFd >= 0 && ::ioctl(edgeFd, EVIOCGID, &edgeId) == 0);
+    EXPECT(edgeId.vendor == 0x054c && edgeId.product == 0x0df2);
+    unsigned long edgeKeys[KEY_MAX / kBitsPerLong + 1] = {};
+    EXPECT(edgeFd >= 0 && ::ioctl(edgeFd, EVIOCGBIT(EV_KEY, sizeof(edgeKeys)), edgeKeys) >= 0);
+    for (int code : {BTN_GRIPL, BTN_GRIPR, BTN_GRIPL2, BTN_GRIPR2}) EXPECT(hasKey(edgeKeys, code));
+
+    TEST("DualSense Edge: each back button presses its grip key, and lets go of it");
+    const struct {
+        uint32_t extButton;
+        uint16_t code;
+    } paddles[] = {
+        {EXT_BUTTON_RIGHT_PADDLE1, BTN_GRIPR},
+        {EXT_BUTTON_LEFT_PADDLE1, BTN_GRIPL},
+        {EXT_BUTTON_RIGHT_PADDLE2, BTN_GRIPR2},
+        {EXT_BUTTON_LEFT_PADDLE2, BTN_GRIPL2},
+    };
+    for (const auto& paddle : paddles) {
+        InputReport held;
+        held.extButtons = paddle.extButton;
+        EXPECT(adapter.submitInput(kEdgeSerial, held));
+        EXPECT(waitForKeyEvent(edgeFd, paddle.code, 1, 2000));
+        EXPECT(adapter.submitInput(kEdgeSerial, InputReport{}));
+        EXPECT(waitForKeyEvent(edgeFd, paddle.code, 0, 2000));
+    }
+    if (edgeFd >= 0) ::close(edgeFd);
+    EXPECT(adapter.unplugDevice(kEdgeSerial));
 
     TEST("relative-mouse node materialises on first use");
     EXPECT(adapter.submitRelativeMouse(3, -2, MouseButtons{}, 0));

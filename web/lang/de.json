@@ -11,6 +11,9 @@
   "catalog.type.switchpro.name": "Switch Pro Controller",
   "catalog.type.switchpro.shortName": "Switch Pro",
   "catalog.type.switchpro.description": "Nintendo-Controller mit Bewegungssteuerung.",
+  "catalog.type.dualsenseedge.name": "DualSense Edge",
+  "catalog.type.dualsenseedge.shortName": "DualSense Edge",
+  "catalog.type.dualsenseedge.description": "PlayStation-5-Controller mit Bewegungssteuerung, Touchpad, Leuchtleiste und vier Rücktasten.",
   "_meta.note": "Translations ported from dish-android/app/src/main/res/values-* where a clean match existed; entries identical to the English source are flagged for translator review in en.json.",
 
   "offline.title": "Server nicht erreichbar",
@@ -115,7 +118,7 @@
   "backend.hidmaestro.status.idle": "Bereit (inaktiv, keine Controller)",
   "backend.hidmaestro.status.unknown": "Erkannt",
   "backend.hidmaestro.err.driver-missing.title": "HIDMaestro-Treiber nicht installiert",
-  "backend.hidmaestro.err.driver-missing.body": "HIDMaestro ist ein User-Mode-Treiber, mit dem Satellite virtuelle DualSense-, Switch-Pro-, DualShock-4- und Xbox-360-Controller unter Windows erstellt. Ohne ihn können diese Controller-Typen nicht erstellt werden.",
+  "backend.hidmaestro.err.driver-missing.body": "HIDMaestro ist ein User-Mode-Treiber, mit dem Satellite virtuelle DualSense-, DualSense-Edge-, Switch-Pro-, DualShock-4- und Xbox-360-Controller unter Windows erstellt. Ohne ihn können diese Controller-Typen nicht erstellt werden.",
   "backend.hidmaestro.err.driver-missing.step1": "Führen Sie das Satellite-Installationsprogramm erneut aus und lassen Sie die Komponente \"HIDMaestro driver\" ausgewählt",
   "backend.hidmaestro.err.driver-missing.step2": "Der Treiber wird ohne Neustart installiert; bestätigen Sie die Berechtigungsanfrage, wenn sie erscheint",
   "backend.hidmaestro.err.driver-missing.step3": "Aktualisieren Sie diese Seite; der Status sollte \"Erkannt\" anzeigen",
@@ -253,7 +256,7 @@
 
   "settings.audio.title": "Controller-Audio",
   "settings.audio.label": "Mikrofon und Lautsprecher des Controllers",
-  "settings.audio.hint": "Ein hier erstellter DualSense oder DualShock 4 v2 erhält auch das eigene Mikrofon und den eigenen Lautsprecher des Controllers, als echte Windows-Audiogeräte. Windows entscheidet, was darüber wiedergegeben wird, genau wie bei jedem Headset: Wählen Sie den Controller unter Einstellungen > System > Sound > Lautstärkemixer für die gewünschten Apps aus. Controller-Audio benötigt einen mitgelieferten signierten USB-Kerneltransport, den HIDMaestro beim ersten Erstellen eines solchen Controllers installiert. Deaktivieren Sie diese Option, um den reinen Eingabe-Controller zu behalten und diese Installation zu überspringen. Änderungen gelten ab der nächsten Controller-Verbindung.",
+  "settings.audio.hint": "Ein hier erstellter DualSense, DualSense Edge oder DualShock 4 v2 erhält auch das eigene Mikrofon und den eigenen Lautsprecher des Controllers, als echte Windows-Audiogeräte. Windows entscheidet, was darüber wiedergegeben wird, genau wie bei jedem Headset: Wählen Sie den Controller unter Einstellungen > System > Sound > Lautstärkemixer für die gewünschten Apps aus. Controller-Audio benötigt einen mitgelieferten signierten USB-Kerneltransport, den HIDMaestro beim ersten Erstellen eines solchen Controllers installiert. Deaktivieren Sie diese Option, um den reinen Eingabe-Controller zu behalten und diese Installation zu überspringen. Änderungen gelten ab der nächsten Controller-Verbindung.",
   "settings.audio.mic-label": "Mikrofon: Ihre Stimme erreicht das Spiel",
   "settings.audio.speaker-label": "Lautsprecher: Spielton erreicht Ihr Headset",
   "settings.audio.haptics-label": "Haptik: DualSense-Vibrationseffekte erreichen Ihren Controller",

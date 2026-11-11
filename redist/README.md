@@ -121,14 +121,15 @@ bump carries both along by itself, because the staging takes them from the
 same hash-pinned zip as the assemblies.
 
 The publish also writes `hidmaestro-profiles\` beside the helper:
-Satellite's copies of five catalog profiles, as `satellite-<id>`, written
+Satellite's copies of seven catalog profiles, as `satellite-<id>`, written
 by `satellite-hm-helper.exe export-profiles` and loaded back by
 `check-profiles`, which fails the publish on any load issue, a missing
 device model or a changed descriptor; `installer.iss` installs the folder,
 and the helper refuses to plug a profile whose copy is not loaded rather
-than fall back to the catalog entry. The four Sony profiles Satellite
-writes natively (`dualsense`, `dualsense-composite`, `dualshock-4-v2`,
-`dualshock-4-v2-composite`) are read out of the SDK the helper was just
+than fall back to the catalog entry. The six Sony profiles Satellite
+writes natively (`dualsense`, `dualsense-composite`, `dualsense-edge`,
+`dualsense-edge-composite`, `dualshock-4-v2`, `dualshock-4-v2-composite`)
+are read out of the SDK the helper was just
 built with and lose their `stream` key: since 2.0 those profiles carry a
 4 ms idle repeat that the SDK runs itself, writing a frame into the
 controller's input section whether or not the program submitted one, which

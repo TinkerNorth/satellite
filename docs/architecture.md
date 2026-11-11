@@ -117,7 +117,7 @@ On Windows the composition root wires BOTH gamepad backends behind one
 `IGamepadPort` reference and a single serial pool, and the mux records
 which child owns each serial at plug time (preference order: ViGEm's
 kernel path first, HIDMaestro for the identities ViGEm cannot
-materialize — DualSense, Switch Pro — and as the fallback when ViGEmBus
+materialize — DualSense, DualSense Edge, Switch Pro — and as the fallback when ViGEmBus
 is absent). Linux (uinput) and macOS (IOHIDUserDevice) keep their single
 adapter; the mux is pure and would take a second adapter there
 unchanged. `core/backend_registry.{h,cpp}` is the data-driven identity /
@@ -1241,8 +1241,8 @@ Not done yet:
 ## Windows second backend: HIDMaestro (user-mode UMDF2, plus one kernel transport for audio)
 
 HIDMaestro materializes the identities ViGEmBus cannot — virtual
-DualSense (motion + touchpad + lightbar at the real DualSense report
-offsets), Switch Pro (motion via the driver's Nintendo protocol
+DualSense and DualSense Edge (motion + touchpad + lightbar at the real
+DualSense report offsets, plus the Edge's back buttons), Switch Pro (motion via the driver's Nintendo protocol
 responder), plus DualShock 4 and Xbox 360 as fallbacks — while ViGEm
 stays preferred for the types both can serve (kernel submit path,
 lowest latency tier).
@@ -1293,7 +1293,8 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
 A real DualSense is a composite USB device: a HID gamepad plus a USB
 Audio Class function carrying the speaker/headset output and the headset
 microphone. HIDMaestro can materialize that composite too
-(`dualsense-composite`, `dualshock-4-v2-composite`), which is what makes
+(`dualsense-composite`, `dualsense-edge-composite`,
+`dualshock-4-v2-composite`), which is what makes
 the emulated pad present real Windows audio endpoints. `profileForIdentity`
 picks the composite id only when the identity has one AND the
 `controllerAudio` setting is on; `HidMaestroAdapter` reads that setting per

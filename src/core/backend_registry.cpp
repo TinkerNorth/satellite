@@ -5,6 +5,8 @@
 #include "core/semver.h"
 #include "core/types.h" // CONTROLLER_TYPE_*, controllerTypeName
 
+#include <iterator>
+
 namespace satellite {
 
 const char* latencyTierName(LatencyTier tier) {
@@ -35,10 +37,10 @@ constexpr BackendControllerSupport kVigemSupport[] = {
 };
 // Trailing columns are triggerEffects, playerLeds, mic, speaker, hapticAudio,
 // extButtons.
-// Only the two Sony pads have real audio endpoints to emulate (the DualShock
-// 4 v2 and the DualSense composite personas); an Xbox pad and a Switch Pro
-// have none, so they advertise none. Haptic lanes exist on the DualSense
-// endpoint alone.
+// Only the Sony pads have real audio endpoints to emulate (the DualShock 4 v2,
+// DualSense and DualSense Edge composite personas); an Xbox pad and a Switch
+// Pro have none, so they advertise none. Haptic lanes exist on the DualSense
+// endpoint, which the Edge's copies.
 constexpr BackendControllerSupport kHidMaestroSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsHidMaestroXbox, false, false, false, ""},
     {CONTROLLER_TYPE_PLAYSTATION, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7", false,
@@ -47,6 +49,8 @@ constexpr BackendControllerSupport kHidMaestroSupport[] = {
      true, true, true, true},
     {CONTROLLER_TYPE_SWITCHPRO, kFactsHidMaestroSony, true, false, false, "hidmaestro>=1.7", false,
      true, false, false, false, EXT_BUTTON_MISC1},
+    {CONTROLLER_TYPE_DUALSENSE_EDGE, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7",
+     true, true, true, true, true, EXT_BUTTON_PADDLES},
 };
 constexpr BackendControllerSupport kUinputSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
@@ -54,6 +58,8 @@ constexpr BackendControllerSupport kUinputSupport[] = {
     {CONTROLLER_TYPE_DUALSENSE, kFactsKernelDirect, true, true, false, ""},
     {CONTROLLER_TYPE_SWITCHPRO, kFactsKernelDirect, true, false, false, "", false, false, false,
      false, false, EXT_BUTTON_MISC1},
+    {CONTROLLER_TYPE_DUALSENSE_EDGE, kFactsKernelDirect, true, true, false, "", false, false, false,
+     false, false, EXT_BUTTON_PADDLES},
 };
 constexpr BackendControllerSupport kMacHidSupport[] = {
     {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, ""},
@@ -61,15 +67,15 @@ constexpr BackendControllerSupport kMacHidSupport[] = {
 
 const BackendDescriptor kBackends[] = {
     {BACKEND_ID_VIGEM, "Nefarius Software Solutions", "ViGEmBus", true, true, true,
-     BACKEND_LIFECYCLE_EOL, "2023-11-02", kVigemSupport, 2},
+     BACKEND_LIFECYCLE_EOL, "2023-11-02", kVigemSupport, std::size(kVigemSupport)},
     {BACKEND_ID_HIDMAESTRO, "hifihedgehog", "HIDMaestro", false, true, true,
-     BACKEND_LIFECYCLE_SUPPORTED, "", kHidMaestroSupport, 4},
+     BACKEND_LIFECYCLE_SUPPORTED, "", kHidMaestroSupport, std::size(kHidMaestroSupport)},
     {BACKEND_ID_UINPUT, "Linux uinput", "uinput", true, true, true, BACKEND_LIFECYCLE_SUPPORTED, "",
-     kUinputSupport, 4},
+     kUinputSupport, std::size(kUinputSupport)},
     {BACKEND_ID_MAC_HID, "Apple IOHIDUserDevice", "macOS virtual HID", false, false, true,
-     BACKEND_LIFECYCLE_SUPPORTED, "", kMacHidSupport, 1},
+     BACKEND_LIFECYCLE_SUPPORTED, "", kMacHidSupport, std::size(kMacHidSupport)},
     {BACKEND_ID_NONE, "", "None", false, false, true, BACKEND_LIFECYCLE_SUPPORTED, "",
-     kMacHidSupport, 1},
+     kMacHidSupport, std::size(kMacHidSupport)},
 };
 
 void appendNullable(std::string& json, const char* value) {
@@ -280,6 +286,21 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.switchProExtButtons = cs.extButtons;
                 }
                 t.offersSwitchPro = true;
+                break;
+            case CONTROLLER_TYPE_DUALSENSE_EDGE:
+                if (!t.offersDualSenseEdge) {
+                    t.dualsenseEdgeMotionSupported = cs.motion;
+                    t.dualsenseEdgeMotionRequires = cs.motionRequires;
+                    t.dualsenseEdgeTouchpadSupported = cs.touchpad;
+                    t.dualsenseEdgeLightbarSupported = cs.lightbar;
+                    t.dualsenseEdgeTriggerEffectsSupported = cs.triggerEffects;
+                    t.dualsenseEdgePlayerLedsSupported = cs.playerLeds;
+                    t.dualsenseEdgeMicSupported = cs.mic;
+                    t.dualsenseEdgeSpeakerSupported = cs.speaker;
+                    t.dualsenseEdgeHapticAudioSupported = cs.hapticAudio;
+                    t.dualsenseEdgeExtButtons = cs.extButtons;
+                }
+                t.offersDualSenseEdge = true;
                 break;
             default:
                 break;

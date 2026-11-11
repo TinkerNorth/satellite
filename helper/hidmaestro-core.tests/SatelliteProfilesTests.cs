@@ -36,14 +36,22 @@ public sealed class SatelliteProfilesTests
         """;
 
     [Fact]
-    public void TheCopiesAreTheFourSonyProfilesAndTheSwitchPro()
+    public void TheCopiesAreTheSixSonyProfilesAndTheSwitchPro()
     {
         Assert.Equal(
-            new[] { "dualsense", "dualsense-composite", "dualshock-4-v2", "dualshock-4-v2-composite" },
+            new[]
+            {
+                "dualsense", "dualsense-composite", "dualsense-edge", "dualsense-edge-composite",
+                "dualshock-4-v2", "dualshock-4-v2-composite",
+            },
             SatelliteProfiles.StreamFreeCopies);
         Assert.Equal(new[] { "switch-pro" }, SatelliteProfiles.HeartbeatCopies);
         Assert.Equal(
-            new[] { "dualsense", "dualsense-composite", "dualshock-4-v2", "dualshock-4-v2-composite", "switch-pro" },
+            new[]
+            {
+                "dualsense", "dualsense-composite", "dualsense-edge", "dualsense-edge-composite",
+                "dualshock-4-v2", "dualshock-4-v2-composite", "switch-pro",
+            },
             SatelliteProfiles.Copies);
         foreach (string id in SatelliteProfiles.Copies) Assert.True(SatelliteProfiles.NeedsCopy(id));
         Assert.False(SatelliteProfiles.NeedsCopy("xbox-360-wired"));
@@ -66,6 +74,7 @@ public sealed class SatelliteProfilesTests
         Assert.Equal("satellite-dualsense.json", SatelliteProfiles.FileName("dualsense"));
         Assert.Equal("satellite-dualshock-4-v2-composite", SatelliteProfiles.ResolveId("dualshock-4-v2-composite"));
         Assert.Equal("satellite-switch-pro", SatelliteProfiles.ResolveId("switch-pro"));
+        Assert.Equal("satellite-dualsense-edge-composite", SatelliteProfiles.ResolveId("dualsense-edge-composite"));
         Assert.Equal("xbox-360-wired", SatelliteProfiles.ResolveId("xbox-360-wired"));
         Assert.Equal("hidmaestro-profiles", SatelliteProfiles.DirectoryName);
     }

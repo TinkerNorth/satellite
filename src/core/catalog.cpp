@@ -85,18 +85,28 @@ std::string catalogString(const std::string& langJson, const std::string& enJson
 }
 
 const std::vector<std::string>& catalogImageSlugs() {
-    static const std::vector<std::string> slugs = {"xbox360", "ds4", "dualsense", "switchpro"};
+    static const std::vector<std::string> slugs = {"xbox360", "ds4", "dualsense", "switchpro",
+                                                   "dualsenseedge"};
     return slugs;
 }
 
 const std::vector<std::string>& catalogStringKeys() {
     static const std::vector<std::string> keys = {
-        "catalog.type.xbox360.name",          "catalog.type.xbox360.shortName",
-        "catalog.type.xbox360.description",   "catalog.type.ds4.name",
-        "catalog.type.ds4.shortName",         "catalog.type.ds4.description",
-        "catalog.type.dualsense.name",        "catalog.type.dualsense.shortName",
-        "catalog.type.dualsense.description", "catalog.type.switchpro.name",
-        "catalog.type.switchpro.shortName",   "catalog.type.switchpro.description",
+        "catalog.type.xbox360.name",
+        "catalog.type.xbox360.shortName",
+        "catalog.type.xbox360.description",
+        "catalog.type.ds4.name",
+        "catalog.type.ds4.shortName",
+        "catalog.type.ds4.description",
+        "catalog.type.dualsense.name",
+        "catalog.type.dualsense.shortName",
+        "catalog.type.dualsense.description",
+        "catalog.type.switchpro.name",
+        "catalog.type.switchpro.shortName",
+        "catalog.type.switchpro.description",
+        "catalog.type.dualsenseedge.name",
+        "catalog.type.dualsenseedge.shortName",
+        "catalog.type.dualsenseedge.description",
     };
     return keys;
 }
@@ -157,6 +167,11 @@ JsonOut emulatesJson(const std::string& slug) {
     } else if (slug == "switchpro") {
         j["sdlType"] = "switchpro";
         j["usb"] = JsonOut::array({"057e:2009"});
+    } else if (slug == "dualsenseedge") {
+        // Only the Edge itself: a matcher must not default another pad (a
+        // Steam Controller among them) to it.
+        j["sdlType"] = "ps5";
+        j["usb"] = JsonOut::array({"054c:0df2"});
     }
     return j;
 }
@@ -270,6 +285,19 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         sw["hapticAudio"] = featureJson(false);
         sw["extendedButtons"] = extendedButtonsJson(traits.switchProExtButtons);
         types.push_back(typeJson(3, "switchpro", lang, en, serverVersion, std::move(sw)));
+    }
+    if (traits.offersDualSenseEdge) {
+        // Last on purpose: a client defaults to the first offered type, and the
+        // Edge is never the default.
+        types.push_back(typeJson(
+            4, "dualsenseedge", lang, en, serverVersion,
+            ds4LikeFeatures(
+                traits.dualsenseEdgeMotionSupported, traits.dualsenseEdgeMotionRequires,
+                traits.dualsenseEdgeTouchpadSupported, traits.dualsenseEdgeLightbarSupported,
+                traits.dualsenseEdgeTriggerEffectsSupported,
+                traits.dualsenseEdgePlayerLedsSupported, traits.dualsenseEdgeMicSupported,
+                traits.dualsenseEdgeSpeakerSupported, traits.dualsenseEdgeHapticAudioSupported,
+                traits.dualsenseEdgeExtButtons)));
     }
     j["controllerTypes"] = std::move(types);
 

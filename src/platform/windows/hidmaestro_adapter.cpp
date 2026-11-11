@@ -283,6 +283,13 @@ static int64_t microsSinceLastFrame(std::chrono::steady_clock::time_point& last)
     return us;
 }
 
+// The DualSense sensor clock runs at 3 MHz; the sequence byte counts reports.
+static void advanceDs5Clocks(hm::Ds5InputState& ds5, std::chrono::steady_clock::time_point& last) {
+    const int64_t us = microsSinceLastFrame(last);
+    ds5.sensorTimestamp += static_cast<uint32_t>(us * 3);
+    ds5.seq++;
+}
+
 uint16_t HidMaestroAdapter::packFrame(IoSlot& slot, bool& withGip) {
     withGip = false;
     switch (slot.identity) {
@@ -299,14 +306,14 @@ uint16_t HidMaestroAdapter::packFrame(IoSlot& slot, bool& withGip) {
         hm::packDs4Payload(slot.ds4, slot.payload);
         return hm::DS4_PAYLOAD_BYTES;
     }
-    case GamepadIdentity::DualSense: {
-        // The DualSense sensor clock runs at 3 MHz.
-        const int64_t us = microsSinceLastFrame(slot.lastSonySubmit);
-        slot.ds5.sensorTimestamp += static_cast<uint32_t>(us * 3);
-        slot.ds5.seq++;
+    case GamepadIdentity::DualSense:
+        advanceDs5Clocks(slot.ds5, slot.lastSonySubmit);
         hm::packDs5Payload(slot.ds5, slot.payload);
         return hm::DS5_PAYLOAD_BYTES;
-    }
+    case GamepadIdentity::DualSenseEdge:
+        advanceDs5Clocks(slot.ds5, slot.lastSonySubmit);
+        hm::packDs5EdgePayload(slot.ds5, slot.payload);
+        return hm::DS5_PAYLOAD_BYTES;
     case GamepadIdentity::SwitchPro:
         hm::packSwitchBody(slot.switchInput, slot.switchMotion, slot.payload);
         return hm::SWITCH_BODY_BYTES;
@@ -343,7 +350,9 @@ bool HidMaestroAdapter::submitInput(uint32_t serial, const InputReport& input) {
         slot.ds4.pad = input.pad;
         break;
     case GamepadIdentity::DualSense:
+    case GamepadIdentity::DualSenseEdge:
         slot.ds5.pad = input.pad;
+        slot.ds5.extButtons = input.extButtons;
         break;
     case GamepadIdentity::SwitchPro:
         slot.switchInput = input;
@@ -357,8 +366,7 @@ void HidMaestroAdapter::refreshIdleInput() {
     const auto now = std::chrono::steady_clock::now();
     for (IoSlot& slot : io_) {
         if (!slot.plugged.load(std::memory_order_relaxed)) continue;
-        if (slot.identity != GamepadIdentity::DS4 && slot.identity != GamepadIdentity::DualSense)
-            continue;
+        if (!hm::identityIsSonyPersona(slot.identity)) continue;
         if (slot.inputBusy.test_and_set(std::memory_order_acquire)) continue;
         // lastSonySubmit is stamped by every pack, this one included, so the
         // cadence is "a frame at least this often", whoever supplied the last.
@@ -378,6 +386,7 @@ bool HidMaestroAdapter::submitMotion(uint32_t serial, const MotionReport& report
         slot.ds4.motion = report;
         break;
     case GamepadIdentity::DualSense:
+    case GamepadIdentity::DualSenseEdge:
         slot.ds5.motion = report;
         break;
     case GamepadIdentity::SwitchPro:
@@ -400,6 +409,7 @@ bool HidMaestroAdapter::submitBattery(uint32_t serial, const BatteryReport& repo
         slot.ds4.batteryByte = ds4BatteryByte(report);
         break;
     case GamepadIdentity::DualSense:
+    case GamepadIdentity::DualSenseEdge:
         slot.ds5.batteryByte = hm::ds5BatteryByte(report);
         break;
     default:
@@ -414,8 +424,7 @@ bool HidMaestroAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& re
     if (!isValidSerial(serial)) return false;
     IoSlot& slot = io_[serial];
     if (!slot.plugged.load(std::memory_order_acquire)) return false;
-    if (slot.identity != GamepadIdentity::DS4 && slot.identity != GamepadIdentity::DualSense)
-        return false;
+    if (!hm::identityIsSonyPersona(slot.identity)) return false;
     const InputClaim claim(slot.inputBusy);
 
     // Bump tracking id on up->down so a consumer reads a new contact, not a
