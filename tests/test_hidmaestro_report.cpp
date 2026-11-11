@@ -509,9 +509,9 @@ static void test_decode_ds5_output() {
     pkt.reportId = 0x02;
     pkt.size = 47;
     pkt.data[0] = 0x03;
-    pkt.data[2] = 11; // right/weak
-    pkt.data[3] = 22; // left/strong
-    pkt.data[38] = 0x04;
+    pkt.data[2] = 11;   // right/weak
+    pkt.data[3] = 22;   // left/strong
+    pkt.data[1] = 0x04; // LIGHTBAR_CONTROL_ENABLE
     pkt.data[44] = 9;
     pkt.data[45] = 8;
     pkt.data[46] = 7;
@@ -523,7 +523,7 @@ static void test_decode_ds5_output() {
     EXPECT_EQ(d.r, (uint8_t)9);
 
     // No lightbar flag: colour is stale bytes, not a lightbar write.
-    pkt.data[38] = 0;
+    pkt.data[1] = 0;
     d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
     EXPECT(!d.hasLightbar);
     EXPECT(d.hasRumble);
@@ -600,6 +600,55 @@ static void test_decode_ds5_lightbar_valid_flag1() {
     EXPECT_EQ(d.r, (uint8_t)5);
     EXPECT_EQ(d.g, (uint8_t)6);
     EXPECT_EQ(d.b, (uint8_t)7);
+}
+
+// valid_flag2 bit 2 is COMPATIBLE_VIBRATION2 (hid-playstation, SDL
+// ucEnableBits3 |= 0x04), a rumble mode flag. Reading it as a lightbar enable
+// turned every v2-rumble packet into a black lightbar write.
+static void test_decode_ds5_v2_rumble_has_no_lightbar() {
+    TEST("decodeOutputPacket — DS5 SDL v2 rumble packet decodes rumble and no lightbar");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[0] = 0x02;
+    pkt.data[2] = 30;
+    pkt.data[3] = 40;
+    pkt.data[38] = 0x04;
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasRumble);
+    EXPECT_EQ(d.rumble.weakMagnitude, (uint16_t)(30 * 257));
+    EXPECT_EQ(d.rumble.strongMagnitude, (uint16_t)(40 * 257));
+    EXPECT(!d.hasLightbar);
+}
+
+static void test_decode_ds5_compatible_vibration2_alone_is_rumble() {
+    TEST("decodeOutputPacket — DS5 valid_flag2 bit 2 alone still decodes rumble");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[2] = 5;
+    pkt.data[3] = 6;
+    pkt.data[38] = 0x04;
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(d.hasRumble);
+    EXPECT_EQ(d.rumble.weakMagnitude, (uint16_t)(5 * 257));
+    EXPECT_EQ(d.rumble.strongMagnitude, (uint16_t)(6 * 257));
+}
+
+static void test_decode_ds5_valid_flag2_is_not_a_lightbar_enable() {
+    TEST("decodeOutputPacket — DS5 valid_flag2 bit 2 with a stale colour is no lightbar");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 47;
+    pkt.data[38] = 0x04;
+    pkt.data[44] = 200;
+    pkt.data[45] = 100;
+    pkt.data[46] = 50;
+    DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(!d.hasLightbar);
 }
 
 // The mute lamp lives at byte 8 (SDL ucMicLightMode / hid-playstation
@@ -795,6 +844,9 @@ int main() {
     test_decode_ds5_trigger_effects();
     test_decode_ds5_player_leds();
     test_decode_ds5_lightbar_valid_flag1();
+    test_decode_ds5_v2_rumble_has_no_lightbar();
+    test_decode_ds5_compatible_vibration2_alone_is_rumble();
+    test_decode_ds5_valid_flag2_is_not_a_lightbar_enable();
     test_decode_ds5_mic_led();
     test_decode_ds5_mic_led_coexists();
     test_decode_switch_player_leds();

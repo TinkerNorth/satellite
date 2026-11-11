@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#include "../src/core/types.h"
 #include "../src/net/status_json.h"
 
 #include <fstream>
@@ -200,6 +201,21 @@ static void test_translations_keep_the_placeholders() {
     }
 }
 
+// The dashboard names the controller types that carry a touchpad surface; the
+// names must be the ones the server writes into controllerType.
+static void test_touchpad_surface_types_are_wire_names() {
+    TEST("dashboard touchpad-surface set names the DualShock 4 and DualSense wire types");
+    const std::string source = readFileAll(webPath("dashboard.js"));
+    const std::regex pattern("TOUCHPAD_SURFACE_TYPES\\s*=\\s*new Set\\(\\[([^\\]]*)\\]");
+    std::smatch list;
+    EXPECT(std::regex_search(source, list, pattern));
+    const std::regex quoted("'([^']+)'");
+    const std::set<std::string> named = distinct(firstGroups(list[1].str(), quoted));
+    const std::set<std::string> expected = {controllerTypeName(CONTROLLER_TYPE_PLAYSTATION),
+                                            controllerTypeName(CONTROLLER_TYPE_DUALSENSE)};
+    EXPECT(named == expected);
+}
+
 int main() {
     std::cout << "Running update UI contract tests...\n\n";
     test_scan_sees_the_reads();
@@ -207,6 +223,7 @@ int main() {
     test_release_fields_are_written();
     test_string_keys_are_in_every_catalog();
     test_translations_keep_the_placeholders();
+    test_touchpad_surface_types_are_wire_names();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

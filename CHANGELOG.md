@@ -3,6 +3,22 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+No protocol changes.
+A game's DualSense rumble now reaches the real controller without also
+turning its light bar off. Newer DualSense firmware rumble packets (the
+kind SDL games send) carry a mode flag in the same byte this decoder
+mistook for "set the light bar", so every such rumble packet became a black
+light bar that Satellite forwarded to the pad. The light bar is now set
+only when the game asks for it, and those rumble packets are decoded as
+rumble.
+The dashboard no longer says "Touchpad: no surface" for a virtual DualSense,
+which has a touchpad, and the touchpad hints now name both the DualSense and
+the DualShock 4.
+Battery wording in the dashboard and contract now says what the clients
+send: the lower of the device's battery and the controller's battery.
+
 ## 2.1.11
 
 No protocol changes.

@@ -220,8 +220,9 @@ function batteryIconFile(b, lvl) {
   return 'battery-critical.svg';
 }
 
-// Derived from ctrl.battery ({ level: 0..100|null, status } or null). A wired
-// controller falls back to the host machine's battery (100% on a desktop).
+// Derived from ctrl.battery ({ level: 0..100|null, status } or null). The
+// client reports the lower of its own device battery and the controller's
+// battery, so the chip can show the phone's charge when it is the lower one.
 function batteryChip(ctrl) {
   const b = ctrl.battery;
   if (!b) {
@@ -269,6 +270,10 @@ function batteryChip(ctrl) {
   return { cls, text, title, icon: batteryIconFile(b, lvl) };
 }
 
+// Virtual controller types that carry a touchpad surface (HIDMaestro and
+// uinput route DualSense touch; the PlayStation family is the DualShock 4).
+const TOUCHPAD_SURFACE_TYPES = new Set(['playstation', 'dualsense']);
+
 // Derived from touchpadActive, controllerType, and touchpadMode (client-owned;
 // the dashboard only mirrors it).
 function touchpadChip(ctrl) {
@@ -276,9 +281,9 @@ function touchpadChip(ctrl) {
   if (mode === 'off') {
     return { cls: 'touchpad-off', text: t('touchpad.off.text'), title: t('touchpad.off.title') };
   }
-  // "Pad" mode needs the virtual DualShock 4 touchpad surface, which only
-  // exists on a PlayStation-typed controller; flag the mismatch otherwise.
-  if (mode === 'ds4' && (ctrl.controllerType || 'xbox') !== 'playstation') {
+  // "Pad" mode needs a virtual touchpad surface, which only exists on a
+  // DualShock 4 or DualSense; flag the mismatch otherwise.
+  if (mode === 'ds4' && !TOUCHPAD_SURFACE_TYPES.has(ctrl.controllerType || 'xbox')) {
     return { cls: 'touchpad-nosurface', text: t('touchpad.nosurface.text'), title: t('touchpad.nosurface.title') };
   }
   const dest = (mode === 'mouse') ? t('touchpad.dest.mouse') : t('touchpad.dest.pad');

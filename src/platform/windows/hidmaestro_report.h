@@ -472,7 +472,12 @@ inline DecodedOutput decodeDs4Output(const OutputPacket& pkt) {
 inline DecodedOutput decodeDualSenseOutput(const OutputPacket& pkt) {
     DecodedOutput out;
     if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || pkt.reportId != 0x02) return out;
-    if (pkt.size >= 4 && (pkt.data[0] & 0x03)) {
+    // Rumble: valid_flag0 bits 0-1 (compatible / haptics select), or
+    // valid_flag2 bit 2 COMPATIBLE_VIBRATION2, which 2.24+ firmware
+    // rumble packets (SDL, hid-playstation) set instead of / beside them.
+    const bool flag0Rumble = pkt.size >= 4 && (pkt.data[0] & 0x03);
+    const bool flag2Rumble = pkt.size >= 39 && (pkt.data[38] & 0x04);
+    if (flag0Rumble || flag2Rumble) {
         out.hasRumble = true;
         out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
         out.rumble.strongMagnitude = static_cast<uint16_t>(pkt.data[3]) * 257;
@@ -501,10 +506,10 @@ inline DecodedOutput decodeDualSenseOutput(const OutputPacket& pkt) {
         out.hasPlayerLeds = true;
         out.playerLeds = static_cast<uint8_t>(pkt.data[43] & 0x1F);
     }
-    // Lightbar: valid_flag1 bit 2 is the documented control-enable
-    // (SDL/hid-playstation); the valid_flag2 bit-2 gate predates this
-    // decoder and is kept so whatever matched it keeps matching.
-    if (pkt.size >= 47 && ((pkt.data[1] & 0x04) || (pkt.data[38] & 0x04))) {
+    // Lightbar: valid_flag1 bit 2 is the only control-enable (SDL
+    // ucEnableBits2, hid-playstation LIGHTBAR_CONTROL_ENABLE); valid_flag2
+    // bit 2 is a rumble mode, so it must not gate the colour bytes.
+    if (pkt.size >= 47 && (pkt.data[1] & 0x04)) {
         out.hasLightbar = true;
         out.r = pkt.data[44];
         out.g = pkt.data[45];
