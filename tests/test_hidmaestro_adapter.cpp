@@ -543,6 +543,47 @@ static void test_xbox_submit_bytes() {
     EXPECT_EQ(u32at(sec, INPUT_EXT_SIZE_OFFSET), (uint32_t)0);
 }
 
+constexpr uint32_t EVERY_EXT_BIT = 0xFFFFFFFFu;
+
+static void test_extended_buttons_dropped_by_xbox_and_ds4() {
+    TEST("Xbox persona — no extended button, reserved bits included, changes the report or the "
+         "GIP slice");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
+    const uint8_t* xbox = prov.inputSection(1);
+    InputReport input{};
+    input.pad.wButtons = 0x1000;
+    input.pad.sThumbLX = 1000;
+    EXPECT(adapter.submitInput(1, input));
+    uint8_t reportWithout[X360_REPORT_BYTES];
+    std::memcpy(reportWithout, xbox + INPUT_DATA_OFFSET, X360_REPORT_BYTES);
+    uint8_t gipWithout[INPUT_GIP_LENGTH];
+    std::memcpy(gipWithout, xbox + INPUT_GIP_OFFSET, INPUT_GIP_LENGTH);
+    input.extButtons = EVERY_EXT_BIT;
+    EXPECT(adapter.submitInput(1, input));
+    EXPECT_EQ(std::memcmp(reportWithout, xbox + INPUT_DATA_OFFSET, X360_REPORT_BYTES), 0);
+    EXPECT_EQ(std::memcmp(gipWithout, xbox + INPUT_GIP_OFFSET, INPUT_GIP_LENGTH), 0);
+
+    TEST("DualShock 4 persona — no extended button, reserved bits included, changes a stick, "
+         "trigger or button byte");
+    EXPECT(adapter.pluginDevice(2, GamepadIdentity::DS4));
+    const uint8_t* ds4 = prov.inputData(2);
+    InputReport pad{};
+    pad.pad.wButtons = 0x1000;
+    EXPECT(adapter.submitInput(2, pad));
+    uint8_t ds4Without[9];
+    std::memcpy(ds4Without, ds4, sizeof(ds4Without));
+    pad.extButtons = EVERY_EXT_BIT;
+    EXPECT(adapter.submitInput(2, pad));
+    for (size_t i = 0; i < sizeof(ds4Without); ++i) {
+        // Byte 6 carries the six-bit frame counter above PS and the pad click.
+        const uint8_t mask = i == 6 ? 0x03 : 0xFF;
+        EXPECT_EQ(ds4[i] & mask, ds4Without[i] & mask);
+    }
+}
+
 static void test_ds4_submit_merges_motion_touch_battery() {
     TEST("DS4 — motion/touch/battery merge into every subsequent frame");
     FakeProvisioner prov;
@@ -1505,6 +1546,7 @@ int main() {
     test_plugin_provision_failure();
     test_unplug_unconfirmed();
     test_xbox_submit_bytes();
+    test_extended_buttons_dropped_by_xbox_and_ds4();
     test_ds4_submit_merges_motion_touch_battery();
     test_ds5_submit();
     test_idle_sony_pads_keep_reporting();

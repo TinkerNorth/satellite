@@ -6,6 +6,7 @@
 #include "../src/core/session_service.h"
 
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -19,6 +20,7 @@
 namespace {
 
 constexpr uint32_t ALL_EXT_BUTTONS = 0x1FFF;
+constexpr uint32_t EVERY_EXT_BIT = 0xFFFFFFFFu;
 constexpr uint8_t REPORT_FILL = 0x5A;
 constexpr uint8_t SLACK_FILL = 0xEE;
 
@@ -43,6 +45,24 @@ struct RecordingGamepad : IGamepadPort {
 
     int submits = 0;
     InputReport last{};
+};
+
+// A backend with no extended buttons at all: it knows only submitReport.
+struct ReportOnlyGamepad : IGamepadPort {
+    bool ensureBusOpen() override { return true; }
+    void closeBus() override {}
+    bool isBusOpen() const override { return true; }
+    bool pluginDevice(uint32_t, GamepadIdentity) override { return true; }
+    bool unplugDevice(uint32_t) override { return true; }
+    bool submitReport(uint32_t, const GamepadReport& report) override {
+        submits++;
+        last = report;
+        return true;
+    }
+    void setRumbleCallback(RumbleCallback) override {}
+
+    int submits = 0;
+    GamepadReport last{};
 };
 
 struct SilentClient : IClientPort {
@@ -226,6 +246,30 @@ void testSettledVersionIsNotAGate() {
     EXPECT_EQ(v4.gamepad.last.pad.wButtons, static_cast<uint16_t>(0x5A5A));
 }
 
+void testEveryBitReachesTheBackendWhole() {
+    TEST("a 17-byte INPUT with every bit set, the reserved ones included, is accepted and reaches "
+         "the backend whole: dropping is the backend's, not the receiver's");
+    OnePadSession s;
+    const DispatchResult dr = s.dispatch(inputFrame(le32(EVERY_EXT_BIT)));
+    EXPECT(dr.wasGamepadData && dr.gamepadOk);
+    EXPECT_EQ(s.gamepad.submits, 1);
+    EXPECT_EQ(s.gamepad.last.extButtons, EVERY_EXT_BIT);
+}
+
+void testPortDefaultDrops() {
+    TEST("the port's default submitInput hands submitReport the pad, and drops the word, reserved "
+         "bits included");
+    ReportOnlyGamepad gamepad;
+    InputReport input;
+    input.pad.wButtons = 0x1000;
+    input.pad.sThumbLX = 1234;
+    input.extButtons = EVERY_EXT_BIT;
+    IGamepadPort& port = gamepad;
+    EXPECT(port.submitInput(1, input));
+    EXPECT_EQ(gamepad.submits, 1);
+    EXPECT_EQ(std::memcmp(&gamepad.last, &input.pad, sizeof(GamepadReport)), 0);
+}
+
 void testExtButtonTable() {
     TEST("the extended buttons are thirteen single bits, in bit order, from 0x0001");
     uint32_t expected = 1;
@@ -255,6 +299,8 @@ int main() {
     testWireSizes();
     testDispatch();
     testSettledVersionIsNotAGate();
+    testEveryBitReachesTheBackendWhole();
+    testPortDefaultDrops();
     testExtButtonTable();
 
     std::cout << "\n=== Test Results ===\n";

@@ -419,6 +419,46 @@ static void test_ds5_edge_payload() {
     EXPECT_EQ(edge[9], (uint8_t)(0x01 | 0x02 | 0x04));
 }
 
+constexpr uint32_t EVERY_EXT_BIT = 0xFFFFFFFFu;
+
+// Every persona drops the extended buttons it has nowhere to put. The Xbox and
+// DualShock 4 packers take no word at all; these three carry one.
+static void test_extended_buttons_dropped_where_there_is_no_room() {
+    TEST("packDs5Payload — the plain DualSense drops every extended button, reserved bits "
+         "included");
+    Ds5InputState ds5{};
+    ds5.pad.wButtons = 0x1000;
+    uint8_t ds5Without[DS5_PAYLOAD_BYTES];
+    packDs5Payload(ds5, ds5Without);
+    ds5.extButtons = EVERY_EXT_BIT;
+    uint8_t ds5With[DS5_PAYLOAD_BYTES];
+    packDs5Payload(ds5, ds5With);
+    EXPECT_EQ(std::memcmp(ds5Without, ds5With, DS5_PAYLOAD_BYTES), 0);
+
+    TEST("packSwitchBody — the Switch Pro drops every extended button but misc1, reserved bits "
+         "included");
+    InputReport sw{};
+    sw.pad.wButtons = 0x1000;
+    MotionReport motion{};
+    uint8_t swWithout[SWITCH_BODY_BYTES];
+    packSwitchBody(sw, motion, swWithout);
+    sw.extButtons = EVERY_EXT_BIT & ~EXT_BUTTON_MISC1;
+    uint8_t swWith[SWITCH_BODY_BYTES];
+    packSwitchBody(sw, motion, swWith);
+    EXPECT_EQ(std::memcmp(swWithout, swWith, SWITCH_BODY_BYTES), 0);
+
+    TEST("packDs5EdgePayload — the DualSense Edge drops every extended button but the paddles, "
+         "reserved bits included");
+    Ds5InputState edge{};
+    edge.pad.wButtons = 0x1000;
+    uint8_t edgeWithout[DS5_PAYLOAD_BYTES];
+    packDs5EdgePayload(edge, edgeWithout);
+    edge.extButtons = EVERY_EXT_BIT & ~EDGE_PADDLES;
+    uint8_t edgeWith[DS5_PAYLOAD_BYTES];
+    packDs5EdgePayload(edge, edgeWith);
+    EXPECT_EQ(std::memcmp(edgeWithout, edgeWith, DS5_PAYLOAD_BYTES), 0);
+}
+
 static void test_mic_mute_bit_ignored_by_other_identities() {
     TEST("packX360Report — the mute bit changes no byte of the Xbox report");
     GamepadReport pad{};
@@ -961,6 +1001,7 @@ int main() {
     test_ds5_payload_buttons_motion_touch();
     test_ds5_mic_mute_button_bit();
     test_ds5_edge_payload();
+    test_extended_buttons_dropped_where_there_is_no_room();
     test_mic_mute_bit_ignored_by_other_identities();
     test_switch_body_neutral();
     test_switch_body_buttons_positional();
