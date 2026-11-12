@@ -121,6 +121,19 @@ JsonOut featureJsonModes(bool supported, JsonOut modes) {
     return j;
 }
 
+// The extended buttons a type renders, by wire name in bit order. A type
+// that renders none is unsupported and lists nothing, like a feature's modes.
+JsonOut extendedButtonsJson(uint32_t bits) {
+    JsonOut buttons = JsonOut::array();
+    for (const auto& button : EXT_BUTTON_NAMES) {
+        if ((bits & button.bit) != 0) buttons.push_back(button.name);
+    }
+    JsonOut j;
+    j["supported"] = bits != 0;
+    if (bits != 0) j["buttons"] = std::move(buttons);
+    return j;
+}
+
 // Physical-pad identity this virtual type is the natural default for. Carried
 // for a FUTURE client-side matcher: the physical->virtual mapping policy lives
 // here on the host, not in each client's switch. Current clients ignore it and
@@ -182,7 +195,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     // renders the DS4-shaped surface; its touchpad renders the "ds4" pad mode.
     auto ds4LikeFeatures = [](bool motion, const std::string& motionRequires, bool touchpad,
                               bool lightbar, bool triggerEffects, bool playerLeds, bool mic,
-                              bool speaker, bool hapticAudio) {
+                              bool speaker, bool hapticAudio, uint32_t extButtons) {
         JsonOut f;
         f["rumble"] = featureJson(true);
         f["analogTriggers"] = featureJson(true);
@@ -194,6 +207,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         f["mic"] = featureJson(mic);
         f["speaker"] = featureJson(speaker);
         f["hapticAudio"] = featureJson(hapticAudio);
+        f["extendedButtons"] = extendedButtonsJson(extButtons);
         return f;
     };
 
@@ -217,17 +231,19 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         xbox["mic"] = featureJson(false);
         xbox["speaker"] = featureJson(false);
         xbox["hapticAudio"] = featureJson(false);
+        xbox["extendedButtons"] = extendedButtonsJson(traits.xboxExtButtons);
         types.push_back(typeJson(0, "xbox360", lang, en, serverVersion, std::move(xbox)));
     }
     if (traits.offersDS4) {
         // DS4 has no adaptive triggers and no player LEDs (lightbar only), but
         // the v2 pad does carry a headset audio function, so mic/speaker ride
         // the traits like the rest.
-        types.push_back(typeJson(
-            1, "ds4", lang, en, serverVersion,
-            ds4LikeFeatures(traits.ds4MotionSupported, traits.ds4MotionRequires,
-                            traits.ds4TouchpadSupported, traits.ds4LightbarSupported, false, false,
-                            traits.ds4MicSupported, traits.ds4SpeakerSupported, false)));
+        types.push_back(
+            typeJson(1, "ds4", lang, en, serverVersion,
+                     ds4LikeFeatures(traits.ds4MotionSupported, traits.ds4MotionRequires,
+                                     traits.ds4TouchpadSupported, traits.ds4LightbarSupported,
+                                     false, false, traits.ds4MicSupported,
+                                     traits.ds4SpeakerSupported, false, traits.ds4ExtButtons)));
     }
     if (traits.offersDualSense) {
         types.push_back(typeJson(
@@ -236,8 +252,8 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
                             traits.dualsenseTouchpadSupported, traits.dualsenseLightbarSupported,
                             traits.dualsenseTriggerEffectsSupported,
                             traits.dualsensePlayerLedsSupported, traits.dualsenseMicSupported,
-                            traits.dualsenseSpeakerSupported,
-                            traits.dualsenseHapticAudioSupported)));
+                            traits.dualsenseSpeakerSupported, traits.dualsenseHapticAudioSupported,
+                            traits.dualsenseExtButtons)));
     }
     if (traits.offersSwitchPro) {
         // Switch Pro: motion, no analog triggers, no touchpad, no light bar.
@@ -252,6 +268,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         sw["mic"] = featureJson(false);
         sw["speaker"] = featureJson(false);
         sw["hapticAudio"] = featureJson(false);
+        sw["extendedButtons"] = extendedButtonsJson(traits.switchProExtButtons);
         types.push_back(typeJson(3, "switchpro", lang, en, serverVersion, std::move(sw)));
     }
     j["controllerTypes"] = std::move(types);

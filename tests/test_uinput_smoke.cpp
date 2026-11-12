@@ -132,6 +132,7 @@ int main() {
     if (proxyDir != nullptr) ::setenv("SATELLITE_SYSFS_PROXY_DIR", proxyDir, 1);
 
     GamepadAdapter adapter;
+    constexpr uint32_t kSwitchSerial = MAX_BACKEND_CONTROLLERS - 2;
     constexpr uint32_t kXboxSerial = MAX_BACKEND_CONTROLLERS - 1;
     constexpr uint32_t kDs4Serial = MAX_BACKEND_CONTROLLERS;
 
@@ -232,6 +233,23 @@ int main() {
     touch.finger0.y = -2048;
     touch.eventTimeMs = 1;
     EXPECT(adapter.submitTouchpad(kDs4Serial, touch));
+
+    TEST("Switch Pro: misc1 presses Capture (BTN_Y, SDL's js4), and lets go of it");
+    EXPECT(adapter.pluginDevice(kSwitchSerial, GamepadIdentity::SwitchPro));
+    const std::string switchNode = findEventNodeByName(
+        "Satellite Virtual Switch Pro Controller #" + std::to_string(kSwitchSerial), 3000);
+    EXPECT(!switchNode.empty());
+    const int switchFd =
+        switchNode.empty() ? -1 : ::open(switchNode.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    EXPECT(switchFd >= 0);
+    InputReport capture;
+    capture.extButtons = EXT_BUTTON_MISC1;
+    EXPECT(adapter.submitInput(kSwitchSerial, capture));
+    EXPECT(waitForKeyEvent(switchFd, BTN_Y, 1, 2000));
+    EXPECT(adapter.submitInput(kSwitchSerial, InputReport{}));
+    EXPECT(waitForKeyEvent(switchFd, BTN_Y, 0, 2000));
+    if (switchFd >= 0) ::close(switchFd);
+    EXPECT(adapter.unplugDevice(kSwitchSerial));
 
     TEST("relative-mouse node materialises on first use");
     EXPECT(adapter.submitRelativeMouse(3, -2, MouseButtons{}, 0));

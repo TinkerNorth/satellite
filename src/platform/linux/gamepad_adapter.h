@@ -26,6 +26,7 @@ class GamepadAdapter : public IGamepadPort {
     bool unplugDevice(uint32_t serial) override;
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
+    bool submitInput(uint32_t serial, const InputReport& input) override;
     void setRumbleCallback(RumbleCallback cb) override;
 
     // DS4 only; Xbox pads and devices whose motion node failed to open return
@@ -109,7 +110,7 @@ class GamepadAdapter : public IGamepadPort {
 
     // Switch Pro has a distinct evdev layout (Nintendo A/B + X/Y swap, ZL/ZR as
     // buttons).
-    bool submitSwitch(int fd, const GamepadReport& report);
+    bool submitSwitch(int fd, const InputReport& input);
 
     mutable TrackedMutex mtx_{"uinput.devices"};
     std::atomic<bool> busOpen_{false};

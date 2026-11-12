@@ -337,6 +337,52 @@ static void test_controllerAudio_surfaces_hidmaestroSonyOnly() {
     EXPECT(!v.dualsenseHapticAudioSupported);
 }
 
+static uint32_t extButtonsOf(const BackendDescriptor* d, uint8_t type) {
+    for (size_t i = 0; i < d->supportCount; ++i) {
+        if (d->support[i].controllerType == type) return d->support[i].extButtons;
+    }
+    return 0;
+}
+
+static void test_extendedButtons_surface_where_a_persona_has_room() {
+    TEST("extendedButtons: the Switch Pro has room for misc1 (Capture) on HIDMaestro and uinput");
+    for (const char* id : {BACKEND_ID_HIDMAESTRO, BACKEND_ID_UINPUT}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr);
+        EXPECT_EQ(extButtonsOf(d, CONTROLLER_TYPE_SWITCHPRO), EXT_BUTTON_MISC1);
+        EXPECT_EQ(extButtonsOf(d, CONTROLLER_TYPE_XBOX), 0u);
+        EXPECT_EQ(extButtonsOf(d, CONTROLLER_TYPE_PLAYSTATION), 0u);
+        EXPECT_EQ(extButtonsOf(d, CONTROLLER_TYPE_DUALSENSE), 0u);
+    }
+
+    TEST("extendedButtons: ViGEm and macOS have room for none");
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_MAC_HID}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr);
+        for (size_t i = 0; i < d->supportCount; ++i) EXPECT_EQ(d->support[i].extButtons, 0u);
+    }
+
+    TEST("extendedButtons: capabilities lists each type's slugs, and an empty list for none");
+    Json parsed;
+    EXPECT(jsonParse(buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, true), parsed));
+    const Json& controllers = parsed[0]["controllers"];
+    EXPECT_EQ(controllers.size(), static_cast<size_t>(4));
+    for (const Json& c : controllers) {
+        const bool switchPro = c["type"].get<int>() == CONTROLLER_TYPE_SWITCHPRO;
+        const Json expected = switchPro ? Json::array({"misc1"}) : Json::array();
+        EXPECT(c.contains("extendedButtons") && c["extendedButtons"] == expected);
+    }
+
+    TEST("extendedButtons: the catalog traits take the preferred materializer's");
+    const CatalogBackendTraits hmTraits = deriveCatalogTraits({{BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT_EQ(hmTraits.switchProExtButtons, EXT_BUTTON_MISC1);
+    EXPECT_EQ(hmTraits.xboxExtButtons | hmTraits.ds4ExtButtons | hmTraits.dualsenseExtButtons, 0u);
+    const CatalogBackendTraits uinputTraits = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
+    EXPECT_EQ(uinputTraits.switchProExtButtons, EXT_BUTTON_MISC1);
+    const CatalogBackendTraits macTraits = deriveCatalogTraits({{BACKEND_ID_MAC_HID, true, ""}});
+    EXPECT_EQ(macTraits.ds4ExtButtons, 0u);
+}
+
 static void test_deriveCatalogTraits_uinput_matches_legacy() {
     TEST("deriveCatalogTraits â€” uinput reproduces the historical Linux traits");
     CatalogBackendTraits t = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
@@ -695,6 +741,7 @@ int main() {
     test_uinput_advertises_no_lightbar_it_cannot_deliver();
     test_rawOutput_surfaces_hidmaestro_only();
     test_controllerAudio_surfaces_hidmaestroSonyOnly();
+    test_extendedButtons_surface_where_a_persona_has_room();
     test_deriveCatalogTraits_uinput_matches_legacy();
     test_deriveCatalogTraits_machid_matches_legacy();
     test_deriveCatalogTraits_ignores_availability();

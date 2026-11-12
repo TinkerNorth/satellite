@@ -43,9 +43,20 @@ constexpr uint16_t SWITCHPRO_PID = 0x2009;
 constexpr int BUTTONS[] = {BTN_A,      BTN_B,     BTN_X,    BTN_Y,      BTN_TL,    BTN_TR,
                            BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR};
 
-// Switch Pro: 14 CONTIGUOUS evdev codes 0x130-0x13d so SDL's built-in Nintendo
-// mapping (which keys on js index = ascending-code position) lines up exactly.
-// Order + the submit remap were derived empirically from SDL's gamecontrollerdb.
+// Switch Pro: 14 contiguous evdev codes 0x130-0x13d, so SDL numbers them
+// js0..js13 by ascending code, and SDL's Linux database row for 057e:2009 names
+// each index's source; submitSwitch writes the sources in the row's order, so
+// misc1 (the Capture button) is b4, which is BTN_Y. The row, the same in SDL3
+// src/joystick/SDL_gamepad_db.h and SDL2 src/joystick/SDL_gamecontrollerdb.h
+// (Linux section):
+//   030000007e0500000920000011810000,Nintendo Switch Pro Controller,a:b0,b:b1,
+//   back:b9,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b11,
+//   leftshoulder:b5,leftstick:b12,lefttrigger:b7,leftx:a0,lefty:a1,misc1:b4,
+//   rightshoulder:b6,rightstick:b13,righttrigger:b8,rightx:a2,righty:a3,
+//   start:b10,x:b3,y:b2,hint:!SDL_GAMECONTROLLER_USE_BUTTON_LABELS:=1,
+// The node is BUS_USB with version 0x0001 where the row has 0x8111; SDL takes
+// the row on its version-less pass (SDL3 SDL_gamepad.c "Try without version
+// match", SDL2 SDL_gamecontroller.c "Try again, ignoring the version").
 constexpr int SWITCH_BUTTONS[] = {BTN_A,      BTN_B,     BTN_C,    BTN_X,     BTN_Y,
                                   BTN_Z,      BTN_TL,    BTN_TR,   BTN_TL2,   BTN_TR2,
                                   BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL};
@@ -461,11 +472,18 @@ struct EventBatch {
 } // namespace
 
 bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
+    InputReport input;
+    input.pad = report;
+    return submitInput(serial, input);
+}
+
+bool GamepadAdapter::submitInput(uint32_t serial, const InputReport& input) {
     if (!isValidSerial(serial)) return false;
     const Device& dev = devices_[serial];
     if (!dev.plugged.load(std::memory_order_acquire) || dev.fd < 0) return false;
     const int fd = dev.fd;
-    if (dev.identity == GamepadIdentity::SwitchPro) return submitSwitch(fd, report);
+    if (dev.identity == GamepadIdentity::SwitchPro) return submitSwitch(fd, input);
+    const GamepadReport& report = input.pad;
 
     EventBatch batch;
     // XUSB Y is positive-up; evdev Y is positive-down, so invert.
@@ -505,7 +523,8 @@ bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) 
     return batch.writeTo(fd);
 }
 
-bool GamepadAdapter::submitSwitch(int fd, const GamepadReport& report) {
+bool GamepadAdapter::submitSwitch(int fd, const InputReport& input) {
+    const GamepadReport& report = input.pad;
     EventBatch batch;
     batch.add(EV_ABS, ABS_X, report.sThumbLX);
     batch.add(EV_ABS, ABS_Y, -clampS16(report.sThumbLY));
@@ -525,13 +544,13 @@ bool GamepadAdapter::submitSwitch(int fd, const GamepadReport& report) {
     batch.add(EV_ABS, ABS_HAT0Y, hatY);
 
     // SWITCH_BUTTONS[i] is SDL js index i; the wire source per index follows SDL's
-    // Nintendo mapping (A/B + X/Y swapped; ZL/ZR digital from the triggers; capture
-    // at js4 has no wire source).
+    // Nintendo mapping (A/B + X/Y swapped; ZL/ZR digital from the triggers).
     const uint16_t b = report.wButtons;
     batch.add(EV_KEY, BTN_A, (b & XUSB_B) ? 1 : 0);                               // js0  B
     batch.add(EV_KEY, BTN_B, (b & XUSB_A) ? 1 : 0);                               // js1  A
     batch.add(EV_KEY, BTN_C, (b & XUSB_X) ? 1 : 0);                               // js2  X
     batch.add(EV_KEY, BTN_X, (b & XUSB_Y) ? 1 : 0);                               // js3  Y
+    batch.add(EV_KEY, BTN_Y, (input.extButtons & EXT_BUTTON_MISC1) ? 1 : 0);      // js4  capture
     batch.add(EV_KEY, BTN_Z, (b & XUSB_LB) ? 1 : 0);                              // js5  L
     batch.add(EV_KEY, BTN_TL, (b & XUSB_RB) ? 1 : 0);                             // js6  R
     batch.add(EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);   // js7  ZL

@@ -33,7 +33,8 @@ constexpr BackendControllerSupport kVigemSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
     {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, "vigembus>=1.17"},
 };
-// Trailing columns are triggerEffects, playerLeds, mic, speaker, hapticAudio.
+// Trailing columns are triggerEffects, playerLeds, mic, speaker, hapticAudio,
+// extButtons.
 // Only the two Sony pads have real audio endpoints to emulate (the DualShock
 // 4 v2 and the DualSense composite personas); an Xbox pad and a Switch Pro
 // have none, so they advertise none. Haptic lanes exist on the DualSense
@@ -45,13 +46,14 @@ constexpr BackendControllerSupport kHidMaestroSupport[] = {
     {CONTROLLER_TYPE_DUALSENSE, kFactsHidMaestroSony, true, true, true, "hidmaestro>=1.7", true,
      true, true, true, true},
     {CONTROLLER_TYPE_SWITCHPRO, kFactsHidMaestroSony, true, false, false, "hidmaestro>=1.7", false,
-     true},
+     true, false, false, false, EXT_BUTTON_MISC1},
 };
 constexpr BackendControllerSupport kUinputSupport[] = {
     {CONTROLLER_TYPE_XBOX, kFactsKernelDirect, false, false, false, ""},
     {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, false, ""},
     {CONTROLLER_TYPE_DUALSENSE, kFactsKernelDirect, true, true, false, ""},
-    {CONTROLLER_TYPE_SWITCHPRO, kFactsKernelDirect, true, false, false, ""},
+    {CONTROLLER_TYPE_SWITCHPRO, kFactsKernelDirect, true, false, false, "", false, false, false,
+     false, false, EXT_BUTTON_MISC1},
 };
 constexpr BackendControllerSupport kMacHidSupport[] = {
     {CONTROLLER_TYPE_PLAYSTATION, kFactsKernelDirect, true, true, true, ""},
@@ -78,6 +80,20 @@ void appendNullable(std::string& json, const char* value) {
     json += "\"";
     json += value;
     json += "\"";
+}
+
+void appendExtButtons(std::string& json, uint32_t bits) {
+    json += "[";
+    bool first = true;
+    for (const auto& button : EXT_BUTTON_NAMES) {
+        if ((bits & button.bit) == 0) continue;
+        if (!first) json += ",";
+        first = false;
+        json += "\"";
+        json += button.name;
+        json += "\"";
+    }
+    json += "]";
 }
 
 void appendSubmitLatency(std::string& json, const SubmitPathFacts& f) {
@@ -199,6 +215,8 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
             json += cs.speaker ? "true" : "false";
             json += ",\"hapticAudio\":";
             json += cs.hapticAudio ? "true" : "false";
+            json += ",\"extendedButtons\":";
+            appendExtButtons(json, cs.extButtons);
             json += ",\"motionRequires\":";
             appendNullable(json, cs.motionRequires);
             json += ",\"submitLatency\":";
@@ -224,6 +242,7 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
             const BackendControllerSupport& cs = d->support[i];
             switch (cs.controllerType) {
             case CONTROLLER_TYPE_XBOX:
+                if (!t.offersXbox) t.xboxExtButtons = cs.extButtons;
                 t.offersXbox = true;
                 break;
             case CONTROLLER_TYPE_PLAYSTATION:
@@ -234,6 +253,7 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.ds4LightbarSupported = cs.lightbar;
                     t.ds4MicSupported = cs.mic;
                     t.ds4SpeakerSupported = cs.speaker;
+                    t.ds4ExtButtons = cs.extButtons;
                 }
                 t.offersDS4 = true;
                 break;
@@ -248,6 +268,7 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.dualsenseMicSupported = cs.mic;
                     t.dualsenseSpeakerSupported = cs.speaker;
                     t.dualsenseHapticAudioSupported = cs.hapticAudio;
+                    t.dualsenseExtButtons = cs.extButtons;
                 }
                 t.offersDualSense = true;
                 break;
@@ -256,6 +277,7 @@ CatalogBackendTraits deriveCatalogTraits(const std::vector<BackendRuntimeStatus>
                     t.switchProMotionSupported = cs.motion;
                     t.switchProMotionRequires = cs.motionRequires;
                     t.switchProPlayerLedsSupported = cs.playerLeds;
+                    t.switchProExtButtons = cs.extButtons;
                 }
                 t.offersSwitchPro = true;
                 break;

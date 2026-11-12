@@ -371,22 +371,22 @@ static void test_mic_mute_bit_ignored_by_other_identities() {
     EXPECT_EQ(std::memcmp(ds4Clear, ds4Set, DS4_PAYLOAD_BYTES), 0);
 
     TEST("packSwitchBody — the mute bit changes no byte of the Switch body");
-    GamepadReport pad3{};
+    InputReport input3{};
     MotionReport motion{};
     uint8_t swClear[SWITCH_BODY_BYTES];
-    packSwitchBody(pad3, motion, swClear);
-    pad3.wButtons = WBUTTON_MIC_MUTE;
+    packSwitchBody(input3, motion, swClear);
+    input3.pad.wButtons = WBUTTON_MIC_MUTE;
     uint8_t swSet[SWITCH_BODY_BYTES];
-    packSwitchBody(pad3, motion, swSet);
+    packSwitchBody(input3, motion, swSet);
     EXPECT_EQ(std::memcmp(swClear, swSet, SWITCH_BODY_BYTES), 0);
 }
 
 static void test_switch_body_neutral() {
     TEST("packSwitchBody — neutral body: centred 12-bit sticks, zero IMU");
-    GamepadReport pad{};
+    const InputReport input{};
     MotionReport motion{};
     uint8_t out[SWITCH_BODY_BYTES];
-    packSwitchBody(pad, motion, out);
+    packSwitchBody(input, motion, out);
     EXPECT_EQ(out[2], (uint8_t)0);
     EXPECT_EQ(out[3], (uint8_t)0);
     EXPECT_EQ(out[4], (uint8_t)0);
@@ -402,40 +402,40 @@ static void test_switch_body_neutral() {
 
 static void test_switch_body_buttons_positional() {
     TEST("packSwitchBody — SDL's Nintendo mapping (A/B + X/Y swapped)");
-    GamepadReport pad{};
-    pad.wButtons = 0x1000; // XUSB A (south) -> wire B
+    InputReport input{};
+    input.pad.wButtons = 0x1000; // XUSB A (south) -> wire B
     uint8_t out[SWITCH_BODY_BYTES];
     MotionReport motion{};
-    packSwitchBody(pad, motion, out);
+    packSwitchBody(input, motion, out);
     EXPECT_EQ(out[2], (uint8_t)0x04);
 
-    pad.wButtons = 0x2000; // XUSB B (east) -> wire A
-    packSwitchBody(pad, motion, out);
+    input.pad.wButtons = 0x2000; // XUSB B (east) -> wire A
+    packSwitchBody(input, motion, out);
     EXPECT_EQ(out[2], (uint8_t)0x08);
 
-    pad.wButtons = 0x4000 | 0x8000; // X (west) -> Y, Y (north) -> X
-    packSwitchBody(pad, motion, out);
+    input.pad.wButtons = 0x4000 | 0x8000; // X (west) -> Y, Y (north) -> X
+    packSwitchBody(input, motion, out);
     EXPECT_EQ(out[2], (uint8_t)(0x01 | 0x02));
 
-    pad.wButtons = 0x0020 | 0x0010 | 0x0400 | 0x0040; // Back/Start/Guide/LS
-    packSwitchBody(pad, motion, out);
+    input.pad.wButtons = 0x0020 | 0x0010 | 0x0400 | 0x0040; // Back/Start/Guide/LS
+    packSwitchBody(input, motion, out);
     EXPECT_EQ(out[3], (uint8_t)(0x01 | 0x02 | 0x10 | 0x08));
 
-    pad.wButtons = 0x0001 | 0x0008 | 0x0100; // dpad up + right + LB
-    pad.bLeftTrigger = 255;
-    packSwitchBody(pad, motion, out);
+    input.pad.wButtons = 0x0001 | 0x0008 | 0x0100; // dpad up + right + LB
+    input.pad.bLeftTrigger = 255;
+    packSwitchBody(input, motion, out);
     EXPECT_EQ(out[4], (uint8_t)(0x02 | 0x04 | 0x40 | 0x80));
     EXPECT_EQ(out[2], (uint8_t)0);
 }
 
 static void test_switch_body_sticks_and_imu() {
     TEST("packSwitchBody — 12-bit stick range and IMU frame permutation");
-    GamepadReport pad{};
-    pad.sThumbLX = 32767; // full right -> 0x800 + 0x600 = 0xE00
-    pad.sThumbLY = 32767; // full up -> wire up-positive keeps + = 0xE00
+    InputReport input{};
+    input.pad.sThumbLX = 32767; // full right -> 0x800 + 0x600 = 0xE00
+    input.pad.sThumbLY = 32767; // full up -> wire up-positive keeps + = 0xE00
     uint8_t out[SWITCH_BODY_BYTES];
     MotionReport motion{};
-    packSwitchBody(pad, motion, out);
+    packSwitchBody(input, motion, out);
     const uint16_t lx = static_cast<uint16_t>(out[5] | ((out[6] & 0x0F) << 8));
     const uint16_t ly = static_cast<uint16_t>((out[6] >> 4) | (out[7] << 4));
     EXPECT_EQ(lx, (uint16_t)0xE00); // 0x800 + full-scale 0x600
@@ -445,12 +445,34 @@ static void test_switch_body_sticks_and_imu() {
     // deg/s on wire Y lands on wire Z at 2000 * 13371/936.
     motion.accelY = 32767;
     motion.gyroY = 32767;
-    packSwitchBody(pad, motion, out);
+    packSwitchBody(input, motion, out);
     EXPECT_EQ(s16at(out, 12 + 4), (int16_t)16384);  // accel wire Z = +4 g
     EXPECT_EQ(s16at(out, 12 + 10), (int16_t)28571); // gyro wire Z ~= 2000 deg/s
     // Three identical IMU frames.
     EXPECT_EQ(std::memcmp(out + 12, out + 24, 12), 0);
     EXPECT_EQ(std::memcmp(out + 12, out + 36, 12), 0);
+}
+
+static void test_switch_body_capture_from_misc1() {
+    TEST("packSwitchBody — misc1 presses Capture, shared byte bit 0x20");
+    InputReport input{};
+    MotionReport motion{};
+    uint8_t released[SWITCH_BODY_BYTES];
+    packSwitchBody(input, motion, released);
+    input.extButtons = EXT_BUTTON_MISC1;
+    uint8_t pressed[SWITCH_BODY_BYTES];
+    packSwitchBody(input, motion, pressed);
+    EXPECT_EQ(pressed[3], (uint8_t)0x20);
+    pressed[3] = released[3];
+    EXPECT_EQ(std::memcmp(released, pressed, SWITCH_BODY_BYTES), 0);
+
+    TEST("packSwitchBody — Capture shares its byte with Home, each its own bit");
+    input.pad.wButtons = 0x0400; // Guide -> Home
+    packSwitchBody(input, motion, pressed);
+    EXPECT_EQ(pressed[3], (uint8_t)(0x10 | 0x20));
+    input.extButtons = 0;
+    packSwitchBody(input, motion, pressed);
+    EXPECT_EQ(pressed[3], (uint8_t)0x10);
 }
 
 static void test_decode_xinput_rumble() {
@@ -838,6 +860,7 @@ int main() {
     test_switch_body_neutral();
     test_switch_body_buttons_positional();
     test_switch_body_sticks_and_imu();
+    test_switch_body_capture_from_misc1();
     test_decode_xinput_rumble();
     test_decode_ds4_output();
     test_decode_ds5_output();
