@@ -11,8 +11,8 @@
 // descriptors are unchanged since v1.7.0; only prose fields moved):
 // xbox-360-wired (18-byte no-RID report + the 14-byte GIP slice),
 // dualshock-4-v2 (DS4 v2 USB report 0x01 — identical to core/ds4_report.h),
-// dualsense (DS5 USB report 0x01), and switch-pro (the 48-byte state block
-// the SDK's protocol host builds its 0x30 reports from).
+// dualsense and dualsense-edge (DS5 USB report 0x01), and switch-pro (the
+// 48-byte state block the SDK's protocol host builds its 0x30 reports from).
 #pragma once
 
 #include "hidmaestro_wire.h"
@@ -51,6 +51,8 @@ inline const char* profileForIdentity(GamepadIdentity identity, bool audio = fal
         return audio ? "dualsense-composite" : "dualsense";
     case GamepadIdentity::SwitchPro:
         return "switch-pro";
+    case GamepadIdentity::DualSenseEdge:
+        return audio ? "dualsense-edge-composite" : "dualsense-edge";
     }
     return nullptr;
 }
@@ -59,7 +61,23 @@ inline const char* profileForIdentity(GamepadIdentity identity, bool audio = fal
 // audio would change anything. Keeps the plug path from spending a failed
 // provision attempt on an identity that could never have carried audio.
 inline bool identityHasAudioPersona(GamepadIdentity identity) {
-    return identity == GamepadIdentity::DS4 || identity == GamepadIdentity::DualSense;
+    return identity == GamepadIdentity::DS4 || identity == GamepadIdentity::DualSense ||
+           identity == GamepadIdentity::DualSenseEdge;
+}
+
+// The Sony personas: each has a touchpad surface, and each is read as a stream
+// (see refreshIdleInput).
+inline bool identityIsSonyPersona(GamepadIdentity identity) {
+    switch (identity) {
+    case GamepadIdentity::DS4:
+    case GamepadIdentity::DualSense:
+    case GamepadIdentity::DualSenseEdge:
+        return true;
+    case GamepadIdentity::Xbox:
+    case GamepadIdentity::SwitchPro:
+        return false;
+    }
+    return false;
 }
 
 // ── xbox-360-wired ─────────────────────────────────────────────────────────
@@ -254,6 +272,7 @@ struct Ds5InputState {
     bool touchpadButtonPressed = false;
     uint8_t seq = 0;              // full-report byte 7, bumped per packed report
     uint32_t sensorTimestamp = 0; // 3 MHz units (0.333 us), free-running
+    uint32_t extButtons = 0;
 };
 
 inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTES]) {
@@ -298,6 +317,52 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
     std::memcpy(out + 36, f1.data(), 4);
 
     out[52] = st.batteryByte;
+}
+
+// ── dualsense-edge ─────────────────────────────────────────────────────────
+//
+// The DualSense report plus the Edge's four back buttons in buttons[2]
+// (payload byte 9), where HIDMaestro's dualsense-edge profiles and SDL's PS5
+// driver read them, and the bytes both Edge profiles' inputDefaults fix:
+// full-report bytes 49..52 at 0x80, 0, 0, 0. The SDK counts those offsets with
+// the report id at byte 0 and overlays them on every frame it is handed, built
+// (SubmitState) or raw (SubmitRawReport: "inputDefaults entries are JSON-keyed
+// by ON-WIRE byte (where byte 0 is the report ID)", HMController.cs at
+// v2.1.0), and calls byte 49 the Edge's activeProfile status. Satellite's
+// frames never pass through the SDK (it writes the input section itself), so
+// the packer applies the same entries at payload byte = full-report byte - 1.
+
+struct Ds5EdgeInputDefault {
+    size_t reportByte;
+    uint8_t value;
+};
+inline constexpr Ds5EdgeInputDefault DS5_EDGE_INPUT_DEFAULTS[] = {
+    {49, 0x80},
+    {50, 0x00},
+    {51, 0x00},
+    {52, 0x00},
+};
+inline constexpr size_t DS5_REPORT_ID_BYTES = 1;
+
+struct Ds5EdgeBackButton {
+    uint32_t extButton;
+    uint8_t bit;
+};
+inline constexpr Ds5EdgeBackButton DS5_EDGE_BACK_BUTTONS[] = {
+    {EXT_BUTTON_LEFT_PADDLE2, 0x10},  // left Fn
+    {EXT_BUTTON_RIGHT_PADDLE2, 0x20}, // right Fn
+    {EXT_BUTTON_LEFT_PADDLE1, 0x40},  // left back button
+    {EXT_BUTTON_RIGHT_PADDLE1, 0x80}, // right back button
+};
+
+inline void packDs5EdgePayload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTES]) {
+    packDs5Payload(st, out);
+    for (const auto& button : DS5_EDGE_BACK_BUTTONS) {
+        if ((st.extButtons & button.extButton) != 0) out[9] |= button.bit;
+    }
+    for (const auto& fixed : DS5_EDGE_INPUT_DEFAULTS) {
+        out[fixed.reportByte - DS5_REPORT_ID_BYTES] = fixed.value;
+    }
 }
 
 // ── switch-pro ─────────────────────────────────────────────────────────────
@@ -553,6 +618,8 @@ inline DecodedOutput decodeOutputPacket(GamepadIdentity identity, const OutputPa
         return decodeDualSenseOutput(pkt);
     case GamepadIdentity::SwitchPro:
         return decodeSwitchProOutput(pkt);
+    case GamepadIdentity::DualSenseEdge:
+        return decodeDualSenseOutput(pkt);
     }
     return DecodedOutput{};
 }

@@ -33,7 +33,8 @@
 // A DS4/DualSense slot has a touchpad surface; Xbox and Switch Pro do not. The
 // mock mirrors that so a touchpad routed to a non-touchpad slot reads as dropped.
 static bool identityHasTouchpad(GamepadIdentity id) {
-    return id == GamepadIdentity::DS4 || id == GamepadIdentity::DualSense;
+    return id == GamepadIdentity::DS4 || id == GamepadIdentity::DualSense ||
+           id == GamepadIdentity::DualSenseEdge;
 }
 
 struct MockViGem : IGamepadPort {
@@ -291,10 +292,9 @@ struct MockViGem : IGamepadPort {
     // Default mirrors real Windows/Linux: the motion-capable types
     // (controllerTypeHasMotion) have an IMU sink, Xbox does not.
     std::unordered_map<uint8_t, bool> supportsMotionForTypeMap{
-        {CONTROLLER_TYPE_XBOX, false},
-        {CONTROLLER_TYPE_PLAYSTATION, true},
-        {CONTROLLER_TYPE_DUALSENSE, true},
-        {CONTROLLER_TYPE_SWITCHPRO, true},
+        {CONTROLLER_TYPE_XBOX, false},          {CONTROLLER_TYPE_PLAYSTATION, true},
+        {CONTROLLER_TYPE_DUALSENSE, true},      {CONTROLLER_TYPE_SWITCHPRO, true},
+        {CONTROLLER_TYPE_DUALSENSE_EDGE, true},
     };
     bool supportsMotionForType(uint8_t controllerType) const override {
         auto it = supportsMotionForTypeMap.find(controllerType);
@@ -1069,6 +1069,44 @@ static void test_upsert_dualSensePlugsWithDualSenseIdentity() {
     EXPECT(vigem.identityFor(serial) == GamepadIdentity::DualSense);
     EXPECT(vigem.lastIdentity == GamepadIdentity::DualSense);
     EXPECT(r.controllers[0].motionSinkSupportedForType);
+}
+
+static void test_upsert_dualSenseEdgePlugsItsOwnIdentity() {
+    TEST("upsert: a DualSense Edge plugs its own identity; motion sink and touchpad landed");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE_EDGE,
+                                   CAP_MOTION | CAP_EXTENDED_BUTTONS, TOUCHPAD_MODE_DS4)});
+    EXPECT_EQ((int)r.controllers[0].result, (int)APPLY_OK);
+    EXPECT_EQ((int)r.controllers[0].appliedType, (int)CONTROLLER_TYPE_DUALSENSE_EDGE);
+    EXPECT(!vigem.pluggedSerials.empty());
+    if (vigem.pluggedSerials.empty()) return;
+    EXPECT(vigem.identityFor(vigem.pluggedSerials.back()) == GamepadIdentity::DualSenseEdge);
+    EXPECT(r.controllers[0].motionSinkSupportedForType);
+    TouchpadReport tr{};
+    tr.finger0.active = true;
+    EXPECT(svc.handleTouchpadData(r.token, 0, tr));
+}
+
+static void test_converge_dualSenseToEdgeReplugs() {
+    TEST("converge: DualSense to DualSense Edge is an identity change, so it replugs");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r1 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE)});
+    const uint32_t dualSenseSerial = vigem.pluggedSerials.back();
+    auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE_EDGE)});
+    EXPECT_EQ((int)r2.controllers[0].result, (int)APPLY_OK);
+    EXPECT(r2.epoch != r1.epoch);
+    const uint32_t edgeSerial = vigem.pluggedSerials.back();
+    EXPECT(edgeSerial != dualSenseSerial);
+    EXPECT(vigem.identityFor(edgeSerial) == GamepadIdentity::DualSenseEdge);
+    EXPECT_EQ(vigem.unplugCalls, 1);
 }
 
 static void test_upsert_switchProPlugsMotionNoTouchpad() {
@@ -4590,13 +4628,18 @@ static void test_concurrent_upsertCloseSnapshot() {
 
 static void test_controllerTypeHelpers() {
     TEST("controller type helpers: names, labels, identities, feature surfaces");
-    EXPECT_EQ((int)CONTROLLER_TYPE_COUNT, 4);
+    EXPECT_EQ((int)CONTROLLER_TYPE_COUNT, 5);
+    EXPECT_EQ((int)CONTROLLER_TYPE_DUALSENSE_EDGE, 4);
 
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_XBOX)), std::string("xbox"));
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_PLAYSTATION)),
               std::string("playstation"));
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_DUALSENSE)), std::string("dualsense"));
     EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_SWITCHPRO)), std::string("switchpro"));
+    EXPECT_EQ(std::string(controllerTypeName(CONTROLLER_TYPE_DUALSENSE_EDGE)),
+              std::string("dualsenseedge"));
+    EXPECT_EQ(std::string(controllerTypeCatalogSlug(CONTROLLER_TYPE_DUALSENSE_EDGE)),
+              std::string("dualsenseedge"));
     EXPECT_EQ(std::string(controllerTypeName(255)), std::string("xbox"));
 
     EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_XBOX)), std::string("Xbox"));
@@ -4606,6 +4649,8 @@ static void test_controllerTypeHelpers() {
               std::string("DualSense"));
     EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_SWITCHPRO)),
               std::string("Switch Pro"));
+    EXPECT_EQ(std::string(controllerTypeLabel(CONTROLLER_TYPE_DUALSENSE_EDGE)),
+              std::string("DualSense Edge"));
     EXPECT_EQ(std::string(controllerTypeLabel(255)), std::string("Xbox"));
 
     // Materialization identity per type (drives plug/submit selection + the
@@ -4614,6 +4659,7 @@ static void test_controllerTypeHelpers() {
     EXPECT(controllerIdentity(CONTROLLER_TYPE_PLAYSTATION) == GamepadIdentity::DS4);
     EXPECT(controllerIdentity(CONTROLLER_TYPE_DUALSENSE) == GamepadIdentity::DualSense);
     EXPECT(controllerIdentity(CONTROLLER_TYPE_SWITCHPRO) == GamepadIdentity::SwitchPro);
+    EXPECT(controllerIdentity(CONTROLLER_TYPE_DUALSENSE_EDGE) == GamepadIdentity::DualSenseEdge);
     EXPECT(controllerIdentity(255) == GamepadIdentity::Xbox);
 
     // Feature surfaces, independent of identity: Switch Pro has an IMU but no
@@ -4626,6 +4672,8 @@ static void test_controllerTypeHelpers() {
     EXPECT(controllerTypeHasTouchpad(CONTROLLER_TYPE_DUALSENSE));
     EXPECT(!controllerTypeHasTouchpad(CONTROLLER_TYPE_XBOX));
     EXPECT(!controllerTypeHasTouchpad(CONTROLLER_TYPE_SWITCHPRO));
+    EXPECT(controllerTypeHasMotion(CONTROLLER_TYPE_DUALSENSE_EDGE));
+    EXPECT(controllerTypeHasTouchpad(CONTROLLER_TYPE_DUALSENSE_EDGE));
 }
 
 static void test_applyResultNames() {
@@ -5431,6 +5479,8 @@ int main() {
     test_converge_sameDescriptorIsNoOp();
 
     test_upsert_dualSensePlugsWithDualSenseIdentity();
+    test_upsert_dualSenseEdgePlugsItsOwnIdentity();
+    test_converge_dualSenseToEdgeReplugs();
     test_upsert_switchProPlugsMotionNoTouchpad();
     test_converge_identityChangeReplugs_capsOnlyDoesNot();
     test_apply_unsupportedIdentityRejectedPriorPadIntact();

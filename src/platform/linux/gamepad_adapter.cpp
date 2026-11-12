@@ -28,6 +28,15 @@ void logMsg(LogLevel level, const std::string& source, const std::string& messag
 #define REL_WHEEL_HI_RES 0x0b
 #endif
 
+// Headers older than the grip keys (Ubuntu 24.04's are 6.8's) lack them; the
+// values are kernel ABI.
+#ifndef BTN_GRIPL
+#define BTN_GRIPL 0x224
+#define BTN_GRIPR 0x225
+#define BTN_GRIPL2 0x226
+#define BTN_GRIPR2 0x227
+#endif
+
 namespace {
 
 constexpr uint16_t XBOX_VID = 0x045e;
@@ -36,6 +45,7 @@ constexpr uint16_t DS4_VID = 0x054c;
 constexpr uint16_t DS4_PID = 0x05c4;
 constexpr uint16_t DUALSENSE_VID = 0x054c;
 constexpr uint16_t DUALSENSE_PID = 0x0ce6;
+constexpr uint16_t DUALSENSE_EDGE_PID = 0x0df2;
 constexpr uint16_t SWITCHPRO_VID = 0x057e;
 constexpr uint16_t SWITCHPRO_PID = 0x2009;
 
@@ -61,6 +71,24 @@ constexpr int SWITCH_BUTTONS[] = {BTN_A,      BTN_B,     BTN_C,    BTN_X,     BT
                                   BTN_Z,      BTN_TL,    BTN_TR,   BTN_TL2,   BTN_TR2,
                                   BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL};
 constexpr int SWITCH_TRIGGER_ON = 30; // ZL/ZR are digital; press past the XInput threshold.
+
+// The DualSense Edge's back buttons, as the keys SDL3's evdev mapping
+// (SDL_sysjoystick_linux.c) reads as its four paddles when no database row
+// claims the pad. SDL's Linux database has no USB row for the Edge (its one row
+// is Bluetooth and maps no paddles), so SDL3 maps this BUS_USB node itself
+// unless a user's or distribution's row claims it; SDL2's evdev mapping reads
+// no paddles from these keys. Unverified on hardware: no Linux Edge has met a
+// game yet.
+struct PaddleKey {
+    uint32_t extButton;
+    int code;
+};
+constexpr PaddleKey EDGE_PADDLE_KEYS[] = {
+    {EXT_BUTTON_RIGHT_PADDLE1, BTN_GRIPR},
+    {EXT_BUTTON_LEFT_PADDLE1, BTN_GRIPL},
+    {EXT_BUTTON_RIGHT_PADDLE2, BTN_GRIPR2},
+    {EXT_BUTTON_LEFT_PADDLE2, BTN_GRIPL2},
+};
 
 inline bool isValidSerial(uint32_t serial) {
     return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS;
@@ -154,7 +182,9 @@ namespace {
 // layout (the Switch Pro's own button set and digital ZL/ZR aside) plus
 // FF_RUMBLE, without which the kernel rejects every UI_FF_UPLOAD with
 // -EOPNOTSUPP and SDL/Steam Input report the pad as "no haptics".
-bool applyPadCapabilities(int fd, bool sw) {
+bool applyPadCapabilities(int fd, GamepadIdentity identity) {
+    const bool sw = identity == GamepadIdentity::SwitchPro;
+    const bool paddles = identity == GamepadIdentity::DualSenseEdge;
     for (int ev : {EV_KEY, EV_ABS, EV_SYN, EV_FF}) {
         if (::ioctl(fd, UI_SET_EVBIT, ev) < 0) return false;
     }
@@ -167,6 +197,11 @@ bool applyPadCapabilities(int fd, bool sw) {
     } else {
         for (int btn : BUTTONS) {
             if (::ioctl(fd, UI_SET_KEYBIT, btn) < 0) return false;
+        }
+    }
+    if (paddles) {
+        for (const auto& key : EDGE_PADDLE_KEYS) {
+            if (::ioctl(fd, UI_SET_KEYBIT, key.code) < 0) return false;
         }
     }
 
@@ -210,6 +245,12 @@ struct uinput_setup padSetupFor(GamepadIdentity identity, uint32_t serial) {
         usetup.id.product = DUALSENSE_PID;
         usetup.id.version = 0x0100;
         name = "Satellite Virtual DualSense";
+        break;
+    case GamepadIdentity::DualSenseEdge:
+        usetup.id.vendor = DUALSENSE_VID;
+        usetup.id.product = DUALSENSE_EDGE_PID;
+        usetup.id.version = 0x0100;
+        name = "Satellite Virtual DualSense Edge";
         break;
     case GamepadIdentity::SwitchPro:
         usetup.id.vendor = SWITCHPRO_VID;
@@ -262,7 +303,7 @@ int GamepadAdapter::openUinputDevice(uint32_t serial, GamepadIdentity identity) 
     const int fd = ::open("/dev/uinput", O_RDWR | O_NONBLOCK);
     if (fd < 0) return -1;
     const struct uinput_setup usetup = padSetupFor(identity, serial);
-    const bool created = applyPadCapabilities(fd, identity == GamepadIdentity::SwitchPro) &&
+    const bool created = applyPadCapabilities(fd, identity) &&
                          ::ioctl(fd, UI_DEV_SETUP, &usetup) == 0 && ::ioctl(fd, UI_DEV_CREATE) == 0;
     if (created) return fd;
     ::close(fd);
@@ -376,9 +417,10 @@ bool GamepadAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
     dev.touchSlotId[0] = -1;
     dev.touchSlotId[1] = -1;
 
-    // DS4/DualSense have an IMU + touchpad; Switch Pro has an IMU, no touchpad.
-    const bool ds4Family =
-        identity == GamepadIdentity::DS4 || identity == GamepadIdentity::DualSense;
+    // DS4/DualSense/Edge have an IMU + touchpad; Switch Pro has an IMU, no touchpad.
+    const bool ds4Family = identity == GamepadIdentity::DS4 ||
+                           identity == GamepadIdentity::DualSense ||
+                           identity == GamepadIdentity::DualSenseEdge;
     const bool hasMotion = ds4Family || identity == GamepadIdentity::SwitchPro;
     if (hasMotion) {
         // Best-effort: on failure the gamepad still works and the sample is
@@ -469,6 +511,13 @@ struct EventBatch {
         return ::write(fd, events, bytes) == static_cast<ssize_t>(bytes);
     }
 };
+
+void addEdgePaddles(EventBatch& batch, uint32_t extButtons) {
+    for (const auto& key : EDGE_PADDLE_KEYS) {
+        batch.add(EV_KEY, static_cast<uint16_t>(key.code), (extButtons & key.extButton) ? 1 : 0);
+    }
+}
+
 } // namespace
 
 bool GamepadAdapter::submitReport(uint32_t serial, const GamepadReport& report) {
@@ -518,6 +567,7 @@ bool GamepadAdapter::submitInput(uint32_t serial, const InputReport& input) {
     batch.add(EV_KEY, BTN_MODE, (report.wButtons & XUSB_GUIDE) ? 1 : 0);
     batch.add(EV_KEY, BTN_THUMBL, (report.wButtons & XUSB_LS) ? 1 : 0);
     batch.add(EV_KEY, BTN_THUMBR, (report.wButtons & XUSB_RS) ? 1 : 0);
+    if (dev.identity == GamepadIdentity::DualSenseEdge) addEdgePaddles(batch, input.extButtons);
 
     batch.add(EV_SYN, SYN_REPORT, 0);
     return batch.writeTo(fd);
@@ -585,10 +635,11 @@ bool GamepadAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
 }
 
 bool GamepadAdapter::supportsIdentity(GamepadIdentity identity) const {
-    // uinput can stamp any VID/PID; all four are wired (Switch Pro via a distinct
+    // uinput can stamp any VID/PID; all five are wired (Switch Pro via a distinct
     // evdev layout + submit remap, empirically fitted to SDL's Nintendo mapping).
     return identity == GamepadIdentity::Xbox || identity == GamepadIdentity::DS4 ||
-           identity == GamepadIdentity::DualSense || identity == GamepadIdentity::SwitchPro;
+           identity == GamepadIdentity::DualSense || identity == GamepadIdentity::SwitchPro ||
+           identity == GamepadIdentity::DualSenseEdge;
 }
 
 bool GamepadAdapter::supportsMotionForType(uint8_t controllerType) const {

@@ -14,7 +14,7 @@ namespace satellite {
 
 // Catalog schema version, bumped when the /api/catalog payload shape evolves in a
 // way clients may branch on (distinct from protocolVersion / serverVersion). v2
-// offers up to four types per backend + per-type `emulates` hints; a response
+// offers more types than the legacy two + per-type `emulates` hints; a response
 // WITHOUT this field is the legacy v1 catalog (xbox360 + ds4, no emulates). Additive
 // within protocolVersion 1: a client reads an absent field as 1.
 inline constexpr int kCatalogVersion = 2;
@@ -64,6 +64,18 @@ struct CatalogBackendTraits {
     uint32_t ds4ExtButtons = 0;
     uint32_t dualsenseExtButtons = 0;
     uint32_t switchProExtButtons = 0;
+    // The DualSense Edge carries the DualSense's fields, from its own
+    // preferred materializer.
+    bool dualsenseEdgeMotionSupported = false;
+    std::string dualsenseEdgeMotionRequires;
+    bool dualsenseEdgeTouchpadSupported = false;
+    bool dualsenseEdgeLightbarSupported = false;
+    bool dualsenseEdgeTriggerEffectsSupported = false;
+    bool dualsenseEdgePlayerLedsSupported = false;
+    bool dualsenseEdgeMicSupported = false;
+    bool dualsenseEdgeSpeakerSupported = false;
+    bool dualsenseEdgeHapticAudioSupported = false;
+    uint32_t dualsenseEdgeExtButtons = 0;
     bool mouseControlSupported = false;
     // rumble is RECEIVE (host streams rumble back); keyboardControl is SEND
     // (host injects keystrokes). A backend reports what it can't do so the
@@ -77,6 +89,7 @@ struct CatalogBackendTraits {
     bool offersDS4 = false;
     bool offersDualSense = false;
     bool offersSwitchPro = false;
+    bool offersDualSenseEdge = false;
 };
 
 // Localized string lookup: the locale's flat web/lang JSON first, then the `en`

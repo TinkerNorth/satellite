@@ -234,7 +234,8 @@ Descriptor rules:
 
 - **ControllerDescriptor is always sent WHOLE.** A rumble/motion/touchpad toggle is a
   re-send of the descriptor with one field changed; the server converges (replug only
-  on a materialization-identity change, e.g. Xbox ↔ DS4 ↔ DualSense ↔ Switch Pro).
+  on a materialization-identity change, e.g. Xbox ↔ DS4 ↔ DualSense ↔ Switch Pro ↔
+  DualSense Edge).
 - **Single-writer: descriptor fields are client-owned.** The admin UI displays them but
   never sets them. Admin intent is session-level (kick) or trust-level (unpair) only.
 
@@ -323,7 +324,8 @@ caller's own session.
                              "facts": { "kernelCrossings": 3, "threadWakeups": 2,
                                         "brokerHops": 0, "managedRuntime": false,
                                         "pollIntervalUs": 0 } } },
-        { "type": 1, "...": "…" }, { "type": 2, "...": "…" }, { "type": 3, "...": "…" }
+        { "type": 1, "...": "…" }, { "type": 2, "...": "…" }, { "type": 3, "...": "…" },
+        { "type": 4, "...": "…" }
       ] }
   ],
   "motion": { "available": true },
@@ -540,19 +542,20 @@ to present it (static, localized) → **capabilities** = what is true right now
 
 - `catalogVersion` is the catalog SCHEMA version (integer), distinct from `protocolVersion`
   (the wire protocol) and `serverVersion` (the build). It increments when the payload shape
-  evolves in a way a client may branch on: v2 offers up to four types per backend and adds
+  evolves in a way a client may branch on: v2 offers more types than the legacy two and adds
   per-type `emulates`; a response OMITTING the field is the legacy **v1** catalog (xbox360 +
   ds4, no emulates) — a client reads absent as 1. Additive within protocolVersion 1; a client
   MAY substitute its own known representation for a recognized legacy version.
 - `controllerTypes[].id` is the wire enum value used as descriptor `type` (0 xbox360,
-  1 ds4, 2 dualsense, 3 switchpro). The client renders its "Emulate" picker from this
-  list instead of hardcoding the enum.
+  1 ds4, 2 dualsense, 3 switchpro, 4 dualsenseedge). The client renders its "Emulate"
+  picker from this list instead of hardcoding the enum. Types are listed in id order, so
+  the DualSense Edge comes last and is never the one a client defaults to.
 - The offered set is the union of the host's configured backends — only identities
-  the receiver can natively materialize. Linux/uinput offers all four; Windows offers
-  all four (xbox360 + ds4 prefer ViGEm's kernel path, dualsense + switchpro
-  materialize via HIDMaestro, which also covers xbox360 + ds4 when ViGEmBus is
-  absent); macOS/IOHIDUserDevice offers ds4 (drops the fake Xbox; DualSense pending
-  its report codec). The catalog is static per server version (its ETag is keyed on
+  the receiver can natively materialize. Linux/uinput offers all five; Windows offers
+  all five (xbox360 + ds4 prefer ViGEm's kernel path, dualsense, switchpro and
+  dualsenseedge materialize via HIDMaestro, which also covers xbox360 + ds4 when
+  ViGEmBus is absent); macOS/IOHIDUserDevice offers ds4 (drops the fake Xbox; DualSense
+  pending its report codec). The catalog is static per server version (its ETag is keyed on
   version + locale), so a type stays offered even while its backend's driver is
   missing — the plug then fails per-controller (`backendUnavailable` when no backend
   bus opened, else `pluginFailed`) and `capabilities.backends` names which driver to
@@ -566,8 +569,9 @@ to present it (static, localized) → **capabilities** = what is true right now
   It lets a client later match a detected physical pad to a default emulation type with
   NO protocol change: the mapping policy lives on the server, not in each client's
   switch. `sdlType` mirrors the clients' `SDL_GameControllerType` vocabulary (`xbox360`,
-  `ps4`, `ps5`, `switchpro`); `usb` is lowercase `vendor:product`, an array so more
-  hardware revisions can be added later. Additive within protocolVersion 1; interim
+  `ps4`, `ps5`, `switchpro`; the DualSense Edge is `ps5` with its own `054c:0df2`);
+  `usb` is lowercase `vendor:product`, an array so more hardware revisions can be added
+  later. Additive within protocolVersion 1; interim
   clients IGNORE it and default to the first offered type. Rides only offered types.
 - Type-feature slugs are protocol constants: `rumble`, `analogTriggers`, `motion`,
   `lightbar`, `touchpad`, `triggerEffects` (DualSense adaptive-trigger passthrough,
@@ -581,7 +585,7 @@ to present it (static, localized) → **capabilities** = what is true right now
   materializer surfaces the game's raw output reports; `mic`/`speaker` reflect whether
   it can materialize a pad that carries real audio endpoints (see Controller audio);
   `hapticAudio` whether that endpoint carries the haptics lanes, which only the
-  DualSense's does.
+  DualSense's and the DualSense Edge's do.
   A client advertises the matching descriptor caps only when it can actuate them on
   the physical pad.
 - A type-feature MAY carry an explicit `modes` array of protocol-constant mode slugs so
@@ -759,6 +763,8 @@ settled 4    : ctrlIdx(1) + GamepadReport(12) + extButtons(u32 LE)  = 17 B
 |---|---|---|
 | Switch Pro | HIDMaestro | `misc1` as Capture: bit 0x20 of the shared button byte of report 0x30 |
 | Switch Pro | uinput | `misc1` as Capture: `BTN_Y`, which SDL numbers button 4 on this node and its Linux database row for the pad reads as `misc1:b4` (the row is quoted below) |
+| DualSense Edge | HIDMaestro | the four paddles as its back buttons, input byte 10: `rightPaddle1` 0x80 and `leftPaddle1` 0x40 (the right and left back buttons), `rightPaddle2` 0x20 and `leftPaddle2` 0x10 (the right and left Fn buttons) |
+| DualSense Edge | uinput | the four paddles as `BTN_GRIPR`, `BTN_GRIPL`, `BTN_GRIPR2`, `BTN_GRIPL2`, which SDL3's own device mapping (`SDL_sysjoystick_linux.c`) reads as `RIGHT_PADDLE1`, `LEFT_PADDLE1`, `RIGHT_PADDLE2`, `LEFT_PADDLE2` when no gamecontrollerdb row claims the pad. SDL ships no Linux row for the Edge on USB (its one row is the Bluetooth `050000004c050000f20d000000010000`, with no paddles), so the `BUS_USB` node is mapped that way unless a user's or distribution's row for it says otherwise; SDL2's device mapping reads no paddles from these keys. Awaiting hardware verification: no Linux Edge has met a game yet |
 | every other type | every backend | nothing |
 
 The uinput Switch Pro is a `BUS_USB` 057e:2009 node whose fourteen keys are the contiguous
@@ -834,7 +840,8 @@ PAD's OWN audio endpoints, never the host's game audio. A DualSense (or DualShoc
 v2) materialized through a composite persona presents real Windows endpoints, named
 after that persona's USB product string — the DualSense composite is
 `Speakers (DualSense Wireless Controller)` out and `Headset Microphone (DualSense
-Wireless Controller)` in; the DualShock 4 v2 composite carries the plain "Wireless
+Wireless Controller)` in, and the DualSense Edge's says "DualSense Edge Wireless
+Controller" in their place; the DualShock 4 v2 composite carries the plain "Wireless
 Controller" string, and its out terminal is a headset rather than a speaker, so
 Windows may not label it "Speakers" at all. Whatever a game writes to that speaker
 endpoint rides 0x0013 to the client; whatever the client's microphone captures rides
@@ -914,7 +921,7 @@ the CLIENT's actuator/source: the client claims a microphone it can capture from
 speaker it can play to, and the server sends or accepts accordingly. They are
 independent directions; one does not imply the other. The catalog advertises the
 type-feature slugs `mic`/`speaker` only for the types whose preferred materializer can
-build a pad with audio endpoints (the two Sony types via HIDMaestro's composite
+build a pad with audio endpoints (the Sony types via HIDMaestro's composite
 personas); every other type and backend reports `false`. The host's own per-direction
 switches are a third, separate thing and live in `/api/server/capabilities`'s
 `controllerAudio` block: a cap says what the CLIENT can do, the catalog says what the
@@ -985,8 +992,9 @@ in whatever form the client would have given them; it gates the wire, not the
 persona, so it applies to a live stream. `/api/server/capabilities`'s
 `controllerAudio.hapticAudio` reports that switch ANDed with `enabled` and with a
 listed backend being able to build the DualSense composite. Catalog: the type-feature
-slug `hapticAudio` is true only on the DualSense type, and only when its preferred
-materializer is HIDMaestro; the DualShock 4 v2 audio function is headset-only.
+slug `hapticAudio` is true only on the DualSense and DualSense Edge types, and only when
+the preferred materializer is HIDMaestro; the DualShock 4 v2 audio function is
+headset-only.
 
 ### Host-input streams (reserved)
 

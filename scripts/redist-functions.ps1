@@ -11,7 +11,7 @@
 
 $HmSdkStagedFiles = @('HIDMaestro.Core.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')
 $HmSatelliteProfilesDir = 'hidmaestro-profiles'
-$HmSatelliteProfileCopies = @('satellite-dualsense', 'satellite-dualsense-composite', 'satellite-dualshock-4-v2', 'satellite-dualshock-4-v2-composite', 'satellite-switch-pro')
+$HmSatelliteProfileCopies = @('satellite-dualsense', 'satellite-dualsense-composite', 'satellite-dualsense-edge', 'satellite-dualsense-edge-composite', 'satellite-dualshock-4-v2', 'satellite-dualshock-4-v2-composite', 'satellite-switch-pro')
 $HmCatalogProfilesDir = 'profiles'
 $HmInfCatalog = 'hidmaestro.cat'
 $HmStagingStampName = 'staged-from.sha256'

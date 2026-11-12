@@ -8,9 +8,11 @@
 // decoders. Pure, so the wire contracts are verified on every CI platform.
 #include "test_util.h"
 
+#include "../src/core/json.h"
 #include "../src/platform/windows/hidmaestro_report.h"
 
 #include <cstring>
+#include <set>
 #include <string>
 
 using namespace satellite::hidmaestro;
@@ -32,7 +34,7 @@ int gipToXinputTrigger(uint16_t v) { return ((v & 0x03FF) * 255) / 1023; }
 } // namespace
 
 static void test_profile_mapping() {
-    TEST("profileForIdentity covers all four identities");
+    TEST("profileForIdentity covers all five identities");
     EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::Xbox)),
               std::string("xbox-360-wired"));
     EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::DS4)), std::string("dualshock-4-v2"));
@@ -40,6 +42,9 @@ static void test_profile_mapping() {
               std::string("dualsense"));
     EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::SwitchPro)),
               std::string("switch-pro"));
+    const char* edge = profileForIdentity(GamepadIdentity::DualSenseEdge);
+    EXPECT(edge != nullptr);
+    if (edge != nullptr) EXPECT_EQ(std::string(edge), std::string("dualsense-edge"));
 
     TEST("audio defaults OFF: a caller that says nothing never asks for a composite");
     for (GamepadIdentity id : {GamepadIdentity::Xbox, GamepadIdentity::DS4,
@@ -52,9 +57,15 @@ static void test_profile_mapping() {
 // is expensive: a false positive installs a kernel USB transport nobody asked
 // for, a false negative silently drops the pad's audio endpoints.
 static void test_profile_audio_matrix() {
-    TEST("audio on: the two Sony identities switch to their composite personas");
+    TEST("audio on: the Sony identities switch to their composite personas");
     EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::DualSense, true)),
               std::string("dualsense-composite"));
+    const char* edgeComposite = profileForIdentity(GamepadIdentity::DualSenseEdge, true);
+    EXPECT(edgeComposite != nullptr);
+    if (edgeComposite != nullptr) {
+        EXPECT_EQ(std::string(edgeComposite), std::string("dualsense-edge-composite"));
+    }
+    EXPECT(identityHasAudioPersona(GamepadIdentity::DualSenseEdge));
     EXPECT_EQ(std::string(profileForIdentity(GamepadIdentity::DS4, true)),
               std::string("dualshock-4-v2-composite"));
 
@@ -342,6 +353,72 @@ static void test_ds5_mic_mute_button_bit() {
 
 // Every other identity must ignore 0x0800: those pads have no mute button, and
 // a stray bit landing in a real button field would fire a phantom press.
+constexpr uint32_t EDGE_PADDLES = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE1 |
+                                  EXT_BUTTON_RIGHT_PADDLE2 | EXT_BUTTON_LEFT_PADDLE2;
+
+// The inputDefaults of profiles/sony/dualsense-edge.json and
+// dualsense-edge-composite.json at HIDMaestro v2.1.0: full-report bytes, the
+// report id at 0.
+constexpr const char* EDGE_PROFILE_INPUT_DEFAULTS =
+    R"([{"byte":49,"value":128},{"byte":50,"value":0},{"byte":51,"value":0},{"byte":52,"value":0}])";
+constexpr size_t EDGE_REPORT_ID_BYTES = 1;
+
+static void test_ds5_edge_payload() {
+    TEST("packDs5EdgePayload — neutral: the DualSense frame plus the profiles' inputDefaults, "
+         "each at its full-report byte less the report id");
+    Ds5InputState st{};
+    st.seq = 3;
+    uint8_t ds5[DS5_PAYLOAD_BYTES];
+    packDs5Payload(st, ds5);
+    uint8_t edge[DS5_PAYLOAD_BYTES];
+    packDs5EdgePayload(st, edge);
+    const nlohmann::json defaults = nlohmann::json::parse(EDGE_PROFILE_INPUT_DEFAULTS);
+    EXPECT_EQ(defaults.size(), size_t{4});
+    std::set<size_t> fixedBytes;
+    for (const auto& entry : defaults) {
+        const size_t payloadByte = entry.at("byte").get<size_t>() - EDGE_REPORT_ID_BYTES;
+        const uint8_t value = static_cast<uint8_t>(entry.at("value").get<int>());
+        EXPECT_EQ(edge[payloadByte], value);
+        fixedBytes.insert(payloadByte);
+    }
+    for (size_t i = 0; i < DS5_PAYLOAD_BYTES; ++i) {
+        if (fixedBytes.count(i) != 0) continue;
+        EXPECT_EQ(edge[i], ds5[i]);
+    }
+
+    TEST("packDs5EdgePayload — each back button lights its own bit of byte 9");
+    const struct {
+        uint32_t extButton;
+        uint8_t bit;
+    } backButtons[] = {
+        {EXT_BUTTON_LEFT_PADDLE2, 0x10},  // left Fn
+        {EXT_BUTTON_RIGHT_PADDLE2, 0x20}, // right Fn
+        {EXT_BUTTON_LEFT_PADDLE1, 0x40},  // left back button
+        {EXT_BUTTON_RIGHT_PADDLE1, 0x80}, // right back button
+    };
+    for (const auto& button : backButtons) {
+        st.extButtons = button.extButton;
+        packDs5EdgePayload(st, edge);
+        EXPECT_EQ(edge[9], button.bit);
+        for (size_t i = 0; i < DS5_PAYLOAD_BYTES; ++i) {
+            if (i == 9 || fixedBytes.count(i) != 0) continue;
+            EXPECT_EQ(edge[i], ds5[i]);
+        }
+    }
+
+    TEST("packDs5EdgePayload — back buttons share byte 9 with PS, the pad click and mute");
+    st.extButtons = EDGE_PADDLES;
+    st.pad.wButtons = 0x0400 | WBUTTON_MIC_MUTE;
+    st.touchpadButtonPressed = true;
+    packDs5EdgePayload(st, edge);
+    EXPECT_EQ(edge[9], (uint8_t)(0x01 | 0x02 | 0x04 | 0x10 | 0x20 | 0x40 | 0x80));
+
+    TEST("packDs5EdgePayload — a frame without the back buttons lets go of them");
+    st.extButtons = 0;
+    packDs5EdgePayload(st, edge);
+    EXPECT_EQ(edge[9], (uint8_t)(0x01 | 0x02 | 0x04));
+}
+
 static void test_mic_mute_bit_ignored_by_other_identities() {
     TEST("packX360Report — the mute bit changes no byte of the Xbox report");
     GamepadReport pad{};
@@ -549,6 +626,33 @@ static void test_decode_ds5_output() {
     d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
     EXPECT(!d.hasLightbar);
     EXPECT(d.hasRumble);
+}
+
+static void test_decode_ds5_edge_output() {
+    TEST("decodeOutputPacket — the Edge's 63-byte 0x02 report decodes as the DualSense's");
+    OutputPacket pkt;
+    pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
+    pkt.reportId = 0x02;
+    pkt.size = 63;
+    pkt.data[0] = 0x03 | 0x04; // motors + right trigger effect
+    pkt.data[1] = 0x04 | 0x10; // lightbar + player LEDs
+    pkt.data[2] = 11;
+    pkt.data[3] = 22;
+    for (int i = 0; i < 11; i++) pkt.data[10 + i] = (uint8_t)(0x40 + i);
+    pkt.data[43] = 0x15;
+    pkt.data[44] = 9;
+    pkt.data[45] = 8;
+    pkt.data[46] = 7;
+    const DecodedOutput edge = decodeOutputPacket(GamepadIdentity::DualSenseEdge, pkt);
+    const DecodedOutput ds5 = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
+    EXPECT(edge.hasRumble && edge.hasLightbar && edge.hasRightTriggerEffect && edge.hasPlayerLeds);
+    EXPECT_EQ(edge.rumble.strongMagnitude, ds5.rumble.strongMagnitude);
+    EXPECT_EQ(edge.rumble.weakMagnitude, ds5.rumble.weakMagnitude);
+    EXPECT_EQ(edge.b, (uint8_t)7);
+    EXPECT_EQ(edge.playerLeds, (uint8_t)0x15);
+    EXPECT_EQ(
+        std::memcmp(edge.rightTriggerEffect, ds5.rightTriggerEffect, TRIGGER_EFFECT_BLOCK_BYTES),
+        0);
 }
 
 static void test_decode_ds5_trigger_effects() {
@@ -856,6 +960,7 @@ int main() {
     test_ds5_payload_neutral();
     test_ds5_payload_buttons_motion_touch();
     test_ds5_mic_mute_button_bit();
+    test_ds5_edge_payload();
     test_mic_mute_bit_ignored_by_other_identities();
     test_switch_body_neutral();
     test_switch_body_buttons_positional();
@@ -864,6 +969,7 @@ int main() {
     test_decode_xinput_rumble();
     test_decode_ds4_output();
     test_decode_ds5_output();
+    test_decode_ds5_edge_output();
     test_decode_ds5_trigger_effects();
     test_decode_ds5_player_leds();
     test_decode_ds5_lightbar_valid_flag1();

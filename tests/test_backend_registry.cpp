@@ -16,6 +16,9 @@
 
 using namespace satellite;
 
+static constexpr uint32_t EDGE_PADDLES = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE1 |
+                                         EXT_BUTTON_RIGHT_PADDLE2 | EXT_BUTTON_LEFT_PADDLE2;
+
 static bool contains(const std::string& hay, const std::string& needle) {
     return hay.find(needle) != std::string::npos;
 }
@@ -57,7 +60,7 @@ static void test_descriptorById_known_and_unknown() {
     EXPECT(hm != nullptr);
     EXPECT(!hm->kernelMode);
     EXPECT_EQ(std::string(hm->displayName), std::string("HIDMaestro"));
-    EXPECT_EQ(hm->supportCount, static_cast<size_t>(4));
+    EXPECT_EQ(hm->supportCount, static_cast<size_t>(5));
 
     EXPECT(backendDescriptorById(BACKEND_ID_UINPUT) != nullptr);
     EXPECT(backendDescriptorById(BACKEND_ID_MAC_HID) != nullptr);
@@ -86,7 +89,7 @@ static void test_cross_backend_latency_is_comparable() {
 }
 
 static void test_hidmaestro_widens_the_windows_type_set() {
-    TEST("hidmaestro supports the two types vigem cannot materialize");
+    TEST("hidmaestro supports the types vigem cannot materialize");
     const BackendDescriptor* vigem = backendDescriptorById(BACKEND_ID_VIGEM);
     const BackendDescriptor* hm = backendDescriptorById(BACKEND_ID_HIDMAESTRO);
     EXPECT(vigem != nullptr && hm != nullptr);
@@ -99,10 +102,12 @@ static void test_hidmaestro_widens_the_windows_type_set() {
 
     EXPECT(!supports(vigem, CONTROLLER_TYPE_DUALSENSE));
     EXPECT(!supports(vigem, CONTROLLER_TYPE_SWITCHPRO));
+    EXPECT(!supports(vigem, CONTROLLER_TYPE_DUALSENSE_EDGE));
     EXPECT(supports(hm, CONTROLLER_TYPE_XBOX));
     EXPECT(supports(hm, CONTROLLER_TYPE_PLAYSTATION));
     EXPECT(supports(hm, CONTROLLER_TYPE_DUALSENSE));
     EXPECT(supports(hm, CONTROLLER_TYPE_SWITCHPRO));
+    EXPECT(supports(hm, CONTROLLER_TYPE_DUALSENSE_EDGE));
 }
 
 static void test_buildBackendsJson_available_backend() {
@@ -230,7 +235,9 @@ static void test_rawOutput_surfaces_hidmaestro_only() {
     EXPECT(hm != nullptr);
     for (size_t i = 0; i < hm->supportCount; ++i) {
         const BackendControllerSupport& cs = hm->support[i];
-        if (cs.controllerType == CONTROLLER_TYPE_DUALSENSE) {
+        const bool dualsenseFamily = cs.controllerType == CONTROLLER_TYPE_DUALSENSE ||
+                                     cs.controllerType == CONTROLLER_TYPE_DUALSENSE_EDGE;
+        if (dualsenseFamily) {
             EXPECT(cs.triggerEffects);
             EXPECT(cs.playerLeds);
         } else if (cs.controllerType == CONTROLLER_TYPE_SWITCHPRO) {
@@ -283,15 +290,17 @@ static void test_controllerAudio_surfaces_hidmaestroSonyOnly() {
     for (size_t i = 0; i < hm->supportCount; ++i) {
         const BackendControllerSupport& cs = hm->support[i];
         const bool sony = cs.controllerType == CONTROLLER_TYPE_PLAYSTATION ||
-                          cs.controllerType == CONTROLLER_TYPE_DUALSENSE;
+                          cs.controllerType == CONTROLLER_TYPE_DUALSENSE ||
+                          cs.controllerType == CONTROLLER_TYPE_DUALSENSE_EDGE;
         EXPECT_EQ(cs.mic, sony);
         EXPECT_EQ(cs.speaker, sony);
         // Both directions ship together: a pad's audio function carries the
         // headset jack and the microphone as one interface.
         EXPECT_EQ(cs.mic, cs.speaker);
-        // The haptics lanes ride the DualSense endpoint alone: the DualShock
-        // 4 v2 function is headset-only.
-        EXPECT_EQ(cs.hapticAudio, cs.controllerType == CONTROLLER_TYPE_DUALSENSE);
+        // The haptics lanes ride the DualSense endpoint, the Edge's included:
+        // the DualShock 4 v2 function is headset-only.
+        EXPECT_EQ(cs.hapticAudio, cs.controllerType == CONTROLLER_TYPE_DUALSENSE ||
+                                      cs.controllerType == CONTROLLER_TYPE_DUALSENSE_EDGE);
     }
     for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_UINPUT, BACKEND_ID_MAC_HID}) {
         const BackendDescriptor* d = backendDescriptorById(id);
@@ -366,10 +375,15 @@ static void test_extendedButtons_surface_where_a_persona_has_room() {
     Json parsed;
     EXPECT(jsonParse(buildBackendsJson({{BACKEND_ID_HIDMAESTRO, true, ""}}, true), parsed));
     const Json& controllers = parsed[0]["controllers"];
-    EXPECT_EQ(controllers.size(), static_cast<size_t>(4));
+    EXPECT_EQ(controllers.size(), static_cast<size_t>(5));
     for (const Json& c : controllers) {
-        const bool switchPro = c["type"].get<int>() == CONTROLLER_TYPE_SWITCHPRO;
-        const Json expected = switchPro ? Json::array({"misc1"}) : Json::array();
+        const int type = c["type"].get<int>();
+        const Json paddles =
+            Json::array({"rightPaddle1", "leftPaddle1", "rightPaddle2", "leftPaddle2"});
+        const Json none = Json::array();
+        const Json expected = type == CONTROLLER_TYPE_SWITCHPRO        ? Json::array({"misc1"})
+                              : type == CONTROLLER_TYPE_DUALSENSE_EDGE ? paddles
+                                                                       : none;
         EXPECT(c.contains("extendedButtons") && c["extendedButtons"] == expected);
     }
 
@@ -381,6 +395,69 @@ static void test_extendedButtons_surface_where_a_persona_has_room() {
     EXPECT_EQ(uinputTraits.switchProExtButtons, EXT_BUTTON_MISC1);
     const CatalogBackendTraits macTraits = deriveCatalogTraits({{BACKEND_ID_MAC_HID, true, ""}});
     EXPECT_EQ(macTraits.ds4ExtButtons, 0u);
+}
+
+static const BackendControllerSupport* rowOf(const BackendDescriptor* d, uint8_t type) {
+    for (size_t i = 0; i < d->supportCount; ++i) {
+        if (d->support[i].controllerType == type) return &d->support[i];
+    }
+    return nullptr;
+}
+
+static void test_dualSenseEdge_is_the_dualsense_plus_its_back_buttons() {
+    TEST("DualSense Edge: on HIDMaestro and uinput, the DualSense's row plus the four paddles");
+    for (const char* id : {BACKEND_ID_HIDMAESTRO, BACKEND_ID_UINPUT}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr);
+        const BackendControllerSupport* edge = rowOf(d, CONTROLLER_TYPE_DUALSENSE_EDGE);
+        const BackendControllerSupport* ds5 = rowOf(d, CONTROLLER_TYPE_DUALSENSE);
+        EXPECT(edge != nullptr && ds5 != nullptr);
+        if (edge == nullptr || ds5 == nullptr) continue;
+        EXPECT_EQ(edge->motion, ds5->motion);
+        EXPECT_EQ(edge->touchpad, ds5->touchpad);
+        EXPECT_EQ(edge->lightbar, ds5->lightbar);
+        EXPECT_EQ(std::string(edge->motionRequires), std::string(ds5->motionRequires));
+        EXPECT_EQ(edge->triggerEffects, ds5->triggerEffects);
+        EXPECT_EQ(edge->playerLeds, ds5->playerLeds);
+        EXPECT_EQ(edge->mic, ds5->mic);
+        EXPECT_EQ(edge->speaker, ds5->speaker);
+        EXPECT_EQ(edge->hapticAudio, ds5->hapticAudio);
+        EXPECT_EQ(edge->facts.threadWakeups, ds5->facts.threadWakeups);
+        EXPECT_EQ(edge->extButtons, EDGE_PADDLES);
+    }
+
+    TEST("DualSense Edge: ViGEm and macOS cannot build one, so they do not offer it");
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_MAC_HID, BACKEND_ID_NONE}) {
+        const BackendDescriptor* d = backendDescriptorById(id);
+        EXPECT(d != nullptr && rowOf(d, CONTROLLER_TYPE_DUALSENSE_EDGE) == nullptr);
+        EXPECT(!deriveCatalogTraits({{id, true, ""}}).offersDualSenseEdge);
+    }
+
+    TEST("DualSense Edge: the catalog traits take its preferred materializer's surface");
+    const CatalogBackendTraits t =
+        deriveCatalogTraits({{BACKEND_ID_VIGEM, true, ""}, {BACKEND_ID_HIDMAESTRO, true, ""}});
+    EXPECT(t.offersDualSenseEdge);
+    EXPECT(t.dualsenseEdgeMotionSupported);
+    EXPECT_EQ(t.dualsenseEdgeMotionRequires, std::string("hidmaestro>=1.7"));
+    EXPECT(t.dualsenseEdgeTouchpadSupported);
+    EXPECT(t.dualsenseEdgeLightbarSupported);
+    EXPECT(t.dualsenseEdgeTriggerEffectsSupported);
+    EXPECT(t.dualsenseEdgePlayerLedsSupported);
+    EXPECT(t.dualsenseEdgeMicSupported);
+    EXPECT(t.dualsenseEdgeSpeakerSupported);
+    EXPECT(t.dualsenseEdgeHapticAudioSupported);
+    EXPECT_EQ(t.dualsenseEdgeExtButtons, EDGE_PADDLES);
+    const CatalogBackendTraits linuxHost = deriveCatalogTraits({{BACKEND_ID_UINPUT, true, ""}});
+    EXPECT(linuxHost.offersDualSenseEdge);
+    EXPECT(!linuxHost.dualsenseEdgeLightbarSupported);
+    EXPECT_EQ(linuxHost.dualsenseEdgeExtButtons, EDGE_PADDLES);
+
+    TEST("DualSense Edge: no backend offers it without the DualSense, so it is never alone");
+    for (const char* id : {BACKEND_ID_VIGEM, BACKEND_ID_HIDMAESTRO, BACKEND_ID_UINPUT,
+                           BACKEND_ID_MAC_HID, BACKEND_ID_NONE}) {
+        const CatalogBackendTraits one = deriveCatalogTraits({{id, true, ""}});
+        EXPECT(!one.offersDualSenseEdge || one.offersDualSense);
+    }
 }
 
 static void test_deriveCatalogTraits_uinput_matches_legacy() {
@@ -742,6 +819,7 @@ int main() {
     test_rawOutput_surfaces_hidmaestro_only();
     test_controllerAudio_surfaces_hidmaestroSonyOnly();
     test_extendedButtons_surface_where_a_persona_has_room();
+    test_dualSenseEdge_is_the_dualsense_plus_its_back_buttons();
     test_deriveCatalogTraits_uinput_matches_legacy();
     test_deriveCatalogTraits_machid_matches_legacy();
     test_deriveCatalogTraits_ignores_availability();

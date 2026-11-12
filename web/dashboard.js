@@ -272,7 +272,7 @@ function batteryChip(ctrl) {
 
 // Virtual controller types that carry a touchpad surface (HIDMaestro and
 // uinput route DualSense touch; the PlayStation family is the DualShock 4).
-const TOUCHPAD_SURFACE_TYPES = new Set(['playstation', 'dualsense']);
+const TOUCHPAD_SURFACE_TYPES = new Set(['playstation', 'dualsense', 'dualsenseedge']);
 
 // Derived from touchpadActive, controllerType, and touchpadMode (client-owned;
 // the dashboard only mirrors it).

@@ -454,13 +454,14 @@ static void test_bus_open_probe_only() {
 }
 
 static void test_identity_support() {
-    TEST("supportsIdentity — all four identities materialize");
+    TEST("supportsIdentity — all five identities materialize");
     FakeProvisioner prov;
     HidMaestroAdapter adapter(prov);
     EXPECT(adapter.supportsIdentity(GamepadIdentity::Xbox));
     EXPECT(adapter.supportsIdentity(GamepadIdentity::DS4));
     EXPECT(adapter.supportsIdentity(GamepadIdentity::DualSense));
     EXPECT(adapter.supportsIdentity(GamepadIdentity::SwitchPro));
+    EXPECT(adapter.supportsIdentity(GamepadIdentity::DualSenseEdge));
 }
 
 static void test_plugin_lifecycle() {
@@ -681,6 +682,47 @@ static void test_switch_submit() {
     EXPECT(!adapter.submitBattery(5, batt));
 }
 
+static void test_ds5_edge_submit() {
+    TEST("DualSense Edge — the back buttons land in byte 9 and survive motion and touch");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSenseEdge));
+    EXPECT(prov.lastIdentity == GamepadIdentity::DualSenseEdge);
+
+    const uint8_t* data = prov.inputData(4);
+    EXPECT_EQ(u32at(prov.inputSection(4), INPUT_DATASIZE_OFFSET), (uint32_t)DS5_PAYLOAD_BYTES);
+    EXPECT_EQ(data[48], (uint8_t)0x80); // the profiles' inputDefaults byte 49, first frame on
+    InputReport input{};
+    input.extButtons = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE2;
+    EXPECT(adapter.submitInput(4, input));
+    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+
+    MotionReport motion{};
+    motion.gyroX = 100;
+    EXPECT(adapter.submitMotion(4, motion));
+    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    TouchpadReport touch{};
+    touch.finger0.active = true;
+    EXPECT(adapter.submitTouchpad(4, touch));
+    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    BatteryReport batt;
+    batt.level = 50;
+    batt.status = BATTERY_STATUS_DISCHARGING;
+    EXPECT(adapter.submitBattery(4, batt));
+
+    TEST("DualSense Edge — an idle Edge is re-published like any Sony pad, buttons held");
+    adapter.setIdleReportIntervalForTest(std::chrono::milliseconds(0));
+    const uint32_t before = prov.inputSeq(4);
+    adapter.refreshIdleInput();
+    EXPECT(prov.inputSeq(4) > before);
+    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[48], (uint8_t)0x80);
+
+    EXPECT(adapter.submitReport(4, GamepadReport{}));
+    EXPECT_EQ(data[9], (uint8_t)0);
+}
+
 static void test_switch_capture_from_misc1() {
     TEST("SwitchPro — misc1 holds Capture through motion, and a frame without it lets go");
     FakeProvisioner prov;
@@ -789,6 +831,11 @@ static void test_audio_request_matrix() {
         EXPECT(adapter.pluginDevice(2, GamepadIdentity::DS4));
         EXPECT(prov.lastAudioRequested);
         EXPECT(adapter.hasSpeakerEndpoint(2));
+
+        EXPECT(adapter.pluginDevice(3, GamepadIdentity::DualSenseEdge));
+        EXPECT(prov.lastAudioRequested);
+        EXPECT(adapter.hasSpeakerEndpoint(3));
+        EXPECT(adapter.hasMicEndpoint(3));
     }
 
     TEST("audio setting on: identities with no audio function never ask");
@@ -1462,6 +1509,7 @@ int main() {
     test_ds5_submit();
     test_idle_sony_pads_keep_reporting();
     test_switch_submit();
+    test_ds5_edge_submit();
     test_switch_capture_from_misc1();
     test_motion_support_matrix();
     test_rumble_worker_xbox();
