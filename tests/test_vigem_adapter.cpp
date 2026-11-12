@@ -47,6 +47,7 @@ struct State {
     bool unplugAccepts = true; // false => driver refused the unplug IOCTL
 
     // Last reports the adapter handed the driver (for conversion assertions).
+    XUSB_REPORT lastXusb{};
     DS4_REPORT_EX lastDs4Ex{};
     DS4_REPORT lastDs4Basic{};
 
@@ -132,8 +133,9 @@ bool unplugTarget(HANDLE, ULONG) {
     return fake::g.unplugAccepts;
 }
 
-bool submitXusbSync(HANDLE, ULONG, XUSB_SUBMIT_REPORT&, HANDLE, const void*) {
+bool submitXusbSync(HANDLE, ULONG, XUSB_SUBMIT_REPORT&, HANDLE, const void* report) {
     fake::g.xusbSyncCalls++;
+    std::memcpy(&fake::g.lastXusb, report, sizeof(XUSB_REPORT));
     return fake::g.xusbAccepts;
 }
 bool submitDs4Sync(HANDLE, ULONG, DS4_SUBMIT_REPORT&, HANDLE, const DS4_REPORT& rpt) {
@@ -727,6 +729,43 @@ static void test_plugged_pad_answers_while_another_unplugs(GamepadIdentity first
     a.closeBus();
 }
 
+constexpr uint32_t EVERY_EXT_BIT = 0xFFFFFFFFu;
+
+// ViGEm's targets are an Xbox 360 pad and a DualShock 4: neither has a place
+// for an extended button, so the adapter keeps the port's default and the
+// driver is handed exactly the report it would get without the word.
+static void test_extended_buttons_never_reach_the_driver() {
+    TEST("ViGEm Xbox 360 — every extended button, reserved bits included, leaves the XUSB report "
+         "unchanged");
+    fake::g.reset();
+    ViGEmAdapter a;
+    EXPECT(a.ensureBusOpen());
+    EXPECT(a.pluginDevice(1, GamepadIdentity::Xbox));
+    InputReport input{};
+    input.pad.wButtons = 0x1000;
+    input.pad.sThumbLX = 1234;
+    EXPECT(a.submitInput(1, input));
+    const XUSB_REPORT without = fake::g.lastXusb;
+    input.extButtons = EVERY_EXT_BIT;
+    EXPECT(a.submitInput(1, input));
+    EXPECT_EQ(std::memcmp(&without, &fake::g.lastXusb, sizeof(XUSB_REPORT)), 0);
+
+    TEST("ViGEm DualShock 4 — every extended button, reserved bits included, leaves the DS4 report "
+         "unchanged");
+    EXPECT(a.pluginDevice(2, GamepadIdentity::DS4));
+    InputReport pad{};
+    pad.pad.wButtons = 0x1000;
+    EXPECT(a.submitInput(2, pad));
+    const DS4_REPORT_EX ds4Without = fake::g.lastDs4Ex;
+    pad.extButtons = EVERY_EXT_BIT;
+    EXPECT(a.submitInput(2, pad));
+    EXPECT_EQ(fake::g.lastDs4Ex.Report.wButtons, ds4Without.Report.wButtons);
+    EXPECT_EQ(fake::g.lastDs4Ex.Report.bSpecial, ds4Without.Report.bSpecial);
+    EXPECT_EQ(fake::g.lastDs4Ex.Report.bThumbLX, ds4Without.Report.bThumbLX);
+    EXPECT_EQ(fake::g.lastDs4Ex.Report.bTriggerL, ds4Without.Report.bTriggerL);
+    a.closeBus();
+}
+
 int main() {
     std::cout << "=== test_vigem_adapter ===\n";
 
@@ -738,6 +777,7 @@ int main() {
     test_submit_to_unplugged_serial_is_rejected();
     test_xusb_to_ds4_conversion_maps_input();
     test_ds4_report_is_the_shared_sony_layout();
+    test_extended_buttons_never_reach_the_driver();
 
     test_ds4ExSubmitLanded_overlapped_success_always_lands();
     test_ds4ExSubmitLanded_benign_failures_still_land();

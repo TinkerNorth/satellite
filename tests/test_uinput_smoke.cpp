@@ -121,6 +121,62 @@ bool hasKey(const unsigned long* keys, int code) {
     return ((keys[index / kBitsPerLong] >> (index % kBitsPerLong)) & 1UL) != 0;
 }
 
+constexpr uint32_t kEveryExtBit = 0xFFFFFFFFu;
+
+// True when any key goes down on `fd` within `windowMs`.
+bool anyKeyPressed(int fd, int windowMs) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(windowMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        struct pollfd pfd{fd, POLLIN, 0};
+        if (::poll(&pfd, 1, 50) <= 0) continue;
+        struct input_event ev;
+        while (::read(fd, &ev, sizeof(ev)) == static_cast<ssize_t>(sizeof(ev))) {
+            if (ev.type == EV_KEY && ev.value == 1) return true;
+        }
+    }
+    return false;
+}
+
+bool declaresAnyGripKey(int fd) {
+    unsigned long keys[KEY_MAX / kBitsPerLong + 1] = {};
+    if (::ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) < 0) return true;
+    for (int code : {BTN_GRIPL, BTN_GRIPR, BTN_GRIPL2, BTN_GRIPR2}) {
+        if (hasKey(keys, code)) return true;
+    }
+    return false;
+}
+
+// Plugs `identity`, sends a neutral frame carrying `extButtons`, and reports
+// whether the pad's node declared a grip key or let any key go down.
+struct DropProbe {
+    bool opened = false;
+    bool gripKeys = false;
+    bool submitted = false;
+    bool pressed = false;
+    bool unplugged = false;
+
+    bool dropped() const { return opened && submitted && !pressed && unplugged; }
+};
+
+DropProbe probeDrop(GamepadAdapter& adapter, uint32_t serial, GamepadIdentity identity,
+                    const std::string& name, uint32_t extButtons) {
+    DropProbe probe;
+    if (!adapter.pluginDevice(serial, identity)) return probe;
+    const std::string node = findEventNodeByName(name + " #" + std::to_string(serial), 3000);
+    const int fd = node.empty() ? -1 : ::open(node.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    probe.opened = fd >= 0;
+    if (fd >= 0) {
+        probe.gripKeys = declaresAnyGripKey(fd);
+        InputReport input;
+        input.extButtons = extButtons;
+        probe.submitted = adapter.submitInput(serial, input);
+        probe.pressed = anyKeyPressed(fd, 300);
+        ::close(fd);
+    }
+    probe.unplugged = adapter.unplugDevice(serial);
+    return probe;
+}
+
 bool waitFor(const std::atomic<bool>& flag, int deadlineMs) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(deadlineMs);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -311,6 +367,41 @@ int main() {
     }
     if (edgeFd >= 0) ::close(edgeFd);
     EXPECT(adapter.unplugDevice(kEdgeSerial));
+
+    TEST("Xbox, DualShock 4 and DualSense nodes have no grip keys, and drop every extended "
+         "button, reserved bits included");
+    constexpr uint32_t kDropSerial = MAX_BACKEND_CONTROLLERS - 4;
+    const struct {
+        GamepadIdentity identity;
+        const char* name;
+    } noRoom[] = {
+        {GamepadIdentity::Xbox, "Satellite Virtual Xbox 360 Pad"},
+        {GamepadIdentity::DS4, "Satellite Virtual DualShock 4"},
+        {GamepadIdentity::DualSense, "Satellite Virtual DualSense"},
+    };
+    for (const auto& pad : noRoom) {
+        const DropProbe probe =
+            probeDrop(adapter, kDropSerial, pad.identity, pad.name, kEveryExtBit);
+        EXPECT(probe.dropped());
+        EXPECT(!probe.gripKeys);
+    }
+
+    TEST("Switch Pro: no grip keys, and every extended button but misc1, reserved bits included, "
+         "presses nothing");
+    const DropProbe sw =
+        probeDrop(adapter, kDropSerial, GamepadIdentity::SwitchPro,
+                  "Satellite Virtual Switch Pro Controller", kEveryExtBit & ~EXT_BUTTON_MISC1);
+    EXPECT(sw.dropped());
+    EXPECT(!sw.gripKeys);
+
+    TEST("DualSense Edge: every extended button but the paddles, reserved bits included, presses "
+         "nothing");
+    const uint32_t edgePaddles = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE1 |
+                                 EXT_BUTTON_RIGHT_PADDLE2 | EXT_BUTTON_LEFT_PADDLE2;
+    const DropProbe edge =
+        probeDrop(adapter, kDropSerial, GamepadIdentity::DualSenseEdge,
+                  "Satellite Virtual DualSense Edge", kEveryExtBit & ~edgePaddles);
+    EXPECT(edge.dropped());
 
     TEST("relative-mouse node materialises on first use");
     EXPECT(adapter.submitRelativeMouse(3, -2, MouseButtons{}, 0));

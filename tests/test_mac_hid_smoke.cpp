@@ -23,9 +23,18 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "test_util.h"
+
+// Its only persona is a DualShock 4, which has no place for an extended
+// button, so the adapter keeps the port's default submitInput, the one that
+// drops the word (test_input_report pins what that default does). Its submit
+// path needs the entitlement, so this is checked where it always builds.
+static_assert(std::is_same_v<decltype(&MacHidGamepadAdapter::submitInput),
+                             bool (IGamepadPort::*)(uint32_t, const InputReport&)>,
+              "the macOS adapter must keep IGamepadPort's dropping submitInput");
 
 #if SATELLITE_HAS_IOHIDUSERDEVICE
 #include <CoreFoundation/CoreFoundation.h>
