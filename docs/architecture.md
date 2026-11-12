@@ -958,7 +958,8 @@ adapters rely on them instead of locking against one another's calls:
    submit is in flight during it. The host-global pointer submit may be, and
    no adapter's `closeBus` touches the state it uses. `ensureBusOpen` may
    run while other serials are live and submitting.
-4. Submits have fixed threads. `submitReport`, `submitMotion`,
+4. Submits have fixed threads. `submitInput` (and the `submitReport` a
+   backend with no extended buttons leaves it to), `submitMotion`,
    `submitTouchpad` and `submitBattery` come only from the receive
    thread, through the frame path or the cold dispatch.
    `submitMicAudioPcm` comes only from the mic worker, and

@@ -70,6 +70,7 @@ struct MockViGem : IGamepadPort {
     std::set<uint32_t> pluggedSet;
     mutable std::mutex pluggedMtx;
     GamepadReport lastSubmittedReport{};
+    uint32_t lastSubmittedExtButtons = 0;
     uint32_t lastMotionSerial = 0;
     MotionReport lastMotion{};
     uint32_t lastBatterySerial = 0;
@@ -147,13 +148,19 @@ struct MockViGem : IGamepadPort {
         return pluggedSet.count(serial) != 0;
     }
     bool submitReport(uint32_t serial, const GamepadReport& r) override {
+        InputReport input;
+        input.pad = r;
+        return submitInput(serial, input);
+    }
+    bool submitInput(uint32_t serial, const InputReport& input) override {
         // Route the tally by the serial's plugged identity so "XUSB vs DS4"
         // stays observable under the unified submit.
         if (identityFor(serial) == GamepadIdentity::DS4)
             submitDS4Calls++;
         else
             submitCalls++;
-        lastSubmittedReport = r;
+        lastSubmittedReport = input.pad;
+        lastSubmittedExtButtons = input.extButtons;
         return submitReturnVal;
     }
     void setRumbleCallback(RumbleCallback cb) override {
@@ -681,7 +688,7 @@ static void test_replay_gamepadPathMarksSeen() {
     SessionService svc(vigem, client, log);
 
     auto r = upsert(svc, {makeDesc(0)});
-    GamepadReport rpt{};
+    const InputReport rpt{};
     EXPECT(svc.handleGamepadDataAndUpdate(r.token, 0, 0x0100007f, 4242, 0, rpt));
 
     uint8_t key[CRYPTO_KEY_SIZE];
@@ -1652,8 +1659,8 @@ static void test_gamepadData_routesByType() {
 
     auto r =
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX), makeDesc(1, CONTROLLER_TYPE_PLAYSTATION)});
-    GamepadReport rpt{};
-    rpt.wButtons = 0x1234;
+    InputReport rpt{};
+    rpt.pad.wButtons = 0x1234;
     EXPECT(svc.handleGamepadData(r.token, 0, rpt));
     EXPECT_EQ(vigem.submitCalls, 1);
     EXPECT_EQ(vigem.submitDS4Calls, 0);
@@ -1670,7 +1677,7 @@ static void test_gamepadData_guards() {
     SessionService svc(vigem, client, log);
 
     auto r = upsert(svc);
-    GamepadReport rpt{};
+    const InputReport rpt{};
     EXPECT(!svc.handleGamepadData(99999, 0, rpt));
     EXPECT(!svc.handleGamepadData(r.token, 0, rpt));
     EXPECT(!svc.handleGamepadData(r.token, 20, rpt));
@@ -1684,8 +1691,8 @@ static void test_fusedHotPath() {
     SessionService svc(vigem, client, log);
 
     auto r = upsert(svc, {makeDesc(0)});
-    GamepadReport rpt{};
-    rpt.sThumbLX = 7777;
+    InputReport rpt{};
+    rpt.pad.sThumbLX = 7777;
     EXPECT(svc.handleGamepadDataAndUpdate(r.token, 5, 0x0100007f, 4242, 0, rpt));
     svc.handleHeartbeat(r.token);
     EXPECT_EQ(client.lastAckAddr, packClientAddr(0x0100007f, 4242));
@@ -1696,6 +1703,26 @@ static void test_fusedHotPath() {
     EXPECT_EQ(vigem.lastSubmittedReport.sThumbLX, (int16_t)7777);
 }
 
+static void test_gamepadData_carriesExtendedButtons() {
+    TEST("gamepadData: both entry points hand the backend the extended buttons");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    auto r = upsert(svc, {makeDesc(0)});
+    InputReport rpt{};
+    rpt.extButtons = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE2;
+    EXPECT(svc.handleGamepadData(r.token, 0, rpt));
+    EXPECT_EQ(vigem.lastSubmittedExtButtons, EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE2);
+    rpt.extButtons = EXT_BUTTON_MISC1;
+    EXPECT(svc.handleGamepadDataAndUpdate(r.token, 1, 0x0100007f, 4242, 0, rpt));
+    EXPECT_EQ(vigem.lastSubmittedExtButtons, EXT_BUTTON_MISC1);
+    rpt.extButtons = 0;
+    EXPECT(svc.handleGamepadDataAndUpdate(r.token, 2, 0x0100007f, 4242, 0, rpt));
+    EXPECT_EQ(vigem.lastSubmittedExtButtons, 0u);
+}
+
 static void test_fusedHotPath_guards() {
     TEST("handleGamepadDataAndUpdate: guards mirror the unfused path");
     MockViGem vigem;
@@ -1704,7 +1731,7 @@ static void test_fusedHotPath_guards() {
     SessionService svc(vigem, client, log);
 
     auto r = upsert(svc);
-    GamepadReport rpt{};
+    const InputReport rpt{};
     EXPECT(!svc.handleGamepadDataAndUpdate(99999, 1, 0x0100007f, 1, 0, rpt));
     // Inactive controller: the packet still refreshes counter/addr (it
     // authenticated), only the submit is refused.
@@ -4399,7 +4426,7 @@ static void test_feedbackState_onlyTheFirstDatagramResends() {
     const int playerLedsAfterFirst = pad.client.playerLedsCalls;
 
     pad.svc.updatePostDecryptV4(second.token, 2, CLIENT_IPV4_NBO, CLIENT_PORT);
-    GamepadReport rpt{};
+    const InputReport rpt{};
     const bool submitted =
         pad.svc.handleGamepadDataAndUpdate(second.token, 3, CLIENT_IPV4_NBO, CLIENT_PORT, 0, rpt);
     EXPECT(submitted);
@@ -4413,7 +4440,7 @@ static void test_feedbackState_firstDatagramCarryingInputResends() {
     TEST("rotate: a first datagram that carries input brings the state back too");
     LitPadSession pad;
     const auto second = pad.rePut();
-    GamepadReport rpt{};
+    const InputReport rpt{};
 
     const bool submitted =
         pad.svc.handleGamepadDataAndUpdate(second.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT, 0, rpt);
@@ -4680,9 +4707,10 @@ static void test_wireConstants() {
     EXPECT_EQ((int)MSG_MIC_LED, 0x0014);
     EXPECT_EQ((int)MSG_HAPTIC_AUDIO, 0x0015);
     EXPECT_EQ((int)CAP_HAPTIC_AUDIO, 0x0100);
-    // Protocol 3 added HAPTIC_AUDIO; the floor stays at 1 so every shipped
-    // client still settles.
-    EXPECT_EQ(PROTOCOL_VERSION, 3);
+    EXPECT_EQ((int)CAP_EXTENDED_BUTTONS, 0x0200);
+    // Protocol 4 added the INPUT extended-buttons word; the floor stays at 1
+    // so every shipped client still settles.
+    EXPECT_EQ(PROTOCOL_VERSION, 4);
     EXPECT_EQ(PROTOCOL_VERSION_MIN, 1);
     EXPECT_EQ(SESSION_SALT_SIZE, 8);
     EXPECT_EQ((int)CRYPTO_DIR_CLIENT_TO_SERVER, 0);
@@ -5449,6 +5477,7 @@ int main() {
     test_gamepadData_routesByType();
     test_gamepadData_guards();
     test_fusedHotPath();
+    test_gamepadData_carriesExtendedButtons();
     test_fusedHotPath_guards();
     test_motionData_cachedAndForwarded();
     test_motionData_acceptedWithoutCapAndCachedOnDecline();

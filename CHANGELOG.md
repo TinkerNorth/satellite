@@ -5,7 +5,16 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## Unreleased
 
-No protocol changes.
+Protocol 4, additive `[wire-coordinated]`: the accepted range is now [1, 4].
+A Dish that speaks 4 appends a 32-bit word of extended buttons to every
+INPUT frame, 17 bytes instead of 13, and can claim the new `extendedButtons`
+cap. The word carries the buttons an Xbox pad has no room for, under SDL's
+names: the four back paddles, the "…" button (misc1), the trackpad and
+trigger clicks and the touch sensors (the contract's Extended buttons
+section has the bits). Satellite reads INPUT by its length, so every shipped
+Dish keeps sending 13 bytes and keeps working, and nothing Satellite sends
+changes. No controller type uses the word yet.
+
 A game's DualSense rumble now reaches the real controller without also
 turning its light bar off. Newer DualSense firmware rumble packets (the
 kind SDL games send) carry a mode flag in the same byte this decoder

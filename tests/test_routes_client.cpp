@@ -257,6 +257,31 @@ int main() {
         }
     }
     {
+        TEST("a protocol-4 offer is accepted and the session settles at 4");
+        auto res =
+            cli.Put("/api/connections", auth, R"({"protocolVersion":4})", "application/json");
+        EXPECT(res && res->status == 200);
+        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 4L);
+    }
+    {
+        TEST("a protocol-3 client keeps working: accepted and settled at 3");
+        auto res =
+            cli.Put("/api/connections", auth, R"({"protocolVersion":3})", "application/json");
+        EXPECT(res && res->status == 200);
+        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 3L);
+    }
+    {
+        TEST("a protocol-5 offer gets 409 naming [1, 4]");
+        auto res =
+            cli.Put("/api/connections", auth, R"({"protocolVersion":5})", "application/json");
+        EXPECT(res && res->status == 409);
+        if (res) {
+            Json j = parseJson(res->body);
+            EXPECT_EQ(jsonInt(j, "supported"), 4L);
+            EXPECT_EQ(jsonInt(j, "supportedMin"), 1L);
+        }
+    }
+    {
         TEST("the current protocolVersion is accepted and echoed");
         const std::string body =
             std::string(R"({"protocolVersion":)") + std::to_string(PROTOCOL_VERSION) + "}";
@@ -478,6 +503,26 @@ int main() {
                 EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), true);
             } else {
                 EXPECT(false);
+            }
+        }
+
+        TEST("caps roundtrip: the session view echoes the extendedButtons claim");
+        auto res4 = cli.Put("/api/connections", auth,
+                            R"({"protocolVersion":4,
+                                "controllers":[{"ctrlIdx":0,"type":0,
+                                "caps":{"extendedButtons":true}}]})",
+                            "application/json");
+        EXPECT(res4 && res4->status == 200);
+        auto view4 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        EXPECT(view4 && view4->status == 200);
+        if (view4) {
+            Json j = parseJson(view4->body);
+            const bool onePad = j.contains("controllers") && j["controllers"].is_array() &&
+                                j["controllers"].size() == 1;
+            EXPECT(onePad);
+            if (onePad) {
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "extendedButtons"), true);
+                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "rumble"), false);
             }
         }
 

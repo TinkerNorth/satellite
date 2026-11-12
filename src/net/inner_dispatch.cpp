@@ -7,8 +7,6 @@
 
 #include "core/session_service.h"
 
-#include <cstring>
-
 // Every per-type length guard below MUST reject a short payload before its
 // decoder runs, so a malformed packet can never read past `payload + msgLen`.
 DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_t msgType,
@@ -16,13 +14,11 @@ DispatchResult dispatchInnerMessage(SessionService& svc, uint32_t token, uint16_
     DispatchResult result;
     switch (msgType) {
     case MSG_GAMEPAD_DATA: {
-        // ctrlIdx(1) + GamepadReport(12) = 13 bytes minimum.
-        if (msgLen < 13) break;
-        uint8_t ctrlIdx = payload[0];
-        GamepadReport report;
-        memcpy(&report, payload + 1, sizeof(GamepadReport));
+        if (msgLen < 1 + INPUT_WIRE_PAYLOAD_BYTES_V1) break;
+        const uint8_t ctrlIdx = payload[0];
+        const InputReport input = decodeInputReport(payload + 1, msgLen - 1u);
         result.wasGamepadData = true;
-        result.gamepadOk = svc.handleGamepadData(token, ctrlIdx, report);
+        result.gamepadOk = svc.handleGamepadData(token, ctrlIdx, input);
         result.handled = true;
         break;
     }

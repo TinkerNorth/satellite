@@ -33,8 +33,7 @@ constexpr int RECV_TIMEOUT_MS = 10;
 constexpr int RECV_BUFFER_BYTES = 65536;
 // DSCP EF (46) << 2: the lowest-latency class a router honours.
 constexpr int TOS_EXPEDITED = 0xB8;
-// The gamepad fast path needs ctrlIdx plus a whole report.
-constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 13;
+constexpr uint16_t GAMEPAD_DATA_MIN_LEN = 1 + INPUT_WIRE_PAYLOAD_BYTES_V1;
 
 ReceiveWake g_receiveWake;
 
@@ -221,11 +220,10 @@ inline void handleDatagram(SessionService& svc, uint8_t* buf, int n, const socka
     DispatchResult dr;
     if (inner.msgType == MSG_GAMEPAD_DATA && inner.msgLen >= GAMEPAD_DATA_MIN_LEN) {
         const uint8_t ctrlIdx = payload[0];
-        GamepadReport report;
-        std::memcpy(&report, payload + 1, sizeof(GamepadReport));
+        const InputReport input = decodeInputReport(payload + 1, inner.msgLen - 1u);
         dr.wasGamepadData = true;
         dr.gamepadOk =
-            svc.handleGamepadDataAndUpdate(token, counter, senderIPv4, senderPort, ctrlIdx, report);
+            svc.handleGamepadDataAndUpdate(token, counter, senderIPv4, senderPort, ctrlIdx, input);
     } else {
         svc.updatePostDecryptV4(token, counter, senderIPv4, senderPort);
         dr = dispatchInnerMessage(svc, token, inner.msgType, payload, inner.msgLen);

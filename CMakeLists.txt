@@ -1052,6 +1052,26 @@ set_target_properties(test_receiver PROPERTIES
 )
 add_test(NAME receiver COMMAND test_receiver)
 
+# INPUT (MSG_GAMEPAD_DATA) and its protocol-4 extended-buttons tail, from the
+# decoder through dispatch to the backend, plus the bit table docs/contract.md
+# carries too.
+add_executable(test_input_report
+    tests/test_input_report.cpp
+    src/net/inner_dispatch.cpp
+    ${SATELLITE_CORE_SOURCES}
+)
+target_include_directories(test_input_report PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(test_input_report PRIVATE
+    CONTRACT_MD="${CMAKE_CURRENT_SOURCE_DIR}/docs/contract.md"
+)
+satellite_test_warnings(test_input_report)
+set_target_properties(test_input_report PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_test(NAME input_report COMMAND test_input_report)
+
 add_executable(test_mdns_protocol
     tests/test_mdns_protocol.cpp
     src/net/mdns_protocol.cpp

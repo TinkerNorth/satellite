@@ -27,6 +27,7 @@ inline constexpr CapName CAP_NAMES[] = {
     {"mic", CAP_MIC},
     {"speaker", CAP_SPEAKER},
     {"hapticAudio", CAP_HAPTIC_AUDIO},
+    {"extendedButtons", CAP_EXTENDED_BUTTONS},
 };
 
 inline JsonOut capsJsonObj(uint16_t caps) {

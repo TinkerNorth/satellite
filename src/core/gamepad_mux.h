@@ -101,6 +101,11 @@ class GamepadMux : public IGamepadPort {
         return p != nullptr && p->submitReport(serial, report);
     }
 
+    bool submitInput(uint32_t serial, const InputReport& input) override {
+        IGamepadPort* p = ownerOf(serial);
+        return p != nullptr && p->submitInput(serial, input);
+    }
+
     bool submitMotion(uint32_t serial, const MotionReport& report) override {
         IGamepadPort* p = ownerOf(serial);
         return p != nullptr && p->submitMotion(serial, report);

@@ -1008,10 +1008,9 @@ void SessionService::closeAllSessions(uint8_t reason) {
     closeBusIfIdle(idle);
 }
 
-bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx,
-                                       const GamepadReport& report) {
+bool SessionService::handleGamepadData(uint32_t token, uint8_t ctrlIdx, const InputReport& input) {
     rx_.enter();
-    const bool ok = submitHotFrame(token, ctrlIdx, report, false, 0, 0);
+    const bool ok = submitHotFrame(token, ctrlIdx, input, false, 0, 0);
     rx_.exit();
     return ok;
 }
@@ -1813,7 +1812,7 @@ void SessionService::recordHotDatagram(uint32_t token, uint32_t counter, uint64_
     if (stable && slotToken == token) recordDatagram(slot, keyEpoch, counter, clientAddr);
 }
 
-bool SessionService::submitHotFrame(uint32_t token, uint8_t ctrlIdx, const GamepadReport& report,
+bool SessionService::submitHotFrame(uint32_t token, uint8_t ctrlIdx, const InputReport& input,
                                     bool record, uint32_t counter, uint64_t clientAddr) {
     const int index = hot_.find(token);
     if (index < 0) return false;
@@ -1830,7 +1829,7 @@ bool SessionService::submitHotFrame(uint32_t token, uint8_t ctrlIdx, const Gamep
     if (!stable || slotToken != token) return false;
     if (record) recordDatagram(slot, keyEpoch, counter, clientAddr);
     if ((word & HOT_CTRL_ACTIVE) == 0) return false;
-    return backend_.submitReport(word & HOT_CTRL_SERIAL_MASK, report);
+    return backend_.submitInput(word & HOT_CTRL_SERIAL_MASK, input);
 }
 
 void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
@@ -1847,9 +1846,9 @@ void SessionService::updatePostDecryptV4(uint32_t token, uint32_t counter,
 
 bool SessionService::handleGamepadDataAndUpdate(uint32_t token, uint32_t counter,
                                                 uint32_t ipv4NetworkOrder, uint16_t clientPort,
-                                                uint8_t ctrlIdx, const GamepadReport& report) {
+                                                uint8_t ctrlIdx, const InputReport& input) {
     rx_.enter();
-    const bool ok = submitHotFrame(token, ctrlIdx, report, true, counter,
+    const bool ok = submitHotFrame(token, ctrlIdx, input, true, counter,
                                    packClientAddr(ipv4NetworkOrder, clientPort));
     rx_.exit();
     return ok;

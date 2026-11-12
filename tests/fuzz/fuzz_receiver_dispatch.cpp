@@ -169,12 +169,11 @@ void parseAndDispatch(uint32_t token, uint32_t counter, const uint8_t* plaintext
                                plaintext + INNER_HEADER_SIZE + msgLen);
     const uint8_t* payload = tight.empty() ? nullptr : tight.data();
 
-    if (msgType == MSG_GAMEPAD_DATA && msgLen >= 13) {
-        uint8_t ctrlIdx = payload[0];
-        GamepadReport report;
-        std::memcpy(&report, payload + 1, sizeof(GamepadReport));
+    if (msgType == MSG_GAMEPAD_DATA && msgLen >= 1 + INPUT_WIRE_PAYLOAD_BYTES_V1) {
+        const uint8_t ctrlIdx = payload[0];
+        const InputReport input = decodeInputReport(payload + 1, msgLen - 1u);
         if (g_svc->handleGamepadDataAndUpdate(token, counter, senderIPv4, senderPort, ctrlIdx,
-                                              report)) {
+                                              input)) {
             g_tally.gamepadSubmitted++;
         } else {
             g_tally.gamepadRefused++;
