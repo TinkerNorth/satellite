@@ -6,6 +6,7 @@
 #include "adapters/log_adapter.h"
 #include "app/audio_settings.h"
 #include "core/byte_order.h"
+#include "core/hidmaestro_device_watch.h"
 #include "core/config_effects.h"
 #include "core/event_broadcaster.h"
 #include "core/hex.h"
@@ -408,9 +409,27 @@ class LawBackend : public IGamepadPort {
 
     bool unplugDevice(uint32_t serial) override {
         watch_.check("mock unplugDevice", true);
-        if (valid(serial)) plugged_[serial].store(false);
+        if (!valid(serial)) return true;
+        if (lost_[serial].exchange(false)) lostUnplugs_++;
+        plugged_[serial].store(false);
         return true;
     }
+
+    // What the HIDMaestro watch reports of a pad Windows lost: listed while it
+    // is plugged, until the core unplugs it.
+    std::vector<uint32_t> lostSerials() const override {
+        std::vector<uint32_t> lost;
+        for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; ++serial) {
+            if (lost_[serial].load() && plugged_[serial].load()) lost.push_back(serial);
+        }
+        return lost;
+    }
+
+    void lose(uint32_t serial) {
+        if (valid(serial)) lost_[serial].store(true);
+    }
+
+    int lostUnplugs() const { return lostUnplugs_.load(); }
 
     bool isDevicePlugged(uint32_t serial) const override {
         return valid(serial) && plugged_[serial].load();
@@ -472,10 +491,22 @@ class LawBackend : public IGamepadPort {
     LifecycleWatch& watch_;
     WorkerCalls& calls_;
     std::array<std::atomic<bool>, MAX_BACKEND_CONTROLLERS + 1> plugged_{};
+    std::array<std::atomic<bool>, MAX_BACKEND_CONTROLLERS + 1> lost_{};
+    std::atomic<int> lostUnplugs_{0};
     std::atomic<bool> busOpen_{false};
     RumbleCallback rumble_;
     LightbarCallback lightbar_;
 };
+
+// The serial of the dish's first pad, as the admin view lists it; 0 when the
+// dish has no session or no pad.
+uint32_t firstPadOf(const SessionService& svc, const Dish& dish) {
+    for (const auto& connection : svc.getConnectionsSnapshot().connections) {
+        const bool ours = connection.deviceId == dish.id() && !connection.controllers.empty();
+        if (ours) return connection.controllers.front().serial;
+    }
+    return 0;
+}
 
 std::vector<std::vector<uint8_t>> encodeMicFrames() {
     std::vector<std::vector<uint8_t>> frames;
@@ -819,7 +850,8 @@ void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& s
     Dish c("dish-c", 0x50, FIRST_PORT + 2);
     Dish d("dish-d", 0x70, FIRST_PORT + 3);
     Dish r("dish-r", 0x90, FIRST_PORT + 4);
-    pairInConfig({&a, &b, &c, &r});
+    Dish l("dish-l", 0x98, FIRST_PORT + 5);
+    pairInConfig({&a, &b, &c, &r, &l});
 
     LawBackend backend(watch, calls);
     ClientAdapter client;
@@ -875,15 +907,24 @@ void runTheServiceOnTheMockBackend(LifecycleWatch& watch, const ConfigSandbox& s
                 if (!silent.ok) tally.refused++;
                 svc.backdateForTest(silent.token, REAP_SILENCE_SEC, 1);
             }
+
+            // The backend loses dish l's pad, and the maintenance tick gives it
+            // up; the next round's re-PUT plugs it again, as the dish's
+            // reconcile loop would.
+            putOrRefuse(svc, l, {pad(0, CONTROLLER_TYPE_XBOX)}, tally);
+            backend.lose(firstPadOf(svc, l));
         },
         [&](uint16_t level) {
             for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; ++serial) {
                 backend.fireFeedback(serial, level);
             }
         });
+    const int vacated = backend.lostUnplugs();
     svc.closeAllSessions();
 
     expectTheRunReachedEverything("mock", run, true);
+    TEST("mock: the maintenance tick unplugged the pads the backend lost, under the laws");
+    EXPECT(vacated > 0);
     TEST("mock: the pairing service saved the config into the sandbox");
     EXPECT(g_configStore->flush(WAIT_LIMIT));
     EXPECT(sandbox.saved());
@@ -940,6 +981,18 @@ class FakeHelper {
 
     int plugs() const { return plugs_.load(); }
     int unplugs() const { return unplugs_.load(); }
+    int quietUnplugs() const { return quietUnplugs_.load(); }
+
+    // The helper's heartbeat moves once on this pad's watch block and then
+    // stops, as a helper that dies does; the pad is then unplugged as lost.
+    void beatOnceThenStop(uint32_t serial) {
+        std::lock_guard<std::mutex> lk(liveMtx_);
+        const auto it = live_.find(serial);
+        if (it == live_.end() || it->second.watchView == nullptr) return;
+        uint8_t* beat = it->second.watchView + hm::WATCH_HEARTBEAT_OFFSET;
+        satellite::writeLE32(beat, satellite::readLE32(beat) + 1);
+        it->second.quiet = true;
+    }
 
   private:
     struct Slot {
@@ -949,14 +1002,30 @@ class FakeHelper {
         HANDLE output = nullptr;
         HANDLE outputEvent = nullptr;
         HANDLE version = nullptr;
+        HANDLE watch = nullptr;
+        uint8_t* watchView = nullptr;
+        bool quiet = false;
     };
 
     static void close(Slot& slot) {
+        if (slot.watchView != nullptr) UnmapViewOfFile(slot.watchView);
         for (HANDLE h : {slot.input, slot.inputEvent, slot.companionEvent, slot.output,
-                         slot.outputEvent, slot.version}) {
+                         slot.outputEvent, slot.version, slot.watch}) {
             if (h != nullptr) CloseHandle(h);
         }
         slot = Slot{};
+    }
+
+    // A watch block as the helper creates it: layout 1, nothing looked at yet.
+    static void openWatchBlock(Slot& slot) {
+        slot.watch = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                        static_cast<DWORD>(hm::WATCH_BLOCK_SIZE), nullptr);
+        slot.watchView = static_cast<uint8_t*>(
+            MapViewOfFile(slot.watch, FILE_MAP_WRITE, 0, 0, hm::WATCH_BLOCK_SIZE));
+        if (slot.watchView != nullptr) {
+            satellite::writeLE32(slot.watchView + hm::WATCH_LAYOUT_OFFSET,
+                                 static_cast<uint32_t>(hm::WATCH_LAYOUT));
+        }
     }
 
     static HANDLE duplicate(HANDLE h) {
@@ -1027,6 +1096,7 @@ class FakeHelper {
         if (!satellite::jsonParse(request, j)) return R"({"ok":false})";
         const std::string op = satellite::jsonStr(j, "op");
         const auto serial = static_cast<uint32_t>(satellite::jsonInt(j, "serial", 0));
+        if (op == "hello") return R"({"ok":true,"protocol":2})";
         if (op == "plug") return plug(serial, satellite::jsonStr(j, "profile"));
         if (op == "unplug") unplug(serial);
         if (op == "shutdown") last = true;
@@ -1044,6 +1114,7 @@ class FakeHelper {
                                          static_cast<DWORD>(hm::OUTPUT_SECTION_SIZE), nullptr);
         slot.outputEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         slot.version = versionSection(serial, profile);
+        openWatchBlock(slot);
         satellite::JsonOut reply;
         reply["ok"] = true;
         reply["index"] = serial;
@@ -1055,14 +1126,20 @@ class FakeHelper {
         reply["version"] = handleValue(duplicateReadOnly(slot.version));
         reply["identityTag"] = tagFor(serial);
         reply["usbip"] = profile.find("-composite") != std::string::npos;
-        live_[serial] = slot;
+        reply["watch"] = handleValue(duplicateReadOnly(slot.watch));
+        {
+            std::lock_guard<std::mutex> lk(liveMtx_);
+            live_[serial] = slot;
+        }
         plugs_++;
         return satellite::jsonDump(reply);
     }
 
     void unplug(uint32_t serial) {
+        std::lock_guard<std::mutex> lk(liveMtx_);
         const auto it = live_.find(serial);
         if (it == live_.end()) return;
+        if (it->second.quiet) quietUnplugs_++;
         close(it->second);
         live_.erase(it);
         unplugs_++;
@@ -1070,9 +1147,11 @@ class FakeHelper {
 
     HANDLE server_ = INVALID_HANDLE_VALUE;
     std::thread thread_;
+    std::mutex liveMtx_;
     std::map<uint32_t, Slot> live_;
     std::atomic<int> plugs_{0};
     std::atomic<int> unplugs_{0};
+    std::atomic<int> quietUnplugs_{0};
 };
 
 struct HelperLockUse {
@@ -1145,7 +1224,8 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
     Dish w3("dish-w3", 0xC0, FIRST_PORT + 12);
     Dish w4("dish-w4", 0xD0, FIRST_PORT + 13);
     Dish wr("dish-wr", 0xE0, FIRST_PORT + 14);
-    pairInConfig({&w1, &w2, &w3, &w4, &wr});
+    Dish wl("dish-wl", 0xF0, FIRST_PORT + 15);
+    pairInConfig({&w1, &w2, &w3, &w4, &wr, &wl});
 
     FakeHelper fake;
     std::atomic<int> connects{0};
@@ -1204,8 +1284,15 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
                     if (!silent.ok) tally.refused++;
                     svc.backdateForTest(silent.token, REAP_SILENCE_SEC, 1);
                 }
+
+                // Dish wl's helper goes quiet: the adapter gives the pad up on
+                // the maintenance tick and the core unplugs it through the
+                // helper client; the next round's re-PUT plugs it again.
+                putOrRefuse(svc, wl, {pad(0, CONTROLLER_TYPE_DUALSENSE)}, tally);
+                fake.beatOnceThenStop(firstPadOf(svc, wl));
             },
             FeedbackTick{});
+        const int givenUp = fake.quietUnplugs();
         svc.closeAllSessions();
 
         const lockstats::Snapshot afterRun = lockstats::snapshot();
@@ -1222,6 +1309,9 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
         TEST("windows: the helper provisioned and removed pads");
         EXPECT(fake.plugs() > 0);
         EXPECT_EQ(fake.unplugs(), fake.plugs());
+        TEST("windows: the maintenance tick gave up the pads whose helper went quiet, through the "
+             "real adapter and helper client, under the laws");
+        EXPECT(givenUp > 0);
     }
     g_driverWatch = nullptr;
 }
