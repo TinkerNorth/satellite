@@ -28,6 +28,7 @@
 #include "core/gamepad_mux.h"
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
+#include "hidmaestro_version_fixture.h"
 #include "hidmaestro_wire.h"
 #include "tray_icon.h"
 #include "vigem_adapter.h"
@@ -720,6 +721,7 @@ void runMaintenance(SessionService& svc, const std::atomic<bool>& stop, ColdTall
         if (done || Clock::now() > deadline) return;
         svc.refreshRumble();
         svc.refreshIdleInput();
+        svc.recheckDrivers();
         if (tick % REAP_EVERY == 0) tally.reaped += svc.reapTimedOut();
         std::this_thread::sleep_for(WORKER_TICK);
     }
@@ -946,11 +948,12 @@ class FakeHelper {
         HANDLE companionEvent = nullptr;
         HANDLE output = nullptr;
         HANDLE outputEvent = nullptr;
+        HANDLE version = nullptr;
     };
 
     static void close(Slot& slot) {
-        for (HANDLE h :
-             {slot.input, slot.inputEvent, slot.companionEvent, slot.output, slot.outputEvent}) {
+        for (HANDLE h : {slot.input, slot.inputEvent, slot.companionEvent, slot.output,
+                         slot.outputEvent, slot.version}) {
             if (h != nullptr) CloseHandle(h);
         }
         slot = Slot{};
@@ -961,6 +964,30 @@ class FakeHelper {
         DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &out, 0, FALSE,
                         DUPLICATE_SAME_ACCESS);
         return out;
+    }
+
+    static HANDLE duplicateReadOnly(HANDLE h) {
+        HANDLE out = nullptr;
+        DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &out, FILE_MAP_READ, FALSE, 0);
+        return out;
+    }
+
+    static uint64_t tagFor(uint32_t serial) { return 0x5A7E111700000000ULL | serial; }
+
+    // The section the pinned SDK and its driver leave for this profile, so the
+    // adapter's plug check passes and the run reaches the pads.
+    static HANDLE versionSection(uint32_t serial, const std::string& profile) {
+        const bool composite = profile.find("-composite") != std::string::npos;
+        const bool xbox = profile.rfind("xbox-", 0) == 0;
+        namespace fx = satellite::hidmaestro::fixture;
+        const fx::VersionImage image =
+            composite ? fx::pinnedUsbipImage() : fx::pinnedDriverImage(tagFor(serial), xbox);
+        HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                            static_cast<DWORD>(image.size()), nullptr);
+        void* view = MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, image.size());
+        if (view != nullptr) std::memcpy(view, image.data(), image.size());
+        if (view != nullptr) UnmapViewOfFile(view);
+        return section;
     }
 
     static int64_t handleValue(HANDLE h) {
@@ -1000,13 +1027,13 @@ class FakeHelper {
         if (!satellite::jsonParse(request, j)) return R"({"ok":false})";
         const std::string op = satellite::jsonStr(j, "op");
         const auto serial = static_cast<uint32_t>(satellite::jsonInt(j, "serial", 0));
-        if (op == "plug") return plug(serial);
+        if (op == "plug") return plug(serial, satellite::jsonStr(j, "profile"));
         if (op == "unplug") unplug(serial);
         if (op == "shutdown") last = true;
         return R"({"ok":true})";
     }
 
-    std::string plug(uint32_t serial) {
+    std::string plug(uint32_t serial, const std::string& profile) {
         unplug(serial);
         Slot slot;
         slot.input = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
@@ -1016,6 +1043,7 @@ class FakeHelper {
         slot.output = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                          static_cast<DWORD>(hm::OUTPUT_SECTION_SIZE), nullptr);
         slot.outputEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        slot.version = versionSection(serial, profile);
         satellite::JsonOut reply;
         reply["ok"] = true;
         reply["index"] = serial;
@@ -1024,6 +1052,9 @@ class FakeHelper {
         reply["companionEvent"] = handleValue(duplicate(slot.companionEvent));
         reply["output"] = handleValue(duplicate(slot.output));
         reply["outputEvent"] = handleValue(duplicate(slot.outputEvent));
+        reply["version"] = handleValue(duplicateReadOnly(slot.version));
+        reply["identityTag"] = tagFor(serial);
+        reply["usbip"] = profile.find("-composite") != std::string::npos;
         live_[serial] = slot;
         plugs_++;
         return satellite::jsonDump(reply);
@@ -1131,10 +1162,10 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
     const lockstats::Snapshot beforeRun = lockstats::snapshot();
     {
         ViGEmAdapter vigem;
-        HidMaestroAdapter hidMaestro(provisioner, controllerAudioEnabled);
+        LogAdapter log;
+        HidMaestroAdapter hidMaestro(provisioner, log, controllerAudioEnabled);
         satellite::GamepadMux mux({&vigem, &hidMaestro});
         ClientAdapter client;
-        LogAdapter log;
         satellite::audio::OpusCodecFactory codecs;
         SessionService svc(mux, client, log, deriveSessionKey, &codecs, productionBarrier());
         svc.setAudioPolicy(audioPolicyFromConfig);

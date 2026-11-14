@@ -1247,6 +1247,11 @@ satellite_add_pure_test(test_hidmaestro_wire tests/test_hidmaestro_wire.cpp
 satellite_add_pure_test(test_hidmaestro_report tests/test_hidmaestro_report.cpp
     src/platform/windows/hidmaestro_wire.cpp)
 
+# The version section and the policy that decides whether Satellite writes a
+# HIDMaestro controller at all. check-sdk holds its constants, and the helper's
+# own reader's, to the pinned SDK's.
+satellite_add_pure_test(test_hidmaestro_version tests/test_hidmaestro_version.cpp)
+
 # The controller-audio rings between the helper and satellite. Same rule as the
 # driver's rings: no version field, so the suite pins the SIZES and the seqlock
 # protocol the C# producer on the other side reimplements.

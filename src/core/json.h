@@ -117,6 +117,20 @@ inline bool jsonTryI64(const Json& j, const char* key, int64_t& out) {
     return true;
 }
 
+inline bool jsonTryU64(const Json& j, const char* key, uint64_t& out) {
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_number_unsigned()) return false;
+    out = it->get<uint64_t>();
+    return true;
+}
+
+inline bool jsonTryNumber(const Json& j, const char* key, double& out) {
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_number()) return false;
+    out = it->get<double>();
+    return true;
+}
+
 inline Json jsonObject(const Json& j, const char* key) {
     auto it = j.find(key);
     return (it != j.end() && it->is_object()) ? *it : Json::object();

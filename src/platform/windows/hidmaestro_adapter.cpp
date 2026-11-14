@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "hidmaestro_adapter.h"
 
+#include "driver_pins.h"
 #include "pointer_inject.h"
 
 #include <algorithm>
@@ -30,11 +31,27 @@ class InputClaim {
     std::atomic_flag& busy_;
 };
 
+// The SDK Satellite ships and the driver releases it has verified, as the
+// version section carries them.
+hm::VersionPins shippedPins() {
+    return {hm::parseReleaseVersion(SATELLITE_HIDMAESTRO_SDK_VERSION),
+            hm::parseReleaseList(SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES)};
+}
+
+hm::VersionExpectation expectationFor(const hm::ProvisionResult& r, const hm::VersionPins& pins) {
+    const hm::ProfileBackend backend =
+        r.usbip ? hm::ProfileBackend::Usbip : hm::ProfileBackend::Umdf2;
+    return {pins, backend, r.companion, r.identityTag};
+}
+
+std::string serialLabel(uint32_t serial) { return "Serial " + std::to_string(serial); }
+
 } // namespace
 
-HidMaestroAdapter::HidMaestroAdapter(hm::IHidMaestroProvisioner& provisioner,
+HidMaestroAdapter::HidMaestroAdapter(hm::IHidMaestroProvisioner& provisioner, ILogPort& log,
                                      AudioEnabledFn audioEnabled)
-    : provisioner_(provisioner), audioEnabled_(std::move(audioEnabled)) {}
+    : provisioner_(provisioner), log_(log), audioEnabled_(std::move(audioEnabled)),
+      versionPins_(shippedPins()) {}
 
 HidMaestroAdapter::~HidMaestroAdapter() {
     closeBus();
@@ -98,9 +115,10 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     if (slot.speakerView) UnmapViewOfFile(const_cast<uint8_t*>(slot.speakerView));
     if (slot.hapticView) UnmapViewOfFile(const_cast<uint8_t*>(slot.hapticView));
     if (slot.micView) UnmapViewOfFile(slot.micView);
+    if (slot.versionView) UnmapViewOfFile(const_cast<uint8_t*>(slot.versionView));
     for (HANDLE h : {slot.inputSection, slot.inputEvent, slot.companionEvent, slot.outputSection,
                      slot.outputEvent, slot.speakerSection, slot.speakerEvent, slot.hapticSection,
-                     slot.hapticEvent, slot.micSection, slot.micEvent}) {
+                     slot.hapticEvent, slot.micSection, slot.micEvent, slot.versionSection}) {
         if (h) CloseHandle(h);
     }
     slot.inputView = nullptr;
@@ -122,6 +140,15 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.switchMotion = {};
     slot.fingerDown0 = slot.fingerDown1 = false;
     slot.lastSonySubmit = {};
+    slot.versionView = nullptr;
+    slot.versionSection = nullptr;
+    slot.versionExpectation = {};
+    slot.loggedDriver = {};
+    slot.pendingSince = {};
+    slot.halfDeadline = {};
+    slot.versionReported = false;
+    slot.companion = false;
+    slot.gate.store(hm::WriteGate::Open, std::memory_order_relaxed);
 }
 
 // The audio-carrying persona when asked for, else, or
@@ -138,6 +165,7 @@ bool HidMaestroAdapter::adoptProvisionedLocked(IoSlot& slot, const hm::Provision
     slot.inputSection = toHandle(r.inputSection);
     slot.inputEvent = toHandle(r.inputEvent);
     slot.companionEvent = toHandle(r.companionEvent);
+    slot.companion = r.companion;
     slot.outputSection = toHandle(r.outputSection);
     slot.outputEvent = toHandle(r.outputEvent);
     slot.inputView = static_cast<uint8_t*>(MapViewOfFile(
@@ -147,9 +175,26 @@ bool HidMaestroAdapter::adoptProvisionedLocked(IoSlot& slot, const hm::Provision
             MapViewOfFile(slot.outputSection, FILE_MAP_READ, 0, 0, hm::OUTPUT_SECTION_SIZE));
     }
     attachAudioLocked(slot, r);
+    attachVersionLocked(slot, r);
     if (slot.inputView != nullptr) return true;
     releaseSlotLocked(slot);
     return false;
+}
+
+// Caller holds busMtx_. Read-only: the helper duplicated a FILE_MAP_READ
+// handle, so this process cannot write the section. Windows maps a shorter
+// section's whole page, zeros past its end, so the view's size checks nothing;
+// the policy refuses the zero tag a short section reads.
+void HidMaestroAdapter::attachVersionLocked(IoSlot& slot, const hm::ProvisionResult& r) {
+    slot.versionSection = toHandle(r.versionSection);
+    if (slot.versionSection) {
+        slot.versionView = static_cast<const uint8_t*>(
+            MapViewOfFile(slot.versionSection, FILE_MAP_READ, 0, 0, hm::VERSION_SECTION_SIZE));
+    }
+    slot.versionExpectation = expectationFor(r, versionPins_);
+    slot.loggedDriver = {};
+    slot.halfDeadline = hm::scaleHalfDeadline(versionDeadline_, r.timeoutScale);
+    slot.versionReported = r.versionReported;
 }
 
 // Caller holds busMtx_. One worker per lane the persona materialized.
@@ -181,32 +226,102 @@ bool HidMaestroAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) 
     if (wantAudio && before) before();
     hm::ProvisionResult r;
     if (!provisionSlot(serial, identity, wantAudio, r)) return false;
-
-    bool adopted = false;
-    bool composite = false;
-    {
-        std::lock_guard<TrackedMutex> lk(busMtx_);
-        IoSlot& slot = io_[serial];
-        slot.identity = identity;
-        adopted = adoptProvisionedLocked(slot, r);
-        if (adopted) {
-            // Neutral first frame so the pad isn't a stuck corner pre-first-report
-            // (GamepadReport{} is centred on the signed XUSB scale; the Sony packers
-            // centre their byte sticks from it).
-            packAndWrite(slot);
-            slot.plugged.store(true, std::memory_order_release);
-            startSlotWorkersLocked(serial, slot);
-            composite = slot.speakerView != nullptr;
-        }
-    }
-    if (!adopted) {
-        provisioner_.deprovision(serial);
+    if (!adoptSlot(serial, identity, r) || !admitSlot(serial)) {
+        discardSlot(serial);
+        // A composite that materialized and was refused may already have been
+        // promoted to the default endpoint, so the guard still watches.
+        if (r.speakerSection != 0 && after) after();
         return false;
     }
+    const bool composite = publishSlot(serial);
     // Only when the composite really materialized: a persona that fell back to
     // input-only created no endpoint, so there is nothing to watch for.
     if (composite && after) after();
     return true;
+}
+
+bool HidMaestroAdapter::adoptSlot(uint32_t serial, GamepadIdentity identity,
+                                  const hm::ProvisionResult& r) {
+    std::lock_guard<TrackedMutex> lk(busMtx_);
+    IoSlot& slot = io_[serial];
+    slot.identity = identity;
+    return adoptProvisionedLocked(slot, r);
+}
+
+// The slot is not published yet, so no other thread reads it. A pad whose
+// driver has not written its half is plugged held rather than refused: the
+// SDK's create returns that way when its own wait for the HID child ran out.
+bool HidMaestroAdapter::admitSlot(uint32_t serial) {
+    IoSlot& slot = io_[serial];
+    const hm::VersionCheck check =
+        hm::checkVersionSection(slot.versionView, slot.versionExpectation);
+    const hm::WriteGate gate = hm::writeGateFor(check.verdict);
+    slot.gate.store(gate, std::memory_order_relaxed);
+    switch (gate) {
+    case hm::WriteGate::Refused:
+        logRefusal(serial, slot, check, "the plug is refused and nothing was written to it");
+        return false;
+    case hm::WriteGate::Held:
+        slot.pendingSince = std::chrono::steady_clock::now();
+        log_.logMsg(LogLevel::INFO, "hidmaestro",
+                    serialLabel(serial) + " " + hm::versionVerdictReason(check.verdict) +
+                        "; Satellite holds its input until the half is written");
+        return true;
+    case hm::WriteGate::Open:
+        noteDriver(serial, slot, check);
+        return true;
+    }
+    return false;
+}
+
+bool HidMaestroAdapter::publishSlot(uint32_t serial) {
+    std::lock_guard<TrackedMutex> lk(busMtx_);
+    IoSlot& slot = io_[serial];
+    // Neutral first frame so the pad isn't a stuck corner pre-first-report
+    // (GamepadReport{} is centred on the signed XUSB scale; the Sony packers
+    // centre their byte sticks from it).
+    packAndWrite(slot);
+    slot.plugged.store(true, std::memory_order_release);
+    startSlotWorkersLocked(serial, slot);
+    return slot.speakerView != nullptr;
+}
+
+void HidMaestroAdapter::discardSlot(uint32_t serial) {
+    {
+        std::lock_guard<TrackedMutex> lk(busMtx_);
+        releaseSlotLocked(io_[serial]);
+    }
+    provisioner_.deprovision(serial);
+}
+
+void HidMaestroAdapter::logRefusal(uint32_t serial, const IoSlot& slot,
+                                   const hm::VersionCheck& check, const char* consequence) const {
+    const bool noSection = check.verdict == hm::VersionVerdict::NoSection;
+    const bool helperTooOld = noSection && !slot.versionReported;
+    const std::string facts =
+        noSection ? std::string() : " (" + hm::describeVersionSection(check.section) + ")";
+    const char* reason = helperTooOld ? "has a helper too old to report its version section"
+                                      : hm::versionVerdictReason(check.verdict);
+    log_.logMsg(LogLevel::ERR, "hidmaestro",
+                serialLabel(serial) + " " + reason + "; " + consequence + facts);
+}
+
+// One line per change of the unverified release a pad runs on, and one when
+// it is back on a verified one. loggedDriver holds the unverified release
+// last named, or nothing while the pad runs on verified ones: a change between
+// two verified releases says nothing.
+void HidMaestroAdapter::noteDriver(uint32_t serial, IoSlot& slot, const hm::VersionCheck& check) {
+    const bool unverified = check.verdict == hm::VersionVerdict::WriteUnverifiedDriver;
+    const hm::SectionVersion running = check.section.driverVersion;
+    const hm::SectionVersion noted = unverified ? running : hm::SectionVersion{};
+    if (noted == slot.loggedDriver) return;
+    slot.loggedDriver = noted;
+    const std::string release =
+        serialLabel(serial) + " runs on HIDMaestro driver " + hm::describeSectionVersion(running);
+    log_.logMsg(unverified ? LogLevel::WARN : LogLevel::INFO, "hidmaestro",
+                unverified ? release + ", a release Satellite has not verified; it serves "
+                                       "protocol 4, so Satellite keeps writing it"
+                           : release + ", a release Satellite has verified");
 }
 
 // Caller holds busMtx_. Every failure here degrades to "no audio on this pad"
@@ -267,9 +382,18 @@ bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
     return provisioner_.deprovision(serial);
 }
 
+// A refused pad still holds its controller until it is unplugged, but reads as
+// gone: that is the failure the dashboard shows.
 bool HidMaestroAdapter::isDevicePlugged(uint32_t serial) const {
     if (!isValidSerial(serial)) return false;
-    return io_[serial].plugged.load(std::memory_order_acquire);
+    const IoSlot& slot = io_[serial];
+    const bool plugged = slot.plugged.load(std::memory_order_acquire);
+    return plugged && slot.gate.load(std::memory_order_relaxed) != hm::WriteGate::Refused;
+}
+
+// The output and audio rings of a refused pad may now be another controller's.
+bool HidMaestroAdapter::deliversFrom(uint32_t serial) const {
+    return io_[serial].gate.load(std::memory_order_relaxed) != hm::WriteGate::Refused;
 }
 
 // Microseconds since `last`, which becomes now; 0 on the first call so the
@@ -290,13 +414,29 @@ static void advanceDs5Clocks(hm::Ds5InputState& ds5, std::chrono::steady_clock::
     ds5.seq++;
 }
 
-uint16_t HidMaestroAdapter::packFrame(IoSlot& slot, bool& withGip) {
-    withGip = false;
+// The XUSB-shaped pad state each identity merges its input into.
+static const GamepadReport& mergedPad(const GamepadIdentity identity, const Ds4InputState& ds4,
+                                      const hm::Ds5InputState& ds5,
+                                      const InputReport& switchInput) {
+    switch (identity) {
+    case GamepadIdentity::Xbox:
+    case GamepadIdentity::DS4:
+        return ds4.pad;
+    case GamepadIdentity::DualSense:
+    case GamepadIdentity::DualSenseEdge:
+        return ds5.pad;
+    case GamepadIdentity::SwitchPro:
+        return switchInput.pad;
+    }
+    return ds4.pad;
+}
+
+uint16_t HidMaestroAdapter::packFrame(IoSlot& slot) {
+    if (slot.companion)
+        hm::packGip(mergedPad(slot.identity, slot.ds4, slot.ds5, slot.switchInput), slot.gip);
     switch (slot.identity) {
     case GamepadIdentity::Xbox:
         hm::packX360Report(slot.ds4.pad, slot.payload);
-        hm::packGip(slot.ds4.pad, slot.gip);
-        withGip = true;
         return hm::X360_REPORT_BYTES;
     case GamepadIdentity::DS4: {
         // The DS4 timestamp ticks at 16/3 us; the frame counter is six bits.
@@ -322,13 +462,14 @@ uint16_t HidMaestroAdapter::packFrame(IoSlot& slot, bool& withGip) {
 }
 
 bool HidMaestroAdapter::packAndWrite(IoSlot& slot) {
-    if (slot.inputView == nullptr) return false;
-    bool withGip = false;
-    const uint16_t len = packFrame(slot, withGip);
-    if (!hm::writeInputFrame(slot.inputView, slot.payload, len, withGip ? slot.gip : nullptr))
+    const bool open = slot.gate.load(std::memory_order_relaxed) == hm::WriteGate::Open;
+    if (slot.inputView == nullptr || !open) return false;
+    const uint16_t len = packFrame(slot);
+    if (!hm::writeInputFrame(slot.inputView, slot.payload, len,
+                             slot.companion ? slot.gip : nullptr))
         return false;
     if (slot.inputEvent) SetEvent(slot.inputEvent);
-    if (withGip && slot.companionEvent) SetEvent(slot.companionEvent);
+    if (slot.companion && slot.companionEvent) SetEvent(slot.companionEvent);
     return true;
 }
 
@@ -373,6 +514,89 @@ void HidMaestroAdapter::refreshIdleInput() {
         if (now - slot.lastSonySubmit >= idleReportInterval_) packAndWrite(slot);
         slot.inputBusy.clear(std::memory_order_release);
     }
+}
+
+void HidMaestroAdapter::recheckDrivers() {
+    std::lock_guard<TrackedMutex> lk(busMtx_);
+    const auto now = std::chrono::steady_clock::now();
+    for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
+        IoSlot& slot = io_[serial];
+        const bool plugged = slot.plugged.load(std::memory_order_relaxed);
+        const bool refused = slot.gate.load(std::memory_order_relaxed) == hm::WriteGate::Refused;
+        if (plugged && !refused) recheckSlotLocked(serial, slot, now);
+    }
+}
+
+// Caller holds busMtx_. A missing half is timed from the first check that
+// missed it, the plug's included.
+void HidMaestroAdapter::recheckSlotLocked(uint32_t serial, IoSlot& slot,
+                                          std::chrono::steady_clock::time_point now) {
+    const hm::VersionCheck check =
+        hm::checkVersionSection(slot.versionView, slot.versionExpectation);
+    const bool pending = check.verdict == hm::VersionVerdict::Pending;
+    if (!pending) {
+        slot.pendingSince = {};
+    } else if (slot.pendingSince == std::chrono::steady_clock::time_point{}) {
+        slot.pendingSince = now;
+    }
+    const bool waitedOut = pending && now - slot.pendingSince >= slot.halfDeadline;
+    const hm::VersionCheck settled{hm::settleVersionVerdict(check.verdict, waitedOut),
+                                   check.section};
+    const hm::WriteGate was = slot.gate.load(std::memory_order_relaxed);
+    switch (hm::writeGateFor(settled.verdict)) {
+    case hm::WriteGate::Refused:
+        refuseSlotLocked(serial, slot, settled);
+        return;
+    case hm::WriteGate::Held:
+        if (was == hm::WriteGate::Open) holdSlotLocked(serial, slot);
+        return;
+    case hm::WriteGate::Open:
+        if (was == hm::WriteGate::Held && !openSlotLocked(serial, slot)) return;
+        noteDriver(serial, slot, settled);
+        return;
+    }
+}
+
+// Caller holds busMtx_. Each flag is tried once, as refreshIdleInput does: a
+// pad whose submit holds one keeps its gate until the next tick, rather than
+// this spinning under busMtx_. With both held, a frame or mic window in flight
+// has finished, and every write after them sees the new gate.
+bool HidMaestroAdapter::changeGateLocked(IoSlot& slot, hm::WriteGate gate) {
+    if (slot.inputBusy.test_and_set(std::memory_order_acquire)) return false;
+    if (slot.micBusy.test_and_set(std::memory_order_acquire)) {
+        slot.inputBusy.clear(std::memory_order_release);
+        return false;
+    }
+    slot.gate.store(gate, std::memory_order_relaxed);
+    if (gate == hm::WriteGate::Open) packAndWrite(slot);
+    slot.micBusy.clear(std::memory_order_release);
+    slot.inputBusy.clear(std::memory_order_release);
+    return true;
+}
+
+void HidMaestroAdapter::refuseSlotLocked(uint32_t serial, IoSlot& slot,
+                                         const hm::VersionCheck& check) {
+    if (!changeGateLocked(slot, hm::WriteGate::Refused)) return;
+    logRefusal(serial, slot, check,
+               "Satellite writes nothing more to it and relays nothing from it");
+}
+
+void HidMaestroAdapter::holdSlotLocked(uint32_t serial, IoSlot& slot) {
+    if (!changeGateLocked(slot, hm::WriteGate::Held)) return;
+    log_.logMsg(LogLevel::WARN, "hidmaestro",
+                serialLabel(serial) +
+                    "'s driver half of the version section is gone; Satellite holds its input "
+                    "until the driver writes it again");
+}
+
+// The state the pad was held with goes out at once, as its first frame.
+bool HidMaestroAdapter::openSlotLocked(uint32_t serial, IoSlot& slot) {
+    if (!changeGateLocked(slot, hm::WriteGate::Open)) return false;
+    log_.logMsg(LogLevel::INFO, "hidmaestro",
+                serialLabel(serial) +
+                    "'s driver has written its half of the version section; Satellite writes "
+                    "it now");
+    return true;
 }
 
 bool HidMaestroAdapter::submitMotion(uint32_t serial, const MotionReport& report) {
@@ -525,11 +749,16 @@ bool HidMaestroAdapter::hasMicEndpoint(uint32_t serial) const {
 // endpoint. Rate-converted here (the endpoint is 16 kHz on the DualShock 4 v2
 // persona) and handed to the helper as endpoint-rate mono; the helper only has
 // to spread it across the endpoint's channels. False = this pad has no mic
-// endpoint, which is a normal state and not an error the sender should act on.
+// endpoint, which is a normal state and not an error the sender should act on,
+// or its version section stopped its writes, and a refused pad then reads as
+// unplugged. The gate is read under the mic flag, which every gate change
+// holds, so no window follows a hold or a refusal.
 bool HidMaestroAdapter::submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) {
     if (!isValidSerial(serial) || mono48k == nullptr || samples == 0) return false;
     IoSlot& slot = io_[serial];
     if (!slot.plugged.load(std::memory_order_acquire) || slot.micView == nullptr) return false;
+    const InputClaim claim(slot.micBusy);
+    if (slot.gate.load(std::memory_order_relaxed) != hm::WriteGate::Open) return false;
 
     slot.micScratch.clear();
     slot.micResampler.process(mono48k, samples, slot.micScratch);
@@ -647,7 +876,8 @@ void HidMaestroAdapter::outputLoop(uint32_t serial, HANDLE cancel, uint32_t last
         hm::OutputPacket pkt;
         while (hm::readNextOutputPacket(view, lastSeq, pkt)) {
             const hm::DecodedOutput decoded = hm::decodeOutputPacket(identity, pkt);
-            if (carriesAnything(decoded)) deliverDecodedOutput(serial, decoded, triggerEffects);
+            const bool deliver = carriesAnything(decoded) && deliversFrom(serial);
+            if (deliver) deliverDecodedOutput(serial, decoded, triggerEffects);
         }
     }
 }
@@ -729,7 +959,7 @@ void HidMaestroAdapter::audioLoop(uint32_t serial, AudioLane lane, HANDLE cancel
             // A batch stamped with someone else's serial means the section was
             // aliased or reused; dropping it is safer than playing it out on
             // the wrong controller's stream.
-            if (pkt.serial != serial) continue;
+            if (pkt.serial != serial || !deliversFrom(serial)) continue;
             const size_t frames = pkt.sampleCount / AUDIO_SPEAKER_CHANNELS;
             if (frames == 0) continue;
             pcm.clear();

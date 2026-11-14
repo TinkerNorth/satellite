@@ -31,6 +31,25 @@ struct ProvisionResult {
     uint64_t outputSection = 0;
     uint64_t outputEvent = 0;
 
+    // Global\HIDMaestroVersion<transportIndex>, read-only. The adapter reads it
+    // before its first write and on every maintenance recheck; zero refuses.
+    uint64_t versionSection = 0;
+    // Whether the helper's reply named the section at all: one that predates
+    // it is a helper too old for this satellite, not a missing section.
+    bool versionReported = false;
+    // The tag the SDK writes for this controller's identity key, as the helper
+    // derives it (helper/hidmaestro-core IdentityTags).
+    uint64_t identityTag = 0;
+    // A composite persona: the SDK's USB/IP device serves it, so no driver
+    // writes a half of the version section and the SDK writes no tag.
+    bool usbip = false;
+    // The SDK profile reaches XInput through an XUSB companion
+    // ("xinput":{"via":"xusbCompanion"}), which writes its own pair.
+    bool companion = false;
+    // HIDMAESTRO_TIMEOUT_SCALE as the helper's SDK resolved it, which scales
+    // the SDK's own start waits and so the adapter's wait for a driver half.
+    double timeoutScale = 1.0;
+
     // Controller-audio rings (hidmaestro_audio_wire.h), present only for a
     // composite persona that actually materialized its USB-audio function.
     // Zero on every other profile, and on a composite whose helper could not

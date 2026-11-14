@@ -377,7 +377,9 @@ own").
 ### Reaper
 
 Runs once per second via `svc.reapTimedOut()`. Teardown logic is
-inside SessionService, not in the receiver.
+inside SessionService, not in the receiver. Every 100 ms tick of the same
+thread also runs `svc.recheckDrivers()`, which lets a backend read again
+what it checked at plug (see "The version contract").
 
 ## HTTP Threads (Inbound HTTP Adapters)
 
@@ -966,8 +968,8 @@ adapters rely on them instead of locking against one another's calls:
    `submitRelativeMouse`, which is host-global, only from the pointer
    thread, which also carries out the maintenance tick's retries and the
    releases a topology change posts. None of them holds a service lock.
-   `refreshIdleInput` comes from the maintenance thread with no service
-   lock held.
+   `refreshIdleInput` and `recheckDrivers` come from the maintenance
+   thread with no service lock held.
    `isDevicePlugged`, `motionBackendOk`, `backendIdForSerial`,
    `isBusOpen` and `supportsMotionForType` may come from any thread.
 
@@ -992,8 +994,9 @@ rules, and the macOS adapter keeps the first and the last:
    `std::atomic_flag`: a submit takes it with `test_and_set(acquire)` in a
    spin that yields, since the only possible holder is the idle tick, for
    one pack and write; `refreshIdleInput` tries once and leaves a busy
-   slot to the next tick. Nothing else takes the flag, and it is never
-   held across a blocking call. The input section's seqlock has a single
+   slot to the next tick. Nothing else takes the flag but a driver
+   recheck that holds, opens or refuses the pad, and it is never held
+   across a blocking call. The input section's seqlock has a single
    writer by design, and two writers would publish frames that mix two
    reports under an even sequence number.
 4. The adapter-wide mutex still guards what it guarded before (the worker
@@ -1019,15 +1022,18 @@ in-flight IOCTL uses one after it is freed. `isDevicePlugged`,
 `busMtx_`, and so do the composite plug hooks. The hooks still never
 overlap, because plugs never do (guarantee 1), which is what keeps the
 default-endpoint guard's window from opening between its check and its
-snapshot. A plug adopts the provisioned handles and views, writes the
-neutral first frame, publishes `plugged` and starts the slot's workers in
-one short hold of `busMtx_`; a refused adoption deprovisions after the
-lock is released. An unplug
+snapshot. A plug adopts the provisioned handles and views in one short hold
+of `busMtx_`, checks the version section without it (the slot is not
+published yet; see "The version contract"), then writes the neutral first
+frame unless the check held the pad, publishes `plugged` and starts the
+slot's workers in a second short hold; a refused adoption or check
+deprovisions after the lock is released. An unplug
 clears `plugged`, stops the slot's workers (each join drops the lock) and
 unmaps the slot under `busMtx_`, then deprovisions without it.
 `refreshIdleInput` still holds `busMtx_` while it walks the slots, which
 keeps it off a slot an unplug or `closeBus` is unmapping, since both
-clear `plugged` under the same lock first. The input-section writers
+clear `plugged` under the same lock first; `recheckDrivers` walks them the
+same way. The input-section writers
 (`submitInput`, which `submitReport` forwards to, `submitMotion`,
 `submitTouchpad`, `submitBattery`, all through `packAndWrite`) take only
 the slot's flag; `submitMicAudioPcm` has a single writer, the mic worker,
@@ -1255,7 +1261,8 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
 
 - `platform/windows/hidmaestro_wire.{h,cpp}` — the shared-memory
   contract with the driver: input-section seqlock writer (with the GIP
-  slice for Xbox profiles and the mandatory ExtendedReportSize clear)
+  slice for a profile with an XUSB companion and the mandatory
+  ExtendedReportSize clear)
   and the 64-slot output-ring reader. No `<windows.h>`; pinned by
   `tests/test_hidmaestro_wire.cpp` on every CI platform.
 - `platform/windows/hidmaestro_report.h` — per-profile packers
@@ -1263,6 +1270,11 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
   codec with the Sony calibration-stub IMU rescale, DualSense, Switch
   Pro 0x30 body) and ring-packet decoding back to rumble/lightbar.
   Pinned by `tests/test_hidmaestro_report.cpp`.
+- `core/hidmaestro_version.h` — `Global\HIDMaestroVersion<N>`, the
+  64-byte section the SDK, the driver and the XUSB companion each write
+  a half of, and the policy that decides whether Satellite writes a
+  controller at all (see "The version contract"). Platform-free, so
+  `tests/test_hidmaestro_version.cpp` runs it on every lane.
 - `platform/windows/hidmaestro_adapter.{h,cpp}` — the I/O shell:
   per-serial slots holding mapped views + duplicated handles, the
   zero-allocation submit path (pack → seqlock write → SetEvent), and
@@ -1287,6 +1299,101 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
   thread makes of it, over a `GuardBackend` interface that the COM shell
   implements and the test fakes. No `<windows.h>`, pinned by
   `tests/test_audio_guard_worker.cpp` on every CI platform.
+
+### The version contract
+
+Before its first frame to a controller the adapter reads that controller's
+`Global\HIDMaestroVersion<N>` through a read-only handle the helper
+duplicates beside the input section's. The helper opens the section
+`FILE_MAP_READ` alone and finds its name in `HMController.SectionNames` by
+name. `judgeVersionSection` then decides:
+
+- The layout must be 1, the identity tag the one the SDK writes for the
+  identity key the helper created the controller with (the helper derives
+  it, `IdentityTags`), and the SDK half the pinned SDK's: protocols 4 to 4
+  and `driver_pins.h`'s SDK version.
+- The driver's error word must be 0, judged before its range, and 4 must lie
+  within `DriverProtocolMin` to `DriverProtocol`.
+- Where the profile reaches XInput through an XUSB companion, the
+  companion's error word must be 0, and a range it has written must hold 4.
+  The helper reads the companion off the SDK profile (`xinput.via` is
+  `xusbCompanion`, on the UMDF2 path) and reports it at plug; such a pad's
+  frames carry the companion's 14-byte slice and ring its doorbell. An
+  unwritten companion pair neither holds nor refuses: the companion writes
+  it only at its add, and the SDK's create restarts a companion that is
+  already running without waiting for it.
+- A composite persona (controller audio) runs on the SDK's USB/IP device,
+  which writes no driver half, and the SDK writes no tag for it, so only the
+  layout, the SDK half and a zero tag are judged. No HIDMaestro driver reads
+  a composite's input section: the SDK's own `UsbipEmulatedDevice`, inside
+  the helper, maps it (`UsbipEmulatedDevice.cs:323`) and reads it under the
+  seqlock (`TryReadInputFrame`, 582-638). The SDK half, which the same SDK
+  wrote, therefore speaks for the section's only reader. The missing tag
+  means the check cannot tell this controller's section from another's at
+  the same index; what covers that is that the section's one reader is the
+  device the helper created for this controller, so a frame reaches nothing
+  else.
+- A driver on a release `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES`
+  lists (`driver_pins.h`, 2.1.0 today) is written without comment. A release
+  it does not list that still serves 4 is written too, and the log names it
+  an unverified release once per change, and says so once when the pad is
+  back on a verified one. The SDK runs on such a driver itself, so refusing
+  it would stop Satellite's pads whenever another program installs a
+  different HIDMaestro driver. 2.1.0 changed driver behaviour without a
+  protocol bump, so only the version tells releases apart.
+
+A release joins the list once two things are done. First, its driver diff
+from a listed release has been reviewed for anything that touches the input
+or output sections, their seqlock, their events, `SeqNo` or the signal
+gate. Second, `satellite-hm-helper.exe selftest` has passed on hardware
+running it. The release of the driver the bundled SDK installs must be
+listed: `test_hidmaestro_version` holds `driver_pins.h`'s INF pin to the
+list, and check-sdk holds the INF the SDK embeds to it.
+
+A zero `DriverProtocol` means the driver's half is not written yet, which
+the SDK's create accepts when no HID child appeared within its own wait.
+Such a pad is plugged but held: nothing is written to it, its output still
+reaches the session, and the next recheck that finds the half written opens
+it and writes the state it was held with. A pad still held after
+`VERSION_HALF_DEADLINE_MS` is refused: 15 s, the SDK's own start budget (10 s
+for the HID child and 5 s for its start), times `HIDMAESTRO_TIMEOUT_SCALE`
+as the SDK resolves it in the helper's process. The helper may run as a
+service with its own environment, so it reads the variable itself with the
+SDK's rules (`SdkTimeoutScale`: an invariant-culture number within
+[0.1, 100], else 1) and reports the factor at plug. check-sdk holds that
+rule to the SDK's own `TimeoutScale.Factor`, which nothing else in the helper
+reflects into. A live pad whose half goes missing is held the same way.
+
+A refused plug is handed back before anything is written to the controller
+and fails like any other HIDMaestro plug: the mux tries the next backend
+that serves the type, and the apply result is `pluginFailed` when none does.
+A composite refused this way still arms the default-endpoint guard, since
+Windows may already have promoted its endpoint. One error line names the
+reason and what the section holds; a helper whose reply names no version
+section at all is named as too old for this satellite. Nothing signals a
+driver change, so the maintenance thread's `recheckDrivers` reads every
+plugged pad's section again on each 100 ms tick, under `busMtx_`. Every gate
+change (open, held, refused) is made while both the pad's input flag and its
+mic flag are held, each tried once: a pad whose submit holds one keeps its
+gate until the next tick rather than having the recheck spin under
+`busMtx_`. Every input write and every mic window checks the gate under its
+own flag, so neither a frame nor a mic window follows a hold or a refusal.
+The receive thread pays one relaxed load per frame for it. A refused pad is
+inert both ways: its output and audio workers deliver nothing more, since
+its rings may now be another controller's, and they consume nothing either,
+since every reader keeps its own cursor and maps its ring read-only. A
+refused pad reads as not plugged, which the dashboard shows as a failed
+controller, and the mic worker drops its audio without reporting a missing
+microphone endpoint. It keeps its controller until its unplug removes it.
+
+Nothing tells satellite.exe when a composite goes away on its own: a USB/IP
+connection that drops, or a device removed in Device Manager. The helper's
+pipe carries replies to satellite.exe's requests and nothing else. The SDK
+raises no public event for a removed device: its device-removed action and
+its USB/IP reattach hook are internal. And a composite's section has no
+driver half for the recheck to see go. Such a pad stays plugged and written
+until its unplug. A UMDF2 pad is caught only when the helper's own SDK
+sweeps its device away, which zeroes its `DriverProtocol`.
 
 ### Controller audio, and the one kernel driver
 

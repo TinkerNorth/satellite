@@ -87,6 +87,7 @@ internal static class ProfileCommands
         if (copy.VendorId != original.VendorId || copy.ProductId != original.ProductId) return "VID/PID differ from the catalog's";
         if (copy.Connection != original.Connection) return "the connection differs from the catalog's";
         if (copy.RequiresUsbipBackend != original.RequiresUsbipBackend) return "the USB transport need differs from the catalog's";
+        if (copy.XInput?.Via != original.XInput?.Via) return "the XInput presentation differs from the catalog's";
         if (copy.InputReportSize != original.InputReportSize) return "the input report size differs from the catalog's";
         return null;
     }

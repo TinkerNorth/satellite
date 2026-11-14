@@ -78,6 +78,12 @@ class IGamepadPort {
     // no-op: XInput and evdev consumers keep state, not streams.
     virtual void refreshIdleInput() {}
 
+    // The maintenance tick again, off the hot path. A backend whose driver can
+    // change under a plugged pad, with nothing to say so, reads again what it
+    // checked at plug, and holds or stops a pad that no longer passes. Default
+    // no-op.
+    virtual void recheckDrivers() {}
+
     // Rumble sink, invoked from a platform worker thread. Must stay callable
     // until the adapter is destroyed (SessionService outlives it).
     using RumbleCallback = std::function<void(uint32_t serial, const RumbleReport& report)>;
