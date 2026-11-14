@@ -10,7 +10,8 @@
     which holds what the helper restates of the SDK's internals to the SDK by
     reflection: the identity tag satellite.exe's version-section check expects,
     the SDK version the SDK writes into that section, that section's layout as
-    src/core/hidmaestro_version.h states it, and the XUSB companion and timeout
+    src/core/hidmaestro_version.h states it, that the driver the SDK installs
+    is a release driver_pins.h has verified, and the XUSB companion and timeout
     scale the helper reports at plug. This checks the artifact the installer
     ships, after `dotnet publish`, where fetch-redist.ps1 checks the staged SDK
     before it.
@@ -46,9 +47,9 @@ if (-not $VersionHeader) { $VersionHeader = Join-Path $RepoRoot 'src\core\hidmae
 if (-not (Test-Path $Helper)) { throw "$Helper not found; run dotnet publish helper/hidmaestro first" }
 
 $SdkPin = (Get-DriverPins $PinsHeader)[$HmSdkVersionPin]
-& $Helper check-sdk --sdk-pin $SdkPin --version-header $VersionHeader
+& $Helper check-sdk --pins-header $PinsHeader --version-header $VersionHeader
 if ($LASTEXITCODE -ne 0) { throw "$Helper check-sdk exited $LASTEXITCODE" }
-Write-Host "[OK]   IdentityTags is the pinned SDK's DeviceIdentity, the SDK writes SDK $SdkPin into a version section laid out as $VersionHeader says, and the helper reads companions and the timeout scale as the SDK does"
+Write-Host "[OK]   IdentityTags is the pinned SDK's DeviceIdentity, the SDK writes SDK $SdkPin into a version section laid out as $VersionHeader says, the driver it installs is a verified release, and the helper reads companions and the timeout scale as the SDK does"
 
 $Lines = @(& $Helper sdk-version)
 if ($LASTEXITCODE -ne 0) { throw "$Helper sdk-version exited $LASTEXITCODE" }

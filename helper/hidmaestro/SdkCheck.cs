@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics;
 using System.Reflection;
 using HIDMaestro;
 using HIDMaestro.Internal;
@@ -12,13 +13,18 @@ namespace Satellite.HmHelper;
 // which driver_pins.h pins for satellite.exe's check of that section; that
 // section's size, offsets, layout and protocols as src/core/hidmaestro_version.h
 // and VersionSection state them; the XUSB companion the helper reads off each
-// profile Satellite plugs; and the timeout scale the helper reports.
-// verify-helper-sdk.ps1 runs it on the published helper. A reflection target
-// the SDK no longer has fails it, so an SDK that renames one stops the publish.
+// profile Satellite plugs; that the driver the SDK installs is a release
+// driver_pins.h has verified; and SdkTimeoutScale, against the SDK's own
+// TimeoutScale.Factor in child processes. verify-helper-sdk.ps1 runs it on the
+// published helper. A reflection target the SDK no longer has fails it, so an
+// SDK that renames one stops the publish. Nothing outside this check reflects
+// into the SDK's internals.
 internal static class SdkCheck
 {
     private const string IdentityTypeName = "HIDMaestro.Internal.DeviceIdentity";
     private const string SharedMemoryTypeName = "HIDMaestro.Internal.SharedMemoryIO";
+    private const string TimeoutScaleTypeName = "HIDMaestro.Internal.TimeoutScale";
+    public const string TimeoutScaleChildCommand = "check-sdk-timeout-scale";
     private const BindingFlags StaticMembers = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
     private static readonly uint[] Serials = { 1, 2, 9, 10, 16 };
     private static readonly string[] UpstreamTokens = { "HM_0000", "HM_0123456789ABCDEF" };
@@ -48,8 +54,16 @@ internal static class SdkCheck
         ("VERSION_OFFSET_COMPANION_CONFIG_ERROR", "VERSION_COMPANION_CONFIG_ERROR_OFFSET", VersionSection.CompanionConfigErrorOffset),
     };
 
-    public static int Run(string sdkPin, string versionHeader)
+    // HIDMAESTRO_TIMEOUT_SCALE in each child: unset, blank, in range at both
+    // ends, below and above it, not a number, comma-decimal, NaN and overflow.
+    private static readonly string?[] TimeoutScaleValues =
+        { null, "", "  ", "2", "2.5", "0.1", "100", "0.05", "100.5", "abc", "2,5", "NaN", "1e400" };
+
+    public static int Run(string pinsHeader, string versionHeader)
     {
+        IReadOnlyDictionary<string, string> pins = DriverPins.Parse(File.ReadAllText(pinsHeader));
+        string sdkPin = Pin(pins, DriverPins.SdkVersion, pinsHeader);
+        IReadOnlyList<Version> verified = DriverPins.Releases(Pin(pins, DriverPins.VerifiedDriverReleases, pinsHeader));
         int failures = 0;
         void Check(bool ok, string what)
         {
@@ -74,8 +88,12 @@ internal static class SdkCheck
         CheckVersionConstants(CppConstants.Parse(File.ReadAllText(versionHeader)), versionHeader, Check);
         CheckCompanions(Check);
 
-        double scale = SdkTimeouts.Scale;
-        Check(scale >= 0.1 && scale <= 100.0, $"the helper reads the SDK's {SdkTimeouts.TypeName}.{SdkTimeouts.FieldName}, {scale} in this process");
+        string inf = SdkInf.EmbeddedDriverVersion(typeof(HMContext).Assembly);
+        Version installs = Release(Version.Parse(inf));
+        Check(verified.Contains(installs),
+              $"the pinned SDK installs HIDMaestro driver {installs} (hidmaestro.inf DriverVer {inf}), and {pinsHeader} verifies {string.Join(", ", verified)}");
+
+        CheckTimeoutScale(Check);
 
         Console.WriteLine(failures == 0 ? "check-sdk: all passed" : $"check-sdk: {failures} failed");
         return failures == 0 ? 0 : 1;
@@ -140,6 +158,68 @@ internal static class SdkCheck
             check(reported == created,
                   $"{id}: the helper reports {(reported ? "an XUSB companion" : "no XUSB companion")}, and the SDK creates {(created ? "one" : "none")}");
         }
+    }
+
+    private static string Pin(IReadOnlyDictionary<string, string> pins, string name, string pinsHeader) =>
+        pins.TryGetValue(name, out string? value)
+            ? value
+            : throw new InvalidOperationException($"{pinsHeader} defines no {name}");
+
+    // The SDK reads the variable once, at its TimeoutScale's type init, so each
+    // value is compared in a child process of its own. The field is looked up
+    // here first too, so an SDK without it fails before any child runs.
+    private static void CheckTimeoutScale(Action<bool, string> check)
+    {
+        TimeoutScaleFactor();
+        foreach (string? value in TimeoutScaleValues)
+        {
+            (int exit, string said) = RunTimeoutScaleChild(value);
+            string named = value == null ? "unset" : $"'{value}'";
+            check(exit == 0, $"HIDMAESTRO_TIMEOUT_SCALE {named}: {said}");
+        }
+    }
+
+    // A child's half: the SDK's Factor under this process's variable, against
+    // SdkTimeoutScale. Exit 0 when they agree, NaN agreeing with NaN.
+    public static int TimeoutScaleChild()
+    {
+        double sdk = TimeoutScaleFactor().GetValue(null) is double factor
+            ? factor
+            : throw new InvalidOperationException($"{TimeoutScaleTypeName}.Factor is no longer a double");
+        double helper = SdkTimeoutScale.Resolve(Environment.GetEnvironmentVariable(SdkTimeoutScale.Variable));
+        Console.WriteLine($"the SDK's {TimeoutScaleTypeName}.Factor is {sdk:R}, SdkTimeoutScale.Resolve {helper:R}");
+        return sdk.Equals(helper) ? 0 : 1;
+    }
+
+    private static FieldInfo TimeoutScaleFactor() =>
+        SdkType(TimeoutScaleTypeName).GetField("Factor", StaticMembers)
+        ?? throw new InvalidOperationException($"the pinned SDK's {TimeoutScaleTypeName} has no Factor");
+
+    // This program again: the helper's own executable, or the dotnet host and
+    // the assembly it runs.
+    private static (int Exit, string Said) RunTimeoutScaleChild(string? value)
+    {
+        string process = Environment.ProcessPath ?? throw new InvalidOperationException("this process has no path to run again");
+        var start = new ProcessStartInfo(process)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        bool hosted = string.Equals(Path.GetFileNameWithoutExtension(process), "dotnet", StringComparison.OrdinalIgnoreCase);
+        if (hosted) start.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
+        start.ArgumentList.Add(TimeoutScaleChildCommand);
+        if (value == null) start.Environment.Remove(SdkTimeoutScale.Variable);
+        else start.Environment[SdkTimeoutScale.Variable] = value;
+        using Process child = Process.Start(start) ?? throw new InvalidOperationException($"could not start {process}");
+        Task<string> error = child.StandardError.ReadToEndAsync();
+        string said = child.StandardOutput.ReadToEnd();
+        if (!child.WaitForExit(60_000))
+        {
+            child.Kill();
+            return (-1, "the child did not exit within 60 s");
+        }
+        return (child.ExitCode, (said + error.Result).Trim());
     }
 
     private static int IntConstant(Type type, string name)

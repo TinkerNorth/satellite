@@ -30,14 +30,20 @@ namespace Satellite.HmHelper;
 // controller's identity key, and `usbip` says the SDK's USB/IP device serves a
 // composite persona, which writes no driver half. `companion` says the profile
 // reaches XInput through an XUSB companion, which writes its own pair, and
-// `timeoutScale` is HIDMAESTRO_TIMEOUT_SCALE as this process's SDK resolved it,
-// which scales Satellite's wait for the driver half as it scales the SDK's.
+// `timeoutScale` is HIDMAESTRO_TIMEOUT_SCALE as this process's SDK resolves it
+// (SdkTimeoutScale), which scales Satellite's wait for the driver half as it
+// scales the SDK's. It is left out when the SDK took a NaN, which JSON cannot
+// carry; satellite.exe then waits unscaled.
 // Satellite checks the section before its first frame
 // (src/core/hidmaestro_version.h). The audio fields are
 // present only when the profile materialized a USB-audio function, and the
 // haptic ones only when that endpoint carries the HD-haptics lanes.
 internal sealed class Session : IDisposable
 {
+    // Read once, as the SDK reads it at its TimeoutScale's type init.
+    private static readonly double TimeoutScale =
+        SdkTimeoutScale.Resolve(Environment.GetEnvironmentVariable(SdkTimeoutScale.Variable));
+
     private readonly int _parentPid;
     private readonly bool _broker;
     private readonly HMContext _ctx = new();
@@ -150,7 +156,6 @@ internal sealed class Session : IDisposable
             ulong outputEvent = DuplicateEvent(SectionNames.OutputEvent(transport));
             ulong version = DuplicateReadOnlyMapping(SectionNames.Version(transport));
             ulong identityTag = IdentityTags.OfKey(controller.IdentityKey);
-            double timeoutScale = SdkTimeouts.Scale;
             if (input == 0 || inputEvent == 0)
                 throw new InvalidOperationException("could not duplicate the controller's shared sections");
 
@@ -172,7 +177,7 @@ internal sealed class Session : IDisposable
                 w.WriteNumber("identityTag", identityTag);
                 w.WriteBoolean("usbip", profile.RequiresUsbipBackend);
                 w.WriteBoolean("companion", companion);
-                w.WriteNumber("timeoutScale", timeoutScale);
+                if (double.IsFinite(TimeoutScale)) w.WriteNumber("timeoutScale", TimeoutScale);
                 plugged.Audio?.WriteHandshake(w);
             });
         }
