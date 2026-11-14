@@ -1673,14 +1673,14 @@ static bool zeroFrom(const uint8_t* view, size_t from) {
 static void test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end() {
     TEST("probe: a 64-byte view of a 20-byte section maps, zeros past the section's end, so a "
          "view's size is no layout check (seen on windows-latest and under Wine)");
-    HANDLE small =
+    HANDLE shortSection =
         CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 20, nullptr);
-    auto* writer =
-        static_cast<uint8_t*>(MapViewOfFile(small, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 20));
+    auto* writer = static_cast<uint8_t*>(
+        MapViewOfFile(shortSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 20));
     if (writer) std::memset(writer, 0xA5, 20);
     const auto* view = static_cast<const uint8_t*>(
-        MapViewOfFile(small, FILE_MAP_READ, 0, 0, VERSION_SECTION_SIZE));
-    EXPECT(small != nullptr);
+        MapViewOfFile(shortSection, FILE_MAP_READ, 0, 0, VERSION_SECTION_SIZE));
+    EXPECT(shortSection != nullptr);
     EXPECT(writer != nullptr);
     EXPECT(view != nullptr);
     if (view) {
@@ -1689,7 +1689,7 @@ static void test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_en
         UnmapViewOfFile(const_cast<uint8_t*>(view));
     }
     if (writer) UnmapViewOfFile(writer);
-    if (small) CloseHandle(small);
+    if (shortSection) CloseHandle(shortSection);
 }
 
 // A plug the version section refuses: false, the controller removed, nothing

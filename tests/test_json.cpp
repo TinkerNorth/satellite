@@ -68,9 +68,9 @@ static void test_try_u64_reads_the_whole_unsigned_range() {
     uint64_t tag = 0;
     EXPECT(jsonTryU64(j, "tag", tag));
     EXPECT_EQ(tag, 0xF2698EBC35709872ULL);
-    uint64_t small = 0;
-    EXPECT(jsonTryU64(j, "small", small));
-    EXPECT_EQ(small, 7ULL);
+    uint64_t smallValue = 0;
+    EXPECT(jsonTryU64(j, "small", smallValue));
+    EXPECT_EQ(smallValue, 7ULL);
     uint64_t untouched = 123;
     EXPECT(!jsonTryU64(j, "negative", untouched));
     EXPECT(!jsonTryU64(j, "s", untouched));
