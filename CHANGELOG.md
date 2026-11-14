@@ -75,9 +75,10 @@ UMDF2 controller, the time HIDMaestro gives a device to start (stretched by
 usbip-win2 imports again 30 seconds after a drop. Input keeps going to it
 meanwhile, so a device that comes back carries on, and the log says when it
 went and when it is back. One that does not come back is unplugged, and its
-Dish plugs a new controller within a heartbeat, however often that happens.
-If the helper itself stops for 5 seconds, every controller it served is
-unplugged the same way.
+Dish plugs a new controller a second or two later, however often that
+happens: every Dish re-sends its whole session for it, so its other pads stay
+plugged but pause for that round trip. If the helper itself stops for 5
+seconds, every controller it served is unplugged the same way.
 
 The watch needs a helper and a satellite.exe from this release, which agree
 on it in their hello (protocol 2). An older helper keeps the old behaviour,
