@@ -21,7 +21,9 @@ public static class IdentityTags
 
     public static string TokenOf(string key)
     {
-        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(HashDomain + key.Trim()));
+        string trimmed = key.Trim();
+        string hashed = trimmed.Length > 30 ? trimmed[..30] : trimmed;
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(HashDomain + hashed));
         ulong hash = BinaryPrimitives.ReadUInt64BigEndian(digest);
         return TokenPrefix + hash.ToString("X16", CultureInfo.InvariantCulture);
     }
