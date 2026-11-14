@@ -238,8 +238,8 @@ Source: "redist\{#ViGEmBusInstaller}"; DestDir: "{tmp}"; Flags: deleteafterinsta
 ; HIDMaestro helper: installed beside satellite.exe (the app spawns it for
 ; controller lifecycle), and also runs the driver deploy at ssPostInstall.
 Source: "{#HmHelperSource}"; DestDir: "{app}"; DestName: "{#HmHelperExe}"; Flags: ignoreversion sign; Components: hidmaestro
-; Satellite's stream-free copies of the Sony profiles, exported by the helper
-; from the SDK it was published with; the helper loads them from this folder.
+; Satellite's copies of seven HIDMaestro catalog profiles, cut at the helper's
+; publish from the pinned catalog files; the helper loads them from this folder.
 Source: "{#HmHelperDir}\{#HmProfilesDir}\*.json"; DestDir: "{app}\{#HmProfilesDir}"; Flags: ignoreversion; Components: hidmaestro
 Source: "redist\hidmaestro\LICENSE"; DestDir: "{app}"; DestName: "LICENSE-HIDMaestro.txt"; Flags: ignoreversion; Components: hidmaestro
 Source: "redist\hidmaestro\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; DestName: "THIRD-PARTY-NOTICES-HIDMaestro.txt"; Flags: ignoreversion; Components: hidmaestro

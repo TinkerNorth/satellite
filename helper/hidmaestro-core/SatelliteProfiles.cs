@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace Satellite.HmHelper.Core;
-
-public enum CopySource
-{
-    Sdk,
-    CatalogFile,
-}
 
 public static class SatelliteProfiles
 {
@@ -35,6 +30,8 @@ public static class SatelliteProfiles
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
+    private static readonly UTF8Encoding CopyEncoding = new(encoderShouldEmitUTF8Identifier: false);
+
     public static bool NeedsCopy(string catalogId) => Copies.Contains(catalogId, StringComparer.Ordinal);
 
     public static string CopyId(string catalogId) => CopyPrefix + catalogId;
@@ -46,13 +43,6 @@ public static class SatelliteProfiles
     public static string CatalogFileName(string catalogId) => catalogId + ".json";
 
     public static string IdentityKey(uint serial, string catalogId) => $"satellite:{serial}:{catalogId}";
-
-    public static CopySource SourceOf(string catalogId)
-    {
-        if (StreamFreeCopies.Contains(catalogId, StringComparer.Ordinal)) return CopySource.Sdk;
-        if (HeartbeatCopies.Contains(catalogId, StringComparer.Ordinal)) return CopySource.CatalogFile;
-        throw new ArgumentException($"'{catalogId}' is not a profile Satellite copies", nameof(catalogId));
-    }
 
     public static string Notes(string catalogId)
     {
@@ -66,10 +56,18 @@ public static class SatelliteProfiles
                "frame on its own clock, so the SDK's idle repeat must not write the section too.";
     }
 
-    public static string Transform(string catalogJson, string catalogId) =>
-        SourceOf(catalogId) == CopySource.CatalogFile
-            ? SimpleReportOnClock(catalogJson, catalogId)
-            : StripStream(catalogJson, catalogId);
+    public static IReadOnlyList<string> Export(string outDir, string catalogDir)
+    {
+        string target = Directory.CreateDirectory(outDir).FullName;
+        return Copies.Select(catalogId => ExportCopy(target, catalogDir, catalogId)).ToArray();
+    }
+
+    public static string Transform(string catalogJson, string catalogId)
+    {
+        if (StreamFreeCopies.Contains(catalogId, StringComparer.Ordinal)) return StripStream(catalogJson, catalogId);
+        if (HeartbeatCopies.Contains(catalogId, StringComparer.Ordinal)) return SimpleReportOnClock(catalogJson, catalogId);
+        throw new ArgumentException($"'{catalogId}' is not a profile Satellite copies", nameof(catalogId));
+    }
 
     public static string StripStream(string catalogJson, string catalogId)
     {
@@ -87,6 +85,16 @@ public static class SatelliteProfiles
             ?? throw new ArgumentException($"'{catalogId}' declares no input report named 'simple'", nameof(catalogJson));
         simple["send"] = "clock";
         return Finish(profile, catalogId);
+    }
+
+    private static string ExportCopy(string outDir, string catalogDir, string catalogId)
+    {
+        string catalogFile = Path.Combine(catalogDir, CatalogFileName(catalogId));
+        string catalogJson = File.ReadAllText(catalogFile);
+        string copyJson = Transform(catalogJson, catalogId);
+        string copyFile = Path.Combine(outDir, FileName(catalogId));
+        File.WriteAllText(copyFile, copyJson, CopyEncoding);
+        return copyFile;
     }
 
     private static JsonObject Parse(string catalogJson, string catalogId)

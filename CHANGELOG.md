@@ -63,6 +63,23 @@ frame, and the suite passes under AddressSanitizer with bounds-checked
 standard containers. GCC lost track of the buffer's size across a copy, so
 the test now builds that buffer from the frame size directly.
 
+The Windows helper now cuts all seven HIDMaestro profile copies it ships
+from HIDMaestro's own catalog files at the pinned release, as it already did
+for the Switch Pro. The DualSense, DualSense Edge and DualShock 4 copies used
+to be written back out of the SDK. HIDMaestro's author confirmed that its
+writer cannot carry a profile's protocol, state block, input reports or live
+feature reports, and that the release's catalog files are the text the SDK
+runs; the writer also writes out every setting a file leaves blank. Today's
+Sony profiles have none of those parts, so their copies load as before and
+nothing changes for a player, but a later release whose Sony profiles gained
+one would have lost it silently. The six new files are hash-pinned beside
+the Switch Pro's in `redist/SHA256SUMS`, and the helper's tests hold each
+copy to its pinned file: only its name, its notes and its one edit may
+differ. The Switch Pro copy still sends its simple report on the clock,
+which a real Pro Controller does not do, because Steam drops a Bluetooth
+Switch pad that stays silent for three seconds; `redist/README.md` records
+why and when to revisit it.
+
 ## 2.1.11
 
 No protocol changes.

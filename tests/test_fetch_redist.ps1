@@ -130,6 +130,10 @@ function SdkLayout([string]$HmDriverVer) {
 
 function WriteLatin1([string]$Path, [string]$Text) { [IO.File]::WriteAllText($Path, $Text, $latin1) }
 
+function WriteBomJson([string]$Path, [string]$Json) {
+    [IO.File]::WriteAllBytes($Path, [byte[]]((0xEF, 0xBB, 0xBF) + [Text.Encoding]::ASCII.GetBytes($Json)))
+}
+
 function NewFakeSdkZip([string]$Dir, [string]$ZipName, [string]$CoreDllText, [string[]]$Omit = @()) {
     $src = Join-Path $Dir ('zip-src-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $src 'HIDMaestroTest') | Out-Null
@@ -342,6 +346,11 @@ function TestVersionsAndAsserts {
     ExpectThrows { Get-HmCatalogProfileVersion 'switch-pro.json' } 'HIDMaestro-v<MAJOR.MINOR.PATCH>-<profile>.json'
     ExpectThrows { Get-HmCatalogProfileVersion 'HIDMaestro-v2.1.0.zip' } 'HIDMaestro-v2.1.0.zip'
 
+    Test 'Get-HmCatalogProfileVersion: a profile id with digits and hyphens keeps all of them'
+    $named = Get-HmCatalogProfileVersion 'HIDMaestro-v2.1.0-dualshock-4-v2-composite.json'
+    ExpectEq $named.Version '2.1.0' 'version'
+    ExpectEq $named.Profile 'dualshock-4-v2-composite' 'profile'
+
     $catalogPins = @{ 'SATELLITE_HIDMAESTRO_SDK_VERSION' = '2.1.0'; 'SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION' = '2.1.0.1716' }
     $entry = @{
         Name           = 'HIDMaestro 2.1.0 catalog profile switch-pro'
@@ -366,6 +375,20 @@ function TestVersionsAndAsserts {
     ExpectThrows { Assert-HmCatalogProfileEntry -Entry $tag -Pins $catalogPins } 'v2.1.0'
     $file = $entry.Clone(); $file.Url = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/nintendo/switch-pro-usb.json'
     ExpectThrows { Assert-HmCatalogProfileEntry -Entry $file -Pins $catalogPins } 'switch-pro.json'
+
+    $sony = @{
+        Name           = 'HIDMaestro 2.1.0 catalog profile dualsense'
+        Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualsense.json'
+        Filename       = 'HIDMaestro-v2.1.0-dualsense.json'
+        CatalogProfile = 'dualsense'
+    }
+    Test 'Assert-HmCatalogProfileEntry: a Sony profile fetched from profiles/sony at the tag passes'
+    Assert-HmCatalogProfileEntry -Entry $sony -Pins $catalogPins
+    $script:pass++
+
+    Test 'Assert-HmCatalogProfileEntry: a URL naming a longer profile id is refused'
+    $longer = $sony.Clone(); $longer.Url = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualsense-edge.json'
+    ExpectThrows { Assert-HmCatalogProfileEntry -Entry $longer -Pins $catalogPins } 'dualsense.json'
 }
 
 function TestRepoPinsAgree {
@@ -382,9 +405,9 @@ function TestRepoPinsAgree {
     Expect $sums.ContainsKey($hm.Filename) 'SHA256SUMS lists the HIDMaestro zip'
     Expect $sums.ContainsKey($vigem.Filename) 'SHA256SUMS lists the ViGEmBus installer'
 
-    Test 'the redist table stages one catalog profile per heartbeat copy, named for the pinned release and listed in SHA256SUMS'
+    Test 'the redist table stages one catalog profile per copy, named for the pinned release and listed in SHA256SUMS'
     $catalog = Get-HmCatalogProfileEntries $table
-    ExpectEq $catalog.Count 1 'one catalog profile entry'
+    ExpectEq (($catalog | ForEach-Object { 'satellite-' + $_.CatalogProfile }) -join ',') ($HmSatelliteProfileCopies -join ',') 'one catalog profile entry per copy, in the copies'' order'
     foreach ($entry in $catalog) {
         Assert-HmCatalogProfileEntry -Entry $entry -Pins $pins
         $script:pass++
@@ -448,7 +471,7 @@ function TestInstallerShipsSatelliteProfiles {
     Expect ($source -match 'CatalogDirectoryName = "([^"]+)"') 'SatelliteProfiles.cs names the staged catalog folder'
     ExpectEq $Matches[1] $HmCatalogProfilesDir 'redist-functions.ps1 and SatelliteProfiles.cs agree on the catalog folder'
     $staged = @(Get-HmCatalogProfileEntries (Get-RedistTable) | ForEach-Object { $_.CatalogProfile })
-    ExpectEq ($staged -join ',') ($heartbeat -join ',') 'every heartbeat copy has its catalog file staged, and nothing else is'
+    ExpectEq ($staged -join ',') ($ids -join ',') 'every copy has its catalog file staged, and nothing else is'
 }
 
 function TestInstallerBrokerSddl {
@@ -528,6 +551,13 @@ function TestStaging {
         Sync-HmCatalogProfiles -RedistDir $dir -SdkDir $sdkDir -Entries $entries | Out-Null
         ExpectEq ([string](Get-Content (Join-Path $sdkDir 'profiles\switch-pro.json') -Raw)).Trim() '{"id":"switch-pro","v":2}' 'replaced'
 
+        Test 'Sync-HmCatalogProfiles: a fetched file that starts with a BOM is staged byte for byte beside the others'
+        WriteBomJson (Join-Path $dir 'HIDMaestro-vX-dualsense-composite.json') '{"id":"dualsense-composite"}'
+        $both = @($entries + @{ Filename = 'HIDMaestro-vX-dualsense-composite.json'; CatalogProfile = 'dualsense-composite' })
+        $staged = @(Sync-HmCatalogProfiles -RedistDir $dir -SdkDir $sdkDir -Entries $both)
+        ExpectEq $staged.Count 2 'two files staged'
+        ExpectEq (HashOf (Join-Path $sdkDir 'profiles\dualsense-composite.json')) (HashOf (Join-Path $dir 'HIDMaestro-vX-dualsense-composite.json')) 'the staged file is the fetched bytes, BOM and all'
+
         Test 'Sync-HmCatalogProfiles: a catalog profile that was never fetched is refused by path'
         ExpectThrows { Sync-HmCatalogProfiles -RedistDir $dir -SdkDir $sdkDir -Entries @(@{ Filename = 'HIDMaestro-vX-missing.json'; CatalogProfile = 'missing' }) } 'HIDMaestro-vX-missing.json'
     } finally {
@@ -541,13 +571,11 @@ function TestFetchRedistEndToEnd {
         $table = Get-RedistTable
         $hm = Get-HmRedistEntry $table
         $vigem = $table | Where-Object { $_.Name -like 'ViGEmBus *' } | Select-Object -First 1
-        $catalog = @(Get-HmCatalogProfileEntries $table)
+        $catalog = Get-HmCatalogProfileEntries $table
         $sdkPin = Get-HmSdkVersionFromZipName $hm.Filename
         $header = Join-Path $dir 'driver_pins.h'
         Set-Content -Path (Join-Path $dir $vigem.Filename) -Value 'not an installer' -Encoding ascii
-        foreach ($entry in $catalog) {
-            Set-Content -Path (Join-Path $dir $entry.Filename) -Value ('{"id":"' + $entry.CatalogProfile + '"}') -Encoding ascii
-        }
+        foreach ($entry in $catalog) { WriteBomJson (Join-Path $dir $entry.Filename) ('{"id":"' + $entry.CatalogProfile + '"}') }
         $fetched = @($vigem.Filename, $hm.Filename) + @($catalog | ForEach-Object { $_.Filename })
         NewFakeSdkZip $dir $hm.Filename (SdkLayout '1.8.1.2248') | Out-Null
         WriteSums $dir $fetched
@@ -560,7 +588,9 @@ function TestFetchRedistEndToEnd {
         Expect (Test-Path (Join-Path $dir 'hidmaestro\HIDMaestro.Core.dll')) 'assembly staged'
         Expect (Test-Path (Get-HmStagingStampPath (Join-Path $dir 'hidmaestro'))) 'stamp written'
         foreach ($entry in $catalog) {
-            Expect (Test-Path (Join-Path $dir "hidmaestro\profiles\$($entry.CatalogProfile).json")) "catalog profile $($entry.CatalogProfile) staged"
+            $stagedFile = Join-Path $dir "hidmaestro\profiles\$($entry.CatalogProfile).json"
+            Expect (Test-Path $stagedFile) "catalog profile $($entry.CatalogProfile) staged"
+            ExpectEq (HashOf $stagedFile) (HashOf (Join-Path $dir $entry.Filename)) "catalog profile $($entry.CatalogProfile) staged byte for byte"
         }
 
         Test 'fetch-redist.ps1: a second run with nothing changed stages nothing'

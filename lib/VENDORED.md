@@ -158,17 +158,21 @@ the 90-day freshness window.
   the section; the catalog's simple report (0x3F) goes out on change only,
   which leaves an idle pad silent and makes Steam's SDL2-era Switch driver
   drop it after three seconds, so the helper's `satellite-switch-pro` copy
-  (cut from the pinned `profiles/nintendo/switch-pro.json`, see
-  `redist/README.md`) sends it on the 15 ms clock instead, as the 1.x
-  driver did before a handshake. The four Sony profiles carry a 4 ms `stream`, an SDK idle
-  repeat that writes the input section whether or not anything was
-  submitted; the helper ships copies without it (`helper/hidmaestro-core`
-  `SatelliteProfiles`, exported from the SDK at publish and loaded back
-  through it). A controller's sections sit at the SDK's transport index
-  (`HMController.TransportIndex`), which is the slot only while no other
-  program holds that number. `RemoveAllVirtualControllers` now removes the
-  devices of exited programs only, `InstallDriver` upgrades in place or
-  beside a running program's older driver and never downgrades
+  sends it on the 15 ms clock instead, as the 1.x driver did before a
+  handshake. The six Sony profiles the helper copies carry a `stream` (4 ms,
+  1 ms on the two Edge profiles), an SDK idle repeat that writes the input
+  section whether or not anything was submitted; the helper ships copies
+  without it. Every copy is cut at publish from the hash-pinned catalog file
+  at the tag (`helper/hidmaestro-core` `SatelliteProfiles`, see
+  `redist/README.md`) and loaded back through the SDK, not exported from
+  it: upstream confirmed on #141 that the SDK's serializer cannot
+  round-trip `protocol`, `stateBlock`, `inputReports` or
+  `liveFeatureReports`, and that the DLL embeds the repository's
+  `profiles/` folder as it is. A controller's sections sit at the SDK's
+  transport index (`HMController.TransportIndex`), which is the slot only
+  while no other program holds that number. `RemoveAllVirtualControllers`
+  now removes the devices of exited programs only, `InstallDriver` upgrades
+  in place or beside a running program's older driver and never downgrades
   (`HMContext.LastDriverInstall`), and `HMUninstall.Run` is the removal,
   refused while another HIDMaestro program runs. The SDK's own driver INF is
   2.1.0.1716 (`driver_pins.h`); 2.0.0 to 2.0.3 share 2.0.0.2201 and a 2.0.x

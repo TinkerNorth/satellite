@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.Text;
-using System.Text.Json;
 using HIDMaestro;
-using HIDMaestro.Internal;
 using Satellite.HmHelper.Core;
 
 namespace Satellite.HmHelper;
@@ -15,25 +12,9 @@ internal static class ProfileCommands
 
     public static int Export(string outDir, string catalogDir)
     {
-        Directory.CreateDirectory(outDir);
-        ProfileDatabase catalog = ProfileDatabase.LoadEmbedded();
-        foreach (string id in SatelliteProfiles.Copies)
-        {
-            string json = SatelliteProfiles.SourceOf(id) == CopySource.Sdk
-                ? SdkJson(catalog, id)
-                : File.ReadAllText(Path.Combine(catalogDir, SatelliteProfiles.CatalogFileName(id)));
-            string path = Path.Combine(outDir, SatelliteProfiles.FileName(id));
-            File.WriteAllText(path, SatelliteProfiles.Transform(json, id), new UTF8Encoding(false));
+        foreach (string path in SatelliteProfiles.Export(outDir, catalogDir))
             Console.WriteLine($"exported {path}");
-        }
         return 0;
-    }
-
-    private static string SdkJson(ProfileDatabase catalog, string id)
-    {
-        ControllerProfile profile = catalog.All.FirstOrDefault(p => p.Id == id)
-            ?? throw new InvalidOperationException($"the HIDMaestro catalog has no profile '{id}'");
-        return JsonSerializer.Serialize(profile, typeof(ControllerProfile), HMLayoutJsonOptions.Default);
     }
 
     public static int Check(string dir)
