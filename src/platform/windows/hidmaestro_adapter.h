@@ -16,6 +16,7 @@
 
 #include "core/audio/audio_resampler.h"
 #include "core/gamepad_backend.h"
+#include "core/hidmaestro_version.h"
 #include "core/ports.h"
 #include "core/tracked_mutex.h"
 #include "hidmaestro_audio_wire.h"
@@ -61,8 +62,8 @@ class HidMaestroAdapter : public IGamepadPort {
     using CompositePlugHook = std::function<void()>;
     void setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after);
 
-    explicit HidMaestroAdapter(satellite::hidmaestro::IHidMaestroProvisioner& provisioner,
-                               AudioEnabledFn audioEnabled = {});
+    HidMaestroAdapter(satellite::hidmaestro::IHidMaestroProvisioner& provisioner, ILogPort& log,
+                      AudioEnabledFn audioEnabled = {});
     ~HidMaestroAdapter() override;
 
     bool ensureBusOpen() override;
@@ -78,6 +79,7 @@ class HidMaestroAdapter : public IGamepadPort {
     // Re-publishes every plugged Sony pad that has gone SONY_IDLE_REPORT_MS
     // without a frame, clocks advanced, state unchanged (see the constant).
     void refreshIdleInput() override;
+    void recheckDrivers() override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
     void setTriggerEffectsCallback(TriggerEffectsCallback cb) override;
@@ -105,6 +107,7 @@ class HidMaestroAdapter : public IGamepadPort {
     void setIdleReportIntervalForTest(std::chrono::milliseconds interval) {
         idleReportInterval_ = interval;
     }
+    void setVersionWaitForTest(std::chrono::milliseconds wait) { versionWait_ = wait; }
 #endif
 
   private:
@@ -162,19 +165,33 @@ class HidMaestroAdapter : public IGamepadPort {
         uint8_t payload[satellite::hidmaestro::INPUT_DATA_CAPACITY]{};
         uint8_t gip[satellite::hidmaestro::INPUT_GIP_LENGTH]{};
 
+        // Global\HIDMaestroVersion<N>, read-only, and what it must hold for
+        // this pad to be written. The plug's check fills the rest before the
+        // pad is published, the maintenance recheck after.
+        const uint8_t* versionView = nullptr;
+        HANDLE versionSection = nullptr;
+        satellite::hidmaestro::VersionExpectation versionExpectation{};
+        satellite::hidmaestro::SectionVersion loggedDriver{};
+        std::chrono::steady_clock::time_point pendingSince{};
+
         // Atomic so isDevicePlugged can read without data races; written under
         // busMtx_ (plugin/unplug).
         std::atomic<bool> plugged{false};
         std::atomic_flag inputBusy = ATOMIC_FLAG_INIT;
+        // Set once, holding inputBusy, by a recheck the version section fails:
+        // every input write checks it under the same flag, so none follows.
+        std::atomic<bool> refused{false};
     };
 
     satellite::hidmaestro::IHidMaestroProvisioner& provisioner_;
+    ILogPort& log_;
     AudioEnabledFn audioEnabled_;
     CompositePlugHook compositePlugBefore_;
     CompositePlugHook compositePlugAfter_;
     mutable TrackedMutex busMtx_{"hidmaestro.bus"};
     std::atomic<bool> busOpen_{false};
     std::chrono::milliseconds idleReportInterval_{SONY_IDLE_REPORT_MS};
+    std::chrono::milliseconds versionWait_{satellite::hidmaestro::VERSION_HALF_WAIT_MS};
 
     std::array<IoSlot, MAX_BACKEND_CONTROLLERS + 1> io_;
 
@@ -231,5 +248,25 @@ class HidMaestroAdapter : public IGamepadPort {
     bool provisionSlot(uint32_t serial, GamepadIdentity identity, bool wantAudio,
                        satellite::hidmaestro::ProvisionResult& r);
     bool adoptProvisionedLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
+    void attachVersionLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
     void startSlotWorkersLocked(uint32_t serial, const IoSlot& slot);
+
+    // The plug's steps around the version check: adopt the helper's handles,
+    // check the version section before the first write, then publish the pad
+    // or hand the controller back.
+    bool adoptSlot(uint32_t serial, GamepadIdentity identity,
+                   const satellite::hidmaestro::ProvisionResult& r);
+    bool admitSlot(uint32_t serial);
+    bool publishSlot(uint32_t serial);
+    void discardSlot(uint32_t serial);
+    satellite::hidmaestro::VersionCheck awaitVersionCheck(const IoSlot& slot) const;
+
+    void recheckSlotLocked(uint32_t serial, IoSlot& slot,
+                           std::chrono::steady_clock::time_point now);
+    void refuseSlotLocked(uint32_t serial, IoSlot& slot,
+                          const satellite::hidmaestro::VersionCheck& check);
+    void noteDriver(uint32_t serial, IoSlot& slot,
+                    const satellite::hidmaestro::VersionCheck& check);
+    void logRefusal(uint32_t serial, const satellite::hidmaestro::VersionCheck& check,
+                    const char* consequence) const;
 };

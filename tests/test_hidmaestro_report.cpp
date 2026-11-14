@@ -987,9 +987,23 @@ static void test_decode_switch_rumble() {
     EXPECT(!decodeOutputPacket(GamepadIdentity::SwitchPro, pkt).hasRumble);
 }
 
+static void test_only_the_xbox_persona_has_an_xusb_companion() {
+    TEST("identityHasXusbCompanion follows the helper's rule: a profile id that starts xbox-");
+    for (GamepadIdentity id :
+         {GamepadIdentity::Xbox, GamepadIdentity::DS4, GamepadIdentity::DualSense,
+          GamepadIdentity::SwitchPro, GamepadIdentity::DualSenseEdge}) {
+        for (const bool audio : {false, true}) {
+            const std::string profile = profileForIdentity(id, audio);
+            EXPECT_EQ(identityHasXusbCompanion(id), profile.rfind("xbox-", 0) == 0);
+        }
+    }
+    EXPECT(identityHasXusbCompanion(GamepadIdentity::Xbox));
+}
+
 int main() {
     test_profile_mapping();
     test_profile_audio_matrix();
+    test_only_the_xbox_persona_has_an_xusb_companion();
     test_x360_neutral_report();
     test_x360_sticks_roundtrip_extremes();
     test_x360_buttons_and_hat();

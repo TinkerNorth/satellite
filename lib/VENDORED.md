@@ -133,13 +133,19 @@ the 90-day freshness window.
   (xbox-360-wired, dualshock-4-v2, dualsense, switch-pro) and the Sony
   calibration scale (16 LSB/deg/s, 8192 LSB/g) the SDK's
   `profiles/models/sony-dualsense.json` and `sony-dualshock4.json` answer.
-  The input and output layouts carry NO version field (v2.0.0 added a
-  separate per-controller `Global\HIDMaestroVersion<N>` section, plus
-  `InputAck`, `Signal` and remove events, which the SDK creates and this
-  backend never opens), so a pin bump REQUIRES diffing those upstream files
-  against the constants here (`test_hidmaestro_wire` /
-  `test_hidmaestro_report` pin them; the section sizes 362 / 16904 are the
-  runtime layout check). The runtime driver itself deploys via the bundled
+  The input and output layouts carry NO version field (v2.0.0 put one in a
+  separate per-controller `Global\HIDMaestroVersion<N>` section, the 64-byte
+  `HIDMAESTRO_VERSION_INFO` of `driver/hm_contract.h`), so a pin bump
+  REQUIRES diffing those upstream files against the constants here
+  (`test_hidmaestro_wire` / `test_hidmaestro_report` pin them; the section
+  sizes 362 / 16904 are the runtime layout check). This backend reads the
+  version section, through a read-only handle the helper duplicates, before
+  its first frame and once a second after; `src/core/hidmaestro_version.h`
+  restates the struct and the policy and `test_hidmaestro_version` pins both,
+  and the helper's `IdentityTags` restates the SDK's internal
+  `DeviceIdentity` tag, so a bump diffs `driver/hm_contract.h` and
+  `DeviceIdentity.cs` too. The SDK's `InputAck`, `Signal` and remove events
+  stay unopened. The runtime driver itself deploys via the bundled
   `satellite-hm-helper.exe` from the hash-pinned release zip (see
   `redist/README.md`); we ship no driver code.
   v1.9.2 -> v2.1.0 (2026-11-01): `HIDMAESTRO_SHARED_INPUT` and

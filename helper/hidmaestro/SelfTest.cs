@@ -80,7 +80,64 @@ internal static class SelfTest
         check(unknown == null, unknown == null
             ? $"{profileId}: every section the helper opens is one the SDK lists for transport index {transport}"
             : $"{profileId}: the SDK lists no {unknown}");
+        CheckVersionSection(controller, profileId, xbox, say, check);
         return controller;
+    }
+
+    // What Satellite's plug checks before its first frame
+    // (src/core/hidmaestro_version.h), held to the SDK's own readings.
+    private static void CheckVersionSection(HMController controller, string profileId, bool xbox,
+                                            Action<string> say, Action<bool, string> check)
+    {
+        VersionSection v = ReadVersionSection(controller.TransportIndex);
+        Version sdk = typeof(HMContext).Assembly.GetName().Version ?? new Version(0, 0, 0);
+        Version? driver = controller.DriverVersion;
+        ulong tag = IdentityTags.OfKey(controller.IdentityKey);
+        say($"{profileId}: version section layout {v.LayoutVersion}, SDK {v.SdkVersion} protocols {v.SdkProtocolMin} to {v.SdkProtocolMax}, " +
+            $"driver {v.DriverVersion} protocols {v.DriverProtocolMin} to {v.DriverProtocol} error {v.DriverConfigError}, " +
+            $"companion protocols {v.CompanionProtocolMin} to {v.CompanionProtocol} error {v.CompanionConfigError}, tag {v.IdentityTag:X16}");
+        check(v.LayoutVersion == 1 && v.SdkProtocolMin == 4 && v.SdkProtocolMax == 4 && SameRelease(v.SdkVersion, sdk),
+              $"{profileId}: the version section's SDK half is layout 1, protocols 4 to 4, and this SDK's {sdk}");
+        check(v.IdentityTag == tag,
+              $"{profileId}: its identity tag {v.IdentityTag:X16} is the one Satellite derives from the key '{controller.IdentityKey}', {tag:X16}");
+        check(v.DriverConfigError == 0 && v.DriverProtocolMin <= 4 && 4 <= v.DriverProtocol,
+              $"{profileId}: its driver serves protocols {v.DriverProtocolMin} to {v.DriverProtocol}, 4 among them, with error {v.DriverConfigError}");
+        check(driver != null && SameRelease(v.DriverVersion, driver),
+              $"{profileId}: its driver version {v.DriverVersion} is the one the SDK reads, {driver?.ToString() ?? "none"}");
+        if (xbox)
+            check(v.CompanionConfigError == 0 && v.CompanionProtocolMin <= 4 && 4 <= v.CompanionProtocol,
+                  $"{profileId}: its XUSB companion serves protocols {v.CompanionProtocolMin} to {v.CompanionProtocol}, 4 among them, with error {v.CompanionConfigError}");
+    }
+
+    private static bool SameRelease(Version a, Version b) => a.Major == b.Major && a.Minor == b.Minor && a.Build == b.Build;
+
+    // Opened FILE_MAP_READ alone, the access satellite.exe's duplicate carries.
+    private static VersionSection ReadVersionSection(int transportIndex)
+    {
+        string name = SectionNames.Version(transportIndex);
+        nint mapping = NativeMethods.OpenFileMappingW(NativeMethods.FILE_MAP_READ, false, name);
+        if (mapping == 0)
+            throw new InvalidOperationException($"could not open {name} for reading (error {Marshal.GetLastWin32Error()})");
+        try
+        {
+            nint view = NativeMethods.MapViewOfFile(mapping, NativeMethods.FILE_MAP_READ, 0, 0, (nuint)VersionSection.Size);
+            if (view == 0)
+                throw new InvalidOperationException($"could not map {VersionSection.Size} bytes of {name} (error {Marshal.GetLastWin32Error()})");
+            try
+            {
+                var bytes = new byte[VersionSection.Size];
+                Marshal.Copy(view, bytes, 0, bytes.Length);
+                return VersionSection.Parse(bytes);
+            }
+            finally
+            {
+                NativeMethods.UnmapViewOfFile(view);
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(mapping);
+        }
     }
 
     private static uint WatchIdle(HMContext ctx, string profileId, int slot, Action<string> say, Action<bool, string> check)

@@ -1247,6 +1247,14 @@ satellite_add_pure_test(test_hidmaestro_wire tests/test_hidmaestro_wire.cpp
 satellite_add_pure_test(test_hidmaestro_report tests/test_hidmaestro_report.cpp
     src/platform/windows/hidmaestro_wire.cpp)
 
+# The version section and the policy that decides whether Satellite writes a
+# HIDMaestro controller at all. HELPER_CORE_DIR lets the suite hold the
+# helper's own reader of the section to the same offsets.
+satellite_add_pure_test(test_hidmaestro_version tests/test_hidmaestro_version.cpp)
+target_compile_definitions(test_hidmaestro_version PRIVATE
+    HELPER_CORE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/helper/hidmaestro-core"
+)
+
 # The controller-audio rings between the helper and satellite. Same rule as the
 # driver's rings: no version field, so the suite pins the SIZES and the seqlock
 # protocol the C# producer on the other side reimplements.

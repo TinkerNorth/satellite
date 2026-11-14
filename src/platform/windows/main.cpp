@@ -343,7 +343,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     // Declared BEFORE the adapter that borrows it, so it is still alive while
     // that adapter tears down; joins its worker on the way out.
     satellite::audioguard::PlugGuardRunner audioDefaultGuard(keepDefaultAudioDevice);
-    HidMaestroAdapter hidMaestroAdapter(hmProvisioner, controllerAudioEnabled);
+    HidMaestroAdapter hidMaestroAdapter(hmProvisioner, logAdapter, controllerAudioEnabled);
     hidMaestroAdapter.setCompositePlugHooks(
         [&audioDefaultGuard] { audioDefaultGuard.beforeCompositePlug(); },
         [&audioDefaultGuard] { audioDefaultGuard.afterCompositePlug(); });

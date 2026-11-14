@@ -634,6 +634,10 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     out.companionEvent = handleField("companionEvent");
     out.outputSection = handleField("output");
     out.outputEvent = handleField("outputEvent");
+    out.versionSection = handleField("version");
+    uint64_t identityTag = 0;
+    out.identityTag = jsonTryU64(j, "identityTag", identityTag) ? identityTag : 0;
+    out.usbip = jsonBool(j, "usbip");
 
     // Audio fields are absent on a plain profile and on a helper that predates
     // controller audio, so every one of them defaults to "no endpoint" rather

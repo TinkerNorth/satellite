@@ -377,7 +377,9 @@ own").
 ### Reaper
 
 Runs once per second via `svc.reapTimedOut()`. Teardown logic is
-inside SessionService, not in the receiver.
+inside SessionService, not in the receiver. The same tick runs
+`svc.recheckDrivers()`, which lets a backend read again what it checked at
+plug (see "The version contract").
 
 ## HTTP Threads (Inbound HTTP Adapters)
 
@@ -966,8 +968,8 @@ adapters rely on them instead of locking against one another's calls:
    `submitRelativeMouse`, which is host-global, only from the pointer
    thread, which also carries out the maintenance tick's retries and the
    releases a topology change posts. None of them holds a service lock.
-   `refreshIdleInput` comes from the maintenance thread with no service
-   lock held.
+   `refreshIdleInput` and `recheckDrivers` come from the maintenance
+   thread with no service lock held.
    `isDevicePlugged`, `motionBackendOk`, `backendIdForSerial`,
    `isBusOpen` and `supportsMotionForType` may come from any thread.
 
@@ -992,8 +994,9 @@ rules, and the macOS adapter keeps the first and the last:
    `std::atomic_flag`: a submit takes it with `test_and_set(acquire)` in a
    spin that yields, since the only possible holder is the idle tick, for
    one pack and write; `refreshIdleInput` tries once and leaves a busy
-   slot to the next tick. Nothing else takes the flag, and it is never
-   held across a blocking call. The input section's seqlock has a single
+   slot to the next tick. Nothing else takes the flag but a driver
+   recheck that refuses the pad, once, and it is never held across a
+   blocking call. The input section's seqlock has a single
    writer by design, and two writers would publish frames that mix two
    reports under an even sequence number.
 4. The adapter-wide mutex still guards what it guarded before (the worker
@@ -1019,15 +1022,18 @@ in-flight IOCTL uses one after it is freed. `isDevicePlugged`,
 `busMtx_`, and so do the composite plug hooks. The hooks still never
 overlap, because plugs never do (guarantee 1), which is what keeps the
 default-endpoint guard's window from opening between its check and its
-snapshot. A plug adopts the provisioned handles and views, writes the
-neutral first frame, publishes `plugged` and starts the slot's workers in
-one short hold of `busMtx_`; a refused adoption deprovisions after the
-lock is released. An unplug
+snapshot. A plug adopts the provisioned handles and views in one short hold
+of `busMtx_`, checks the version section without it (the slot is not
+published yet, and the check may wait for a driver half; see "The version
+contract"), then writes the neutral first frame, publishes `plugged` and
+starts the slot's workers in a second short hold; a refused adoption or
+check deprovisions after the lock is released. An unplug
 clears `plugged`, stops the slot's workers (each join drops the lock) and
 unmaps the slot under `busMtx_`, then deprovisions without it.
 `refreshIdleInput` still holds `busMtx_` while it walks the slots, which
 keeps it off a slot an unplug or `closeBus` is unmapping, since both
-clear `plugged` under the same lock first. The input-section writers
+clear `plugged` under the same lock first; `recheckDrivers` walks them the
+same way. The input-section writers
 (`submitInput`, which `submitReport` forwards to, `submitMotion`,
 `submitTouchpad`, `submitBattery`, all through `packAndWrite`) take only
 the slot's flag; `submitMicAudioPcm` has a single writer, the mic worker,
@@ -1263,6 +1269,11 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
   codec with the Sony calibration-stub IMU rescale, DualSense, Switch
   Pro 0x30 body) and ring-packet decoding back to rumble/lightbar.
   Pinned by `tests/test_hidmaestro_report.cpp`.
+- `core/hidmaestro_version.h` — `Global\HIDMaestroVersion<N>`, the
+  64-byte section the SDK, the driver and the XUSB companion each write
+  a half of, and the policy that decides whether Satellite writes a
+  controller at all (see "The version contract"). Platform-free, so
+  `tests/test_hidmaestro_version.cpp` runs it on every lane.
 - `platform/windows/hidmaestro_adapter.{h,cpp}` — the I/O shell:
   per-serial slots holding mapped views + duplicated handles, the
   zero-allocation submit path (pack → seqlock write → SetEvent), and
@@ -1287,6 +1298,46 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
   thread makes of it, over a `GuardBackend` interface that the COM shell
   implements and the test fakes. No `<windows.h>`, pinned by
   `tests/test_audio_guard_worker.cpp` on every CI platform.
+
+### The version contract
+
+Before its first frame to a controller the adapter reads that controller's
+`Global\HIDMaestroVersion<N>` through a read-only handle the helper
+duplicates beside the input section's. The helper opens the section
+`FILE_MAP_READ` alone and finds its name in `HMController.SectionNames` by
+name. `judgeVersionSection` then decides:
+
+- The layout must be 1, the identity tag the one the SDK writes for the
+  identity key the helper created the controller with (the helper derives
+  it, `IdentityTags`), and the SDK half the pinned SDK's: protocols 4 to 4
+  and `driver_pins.h`'s SDK version.
+- The driver's error word must be 0, judged before its range, and 4 must lie
+  within `DriverProtocolMin` to `DriverProtocol`. A zero `DriverProtocol`
+  means the driver has not written its half yet, which the SDK's create
+  accepts when no HID child appeared within its own wait, so the plug waits
+  up to `VERSION_HALF_WAIT_MS` (3 s) for it and then refuses.
+- On xbox-360-wired the XUSB companion's pair is judged the same way.
+- A composite persona runs on the SDK's USB/IP device, which writes no
+  driver half, and the SDK writes no tag for it, so only the layout, the
+  SDK half and a zero tag are judged.
+- A driver release other than the pinned one that still serves 4 is
+  written, and the log says so once per change. The SDK runs on such a
+  driver itself, so refusing it would stop Satellite's pads whenever another
+  program installs a different HIDMaestro driver. 2.1.0 changed driver
+  behaviour without a protocol bump, so only the version tells releases
+  apart.
+
+A refused plug is handed back before anything is written to the controller
+and fails like any other plug (`pluginFailed`), with one error line that
+names the reason and what the section holds. Nothing signals a driver
+change, so the maintenance tick's `recheckDrivers` reads every plugged pad's
+section again once a second, under `busMtx_`. It gives a half that goes
+missing the same wait, and refuses a pad that no longer passes by setting
+its `refused` flag while it holds the pad's input flag. Every input write
+checks that flag under the input flag, so no frame follows the refusal; the
+mic ring stops too. The receive thread pays one relaxed load per frame for
+it. A refused pad reads as not plugged, which the dashboard shows as a
+failed controller, and keeps its controller until its unplug removes it.
 
 ### Controller audio, and the one kernel driver
 

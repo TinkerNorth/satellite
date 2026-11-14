@@ -1118,6 +1118,8 @@ void SessionService::refreshIdleInput() {
     if (pointer_.retryPending()) pointer_.post(PointerCommand{});
 }
 
+void SessionService::recheckDrivers() { backend_.recheckDrivers(); }
+
 int SessionService::refreshRumble() {
     std::lock_guard<TrackedMutex> lk(mtx_);
     const auto now = std::chrono::steady_clock::now();

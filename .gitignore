@@ -48,6 +48,7 @@ compile_commands.json
 /test_gamepad_mux
 /test_hidmaestro_wire
 /test_hidmaestro_report
+/test_hidmaestro_version
 
 # IDE / Editor
 .vs/

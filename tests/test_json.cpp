@@ -62,6 +62,22 @@ static void test_try_accessors() {
     EXPECT_EQ(untouched, 123L);
 }
 
+static void test_try_u64_reads_the_whole_unsigned_range() {
+    TEST("jsonTryU64: a value above INT64_MAX reads exactly; a negative, text or absent one not");
+    Json j = Json::parse(R"({"tag":17467649568734746738,"small":7,"negative":-1,"s":"x"})");
+    uint64_t tag = 0;
+    EXPECT(jsonTryU64(j, "tag", tag));
+    EXPECT_EQ(tag, 0xF2698EBC35709872ULL);
+    uint64_t small = 0;
+    EXPECT(jsonTryU64(j, "small", small));
+    EXPECT_EQ(small, 7ULL);
+    uint64_t untouched = 123;
+    EXPECT(!jsonTryU64(j, "negative", untouched));
+    EXPECT(!jsonTryU64(j, "s", untouched));
+    EXPECT(!jsonTryU64(j, "missing", untouched));
+    EXPECT_EQ(untouched, 123ULL);
+}
+
 static void test_object_descend() {
     TEST("jsonObject: returns the nested object, or an empty object when absent/not-object");
     Json j = Json::parse(R"({"caps":{"rumble":true},"x":5})");
@@ -223,6 +239,7 @@ int main() {
     test_typed_accessors_present();
     test_typed_accessors_fallback();
     test_try_accessors();
+    test_try_u64_reads_the_whole_unsigned_range();
     test_object_descend();
     test_deep_request_body_is_refused_before_anything_copies_it();
     test_nesting_up_to_the_bound_parses();

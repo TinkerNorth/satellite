@@ -58,6 +58,7 @@ struct MockViGem : IGamepadPort {
     int submitTouchpadCalls = 0;
     int submitRelativeMouseCalls = 0;
     int setLightbarCallbackCalls = 0;
+    int recheckDriversCalls = 0;
 
     bool submitMotionReturnVal = true;
     bool submitBatteryReturnVal = true;
@@ -117,6 +118,7 @@ struct MockViGem : IGamepadPort {
         pluggedSet.clear();
     }
     bool isBusOpen() const override { return busOpen; }
+    void recheckDrivers() override { recheckDriversCalls++; }
     bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
         // Split the tally by identity so existing Xbox-vs-DS4 plug-count asserts
         // still read; DualSense/SwitchPro plugs are asserted via identityFor.
@@ -5068,6 +5070,19 @@ static void test_pointer_failedReleaseRetriesDuringMaintenance() {
     EXPECT_EQ(f.backend_.submitRelativeMouseCalls, beforeRetry + 1);
 }
 
+static void test_maintenance_driverRecheckReachesTheBackend() {
+    TEST("maintenance: the driver recheck reaches the backend once per tick, with no session");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    svc.recheckDrivers();
+    EXPECT_EQ(vigem.recheckDriversCalls, 1);
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX)}, "dev1", "D", true);
+    svc.recheckDrivers();
+    EXPECT_EQ(vigem.recheckDriversCalls, 2);
+}
+
 static void test_pointer_framesInjectInOrderOnThePointerThread() {
     TEST("pointer: mouse frames reach the host in the order they arrived");
     MockViGem vigem;
@@ -5431,6 +5446,7 @@ int main() {
     test_pointer_replugReleasesButtons();
     test_pointer_failedReleaseRetriesDuringMaintenance();
     test_pointer_framesInjectInOrderOnThePointerThread();
+    test_maintenance_driverRecheckReachesTheBackend();
     test_pointer_refusedFrameRetriesDuringMaintenance();
     test_pointer_nothingButThePointerThreadInjects();
     test_receivePath_mouseFramesNeverWaitForTheServiceLock();

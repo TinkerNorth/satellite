@@ -115,6 +115,10 @@ class GamepadMux : public IGamepadPort {
         for (IGamepadPort* p : ports_) p->refreshIdleInput();
     }
 
+    void recheckDrivers() override {
+        for (IGamepadPort* p : ports_) p->recheckDrivers();
+    }
+
     bool submitBattery(uint32_t serial, const BatteryReport& report) override {
         IGamepadPort* p = ownerOf(serial);
         return p != nullptr && p->submitBattery(serial, report);
