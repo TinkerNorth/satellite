@@ -25,7 +25,7 @@ internal static class Program
                     ProfileCommands.Export(ParseOption(args, "--out"), ParseOption(args, "--catalog")),
                 > 0 when args[0] == "check-profiles" =>
                     ProfileCommands.Check(ParseOptionOr(args, "--dir", ProfileCommands.InstalledDirectory)),
-                > 0 when args[0] == "selftest" => SelfTest.Run(ParseOptionOrNull(args, "--log")),
+                > 0 when args[0] == "selftest" => SelfTest.Run(ParseOptionOrNull(args, "--log"), HasFlag(args, "--composite")),
                 _ => Usage(),
             };
         }
@@ -42,7 +42,7 @@ internal static class Program
             "usage: satellite-hm-helper <serve --pipe <name> --parent-pid <pid> | service | broker" +
             " | install-driver | remove-driver [--include-usbip] | cleanup | sdk-version" +
             " | check-sdk --pins-header <driver_pins.h> --version-header <hidmaestro_version.h>" +
-            " | export-profiles --out <dir> --catalog <dir> | check-profiles [--dir <dir>] | selftest [--log <file>]>");
+            " | export-profiles --out <dir> --catalog <dir> | check-profiles [--dir <dir>] | selftest [--log <file>] [--composite]>");
         return 2;
     }
 

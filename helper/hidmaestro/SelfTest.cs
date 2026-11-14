@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using HIDMaestro;
 using Satellite.HmHelper.Core;
@@ -10,12 +11,17 @@ internal static class SelfTest
     private const int WatchMs = 500;
     private const uint MinClockFrames = 20;
     private const string KeyPrefix = "satellite:selftest:";
+    private const int AwaitPollMs = 50;
+    private static readonly TimeSpan WatchBudget = TimeSpan.FromSeconds(15);
+    // A composite whose USB device was disabled may drop its USB/IP connection,
+    // which usbip-win2 attaches again 30 s later.
+    private static readonly TimeSpan ReattachBudget = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan HidChildBudget = TimeSpan.FromSeconds(10);
     private static readonly byte[] SonyIdentityCalibration =
         Convert.FromHexString("000000000000401FC0E0401FC0E0401FC0E0F401F401002000E0002000E0002000E0");
     private static readonly byte[] SonyPairingMacPrefix = { 0x02, 0x48, 0x4D, 0x00, 0x00 };
 
-    public static int Run(string? logPath)
+    public static int Run(string? logPath, bool composite)
     {
         var lines = new List<string>();
         int failures = 0;
@@ -57,6 +63,18 @@ internal static class SelfTest
 
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualsense"), 5, calibrationReport: 0x05, pairingReport: 0x09, Say, Check);
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualshock-4-v2"), 6, calibrationReport: 0x02, pairingReport: 0x12, Say, Check);
+
+            WatchedDevices(ctx, SatelliteProfiles.CopyId("dualsense"), 7, Say, Check);
+            WatchedDevices(ctx, "xbox-360-wired", 8, Say, Check);
+            if (composite)
+            {
+                if (!HMContext.IsUsbipBackendAvailable) HMContext.InstallUsbipBackend();
+                WatchedDevices(ctx, SatelliteProfiles.CopyId("dualsense-composite"), 9, Say, Check);
+            }
+            else
+            {
+                Say("the composite's device watch is not checked; run selftest --composite to check it (installs HIDMaestro's USB/IP transport)");
+            }
         }
         catch (Exception ex)
         {
@@ -242,6 +260,112 @@ internal static class SelfTest
               pairing.AsSpan(1, SonyPairingMacPrefix.Length).SequenceEqual(SonyPairingMacPrefix) &&
               pairing[6] == controller.TransportIndex,
               $"{profileId}: feature 0x{pairingReport:X2} carries the pairing MAC ending in the transport index ({mac})");
+    }
+
+    // The device watch on a real controller, read the way satellite.exe reads
+    // it: whole, each of its devnodes disabled and enabled again through the
+    // Configuration Manager, and its device removed. A composite's USB device is
+    // disabled too, and what the USB/IP connection does then is reported.
+    private static void WatchedDevices(HMContext ctx, string profileId, int slot, Action<string> say, Action<bool, string> check)
+    {
+        using HMController controller = Create(ctx, profileId, slot, say, check);
+        HMProfile profile = controller.Profile;
+        bool companion = XusbCompanion.Presents(profile.XInput?.Via, profile.RequiresUsbipBackend);
+        PadDevnodes devnodes = DevnodeIds.For(profile.VendorId, profile.ProductId, companion, profile.RequiresUsbipBackend,
+                                              IdentityTags.TokenOf(controller.IdentityKey));
+        say($"{profileId}: the watch looks for {devnodes.Device}{(devnodes.Companion == null ? "" : " and " + devnodes.Companion)}");
+        var tree = new WindowsDevnodeTree();
+        using var watch = new DeviceWatch(tree);
+        using var block = new WatchBlockView(watch.Add((uint)slot, devnodes, DuplicateHere).Handle);
+
+        DeviceWatchBlock.Reading whole = block.Await(r => r.Condition == PadCondition.Present, WatchBudget);
+        check(whole.Condition == PadCondition.Present, $"{profileId}: the watch finds every devnode present, {Describe(whole)}");
+        uint beat = block.Read().Heartbeat;
+        Thread.Sleep(2 * DeviceWatchBlock.BeatMs);
+        check(block.Read().Heartbeat != beat, $"{profileId}: the heartbeat moves");
+        if (whole.Condition != PadCondition.Present) return;
+
+        DevnodeState device = tree.Locate(devnodes.Device);
+        DevnodeState collection = devnodes.Usbip
+            ? tree.FirstChild(tree.ChildOfClass(device, DevnodeIds.HidClass))
+            : tree.FirstChild(device);
+        say($"{profileId}: its HID collection is {WindowsDevnodeTree.InstanceIdOf(collection) ?? "not found"}");
+        DisableAndEnable(profileId, block, collection, WatchedDevnode.HidCollection, say, check);
+        if (devnodes.Usbip)
+            DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.HidClass), WatchedDevnode.HidFunction, say, check);
+        if (devnodes.Companion != null)
+            DisableAndEnable(profileId, block, tree.Locate(devnodes.Companion), WatchedDevnode.Companion, say, check);
+        DisableAndEnable(profileId, block, tree.Locate(devnodes.Device), WatchedDevnode.Device, say, check);
+
+        DevnodeState parent = tree.Locate(devnodes.Device);
+        uint removed = CfgMgr.CM_Query_And_Remove_SubTreeW(parent.Handle, out int veto, null, 0, CfgMgr.CM_REMOVE_NO_RESTART);
+        check(removed == CfgMgr.CR_SUCCESS, $"{profileId}: CM_Query_And_Remove_SubTree removes {devnodes.Device} (CONFIGRET {removed}, veto {veto})");
+        DeviceWatchBlock.Reading gone = block.Await(r => r.Condition?.Condition == DevnodeCondition.Missing, WatchBudget);
+        check(gone.Condition == new PadCondition(DevnodeCondition.Missing, WatchedDevnode.Device, 0),
+              $"{profileId}: once it is removed the watch finds its device missing, {Describe(gone)}");
+    }
+
+    private static void DisableAndEnable(string profileId, WatchBlockView block, DevnodeState node, WatchedDevnode role,
+                                         Action<string> say, Action<bool, string> check)
+    {
+        string named = $"{profileId}: its {role}";
+        uint disabled = node.Located ? CfgMgr.CM_Disable_DevNode(node.Handle, CfgMgr.CM_DISABLE_UI_NOT_OK) : uint.MaxValue;
+        check(disabled == CfgMgr.CR_SUCCESS, $"{named} is disabled through CM_Disable_DevNode (CONFIGRET {disabled})");
+        if (disabled != CfgMgr.CR_SUCCESS) return;
+        var expected = new PadCondition(DevnodeCondition.Disabled, role, DevnodeStatus.ProblemDisabled);
+        DeviceWatchBlock.Reading off = block.Await(r => r.Condition == expected, WatchBudget);
+        check(off.Condition == expected, $"{named} disabled reads disabled with Code 22, {Describe(off)}");
+        uint enabled = CfgMgr.CM_Enable_DevNode(node.Handle, 0);
+        check(enabled == CfgMgr.CR_SUCCESS, $"{named} is enabled again through CM_Enable_DevNode (CONFIGRET {enabled})");
+        var started = Stopwatch.StartNew();
+        DeviceWatchBlock.Reading back = block.Await(r => r.Condition == PadCondition.Present, ReattachBudget);
+        check(back.Condition == PadCondition.Present, $"{named} enabled again, the watch finds every devnode present after {started.Elapsed.TotalSeconds:F1} s, {Describe(back)}");
+    }
+
+    private static string Describe(DeviceWatchBlock.Reading reading) =>
+        reading.Condition is PadCondition c ? $"{c.Condition} {c.Devnode} problem {c.Problem}" : "mid-write";
+
+    // Into this process with the access satellite.exe's duplicate carries.
+    private static ulong DuplicateHere(nint local)
+    {
+        nint self = NativeMethods.GetCurrentProcess();
+        return NativeMethods.DuplicateHandle(self, local, self, out nint copy, NativeMethods.FILE_MAP_READ, false, 0)
+            ? (ulong)copy
+            : 0;
+    }
+
+    private sealed class WatchBlockView : IDisposable
+    {
+        private readonly nint _mapping;
+        private readonly nint _view;
+
+        public WatchBlockView(ulong handle)
+        {
+            _mapping = (nint)handle;
+            _view = _mapping == 0 ? 0 : NativeMethods.MapViewOfFile(_mapping, NativeMethods.FILE_MAP_READ, 0, 0, (nuint)DeviceWatchBlock.BlockSize);
+            if (_view == 0) throw new InvalidOperationException($"could not map the watch block read-only (error {Marshal.GetLastWin32Error()})");
+        }
+
+        public unsafe DeviceWatchBlock.Reading Read() =>
+            DeviceWatchBlock.Read(new ReadOnlySpan<byte>((void*)_view, DeviceWatchBlock.BlockSize));
+
+        public DeviceWatchBlock.Reading Await(Func<DeviceWatchBlock.Reading, bool> done, TimeSpan budget)
+        {
+            var clock = Stopwatch.StartNew();
+            DeviceWatchBlock.Reading reading = Read();
+            while (!done(reading) && clock.Elapsed < budget)
+            {
+                Thread.Sleep(AwaitPollMs);
+                reading = Read();
+            }
+            return reading;
+        }
+
+        public void Dispose()
+        {
+            NativeMethods.UnmapViewOfFile(_view);
+            NativeMethods.CloseHandle(_mapping);
+        }
     }
 
     private sealed class InputSectionView : IDisposable
