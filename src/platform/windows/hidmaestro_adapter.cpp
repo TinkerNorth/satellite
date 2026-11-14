@@ -12,6 +12,10 @@ namespace {
 
 namespace hm = satellite::hidmaestro;
 
+// IoSlot::hostDisabled's bit for a pad whose every input presentation is
+// disabled, above the WATCH_PRESENTS_* bits.
+constexpr uint32_t HOST_INPUT_HELD = 1u << 8;
+
 inline bool isValidSerial(uint32_t serial) {
     return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS;
 }
@@ -159,9 +163,10 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.watchPolicy = {};
     slot.watch = {};
     slot.watchLost.store(false, std::memory_order_release);
-    slot.watchDisabled.store(false, std::memory_order_release);
+    slot.hostDisabled.store(0, std::memory_order_release);
     slot.companion = false;
     slot.gate.store(hm::WriteGate::Open, std::memory_order_relaxed);
+    slot.micGate.store(hm::WriteGate::Open, std::memory_order_relaxed);
 }
 
 // The audio-carrying persona when asked for, else, or
@@ -293,6 +298,7 @@ bool HidMaestroAdapter::admitSlot(uint32_t serial) {
         hm::checkVersionSection(slot.versionView, slot.versionExpectation);
     const hm::WriteGate gate = hm::writeGateFor(check.verdict);
     slot.gate.store(gate, std::memory_order_relaxed);
+    slot.micGate.store(gate, std::memory_order_relaxed);
     slot.versionGate = gate;
     switch (gate) {
     case hm::WriteGate::Refused:
@@ -452,11 +458,17 @@ std::vector<uint32_t> HidMaestroAdapter::lostSerials() const {
     return lost;
 }
 
-bool HidMaestroAdapter::deviceDisabled(uint32_t serial) const {
-    if (!isValidSerial(serial)) return false;
+HostDisabled HidMaestroAdapter::hostDisabled(uint32_t serial) const {
+    if (!isValidSerial(serial)) return {};
     const IoSlot& slot = io_[serial];
-    const bool plugged = slot.plugged.load(std::memory_order_acquire);
-    return plugged && slot.watchDisabled.load(std::memory_order_acquire);
+    if (!slot.plugged.load(std::memory_order_acquire)) return {};
+    const uint32_t bits = slot.hostDisabled.load(std::memory_order_acquire);
+    HostDisabled d;
+    d.input = (bits & HOST_INPUT_HELD) != 0;
+    d.hid = (bits & hm::WATCH_PRESENTS_HID) != 0;
+    d.xinput = (bits & hm::WATCH_PRESENTS_XINPUT) != 0;
+    d.audio = (bits & hm::WATCH_PRESENTS_AUDIO) != 0;
+    return d;
 }
 
 // A refused pad still holds its controller until it is unplugged, but reads as
@@ -598,24 +610,28 @@ void HidMaestroAdapter::recheckDrivers() {
     const auto now = std::chrono::steady_clock::now();
     for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
         IoSlot& slot = io_[serial];
-        const bool plugged = slot.plugged.load(std::memory_order_relaxed);
-        const bool refused = slot.gate.load(std::memory_order_relaxed) == hm::WriteGate::Refused;
-        if (plugged && !refused) recheckSlotLocked(serial, slot, now);
+        if (slot.plugged.load(std::memory_order_relaxed)) recheckSlotLocked(serial, slot, now);
     }
 }
 
 // Caller holds busMtx_. The version section and the device watch each may
-// hold the pad, and the gate is the stricter of the two. A gate that cannot
-// change this tick (a submit holds a flag) leaves everything to the next, and
-// the version section names its own change once the gate agrees with it.
+// hold the pad, the input and the microphone each by the stricter of the two.
+// A gate that cannot change this tick (a submit holds a flag) leaves everything
+// to the next, and the version section names its own change once the gate
+// agrees with it. A refusal is final, but the watch goes on: the pad's device
+// can still be lost, and what Windows disables of it still changes.
 void HidMaestroAdapter::recheckSlotLocked(uint32_t serial, IoSlot& slot,
                                           std::chrono::steady_clock::time_point now) {
+    const WatchHolds holds = watchSlotLocked(serial, slot);
+    if (slot.gate.load(std::memory_order_relaxed) == hm::WriteGate::Refused) return;
     const hm::VersionCheck settled = settleVersionLocked(slot, now);
-    const bool watchHolds = watchSlotLocked(serial, slot);
-    const hm::WriteGate target = hm::combineGates(hm::writeGateFor(settled.verdict), watchHolds);
-    const bool moves = target != slot.gate.load(std::memory_order_relaxed);
-    if (moves && !changeGateLocked(slot, target)) return;
-    noteVersionGateLocked(serial, slot, settled, watchHolds);
+    const hm::WriteGate version = hm::writeGateFor(settled.verdict);
+    const hm::WriteGate input = hm::combineGates(version, holds.input);
+    const hm::WriteGate mic = hm::combineGates(version, holds.mic);
+    const bool moves = input != slot.gate.load(std::memory_order_relaxed) ||
+                       mic != slot.micGate.load(std::memory_order_relaxed);
+    if (moves && !changeGateLocked(slot, input, mic)) return;
+    noteVersionGateLocked(serial, slot, settled, holds.input);
 }
 
 // Caller holds busMtx_. A missing half is timed from the first check that
@@ -636,15 +652,16 @@ hm::VersionCheck HidMaestroAdapter::settleVersionLocked(IoSlot& slot,
 
 // Caller holds busMtx_. One tick of the pad's device watch: what changed goes
 // to the log, and what the core and the dashboard read goes to the flags.
-// True while the watch holds the pad's input.
-bool HidMaestroAdapter::watchSlotLocked(uint32_t serial, IoSlot& slot) {
-    if (slot.watchView == nullptr) return false;
+HidMaestroAdapter::WatchHolds HidMaestroAdapter::watchSlotLocked(uint32_t serial, IoSlot& slot) {
+    if (slot.watchView == nullptr) return {};
     const hm::WatchTracker was = slot.watch;
     slot.watch = hm::advanceWatch(was, hm::readWatchBlock(slot.watchView), slot.watchPolicy);
-    const hm::WatchNote note = hm::noteWatchStep(serial, was, slot.watch, slot.watchPolicy);
-    if (!note.text.empty()) log_.logMsg(note.level, "hidmaestro", note.text);
-    const bool holds = hm::watchHoldsInput(slot.watch);
-    slot.watchDisabled.store(holds, std::memory_order_release);
+    for (const hm::WatchNote& note : hm::noteWatchStep(serial, was, slot.watch, slot.watchPolicy)) {
+        log_.logMsg(note.level, "hidmaestro", note.text);
+    }
+    const WatchHolds holds{hm::watchHoldsInput(slot.watch), hm::watchHoldsMic(slot.watch)};
+    const uint32_t bits = hm::disabledParts(slot.watch.look) | (holds.input ? HOST_INPUT_HELD : 0);
+    slot.hostDisabled.store(bits, std::memory_order_release);
     slot.watchLost.store(hm::watchLost(slot.watch), std::memory_order_release);
     return holds;
 }
@@ -653,14 +670,17 @@ bool HidMaestroAdapter::watchSlotLocked(uint32_t serial, IoSlot& slot) {
 // pad whose submit holds one keeps its gate until the next tick, rather than
 // this spinning under busMtx_. With both held, a frame or mic window in flight
 // has finished, and every write after them sees the new gate.
-bool HidMaestroAdapter::changeGateLocked(IoSlot& slot, hm::WriteGate gate) {
+bool HidMaestroAdapter::changeGateLocked(IoSlot& slot, hm::WriteGate input, hm::WriteGate mic) {
     if (slot.inputBusy.test_and_set(std::memory_order_acquire)) return false;
     if (slot.micBusy.test_and_set(std::memory_order_acquire)) {
         slot.inputBusy.clear(std::memory_order_release);
         return false;
     }
-    slot.gate.store(gate, std::memory_order_relaxed);
-    if (gate == hm::WriteGate::Open) packAndWrite(slot);
+    const bool opens = input == hm::WriteGate::Open &&
+                       slot.gate.load(std::memory_order_relaxed) != hm::WriteGate::Open;
+    slot.gate.store(input, std::memory_order_relaxed);
+    slot.micGate.store(mic, std::memory_order_relaxed);
+    if (opens) packAndWrite(slot);
     slot.micBusy.clear(std::memory_order_release);
     slot.inputBusy.clear(std::memory_order_release);
     return true;
@@ -858,7 +878,7 @@ bool HidMaestroAdapter::submitMicAudioPcm(uint32_t serial, const int16_t* mono48
     IoSlot& slot = io_[serial];
     if (!slot.plugged.load(std::memory_order_acquire) || slot.micView == nullptr) return false;
     const InputClaim claim(slot.micBusy);
-    if (slot.gate.load(std::memory_order_relaxed) != hm::WriteGate::Open) return false;
+    if (slot.micGate.load(std::memory_order_relaxed) != hm::WriteGate::Open) return false;
 
     slot.micScratch.clear();
     slot.micResampler.process(mono48k, samples, slot.micScratch);

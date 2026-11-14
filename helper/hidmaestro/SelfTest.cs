@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using HIDMaestro;
 using Satellite.HmHelper.Core;
 
@@ -36,6 +37,9 @@ internal static class SelfTest
             if (!ok) failures++;
         }
 
+        Say("Close every program that holds a game controller open before this runs, Steam with a " +
+            "PlayStation pad among them: one that refuses a removal makes each removal wait about 5.4 s " +
+            "and fails the removal checks here (the SDK's DeviceManager.QueryRemoveSubtree).");
         try
         {
             using var ctx = new HMContext();
@@ -64,12 +68,12 @@ internal static class SelfTest
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualsense"), 5, calibrationReport: 0x05, pairingReport: 0x09, Say, Check);
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualshock-4-v2"), 6, calibrationReport: 0x02, pairingReport: 0x12, Say, Check);
 
-            WatchedDevices(ctx, SatelliteProfiles.CopyId("dualsense"), 7, Say, Check);
-            WatchedDevices(ctx, "xbox-360-wired", 8, Say, Check);
+            WatchedDevices(SatelliteProfiles.CopyId("dualsense"), 7, Say, Check);
+            WatchedDevices("xbox-360-wired", 8, Say, Check);
             if (composite)
             {
                 if (!HMContext.IsUsbipBackendAvailable) HMContext.InstallUsbipBackend();
-                WatchedDevices(ctx, SatelliteProfiles.CopyId("dualsense-composite"), 9, Say, Check);
+                WatchedDevices(SatelliteProfiles.CopyId("dualsense-composite"), 9, Say, Check);
             }
             else
             {
@@ -266,73 +270,107 @@ internal static class SelfTest
     // it: whole, each of its devnodes disabled and enabled again through the
     // Configuration Manager, and its device removed. A composite's USB device is
     // disabled too, and what the USB/IP connection does then is reported.
-    private static void WatchedDevices(HMContext ctx, string profileId, int slot, Action<string> say, Action<bool, string> check)
+    // The device watch through the session satellite.exe talks to: the hello on
+    // the watch's protocol, the plug that hands over the block, the devnodes the
+    // watch derived, each presentation disabled and enabled on its own, the
+    // device removed, and the unplug answered before the SDK has removed it.
+    private static void WatchedDevices(string profileId, int slot, Action<string> say, Action<bool, string> check)
     {
-        using HMController controller = Create(ctx, profileId, slot, say, check);
-        HMProfile profile = controller.Profile;
-        bool companion = XusbCompanion.Presents(profile.XInput?.Via, profile.RequiresUsbipBackend);
-        PadDevnodes devnodes = DevnodeIds.For(profile.VendorId, profile.ProductId, companion, profile.RequiresUsbipBackend,
-                                              IdentityTags.TokenOf(controller.IdentityKey));
-        say($"{profileId}: the watch looks for {devnodes.Device}{(devnodes.Companion == null ? "" : " and " + devnodes.Companion)}");
+        using var session = new Session(Environment.ProcessId);
+        string hello = session.Handle(@"{""op"":""hello"",""protocol"":2}", out _);
+        check(hello.Contains(@"""protocol"":2"), $"{profileId}: the session settles on the device watch's protocol");
+        string reply = session.Handle($@"{{""op"":""plug"",""serial"":{slot},""profile"":""{profileId}""}}", out _);
+        ulong handle = WatchHandleOf(reply);
+        PadDevnodes? devnodes = session.WatchedDevnodes((uint)slot);
+        check(handle != 0 && devnodes != null, $"{profileId}: the plug hands over a watch block ({Shorten(reply)})");
+        if (handle == 0 || devnodes == null) return;
+        say($"{profileId}: the watch looks for {devnodes.Device}{(devnodes.Companion == null ? "" : " and " + devnodes.Companion)}" +
+            (devnodes.Audio ? ", with an audio function" : ""));
         var tree = new WindowsDevnodeTree();
-        using var watch = new DeviceWatch(tree);
-        using var block = new WatchBlockView(watch.Add((uint)slot, devnodes, DuplicateHere).Handle);
+        using var block = new WatchBlockView(handle);
 
-        DeviceWatchBlock.Reading whole = block.Await(r => r.Condition == PadCondition.Present, WatchBudget);
-        check(whole.Condition == PadCondition.Present, $"{profileId}: the watch finds every devnode present, {Describe(whole)}");
-        uint beat = block.Read().Heartbeat;
+        DeviceWatchBlock.Reading whole = block.Await(r => r.Report is { Whole: true }, WatchBudget);
+        check(whole.Report is { Whole: true }, $"{profileId}: the watch finds every presentation present, {Describe(whole)}");
+        DeviceWatchBlock.Reading before = block.Read();
         Thread.Sleep(2 * DeviceWatchBlock.BeatMs);
-        check(block.Read().Heartbeat != beat, $"{profileId}: the heartbeat moves");
-        if (whole.Condition != PadCondition.Present) return;
+        DeviceWatchBlock.Reading after = block.Read();
+        check(after.Heartbeat != before.Heartbeat, $"{profileId}: the heartbeat moves");
+        check(after.Seq != before.Seq, $"{profileId}: the watcher looks again, so the sequence moves with nothing changed");
+        if (whole.Report is not { Whole: true }) return;
 
         DevnodeState device = tree.Locate(devnodes.Device);
-        DevnodeState collection = devnodes.Usbip
-            ? tree.FirstChild(tree.ChildOfClass(device, DevnodeIds.HidClass))
-            : tree.FirstChild(device);
-        say($"{profileId}: its HID collection is {WindowsDevnodeTree.InstanceIdOf(collection) ?? "not found"}");
-        DisableAndEnable(profileId, block, collection, WatchedDevnode.HidCollection, say, check);
+        DevnodeState hidParent = devnodes.Usbip ? tree.ChildOfClass(device, DevnodeIds.HidClass) : device;
+        say($"{profileId}: its HID collection is {WindowsDevnodeTree.InstanceIdOf(tree.FirstChild(hidParent)) ?? "not found"}");
+        DisableAndEnable(profileId, block, tree.FirstChild(hidParent), Presents.Hid, WatchedDevnode.HidCollection, say, check);
         if (devnodes.Usbip)
-            DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.HidClass), WatchedDevnode.HidFunction, say, check);
+            DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.HidClass),
+                             Presents.Hid, WatchedDevnode.HidFunction, say, check);
+        if (devnodes.Audio)
+            DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.MediaClass),
+                             Presents.Audio, WatchedDevnode.AudioFunction, say, check);
         if (devnodes.Companion != null)
-            DisableAndEnable(profileId, block, tree.Locate(devnodes.Companion), WatchedDevnode.Companion, say, check);
-        DisableAndEnable(profileId, block, tree.Locate(devnodes.Device), WatchedDevnode.Device, say, check);
+            DisableAndEnable(profileId, block, tree.Locate(devnodes.Companion), Presents.Xinput, WatchedDevnode.Companion,
+                             say, check);
+        DisableAndEnable(profileId, block, tree.Locate(devnodes.Device), Presents.Hid, WatchedDevnode.Device, say, check);
 
         DevnodeState parent = tree.Locate(devnodes.Device);
         uint removed = CfgMgr.CM_Query_And_Remove_SubTreeW(parent.Handle, out int veto, null, 0, CfgMgr.CM_REMOVE_NO_RESTART);
         check(removed == CfgMgr.CR_SUCCESS, $"{profileId}: CM_Query_And_Remove_SubTree removes {devnodes.Device} (CONFIGRET {removed}, veto {veto})");
-        DeviceWatchBlock.Reading gone = block.Await(r => r.Condition?.Condition == DevnodeCondition.Missing, WatchBudget);
-        check(gone.Condition == new PadCondition(DevnodeCondition.Missing, WatchedDevnode.Device, 0),
-              $"{profileId}: once it is removed the watch finds its device missing, {Describe(gone)}");
+        DeviceWatchBlock.Reading gone = block.Await(r => r.Report?.Hid.Condition is DevnodeCondition.Missing or DevnodeCondition.Failed,
+                                                    WatchBudget);
+        bool goneOrHeld = gone.Report?.Hid is { Devnode: WatchedDevnode.Device, Condition: DevnodeCondition.Missing or DevnodeCondition.Failed };
+        check(goneOrHeld, $"{profileId}: once it is removed the watch finds its device gone, or failed as a USB device held for " +
+                          $"eject is (Code 47): {Describe(gone)}");
+
+        var clock = Stopwatch.StartNew();
+        string unplugged = session.Handle($@"{{""op"":""unplug"",""serial"":{slot}}}", out _);
+        check(unplugged.Contains(@"""ok"":true") && clock.Elapsed < TimeSpan.FromSeconds(1),
+              $"{profileId}: the session answers its unplug in {clock.ElapsedMilliseconds} ms, before the SDK has removed the controller");
     }
 
-    private static void DisableAndEnable(string profileId, WatchBlockView block, DevnodeState node, WatchedDevnode role,
-                                         Action<string> say, Action<bool, string> check)
+    // Disables one devnode and checks that its presentation, and only that
+    // one, reads disabled; then enables it and times the presentation's return.
+    private static void DisableAndEnable(string profileId, WatchBlockView block, DevnodeState node, Presents part,
+                                         WatchedDevnode role, Action<string> say, Action<bool, string> check)
     {
         string named = $"{profileId}: its {role}";
         uint disabled = node.Located ? CfgMgr.CM_Disable_DevNode(node.Handle, CfgMgr.CM_DISABLE_UI_NOT_OK) : uint.MaxValue;
         check(disabled == CfgMgr.CR_SUCCESS, $"{named} is disabled through CM_Disable_DevNode (CONFIGRET {disabled})");
         if (disabled != CfgMgr.CR_SUCCESS) return;
-        var expected = new PadCondition(DevnodeCondition.Disabled, role, DevnodeStatus.ProblemDisabled);
-        DeviceWatchBlock.Reading off = block.Await(r => r.Condition == expected, WatchBudget);
-        check(off.Condition == expected, $"{named} disabled reads disabled with Code 22, {Describe(off)}");
+        var expected = new PresentationCondition(DevnodeCondition.Disabled, role, DevnodeStatus.ProblemDisabled);
+        DeviceWatchBlock.Reading off = block.Await(r => r.Report?.Of(part) == expected, WatchBudget);
+        check(off.Report?.Of(part) == expected, $"{named} disabled reads disabled with Code 22, {Describe(off)}");
+        foreach (Presents other in new[] { Presents.Hid, Presents.Xinput })
+        {
+            bool beside = other != part && off.Report is { } report && report.Presents.HasFlag(other);
+            if (beside)
+                check(off.Report!.Value.Present(other), $"{named} disabled, its {other} presentation still reads present, {Describe(off)}");
+        }
         uint enabled = CfgMgr.CM_Enable_DevNode(node.Handle, 0);
         check(enabled == CfgMgr.CR_SUCCESS, $"{named} is enabled again through CM_Enable_DevNode (CONFIGRET {enabled})");
         var started = Stopwatch.StartNew();
-        DeviceWatchBlock.Reading back = block.Await(r => r.Condition == PadCondition.Present, ReattachBudget);
-        check(back.Condition == PadCondition.Present, $"{named} enabled again, the watch finds every devnode present after {started.Elapsed.TotalSeconds:F1} s, {Describe(back)}");
+        DeviceWatchBlock.Reading back = block.Await(r => r.Report is { Whole: true }, ReattachBudget);
+        check(back.Report is { Whole: true },
+              $"{named} enabled again, the watch finds every presentation present after {started.Elapsed.TotalSeconds:F1} s, {Describe(back)}");
     }
 
     private static string Describe(DeviceWatchBlock.Reading reading) =>
-        reading.Condition is PadCondition c ? $"{c.Condition} {c.Devnode} problem {c.Problem}" : "mid-write";
+        reading.Report is PadReport r
+            ? $"HID {Part(r.Hid)}" + (r.Presents.HasFlag(Presents.Xinput) ? $"; XInput {Part(r.Xinput)}" : "") +
+              (r.Presents.HasFlag(Presents.Audio) ? $"; audio {Part(r.Audio)}" : "")
+            : "mid-write";
 
-    // Into this process with the access satellite.exe's duplicate carries.
-    private static ulong DuplicateHere(nint local)
+    private static string Part(PresentationCondition p) => $"{p.Condition} {p.Devnode} problem {p.Problem}";
+
+    private static ulong WatchHandleOf(string reply)
     {
-        nint self = NativeMethods.GetCurrentProcess();
-        return NativeMethods.DuplicateHandle(self, local, self, out nint copy, NativeMethods.FILE_MAP_READ, false, 0)
-            ? (ulong)copy
+        using JsonDocument doc = JsonDocument.Parse(reply);
+        return doc.RootElement.TryGetProperty("watch", out JsonElement watch) && watch.TryGetUInt64(out ulong handle)
+            ? handle
             : 0;
     }
+
+    private static string Shorten(string reply) => reply.Length <= 120 ? reply : reply[..120] + "...";
 
     private sealed class WatchBlockView : IDisposable
     {

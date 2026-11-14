@@ -1916,7 +1916,7 @@ SessionService::snapshotController(const Connection& conn, const Controller& ctr
     info.serial = ctrl.serialNo;
     info.active = true;
     info.pluggedIn = backend_.isDevicePlugged(ctrl.serialNo);
-    info.disabled = backend_.deviceDisabled(ctrl.serialNo);
+    info.hostDisabled = backend_.hostDisabled(ctrl.serialNo);
     info.controllerType = ctrl.controllerType;
     info.touchpadMode = ctrl.touchpadMode;
     info.batteryLevel = BATTERY_LEVEL_UNKNOWN;

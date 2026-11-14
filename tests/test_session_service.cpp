@@ -329,7 +329,13 @@ struct MockViGem : IGamepadPort {
         return lost;
     }
     std::function<void()> afterLostRead;
-    bool deviceDisabled(uint32_t serial) const override { return disabledSet.count(serial) != 0; }
+    std::set<uint32_t> audioDisabledSet;
+    HostDisabled hostDisabled(uint32_t serial) const override {
+        HostDisabled d;
+        d.input = disabledSet.count(serial) != 0;
+        d.audio = audioDisabledSet.count(serial) != 0;
+        return d;
+    }
 
     // The serials a new helper has since swept, reported once; and how often
     // the core asked, which it does inside topology changes only.
@@ -1446,7 +1452,7 @@ static void test_disabledPad_keepsItsSlotAndShowsDisabled() {
     const uint32_t serial = serialOfPad(svc, 0);
     svc.handleHeartbeat(r.token);
     const uint16_t epochBefore = client.lastAckEpoch;
-    EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].disabled);
+    EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].hostDisabled.input);
     vigem.disabledSet.insert(serial);
     svc.recheckDrivers();
     svc.handleHeartbeat(r.token);
@@ -1454,12 +1460,12 @@ static void test_disabledPad_keepsItsSlotAndShowsDisabled() {
     EXPECT_EQ(client.lastAckEpoch, epochBefore);
     EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b1);
     const auto ctrl = svc.getConnectionsSnapshot().connections[0].controllers[0];
-    EXPECT(ctrl.disabled);
+    EXPECT(ctrl.hostDisabled.input);
     EXPECT(ctrl.pluggedIn);
 
     TEST("disabled pad: enabled again, the snapshot no longer names it disabled");
     vigem.disabledSet.clear();
-    EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].disabled);
+    EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].hostDisabled.input);
 }
 
 static void test_applyController_standalone() {
@@ -3274,15 +3280,15 @@ static void test_micAudio_aPadThatReadsAsGoneIsNotAMissingMicrophone() {
 }
 
 static void test_micAudio_aDisabledPadIsNotAMissingMicrophone() {
-    TEST("mic audio: a pad its host disabled drops the audio without logging that the pad has "
-         "no microphone endpoint");
+    TEST("mic audio: a pad whose audio function its host disabled drops the audio without logging "
+         "that the pad has no microphone endpoint");
     MockViGem vigem;
     MockClient client;
     MockLog log;
     satellite::audio::OpusCodecFactory codecs;
     SessionService svc(vigem, client, log, {}, &codecs);
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
-    vigem.disabledSet.insert(serialOfSlot(svc, 0));
+    vigem.audioDisabledSet.insert(serialOfSlot(svc, 0));
     vigem.submitMicAudioReturnVal = false;
     MicPacketSource mic;
     for (uint16_t seq = 0; seq < 3; seq++) {

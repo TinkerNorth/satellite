@@ -1037,11 +1037,14 @@ class FakeHelper {
         slot = Slot{};
     }
 
-    // One finished write of the watcher's: the sequence odd while it writes.
+    // One finished look of the watcher's: the sequence odd while it writes,
+    // every presentation the pad has showing `condition`.
     static void writeCondition(uint8_t* block, uint32_t condition) {
         uint8_t* seq = block + hm::WATCH_SEQ_OFFSET;
         satellite::writeLE32(seq, satellite::readLE32(seq) + 1);
-        satellite::writeLE32(block + hm::WATCH_CONDITION_OFFSET, condition);
+        satellite::writeLE32(block + hm::WATCH_PRESENTS_OFFSET, hm::WATCH_PRESENTS_HID);
+        satellite::writeLE32(block + hm::WATCH_HID_OFFSET + hm::WATCH_FIELD_CONDITION_OFFSET,
+                             condition);
         satellite::writeLE32(seq, satellite::readLE32(seq) + 1);
     }
 

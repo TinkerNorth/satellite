@@ -114,11 +114,39 @@ inline const char* controllerStateName(ControllerState s) {
     return "live";
 }
 
-// What the admin API names a connection's controller: Live, Detached or
-// Disabled; the other states are not threaded through SessionService yet.
-inline ControllerState controllerStateFor(bool active, bool disabled) {
+// What the admin API names a connection's controller: Live, Detached,
+// Disabled, or Failed for one its backend refused; the other states are not
+// threaded through SessionService yet.
+inline ControllerState controllerStateFor(bool active, bool pluggedIn, bool disabled) {
     if (!active) return ControllerState::Detached;
+    if (!pluggedIn) return ControllerState::Failed;
     return disabled ? ControllerState::Disabled : ControllerState::Live;
+}
+
+// What the host's user has disabled of a virtual pad (Windows' Device
+// Manager), each of its presentations on its own: the pad is held only when
+// every presentation that takes input is.
+struct HostDisabled {
+    bool input = false;  // every input presentation: the backend writes the pad nothing
+    bool hid = false;    // its HID game controller
+    bool xinput = false; // its XInput device
+    bool audio = false;  // its audio function: the backend holds its microphone
+};
+
+// The presentations the admin API names as disabled in Windows.
+inline constexpr const char* HOST_PART_HID = "hid";
+inline constexpr const char* HOST_PART_XINPUT = "xinput";
+inline constexpr const char* HOST_PART_AUDIO = "audio";
+
+// The ones the controller's state does not already say: its HID game
+// controller or XInput device while the other still takes input, and its audio
+// function, which holds the microphone whatever the input does.
+inline std::vector<const char*> disabledInWindows(const HostDisabled& d) {
+    std::vector<const char*> parts;
+    if (!d.input && d.hid) parts.push_back(HOST_PART_HID);
+    if (!d.input && d.xinput) parts.push_back(HOST_PART_XINPUT);
+    if (d.audio) parts.push_back(HOST_PART_AUDIO);
+    return parts;
 }
 
 // REST + wire protocol versions (docs/contract.md §Versioning). The satellite accepts

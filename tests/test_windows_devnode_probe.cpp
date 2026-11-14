@@ -14,6 +14,7 @@
 #include <setupapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cwctype>
@@ -575,6 +576,73 @@ void probeDisableThroughCm(Probe& p) {
     EXPECT(child.started());
 }
 
+// One look of the helper's watcher at a pad, the calls it makes: the parent's
+// locate and status, its first child's walk and name, and the child's status.
+struct TimedLook {
+    std::chrono::microseconds took{0};
+    bool foundParent = false;
+};
+
+TimedLook timedLook(const std::wstring& parentId) {
+    const auto start = std::chrono::steady_clock::now();
+    const NodeState parent = readNode(parentId);
+    const ChildWalk walk = firstChildOf(parentId);
+    const NodeState child = walk.found == CR_SUCCESS ? readNode(walk.instanceId) : NodeState{};
+    const auto took = std::chrono::steady_clock::now() - start;
+    TimedLook look;
+    look.took = std::chrono::duration_cast<std::chrono::microseconds>(took);
+    look.foundParent = parent.present() || child.present();
+    return look;
+}
+
+constexpr int TIMED_LOOKS = 1000;
+constexpr int TIMED_TOGGLES = 5;
+constexpr auto WATCH_PERIOD = std::chrono::milliseconds(500);
+
+// The evidence for the watch's stale bound (WATCH_LOOK_STALE_MS, three of the
+// watcher's 500 ms periods): how long a look takes, at rest and while another
+// thread disables and enables the pad's parent the way Device Manager does.
+void probeLookTiming(Probe& p) {
+    const NodeState ready =
+        waitForNode(p.parent.instanceId, [](const NodeState& s) { return s.started(); });
+    std::chrono::microseconds atRest{0};
+    int found = 0;
+    for (int i = 0; i < TIMED_LOOKS; ++i) {
+        const TimedLook look = timedLook(p.parent.instanceId);
+        atRest = std::max(atRest, look.took);
+        found += look.foundParent ? 1 : 0;
+    }
+    std::atomic<bool> toggled{false};
+    std::thread toggler([&p, &toggled] {
+        for (int i = 0; i < TIMED_TOGGLES; ++i) {
+            changeState(p.parent.instanceId, DICS_DISABLE);
+            waitForNode(p.parent.instanceId,
+                        [](const NodeState& s) { return s.hasProblem(CM_PROB_DISABLED); });
+            changeState(p.parent.instanceId, DICS_ENABLE);
+            waitForNode(p.parent.instanceId, [](const NodeState& s) { return s.started(); });
+        }
+        toggled = true;
+    });
+    std::chrono::microseconds underChange{0};
+    int looks = 0;
+    while (!toggled) {
+        underChange = std::max(underChange, timedLook(p.parent.instanceId).took);
+        looks++;
+    }
+    toggler.join();
+    std::cout << "probe: a look took at most " << atRest.count() << " us over " << TIMED_LOOKS
+              << " at rest, and " << underChange.count() << " us over " << looks
+              << " while the parent was disabled and enabled " << TIMED_TOGGLES << " times\n";
+    TEST("probe: a look at a pad's devnodes takes far less than the watcher's 500 ms period, at "
+         "rest and while its parent is disabled and enabled, so a look three periods old is a "
+         "watcher stuck in a call");
+    EXPECT(ready.started());
+    EXPECT_EQ(found, TIMED_LOOKS);
+    EXPECT(atRest < WATCH_PERIOD);
+    EXPECT(underChange < WATCH_PERIOD);
+    EXPECT(looks > 0);
+}
+
 void probeChildWalk(const Probe& p) {
     const ChildWalk walk = firstChildOf(p.parent.instanceId);
     std::cout << "probe: CM_Get_Child of the parent: " << walk.found << ", "
@@ -737,6 +805,7 @@ int runProbe(Probe& p) {
     probeLeaveAndReturn(p);
     probeNeverSeen(p);
     probeUnelevated(p);
+    probeLookTiming(p);
     reportThreads(p);
     return 0;
 }

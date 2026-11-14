@@ -138,7 +138,12 @@ struct MockPort : IGamepadPort {
     }
     std::vector<uint32_t> lostSerials() const override { return lost; }
     std::vector<uint32_t> settledSerials() override { return std::exchange(settled, {}); }
-    bool deviceDisabled(uint32_t serial) const override { return disabled.count(serial) != 0; }
+    HostDisabled hostDisabled(uint32_t serial) const override {
+        HostDisabled d;
+        d.input = disabled.count(serial) != 0;
+        d.audio = d.input;
+        return d;
+    }
 };
 
 MockPort makeVigemLike(const char* name = "vigem") {
@@ -346,17 +351,18 @@ static void test_settled_serials_come_from_every_child() {
 }
 
 static void test_a_disabled_device_is_asked_of_its_owner() {
-    TEST("deviceDisabled defers to the owner; a serial nobody owns is not disabled");
+    TEST("hostDisabled defers to the owner; a serial nobody owns has nothing disabled");
     MockPort a = makeVigemLike();
     MockPort b = makeHidMaestroLike();
     GamepadMux mux({&a, &b});
     a.disabled = {4};
     b.disabled = {4};
-    EXPECT(!mux.deviceDisabled(4));
+    EXPECT(!mux.hostDisabled(4).input);
     EXPECT(mux.pluginDevice(4, GamepadIdentity::DualSense));
-    EXPECT(mux.deviceDisabled(4));
+    EXPECT(mux.hostDisabled(4).input);
+    EXPECT(mux.hostDisabled(4).audio);
     b.disabled.clear();
-    EXPECT(!mux.deviceDisabled(4));
+    EXPECT(!mux.hostDisabled(4).input);
 }
 
 static void test_unplug_clears_owner() {

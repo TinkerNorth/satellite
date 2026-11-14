@@ -76,8 +76,16 @@ struct StubGamepad : IGamepadPort {
     bool unplugDevice(uint32_t) override { return true; }
     bool submitReport(uint32_t, const GamepadReport&) override { return true; }
     void setRumbleCallback(RumbleCallback) override {}
-    bool deviceDisabled(uint32_t) const override { return disabled.load(); }
+    HostDisabled hostDisabled(uint32_t) const override {
+        HostDisabled d;
+        d.input = disabled.load();
+        d.xinput = xinputDisabled.load();
+        return d;
+    }
+    bool isDevicePlugged(uint32_t serial) const override { return serial != 0 && !refused.load(); }
     std::atomic<bool> disabled{false};
+    std::atomic<bool> xinputDisabled{false};
+    std::atomic<bool> refused{false};
 };
 
 struct StubClient : IClientPort {
@@ -856,6 +864,29 @@ int main() {
             }
             EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);
         }
+        gamepad.disabled.store(false);
+
+        TEST("a controller whose XInput device alone its host disabled reads live and names it");
+        gamepad.xinputDisabled.store(true);
+        auto partly = cli.Get("/api/connections");
+        EXPECT(partly && partly->status == 200);
+        if (partly) {
+            Json c = parseJson(partly->body)["connections"][0]["controllers"][0];
+            EXPECT_EQ(jsonStr(c, "state"), std::string("live"));
+            EXPECT(c["disabledInWindows"] == Json::array({"xinput"}));
+        }
+        gamepad.xinputDisabled.store(false);
+
+        TEST("a controller its backend refused reads failed, not a stale disabled");
+        gamepad.refused.store(true);
+        gamepad.disabled.store(true);
+        auto refused = cli.Get("/api/connections");
+        EXPECT(refused && refused->status == 200);
+        if (refused) {
+            Json c = parseJson(refused->body)["connections"][0]["controllers"][0];
+            EXPECT_EQ(jsonStr(c, "state"), std::string("failed"));
+        }
+        gamepad.refused.store(false);
         gamepad.disabled.store(false);
     }
     {

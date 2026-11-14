@@ -86,7 +86,7 @@ class HidMaestroAdapter : public IGamepadPort {
     void recheckDrivers() override;
     std::vector<uint32_t> lostSerials() const override;
     std::vector<uint32_t> settledSerials() override;
-    bool deviceDisabled(uint32_t serial) const override;
+    HostDisabled hostDisabled(uint32_t serial) const override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
     void setTriggerEffectsCallback(TriggerEffectsCallback cb) override;
@@ -209,9 +209,15 @@ class HidMaestroAdapter : public IGamepadPort {
         satellite::hidmaestro::WatchPolicy watchPolicy{};
         satellite::hidmaestro::WatchTracker watch{};
         // Published for the core and the dashboard, which read them without
-        // busMtx_: the watch has given the pad up, or holds it disabled.
+        // busMtx_: the watch has given the pad up, and what of it Windows has
+        // disabled (WATCH_PRESENTS_* bits, and HOST_INPUT_HELD when every
+        // input presentation is).
         std::atomic<bool> watchLost{false};
-        std::atomic<bool> watchDisabled{false};
+        std::atomic<uint32_t> hostDisabled{0};
+        // The microphone's own gate: the version section's, and the watch's
+        // for the audio function alone. The input's is `gate`.
+        std::atomic<satellite::hidmaestro::WriteGate> micGate{
+            satellite::hidmaestro::WriteGate::Open};
 
         // Atomic so isDevicePlugged can read without data races; written under
         // busMtx_ (plugin/unplug).
@@ -310,8 +316,14 @@ class HidMaestroAdapter : public IGamepadPort {
                            std::chrono::steady_clock::time_point now);
     satellite::hidmaestro::VersionCheck
     settleVersionLocked(IoSlot& slot, std::chrono::steady_clock::time_point now);
-    bool watchSlotLocked(uint32_t serial, IoSlot& slot);
-    bool changeGateLocked(IoSlot& slot, satellite::hidmaestro::WriteGate gate);
+    // What the watch holds of a pad this tick: its input, its microphone.
+    struct WatchHolds {
+        bool input = false;
+        bool mic = false;
+    };
+    WatchHolds watchSlotLocked(uint32_t serial, IoSlot& slot);
+    bool changeGateLocked(IoSlot& slot, satellite::hidmaestro::WriteGate input,
+                          satellite::hidmaestro::WriteGate mic);
     void noteVersionGateLocked(uint32_t serial, IoSlot& slot,
                                const satellite::hidmaestro::VersionCheck& settled, bool watchHolds);
     void noteDriver(uint32_t serial, IoSlot& slot,

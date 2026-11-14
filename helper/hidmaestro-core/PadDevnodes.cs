@@ -37,8 +37,9 @@ public static class DevnodeStatus
 // PresentationPlan.cs:160-171, DeviceOrchestrator.cs:1146-1151,
 // DeviceIdentity.cs:94, 106, UsbDescriptorSet.cs:146-151). Internal formats,
 // held to the SDK by check-sdk; a HID child or a composite's functions are
-// found by walking from the device.
-public sealed record PadDevnodes(string Device, string? Companion, bool Usbip);
+// found by walking from the device. Audio says a composite materialized its
+// USB-audio function (HMController.UsbAudio).
+public sealed record PadDevnodes(string Device, string? Companion, bool Usbip, bool Audio = false);
 
 public static class DevnodeIds
 {
@@ -51,9 +52,14 @@ public static class DevnodeIds
     // GUID_DEVCLASS_HIDCLASS: the setup class of a composite's HID function.
     public static readonly Guid HidClass = new("745a17a0-74d3-11d0-b6fe-00a0c90f57da");
 
-    public static PadDevnodes For(ushort vendorId, ushort productId, bool companion, bool usbip, string token)
+    // GUID_DEVCLASS_MEDIA: the setup class of a composite's USB-audio function,
+    // which usbaudio.sys serves and the microphone and speaker hang off.
+    public static readonly Guid MediaClass = new("4d36e96c-e325-11ce-bfc1-08002be10318");
+
+    public static PadDevnodes For(ushort vendorId, ushort productId, bool companion, bool usbip, string token,
+                                  bool audio = false)
     {
-        if (usbip) return new($@"USB\VID_{vendorId:X4}&PID_{productId:X4}\{UsbSerial(token)}", null, true);
+        if (usbip) return new($@"USB\VID_{vendorId:X4}&PID_{productId:X4}\{UsbSerial(token)}", null, true, audio);
         if (companion)
             return new($@"ROOT\{CompanionParentEnumerator(vendorId, productId)}\{token}",
                        $@"SWD\{CompanionEnumerator}\{token}", false);
@@ -76,42 +82,64 @@ public static class DevnodeIds
 
 public static class PadEvaluation
 {
-    // Every devnode the pad needs, as far as a walk can reach: a disabled one
-    // first, since disabling a devnode takes its children out of the tree, then
-    // the first that is not present, else the pad is present.
-    public static PadCondition Evaluate(IDevnodeTree tree, PadDevnodes pad)
+    // Each of the pad's presentations on its own, so one that Windows disabled
+    // never hides another that still takes input: the HID game controller
+    // (the parent and its HID child, or a composite's USB device, HID function
+    // and collection), the XInput device (the XUSB companion), and a
+    // composite's USB-audio function.
+    public static PadReport Evaluate(IDevnodeTree tree, PadDevnodes pad)
     {
         DevnodeState device = tree.Locate(pad.Device);
-        IEnumerable<(WatchedDevnode Role, DevnodeState Node)> found = new[] { (WatchedDevnode.Device, device) };
-        if (DevnodeStatus.Classify(device) == DevnodeCondition.Present)
-            found = found.Concat(pad.Usbip ? CompositeHid(tree, device) : ChildHid(tree, device));
-        if (pad.Companion != null) found = found.Append((WatchedDevnode.Companion, tree.Locate(pad.Companion)));
-        return Worst(found.ToArray());
+        Presents presents = Presents.Hid | (pad.Companion != null ? Presents.Xinput : 0) |
+                            (pad.Usbip && pad.Audio ? Presents.Audio : 0);
+        PresentationCondition hid = Condition(pad.Usbip ? CompositeHid(tree, device) : RootHid(tree, device),
+                                              WatchedDevnode.HidCollection);
+        PresentationCondition xinput = pad.Companion == null
+            ? default
+            : Condition(new[] { (WatchedDevnode.Companion, tree.Locate(pad.Companion)) }, WatchedDevnode.Companion);
+        PresentationCondition audio = presents.HasFlag(Presents.Audio)
+            ? Condition(CompositeAudio(tree, device), WatchedDevnode.AudioFunction)
+            : default;
+        return new PadReport(presents, hid, xinput, audio);
     }
 
-    private static IEnumerable<(WatchedDevnode, DevnodeState)> ChildHid(IDevnodeTree tree, DevnodeState parent)
+    private static IEnumerable<(WatchedDevnode, DevnodeState)> RootHid(IDevnodeTree tree, DevnodeState parent)
     {
-        yield return (WatchedDevnode.HidCollection, tree.FirstChild(parent));
+        yield return (WatchedDevnode.Device, parent);
+        if (DevnodeStatus.Classify(parent) == DevnodeCondition.Present)
+            yield return (WatchedDevnode.HidCollection, tree.FirstChild(parent));
     }
 
     private static IEnumerable<(WatchedDevnode, DevnodeState)> CompositeHid(IDevnodeTree tree, DevnodeState usb)
     {
+        yield return (WatchedDevnode.Device, usb);
+        if (DevnodeStatus.Classify(usb) != DevnodeCondition.Present) yield break;
         DevnodeState function = tree.ChildOfClass(usb, DevnodeIds.HidClass);
         yield return (WatchedDevnode.HidFunction, function);
         if (DevnodeStatus.Classify(function) == DevnodeCondition.Present)
             yield return (WatchedDevnode.HidCollection, tree.FirstChild(function));
     }
 
-    private static PadCondition Worst(IReadOnlyList<(WatchedDevnode Role, DevnodeState Node)> found)
+    private static IEnumerable<(WatchedDevnode, DevnodeState)> CompositeAudio(IDevnodeTree tree, DevnodeState usb)
     {
-        Finding[] findings = found.Select(f => new Finding(f.Role, f.Node, DevnodeStatus.Classify(f.Node))).ToArray();
-        Finding? worst = findings.FirstOrDefault(f => f.Condition == DevnodeCondition.Disabled)
-                         ?? findings.FirstOrDefault(f => f.Condition != DevnodeCondition.Present);
-        return worst?.Reported() ?? PadCondition.Present;
+        yield return (WatchedDevnode.Device, usb);
+        if (DevnodeStatus.Classify(usb) == DevnodeCondition.Present)
+            yield return (WatchedDevnode.AudioFunction, tree.ChildOfClass(usb, DevnodeIds.MediaClass));
     }
 
-    private sealed record Finding(WatchedDevnode Role, DevnodeState Node, DevnodeCondition Condition)
+    // A presentation's devnodes from the top, each walked only below a present
+    // one: the first that is not present names the condition (a disabled
+    // devnode takes its children out of the tree with it), else the
+    // presentation is present, named by the devnode a program reaches it by.
+    private static PresentationCondition Condition(IEnumerable<(WatchedDevnode Role, DevnodeState Node)> path,
+                                                   WatchedDevnode named)
     {
-        public PadCondition Reported() => new(Condition, Role, Condition == DevnodeCondition.Missing ? 0 : Node.Problem);
+        foreach ((WatchedDevnode role, DevnodeState node) in path)
+        {
+            DevnodeCondition condition = DevnodeStatus.Classify(node);
+            if (condition != DevnodeCondition.Present)
+                return new(condition, role, condition == DevnodeCondition.Missing ? 0 : node.Problem);
+        }
+        return new(DevnodeCondition.Present, named, 0);
     }
 }

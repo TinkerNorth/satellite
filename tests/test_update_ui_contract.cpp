@@ -242,8 +242,10 @@ static std::set<std::string> controllerStateKeys() {
 static std::set<std::string> controllerStatesWritten() {
     std::set<std::string> written;
     for (const bool active : {false, true}) {
-        for (const bool disabled : {false, true}) {
-            written.insert(controllerStateName(controllerStateFor(active, disabled)));
+        for (const bool plugged : {false, true}) {
+            for (const bool disabled : {false, true}) {
+                written.insert(controllerStateName(controllerStateFor(active, plugged, disabled)));
+            }
         }
     }
     return written;
@@ -252,14 +254,20 @@ static std::set<std::string> controllerStatesWritten() {
 static void test_a_disabled_controller_reads_disabled() {
     TEST("controller state: an active controller its host disabled reads disabled, an active one "
          "live, and one being torn down detached");
-    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, true))),
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, true, true))),
               std::string("disabled"));
-    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, false))),
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, true, false))),
               std::string("live"));
-    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(false, true))),
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(false, true, true))),
               std::string("detached"));
-    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(false, false))),
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(false, false, false))),
               std::string("detached"));
+    TEST("controller state: an active controller whose backend refused it reads failed, whatever "
+         "its host has disabled");
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, false, true))),
+              std::string("failed"));
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, false, false))),
+              std::string("failed"));
 }
 
 static void test_every_controller_state_written_has_a_label() {
@@ -288,6 +296,69 @@ static void test_controller_state_labels_are_in_every_catalog() {
     }
 }
 
+// Every presentation the admin API can name as disabled in Windows, from the
+// function that names them, over every input it takes.
+static std::set<std::string> hostPartsWritten() {
+    std::set<std::string> written;
+    for (int bits = 0; bits < 16; ++bits) {
+        HostDisabled d;
+        d.input = (bits & 1) != 0;
+        d.hid = (bits & 2) != 0;
+        d.xinput = (bits & 4) != 0;
+        d.audio = (bits & 8) != 0;
+        for (const char* part : disabledInWindows(d)) written.insert(part);
+    }
+    return written;
+}
+
+static std::string controllerNoteLabelBody() {
+    const std::string source = readFileAll(webPath("dashboard.js"));
+    const std::regex pattern("function controllerNoteLabel\\(part\\) \\{([\\s\\S]*?)\\n\\}");
+    std::smatch body;
+    return std::regex_search(source, body, pattern) ? body[1].str() : std::string();
+}
+
+static void test_every_part_disabled_in_windows_has_a_note() {
+    TEST("controller notes: every presentation the admin API names as disabled in Windows has a "
+         "case in the dashboard's controllerNoteLabel");
+    const std::string body = controllerNoteLabelBody();
+    EXPECT(!body.empty());
+    const std::set<std::string> labelled =
+        distinct(firstGroups(body, std::regex("case '([^']+)':")));
+    const std::set<std::string> written = hostPartsWritten();
+    EXPECT_EQ(written.size(), size_t{3});
+    for (const std::string& part : written) {
+        const bool handled = labelled.count(part) != 0;
+        if (!handled) reportMissing("case '" + part + "'", "controllerNoteLabel");
+        EXPECT(handled);
+    }
+
+    TEST("controller notes: every string key controllerNoteLabel asks for is in every shipped "
+         "catalog");
+    const std::set<std::string> keys = distinct(firstGroups(body, std::regex("\\bt\\('([^']+)'")));
+    EXPECT_EQ(keys.size(), written.size());
+    for (const std::string& locale : shippedLocales()) {
+        const Json strings = catalog(locale);
+        if (!strings.is_object()) continue;
+        for (const std::string& key : keys) {
+            const bool present = strings.contains(key) && strings[key].is_string();
+            if (!present) reportMissing(key, locale + ".json");
+            EXPECT(present);
+        }
+    }
+
+    TEST("controller notes: a presentation the controller's state already says is not named "
+         "again; its audio function always is");
+    HostDisabled whole;
+    whole.input = whole.hid = whole.xinput = true;
+    EXPECT(disabledInWindows(whole).empty());
+    whole.audio = true;
+    EXPECT(disabledInWindows(whole) == std::vector<const char*>({HOST_PART_AUDIO}));
+    HostDisabled companion;
+    companion.xinput = true;
+    EXPECT(disabledInWindows(companion) == std::vector<const char*>({HOST_PART_XINPUT}));
+}
+
 int main() {
     std::cout << "Running update UI contract tests...\n\n";
     test_scan_sees_the_reads();
@@ -297,6 +368,7 @@ int main() {
     test_translations_keep_the_placeholders();
     test_touchpad_surface_types_are_wire_names();
     test_a_disabled_controller_reads_disabled();
+    test_every_part_disabled_in_windows_has_a_note();
     test_every_controller_state_written_has_a_label();
     test_controller_state_labels_are_in_every_catalog();
 

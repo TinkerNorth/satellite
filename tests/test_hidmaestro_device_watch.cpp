@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <ostream>
 #include <string>
+#include <vector>
 
 namespace satellite {
 namespace hidmaestro {
@@ -19,6 +20,10 @@ std::ostream& operator<<(std::ostream& os, PadLoss loss) { return os << static_c
 
 std::ostream& operator<<(std::ostream& os, DevnodeCondition condition) {
     return os << static_cast<uint32_t>(condition);
+}
+
+std::ostream& operator<<(std::ostream& os, Presentation part) {
+    return os << static_cast<uint32_t>(part);
 }
 
 std::ostream& operator<<(std::ostream& os, WriteGate gate) { return os << static_cast<int>(gate); }
@@ -34,75 +39,138 @@ namespace {
 using WatchImage = std::array<uint8_t, WATCH_BLOCK_SIZE>;
 
 // A small policy, so a test walks a grace in a few steps.
-constexpr WatchPolicy SHORT{5, 3, 7};
+constexpr WatchPolicy SHORT{5, 3, 7, 4};
+
+PresentationReading part(DevnodeCondition condition,
+                         WatchedDevnode devnode = WatchedDevnode::Device, uint32_t problem = 0) {
+    return {condition, devnode, problem};
+}
+
+const PresentationReading PRESENT = part(DevnodeCondition::Present);
+const PresentationReading UNKNOWN = part(DevnodeCondition::Unknown);
+
+PresentationReading disabled(WatchedDevnode devnode) {
+    return part(DevnodeCondition::Disabled, devnode, 22);
+}
+
+// The looks of the three kinds of pad the SDK makes: a UMDF2 pad, a profile
+// with an XUSB companion, and a composite with its audio function.
+WatchLook sonyLook(PresentationReading hid) {
+    WatchLook look;
+    look.presents = WATCH_PRESENTS_HID;
+    look.hid = hid;
+    return look;
+}
+
+WatchLook xboxLook(PresentationReading hid, PresentationReading xinput) {
+    WatchLook look = sonyLook(hid);
+    look.presents |= WATCH_PRESENTS_XINPUT;
+    look.xinput = xinput;
+    return look;
+}
+
+WatchLook compositeLook(PresentationReading hid, PresentationReading audio) {
+    WatchLook look = sonyLook(hid);
+    look.presents |= WATCH_PRESENTS_AUDIO;
+    look.audio = audio;
+    return look;
+}
+
+void writePart(WatchImage& image, size_t offset, const PresentationReading& p) {
+    writeLE32(image.data() + offset + WATCH_FIELD_CONDITION_OFFSET,
+              static_cast<uint32_t>(p.condition));
+    writeLE32(image.data() + offset + WATCH_FIELD_DEVNODE_OFFSET, static_cast<uint32_t>(p.devnode));
+    writeLE32(image.data() + offset + WATCH_FIELD_PROBLEM_OFFSET, p.problem);
+}
 
 // What the helper's watcher leaves in a block after a write it finished.
-WatchImage blockWith(uint32_t condition, uint32_t devnode, uint32_t problem, uint32_t heartbeat) {
+WatchImage blockWith(const WatchLook& look, uint32_t heartbeat, uint32_t seq = 2) {
     WatchImage image{};
     writeLE32(image.data() + WATCH_LAYOUT_OFFSET, static_cast<uint32_t>(WATCH_LAYOUT));
-    writeLE32(image.data() + WATCH_SEQ_OFFSET, 2);
+    writeLE32(image.data() + WATCH_SEQ_OFFSET, seq);
     writeLE32(image.data() + WATCH_HEARTBEAT_OFFSET, heartbeat);
-    writeLE32(image.data() + WATCH_CONDITION_OFFSET, condition);
-    writeLE32(image.data() + WATCH_DEVNODE_OFFSET, devnode);
-    writeLE32(image.data() + WATCH_PROBLEM_OFFSET, problem);
+    writeLE32(image.data() + WATCH_PRESENTS_OFFSET, look.presents);
+    writePart(image, WATCH_HID_OFFSET, look.hid);
+    writePart(image, WATCH_XINPUT_OFFSET, look.xinput);
+    writePart(image, WATCH_AUDIO_OFFSET, look.audio);
     return image;
 }
 
-WatchReading reading(DevnodeCondition condition, uint32_t heartbeat,
-                     WatchedDevnode devnode = WatchedDevnode::Device, uint32_t problem = 0) {
-    WatchReading r;
-    r.known = true;
-    r.stable = true;
-    r.heartbeat = heartbeat;
-    r.condition = condition;
-    r.devnode = devnode;
-    r.problem = problem;
-    return r;
-}
+// The helper as a test drives it: each step its watcher may look (the
+// sequence moves) and its heartbeat may beat.
+struct Helper {
+    uint32_t heartbeat = 0;
+    uint32_t seq = 0;
+    bool beats = true;
+    bool looks = true;
 
-// One tracker stepped through `steps` readings of the same thing, the heartbeat
-// moving on each when `beating`.
-WatchTracker stepped(WatchTracker t, DevnodeCondition condition, int steps, uint32_t& heartbeat,
-                     bool beating) {
-    for (int i = 0; i < steps; ++i) {
-        if (beating) heartbeat++;
-        t = advanceWatch(t, reading(condition, heartbeat), SHORT);
+    WatchReading next(const WatchLook& look) {
+        if (beats) heartbeat++;
+        if (looks) seq += 2;
+        WatchReading r;
+        r.known = true;
+        r.stable = true;
+        r.seq = seq;
+        r.heartbeat = heartbeat;
+        r.look = look;
+        return r;
     }
+};
+
+WatchTracker steps(WatchTracker t, Helper& helper, const WatchLook& look, int n,
+                   const WatchPolicy& policy = SHORT) {
+    for (int i = 0; i < n; ++i) t = advanceWatch(t, helper.next(look), policy);
     return t;
 }
 
-// A pad the watch has armed: seen whole once, its heartbeat moving.
-WatchTracker armed(uint32_t& heartbeat) {
-    const WatchTracker start = startWatch(reading(DevnodeCondition::Unknown, heartbeat));
-    return stepped(start, DevnodeCondition::Present, 1, heartbeat, true);
+// A pad the watch has armed: seen taking input once, its heartbeat moving.
+WatchTracker armed(Helper& helper, const WatchLook& look) {
+    return steps(WatchTracker{}, helper, look, 1);
 }
 
 bool says(const WatchNote& note, LogLevel level, const std::string& needle) {
     return note.level == level && note.text.find(needle) != std::string::npos;
 }
 
+int count(const std::vector<WatchNote>& notes, LogLevel level, const std::string& needle) {
+    int n = 0;
+    for (const WatchNote& note : notes) n += says(note, level, needle) ? 1 : 0;
+    return n;
+}
+
 void test_the_block_reads_back_what_the_watcher_wrote() {
-    TEST("block: a finished write reads back field for field, little-endian at its offsets");
-    const WatchImage image =
-        blockWith(WATCH_CONDITION_FAILED, WATCH_DEVNODE_HID_COLLECTION, 43, 0x01020304);
+    TEST("block: a finished write reads back presentation for presentation, little-endian at its "
+         "offsets");
+    WatchLook look = xboxLook(part(DevnodeCondition::Failed, WatchedDevnode::HidCollection, 43),
+                              disabled(WatchedDevnode::Companion));
+    look.presents |= WATCH_PRESENTS_AUDIO;
+    look.audio = part(DevnodeCondition::Missing, WatchedDevnode::AudioFunction);
+    const WatchImage image = blockWith(look, 0x01020304, 6);
     const WatchReading r = readWatchBlock(image.data());
     EXPECT(r.known);
     EXPECT(r.stable);
+    EXPECT_EQ(r.seq, 6u);
     EXPECT_EQ(r.heartbeat, 0x01020304u);
-    EXPECT_EQ(r.condition, DevnodeCondition::Failed);
-    EXPECT(r.devnode == WatchedDevnode::HidCollection);
-    EXPECT_EQ(r.problem, 43u);
+    EXPECT_EQ(r.look.presents, WATCH_PRESENTS_HID | WATCH_PRESENTS_XINPUT | WATCH_PRESENTS_AUDIO);
+    EXPECT_EQ(r.look.hid.condition, DevnodeCondition::Failed);
+    EXPECT(r.look.hid.devnode == WatchedDevnode::HidCollection);
+    EXPECT_EQ(r.look.hid.problem, 43u);
+    EXPECT_EQ(r.look.xinput.condition, DevnodeCondition::Disabled);
+    EXPECT(r.look.xinput.devnode == WatchedDevnode::Companion);
+    EXPECT_EQ(r.look.xinput.problem, 22u);
+    EXPECT_EQ(r.look.audio.condition, DevnodeCondition::Missing);
+    EXPECT(r.look.audio.devnode == WatchedDevnode::AudioFunction);
 
     TEST("block: the layout constants are the C# writer's (DeviceWatchBlock, held by its test)");
     EXPECT_EQ(WATCH_BLOCK_SIZE, size_t{64});
     EXPECT_EQ(WATCH_LAYOUT, 1);
     EXPECT_EQ(WATCH_HEARTBEAT_OFFSET, size_t{8});
-    EXPECT_EQ(WATCH_PROBLEM_OFFSET, size_t{20});
+    EXPECT_EQ(WATCH_AUDIO_OFFSET + WATCH_PRESENTATION_SIZE, size_t{52});
 }
 
 void test_a_block_of_another_layout_is_not_known() {
     TEST("block: a block whose layout is not 1, or no block at all, says nothing");
-    WatchImage image = blockWith(WATCH_CONDITION_PRESENT, WATCH_DEVNODE_DEVICE, 0, 9);
+    WatchImage image = blockWith(sonyLook(PRESENT), 9);
     writeLE32(image.data() + WATCH_LAYOUT_OFFSET, 2);
     EXPECT(!readWatchBlock(image.data()).known);
     writeLE32(image.data() + WATCH_LAYOUT_OFFSET, 0);
@@ -111,22 +179,104 @@ void test_a_block_of_another_layout_is_not_known() {
 }
 
 void test_a_write_in_progress_is_not_stable() {
-    TEST("block: a write in progress (odd sequence) is no condition, and its heartbeat still "
-         "reads");
-    WatchImage image = blockWith(WATCH_CONDITION_MISSING, WATCH_DEVNODE_DEVICE, 0, 77);
-    writeLE32(image.data() + WATCH_SEQ_OFFSET, 3);
+    TEST("block: a write in progress (odd sequence) is no look, and its heartbeat still reads");
+    const WatchImage image = blockWith(sonyLook(part(DevnodeCondition::Missing)), 77, 3);
     const WatchReading r = readWatchBlock(image.data());
     EXPECT(r.known);
     EXPECT(!r.stable);
     EXPECT_EQ(r.heartbeat, 77u);
 }
 
-void test_an_unknown_condition_or_devnode_reads_as_unknown() {
-    TEST("block: a condition or devnode code this side does not know reads as unknown");
-    const WatchImage image = blockWith(99, 42, 0, 1);
+void test_codes_this_side_does_not_know_read_as_unknown() {
+    TEST("block: a condition or devnode code this side does not know reads as unknown, a "
+         "presentation bit it does not know is dropped, and every pad has its HID one");
+    WatchImage image = blockWith(sonyLook(PRESENT), 1);
+    writeLE32(image.data() + WATCH_HID_OFFSET + WATCH_FIELD_CONDITION_OFFSET, 99);
+    writeLE32(image.data() + WATCH_HID_OFFSET + WATCH_FIELD_DEVNODE_OFFSET, 42);
+    writeLE32(image.data() + WATCH_PRESENTS_OFFSET, 0x80);
     const WatchReading r = readWatchBlock(image.data());
-    EXPECT_EQ(r.condition, DevnodeCondition::Unknown);
-    EXPECT(r.devnode == WatchedDevnode::Device);
+    EXPECT_EQ(r.look.hid.condition, DevnodeCondition::Unknown);
+    EXPECT(r.look.hid.devnode == WatchedDevnode::Device);
+    EXPECT_EQ(r.look.presents, WATCH_PRESENTS_HID);
+}
+
+void test_a_pad_with_one_presentation_is_what_it_shows() {
+    TEST("verdict: a UMDF2 pad's one presentation decides it: present, disabled or away");
+    EXPECT_EQ(inputVerdict(sonyLook(PRESENT)).condition, DevnodeCondition::Present);
+    EXPECT_EQ(inputVerdict(sonyLook(disabled(WatchedDevnode::HidCollection))).condition,
+              DevnodeCondition::Disabled);
+    EXPECT_EQ(inputVerdict(sonyLook(part(DevnodeCondition::Missing))).condition,
+              DevnodeCondition::Missing);
+    EXPECT_EQ(inputVerdict(sonyLook(UNKNOWN)).condition, DevnodeCondition::Unknown);
+}
+
+void test_an_xbox_pad_takes_input_while_either_presentation_does() {
+    TEST("verdict: an Xbox pad whose XInput device is disabled still takes input through its HID "
+         "game controller, and the other way round");
+    const InputVerdict companionOff =
+        inputVerdict(xboxLook(PRESENT, disabled(WatchedDevnode::Companion)));
+    EXPECT_EQ(companionOff.condition, DevnodeCondition::Present);
+    EXPECT_EQ(companionOff.part, Presentation::Hid);
+    const InputVerdict hidOff =
+        inputVerdict(xboxLook(disabled(WatchedDevnode::HidCollection),
+                              part(DevnodeCondition::Present, WatchedDevnode::Companion)));
+    EXPECT_EQ(hidOff.condition, DevnodeCondition::Present);
+    EXPECT_EQ(hidOff.part, Presentation::Xinput);
+
+    TEST("verdict: only with both disabled is the pad disabled");
+    EXPECT_EQ(inputVerdict(
+                  xboxLook(disabled(WatchedDevnode::Device), disabled(WatchedDevnode::Companion)))
+                  .condition,
+              DevnodeCondition::Disabled);
+
+    TEST("verdict: one gone or failed with the other disabled is away, a loss in the making: a "
+         "disabled companion no longer outranks a failed parent");
+    const InputVerdict failedParent =
+        inputVerdict(xboxLook(part(DevnodeCondition::Failed, WatchedDevnode::Device, 43),
+                              disabled(WatchedDevnode::Companion)));
+    EXPECT_EQ(failedParent.condition, DevnodeCondition::Failed);
+    EXPECT_EQ(failedParent.part, Presentation::Hid);
+    EXPECT_EQ(failedParent.named.problem, 43u);
+    const InputVerdict missingCompanion =
+        inputVerdict(xboxLook(disabled(WatchedDevnode::Device),
+                              part(DevnodeCondition::Missing, WatchedDevnode::Companion)));
+    EXPECT_EQ(missingCompanion.condition, DevnodeCondition::Missing);
+    EXPECT_EQ(missingCompanion.part, Presentation::Xinput);
+
+    TEST("verdict: a presentation not looked at yet leaves the verdict unknown unless another "
+         "takes input");
+    EXPECT_EQ(inputVerdict(xboxLook(disabled(WatchedDevnode::Device), UNKNOWN)).condition,
+              DevnodeCondition::Unknown);
+    EXPECT_EQ(inputVerdict(xboxLook(UNKNOWN, PRESENT)).condition, DevnodeCondition::Present);
+}
+
+void test_a_composites_audio_takes_no_input() {
+    TEST("verdict: a composite whose HID function is disabled is disabled, whatever its audio "
+         "function shows, and one whose audio function is disabled still takes input");
+    EXPECT_EQ(inputVerdict(compositeLook(disabled(WatchedDevnode::HidFunction), PRESENT)).condition,
+              DevnodeCondition::Disabled);
+    EXPECT_EQ(
+        inputVerdict(compositeLook(PRESENT, disabled(WatchedDevnode::AudioFunction))).condition,
+        DevnodeCondition::Present);
+    EXPECT_EQ(
+        inputVerdict(
+            compositeLook(part(DevnodeCondition::Failed, WatchedDevnode::HidFunction, 10), PRESENT))
+            .condition,
+        DevnodeCondition::Failed);
+}
+
+void test_the_disabled_parts_are_the_presented_ones() {
+    TEST("verdict: the disabled parts name each disabled presentation the pad has, and none it "
+         "lacks");
+    EXPECT_EQ(disabledParts(xboxLook(PRESENT, disabled(WatchedDevnode::Companion))),
+              WATCH_PRESENTS_XINPUT);
+    EXPECT_EQ(disabledParts(compositeLook(disabled(WatchedDevnode::Device),
+                                          disabled(WatchedDevnode::Device))),
+              WATCH_PRESENTS_HID | WATCH_PRESENTS_AUDIO);
+    WatchLook sony = sonyLook(PRESENT);
+    sony.xinput = disabled(WatchedDevnode::Companion);
+    sony.audio = disabled(WatchedDevnode::AudioFunction);
+    EXPECT_EQ(disabledParts(sony), 0u);
 }
 
 void test_a_umdf2_pad_waits_the_sdks_start_budget() {
@@ -151,289 +301,515 @@ void test_a_composite_waits_for_usbip_win2s_first_reattach() {
 }
 
 void test_a_silent_helper_is_given_up_after_ten_missed_beats() {
-    TEST("policy: a helper is given up after ten of its beats go missing, 5 s");
+    TEST("policy: a helper is gone after ten of its beats' worth of silence, 5 s, and a pad "
+         "never seen whole is noted after 30 s");
     EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 1.0).helperSilenceTicks, 50u);
     EXPECT_EQ(watchPolicyFor(ProfileBackend::Usbip, 1.0).helperSilenceTicks, 50u);
-    TEST("policy: a pad not armed 30 s after its plug is named once");
     EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 1.0).unarmedNoticeTicks, 300u);
-    TEST("policy: a span that is not whole ticks rounds up, and none is under one tick");
-    EXPECT_EQ(watchTicks(std::chrono::milliseconds(150)), 2u);
-    EXPECT_EQ(watchTicks(std::chrono::milliseconds(0)), 1u);
 }
 
-void test_a_pad_is_unwatched_until_it_is_seen_whole() {
-    TEST("watch: a pad is unwatched while the helper has not looked, or has not yet found every "
-         "devnode present");
-    uint32_t heartbeat = 1;
-    WatchTracker t = startWatch(reading(DevnodeCondition::Unknown, heartbeat));
-    EXPECT_EQ(t.state, PadWatch::Unwatched);
-    t = stepped(t, DevnodeCondition::Unknown, 2, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Unwatched);
-    t = stepped(t, DevnodeCondition::Missing, SHORT.graceTicks * 2, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Unwatched);
-    EXPECT_EQ(t.loss, PadLoss::None);
+void test_a_look_is_stale_after_three_of_its_periods() {
+    TEST("policy: a look that has not moved for three of the watcher's periods, 1.5 s, is stale");
+    EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 1.0).staleTicks, 15u);
+    EXPECT_EQ(watchPolicyFor(ProfileBackend::Usbip, 4.0).staleTicks, 15u);
+    EXPECT_EQ(watchTicks(std::chrono::milliseconds(1)), 1u);
+    EXPECT_EQ(watchTicks(std::chrono::milliseconds(101)), 2u);
+}
 
-    TEST("watch: the first reading of every devnode present arms the watch");
-    t = stepped(t, DevnodeCondition::Present, 1, heartbeat, true);
+void test_a_pad_is_unwatched_until_it_takes_input() {
+    TEST("watch: a pad is unwatched while the helper has not looked, or has not found an input "
+         "presentation taking input");
+    Helper helper;
+    WatchTracker t = steps(WatchTracker{}, helper, sonyLook(UNKNOWN), 3);
+    EXPECT_EQ(t.state, PadWatch::Unwatched);
+    t = steps(t, helper, sonyLook(part(DevnodeCondition::Missing)), 20);
+    EXPECT_EQ(t.state, PadWatch::Unwatched);
+    EXPECT(!watchLost(t));
+    t = steps(t, helper, sonyLook(PRESENT), 1);
     EXPECT_EQ(t.state, PadWatch::Present);
+
+    TEST("watch: an Xbox pad seen with only its XInput device taking input is armed");
+    Helper other;
+    const WatchTracker xbox =
+        steps(WatchTracker{}, other,
+              xboxLook(part(DevnodeCondition::Missing),
+                       part(DevnodeCondition::Present, WatchedDevnode::Companion)),
+              1);
+    EXPECT_EQ(xbox.state, PadWatch::Present);
 }
 
 void test_a_pad_absent_within_its_grace_comes_back() {
-    TEST("watch: a present pad whose devnode goes missing is absent, counting its grace");
-    uint32_t heartbeat = 1;
-    WatchTracker t = armed(heartbeat);
-    t = stepped(t, DevnodeCondition::Missing, 1, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Absent);
-    EXPECT_EQ(t.absentTicks, 1u);
-    t = stepped(t, DevnodeCondition::Missing, SHORT.graceTicks - 2, heartbeat, true);
+    TEST("watch: a pad away for less than its grace is absent, not lost, and present again once "
+         "it is back");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    t = steps(t, helper, sonyLook(part(DevnodeCondition::Missing)), SHORT.graceTicks - 1);
     EXPECT_EQ(t.state, PadWatch::Absent);
     EXPECT_EQ(t.absentTicks, SHORT.graceTicks - 1);
-
-    TEST("watch: a pad back within its grace is present again, and its count starts over");
-    t = stepped(t, DevnodeCondition::Present, 1, heartbeat, true);
+    t = steps(t, helper, sonyLook(PRESENT), 1);
     EXPECT_EQ(t.state, PadWatch::Present);
     EXPECT_EQ(t.absentTicks, 0u);
-    t = stepped(t, DevnodeCondition::Missing, SHORT.graceTicks - 1, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Absent);
+
+    TEST("watch: the grace counts ticks, not looks: a look every few ticks ages the absence on "
+         "every tick between them");
+    Helper slow;
+    WatchTracker u = armed(slow, sonyLook(PRESENT));
+    for (uint32_t i = 0; i < SHORT.graceTicks; ++i) {
+        slow.looks = i % 3 == 0;
+        u = advanceWatch(u, slow.next(sonyLook(part(DevnodeCondition::Missing))), SHORT);
+    }
+    EXPECT_EQ(u.state, PadWatch::Lost);
 }
 
 void test_a_pad_absent_for_its_whole_grace_is_lost() {
-    TEST("watch: a pad absent for its whole grace is lost to its device, and not a step before");
-    uint32_t heartbeat = 1;
-    WatchTracker t = armed(heartbeat);
-    t = stepped(t, DevnodeCondition::Missing, SHORT.graceTicks - 1, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Absent);
-    t = stepped(t, DevnodeCondition::Missing, 1, heartbeat, true);
+    TEST("watch: a pad away for its whole grace is lost to its device");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    t = steps(t, helper,
+              sonyLook(part(DevnodeCondition::Failed, WatchedDevnode::HidCollection, 43)),
+              SHORT.graceTicks);
     EXPECT_EQ(t.state, PadWatch::Lost);
     EXPECT_EQ(t.loss, PadLoss::Device);
-    EXPECT(watchLost(t));
 }
 
 void test_every_kind_of_absence_counts_toward_the_grace() {
-    TEST("watch: a failed, leaving or unstarted devnode counts toward the same grace as a "
-         "missing one");
-    for (const DevnodeCondition condition :
-         {DevnodeCondition::Failed, DevnodeCondition::Leaving, DevnodeCondition::Starting}) {
-        uint32_t heartbeat = 1;
-        WatchTracker t = armed(heartbeat);
-        t = stepped(t, condition, SHORT.graceTicks - 1, heartbeat, true);
-        EXPECT_EQ(t.state, PadWatch::Absent);
-        t = stepped(t, condition, 1, heartbeat, true);
+    TEST("watch: missing, failed, leaving and not started all count toward the grace");
+    for (const DevnodeCondition c : {DevnodeCondition::Missing, DevnodeCondition::Failed,
+                                     DevnodeCondition::Leaving, DevnodeCondition::Starting}) {
+        Helper helper;
+        WatchTracker t = armed(helper, sonyLook(PRESENT));
+        t = steps(t, helper, sonyLook(part(c)), SHORT.graceTicks);
         EXPECT_EQ(t.state, PadWatch::Lost);
-        EXPECT_EQ(t.loss, PadLoss::Device);
     }
 }
 
 void test_a_disabled_pad_is_held_and_never_lost_to_it() {
-    TEST("watch: a pad disabled in Windows is disabled at once, holds its input, and is never "
-         "lost however long it stays disabled");
-    uint32_t heartbeat = 1;
-    WatchTracker t = armed(heartbeat);
-    t = stepped(t, DevnodeCondition::Disabled, 1, heartbeat, true);
+    TEST("watch: a pad whose every input presentation is disabled is held however long it stays "
+         "so, and present again once enabled");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    t = steps(t, helper, sonyLook(disabled(WatchedDevnode::HidCollection)), 10 * SHORT.graceTicks);
     EXPECT_EQ(t.state, PadWatch::Disabled);
     EXPECT(watchHoldsInput(t));
-    t = stepped(t, DevnodeCondition::Disabled, SHORT.graceTicks * 4, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Disabled);
     EXPECT(!watchLost(t));
-
-    TEST("watch: a disabled pad that is enabled and started again is present, and writes again");
-    t = stepped(t, DevnodeCondition::Present, 1, heartbeat, true);
+    t = steps(t, helper, sonyLook(PRESENT), 1);
     EXPECT_EQ(t.state, PadWatch::Present);
     EXPECT(!watchHoldsInput(t));
 }
 
 void test_a_pad_disabled_before_it_was_armed_is_disabled() {
-    TEST("watch: a pad whose devnode is disabled before the watch armed is disabled all the same");
-    uint32_t heartbeat = 1;
-    WatchTracker t = startWatch(reading(DevnodeCondition::Unknown, heartbeat));
-    t = stepped(t, DevnodeCondition::Disabled, 1, heartbeat, true);
+    TEST("watch: a pad first seen disabled is held at once");
+    Helper helper;
+    const WatchTracker t =
+        steps(WatchTracker{}, helper, sonyLook(disabled(WatchedDevnode::Device)), 1);
     EXPECT_EQ(t.state, PadWatch::Disabled);
 }
 
 void test_a_disabled_pad_that_then_goes_missing_starts_its_grace() {
-    TEST("watch: a disabled pad whose devnode then goes missing is absent from that step on");
-    uint32_t heartbeat = 1;
-    WatchTracker t = armed(heartbeat);
-    t = stepped(t, DevnodeCondition::Disabled, 3, heartbeat, true);
-    t = stepped(t, DevnodeCondition::Missing, 1, heartbeat, true);
+    TEST("watch: a disabled pad that then goes missing starts its grace there");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    t = steps(t, helper, sonyLook(disabled(WatchedDevnode::Device)), 3);
+    t = steps(t, helper, sonyLook(part(DevnodeCondition::Missing)), SHORT.graceTicks - 1);
     EXPECT_EQ(t.state, PadWatch::Absent);
-    EXPECT_EQ(t.absentTicks, 1u);
-    EXPECT(!watchHoldsInput(t));
+    t = steps(t, helper, sonyLook(part(DevnodeCondition::Missing)), 1);
+    EXPECT_EQ(t.state, PadWatch::Lost);
 }
 
-void test_a_helper_that_stops_beating_is_given_up() {
-    TEST("watch: a helper whose heartbeat moved and then stopped is gone after the silence, and "
-         "not a step before");
-    uint32_t heartbeat = 1;
-    WatchTracker t = armed(heartbeat);
-    t = stepped(t, DevnodeCondition::Present, SHORT.helperSilenceTicks - 1, heartbeat, false);
+void test_an_xbox_pad_with_one_presentation_disabled_is_written_on() {
+    TEST("watch: an Xbox pad whose XInput device is disabled stays present and is never held or "
+         "given up for it");
+    Helper helper;
+    WatchTracker t = armed(helper, xboxLook(PRESENT, PRESENT));
+    t = steps(t, helper, xboxLook(PRESENT, disabled(WatchedDevnode::Companion)),
+              10 * SHORT.graceTicks);
     EXPECT_EQ(t.state, PadWatch::Present);
-    t = stepped(t, DevnodeCondition::Present, 1, heartbeat, false);
-    EXPECT_EQ(t.state, PadWatch::Lost);
-    EXPECT_EQ(t.loss, PadLoss::Helper);
+    EXPECT(!watchHoldsInput(t));
+    EXPECT(!watchLost(t));
+    EXPECT_EQ(disabledParts(t.look), WATCH_PRESENTS_XINPUT);
 
-    TEST("watch: a beat resets the silence");
-    uint32_t again = 1;
-    WatchTracker u = armed(again);
-    u = stepped(u, DevnodeCondition::Present, SHORT.helperSilenceTicks - 1, again, false);
-    u = stepped(u, DevnodeCondition::Present, 1, again, true);
-    u = stepped(u, DevnodeCondition::Present, SHORT.helperSilenceTicks - 1, again, false);
+    TEST("watch: its HID game controller then failing, with the XInput device still disabled, is "
+         "a loss after the grace");
+    t = steps(t, helper,
+              xboxLook(part(DevnodeCondition::Failed, WatchedDevnode::Device, 43),
+                       disabled(WatchedDevnode::Companion)),
+              SHORT.graceTicks - 1);
+    EXPECT_EQ(t.state, PadWatch::Absent);
+    t = steps(t, helper,
+              xboxLook(part(DevnodeCondition::Failed, WatchedDevnode::Device, 43),
+                       disabled(WatchedDevnode::Companion)),
+              1);
+    EXPECT_EQ(t.state, PadWatch::Lost);
+    EXPECT_EQ(t.loss, PadLoss::Device);
+
+    TEST("watch: an Xbox pad whose XUSB companion is gone while its HID game controller takes "
+         "input is written on and not given up");
+    Helper other;
+    WatchTracker u = armed(other, xboxLook(PRESENT, PRESENT));
+    u = steps(u, other,
+              xboxLook(PRESENT, part(DevnodeCondition::Missing, WatchedDevnode::Companion)),
+              10 * SHORT.graceTicks);
     EXPECT_EQ(u.state, PadWatch::Present);
 }
 
-void test_a_heartbeat_that_never_moved_never_gives_the_helper_up() {
-    TEST("watch: a heartbeat that has not moved since the plug never gives the helper up");
-    uint32_t heartbeat = 5;
-    WatchTracker t = startWatch(reading(DevnodeCondition::Present, heartbeat));
-    t = stepped(t, DevnodeCondition::Present, SHORT.helperSilenceTicks * 4, heartbeat, false);
+void test_a_helper_that_stops_beating_is_given_up() {
+    TEST("watch: a helper whose heartbeat moved and then stops is gone after its silence");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    helper.beats = false;
+    t = steps(t, helper, sonyLook(PRESENT), SHORT.helperSilenceTicks - 1);
     EXPECT_EQ(t.state, PadWatch::Present);
-    EXPECT(!t.beating);
+    t = steps(t, helper, sonyLook(PRESENT), 1);
+    EXPECT_EQ(t.state, PadWatch::Lost);
+    EXPECT_EQ(t.loss, PadLoss::Helper);
+}
+
+void test_a_heartbeat_that_never_moved_never_gives_the_helper_up() {
+    TEST("watch: a heartbeat that never moved since the plug never gives the helper up");
+    Helper helper;
+    helper.beats = false;
+    const WatchTracker t = steps(WatchTracker{}, helper, sonyLook(PRESENT), 100);
+    EXPECT_EQ(t.state, PadWatch::Present);
 }
 
 void test_a_helper_gone_takes_unwatched_and_disabled_pads_too() {
-    TEST("watch: a helper gone takes a pad the watch never armed");
-    uint32_t heartbeat = 1;
-    WatchTracker t = startWatch(reading(DevnodeCondition::Unknown, heartbeat));
-    t = stepped(t, DevnodeCondition::Missing, 2, heartbeat, true);
-    t = stepped(t, DevnodeCondition::Missing, SHORT.helperSilenceTicks, heartbeat, false);
-    EXPECT_EQ(t.state, PadWatch::Lost);
-    EXPECT_EQ(t.loss, PadLoss::Helper);
+    TEST("watch: a helper gone takes a pad still unwatched, and one held disabled (Emir's "
+         "decision: nothing could tell Satellite when Windows enabled it again)");
+    Helper helper;
+    const WatchReading first = helper.next(sonyLook(UNKNOWN));
+    WatchReading firstHeld = first;
+    firstHeld.look = sonyLook(disabled(WatchedDevnode::Device));
+    WatchTracker unwatched = advanceWatch(WatchTracker{}, first, SHORT);
+    WatchTracker held = advanceWatch(WatchTracker{}, firstHeld, SHORT);
+    EXPECT_EQ(unwatched.state, PadWatch::Unwatched);
+    EXPECT_EQ(held.state, PadWatch::Disabled);
+    helper.beats = false;
+    for (uint32_t i = 0; i < SHORT.helperSilenceTicks; ++i) {
+        const WatchReading r = helper.next(sonyLook(UNKNOWN));
+        unwatched = advanceWatch(unwatched, r, SHORT);
+        WatchReading d = r;
+        d.look = sonyLook(disabled(WatchedDevnode::Device));
+        held = advanceWatch(held, d, SHORT);
+    }
+    EXPECT_EQ(unwatched.state, PadWatch::Lost);
+    EXPECT_EQ(unwatched.loss, PadLoss::Helper);
+    EXPECT_EQ(held.state, PadWatch::Lost);
+    EXPECT_EQ(held.loss, PadLoss::Helper);
+}
 
-    TEST("watch: a helper gone takes a disabled pad too, since nothing can enable it again");
-    uint32_t beat = 1;
-    WatchTracker d = armed(beat);
-    d = stepped(d, DevnodeCondition::Disabled, 1, beat, true);
-    d = stepped(d, DevnodeCondition::Disabled, SHORT.helperSilenceTicks, beat, false);
+void test_a_lost_pad_stays_lost() {
+    TEST("watch: lost is final, whatever the block says after");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    t = steps(t, helper, sonyLook(part(DevnodeCondition::Missing)), SHORT.graceTicks);
+    EXPECT_EQ(t.state, PadWatch::Lost);
+    t = steps(t, helper, sonyLook(PRESENT), 5);
+    EXPECT_EQ(t.state, PadWatch::Lost);
+}
+
+void test_an_unstable_reading_leaves_the_pad_as_it_was() {
+    TEST("watch: a reading taken mid-write keeps the last look, so it neither starts nor ends an "
+         "absence by itself");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    WatchReading r = helper.next(sonyLook(part(DevnodeCondition::Missing)));
+    r.stable = false;
+    t = advanceWatch(t, r, SHORT);
+    EXPECT_EQ(t.state, PadWatch::Present);
+    EXPECT_EQ(t.look.hid.condition, DevnodeCondition::Present);
+}
+
+void test_a_block_of_another_layout_leaves_the_pad_unwatched() {
+    TEST("watch: a block of another layout is no look and no heartbeat, so the pad stays "
+         "unwatched and is never given up");
+    WatchTracker t;
+    WatchReading r;
+    r.known = false;
+    for (int i = 0; i < 40; ++i) t = advanceWatch(t, r, SHORT);
+    EXPECT_EQ(t.state, PadWatch::Unwatched);
+}
+
+void test_a_stale_look_decides_nothing() {
+    TEST("stale: a pad away whose watcher stops looking is not aged into a loss however long the "
+         "look stays stale");
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    t = steps(t, helper, sonyLook(part(DevnodeCondition::Missing)), 1);
+    helper.looks = false;
+    t = steps(t, helper, sonyLook(part(DevnodeCondition::Missing)), 10 * SHORT.graceTicks);
+    EXPECT(t.stale);
+    EXPECT_EQ(t.state, PadWatch::Absent);
+    EXPECT(t.absentTicks < SHORT.graceTicks);
+
+    TEST("stale: a look within the stale bound still ages the absence");
+    Helper slow;
+    WatchTracker u = armed(slow, sonyLook(PRESENT));
+    u = steps(u, slow, sonyLook(part(DevnodeCondition::Missing)), 1);
+    slow.looks = false;
+    u = steps(u, slow, sonyLook(part(DevnodeCondition::Missing)), SHORT.staleTicks - 1);
+    EXPECT(!u.stale);
+    EXPECT_EQ(u.absentTicks, SHORT.staleTicks);
+
+    TEST("stale: a look that comes again decides again, and a pad back is present");
+    helper.looks = true;
+    t = steps(t, helper, sonyLook(PRESENT), 1);
+    EXPECT(!t.stale);
+    EXPECT_EQ(t.state, PadWatch::Present);
+
+    TEST("stale: a held pad stays held while its look is stale, and a present one present");
+    Helper held;
+    WatchTracker h = armed(held, sonyLook(disabled(WatchedDevnode::Device)));
+    held.looks = false;
+    h = steps(h, held, sonyLook(PRESENT), 3 * SHORT.staleTicks);
+    EXPECT_EQ(h.state, PadWatch::Disabled);
+    Helper calm;
+    WatchTracker p = armed(calm, sonyLook(PRESENT));
+    calm.looks = false;
+    p = steps(p, calm, sonyLook(part(DevnodeCondition::Missing)), 3 * SHORT.staleTicks);
+    EXPECT_EQ(p.state, PadWatch::Present);
+
+    TEST("stale: a helper that stops beating is still given up while its look is stale");
+    Helper dying;
+    WatchTracker d = armed(dying, sonyLook(PRESENT));
+    dying.looks = false;
+    dying.beats = false;
+    d = steps(d, dying, sonyLook(PRESENT), SHORT.helperSilenceTicks);
     EXPECT_EQ(d.state, PadWatch::Lost);
     EXPECT_EQ(d.loss, PadLoss::Helper);
 }
 
-void test_a_lost_pad_stays_lost() {
-    TEST("watch: a lost pad stays lost whatever the helper reports after");
-    uint32_t heartbeat = 1;
-    WatchTracker t = armed(heartbeat);
-    t = stepped(t, DevnodeCondition::Missing, SHORT.graceTicks, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Lost);
-    t = stepped(t, DevnodeCondition::Present, 3, heartbeat, true);
-    EXPECT_EQ(t.state, PadWatch::Lost);
-    EXPECT_EQ(t.loss, PadLoss::Device);
-}
+void test_only_every_input_presentation_disabled_holds_input() {
+    TEST("gate: only a pad whose every input presentation is disabled holds its input");
+    Helper helper;
+    WatchTracker t = armed(helper, xboxLook(PRESENT, PRESENT));
+    EXPECT(!watchHoldsInput(t));
+    t = steps(t, helper, xboxLook(disabled(WatchedDevnode::HidCollection), PRESENT), 1);
+    EXPECT(!watchHoldsInput(t));
+    t = steps(
+        t, helper,
+        xboxLook(disabled(WatchedDevnode::HidCollection), disabled(WatchedDevnode::Companion)), 1);
+    EXPECT(watchHoldsInput(t));
+    t = steps(t, helper, xboxLook(part(DevnodeCondition::Missing), PRESENT), 1);
+    EXPECT(!watchHoldsInput(t));
 
-void test_an_unstable_reading_leaves_the_pad_as_it_was() {
-    TEST("watch: a reading taken mid-write leaves the pad as it was, and its heartbeat still "
-         "counts");
-    uint32_t heartbeat = 1;
-    WatchTracker t = armed(heartbeat);
-    t = stepped(t, DevnodeCondition::Missing, 1, heartbeat, true);
-    WatchReading torn = reading(DevnodeCondition::Present, ++heartbeat);
-    torn.stable = false;
-    t = advanceWatch(t, torn, SHORT);
-    EXPECT_EQ(t.state, PadWatch::Absent);
-    EXPECT_EQ(t.absentTicks, 2u);
-    EXPECT_EQ(t.silentTicks, 0u);
-}
-
-void test_a_block_of_another_layout_leaves_the_pad_unwatched() {
-    TEST("watch: a block of another layout leaves the pad unwatched, its heartbeat unheard");
-    WatchReading other = reading(DevnodeCondition::Present, 1);
-    other.known = false;
-    WatchTracker t = startWatch(other);
-    for (uint32_t i = 2; i < 2 + SHORT.helperSilenceTicks * 2; ++i) {
-        other.heartbeat = i;
-        t = advanceWatch(t, other, SHORT);
-    }
-    EXPECT_EQ(t.state, PadWatch::Unwatched);
-    EXPECT(!t.beating);
-}
-
-void test_only_a_disabled_pad_holds_its_input() {
-    TEST("watch: only a disabled pad holds its input; an absent or lost one is still written");
-    WatchTracker t;
-    const struct {
-        PadWatch state;
-        bool holds;
-        bool lost;
-    } cases[] = {{PadWatch::Unwatched, false, false},
-                 {PadWatch::Present, false, false},
-                 {PadWatch::Absent, false, false},
-                 {PadWatch::Disabled, true, false},
-                 {PadWatch::Lost, false, true}};
-    for (const auto& c : cases) {
-        t.state = c.state;
-        EXPECT_EQ(watchHoldsInput(t), c.holds);
-        EXPECT_EQ(watchLost(t), c.lost);
-    }
+    TEST("gate: the microphone is held by the audio function alone");
+    Helper composite;
+    WatchTracker c = armed(composite, compositeLook(PRESENT, PRESENT));
+    EXPECT(!watchHoldsMic(c));
+    c = steps(c, composite, compositeLook(disabled(WatchedDevnode::HidFunction), PRESENT), 1);
+    EXPECT(watchHoldsInput(c));
+    EXPECT(!watchHoldsMic(c));
+    c = steps(c, composite, compositeLook(PRESENT, disabled(WatchedDevnode::AudioFunction)), 1);
+    EXPECT(!watchHoldsInput(c));
+    EXPECT(watchHoldsMic(c));
+    c = steps(c, composite,
+              compositeLook(disabled(WatchedDevnode::Device), disabled(WatchedDevnode::Device)), 1);
+    EXPECT(watchHoldsInput(c));
+    EXPECT(watchHoldsMic(c));
 }
 
 void test_each_step_says_what_changed() {
-    uint32_t heartbeat = 1;
-    const WatchTracker start = startWatch(reading(DevnodeCondition::Unknown, heartbeat));
-    const WatchTracker present = stepped(start, DevnodeCondition::Present, 1, heartbeat, true);
+    TEST("note: arming, going away, coming back, disabled, enabled and lost each say so once");
     const WatchPolicy umdf2 = watchPolicyFor(ProfileBackend::Umdf2, 1.0);
+    Helper helper;
+    WatchTracker was;
+    WatchTracker now = steps(was, helper, sonyLook(PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::INFO,
+                    "Satellite watches Serial 3's devices in Windows"),
+              1);
+    was = now;
+    now = steps(was, helper, sonyLook(part(DevnodeCondition::Missing)), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::WARN,
+                    "Serial 3's device is not in Windows' device tree; Satellite waits up to 15 s"),
+              1);
+    was = now;
+    now = steps(was, helper, sonyLook(part(DevnodeCondition::Missing)), 1, umdf2);
+    EXPECT(noteWatchStep(3, was, now, umdf2).empty());
+    was = now;
+    now = steps(was, helper, sonyLook(PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::INFO,
+                    "Serial 3's device is back in Windows after 0.2 s"),
+              1);
+    was = now;
+    now = steps(was, helper, sonyLook(disabled(WatchedDevnode::HidCollection)), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::WARN,
+                    "Serial 3's HID collection is disabled in Windows (Code 22); Satellite writes "
+                    "nothing"),
+              1);
+    was = now;
+    now = steps(was, helper, sonyLook(PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::INFO,
+                    "Serial 3's HID collection is enabled in Windows again"),
+              1);
+    was = now;
+    now = steps(was, helper, sonyLook(part(DevnodeCondition::Failed, WatchedDevnode::Device, 43)),
+                umdf2.graceTicks, umdf2);
+    const WatchTracker before = steps(was, helper, sonyLook(PRESENT), 0, umdf2);
+    EXPECT_EQ(now.state, PadWatch::Lost);
+    WatchTracker last = now;
+    last.state = PadWatch::Absent;
+    EXPECT_EQ(count(noteWatchStep(3, last, now, umdf2), LogLevel::WARN,
+                    "Serial 3's device is still failed with problem code 43 after 15 s; Satellite "
+                    "gives the controller up"),
+              1);
+    EXPECT_EQ(before.state, PadWatch::Present);
 
-    TEST("note: arming says the watch has the pad's devnodes");
-    EXPECT(says(noteWatchStep(3, start, present, umdf2), LogLevel::INFO, "Serial 3"));
-    EXPECT(says(noteWatchStep(3, start, present, umdf2), LogLevel::INFO, "watches"));
+    TEST("note: a helper gone says how long it has been silent");
+    WatchTracker gone = now;
+    gone.loss = PadLoss::Helper;
+    EXPECT_EQ(count(noteWatchStep(3, last, gone, umdf2), LogLevel::WARN,
+                    "Serial 3's HIDMaestro helper has not beaten for 5 s"),
+              1);
 
-    TEST("note: a step that changes nothing says nothing");
-    EXPECT(noteWatchStep(3, present, present, umdf2).text.empty());
+    TEST("note: both of an Xbox pad's input presentations disabled are named together");
+    Helper xbox;
+    WatchTracker x = armed(xbox, xboxLook(PRESENT, PRESENT));
+    const WatchTracker off = steps(
+        x, xbox,
+        xboxLook(disabled(WatchedDevnode::HidCollection), disabled(WatchedDevnode::Companion)), 1);
+    EXPECT_EQ(count(noteWatchStep(4, x, off, umdf2), LogLevel::WARN,
+                    "Serial 4's HID collection and XUSB companion are disabled in Windows"),
+              1);
 
-    TEST("note: an absence names the devnode, what Windows says of it and the grace");
-    WatchTracker absent = present;
-    absent.state = PadWatch::Absent;
-    absent.absentTicks = 1;
-    absent.condition = DevnodeCondition::Failed;
-    absent.devnode = WatchedDevnode::HidCollection;
-    absent.problem = 43;
-    const WatchNote gone = noteWatchStep(3, present, absent, umdf2);
-    EXPECT(says(gone, LogLevel::WARN, "HID collection"));
-    EXPECT(says(gone, LogLevel::WARN, "problem code 43"));
-    EXPECT(says(gone, LogLevel::WARN, "15 s"));
-
-    TEST("note: a return says how long the devnode was away, and that the pad carries on");
-    WatchTracker away = absent;
-    away.absentTicks = 12;
-    const WatchNote back = noteWatchStep(3, away, present, umdf2);
-    EXPECT(says(back, LogLevel::INFO, "1.2 s"));
-    EXPECT(says(back, LogLevel::INFO, "carries on"));
-
-    TEST("note: a loss to the device says the controller is given up for its client to plug "
-         "again");
-    WatchTracker lost = absent;
-    lost.state = PadWatch::Lost;
-    lost.loss = PadLoss::Device;
-    const WatchNote device = noteWatchStep(3, absent, lost, umdf2);
-    EXPECT(says(device, LogLevel::WARN, "gives the controller up"));
-    EXPECT(says(device, LogLevel::WARN, "plugs it again"));
-
-    TEST("note: a loss to the helper names the helper");
-    WatchTracker silent = present;
-    silent.state = PadWatch::Lost;
-    silent.loss = PadLoss::Helper;
-    EXPECT(says(noteWatchStep(3, present, silent, umdf2), LogLevel::WARN, "helper"));
-
-    TEST("note: a disable names Device Manager's code, and says the slot is kept");
-    WatchTracker disabled = present;
-    disabled.state = PadWatch::Disabled;
-    disabled.condition = DevnodeCondition::Disabled;
-    disabled.problem = 22;
-    const WatchNote off = noteWatchStep(3, present, disabled, umdf2);
-    EXPECT(says(off, LogLevel::WARN, "disabled in Windows"));
-    EXPECT(says(off, LogLevel::WARN, "Code 22"));
-    EXPECT(says(off, LogLevel::WARN, "keeps its slot"));
-
-    TEST("note: an enable says Satellite writes the pad again");
-    EXPECT(says(noteWatchStep(3, disabled, present, umdf2), LogLevel::INFO, "enabled"));
-
-    TEST("note: a pad not armed is named once, when its notice comes due");
-    WatchTracker waiting = start;
-    waiting.unwatchedTicks = umdf2.unarmedNoticeTicks - 1;
-    WatchTracker due = waiting;
+    TEST("note: a pad still unwatched is noted once, when its notice comes due");
+    WatchTracker due;
     due.unwatchedTicks = umdf2.unarmedNoticeTicks;
+    WatchTracker beforeDue;
+    beforeDue.unwatchedTicks = umdf2.unarmedNoticeTicks - 1;
+    EXPECT_EQ(count(noteWatchStep(3, beforeDue, due, umdf2), LogLevel::WARN,
+                    "Satellite has not found Serial 3's game controller taking input"),
+              1);
     WatchTracker past = due;
-    past.unwatchedTicks = umdf2.unarmedNoticeTicks + 1;
-    EXPECT(says(noteWatchStep(3, waiting, due, umdf2), LogLevel::WARN, "does not watch"));
-    EXPECT(noteWatchStep(3, due, past, umdf2).text.empty());
+    past.unwatchedTicks++;
+    EXPECT(noteWatchStep(3, due, past, umdf2).empty());
+}
+
+void test_a_presentation_that_changes_while_another_takes_input_is_noted() {
+    TEST("note: an Xbox pad's XInput device disabled while its HID game controller takes input "
+         "says so, and that Satellite keeps writing the controller");
+    const WatchPolicy umdf2 = watchPolicyFor(ProfileBackend::Umdf2, 1.0);
+    Helper helper;
+    WatchTracker was = armed(helper, xboxLook(PRESENT, PRESENT));
+    WatchTracker now =
+        steps(was, helper, xboxLook(PRESENT, disabled(WatchedDevnode::Companion)), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::WARN,
+                    "Serial 3's XUSB companion is disabled in Windows (Code 22); its HID game "
+                    "controller still takes input, so Satellite keeps writing the controller"),
+              1);
+    was = now;
+    now = steps(was, helper, xboxLook(PRESENT, disabled(WatchedDevnode::Companion)), 1, umdf2);
+    EXPECT(noteWatchStep(3, was, now, umdf2).empty());
+
+    TEST("note: enabled again, it says so");
+    was = now;
+    now = steps(was, helper, xboxLook(PRESENT, PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::INFO,
+                    "Serial 3's XUSB companion is enabled in Windows again"),
+              1);
+
+    TEST("note: one gone while the other takes input is not given up for it, and back says so");
+    was = now;
+    now = steps(was, helper,
+                xboxLook(PRESENT, part(DevnodeCondition::Missing, WatchedDevnode::Companion)), 1,
+                umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::WARN,
+                    "Serial 3's XUSB companion is not in Windows' device tree; its HID game "
+                    "controller still takes input, so Satellite keeps writing the controller and "
+                    "does not give it up"),
+              1);
+    was = now;
+    now = steps(was, helper, xboxLook(PRESENT, PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::INFO, "is back in Windows"), 1);
+
+    TEST("note: the HID game controller disabled says the XInput device still takes input");
+    was = now;
+    now = steps(was, helper, xboxLook(disabled(WatchedDevnode::HidCollection), PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::WARN,
+                    "Serial 3's HID collection is disabled in Windows (Code 22); its XInput device "
+                    "still takes input"),
+              1);
+
+    TEST("note: a presentation already disabled when the pad is armed is noted then");
+    Helper late;
+    const WatchTracker start;
+    const WatchTracker armedOff =
+        steps(start, late, xboxLook(PRESENT, disabled(WatchedDevnode::Companion)), 1, umdf2);
+    const std::vector<WatchNote> notes = noteWatchStep(5, start, armedOff, umdf2);
+    EXPECT_EQ(count(notes, LogLevel::INFO, "Satellite watches Serial 5's devices"), 1);
+    EXPECT_EQ(count(notes, LogLevel::WARN, "Serial 5's XUSB companion is disabled in Windows"), 1);
+    EXPECT_EQ(notes.size(), size_t{2});
+}
+
+void test_the_audio_function_says_what_it_does_to_the_microphone() {
+    TEST("note: a composite's audio function disabled holds its microphone, and says so");
+    const WatchPolicy usbip = watchPolicyFor(ProfileBackend::Usbip, 1.0);
+    Helper helper;
+    WatchTracker was = armed(helper, compositeLook(PRESENT, PRESENT));
+    WatchTracker now = steps(
+        was, helper, compositeLook(PRESENT, disabled(WatchedDevnode::AudioFunction)), 1, usbip);
+    EXPECT_EQ(count(noteWatchStep(6, was, now, usbip), LogLevel::WARN,
+                    "Serial 6's audio function is disabled in Windows (Code 22); Satellite holds "
+                    "its microphone until it is enabled again"),
+              1);
+    was = now;
+    now = steps(was, helper, compositeLook(PRESENT, PRESENT), 1, usbip);
+    EXPECT_EQ(count(noteWatchStep(6, was, now, usbip), LogLevel::INFO,
+                    "Serial 6's audio function is enabled in Windows again; its microphone "
+                    "carries on"),
+              1);
+    was = now;
+    now = steps(
+        was, helper,
+        compositeLook(PRESENT, part(DevnodeCondition::Missing, WatchedDevnode::AudioFunction)), 1,
+        usbip);
+    EXPECT_EQ(count(noteWatchStep(6, was, now, usbip), LogLevel::WARN,
+                    "its microphone and speaker have nowhere to go"),
+              1);
+    was = now;
+    now = steps(was, helper, compositeLook(PRESENT, PRESENT), 1, usbip);
+    EXPECT_EQ(count(noteWatchStep(6, was, now, usbip), LogLevel::INFO,
+                    "Serial 6's audio function is back in Windows"),
+              1);
+
+    TEST("note: a pad without an audio function never speaks of one");
+    Helper sony;
+    WatchLook look = sonyLook(PRESENT);
+    look.audio = disabled(WatchedDevnode::AudioFunction);
+    const WatchTracker s = armed(sony, sonyLook(PRESENT));
+    const WatchTracker s2 = steps(s, sony, look, 1, usbip);
+    EXPECT_EQ(count(noteWatchStep(6, s, s2, usbip), LogLevel::WARN, "audio function"), 0);
+}
+
+void test_a_stale_look_is_noted_and_its_end_too() {
+    TEST("note: a look grown stale says the watch decides nothing, once, and a fresh one says "
+         "the watch looks again");
+    const WatchPolicy umdf2 = watchPolicyFor(ProfileBackend::Umdf2, 1.0);
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    helper.looks = false;
+    WatchTracker was = steps(t, helper, sonyLook(PRESENT), umdf2.staleTicks - 1, umdf2);
+    WatchTracker now = steps(was, helper, sonyLook(PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(2, was, now, umdf2), LogLevel::WARN,
+                    "The device watch has not finished a look at Serial 2's devices for 1.5 s; "
+                    "Satellite decides nothing about the controller until it does"),
+              1);
+    was = now;
+    now = steps(was, helper, sonyLook(PRESENT), 1, umdf2);
+    EXPECT(noteWatchStep(2, was, now, umdf2).empty());
+    helper.looks = true;
+    was = now;
+    now = steps(was, helper, sonyLook(PRESENT), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(2, was, now, umdf2), LogLevel::INFO,
+                    "The device watch looks at Serial 2's devices again"),
+              1);
+
+    TEST("note: an unwatched pad's stale look says nothing, its unarmed notice covers it");
+    Helper quiet;
+    quiet.looks = false;
+    const WatchTracker u0;
+    const WatchTracker u1 = steps(u0, quiet, sonyLook(UNKNOWN), umdf2.staleTicks, umdf2);
+    const WatchTracker u2 = steps(u1, quiet, sonyLook(UNKNOWN), 1, umdf2);
+    EXPECT_EQ(count(noteWatchStep(2, u1, u2, umdf2), LogLevel::WARN, "The device watch"), 0);
 }
 
 void test_the_version_gate_and_the_watch_combine() {
@@ -468,25 +844,35 @@ int main() {
     test_the_block_reads_back_what_the_watcher_wrote();
     test_a_block_of_another_layout_is_not_known();
     test_a_write_in_progress_is_not_stable();
-    test_an_unknown_condition_or_devnode_reads_as_unknown();
+    test_codes_this_side_does_not_know_read_as_unknown();
+    test_a_pad_with_one_presentation_is_what_it_shows();
+    test_an_xbox_pad_takes_input_while_either_presentation_does();
+    test_a_composites_audio_takes_no_input();
+    test_the_disabled_parts_are_the_presented_ones();
     test_a_umdf2_pad_waits_the_sdks_start_budget();
     test_a_composite_waits_for_usbip_win2s_first_reattach();
     test_a_silent_helper_is_given_up_after_ten_missed_beats();
-    test_a_pad_is_unwatched_until_it_is_seen_whole();
+    test_a_look_is_stale_after_three_of_its_periods();
+    test_a_pad_is_unwatched_until_it_takes_input();
     test_a_pad_absent_within_its_grace_comes_back();
     test_a_pad_absent_for_its_whole_grace_is_lost();
     test_every_kind_of_absence_counts_toward_the_grace();
     test_a_disabled_pad_is_held_and_never_lost_to_it();
     test_a_pad_disabled_before_it_was_armed_is_disabled();
     test_a_disabled_pad_that_then_goes_missing_starts_its_grace();
+    test_an_xbox_pad_with_one_presentation_disabled_is_written_on();
     test_a_helper_that_stops_beating_is_given_up();
     test_a_heartbeat_that_never_moved_never_gives_the_helper_up();
     test_a_helper_gone_takes_unwatched_and_disabled_pads_too();
     test_a_lost_pad_stays_lost();
     test_an_unstable_reading_leaves_the_pad_as_it_was();
     test_a_block_of_another_layout_leaves_the_pad_unwatched();
-    test_only_a_disabled_pad_holds_its_input();
+    test_a_stale_look_decides_nothing();
+    test_only_every_input_presentation_disabled_holds_input();
     test_each_step_says_what_changed();
+    test_a_presentation_that_changes_while_another_takes_input_is_noted();
+    test_the_audio_function_says_what_it_does_to_the_microphone();
+    test_a_stale_look_is_noted_and_its_end_too();
     test_the_version_gate_and_the_watch_combine();
     test_the_hello_settles_the_protocol();
 

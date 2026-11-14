@@ -145,7 +145,7 @@ internal sealed unsafe class WatchedPad : IDisposable
 
     public void Look(IDevnodeTree tree)
     {
-        PadCondition found;
+        PadReport found;
         try
         {
             found = PadEvaluation.Evaluate(tree, _devnodes);

@@ -225,9 +225,10 @@ class SessionService {
             bool active;
             // Adapter truth, not inferred from serial > 0.
             bool pluggedIn;
-            // The host's user has the virtual device disabled: the backend
-            // writes nothing to it, and the slot is kept for when it is enabled.
-            bool disabled;
+            // What the host's user has disabled of the virtual device: with
+            // every input presentation disabled the backend writes nothing to
+            // it, and the slot is kept for when one is enabled.
+            HostDisabled hostDisabled;
             uint8_t controllerType;
             uint8_t touchpadMode;
             // level/status unspecified until batteryKnown.

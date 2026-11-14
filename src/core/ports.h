@@ -98,10 +98,12 @@ class IGamepadPort {
     // Each is reported once. Default: none.
     virtual std::vector<uint32_t> settledSerials() { return {}; }
 
-    // True while the host's user has the serial's virtual device disabled (in
-    // Windows' Device Manager): the backend writes nothing to it until it is
-    // enabled again, and the core keeps its slot. Any thread. Default false.
-    virtual bool deviceDisabled(uint32_t /*serial*/) const { return false; }
+    // What the host's user has disabled of the serial's virtual device (in
+    // Windows' Device Manager). With every input presentation disabled the
+    // backend writes nothing to it until one is enabled again, and the core
+    // keeps its slot; with its audio function disabled the backend holds its
+    // microphone. Any thread. Default: nothing.
+    virtual HostDisabled hostDisabled(uint32_t /*serial*/) const { return {}; }
 
     // Rumble sink, invoked from a platform worker thread. Must stay callable
     // until the adapter is destroyed (SessionService outlives it).

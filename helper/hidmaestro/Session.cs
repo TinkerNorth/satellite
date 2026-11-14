@@ -109,15 +109,23 @@ internal sealed class Session : IDisposable
 
     private DeviceWatch Watch() => _watch ??= new DeviceWatch(new WindowsDevnodeTree());
 
+    // What the watch looks for on a plugged pad, for the selftest, which
+    // drives this session as satellite.exe does.
+    internal PadDevnodes? WatchedDevnodes(uint serial) =>
+        _plugged.TryGetValue(serial, out PluggedController? plugged) ? plugged.Devnodes : null;
+
     // The pad's watch block, or 0 when it could not be made: the pad then
     // runs unwatched, as it did before the watch.
-    private ulong WatchPad(uint serial, HMController controller, HMProfile profile, bool companion)
+    private ulong WatchPad(uint serial, PluggedController plugged, HMProfile profile, bool companion)
     {
         try
         {
+            HMController controller = plugged.Controller;
             PadDevnodes devnodes = DevnodeIds.For(profile.VendorId, profile.ProductId, companion,
                                                   profile.RequiresUsbipBackend,
-                                                  IdentityTags.TokenOf(controller.IdentityKey));
+                                                  IdentityTags.TokenOf(controller.IdentityKey),
+                                                  audio: controller.UsbAudio != null);
+            plugged.Devnodes = devnodes;
             return Watch().Add(serial, devnodes, DuplicateReadOnlyForParent).Handle;
         }
         catch (Exception ex)
@@ -201,7 +209,7 @@ internal sealed class Session : IDisposable
                 plugged.Audio = AudioBridge.TryCreate(serial, controller.UsbAudio, DuplicateForParent);
 
             bool watches = HelperProtocol.Watches(_protocol);
-            ulong watch = watches ? WatchPad(serial, controller, profile, companion) : 0;
+            ulong watch = watches ? WatchPad(serial, plugged, profile, companion) : 0;
             _plugged[serial] = plugged;
             int index = checked((int)serial);
             return Ok(w =>
@@ -345,6 +353,7 @@ internal sealed class PluggedController : IDisposable
     }
 
     public HMController Controller { get; }
+    public PadDevnodes? Devnodes { get; set; }
     public FrameRelay? Relay { get; set; }
     public AudioBridge? Audio { get; set; }
 

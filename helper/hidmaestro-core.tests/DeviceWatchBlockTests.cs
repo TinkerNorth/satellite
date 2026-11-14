@@ -37,7 +37,8 @@ public sealed class DeviceWatchBlockTests
         Constants(typeof(DeviceWatchBlock), "WATCH_")
             .Concat(Constants(typeof(HelperProtocol), "HELPER_PROTOCOL_"))
             .Concat(Members<DevnodeCondition>("WATCH_CONDITION_"))
-            .Concat(Members<WatchedDevnode>("WATCH_DEVNODE_"));
+            .Concat(Members<WatchedDevnode>("WATCH_DEVNODE_"))
+            .Concat(Members<Presents>("WATCH_PRESENTS_"));
 
     [Fact]
     public void EveryValueTheWriterUsesIsTheOneSatelliteReads()
@@ -57,11 +58,13 @@ public sealed class DeviceWatchBlockTests
         string[] contract = Header().Keys
             .Where(k => k.StartsWith("WATCH_CONDITION_", StringComparison.Ordinal) ||
                         k.StartsWith("WATCH_DEVNODE_", StringComparison.Ordinal) ||
+                        k.StartsWith("WATCH_PRESENTS_", StringComparison.Ordinal) ||
                         k.StartsWith("HELPER_PROTOCOL_", StringComparison.Ordinal) ||
                         k.EndsWith("_OFFSET", StringComparison.Ordinal))
             .ToArray();
         Assert.NotEmpty(contract);
-        foreach (string name in contract.Append("WATCH_BLOCK_SIZE").Append("WATCH_LAYOUT").Append("WATCH_BEAT_MS"))
+        string[] alsoNeeded = { "WATCH_BLOCK_SIZE", "WATCH_LAYOUT", "WATCH_BEAT_MS", "WATCH_PRESENTATION_SIZE" };
+        foreach (string name in contract.Concat(alsoNeeded))
             Assert.True(stated.Contains(name), $"the helper has no counterpart of {name}");
     }
 
@@ -74,22 +77,47 @@ public sealed class DeviceWatchBlockTests
         Assert.All(block.Skip(4), b => Assert.Equal(0, b));
     }
 
+    private static readonly PresentationCondition PresentHid = new(DevnodeCondition.Present, WatchedDevnode.HidCollection, 0);
+
+    private static uint At(byte[] block, int offset) => BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(offset));
+
     [Fact]
-    public void AWriteLeavesAnEvenSequenceAndTheFieldsAtTheirOffsets()
+    public void AWriteLeavesAnEvenSequenceAndEachPresentationAtItsOffsets()
     {
         var block = new byte[DeviceWatchBlock.BlockSize];
         DeviceWatchBlock.Initialize(block);
-        DeviceWatchBlock.Write(block, new PadCondition(DevnodeCondition.Failed, WatchedDevnode.HidCollection, 43));
-        Assert.Equal(2u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.SeqOffset)));
-        Assert.Equal(4u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.ConditionOffset)));
-        Assert.Equal(2u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.DevnodeOffset)));
-        Assert.Equal(43u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.ProblemOffset)));
+        var report = new PadReport(Presents.Hid | Presents.Xinput | Presents.Audio,
+                                   new PresentationCondition(DevnodeCondition.Failed, WatchedDevnode.HidCollection, 43),
+                                   new PresentationCondition(DevnodeCondition.Disabled, WatchedDevnode.Companion, 22),
+                                   new PresentationCondition(DevnodeCondition.Missing, WatchedDevnode.AudioFunction, 0));
+        DeviceWatchBlock.Write(block, report);
+        Assert.Equal(2u, At(block, DeviceWatchBlock.SeqOffset));
+        Assert.Equal(7u, At(block, DeviceWatchBlock.PresentsOffset));
+        Assert.Equal(4u, At(block, DeviceWatchBlock.HidOffset + DeviceWatchBlock.FieldConditionOffset));
+        Assert.Equal(2u, At(block, DeviceWatchBlock.HidOffset + DeviceWatchBlock.FieldDevnodeOffset));
+        Assert.Equal(43u, At(block, DeviceWatchBlock.HidOffset + DeviceWatchBlock.FieldProblemOffset));
+        Assert.Equal(2u, At(block, DeviceWatchBlock.XinputOffset + DeviceWatchBlock.FieldConditionOffset));
+        Assert.Equal(3u, At(block, DeviceWatchBlock.XinputOffset + DeviceWatchBlock.FieldDevnodeOffset));
+        Assert.Equal(22u, At(block, DeviceWatchBlock.XinputOffset + DeviceWatchBlock.FieldProblemOffset));
+        Assert.Equal(3u, At(block, DeviceWatchBlock.AudioOffset + DeviceWatchBlock.FieldConditionOffset));
+        Assert.Equal(4u, At(block, DeviceWatchBlock.AudioOffset + DeviceWatchBlock.FieldDevnodeOffset));
 
-        DeviceWatchBlock.Write(block, PadCondition.Present);
-        Assert.Equal(4u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.SeqOffset)));
-        Assert.Equal(1u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.ConditionOffset)));
-        Assert.Equal(0u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.DevnodeOffset)));
-        Assert.Equal(0u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.ProblemOffset)));
+        DeviceWatchBlock.Write(block, new PadReport(Presents.Hid, PresentHid, default, default));
+        Assert.Equal(4u, At(block, DeviceWatchBlock.SeqOffset));
+        Assert.Equal(1u, At(block, DeviceWatchBlock.PresentsOffset));
+        Assert.Equal(1u, At(block, DeviceWatchBlock.HidOffset + DeviceWatchBlock.FieldConditionOffset));
+        Assert.Equal(0u, At(block, DeviceWatchBlock.XinputOffset + DeviceWatchBlock.FieldConditionOffset));
+    }
+
+    [Fact]
+    public void EveryLookMovesTheSequenceThoughNothingChanged()
+    {
+        var block = new byte[DeviceWatchBlock.BlockSize];
+        DeviceWatchBlock.Initialize(block);
+        var report = new PadReport(Presents.Hid, PresentHid, default, default);
+        DeviceWatchBlock.Write(block, report);
+        DeviceWatchBlock.Write(block, report);
+        Assert.Equal(4u, At(block, DeviceWatchBlock.SeqOffset));
     }
 
     [Fact]
@@ -97,10 +125,10 @@ public sealed class DeviceWatchBlockTests
     {
         var block = new byte[DeviceWatchBlock.BlockSize];
         DeviceWatchBlock.Initialize(block);
-        DeviceWatchBlock.Write(block, PadCondition.Present);
+        DeviceWatchBlock.Write(block, new PadReport(Presents.Hid, PresentHid, default, default));
         byte[] before = (byte[])block.Clone();
         DeviceWatchBlock.Beat(block);
-        Assert.Equal(1u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.HeartbeatOffset)));
+        Assert.Equal(1u, At(block, DeviceWatchBlock.HeartbeatOffset));
         for (int i = 0; i < block.Length; i++)
         {
             bool heartbeat = i >= DeviceWatchBlock.HeartbeatOffset && i < DeviceWatchBlock.HeartbeatOffset + 4;
@@ -108,37 +136,51 @@ public sealed class DeviceWatchBlockTests
         }
         BinaryPrimitives.WriteUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.HeartbeatOffset), uint.MaxValue);
         DeviceWatchBlock.Beat(block);
-        Assert.Equal(0u, BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.HeartbeatOffset)));
+        Assert.Equal(0u, At(block, DeviceWatchBlock.HeartbeatOffset));
     }
 
     [Fact]
-    public void AReadingIsTheHeartbeatAndTheLastFinishedWrite()
+    public void AReadingIsTheHeartbeatTheSequenceAndTheLastFinishedWrite()
     {
         var block = new byte[DeviceWatchBlock.BlockSize];
         DeviceWatchBlock.Initialize(block);
-        Assert.Equal(new DeviceWatchBlock.Reading(0, new PadCondition(DevnodeCondition.Unknown, WatchedDevnode.Device, 0)),
+        Assert.Equal(new DeviceWatchBlock.Reading(0, 0, new PadReport(0, default, default, default)),
                      DeviceWatchBlock.Read(block));
-        var disabled = new PadCondition(DevnodeCondition.Disabled, WatchedDevnode.Companion, 22);
-        DeviceWatchBlock.Write(block, disabled);
+        var report = new PadReport(Presents.Hid | Presents.Xinput, PresentHid,
+                                   new PresentationCondition(DevnodeCondition.Disabled, WatchedDevnode.Companion, 22),
+                                   default);
+        DeviceWatchBlock.Write(block, report);
         DeviceWatchBlock.Beat(block);
-        Assert.Equal(new DeviceWatchBlock.Reading(1, disabled), DeviceWatchBlock.Read(block));
+        Assert.Equal(new DeviceWatchBlock.Reading(1, 2, report), DeviceWatchBlock.Read(block));
     }
 
     [Fact]
-    public void AWriteInProgressReadsAsNoCondition()
+    public void AWriteInProgressReadsAsNoReport()
     {
         var block = new byte[DeviceWatchBlock.BlockSize];
         DeviceWatchBlock.Initialize(block);
-        DeviceWatchBlock.Write(block, PadCondition.Present);
+        DeviceWatchBlock.Write(block, new PadReport(Presents.Hid, PresentHid, default, default));
         BinaryPrimitives.WriteUInt32LittleEndian(block.AsSpan(DeviceWatchBlock.SeqOffset), 3);
-        Assert.Null(DeviceWatchBlock.Read(block).Condition);
+        Assert.Null(DeviceWatchBlock.Read(block).Report);
+    }
+
+    [Fact]
+    public void AReportIsWholeOnlyWhenEveryPresentationItHasIsPresent()
+    {
+        var presentCompanion = new PresentationCondition(DevnodeCondition.Present, WatchedDevnode.Companion, 0);
+        var disabledCompanion = new PresentationCondition(DevnodeCondition.Disabled, WatchedDevnode.Companion, 22);
+        Assert.True(new PadReport(Presents.Hid, PresentHid, default, default).Whole);
+        Assert.True(new PadReport(Presents.Hid | Presents.Xinput, PresentHid, presentCompanion, default).Whole);
+        Assert.False(new PadReport(Presents.Hid | Presents.Xinput, PresentHid, disabledCompanion, default).Whole);
+        Assert.False(new PadReport(Presents.Hid | Presents.Audio, PresentHid, default, default).Whole);
     }
 
     [Fact]
     public void ABlockTooSmallIsRefused()
     {
         Assert.Throws<ArgumentException>(() => DeviceWatchBlock.Initialize(new byte[DeviceWatchBlock.BlockSize - 1]));
-        Assert.Throws<ArgumentException>(() => DeviceWatchBlock.Write(new byte[DeviceWatchBlock.BlockSize - 1], PadCondition.Present));
+        Assert.Throws<ArgumentException>(() => DeviceWatchBlock.Write(new byte[DeviceWatchBlock.BlockSize - 1],
+                                                                      new PadReport(Presents.Hid, PresentHid, default, default)));
         Assert.Throws<ArgumentException>(() => DeviceWatchBlock.Beat(new byte[DeviceWatchBlock.BlockSize - 1]));
         Assert.Throws<ArgumentException>(() => DeviceWatchBlock.Read(new byte[DeviceWatchBlock.BlockSize - 1]));
     }

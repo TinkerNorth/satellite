@@ -136,9 +136,9 @@ class GamepadMux : public IGamepadPort {
         return settled;
     }
 
-    bool deviceDisabled(uint32_t serial) const override {
+    HostDisabled hostDisabled(uint32_t serial) const override {
         IGamepadPort* p = ownerOf(serial);
-        return p != nullptr && p->deviceDisabled(serial);
+        return p != nullptr ? p->hostDisabled(serial) : HostDisabled{};
     }
 
     bool submitBattery(uint32_t serial, const BatteryReport& report) override {

@@ -27,7 +27,7 @@ internal static class SdkCheck
     private const string SharedMemoryTypeName = "HIDMaestro.Internal.SharedMemoryIO";
     private const string TimeoutScaleTypeName = "HIDMaestro.Internal.TimeoutScale";
     private const string PlanTypeName = "HIDMaestro.Internal.PresentationPlan";
-    private const string SoftwareDeviceTypeName = "HIDMaestro.Internal.SwdDeviceFactory";
+    private const string OrchestratorTypeName = "HIDMaestro.Internal.DeviceOrchestrator";
     // One of Satellite's own tokens, the shape every devnode name carries.
     private static readonly string SampleToken = IdentityTags.TokenOf(SatelliteProfiles.IdentityKey(1, "dualsense"));
     public const string TimeoutScaleChildCommand = "check-sdk-timeout-scale";
@@ -171,18 +171,24 @@ internal static class SdkCheck
     }
 
     // The devnodes DevnodeIds names for each profile Satellite plugs, against
-    // the SDK's own create plan for it (PresentationPlan.Of): the parent under
-    // ROOT and the plan's enumerator, the XUSB companion under SWD and the
-    // SDK's software device enumerator, and a composite's USB device, whose
-    // serial the keys loop holds to DeviceIdentity.SyntheticSerial. A profile
-    // the SDK creates on a path the watch does not know fails, as does one with
-    // a captured serial of its own, which the synthetic serial does not name.
+    // what reflection reaches of the SDK: the parent's enumerator in its create
+    // plan (PresentationPlan.Of), whether the plan makes an XUSB companion, the
+    // companion's instance id prefix as DeviceOrchestrator's code spells it (an
+    // ldstr in its IL, since the id is built from a literal there), and a
+    // composite's USB serial, which the keys loop holds to
+    // DeviceIdentity.SyntheticSerial. A profile the SDK creates on a path the
+    // watch does not know fails, as does one with a captured serial of its own.
+    // How the parent's id is put together, ROOT\<enumerator>\<token>
+    // (DeviceNodeCreator.cs:130), and that a parent's first child is its HID
+    // collection, reflection does not reach: selftest finds both on hardware.
     private static void CheckDevnodes(Action<bool, string> check)
     {
         Type planType = SdkType(PlanTypeName);
         MethodInfo of = planType.GetMethod("Of", StaticMembers, null, new[] { typeof(ControllerProfile) }, null)
             ?? throw new InvalidOperationException($"the pinned SDK's {PlanTypeName} has no static Of(ControllerProfile)");
-        string softwareEnumerator = StringConstant(SdkType(SoftwareDeviceTypeName), "DefaultEnumeratorName");
+        string companionPrefix = $@"SWD\{DevnodeIds.CompanionEnumerator}\";
+        check(LoadsString(SdkType(OrchestratorTypeName), companionPrefix),
+              $"the SDK's {OrchestratorTypeName} names its XUSB companions from the literal '{companionPrefix}', the prefix DevnodeIds gives them");
         ProfileDatabase catalog = ProfileDatabase.LoadEmbedded();
         foreach (string id in PluggedProfiles)
         {
@@ -199,7 +205,7 @@ internal static class SdkCheck
                                                  profile.RequiresUsbipBackend, SampleToken);
             CheckDevice(id, profile, plan, watched, check);
             bool planned = PlanValue(plan, "XusbCompanion") is true;
-            string? expected = planned ? $@"SWD\{softwareEnumerator}\{SampleToken}" : null;
+            string? expected = planned ? companionPrefix + SampleToken : null;
             check(watched.Companion == expected,
                   $"{id}: the watch looks for the XUSB companion {watched.Companion ?? "none"}, and the SDK makes {expected ?? "none"}");
         }
@@ -231,13 +237,29 @@ internal static class SdkCheck
         (plan.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
          ?? throw new InvalidOperationException($"the pinned SDK's {PlanTypeName} has no {name}")).GetValue(plan);
 
-    private static string StringConstant(Type type, string name)
+    // Whether any method of `type` loads `literal` with an ldstr: the IL is the
+    // only place a string the SDK builds an id from is spelt out.
+    private static bool LoadsString(Type type, string literal)
     {
-        FieldInfo field = type.GetField(name, StaticMembers)
-            ?? throw new InvalidOperationException($"the pinned SDK's {type.FullName} has no {name}");
-        return field.IsLiteral && field.GetRawConstantValue() is string value
-            ? value
-            : throw new InvalidOperationException($"{type.FullName}.{name} is no longer a string constant");
+        const byte Ldstr = 0x72;
+        const int StringTable = 0x70;
+        const BindingFlags Every = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static |
+                                   BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        foreach (MethodBase method in type.GetMethods(Every).Cast<MethodBase>().Concat(type.GetConstructors(Every)))
+        {
+            byte[]? il = method.GetMethodBody()?.GetILAsByteArray();
+            if (il == null) continue;
+            for (int i = 0; i + 4 < il.Length; i++)
+            {
+                if (il[i] != Ldstr || il[i + 4] != StringTable) continue;
+                int token = BitConverter.ToInt32(il, i + 1);
+                string? loaded = null;
+                try { loaded = method.Module.ResolveString(token); }
+                catch (ArgumentException) { }
+                if (loaded == literal) return true;
+            }
+        }
+        return false;
     }
 
     private static string Pin(IReadOnlyDictionary<string, string> pins, string name, string pinsHeader) =>
