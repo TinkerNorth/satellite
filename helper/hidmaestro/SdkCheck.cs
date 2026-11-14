@@ -28,7 +28,8 @@ internal static class SdkCheck
     private const string TimeoutScaleTypeName = "HIDMaestro.Internal.TimeoutScale";
     private const string PlanTypeName = "HIDMaestro.Internal.PresentationPlan";
     private const string SoftwareDeviceTypeName = "HIDMaestro.Internal.SwdDeviceFactory";
-    private const string SampleToken = "HM_0123456789ABCDEF";
+    // One of Satellite's own tokens, the shape every devnode name carries.
+    private static readonly string SampleToken = IdentityTags.TokenOf(SatelliteProfiles.IdentityKey(1, "dualsense"));
     public const string TimeoutScaleChildCommand = "check-sdk-timeout-scale";
     private const BindingFlags StaticMembers = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
     private static readonly uint[] Serials = { 1, 2, 9, 10, 16 };
