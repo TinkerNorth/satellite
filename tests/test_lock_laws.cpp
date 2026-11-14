@@ -953,6 +953,14 @@ void checkDriver(const char* where) {
 
 constexpr DWORD PIPE_BUFFER = 64 * 1024;
 
+// The shipped policy with a helper given up after three quiet ticks rather
+// than five seconds of them, so a run of a few hundred milliseconds sees it.
+hm::WatchPolicy quietHelperPolicy() {
+    hm::WatchPolicy policy = hm::watchPolicyFor(hm::ProfileBackend::Umdf2, 1.0);
+    policy.helperSilenceTicks = 3;
+    return policy;
+}
+
 class FakeHelper {
   public:
     FakeHelper() = default;
@@ -985,10 +993,11 @@ class FakeHelper {
 
     // The helper's heartbeat moves once on this pad's watch block and then
     // stops, as a helper that dies does; the pad is then unplugged as lost.
+    // A pad already beaten stays quiet until a new plug replaces it.
     void beatOnceThenStop(uint32_t serial) {
         std::lock_guard<std::mutex> lk(liveMtx_);
         const auto it = live_.find(serial);
-        if (it == live_.end() || it->second.watchView == nullptr) return;
+        if (it == live_.end() || it->second.watchView == nullptr || it->second.quiet) return;
         uint8_t* beat = it->second.watchView + hm::WATCH_HEARTBEAT_OFFSET;
         satellite::writeLE32(beat, satellite::readLE32(beat) + 1);
         it->second.quiet = true;
@@ -1244,6 +1253,7 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
         ViGEmAdapter vigem;
         LogAdapter log;
         HidMaestroAdapter hidMaestro(provisioner, log, controllerAudioEnabled);
+        hidMaestro.setWatchPolicyForTest(quietHelperPolicy());
         satellite::GamepadMux mux({&vigem, &hidMaestro});
         ClientAdapter client;
         satellite::audio::OpusCodecFactory codecs;
