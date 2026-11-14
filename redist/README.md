@@ -206,10 +206,15 @@ files at the SDK's tag, `profiles/<vendor>/<id>.json`, which
 pinned file. The SDK embeds the repository's `profiles/` folder as it is
 (`HIDMaestro.Core.csproj` at v2.1.0), so a file at the tag is the text the
 SDK runs, and each of the seven is byte-identical to the resource the
-2.1.0 zip's `HIDMaestro.Core.dll` carries. The copies are not written back
-out of the SDK: its serializer cannot round-trip `protocol`, `stateBlock`,
-`inputReports` or `liveFeatureReports`, which a shared parser reads instead
-(`ControllerProfile.cs` at v2.1.0), as HIDMaestro's author confirmed on
+2.1.0 zip's `HIDMaestro.Core.dll` carries. Every publish checks that this
+still holds: `export-profiles` reads the profile `HIDMaestro.Core.dll`
+embeds for each copy (`HIDMaestro.Profiles.<dir>\<id>.json`) and cuts no
+copy when a staged file is not that profile as parsed JSON (line endings
+and a byte order mark aside), or when the resource is missing or renamed.
+The copies are not written back out of the SDK: its serializer cannot
+round-trip `protocol`, `stateBlock`, `inputReports` or `liveFeatureReports`,
+which a shared parser reads instead (`ControllerProfile.cs` at v2.1.0), as
+HIDMaestro's author confirmed on
 [issue #141](https://github.com/TinkerNorth/satellite/issues/141), and it
 writes out every key a file leaves out, as null or as its default.
 
@@ -301,7 +306,8 @@ version field, so the pin bump IS the compatibility review; move the seven
 catalog profile entries in the table to the new tag and re-pin each
 `HIDMaestro-v<ver>-<id>.json` in `SHA256SUMS` from the file at that tag,
 after which the helper's `dotnet test` suite holds every copy to its new
-file and fails on an edit the new file no longer needs; read the publish's
+file and fails on an edit the new file no longer needs, and the publish
+refuses a file that is not the profile the new DLL embeds; read the publish's
 `check-profiles` output, which is the SDK loading the seven copies; and
 run `satellite-hm-helper.exe selftest` elevated on a machine with the
 driver, which is the only place the idle repeat, the Switch Pro state block

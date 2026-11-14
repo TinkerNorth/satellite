@@ -75,7 +75,10 @@ nothing changes for a player, but a later release whose Sony profiles gained
 one would have lost it silently. The six new files are hash-pinned beside
 the Switch Pro's in `redist/SHA256SUMS`, and the helper's tests hold each
 copy to its pinned file: only its name, its notes and its one edit may
-differ. The Switch Pro copy still sends its simple report on the clock,
+differ. Every build of the helper also checks each pinned file against the
+profile HIDMaestro.Core.dll carries inside it, as parsed JSON, and stops if
+one differs or is gone, so a release whose files and SDK disagree cannot
+ship a copy. The Switch Pro copy still sends its simple report on the clock,
 which a real Pro Controller does not do, because Steam drops a Bluetooth
 Switch pad that stays silent for three seconds; `redist/README.md` records
 why and when to revisit it.

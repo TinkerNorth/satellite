@@ -122,8 +122,8 @@ jobs:
       # The helper's SDK-free logic (the frame mailbox the Switch Pro state
       # rides, the profile copies, the section names) is a library with its own
       # tests, which check each copy against the catalog file the fetch above
-      # staged; the publish below then exports the copies and loads them back
-      # through the real SDK.
+      # staged; the publish below then checks each staged file against the
+      # profile the real SDK embeds, exports the copies and loads them back.
       - name: Helper unit tests (dotnet test)
         shell: pwsh
         run: dotnet test helper/hidmaestro-core.tests/satellite-hm-helper-core.tests.csproj -c Release
