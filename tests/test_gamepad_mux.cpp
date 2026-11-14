@@ -10,6 +10,7 @@
 
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace satellite;
@@ -50,6 +51,7 @@ struct MockPort : IGamepadPort {
     int micAudioCalls = 0;
     size_t lastMicSamples = 0;
     std::vector<uint32_t> lost;
+    std::vector<uint32_t> settled;
     std::set<uint32_t> disabled;
 
     explicit MockPort(std::string n, std::set<GamepadIdentity> ids)
@@ -135,6 +137,7 @@ struct MockPort : IGamepadPort {
         return true;
     }
     std::vector<uint32_t> lostSerials() const override { return lost; }
+    std::vector<uint32_t> settledSerials() override { return std::exchange(settled, {}); }
     bool deviceDisabled(uint32_t serial) const override { return disabled.count(serial) != 0; }
 };
 
@@ -328,6 +331,18 @@ static void test_lost_serials_come_from_their_owners() {
     a.lost = {1, 2};
     b.lost = {};
     EXPECT(mux.lostSerials() == std::vector<uint32_t>({1}));
+}
+
+static void test_settled_serials_come_from_every_child() {
+    TEST("settledSerials gathers what every child has seen through, whether or not it still owns "
+         "the serial, since an unplugged serial has no owner");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+    a.settled = {5};
+    b.settled = {2, 7};
+    EXPECT(mux.settledSerials() == std::vector<uint32_t>({5, 2, 7}));
+    EXPECT(mux.settledSerials().empty());
 }
 
 static void test_a_disabled_device_is_asked_of_its_owner() {
@@ -578,6 +593,7 @@ int main() {
     test_idle_refresh_reaches_every_child();
     test_driver_recheck_reaches_every_child();
     test_lost_serials_come_from_their_owners();
+    test_settled_serials_come_from_every_child();
     test_a_disabled_device_is_asked_of_its_owner();
     test_unplug_clears_owner();
     test_unplug_unconfirmed_keeps_owner();

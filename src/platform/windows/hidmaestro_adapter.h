@@ -85,6 +85,7 @@ class HidMaestroAdapter : public IGamepadPort {
     // tick: a pad either one holds is written nothing until both let it go.
     void recheckDrivers() override;
     std::vector<uint32_t> lostSerials() const override;
+    std::vector<uint32_t> settledSerials() override;
     bool deviceDisabled(uint32_t serial) const override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
@@ -277,6 +278,7 @@ class HidMaestroAdapter : public IGamepadPort {
         return lane == AudioLane::Speaker ? speakerWorkers_ : hapticWorkers_;
     }
     void releaseSlotLocked(IoSlot& slot);
+    static satellite::hidmaestro::Teardown teardownFor(const IoSlot& slot);
     // Map the audio rings this plug came back with. Caller holds busMtx_;
     // failure is not fatal, it just leaves the pad without audio.
     void attachAudioLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);

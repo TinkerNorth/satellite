@@ -13,6 +13,8 @@
 #include <winsvc.h>
 
 #include <algorithm>
+#include <deque>
+#include <utility>
 #include <fstream>
 #include <memory>
 #include <random>
@@ -233,6 +235,9 @@ struct HelperChannel {
     HANDLE process = nullptr;
     std::string pending;
     std::vector<char> chunk;
+    // The serials whose lost-pad unplug went without its answer yet, in the
+    // order sent: those answers come ahead of any later request's.
+    std::deque<uint32_t> owed;
     // What the hello settled on; the base protocol hands over no watch blocks.
     int32_t protocol = HELPER_PROTOCOL_BASE;
 };
@@ -291,6 +296,19 @@ bool readLine(HelperChannel& ch, std::string& line, const IoBudget& budget) {
         }
         ch.pending.append(ch.chunk.data(), moved);
     }
+}
+
+bool writeLine(HelperChannel& ch, const std::string& request, const IoBudget& budget) {
+    std::string out = request;
+    out.push_back('\n');
+    DWORD moved = 0;
+    return pipeIo(ch, true, out.data(), static_cast<DWORD>(out.size()), moved, budget) &&
+           moved == out.size();
+}
+
+bool unplugAnswered(const std::string& response) {
+    Json j;
+    return jsonParse(response, j) && jsonBool(j, "ok");
 }
 
 bool roundTrip(HelperChannel& ch, const std::string& request, std::string& response, DWORD waitMs,
@@ -459,6 +477,7 @@ void HelperClient::adoptStagedLocked() {
 
 void HelperClient::setChannelLocked(std::unique_ptr<HelperChannel> channel) {
     channel_ = std::move(channel);
+    if (channel_ != nullptr) generation_++;
     channelUp_.store(channel_ != nullptr, std::memory_order_release);
 }
 
@@ -631,12 +650,50 @@ void HelperClient::stopLocked(bool sendShutdown) {
     setChannelLocked(nullptr);
 }
 
+// Answers still owed to lost pads' unplugs are read first: the helper answers
+// in order, so the next line after them is this request's.
 bool HelperClient::requestLocked(HelperRequest request, const std::string& line,
                                  std::string& response) {
     if (channel_ == nullptr) return false;
-    if (roundTrip(*channel_, line, response, waitFor(request), nullptr)) return true;
+    if (drainOwedLocked(waitFor(request)) &&
+        roundTrip(*channel_, line, response, waitFor(request), nullptr)) {
+        return true;
+    }
     setChannelLocked(nullptr);
     return false;
+}
+
+// Caller holds mtx_. Each owed answer that confirms its unplug settles that
+// serial; false when the helper gives them not within `waitMs`.
+bool HelperClient::drainOwedLocked(DWORD waitMs) {
+    const IoBudget budget = budgetFor(waitMs, nullptr);
+    while (!channel_->owed.empty()) {
+        std::string response;
+        if (!readLine(*channel_, response, budget)) return false;
+        const uint32_t serial = channel_->owed.front();
+        channel_->owed.pop_front();
+        if (unplugAnswered(response)) settleLocked(serial);
+    }
+    return true;
+}
+
+void HelperClient::settleLocked(uint32_t serial) {
+    unconfirmed_.erase(serial);
+    settled_.push_back(serial);
+}
+
+// Caller holds mtx_, after a plug on the current channel succeeded: that
+// helper swept what helpers that came before it left (Session.Profiles, the
+// SDK's RemoveAllVirtualControllers for exited programs, before the create).
+void HelperClient::settleSweptLocked() {
+    for (auto it = unconfirmed_.begin(); it != unconfirmed_.end();) {
+        if (it->second >= generation_) {
+            ++it;
+            continue;
+        }
+        settled_.push_back(it->first);
+        it = unconfirmed_.erase(it);
+    }
 }
 
 bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool audio,
@@ -656,6 +713,7 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
 
     Json j;
     if (!jsonParse(response, j) || !jsonBool(j, "ok")) return false;
+    settleSweptLocked();
     auto handleField = [&j](const char* key) -> uint64_t {
         int64_t v = 0;
         return jsonTryI64(j, key, v) && v > 0 ? static_cast<uint64_t>(v) : 0;
@@ -736,6 +794,8 @@ void HelperClient::setLaunchWaitForTest(DWORD ms) { launchWaitMs_.store(ms); }
 
 void HelperClient::setExitWaitForTest(DWORD ms) { exitWaitMs_.store(ms); }
 
+void HelperClient::setLostUnplugWaitForTest(DWORD ms) { lostUnplugWaitMs_.store(ms); }
+
 bool HelperClient::waitForBackgroundConnectForTest(DWORD ms) {
     return WaitForSingleObject(connectDone_, ms) == WAIT_OBJECT_0;
 }
@@ -745,17 +805,63 @@ uint64_t HelperClient::pipeReadsForTest() { return g_pipeReads.load(std::memory_
 void notifyDriverInstalledForTest() { notifyDriverInstalled(); }
 #endif
 
-bool HelperClient::deprovision(uint32_t serial) {
+bool HelperClient::deprovision(uint32_t serial, Teardown why) {
     std::lock_guard<TrackedMutex> lk(mtx_);
-    if (channel_ == nullptr) return false;
+    const bool confirmed = deprovisionLocked(serial, why);
+    if (confirmed) {
+        unconfirmed_.erase(serial);
+    } else {
+        unconfirmed_[serial] = generation_;
+    }
+    return confirmed;
+}
 
+bool HelperClient::deprovisionLocked(uint32_t serial, Teardown why) {
+    if (channel_ == nullptr) return false;
     JsonOut req;
     req["op"] = "unplug";
     req["serial"] = serial;
+    switch (why) {
+    case Teardown::Requested: {
+        std::string response;
+        return requestLocked(HelperRequest::Deprovision, jsonDump(req), response) &&
+               unplugAnswered(response);
+    }
+    case Teardown::DeviceLost:
+        return lostUnplugLocked(serial, jsonDump(req));
+    case Teardown::HelperGone:
+        logMsg(LogLevel::WARN, "hidmaestro",
+               "The HIDMaestro helper has stopped; Satellite lets it go, and the next plug "
+               "reaches a new one");
+        setChannelLocked(nullptr);
+        return false;
+    }
+    return false;
+}
+
+// Caller holds mtx_. The answer gets one short wait, and none while an earlier
+// one is owed; one that has not come is owed, read ahead of the next request's,
+// and the channel stays for the helper's other pads.
+bool HelperClient::lostUnplugLocked(uint32_t serial, const std::string& line) {
+    HelperChannel& ch = *channel_;
+    if (!writeLine(ch, line, budgetFor(waitFor(HelperRequest::Deprovision), nullptr))) {
+        setChannelLocked(nullptr);
+        return false;
+    }
+    ch.owed.push_back(serial);
+    if (ch.owed.size() > 1) return false;
     std::string response;
-    if (!requestLocked(HelperRequest::Deprovision, jsonDump(req), response)) return false;
-    Json j;
-    return jsonParse(response, j) && jsonBool(j, "ok");
+    if (!readLine(ch, response, budgetFor(lostUnplugWaitMs_.load(), nullptr))) {
+        if (!ch.alive()) setChannelLocked(nullptr);
+        return false;
+    }
+    ch.owed.pop_front();
+    return unplugAnswered(response);
+}
+
+std::vector<uint32_t> HelperClient::takeSettledSerials() {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    return std::exchange(settled_, {});
 }
 
 } // namespace hidmaestro

@@ -15,6 +15,7 @@
 #include "core/types.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace satellite {
 namespace hidmaestro {
@@ -81,6 +82,21 @@ struct ProvisionResult {
     int micRateHz = 0;
 };
 
+// Why a pad is being removed, which decides what its removal may wait for.
+enum class Teardown : uint8_t {
+    // The client let the pad go: the helper's answer is awaited as any
+    // request's is, and a helper that misses it loses its channel.
+    Requested,
+    // Windows lost the pad's device while its helper lives: the answer is
+    // awaited only briefly, and one that comes later is read before the next
+    // request's, so a removal Windows makes wait never holds the maintenance
+    // tick or costs the helper's other pads their channel.
+    DeviceLost,
+    // The pad's helper stopped beating: nothing is asked of it, and its channel
+    // is let go, so the next plug reaches a new helper.
+    HelperGone,
+};
+
 class IHidMaestroProvisioner {
   public:
     virtual ~IHidMaestroProvisioner() = default;
@@ -105,7 +121,12 @@ class IHidMaestroProvisioner {
 
     // Tear down the controller for `serial`. False = removal unconfirmed (the
     // caller must quarantine the serial). Idempotent.
-    virtual bool deprovision(uint32_t serial) = 0;
+    virtual bool deprovision(uint32_t serial, Teardown why) = 0;
+
+    // The serials whose unconfirmed removal has since been seen through: the
+    // helper answered it late, or a helper that started after it swept what
+    // its predecessor left. Each is reported once.
+    virtual std::vector<uint32_t> takeSettledSerials() { return {}; }
 };
 
 } // namespace hidmaestro

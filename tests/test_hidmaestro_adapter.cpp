@@ -27,6 +27,7 @@
 #include <functional>
 #include <future>
 #include <map>
+#include <utility>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -108,6 +109,9 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     bool ensureReadyResult = true;
     bool provisionResult = true;
     bool deprovisionResult = true;
+    // Why each serial was last removed, as the adapter said.
+    std::map<uint32_t, Teardown> teardowns;
+    std::vector<uint32_t> settled;
     bool withOutputSection = true;
     // What a composite persona reports back. 48/48 is the DualSense; the
     // DualShock 4 v2 is 32 kHz out / 16 kHz in, which is what forces the
@@ -315,6 +319,7 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     }
 
     bool installed() const override { return installedVal; }
+    std::vector<uint32_t> takeSettledSerials() override { return std::exchange(settled, {}); }
     bool isReady() const override { return ready; }
     bool ensureReady() override {
         if (!ensureReadyResult) return false;
@@ -419,9 +424,10 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         return true;
     }
 
-    bool deprovision(uint32_t serial) override {
+    bool deprovision(uint32_t serial, Teardown why) override {
         passGate();
         deprovisionCalls++;
+        teardowns[serial] = why;
         auto it = live.find(serial);
         if (it != live.end()) {
             inputSeqAtRemoval[serial] = u32at(it->second.inputView, 0);
@@ -2504,6 +2510,9 @@ static void test_a_pad_away_past_its_grace_is_given_up() {
     EXPECT_EQ(prov.log.count(LogLevel::WARN, "gives the controller up"), 1);
     EXPECT(adapter.unplugDevice(3));
     EXPECT(adapter.lostSerials().empty());
+    TEST("watch: a pad given up for its device is removed as one whose helper lives, so the "
+         "removal never waits out the helper's whole bound");
+    EXPECT(prov.teardowns.at(3) == Teardown::DeviceLost);
 }
 
 static void test_a_silent_helper_gives_up_every_pad() {
@@ -2520,6 +2529,25 @@ static void test_a_silent_helper_gives_up_every_pad() {
     silentTicks(adapter, 1);
     EXPECT(adapter.lostSerials() == std::vector<uint32_t>({1, 2}));
     EXPECT_EQ(prov.log.count(LogLevel::WARN, "HIDMaestro helper has not beaten"), 2);
+    TEST("watch: a pad given up for its helper is removed without asking that helper anything");
+    adapter.unplugDevice(1);
+    EXPECT(prov.teardowns.at(1) == Teardown::HelperGone);
+}
+
+static void test_a_pad_let_go_by_its_client_is_removed_as_asked() {
+    TEST("teardown: a pad its client lets go is removed as a request, which waits for the helper's "
+         "answer");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 4, GamepadIdentity::DualSense);
+    EXPECT(adapter.unplugDevice(4));
+    EXPECT(prov.teardowns.at(4) == Teardown::Requested);
+
+    TEST("teardown: the serials the helper has since settled reach the core once each");
+    prov.settled = {4, 9};
+    EXPECT(adapter.settledSerials() == std::vector<uint32_t>({4, 9}));
+    EXPECT(adapter.settledSerials().empty());
 }
 
 static void test_a_helper_without_the_watch_leaves_pads_as_they_were() {
@@ -2745,6 +2773,7 @@ int main() {
     test_a_pad_away_within_its_grace_is_still_written();
     test_a_pad_away_past_its_grace_is_given_up();
     test_a_silent_helper_gives_up_every_pad();
+    test_a_pad_let_go_by_its_client_is_removed_as_asked();
     test_a_helper_without_the_watch_leaves_pads_as_they_were();
     test_a_composite_waits_longer_than_a_umdf2_pad();
     test_the_watch_and_the_version_section_hold_a_pad_together();

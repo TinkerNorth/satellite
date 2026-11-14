@@ -321,6 +321,25 @@ void SessionService::releaseSerial(uint32_t serial) {
     serialInUse_[serial - 1] = false;
 }
 
+// Caller holds topoMtx_ alone, as a backend call needs. A quarantine only
+// clears when the bus closes, which a pad of another backend can keep from
+// happening for good, so each serial whose unconfirmed unplug the backend has
+// since seen through (a helper that answered late, or a new helper that swept
+// what a dead one left) is free again here, before the plan hands serials out.
+void SessionService::releaseSettledSerials() {
+    const std::vector<uint32_t> settled = backend_.settledSerials();
+    if (settled.empty()) return;
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    for (const uint32_t serial : settled) {
+        if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) continue;
+        if (!serialQuarantined_[serial - 1]) continue;
+        serialQuarantined_[serial - 1] = false;
+        log_.logMsg(LogLevel::INFO, "service",
+                    "Serial " + std::to_string(serial) +
+                        "'s unplug has since been seen through; the serial is free again");
+    }
+}
+
 void SessionService::quarantineSerial(uint32_t serial) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
     hidMotors_[serial].store(0, std::memory_order_release);
@@ -805,6 +824,7 @@ SessionUpsertResult SessionService::upsertSession(
     const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::vector<ControllerDescriptor>& descriptors,
     bool requestMouseControl, int protocolVersion) {
     std::lock_guard<TrackedMutex> topo(topoMtx_);
+    releaseSettledSerials();
     SessionUpsertResult res;
     const std::vector<ControllerDescriptor> desired = dedupDescriptors(descriptors);
     SessionMint mint;
@@ -864,6 +884,7 @@ bool SessionService::applyController(const std::string& connectionId, const std:
                                      const ControllerDescriptor& desc,
                                      ControllerApplyResult& outResult, uint16_t& outEpoch) {
     std::lock_guard<TrackedMutex> topo(topoMtx_);
+    releaseSettledSerials();
     TopologyChange change;
     Connection* conn = nullptr;
     {
@@ -1120,15 +1141,18 @@ void SessionService::refreshIdleInput() {
 
 void SessionService::recheckDrivers() {
     backend_.recheckDrivers();
-    const std::vector<uint32_t> lost = backend_.lostSerials();
-    if (!lost.empty()) vacateLostPads(lost);
+    vacateLostPads();
 }
 
 // The topology change for a pad the backend lost: commit and publish under the
-// state lock, then the unplug, settle and bus close of any teardown.
-void SessionService::vacateLostPads(const std::vector<uint32_t>& lost) {
+// state lock, then the unplug, settle and bus close of any teardown. The list
+// is read under the topology lock, so no PUT can free a lost serial and plug a
+// fresh pad on it between the read and the vacate.
+void SessionService::vacateLostPads() {
     std::unique_lock<TrackedMutex> topo(topoMtx_, std::try_to_lock);
     if (!topo.owns_lock()) return;
+    const std::vector<uint32_t> lost = backend_.lostSerials();
+    if (lost.empty()) return;
     std::vector<RetiredSerial> retired;
     {
         std::lock_guard<TrackedMutex> lk(mtx_);

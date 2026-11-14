@@ -130,12 +130,16 @@ void test_an_unknown_condition_or_devnode_reads_as_unknown() {
 }
 
 void test_a_umdf2_pad_waits_the_sdks_start_budget() {
-    TEST("policy: a UMDF2 pad waits the SDK's own start budget, 15 s, scaled as the SDK "
-         "scales it");
+    TEST("policy: a UMDF2 pad waits the SDK's own start budget, 15 s, lengthened as the SDK "
+         "lengthens it");
     EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 1.0).graceTicks, 150u);
     EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 2.0).graceTicks, 300u);
-    EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 0.1).graceTicks, 15u);
     EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 500.0).graceTicks, 150u);
+    TEST("policy: a timeout scale below 1 never shortens a UMDF2 pad's grace: Windows restarting "
+         "a failed host does not run on the SDK's clock");
+    EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 0.1).graceTicks, 150u);
+    EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 0.5).graceTicks, 150u);
+    EXPECT_EQ(watchPolicyFor(ProfileBackend::Umdf2, 0.99).graceTicks, 150u);
 }
 
 void test_a_composite_waits_for_usbip_win2s_first_reattach() {

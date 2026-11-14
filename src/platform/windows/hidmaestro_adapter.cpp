@@ -86,16 +86,18 @@ void HidMaestroAdapter::closeBus() {
         stopAudioWorker(serial, AudioLane::Haptic);
     }
 
-    std::vector<uint32_t> provisioned;
+    std::vector<std::pair<uint32_t, hm::Teardown>> provisioned;
     {
         std::lock_guard<TrackedMutex> lk(busMtx_);
         for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
             IoSlot& slot = io_[s];
-            if (slot.plugged.load(std::memory_order_acquire)) provisioned.push_back(s);
+            if (slot.plugged.load(std::memory_order_acquire)) {
+                provisioned.emplace_back(s, teardownFor(slot));
+            }
             releaseSlotLocked(slot);
         }
     }
-    for (uint32_t s : provisioned) provisioner_.deprovision(s);
+    for (const auto& [s, why] : provisioned) provisioner_.deprovision(s, why);
     // The helper stays resident: closeBus fires every time the session goes
     // idle, and respawning the elevated helper would mean a fresh UAC prompt
     // on every reconnect. It exits with satellite (parent watch) or in the
@@ -326,7 +328,7 @@ void HidMaestroAdapter::discardSlot(uint32_t serial) {
         std::lock_guard<TrackedMutex> lk(busMtx_);
         releaseSlotLocked(io_[serial]);
     }
-    provisioner_.deprovision(serial);
+    provisioner_.deprovision(serial, hm::Teardown::Requested);
 }
 
 void HidMaestroAdapter::logRefusal(uint32_t serial, const IoSlot& slot,
@@ -400,10 +402,12 @@ bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
     if (!isValidSerial(serial)) return true; // nothing to remove
 
     bool wasPlugged = false;
+    hm::Teardown why = hm::Teardown::Requested;
     {
         std::lock_guard<TrackedMutex> lk(busMtx_);
         IoSlot& slot = io_[serial];
         wasPlugged = slot.plugged.load(std::memory_order_acquire);
+        why = teardownFor(slot);
         slot.plugged.store(false, std::memory_order_release);
         stopOutputWorker(serial);
         stopAudioWorker(serial, AudioLane::Speaker);
@@ -414,7 +418,26 @@ bool HidMaestroAdapter::unplugDevice(uint32_t serial) {
     // False (helper gone / SDK teardown failed) means target state unknown:
     // the caller quarantines the serial, exactly like an unconfirmed ViGEm
     // unplug.
-    return provisioner_.deprovision(serial);
+    return provisioner_.deprovision(serial, why);
+}
+
+// Caller holds busMtx_. A pad the watch gave up says why, which decides what
+// its removal may wait for (hm::Teardown).
+hm::Teardown HidMaestroAdapter::teardownFor(const IoSlot& slot) {
+    if (!hm::watchLost(slot.watch)) return hm::Teardown::Requested;
+    switch (slot.watch.loss) {
+    case hm::PadLoss::Helper:
+        return hm::Teardown::HelperGone;
+    case hm::PadLoss::Device:
+    case hm::PadLoss::None:
+        return hm::Teardown::DeviceLost;
+    }
+    return hm::Teardown::DeviceLost;
+}
+
+// Inside a topology change, as every provisioner call is.
+std::vector<uint32_t> HidMaestroAdapter::settledSerials() {
+    return provisioner_.takeSettledSerials();
 }
 
 // Read without busMtx_: the core calls it on the maintenance tick, after the

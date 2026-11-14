@@ -530,7 +530,8 @@ class SessionService {
     void removePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
     void bindPadLocked(Connection& conn, Controller& ctrl, const PadChange& pad);
     void vacatePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
-    void vacateLostPads(const std::vector<uint32_t>& lost);
+    void vacateLostPads();
+    void releaseSettledSerials();
     void vacateLostPadLocked(uint32_t serial, std::vector<RetiredSerial>& retired);
     void takeDescriptorLocked(Controller& ctrl, const ControllerDescriptor& desc);
     bool allocateWaitingLocked(TopologyChange& change);

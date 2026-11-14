@@ -18,10 +18,12 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace satellite {
 namespace hidmaestro {
@@ -30,6 +32,10 @@ inline constexpr DWORD HELPER_PIPE_WAIT_MS = 10000;
 inline constexpr DWORD HELPER_PROVISION_WAIT_MS = 120000;
 inline constexpr DWORD HELPER_LAUNCH_WAIT_MS = 120000;
 inline constexpr DWORD HELPER_EXIT_WAIT_MS = 5000;
+// How long a lost pad's unplug waits for its answer: one maintenance tick, on
+// whose thread it runs. A helper answers it at once (helper Disposals); one
+// that does not is read later, before the next request's answer.
+inline constexpr DWORD HELPER_LOST_UNPLUG_WAIT_MS = 100;
 
 enum class HelperRequest { Hello, Provision, Deprovision, Shutdown };
 
@@ -64,7 +70,8 @@ class HelperClient : public IHidMaestroProvisioner {
     void shutdown() override;
     bool provision(uint32_t serial, GamepadIdentity identity, bool audio,
                    ProvisionResult& out) override;
-    bool deprovision(uint32_t serial) override;
+    bool deprovision(uint32_t serial, Teardown why) override;
+    std::vector<uint32_t> takeSettledSerials() override;
 
     void connectBrokerInBackground();
 
@@ -79,6 +86,7 @@ class HelperClient : public IHidMaestroProvisioner {
     void setProvisionWaitForTest(DWORD ms);
     void setLaunchWaitForTest(DWORD ms);
     void setExitWaitForTest(DWORD ms);
+    void setLostUnplugWaitForTest(DWORD ms);
     bool waitForBackgroundConnectForTest(DWORD ms);
     static uint64_t pipeReadsForTest();
 #endif
@@ -97,6 +105,11 @@ class HelperClient : public IHidMaestroProvisioner {
     void setChannelLocked(std::unique_ptr<HelperChannel> channel);
     void stopLocked(bool sendShutdown);
     bool requestLocked(HelperRequest request, const std::string& line, std::string& response);
+    bool deprovisionLocked(uint32_t serial, Teardown why);
+    bool lostUnplugLocked(uint32_t serial, const std::string& line);
+    bool drainOwedLocked(DWORD waitMs);
+    void settleLocked(uint32_t serial);
+    void settleSweptLocked();
 
     mutable TrackedMutex mtx_{"hidmaestro.helper"};
     std::unique_ptr<HelperChannel> channel_;
@@ -107,6 +120,13 @@ class HelperClient : public IHidMaestroProvisioner {
     std::atomic<DWORD> provisionWaitMs_{helperRequestWaitMs(HelperRequest::Provision)};
     std::atomic<DWORD> launchWaitMs_{HELPER_LAUNCH_WAIT_MS};
     std::atomic<DWORD> exitWaitMs_{HELPER_EXIT_WAIT_MS};
+    std::atomic<DWORD> lostUnplugWaitMs_{HELPER_LOST_UNPLUG_WAIT_MS};
+    // mtx_: each channel adopted counts one up; a serial whose removal went
+    // unconfirmed keeps the count it went on, and a later channel's first
+    // plug, which sweeps what an earlier helper left, settles it.
+    uint64_t generation_ = 0;
+    std::map<uint32_t, uint64_t> unconfirmed_;
+    std::vector<uint32_t> settled_;
     HANDLE cancel_ = nullptr;
     HANDLE connectDone_ = nullptr;
     std::thread connectThread_;

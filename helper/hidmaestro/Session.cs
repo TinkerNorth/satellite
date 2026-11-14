@@ -53,6 +53,7 @@ internal sealed class Session : IDisposable
     private readonly bool _broker;
     private readonly HMContext _ctx = new();
     private readonly Dictionary<uint, PluggedController> _plugged = new();
+    private readonly Disposals _disposals = new();
     private ProfileSet? _profiles;
     private DeviceWatch? _watch;
     private int _protocol = HelperProtocol.Base;
@@ -140,6 +141,9 @@ internal sealed class Session : IDisposable
     {
         ProfileSet profiles = Profiles();
         Unplug(serial);
+        // The same serial's identity key names the same devnodes, so its last
+        // controller goes first.
+        _disposals.Await(serial);
 
         HMProfile? profile = profiles.Resolve(_ctx, profileId, out string? refusal);
         if (profile == null) return Error(refusal ?? $"unknown profile '{profileId}'");
@@ -227,11 +231,14 @@ internal sealed class Session : IDisposable
     }
 
     // The watch goes first, so it never looks at devnodes the controller's
-    // teardown is removing.
+    // teardown is removing. The SDK's removal runs off the pipe's thread
+    // (Disposals) and the answer goes at once, so a removal that Windows makes
+    // wait, a pad held open by another program or a driver that does not
+    // answer, holds up no other request and no other pad.
     private string Unplug(uint serial)
     {
         _watch?.Remove(serial);
-        if (_plugged.Remove(serial, out PluggedController? plugged)) plugged.Dispose();
+        if (_plugged.Remove(serial, out PluggedController? plugged)) _disposals.Begin(serial, plugged.Dispose);
         return Ok(_ => { });
     }
 
@@ -245,6 +252,7 @@ internal sealed class Session : IDisposable
         _watch?.Dispose();
         foreach (PluggedController plugged in _plugged.Values) plugged.Dispose();
         _plugged.Clear();
+        _disposals.AwaitAll();
         try { _ctx.Dispose(); }
         catch { }
     }

@@ -418,11 +418,17 @@ class LawBackend : public IGamepadPort {
     // What the HIDMaestro watch reports of a pad Windows lost: listed while it
     // is plugged, until the core unplugs it.
     std::vector<uint32_t> lostSerials() const override {
+        watch_.check("mock lostSerials", true);
         std::vector<uint32_t> lost;
         for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; ++serial) {
             if (lost_[serial].load() && plugged_[serial].load()) lost.push_back(serial);
         }
         return lost;
+    }
+
+    std::vector<uint32_t> settledSerials() override {
+        watch_.check("mock settledSerials", true);
+        return {};
     }
 
     void lose(uint32_t serial) {
@@ -953,13 +959,16 @@ void checkDriver(const char* where) {
 
 constexpr DWORD PIPE_BUFFER = 64 * 1024;
 
-// The shipped policy with a helper given up after three quiet ticks rather
-// than five seconds of them, so a run of a few hundred milliseconds sees it.
-hm::WatchPolicy quietHelperPolicy() {
+// The shipped policy with a device given up after three ticks gone rather than
+// fifteen seconds of them, so a run of a few hundred milliseconds sees it.
+hm::WatchPolicy shortGracePolicy() {
     hm::WatchPolicy policy = hm::watchPolicyFor(hm::ProfileBackend::Umdf2, 1.0);
-    policy.helperSilenceTicks = 3;
+    policy.graceTicks = 3;
     return policy;
 }
+
+// Ten of the law run's maintenance ticks.
+constexpr std::chrono::milliseconds SEEN_WHOLE_AFTER{20};
 
 class FakeHelper {
   public:
@@ -989,18 +998,20 @@ class FakeHelper {
 
     int plugs() const { return plugs_.load(); }
     int unplugs() const { return unplugs_.load(); }
-    int quietUnplugs() const { return quietUnplugs_.load(); }
+    int lostUnplugs() const { return lostUnplugs_.load(); }
 
-    // The helper's heartbeat moves once on this pad's watch block and then
-    // stops, as a helper that dies does; the pad is then unplugged as lost.
-    // A pad already beaten stays quiet until a new plug replaces it.
-    void beatOnceThenStop(uint32_t serial) {
+    // Windows loses this pad's device while the helper lives: the watch block
+    // says so, and the pad is unplugged as lost once its grace is out. A pad
+    // the maintenance tick has had no time to see whole yet is left alone, since
+    // a pad never seen whole is never given up for its devices; one already
+    // lost stays so until a new plug replaces it.
+    void loseDevice(uint32_t serial) {
         std::lock_guard<std::mutex> lk(liveMtx_);
         const auto it = live_.find(serial);
-        if (it == live_.end() || it->second.watchView == nullptr || it->second.quiet) return;
-        uint8_t* beat = it->second.watchView + hm::WATCH_HEARTBEAT_OFFSET;
-        satellite::writeLE32(beat, satellite::readLE32(beat) + 1);
-        it->second.quiet = true;
+        if (it == live_.end() || it->second.watchView == nullptr || it->second.lost) return;
+        if (std::chrono::steady_clock::now() - it->second.pluggedAt < SEEN_WHOLE_AFTER) return;
+        writeCondition(it->second.watchView, hm::WATCH_CONDITION_MISSING);
+        it->second.lost = true;
     }
 
   private:
@@ -1013,7 +1024,8 @@ class FakeHelper {
         HANDLE version = nullptr;
         HANDLE watch = nullptr;
         uint8_t* watchView = nullptr;
-        bool quiet = false;
+        bool lost = false;
+        std::chrono::steady_clock::time_point pluggedAt{};
     };
 
     static void close(Slot& slot) {
@@ -1025,7 +1037,16 @@ class FakeHelper {
         slot = Slot{};
     }
 
-    // A watch block as the helper creates it: layout 1, nothing looked at yet.
+    // One finished write of the watcher's: the sequence odd while it writes.
+    static void writeCondition(uint8_t* block, uint32_t condition) {
+        uint8_t* seq = block + hm::WATCH_SEQ_OFFSET;
+        satellite::writeLE32(seq, satellite::readLE32(seq) + 1);
+        satellite::writeLE32(block + hm::WATCH_CONDITION_OFFSET, condition);
+        satellite::writeLE32(seq, satellite::readLE32(seq) + 1);
+    }
+
+    // A watch block as the helper has it once it has looked: layout 1, every
+    // devnode present.
     static void openWatchBlock(Slot& slot) {
         slot.watch = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                         static_cast<DWORD>(hm::WATCH_BLOCK_SIZE), nullptr);
@@ -1034,6 +1055,7 @@ class FakeHelper {
         if (slot.watchView != nullptr) {
             satellite::writeLE32(slot.watchView + hm::WATCH_LAYOUT_OFFSET,
                                  static_cast<uint32_t>(hm::WATCH_LAYOUT));
+            writeCondition(slot.watchView, hm::WATCH_CONDITION_PRESENT);
         }
     }
 
@@ -1124,6 +1146,7 @@ class FakeHelper {
         slot.outputEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         slot.version = versionSection(serial, profile);
         openWatchBlock(slot);
+        slot.pluggedAt = std::chrono::steady_clock::now();
         satellite::JsonOut reply;
         reply["ok"] = true;
         reply["index"] = serial;
@@ -1148,7 +1171,7 @@ class FakeHelper {
         std::lock_guard<std::mutex> lk(liveMtx_);
         const auto it = live_.find(serial);
         if (it == live_.end()) return;
-        if (it->second.quiet) quietUnplugs_++;
+        if (it->second.lost) lostUnplugs_++;
         close(it->second);
         live_.erase(it);
         unplugs_++;
@@ -1160,7 +1183,7 @@ class FakeHelper {
     std::map<uint32_t, Slot> live_;
     std::atomic<int> plugs_{0};
     std::atomic<int> unplugs_{0};
-    std::atomic<int> quietUnplugs_{0};
+    std::atomic<int> lostUnplugs_{0};
 };
 
 struct HelperLockUse {
@@ -1217,9 +1240,9 @@ class CheckedProvisioner : public hm::IHidMaestroProvisioner {
         return helper_.provision(serial, identity, audio, out);
     }
 
-    bool deprovision(uint32_t serial) override {
+    bool deprovision(uint32_t serial, hm::Teardown why) override {
         watch_.check("helper deprovision", true);
-        return helper_.deprovision(serial);
+        return helper_.deprovision(serial, why);
     }
 
   private:
@@ -1253,7 +1276,7 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
         ViGEmAdapter vigem;
         LogAdapter log;
         HidMaestroAdapter hidMaestro(provisioner, log, controllerAudioEnabled);
-        hidMaestro.setWatchPolicyForTest(quietHelperPolicy());
+        hidMaestro.setWatchPolicyForTest(shortGracePolicy());
         satellite::GamepadMux mux({&vigem, &hidMaestro});
         ClientAdapter client;
         satellite::audio::OpusCodecFactory codecs;
@@ -1295,14 +1318,14 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
                     svc.backdateForTest(silent.token, REAP_SILENCE_SEC, 1);
                 }
 
-                // Dish wl's helper goes quiet: the adapter gives the pad up on
-                // the maintenance tick and the core unplugs it through the
+                // Windows loses dish wl's device: the adapter gives the pad up
+                // on the maintenance tick and the core unplugs it through the
                 // helper client; the next round's re-PUT plugs it again.
                 putOrRefuse(svc, wl, {pad(0, CONTROLLER_TYPE_DUALSENSE)}, tally);
-                fake.beatOnceThenStop(firstPadOf(svc, wl));
+                fake.loseDevice(firstPadOf(svc, wl));
             },
             FeedbackTick{});
-        const int givenUp = fake.quietUnplugs();
+        const int givenUp = fake.lostUnplugs();
         svc.closeAllSessions();
 
         const lockstats::Snapshot afterRun = lockstats::snapshot();
@@ -1319,8 +1342,9 @@ void runTheServiceOnTheWindowsBackends(LifecycleWatch& watch) {
         TEST("windows: the helper provisioned and removed pads");
         EXPECT(fake.plugs() > 0);
         EXPECT_EQ(fake.unplugs(), fake.plugs());
-        TEST("windows: the maintenance tick gave up the pads whose helper went quiet, through the "
-             "real adapter and helper client, under the laws");
+        TEST(
+            "windows: the maintenance tick gave up the pads whose device Windows lost, through the "
+            "real adapter and helper client, under the laws");
         EXPECT(givenUp > 0);
     }
     g_driverWatch = nullptr;

@@ -126,6 +126,16 @@ class GamepadMux : public IGamepadPort {
         return lost;
     }
 
+    // An unplugged serial has no owner any more, so every child's count.
+    std::vector<uint32_t> settledSerials() override {
+        std::vector<uint32_t> settled;
+        for (IGamepadPort* p : ports_) {
+            const std::vector<uint32_t> mine = p->settledSerials();
+            settled.insert(settled.end(), mine.begin(), mine.end());
+        }
+        return settled;
+    }
+
     bool deviceDisabled(uint32_t serial) const override {
         IGamepadPort* p = ownerOf(serial);
         return p != nullptr && p->deviceDisabled(serial);

@@ -16,6 +16,7 @@
 #include "../src/adapters/audio/opus_codec.h"
 #include "../src/core/audio/haptic_envelope.h"
 #include <atomic>
+#include <functional>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -144,6 +145,7 @@ struct MockViGem : IGamepadPort {
         unpluggedSerials.push_back(serial);
         std::lock_guard<std::mutex> lk(pluggedMtx);
         pluggedSet.erase(serial);
+        lostSet.erase(serial);
         return unplugReturnVal;
     }
     bool isDevicePlugged(uint32_t serial) const override {
@@ -315,14 +317,28 @@ struct MockViGem : IGamepadPort {
     std::set<uint32_t> lostSet;
     std::set<uint32_t> disabledSet;
     std::vector<uint32_t> lostSerials() const override {
-        std::lock_guard<std::mutex> lk(pluggedMtx);
         std::vector<uint32_t> lost;
-        for (const uint32_t serial : lostSet) {
-            if (pluggedSet.count(serial) != 0) lost.push_back(serial);
+        {
+            std::lock_guard<std::mutex> lk(pluggedMtx);
+            for (const uint32_t serial : lostSet) {
+                if (pluggedSet.count(serial) != 0) lost.push_back(serial);
+            }
         }
+        // What happens between this read and the core acting on it.
+        if (afterLostRead) afterLostRead();
         return lost;
     }
+    std::function<void()> afterLostRead;
     bool deviceDisabled(uint32_t serial) const override { return disabledSet.count(serial) != 0; }
+
+    // The serials a new helper has since swept, reported once; and how often
+    // the core asked, which it does inside topology changes only.
+    std::vector<uint32_t> settledSet;
+    int settledCalls = 0;
+    std::vector<uint32_t> settledSerials() override {
+        settledCalls++;
+        return std::exchange(settledSet, {});
+    }
 };
 
 struct MockClient : IClientPort {
@@ -1295,6 +1311,50 @@ static uint32_t serialOfPad(const SessionService& svc, size_t position) {
     return svc.getConnectionsSnapshot().connections[0].controllers[position].serial;
 }
 
+// Every serial in use, so the next plug takes whichever one comes free.
+static std::vector<ControllerDescriptor> everyPad() {
+    std::vector<ControllerDescriptor> pads;
+    for (int i = 0; i < MAX_BACKEND_CONTROLLERS; i++) pads.push_back(makeDesc((uint8_t)i));
+    return pads;
+}
+
+static void test_lostPad_isReadUnderTheTopologyLock() {
+    TEST("lost pad: the backend's lost list is read under the topology lock, so a PUT that frees "
+         "the lost serial and plugs a fresh pad on it waits, and the fresh pad is not vacated");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    std::vector<ControllerDescriptor> pads = everyPad();
+    upsert(svc, pads);
+    const uint8_t last = (uint8_t)(MAX_BACKEND_CONTROLLERS - 1);
+    const uint32_t lost = serialOfPad(svc, last);
+    vigem.lostSet.insert(lost);
+    std::vector<ControllerDescriptor> withoutIt(pads.begin(), pads.end() - 1);
+    std::atomic<bool> putsDone{false};
+    bool raced = false;
+    std::thread puts;
+    vigem.afterLostRead = [&] {
+        if (raced) return;
+        raced = true;
+        puts = std::thread([&] {
+            upsert(svc, withoutIt);
+            upsert(svc, pads);
+            putsDone = true;
+        });
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!putsDone && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    };
+    svc.recheckDrivers();
+    puts.join();
+    EXPECT(putsDone);
+    EXPECT_EQ(svc.totalActiveControllers(), MAX_BACKEND_CONTROLLERS);
+    EXPECT_EQ(serialOfPad(svc, last), lost);
+    EXPECT(vigem.isDevicePlugged(lost));
+}
+
 static void test_lostPad_isUnpluggedAndItsSlotVacated() {
     TEST("lost pad: a serial the backend has lost is unplugged and its slot vacated, so the "
          "heartbeat ack's epoch moves and its bit clears");
@@ -1614,6 +1674,38 @@ static void test_serials_quarantineOnUnplugFailure() {
     upsert(svc, {});
     EXPECT(!vigem.busOpen);
     EXPECT_EQ(svc.availableSlots(), 16);
+}
+
+static uint32_t serialOfSlot(SessionService& svc, uint8_t index);
+
+static void test_serials_settledByTheBackendLeaveQuarantine() {
+    TEST("serials: a serial whose unconfirmed unplug the backend has since seen through leaves "
+         "quarantine, so helpers that die again and again do not shrink the pool while another "
+         "pad keeps the bus open");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0)});
+    for (int round = 0; round < 2 * MAX_BACKEND_CONTROLLERS; round++) {
+        upsert(svc, {makeDesc(0), makeDesc(1)});
+        const uint32_t dying = serialOfSlot(svc, 1);
+        vigem.unplugReturnVal = false;
+        upsert(svc, {makeDesc(0)});
+        vigem.unplugReturnVal = true;
+        vigem.settledSet.push_back(dying);
+    }
+    const SessionUpsertResult last = upsert(svc, {makeDesc(0), makeDesc(1)});
+    EXPECT(vigem.busOpen);
+    EXPECT(last.controllers.size() == 2 && last.controllers[1].result == APPLY_OK);
+    EXPECT(svc.availableSlots() >= MAX_BACKEND_CONTROLLERS - 3);
+    EXPECT(log.contains("free again"));
+
+    TEST("serials: a serial the backend settles that was never quarantined stays as it was");
+    vigem.settledSet.push_back(serialOfSlot(svc, 0));
+    upsert(svc, {makeDesc(0), makeDesc(1)});
+    EXPECT(serialOfSlot(svc, 0) != 0);
+    EXPECT(vigem.settledCalls > 0);
 }
 
 static void test_closeById_kick_notifiesBeforeTeardown() {
@@ -5695,6 +5787,8 @@ int main() {
 
     test_serials_roundRobinAvoidsInstantReuse();
     test_serials_quarantineOnUnplugFailure();
+    test_serials_settledByTheBackendLeaveQuarantine();
+    test_lostPad_isReadUnderTheTopologyLock();
 
     test_closeById_kick_notifiesBeforeTeardown();
     test_closeById_clientCloseNoNotify();

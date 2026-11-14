@@ -162,7 +162,9 @@ struct WatchPolicy {
 };
 
 // A UMDF2 pad whose host failed is restarted by Windows, which runs the
-// device start the SDK's create waits VERSION_HALF_DEADLINE_MS for. A dropped
+// device start the SDK's create waits VERSION_HALF_DEADLINE_MS for; the
+// timeout scale lengthens that, as it lengthens the SDK's own wait, and never
+// shortens it, since the restart is Windows' and not on the SDK's clock. A dropped
 // USB/IP connection is imported again by usbip-win2's first reattach, 30 s
 // after the drop, and HIDMaestro's own probe gives the composite 45 s to be
 // back (test/probes/coexist_check/SectionV.cs:260-261, 415-416, 474-475 at
@@ -179,8 +181,10 @@ inline uint32_t watchTicks(std::chrono::milliseconds span) {
 
 inline std::chrono::milliseconds watchGrace(ProfileBackend backend, double timeoutScale) {
     switch (backend) {
-    case ProfileBackend::Umdf2:
-        return scaleHalfDeadline(std::chrono::milliseconds(VERSION_HALF_DEADLINE_MS), timeoutScale);
+    case ProfileBackend::Umdf2: {
+        const std::chrono::milliseconds budget(VERSION_HALF_DEADLINE_MS);
+        return std::max(budget, scaleHalfDeadline(budget, timeoutScale));
+    }
     case ProfileBackend::Usbip:
         return std::chrono::milliseconds(WATCH_USBIP_GRACE_MS);
     }
