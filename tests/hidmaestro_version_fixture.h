@@ -62,7 +62,7 @@ inline void eraseDriverHalf(VersionImage& image) {
 
 // The section the pinned SDK writes for one of Satellite's controllers once its
 // driver has started the device: its own tag, and the companion's pair only on
-// an Xbox profile.
+// a profile with an XUSB companion.
 inline VersionImage pinnedDriverImage(uint64_t tag, bool companion) {
     VersionImage image = PINNED_XBOX_IMAGE;
     putU64(image, VERSION_IDENTITY_TAG_OFFSET, tag);

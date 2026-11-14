@@ -2,10 +2,11 @@
 
 // Global\HIDMaestroVersion<N>, HIDMaestro v2.1.0's version contract
 // (HIDMAESTRO_VERSION_INFO, driver/hm_contract.h:47-65; SharedMemoryIO.cs
-// 194-216): 64 bytes, little-endian, one per transport index. The SDK writes
-// its half before the device exists, the HID driver its half at add with
-// DriverProtocol last, the XUSB companion its own pair. Nothing is ever
-// cleared and nothing signals a change, so a writer reads it again.
+// 194-216): 64 bytes, little-endian, one per transport index. The SDK zeroes
+// it and writes its half before the device exists, the HID driver its half at
+// add with DriverProtocol last, the XUSB companion its own pair at its add.
+// Neither driver clears anything; only the SDK's Everything sweep zeroes
+// DriverProtocol again. Nothing signals a change, so a writer reads it again.
 #pragma once
 
 #include "core/byte_order.h"
@@ -13,6 +14,7 @@
 #include "core/semver.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -38,13 +40,17 @@ inline constexpr size_t VERSION_DRIVER_CONFIG_ERROR_OFFSET = 56;    // HID drive
 inline constexpr size_t VERSION_COMPANION_CONFIG_ERROR_OFFSET = 60; // XUSB companion
 
 inline constexpr int32_t VERSION_LAYOUT = 1;
-// The pinned SDK speaks protocol 4 and runs on it alone (SDK_PROTOCOL_MIN and
-// SDK_PROTOCOL, SharedMemoryIO.cs:216).
+// The pinned SDK speaks protocol 4 and runs on it alone (SharedMemoryIO.cs:216),
+// so its half reads 4 to 4. check-sdk holds these and the offsets above to the
+// SDK's own constants.
+inline constexpr int32_t SDK_PROTOCOL_MIN = 4;
 inline constexpr int32_t SDK_PROTOCOL = 4;
 
 // The SDK's create returns without the driver half when no HID child appeared
 // within its own wait, so such a pad is plugged but held, nothing written to
-// it, until the half comes or this deadline passes.
+// it, until the half comes or this deadline passes: the SDK's own start budget,
+// 10 s for the HID child and 5 s for its start (DeviceOrchestrator.cs:1563,
+// 1597), before HIDMAESTRO_TIMEOUT_SCALE.
 inline constexpr int VERSION_HALF_DEADLINE_MS = 15000;
 inline constexpr int VERSION_READ_ATTEMPTS = 4;
 
@@ -223,7 +229,7 @@ inline bool servesSdkProtocol(int32_t oldest, int32_t newest) {
 
 inline bool writtenByPinnedSdk(const VersionSection& s, const VersionPins& pins) {
     const bool speaksPinnedProtocol =
-        s.sdkProtocolMin == SDK_PROTOCOL && s.sdkProtocolMax == SDK_PROTOCOL;
+        s.sdkProtocolMin == SDK_PROTOCOL_MIN && s.sdkProtocolMax == SDK_PROTOCOL;
     return speaksPinnedProtocol && s.sdkVersion == pins.sdk;
 }
 
@@ -250,11 +256,16 @@ inline VersionVerdict judgeDriverHalf(const VersionSection& s, const VersionPins
     return VersionVerdict::Write;
 }
 
+// The companion writes its pair only at its add (companion.c:890-899), and a
+// create that finds it running restarts it without waiting
+// (DeviceOrchestrator.cs:1211-1212), a restart Windows refuses while a process
+// holds XInput open. So an unwritten pair is a running companion, not one
+// still to come.
 inline VersionVerdict judgeCompanionHalf(const VersionSection& s) {
+    const bool written = s.companionProtocol != 0;
     const bool serves = servesSdkProtocol(s.companionProtocolMin, s.companionProtocol);
     if (s.companionConfigError != 0) return VersionVerdict::CompanionError;
-    if (s.companionProtocol == 0) return VersionVerdict::Pending;
-    if (!serves) return VersionVerdict::CompanionProtocol;
+    if (written && !serves) return VersionVerdict::CompanionProtocol;
     return VersionVerdict::Write;
 }
 
@@ -290,6 +301,16 @@ inline VersionVerdict judgeVersionSection(const VersionSection& s, const Version
 inline VersionVerdict settleVersionVerdict(VersionVerdict verdict, bool waitedOut) {
     const bool stillPending = verdict == VersionVerdict::Pending && waitedOut;
     return stillPending ? VersionVerdict::Unwritten : verdict;
+}
+
+// The SDK scales its own start waits by HIDMAESTRO_TIMEOUT_SCALE, read from its
+// process's environment and clamped to [0.1, 100] (TimeoutScale.cs); the
+// helper reports the factor its SDK resolved.
+inline std::chrono::milliseconds scaleHalfDeadline(std::chrono::milliseconds base,
+                                                   double timeoutScale) {
+    const bool usable = timeoutScale >= 0.1 && timeoutScale <= 100.0;
+    const double scaled = static_cast<double>(base.count()) * timeoutScale;
+    return usable ? std::chrono::milliseconds(static_cast<int64_t>(scaled)) : base;
 }
 
 inline VersionCheck checkVersionSection(const uint8_t* view, const VersionExpectation& e) {

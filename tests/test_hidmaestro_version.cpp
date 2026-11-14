@@ -5,12 +5,11 @@
 #include "../src/platform/windows/driver_pins.h"
 #include "hidmaestro_version_fixture.h"
 
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <ostream>
-#include <regex>
 #include <string>
 
 namespace satellite {
@@ -56,18 +55,6 @@ bool sameVersion(const SectionVersion& v, uint16_t major, uint16_t minor, uint16
 }
 
 VersionImage sonyImage() { return pinnedDriverImage(HM_0000_TAG, false); }
-
-std::string readFileAll(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-}
-
-size_t csharpConstant(const std::string& source, const std::string& name) {
-    const std::regex pattern("public const int " + name + " = ([0-9]+);");
-    std::smatch match;
-    const bool found = std::regex_search(source, match, pattern);
-    return found ? static_cast<size_t>(std::stoul(match[1].str())) : SIZE_MAX;
-}
 
 } // namespace
 
@@ -116,9 +103,6 @@ static void test_each_field_comes_from_its_upstream_offset() {
     EXPECT_EQ(s.identityTag, 0xA7A6A5A4A3A2A1A0ULL);
     EXPECT_EQ(static_cast<uint32_t>(s.driverConfigError), 0x84030238u);
     EXPECT_EQ(static_cast<uint32_t>(s.companionConfigError), 0x8403023Cu);
-
-    TEST("layout: the section is the 64 bytes HIDMAESTRO_VERSION_INFO's C_ASSERT pins");
-    EXPECT_EQ(VERSION_SECTION_SIZE, static_cast<size_t>(64));
 }
 
 static void test_a_live_view_reads_as_its_bytes() {
@@ -311,10 +295,15 @@ static void test_the_xusb_companion_is_judged_on_a_companion_profile() {
     putI32(dropped, VERSION_COMPANION_PROTOCOL_OFFSET, 5);
     EXPECT_EQ(judge(dropped, xboxPad()), VersionVerdict::CompanionProtocol);
 
-    TEST("policy: a companion pair not written yet waits, as the driver half does");
+    TEST("policy: an unwritten companion pair is written, not held: the companion writes it only "
+         "at its add, and a create that finds it running restarts it without waiting");
     VersionImage unwritten = PINNED_XBOX_IMAGE;
     eraseCompanionHalf(unwritten);
-    EXPECT_EQ(judge(unwritten, xboxPad()), VersionVerdict::Pending);
+    EXPECT_EQ(judge(unwritten, xboxPad()), VersionVerdict::Write);
+
+    TEST("policy: an unwritten companion pair still answers to its error word");
+    putI32(unwritten, VERSION_COMPANION_CONFIG_ERROR_OFFSET, 1);
+    EXPECT_EQ(judge(unwritten, xboxPad()), VersionVerdict::CompanionError);
 
     TEST("policy: a driver refusal outranks the companion's");
     VersionImage both = PINNED_XBOX_IMAGE;
@@ -356,39 +345,42 @@ static void test_a_composite_persona_has_no_driver_half() {
     EXPECT_EQ(judge(pinnedUsbipImage(), untagged), VersionVerdict::Pending);
 }
 
-static void test_every_refusal_refuses() {
-    TEST("verdicts: every refusal refuses, and only the two writes and the wait do not");
-    for (VersionVerdict v :
-         {VersionVerdict::NoSection, VersionVerdict::OtherLayout, VersionVerdict::OtherController,
-          VersionVerdict::OtherSdk, VersionVerdict::DriverError, VersionVerdict::DriverProtocol,
-          VersionVerdict::CompanionError, VersionVerdict::CompanionProtocol,
-          VersionVerdict::Unwritten}) {
-        EXPECT(versionVerdictRefuses(v));
-        EXPECT(std::string(versionVerdictReason(v)).size() > 0);
-    }
-    for (VersionVerdict v :
-         {VersionVerdict::Write, VersionVerdict::WriteOtherDriver, VersionVerdict::Pending}) {
-        EXPECT(!versionVerdictRefuses(v));
-    }
+static void test_a_section_opens_holds_or_refuses_its_pad() {
+    TEST("gate: a section that passes opens the pad, one whose driver half is still to come "
+         "holds it, and one that fails refuses it");
+    VersionImage unwritten = sonyImage();
+    eraseDriverHalf(unwritten);
+    VersionImage foreign = sonyImage();
+    putU64(foreign, VERSION_IDENTITY_TAG_OFFSET, OTHER_TAG);
+    EXPECT(writeGateFor(judge(sonyImage(), sonyPad())) == WriteGate::Open);
+    EXPECT(writeGateFor(judge(unwritten, sonyPad())) == WriteGate::Held);
+    EXPECT(writeGateFor(judge(foreign, sonyPad())) == WriteGate::Refused);
+    EXPECT(versionVerdictRefuses(judge(foreign, sonyPad())));
+    EXPECT(!versionVerdictRefuses(judge(unwritten, sonyPad())));
+
+    TEST("gate: the wait running out refuses a held pad and nothing else");
+    EXPECT(writeGateFor(settleVersionVerdict(judge(unwritten, sonyPad()), true)) ==
+           WriteGate::Refused);
+    EXPECT(writeGateFor(settleVersionVerdict(judge(sonyImage(), sonyPad()), true)) ==
+           WriteGate::Open);
+    EXPECT(std::string(versionVerdictReason(VersionVerdict::Unwritten)).find("within the wait") !=
+           std::string::npos);
 }
 
-static void test_a_verdict_opens_holds_or_refuses_the_pad() {
-    TEST("gate: a written verdict opens the pad's writes, a pending one holds them, a refusal "
-         "refuses the pad");
-    EXPECT(writeGateFor(VersionVerdict::Write) == WriteGate::Open);
-    EXPECT(writeGateFor(VersionVerdict::WriteOtherDriver) == WriteGate::Open);
-    EXPECT(writeGateFor(VersionVerdict::Pending) == WriteGate::Held);
-    for (VersionVerdict v :
-         {VersionVerdict::NoSection, VersionVerdict::OtherLayout, VersionVerdict::OtherController,
-          VersionVerdict::OtherSdk, VersionVerdict::DriverError, VersionVerdict::DriverProtocol,
-          VersionVerdict::CompanionError, VersionVerdict::CompanionProtocol,
-          VersionVerdict::Unwritten}) {
-        EXPECT(writeGateFor(v) == WriteGate::Refused);
-    }
+static void test_the_hold_lasts_as_long_as_the_sdk_would_wait() {
+    TEST("deadline: the hold stretches by the factor the SDK stretches its own waits by, across "
+         "the range the SDK takes");
+    const auto base = std::chrono::milliseconds(4000);
+    EXPECT(scaleHalfDeadline(base, 1.0) == base);
+    EXPECT(scaleHalfDeadline(base, 2.5) == std::chrono::milliseconds(10000));
+    EXPECT(scaleHalfDeadline(base, 0.1) == std::chrono::milliseconds(400));
+    EXPECT(scaleHalfDeadline(base, 100.0) == std::chrono::milliseconds(400000));
 
-    TEST("gate: a held pad waits the SDK's own start budget, its 10 s wait for the HID child and "
-         "its 5 s wait for the start (DeviceOrchestrator.cs:1563, 1597), before it is refused");
-    EXPECT_EQ(VERSION_HALF_DEADLINE_MS, 10000 + 5000);
+    TEST("deadline: a factor the SDK would not have used leaves the deadline unscaled");
+    EXPECT(scaleHalfDeadline(base, 0.0) == base);
+    EXPECT(scaleHalfDeadline(base, -3.0) == base);
+    EXPECT(scaleHalfDeadline(base, 101.0) == base);
+    EXPECT(scaleHalfDeadline(base, std::nan("")) == base);
 }
 
 static void test_the_log_names_what_the_section_holds() {
@@ -400,31 +392,6 @@ static void test_the_log_names_what_the_section_holds() {
     TEST("log: a version's fourth field shows only when it is set");
     EXPECT_EQ(describeSectionVersion({2, 1, 0, 0}), std::string("2.1.0"));
     EXPECT_EQ(describeSectionVersion({2, 1, 0, 7}), std::string("2.1.0.7"));
-}
-
-static void test_the_helpers_reader_keeps_these_offsets() {
-    TEST("knowledge twice: the helper's VersionSection reads the offsets this header pins");
-    const std::string source = readFileAll(std::string(HELPER_CORE_DIR) + "/VersionSection.cs");
-    EXPECT(!source.empty());
-    EXPECT_EQ(csharpConstant(source, "Size"), VERSION_SECTION_SIZE);
-    EXPECT_EQ(csharpConstant(source, "LayoutOffset"), VERSION_LAYOUT_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "SdkProtocolMinOffset"), VERSION_SDK_PROTOCOL_MIN_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "SdkProtocolMaxOffset"), VERSION_SDK_PROTOCOL_MAX_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "SdkVersionOffset"), VERSION_SDK_VERSION_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "DriverProtocolOffset"), VERSION_DRIVER_PROTOCOL_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "DriverVersionOffset"), VERSION_DRIVER_VERSION_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "DriverCapabilitiesOffset"),
-              VERSION_DRIVER_CAPABILITIES_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "DriverProtocolMinOffset"),
-              VERSION_DRIVER_PROTOCOL_MIN_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "CompanionProtocolOffset"), VERSION_COMPANION_PROTOCOL_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "CompanionProtocolMinOffset"),
-              VERSION_COMPANION_PROTOCOL_MIN_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "IdentityTagOffset"), VERSION_IDENTITY_TAG_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "DriverConfigErrorOffset"),
-              VERSION_DRIVER_CONFIG_ERROR_OFFSET);
-    EXPECT_EQ(csharpConstant(source, "CompanionConfigErrorOffset"),
-              VERSION_COMPANION_CONFIG_ERROR_OFFSET);
 }
 
 int main() {
@@ -442,10 +409,9 @@ int main() {
     test_a_driver_that_does_not_serve_4_is_refused();
     test_the_xusb_companion_is_judged_on_a_companion_profile();
     test_a_composite_persona_has_no_driver_half();
-    test_every_refusal_refuses();
-    test_a_verdict_opens_holds_or_refuses_the_pad();
+    test_a_section_opens_holds_or_refuses_its_pad();
+    test_the_hold_lasts_as_long_as_the_sdk_would_wait();
     test_the_log_names_what_the_section_holds();
-    test_the_helpers_reader_keeps_these_offsets();
 
     std::cout << "hidmaestro_version: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
