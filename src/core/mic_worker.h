@@ -69,7 +69,7 @@ class MicWorker {
         bool noSinkLogged = false;
     };
     enum class Binding { Bound, Unbound, Changing };
-    enum class Delivery { Submitted, NoSink, Unbound };
+    enum class Delivery { Submitted, NoSink, Gone, Unbound };
 
     void run();
     bool hasWork() const;

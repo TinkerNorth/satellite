@@ -38,10 +38,38 @@ const std::string PLUG_REPLY =
     R"({"ok":true,"index":3,"transportIndex":7,"input":1001,"inputEvent":1002,"companionEvent":0,"output":1003,"outputEvent":1004})";
 const std::string PLUG_REPLY_WITHOUT_TRANSPORT_INDEX =
     R"({"ok":true,"index":3,"input":1001,"inputEvent":1002,"companionEvent":0,"output":1003,"outputEvent":1004})";
-const std::string PLUG_REPLY_WITHOUT_INPUT =
-    R"({"ok":true,"index":3,"transportIndex":3,"output":1003,"outputEvent":1004})";
+const std::string PLUG_REPLY_WITH_VERSION =
+    R"({"ok":true,"index":3,"transportIndex":7,"input":1001,"inputEvent":1002,"companionEvent":0,"output":1003,"outputEvent":1004,"version":1005,"identityTag":17467649568734746738,"usbip":true,"companion":true,"timeoutScale":2.5})";
 
 bool isHello(const std::string& request) { return request.find("\"hello\"") != std::string::npos; }
+
+// A section whose one handle the test hands to the client in a reply, as the
+// helper's duplicates arrive; alive() says whether any handle still holds it.
+class NamedSection {
+  public:
+    explicit NamedSection(const std::wstring& role)
+        : name_(L"Local\\satellite-helper-client-test-" + role + L"-" +
+                std::to_wstring(GetCurrentProcessId())),
+          handle_(CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 64,
+                                     name_.c_str())) {}
+    NamedSection(const NamedSection&) = delete;
+    NamedSection& operator=(const NamedSection&) = delete;
+
+    int64_t handleValue() const {
+        return static_cast<int64_t>(reinterpret_cast<uintptr_t>(handle_));
+    }
+
+    bool alive() const {
+        HANDLE opened = OpenFileMappingW(FILE_MAP_READ, FALSE, name_.c_str());
+        if (opened == nullptr) return false;
+        CloseHandle(opened);
+        return true;
+    }
+
+  private:
+    std::wstring name_;
+    HANDLE handle_;
+};
 
 class FakeHelper {
   public:
@@ -275,16 +303,60 @@ static void test_a_reply_names_where_the_frames_go() {
         client.shutdown();
     }
 
-    TEST("plug reply: no frame section or doorbell means no plug, whatever else came back");
+    TEST("plug reply: no frame section or doorbell means no plug, and every handle the helper "
+         "duplicated for it is closed");
     {
-        FakeHelper fake(answersHelloThen(
-            [](FakeHelper& helper) { helper.write(PLUG_REPLY_WITHOUT_INPUT + "\n"); }));
+        const NamedSection output(L"output");
+        const NamedSection version(L"version");
+        const std::string reply = R"({"ok":true,"index":3,"transportIndex":3,"output":)" +
+                                  std::to_string(output.handleValue()) + R"(,"version":)" +
+                                  std::to_string(version.handleValue()) + "}";
+        FakeHelper fake(
+            answersHelloThen([reply](FakeHelper& helper) { helper.write(reply + "\n"); }));
         hm::HelperClient client;
         EXPECT(client.adoptChannelForTest(fake.connect()));
         hm::ProvisionResult out;
         EXPECT(!client.provision(3, GamepadIdentity::SwitchPro, false, out));
         EXPECT_EQ(out.inputSection, static_cast<uint64_t>(0));
-        EXPECT_EQ(out.outputSection, static_cast<uint64_t>(1003));
+        EXPECT(!output.alive());
+        EXPECT(!version.alive());
+        client.shutdown();
+    }
+}
+
+static void test_a_reply_hands_over_the_version_section() {
+    TEST("plug reply: the version section, an identity tag past INT64_MAX and the USB/IP flag "
+         "reach the result");
+    {
+        FakeHelper fake(answersHelloThen(
+            [](FakeHelper& helper) { helper.write(PLUG_REPLY_WITH_VERSION + "\n"); }));
+        hm::HelperClient client;
+        EXPECT(client.adoptChannelForTest(fake.connect()));
+        hm::ProvisionResult out;
+        EXPECT(client.provision(3, GamepadIdentity::DualSense, true, out));
+        EXPECT_EQ(out.versionSection, static_cast<uint64_t>(1005));
+        EXPECT_EQ(out.identityTag, 0xF2698EBC35709872ULL);
+        EXPECT(out.usbip);
+        EXPECT(out.versionReported);
+        EXPECT(out.companion);
+        EXPECT_EQ(out.timeoutScale, 2.5);
+        client.shutdown();
+    }
+
+    TEST("plug reply: a reply without them reads as no section, no tag and the driver's path, "
+         "which the adapter then refuses");
+    {
+        FakeHelper fake(answersEverything());
+        hm::HelperClient client;
+        EXPECT(client.adoptChannelForTest(fake.connect()));
+        hm::ProvisionResult out;
+        EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
+        EXPECT_EQ(out.versionSection, static_cast<uint64_t>(0));
+        EXPECT_EQ(out.identityTag, static_cast<uint64_t>(0));
+        EXPECT(!out.usbip);
+        EXPECT(!out.versionReported);
+        EXPECT(!out.companion);
+        EXPECT_EQ(out.timeoutScale, 1.0);
         client.shutdown();
     }
 }
@@ -789,6 +861,7 @@ int main() {
     test_each_request_carries_its_own_limit();
     test_a_reply_that_arrives_whole_costs_one_read();
     test_a_reply_names_where_the_frames_go();
+    test_a_reply_hands_over_the_version_section();
     test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces();
     test_a_carriage_return_before_the_line_feed_is_part_of_the_framing();
     test_a_reply_with_no_end_is_refused_at_the_size_limit();

@@ -111,7 +111,7 @@ void MicWorker::process(const MicPacket& packet) {
         }
         if (decoded == 0) continue;
         const Delivery delivery = submit(packet, pcm, decoded);
-        if (delivery == Delivery::Unbound) return;
+        if (delivery == Delivery::Unbound || delivery == Delivery::Gone) return;
         if (delivery == Delivery::NoSink) noteNoSink(packet);
     }
 }
@@ -120,8 +120,11 @@ MicWorker::Delivery MicWorker::submit(const MicPacket& packet, const int16_t* pc
     rx_.enter(RX_MIC_PARTICIPANT);
     Delivery delivery = Delivery::Unbound;
     if (binding(packet.slot, packet.ctrlIdx, packet.serial, packet.gen) == Binding::Bound) {
-        delivery = backend_.submitMicAudioPcm(packet.serial, pcm, frames) ? Delivery::Submitted
-                                                                          : Delivery::NoSink;
+        const bool submitted = backend_.submitMicAudioPcm(packet.serial, pcm, frames);
+        // A pad its backend no longer counts as plugged (one the backend
+        // refused) has lost its whole stream, not its microphone.
+        const bool gone = !submitted && !backend_.isDevicePlugged(packet.serial);
+        delivery = submitted ? Delivery::Submitted : gone ? Delivery::Gone : Delivery::NoSink;
     }
     rx_.exit(RX_MIC_PARTICIPANT);
     return delivery;

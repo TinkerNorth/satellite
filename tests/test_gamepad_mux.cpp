@@ -38,6 +38,7 @@ struct MockPort : IGamepadPort {
     int touchpadCalls = 0;
     int relMouseCalls = 0;
     int refreshIdleCalls = 0;
+    int recheckDriversCalls = 0;
     uint32_t lastSerial = 0;
     std::set<uint32_t> plugged;
     RumbleCallback rumbleCb;
@@ -62,6 +63,7 @@ struct MockPort : IGamepadPort {
         busOpen = false;
     }
     void refreshIdleInput() override { refreshIdleCalls++; }
+    void recheckDrivers() override { recheckDriversCalls++; }
     bool isBusOpen() const override { return busOpen; }
     const char* backendId() const override { return name.c_str(); }
     bool supportsIdentity(GamepadIdentity identity) const override {
@@ -293,6 +295,16 @@ static void test_idle_refresh_reaches_every_child() {
     mux.refreshIdleInput();
     EXPECT_EQ(a.refreshIdleCalls, 1);
     EXPECT_EQ(b.refreshIdleCalls, 1);
+}
+
+static void test_driver_recheck_reaches_every_child() {
+    TEST("recheckDrivers fans out to every child, owner or not");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+    mux.recheckDrivers();
+    EXPECT_EQ(a.recheckDriversCalls, 1);
+    EXPECT_EQ(b.recheckDriversCalls, 1);
 }
 
 static void test_unplug_clears_owner() {
@@ -527,6 +539,7 @@ int main() {
     test_per_serial_routing();
     test_input_reaches_the_owner_whole();
     test_idle_refresh_reaches_every_child();
+    test_driver_recheck_reaches_every_child();
     test_unplug_clears_owner();
     test_unplug_unconfirmed_keeps_owner();
     test_unplug_unowned_serial_is_gone();

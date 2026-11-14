@@ -18,6 +18,9 @@ internal static class Program
                 > 0 when args[0] == "remove-driver" => DriverCommands.Remove(HasFlag(args, "--include-usbip")),
                 > 0 when args[0] == "cleanup" => DriverCommands.Cleanup(),
                 > 0 when args[0] == "sdk-version" => DriverCommands.SdkVersion(),
+                > 0 when args[0] == "check-sdk" =>
+                    SdkCheck.Run(ParseOption(args, "--pins-header"), ParseOption(args, "--version-header")),
+                > 0 when args[0] == SdkCheck.TimeoutScaleChildCommand => SdkCheck.TimeoutScaleChild(),
                 > 0 when args[0] == "export-profiles" =>
                     ProfileCommands.Export(ParseOption(args, "--out"), ParseOption(args, "--catalog")),
                 > 0 when args[0] == "check-profiles" =>
@@ -38,6 +41,7 @@ internal static class Program
         Console.Error.WriteLine(
             "usage: satellite-hm-helper <serve --pipe <name> --parent-pid <pid> | service | broker" +
             " | install-driver | remove-driver [--include-usbip] | cleanup | sdk-version" +
+            " | check-sdk --pins-header <driver_pins.h> --version-header <hidmaestro_version.h>" +
             " | export-profiles --out <dir> --catalog <dir> | check-profiles [--dir <dir>] | selftest [--log <file>]>");
         return 2;
     }

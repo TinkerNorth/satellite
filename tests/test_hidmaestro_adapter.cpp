@@ -13,8 +13,11 @@
 // consumes.
 #include "test_util.h"
 
+#include "../src/platform/windows/driver_pins.h"
 #include "../src/platform/windows/hidmaestro_adapter.h"
+#include "hidmaestro_version_fixture.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -42,6 +45,36 @@ uint32_t u32at(const uint8_t* p, size_t off) {
 void storeU32(uint8_t* p, uint32_t v) { std::memcpy(p, &v, sizeof(v)); }
 void storeU16(uint8_t* p, uint16_t v) { std::memcpy(p, &v, sizeof(v)); }
 
+namespace fx = satellite::hidmaestro::fixture;
+
+constexpr std::array<uint8_t, INPUT_SECTION_SIZE> NO_SECTION{};
+
+constexpr uint64_t FOREIGN_TAG = 0x3B86F3634086D831ULL;
+
+struct LogSink : ILogPort {
+    struct Line {
+        LogLevel level;
+        std::string message;
+    };
+
+    void logMsg(LogLevel level, const std::string&, const std::string& message) override {
+        std::lock_guard<std::mutex> lk(m);
+        lines.push_back({level, message});
+    }
+
+    int count(LogLevel level, const std::string& needle) {
+        std::lock_guard<std::mutex> lk(m);
+        int n = 0;
+        for (const Line& line : lines) {
+            if (line.level == level && line.message.find(needle) != std::string::npos) n++;
+        }
+        return n;
+    }
+
+    std::mutex m;
+    std::vector<Line> lines;
+};
+
 struct FakeProvisioner : IHidMaestroProvisioner {
     struct Fake {
         HANDLE inputSection = nullptr;
@@ -63,6 +96,8 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         uint32_t micLastSeq = 0; // this side's drain cursor over the mic ring
         uint16_t speakerSeq = 0;
         uint16_t hapticSeq = 0;
+        HANDLE versionSection = nullptr;
+        uint8_t* versionView = nullptr;
     };
 
     bool installedVal = true;
@@ -82,6 +117,24 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     int speakerRateHz = 48000;
     int micRateHz = 48000;
     int micChannels = 1;
+    // The version section the helper hands over, named and opened FILE_MAP_READ
+    // then duplicated with the same access, as Session.DuplicateReadOnlyMapping
+    // does; the fake keeps its own read-write view to play the driver.
+    bool withVersionSection = true;
+    bool helperReportsVersion = true;
+    DWORD versionSectionBytes = VERSION_SECTION_SIZE;
+    std::function<void(fx::VersionImage&)> editVersion;
+    // What the helper reads off the SDK profile: xbox-360-wired is the one
+    // persona with an XUSB companion.
+    std::function<bool(GamepadIdentity)> reportsCompanion = [](GamepadIdentity identity) {
+        return identity == GamepadIdentity::Xbox;
+    };
+    double timeoutScale = 1.0;
+    std::map<uint32_t, std::wstring> versionNames;
+    int versionSections = 0;
+    std::atomic<int> provisionsDone{0};
+    std::map<uint32_t, uint32_t> inputSeqAtRemoval;
+    LogSink log;
     int provisionCalls = 0;
     int audioProvisionCalls = 0;
     int deprovisionCalls = 0;
@@ -140,12 +193,67 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         if (f.speakerView) UnmapViewOfFile(f.speakerView);
         if (f.micView) UnmapViewOfFile(f.micView);
         if (f.hapticView) UnmapViewOfFile(f.hapticView);
+        if (f.versionView) UnmapViewOfFile(f.versionView);
         for (HANDLE h : {f.inputSection, f.outputSection, f.inputEvent, f.companionEvent,
                          f.outputEvent, f.speakerSection, f.micSection, f.speakerEvent, f.micEvent,
-                         f.hapticSection, f.hapticEvent}) {
+                         f.hapticSection, f.hapticEvent, f.versionSection}) {
             if (h) CloseHandle(h);
         }
         f = Fake{};
+    }
+
+    static uint64_t tagFor(uint32_t serial) { return 0xC0FFEE0000000000ULL | serial; }
+
+    // The section the helper would hand over for this plug, written as the SDK
+    // and its driver would have left it when the create returned.
+    fx::VersionImage versionImageFor(uint32_t serial, GamepadIdentity identity, bool composite) {
+        fx::VersionImage image =
+            composite ? fx::pinnedUsbipImage()
+                      : fx::pinnedDriverImage(tagFor(serial), reportsCompanion(identity));
+        if (editVersion) editVersion(image);
+        return image;
+    }
+
+    // Read-only handle to a fresh named section holding `image`, or null.
+    HANDLE openVersionSection(uint32_t serial, Fake& f, const fx::VersionImage& image) {
+        if (!withVersionSection) return nullptr;
+        const std::wstring name = L"Local\\satellite-hm-adapter-test-version-" +
+                                  std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                  std::to_wstring(reinterpret_cast<uintptr_t>(this)) + L"-" +
+                                  std::to_wstring(versionSections++);
+        versionNames[serial] = name;
+        f.versionSection = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                              versionSectionBytes, name.c_str());
+        f.versionView = static_cast<uint8_t*>(
+            MapViewOfFile(f.versionSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0));
+        std::memcpy(f.versionView, image.data(),
+                    std::min<size_t>(image.size(), versionSectionBytes));
+        return OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+    }
+
+    void writeVersion(uint32_t serial, const fx::VersionImage& image) {
+        const auto it = live.find(serial);
+        if (it != live.end()) std::memcpy(it->second.versionView, image.data(), image.size());
+    }
+
+    // True while any process still holds the serial's version section: the
+    // fake's own handle is gone once it deprovisions, so this is the adapter's.
+    bool versionSectionAlive(uint32_t serial) const {
+        const auto it = versionNames.find(serial);
+        if (it == versionNames.end()) return false;
+        HANDLE opened = OpenFileMappingW(FILE_MAP_READ, FALSE, it->second.c_str());
+        if (opened == nullptr) return false;
+        CloseHandle(opened);
+        return true;
+    }
+
+    bool waitProvisioned(int count, std::chrono::milliseconds budget) const {
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        while (provisionsDone.load() < count) {
+            if (std::chrono::steady_clock::now() > deadline) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return true;
     }
 
     bool installed() const override { return installedVal; }
@@ -211,7 +319,7 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         out.controllerIndex = serial;
         out.inputSection = reinterpret_cast<uint64_t>(dup(f.inputSection));
         out.inputEvent = reinterpret_cast<uint64_t>(dup(f.inputEvent));
-        out.companionEvent = identity == GamepadIdentity::Xbox
+        out.companionEvent = !(audio && audioAvailable) && reportsCompanion(identity)
                                  ? reinterpret_cast<uint64_t>(dup(f.companionEvent))
                                  : 0;
         out.outputSection = f.outputSection ? reinterpret_cast<uint64_t>(dup(f.outputSection)) : 0;
@@ -231,9 +339,21 @@ struct FakeProvisioner : IHidMaestroProvisioner {
             out.hapticEvent = reinterpret_cast<uint64_t>(dup(f.hapticEvent));
         }
 
+        const bool composite = audio && audioAvailable;
+        HANDLE readOnlyVersion =
+            openVersionSection(serial, f, versionImageFor(serial, identity, composite));
+        out.versionSection = readOnlyVersion ? reinterpret_cast<uint64_t>(dup(readOnlyVersion)) : 0;
+        if (readOnlyVersion) CloseHandle(readOnlyVersion);
+        out.versionReported = helperReportsVersion;
+        out.identityTag = tagFor(serial);
+        out.usbip = composite;
+        out.companion = !composite && reportsCompanion(identity);
+        out.timeoutScale = timeoutScale;
+
         auto existing = live.find(serial);
         if (existing != live.end()) destroy(existing->second);
         live[serial] = f;
+        provisionsDone++;
         return true;
     }
 
@@ -242,6 +362,7 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         deprovisionCalls++;
         auto it = live.find(serial);
         if (it != live.end()) {
+            inputSeqAtRemoval[serial] = u32at(it->second.inputView, 0);
             destroy(it->second);
             live.erase(it);
         }
@@ -296,10 +417,20 @@ struct FakeProvisioner : IHidMaestroProvisioner {
 
     bool hasAudioSections(uint32_t serial) const { return live.at(serial).speakerView != nullptr; }
 
-    const uint8_t* inputSection(uint32_t serial) const { return live.at(serial).inputView; }
-    uint32_t inputSeq(uint32_t serial) const { return u32at(live.at(serial).inputView, 0); }
+    uint32_t micHead(uint32_t serial) const { return audioRingHead(live.at(serial).micView); }
+
+    // A removed controller reads as a section nothing ever wrote.
+    const uint8_t* inputSection(uint32_t serial) const {
+        const auto it = live.find(serial);
+        return it == live.end() ? NO_SECTION.data() : it->second.inputView;
+    }
+    uint32_t inputSeq(uint32_t serial) const { return u32at(inputSection(serial), 0); }
+    // Whether the adapter rang the companion's doorbell since the last look.
+    bool companionRang(uint32_t serial) const {
+        return WaitForSingleObject(live.at(serial).companionEvent, 0) == WAIT_OBJECT_0;
+    }
     const uint8_t* inputData(uint32_t serial) const {
-        return live.at(serial).inputView + INPUT_DATA_OFFSET;
+        return inputSection(serial) + INPUT_DATA_OFFSET;
     }
 };
 
@@ -443,7 +574,7 @@ static void test_bus_open_probe_only() {
     TEST("ensureBusOpen — passive: installed-ness only, never spawns the helper");
     FakeProvisioner prov;
     prov.installedVal = false;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(!adapter.ensureBusOpen());
     EXPECT(!adapter.isBusOpen());
 
@@ -456,7 +587,7 @@ static void test_bus_open_probe_only() {
 static void test_identity_support() {
     TEST("supportsIdentity — all five identities materialize");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.supportsIdentity(GamepadIdentity::Xbox));
     EXPECT(adapter.supportsIdentity(GamepadIdentity::DS4));
     EXPECT(adapter.supportsIdentity(GamepadIdentity::DualSense));
@@ -467,7 +598,7 @@ static void test_identity_support() {
 static void test_plugin_lifecycle() {
     TEST("pluginDevice — helper spun up lazily, neutral frame written");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
     EXPECT(prov.ready);
@@ -487,7 +618,7 @@ static void test_plugin_denied_elevation() {
     TEST("pluginDevice — a declined helper start fails the plug cleanly");
     FakeProvisioner prov;
     prov.ensureReadyResult = false;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(!adapter.pluginDevice(1, GamepadIdentity::Xbox));
     EXPECT_EQ(prov.provisionCalls, 0);
@@ -498,7 +629,7 @@ static void test_plugin_provision_failure() {
     TEST("pluginDevice — provision failure leaves no slot state behind");
     FakeProvisioner prov;
     prov.provisionResult = false;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(!adapter.pluginDevice(1, GamepadIdentity::DS4));
     EXPECT(!adapter.isDevicePlugged(1));
@@ -510,7 +641,7 @@ static void test_unplug_unconfirmed() {
     TEST("unplugDevice — an unconfirmed teardown reports false (quarantine)");
     FakeProvisioner prov;
     prov.deprovisionResult = false;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(3, GamepadIdentity::Xbox));
     EXPECT(!adapter.unplugDevice(3));
@@ -521,7 +652,7 @@ static void test_unplug_unconfirmed() {
 static void test_xbox_submit_bytes() {
     TEST("submitReport(Xbox) — section carries the packed report + GIP slice");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
 
@@ -549,7 +680,7 @@ static void test_extended_buttons_dropped_by_xbox_and_ds4() {
     TEST("Xbox persona — no extended button, reserved bits included, changes the report or the "
          "GIP slice");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
     const uint8_t* xbox = prov.inputSection(1);
@@ -587,7 +718,7 @@ static void test_extended_buttons_dropped_by_xbox_and_ds4() {
 static void test_ds4_submit_merges_motion_touch_battery() {
     TEST("DS4 — motion/touch/battery merge into every subsequent frame");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(2, GamepadIdentity::DS4));
 
@@ -624,7 +755,7 @@ static void test_ds4_submit_merges_motion_touch_battery() {
 static void test_ds5_submit() {
     TEST("DualSense — seq counter advances, motion + touch at DS5 offsets");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSense));
 
@@ -656,7 +787,7 @@ static void test_ds5_submit() {
 static void test_idle_sony_pads_keep_reporting() {
     TEST("refreshIdleInput — an idle Sony pad is re-published, clocks advanced; others are not");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSense));
     EXPECT(adapter.pluginDevice(5, GamepadIdentity::DS4));
@@ -698,7 +829,7 @@ static void test_idle_sony_pads_keep_reporting() {
 static void test_switch_submit() {
     TEST("SwitchPro — pad and motion merge into the 48-byte body");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(5, GamepadIdentity::SwitchPro));
 
@@ -726,7 +857,7 @@ static void test_switch_submit() {
 static void test_ds5_edge_submit() {
     TEST("DualSense Edge — the back buttons land in byte 9 and survive motion and touch");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSenseEdge));
     EXPECT(prov.lastIdentity == GamepadIdentity::DualSenseEdge);
@@ -767,7 +898,7 @@ static void test_ds5_edge_submit() {
 static void test_switch_capture_from_misc1() {
     TEST("SwitchPro — misc1 holds Capture through motion, and a frame without it lets go");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(5, GamepadIdentity::SwitchPro));
 
@@ -788,14 +919,14 @@ static void test_switch_capture_from_misc1() {
 static void test_motion_support_matrix() {
     TEST("supportsMotionForType — everything but Xbox");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     EXPECT(!adapter.supportsMotionForType(CONTROLLER_TYPE_XBOX));
     EXPECT(adapter.supportsMotionForType(CONTROLLER_TYPE_PLAYSTATION));
     EXPECT(adapter.supportsMotionForType(CONTROLLER_TYPE_DUALSENSE));
     EXPECT(adapter.supportsMotionForType(CONTROLLER_TYPE_SWITCHPRO));
     MotionReport motion{};
     FakeProvisioner prov2;
-    HidMaestroAdapter adapter2(prov2);
+    HidMaestroAdapter adapter2(prov2, prov2.log);
     EXPECT(adapter2.ensureBusOpen());
     EXPECT(adapter2.pluginDevice(1, GamepadIdentity::Xbox));
     EXPECT(!adapter2.submitMotion(1, motion));
@@ -804,7 +935,7 @@ static void test_motion_support_matrix() {
 static void test_rumble_worker_xbox() {
     TEST("output worker — XUSB SET_STATE packets surface as rumble callbacks");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     CallbackSink sink;
     sink.install(adapter);
     EXPECT(adapter.ensureBusOpen());
@@ -826,7 +957,7 @@ static void test_rumble_worker_xbox() {
 static void test_rumble_and_lightbar_worker_ds4() {
     TEST("output worker — DS4 0x05 packets surface rumble + lightbar");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     CallbackSink sink;
     sink.install(adapter);
     EXPECT(adapter.ensureBusOpen());
@@ -862,7 +993,7 @@ static void test_audio_request_matrix() {
     TEST("audio setting on: the Sony identities ask for a composite persona");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov, audioOn());
+        HidMaestroAdapter adapter(prov, prov.log, audioOn());
         EXPECT(adapter.ensureBusOpen());
         EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
         EXPECT(prov.lastAudioRequested);
@@ -882,7 +1013,7 @@ static void test_audio_request_matrix() {
     TEST("audio setting on: identities with no audio function never ask");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov, audioOn());
+        HidMaestroAdapter adapter(prov, prov.log, audioOn());
         EXPECT(adapter.ensureBusOpen());
         EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
         EXPECT(!prov.lastAudioRequested);
@@ -896,7 +1027,7 @@ static void test_audio_request_matrix() {
     TEST("audio setting off: not even a DualSense asks");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov, [] { return false; });
+        HidMaestroAdapter adapter(prov, prov.log, [] { return false; });
         EXPECT(adapter.ensureBusOpen());
         EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
         EXPECT(!prov.lastAudioRequested);
@@ -907,7 +1038,7 @@ static void test_audio_request_matrix() {
     TEST("no setting provider at all: audio stays off (the safe default)");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov);
+        HidMaestroAdapter adapter(prov, prov.log);
         EXPECT(adapter.ensureBusOpen());
         EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
         EXPECT(!prov.lastAudioRequested);
@@ -922,7 +1053,7 @@ static void test_composite_plug_hooks() {
     TEST("composite plug hooks fire once, in order, for an audio persona");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov, audioOn());
+        HidMaestroAdapter adapter(prov, prov.log, audioOn());
         std::vector<std::string> events;
         adapter.setCompositePlugHooks([&] { events.push_back("before"); },
                                       [&] { events.push_back("after"); });
@@ -938,7 +1069,7 @@ static void test_composite_plug_hooks() {
     TEST("no hooks for an identity that has no audio persona");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov, audioOn());
+        HidMaestroAdapter adapter(prov, prov.log, audioOn());
         int calls = 0;
         adapter.setCompositePlugHooks([&] { calls++; }, [&] { calls++; });
         EXPECT(adapter.ensureBusOpen());
@@ -950,7 +1081,7 @@ static void test_composite_plug_hooks() {
     TEST("no hooks when the audio setting is off");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov, [] { return false; });
+        HidMaestroAdapter adapter(prov, prov.log, [] { return false; });
         int calls = 0;
         adapter.setCompositePlugHooks([&] { calls++; }, [&] { calls++; });
         EXPECT(adapter.ensureBusOpen());
@@ -965,7 +1096,7 @@ static void test_composite_plug_hooks() {
         // the watch would have it restore against a device that never moved.
         FakeProvisioner prov;
         prov.failAudioProvision = true;
-        HidMaestroAdapter adapter(prov, audioOn());
+        HidMaestroAdapter adapter(prov, prov.log, audioOn());
         int before = 0;
         int after = 0;
         adapter.setCompositePlugHooks([&] { before++; }, [&] { after++; });
@@ -979,7 +1110,7 @@ static void test_composite_plug_hooks() {
     TEST("an adapter with no hooks wired plugs exactly as before");
     {
         FakeProvisioner prov;
-        HidMaestroAdapter adapter(prov, audioOn());
+        HidMaestroAdapter adapter(prov, prov.log, audioOn());
         EXPECT(adapter.ensureBusOpen());
         EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
         EXPECT(adapter.hasSpeakerEndpoint(1));
@@ -990,7 +1121,7 @@ static void test_audio_provision_failure_falls_back() {
     TEST("a refused composite falls back to the plain persona, pad still works");
     FakeProvisioner prov;
     prov.failAudioProvision = true;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSense));
     EXPECT_EQ(prov.provisionCalls, 2); // one with audio, one without
@@ -1007,7 +1138,7 @@ static void test_audio_provision_failure_falls_back() {
     TEST("a plug that fails outright is not retried into an audio loop");
     FakeProvisioner dead;
     dead.provisionResult = false;
-    HidMaestroAdapter adapter2(dead, audioOn());
+    HidMaestroAdapter adapter2(dead, dead.log, audioOn());
     EXPECT(adapter2.ensureBusOpen());
     EXPECT(!adapter2.pluginDevice(1, GamepadIdentity::DualSense));
     EXPECT_EQ(dead.provisionCalls, 2); // audio attempt, then the plain retry
@@ -1017,7 +1148,7 @@ static void test_audio_provision_failure_falls_back() {
 static void test_speaker_ring_to_callback() {
     TEST("speaker ring -> backend callback: PCM arrives with the frames intact");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     AudioSink sink;
     sink.install(adapter);
     EXPECT(adapter.ensureBusOpen());
@@ -1051,7 +1182,7 @@ static void test_speaker_ring_to_callback() {
 static void test_haptic_ring_to_callback() {
     TEST("haptic ring -> its own callback: the lanes arrive intact and apart from the speaker");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     AudioSink sink;
     sink.install(adapter);
     EXPECT(adapter.ensureBusOpen());
@@ -1104,7 +1235,7 @@ static void test_speaker_rate_conversion() {
     TEST("a 32 kHz persona is resampled to the wire rate before the callback");
     FakeProvisioner prov;
     prov.speakerRateHz = 32000;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     AudioSink sink;
     sink.install(adapter);
     EXPECT(adapter.ensureBusOpen());
@@ -1129,7 +1260,7 @@ static void test_speaker_rate_conversion() {
 static void test_mic_submit_to_ring() {
     TEST("submitMicAudioPcm -> mic ring: a 48 kHz window crosses unchanged");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
 
@@ -1155,7 +1286,7 @@ static void test_mic_submit_to_ring() {
 static void test_mic_submit_without_endpoint() {
     TEST("a pad with no mic endpoint refuses mic PCM (not an error, just absent)");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, [] { return false; });
+    HidMaestroAdapter adapter(prov, prov.log, [] { return false; });
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
     EXPECT(!adapter.hasMicEndpoint(1));
@@ -1175,7 +1306,7 @@ static void test_mic_rate_conversion() {
     FakeProvisioner prov;
     prov.micRateHz = 16000;
     prov.speakerRateHz = 32000;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
 
@@ -1202,7 +1333,7 @@ static void test_mic_rate_conversion() {
 static void test_mic_led_from_output_ring() {
     TEST("output worker — a DS5 mute-lamp write surfaces as a mic-LED callback");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     AudioSink sink;
     sink.install(adapter);
     EXPECT(adapter.ensureBusOpen());
@@ -1247,7 +1378,7 @@ static void test_mic_led_from_output_ring() {
 static void test_speaker_ring_concurrent_producer() {
     TEST("a concurrent producer never yields a torn batch to the drain worker");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
 
     std::atomic<int> torn{0};
     std::atomic<int> seen{0};
@@ -1288,7 +1419,7 @@ static void test_speaker_ring_concurrent_producer() {
 static void test_audio_workers_stop_with_the_pad() {
     TEST("unplug tears down the audio worker and forgets the endpoints");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     AudioSink sink;
     sink.install(adapter);
     EXPECT(adapter.ensureBusOpen());
@@ -1315,7 +1446,7 @@ static void test_close_bus() {
     TEST("closeBus — tears down slots but keeps the helper resident");
     FakeProvisioner prov;
     {
-        HidMaestroAdapter adapter(prov);
+        HidMaestroAdapter adapter(prov, prov.log);
         EXPECT(adapter.ensureBusOpen());
         EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
         EXPECT(adapter.pluginDevice(2, GamepadIdentity::DualSense));
@@ -1405,7 +1536,7 @@ static void test_plugged_pad_answers_while_another_provisions(GamepadIdentity fi
     const std::string during = identityName(first) + " on serial 1, " + identityName(second) +
                                " plug of serial 2 waiting on the helper";
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     TEST(during + ": setup");
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, first));
@@ -1425,7 +1556,7 @@ static void test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity 
     const std::string during = identityName(first) + " on serial 1, " + identityName(second) +
                                " unplug of serial 2 waiting on the helper";
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov, audioOn());
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
     TEST(during + ": setup");
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, first));
@@ -1470,7 +1601,7 @@ static bool readStableFrame(const uint8_t* section, uint8_t (&payload)[DS5_PAYLO
 static void test_idle_republish_never_tears_a_frame() {
     TEST("idle re-publish racing submitReport on a DualSense: setup");
     FakeProvisioner prov;
-    HidMaestroAdapter adapter(prov);
+    HidMaestroAdapter adapter(prov, prov.log);
     adapter.setIdleReportIntervalForTest(std::chrono::milliseconds(0));
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
@@ -1538,7 +1669,652 @@ static void test_idle_republish_never_tears_a_frame() {
     EXPECT(idleWrites > 0);
 }
 
+static void test_probe_a_read_only_duplicate_refuses_a_write_view() {
+    TEST("probe: a section opened FILE_MAP_READ and duplicated with the same access maps for "
+         "reading and refuses a write view, so satellite.exe cannot write the version section");
+    const std::wstring name =
+        L"Local\\satellite-hm-adapter-test-readonly-" + std::to_wstring(GetCurrentProcessId());
+    HANDLE owner = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                      VERSION_SECTION_SIZE, name.c_str());
+    HANDLE readOnly = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+    HANDLE duplicated = FakeProvisioner::dup(readOnly);
+    void* readView = MapViewOfFile(duplicated, FILE_MAP_READ, 0, 0, VERSION_SECTION_SIZE);
+    void* writeView =
+        MapViewOfFile(duplicated, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, VERSION_SECTION_SIZE);
+    const DWORD writeError = GetLastError();
+    EXPECT(owner != nullptr);
+    EXPECT(readOnly != nullptr);
+    EXPECT(readView != nullptr);
+    EXPECT(writeView == nullptr);
+    EXPECT_EQ(writeError, static_cast<DWORD>(ERROR_ACCESS_DENIED));
+    if (readView) UnmapViewOfFile(readView);
+    if (writeView) UnmapViewOfFile(writeView);
+    for (HANDLE h : {duplicated, readOnly, owner}) {
+        if (h) CloseHandle(h);
+    }
+}
+
+static bool zeroFrom(const uint8_t* view, size_t from) {
+    for (size_t i = from; i < VERSION_SECTION_SIZE; i++) {
+        if (view[i] != 0) return false;
+    }
+    return true;
+}
+
+static void test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end() {
+    TEST("probe: a 64-byte view of a 20-byte section maps, zeros past the section's end, so a "
+         "view's size is no layout check (seen on windows-latest and under Wine)");
+    HANDLE shortSection =
+        CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 20, nullptr);
+    auto* writer = static_cast<uint8_t*>(
+        MapViewOfFile(shortSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 20));
+    if (writer) std::memset(writer, 0xA5, 20);
+    const auto* view = static_cast<const uint8_t*>(
+        MapViewOfFile(shortSection, FILE_MAP_READ, 0, 0, VERSION_SECTION_SIZE));
+    EXPECT(shortSection != nullptr);
+    EXPECT(writer != nullptr);
+    EXPECT(view != nullptr);
+    if (view) {
+        EXPECT_EQ(view[19], (uint8_t)0xA5);
+        EXPECT(zeroFrom(view, 20));
+        UnmapViewOfFile(const_cast<uint8_t*>(view));
+    }
+    if (writer) UnmapViewOfFile(writer);
+    if (shortSection) CloseHandle(shortSection);
+}
+
+// A plug the version section refuses: false, the controller removed, nothing
+// ever written to its input section, and one line that says why.
+static void expectRefusedAtPlug(FakeProvisioner& prov, HidMaestroAdapter& adapter, uint32_t serial,
+                                GamepadIdentity identity, const std::string& reason) {
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(!adapter.pluginDevice(serial, identity));
+    EXPECT(!adapter.isDevicePlugged(serial));
+    EXPECT_EQ(prov.deprovisionCalls, 1);
+    EXPECT_EQ(prov.inputSeqAtRemoval[serial], (uint32_t)0);
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, reason), 1);
+    GamepadReport rpt{};
+    EXPECT(!adapter.submitReport(serial, rpt));
+}
+
+static void test_a_plug_without_a_version_section_is_refused_before_any_write() {
+    TEST("version: a plug with no version section is refused before any frame, and removed");
+    FakeProvisioner prov;
+    prov.withVersionSection = false;
+    HidMaestroAdapter adapter(prov, prov.log);
+    expectRefusedAtPlug(prov, adapter, 1, GamepadIdentity::DualSense, "no HIDMaestro version");
+
+    TEST("version: a section shorter than 64 bytes maps, reads a zero tag past its end and is "
+         "refused before any frame");
+    FakeProvisioner shortProv;
+    shortProv.versionSectionBytes = 20;
+    HidMaestroAdapter shortAdapter(shortProv, shortProv.log);
+    expectRefusedAtPlug(shortProv, shortAdapter, 1, GamepadIdentity::DualSense,
+                        "another controller's");
+}
+
+static void test_a_plug_whose_section_names_another_controller_is_refused() {
+    TEST("version: a plug whose section carries another identity's tag is refused before any "
+         "frame");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) {
+        fx::putU64(image, VERSION_IDENTITY_TAG_OFFSET, FOREIGN_TAG);
+    };
+    HidMaestroAdapter adapter(prov, prov.log);
+    expectRefusedAtPlug(prov, adapter, 2, GamepadIdentity::Xbox, "another controller's");
+}
+
+static void test_a_plug_whose_driver_failed_its_start_is_refused() {
+    TEST("version: a plug whose driver named a value it could not read is refused before any "
+         "frame");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) {
+        fx::putI32(image, VERSION_DRIVER_CONFIG_ERROR_OFFSET, 2);
+    };
+    HidMaestroAdapter adapter(prov, prov.log);
+    expectRefusedAtPlug(prov, adapter, 3, GamepadIdentity::DS4, "failed its start");
+
+    TEST("version: a plug whose XUSB companion does not serve protocol 4 is refused");
+    FakeProvisioner companion;
+    companion.editVersion = [](fx::VersionImage& image) {
+        fx::putI32(image, VERSION_COMPANION_PROTOCOL_MIN_OFFSET, 5);
+        fx::putI32(image, VERSION_COMPANION_PROTOCOL_OFFSET, 5);
+    };
+    HidMaestroAdapter companionAdapter(companion, companion.log);
+    expectRefusedAtPlug(companion, companionAdapter, 3, GamepadIdentity::Xbox,
+                        "XUSB companion that does not serve protocol 4");
+}
+
+static void test_a_plug_whose_driver_half_is_still_to_come_is_held_until_it_comes() {
+    TEST("version: a plug whose driver half is not written yet plugs at once, and nothing is "
+         "written to the pad while it is held");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) { fx::eraseDriverHalf(image); };
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setIdleReportIntervalForTest(std::chrono::milliseconds(1));
+    EXPECT(adapter.ensureBusOpen());
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSense));
+    EXPECT(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(2000));
+    EXPECT(adapter.isDevicePlugged(4));
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)0);
+    MotionReport motion{};
+    motion.accelZ = 500;
+    EXPECT(!adapter.submitMotion(4, motion));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    adapter.refreshIdleInput();
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)0);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "holds its input"), 1);
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "Serial 4"), 0);
+
+    TEST("version: once the driver writes its half the recheck opens the pad, and the state it "
+         "was held with goes out at once");
+    prov.writeVersion(4, fx::pinnedDriverImage(FakeProvisioner::tagFor(4), false));
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)2);
+    const uint8_t* data = prov.inputData(4);
+    EXPECT_EQ(static_cast<int16_t>(data[25] | (data[26] << 8)), sonyAccelFromWire(500));
+    GamepadReport rpt{};
+    EXPECT(adapter.submitReport(4, rpt));
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)4);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "writes it now"), 1);
+}
+
+static void test_a_held_pad_whose_driver_half_never_comes_is_refused_at_the_deadline() {
+    TEST("version: a held pad whose driver half never comes is refused once the deadline passes, "
+         "never written, and still removed at unplug");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) { fx::eraseDriverHalf(image); };
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setVersionDeadlineForTest(std::chrono::milliseconds(1000));
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSense));
+    adapter.recheckDrivers();
+    EXPECT(adapter.isDevicePlugged(4));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    adapter.recheckDrivers();
+    EXPECT(!adapter.isDevicePlugged(4));
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "within the wait"), 1);
+    EXPECT_EQ(prov.inputSeq(4), (uint32_t)0);
+    EXPECT(adapter.unplugDevice(4));
+    EXPECT_EQ(prov.deprovisionCalls, 1);
+}
+
+static void test_a_composite_persona_plugs_without_a_driver_half() {
+    TEST("version: a composite persona, which the SDK's USB/IP device serves, plugs open with no "
+         "driver half and no tag");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(2, GamepadIdentity::DualSense));
+    EXPECT(adapter.hasSpeakerEndpoint(2));
+    EXPECT_EQ(prov.inputSeq(2), (uint32_t)2);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "holds its input"), 0);
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "Serial 2"), 0);
+}
+
+static void test_an_unverified_driver_that_serves_4_is_written_with_one_line_per_change() {
+    TEST("version: a pad on a driver release Satellite has not verified that serves 4 is "
+         "written, and the log says so once per change, not per tick");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) {
+        fx::putVersion(image, VERSION_DRIVER_VERSION_OFFSET, 2, 2, 0);
+        fx::putI32(image, VERSION_DRIVER_PROTOCOL_OFFSET, 6);
+    };
+    HidMaestroAdapter adapter(prov, prov.log);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
+    EXPECT_EQ(prov.inputSeq(1), (uint32_t)2);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.2.0, a release Satellite has not verified"),
+              1);
+    adapter.recheckDrivers();
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.2.0"), 1);
+
+    TEST("version: another unverified release is a change of its own, logged once");
+    fx::VersionImage later = fx::pinnedDriverImage(FakeProvisioner::tagFor(1), true);
+    fx::putVersion(later, VERSION_DRIVER_VERSION_OFFSET, 2, 3, 0);
+    prov.writeVersion(1, later);
+    adapter.recheckDrivers();
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.3.0, a release Satellite has not verified"),
+              1);
+
+    TEST("version: back on a verified release, the log says so once, without a warning");
+    prov.writeVersion(1, fx::pinnedDriverImage(FakeProvisioner::tagFor(1), true));
+    adapter.recheckDrivers();
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "driver 2.1.0, a release Satellite has verified"), 1);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.1.0"), 0);
+    GamepadReport rpt{};
+    EXPECT(adapter.submitReport(1, rpt));
+    EXPECT(adapter.isDevicePlugged(1));
+}
+
+static void test_every_verified_release_is_written_without_a_word() {
+    TEST("version: with 2.1.0 and 2.2.0 verified, a pad plugs on either and changes between "
+         "them without a line about its driver");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setVersionPinsForTest(
+        {parseReleaseVersion(SATELLITE_HIDMAESTRO_SDK_VERSION), {{2, 1, 0, 0}, {2, 2, 0, 0}}});
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+    fx::VersionImage second = fx::pinnedDriverImage(FakeProvisioner::tagFor(1), false);
+    fx::putVersion(second, VERSION_DRIVER_VERSION_OFFSET, 2, 2, 0);
+    prov.writeVersion(1, second);
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2."), 0);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "driver 2."), 0);
+    GamepadReport rpt{};
+    EXPECT(adapter.submitReport(1, rpt));
+
+    TEST("version: a release outside the list still warns once, and the next listed one says "
+         "it is verified");
+    fx::VersionImage third = second;
+    fx::putVersion(third, VERSION_DRIVER_VERSION_OFFSET, 2, 3, 0);
+    prov.writeVersion(1, third);
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.3.0, a release Satellite has not verified"),
+              1);
+    prov.writeVersion(1, second);
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "driver 2.2.0, a release Satellite has verified"), 1);
+}
+
+static void test_the_recheck_stops_every_write_to_a_pad_whose_section_changed() {
+    TEST("version: the recheck refuses a pad whose section now names another controller, and "
+         "nothing Satellite sends reaches it after");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
+    adapter.setIdleReportIntervalForTest(std::chrono::milliseconds(1));
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+    GamepadReport rpt{};
+    EXPECT(adapter.submitReport(1, rpt));
+    EXPECT_EQ(prov.inputSeq(1), (uint32_t)4);
+
+    fx::VersionImage foreign = fx::pinnedDriverImage(FOREIGN_TAG, false);
+    prov.writeVersion(1, foreign);
+    adapter.recheckDrivers();
+    EXPECT(!adapter.isDevicePlugged(1));
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "another controller's"), 1);
+
+    const std::vector<int16_t> window(AUDIO_SAMPLE_RATE_HZ / 50, 1000);
+    EXPECT(!adapter.submitReport(1, rpt));
+    EXPECT(!adapter.submitMotion(1, MotionReport{}));
+    EXPECT(!adapter.submitTouchpad(1, TouchpadReport{}));
+    EXPECT(!adapter.submitBattery(1, BatteryReport{}));
+    EXPECT(!adapter.submitMicAudioPcm(1, window.data(), window.size()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    adapter.refreshIdleInput();
+    EXPECT_EQ(prov.inputSeq(1), (uint32_t)4);
+    EXPECT(prov.drainMic(1).empty());
+
+    TEST("version: a refused pad is judged once, and is still removed at unplug");
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "another controller's"), 1);
+    EXPECT(adapter.unplugDevice(1));
+    EXPECT_EQ(prov.deprovisionCalls, 1);
+}
+
+static void test_a_live_pad_whose_driver_half_goes_missing_is_held_then_refused() {
+    TEST("version: a live pad whose driver half goes missing is held, and opens again with its "
+         "latest state when the half comes back");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setVersionDeadlineForTest(std::chrono::milliseconds(1000));
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(5, GamepadIdentity::DS4));
+    EXPECT_EQ(prov.inputSeq(5), (uint32_t)2);
+    fx::VersionImage forgotten = fx::pinnedDriverImage(FakeProvisioner::tagFor(5), false);
+    fx::putI32(forgotten, VERSION_DRIVER_PROTOCOL_OFFSET, 0);
+    prov.writeVersion(5, forgotten);
+    adapter.recheckDrivers();
+    EXPECT(adapter.isDevicePlugged(5));
+    GamepadReport rpt{};
+    EXPECT(!adapter.submitReport(5, rpt));
+    EXPECT_EQ(prov.inputSeq(5), (uint32_t)2);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "holds its input"), 1);
+    prov.writeVersion(5, fx::pinnedDriverImage(FakeProvisioner::tagFor(5), false));
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.inputSeq(5), (uint32_t)4);
+    EXPECT(adapter.submitReport(5, rpt));
+    EXPECT_EQ(prov.inputSeq(5), (uint32_t)6);
+
+    TEST("version: a driver half missing past the deadline refuses the pad");
+    prov.writeVersion(5, forgotten);
+    adapter.recheckDrivers();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    adapter.recheckDrivers();
+    EXPECT(adapter.isDevicePlugged(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    adapter.recheckDrivers();
+    EXPECT(!adapter.isDevicePlugged(5));
+    EXPECT(!adapter.submitReport(5, rpt));
+    EXPECT_EQ(prov.inputSeq(5), (uint32_t)6);
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "within the wait"), 1);
+}
+
+static void test_a_refused_pad_relays_nothing_from_its_rings() {
+    TEST("version: a refused pad's output ring reaches the client no more: rumble published "
+         "after the refusal is not delivered");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    CallbackSink sink;
+    sink.install(adapter);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
+    prov.publishOutput(1, OUTPUT_SOURCE_XINPUT, 0, {0x00, 0x08, 0x40, 0x80, 0x00});
+    EXPECT(sink.waitRumble(1));
+    prov.writeVersion(1, fx::pinnedDriverImage(FOREIGN_TAG, true));
+    adapter.recheckDrivers();
+    prov.publishOutput(1, OUTPUT_SOURCE_XINPUT, 0, {0x00, 0x08, 0x01, 0x01, 0x00});
+    EXPECT(!sink.waitRumble(2, 400));
+
+    TEST("version: a refused composite pad's speaker ring reaches the client no more");
+    FakeProvisioner audioProv;
+    HidMaestroAdapter audioAdapter(audioProv, audioProv.log, audioOn());
+    AudioSink audio;
+    audio.install(audioAdapter);
+    EXPECT(audioAdapter.ensureBusOpen());
+    EXPECT(audioAdapter.pluginDevice(1, GamepadIdentity::DualSense));
+    audioProv.publishSpeaker(1, stereoTone(48000, 1000.0, 240));
+    EXPECT(audio.waitFrames(240));
+    audioProv.writeVersion(1, fx::pinnedDriverImage(FOREIGN_TAG, false));
+    audioAdapter.recheckDrivers();
+    audioProv.publishSpeaker(1, stereoTone(48000, 1000.0, 240));
+    EXPECT(!audio.waitFrames(480, 400));
+}
+
+static void test_the_companion_slice_follows_the_helpers_report() {
+    TEST("companion: a pad the helper reports an XUSB companion for carries the companion's slice "
+         "and rings its doorbell, whatever its identity");
+    FakeProvisioner prov;
+    prov.reportsCompanion = [](GamepadIdentity) { return true; };
+    HidMaestroAdapter adapter(prov, prov.log);
+    EXPECT(adapter.ensureBusOpen());
+    GamepadReport rpt{};
+    rpt.sThumbLX = 1000;
+    rpt.bLeftTrigger = 200;
+    rpt.wButtons = 0x1000;
+    uint8_t expectedGip[INPUT_GIP_LENGTH];
+    packGip(rpt, expectedGip);
+    uint32_t serial = 1;
+    for (GamepadIdentity identity : {GamepadIdentity::Xbox, GamepadIdentity::DS4,
+                                     GamepadIdentity::DualSense, GamepadIdentity::SwitchPro}) {
+        EXPECT(adapter.pluginDevice(serial, identity));
+        prov.companionRang(serial);
+        EXPECT(adapter.submitReport(serial, rpt));
+        EXPECT_EQ(std::memcmp(prov.inputSection(serial) + INPUT_GIP_OFFSET, expectedGip,
+                              INPUT_GIP_LENGTH),
+                  0);
+        EXPECT(prov.companionRang(serial));
+        serial++;
+    }
+
+    TEST("companion: an Xbox pad the helper reports none for carries no slice and rings no "
+         "doorbell");
+    FakeProvisioner bare;
+    bare.reportsCompanion = [](GamepadIdentity) { return false; };
+    HidMaestroAdapter bareAdapter(bare, bare.log);
+    EXPECT(bareAdapter.ensureBusOpen());
+    EXPECT(bareAdapter.pluginDevice(1, GamepadIdentity::Xbox));
+    EXPECT(bareAdapter.submitReport(1, rpt));
+    const uint8_t untouched[INPUT_GIP_LENGTH]{};
+    EXPECT_EQ(std::memcmp(bare.inputSection(1) + INPUT_GIP_OFFSET, untouched, INPUT_GIP_LENGTH), 0);
+    EXPECT(!bare.companionRang(1));
+}
+
+static void test_the_helper_says_which_profile_has_a_companion() {
+    TEST("version: the companion's pair is judged where the helper reports a companion, and "
+         "ignored where it reports none, whatever the identity");
+    FakeProvisioner prov;
+    prov.reportsCompanion = [](GamepadIdentity) { return false; };
+    prov.editVersion = [](fx::VersionImage& image) {
+        fx::putI32(image, VERSION_COMPANION_CONFIG_ERROR_OFFSET, 1);
+    };
+    HidMaestroAdapter adapter(prov, prov.log);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
+    EXPECT_EQ(prov.inputSeq(1), (uint32_t)2);
+
+    FakeProvisioner withCompanion;
+    withCompanion.reportsCompanion = [](GamepadIdentity) { return true; };
+    withCompanion.editVersion = [](fx::VersionImage& image) {
+        fx::putI32(image, VERSION_COMPANION_CONFIG_ERROR_OFFSET, 1);
+    };
+    HidMaestroAdapter companionAdapter(withCompanion, withCompanion.log);
+    expectRefusedAtPlug(withCompanion, companionAdapter, 2, GamepadIdentity::DS4,
+                        "XUSB companion that failed its start");
+}
+
+static void test_an_unwritten_companion_pair_does_not_hold_the_pad() {
+    TEST("version: an xbox-360-wired pad whose companion pair is unwritten (a running companion "
+         "the create restarted without waiting) plugs open and is written");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) { fx::eraseCompanionHalf(image); };
+    HidMaestroAdapter adapter(prov, prov.log);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(3, GamepadIdentity::Xbox));
+    EXPECT_EQ(prov.inputSeq(3), (uint32_t)2);
+    adapter.recheckDrivers();
+    GamepadReport rpt{};
+    EXPECT(adapter.submitReport(3, rpt));
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "holds its input"), 0);
+}
+
+static void test_the_hold_scales_with_the_sdks_timeout_scale() {
+    TEST("version: a held pad waits the deadline times the timeout scale the helper's SDK uses");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) { fx::eraseDriverHalf(image); };
+    prov.timeoutScale = 3.0;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setVersionDeadlineForTest(std::chrono::milliseconds(400));
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(4, GamepadIdentity::DualSense));
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    adapter.recheckDrivers();
+    EXPECT(adapter.isDevicePlugged(4));
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    adapter.recheckDrivers();
+    EXPECT(!adapter.isDevicePlugged(4));
+}
+
+static void test_a_helper_too_old_to_report_the_section_is_named() {
+    TEST("version: a plug from a helper that predates the version section is refused, and the "
+         "log says the helper is too old rather than that the section is missing");
+    FakeProvisioner prov;
+    prov.withVersionSection = false;
+    prov.helperReportsVersion = false;
+    HidMaestroAdapter adapter(prov, prov.log);
+    expectRefusedAtPlug(prov, adapter, 1, GamepadIdentity::DualSense, "too old");
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "no HIDMaestro version section"), 0);
+}
+
+static void test_a_composite_refused_at_plug_still_restores_the_default_endpoint() {
+    TEST("version: a composite refused at plug still runs the hook after the one before it, so "
+         "the guard puts back a default endpoint Windows promoted");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) {
+        fx::putU64(image, VERSION_IDENTITY_TAG_OFFSET, FOREIGN_TAG);
+    };
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
+    int before = 0;
+    int after = 0;
+    adapter.setCompositePlugHooks([&] { before++; }, [&] { after++; });
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(!adapter.pluginDevice(1, GamepadIdentity::DualSense));
+    EXPECT_EQ(before, 1);
+    EXPECT_EQ(after, 1);
+}
+
+static void test_a_held_pad_still_delivers_its_output() {
+    TEST("version: a held pad's section is still its own, so its rumble is delivered");
+    FakeProvisioner prov;
+    prov.editVersion = [](fx::VersionImage& image) { fx::eraseDriverHalf(image); };
+    HidMaestroAdapter adapter(prov, prov.log);
+    CallbackSink sink;
+    sink.install(adapter);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
+    EXPECT(adapter.gateForTest(1) == WriteGate::Held);
+    prov.publishOutput(1, OUTPUT_SOURCE_XINPUT, 0, {0x00, 0x08, 0x40, 0x80, 0x00});
+    EXPECT(sink.waitRumble(1));
+}
+
+static void test_the_version_handle_goes_with_the_pad() {
+    TEST("version: unplugging a pad closes its version handle");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+    EXPECT(prov.versionSectionAlive(1));
+    EXPECT(adapter.unplugDevice(1));
+    EXPECT(!prov.versionSectionAlive(1));
+
+    TEST("version: closing the bus closes every pad's version handle");
+    EXPECT(adapter.pluginDevice(2, GamepadIdentity::DualSense));
+    EXPECT(adapter.pluginDevice(3, GamepadIdentity::Xbox));
+    adapter.closeBus();
+    EXPECT(!prov.versionSectionAlive(2));
+    EXPECT(!prov.versionSectionAlive(3));
+}
+
+static void test_the_recheck_passes_over_a_busy_pad() {
+    TEST("version: a recheck that finds a pad's input flag taken leaves it for the next tick "
+         "rather than spinning under hidmaestro.bus");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+    prov.writeVersion(1, fx::pinnedDriverImage(FOREIGN_TAG, false));
+    std::atomic_flag& busy = adapter.inputBusyForTest(1);
+    EXPECT(!busy.test_and_set(std::memory_order_acquire));
+    std::future<void> recheck =
+        std::async(std::launch::async, [&adapter] { adapter.recheckDrivers(); });
+    const bool returned =
+        recheck.wait_for(std::chrono::milliseconds(1000)) == std::future_status::ready;
+    EXPECT(returned);
+    EXPECT(adapter.gateForTest(1) == WriteGate::Open);
+    busy.clear(std::memory_order_release);
+    recheck.wait();
+    adapter.recheckDrivers();
+    EXPECT(adapter.gateForTest(1) == WriteGate::Refused);
+
+    TEST("version: the same goes for a pad whose mic flag is taken");
+    FakeProvisioner audioProv;
+    HidMaestroAdapter audioAdapter(audioProv, audioProv.log, audioOn());
+    EXPECT(audioAdapter.ensureBusOpen());
+    EXPECT(audioAdapter.pluginDevice(1, GamepadIdentity::DualSense));
+    audioProv.writeVersion(1, fx::pinnedDriverImage(FOREIGN_TAG, false));
+    std::atomic_flag& micBusy = audioAdapter.micBusyForTest(1);
+    EXPECT(!micBusy.test_and_set(std::memory_order_acquire));
+    audioAdapter.recheckDrivers();
+    EXPECT(audioAdapter.gateForTest(1) == WriteGate::Open);
+    micBusy.clear(std::memory_order_release);
+    audioAdapter.recheckDrivers();
+    EXPECT(audioAdapter.gateForTest(1) == WriteGate::Refused);
+}
+
+// The gate's claim: once a recheck that holds or refuses a pad returns, no
+// frame reaches the pad, however hard a writer is pushing at that moment.
+constexpr int GATE_RACE_ROUNDS = 3000;
+constexpr uint64_t GATE_RACE_ATTEMPTS_AFTER = 8;
+
+struct HotWriter {
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> attempts{0};
+
+    void waitForAttempts(uint64_t more) const {
+        const uint64_t until = attempts.load() + more;
+        while (attempts.load() < until) std::this_thread::yield();
+    }
+};
+
+static void runInputWriter(HidMaestroAdapter& adapter, uint32_t serial, HotWriter& writer) {
+    const GamepadReport rpt{};
+    while (!writer.stop.load()) {
+        adapter.submitReport(serial, rpt);
+        writer.attempts++;
+    }
+}
+
+static void recheckUntil(HidMaestroAdapter& adapter, uint32_t serial, WriteGate gate) {
+    while (adapter.gateForTest(serial) != gate) adapter.recheckDrivers();
+}
+
+static void test_no_frame_follows_a_hold_under_a_racing_writer() {
+    TEST("version race: across hundreds of holds with a writer pushing frames throughout, no "
+         "frame lands once the recheck that held the pad has returned");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setVersionDeadlineForTest(std::chrono::milliseconds(600000));
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(5, GamepadIdentity::DS4));
+    const fx::VersionImage passing = fx::pinnedDriverImage(FakeProvisioner::tagFor(5), false);
+    fx::VersionImage missing = passing;
+    fx::putI32(missing, VERSION_DRIVER_PROTOCOL_OFFSET, 0);
+    HotWriter writer;
+    std::thread thread([&] { runInputWriter(adapter, 5, writer); });
+    int leaks = 0;
+    for (int round = 0; round < GATE_RACE_ROUNDS; ++round) {
+        prov.writeVersion(5, missing);
+        recheckUntil(adapter, 5, WriteGate::Held);
+        const uint32_t heldAt = prov.inputSeq(5);
+        writer.waitForAttempts(GATE_RACE_ATTEMPTS_AFTER);
+        if (prov.inputSeq(5) != heldAt) leaks++;
+        prov.writeVersion(5, passing);
+        recheckUntil(adapter, 5, WriteGate::Open);
+        writer.waitForAttempts(GATE_RACE_ATTEMPTS_AFTER);
+    }
+    writer.stop = true;
+    thread.join();
+    EXPECT_EQ(leaks, 0);
+    EXPECT(prov.inputSeq(5) > (uint32_t)(2 * GATE_RACE_ROUNDS));
+}
+
+// A second of audio per call, resampled to a 16 kHz endpoint: the work between
+// a mic window's gate check and its ring write is then long enough that a gate
+// change racing it would land inside it, which a 20 ms window rarely does.
+constexpr size_t RACE_MIC_SAMPLES = AUDIO_SAMPLE_RATE_HZ;
+
+static void runMicWriter(HidMaestroAdapter& adapter, uint32_t serial, HotWriter& writer) {
+    const std::vector<int16_t> batch(RACE_MIC_SAMPLES, 1000);
+    while (!writer.stop.load()) {
+        adapter.submitMicAudioPcm(serial, batch.data(), batch.size());
+        writer.attempts++;
+    }
+}
+
+static void test_no_mic_window_follows_a_refusal_under_a_racing_writer() {
+    TEST("version race: across many refusals with the mic worker writing throughout, no mic "
+         "window lands once the recheck that refused the pad has returned");
+    int leaks = 0;
+    for (int round = 0; round < 40; ++round) {
+        FakeProvisioner prov;
+        prov.micRateHz = 16000;
+        HidMaestroAdapter adapter(prov, prov.log, audioOn());
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+        HotWriter writer;
+        std::thread thread([&] { runMicWriter(adapter, 1, writer); });
+        writer.waitForAttempts(2);
+        prov.writeVersion(1, fx::pinnedDriverImage(FOREIGN_TAG, false));
+        recheckUntil(adapter, 1, WriteGate::Refused);
+        const uint32_t refusedAt = prov.micHead(1);
+        writer.waitForAttempts(2);
+        if (prov.micHead(1) != refusedAt) leaks++;
+        writer.stop = true;
+        thread.join();
+    }
+    EXPECT_EQ(leaks, 0);
+}
+
 int main() {
+    test_probe_a_read_only_duplicate_refuses_a_write_view();
+    test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end();
     test_bus_open_probe_only();
     test_identity_support();
     test_plugin_lifecycle();
@@ -1578,6 +2354,28 @@ int main() {
     test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity::DualSense,
                                                         GamepadIdentity::Xbox);
     test_idle_republish_never_tears_a_frame();
+    test_a_plug_without_a_version_section_is_refused_before_any_write();
+    test_a_plug_whose_section_names_another_controller_is_refused();
+    test_a_plug_whose_driver_failed_its_start_is_refused();
+    test_a_plug_whose_driver_half_is_still_to_come_is_held_until_it_comes();
+    test_a_held_pad_whose_driver_half_never_comes_is_refused_at_the_deadline();
+    test_a_composite_persona_plugs_without_a_driver_half();
+    test_an_unverified_driver_that_serves_4_is_written_with_one_line_per_change();
+    test_every_verified_release_is_written_without_a_word();
+    test_the_recheck_stops_every_write_to_a_pad_whose_section_changed();
+    test_a_live_pad_whose_driver_half_goes_missing_is_held_then_refused();
+    test_a_refused_pad_relays_nothing_from_its_rings();
+    test_the_helper_says_which_profile_has_a_companion();
+    test_the_companion_slice_follows_the_helpers_report();
+    test_an_unwritten_companion_pair_does_not_hold_the_pad();
+    test_the_hold_scales_with_the_sdks_timeout_scale();
+    test_a_helper_too_old_to_report_the_section_is_named();
+    test_a_composite_refused_at_plug_still_restores_the_default_endpoint();
+    test_a_held_pad_still_delivers_its_output();
+    test_the_version_handle_goes_with_the_pad();
+    test_the_recheck_passes_over_a_busy_pad();
+    test_no_frame_follows_a_hold_under_a_racing_writer();
+    test_no_mic_window_follows_a_refusal_under_a_racing_writer();
 
     std::cout << "hidmaestro_adapter: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
