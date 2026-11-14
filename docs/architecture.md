@@ -1261,7 +1261,8 @@ served over HIDMaestro's bundled usbip-win2 kernel USB transport.
 
 - `platform/windows/hidmaestro_wire.{h,cpp}` — the shared-memory
   contract with the driver: input-section seqlock writer (with the GIP
-  slice for Xbox profiles and the mandatory ExtendedReportSize clear)
+  slice for a profile with an XUSB companion and the mandatory
+  ExtendedReportSize clear)
   and the 64-slot output-ring reader. No `<windows.h>`; pinned by
   `tests/test_hidmaestro_wire.cpp` on every CI platform.
 - `platform/windows/hidmaestro_report.h` — per-profile packers
@@ -1313,7 +1314,14 @@ name. `judgeVersionSection` then decides:
   and `driver_pins.h`'s SDK version.
 - The driver's error word must be 0, judged before its range, and 4 must lie
   within `DriverProtocolMin` to `DriverProtocol`.
-- On xbox-360-wired the XUSB companion's pair is judged the same way.
+- Where the profile reaches XInput through an XUSB companion, the
+  companion's error word must be 0, and a range it has written must hold 4.
+  The helper reads the companion off the SDK profile (`xinput.via` is
+  `xusbCompanion`, on the UMDF2 path) and reports it at plug; such a pad's
+  frames carry the companion's 14-byte slice and ring its doorbell. An
+  unwritten companion pair neither holds nor refuses: the companion writes
+  it only at its add, and the SDK's create restarts a companion that is
+  already running without waiting for it.
 - A composite persona runs on the SDK's USB/IP device, which writes no
   driver half, and the SDK writes no tag for it, so only the layout, the
   SDK half and a zero tag are judged.
@@ -1324,30 +1332,38 @@ name. `judgeVersionSection` then decides:
   behaviour without a protocol bump, so only the version tells releases
   apart.
 
-A zero `DriverProtocol` (or companion protocol) means that half is not
-written yet, which the SDK's create accepts when no HID child appeared
-within its own wait. Such a pad is plugged but held: nothing is written to
-it, and the next recheck that finds the half written opens it and writes
-the state it was held with. A pad still held after `VERSION_HALF_DEADLINE_MS`
-(15 s, the SDK's own start budget: 10 s for the HID child and 5 s for its
-start, and three 5 s waits for the companion) is refused. A live pad whose
-half goes missing is held the same way.
+A zero `DriverProtocol` means the driver's half is not written yet, which
+the SDK's create accepts when no HID child appeared within its own wait.
+Such a pad is plugged but held: nothing is written to it, its output still
+reaches the session, and the next recheck that finds the half written opens
+it and writes the state it was held with. A pad still held after
+`VERSION_HALF_DEADLINE_MS` is refused: 15 s, the SDK's own start budget (10 s
+for the HID child and 5 s for its start), times `HIDMAESTRO_TIMEOUT_SCALE`
+as the helper's SDK resolved it, which the helper reports at plug since it
+may run as a service with its own environment. A live pad whose half goes
+missing is held the same way.
 
 A refused plug is handed back before anything is written to the controller
 and fails like any other HIDMaestro plug: the mux tries the next backend
 that serves the type, and the apply result is `pluginFailed` when none does.
-One error line names the reason and what the section holds. Nothing signals
-a driver change, so the maintenance thread's `recheckDrivers` reads every
+A composite refused this way still arms the default-endpoint guard, since
+Windows may already have promoted its endpoint. One error line names the
+reason and what the section holds; a helper whose reply names no version
+section at all is named as too old for this satellite. Nothing signals a
+driver change, so the maintenance thread's `recheckDrivers` reads every
 plugged pad's section again on each 100 ms tick, under `busMtx_`. Every gate
-change (open, held, refused) is made while the pad's input flag is held, and
-every input write checks the gate under that flag, so no frame follows a
-hold or a refusal; the mic ring stops too. The receive thread pays one
-relaxed load per frame for it. A refused pad is inert both ways: its output
-and audio workers deliver nothing more, since its rings may now be another
-controller's, and they consume nothing either, since every reader keeps its
-own cursor and maps its ring read-only. A refused pad reads as not plugged,
-which the dashboard shows as a failed controller, and keeps its controller
-until its unplug removes it.
+change (open, held, refused) is made while both the pad's input flag and its
+mic flag are held, each tried once: a pad whose submit holds one keeps its
+gate until the next tick rather than having the recheck spin under
+`busMtx_`. Every input write and every mic window checks the gate under its
+own flag, so neither a frame nor a mic window follows a hold or a refusal.
+The receive thread pays one relaxed load per frame for it. A refused pad is
+inert both ways: its output and audio workers deliver nothing more, since
+its rings may now be another controller's, and they consume nothing either,
+since every reader keeps its own cursor and maps its ring read-only. A
+refused pad reads as not plugged, which the dashboard shows as a failed
+controller, and the mic worker drops its audio without reporting a missing
+microphone endpoint. It keeps its controller until its unplug removes it.
 
 ### Controller audio, and the one kernel driver
 

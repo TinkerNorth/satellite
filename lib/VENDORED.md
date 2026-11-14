@@ -140,15 +140,18 @@ the 90-day freshness window.
   (`test_hidmaestro_wire` / `test_hidmaestro_report` pin them; the section
   sizes 362 / 16904 are the runtime layout check). This backend reads the
   version section, through a read-only handle the helper duplicates, before
-  its first frame and once a second after; `src/core/hidmaestro_version.h`
-  restates the struct and the policy and `test_hidmaestro_version` pins both,
-  and the helper's `IdentityTags` restates the SDK's internal
-  `DeviceIdentity` tag, so a bump diffs `driver/hm_contract.h` and
-  `DeviceIdentity.cs` too. `verify-helper-sdk.ps1` runs
-  `satellite-hm-helper.exe check-sdk`, which holds `IdentityTags` to the
-  SDK's `DeviceIdentity` by reflection and the SDK version `SharedMemoryIO`
-  writes into the section to `driver_pins.h`, and fails when a reflection
-  target is gone. The SDK's `InputAck`, `Signal` and remove events stay
+  its first frame and on every 100 ms maintenance tick after;
+  `src/core/hidmaestro_version.h` restates the struct and the policy and
+  `test_hidmaestro_version` pins both, and the helper's `IdentityTags`
+  restates the SDK's internal `DeviceIdentity` tag, so a bump diffs
+  `driver/hm_contract.h` and `DeviceIdentity.cs` too. `verify-helper-sdk.ps1`
+  runs `satellite-hm-helper.exe check-sdk`, which holds `IdentityTags` to the
+  SDK's `DeviceIdentity` by reflection, the SDK version `SharedMemoryIO`
+  writes into the section to `driver_pins.h`, the header's section size,
+  offsets, layout and protocols to `SharedMemoryIO`'s constants, and the
+  XUSB companion the helper reads off each profile to the SDK's own
+  resolution of it, finds the `TimeoutScale.Factor` the helper reports, and
+  fails when a reflection target is gone. The SDK's `InputAck`, `Signal` and remove events stay
   unopened. The runtime driver itself deploys via the bundled
   `satellite-hm-helper.exe` from the hash-pinned release zip (see
   `redist/README.md`); we ship no driver code.

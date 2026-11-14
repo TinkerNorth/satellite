@@ -46,7 +46,8 @@ the section was not written by the SDK Satellite ships, belongs to another
 controller (another program's at the same index), or shows a driver or
 companion that failed its start or does not serve protocol 4. A controller
 whose driver has not written its half yet is plugged but gets no input
-until it has, for up to 15 seconds, the SDK's own start budget. A driver
+until it has, for up to 15 seconds, the SDK's own start budget, stretched by
+`HIDMAESTRO_TIMEOUT_SCALE` as the SDK stretches it. A driver
 from another HIDMaestro release that still serves protocol 4 keeps working,
 and the log says once that it is not the pinned one. A controller refused
 after it was plugged gets no more input, passes nothing back (rumble, light
