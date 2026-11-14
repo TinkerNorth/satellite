@@ -75,18 +75,18 @@ internal static class SelfTest
         HMController controller = ctx.CreateControllerAt(slot, profile, KeyPrefix + profileId);
         int transport = controller.TransportIndex;
         say($"{profileId}: slot {slot}, transport index {transport}, driver {controller.DriverVersion?.ToString() ?? "unknown"}, {controller.SectionNames.Count} sections");
-        bool xbox = profileId.StartsWith("xbox-", StringComparison.Ordinal);
-        string? unknown = SectionNames.FirstUnknown(SectionNames.Opened(transport, xbox), controller.SectionNames);
+        bool companion = XusbCompanion.Presents(profile.XInput?.Via, profile.RequiresUsbipBackend);
+        string? unknown = SectionNames.FirstUnknown(SectionNames.Opened(transport, companion), controller.SectionNames);
         check(unknown == null, unknown == null
             ? $"{profileId}: every section the helper opens is one the SDK lists for transport index {transport}"
             : $"{profileId}: the SDK lists no {unknown}");
-        CheckVersionSection(controller, profileId, xbox, say, check);
+        CheckVersionSection(controller, profileId, companion, say, check);
         return controller;
     }
 
     // What Satellite's plug checks before its first frame
     // (src/core/hidmaestro_version.h), held to the SDK's own readings.
-    private static void CheckVersionSection(HMController controller, string profileId, bool xbox,
+    private static void CheckVersionSection(HMController controller, string profileId, bool companion,
                                             Action<string> say, Action<bool, string> check)
     {
         VersionSection v = ReadVersionSection(controller.TransportIndex);
@@ -104,9 +104,14 @@ internal static class SelfTest
               $"{profileId}: its driver serves protocols {v.DriverProtocolMin} to {v.DriverProtocol}, 4 among them, with error {v.DriverConfigError}");
         check(driver != null && SameRelease(v.DriverVersion, driver),
               $"{profileId}: its driver version {v.DriverVersion} is the one the SDK reads, {driver?.ToString() ?? "none"}");
-        if (xbox)
-            check(v.CompanionConfigError == 0 && v.CompanionProtocolMin <= 4 && 4 <= v.CompanionProtocol,
-                  $"{profileId}: its XUSB companion serves protocols {v.CompanionProtocolMin} to {v.CompanionProtocol}, 4 among them, with error {v.CompanionConfigError}");
+        if (!companion) return;
+        // The companion writes its pair only at its add, and the SDK restarts
+        // one that is already running without waiting for it, so an unwritten
+        // pair passes, as it does at Satellite's plug.
+        if (v.CompanionProtocol == 0)
+            say($"{profileId}: its XUSB companion has not written its pair; a companion the SDK restarted writes none");
+        check(v.CompanionConfigError == 0 && (v.CompanionProtocol == 0 || (v.CompanionProtocolMin <= 4 && 4 <= v.CompanionProtocol)),
+              $"{profileId}: its XUSB companion has error {v.CompanionConfigError} and serves protocols {v.CompanionProtocolMin} to {v.CompanionProtocol}, 4 among them where written");
     }
 
     private static bool SameRelease(Version a, Version b) => a.Major == b.Major && a.Minor == b.Minor && a.Build == b.Build;

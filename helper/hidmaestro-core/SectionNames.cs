@@ -15,10 +15,10 @@ public static class SectionNames
 
     public static string Version(int transportIndex) => Name("Version", transportIndex);
 
-    public static IReadOnlyList<string> Opened(int transportIndex, bool xbox)
+    public static IReadOnlyList<string> Opened(int transportIndex, bool companion)
     {
         var names = new List<string> { Input(transportIndex), InputEvent(transportIndex) };
-        if (xbox) names.Add(CompanionInputEvent(transportIndex));
+        if (companion) names.Add(CompanionInputEvent(transportIndex));
         names.Add(Output(transportIndex));
         names.Add(OutputEvent(transportIndex));
         names.Add(Version(transportIndex));

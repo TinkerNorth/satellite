@@ -18,7 +18,7 @@ public sealed class SectionNamesTests
     }
 
     [Fact]
-    public void OnlyAnXboxProfileOpensTheCompanionDoorbell()
+    public void OnlyAProfileWithACompanionOpensItsDoorbell()
     {
         Assert.Equal(
             new[]
@@ -27,7 +27,7 @@ public sealed class SectionNamesTests
                 @"Global\HIDMaestroOutput0", @"Global\HIDMaestroOutputEvent0",
                 @"Global\HIDMaestroVersion0",
             },
-            SectionNames.Opened(0, xbox: false));
+            SectionNames.Opened(0, companion: false));
         Assert.Equal(
             new[]
             {
@@ -36,7 +36,7 @@ public sealed class SectionNamesTests
                 @"Global\HIDMaestroOutput3", @"Global\HIDMaestroOutputEvent3",
                 @"Global\HIDMaestroVersion3",
             },
-            SectionNames.Opened(3, xbox: true));
+            SectionNames.Opened(3, companion: true));
     }
 
     [Fact]
@@ -53,9 +53,9 @@ public sealed class SectionNamesTests
         string[] versionFirst = v210Order.OrderBy(name => name.Contains("Version") ? 0 : 1).ToArray();
         string[] withoutVersion = v210Order.Where(name => !name.Contains("Version")).ToArray();
 
-        Assert.Null(SectionNames.FirstUnknown(SectionNames.Opened(3, xbox: true), v210Order));
-        Assert.Null(SectionNames.FirstUnknown(SectionNames.Opened(3, xbox: true), versionFirst));
-        Assert.Equal(@"Global\HIDMaestroVersion3", SectionNames.FirstUnknown(SectionNames.Opened(3, xbox: false), withoutVersion));
+        Assert.Null(SectionNames.FirstUnknown(SectionNames.Opened(3, companion: true), v210Order));
+        Assert.Null(SectionNames.FirstUnknown(SectionNames.Opened(3, companion: true), versionFirst));
+        Assert.Equal(@"Global\HIDMaestroVersion3", SectionNames.FirstUnknown(SectionNames.Opened(3, companion: false), withoutVersion));
     }
 
     [Fact]
@@ -68,9 +68,9 @@ public sealed class SectionNamesTests
             @"Global\HIDMaestroVersion3", @"\\.\pipe\HIDMaestroOwner3",
         };
 
-        Assert.Null(SectionNames.FirstUnknown(SectionNames.Opened(3, xbox: false), sdk));
-        Assert.Equal(@"Global\HIDMaestroCompanionInputEvent3", SectionNames.FirstUnknown(SectionNames.Opened(3, xbox: true), sdk));
-        Assert.Equal(@"Global\HIDMaestroInput4", SectionNames.FirstUnknown(SectionNames.Opened(4, xbox: false), sdk));
+        Assert.Null(SectionNames.FirstUnknown(SectionNames.Opened(3, companion: false), sdk));
+        Assert.Equal(@"Global\HIDMaestroCompanionInputEvent3", SectionNames.FirstUnknown(SectionNames.Opened(3, companion: true), sdk));
+        Assert.Equal(@"Global\HIDMaestroInput4", SectionNames.FirstUnknown(SectionNames.Opened(4, companion: false), sdk));
     }
 
     [Fact]

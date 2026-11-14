@@ -14,7 +14,7 @@ namespace Satellite.HmHelper;
 //   {"op":"plug","serial":N,"profile":"<catalog id>"}
 //     -> {"ok":true,"index":N,"transportIndex":T,"input":H,"inputEvent":H,
 //         "companionEvent":H,"output":H,"outputEvent":H,
-//         "version":H,"identityTag":U,"usbip":B,
+//         "version":H,"identityTag":U,"usbip":B,"companion":B,"timeoutScale":F,
 //         "speakerAudio":H,"speakerAudioEvent":H,"micAudio":H,"micAudioEvent":H,
 //         "speakerChannels":N,"speakerRateHz":N,"micChannels":N,"micRateHz":N,
 //         "hapticAudio":H,"hapticAudioEvent":H,"hapticChannels":N}
@@ -28,8 +28,12 @@ namespace Satellite.HmHelper;
 // section, opened FILE_MAP_READ alone so satellite can read it and never
 // write it; `identityTag` is the tag the SDK writes there for the
 // controller's identity key, and `usbip` says the SDK's USB/IP device serves a
-// composite persona, which writes no driver half. Satellite checks the section
-// before its first frame (src/core/hidmaestro_version.h). The audio fields are
+// composite persona, which writes no driver half. `companion` says the profile
+// reaches XInput through an XUSB companion, which writes its own pair, and
+// `timeoutScale` is HIDMAESTRO_TIMEOUT_SCALE as this process's SDK resolved it,
+// which scales Satellite's wait for the driver half as it scales the SDK's.
+// Satellite checks the section before its first frame
+// (src/core/hidmaestro_version.h). The audio fields are
 // present only when the profile materialized a USB-audio function, and the
 // haptic ones only when that endpoint carries the HD-haptics lanes.
 internal sealed class Session : IDisposable
@@ -123,8 +127,8 @@ internal sealed class Session : IDisposable
         {
             _ctx.FinalizeNames();
             int transport = controller.TransportIndex;
-            bool xbox = profileId.StartsWith("xbox-", StringComparison.Ordinal);
-            string? unknown = SectionNames.FirstUnknown(SectionNames.Opened(transport, xbox), controller.SectionNames);
+            bool companion = XusbCompanion.Presents(profile.XInput?.Via, profile.RequiresUsbipBackend);
+            string? unknown = SectionNames.FirstUnknown(SectionNames.Opened(transport, companion), controller.SectionNames);
             if (unknown != null)
                 throw new InvalidOperationException($"the SDK lists no {unknown} among the sections of transport index {transport}");
 
@@ -141,11 +145,12 @@ internal sealed class Session : IDisposable
                 input = DuplicateMapping(SectionNames.Input(transport));
                 inputEvent = DuplicateEvent(SectionNames.InputEvent(transport));
             }
-            ulong companionEvent = xbox ? DuplicateEvent(SectionNames.CompanionInputEvent(transport)) : 0;
+            ulong companionEvent = companion ? DuplicateEvent(SectionNames.CompanionInputEvent(transport)) : 0;
             ulong output = DuplicateMapping(SectionNames.Output(transport));
             ulong outputEvent = DuplicateEvent(SectionNames.OutputEvent(transport));
             ulong version = DuplicateReadOnlyMapping(SectionNames.Version(transport));
             ulong identityTag = IdentityTags.OfKey(controller.IdentityKey);
+            double timeoutScale = SdkTimeouts.Scale;
             if (input == 0 || inputEvent == 0)
                 throw new InvalidOperationException("could not duplicate the controller's shared sections");
 
@@ -166,6 +171,8 @@ internal sealed class Session : IDisposable
                 w.WriteNumber("version", version);
                 w.WriteNumber("identityTag", identityTag);
                 w.WriteBoolean("usbip", profile.RequiresUsbipBackend);
+                w.WriteBoolean("companion", companion);
+                w.WriteNumber("timeoutScale", timeoutScale);
                 plugged.Audio?.WriteHandshake(w);
             });
         }
