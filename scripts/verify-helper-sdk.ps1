@@ -6,7 +6,10 @@
     Runs the helper's `sdk-version` command, which prints the HIDMaestro SDK
     release compiled into it and the hidmaestro.inf DriverVer that SDK embeds,
     and fails when either differs from the pins the dashboard's driver banner
-    compares installed drivers against. This checks the artifact the installer
+    compares installed drivers against. Runs its `check-sdk` command first,
+    which holds what the helper restates of the SDK's internals to the SDK by
+    reflection: the identity tag satellite.exe's version-section check expects,
+    and the SDK version the SDK writes into that section. This checks the artifact the installer
     ships, after `dotnet publish`, where fetch-redist.ps1 checks the staged SDK
     before it.
 
@@ -34,6 +37,11 @@ if (-not $Helper) {
 }
 if (-not $PinsHeader) { $PinsHeader = Join-Path $RepoRoot 'src\platform\windows\driver_pins.h' }
 if (-not (Test-Path $Helper)) { throw "$Helper not found; run dotnet publish helper/hidmaestro first" }
+
+$SdkPin = (Get-DriverPins $PinsHeader)[$HmSdkVersionPin]
+& $Helper check-sdk --sdk-pin $SdkPin
+if ($LASTEXITCODE -ne 0) { throw "$Helper check-sdk exited $LASTEXITCODE" }
+Write-Host "[OK]   IdentityTags is the pinned SDK's DeviceIdentity, and the SDK writes SDK $SdkPin into a version section"
 
 $Lines = @(& $Helper sdk-version)
 if ($LASTEXITCODE -ne 0) { throw "$Helper sdk-version exited $LASTEXITCODE" }

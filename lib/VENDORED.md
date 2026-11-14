@@ -144,8 +144,12 @@ the 90-day freshness window.
   restates the struct and the policy and `test_hidmaestro_version` pins both,
   and the helper's `IdentityTags` restates the SDK's internal
   `DeviceIdentity` tag, so a bump diffs `driver/hm_contract.h` and
-  `DeviceIdentity.cs` too. The SDK's `InputAck`, `Signal` and remove events
-  stay unopened. The runtime driver itself deploys via the bundled
+  `DeviceIdentity.cs` too. `verify-helper-sdk.ps1` runs
+  `satellite-hm-helper.exe check-sdk`, which holds `IdentityTags` to the
+  SDK's `DeviceIdentity` by reflection and the SDK version `SharedMemoryIO`
+  writes into the section to `driver_pins.h`, and fails when a reflection
+  target is gone. The SDK's `InputAck`, `Signal` and remove events stay
+  unopened. The runtime driver itself deploys via the bundled
   `satellite-hm-helper.exe` from the hash-pinned release zip (see
   `redist/README.md`); we ship no driver code.
   v1.9.2 -> v2.1.0 (2026-11-01): `HIDMAESTRO_SHARED_INPUT` and
