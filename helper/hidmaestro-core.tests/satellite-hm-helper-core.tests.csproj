@@ -20,4 +20,11 @@
     <ProjectReference Include="..\hidmaestro-core\satellite-hm-helper-core.csproj" />
   </ItemGroup>
 
+  <!-- The copy tests read the catalog files scripts/fetch-redist.ps1 stages and
+       the SHA256SUMS that pins them, so the fetch runs before the tests. -->
+  <ItemGroup>
+    <None Include="..\..\redist\SHA256SUMS" Link="redist\SHA256SUMS" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\redist\hidmaestro\profiles\*.json" Link="redist\hidmaestro\profiles\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

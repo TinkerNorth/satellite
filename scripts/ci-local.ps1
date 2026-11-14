@@ -135,7 +135,8 @@ if ($toolchainReady) {
 Step 'Build HIDMaestro helper (dotnet publish)'
 if (Get-Command dotnet -ErrorAction SilentlyContinue) {
     # fetch-redist.ps1 stages the hash-pinned HIDMaestro SDK the helper
-    # project references; CI runs it right before the publish.
+    # project references and the catalog files the profile copies are cut
+    # from, which the helper's tests read; CI runs it before both.
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'fetch-redist.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'fetch-redist.ps1 failed' }
     & dotnet test helper/hidmaestro-core.tests/satellite-hm-helper-core.tests.csproj -c Release

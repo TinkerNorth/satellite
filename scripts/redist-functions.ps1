@@ -31,6 +31,42 @@ function Get-RedistTable {
             Filename = 'HIDMaestro-v2.1.0.zip'
         }
         @{
+            Name           = 'HIDMaestro 2.1.0 catalog profile dualsense'
+            Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualsense.json'
+            Filename       = 'HIDMaestro-v2.1.0-dualsense.json'
+            CatalogProfile = 'dualsense'
+        }
+        @{
+            Name           = 'HIDMaestro 2.1.0 catalog profile dualsense-composite'
+            Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualsense-composite.json'
+            Filename       = 'HIDMaestro-v2.1.0-dualsense-composite.json'
+            CatalogProfile = 'dualsense-composite'
+        }
+        @{
+            Name           = 'HIDMaestro 2.1.0 catalog profile dualsense-edge'
+            Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualsense-edge.json'
+            Filename       = 'HIDMaestro-v2.1.0-dualsense-edge.json'
+            CatalogProfile = 'dualsense-edge'
+        }
+        @{
+            Name           = 'HIDMaestro 2.1.0 catalog profile dualsense-edge-composite'
+            Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualsense-edge-composite.json'
+            Filename       = 'HIDMaestro-v2.1.0-dualsense-edge-composite.json'
+            CatalogProfile = 'dualsense-edge-composite'
+        }
+        @{
+            Name           = 'HIDMaestro 2.1.0 catalog profile dualshock-4-v2'
+            Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualshock-4-v2.json'
+            Filename       = 'HIDMaestro-v2.1.0-dualshock-4-v2.json'
+            CatalogProfile = 'dualshock-4-v2'
+        }
+        @{
+            Name           = 'HIDMaestro 2.1.0 catalog profile dualshock-4-v2-composite'
+            Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/sony/dualshock-4-v2-composite.json'
+            Filename       = 'HIDMaestro-v2.1.0-dualshock-4-v2-composite.json'
+            CatalogProfile = 'dualshock-4-v2-composite'
+        }
+        @{
             Name           = 'HIDMaestro 2.1.0 catalog profile switch-pro'
             Url            = 'https://raw.githubusercontent.com/hifihedgehog/HIDMaestro/v2.1.0/profiles/nintendo/switch-pro.json'
             Filename       = 'HIDMaestro-v2.1.0-switch-pro.json'
