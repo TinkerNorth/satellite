@@ -1328,16 +1328,18 @@ name. `judgeVersionSection` then decides:
   apart.
 
 A refused plug is handed back before anything is written to the controller
-and fails like any other plug (`pluginFailed`), with one error line that
-names the reason and what the section holds. Nothing signals a driver
-change, so the maintenance tick's `recheckDrivers` reads every plugged pad's
-section again once a second, under `busMtx_`. It gives a half that goes
-missing the same wait, and refuses a pad that no longer passes by setting
-its `refused` flag while it holds the pad's input flag. Every input write
-checks that flag under the input flag, so no frame follows the refusal; the
-mic ring stops too. The receive thread pays one relaxed load per frame for
-it. A refused pad reads as not plugged, which the dashboard shows as a
-failed controller, and keeps its controller until its unplug removes it.
+and fails like any other HIDMaestro plug: the mux tries the next backend
+that serves the type, and the apply result is `pluginFailed` when none does.
+One error line names the reason and what the section holds. Nothing signals
+a driver change, so the maintenance tick's `recheckDrivers` reads every
+plugged pad's section again once a second, under `busMtx_`. It gives a half
+that goes missing the same wait, and refuses a pad that no longer passes by
+setting its `refused` flag while it holds the pad's input flag. Every input
+write checks that flag under the input flag, so no frame follows the
+refusal; the mic ring stops too. The receive thread pays one relaxed load
+per frame for it. A refused pad reads as not plugged, which the dashboard
+shows as a failed controller, and keeps its controller until its unplug
+removes it.
 
 ### Controller audio, and the one kernel driver
 

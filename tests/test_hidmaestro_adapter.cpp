@@ -16,6 +16,7 @@
 #include "../src/platform/windows/hidmaestro_adapter.h"
 #include "hidmaestro_version_fixture.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -117,6 +118,7 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     // then duplicated with the same access, as Session.DuplicateReadOnlyMapping
     // does; the fake keeps its own read-write view to play the driver.
     bool withVersionSection = true;
+    DWORD versionSectionBytes = VERSION_SECTION_SIZE;
     std::function<void(fx::VersionImage&)> editVersion;
     int versionSections = 0;
     std::atomic<int> provisionsDone{0};
@@ -208,10 +210,11 @@ struct FakeProvisioner : IHidMaestroProvisioner {
                                   std::to_wstring(GetCurrentProcessId()) + L"-" +
                                   std::to_wstring(versionSections++);
         f.versionSection = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
-                                              VERSION_SECTION_SIZE, name.c_str());
+                                              versionSectionBytes, name.c_str());
         f.versionView = static_cast<uint8_t*>(
             MapViewOfFile(f.versionSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0));
-        std::memcpy(f.versionView, image.data(), image.size());
+        std::memcpy(f.versionView, image.data(),
+                    std::min<size_t>(image.size(), versionSectionBytes));
         return OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
     }
 
@@ -1653,15 +1656,32 @@ static void test_probe_a_read_only_duplicate_refuses_a_write_view() {
     }
 }
 
-static void test_probe_a_short_section_refuses_a_64_byte_view() {
-    TEST("probe: a 64-byte view of a smaller section fails, so a short version section never "
-         "maps");
+static bool zeroFrom(const uint8_t* view, size_t from) {
+    for (size_t i = from; i < VERSION_SECTION_SIZE; i++) {
+        if (view[i] != 0) return false;
+    }
+    return true;
+}
+
+static void test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end() {
+    TEST("probe: a 64-byte view of a 20-byte section maps, zeros past the section's end, so a "
+         "view's size is no layout check (seen on windows-latest and under Wine)");
     HANDLE small =
         CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 20, nullptr);
-    void* view = MapViewOfFile(small, FILE_MAP_READ, 0, 0, VERSION_SECTION_SIZE);
+    auto* writer =
+        static_cast<uint8_t*>(MapViewOfFile(small, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 20));
+    if (writer) std::memset(writer, 0xA5, 20);
+    const auto* view = static_cast<const uint8_t*>(
+        MapViewOfFile(small, FILE_MAP_READ, 0, 0, VERSION_SECTION_SIZE));
     EXPECT(small != nullptr);
-    EXPECT(view == nullptr);
-    if (view) UnmapViewOfFile(view);
+    EXPECT(writer != nullptr);
+    EXPECT(view != nullptr);
+    if (view) {
+        EXPECT_EQ(view[19], (uint8_t)0xA5);
+        EXPECT(zeroFrom(view, 20));
+        UnmapViewOfFile(const_cast<uint8_t*>(view));
+    }
+    if (writer) UnmapViewOfFile(writer);
     if (small) CloseHandle(small);
 }
 
@@ -1684,7 +1704,15 @@ static void test_a_plug_without_a_version_section_is_refused_before_any_write() 
     FakeProvisioner prov;
     prov.withVersionSection = false;
     HidMaestroAdapter adapter(prov, prov.log);
-    expectRefusedAtPlug(prov, adapter, 1, GamepadIdentity::DualSense, "no 64-byte");
+    expectRefusedAtPlug(prov, adapter, 1, GamepadIdentity::DualSense, "no HIDMaestro version");
+
+    TEST("version: a section shorter than 64 bytes maps, reads a zero tag past its end and is "
+         "refused before any frame");
+    FakeProvisioner shortProv;
+    shortProv.versionSectionBytes = 20;
+    HidMaestroAdapter shortAdapter(shortProv, shortProv.log);
+    expectRefusedAtPlug(shortProv, shortAdapter, 1, GamepadIdentity::DualSense,
+                        "another controller's");
 }
 
 static void test_a_plug_whose_section_names_another_controller_is_refused() {
@@ -1841,7 +1869,7 @@ static void test_the_recheck_gives_a_missing_driver_half_the_wait() {
          "it stays");
     FakeProvisioner prov;
     HidMaestroAdapter adapter(prov, prov.log);
-    adapter.setVersionWaitForTest(std::chrono::milliseconds(300));
+    adapter.setVersionWaitForTest(std::chrono::milliseconds(1000));
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(5, GamepadIdentity::DS4));
     fx::VersionImage forgotten = fx::pinnedDriverImage(FakeProvisioner::tagFor(5), false);
@@ -1858,10 +1886,10 @@ static void test_the_recheck_gives_a_missing_driver_half_the_wait() {
     TEST("version: a driver half missing past the wait is refused on the next recheck");
     prov.writeVersion(5, forgotten);
     adapter.recheckDrivers();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
     adapter.recheckDrivers();
     EXPECT(adapter.isDevicePlugged(5));
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
     adapter.recheckDrivers();
     EXPECT(!adapter.isDevicePlugged(5));
     EXPECT(!adapter.submitReport(5, rpt));
@@ -1870,7 +1898,7 @@ static void test_the_recheck_gives_a_missing_driver_half_the_wait() {
 
 int main() {
     test_probe_a_read_only_duplicate_refuses_a_write_view();
-    test_probe_a_short_section_refuses_a_64_byte_view();
+    test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end();
     test_bus_open_probe_only();
     test_identity_support();
     test_plugin_lifecycle();

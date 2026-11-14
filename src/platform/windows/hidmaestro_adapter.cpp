@@ -175,8 +175,10 @@ bool HidMaestroAdapter::adoptProvisionedLocked(IoSlot& slot, const hm::Provision
     return false;
 }
 
-// Caller holds busMtx_. Mapping exactly VERSION_SECTION_SIZE read-only: the
-// helper duplicated a FILE_MAP_READ handle, so this process cannot write it.
+// Caller holds busMtx_. Read-only: the helper duplicated a FILE_MAP_READ
+// handle, so this process cannot write the section. Windows maps a shorter
+// section's whole page, zeros past its end, so the view's size checks nothing;
+// the policy refuses the zero tag a short section reads.
 void HidMaestroAdapter::attachVersionLocked(IoSlot& slot, const hm::ProvisionResult& r) {
     slot.versionSection = toHandle(r.versionSection);
     if (slot.versionSection) {

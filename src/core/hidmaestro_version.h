@@ -300,7 +300,7 @@ inline const char* versionVerdictReason(VersionVerdict verdict) {
     case VersionVerdict::Pending:
         return "has a driver or XUSB companion that has not written its half yet";
     case VersionVerdict::NoSection:
-        return "came with no 64-byte HIDMaestro version section";
+        return "came with no HIDMaestro version section";
     case VersionVerdict::OtherLayout:
         return "has a version section of a layout other than 1";
     case VersionVerdict::OtherController:
