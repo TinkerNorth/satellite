@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <set>
@@ -24,6 +25,7 @@ constexpr auto PROBE_LIMIT = std::chrono::milliseconds(200);
 constexpr int SLOW_PLUG_MS = 200;
 constexpr int SLOW_ROUNDS = 4;
 constexpr auto BLOCKED_CALL_LIMIT = std::chrono::milliseconds(50);
+constexpr auto HELD_LOCK_TICK_LIMIT = std::chrono::milliseconds(1000);
 constexpr auto THREAD_TIMEOUT = std::chrono::seconds(60);
 constexpr uint64_t FRAMES_ON_NEW_TOKEN = 200;
 constexpr uint32_t SENDER_IPV4 = 0x0100007fu;
@@ -610,6 +612,123 @@ void test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne() {
               << "\n";
 }
 
+// A backend whose plug waits at a gate the test opens, and that lists the
+// serials a test marks lost while they are plugged, as the HIDMaestro watch does.
+class GatedPlugBackend : public IGamepadPort {
+  public:
+    void armGate() {
+        std::lock_guard<std::mutex> lk(m_);
+        armed_ = true;
+        entered_ = false;
+    }
+
+    bool waitUntilEntered() {
+        std::unique_lock<std::mutex> lk(m_);
+        return cv_.wait_for(lk, THREAD_TIMEOUT, [&] { return entered_; });
+    }
+
+    void openGate() {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            armed_ = false;
+        }
+        cv_.notify_all();
+    }
+
+    void markLost(uint32_t serial) { lost_[serial].store(true); }
+
+    int unplugsOf(uint32_t serial) const { return unplugs_[serial].load(); }
+
+    bool ensureBusOpen() override {
+        busOpen_.store(true);
+        return true;
+    }
+
+    void closeBus() override { busOpen_.store(false); }
+
+    bool isBusOpen() const override { return busOpen_.load(); }
+
+    bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
+        return pluginDevicePreferring(serial, identity, std::string());
+    }
+
+    bool pluginDevicePreferring(uint32_t serial, GamepadIdentity, const std::string&) override {
+        passGate();
+        plugged_[serial].store(true);
+        return true;
+    }
+
+    bool unplugDevice(uint32_t serial) override {
+        plugged_[serial].store(false);
+        lost_[serial].store(false);
+        unplugs_[serial]++;
+        return true;
+    }
+
+    bool isDevicePlugged(uint32_t serial) const override { return plugged_[serial].load(); }
+
+    bool submitReport(uint32_t serial, const GamepadReport&) override {
+        return isDevicePlugged(serial);
+    }
+
+    void setRumbleCallback(RumbleCallback) override {}
+
+    std::vector<uint32_t> lostSerials() const override {
+        std::vector<uint32_t> lost;
+        for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
+            if (lost_[serial].load() && plugged_[serial].load()) lost.push_back(serial);
+        }
+        return lost;
+    }
+
+  private:
+    void passGate() {
+        std::unique_lock<std::mutex> lk(m_);
+        if (!armed_) return;
+        entered_ = true;
+        cv_.notify_all();
+        cv_.wait(lk, [&] { return !armed_; });
+    }
+
+    std::mutex m_;
+    std::condition_variable cv_;
+    bool armed_ = false;
+    bool entered_ = false;
+    std::atomic<bool> busOpen_{false};
+    std::array<std::atomic<bool>, MAX_BACKEND_CONTROLLERS + 1> plugged_{};
+    std::array<std::atomic<bool>, MAX_BACKEND_CONTROLLERS + 1> lost_{};
+    std::array<std::atomic<int>, MAX_BACKEND_CONTROLLERS + 1> unplugs_{};
+};
+
+void test_aLostPadWaitsOutATopologyChangeInFlight() {
+    TEST("topology: a tick that finds another topology change holding the lock returns at once "
+         "and leaves a lost pad to a later tick, which vacates it");
+    GatedPlugBackend backend;
+    SilentClient client;
+    SilentLog log;
+    SessionService svc(backend, client, log);
+    EXPECT(put(svc, "dishA", {padAt(0)}).ok);
+    const uint32_t lost = svc.getConnectionsSnapshot().connections[0].controllers[0].serial;
+
+    backend.armGate();
+    std::thread plugging([&] { put(svc, "dishB", {padAt(0)}); });
+    const bool entered = backend.waitUntilEntered();
+    backend.markLost(lost);
+    std::future<void> tick = std::async(std::launch::async, [&] { svc.recheckDrivers(); });
+    const bool returned = tick.wait_for(HELD_LOCK_TICK_LIMIT) == std::future_status::ready;
+    const int unplugsWhileHeld = backend.unplugsOf(lost);
+    backend.openGate();
+    tick.wait();
+    plugging.join();
+    svc.recheckDrivers();
+
+    EXPECT(entered);
+    EXPECT(returned);
+    EXPECT_EQ(unplugsWhileHeld, 0);
+    EXPECT_EQ(backend.unplugsOf(lost), 1);
+    EXPECT_EQ(svc.totalActiveControllers(), 1);
+}
+
 } // namespace
 
 int main() {
@@ -617,6 +736,7 @@ int main() {
     test_coldDispatchNeverWaitsBehindAnotherSessionsPlug();
     test_padKeepsSubmittingThroughItsSessionsControllerPlug();
     test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne();
+    test_aLostPadWaitsOutATopologyChangeInFlight();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

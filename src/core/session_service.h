@@ -225,6 +225,9 @@ class SessionService {
             bool active;
             // Adapter truth, not inferred from serial > 0.
             bool pluggedIn;
+            // The host's user has the virtual device disabled: the backend
+            // writes nothing to it, and the slot is kept for when it is enabled.
+            bool disabled;
             uint8_t controllerType;
             uint8_t touchpadMode;
             // level/status unspecified until batteryKnown.
@@ -295,7 +298,11 @@ class SessionService {
     // reporting (IGamepadPort::refreshIdleInput).
     void refreshIdleInput();
 
-    // The same tick: IGamepadPort::recheckDrivers.
+    // The same tick: IGamepadPort::recheckDrivers, then a topology change for
+    // the pads whose virtual device the backend lost (IGamepadPort::
+    // lostSerials): each is unplugged and its slot vacated, so its client's
+    // reconcile loop plugs it again. Like the reaper it takes the topology lock
+    // with try_lock, and a tick that finds it held leaves them to the next.
     void recheckDrivers();
 
     bool isBackendAvailable() const;
@@ -523,6 +530,8 @@ class SessionService {
     void removePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
     void bindPadLocked(Connection& conn, Controller& ctrl, const PadChange& pad);
     void vacatePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
+    void vacateLostPads(const std::vector<uint32_t>& lost);
+    void vacateLostPadLocked(uint32_t serial, std::vector<RetiredSerial>& retired);
     void takeDescriptorLocked(Controller& ctrl, const ControllerDescriptor& desc);
     bool allocateWaitingLocked(TopologyChange& change);
     ControllerApplyResult applyResultLocked(const Connection& conn, const PadChange& pad) const;

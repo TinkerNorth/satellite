@@ -1252,6 +1252,11 @@ satellite_add_pure_test(test_hidmaestro_report tests/test_hidmaestro_report.cpp
 # own reader's, to the pinned SDK's.
 satellite_add_pure_test(test_hidmaestro_version tests/test_hidmaestro_version.cpp)
 
+# The helper's device watch block, and the policy that holds a pad Windows has
+# disabled and gives up one it has lost. The helper's own test holds its writer
+# to this header's constants.
+satellite_add_pure_test(test_hidmaestro_device_watch tests/test_hidmaestro_device_watch.cpp)
+
 # The controller-audio rings between the helper and satellite. Same rule as the
 # driver's rings: no version field, so the suite pins the SIZES and the seqlock
 # protocol the C# producer on the other side reimplements.

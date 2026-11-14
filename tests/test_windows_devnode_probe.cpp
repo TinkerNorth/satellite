@@ -359,6 +359,32 @@ std::vector<std::string> actionsFor(const std::vector<Event>& events, int regist
     return actions;
 }
 
+bool includes(const std::vector<std::string>& actions, const std::string& action) {
+    return std::find(actions.begin(), actions.end(), action) != actions.end();
+}
+
+// The first child of a devnode by CM_Get_Child, named by CM_Get_Device_ID,
+// the walk the helper takes from a pad's parent to its HID child.
+struct ChildWalk {
+    CONFIGRET found = CR_FAILURE;
+    std::wstring instanceId;
+};
+
+ChildWalk firstChildOf(const std::wstring& parentId) {
+    ChildWalk walk;
+    DEVINST parent = 0;
+    std::wstring id = parentId;
+    walk.found = CM_Locate_DevNodeW(&parent, id.data(), CM_LOCATE_DEVNODE_NORMAL);
+    if (walk.found != CR_SUCCESS) return walk;
+    DEVINST child = 0;
+    walk.found = CM_Get_Child(&child, parent, 0);
+    if (walk.found != CR_SUCCESS) return walk;
+    wchar_t name[MAX_DEVICE_ID_LEN] = {};
+    walk.found = CM_Get_Device_IDW(child, name, MAX_DEVICE_ID_LEN, 0);
+    walk.instanceId = name;
+    return walk;
+}
+
 std::string joined(const std::vector<std::string>& actions) {
     if (actions.empty()) return "nothing";
     std::string out;
@@ -413,16 +439,28 @@ void probeDisable(Probe& p) {
         p.parent.instanceId, [](const NodeState& s) { return s.hasProblem(CM_PROB_DISABLED); });
     std::this_thread::sleep_for(SETTLE);
     const NodeState child = readNode(p.child.instanceId);
+    const ChildWalk walk = firstChildOf(p.parent.instanceId);
     std::cout << "probe: disabled parent: " << describe(parent)
-              << "; its child: " << describe(child) << "\n";
-    reportEvents("disable", p, p.recorder.since(mark));
+              << "; its child: " << describe(child) << "; CM_Get_Child returned " << walk.found
+              << "\n";
+    const std::vector<Event> events = p.recorder.since(mark);
+    reportEvents("disable", p, events);
 
     TEST("probe: Device Manager's disable leaves the parent in the tree, found by a normal "
          "CM_Locate_DevNode, flagged DN_HAS_PROBLEM with CM_PROB_DISABLED (22)");
     EXPECT(viaDeviceManager);
     EXPECT(parent.hasProblem(CM_PROB_DISABLED));
-    TEST("probe: a disabled parent's child leaves the tree with it");
+    TEST("probe: a disabled parent's child leaves the tree with it, and the parent has no child "
+         "to walk to");
     EXPECT(!child.present());
+    EXPECT_EQ(walk.found, static_cast<CONFIGRET>(CR_NO_SUCH_DEVNODE));
+    TEST("probe: SPEC 6.1: a disable sends no DEVICEINSTANCEREMOVED for the disabled devnode, "
+         "which stays present, on its own registration or an all-devices one");
+    EXPECT(!includes(actionsFor(events, PARENT, p.parent.instanceId), "REMOVED"));
+    EXPECT(!includes(actionsFor(events, ALL_DEVICES, p.parent.instanceId), "REMOVED"));
+    TEST("probe: SPEC 6.1: the child, which does leave the tree, gets DEVICEINSTANCEREMOVED on "
+         "its own registration");
+    EXPECT(includes(actionsFor(events, CHILD, p.child.instanceId), "REMOVED"));
 }
 
 void probeEnable(Probe& p) {
@@ -435,7 +473,13 @@ void probeEnable(Probe& p) {
     std::this_thread::sleep_for(SETTLE);
     std::cout << "probe: enabled parent: " << describe(parent) << "; its child: " << describe(child)
               << "\n";
-    reportEvents("enable", p, p.recorder.since(mark));
+    const std::vector<Event> events = p.recorder.since(mark);
+    reportEvents("enable", p, events);
+    TEST("probe: enabling the parent sends DEVICEINSTANCESTARTED on its own registration");
+    EXPECT(includes(actionsFor(events, PARENT, p.parent.instanceId), "STARTED"));
+    TEST("probe: SPEC 6.2: the child's registration, made before it left with its parent, sees "
+         "it start again");
+    EXPECT(includes(actionsFor(events, CHILD, p.child.instanceId), "STARTED"));
 
     TEST("probe: enabling the parent the same way starts it again, and its child comes back "
          "started under the same instance id");
@@ -451,7 +495,8 @@ void probeLeaveAndReturn(Probe& p) {
         waitForNode(p.child.instanceId, [](const NodeState& s) { return !s.present(); });
     std::this_thread::sleep_for(SETTLE);
     std::cout << "probe: closed child: " << describe(gone) << "\n";
-    reportEvents("child removed", p, p.recorder.since(mark));
+    const std::vector<Event> removal = p.recorder.since(mark);
+    reportEvents("child removed", p, removal);
 
     registerFor(p.api, p.onChildAgain, instanceFilter(p.child.instanceId));
     std::cout << "probe: a new registration for the absent child's id returned CONFIGRET "
@@ -474,6 +519,49 @@ void probeLeaveAndReturn(Probe& p) {
     TEST("probe: the same instance id can be created again and starts");
     EXPECT(recreated);
     EXPECT(returned.started());
+    TEST("probe: SPEC 6.2: a registration for an id that has no devnode is refused");
+    EXPECT(p.onChildAgain.result != CR_SUCCESS);
+    TEST("probe: SPEC 6.2: the child's first registration sees its removal and then the device "
+         "made again under the same id");
+    EXPECT(includes(actionsFor(removal, CHILD, p.child.instanceId), "REMOVED"));
+    EXPECT(includes(actionsFor(events, CHILD, p.child.instanceId), "STARTED"));
+}
+
+// The CM call the helper's selftest disables a pad with, beside Device
+// Manager's DIF_PROPERTYCHANGE.
+void probeDisableThroughCm(Probe& p) {
+    DEVINST node = 0;
+    std::wstring id = p.parent.instanceId;
+    const CONFIGRET located = CM_Locate_DevNodeW(&node, id.data(), CM_LOCATE_DEVNODE_NORMAL);
+    const CONFIGRET disabled = CM_Disable_DevNode(node, CM_DISABLE_UI_NOT_OK);
+    const NodeState off = waitForNode(
+        p.parent.instanceId, [](const NodeState& s) { return s.hasProblem(CM_PROB_DISABLED); });
+    const CONFIGRET enabled = CM_Enable_DevNode(node, 0);
+    const NodeState parent =
+        waitForNode(p.parent.instanceId, [](const NodeState& s) { return s.started(); });
+    const NodeState child =
+        waitForNode(p.child.instanceId, [](const NodeState& s) { return s.started(); });
+    std::cout << "probe: CM_Disable_DevNode " << disabled << ": " << describe(off)
+              << "; CM_Enable_DevNode " << enabled << ": " << describe(parent) << "; child "
+              << describe(child) << "\n";
+
+    TEST("probe: CM_Disable_DevNode leaves the CM_PROB_DISABLED (22) Device Manager's disable "
+         "leaves, and CM_Enable_DevNode starts the parent and its child again");
+    EXPECT_EQ(located, static_cast<CONFIGRET>(CR_SUCCESS));
+    EXPECT_EQ(disabled, static_cast<CONFIGRET>(CR_SUCCESS));
+    EXPECT(off.hasProblem(CM_PROB_DISABLED));
+    EXPECT_EQ(enabled, static_cast<CONFIGRET>(CR_SUCCESS));
+    EXPECT(parent.started());
+    EXPECT(child.started());
+}
+
+void probeChildWalk(const Probe& p) {
+    const ChildWalk walk = firstChildOf(p.parent.instanceId);
+    std::cout << "probe: CM_Get_Child of the parent: " << walk.found << ", "
+              << narrow(walk.instanceId) << "\n";
+    TEST("probe: CM_Get_Child walks from the parent to its child, and CM_Get_Device_ID names it");
+    EXPECT_EQ(walk.found, static_cast<CONFIGRET>(CR_SUCCESS));
+    EXPECT(sameId(walk.instanceId, p.child.instanceId));
 }
 
 bool lowerToMediumIntegrity(HANDLE token) {
@@ -622,8 +710,10 @@ int runProbe(Probe& p) {
     EXPECT_EQ(p.onParent.result, static_cast<CONFIGRET>(CR_SUCCESS));
     EXPECT_EQ(p.onChild.result, static_cast<CONFIGRET>(CR_SUCCESS));
 
+    probeChildWalk(p);
     probeDisable(p);
     probeEnable(p);
+    probeDisableThroughCm(p);
     probeLeaveAndReturn(p);
     probeUnelevated(p);
     reportThreads(p);

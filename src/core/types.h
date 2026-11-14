@@ -484,6 +484,9 @@ struct RumbleReport {
 // partitioned host, never the mechanism that ends a held rumble.
 inline const uint16_t RUMBLE_WIRE_DURATION_MS = 500;
 inline const int RUMBLE_REFRESH_MS = 200;
+// The maintenance thread's tick (net/receiver.cpp), half the refresh so a held
+// level is re-sent within one refresh of falling due.
+inline const int MAINTENANCE_TICK_MS = RUMBLE_REFRESH_MS / 2;
 
 // DualSense adaptive-trigger effect blocks (game to controller, return path).
 // Each block is the raw 11-byte DS5 output-report field: mode byte + 10 param

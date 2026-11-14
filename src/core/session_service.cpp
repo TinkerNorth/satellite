@@ -1118,7 +1118,36 @@ void SessionService::refreshIdleInput() {
     if (pointer_.retryPending()) pointer_.post(PointerCommand{});
 }
 
-void SessionService::recheckDrivers() { backend_.recheckDrivers(); }
+void SessionService::recheckDrivers() {
+    backend_.recheckDrivers();
+    const std::vector<uint32_t> lost = backend_.lostSerials();
+    if (!lost.empty()) vacateLostPads(lost);
+}
+
+// The topology change for a pad the backend lost: commit and publish under the
+// state lock, then the unplug, settle and bus close of any teardown.
+void SessionService::vacateLostPads(const std::vector<uint32_t>& lost) {
+    std::unique_lock<TrackedMutex> topo(topoMtx_, std::try_to_lock);
+    if (!topo.owns_lock()) return;
+    std::vector<RetiredSerial> retired;
+    {
+        std::lock_guard<TrackedMutex> lk(mtx_);
+        for (const uint32_t serial : lost) vacateLostPadLocked(serial, retired);
+    }
+    if (!retired.empty()) finishTeardown(retired);
+}
+
+void SessionService::vacateLostPadLocked(uint32_t serial, std::vector<RetiredSerial>& retired) {
+    Connection* conn = nullptr;
+    Controller* ctrl = nullptr;
+    if (!findBySerialLocked(serial, conn, ctrl)) return;
+    log_.logMsg(LogLevel::WARN, "service",
+                "Controller #" + std::to_string(ctrl->index) + " of " + conn->deviceName +
+                    " lost its virtual device; Satellite unplugs it so " + conn->deviceName +
+                    " plugs it again");
+    vacatePadLocked(*conn, *ctrl, retired);
+    publishControllersLocked(*conn);
+}
 
 int SessionService::refreshRumble() {
     std::lock_guard<TrackedMutex> lk(mtx_);
@@ -1863,6 +1892,7 @@ SessionService::snapshotController(const Connection& conn, const Controller& ctr
     info.serial = ctrl.serialNo;
     info.active = true;
     info.pluggedIn = backend_.isDevicePlugged(ctrl.serialNo);
+    info.disabled = backend_.deviceDisabled(ctrl.serialNo);
     info.controllerType = ctrl.controllerType;
     info.touchpadMode = ctrl.touchpadMode;
     info.batteryLevel = BATTERY_LEVEL_UNKNOWN;

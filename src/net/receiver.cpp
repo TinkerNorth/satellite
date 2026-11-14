@@ -46,12 +46,11 @@ void reportUnknownTokenTraffic(satellite::UnknownTokenLog& unknownTokens) {
 }
 
 // Session maintenance off the hot path: the motor-state tick every
-// RUMBLE_REFRESH_MS / 2 (so a held level is re-sent within one refresh
-// interval of becoming due), the idle-input re-publish and the backend's driver
+// MAINTENANCE_TICK_MS, the idle-input re-publish and the backend's driver
 // recheck on the same tick, the reaper once a second.
 void maintenanceLoop(SessionService& svc) {
     ScopedThreadRole role(ThreadRole::Maintenance);
-    const int tickMs = RUMBLE_REFRESH_MS / 2;
+    const int tickMs = MAINTENANCE_TICK_MS;
     int sinceReapMs = 0;
     satellite::UnknownTokenLog unknownTokens;
     while (g_appRunning) {

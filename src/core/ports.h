@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstddef>
 #include <functional>
+#include <vector>
 
 // Virtual gamepad synthesis. Windows: ViGEmAdapter (ViGEmBus). Linux:
 // GamepadAdapter (/dev/uinput). macOS: MacHidGamepadAdapter (IOHIDUserDevice;
@@ -83,6 +84,18 @@ class IGamepadPort {
     // checked at plug, and holds or stops a pad that no longer passes. Default
     // no-op.
     virtual void recheckDrivers() {}
+
+    // After recheckDrivers, on the same tick: the serials whose virtual device
+    // the backend has lost for good, because the host removed it, it failed
+    // and stayed failed, or the process serving it died. The core unplugs each
+    // one and vacates its slot, so its client plugs the pad again. A serial
+    // stays listed until it is unplugged. Default: none.
+    virtual std::vector<uint32_t> lostSerials() const { return {}; }
+
+    // True while the host's user has the serial's virtual device disabled (in
+    // Windows' Device Manager): the backend writes nothing to it until it is
+    // enabled again, and the core keeps its slot. Any thread. Default false.
+    virtual bool deviceDisabled(uint32_t /*serial*/) const { return false; }
 
     // Rumble sink, invoked from a platform worker thread. Must stay callable
     // until the adapter is destroyed (SessionService outlives it).

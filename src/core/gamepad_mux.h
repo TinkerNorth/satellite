@@ -119,6 +119,18 @@ class GamepadMux : public IGamepadPort {
         for (IGamepadPort* p : ports_) p->recheckDrivers();
     }
 
+    // Only a serial's owner speaks for it, as for every other per-serial query.
+    std::vector<uint32_t> lostSerials() const override {
+        std::vector<uint32_t> lost;
+        for (IGamepadPort* p : ports_) appendOwnedBy(p, p->lostSerials(), lost);
+        return lost;
+    }
+
+    bool deviceDisabled(uint32_t serial) const override {
+        IGamepadPort* p = ownerOf(serial);
+        return p != nullptr && p->deviceDisabled(serial);
+    }
+
     bool submitBattery(uint32_t serial, const BatteryReport& report) override {
         IGamepadPort* p = ownerOf(serial);
         return p != nullptr && p->submitBattery(serial, report);
@@ -205,6 +217,13 @@ class GamepadMux : public IGamepadPort {
   private:
     static bool validSerial(uint32_t serial) {
         return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS;
+    }
+
+    void appendOwnedBy(const IGamepadPort* child, const std::vector<uint32_t>& serials,
+                       std::vector<uint32_t>& out) const {
+        for (const uint32_t serial : serials) {
+            if (ownerOf(serial) == child) out.push_back(serial);
+        }
     }
 
     std::atomic<IGamepadPort*>& owner(uint32_t serial) { return owners_[serial]; }
