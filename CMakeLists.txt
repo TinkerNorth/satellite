@@ -1942,6 +1942,16 @@ if(WIN32)
     add_test(NAME hidmaestro_helper_client COMMAND test_hidmaestro_helper_client)
 endif()
 
+# The Plug and Play behaviour the helper's device watch reads, probed with two
+# software devices and no HIDMaestro driver. It needs elevation: elsewhere it
+# skips, and on GitHub Actions a skip fails.
+if(WIN32)
+    satellite_add_pure_test(test_windows_devnode_probe tests/test_windows_devnode_probe.cpp)
+    target_compile_definitions(test_windows_devnode_probe PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries(test_windows_devnode_probe PRIVATE cfgmgr32 setupapi advapi32)
+    set_tests_properties(test_windows_devnode_probe PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 if(WIN32)
     add_executable(test_udp_receive
         tests/test_udp_receive.cpp
