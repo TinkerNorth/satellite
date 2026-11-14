@@ -110,6 +110,11 @@ class HidMaestroAdapter : public IGamepadPort {
     void setVersionDeadlineForTest(std::chrono::milliseconds deadline) {
         versionDeadline_ = deadline;
     }
+    satellite::hidmaestro::WriteGate gateForTest(uint32_t serial) const {
+        return io_[serial].gate.load();
+    }
+    std::atomic_flag& inputBusyForTest(uint32_t serial) { return io_[serial].inputBusy; }
+    std::atomic_flag& micBusyForTest(uint32_t serial) { return io_[serial].micBusy; }
 #endif
 
   private:
@@ -166,6 +171,10 @@ class HidMaestroAdapter : public IGamepadPort {
 
         uint8_t payload[satellite::hidmaestro::INPUT_DATA_CAPACITY]{};
         uint8_t gip[satellite::hidmaestro::INPUT_GIP_LENGTH]{};
+        // The SDK profile reaches XInput through an XUSB companion, as the
+        // helper read it off the profile: every frame then carries the
+        // companion's slice and rings its doorbell.
+        bool companion = false;
 
         // Global\HIDMaestroVersion<N>, read-only, and what it must hold for
         // this pad to be written. The plug's check fills the rest before the
@@ -175,14 +184,17 @@ class HidMaestroAdapter : public IGamepadPort {
         satellite::hidmaestro::VersionExpectation versionExpectation{};
         satellite::hidmaestro::SectionVersion loggedDriver{};
         std::chrono::steady_clock::time_point pendingSince{};
+        std::chrono::milliseconds halfDeadline{0};
+        bool versionReported = false;
 
         // Atomic so isDevicePlugged can read without data races; written under
         // busMtx_ (plugin/unplug).
         std::atomic<bool> plugged{false};
         std::atomic_flag inputBusy = ATOMIC_FLAG_INIT;
-        // What the version section allows, changed only while inputBusy is
-        // held: input is written while Open, held while the driver's half is
-        // still to come, and a Refused pad is inert both ways.
+        std::atomic_flag micBusy = ATOMIC_FLAG_INIT;
+        // What the version section allows, changed only while inputBusy and
+        // micBusy are both held: input is written while Open, held while the
+        // driver's half is still to come, and a Refused pad is inert both ways.
         std::atomic<satellite::hidmaestro::WriteGate> gate{satellite::hidmaestro::WriteGate::Open};
     };
 
@@ -245,9 +257,9 @@ class HidMaestroAdapter : public IGamepadPort {
     // Advance the Sony free-running clocks from wall time, pack the slot's
     // merged state for its identity, and publish the frame.
     bool packAndWrite(IoSlot& slot);
-    // The slot's merged state packed as its identity's report into slot.payload:
-    // the length, and whether the Xbox companion slice rides along.
-    uint16_t packFrame(IoSlot& slot, bool& withGip);
+    // The slot's merged state packed as its identity's report into slot.payload,
+    // and into slot.gip for a pad with an XUSB companion: the report's length.
+    uint16_t packFrame(IoSlot& slot);
     bool provisionSlot(uint32_t serial, GamepadIdentity identity, bool wantAudio,
                        satellite::hidmaestro::ProvisionResult& r);
     bool adoptProvisionedLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
@@ -266,12 +278,14 @@ class HidMaestroAdapter : public IGamepadPort {
 
     void recheckSlotLocked(uint32_t serial, IoSlot& slot,
                            std::chrono::steady_clock::time_point now);
+    bool changeGateLocked(IoSlot& slot, satellite::hidmaestro::WriteGate gate);
     void refuseSlotLocked(uint32_t serial, IoSlot& slot,
                           const satellite::hidmaestro::VersionCheck& check);
     void holdSlotLocked(uint32_t serial, IoSlot& slot);
-    void openSlotLocked(uint32_t serial, IoSlot& slot);
+    bool openSlotLocked(uint32_t serial, IoSlot& slot);
     void noteDriver(uint32_t serial, IoSlot& slot,
                     const satellite::hidmaestro::VersionCheck& check);
-    void logRefusal(uint32_t serial, const satellite::hidmaestro::VersionCheck& check,
+    void logRefusal(uint32_t serial, const IoSlot& slot,
+                    const satellite::hidmaestro::VersionCheck& check,
                     const char* consequence) const;
 };

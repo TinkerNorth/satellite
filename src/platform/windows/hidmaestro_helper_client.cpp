@@ -535,6 +535,18 @@ bool pipeClientIs(HANDLE pipe, HANDLE process) {
     return GetNamedPipeClientProcessId(pipe, &clientPid) && clientPid == GetProcessId(process);
 }
 
+// The helper duplicates every handle in its reply into this process, so a
+// reply the plug cannot use leaves them here to close.
+void closeDuplicatedHandles(ProvisionResult& out) {
+    for (uint64_t* handle :
+         {&out.inputSection, &out.inputEvent, &out.companionEvent, &out.outputSection,
+          &out.outputEvent, &out.versionSection, &out.speakerSection, &out.speakerEvent,
+          &out.micSection, &out.micEvent, &out.hapticSection, &out.hapticEvent}) {
+        if (*handle != 0) CloseHandle(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(*handle)));
+        *handle = 0;
+    }
+}
+
 } // namespace
 
 HANDLE HelperClient::launch(const std::wstring& pipeName) {
@@ -635,9 +647,13 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     out.outputSection = handleField("output");
     out.outputEvent = handleField("outputEvent");
     out.versionSection = handleField("version");
+    out.versionReported = j.contains("version");
     uint64_t identityTag = 0;
     out.identityTag = jsonTryU64(j, "identityTag", identityTag) ? identityTag : 0;
     out.usbip = jsonBool(j, "usbip");
+    out.companion = jsonBool(j, "companion");
+    double timeoutScale = 1.0;
+    out.timeoutScale = jsonTryNumber(j, "timeoutScale", timeoutScale) ? timeoutScale : 1.0;
 
     // Audio fields are absent on a plain profile and on a helper that predates
     // controller audio, so every one of them defaults to "no endpoint" rather
@@ -653,7 +669,10 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     out.micChannels = static_cast<int>(jsonInt(j, "micChannels", 0));
     out.micRateHz = static_cast<int>(jsonInt(j, "micRateHz", 0));
 
-    if (out.inputSection == 0 || out.inputEvent == 0) return false;
+    if (out.inputSection == 0 || out.inputEvent == 0) {
+        closeDuplicatedHandles(out);
+        return false;
+    }
     logMsg(LogLevel::INFO, "hidmaestro",
            "Serial " + std::to_string(serial) + " plugged as " + profile +
                " at HIDMaestro transport index " + std::to_string(out.transportIndex));

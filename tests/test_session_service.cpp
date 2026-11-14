@@ -3032,6 +3032,30 @@ struct MicPacketSource {
     }
 };
 
+static void test_micAudio_aPadThatReadsAsGoneIsNotAMissingMicrophone() {
+    TEST("mic audio: a pad its backend no longer counts as plugged (one it refused) drops the "
+         "audio without logging that the pad has no microphone endpoint");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    const uint32_t serial0 = serialOfSlot(svc, 0);
+    {
+        std::lock_guard<std::mutex> lk(vigem.pluggedMtx);
+        vigem.pluggedSet.erase(serial0);
+    }
+    vigem.submitMicAudioReturnVal = false;
+    MicPacketSource mic;
+    for (uint16_t seq = 0; seq < 3; seq++) {
+        const auto pkt = mic.next();
+        EXPECT(deliverMic(svc, r.token, 0, seq, pkt.data(), pkt.size()));
+    }
+    EXPECT(vigem.submitMicAudioCalls >= 1);
+    EXPECT_EQ(log.countContaining("no microphone endpoint"), 0);
+}
+
 static void test_micAudio_decodesRealPacketsToTheBackend() {
     TEST("mic audio: real Opus frames decode to 20 ms of PCM on the pad's mic endpoint");
     MockViGem vigem;
@@ -5583,6 +5607,7 @@ int main() {
     test_audioPolicy_micOffDropsWithAReason();
     test_audioPolicy_directionsAreIndependent();
     test_micAudio_decodesRealPacketsToTheBackend();
+    test_micAudio_aPadThatReadsAsGoneIsNotAMissingMicrophone();
     test_micAudio_withoutCodecAcceptsAndDrops();
     test_micAudio_gapConcealedAndReorderHealed();
     test_micAudio_streamsPastTheRateWindow();

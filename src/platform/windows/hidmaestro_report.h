@@ -65,22 +65,6 @@ inline bool identityHasAudioPersona(GamepadIdentity identity) {
            identity == GamepadIdentity::DualSenseEdge;
 }
 
-// HIDMaestro's XUSB companion serves the one persona that reaches XInput
-// through it (xbox-360-wired's "xinput":{"via":"xusbCompanion"}), and writes
-// its own pair of the version section.
-inline bool identityHasXusbCompanion(GamepadIdentity identity) {
-    switch (identity) {
-    case GamepadIdentity::Xbox:
-        return true;
-    case GamepadIdentity::DS4:
-    case GamepadIdentity::DualSense:
-    case GamepadIdentity::SwitchPro:
-    case GamepadIdentity::DualSenseEdge:
-        return false;
-    }
-    return false;
-}
-
 // The Sony personas: each has a touchpad surface, and each is read as a stream
 // (see refreshIdleInput).
 inline bool identityIsSonyPersona(GamepadIdentity identity) {
