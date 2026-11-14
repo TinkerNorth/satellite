@@ -1322,15 +1322,33 @@ name. `judgeVersionSection` then decides:
   unwritten companion pair neither holds nor refuses: the companion writes
   it only at its add, and the SDK's create restarts a companion that is
   already running without waiting for it.
-- A composite persona runs on the SDK's USB/IP device, which writes no
-  driver half, and the SDK writes no tag for it, so only the layout, the
-  SDK half and a zero tag are judged.
-- A driver release other than the pinned one that still serves 4 is
-  written, and the log says so once per change. The SDK runs on such a
-  driver itself, so refusing it would stop Satellite's pads whenever another
-  program installs a different HIDMaestro driver. 2.1.0 changed driver
-  behaviour without a protocol bump, so only the version tells releases
-  apart.
+- A composite persona (controller audio) runs on the SDK's USB/IP device,
+  which writes no driver half, and the SDK writes no tag for it, so only the
+  layout, the SDK half and a zero tag are judged. No HIDMaestro driver reads
+  a composite's input section: the SDK's own `UsbipEmulatedDevice`, inside
+  the helper, maps it (`UsbipEmulatedDevice.cs:323`) and reads it under the
+  seqlock (`TryReadInputFrame`, 582-638). The SDK half, which the same SDK
+  wrote, therefore speaks for the section's only reader. The missing tag
+  means the check cannot tell this controller's section from another's at
+  the same index; what covers that is that the section's one reader is the
+  device the helper created for this controller, so a frame reaches nothing
+  else.
+- A driver on a release `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES`
+  lists (`driver_pins.h`, 2.1.0 today) is written without comment. A release
+  it does not list that still serves 4 is written too, and the log names it
+  an unverified release once per change, and says so once when the pad is
+  back on a verified one. The SDK runs on such a driver itself, so refusing
+  it would stop Satellite's pads whenever another program installs a
+  different HIDMaestro driver. 2.1.0 changed driver behaviour without a
+  protocol bump, so only the version tells releases apart.
+
+A release joins the list once two things are done. First, its driver diff
+from a listed release has been reviewed for anything that touches the input
+or output sections, their seqlock, their events, `SeqNo` or the signal
+gate. Second, `satellite-hm-helper.exe selftest` has passed on hardware
+running it. The release of the driver the bundled SDK installs must be
+listed: `test_hidmaestro_version` holds `driver_pins.h`'s INF pin to the
+list, and check-sdk holds the INF the SDK embeds to it.
 
 A zero `DriverProtocol` means the driver's half is not written yet, which
 the SDK's create accepts when no HID child appeared within its own wait.
@@ -1339,9 +1357,12 @@ reaches the session, and the next recheck that finds the half written opens
 it and writes the state it was held with. A pad still held after
 `VERSION_HALF_DEADLINE_MS` is refused: 15 s, the SDK's own start budget (10 s
 for the HID child and 5 s for its start), times `HIDMAESTRO_TIMEOUT_SCALE`
-as the helper's SDK resolved it, which the helper reports at plug since it
-may run as a service with its own environment. A live pad whose half goes
-missing is held the same way.
+as the SDK resolves it in the helper's process. The helper may run as a
+service with its own environment, so it reads the variable itself with the
+SDK's rules (`SdkTimeoutScale`: an invariant-culture number within
+[0.1, 100], else 1) and reports the factor at plug. check-sdk holds that
+rule to the SDK's own `TimeoutScale.Factor`, which nothing else in the helper
+reflects into. A live pad whose half goes missing is held the same way.
 
 A refused plug is handed back before anything is written to the controller
 and fails like any other HIDMaestro plug: the mux tries the next backend
@@ -1364,6 +1385,15 @@ since every reader keeps its own cursor and maps its ring read-only. A
 refused pad reads as not plugged, which the dashboard shows as a failed
 controller, and the mic worker drops its audio without reporting a missing
 microphone endpoint. It keeps its controller until its unplug removes it.
+
+Nothing tells satellite.exe when a composite goes away on its own: a USB/IP
+connection that drops, or a device removed in Device Manager. The helper's
+pipe carries replies to satellite.exe's requests and nothing else. The SDK
+raises no public event for a removed device: its device-removed action and
+its USB/IP reattach hook are internal. And a composite's section has no
+driver half for the recheck to see go. Such a pad stays plugged and written
+until its unplug. A UMDF2 pad is caught only when the helper's own SDK
+sweeps its device away, which zeroes its `DriverProtocol`.
 
 ### Controller audio, and the one kernel driver
 

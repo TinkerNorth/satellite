@@ -143,15 +143,22 @@ the 90-day freshness window.
   its first frame and on every 100 ms maintenance tick after;
   `src/core/hidmaestro_version.h` restates the struct and the policy and
   `test_hidmaestro_version` pins both, and the helper's `IdentityTags`
-  restates the SDK's internal `DeviceIdentity` tag, so a bump diffs
-  `driver/hm_contract.h` and `DeviceIdentity.cs` too. `verify-helper-sdk.ps1`
+  restates the SDK's internal `DeviceIdentity` tag and `SdkTimeoutScale` its
+  `TimeoutScale` rule, so a bump diffs `driver/hm_contract.h`,
+  `DeviceIdentity.cs` and `TimeoutScale.cs` too. `verify-helper-sdk.ps1`
   runs `satellite-hm-helper.exe check-sdk`, which holds `IdentityTags` to the
   SDK's `DeviceIdentity` by reflection, the SDK version `SharedMemoryIO`
   writes into the section to `driver_pins.h`, the header's section size,
-  offsets, layout and protocols to `SharedMemoryIO`'s constants, and the
-  XUSB companion the helper reads off each profile to the SDK's own
-  resolution of it, finds the `TimeoutScale.Factor` the helper reports, and
-  fails when a reflection target is gone. The SDK's `InputAck`, `Signal` and remove events stay
+  offsets, layout and protocols to `SharedMemoryIO`'s constants, the XUSB
+  companion the helper reads off each profile to the SDK's own resolution of
+  it, the driver the SDK's embedded INF installs to the releases
+  `driver_pins.h` verifies, and `SdkTimeoutScale` to `TimeoutScale.Factor`
+  in child processes under each rule, and fails when a reflection target is
+  gone. A driver release joins `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES`
+  once its driver diff from a listed release has been reviewed for anything
+  that touches the input or output sections, their seqlock, their events,
+  `SeqNo` or the signal gate, and the helper's `selftest` has passed on
+  hardware running it. The SDK's `InputAck`, `Signal` and remove events stay
   unopened. The runtime driver itself deploys via the bundled
   `satellite-hm-helper.exe` from the hash-pinned release zip (see
   `redist/README.md`); we ship no driver code.
