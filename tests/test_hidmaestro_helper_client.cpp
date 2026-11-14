@@ -11,6 +11,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -41,7 +42,30 @@ const std::string PLUG_REPLY_WITHOUT_TRANSPORT_INDEX =
 const std::string PLUG_REPLY_WITH_VERSION =
     R"({"ok":true,"index":3,"transportIndex":7,"input":1001,"inputEvent":1002,"companionEvent":0,"output":1003,"outputEvent":1004,"version":1005,"identityTag":17467649568734746738,"usbip":true,"companion":true,"timeoutScale":2.5})";
 
+const std::string HELLO_REPLY_WATCHING =
+    R"({"ok":true,"helper":"test","audio":true,"broker":true,"protocol":2})";
+const std::string PLUG_REPLY_WITH_WATCH =
+    R"({"ok":true,"index":3,"transportIndex":7,"input":1001,"inputEvent":1002,"companionEvent":0,"output":1003,"outputEvent":1004,"version":1005,"identityTag":1,"usbip":true,"watch":1006})";
+
 bool isHello(const std::string& request) { return request.find("\"hello\"") != std::string::npos; }
+
+// The hello a fake helper was sent, written on its serving thread.
+class HeardHello {
+  public:
+    void hear(const std::string& request) {
+        std::lock_guard<std::mutex> lk(m_);
+        hello_ = request;
+    }
+
+    std::string hello() const {
+        std::lock_guard<std::mutex> lk(m_);
+        return hello_;
+    }
+
+  private:
+    mutable std::mutex m_;
+    std::string hello_;
+};
 
 // A section whose one handle the test hands to the client in a reply, as the
 // helper's duplicates arrive; alive() says whether any handle still holds it.
@@ -203,6 +227,19 @@ FakeHelper::Handler answersHelloThen(std::function<void(FakeHelper&)> reply) {
     };
 }
 
+// A helper on the device watch's protocol: it says so at hello, then answers a
+// plug with `reply`.
+FakeHelper::Handler watchingHelper(std::string reply, HeardHello* heard = nullptr) {
+    return [reply = std::move(reply), heard](FakeHelper& helper, const std::string& request) {
+        if (!isHello(request)) {
+            helper.write(reply + "\n");
+            return;
+        }
+        if (heard != nullptr) heard->hear(request);
+        helper.write(HELLO_REPLY_WATCHING + "\n");
+    };
+}
+
 FakeHelper::Handler silentAfterHello() {
     return answersHelloThen([](FakeHelper& helper) { helper.pause(60000); });
 }
@@ -359,6 +396,60 @@ static void test_a_reply_hands_over_the_version_section() {
         EXPECT_EQ(out.timeoutScale, 1.0);
         client.shutdown();
     }
+}
+
+static void test_the_hello_offers_the_device_watch() {
+    TEST("hello: satellite offers the device watch's protocol");
+    HeardHello heard;
+    FakeHelper fake(watchingHelper(OK_REPLY, &heard));
+    hm::HelperClient client;
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    EXPECT(heard.hello().find("\"protocol\":2") != std::string::npos);
+    client.shutdown();
+}
+
+static void test_a_plug_on_the_watch_protocol_hands_over_its_block() {
+    TEST("plug reply: on a session the helper settled on the watch's protocol, the plug's watch "
+         "block reaches the result");
+    {
+        FakeHelper fake(watchingHelper(PLUG_REPLY_WITH_WATCH));
+        hm::HelperClient client;
+        EXPECT(client.adoptChannelForTest(fake.connect()));
+        hm::ProvisionResult out;
+        EXPECT(client.provision(3, GamepadIdentity::DualSense, true, out));
+        EXPECT_EQ(out.watchSection, static_cast<uint64_t>(1006));
+        EXPECT(out.watchReported);
+        client.shutdown();
+    }
+
+    TEST("plug reply: a plug on that session that names no block reports none");
+    {
+        FakeHelper fake(watchingHelper(PLUG_REPLY));
+        hm::HelperClient client;
+        EXPECT(client.adoptChannelForTest(fake.connect()));
+        hm::ProvisionResult out;
+        EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
+        EXPECT_EQ(out.watchSection, static_cast<uint64_t>(0));
+        EXPECT(!out.watchReported);
+        client.shutdown();
+    }
+}
+
+static void test_a_helper_that_predates_the_watch_stays_on_the_base_protocol() {
+    TEST("plug reply: a helper that names no protocol at hello is on the base protocol, so no "
+         "watch block is taken from its plug, and one it sent anyway is closed");
+    const NamedSection stray(L"stray-watch");
+    const std::string reply = PLUG_REPLY.substr(0, PLUG_REPLY.size() - 1) + R"(,"watch":)" +
+                              std::to_string(stray.handleValue()) + "}";
+    FakeHelper fake(answersHelloThen([reply](FakeHelper& helper) { helper.write(reply + "\n"); }));
+    hm::HelperClient client;
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    hm::ProvisionResult out;
+    EXPECT(client.provision(3, GamepadIdentity::Xbox, false, out));
+    EXPECT_EQ(out.watchSection, static_cast<uint64_t>(0));
+    EXPECT(!out.watchReported);
+    EXPECT(!stray.alive());
+    client.shutdown();
 }
 
 static void test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces() {
@@ -862,6 +953,9 @@ int main() {
     test_a_reply_that_arrives_whole_costs_one_read();
     test_a_reply_names_where_the_frames_go();
     test_a_reply_hands_over_the_version_section();
+    test_the_hello_offers_the_device_watch();
+    test_a_plug_on_the_watch_protocol_hands_over_its_block();
+    test_a_helper_that_predates_the_watch_stays_on_the_base_protocol();
     test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces();
     test_a_carriage_return_before_the_line_feed_is_part_of_the_framing();
     test_a_reply_with_no_end_is_refused_at_the_size_limit();

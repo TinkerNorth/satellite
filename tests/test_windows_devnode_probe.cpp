@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
 #include <cwctype>
 #include <iostream>
 #include <mutex>
@@ -94,8 +93,9 @@ bool underWine() {
 }
 
 bool onGitHubActions() {
-    const char* value = std::getenv("GITHUB_ACTIONS");
-    return value != nullptr && std::string(value) == "true";
+    char value[8] = {};
+    const DWORD length = GetEnvironmentVariableA("GITHUB_ACTIONS", value, sizeof(value));
+    return length < sizeof(value) && std::string(value, length) == "true";
 }
 
 bool tokenElevated(HANDLE token) {
@@ -425,7 +425,8 @@ void reportThreads(const Probe& p) {
     std::cout << "probe: " << events.size() << " callbacks ran on " << threads.size()
               << " distinct thread(s); the registering thread ran " << (onMain ? "some" : "none")
               << "\n";
-    TEST("probe: a notification callback never runs on the thread that registered it");
+    TEST("probe: SPEC 6.3: notification callbacks run on threads of Windows' own, never the one "
+         "that registered them");
     EXPECT(!onMain);
     EXPECT(!events.empty());
 }
@@ -454,10 +455,10 @@ void probeDisable(Probe& p) {
          "to walk to");
     EXPECT(!child.present());
     EXPECT_EQ(walk.found, static_cast<CONFIGRET>(CR_NO_SUCH_DEVNODE));
-    TEST("probe: SPEC 6.1: a disable sends no DEVICEINSTANCEREMOVED for the disabled devnode, "
+    TEST("probe: SPEC 6.1: a disable sends no notification at all for the disabled devnode, "
          "which stays present, on its own registration or an all-devices one");
-    EXPECT(!includes(actionsFor(events, PARENT, p.parent.instanceId), "REMOVED"));
-    EXPECT(!includes(actionsFor(events, ALL_DEVICES, p.parent.instanceId), "REMOVED"));
+    EXPECT(actionsFor(events, PARENT, p.parent.instanceId).empty());
+    EXPECT(actionsFor(events, ALL_DEVICES, p.parent.instanceId).empty());
     TEST("probe: SPEC 6.1: the child, which does leave the tree, gets DEVICEINSTANCEREMOVED on "
          "its own registration");
     EXPECT(includes(actionsFor(events, CHILD, p.child.instanceId), "REMOVED"));
@@ -475,8 +476,10 @@ void probeEnable(Probe& p) {
               << "\n";
     const std::vector<Event> events = p.recorder.since(mark);
     reportEvents("enable", p, events);
-    TEST("probe: enabling the parent sends DEVICEINSTANCESTARTED on its own registration");
-    EXPECT(includes(actionsFor(events, PARENT, p.parent.instanceId), "STARTED"));
+    TEST("probe: enabling the parent sends DEVICEINSTANCEENUMERATED and then "
+         "DEVICEINSTANCESTARTED on its own registration");
+    EXPECT(actionsFor(events, PARENT, p.parent.instanceId) ==
+           std::vector<std::string>({"ENUMERATED", "STARTED"}));
     TEST("probe: SPEC 6.2: the child's registration, made before it left with its parent, sees "
          "it start again");
     EXPECT(includes(actionsFor(events, CHILD, p.child.instanceId), "STARTED"));
@@ -519,12 +522,29 @@ void probeLeaveAndReturn(Probe& p) {
     TEST("probe: the same instance id can be created again and starts");
     EXPECT(recreated);
     EXPECT(returned.started());
-    TEST("probe: SPEC 6.2: a registration for an id that has no devnode is refused");
-    EXPECT(p.onChildAgain.result != CR_SUCCESS);
+    TEST("probe: SPEC 6.2: a registration for the id of a device that has left, its record still "
+         "there, is accepted, and sees the device made again under that id");
+    EXPECT_EQ(p.onChildAgain.result, static_cast<CONFIGRET>(CR_SUCCESS));
+    EXPECT(includes(actionsFor(events, CHILD_AGAIN, p.child.instanceId), "STARTED"));
     TEST("probe: SPEC 6.2: the child's first registration sees its removal and then the device "
          "made again under the same id");
     EXPECT(includes(actionsFor(removal, CHILD, p.child.instanceId), "REMOVED"));
     EXPECT(includes(actionsFor(events, CHILD, p.child.instanceId), "STARTED"));
+}
+
+// HIDMaestro measured a registration refused "for an id with no devnode"
+// (DeviceManager.cs:719-724 at v2.1.0): an id Windows has never seen.
+void probeNeverSeen(Probe& p) {
+    Registration never{CHILD_AGAIN, &p.recorder};
+    const std::wstring id = std::wstring(L"SWD\\") + ENUMERATOR + L"\\never-" +
+                            std::to_wstring(GetCurrentProcessId()) + L"-" +
+                            std::to_wstring(GetTickCount64());
+    registerFor(p.api, never, instanceFilter(id));
+    std::cout << "probe: a registration for an id never seen returned CONFIGRET " << never.result
+              << "\n";
+    unregister(p.api, never);
+    TEST("probe: a registration for an id Windows has never seen is refused");
+    EXPECT(never.result != CR_SUCCESS);
 }
 
 // The CM call the helper's selftest disables a pad with, beside Device
@@ -643,14 +663,14 @@ void probeUnelevated(Probe& p) {
               << found.elevated << ", locate " << found.located << ", status " << found.statused
               << ", register " << found.registered << ", disable " << found.disabled << "\n";
 
-    TEST("probe: a filtered, medium-integrity token locates a devnode, reads its status and "
-         "registers for its notifications, and is refused a disable");
+    TEST("probe: SPEC 6.4: a filtered, medium-integrity token locates a devnode, reads its status "
+         "and registers for its notifications, and is refused a disable (CR_ACCESS_DENIED)");
     EXPECT(found.impersonated);
     EXPECT(!found.elevated);
     EXPECT_EQ(found.located, static_cast<CONFIGRET>(CR_SUCCESS));
     EXPECT_EQ(found.statused, static_cast<CONFIGRET>(CR_SUCCESS));
     EXPECT_EQ(found.registered, static_cast<CONFIGRET>(CR_SUCCESS));
-    EXPECT(found.disabled != CR_SUCCESS);
+    EXPECT_EQ(found.disabled, static_cast<CONFIGRET>(CR_ACCESS_DENIED));
 }
 
 void uninstallPhantom(const std::wstring& instanceId) {
@@ -715,6 +735,7 @@ int runProbe(Probe& p) {
     probeEnable(p);
     probeDisableThroughCm(p);
     probeLeaveAndReturn(p);
+    probeNeverSeen(p);
     probeUnelevated(p);
     reportThreads(p);
     return 0;

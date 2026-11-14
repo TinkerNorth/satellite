@@ -380,8 +380,8 @@ inline WatchNote noteLoss(uint32_t serial, const WatchTracker& now, const WatchP
                                     watchSeconds(policy.helperSilenceTicks) + consequence};
     case PadLoss::Device:
     case PadLoss::None:
-        return {LogLevel::WARN, watchSubject(serial, now) + " has been " +
-                                    conditionPhrase(now.condition, now.problem) + " for " +
+        return {LogLevel::WARN, watchSubject(serial, now) + " is still " +
+                                    conditionPhrase(now.condition, now.problem) + " after " +
                                     watchSeconds(policy.graceTicks) + consequence};
     }
     return {};

@@ -50,6 +50,13 @@ struct ProvisionResult {
     // the SDK's own start waits and so the adapter's wait for a driver half.
     double timeoutScale = 1.0;
 
+    // The pad's device watch block (core/hidmaestro_device_watch.h), read-only.
+    // A helper on the base protocol names none, and the pad is then never held
+    // or given up for its devices; watchReported says whether the reply named
+    // one at all.
+    uint64_t watchSection = 0;
+    bool watchReported = false;
+
     // Controller-audio rings (hidmaestro_audio_wire.h), present only for a
     // composite persona that actually materialized its USB-audio function.
     // Zero on every other profile, and on a composite whose helper could not

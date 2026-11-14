@@ -4,6 +4,7 @@
 #include "app/app_state.h"
 #include "core/driver_inf.h"
 #include "core/hex.h"
+#include "core/hidmaestro_device_watch.h"
 #include "core/json.h"
 #include "core/semver.h"
 #include "hidmaestro_report.h"
@@ -232,6 +233,8 @@ struct HelperChannel {
     HANDLE process = nullptr;
     std::string pending;
     std::vector<char> chunk;
+    // What the hello settled on; the base protocol hands over no watch blocks.
+    int32_t protocol = HELPER_PROTOCOL_BASE;
 };
 
 namespace {
@@ -305,13 +308,28 @@ bool roundTrip(HelperChannel& ch, const std::string& request, std::string& respo
     return readLine(ch, response, budget);
 }
 
+std::string helloRequest() {
+    return "{\"op\":\"hello\",\"protocol\":" + std::to_string(HELPER_PROTOCOL_OFFERED) + "}";
+}
+
+int32_t settledProtocol(const Json& hello) {
+    int64_t answered = 0;
+    const bool named = jsonTryI64(hello, "protocol", answered);
+    return settledHelperProtocol(named, answered);
+}
+
 bool handshake(HelperChannel& ch, DWORD waitMs, HANDLE cancel) {
     std::string response;
-    if (!roundTrip(ch, "{\"op\":\"hello\",\"protocol\":1}", response, waitMs, cancel)) {
-        return false;
-    }
+    if (!roundTrip(ch, helloRequest(), response, waitMs, cancel)) return false;
     Json j;
-    return jsonParse(response, j) && jsonBool(j, "ok");
+    if (!jsonParse(response, j) || !jsonBool(j, "ok")) return false;
+    ch.protocol = settledProtocol(j);
+    if (ch.protocol < HELPER_PROTOCOL_DEVICE_WATCH) {
+        logMsg(LogLevel::WARN, "hidmaestro",
+               "The HIDMaestro helper predates the device watch, so Satellite cannot tell when "
+               "Windows loses one of its controllers");
+    }
+    return true;
 }
 
 bool pauseUnlessCancelled(HANDLE cancel, DWORD ms) {
@@ -535,14 +553,18 @@ bool pipeClientIs(HANDLE pipe, HANDLE process) {
     return GetNamedPipeClientProcessId(pipe, &clientPid) && clientPid == GetProcessId(process);
 }
 
+void closeDuplicatedHandle(uint64_t handle) {
+    if (handle != 0) CloseHandle(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handle)));
+}
+
 // The helper duplicates every handle in its reply into this process, so a
 // reply the plug cannot use leaves them here to close.
 void closeDuplicatedHandles(ProvisionResult& out) {
-    for (uint64_t* handle :
-         {&out.inputSection, &out.inputEvent, &out.companionEvent, &out.outputSection,
-          &out.outputEvent, &out.versionSection, &out.speakerSection, &out.speakerEvent,
-          &out.micSection, &out.micEvent, &out.hapticSection, &out.hapticEvent}) {
-        if (*handle != 0) CloseHandle(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(*handle)));
+    for (uint64_t* handle : {&out.inputSection, &out.inputEvent, &out.companionEvent,
+                             &out.outputSection, &out.outputEvent, &out.versionSection,
+                             &out.speakerSection, &out.speakerEvent, &out.micSection, &out.micEvent,
+                             &out.hapticSection, &out.hapticEvent, &out.watchSection}) {
+        closeDuplicatedHandle(*handle);
         *handle = 0;
     }
 }
@@ -654,6 +676,14 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     out.companion = jsonBool(j, "companion");
     double timeoutScale = 1.0;
     out.timeoutScale = jsonTryNumber(j, "timeoutScale", timeoutScale) ? timeoutScale : 1.0;
+
+    // Only a session the hello settled on the watch's protocol takes a block; a
+    // handle a helper sent outside it is this process's to close.
+    const bool watches = channel_->protocol >= HELPER_PROTOCOL_DEVICE_WATCH;
+    const uint64_t watch = handleField("watch");
+    out.watchSection = watches ? watch : 0;
+    out.watchReported = watches && j.contains("watch");
+    if (!watches) closeDuplicatedHandle(watch);
 
     // Audio fields are absent on a plain profile and on a helper that predates
     // controller audio, so every one of them defaults to "no endpoint" rather
