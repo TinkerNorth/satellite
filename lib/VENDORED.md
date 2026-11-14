@@ -154,7 +154,18 @@ the 90-day freshness window.
   it, the driver the SDK's embedded INF installs to the releases
   `driver_pins.h` verifies, and `SdkTimeoutScale` to `TimeoutScale.Factor`
   in child processes under each rule, and fails when a reflection target is
-  gone. A driver release joins `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES`
+  gone. The device watch restates how the SDK names every devnode a
+  controller owns, names the SDK hands out nowhere (helper `DevnodeIds`): the
+  parent under `ROOT\HIDClass` or the profile's `ROOT\VID_xxxx&PID_yyyy&IG_00`
+  enumerator, the XUSB companion `SWD\HIDMAESTRO\<token>`, and a composite's
+  USB device under the serial `HM` + the token's low 48 bits
+  (`DeviceIdentity.SyntheticSerial`), the one a persona without its own
+  serial is served. check-sdk holds each to the SDK's create plan
+  (`PresentationPlan.Of`), its software enumerator and `SyntheticSerial` for
+  every profile Satellite plugs, and `selftest` finds them on hardware, so a
+  bump diffs `PresentationPlan.cs`, `DeviceNodeCreator.cs`,
+  `DeviceOrchestrator.cs`, `DeviceIdentity.cs` and
+  `Usbip/UsbDescriptorSet.cs` too. A driver release joins `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES`
   once its driver diff from a listed release has been reviewed for anything
   that touches the input or output sections, their seqlock, their events,
   `SeqNo` or the signal gate, and the helper's `selftest` has passed on

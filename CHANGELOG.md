@@ -56,6 +56,37 @@ bar, audio), and shows as failed on the dashboard until its session lets it
 go. `satellite-hm-helper.exe selftest` now checks each controller's section
 against the installed driver.
 
+On Windows, Satellite now notices when a HIDMaestro controller's device goes
+away without Satellite asking: disabled, removed or crashed in Windows, or a
+controller-audio pad whose USB/IP connection dropped. Until now such a pad
+stayed plugged, took input that reached nothing, and was never replaced. The
+helper looks at each controller's devices twice a second, and Satellite reads
+what it found on every 100 ms tick.
+
+A controller disabled in Windows (Device Manager) stays disabled. Satellite
+writes it nothing, its microphone included, keeps it, and shows it as
+disabled in Windows on the dashboard and in the log; once Windows enables it
+again, Satellite writes it again with the latest input. Removing the pad in
+Dish and adding it again plugs a new controller, as before.
+
+A device that is gone or has failed gets time to come back: 15 seconds for a
+UMDF2 controller, the time HIDMaestro gives a device to start (stretched by
+`HIDMAESTRO_TIMEOUT_SCALE`), and 45 seconds for a controller-audio one, which
+usbip-win2 imports again 30 seconds after a drop. Input keeps going to it
+meanwhile, so a device that comes back carries on, and the log says when it
+went and when it is back. One that does not come back is unplugged, and its
+Dish plugs a new controller within a heartbeat, however often that happens.
+If the helper itself stops for 5 seconds, every controller it served is
+unplugged the same way.
+
+The watch needs a helper and a satellite.exe from this release, which agree
+on it in their hello (protocol 2). An older helper keeps the old behaviour,
+and the log says so once per connection; an older satellite.exe gets the
+replies it always got. `satellite-hm-helper.exe selftest` now disables,
+enables and removes a controller's devices and checks what the watch reports;
+`--composite` does the same for a controller-audio pad, installing
+HIDMaestro's USB/IP transport for it.
+
 A game's DualSense rumble now reaches the real controller without also
 turning its light bar off. Newer DualSense firmware rumble packets (the
 kind SDL games send) carry a mode flag in the same byte this decoder
