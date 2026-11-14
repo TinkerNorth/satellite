@@ -42,11 +42,10 @@ inline constexpr int32_t VERSION_LAYOUT = 1;
 // SDK_PROTOCOL, SharedMemoryIO.cs:216).
 inline constexpr int32_t SDK_PROTOCOL = 4;
 
-// A plug waits this long for a driver or companion half the create returned
-// without (the SDK accepts a zero DriverProtocol when no HID child appeared
-// within its own wait), and a pad whose half goes missing later gets as long.
-inline constexpr int VERSION_HALF_WAIT_MS = 3000;
-inline constexpr int VERSION_POLL_MS = 50;
+// The SDK's create returns without the driver half when no HID child appeared
+// within its own wait, so such a pad is plugged but held, nothing written to
+// it, until the half comes or this deadline passes.
+inline constexpr int VERSION_HALF_DEADLINE_MS = 15000;
 inline constexpr int VERSION_READ_ATTEMPTS = 4;
 
 // USHORT[4]: major, minor, patch, and a fourth field every v2.1.0 writer
@@ -139,6 +138,35 @@ enum class VersionVerdict : uint8_t {
     Unwritten,
 };
 
+// What a verdict does to a pad: its input is written while Open, held while
+// its driver's half is still to come, and a Refused pad is inert both ways.
+enum class WriteGate : uint8_t { Open, Held, Refused };
+
+inline WriteGate writeGateFor(VersionVerdict verdict) {
+    switch (verdict) {
+    case VersionVerdict::Write:
+    case VersionVerdict::WriteOtherDriver:
+        return WriteGate::Open;
+    case VersionVerdict::Pending:
+        return WriteGate::Held;
+    case VersionVerdict::NoSection:
+    case VersionVerdict::OtherLayout:
+    case VersionVerdict::OtherController:
+    case VersionVerdict::OtherSdk:
+    case VersionVerdict::DriverError:
+    case VersionVerdict::DriverProtocol:
+    case VersionVerdict::CompanionError:
+    case VersionVerdict::CompanionProtocol:
+    case VersionVerdict::Unwritten:
+        return WriteGate::Refused;
+    }
+    return WriteGate::Refused;
+}
+
+inline bool versionVerdictRefuses(VersionVerdict verdict) {
+    return writeGateFor(verdict) == WriteGate::Refused;
+}
+
 struct VersionCheck {
     VersionVerdict verdict = VersionVerdict::NoSection;
     VersionSection section;
@@ -228,26 +256,6 @@ inline VersionVerdict judgeCompanionHalf(const VersionSection& s) {
     if (s.companionProtocol == 0) return VersionVerdict::Pending;
     if (!serves) return VersionVerdict::CompanionProtocol;
     return VersionVerdict::Write;
-}
-
-inline bool versionVerdictRefuses(VersionVerdict verdict) {
-    switch (verdict) {
-    case VersionVerdict::Write:
-    case VersionVerdict::WriteOtherDriver:
-    case VersionVerdict::Pending:
-        return false;
-    case VersionVerdict::NoSection:
-    case VersionVerdict::OtherLayout:
-    case VersionVerdict::OtherController:
-    case VersionVerdict::OtherSdk:
-    case VersionVerdict::DriverError:
-    case VersionVerdict::DriverProtocol:
-    case VersionVerdict::CompanionError:
-    case VersionVerdict::CompanionProtocol:
-    case VersionVerdict::Unwritten:
-        return true;
-    }
-    return true;
 }
 
 inline VersionVerdict judgeDriverHalves(const VersionSection& s, const VersionExpectation& e) {

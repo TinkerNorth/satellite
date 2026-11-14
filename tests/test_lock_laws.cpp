@@ -721,10 +721,8 @@ void runMaintenance(SessionService& svc, const std::atomic<bool>& stop, ColdTall
         if (done || Clock::now() > deadline) return;
         svc.refreshRumble();
         svc.refreshIdleInput();
-        if (tick % REAP_EVERY == 0) {
-            tally.reaped += svc.reapTimedOut();
-            svc.recheckDrivers();
-        }
+        svc.recheckDrivers();
+        if (tick % REAP_EVERY == 0) tally.reaped += svc.reapTimedOut();
         std::this_thread::sleep_for(WORKER_TICK);
     }
 }

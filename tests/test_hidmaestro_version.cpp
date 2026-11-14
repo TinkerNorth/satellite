@@ -372,6 +372,25 @@ static void test_every_refusal_refuses() {
     }
 }
 
+static void test_a_verdict_opens_holds_or_refuses_the_pad() {
+    TEST("gate: a written verdict opens the pad's writes, a pending one holds them, a refusal "
+         "refuses the pad");
+    EXPECT(writeGateFor(VersionVerdict::Write) == WriteGate::Open);
+    EXPECT(writeGateFor(VersionVerdict::WriteOtherDriver) == WriteGate::Open);
+    EXPECT(writeGateFor(VersionVerdict::Pending) == WriteGate::Held);
+    for (VersionVerdict v :
+         {VersionVerdict::NoSection, VersionVerdict::OtherLayout, VersionVerdict::OtherController,
+          VersionVerdict::OtherSdk, VersionVerdict::DriverError, VersionVerdict::DriverProtocol,
+          VersionVerdict::CompanionError, VersionVerdict::CompanionProtocol,
+          VersionVerdict::Unwritten}) {
+        EXPECT(writeGateFor(v) == WriteGate::Refused);
+    }
+
+    TEST("gate: a held pad waits the SDK's own start budget, its 10 s wait for the HID child and "
+         "its 5 s wait for the start (DeviceOrchestrator.cs:1563, 1597), before it is refused");
+    EXPECT_EQ(VERSION_HALF_DEADLINE_MS, 10000 + 5000);
+}
+
 static void test_the_log_names_what_the_section_holds() {
     TEST("log: a section is described by what each writer put in it");
     EXPECT_EQ(describeVersionSection(parseVersionSection(PINNED_XBOX_IMAGE.data())),
@@ -424,6 +443,7 @@ int main() {
     test_the_xusb_companion_is_judged_on_a_companion_profile();
     test_a_composite_persona_has_no_driver_half();
     test_every_refusal_refuses();
+    test_a_verdict_opens_holds_or_refuses_the_pad();
     test_the_log_names_what_the_section_holds();
     test_the_helpers_reader_keeps_these_offsets();
 

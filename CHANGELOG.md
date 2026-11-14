@@ -39,18 +39,20 @@ Dish at protocol 3 can already pick it and gets an Edge whose back buttons
 stay up.
 
 On Windows, Satellite now reads a HIDMaestro controller's version section
-before it writes the controller, and again once a second. The section is
-where HIDMaestro's SDK, its driver and its Xbox companion each say what they
-speak. Satellite refuses the controller, removes it and logs why when the
-section was not written by the SDK Satellite ships, belongs to another
+before it writes the controller, and again ten times a second. The section
+is where HIDMaestro's SDK, its driver and its Xbox companion each say what
+they speak. Satellite refuses the controller, removes it and logs why when
+the section was not written by the SDK Satellite ships, belongs to another
 controller (another program's at the same index), or shows a driver or
-companion that failed its start or does not serve protocol 4. A plug whose
-driver has not written its half yet waits up to three seconds for it. A
-driver from another HIDMaestro release that still serves protocol 4 keeps
-working, and the log says once that it is not the pinned one. A controller
-refused after it was plugged gets no more input and shows as failed on the
-dashboard until its session lets it go. `satellite-hm-helper.exe selftest`
-now checks each controller's section against the installed driver.
+companion that failed its start or does not serve protocol 4. A controller
+whose driver has not written its half yet is plugged but gets no input
+until it has, for up to 15 seconds, the SDK's own start budget. A driver
+from another HIDMaestro release that still serves protocol 4 keeps working,
+and the log says once that it is not the pinned one. A controller refused
+after it was plugged gets no more input, passes nothing back (rumble, light
+bar, audio), and shows as failed on the dashboard until its session lets it
+go. `satellite-hm-helper.exe selftest` now checks each controller's section
+against the installed driver.
 
 A game's DualSense rumble now reaches the real controller without also
 turning its light bar off. Newer DualSense firmware rumble packets (the

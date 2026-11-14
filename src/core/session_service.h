@@ -295,7 +295,7 @@ class SessionService {
     // reporting (IGamepadPort::refreshIdleInput).
     void refreshIdleInput();
 
-    // Once a second, from the maintenance thread: IGamepadPort::recheckDrivers.
+    // The same tick: IGamepadPort::recheckDrivers.
     void recheckDrivers();
 
     bool isBackendAvailable() const;

@@ -107,7 +107,9 @@ class HidMaestroAdapter : public IGamepadPort {
     void setIdleReportIntervalForTest(std::chrono::milliseconds interval) {
         idleReportInterval_ = interval;
     }
-    void setVersionWaitForTest(std::chrono::milliseconds wait) { versionWait_ = wait; }
+    void setVersionDeadlineForTest(std::chrono::milliseconds deadline) {
+        versionDeadline_ = deadline;
+    }
 #endif
 
   private:
@@ -178,9 +180,10 @@ class HidMaestroAdapter : public IGamepadPort {
         // busMtx_ (plugin/unplug).
         std::atomic<bool> plugged{false};
         std::atomic_flag inputBusy = ATOMIC_FLAG_INIT;
-        // Set once, holding inputBusy, by a recheck the version section fails:
-        // every input write checks it under the same flag, so none follows.
-        std::atomic<bool> refused{false};
+        // What the version section allows, changed only while inputBusy is
+        // held: input is written while Open, held while the driver's half is
+        // still to come, and a Refused pad is inert both ways.
+        std::atomic<satellite::hidmaestro::WriteGate> gate{satellite::hidmaestro::WriteGate::Open};
     };
 
     satellite::hidmaestro::IHidMaestroProvisioner& provisioner_;
@@ -191,7 +194,7 @@ class HidMaestroAdapter : public IGamepadPort {
     mutable TrackedMutex busMtx_{"hidmaestro.bus"};
     std::atomic<bool> busOpen_{false};
     std::chrono::milliseconds idleReportInterval_{SONY_IDLE_REPORT_MS};
-    std::chrono::milliseconds versionWait_{satellite::hidmaestro::VERSION_HALF_WAIT_MS};
+    std::chrono::milliseconds versionDeadline_{satellite::hidmaestro::VERSION_HALF_DEADLINE_MS};
 
     std::array<IoSlot, MAX_BACKEND_CONTROLLERS + 1> io_;
 
@@ -253,18 +256,20 @@ class HidMaestroAdapter : public IGamepadPort {
 
     // The plug's steps around the version check: adopt the helper's handles,
     // check the version section before the first write, then publish the pad
-    // or hand the controller back.
+    // (open, or held) or hand the controller back.
     bool adoptSlot(uint32_t serial, GamepadIdentity identity,
                    const satellite::hidmaestro::ProvisionResult& r);
     bool admitSlot(uint32_t serial);
     bool publishSlot(uint32_t serial);
     void discardSlot(uint32_t serial);
-    satellite::hidmaestro::VersionCheck awaitVersionCheck(const IoSlot& slot) const;
+    bool deliversFrom(uint32_t serial) const;
 
     void recheckSlotLocked(uint32_t serial, IoSlot& slot,
                            std::chrono::steady_clock::time_point now);
     void refuseSlotLocked(uint32_t serial, IoSlot& slot,
                           const satellite::hidmaestro::VersionCheck& check);
+    void holdSlotLocked(uint32_t serial, IoSlot& slot);
+    void openSlotLocked(uint32_t serial, IoSlot& slot);
     void noteDriver(uint32_t serial, IoSlot& slot,
                     const satellite::hidmaestro::VersionCheck& check);
     void logRefusal(uint32_t serial, const satellite::hidmaestro::VersionCheck& check,

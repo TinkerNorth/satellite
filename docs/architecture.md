@@ -377,9 +377,9 @@ own").
 ### Reaper
 
 Runs once per second via `svc.reapTimedOut()`. Teardown logic is
-inside SessionService, not in the receiver. The same tick runs
-`svc.recheckDrivers()`, which lets a backend read again what it checked at
-plug (see "The version contract").
+inside SessionService, not in the receiver. Every 100 ms tick of the same
+thread also runs `svc.recheckDrivers()`, which lets a backend read again
+what it checked at plug (see "The version contract").
 
 ## HTTP Threads (Inbound HTTP Adapters)
 
@@ -995,8 +995,8 @@ rules, and the macOS adapter keeps the first and the last:
    spin that yields, since the only possible holder is the idle tick, for
    one pack and write; `refreshIdleInput` tries once and leaves a busy
    slot to the next tick. Nothing else takes the flag but a driver
-   recheck that refuses the pad, once, and it is never held across a
-   blocking call. The input section's seqlock has a single
+   recheck that holds, opens or refuses the pad, and it is never held
+   across a blocking call. The input section's seqlock has a single
    writer by design, and two writers would publish frames that mix two
    reports under an even sequence number.
 4. The adapter-wide mutex still guards what it guarded before (the worker
@@ -1024,10 +1024,10 @@ overlap, because plugs never do (guarantee 1), which is what keeps the
 default-endpoint guard's window from opening between its check and its
 snapshot. A plug adopts the provisioned handles and views in one short hold
 of `busMtx_`, checks the version section without it (the slot is not
-published yet, and the check may wait for a driver half; see "The version
-contract"), then writes the neutral first frame, publishes `plugged` and
-starts the slot's workers in a second short hold; a refused adoption or
-check deprovisions after the lock is released. An unplug
+published yet; see "The version contract"), then writes the neutral first
+frame unless the check held the pad, publishes `plugged` and starts the
+slot's workers in a second short hold; a refused adoption or check
+deprovisions after the lock is released. An unplug
 clears `plugged`, stops the slot's workers (each join drops the lock) and
 unmaps the slot under `busMtx_`, then deprovisions without it.
 `refreshIdleInput` still holds `busMtx_` while it walks the slots, which
@@ -1312,10 +1312,7 @@ name. `judgeVersionSection` then decides:
   it, `IdentityTags`), and the SDK half the pinned SDK's: protocols 4 to 4
   and `driver_pins.h`'s SDK version.
 - The driver's error word must be 0, judged before its range, and 4 must lie
-  within `DriverProtocolMin` to `DriverProtocol`. A zero `DriverProtocol`
-  means the driver has not written its half yet, which the SDK's create
-  accepts when no HID child appeared within its own wait, so the plug waits
-  up to `VERSION_HALF_WAIT_MS` (3 s) for it and then refuses.
+  within `DriverProtocolMin` to `DriverProtocol`.
 - On xbox-360-wired the XUSB companion's pair is judged the same way.
 - A composite persona runs on the SDK's USB/IP device, which writes no
   driver half, and the SDK writes no tag for it, so only the layout, the
@@ -1327,19 +1324,30 @@ name. `judgeVersionSection` then decides:
   behaviour without a protocol bump, so only the version tells releases
   apart.
 
+A zero `DriverProtocol` (or companion protocol) means that half is not
+written yet, which the SDK's create accepts when no HID child appeared
+within its own wait. Such a pad is plugged but held: nothing is written to
+it, and the next recheck that finds the half written opens it and writes
+the state it was held with. A pad still held after `VERSION_HALF_DEADLINE_MS`
+(15 s, the SDK's own start budget: 10 s for the HID child and 5 s for its
+start, and three 5 s waits for the companion) is refused. A live pad whose
+half goes missing is held the same way.
+
 A refused plug is handed back before anything is written to the controller
 and fails like any other HIDMaestro plug: the mux tries the next backend
 that serves the type, and the apply result is `pluginFailed` when none does.
 One error line names the reason and what the section holds. Nothing signals
-a driver change, so the maintenance tick's `recheckDrivers` reads every
-plugged pad's section again once a second, under `busMtx_`. It gives a half
-that goes missing the same wait, and refuses a pad that no longer passes by
-setting its `refused` flag while it holds the pad's input flag. Every input
-write checks that flag under the input flag, so no frame follows the
-refusal; the mic ring stops too. The receive thread pays one relaxed load
-per frame for it. A refused pad reads as not plugged, which the dashboard
-shows as a failed controller, and keeps its controller until its unplug
-removes it.
+a driver change, so the maintenance thread's `recheckDrivers` reads every
+plugged pad's section again on each 100 ms tick, under `busMtx_`. Every gate
+change (open, held, refused) is made while the pad's input flag is held, and
+every input write checks the gate under that flag, so no frame follows a
+hold or a refusal; the mic ring stops too. The receive thread pays one
+relaxed load per frame for it. A refused pad is inert both ways: its output
+and audio workers deliver nothing more, since its rings may now be another
+controller's, and they consume nothing either, since every reader keeps its
+own cursor and maps its ring read-only. A refused pad reads as not plugged,
+which the dashboard shows as a failed controller, and keeps its controller
+until its unplug removes it.
 
 ### Controller audio, and the one kernel driver
 
