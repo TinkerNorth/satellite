@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.Text;
-using System.Text.Json;
+using System.Reflection;
 using HIDMaestro;
-using HIDMaestro.Internal;
 using Satellite.HmHelper.Core;
 
 namespace Satellite.HmHelper;
@@ -15,25 +13,39 @@ internal static class ProfileCommands
 
     public static int Export(string outDir, string catalogDir)
     {
-        Directory.CreateDirectory(outDir);
-        ProfileDatabase catalog = ProfileDatabase.LoadEmbedded();
-        foreach (string id in SatelliteProfiles.Copies)
-        {
-            string json = SatelliteProfiles.SourceOf(id) == CopySource.Sdk
-                ? SdkJson(catalog, id)
-                : File.ReadAllText(Path.Combine(catalogDir, SatelliteProfiles.CatalogFileName(id)));
-            string path = Path.Combine(outDir, SatelliteProfiles.FileName(id));
-            File.WriteAllText(path, SatelliteProfiles.Transform(json, id), new UTF8Encoding(false));
+        CheckCatalogIsEmbedded(catalogDir);
+        foreach (string path in SatelliteProfiles.Export(outDir, catalogDir))
             Console.WriteLine($"exported {path}");
-        }
         return 0;
     }
 
-    private static string SdkJson(ProfileDatabase catalog, string id)
+    private static void CheckCatalogIsEmbedded(string catalogDir)
     {
-        ControllerProfile profile = catalog.All.FirstOrDefault(p => p.Id == id)
-            ?? throw new InvalidOperationException($"the HIDMaestro catalog has no profile '{id}'");
-        return JsonSerializer.Serialize(profile, typeof(ControllerProfile), HMLayoutJsonOptions.Default);
+        Assembly sdk = typeof(HMContext).Assembly;
+        string[] resources = sdk.GetManifestResourceNames();
+        foreach (string id in SatelliteProfiles.Copies)
+            Console.WriteLine($"ok   {ConfirmEmbedded(sdk, resources, catalogDir, id)}");
+    }
+
+    private static string ConfirmEmbedded(Assembly sdk, string[] resources, string catalogDir, string catalogId)
+    {
+        string resource = CatalogIdentity.ResourceNameFor(resources, catalogId);
+        string file = Path.Combine(catalogDir, SatelliteProfiles.CatalogFileName(catalogId));
+        byte[] fileBytes = File.ReadAllBytes(file);
+        byte[] embedded = ResourceBytes(sdk, resource);
+        IReadOnlyList<string> keys = CatalogIdentity.DifferingKeys(fileBytes, embedded);
+        return keys.Count == 0
+            ? $"{file} is the profile HIDMaestro.Core.dll embeds as {resource}"
+            : throw new InvalidOperationException($"{file} is not the profile HIDMaestro.Core.dll embeds as {resource}: they differ at {string.Join(", ", keys)}");
+    }
+
+    private static byte[] ResourceBytes(Assembly sdk, string name)
+    {
+        using Stream stream = sdk.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException($"HIDMaestro.Core.dll lists {name} but does not open it");
+        using var bytes = new MemoryStream();
+        stream.CopyTo(bytes);
+        return bytes.ToArray();
     }
 
     public static int Check(string dir)

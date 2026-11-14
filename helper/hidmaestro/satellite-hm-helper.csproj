@@ -40,9 +40,11 @@
     <ProjectReference Include="..\hidmaestro-core\satellite-hm-helper-core.csproj" />
   </ItemGroup>
 
-  <!-- The published helper writes Satellite's stream-free copies of the Sony
-       catalog profiles beside itself from the SDK it was just built with, then
-       loads them back through that SDK; the installer ships the directory. -->
+  <!-- The published helper writes Satellite's copies of seven catalog profiles
+       beside itself, cut from the pinned catalog files fetch-redist.ps1 stages
+       once each is shown to be the profile the SDK embeds, then loads them
+       back through the SDK it was just built with; the installer ships the
+       directory. -->
   <Target Name="ExportSatelliteProfiles" AfterTargets="Publish">
     <PropertyGroup>
       <SatelliteHelperExe>$([MSBuild]::NormalizePath('$(PublishDir)', '$(AssemblyName).exe'))</SatelliteHelperExe>

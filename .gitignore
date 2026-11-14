@@ -116,4 +116,4 @@ Desktop.ini
 /helper/hidmaestro-core/obj/
 /helper/hidmaestro-core.tests/bin/
 /helper/hidmaestro-core.tests/obj/
-/redist/HIDMaestro-v*-switch-pro.json
+/redist/HIDMaestro-v*-*.json
