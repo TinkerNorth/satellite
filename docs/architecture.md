@@ -382,7 +382,7 @@ thread also runs `svc.recheckDrivers()`, which lets a backend read again
 what it checked at plug (see "The version contract"), and then vacates
 every pad the backend has lost for good (`IGamepadPort::lostSerials`, see
 "The device watch"), a topology change that takes `topoMtx_` with
-`try_lock` as the reaper does.
+`try_lock` as the reaper does and reads the list under it.
 
 ## HTTP Threads (Inbound HTTP Adapters)
 
@@ -972,9 +972,11 @@ adapters rely on them instead of locking against one another's calls:
    `submitRelativeMouse`, which is host-global, only from the pointer
    thread, which also carries out the maintenance tick's retries and the
    releases a topology change posts. None of them holds a service lock.
-   `refreshIdleInput`, `recheckDrivers` and `lostSerials` come from the
-   maintenance thread with no service lock held.
-   `isDevicePlugged`, `deviceDisabled`, `motionBackendOk`,
+   `refreshIdleInput` and `recheckDrivers` come from the maintenance thread
+   with no service lock held; `lostSerials` comes from it holding
+   `service.topology` alone, and `settledSerials` from any topology change
+   that plugs, before it takes `service.state`.
+   `isDevicePlugged`, `hostDisabled`, `motionBackendOk`,
    `backendIdForSerial`, `isBusOpen` and `supportsMotionForType` may come
    from any thread.
 
@@ -1039,7 +1041,7 @@ unmaps the slot under `busMtx_`, then deprovisions without it.
 keeps it off a slot an unplug or `closeBus` is unmapping, since both
 clear `plugged` under the same lock first; `recheckDrivers` walks them the
 same way, and advances each pad's device watch there. `lostSerials` and
-`deviceDisabled` read atomics the recheck writes, without the lock. The
+`hostDisabled` read atomics the recheck writes, without the lock. The
 input-section writers (`submitInput`, which `submitReport` forwards to, `submitMotion`,
 `submitTouchpad`, `submitBattery`, all through `packAndWrite`) take only
 the slot's flag; `submitMicAudioPcm` has a single writer, the mic worker,
@@ -1415,14 +1417,28 @@ that sweeps every controller. So the helper watches each pad's devnodes and
 writes what it finds into a block per pad, and satellite.exe's maintenance
 tick acts on it.
 
+**Presentations.** The SDK's create plan (`PresentationPlan`) decides how a
+controller presents itself to Windows, and the watch judges each
+presentation on its own:
+
+- the *HID game controller*, which every pad has: the parent and its HID
+  child, or a composite's USB device, its HID function and the HID
+  collection below that;
+- the *XInput device*, for a profile with an XUSB companion (xbox-360-wired):
+  the companion, a software device of its own that reads the input section
+  itself (its driver, HMXInput, opens it at start), so either of the two can
+  be disabled while the other takes input;
+- a composite's *USB-audio function*, which carries its microphone and
+  speaker and takes no input.
+
 **The block.** A session whose hello offers protocol 2 (`HelperProtocol`)
 gets, with every plug, a 64-byte block the helper duplicates `FILE_MAP_READ`
 alone (`core/hidmaestro_device_watch.h`, `DeviceWatchBlock`): the layout, a
-sequence the watcher writes the condition words under, a heartbeat, and the
-worst devnode's condition, role and problem code. A session that offers 1 is
-answered byte for byte as before, and an older helper names no protocol, so
-either skew keeps the old behaviour; satellite.exe logs the older helper
-once per connection.
+sequence, a heartbeat, which presentations the pad has, and for each the
+condition, devnode and problem code of the first of its devnodes that is not
+present. A session that offers 1 is answered byte for byte as before, and an
+older helper names no protocol, so either skew keeps the old behaviour;
+satellite.exe logs the older helper once per connection.
 
 **The devnodes.** The SDK names every devnode a controller owns from its
 identity's token, which `IdentityTags` already restates, and hands none of
@@ -1431,73 +1447,123 @@ the names out (`DevnodeIds`): the parent is `ROOT\HIDClass\<token>`, or
 which is `SWD\HIDMAESTRO\<token>`; a composite's USB device is
 `USB\VID_xxxx&PID_yyyy\HM<the token's last 12 hex digits>`, the synthetic
 serial the SDK serves a persona that has none. The HID collection is the
-parent's first child; a composite's is the child of its HID function, the
-USB device's child in the HIDClass setup class, so a disabled audio function
-is not the pad's. These are SDK internals, and check-sdk holds every one to
-the SDK's own create plan (`PresentationPlan.Of`), its software device
-enumerator and `DeviceIdentity.SyntheticSerial` for each profile Satellite
-plugs.
+parent's first child; a composite's is the child of its HID function, the USB
+device's child in the HIDClass setup class, and its audio function is the
+child in the MEDIA class. check-sdk holds what reflection reaches to the
+pinned SDK: the parent's enumerator in its create plan (`PresentationPlan.Of`),
+whether the plan makes a companion, the companion's `SWD\HIDMAESTRO\` prefix
+as `DeviceOrchestrator`'s IL spells it, and the synthetic serial
+(`DeviceIdentity.SyntheticSerial`), for each profile Satellite plugs. How the
+parent's id is put together (`ROOT\<enumerator>\<token>`, DeviceNodeCreator.cs)
+and that a parent's first child is its HID collection are restated, not
+checked; `selftest` finds both on hardware.
 
 **The watcher.** A thread looks at every pad every 500 ms:
 `CM_Locate_DevNode` and `CM_Get_DevNode_Status` find each devnode present
 (started, no problem), disabled (`CM_PROB_DISABLED`, 22, which Device
 Manager's disable and `CM_Disable_DevNode` both leave), missing, failed (any
-other problem), leaving (`DN_WILL_BE_REMOVED`) or not started. The block gets
-the first disabled one, since a disabled devnode's children leave the tree
-with it, else the first that is not present. It opens no device, since a
-handle would veto a removal and keep a failed UMDF stack from restarting. It
-polls rather than registers for notifications: Windows sends a disabled
-devnode no notification at all, only the children that leave with it, so
-disabling a HID collection or a companion, which have none, would raise
-nothing (`tests/test_windows_devnode_probe.cpp`, which also finds that a
-registration outlives its device leaving and returning and that callbacks
-run on Windows' own threads). A second thread beats the heartbeat every
-250 ms and makes no Plug and Play call, so a watcher stuck in one cannot
-pass for a dead helper.
+other problem), leaving (`DN_WILL_BE_REMOVED`) or not started, from the top
+of each presentation down, a disabled devnode's children leaving the tree
+with it. Every look is one write and moves the sequence, whether or not
+anything changed. It opens no device, since a handle would veto a removal
+and keep a failed UMDF stack from restarting. It polls rather than registers
+for notifications: Windows sends a disabled devnode no notification at all,
+only the children that leave with it, so disabling a HID collection or a
+companion, which have none, would raise nothing
+(`tests/test_windows_devnode_probe.cpp`, which also finds that a registration
+outlives its device leaving and returning and that callbacks run on Windows'
+own threads). A second thread beats the heartbeat every 250 ms and makes no
+Plug and Play call, so a watcher stuck in one cannot pass for a dead helper.
 
 **What satellite.exe does.** `recheckDrivers` advances each pad's watch once
-per maintenance tick beside its version section, and the write gate is the
-stricter of the two. It counts ticks, not clock time, so a machine that
-slept is not taken for a pad that went quiet.
+per maintenance tick beside its version section; the input's gate and the
+microphone's are each the stricter of the two. It counts ticks, not clock
+time, so a machine that slept is not taken for a pad that went quiet.
 
-- *Unwatched* until the block first shows every devnode present, or one
-  disabled. A pad never seen whole is never given up, and the log names it
-  once after 30 s.
-- *Disabled*: nothing is written to the pad, its mic included; it keeps its
-  slot, the dashboard shows it disabled, and once Windows enables and starts
-  the device again the state it was held with goes out as its first frame.
-  It is never re-created, since a new controller would undo the disable.
-- *Absent* (missing, failed, leaving or not started): frames keep going to
-  the section, which a restarted UMDF driver reopens by name and a
-  re-imported composite's pump reads, so a device that comes back carries
-  on from the latest state. The log says when it went and when it is back.
+- *Unwatched* until a look first finds an input presentation taking input,
+  or every one disabled. A pad never seen so is never given up for its
+  devices, and the log names it once after 30 s.
+- *Present* while any input presentation takes input. One disabled while the
+  other still serves, an Xbox pad's XInput device or its HID game controller,
+  is written on: the dashboard notes it ("XInput disabled in Windows") and the
+  log says so, and the pad is never held or given up for it. One gone or
+  failed while the other serves is logged, and not given up either.
+- *Disabled* when every input presentation is: nothing is written to the pad;
+  it keeps its slot, the dashboard shows it disabled, and once Windows enables
+  one again the state it was held with goes out as its first frame. It is
+  never re-created, since a new controller would undo the disable. A
+  composite's microphone follows its audio function alone: held while that is
+  disabled, whatever the input does, and written while it is enabled.
+- *Absent* when an input presentation is gone, failed, leaving or not
+  started and the rest are disabled or gone too (a disabled XInput device
+  beside a failed parent is a loss in the making): frames keep going to the
+  section, which a restarted UMDF driver reopens by name and a re-imported
+  composite's pump reads, so a device that comes back carries on from the
+  latest state. The log says when it went and when it is back.
 - *Lost*: absent for its whole grace, or its helper's heartbeat stopped for
   5 s after it had moved at least once. On UMDF2 the grace is the SDK's own
   budget for a device start, which Windows runs again when it restarts a
-  failed host: 15 s times `HIDMAESTRO_TIMEOUT_SCALE`. On USB/IP it is 45 s:
-  usbip-win2 imports a dropped device again 30 s after the drop, under the
-  same instance id, and HIDMaestro's own probe gives it 45 s to be back
+  failed host: 15 s, lengthened by a `HIDMAESTRO_TIMEOUT_SCALE` above 1 and
+  never shortened by one below. On USB/IP it is 45 s: usbip-win2 imports a
+  dropped device again 30 s after the drop, under the same instance id, and
+  HIDMaestro's own probe gives it 45 s to be back
   (`test/probes/coexist_check/SectionV.cs`). Within the grace Satellite does
   not race Windows to a second device.
 
-A lost pad is listed by `lostSerials`. The core vacates its slot (the epoch
-moves and its bit leaves the heartbeat ack) and unplugs it, which disposes
-the SDK's controller and, for a composite, cancels its reattach attempts.
-The client's reconcile loop then re-PUTs and plugs a fresh controller, with
-no cap on how often. A helper gone takes disabled pads too: with nothing
-watching, Satellite could not learn that Windows enabled one again, and the
-pad would stay held for good.
+A look older than 1.5 s, three of the watcher's periods, is stale: a watcher
+stuck in a call, its heartbeat still beating. Nothing ages and nothing changes
+on a stale look, so a stale absence is never aged into a loss and a stale
+presence is not taken for health; the log says so once, and again when the
+watcher looks again. A pad the version section refused mid-life is still
+watched, so Windows losing its device still vacates it, and the dashboard
+shows the refusal (failed) rather than what Windows disabled.
 
-`satellite-hm-helper.exe selftest`, run elevated with the driver, disables
-and enables each of a real controller's devnodes through the Configuration
-Manager, then removes its device, and checks the block each time;
-`--composite` does the same for a USB/IP persona and installs its transport.
-CI does not run it. Still to be seen on hardware: whether input resumes
-after a UMDF restart or a USB/IP re-import with no action from Satellite
-(the driver reopens its input section by name, and the composite's pump
-keeps reading it), how many times Windows restarts a failed UMDF host, and
+**Removing a lost pad.** The maintenance tick reads `lostSerials` under the
+topology lock it took with `try_lock`, so no PUT can free a lost serial and
+plug a fresh pad on it in between. The core vacates the slot (the epoch moves
+and its bit leaves the heartbeat ack) and unplugs it; the client's reconcile
+loop then re-PUTs and plugs a fresh controller, with no cap on how often. The
+adapter tells the helper client why it removes a pad (`hm::Teardown`):
+
+- one Windows lost while its helper lives waits 100 ms for the answer; one
+  that comes later is read ahead of the next request's, and the channel, and
+  every other pad on it, stays;
+- one whose helper stopped beating asks that helper nothing, and its channel
+  is let go (a spawned helper is ended), so the next plug reaches a new one;
+- one the client let go keeps the ten-second bound of any request.
+
+The helper answers every unplug at once and removes the controller on a
+thread of its own (`Disposals`; a plug of the same serial waits for it), since
+the SDK's removal can take many seconds: against a program that holds the pad
+open each removal query waits about 5.4 s before Windows refuses it, and a
+driver that does not answer adds 2 s (DeviceManager.cs). An unplug that stays
+unconfirmed quarantines its serial, as any does; the serial is freed again
+when the helper answers late, or when a new helper's first plug has swept
+what a dead one left, so repeated helper deaths do not shrink the pool while
+a ViGEm pad keeps the bus open.
+
+A helper gone takes disabled pads too: they are vacated and re-created, and
+the new controller starts enabled. This is Emir's decision: with nothing
+watching, Satellite could not learn that Windows enabled the old one again,
+and it would stay held for good.
+
+`satellite-hm-helper.exe selftest`, run elevated with the driver and every
+program that holds a game controller open closed (Steam with a PlayStation
+pad refuses removals), drives a real session as satellite.exe does: the hello
+on protocol 2, the plug that hands over the block, each presentation's
+devnodes disabled and enabled on its own, with the other input presentation
+still reading present, the device removed (a USB device may stay in the tree
+held for eject, Code 47, which the block shows as failed), and the unplug
+answered before the SDK has removed the controller. `--composite` does the
+same for a USB/IP persona, its audio function included, and installs its
+transport. CI does not run it. Still to be seen on hardware: whether input
+resumes after a UMDF restart or a USB/IP re-import with no action from
+Satellite (the driver reopens its input section by name, and the composite's
+pump keeps reading it), how many times Windows restarts a failed UMDF host,
 what disabling a composite's USB device does to its connection, whose time
-to come back `--composite` reports.
+to come back `--composite` reports, and whether a pad plugged again on a
+serial whose XUSB companion was disabled starts with it disabled (the SDK's
+`SwDeviceCreate` takes over a software device's old record).
 
 ### Controller audio, and the one kernel driver
 

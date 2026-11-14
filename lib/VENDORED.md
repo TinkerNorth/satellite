@@ -160,10 +160,16 @@ the 90-day freshness window.
   enumerator, the XUSB companion `SWD\HIDMAESTRO\<token>`, and a composite's
   USB device under the serial `HM` + the token's low 48 bits
   (`DeviceIdentity.SyntheticSerial`), the one a persona without its own
-  serial is served. check-sdk holds each to the SDK's create plan
-  (`PresentationPlan.Of`), its software enumerator and `SyntheticSerial` for
-  every profile Satellite plugs, and `selftest` finds them on hardware, so a
-  bump diffs `PresentationPlan.cs`, `DeviceNodeCreator.cs`,
+  serial is served, and a composite's HID and USB-audio functions by their
+  setup classes. check-sdk holds what reflection reaches, for every profile
+  Satellite plugs: the parent's enumerator in the SDK's create plan
+  (`PresentationPlan.Of`), whether the plan makes a companion, the companion's
+  `SWD\HIDMAESTRO\` prefix as an ldstr in `DeviceOrchestrator`'s IL (the id
+  is built from that literal), and `SyntheticSerial`. How the parent's id is
+  put together (`ROOT\<enumerator>\<token>`, DeviceNodeCreator.cs:130) and
+  that its first child is its HID collection are restated from the SDK and
+  Windows, not checked, and `selftest` finds every one on hardware. So a bump
+  diffs `PresentationPlan.cs`, `DeviceNodeCreator.cs`,
   `DeviceOrchestrator.cs`, `DeviceIdentity.cs` and
   `Usbip/UsbDescriptorSet.cs` too. A driver release joins `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES`
   once its driver diff from a listed release has been reviewed for anything

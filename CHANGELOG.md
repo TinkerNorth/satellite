@@ -63,30 +63,41 @@ stayed plugged, took input that reached nothing, and was never replaced. The
 helper looks at each controller's devices twice a second, and Satellite reads
 what it found on every 100 ms tick.
 
-A controller disabled in Windows (Device Manager) stays disabled. Satellite
-writes it nothing, its microphone included, keeps it, and shows it as
-disabled in Windows on the dashboard and in the log; once Windows enables it
-again, Satellite writes it again with the latest input. Removing the pad in
-Dish and adding it again plugs a new controller, as before.
+A controller disabled in Windows (Device Manager) stays disabled. When every
+part of it that takes input is disabled, Satellite writes it nothing, keeps
+it, and shows it as disabled in Windows on the dashboard and in the log; once
+Windows enables it again, Satellite writes it again with the latest input. An
+Xbox controller is two things to Windows, a HID game controller and an
+XInput device, and disabling one of them to drop a duplicate leaves the
+other working: Satellite writes on, and the dashboard notes which one is
+disabled ("XInput disabled in Windows"). A controller-audio pad's microphone
+follows its audio function alone. Removing the pad in Dish and adding it
+again plugs a new controller, as before.
 
 A device that is gone or has failed gets time to come back: 15 seconds for a
-UMDF2 controller, the time HIDMaestro gives a device to start (stretched by
-`HIDMAESTRO_TIMEOUT_SCALE`), and 45 seconds for a controller-audio one, which
-usbip-win2 imports again 30 seconds after a drop. Input keeps going to it
-meanwhile, so a device that comes back carries on, and the log says when it
-went and when it is back. One that does not come back is unplugged, and its
-Dish plugs a new controller a second or two later, however often that
-happens: every Dish re-sends its whole session for it, so its other pads stay
-plugged but pause for that round trip. If the helper itself stops for 5
-seconds, every controller it served is unplugged the same way.
+UMDF2 controller, the time HIDMaestro gives a device to start (lengthened by
+`HIDMAESTRO_TIMEOUT_SCALE`, never shortened), and 45 seconds for a
+controller-audio one, which usbip-win2 imports again 30 seconds after a drop.
+Input keeps going to it meanwhile, so a device that comes back carries on,
+and the log says when it went and when it is back. One that does not come
+back is unplugged, and its Dish plugs a new controller a second or two later,
+however often that happens: every Dish re-sends its whole session for it, so
+its other pads stay plugged but pause for that round trip. If the helper
+itself stops for 5 seconds, every controller it served is unplugged the same
+way, a disabled one too, and comes back enabled. Unplugging a lost controller
+never holds up the other controllers, even when Windows takes many seconds
+to remove it, and a helper that died now and again no longer uses up
+controller slots.
 
 The watch needs a helper and a satellite.exe from this release, which agree
 on it in their hello (protocol 2). An older helper keeps the old behaviour,
 and the log says so once per connection; an older satellite.exe gets the
-replies it always got. `satellite-hm-helper.exe selftest` now disables,
-enables and removes a controller's devices and checks what the watch reports;
-`--composite` does the same for a controller-audio pad, installing
-HIDMaestro's USB/IP transport for it.
+replies it always got. `satellite-hm-helper.exe selftest` now drives a real
+session, disables and enables each part of a controller's devices, removes
+them, and checks what the watch reports; `--composite` does the same for a
+controller-audio pad, installing HIDMaestro's USB/IP transport for it. Close
+any program that holds a controller open (Steam, with a PlayStation pad)
+before running it.
 
 A game's DualSense rumble now reaches the real controller without also
 turning its light bar off. Newer DualSense firmware rumble packets (the
