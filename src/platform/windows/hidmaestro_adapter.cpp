@@ -31,16 +31,17 @@ class InputClaim {
     std::atomic_flag& busy_;
 };
 
-// The SDK and the driver Satellite ships, as the version section carries them.
+// The SDK Satellite ships and the driver releases it has verified, as the
+// version section carries them.
 hm::VersionPins shippedPins() {
     return {hm::parseReleaseVersion(SATELLITE_HIDMAESTRO_SDK_VERSION),
-            hm::parseReleaseVersion(SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION)};
+            hm::parseReleaseList(SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES)};
 }
 
-hm::VersionExpectation expectationFor(const hm::ProvisionResult& r) {
+hm::VersionExpectation expectationFor(const hm::ProvisionResult& r, const hm::VersionPins& pins) {
     const hm::ProfileBackend backend =
         r.usbip ? hm::ProfileBackend::Usbip : hm::ProfileBackend::Umdf2;
-    return {shippedPins(), backend, r.companion, r.identityTag};
+    return {pins, backend, r.companion, r.identityTag};
 }
 
 std::string serialLabel(uint32_t serial) { return "Serial " + std::to_string(serial); }
@@ -49,7 +50,8 @@ std::string serialLabel(uint32_t serial) { return "Serial " + std::to_string(ser
 
 HidMaestroAdapter::HidMaestroAdapter(hm::IHidMaestroProvisioner& provisioner, ILogPort& log,
                                      AudioEnabledFn audioEnabled)
-    : provisioner_(provisioner), log_(log), audioEnabled_(std::move(audioEnabled)) {}
+    : provisioner_(provisioner), log_(log), audioEnabled_(std::move(audioEnabled)),
+      versionPins_(shippedPins()) {}
 
 HidMaestroAdapter::~HidMaestroAdapter() {
     closeBus();
@@ -189,8 +191,8 @@ void HidMaestroAdapter::attachVersionLocked(IoSlot& slot, const hm::ProvisionRes
         slot.versionView = static_cast<const uint8_t*>(
             MapViewOfFile(slot.versionSection, FILE_MAP_READ, 0, 0, hm::VERSION_SECTION_SIZE));
     }
-    slot.versionExpectation = expectationFor(r);
-    slot.loggedDriver = slot.versionExpectation.pins.driver;
+    slot.versionExpectation = expectationFor(r, versionPins_);
+    slot.loggedDriver = {};
     slot.halfDeadline = hm::scaleHalfDeadline(versionDeadline_, r.timeoutScale);
     slot.versionReported = r.versionReported;
 }
@@ -304,21 +306,22 @@ void HidMaestroAdapter::logRefusal(uint32_t serial, const IoSlot& slot,
                 serialLabel(serial) + " " + reason + "; " + consequence + facts);
 }
 
-// One line per change of the driver a pad runs on, counted from the pinned one.
+// One line per change of the unverified release a pad runs on, and one when
+// it is back on a verified one. loggedDriver holds the unverified release
+// last named, or nothing while the pad runs on verified ones: a change between
+// two verified releases says nothing.
 void HidMaestroAdapter::noteDriver(uint32_t serial, IoSlot& slot, const hm::VersionCheck& check) {
-    const bool other = check.verdict == hm::VersionVerdict::WriteOtherDriver;
-    const hm::SectionVersion pinned = slot.versionExpectation.pins.driver;
-    const hm::SectionVersion running = other ? check.section.driverVersion : pinned;
-    if (running == slot.loggedDriver) return;
-    slot.loggedDriver = running;
-    const std::string otherLine = serialLabel(serial) + " runs on HIDMaestro driver " +
-                                  hm::describeSectionVersion(running) + ", not the pinned " +
-                                  hm::describeSectionVersion(pinned) +
-                                  "; it serves protocol 4, so Satellite keeps writing it";
-    const std::string pinnedLine = serialLabel(serial) + " runs on the pinned HIDMaestro driver " +
-                                   hm::describeSectionVersion(pinned) + " again";
-    log_.logMsg(other ? LogLevel::WARN : LogLevel::INFO, "hidmaestro",
-                other ? otherLine : pinnedLine);
+    const bool unverified = check.verdict == hm::VersionVerdict::WriteUnverifiedDriver;
+    const hm::SectionVersion running = check.section.driverVersion;
+    const hm::SectionVersion noted = unverified ? running : hm::SectionVersion{};
+    if (noted == slot.loggedDriver) return;
+    slot.loggedDriver = noted;
+    const std::string release =
+        serialLabel(serial) + " runs on HIDMaestro driver " + hm::describeSectionVersion(running);
+    log_.logMsg(unverified ? LogLevel::WARN : LogLevel::INFO, "hidmaestro",
+                unverified ? release + ", a release Satellite has not verified; it serves "
+                                       "protocol 4, so Satellite keeps writing it"
+                           : release + ", a release Satellite has verified");
 }
 
 // Caller holds busMtx_. Every failure here degrades to "no audio on this pad"

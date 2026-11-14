@@ -5,6 +5,7 @@
 #include "../src/platform/windows/driver_pins.h"
 #include "hidmaestro_version_fixture.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -34,7 +35,20 @@ constexpr size_t TAG_OFFSET = 48;
 
 VersionPins shippedPins() {
     return {parseReleaseVersion(SATELLITE_HIDMAESTRO_SDK_VERSION),
-            parseReleaseVersion(SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION)};
+            parseReleaseList(SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES)};
+}
+
+// A Sony pad on a satellite that has verified 2.1.0 and 2.2.0, or none.
+VersionExpectation sonyPadVerifying(std::vector<SectionVersion> releases) {
+    return {{parseReleaseVersion(SATELLITE_HIDMAESTRO_SDK_VERSION), std::move(releases)},
+            ProfileBackend::Umdf2,
+            false,
+            HM_0000_TAG};
+}
+
+bool sameReleases(const std::vector<SectionVersion>& releases,
+                  const std::vector<SectionVersion>& expected) {
+    return releases == expected;
 }
 
 VersionExpectation xboxPad() { return {shippedPins(), ProfileBackend::Umdf2, true, HM_0000_TAG}; }
@@ -129,15 +143,29 @@ static void test_the_pins_are_driver_pins_h() {
     EXPECT(sameVersion(parseReleaseVersion("10.20.30"), 10, 20, 30, 0));
     EXPECT(sameVersion(parseReleaseVersion("2.x.0"), 2, 0, 0, 0));
 
-    TEST("pins: driver_pins.h's SDK is the SDK half the pinned SDK writes, and its driver INF "
-         "the driver half the pinned driver writes");
+    TEST("pins: driver_pins.h's SDK is the SDK half the pinned SDK writes");
     const VersionSection s = parseVersionSection(PINNED_XBOX_IMAGE.data());
     EXPECT(shippedPins().sdk == s.sdkVersion);
-    EXPECT(shippedPins().driver == s.driverVersion);
+
+    TEST("pins: the release the bundled driver's INF names is one driver_pins.h has verified, "
+         "and is the driver half that driver writes");
+    const SectionVersion bundled = parseReleaseVersion(SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION);
+    const std::vector<SectionVersion> verified = shippedPins().verifiedDrivers;
+    EXPECT(std::find(verified.begin(), verified.end(), bundled) != verified.end());
+    EXPECT(bundled == s.driverVersion);
+
+    TEST("pins: a release list reads each comma-separated release, spaces around it ignored");
+    EXPECT(sameReleases(parseReleaseList("2.1.0"), {{2, 1, 0, 0}}));
+    EXPECT(sameReleases(parseReleaseList("2.1.0, 2.2.0 ,3.0.12"),
+                        {{2, 1, 0, 0}, {2, 2, 0, 0}, {3, 0, 12, 0}}));
+
+    TEST("pins: an empty list, or an empty entry, names no release");
+    EXPECT(parseReleaseList("").empty());
+    EXPECT(sameReleases(parseReleaseList("2.1.0,, "), {{2, 1, 0, 0}}));
 }
 
 static void test_the_pinned_driver_is_written() {
-    TEST("policy: the pinned SDK on the pinned driver is written, companion and all");
+    TEST("policy: the pinned SDK on a verified driver release is written, companion and all");
     EXPECT_EQ(judge(PINNED_XBOX_IMAGE, xboxPad()), VersionVerdict::Write);
 
     TEST("policy: a pad without a companion is written without the companion's pair");
@@ -149,18 +177,42 @@ static void test_the_pinned_driver_is_written() {
     EXPECT_EQ(judge(stray, sonyPad()), VersionVerdict::Write);
 }
 
-static void test_another_driver_that_serves_4_is_written_with_a_warning() {
-    TEST("policy: a newer driver that still serves 4 is written, flagged as not the pinned one");
+static void test_an_unverified_driver_that_serves_4_is_written_with_a_warning() {
+    TEST("policy: a newer release the list does not name that still serves 4 is written, "
+         "flagged unverified");
     VersionImage newer = sonyImage();
     putVersion(newer, VERSION_DRIVER_VERSION_OFFSET, 2, 2, 0);
     putI32(newer, VERSION_DRIVER_PROTOCOL_OFFSET, 6);
-    EXPECT_EQ(judge(newer, sonyPad()), VersionVerdict::WriteOtherDriver);
-    EXPECT(!versionVerdictRefuses(VersionVerdict::WriteOtherDriver));
+    EXPECT_EQ(judge(newer, sonyPad()), VersionVerdict::WriteUnverifiedDriver);
+    EXPECT(!versionVerdictRefuses(VersionVerdict::WriteUnverifiedDriver));
 
     TEST("policy: a 2.0.x driver on the same protocols is flagged too: only its version differs");
     VersionImage older = sonyImage();
     putVersion(older, VERSION_DRIVER_VERSION_OFFSET, 2, 0, 3);
-    EXPECT_EQ(judge(older, sonyPad()), VersionVerdict::WriteOtherDriver);
+    EXPECT_EQ(judge(older, sonyPad()), VersionVerdict::WriteUnverifiedDriver);
+
+    TEST("policy: every release the list names is written unflagged, not only its first");
+    const std::vector<SectionVersion> two = {{2, 1, 0, 0}, {2, 2, 0, 0}};
+    EXPECT_EQ(judge(newer, sonyPadVerifying(two)), VersionVerdict::Write);
+    EXPECT_EQ(judge(sonyImage(), sonyPadVerifying(two)), VersionVerdict::Write);
+    EXPECT_EQ(judge(older, sonyPadVerifying(two)), VersionVerdict::WriteUnverifiedDriver);
+
+    TEST("policy: with no release verified, every driver that serves 4 is written, flagged");
+    EXPECT_EQ(judge(sonyImage(), sonyPadVerifying({})), VersionVerdict::WriteUnverifiedDriver);
+
+    TEST("policy: a listed release is still refused when it does not serve 4: the list vouches "
+         "for a release, not for a range");
+    VersionImage dropped = sonyImage();
+    putI32(dropped, VERSION_DRIVER_PROTOCOL_MIN_OFFSET, 5);
+    putI32(dropped, VERSION_DRIVER_PROTOCOL_OFFSET, 6);
+    EXPECT_EQ(judge(dropped, sonyPadVerifying(two)), VersionVerdict::DriverProtocol);
+
+    TEST("log: the words for each driver verdict say whether Satellite verified the release");
+    EXPECT_EQ(std::string(versionVerdictReason(VersionVerdict::Write)),
+              std::string("runs on a HIDMaestro driver release Satellite has verified"));
+    EXPECT_EQ(std::string(versionVerdictReason(VersionVerdict::WriteUnverifiedDriver)),
+              std::string("runs on a HIDMaestro driver release Satellite has not verified, "
+                          "which still serves protocol 4"));
 }
 
 static void test_another_layout_is_refused_before_anything_else() {
@@ -317,10 +369,10 @@ static void test_the_xusb_companion_is_judged_on_a_companion_profile() {
     putI32(waiting, VERSION_COMPANION_CONFIG_ERROR_OFFSET, 1);
     EXPECT_EQ(judge(waiting, xboxPad()), VersionVerdict::CompanionError);
 
-    TEST("policy: an unpinned driver beside a good companion is still written, flagged");
+    TEST("policy: an unverified driver beside a good companion is still written, flagged");
     VersionImage newer = PINNED_XBOX_IMAGE;
     putVersion(newer, VERSION_DRIVER_VERSION_OFFSET, 3, 0, 0);
-    EXPECT_EQ(judge(newer, xboxPad()), VersionVerdict::WriteOtherDriver);
+    EXPECT_EQ(judge(newer, xboxPad()), VersionVerdict::WriteUnverifiedDriver);
 }
 
 static void test_a_composite_persona_has_no_driver_half() {
@@ -400,7 +452,7 @@ int main() {
     test_a_live_view_reads_as_its_bytes();
     test_the_pins_are_driver_pins_h();
     test_the_pinned_driver_is_written();
-    test_another_driver_that_serves_4_is_written_with_a_warning();
+    test_an_unverified_driver_that_serves_4_is_written_with_a_warning();
     test_another_layout_is_refused_before_anything_else();
     test_another_controllers_section_is_refused();
     test_another_sdk_half_is_refused();

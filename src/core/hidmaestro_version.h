@@ -13,6 +13,7 @@
 #include "core/hex.h"
 #include "core/semver.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -112,11 +113,17 @@ static_assert(offsetof(VersionSection, companionConfigError) ==
 // (HMProfile.RequiresUsbipBackend).
 enum class ProfileBackend : uint8_t { Umdf2, Usbip };
 
-// The SDK and the driver Satellite ships, as the section carries them.
+// The SDK Satellite ships, and the driver releases it has verified
+// (driver_pins.h), as the section carries them.
 struct VersionPins {
     SectionVersion sdk;
-    SectionVersion driver;
+    std::vector<SectionVersion> verifiedDrivers;
 };
+
+inline bool verifiedDriver(const VersionPins& pins, const SectionVersion& driver) {
+    return std::find(pins.verifiedDrivers.begin(), pins.verifiedDrivers.end(), driver) !=
+           pins.verifiedDrivers.end();
+}
 
 // What one controller's section must hold for Satellite to write it.
 struct VersionExpectation {
@@ -131,7 +138,7 @@ struct VersionExpectation {
 
 enum class VersionVerdict : uint8_t {
     Write,
-    WriteOtherDriver,
+    WriteUnverifiedDriver,
     Pending,
     NoSection,
     OtherLayout,
@@ -151,7 +158,7 @@ enum class WriteGate : uint8_t { Open, Held, Refused };
 inline WriteGate writeGateFor(VersionVerdict verdict) {
     switch (verdict) {
     case VersionVerdict::Write:
-    case VersionVerdict::WriteOtherDriver:
+    case VersionVerdict::WriteUnverifiedDriver:
         return WriteGate::Open;
     case VersionVerdict::Pending:
         return WriteGate::Held;
@@ -252,7 +259,7 @@ inline VersionVerdict judgeDriverHalf(const VersionSection& s, const VersionPins
     if (s.driverConfigError != 0) return VersionVerdict::DriverError;
     if (s.driverProtocol == 0) return VersionVerdict::Pending;
     if (!serves) return VersionVerdict::DriverProtocol;
-    if (s.driverVersion != pins.driver) return VersionVerdict::WriteOtherDriver;
+    if (!verifiedDriver(pins, s.driverVersion)) return VersionVerdict::WriteUnverifiedDriver;
     return VersionVerdict::Write;
 }
 
@@ -288,9 +295,10 @@ inline VersionVerdict judgeServedHalves(const VersionSection& s, const VersionEx
     return VersionVerdict::Write;
 }
 
-// The SDK accepts a newer driver that still serves 4 (DeviceOrchestrator.cs:
-// 2014), so a driver other than the pinned one is written, flagged; refusing
-// it would stop Satellite's pads whenever another program installs one.
+// The SDK accepts any driver that still serves 4 (DeviceOrchestrator.cs:
+// 2014), so a release driver_pins.h has not verified is written, flagged;
+// refusing it would stop Satellite's pads whenever another program installs
+// one.
 inline VersionVerdict judgeVersionSection(const VersionSection& s, const VersionExpectation& e) {
     if (s.layoutVersion != VERSION_LAYOUT) return VersionVerdict::OtherLayout;
     if (s.identityTag != expectedIdentityTag(e)) return VersionVerdict::OtherController;
@@ -323,11 +331,12 @@ inline VersionCheck checkVersionSection(const uint8_t* view, const VersionExpect
 inline const char* versionVerdictReason(VersionVerdict verdict) {
     switch (verdict) {
     case VersionVerdict::Write:
-        return "runs on the pinned HIDMaestro driver";
-    case VersionVerdict::WriteOtherDriver:
-        return "runs on another HIDMaestro driver release that still serves protocol 4";
+        return "runs on a HIDMaestro driver release Satellite has verified";
+    case VersionVerdict::WriteUnverifiedDriver:
+        return "runs on a HIDMaestro driver release Satellite has not verified, which still "
+               "serves protocol 4";
     case VersionVerdict::Pending:
-        return "has a driver or XUSB companion that has not written its half yet";
+        return "has a driver that has not written its half of the version section yet";
     case VersionVerdict::NoSection:
         return "came with no HIDMaestro version section";
     case VersionVerdict::OtherLayout:
@@ -345,7 +354,7 @@ inline const char* versionVerdictReason(VersionVerdict verdict) {
     case VersionVerdict::CompanionProtocol:
         return "has an XUSB companion that does not serve protocol 4";
     case VersionVerdict::Unwritten:
-        return "has a driver or XUSB companion that wrote no protocol within the wait";
+        return "has a driver that wrote no protocol within the wait";
     }
     return "";
 }
@@ -391,6 +400,21 @@ inline uint16_t releasePart(const std::vector<std::string>& parts, size_t index)
 inline SectionVersion parseReleaseVersion(const std::string& dotted) {
     const std::vector<std::string> parts = semverSplitDots(dotted);
     return {releasePart(parts, 0), releasePart(parts, 1), releasePart(parts, 2), 0};
+}
+
+// driver_pins.h's comma-separated releases; an empty entry names none.
+inline std::vector<SectionVersion> parseReleaseList(const std::string& listed) {
+    std::vector<SectionVersion> releases;
+    size_t start = 0;
+    while (start <= listed.size()) {
+        const size_t comma = std::min(listed.find(',', start), listed.size());
+        const size_t first = listed.find_first_not_of(' ', start);
+        const size_t last = listed.find_last_not_of(' ', comma == 0 ? 0 : comma - 1);
+        const bool named = first < comma && last != std::string::npos && last >= first;
+        if (named) releases.push_back(parseReleaseVersion(listed.substr(first, last - first + 1)));
+        start = comma + 1;
+    }
+    return releases;
 }
 
 } // namespace hidmaestro

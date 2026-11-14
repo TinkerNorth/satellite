@@ -13,6 +13,7 @@
 // consumes.
 #include "test_util.h"
 
+#include "../src/platform/windows/driver_pins.h"
 #include "../src/platform/windows/hidmaestro_adapter.h"
 #include "hidmaestro_version_fixture.h"
 
@@ -1853,9 +1854,9 @@ static void test_a_composite_persona_plugs_without_a_driver_half() {
     EXPECT_EQ(prov.log.count(LogLevel::ERR, "Serial 2"), 0);
 }
 
-static void test_another_driver_that_serves_4_is_written_with_one_line_per_change() {
-    TEST("version: a pad on another driver release that serves 4 is written, and the log says "
-         "so once per change, not per tick");
+static void test_an_unverified_driver_that_serves_4_is_written_with_one_line_per_change() {
+    TEST("version: a pad on a driver release Satellite has not verified that serves 4 is "
+         "written, and the log says so once per change, not per tick");
     FakeProvisioner prov;
     prov.editVersion = [](fx::VersionImage& image) {
         fx::putVersion(image, VERSION_DRIVER_VERSION_OFFSET, 2, 2, 0);
@@ -1865,25 +1866,61 @@ static void test_another_driver_that_serves_4_is_written_with_one_line_per_chang
     EXPECT(adapter.ensureBusOpen());
     EXPECT(adapter.pluginDevice(1, GamepadIdentity::Xbox));
     EXPECT_EQ(prov.inputSeq(1), (uint32_t)2);
-    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.2.0"), 1);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.2.0, a release Satellite has not verified"),
+              1);
     adapter.recheckDrivers();
     adapter.recheckDrivers();
     EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.2.0"), 1);
 
+    TEST("version: another unverified release is a change of its own, logged once");
     fx::VersionImage later = fx::pinnedDriverImage(FakeProvisioner::tagFor(1), true);
     fx::putVersion(later, VERSION_DRIVER_VERSION_OFFSET, 2, 3, 0);
     prov.writeVersion(1, later);
     adapter.recheckDrivers();
     adapter.recheckDrivers();
-    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.3.0"), 1);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.3.0, a release Satellite has not verified"),
+              1);
 
+    TEST("version: back on a verified release, the log says so once, without a warning");
     prov.writeVersion(1, fx::pinnedDriverImage(FakeProvisioner::tagFor(1), true));
     adapter.recheckDrivers();
     adapter.recheckDrivers();
-    EXPECT_EQ(prov.log.count(LogLevel::INFO, "pinned HIDMaestro driver 2.1.0 again"), 1);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "driver 2.1.0, a release Satellite has verified"), 1);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.1.0"), 0);
     GamepadReport rpt{};
     EXPECT(adapter.submitReport(1, rpt));
     EXPECT(adapter.isDevicePlugged(1));
+}
+
+static void test_every_verified_release_is_written_without_a_word() {
+    TEST("version: with 2.1.0 and 2.2.0 verified, a pad plugs on either and changes between "
+         "them without a line about its driver");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setVersionPinsForTest(
+        {parseReleaseVersion(SATELLITE_HIDMAESTRO_SDK_VERSION), {{2, 1, 0, 0}, {2, 2, 0, 0}}});
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+    fx::VersionImage second = fx::pinnedDriverImage(FakeProvisioner::tagFor(1), false);
+    fx::putVersion(second, VERSION_DRIVER_VERSION_OFFSET, 2, 2, 0);
+    prov.writeVersion(1, second);
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2."), 0);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "driver 2."), 0);
+    GamepadReport rpt{};
+    EXPECT(adapter.submitReport(1, rpt));
+
+    TEST("version: a release outside the list still warns once, and the next listed one says "
+         "it is verified");
+    fx::VersionImage third = second;
+    fx::putVersion(third, VERSION_DRIVER_VERSION_OFFSET, 2, 3, 0);
+    prov.writeVersion(1, third);
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "driver 2.3.0, a release Satellite has not verified"),
+              1);
+    prov.writeVersion(1, second);
+    adapter.recheckDrivers();
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "driver 2.2.0, a release Satellite has verified"), 1);
 }
 
 static void test_the_recheck_stops_every_write_to_a_pad_whose_section_changed() {
@@ -2323,7 +2360,8 @@ int main() {
     test_a_plug_whose_driver_half_is_still_to_come_is_held_until_it_comes();
     test_a_held_pad_whose_driver_half_never_comes_is_refused_at_the_deadline();
     test_a_composite_persona_plugs_without_a_driver_half();
-    test_another_driver_that_serves_4_is_written_with_one_line_per_change();
+    test_an_unverified_driver_that_serves_4_is_written_with_one_line_per_change();
+    test_every_verified_release_is_written_without_a_word();
     test_the_recheck_stops_every_write_to_a_pad_whose_section_changed();
     test_a_live_pad_whose_driver_half_goes_missing_is_held_then_refused();
     test_a_refused_pad_relays_nothing_from_its_rings();

@@ -110,6 +110,9 @@ class HidMaestroAdapter : public IGamepadPort {
     void setVersionDeadlineForTest(std::chrono::milliseconds deadline) {
         versionDeadline_ = deadline;
     }
+    void setVersionPinsForTest(satellite::hidmaestro::VersionPins pins) {
+        versionPins_ = std::move(pins);
+    }
     satellite::hidmaestro::WriteGate gateForTest(uint32_t serial) const {
         return io_[serial].gate.load();
     }
@@ -207,6 +210,7 @@ class HidMaestroAdapter : public IGamepadPort {
     std::atomic<bool> busOpen_{false};
     std::chrono::milliseconds idleReportInterval_{SONY_IDLE_REPORT_MS};
     std::chrono::milliseconds versionDeadline_{satellite::hidmaestro::VERSION_HALF_DEADLINE_MS};
+    satellite::hidmaestro::VersionPins versionPins_;
 
     std::array<IoSlot, MAX_BACKEND_CONTROLLERS + 1> io_;
 
