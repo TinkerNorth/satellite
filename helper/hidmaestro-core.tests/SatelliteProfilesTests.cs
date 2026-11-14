@@ -58,11 +58,10 @@ public sealed class SatelliteProfilesTests
     }
 
     [Fact]
-    public void TheSonyCopiesComeFromTheSdkAndTheSwitchProFromTheCatalogFile()
+    public void ACopyIsCutFromTheCatalogFileNamedForItsProfile()
     {
-        foreach (string id in SatelliteProfiles.StreamFreeCopies) Assert.Equal(CopySource.Sdk, SatelliteProfiles.SourceOf(id));
-        Assert.Equal(CopySource.CatalogFile, SatelliteProfiles.SourceOf("switch-pro"));
-        Assert.Throws<ArgumentException>(() => SatelliteProfiles.SourceOf("xbox-360-wired"));
+        Assert.Equal("dualsense.json", SatelliteProfiles.CatalogFileName("dualsense"));
+        Assert.Equal("dualshock-4-v2-composite.json", SatelliteProfiles.CatalogFileName("dualshock-4-v2-composite"));
         Assert.Equal("switch-pro.json", SatelliteProfiles.CatalogFileName("switch-pro"));
         Assert.Equal("profiles", SatelliteProfiles.CatalogDirectoryName);
     }
