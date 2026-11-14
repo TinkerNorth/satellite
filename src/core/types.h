@@ -60,6 +60,7 @@ enum class ControllerState {
     Quiet,       // Live, but no input recently
     Detached,    // slot deleted, virtual being torn down
     Failed,      // descriptor apply returned an APPLY_ERR_* code
+    Disabled,    // Live, but its host's user disabled the virtual device
 };
 
 // A connection enters NotResponding after ~2 heartbeat intervals without a
@@ -107,8 +108,17 @@ inline const char* controllerStateName(ControllerState s) {
         return "detached";
     case ControllerState::Failed:
         return "failed";
+    case ControllerState::Disabled:
+        return "disabled";
     }
     return "live";
+}
+
+// What the admin API names a connection's controller: Live, Detached or
+// Disabled; the other states are not threaded through SessionService yet.
+inline ControllerState controllerStateFor(bool active, bool disabled) {
+    if (!active) return ControllerState::Detached;
+    return disabled ? ControllerState::Disabled : ControllerState::Live;
 }
 
 // REST + wire protocol versions (docs/contract.md §Versioning). The satellite accepts

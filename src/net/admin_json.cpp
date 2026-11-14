@@ -31,10 +31,7 @@ JsonOut controllerBatteryObj(const SessionService::ConnectionSnapshot::CtrlInfo&
 }
 
 JsonOut controllerSnapshotObj(const SessionService::ConnectionSnapshot::CtrlInfo& ctrl) {
-    // Only Live/Detached are surfaced today; transient states aren't yet
-    // threaded through SessionService. See ControllerState in core/types.h.
-    const char* ctrlState = ctrl.active ? controllerStateName(ControllerState::Live)
-                                        : controllerStateName(ControllerState::Detached);
+    const char* ctrlState = controllerStateName(controllerStateFor(ctrl.active, ctrl.disabled));
     JsonOut o;
     o["controllerIndex"] = ctrl.index;
     o["serialNo"] = ctrl.serial;

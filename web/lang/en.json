@@ -169,6 +169,7 @@
   "controller.state.mounted": "Mounted",
   "controller.state.unmounting": "Unmounting…",
   "controller.state.blocked": "Blocked",
+  "controller.state.disabled": "Disabled in Windows",
 
   "device.state.paired": "Paired",
   "device.state.connecting": "Connecting…",

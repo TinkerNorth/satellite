@@ -50,10 +50,18 @@ function controllerStateLabel(key) {
     case 'allocating':   return t('controller.state.mounting');
     case 'detached':     return t('controller.state.unmounting');
     case 'failed':       return t('controller.state.blocked');
+    case 'disabled':     return t('controller.state.disabled');
     case 'live':
     case 'quiet':
     default:             return t('controller.state.mounted');
   }
+}
+
+// A pad its host disabled (Device Manager) still exists, so it is neither the
+// healthy dot nor the failed one.
+function controllerDotClass(ok, stateKey) {
+  if (stateKey === 'disabled') return 'warn';
+  return ok ? 'ok' : 'err';
 }
 
 // Keyed by (backend.id, errorCode); a new server error code falls back to a
@@ -590,7 +598,7 @@ function updateConnections(d) {
             <img class="ctrl-type-icon" src="img/icons/ctrl-${esc(ctrlArt)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}"
                  onerror="this.onerror=null;this.src='img/icons/gamepad_outline.svg'">
             <div class="ctrl-info">
-              <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>
+              <span class="ctrl-name"><span class="ctrl-dot ${controllerDotClass(ok, stateKey)}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>
               <span class="ctrl-meta">${esc(ctrl.deviceName)} · ${esc(serialLabel)} ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
             </div>
           </div>

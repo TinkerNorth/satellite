@@ -220,6 +220,74 @@ static void test_touchpad_surface_types_are_wire_names() {
     EXPECT_EQ(expected.size(), static_cast<size_t>(3));
 }
 
+// The dashboard's controllerStateLabel: the state names it has a case for, and
+// the string keys it asks for.
+static std::string controllerStateLabelBody() {
+    const std::string source = readFileAll(webPath("dashboard.js"));
+    const std::regex pattern("function controllerStateLabel\\(key\\) \\{([\\s\\S]*?)\\n\\}");
+    std::smatch body;
+    return std::regex_search(source, body, pattern) ? body[1].str() : std::string();
+}
+
+static std::set<std::string> controllerStatesLabelled() {
+    return distinct(firstGroups(controllerStateLabelBody(), std::regex("case '([^']+)':")));
+}
+
+static std::set<std::string> controllerStateKeys() {
+    return distinct(firstGroups(controllerStateLabelBody(), std::regex("\\bt\\('([^']+)'")));
+}
+
+// Every state the admin API can write for a connection's controller, from the
+// function that picks it, over every input it takes.
+static std::set<std::string> controllerStatesWritten() {
+    std::set<std::string> written;
+    for (const bool active : {false, true}) {
+        for (const bool disabled : {false, true}) {
+            written.insert(controllerStateName(controllerStateFor(active, disabled)));
+        }
+    }
+    return written;
+}
+
+static void test_a_disabled_controller_reads_disabled() {
+    TEST("controller state: an active controller its host disabled reads disabled, an active one "
+         "live, and one being torn down detached");
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, true))),
+              std::string("disabled"));
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(true, false))),
+              std::string("live"));
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(false, true))),
+              std::string("detached"));
+    EXPECT_EQ(std::string(controllerStateName(controllerStateFor(false, false))),
+              std::string("detached"));
+}
+
+static void test_every_controller_state_written_has_a_label() {
+    TEST("dashboard: every controller state the server writes has a case in controllerStateLabel");
+    const std::set<std::string> labelled = controllerStatesLabelled();
+    EXPECT(!labelled.empty());
+    for (const std::string& state : controllerStatesWritten()) {
+        const bool handled = labelled.count(state) != 0;
+        if (!handled) reportMissing("case '" + state + "'", "controllerStateLabel");
+        EXPECT(handled);
+    }
+}
+
+static void test_controller_state_labels_are_in_every_catalog() {
+    TEST("dashboard: every string key controllerStateLabel asks for is in every shipped catalog");
+    const std::set<std::string> keys = controllerStateKeys();
+    EXPECT(!keys.empty());
+    for (const std::string& locale : shippedLocales()) {
+        const Json strings = catalog(locale);
+        if (!strings.is_object()) continue;
+        for (const std::string& key : keys) {
+            const bool present = strings.contains(key) && strings[key].is_string();
+            if (!present) reportMissing(key, locale + ".json");
+            EXPECT(present);
+        }
+    }
+}
+
 int main() {
     std::cout << "Running update UI contract tests...\n\n";
     test_scan_sees_the_reads();
@@ -228,6 +296,9 @@ int main() {
     test_string_keys_are_in_every_catalog();
     test_translations_keep_the_placeholders();
     test_touchpad_surface_types_are_wire_names();
+    test_a_disabled_controller_reads_disabled();
+    test_every_controller_state_written_has_a_label();
+    test_controller_state_labels_are_in_every_catalog();
 
     std::cout << "\n=== Test Results ===\n";
     std::cout << "  Passed: " << g_pass << "\n";

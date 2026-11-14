@@ -122,8 +122,10 @@ MicWorker::Delivery MicWorker::submit(const MicPacket& packet, const int16_t* pc
     if (binding(packet.slot, packet.ctrlIdx, packet.serial, packet.gen) == Binding::Bound) {
         const bool submitted = backend_.submitMicAudioPcm(packet.serial, pcm, frames);
         // A pad its backend no longer counts as plugged (one the backend
-        // refused) has lost its whole stream, not its microphone.
-        const bool gone = !submitted && !backend_.isDevicePlugged(packet.serial);
+        // refused), or one its host disabled, has lost its whole stream, not
+        // its microphone.
+        const bool unplugged = !backend_.isDevicePlugged(packet.serial);
+        const bool gone = !submitted && (unplugged || backend_.deviceDisabled(packet.serial));
         delivery = submitted ? Delivery::Submitted : gone ? Delivery::Gone : Delivery::NoSink;
     }
     rx_.exit(RX_MIC_PARTICIPANT);

@@ -22,6 +22,7 @@
 
 #include <sys/stat.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -75,6 +76,8 @@ struct StubGamepad : IGamepadPort {
     bool unplugDevice(uint32_t) override { return true; }
     bool submitReport(uint32_t, const GamepadReport&) override { return true; }
     void setRumbleCallback(RumbleCallback) override {}
+    bool deviceDisabled(uint32_t) const override { return disabled.load(); }
+    std::atomic<bool> disabled{false};
 };
 
 struct StubClient : IClientPort {
@@ -837,6 +840,23 @@ int main() {
             }
             EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);
         }
+
+        TEST("a controller its host disabled reads disabled, and stays in its session");
+        gamepad.disabled.store(true);
+        auto off = cli.Get("/api/connections");
+        EXPECT(off && off->status == 200);
+        if (off) {
+            Json j = parseJson(off->body);
+            const bool one =
+                j["connections"].size() == 1 && j["connections"][0]["controllers"].size() == 1;
+            EXPECT(one);
+            if (one) {
+                EXPECT_EQ(jsonStr(j["connections"][0]["controllers"][0], "state"),
+                          std::string("disabled"));
+            }
+            EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);
+        }
+        gamepad.disabled.store(false);
     }
     {
         TEST("admin kick: DELETE /api/connections/:id closes WITH close-notify");

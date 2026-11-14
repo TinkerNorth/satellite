@@ -156,6 +156,7 @@
   "controller.state.mounted": "Montée",
   "controller.state.unmounting": "Démontage…",
   "controller.state.blocked": "Bloquée",
+  "controller.state.disabled": "Désactivée dans Windows",
   "device.state.paired": "Appairé",
   "device.state.connecting": "Connexion…",
   "device.state.online": "En ligne",

@@ -169,6 +169,7 @@
   "controller.state.mounted": "Eingebunden",
   "controller.state.unmounting": "Wird entfernt…",
   "controller.state.blocked": "Blockiert",
+  "controller.state.disabled": "In Windows deaktiviert",
 
   "device.state.paired": "Gekoppelt",
   "device.state.connecting": "Verbindet…",
