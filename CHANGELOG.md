@@ -92,8 +92,10 @@ way, a disabled one too, and comes back enabled. Unplugging a lost controller
 never holds up the other controllers, even when Windows takes many seconds
 to remove it, and a helper that died now and again no longer uses up
 controller slots. Quitting Satellite waits for the helper to finish removing
-its controllers: well under a second each, about 7 seconds for one a program
-holds open.
+its controllers: well under a second each, up to about 12 seconds for one a
+program holds open. Starting Satellite again while the last one is still
+closing now waits for it to finish and then starts, where before nothing
+happened.
 
 The watch needs a helper and a satellite.exe from this release, which agree
 on it in their hello (protocol 2). An older helper keeps the old behaviour,

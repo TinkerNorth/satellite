@@ -1055,14 +1055,21 @@ request, and a request has one deadline for its write and its whole reply, so a
 helper that trickles bytes gets no longer than a silent one. Hello and unplug get
 10 s (`HELPER_PIPE_WAIT_MS`), and so does the connection to the broker service: a
 peer that has not answered a one-line request in that long is stalled, and the
-topology change waits as long as the request does. A shutdown gets 120 s
-(`HELPER_SHUTDOWN_WAIT_MS`), because the helper removes every controller it still
-holds and answers only once each removal it answered early is done, so it is
-never ended mid-removal: HIDMaestro's INTERNALS.md gives a clean removal 60 to
-300 ms, and one a program refuses about 7.4 s, 5.4 s for its query and 2 s for a
-driver that does not answer. The helper removes different pads side by side, so
-the bound is the case where Windows takes them one at a time: 16 pads held open,
-about 118 s. A plug gets
+topology change waits as long as the request does. A shutdown waits for the
+helper to remove every controller it still holds, since the helper answers only
+once each removal is done, so it is never ended mid-removal. Its bound comes from
+the SDK's own waits (DeviceManager.cs, v2.1.0). Against a program that holds a
+pad open, a removal's query waits about 5.4 s, Windows' own wait. Once the
+driver has failed the device on request, the SDK waits up to 5 s for Windows'
+surprise removal (`SurpriseRemovalWaitMs`) and up to 2 s for a late
+notification (`RemovedBoundMs`). The SDK scales those two by
+`HIDMAESTRO_TIMEOUT_SCALE`, and so does satellite.exe, at the scale the helper's
+plugs report and never below 1. The SDK takes removals one at a time under its
+PnP lock, so 16 such removals and 5 s for the answer give 203.4 s at a scale of 1
+(`helperShutdownWaitMs`); a clean removal takes 60 to 300 ms. A removal that runs
+into the SDK's own removal budgets is not covered (one software device with
+children can hold the PnP lock about 230 s, INTERNALS.md): satellite.exe then
+ends the helper, and the next launch's sweep removes what it left. A plug gets
 120 s (`HELPER_PROVISION_WAIT_MS`), because the first composite plug installs
 HIDMaestro's usbip transport inside the request, which takes tens of seconds on
 a slow machine and reports no progress. A launched helper gets 120 s to connect
@@ -1172,6 +1179,21 @@ costs no shell call. Registering the icon asks for a stable identity
 the add, and falls back to a plain id; the callback version is set after the
 add, since version 4 puts the event in `LOWORD(lp)`. Explorer's
 `TaskbarCreated` registers the icon again.
+
+One Satellite runs per Windows session (`single_instance.cpp`). The first
+launch owns a named mutex (`Local\TinkerNorth.Satellite.Singleton.v1`) on its
+Gui thread until the process exits. A later launch taps the tray window with
+`SendMessageTimeout`: a Satellite whose message loop runs answers at once,
+opens the dashboard after, and the launch ends. One that does not answer is on
+its way out, its loop left behind while it waits for its helper's shutdown, or
+hung, or still starting: the launch waits on the mutex, which the old process's
+exit leaves abandoned, and starts as soon as it owns it, tapping once any window
+that shows meanwhile. It waits up to ten minutes, as long as the SDK lets one
+program wait for another's removals (`PnpLockWaitMs`), which a static_assert
+holds above the old Satellite's longest exit at a timeout scale of 4; a
+Satellite that never exits is given up on, and the launch ends. Releasing the
+mutex before the wait instead would run two Satellites side by side, with two
+helpers, the new one's first plug sweeping what the old one is still removing.
 
 `tests/test_lock_laws.cpp` runs the real service wired as in production (the
 HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,
@@ -1548,12 +1570,16 @@ adapter tells the helper client why it removes a pad (`hm::Teardown`):
 
 - one Windows lost while its helper lives waits 100 ms for the answer; one
   that comes later is read ahead of the next request's, and the channel, and
-  every other pad on it, stays. The answers owed get 2 s together
-  (`HELPER_OWED_WAIT_MS`), not that request's own bound, so a plug never holds
-  the topology lock long behind them; one still missing fails the request
-  unsent and keeps the channel, until it is older than an unplug's 10 s and
-  the helper no longer answers. A shutdown is sent behind them all the same,
-  and they share its bound;
+  every other pad on it, stays. The next request is written at once and its
+  answer read after the owed ones, all within its own bound, since the helper
+  answers in order: a late answer delays it no longer than it is late, and a
+  client's unplug or a lost pad's re-PUT behind one is sent and answered like
+  any other. A helper that answers nothing costs the request that one bound,
+  after which the channel goes. Behind a stalled helper a plug so fails once,
+  at its 120 s; the helper's other pads are then given up at once (their
+  connection is gone) and plugged again on a fresh helper by their clients'
+  re-PUTs, and the plug that failed answers `pluginFailed`, as any failed plug
+  does;
 - one whose helper stopped beating, or whose helper connection is gone, asks
   that helper nothing, and its channel is let go (a spawned helper is ended),
   so the next plug reaches a new one;
@@ -1588,9 +1614,10 @@ and it would stay held for good.
 `satellite-hm-helper.exe selftest`, run elevated with the driver and every
 program that holds a game controller open closed (Steam with a PlayStation
 pad refuses removals), drives a real session as satellite.exe does: the hello
-on protocol 2, an unplug answered while the controller's device is still in
-Windows (an unplug that removed it before answering fails this) and the
-device leaving after, the plug that hands over the block, each
+on protocol 2, an unplug answered while its removal still waits behind a hold
+of the selftest's own, so by the order of the two rather than by timing (an
+unplug that removed the controller before answering fails this), and the device
+leaving after, the plug that hands over the block, each
 presentation's devnodes disabled and enabled on its own, with the other
 input presentation still reading present, and the device removed (a USB
 device may stay in the tree held for eject, Code 47, which the block shows

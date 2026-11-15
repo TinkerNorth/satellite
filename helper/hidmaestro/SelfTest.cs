@@ -18,6 +18,9 @@ internal static class SelfTest
     // which usbip-win2 attaches again 30 s later.
     private static readonly TimeSpan ReattachBudget = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan HidChildBudget = TimeSpan.FromSeconds(10);
+    // How long the hold ahead of an unplug's removal lasts if nothing ends it:
+    // an unplug that waited for its removal answers only after it.
+    private static readonly TimeSpan HoldBudget = TimeSpan.FromSeconds(20);
     private static readonly byte[] SonyIdentityCalibration =
         Convert.FromHexString("000000000000401FC0E0401FC0E0401FC0E0F401F401002000E0002000E0002000E0");
     private static readonly byte[] SonyPairingMacPrefix = { 0x02, 0x48, 0x4D, 0x00, 0x00 };
@@ -323,10 +326,13 @@ internal static class SelfTest
                           $"eject is (Code 47): {Describe(gone)}");
     }
 
-    // A controller plugged and unplugged while its devices are all in Windows:
-    // the answer comes while the device is still in the tree, so the removal
-    // happens after it (a removal made before the answer fails this), and the
-    // device then leaves on its own.
+    // A controller plugged and unplugged while its devices are all in Windows,
+    // its removal queued behind a hold of the selftest's own: the removal cannot
+    // begin before the hold ends, so an answer that came while the hold still
+    // ran did not wait for the removal. Ordering, not timing: a composite's
+    // removal can take a few milliseconds (INTERNALS.md). An unplug that removed
+    // the controller before answering would answer only once the hold gave out.
+    // The device then leaves on its own.
     private static void UnplugAnswersFirst(Session session, string profileId, int slot, WindowsDevnodeTree tree,
                                            Action<bool, string> check)
     {
@@ -338,12 +344,22 @@ internal static class SelfTest
         using var block = new WatchBlockView(handle);
         DeviceWatchBlock.Reading whole = block.Await(r => r.Report is { Whole: true }, WatchBudget);
         check(whole.Report is { Whole: true }, $"{profileId}: every presentation reads present before the unplug, {Describe(whole)}");
+        using var release = new ManualResetEventSlim(false);
+        int holdEnded = 0;
+        session.HoldRemovals((uint)slot, () =>
+        {
+            release.Wait(HoldBudget);
+            Volatile.Write(ref holdEnded, 1);
+        });
         var clock = Stopwatch.StartNew();
         string unplugged = session.Handle($@"{{""op"":""unplug"",""serial"":{slot}}}", out _);
         long answeredMs = clock.ElapsedMilliseconds;
+        bool answeredFirst = Volatile.Read(ref holdEnded) == 0;
         bool stillThere = tree.Locate(devnodes.Device).Located;
-        check(unplugged.Contains(@"""ok"":true") && stillThere,
-              $"{profileId}: the session answers its unplug in {answeredMs} ms with the device still in Windows, so the removal comes after the answer");
+        check(unplugged.Contains(@"""ok"":true") && answeredFirst && stillThere,
+              $"{profileId}: the session answers its unplug in {answeredMs} ms while its removal waits behind the selftest's hold, " +
+              "the device still in Windows, so the answer never waits for the removal");
+        release.Set();
         DevnodeCondition after = AwaitGone(tree, devnodes.Device, ReattachBudget);
         check(after is DevnodeCondition.Missing or DevnodeCondition.Failed,
               $"{profileId}: the device then leaves Windows, or stays held for eject (Code 47): {after}, " +

@@ -261,6 +261,11 @@ internal sealed class Session : IDisposable
         return Ok(_ => { });
     }
 
+    // For selftest: `hold` runs as a removal of `serial`, so that serial's next
+    // removal begins only once it returns (Disposals runs one serial's removals
+    // in turn).
+    internal void HoldRemovals(uint serial, Action hold) => _disposals.Begin(serial, hold);
+
     public void Dispose()
     {
         lock (this)
