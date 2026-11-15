@@ -51,6 +51,11 @@ inline constexpr DWORD HM_SURPRISE_REMOVAL_WAIT_MS = 5000;
 inline constexpr DWORD HM_REMOVED_BOUND_MS = 2000;
 // What the shutdown's answer itself gets once the last removal is done.
 inline constexpr DWORD HELPER_SHUTDOWN_ANSWER_MS = 5000;
+// The longest a shutdown waits at any timeout scale: nine minutes, so a
+// Satellite's exit stays inside the ten minutes a relaunch waits for it
+// (single_instance.h; app_lifecycle.cpp checks it). Reached just above a scale
+// of 4.
+inline constexpr DWORD HELPER_SHUTDOWN_WAIT_CAP_MS = 540000;
 
 // How long a shutdown waits for its answer, which the helper gives once every
 // controller it held is removed: 16 such removals one after another, as the SDK
@@ -64,7 +69,9 @@ constexpr DWORD helperShutdownWaitMs(double timeoutScale) {
     const double scale = timeoutScale > 1.0 && timeoutScale <= 100.0 ? timeoutScale : 1.0;
     const double removal =
         HM_REFUSED_QUERY_MS + (HM_SURPRISE_REMOVAL_WAIT_MS + HM_REMOVED_BOUND_MS) * scale;
-    return static_cast<DWORD>(MAX_BACKEND_CONTROLLERS * removal) + HELPER_SHUTDOWN_ANSWER_MS;
+    const double wait = MAX_BACKEND_CONTROLLERS * removal + HELPER_SHUTDOWN_ANSWER_MS;
+    return wait < HELPER_SHUTDOWN_WAIT_CAP_MS ? static_cast<DWORD>(wait)
+                                              : HELPER_SHUTDOWN_WAIT_CAP_MS;
 }
 inline constexpr DWORD HELPER_SHUTDOWN_WAIT_MS = helperShutdownWaitMs(1.0);
 

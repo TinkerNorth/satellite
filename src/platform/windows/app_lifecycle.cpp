@@ -46,6 +46,8 @@ namespace {
 
 constexpr const wchar_t* kAppFolder = L"TinkerNorth\\Satellite";
 constexpr const char* kSingletonMutex = "Local\\TinkerNorth.Satellite.Singleton.v1";
+// Held by the one launch waiting for a Satellite on its way out.
+constexpr const char* kRelaunchMutex = "Local\\TinkerNorth.Satellite.Relaunch.v1";
 constexpr const char* kRunKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 // Must match the literal Inno Setup writes (case-insensitive rename otherwise
 // collides); changing it needs a migration step.
@@ -245,16 +247,18 @@ std::string logDir() { return ensureSubdir(L"logs"); }
 std::string sentryDir() { return ensureSubdir(L"sentry"); }
 
 // A Satellite on its way out waits for its helper's shutdown, then for the
-// helper to exit; a launch waits that long for it, at any timeout scale up to 4.
-static_assert(satellite::hidmaestro::helperShutdownWaitMs(4.0) +
-                      satellite::hidmaestro::HELPER_EXIT_WAIT_MS <
+// helper to exit, besides the rest of its exit; a relaunch outwaits all of it
+// at any timeout scale, since the shutdown's wait has its cap.
+static_assert(satellite::hidmaestro::HELPER_SHUTDOWN_WAIT_CAP_MS +
+                      satellite::hidmaestro::HELPER_EXIT_WAIT_MS + EXIT_BESIDES_HELPER_MS <
                   PREVIOUS_INSTANCE_EXIT_WAIT_MS,
               "a relaunch must outwait the exit of a Satellite whose helper is still removing");
 
 bool acquireSingleInstance(const char* appTitle) {
     // Local\ namespace = per-session, so RDP sessions/fast user switching get
     // independent instances.
-    const SingleInstanceNames names{kSingletonMutex, "ControllerForwardTray", appTitle};
+    const SingleInstanceNames names{kSingletonMutex, "ControllerForwardTray", appTitle,
+                                    kRelaunchMutex};
     const SingleInstanceWaits waits{SECOND_INSTANCE_ANSWER_MS, PREVIOUS_INSTANCE_SLICE_MS,
                                     PREVIOUS_INSTANCE_EXIT_WAIT_MS};
     return acquireSingleInstance(names, waits, g_singletonMutex);

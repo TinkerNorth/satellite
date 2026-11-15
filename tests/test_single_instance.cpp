@@ -25,16 +25,30 @@ long long elapsedMs(Clock::time_point start) {
 struct TestNames {
     std::string mutex;
     std::string windowClass;
+    std::string waiting;
     std::string title = "Satellite single instance test";
     lifecycle::SingleInstanceNames names() const {
-        return {mutex.c_str(), windowClass.c_str(), title.c_str()};
+        return {mutex.c_str(), windowClass.c_str(), title.c_str(), waiting.c_str()};
     }
 };
 
 TestNames namesFor(const std::string& test) {
     const std::string suffix = test + "." + std::to_string(GetCurrentProcessId());
-    return {"Local\\TinkerNorth.Satellite.Test." + suffix, "SatelliteSingleInstanceTest." + suffix};
+    return {"Local\\TinkerNorth.Satellite.Test." + suffix, "SatelliteSingleInstanceTest." + suffix,
+            "Local\\TinkerNorth.Satellite.TestWaiting." + suffix};
 }
+
+// Whether a launch still holds the right to wait, after every launch is done.
+bool someoneWaits(const TestNames& n) {
+    HANDLE probe = CreateMutexA(nullptr, FALSE, n.waiting.c_str());
+    const bool existed = GetLastError() == ERROR_ALREADY_EXISTS;
+    if (probe != nullptr) CloseHandle(probe);
+    return existed;
+}
+
+// A tap that UIPI keeps out, as from a launch below a Satellite running
+// elevated without UIAccess.
+lifecycle::TapAnswer deniedTap(HWND, UINT, DWORD) { return lifecycle::TapAnswer::Denied; }
 
 constexpr lifecycle::SingleInstanceWaits QUICK{200, 50, 5000};
 
@@ -75,6 +89,7 @@ struct Other {
     DWORD windowAfterMs = 0; // when its window shows; ~0 for never
     bool pumps = false;      // whether its message loop runs
     DWORD holdMs = 0;        // how long until it exits
+    DWORD loopAfterMs = 0;   // when its message loop starts, if it pumps
 };
 
 constexpr DWORD NEVER = ~DWORD{0};
@@ -99,20 +114,23 @@ class OtherInstance {
         HANDLE mutex = CreateMutexA(nullptr, TRUE, names_.mutex.c_str());
         SetEvent(ready_);
         HWND window = nullptr;
-        DWORD shownAt = 0;
+        DWORD at = 0;
         if (how_.windowAfterMs != NEVER) {
             Sleep(how_.windowAfterMs);
-            shownAt = how_.windowAfterMs;
+            at = how_.windowAfterMs;
             window = makeWindow(names_);
         }
-        const DWORD rest = how_.holdMs > shownAt ? how_.holdMs - shownAt : 0;
+        if (how_.pumps && how_.loopAfterMs > at) {
+            Sleep(how_.loopAfterMs - at);
+            at = how_.loopAfterMs;
+        }
+        const DWORD rest = how_.holdMs > at ? how_.holdMs - at : 0;
         if (how_.pumps) {
             pumpFor(rest);
         } else {
+            // A Satellite on its way out never runs its loop again, so it
+            // answers nothing, a probe included, until it is gone.
             Sleep(rest);
-            // Delivers what was sent to it meanwhile, so the taps can be counted.
-            MSG msg;
-            while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
         }
         if (window != nullptr) DestroyWindow(window);
         CloseHandle(mutex);
@@ -183,28 +201,109 @@ static void test_a_satellite_on_its_way_out_is_waited_for() {
     EXPECT(held != nullptr);
     EXPECT(tookMs >= 600);
     EXPECT(tookMs < 4000);
-    TEST("single instance: the window that answered nothing is tapped once, not on every wait");
-    EXPECT(g_taps.load() <= 1);
+    EXPECT(!someoneWaits(n));
     release(held);
 }
 
-static void test_a_slow_answer_is_tapped_once() {
-    TEST("single instance: a Satellite that answers a tap later than the tap waits is tapped once, "
-         "not on every wait, so it opens one dashboard, and the launch waits for it to exit");
+static void test_a_late_answer_still_ends_the_launch() {
+    TEST("single instance: a Satellite that answers a tap later than the tap waits is a running "
+         "one: the launch ends once it answers a probe, before it exits, and it gets the one tap");
     const TestNames n = namesFor("slow");
     g_taps = 0;
     g_answerDelayMs = 400;
     HANDLE held = nullptr;
-    bool started = false;
+    bool started = true;
+    long long tookMs = 0;
     {
-        OtherInstance other(n, {0, true, 1200});
+        OtherInstance other(n, {0, true, 1500});
         Sleep(50);
+        const auto start = Clock::now();
         started = lifecycle::acquireSingleInstance(n.names(), QUICK, held);
+        tookMs = elapsedMs(start);
     }
     g_answerDelayMs = 0;
-    EXPECT(started);
+    EXPECT(!started);
+    EXPECT(held == nullptr);
+    EXPECT(tookMs < 1300);
     EXPECT_EQ(g_taps.load(), 1);
-    release(held);
+    EXPECT(!someoneWaits(n));
+}
+
+static void test_a_satellite_whose_loop_starts_late_is_not_taken_for_one_exiting() {
+    TEST("single instance: a launch while another Satellite has its window but not yet its "
+         "message loop, as at login, ends once that loop answers, and never starts a second one");
+    const TestNames n = namesFor("loop-late");
+    g_taps = 0;
+    HANDLE held = nullptr;
+    bool started = true;
+    long long tookMs = 0;
+    {
+        OtherInstance other(n, {0, true, 4500, 3000});
+        Sleep(50);
+        const auto start = Clock::now();
+        started = lifecycle::acquireSingleInstance(n.names(), QUICK, held);
+        tookMs = elapsedMs(start);
+    }
+    EXPECT(!started);
+    EXPECT(held == nullptr);
+    EXPECT(tookMs >= 2500);
+    EXPECT(tookMs < 4200);
+    TEST("single instance: that Satellite is tapped once, then only probed");
+    EXPECT(g_taps.load() <= 1);
+    EXPECT(!someoneWaits(n));
+}
+
+static void test_a_tap_that_uipi_refuses_ends_the_launch() {
+    TEST("single instance: a tap UIPI refuses, as to a Satellite running elevated without "
+         "UIAccess, is a running Satellite: the launch ends at once and never waits");
+    const TestNames n = namesFor("uipi");
+    HANDLE held = nullptr;
+    bool started = true;
+    long long tookMs = 0;
+    {
+        OtherInstance other(n, {0, false, 1500});
+        Sleep(50);
+        const auto start = Clock::now();
+        started = lifecycle::acquireSingleInstance(n.names(), QUICK, held, deniedTap);
+        tookMs = elapsedMs(start);
+    }
+    EXPECT(!started);
+    EXPECT(held == nullptr);
+    EXPECT(tookMs < 150);
+    EXPECT(!someoneWaits(n));
+}
+
+static void test_only_one_launch_waits() {
+    TEST("single instance: while one launch waits for a Satellite on its way out, a later launch "
+         "ends at once instead of waiting too");
+    const TestNames n = namesFor("one-waiter");
+    HANDLE firstHeld = nullptr;
+    bool firstStarted = false;
+    bool laterStarted = true;
+    long long laterMs = 0;
+    {
+        OtherInstance other(n, {NEVER, false, 1500});
+        std::thread first([&n, &firstHeld, &firstStarted] {
+            firstStarted = lifecycle::acquireSingleInstance(n.names(), QUICK, firstHeld);
+            if (firstStarted) {
+                ReleaseMutex(firstHeld);
+                CloseHandle(firstHeld);
+            }
+        });
+        Sleep(300);
+        HANDLE laterHeld = nullptr;
+        const auto start = Clock::now();
+        laterStarted = lifecycle::acquireSingleInstance(n.names(), QUICK, laterHeld);
+        laterMs = elapsedMs(start);
+        if (laterHeld != nullptr) release(laterHeld);
+        first.join();
+    }
+    EXPECT(!laterStarted);
+    EXPECT(laterMs < 600);
+    TEST("single instance: the launch that waited starts once the old Satellite is gone, and lets "
+         "the right to wait go");
+    EXPECT(firstStarted);
+    EXPECT(!someoneWaits(n));
 }
 
 static void test_a_satellite_still_starting_is_tapped_once_its_window_shows() {
@@ -252,7 +351,10 @@ int main() {
     test_the_first_launch_takes_the_singleton();
     test_a_live_satellite_takes_the_click();
     test_a_satellite_on_its_way_out_is_waited_for();
-    test_a_slow_answer_is_tapped_once();
+    test_a_late_answer_still_ends_the_launch();
+    test_a_satellite_whose_loop_starts_late_is_not_taken_for_one_exiting();
+    test_a_tap_that_uipi_refuses_ends_the_launch();
+    test_only_one_launch_waits();
     test_a_satellite_still_starting_is_tapped_once_its_window_shows();
     test_a_satellite_that_never_exits_is_given_up_on();
 

@@ -20,12 +20,29 @@ inline constexpr DWORD PREVIOUS_INSTANCE_SLICE_MS = 1000;
 // PnpLockWaitMs, ten minutes). app_lifecycle.cpp checks that the old one's exit,
 // its helper's shutdown and the helper's own exit, fits inside it.
 inline constexpr DWORD PREVIOUS_INSTANCE_EXIT_WAIT_MS = 600000;
+// What a Satellite's exit takes besides its helper's shutdown and the helper's
+// own exit: its servers and threads stopping, and its sessions' unplugs, one of
+// which can wait out an unplug's 10 s before the channel goes.
+inline constexpr DWORD EXIT_BESIDES_HELPER_MS = 30000;
 
 struct SingleInstanceNames {
     const char* mutex;
     const char* windowClass;
     const char* windowTitle;
+    // Held by the one launch that waits for a Satellite on its way out.
+    const char* waitingMutex;
 };
+
+// What a window did with a tap or a probe.
+enum class TapAnswer {
+    Answered, // its message loop runs: a live Satellite
+    NoAnswer, // not within the wait: on its way out, hung, or not looping yet
+    Denied,   // UIPI kept the message out: a Satellite above this launch's integrity
+};
+using Tap = TapAnswer (*)(HWND window, UINT message, DWORD waitMs);
+
+// SendMessageTimeout, read as a TapAnswer.
+TapAnswer tapWindow(HWND window, UINT message, DWORD waitMs);
 
 struct SingleInstanceWaits {
     DWORD answerMs;
@@ -35,14 +52,15 @@ struct SingleInstanceWaits {
 
 // True when this process is the session's Satellite: it then owns the mutex,
 // in `held`, on the calling thread until it exits, which is what a later launch
-// waits for. A launch that finds another Satellite taps its tray window: one
-// that answers takes the click, and this launch ends (false). One that does not
-// is on its way out, still waiting for its helper to finish removing its
-// controllers, or hung, or not yet showing its window: this launch waits for it
-// to exit and starts once it has, or taps the window it shows, and past
-// `exitMs` it ends. Each window is tapped once, so one that answers late opens
-// one dashboard, not one per wait.
+// waits for. A launch that finds another Satellite ends (false) unless that one
+// is on its way out. It taps the tray window once: a Satellite that answers, or
+// that UIPI keeps the tap from (one running elevated without UIAccess), has the
+// click. One that does not answer is probed with WM_NULL on each wait, so one
+// whose message loop has not started yet, as at login, ends the launch as soon
+// as it answers. Only one that never answers again is on its way out, or hung:
+// this launch waits for it to exit and starts once it has, and past `exitMs` it
+// ends. One launch at a time does this (`waitingMutex`); a later one ends at once.
 bool acquireSingleInstance(const SingleInstanceNames& names, const SingleInstanceWaits& waits,
-                           HANDLE& held);
+                           HANDLE& held, Tap tap = tapWindow);
 
 } // namespace lifecycle

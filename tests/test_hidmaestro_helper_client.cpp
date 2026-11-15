@@ -4,6 +4,7 @@
 #include "core/tracked_mutex.h"
 #include "core/types.h"
 #include "hidmaestro_helper_client.h"
+#include "single_instance.h"
 
 #include <algorithm>
 #include <atomic>
@@ -984,6 +985,37 @@ static void test_a_shutdown_is_sent_behind_an_owed_answer() {
     EXPECT(client.takeSettledSerials() == std::vector<uint32_t>({2}));
 }
 
+static void test_an_exit_never_outlasts_a_relaunchs_wait() {
+    TEST("limits: at every timeout scale a Satellite's exit, its helper's shutdown, the helper's "
+         "exit and the rest of it, ends inside the ten minutes a relaunch waits for it");
+    const double scales[] = {-1.0,
+                             0.0,
+                             0.01,
+                             0.1,
+                             0.5,
+                             1.0,
+                             2.0,
+                             4.0,
+                             4.5,
+                             7.0,
+                             10.0,
+                             50.0,
+                             100.0,
+                             1000.0,
+                             std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::quiet_NaN()};
+    for (const double scale : scales) {
+        const DWORD exitMs = hm::helperShutdownWaitMs(scale) + hm::HELPER_EXIT_WAIT_MS +
+                             lifecycle::EXIT_BESIDES_HELPER_MS;
+        EXPECT(exitMs < lifecycle::PREVIOUS_INSTANCE_EXIT_WAIT_MS);
+        EXPECT(hm::helperShutdownWaitMs(scale) >= hm::helperShutdownWaitMs(1.0));
+    }
+    TEST("limits: the shutdown's bound grows with the scale up to its cap of nine minutes");
+    EXPECT(hm::helperShutdownWaitMs(4.0) > hm::helperShutdownWaitMs(2.0));
+    EXPECT_EQ(hm::helperShutdownWaitMs(7.0), hm::HELPER_SHUTDOWN_WAIT_CAP_MS);
+    EXPECT_EQ(hm::helperShutdownWaitMs(100.0), hm::HELPER_SHUTDOWN_WAIT_CAP_MS);
+}
+
 static void test_a_shutdown_waits_as_its_helpers_timeout_scale_says() {
     TEST(
         "shutdown: the wait scales with the timeout scale the helper's plugs report, which its SDK "
@@ -1421,6 +1453,7 @@ int main() {
     test_a_shutdown_waits_for_the_helpers_removals();
     test_a_shutdown_is_sent_behind_an_owed_answer();
     test_a_shutdown_waits_as_its_helpers_timeout_scale_says();
+    test_an_exit_never_outlasts_a_relaunchs_wait();
     test_a_client_unplug_behind_an_owed_answer_is_sent_and_confirmed();
     test_a_plug_behind_an_owed_answer_is_sent_and_succeeds();
     test_a_stalled_helper_costs_a_plug_one_budget();
