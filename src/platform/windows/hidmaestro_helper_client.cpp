@@ -237,14 +237,12 @@ struct HelperChannel {
     std::vector<char> chunk;
     // The serials whose lost-pad unplug went without its answer yet, in the
     // order sent: those answers come ahead of any later request's.
-    struct Owed {
-        uint32_t serial;
-        // Past this, an answer still missing is a helper that no longer answers.
-        ULONGLONG due;
-    };
-    std::deque<Owed> owed;
+    std::deque<uint32_t> owed;
     // What the hello settled on; the base protocol hands over no watch blocks.
     int32_t protocol = HELPER_PROTOCOL_BASE;
+    // HIDMAESTRO_TIMEOUT_SCALE as the helper's SDK resolved it, from its plugs:
+    // the SDK's removal waits, which the shutdown waits out, scale with it.
+    double timeoutScale = 1.0;
 };
 
 namespace {
@@ -621,8 +619,11 @@ DWORD HelperClient::waitFor(HelperRequest request) const {
     switch (request) {
     case HelperRequest::Provision:
         return provisionWaitMs_.load();
-    case HelperRequest::Shutdown:
-        return shutdownWaitMs_.load();
+    case HelperRequest::Shutdown: {
+        const DWORD forced = shutdownWaitMs_.load();
+        if (forced != 0) return forced;
+        return helperShutdownWaitMs(channel_ != nullptr ? channel_->timeoutScale : 1.0);
+    }
     case HelperRequest::Hello:
     case HelperRequest::Deprovision:
         return pipeWaitMs_.load();
@@ -679,51 +680,38 @@ void HelperClient::stopLocked(bool sendShutdown) {
     setChannelLocked(nullptr);
 }
 
-// Answers still owed to lost pads' unplugs are read first: the helper answers
-// in order, so the next line after them is this request's. They get
-// HELPER_OWED_WAIT_MS together, not the request's own bound, so a plug never
-// holds the topology lock long behind them; one still missing then fails the
-// request unsent and keeps the channel, until it is older than any unplug's
-// own bound, when the helper no longer answers. A shutdown is the last request
-// and is sent whatever waits ahead of it: those answers share its own bound.
+// A request goes at once, and its answer is read after the answers still
+// owed to lost pads' unplugs, all within the request's own bound: the helper
+// answers in order. A late answer so delays the request no longer than it is
+// late, and a helper that answers nothing costs the request that one bound,
+// after which the channel goes, as for any request that misses its deadline.
+// Nothing owed, whatever an earlier reply left unread is dropped.
 bool HelperClient::requestLocked(HelperRequest request, const std::string& line,
                                  std::string& response) {
     if (channel_ == nullptr) return false;
-    const bool last = request == HelperRequest::Shutdown;
-    const IoBudget owed = budgetFor(last ? waitFor(request) : owedWaitMs_.load(), nullptr);
-    switch (drainOwedLocked(owed.deadline)) {
-    case OwedAnswers::Pending:
-        if (!last) return false;
-        setChannelLocked(nullptr);
-        return false;
-    case OwedAnswers::Gone:
-        setChannelLocked(nullptr);
-        return false;
-    case OwedAnswers::Read:
-        break;
+    HelperChannel& ch = *channel_;
+    const IoBudget budget = budgetFor(waitFor(request), nullptr);
+    if (ch.owed.empty()) ch.pending.clear();
+    if (writeLine(ch, line, budget) && drainOwedLocked(budget.deadline) &&
+        readLine(ch, response, budget)) {
+        return true;
     }
-    const DWORD waitMs = last ? msLeft(owed) : waitFor(request);
-    if (roundTrip(*channel_, line, response, waitMs, nullptr)) return true;
     setChannelLocked(nullptr);
     return false;
 }
 
 // Caller holds mtx_. Each owed answer that confirms its unplug settles that
-// serial; Pending when one has not come within `budget` and is younger than an
-// unplug's own bound, Gone once it is older or the helper has closed the pipe.
-HelperClient::OwedAnswers HelperClient::drainOwedLocked(ULONGLONG deadline) {
+// serial; false when they do not all come by `deadline`.
+bool HelperClient::drainOwedLocked(ULONGLONG deadline) {
     const IoBudget budget{deadline, nullptr};
     while (!channel_->owed.empty()) {
         std::string response;
-        if (!readLine(*channel_, response, budget)) {
-            const bool overdue = GetTickCount64() >= channel_->owed.front().due;
-            return overdue || !channel_->alive() ? OwedAnswers::Gone : OwedAnswers::Pending;
-        }
-        const uint32_t serial = channel_->owed.front().serial;
+        if (!readLine(*channel_, response, budget)) return false;
+        const uint32_t serial = channel_->owed.front();
         channel_->owed.pop_front();
         if (unplugAnswered(response)) settleLocked(serial);
     }
-    return OwedAnswers::Read;
+    return true;
 }
 
 void HelperClient::settleLocked(uint32_t serial) {
@@ -783,6 +771,7 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
     out.companion = jsonBool(j, "companion");
     double timeoutScale = 1.0;
     out.timeoutScale = jsonTryNumber(j, "timeoutScale", timeoutScale) ? timeoutScale : 1.0;
+    channel_->timeoutScale = out.timeoutScale;
 
     // Only a session the hello settled on the watch's protocol takes a block; a
     // handle a helper sent outside it is this process's to close.
@@ -849,7 +838,10 @@ void HelperClient::setLostUnplugWaitForTest(DWORD ms) { lostUnplugWaitMs_.store(
 
 void HelperClient::setShutdownWaitForTest(DWORD ms) { shutdownWaitMs_.store(ms); }
 
-void HelperClient::setOwedWaitForTest(DWORD ms) { owedWaitMs_.store(ms); }
+DWORD HelperClient::shutdownWaitForTest() const {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    return waitFor(HelperRequest::Shutdown);
+}
 
 bool HelperClient::waitForBackgroundConnectForTest(DWORD ms) {
     return WaitForSingleObject(connectDone_, ms) == WAIT_OBJECT_0;
@@ -913,7 +905,7 @@ bool HelperClient::lostUnplugLocked(uint32_t serial, const std::string& line) {
         setChannelLocked(nullptr);
         return false;
     }
-    ch.owed.push_back({serial, GetTickCount64() + pipeWaitMs_.load()});
+    ch.owed.push_back(serial);
     if (ch.owed.size() > 1) return false;
     std::string response;
     if (!readLine(ch, response, budgetFor(lostUnplugWaitMs_.load(), nullptr))) {

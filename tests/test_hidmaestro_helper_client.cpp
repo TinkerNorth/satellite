@@ -10,6 +10,7 @@
 #include <chrono>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -342,15 +343,21 @@ static void test_each_request_carries_its_own_limit() {
     EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Hello), static_cast<DWORD>(10000));
     EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Deprovision), static_cast<DWORD>(10000));
 
-    TEST("limits: a shutdown gets 120 s, for the helper to finish removing its controllers: 16 "
-         "pads at about 7.4 s each against a program that holds them open, should Windows take "
-         "them one at a time");
-    EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Shutdown), static_cast<DWORD>(120000));
-    EXPECT_EQ(hm::HELPER_SHUTDOWN_WAIT_MS, static_cast<DWORD>(120000));
-
-    TEST("limits: an answer owed to a lost pad's unplug gets 2 s ahead of the next request, "
-         "whatever that request's own bound");
-    EXPECT_EQ(hm::HELPER_OWED_WAIT_MS, static_cast<DWORD>(2000));
+    TEST("limits: a shutdown waits for 16 removals one after another, each against a program "
+         "that holds its pad open: 5.4 s for the refused query, up to 5 s for Windows' surprise "
+         "removal once the driver failed the device and 2 s for a late notification, and 5 s for "
+         "the answer: 203.4 s at a timeout scale of 1");
+    EXPECT_EQ(hm::helperShutdownWaitMs(1.0), static_cast<DWORD>(203400));
+    EXPECT_EQ(hm::HELPER_SHUTDOWN_WAIT_MS, static_cast<DWORD>(203400));
+    EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Shutdown), static_cast<DWORD>(203400));
+    TEST("limits: the SDK's two waits in it scale with HIDMAESTRO_TIMEOUT_SCALE, as the SDK "
+         "scales them, and Windows' query does not");
+    EXPECT_EQ(hm::helperShutdownWaitMs(2.0), static_cast<DWORD>(315400));
+    TEST("limits: a scale below 1, out of the SDK's range or none never shortens it");
+    EXPECT_EQ(hm::helperShutdownWaitMs(0.5), static_cast<DWORD>(203400));
+    EXPECT_EQ(hm::helperShutdownWaitMs(1000.0), static_cast<DWORD>(203400));
+    EXPECT_EQ(hm::helperShutdownWaitMs(std::numeric_limits<double>::quiet_NaN()),
+              static_cast<DWORD>(203400));
 
     TEST("limits: a plug gets 120 s, for the transport install inside it");
     EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Provision), static_cast<DWORD>(120000));
@@ -864,6 +871,86 @@ static void test_a_shutdown_waits_for_the_helpers_removals() {
     EXPECT(answered.load());
 }
 
+// A helper that answers its first unplug, a lost pad's, `lateMs` late and the
+// rest at once, in order, as a helper answers; `heard` is set by any unplug
+// after the first.
+FakeHelper::Handler answersFirstUnplugLate(DWORD lateMs, std::atomic<bool>* heard) {
+    auto unplugs = std::make_shared<int>(0);
+    return [lateMs, heard, unplugs](FakeHelper& helper, const std::string& request) {
+        if (isHello(request)) {
+            helper.write(HELLO_REPLY_WATCHING + "\n");
+        } else if (request.find("\"unplug\"") != std::string::npos) {
+            if ((*unplugs)++ == 0) {
+                helper.pause(lateMs);
+            } else if (heard != nullptr) {
+                *heard = true;
+            }
+            helper.write(OK_REPLY + "\n");
+        } else {
+            helper.write(PLUG_REPLY_WITH_WATCH + "\n");
+        }
+    };
+}
+
+static void test_a_client_unplug_behind_an_owed_answer_is_sent_and_confirmed() {
+    TEST("owed: a client's unplug made while a lost pad's answer is still owed is sent behind it "
+         "and confirmed once both answers come, so the helper removes that pad and its serial is "
+         "never left blocked");
+    std::atomic<bool> heard{false};
+    FakeHelper fake(answersFirstUnplugLate(2500, &heard));
+    hm::HelperClient client;
+    client.setLostUnplugWaitForTest(20);
+    client.setPipeWaitForTest(LONG_WAIT_MS);
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    hm::ProvisionResult out;
+    EXPECT(client.provision(2, GamepadIdentity::DualSense, false, out));
+    EXPECT(client.provision(3, GamepadIdentity::DualSense, false, out));
+    EXPECT(!client.deprovision(2, hm::Teardown::DeviceLost));
+    EXPECT(client.deprovision(3, hm::Teardown::Requested));
+    EXPECT(heard.load());
+    EXPECT(client.takeSettledSerials() == std::vector<uint32_t>({2}));
+    EXPECT(client.isReady());
+    client.shutdown();
+}
+
+static void test_a_plug_behind_an_owed_answer_is_sent_and_succeeds() {
+    TEST("owed: a plug made while a lost pad's answer is still owed, as the lost pad's re-PUT is, "
+         "is sent behind it and succeeds once both answers come, so the pad is plugged again");
+    FakeHelper fake(answersFirstUnplugLate(2500, nullptr));
+    hm::HelperClient client;
+    client.setLostUnplugWaitForTest(20);
+    client.setProvisionWaitForTest(LONG_WAIT_MS);
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    hm::ProvisionResult out;
+    EXPECT(client.provision(2, GamepadIdentity::DualSense, false, out));
+    EXPECT(!client.deprovision(2, hm::Teardown::DeviceLost));
+    const auto start = Clock::now();
+    EXPECT(client.provision(4, GamepadIdentity::DualSense, false, out));
+    EXPECT(elapsedMs(start) < TIMEOUT_SLACK.count());
+    EXPECT(client.takeSettledSerials() == std::vector<uint32_t>({2}));
+    EXPECT(client.isReady());
+    client.shutdown();
+}
+
+static void test_a_stalled_helper_costs_a_plug_one_budget() {
+    TEST("owed: behind an owed answer that does not come, a plug fails at its own bound, once, "
+         "and the channel goes, so the next plug reaches a fresh helper");
+    FakeHelper fake(answersFirstUnplugLate(3000, nullptr));
+    hm::HelperClient client;
+    client.setLostUnplugWaitForTest(20);
+    client.setProvisionWaitForTest(1000);
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    hm::ProvisionResult out;
+    EXPECT(client.provision(2, GamepadIdentity::DualSense, false, out));
+    EXPECT(!client.deprovision(2, hm::Teardown::DeviceLost));
+    const auto start = Clock::now();
+    EXPECT(!client.provision(4, GamepadIdentity::DualSense, false, out));
+    const long long tookMs = elapsedMs(start);
+    EXPECT(tookMs >= 900);
+    EXPECT(tookMs < 1800);
+    EXPECT(!client.isReady());
+}
+
 static void test_a_shutdown_is_sent_behind_an_owed_answer() {
     TEST("shutdown: a shutdown with a lost pad's unplug answer still owed is sent once that "
          "answer comes, within the shutdown's own bound, so the helper is told to finish its "
@@ -885,7 +972,6 @@ static void test_a_shutdown_is_sent_behind_an_owed_answer() {
     hm::HelperClient client;
     client.setLostUnplugWaitForTest(20);
     client.setPipeWaitForTest(LONG_WAIT_MS);
-    client.setOwedWaitForTest(SHORT_WAIT_MS);
     client.setShutdownWaitForTest(LONG_WAIT_MS);
     EXPECT(client.adoptChannelForTest(fake.connect()));
     hm::ProvisionResult out;
@@ -896,6 +982,31 @@ static void test_a_shutdown_is_sent_behind_an_owed_answer() {
     EXPECT(told.load());
     EXPECT(elapsedMs(start) < TIMEOUT_SLACK.count());
     EXPECT(client.takeSettledSerials() == std::vector<uint32_t>({2}));
+}
+
+static void test_a_shutdown_waits_as_its_helpers_timeout_scale_says() {
+    TEST(
+        "shutdown: the wait scales with the timeout scale the helper's plugs report, which its SDK "
+        "scales its removals by");
+    FakeHelper fake([](FakeHelper& helper, const std::string& request) {
+        if (isHello(request)) {
+            helper.write(HELLO_REPLY_WATCHING + "\n");
+        } else if (request.find("\"plug\"") != std::string::npos) {
+            helper.write(
+                R"({"ok":true,"index":3,"input":1001,"inputEvent":1002,"timeoutScale":2.0})"
+                "\n");
+        } else {
+            helper.write(OK_REPLY + "\n");
+        }
+    });
+    hm::HelperClient client;
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    EXPECT_EQ(client.shutdownWaitForTest(), hm::helperShutdownWaitMs(1.0));
+    hm::ProvisionResult out;
+    EXPECT(client.provision(2, GamepadIdentity::DualSense, false, out));
+    EXPECT_EQ(client.shutdownWaitForTest(), hm::helperShutdownWaitMs(2.0));
+    EXPECT(client.shutdownWaitForTest() > hm::helperShutdownWaitMs(1.0));
+    client.shutdown();
 }
 
 static void test_an_answer_that_lands_during_the_cancel_is_kept() {
@@ -923,41 +1034,6 @@ static void test_an_answer_that_lands_during_the_cancel_is_kept() {
     EXPECT(client.provision(3, GamepadIdentity::DualSense, false, out));
     EXPECT(client.isReady());
     client.shutdown();
-}
-
-static void test_an_owed_answer_waits_its_own_small_bound() {
-    TEST("owed: an answer owed to a lost pad's unplug that never comes fails the next request "
-         "after the owed bound, not after that request's own, so a plug holds the topology lock "
-         "no longer than that");
-    FakeHelper fake([](FakeHelper& helper, const std::string& request) {
-        if (isHello(request)) {
-            helper.write(HELLO_REPLY_WATCHING + "\n");
-        } else if (request.find("\"unplug\"") == std::string::npos) {
-            helper.write(PLUG_REPLY_WITH_WATCH + "\n");
-        }
-    });
-    hm::HelperClient client;
-    client.setLostUnplugWaitForTest(20);
-    client.setPipeWaitForTest(1500);
-    client.setProvisionWaitForTest(LONG_WAIT_MS);
-    client.setOwedWaitForTest(SHORT_WAIT_MS);
-    EXPECT(client.adoptChannelForTest(fake.connect()));
-    hm::ProvisionResult out;
-    EXPECT(client.provision(2, GamepadIdentity::DualSense, false, out));
-    EXPECT(!client.deprovision(2, hm::Teardown::DeviceLost));
-    const auto start = Clock::now();
-    EXPECT(!client.provision(3, GamepadIdentity::DualSense, false, out));
-    EXPECT(elapsedMs(start) < TIMEOUT_SLACK.count());
-    TEST("owed: while the owed answer is younger than an unplug's own bound, the request fails "
-         "unsent and the channel stays");
-    EXPECT(client.isReady());
-    EXPECT(!fake.closedByClient());
-
-    TEST("owed: once it is older than that, the helper no longer answers, and the next request "
-         "lets the channel go");
-    std::this_thread::sleep_for(milliseconds(1600));
-    EXPECT(!client.provision(4, GamepadIdentity::DualSense, false, out));
-    EXPECT(!client.isReady());
 }
 
 static void test_a_slow_launch_connect_succeeds_within_its_limit() {
@@ -1016,8 +1092,8 @@ static void test_the_shipped_limits_hold_in_real_time() {
         long long tookMs = 0;
         bool keptChannel = false;
         bool closedByClient = true;
-        bool meanwhileFailsFast = false;
         bool nextPlug = false;
+        long long nextPlugMs = 0;
         std::vector<uint32_t> settled;
     } lost;
     Outcome slowExit;
@@ -1068,11 +1144,8 @@ static void test_the_shipped_limits_hold_in_real_time() {
         lost.tookMs = elapsedMs(start);
         lost.keptChannel = client.isReady();
         const auto meanwhile = Clock::now();
-        const bool meanwhilePlugged = client.provision(3, GamepadIdentity::DualSense, false, later);
-        lost.meanwhileFailsFast =
-            !meanwhilePlugged && elapsedMs(meanwhile) < 4000 && client.isReady();
-        fake.idleWithin(15000);
-        lost.nextPlug = client.provision(5, GamepadIdentity::DualSense, false, later);
+        lost.nextPlug = client.provision(3, GamepadIdentity::DualSense, false, later);
+        lost.nextPlugMs = elapsedMs(meanwhile);
         lost.settled = client.takeSettledSerials();
         lost.closedByClient = !fake.idleWithin(5000) || fake.closedByClient();
         client.shutdown();
@@ -1111,12 +1184,12 @@ static void test_the_shipped_limits_hold_in_real_time() {
          "session and their heartbeat");
     EXPECT(lost.keptChannel);
     EXPECT(!lost.closedByClient);
-    TEST("limits (real time): a plug meanwhile fails within the owed answer's 2 s and keeps the "
-         "channel");
-    EXPECT(lost.meanwhileFailsFast);
-    TEST("limits (real time): the late answer is read before the next request's, which succeeds, "
-         "and it settles the lost pad's serial");
+    TEST("limits (real time): a plug meanwhile is sent behind the late answer and succeeds once "
+         "it comes, within the plug's own bound, and the late answer settles the lost pad's "
+         "serial");
     EXPECT(lost.nextPlug);
+    EXPECT(lost.nextPlugMs >= 9000);
+    EXPECT(lost.nextPlugMs < 60000);
     EXPECT(lost.settled == std::vector<uint32_t>({2}));
 
     TEST("limits (real time): a stalled unplug fails at ten seconds");
@@ -1347,8 +1420,11 @@ int main() {
     test_hello_and_shutdown_keep_the_short_bound_beside_a_long_plug();
     test_a_shutdown_waits_for_the_helpers_removals();
     test_a_shutdown_is_sent_behind_an_owed_answer();
+    test_a_shutdown_waits_as_its_helpers_timeout_scale_says();
+    test_a_client_unplug_behind_an_owed_answer_is_sent_and_confirmed();
+    test_a_plug_behind_an_owed_answer_is_sent_and_succeeds();
+    test_a_stalled_helper_costs_a_plug_one_budget();
     test_an_answer_that_lands_during_the_cancel_is_kept();
-    test_an_owed_answer_waits_its_own_small_bound();
     test_a_slow_launch_connect_succeeds_within_its_limit();
     test_a_launch_that_never_connects_fails_at_its_limit();
     test_a_connection_made_ahead_serves_the_first_plug();
