@@ -18,11 +18,13 @@
     Close every program that holds a game controller open first (Steam with a
     PlayStation pad refuses removals and fails the removal checks).
 
-        scripts/hardware-selftest.ps1
-        scripts/hardware-selftest.ps1 -SkipComposite
-        scripts/hardware-selftest.ps1 -Helper "C:\Program Files\Satellite\satellite-hm-helper.exe"
+        hardware-selftest.bat
+        hardware-selftest.bat -SkipComposite
+        hardware-selftest.bat -Helper "C:\Program Files\Satellite\satellite-hm-helper.exe"
 
-    Requires an elevated PowerShell. Exit code 0 when every step passed.
+    Requires an elevated prompt. The .bat at the repo root forwards here with
+    -ExecutionPolicy Bypass, so it runs where the policy refuses .ps1 files.
+    Exit code 0 when every step passed.
 
 .PARAMETER Helper
     Path to satellite-hm-helper.exe. Defaults to the helper project's publish output.

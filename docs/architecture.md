@@ -1655,8 +1655,9 @@ no action from Satellite, which the hold on a disabled pad relies on (the
 driver reopens its input section by name, and the composite's pump keeps
 reading it). `--composite` does the same for a USB/IP persona, its audio
 function included, and installs its transport. CI does not run either;
-`scripts/hardware-selftest.ps1`, from an elevated PowerShell, runs both and
-the devnode probe and keeps their logs. Still to be seen on hardware: how
+`hardware-selftest.bat` (a forwarder to `scripts/hardware-selftest.ps1`), from
+an elevated prompt, runs both and the devnode probe and keeps their logs.
+Still to be seen on hardware: how
 many times Windows restarts a failed UMDF host, what disabling a composite's
 USB device does to its connection, whose time to come back `--composite`
 reports, and whether a pad plugged again on a serial whose XUSB companion was

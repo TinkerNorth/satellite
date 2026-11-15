@@ -283,7 +283,9 @@ carries every lane's configure flags, and the scripts under
 The historical entry points (`build-satellite.bat`, `build-satellite.sh`,
 `build-tests.bat`, `build-deb.sh`, `build-installer.bat`,
 `install-dependencies.bat`) still work; each is now a thin forwarder to the
-matching script.
+matching script, as is `hardware-selftest.bat` for
+`scripts\hardware-selftest.ps1`. The forwarders run under a Restricted
+execution policy, which refuses the `.ps1` files themselves.
 
 ### Windows
 
