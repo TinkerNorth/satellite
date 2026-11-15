@@ -2789,6 +2789,29 @@ static void test_a_helper_without_the_watch_leaves_pads_as_they_were() {
     EXPECT_EQ(bare.log.count(LogLevel::WARN, "came with no device watch block"), 1);
 }
 
+static void test_a_pad_without_a_watch_block_still_goes_with_its_connection() {
+    TEST("watch: a pad that came with no watch block is still given up when its helper connection "
+         "is replaced, says nothing before that, and is removed as one whose helper is gone");
+    FakeProvisioner prov;
+    prov.withWatch = false;
+    prov.helperReportsWatch = false;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+    silentTicks(adapter, ticksOf(SHORT_WATCH.unarmedNoticeTicks) + 1);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "watch"), 0);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "Serial 1"), 0);
+    prov.channelNow = 2;
+    silentTicks(adapter, 1);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({1}));
+    EXPECT(!adapter.hostDisabled(1).input);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "Serial 1's HIDMaestro helper connection is gone"), 1);
+    adapter.unplugDevice(1);
+    EXPECT(prov.teardowns.at(1) == Teardown::HelperGone);
+}
+
 static void test_a_composite_waits_longer_than_a_umdf2_pad() {
     TEST("watch: with the shipped policy a UMDF2 pad is given up after 15 s of ticks and a "
          "composite after 45 s, usbip-win2's first reattach and the import after it");
@@ -2995,6 +3018,7 @@ int main() {
     test_a_silent_helper_gives_up_every_pad();
     test_a_pad_let_go_by_its_client_is_removed_as_asked();
     test_a_helper_without_the_watch_leaves_pads_as_they_were();
+    test_a_pad_without_a_watch_block_still_goes_with_its_connection();
     test_a_composite_waits_longer_than_a_umdf2_pad();
     test_the_watch_and_the_version_section_hold_a_pad_together();
     test_a_disable_waits_for_a_busy_pad();

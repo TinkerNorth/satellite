@@ -105,8 +105,9 @@ if ($LASTEXITCODE -ne 0) { throw 'test_fetch_redist.ps1 failed' }
 # windows-ci.yml runs inside the MSYS2 MINGW64 shell; get the same toolchain
 # by putting mingw64\bin first. Never ucrt64: different toolchain than CI's.
 $mingwBin = 'C:\msys64\mingw64\bin'
-if ((Test-Path $mingwBin) -and (-not (($env:PATH -split ';') -contains $mingwBin))) {
-    $env:PATH = "$mingwBin;$env:PATH"
+if (Test-Path $mingwBin) {
+    $others = ($env:PATH -split ';') | Where-Object { $_ -and $_.TrimEnd('\') -ne $mingwBin }
+    $env:PATH = (@($mingwBin) + $others) -join ';'
 }
 
 Step 'Configure (Release, preset windows-mingw)'

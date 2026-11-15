@@ -71,12 +71,13 @@ internal static class SelfTest
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualsense"), 5, calibrationReport: 0x05, pairingReport: 0x09, Say, Check);
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualshock-4-v2"), 6, calibrationReport: 0x02, pairingReport: 0x12, Say, Check);
 
-            WatchedDevices(SatelliteProfiles.CopyId("dualsense"), 7, Say, Check);
-            WatchedDevices("xbox-360-wired", 8, Say, Check);
+            WatchedDevices(SatelliteProfiles.CopyId("dualsense"), 7, ctx.GetProfile(SatelliteProfiles.CopyId("dualsense")), Say, Check);
+            WatchedDevices("xbox-360-wired", 8, null, Say, Check);
             if (composite)
             {
                 if (!HMContext.IsUsbipBackendAvailable) HMContext.InstallUsbipBackend();
-                WatchedDevices(SatelliteProfiles.CopyId("dualsense-composite"), 9, Say, Check);
+                WatchedDevices(SatelliteProfiles.CopyId("dualsense-composite"), 9,
+                               ctx.GetProfile(SatelliteProfiles.CopyId("dualsense-composite")), Say, Check);
             }
             else
             {
@@ -276,8 +277,9 @@ internal static class SelfTest
     // through the Configuration Manager on its own, and the device removed. A
     // composite's USB device is disabled too, and what the USB/IP connection
     // does then is reported.
-    private static void WatchedDevices(string profileId, int slot, Action<string> say, Action<bool, string> check)
+    private static void WatchedDevices(string profileId, int slot, HMProfile? sony, Action<string> say, Action<bool, string> check)
     {
+        IReadOnlyList<string> hidBefore = sony == null ? Array.Empty<string>() : HidDevices.Paths(sony.VendorId, sony.ProductId);
         using var session = new Session(Environment.ProcessId);
         string hello = session.Handle(@"{""op"":""hello"",""protocol"":2}", out _);
         check(hello.Contains(@"""protocol"":2"), $"{profileId}: the session settles on the device watch's protocol");
@@ -301,20 +303,23 @@ internal static class SelfTest
         check(after.Seq != before.Seq, $"{profileId}: the watcher looks again, so the sequence moves with nothing changed");
         if (whole.Report is not { Whole: true }) return;
 
+        using InputProbe? input = sony == null ? null : InputProbe.Open(TransportIndexOf(reply), sony, hidBefore);
+        input?.Check(profileId, "before anything is disabled", check);
+
         DevnodeState device = tree.Locate(devnodes.Device);
         DevnodeState hidParent = devnodes.Usbip ? tree.ChildOfClass(device, DevnodeIds.HidClass) : device;
         say($"{profileId}: its HID collection is {WindowsDevnodeTree.InstanceIdOf(tree.FirstChild(hidParent)) ?? "not found"}");
-        DisableAndEnable(profileId, block, tree.FirstChild(hidParent), Presents.Hid, WatchedDevnode.HidCollection, say, check);
+        DisableAndEnable(profileId, block, tree.FirstChild(hidParent), Presents.Hid, WatchedDevnode.HidCollection, input, say, check);
         if (devnodes.Usbip)
             DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.HidClass),
-                             Presents.Hid, WatchedDevnode.HidFunction, say, check);
+                             Presents.Hid, WatchedDevnode.HidFunction, input, say, check);
         if (devnodes.Audio)
             DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.MediaClass),
-                             Presents.Audio, WatchedDevnode.AudioFunction, say, check);
+                             Presents.Audio, WatchedDevnode.AudioFunction, input, say, check);
         if (devnodes.Companion != null)
             DisableAndEnable(profileId, block, tree.Locate(devnodes.Companion), Presents.Xinput, WatchedDevnode.Companion,
-                             say, check);
-        DisableAndEnable(profileId, block, tree.Locate(devnodes.Device), Presents.Hid, WatchedDevnode.Device, say, check);
+                             input, say, check);
+        DisableAndEnable(profileId, block, tree.Locate(devnodes.Device), Presents.Hid, WatchedDevnode.Device, input, say, check);
 
         DevnodeState parent = tree.Locate(devnodes.Device);
         uint removed = CfgMgr.CM_Query_And_Remove_SubTreeW(parent.Handle, out int veto, null, 0, CfgMgr.CM_REMOVE_NO_RESTART);
@@ -383,7 +388,7 @@ internal static class SelfTest
     // Disables one devnode and checks that its presentation, and only that
     // one, reads disabled; then enables it and times the presentation's return.
     private static void DisableAndEnable(string profileId, WatchBlockView block, DevnodeState node, Presents part,
-                                         WatchedDevnode role, Action<string> say, Action<bool, string> check)
+                                         WatchedDevnode role, InputProbe? input, Action<string> say, Action<bool, string> check)
     {
         string named = $"{profileId}: its {role}";
         uint disabled = node.Located ? CfgMgr.CM_Disable_DevNode(node.Handle, CfgMgr.CM_DISABLE_UI_NOT_OK) : uint.MaxValue;
@@ -404,6 +409,142 @@ internal static class SelfTest
         DeviceWatchBlock.Reading back = block.Await(r => r.Report is { Whole: true }, ReattachBudget);
         check(back.Report is { Whole: true },
               $"{named} enabled again, the watch finds every presentation present after {started.Elapsed.TotalSeconds:F1} s, {Describe(back)}");
+        input?.Check(profileId, $"after its {role} was enabled again", check);
+    }
+
+    private static int TransportIndexOf(string reply)
+    {
+        using JsonDocument doc = JsonDocument.Parse(reply);
+        return doc.RootElement.TryGetProperty("transportIndex", out JsonElement transport) && transport.TryGetInt32(out int index)
+            ? index
+            : throw new InvalidOperationException($"the plug reply names no transport index: {Shorten(reply)}");
+    }
+
+    private sealed class InputProbe : IDisposable
+    {
+        private const int SonyPayloadBytes = 63;
+        private const byte SonyStickCentre = 0x80;
+        private const byte SonyHatNeutral = 0x08;
+        private static readonly TimeSpan ReportBudget = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan ResumeBudget = TimeSpan.FromSeconds(10);
+
+        private readonly nint _mapping;
+        private readonly nint _view;
+        private readonly EventWaitHandle _doorbell;
+        private readonly HMProfile _profile;
+        private readonly IReadOnlyList<string> _before;
+        private byte _mark = 0x10;
+        private byte _seq;
+
+        private InputProbe(nint mapping, nint view, EventWaitHandle doorbell, HMProfile profile, IReadOnlyList<string> before)
+        {
+            _mapping = mapping;
+            _view = view;
+            _doorbell = doorbell;
+            _profile = profile;
+            _before = before;
+        }
+
+        public static InputProbe Open(int transportIndex, HMProfile profile, IReadOnlyList<string> before)
+        {
+            string name = SectionNames.Input(transportIndex);
+            uint access = NativeMethods.FILE_MAP_READ | NativeMethods.FILE_MAP_WRITE;
+            nint mapping = NativeMethods.OpenFileMappingW(access, false, name);
+            if (mapping == 0)
+                throw new InvalidOperationException($"could not open {name} for writing (error {Marshal.GetLastWin32Error()})");
+            nint view = NativeMethods.MapViewOfFile(mapping, access, 0, 0, (nuint)FrameMailbox.SectionSize);
+            if (view == 0)
+            {
+                int error = Marshal.GetLastWin32Error();
+                NativeMethods.CloseHandle(mapping);
+                throw new InvalidOperationException($"could not map {name} for writing (error {error})");
+            }
+            return new InputProbe(mapping, view, EventWaitHandle.OpenExisting(SectionNames.InputEvent(transportIndex)), profile, before);
+        }
+
+        public void Check(string profileId, string when, Action<bool, string> check)
+        {
+            byte mark = ++_mark;
+            bool delivered = Delivers(mark, out string said);
+            check(delivered, $"{profileId}: a frame written to its input section {when} comes out of its HID collection as an input report: {said}");
+        }
+
+        private bool Delivers(byte mark, out string said)
+        {
+            var clock = Stopwatch.StartNew();
+            said = $"no {_profile.VendorId:X4}:{_profile.ProductId:X4} HID device of its own is present";
+            while (clock.Elapsed < ResumeBudget)
+            {
+                string? path = HidDevices.Paths(_profile.VendorId, _profile.ProductId)
+                    .FirstOrDefault(p => !_before.Contains(p, StringComparer.OrdinalIgnoreCase));
+                if (path == null)
+                {
+                    Thread.Sleep(AwaitPollMs);
+                    continue;
+                }
+                HidDevices.InputReader reader;
+                try
+                {
+                    reader = new HidDevices.InputReader(path);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    said = ex.Message;
+                    Thread.Sleep(AwaitPollMs);
+                    continue;
+                }
+                using (reader)
+                {
+                    WriteFrame(mark);
+                    TimeSpan deadline = clock.Elapsed + ReportBudget;
+                    while (clock.Elapsed < deadline)
+                    {
+                        byte[]? report;
+                        try
+                        {
+                            report = reader.Read(ReportBudget);
+                        }
+                        catch (IOException ex)
+                        {
+                            said = ex.Message;
+                            break;
+                        }
+                        if (report == null)
+                        {
+                            said = $"no input report within {ReportBudget.TotalSeconds:F0} s of the frame";
+                            break;
+                        }
+                        if (report.Length > 1 && report[1] == mark)
+                        {
+                            said = $"report 0x{report[0]:X2} carries left stick X 0x{mark:X2}, {clock.Elapsed.TotalSeconds:F1} s in";
+                            return true;
+                        }
+                        said = $"an input report carried left stick X 0x{(report.Length > 1 ? report[1] : 0):X2}, not 0x{mark:X2}";
+                    }
+                }
+            }
+            return false;
+        }
+
+        private unsafe void WriteFrame(byte mark)
+        {
+            var frame = new byte[SonyPayloadBytes];
+            frame[0] = mark;
+            frame[1] = SonyStickCentre;
+            frame[2] = SonyStickCentre;
+            frame[3] = SonyStickCentre;
+            frame[6] = ++_seq;
+            frame[7] = SonyHatNeutral;
+            FrameMailbox.Write(new Span<byte>((void*)_view, FrameMailbox.SectionSize), frame);
+            _doorbell.Set();
+        }
+
+        public void Dispose()
+        {
+            _doorbell.Dispose();
+            NativeMethods.UnmapViewOfFile(_view);
+            NativeMethods.CloseHandle(_mapping);
+        }
     }
 
     private static string Describe(DeviceWatchBlock.Reading reading) =>

@@ -24,7 +24,84 @@ public sealed class FrameMailboxTests
         Assert.Equal(4, FrameMailbox.DataSizeOffset);
         Assert.Equal(8, FrameMailbox.DataOffset);
         Assert.Equal(256, FrameMailbox.DataCapacity);
+        Assert.Equal(278, FrameMailbox.ExtendedSizeOffset);
         Assert.Equal(362, FrameMailbox.SectionSize);
+    }
+
+    [Fact]
+    public void AWrittenFrameReadsBackUnderTheNextEvenSequence()
+    {
+        byte[] section = Section();
+        byte[] payload = Enumerable.Range(10, 63).Select(i => (byte)i).ToArray();
+
+        FrameMailbox.Write(section, payload);
+
+        var frame = new byte[FrameMailbox.DataCapacity];
+        uint lastSeq = 0;
+        Assert.True(FrameMailbox.TryRead(section, ref lastSeq, frame, out int length));
+        Assert.Equal(63, length);
+        Assert.Equal(payload, frame.Take(63).ToArray());
+        Assert.Equal(2u, lastSeq);
+
+        FrameMailbox.Write(section, new byte[] { 1 });
+        Assert.True(FrameMailbox.TryRead(section, ref lastSeq, frame, out length));
+        Assert.Equal(1, length);
+        Assert.Equal(4u, lastSeq);
+    }
+
+    [Fact]
+    public void AWrittenFrameClearsTheExtendedReportSize()
+    {
+        byte[] section = Section();
+        BinaryPrimitives.WriteUInt32LittleEndian(section.AsSpan(FrameMailbox.ExtendedSizeOffset), 77);
+
+        FrameMailbox.Write(section, new byte[] { 5, 6, 7 });
+
+        Assert.Equal(0u, BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan(FrameMailbox.ExtendedSizeOffset)));
+        Assert.Equal(3u, BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan(FrameMailbox.DataSizeOffset)));
+    }
+
+    [Fact]
+    public void AFrameLargerThanTheCapacityOrASectionTooSmallIsRefused()
+    {
+        Assert.Throws<ArgumentException>(() => FrameMailbox.Write(Section(), new byte[FrameMailbox.DataCapacity + 1]));
+        Assert.Throws<ArgumentException>(() => FrameMailbox.Write(new byte[FrameMailbox.SectionSize - 1], new byte[1]));
+    }
+
+    [Fact]
+    public void AReaderRacingTheMailboxWriterNeverSeesATornFrame()
+    {
+        byte[] section = Section();
+        var stop = new ManualResetEventSlim(false);
+        var writer = new Thread(() =>
+        {
+            var block = new byte[48];
+            byte fill = 0;
+            while (!stop.IsSet)
+            {
+                fill++;
+                Array.Fill(block, fill);
+                FrameMailbox.Write(section, block);
+            }
+        });
+        writer.Start();
+
+        var frame = new byte[FrameMailbox.DataCapacity];
+        uint lastSeq = 0;
+        int read = 0;
+        int torn = 0;
+        var deadline = DateTime.UtcNow.AddMilliseconds(300);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!FrameMailbox.TryRead(section, ref lastSeq, frame, out int length)) continue;
+            read++;
+            if (length != 48 || frame.Take(48).Distinct().Count() != 1) torn++;
+        }
+        stop.Set();
+        writer.Join();
+
+        Assert.True(read > 0);
+        Assert.Equal(0, torn);
     }
 
     [Fact]

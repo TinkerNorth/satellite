@@ -53,11 +53,12 @@ struct SingleInstanceWaits {
 // True when this process is the session's Satellite: it then owns the mutex,
 // in `held`, on the calling thread until it exits, which is what a later launch
 // waits for. A launch that finds another Satellite ends (false) unless that one
-// is on its way out. It taps the tray window once: a Satellite that answers, or
-// that UIPI keeps the tap from (one running elevated without UIAccess), has the
-// click. One that does not answer is probed with WM_NULL on each wait, so one
-// whose message loop has not started yet, as at login, ends the launch as soon
-// as it answers. Only one that never answers again is on its way out, or hung:
+// is on its way out. It taps the tray window once: a Satellite that answers has
+// the click. One that UIPI keeps the tap from (one running elevated without
+// UIAccess) is probed at once with WM_NULL, which UIPI admits, and is running if
+// it answers that. One that does not answer is probed with WM_NULL on each wait,
+// so one whose message loop has not started yet, as at login, ends the launch as
+// soon as it answers. Only one that never answers again is on its way out, or hung:
 // this launch waits for it to exit and starts once it has, and past `exitMs` it
 // ends. One launch at a time does this (`waitingMutex`); a later one ends at once.
 bool acquireSingleInstance(const SingleInstanceNames& names, const SingleInstanceWaits& waits,

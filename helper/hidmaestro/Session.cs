@@ -137,10 +137,13 @@ internal sealed class Session : IDisposable
                                                   IdentityTags.TokenOf(controller.IdentityKey),
                                                   audio: controller.UsbAudio != null);
             plugged.Devnodes = devnodes;
-            return Watch().Add(serial, devnodes, DuplicateReadOnlyForParent).Handle;
+            ulong handle = Watch().Add(serial, devnodes, DuplicateReadOnlyForParent).Handle;
+            if (handle == 0) throw new InvalidOperationException("the watch block could not be duplicated into satellite.exe");
+            return handle;
         }
         catch (Exception ex)
         {
+            _watch?.Remove(serial);
             Console.Error.WriteLine($"satellite-hm-helper: serial {serial} runs unwatched: {ex.Message}");
             return 0;
         }

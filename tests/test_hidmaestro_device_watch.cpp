@@ -531,6 +531,30 @@ void test_a_gone_channel_gives_the_pad_up_whatever_its_heartbeat_did() {
               1);
 }
 
+void test_a_pad_without_a_block_goes_only_with_its_connection() {
+    TEST("watch: a pad with no block to read stays as it was through any number of steps, says "
+         "nothing, and is lost to its connection alone");
+    WatchTracker t;
+    int notes = 0;
+    for (int i = 0; i < 100; ++i) {
+        const WatchTracker next = advanceUnwatched(t, false);
+        notes += static_cast<int>(noteWatchStep(3, t, next, SHORT).size());
+        t = next;
+    }
+    EXPECT_EQ(t.state, PadWatch::Unwatched);
+    EXPECT_EQ(notes, 0);
+    const WatchTracker lost = advanceUnwatched(t, true);
+    EXPECT_EQ(lost.state, PadWatch::Lost);
+    EXPECT_EQ(lost.loss, PadLoss::Channel);
+    EXPECT_EQ(count(noteWatchStep(3, t, lost, SHORT), LogLevel::WARN,
+                    "Serial 3's HIDMaestro helper connection is gone"),
+              1);
+    const WatchTracker still = advanceUnwatched(lost, false);
+    EXPECT_EQ(still.state, PadWatch::Lost);
+    EXPECT_EQ(still.loss, PadLoss::Channel);
+    EXPECT(noteWatchStep(3, lost, still, SHORT).empty());
+}
+
 void test_a_helper_gone_takes_unwatched_and_disabled_pads_too() {
     TEST("watch: a helper gone takes a pad still unwatched, and one held disabled (Emir's "
          "decision: nothing could tell Satellite when Windows enabled it again)");
@@ -955,6 +979,7 @@ int main() {
     test_a_heartbeat_that_never_moved_never_gives_the_helper_up();
     test_a_helper_gone_takes_unwatched_and_disabled_pads_too();
     test_a_gone_channel_gives_the_pad_up_whatever_its_heartbeat_did();
+    test_a_pad_without_a_block_goes_only_with_its_connection();
     test_a_lost_pad_stays_lost();
     test_an_unstable_reading_leaves_the_pad_as_it_was();
     test_a_block_of_another_layout_leaves_the_pad_unwatched();

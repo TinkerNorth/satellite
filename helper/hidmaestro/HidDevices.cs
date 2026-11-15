@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
+using Satellite.HmHelper.Core;
 
 namespace Satellite.HmHelper;
 
@@ -13,6 +14,45 @@ internal static class HidDevices
     private const uint FILE_SHARE_READ = 1;
     private const uint FILE_SHARE_WRITE = 2;
     private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_OVERLAPPED = 0x40000000;
+
+    public sealed class InputReader : IDisposable
+    {
+        private readonly SafeFileHandle _handle;
+
+        public int ReportLength { get; }
+
+        public InputReader(string path)
+        {
+            _handle = CreateFile(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING,
+                                 FILE_FLAG_OVERLAPPED, 0);
+            if (_handle.IsInvalid)
+                throw new InvalidOperationException($"could not open {path} (error {Marshal.GetLastWin32Error()})");
+            if (!HidD_GetPreparsedData(_handle, out nint prepared))
+            {
+                int error = Marshal.GetLastWin32Error();
+                _handle.Dispose();
+                throw new InvalidOperationException($"{path} has no HID preparsed data (error {error})");
+            }
+            try
+            {
+                HidP_GetCaps(prepared, out HIDP_CAPS caps);
+                ReportLength = caps.InputReportByteLength;
+            }
+            finally
+            {
+                HidD_FreePreparsedData(prepared);
+            }
+        }
+
+        public byte[]? Read(TimeSpan budget)
+        {
+            var report = new byte[ReportLength];
+            return OverlappedIo.Read(_handle, report, budget) is int moved && moved > 0 ? report : null;
+        }
+
+        public void Dispose() => _handle.Dispose();
+    }
 
     public static IReadOnlyList<string> Paths(ushort vendorId, ushort productId)
     {

@@ -472,6 +472,11 @@ inline WatchTracker advanceWatch(const WatchTracker& was, const WatchReading& no
     return settleCondition(heard, policy);
 }
 
+inline WatchTracker advanceUnwatched(const WatchTracker& was, bool channelGone) {
+    const bool settled = was.state == PadWatch::Lost || !channelGone;
+    return settled ? was : lose(was, PadLoss::Channel);
+}
+
 inline bool watchHoldsInput(const WatchTracker& t) { return t.state == PadWatch::Disabled; }
 
 inline bool watchHoldsMic(const WatchTracker& t) {

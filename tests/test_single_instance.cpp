@@ -50,6 +50,14 @@ bool someoneWaits(const TestNames& n) {
 // elevated without UIAccess.
 lifecycle::TapAnswer deniedTap(HWND, UINT, DWORD) { return lifecycle::TapAnswer::Denied; }
 
+lifecycle::TapAnswer deniedTapProbeAnswered(HWND, UINT message, DWORD) {
+    return message == WM_NULL ? lifecycle::TapAnswer::Answered : lifecycle::TapAnswer::Denied;
+}
+
+lifecycle::TapAnswer deniedTapProbeUnanswered(HWND, UINT message, DWORD) {
+    return message == WM_NULL ? lifecycle::TapAnswer::NoAnswer : lifecycle::TapAnswer::Denied;
+}
+
 constexpr lifecycle::SingleInstanceWaits QUICK{200, 50, 5000};
 
 std::atomic<int> g_taps{0};
@@ -273,6 +281,45 @@ static void test_a_tap_that_uipi_refuses_ends_the_launch() {
     EXPECT(!someoneWaits(n));
 }
 
+static void test_a_refused_tap_is_followed_by_a_probe() {
+    TEST("single instance: a tap UIPI refuses is followed by a probe UIPI admits: an elevated "
+         "Satellite that answers the probe is running, and the launch ends at once");
+    const TestNames n = namesFor("uipi-probe-live");
+    HANDLE held = nullptr;
+    bool started = true;
+    long long tookMs = 0;
+    {
+        OtherInstance other(n, {0, false, 1500});
+        Sleep(50);
+        const auto start = Clock::now();
+        started = lifecycle::acquireSingleInstance(n.names(), QUICK, held, deniedTapProbeAnswered);
+        tookMs = elapsedMs(start);
+    }
+    EXPECT(!started);
+    EXPECT(held == nullptr);
+    EXPECT(tookMs < 150);
+    EXPECT(!someoneWaits(n));
+
+    TEST("single instance: an elevated Satellite that answers the probe no more is on its way "
+         "out, and the launch waits for it and then starts");
+    const TestNames m = namesFor("uipi-probe-exiting");
+    started = false;
+    {
+        OtherInstance other(m, {0, false, 800});
+        Sleep(50);
+        const auto start = Clock::now();
+        started =
+            lifecycle::acquireSingleInstance(m.names(), QUICK, held, deniedTapProbeUnanswered);
+        tookMs = elapsedMs(start);
+    }
+    EXPECT(started);
+    EXPECT(held != nullptr);
+    EXPECT(tookMs >= 600);
+    EXPECT(tookMs < 4000);
+    EXPECT(!someoneWaits(m));
+    release(held);
+}
+
 static void test_only_one_launch_waits() {
     TEST("single instance: while one launch waits for a Satellite on its way out, a later launch "
          "ends at once instead of waiting too");
@@ -354,6 +401,7 @@ int main() {
     test_a_late_answer_still_ends_the_launch();
     test_a_satellite_whose_loop_starts_late_is_not_taken_for_one_exiting();
     test_a_tap_that_uipi_refuses_ends_the_launch();
+    test_a_refused_tap_is_followed_by_a_probe();
     test_only_one_launch_waits();
     test_a_satellite_still_starting_is_tapped_once_its_window_shows();
     test_a_satellite_that_never_exits_is_given_up_on();
