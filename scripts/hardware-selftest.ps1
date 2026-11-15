@@ -15,14 +15,18 @@
       3. test_windows_devnode_probe.exe               (Plug and Play behaviour the
                                                        device watch builds on)
 
-    Close every program that holds a game controller open first (Steam with a
-    PlayStation pad refuses removals and fails the removal checks).
+    Close every program that holds a game controller open first: the script
+    refuses to start while Steam or DS4Windows runs, since a program holding a
+    pad open refuses its removal, which costs about 5.4 s each and fails the
+    removal checks. -IgnoreHolders runs anyway.
 
-        scripts/hardware-selftest.ps1
-        scripts/hardware-selftest.ps1 -SkipComposite
-        scripts/hardware-selftest.ps1 -Helper "C:\Program Files\Satellite\satellite-hm-helper.exe"
+        hardware-selftest.bat
+        hardware-selftest.bat -SkipComposite
+        hardware-selftest.bat -Helper "C:\Program Files\Satellite\satellite-hm-helper.exe"
 
-    Requires an elevated PowerShell. Exit code 0 when every step passed.
+    Requires an elevated prompt. The .bat at the repo root forwards here with
+    -ExecutionPolicy Bypass, so it runs where the policy refuses .ps1 files.
+    Exit code 0 when every step passed.
 
 .PARAMETER Helper
     Path to satellite-hm-helper.exe. Defaults to the helper project's publish output.
@@ -37,13 +41,17 @@
 
 .PARAMETER SkipComposite
     Leave out `selftest --composite`.
+
+.PARAMETER IgnoreHolders
+    Run even while a program known to hold game controllers open is running.
 #>
 [CmdletBinding()]
 param(
     [string]$Helper = '',
     [string]$Probe = '',
     [string]$LogDir = '',
-    [switch]$SkipComposite
+    [switch]$SkipComposite,
+    [switch]$IgnoreHolders
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,12 +75,15 @@ New-Item -ItemType Directory -Force $LogDir | Out-Null
 
 $holders = Get-Process -Name steam, steamwebhelper, 'DS4Windows', 'ds4windows' -ErrorAction SilentlyContinue
 if ($holders) {
-    Write-Warning ("These programs may hold a game controller open and refuse removals: " +
-        (($holders | Select-Object -ExpandProperty ProcessName -Unique) -join ', '))
+    $names = ($holders | Select-Object -ExpandProperty ProcessName -Unique) -join ', '
+    if (-not $IgnoreHolders) {
+        throw "Close these first, a program that holds a game controller open refuses its removal, which costs about 5.4 s each and fails the removal checks: $names. Pass -IgnoreHolders to run anyway."
+    }
+    Write-Warning "Running beside programs that may hold game controllers open: $names. A refused removal costs about 5.4 s and fails its check."
 }
 
 $results = [System.Collections.Generic.List[object]]::new()
-function Run-Step([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Log) {
+function Invoke-Step([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Log) {
     Write-Host ''
     Write-Host "=== $Name ===" -ForegroundColor Cyan
     Write-Host "    $Exe $($Arguments -join ' ')"
@@ -86,11 +97,11 @@ function Run-Step([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Lo
 
 Write-Host "helper: $Helper"
 & $Helper sdk-version
-Run-Step 'selftest' $Helper @('selftest', '--log', (Join-Path $LogDir 'selftest.helper.log')) (Join-Path $LogDir 'selftest.log')
+Invoke-Step 'selftest' $Helper @('selftest', '--log', (Join-Path $LogDir 'selftest.helper.log')) (Join-Path $LogDir 'selftest.log')
 if (-not $SkipComposite) {
-    Run-Step 'selftest --composite' $Helper @('selftest', '--composite', '--log', (Join-Path $LogDir 'selftest-composite.helper.log')) (Join-Path $LogDir 'selftest-composite.log')
+    Invoke-Step 'selftest --composite' $Helper @('selftest', '--composite', '--log', (Join-Path $LogDir 'selftest-composite.helper.log')) (Join-Path $LogDir 'selftest-composite.log')
 }
-Run-Step 'devnode probe' $Probe @() (Join-Path $LogDir 'devnode-probe.log')
+Invoke-Step 'devnode probe' $Probe @() (Join-Path $LogDir 'devnode-probe.log')
 
 Write-Host ''
 Write-Host '=== Results ===' -ForegroundColor Cyan

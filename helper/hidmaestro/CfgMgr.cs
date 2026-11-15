@@ -8,11 +8,13 @@ namespace Satellite.HmHelper;
 internal static class CfgMgr
 {
     public const uint CR_SUCCESS = 0x00000000;
+    public const uint CR_REMOVE_VETOED = 0x00000017;
     public const uint CM_LOCATE_DEVNODE_NORMAL = 0x00000000;
     public const uint CM_DRP_CLASSGUID = 0x00000009;
     public const uint CM_DISABLE_UI_NOT_OK = 0x00000004;
     public const uint CM_REMOVE_NO_RESTART = 0x00000002;
     public const int MAX_DEVICE_ID_LEN = 200;
+    public const int MAX_PATH = 260;
 
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     public static extern uint CM_Locate_DevNodeW(out uint devInst, string deviceId, uint flags);
