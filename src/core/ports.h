@@ -92,11 +92,18 @@ class IGamepadPort {
     // stays listed until it is unplugged. Default: none.
     virtual std::vector<uint32_t> lostSerials() const { return {}; }
 
+    // A cheap hint, read without any lock on every maintenance tick: might a
+    // serial be lost? Only then does the tick take the topology lock and read
+    // lostSerials, which decides. Default: the list itself.
+    virtual bool anyLost() const { return !lostSerials().empty(); }
+
     // Called inside a topology change, with service.topology alone held: the
     // serials whose unconfirmed unplug (each one the core quarantined) the
-    // backend has since seen through, so the core may hand them out again.
-    // Each is reported once. Default: none.
-    virtual std::vector<uint32_t> settledSerials() { return {}; }
+    // backend has since seen through, so the core may hand them out again,
+    // each named by the backend that saw it through, since only that
+    // backend's quarantine of it ends there. Each is reported once. Default:
+    // none.
+    virtual std::vector<SettledSerial> settledSerials() { return {}; }
 
     // What the host's user has disabled of the serial's virtual device (in
     // Windows' Device Manager). With every input presentation disabled the

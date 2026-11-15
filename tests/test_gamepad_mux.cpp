@@ -137,7 +137,12 @@ struct MockPort : IGamepadPort {
         return true;
     }
     std::vector<uint32_t> lostSerials() const override { return lost; }
-    std::vector<uint32_t> settledSerials() override { return std::exchange(settled, {}); }
+    std::vector<SettledSerial> settledSerials() override {
+        std::vector<SettledSerial> out;
+        for (const uint32_t serial : std::exchange(settled, {}))
+            out.push_back({serial, backendId()});
+        return out;
+    }
     HostDisabled hostDisabled(uint32_t serial) const override {
         HostDisabled d;
         d.input = disabled.count(serial) != 0;
@@ -346,7 +351,10 @@ static void test_settled_serials_come_from_every_child() {
     GamepadMux mux({&a, &b});
     a.settled = {5};
     b.settled = {2, 7};
-    EXPECT(mux.settledSerials() == std::vector<uint32_t>({5, 2, 7}));
+    const std::vector<SettledSerial> settled = mux.settledSerials();
+    EXPECT_EQ(settled.size(), size_t{3});
+    EXPECT(settled.size() == 3 && settled[0].serial == 5 && settled[0].backend == a.backendId());
+    EXPECT(settled.size() == 3 && settled[2].serial == 7 && settled[2].backend == b.backendId());
     EXPECT(mux.settledSerials().empty());
 }
 

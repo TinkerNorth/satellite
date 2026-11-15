@@ -255,7 +255,7 @@ void SessionService::retireConnectionLocked(Connection& conn, std::vector<Retire
     for (auto& ctrl : conn.controllers) {
         if (ctrl.active && ctrl.serialNo != 0) {
             releasePointerLocked(ctrl);
-            retired.push_back(RetiredSerial{ctrl.serialNo, false});
+            retired.push_back(retiring(ctrl.serialNo));
             ctrl.active = false;
             ctrl.serialNo = 0;
         }
@@ -281,7 +281,7 @@ void SessionService::settleRetiredLocked(std::vector<RetiredSerial>& retired) {
             releaseSerial(r.serial);
             continue;
         }
-        quarantineSerial(r.serial);
+        quarantineSerial(r.serial, r.backend);
         log_.logMsg(LogLevel::WARN, "service",
                     "Unplug of serial " + std::to_string(r.serial) +
                         " unconfirmed; serial quarantined until the bus closes");
@@ -327,12 +327,14 @@ void SessionService::releaseSerial(uint32_t serial) {
 // since seen through (a helper that answered late, or a new helper that swept
 // what a dead one left) is free again here, before the plan hands serials out.
 void SessionService::releaseSettledSerials() {
-    const std::vector<uint32_t> settled = backend_.settledSerials();
+    const std::vector<SettledSerial> settled = backend_.settledSerials();
     if (settled.empty()) return;
     std::lock_guard<TrackedMutex> lk(mtx_);
-    for (const uint32_t serial : settled) {
+    for (const SettledSerial& s : settled) {
+        const uint32_t serial = s.serial;
         if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) continue;
         if (!serialQuarantined_[serial - 1]) continue;
+        if (serialQuarantinedBy_[serial - 1] != s.backend) continue;
         serialQuarantined_[serial - 1] = false;
         log_.logMsg(LogLevel::INFO, "service",
                     "Serial " + std::to_string(serial) +
@@ -340,11 +342,17 @@ void SessionService::releaseSettledSerials() {
     }
 }
 
-void SessionService::quarantineSerial(uint32_t serial) {
+void SessionService::quarantineSerial(uint32_t serial, const std::string& backend) {
     if (serial == 0 || serial > (uint32_t)MAX_BACKEND_CONTROLLERS) return;
     hidMotors_[serial].store(0, std::memory_order_release);
     serialInUse_[serial - 1] = false;
     serialQuarantined_[serial - 1] = true;
+    serialQuarantinedBy_[serial - 1] = backend;
+}
+
+// A serial on its way out, named by the backend that owns it now.
+SessionService::RetiredSerial SessionService::retiring(uint32_t serial) const {
+    return RetiredSerial{serial, false, backend_.backendIdForSerial(serial)};
 }
 
 bool SessionService::claimSerialLocked(uint32_t serial) {
@@ -506,7 +514,7 @@ void SessionService::vacatePadLocked(Connection& conn, Controller& ctrl,
                                      std::vector<RetiredSerial>& retired) {
     if (ctrl.serialNo != 0) {
         releasePointerLocked(ctrl);
-        retired.push_back(RetiredSerial{ctrl.serialNo, false});
+        retired.push_back(retiring(ctrl.serialNo));
     }
     ctrl.active = false;
     ctrl.serialNo = 0;
@@ -742,7 +750,7 @@ void SessionService::replugPadLocked(Connection& conn, Controller& ctrl, PadChan
         return;
     }
     releasePointerLocked(ctrl);
-    retired.push_back(RetiredSerial{ctrl.serialNo, false});
+    retired.push_back(retiring(ctrl.serialNo));
     ctrl.serialNo = pad.serial;
     takeDescriptorLocked(ctrl, pad.desc);
     seedRumbleLocked(ctrl);
@@ -1149,6 +1157,7 @@ void SessionService::recheckDrivers() {
 // is read under the topology lock, so no PUT can free a lost serial and plug a
 // fresh pad on it between the read and the vacate.
 void SessionService::vacateLostPads() {
+    if (!backend_.anyLost()) return;
     std::unique_lock<TrackedMutex> topo(topoMtx_, std::try_to_lock);
     if (!topo.owns_lock()) return;
     const std::vector<uint32_t> lost = backend_.lostSerials();

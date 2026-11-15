@@ -123,6 +123,12 @@ inline ControllerState controllerStateFor(bool active, bool pluggedIn, bool disa
     return disabled ? ControllerState::Disabled : ControllerState::Live;
 }
 
+// A serial whose unconfirmed unplug a backend has since seen through.
+struct SettledSerial {
+    uint32_t serial = 0;
+    std::string backend;
+};
+
 // What the host's user has disabled of a virtual pad (Windows' Device
 // Manager), each of its presentations on its own: the pad is held only when
 // every presentation that takes input is.

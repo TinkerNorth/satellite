@@ -316,7 +316,16 @@ struct MockViGem : IGamepadPort {
     // still plugged, and a disabled one is asked about by serial.
     std::set<uint32_t> lostSet;
     std::set<uint32_t> disabledSet;
+    mutable int lostReads = 0;
+    bool anyLost() const override {
+        std::lock_guard<std::mutex> lk(pluggedMtx);
+        for (const uint32_t serial : lostSet) {
+            if (pluggedSet.count(serial) != 0) return true;
+        }
+        return false;
+    }
     std::vector<uint32_t> lostSerials() const override {
+        lostReads++;
         std::vector<uint32_t> lost;
         {
             std::lock_guard<std::mutex> lk(pluggedMtx);
@@ -337,13 +346,19 @@ struct MockViGem : IGamepadPort {
         return d;
     }
 
-    // The serials a new helper has since swept, reported once; and how often
-    // the core asked, which it does inside topology changes only.
-    std::vector<uint32_t> settledSet;
+    // The serials a new helper has since swept, reported once and named by the
+    // backend that saw them through; and how often the core asked, which it
+    // does inside topology changes only.
+    std::vector<SettledSerial> settledSet;
     int settledCalls = 0;
-    std::vector<uint32_t> settledSerials() override {
+    std::vector<SettledSerial> settledSerials() override {
         settledCalls++;
         return std::exchange(settledSet, {});
+    }
+    // The backend a plugged serial belongs to, as the mux names it.
+    std::string serialBackend = "hidmaestro";
+    const char* backendIdForSerial(uint32_t serial) const override {
+        return isDevicePlugged(serial) ? serialBackend.c_str() : "";
     }
 };
 
@@ -1324,6 +1339,22 @@ static std::vector<ControllerDescriptor> everyPad() {
     return pads;
 }
 
+static void test_lostPad_nothingLostTakesNoLock() {
+    TEST("lost pad: a tick with nothing lost asks the backend's cheap hint alone and takes no "
+         "topology lock, so it never reads the lost list");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0)});
+    for (int tick = 0; tick < 10; tick++) svc.recheckDrivers();
+    EXPECT_EQ(vigem.lostReads, 0);
+    vigem.lostSet.insert(serialOfPad(svc, 0));
+    svc.recheckDrivers();
+    EXPECT_EQ(vigem.lostReads, 1);
+    EXPECT_EQ(vigem.unplugCalls, 1);
+}
+
 static void test_lostPad_isReadUnderTheTopologyLock() {
     TEST("lost pad: the backend's lost list is read under the topology lock, so a PUT that frees "
          "the lost serial and plugs a fresh pad on it waits, and the fresh pad is not vacated");
@@ -1699,7 +1730,7 @@ static void test_serials_settledByTheBackendLeaveQuarantine() {
         vigem.unplugReturnVal = false;
         upsert(svc, {makeDesc(0)});
         vigem.unplugReturnVal = true;
-        vigem.settledSet.push_back(dying);
+        vigem.settledSet.push_back({dying, "hidmaestro"});
     }
     const SessionUpsertResult last = upsert(svc, {makeDesc(0), makeDesc(1)});
     EXPECT(vigem.busOpen);
@@ -1707,8 +1738,25 @@ static void test_serials_settledByTheBackendLeaveQuarantine() {
     EXPECT(svc.availableSlots() >= MAX_BACKEND_CONTROLLERS - 3);
     EXPECT(log.contains("free again"));
 
+    TEST("serials: a serial another backend quarantined stays quarantined when this one settles "
+         "it, as when ViGEm reused a serial whose HIDMaestro unplug is confirmed late");
+    upsert(svc, {makeDesc(0), makeDesc(1)});
+    const uint32_t reused = serialOfSlot(svc, 1);
+    vigem.serialBackend = "vigem";
+    vigem.unplugReturnVal = false;
+    upsert(svc, {makeDesc(0)});
+    vigem.unplugReturnVal = true;
+    const int before = svc.availableSlots();
+    vigem.settledSet.push_back({reused, "hidmaestro"});
+    upsert(svc, {makeDesc(0)});
+    EXPECT_EQ(svc.availableSlots(), before);
+    vigem.settledSet.push_back({reused, "vigem"});
+    upsert(svc, {makeDesc(0)});
+    EXPECT_EQ(svc.availableSlots(), before + 1);
+    vigem.serialBackend = "hidmaestro";
+
     TEST("serials: a serial the backend settles that was never quarantined stays as it was");
-    vigem.settledSet.push_back(serialOfSlot(svc, 0));
+    vigem.settledSet.push_back({serialOfSlot(svc, 0), "hidmaestro"});
     upsert(svc, {makeDesc(0), makeDesc(1)});
     EXPECT(serialOfSlot(svc, 0) != 0);
     EXPECT(vigem.settledCalls > 0);
@@ -5795,6 +5843,7 @@ int main() {
     test_serials_quarantineOnUnplugFailure();
     test_serials_settledByTheBackendLeaveQuarantine();
     test_lostPad_isReadUnderTheTopologyLock();
+    test_lostPad_nothingLostTakesNoLock();
 
     test_closeById_kick_notifiesBeforeTeardown();
     test_closeById_clientCloseNoNotify();

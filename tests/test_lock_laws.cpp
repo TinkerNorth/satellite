@@ -417,6 +417,15 @@ class LawBackend : public IGamepadPort {
 
     // What the HIDMaestro watch reports of a pad Windows lost: listed while it
     // is plugged, until the core unplugs it.
+    // The tick's hint, read with no lock; the list itself only under the
+    // topology lock.
+    bool anyLost() const override {
+        for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; ++serial) {
+            if (lost_[serial].load() && plugged_[serial].load()) return true;
+        }
+        return false;
+    }
+
     std::vector<uint32_t> lostSerials() const override {
         watch_.check("mock lostSerials", true);
         std::vector<uint32_t> lost;
@@ -426,7 +435,7 @@ class LawBackend : public IGamepadPort {
         return lost;
     }
 
-    std::vector<uint32_t> settledSerials() override {
+    std::vector<SettledSerial> settledSerials() override {
         watch_.check("mock settledSerials", true);
         return {};
     }

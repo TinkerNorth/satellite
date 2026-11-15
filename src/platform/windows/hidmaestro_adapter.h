@@ -85,7 +85,8 @@ class HidMaestroAdapter : public IGamepadPort {
     // tick: a pad either one holds is written nothing until both let it go.
     void recheckDrivers() override;
     std::vector<uint32_t> lostSerials() const override;
-    std::vector<uint32_t> settledSerials() override;
+    bool anyLost() const override;
+    std::vector<SettledSerial> settledSerials() override;
     HostDisabled hostDisabled(uint32_t serial) const override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;

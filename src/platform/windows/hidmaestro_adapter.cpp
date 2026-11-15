@@ -445,9 +445,15 @@ hm::Teardown HidMaestroAdapter::teardownFor(const IoSlot& slot) {
 }
 
 // Inside a topology change, as every provisioner call is.
-std::vector<uint32_t> HidMaestroAdapter::settledSerials() {
-    return provisioner_.takeSettledSerials();
+std::vector<SettledSerial> HidMaestroAdapter::settledSerials() {
+    std::vector<SettledSerial> settled;
+    for (const uint32_t serial : provisioner_.takeSettledSerials()) {
+        settled.push_back({serial, backendId()});
+    }
+    return settled;
 }
+
+bool HidMaestroAdapter::anyLost() const { return !lostSerials().empty(); }
 
 // Read without busMtx_: the core calls it on the maintenance tick, after the
 // recheck that set the flags.

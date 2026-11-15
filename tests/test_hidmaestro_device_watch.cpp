@@ -878,6 +878,30 @@ void test_a_stale_look_is_noted_and_its_end_too() {
     EXPECT_EQ(count(noteWatchStep(2, u1, u2, umdf2), LogLevel::WARN, "The device watch"), 0);
 }
 
+void test_a_look_that_keeps_going_stale_is_logged_less_and_less() {
+    TEST("note: a look that goes stale and fresh again and again is logged on its 1st, 2nd, 4th "
+         "and 8th time, with the count, so PnP contention cannot flood the log");
+    const WatchPolicy umdf2 = watchPolicyFor(ProfileBackend::Umdf2, 1.0);
+    Helper helper;
+    WatchTracker t = armed(helper, sonyLook(PRESENT));
+    std::vector<WatchNote> all;
+    for (int round = 0; round < 10; ++round) {
+        helper.looks = false;
+        for (uint32_t i = 0; i < umdf2.staleTicks; ++i) {
+            const WatchTracker was = t;
+            t = advanceWatch(t, helper.next(sonyLook(PRESENT)), umdf2);
+            for (const WatchNote& n : noteWatchStep(2, was, t, umdf2)) all.push_back(n);
+        }
+        helper.looks = true;
+        const WatchTracker was = t;
+        t = advanceWatch(t, helper.next(sonyLook(PRESENT)), umdf2);
+        for (const WatchNote& n : noteWatchStep(2, was, t, umdf2)) all.push_back(n);
+    }
+    EXPECT_EQ(count(all, LogLevel::WARN, "has not finished a look"), 4);
+    EXPECT_EQ(count(all, LogLevel::INFO, "looks at Serial 2's devices again"), 4);
+    EXPECT_EQ(count(all, LogLevel::WARN, "8 times since the plug"), 1);
+}
+
 void test_the_version_gate_and_the_watch_combine() {
     TEST("gate: a refused version wins, a held one holds, and an open one holds only while the "
          "watch holds the pad");
@@ -940,6 +964,7 @@ int main() {
     test_a_presentation_that_changes_while_another_takes_input_is_noted();
     test_the_audio_function_says_what_it_does_to_the_microphone();
     test_a_stale_look_is_noted_and_its_end_too();
+    test_a_look_that_keeps_going_stale_is_logged_less_and_less();
     test_the_version_gate_and_the_watch_combine();
     test_the_hello_settles_the_protocol();
 

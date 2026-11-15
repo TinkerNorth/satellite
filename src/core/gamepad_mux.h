@@ -119,6 +119,13 @@ class GamepadMux : public IGamepadPort {
         for (IGamepadPort* p : ports_) p->recheckDrivers();
     }
 
+    bool anyLost() const override {
+        for (IGamepadPort* p : ports_) {
+            if (p->anyLost()) return true;
+        }
+        return false;
+    }
+
     // Only a serial's owner speaks for it, as for every other per-serial query.
     std::vector<uint32_t> lostSerials() const override {
         std::vector<uint32_t> lost;
@@ -126,11 +133,12 @@ class GamepadMux : public IGamepadPort {
         return lost;
     }
 
-    // An unplugged serial has no owner any more, so every child's count.
-    std::vector<uint32_t> settledSerials() override {
-        std::vector<uint32_t> settled;
+    // An unplugged serial has no owner any more, so every child's count, each
+    // named by the child that saw it through.
+    std::vector<SettledSerial> settledSerials() override {
+        std::vector<SettledSerial> settled;
         for (IGamepadPort* p : ports_) {
-            const std::vector<uint32_t> mine = p->settledSerials();
+            const std::vector<SettledSerial> mine = p->settledSerials();
             settled.insert(settled.end(), mine.begin(), mine.end());
         }
         return settled;

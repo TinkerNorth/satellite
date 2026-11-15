@@ -414,6 +414,9 @@ class SessionService {
     // reallocated) until the backend bus closes; a zombie target on it would
     // poison the next plug. Cleared whenever the bus is (re)opened from idle.
     bool serialQuarantined_[MAX_BACKEND_CONTROLLERS] = {};
+    // Whose unconfirmed unplug each quarantine is: only that backend's word
+    // that it has since been seen through ends it.
+    std::string serialQuarantinedBy_[MAX_BACKEND_CONTROLLERS];
     // Round-robin scan start so a just-freed serial isn't reused while its PnP
     // removal may still be in flight.
     uint32_t serialScanStart_ = 0;
@@ -436,6 +439,9 @@ class SessionService {
     struct RetiredSerial {
         uint32_t serial = 0;
         bool unplugged = false;
+        // The backend that owned the serial when it was retired, before the
+        // unplug lets it go.
+        std::string backend;
     };
     struct TopologyChange {
         std::vector<PadChange> pads;
@@ -548,7 +554,8 @@ class SessionService {
     uint32_t allocateSerial();
     bool claimSerialLocked(uint32_t serial);
     void releaseSerial(uint32_t serial);
-    void quarantineSerial(uint32_t serial);
+    void quarantineSerial(uint32_t serial, const std::string& backend);
+    RetiredSerial retiring(uint32_t serial) const;
     int countGlobalActiveControllers() const;
     uint32_t takePointerStampLocked();
     void releasePointerLocked(Controller& ctrl);

@@ -360,6 +360,8 @@ struct WatchTracker {
     uint32_t seq = 0;
     uint32_t sinceLookTicks = 0;
     bool stale = false;
+    // How many times the look has gone stale since the plug.
+    uint32_t staleEpisodes = 0;
     uint32_t absentTicks = 0;
     uint32_t unwatchedTicks = 0;
     WatchLook look;
@@ -400,6 +402,7 @@ inline WatchTracker looked(const WatchTracker& was, const WatchReading& now,
     }
     t.sinceLookTicks = was.sinceLookTicks + 1;
     t.stale = t.sinceLookTicks >= policy.staleTicks;
+    if (t.stale && !was.stale) t.staleEpisodes = was.staleEpisodes + 1;
     return t;
 }
 
@@ -709,14 +712,25 @@ inline WatchNote noteAudio(uint32_t serial, const WatchLook& was, const WatchLoo
     return {};
 }
 
+// A look that goes stale and fresh again and again, under Plug and Play
+// contention, is logged on its 1st, 2nd, 4th, 8th... time, with the count.
+inline bool staleEpisodeLogged(uint32_t episode) {
+    return episode != 0 && (episode & (episode - 1)) == 0;
+}
+
 inline WatchNote noteStale(uint32_t serial, const WatchTracker& was, const WatchTracker& now,
                            const WatchPolicy& policy) {
     const bool watched = was.state != PadWatch::Unwatched && was.state != PadWatch::Lost;
     if (!watched || now.stale == was.stale) return {};
+    if (!staleEpisodeLogged(now.staleEpisodes)) return {};
     if (now.stale) {
+        const std::string times =
+            now.staleEpisodes == 1
+                ? std::string()
+                : " (" + std::to_string(now.staleEpisodes) + " times since the plug)";
         return {LogLevel::WARN, "The device watch has not finished a look at " +
                                     serialName(serial) + "'s devices for " +
-                                    watchSeconds(policy.staleTicks) +
+                                    watchSeconds(policy.staleTicks) + times +
                                     "; Satellite decides nothing about the controller until it "
                                     "does"};
     }

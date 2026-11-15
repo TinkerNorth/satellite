@@ -2758,7 +2758,9 @@ static void test_a_pad_let_go_by_its_client_is_removed_as_asked() {
 
     TEST("teardown: the serials the helper has since settled reach the core once each");
     prov.settled = {4, 9};
-    EXPECT(adapter.settledSerials() == std::vector<uint32_t>({4, 9}));
+    const std::vector<SettledSerial> settled = adapter.settledSerials();
+    EXPECT(settled.size() == 2 && settled[0].serial == 4 && settled[1].serial == 9);
+    EXPECT(settled.size() == 2 && settled[0].backend == adapter.backendId());
     EXPECT(adapter.settledSerials().empty());
 }
 
