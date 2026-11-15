@@ -271,14 +271,17 @@ internal static class SelfTest
     // Configuration Manager, and its device removed. A composite's USB device is
     // disabled too, and what the USB/IP connection does then is reported.
     // The device watch through the session satellite.exe talks to: the hello on
-    // the watch's protocol, the plug that hands over the block, the devnodes the
-    // watch derived, each presentation disabled and enabled on its own, the
-    // device removed, and the unplug answered before the SDK has removed it.
+    // the watch's protocol, an unplug answered while its device is still in
+    // Windows, the plug that hands over the block, the devnodes the watch
+    // derived, each presentation disabled and enabled on its own, and the
+    // device removed.
     private static void WatchedDevices(string profileId, int slot, Action<string> say, Action<bool, string> check)
     {
         using var session = new Session(Environment.ProcessId);
         string hello = session.Handle(@"{""op"":""hello"",""protocol"":2}", out _);
         check(hello.Contains(@"""protocol"":2"), $"{profileId}: the session settles on the device watch's protocol");
+        var tree = new WindowsDevnodeTree();
+        UnplugAnswersFirst(session, profileId, slot, tree, check);
         string reply = session.Handle($@"{{""op"":""plug"",""serial"":{slot},""profile"":""{profileId}""}}", out _);
         ulong handle = WatchHandleOf(reply);
         PadDevnodes? devnodes = session.WatchedDevnodes((uint)slot);
@@ -286,7 +289,6 @@ internal static class SelfTest
         if (handle == 0 || devnodes == null) return;
         say($"{profileId}: the watch looks for {devnodes.Device}{(devnodes.Companion == null ? "" : " and " + devnodes.Companion)}" +
             (devnodes.Audio ? ", with an audio function" : ""));
-        var tree = new WindowsDevnodeTree();
         using var block = new WatchBlockView(handle);
 
         DeviceWatchBlock.Reading whole = block.Await(r => r.Report is { Whole: true }, WatchBudget);
@@ -321,11 +323,47 @@ internal static class SelfTest
         bool goneOrHeld = gone.Report?.Hid is { Devnode: WatchedDevnode.Device, Condition: DevnodeCondition.Missing or DevnodeCondition.Failed };
         check(goneOrHeld, $"{profileId}: once it is removed the watch finds its device gone, or failed as a USB device held for " +
                           $"eject is (Code 47): {Describe(gone)}");
+    }
 
+    // A controller plugged and unplugged while its devices are all in Windows:
+    // the answer comes while the device is still in the tree, so the removal
+    // happens after it (a removal made before the answer fails this), and the
+    // device then leaves on its own.
+    private static void UnplugAnswersFirst(Session session, string profileId, int slot, WindowsDevnodeTree tree,
+                                           Action<bool, string> check)
+    {
+        string reply = session.Handle($@"{{""op"":""plug"",""serial"":{slot},""profile"":""{profileId}""}}", out _);
+        PadDevnodes? devnodes = session.WatchedDevnodes((uint)slot);
+        ulong handle = WatchHandleOf(reply);
+        check(handle != 0 && devnodes != null, $"{profileId}: plugged for the unplug check ({Shorten(reply)})");
+        if (handle == 0 || devnodes == null) return;
+        using var block = new WatchBlockView(handle);
+        DeviceWatchBlock.Reading whole = block.Await(r => r.Report is { Whole: true }, WatchBudget);
+        check(whole.Report is { Whole: true }, $"{profileId}: every presentation reads present before the unplug, {Describe(whole)}");
         var clock = Stopwatch.StartNew();
         string unplugged = session.Handle($@"{{""op"":""unplug"",""serial"":{slot}}}", out _);
-        check(unplugged.Contains(@"""ok"":true") && clock.Elapsed < TimeSpan.FromSeconds(1),
-              $"{profileId}: the session answers its unplug in {clock.ElapsedMilliseconds} ms, before the SDK has removed the controller");
+        long answeredMs = clock.ElapsedMilliseconds;
+        bool stillThere = tree.Locate(devnodes.Device).Located;
+        check(unplugged.Contains(@"""ok"":true") && stillThere,
+              $"{profileId}: the session answers its unplug in {answeredMs} ms with the device still in Windows, so the removal comes after the answer");
+        DevnodeCondition after = AwaitGone(tree, devnodes.Device, ReattachBudget);
+        check(after is DevnodeCondition.Missing or DevnodeCondition.Failed,
+              $"{profileId}: the device then leaves Windows, or stays held for eject (Code 47): {after}, " +
+              $"{clock.Elapsed.TotalSeconds:F1} s after the unplug");
+    }
+
+    // Until the devnode is out of the tree, or in it with a problem as a USB
+    // device held for eject is.
+    private static DevnodeCondition AwaitGone(WindowsDevnodeTree tree, string instanceId, TimeSpan budget)
+    {
+        var clock = Stopwatch.StartNew();
+        DevnodeCondition now = DevnodeStatus.Classify(tree.Locate(instanceId));
+        while (now is not (DevnodeCondition.Missing or DevnodeCondition.Failed) && clock.Elapsed < budget)
+        {
+            Thread.Sleep(AwaitPollMs);
+            now = DevnodeStatus.Classify(tree.Locate(instanceId));
+        }
+        return now;
     }
 
     // Disables one devnode and checks that its presentation, and only that

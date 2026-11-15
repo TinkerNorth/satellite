@@ -40,10 +40,11 @@ inline constexpr DWORD HELPER_LOST_UNPLUG_WAIT_MS = 100;
 // ahead of the next request: the helper answers an unplug before it removes
 // anything, so one this late is a helper that no longer answers.
 inline constexpr DWORD HELPER_OWED_WAIT_MS = 2000;
-// How long a shutdown waits for its answer, which the helper gives once the
-// removals it answered early are done: HIDMaestro's INTERNALS.md gives a clean
+// How long a shutdown waits for its answer, which the helper gives once every
+// controller it held is removed: HIDMaestro's INTERNALS.md gives a clean
 // removal 60 to 300 ms, and one a program refuses about 5.4 s for its query and
-// 2 s for a driver that does not answer, so 16 pads held open take about 118 s.
+// 2 s for a driver that does not answer. The helper removes pads side by side,
+// so this covers 16 held open even if Windows takes them one at a time.
 inline constexpr DWORD HELPER_SHUTDOWN_WAIT_MS = 120000;
 
 enum class HelperRequest { Hello, Provision, Deprovision, Shutdown };
@@ -129,7 +130,7 @@ class HelperClient : public IHidMaestroProvisioner {
     bool deprovisionLocked(uint32_t serial, Teardown why);
     bool lostUnplugLocked(uint32_t serial, const std::string& line);
     enum class OwedAnswers { Read, Pending, Gone };
-    OwedAnswers drainOwedLocked();
+    OwedAnswers drainOwedLocked(ULONGLONG deadline);
     void settleLocked(uint32_t serial);
     void settleSweptLocked();
 

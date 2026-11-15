@@ -28,6 +28,7 @@ internal static class SdkCheck
     private const string TimeoutScaleTypeName = "HIDMaestro.Internal.TimeoutScale";
     private const string PlanTypeName = "HIDMaestro.Internal.PresentationPlan";
     private const string OrchestratorTypeName = "HIDMaestro.Internal.DeviceOrchestrator";
+    private const string SoftwareDeviceTypeName = "HIDMaestro.Internal.SwdDeviceFactory";
     // One of Satellite's own tokens, the shape every devnode name carries.
     private static readonly string SampleToken = IdentityTags.TokenOf(SatelliteProfiles.IdentityKey(1, "dualsense"));
     public const string TimeoutScaleChildCommand = "check-sdk-timeout-scale";
@@ -187,8 +188,8 @@ internal static class SdkCheck
         MethodInfo of = planType.GetMethod("Of", StaticMembers, null, new[] { typeof(ControllerProfile) }, null)
             ?? throw new InvalidOperationException($"the pinned SDK's {PlanTypeName} has no static Of(ControllerProfile)");
         string companionPrefix = $@"SWD\{DevnodeIds.CompanionEnumerator}\";
-        check(LoadsString(SdkType(OrchestratorTypeName), companionPrefix),
-              $"the SDK's {OrchestratorTypeName} names its XUSB companions from the literal '{companionPrefix}', the prefix DevnodeIds gives them");
+        check(IlScan.BuildsFrom(SdkType(OrchestratorTypeName), SdkType(SoftwareDeviceTypeName), "Create", companionPrefix),
+              $"the method of the SDK's {OrchestratorTypeName} that creates a software device ({SoftwareDeviceTypeName}.Create) builds its id from the literal '{companionPrefix}', the prefix DevnodeIds gives an XUSB companion");
         ProfileDatabase catalog = ProfileDatabase.LoadEmbedded();
         foreach (string id in PluggedProfiles)
         {
@@ -236,31 +237,6 @@ internal static class SdkCheck
     private static object? PlanValue(object plan, string name) =>
         (plan.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
          ?? throw new InvalidOperationException($"the pinned SDK's {PlanTypeName} has no {name}")).GetValue(plan);
-
-    // Whether any method of `type` loads `literal` with an ldstr: the IL is the
-    // only place a string the SDK builds an id from is spelt out.
-    private static bool LoadsString(Type type, string literal)
-    {
-        const byte Ldstr = 0x72;
-        const int StringTable = 0x70;
-        const BindingFlags Every = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static |
-                                   BindingFlags.Instance | BindingFlags.DeclaredOnly;
-        foreach (MethodBase method in type.GetMethods(Every).Cast<MethodBase>().Concat(type.GetConstructors(Every)))
-        {
-            byte[]? il = method.GetMethodBody()?.GetILAsByteArray();
-            if (il == null) continue;
-            for (int i = 0; i + 4 < il.Length; i++)
-            {
-                if (il[i] != Ldstr || il[i + 4] != StringTable) continue;
-                int token = BitConverter.ToInt32(il, i + 1);
-                string? loaded = null;
-                try { loaded = method.Module.ResolveString(token); }
-                catch (ArgumentException) { }
-                if (loaded == literal) return true;
-            }
-        }
-        return false;
-    }
 
     private static string Pin(IReadOnlyDictionary<string, string> pins, string name, string pinsHeader) =>
         pins.TryGetValue(name, out string? value)

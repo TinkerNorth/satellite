@@ -680,12 +680,21 @@ void HelperClient::stopLocked(bool sendShutdown) {
 }
 
 // Answers still owed to lost pads' unplugs are read first: the helper answers
-// in order, so the next line after them is this request's.
+// in order, so the next line after them is this request's. They get
+// HELPER_OWED_WAIT_MS together, not the request's own bound, so a plug never
+// holds the topology lock long behind them; one still missing then fails the
+// request unsent and keeps the channel, until it is older than any unplug's
+// own bound, when the helper no longer answers. A shutdown is the last request
+// and is sent whatever waits ahead of it: those answers share its own bound.
 bool HelperClient::requestLocked(HelperRequest request, const std::string& line,
                                  std::string& response) {
     if (channel_ == nullptr) return false;
-    switch (drainOwedLocked()) {
+    const bool last = request == HelperRequest::Shutdown;
+    const IoBudget owed = budgetFor(last ? waitFor(request) : owedWaitMs_.load(), nullptr);
+    switch (drainOwedLocked(owed.deadline)) {
     case OwedAnswers::Pending:
+        if (!last) return false;
+        setChannelLocked(nullptr);
         return false;
     case OwedAnswers::Gone:
         setChannelLocked(nullptr);
@@ -693,18 +702,17 @@ bool HelperClient::requestLocked(HelperRequest request, const std::string& line,
     case OwedAnswers::Read:
         break;
     }
-    if (roundTrip(*channel_, line, response, waitFor(request), nullptr)) return true;
+    const DWORD waitMs = last ? msLeft(owed) : waitFor(request);
+    if (roundTrip(*channel_, line, response, waitMs, nullptr)) return true;
     setChannelLocked(nullptr);
     return false;
 }
 
-// Caller holds mtx_. The owed answers get HELPER_OWED_WAIT_MS together, not
-// the next request's own bound, so a plug never holds the topology lock long
-// behind them; each that confirms its unplug settles that serial. One still
-// missing then fails the request unsent and keeps the channel, until it is
-// older than any unplug's own bound, when the helper no longer answers.
-HelperClient::OwedAnswers HelperClient::drainOwedLocked() {
-    const IoBudget budget = budgetFor(owedWaitMs_.load(), nullptr);
+// Caller holds mtx_. Each owed answer that confirms its unplug settles that
+// serial; Pending when one has not come within `budget` and is younger than an
+// unplug's own bound, Gone once it is older or the helper has closed the pipe.
+HelperClient::OwedAnswers HelperClient::drainOwedLocked(ULONGLONG deadline) {
+    const IoBudget budget{deadline, nullptr};
     while (!channel_->owed.empty()) {
         std::string response;
         if (!readLine(*channel_, response, budget)) {

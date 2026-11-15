@@ -342,9 +342,9 @@ static void test_each_request_carries_its_own_limit() {
     EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Hello), static_cast<DWORD>(10000));
     EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Deprovision), static_cast<DWORD>(10000));
 
-    TEST("limits: a shutdown gets 120 s, for the helper to finish the removals it answered "
-         "before they were done: 16 pads at about 7.4 s each against a program that holds them "
-         "open");
+    TEST("limits: a shutdown gets 120 s, for the helper to finish removing its controllers: 16 "
+         "pads at about 7.4 s each against a program that holds them open, should Windows take "
+         "them one at a time");
     EXPECT_EQ(hm::helperRequestWaitMs(hm::HelperRequest::Shutdown), static_cast<DWORD>(120000));
     EXPECT_EQ(hm::HELPER_SHUTDOWN_WAIT_MS, static_cast<DWORD>(120000));
 
@@ -864,6 +864,40 @@ static void test_a_shutdown_waits_for_the_helpers_removals() {
     EXPECT(answered.load());
 }
 
+static void test_a_shutdown_is_sent_behind_an_owed_answer() {
+    TEST("shutdown: a shutdown with a lost pad's unplug answer still owed is sent once that "
+         "answer comes, within the shutdown's own bound, so the helper is told to finish its "
+         "removals rather than ended");
+    std::atomic<bool> told{false};
+    FakeHelper fake([&told](FakeHelper& helper, const std::string& request) {
+        if (isHello(request)) {
+            helper.write(HELLO_REPLY_WATCHING + "\n");
+        } else if (request.find("\"shutdown\"") != std::string::npos) {
+            told = true;
+            helper.write(OK_REPLY + "\n");
+        } else if (request.find("\"unplug\"") != std::string::npos) {
+            helper.pause(800);
+            helper.write(OK_REPLY + "\n");
+        } else {
+            helper.write(PLUG_REPLY_WITH_WATCH + "\n");
+        }
+    });
+    hm::HelperClient client;
+    client.setLostUnplugWaitForTest(20);
+    client.setPipeWaitForTest(LONG_WAIT_MS);
+    client.setOwedWaitForTest(SHORT_WAIT_MS);
+    client.setShutdownWaitForTest(LONG_WAIT_MS);
+    EXPECT(client.adoptChannelForTest(fake.connect()));
+    hm::ProvisionResult out;
+    EXPECT(client.provision(2, GamepadIdentity::DualSense, false, out));
+    EXPECT(!client.deprovision(2, hm::Teardown::DeviceLost));
+    const auto start = Clock::now();
+    client.shutdown();
+    EXPECT(told.load());
+    EXPECT(elapsedMs(start) < TIMEOUT_SLACK.count());
+    EXPECT(client.takeSettledSerials() == std::vector<uint32_t>({2}));
+}
+
 static void test_an_answer_that_lands_during_the_cancel_is_kept() {
     TEST("pipe: an answer whose read completes while its wait is being cancelled is kept, so a "
          "late answer is never lost to the cancel");
@@ -986,6 +1020,8 @@ static void test_the_shipped_limits_hold_in_real_time() {
         bool nextPlug = false;
         std::vector<uint32_t> settled;
     } lost;
+    Outcome slowExit;
+    std::atomic<bool> exitAnswered{false};
 
     std::thread stalledCall([&stalled] {
         FakeHelper fake(silentAfterHello());
@@ -1041,10 +1077,30 @@ static void test_the_shipped_limits_hold_in_real_time() {
         lost.closedByClient = !fake.idleWithin(5000) || fake.closedByClient();
         client.shutdown();
     });
+    std::thread slowShutdownCall([&slowExit, &exitAnswered] {
+        FakeHelper fake(finishesRemovalsFirst(REAL_SLOW_MS, &exitAnswered));
+        hm::HelperClient client;
+        client.adoptChannelForTest(fake.connect());
+        hm::ProvisionResult out;
+        slowExit.ok = client.provision(2, GamepadIdentity::DualSense, false, out) &&
+                      client.deprovision(2, hm::Teardown::Requested);
+        const auto start = Clock::now();
+        client.shutdown();
+        slowExit.tookMs = elapsedMs(start);
+    });
     stalledCall.join();
     slowPlugCall.join();
     slowLaunchCall.join();
     lostCall.join();
+    slowShutdownCall.join();
+
+    TEST("limits (real time): a shutdown its helper answers only after more than ten seconds, "
+         "once removals that outlast the 5 s exit wait are done, is waited for, so the helper is "
+         "never ended mid-removal");
+    EXPECT(slowExit.ok);
+    EXPECT(exitAnswered.load());
+    EXPECT(slowExit.tookMs >= 10000);
+    EXPECT(slowExit.tookMs < 60000);
 
     TEST("limits (real time): a lost pad's unplug that its helper answers only after more than "
          "ten seconds returns within its short wait, unconfirmed for now");
@@ -1290,6 +1346,7 @@ int main() {
     test_a_plug_that_stalls_still_fails_at_its_limit();
     test_hello_and_shutdown_keep_the_short_bound_beside_a_long_plug();
     test_a_shutdown_waits_for_the_helpers_removals();
+    test_a_shutdown_is_sent_behind_an_owed_answer();
     test_an_answer_that_lands_during_the_cancel_is_kept();
     test_an_owed_answer_waits_its_own_small_bound();
     test_a_slow_launch_connect_succeeds_within_its_limit();
