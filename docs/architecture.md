@@ -1069,7 +1069,10 @@ PnP lock, so 16 such removals and 5 s for the answer give 203.4 s at a scale of 
 (`helperShutdownWaitMs`); a clean removal takes 60 to 300 ms. A removal that runs
 into the SDK's own removal budgets is not covered (one software device with
 children can hold the PnP lock about 230 s, INTERNALS.md): satellite.exe then
-ends the helper, and the next launch's sweep removes what it left. A plug gets
+ends the helper, and the next launch's sweep removes what it left. The wait is
+capped at nine minutes (`HELPER_SHUTDOWN_WAIT_CAP_MS`), reached just above a
+scale of 4, so a Satellite's exit always ends inside the ten minutes a relaunch
+waits for it (below). A plug gets
 120 s (`HELPER_PROVISION_WAIT_MS`), because the first composite plug installs
 HIDMaestro's usbip transport inside the request, which takes tens of seconds on
 a slow machine and reports no progress. A launched helper gets 120 s to connect
@@ -1182,18 +1185,40 @@ add, since version 4 puts the event in `LOWORD(lp)`. Explorer's
 
 One Satellite runs per Windows session (`single_instance.cpp`). The first
 launch owns a named mutex (`Local\TinkerNorth.Satellite.Singleton.v1`) on its
-Gui thread until the process exits. A later launch taps the tray window with
-`SendMessageTimeout`: a Satellite whose message loop runs answers at once,
-opens the dashboard after, and the launch ends. One that does not answer is on
-its way out, its loop left behind while it waits for its helper's shutdown, or
-hung, or still starting: the launch waits on the mutex, which the old process's
-exit leaves abandoned, and starts as soon as it owns it, tapping once any window
-that shows meanwhile. It waits up to ten minutes, as long as the SDK lets one
-program wait for another's removals (`PnpLockWaitMs`), which a static_assert
-holds above the old Satellite's longest exit at a timeout scale of 4; a
-Satellite that never exits is given up on, and the launch ends. Releasing the
-mutex before the wait instead would run two Satellites side by side, with two
-helpers, the new one's first plug sweeping what the old one is still removing.
+Gui thread until the process exits. A later launch taps the tray window once
+with `SendMessageTimeout`. A Satellite whose message loop runs answers at once,
+opens the dashboard after, and the launch ends. So does one that UIPI keeps the
+tap from (`ERROR_ACCESS_DENIED`), a Satellite running elevated without
+UIAccess, as the installer's finish page starts it. One that does not answer
+may be on its way out, its loop left behind while it waits for its helper's
+shutdown, or still starting: its window exists before its loop runs, and at
+login what comes between can take seconds. So the launch then probes that
+window with `WM_NULL`, which does nothing, between waits on the mutex. A window
+that answers a probe is a running Satellite and ends the launch; the tap it
+took is delivered once its loop runs, so it opens one dashboard. Only a window
+that never answers again is on its way out: the launch starts as soon as the
+old process's exit leaves the mutex abandoned, tapping once any new window that
+shows meanwhile. It waits up to ten minutes, as long as the SDK lets one program
+wait for another's removals (`PnpLockWaitMs`), and a static_assert holds that
+above the old Satellite's longest exit, its shutdown's cap and its helper's
+exit; a Satellite that never exits is given up on, and the launch ends. One
+launch at a time does any of this (`Local\TinkerNorth.Satellite.Relaunch.v1`):
+a later click ends at once, so extra clicks never pile up hidden waiters. The
+wait shows nothing; it is over in under a second unless the old Satellite's
+helper is still removing pads a program holds open. Releasing the mutex before
+the wait instead would run two Satellites side by side, with two helpers, the
+new one's first plug sweeping what the old one is still removing.
+
+An in-app update is the one exit that can still end the helper mid-removal.
+`applyUpdate` starts Setup first, so a Setup that fails to start is reported
+while Satellite still runs, and then closes Satellite; Setup's
+`CloseApplications=force` ends whatever has not closed by the time it needs the
+files, Satellite or its helper still removing among them. What that leaves in
+Windows goes at the relaunched Satellite's first plug (`/OTA` relaunches it once
+Setup is done), whose helper sweeps what exited programs left. Finishing the
+removals before Setup would mean stopping the servers, closing the sessions and
+waiting out the helper's shutdown first, and a Setup that then failed to start
+would leave no Satellite running.
 
 `tests/test_lock_laws.cpp` runs the real service wired as in production (the
 HKDF deriver, the Opus codec, `audioPolicyFromConfig`, `ClientAdapter`,

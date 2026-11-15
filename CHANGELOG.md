@@ -95,7 +95,8 @@ controller slots. Quitting Satellite waits for the helper to finish removing
 its controllers: well under a second each, up to about 12 seconds for one a
 program holds open. Starting Satellite again while the last one is still
 closing now waits for it to finish and then starts, where before nothing
-happened.
+happened; starting it while it is still starting up opens its dashboard once it
+is ready, and further clicks meanwhile do nothing more.
 
 The watch needs a helper and a satellite.exe from this release, which agree
 on it in their hello (protocol 2). An older helper keeps the old behaviour,
