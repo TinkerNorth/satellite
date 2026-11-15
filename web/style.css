@@ -583,6 +583,7 @@ h2.section-title { font-size: 12px; }
 }
 .ctrl-dot.ok  { background: var(--success); }
 .ctrl-dot.err { background: var(--error); }
+.ctrl-dot.warn { background: var(--warning); }
 
 .ctrl-chips {
   display: flex;
@@ -1647,6 +1648,11 @@ h2.section-title { font-size: 12px; }
   color: var(--error);
   background: rgba(239, 68, 68, 0.14);
   border-color: rgba(239, 68, 68, 0.35);
+}
+.state-disabled {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
 }
 
 .ldr-spinner, .ldr-dots, .ldr-bar { color: var(--primary); }

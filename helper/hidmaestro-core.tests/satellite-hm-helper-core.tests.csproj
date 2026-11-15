@@ -20,6 +20,11 @@
     <ProjectReference Include="..\hidmaestro-core\satellite-hm-helper-core.csproj" />
   </ItemGroup>
 
+  <!-- The device watch's writer is held to the reader's own header. -->
+  <ItemGroup>
+    <None Include="..\..\src\core\hidmaestro_device_watch.h" Link="cpp\hidmaestro_device_watch.h" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- The copy tests read the catalog files scripts/fetch-redist.ps1 stages and
        the SHA256SUMS that pins them, so the fetch runs before the tests. -->
   <ItemGroup>

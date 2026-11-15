@@ -200,6 +200,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/gamepad_backend.cpp
     src/platform/windows/updater_adapter.cpp
     src/platform/windows/app_lifecycle.cpp
+    src/platform/windows/single_instance.cpp
     src/platform/windows/file_log.cpp
     src/platform/windows/shell_integration.cpp
 )
@@ -1252,6 +1253,11 @@ satellite_add_pure_test(test_hidmaestro_report tests/test_hidmaestro_report.cpp
 # own reader's, to the pinned SDK's.
 satellite_add_pure_test(test_hidmaestro_version tests/test_hidmaestro_version.cpp)
 
+# The helper's device watch block, and the policy that holds a pad Windows has
+# disabled and gives up one it has lost. The helper's own test holds its writer
+# to this header's constants.
+satellite_add_pure_test(test_hidmaestro_device_watch tests/test_hidmaestro_device_watch.cpp)
+
 # The controller-audio rings between the helper and satellite. Same rule as the
 # driver's rings: no version field, so the suite pins the SIZES and the seqlock
 # protocol the C# producer on the other side reimplements.
@@ -1787,6 +1793,7 @@ if(WIN32)
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
         src/platform/windows/app_lifecycle.cpp
+        src/platform/windows/single_instance.cpp
         src/platform/windows/file_log.cpp
         src/adapters/crash_adapter.cpp
         src/net/pin_rotation.cpp
@@ -1831,6 +1838,35 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME windows_platform COMMAND test_windows_platform)
+endif()
+
+# A launch that finds another Satellite: the singleton mutex, the tap on the
+# other one's tray window, and the wait for one on its way out, each "other
+# Satellite" a thread of the test that holds the mutex.
+if(WIN32)
+    add_executable(test_single_instance
+        tests/test_single_instance.cpp
+        src/platform/windows/single_instance.cpp
+    )
+    target_include_directories(test_single_instance PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_compile_definitions(test_single_instance PRIVATE
+        _WIN32_WINNT=0x0A00
+    )
+    target_link_libraries(test_single_instance PRIVATE
+        user32
+        Threads::Threads
+    )
+    satellite_test_warnings(test_single_instance)
+    if(MINGW)
+        target_link_options(test_single_instance PRIVATE -static)
+    endif()
+    set_target_properties(test_single_instance PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME single_instance COMMAND test_single_instance)
 endif()
 
 # Links the real vigem_adapter.cpp against an in-test fake ViGEmBus driver
@@ -1940,6 +1976,16 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME hidmaestro_helper_client COMMAND test_hidmaestro_helper_client)
+endif()
+
+# The Plug and Play behaviour the helper's device watch reads, probed with two
+# software devices and no HIDMaestro driver. It needs elevation: elsewhere it
+# skips, and on GitHub Actions a skip fails.
+if(WIN32)
+    satellite_add_pure_test(test_windows_devnode_probe tests/test_windows_devnode_probe.cpp)
+    target_compile_definitions(test_windows_devnode_probe PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries(test_windows_devnode_probe PRIVATE cfgmgr32 setupapi advapi32)
+    set_tests_properties(test_windows_devnode_probe PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 if(WIN32)

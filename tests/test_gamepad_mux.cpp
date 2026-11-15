@@ -10,6 +10,7 @@
 
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace satellite;
@@ -49,6 +50,9 @@ struct MockPort : IGamepadPort {
     MicLedCallback micLedCb;
     int micAudioCalls = 0;
     size_t lastMicSamples = 0;
+    std::vector<uint32_t> lost;
+    std::vector<uint32_t> settled;
+    std::set<uint32_t> disabled;
 
     explicit MockPort(std::string n, std::set<GamepadIdentity> ids)
         : name(std::move(n)), identities(std::move(ids)) {}
@@ -131,6 +135,19 @@ struct MockPort : IGamepadPort {
         lastSerial = serial;
         lastMicSamples = samples;
         return true;
+    }
+    std::vector<uint32_t> lostSerials() const override { return lost; }
+    std::vector<SettledSerial> settledSerials() override {
+        std::vector<SettledSerial> out;
+        for (const uint32_t serial : std::exchange(settled, {}))
+            out.push_back({serial, backendId()});
+        return out;
+    }
+    HostDisabled hostDisabled(uint32_t serial) const override {
+        HostDisabled d;
+        d.input = disabled.count(serial) != 0;
+        d.audio = d.input;
+        return d;
     }
 };
 
@@ -305,6 +322,55 @@ static void test_driver_recheck_reaches_every_child() {
     mux.recheckDrivers();
     EXPECT_EQ(a.recheckDriversCalls, 1);
     EXPECT_EQ(b.recheckDriversCalls, 1);
+}
+
+static void test_lost_serials_come_from_their_owners() {
+    TEST("lostSerials lists every child's lost serials, each from the child that owns it");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+    EXPECT(mux.pluginDevice(1, GamepadIdentity::Xbox));
+    EXPECT(mux.pluginDevice(2, GamepadIdentity::DualSense));
+    EXPECT(mux.pluginDevice(3, GamepadIdentity::SwitchPro));
+    EXPECT(mux.lostSerials().empty());
+    a.lost = {1};
+    b.lost = {2, 3};
+    EXPECT(mux.lostSerials() == std::vector<uint32_t>({1, 2, 3}));
+
+    TEST("a serial a child does not own is not listed from it");
+    a.lost = {1, 2};
+    b.lost = {};
+    EXPECT(mux.lostSerials() == std::vector<uint32_t>({1}));
+}
+
+static void test_settled_serials_come_from_every_child() {
+    TEST("settledSerials gathers what every child has seen through, whether or not it still owns "
+         "the serial, since an unplugged serial has no owner");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+    a.settled = {5};
+    b.settled = {2, 7};
+    const std::vector<SettledSerial> settled = mux.settledSerials();
+    EXPECT_EQ(settled.size(), size_t{3});
+    EXPECT(settled.size() == 3 && settled[0].serial == 5 && settled[0].backend == a.backendId());
+    EXPECT(settled.size() == 3 && settled[2].serial == 7 && settled[2].backend == b.backendId());
+    EXPECT(mux.settledSerials().empty());
+}
+
+static void test_a_disabled_device_is_asked_of_its_owner() {
+    TEST("hostDisabled defers to the owner; a serial nobody owns has nothing disabled");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+    a.disabled = {4};
+    b.disabled = {4};
+    EXPECT(!mux.hostDisabled(4).input);
+    EXPECT(mux.pluginDevice(4, GamepadIdentity::DualSense));
+    EXPECT(mux.hostDisabled(4).input);
+    EXPECT(mux.hostDisabled(4).audio);
+    b.disabled.clear();
+    EXPECT(!mux.hostDisabled(4).input);
 }
 
 static void test_unplug_clears_owner() {
@@ -540,6 +606,9 @@ int main() {
     test_input_reaches_the_owner_whole();
     test_idle_refresh_reaches_every_child();
     test_driver_recheck_reaches_every_child();
+    test_lost_serials_come_from_their_owners();
+    test_settled_serials_come_from_every_child();
+    test_a_disabled_device_is_asked_of_its_owner();
     test_unplug_clears_owner();
     test_unplug_unconfirmed_keeps_owner();
     test_unplug_unowned_serial_is_gone();

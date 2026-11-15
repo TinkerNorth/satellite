@@ -27,6 +27,7 @@
 #include <functional>
 #include <future>
 #include <map>
+#include <utility>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -98,6 +99,14 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         uint16_t hapticSeq = 0;
         HANDLE versionSection = nullptr;
         uint8_t* versionView = nullptr;
+        HANDLE watchSection = nullptr;
+        uint8_t* watchView = nullptr;
+        uint32_t watchSeq = 0;
+        // What the helper's watcher finds of each presentation the pad has.
+        uint32_t presents = WATCH_PRESENTS_HID;
+        std::array<uint32_t, 3> hid{};
+        std::array<uint32_t, 3> xinput{};
+        std::array<uint32_t, 3> audio{};
     };
 
     bool installedVal = true;
@@ -105,6 +114,9 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     bool ensureReadyResult = true;
     bool provisionResult = true;
     bool deprovisionResult = true;
+    // Why each serial was last removed, as the adapter said.
+    std::map<uint32_t, Teardown> teardowns;
+    std::vector<uint32_t> settled;
     bool withOutputSection = true;
     // What a composite persona reports back. 48/48 is the DualSense; the
     // DualShock 4 v2 is 32 kHz out / 16 kHz in, which is what forces the
@@ -132,6 +144,12 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     double timeoutScale = 1.0;
     std::map<uint32_t, std::wstring> versionNames;
     int versionSections = 0;
+    // The device watch block the helper hands over on protocol 2, which the
+    // fake writes as the helper's watcher and heartbeat do.
+    bool withWatch = true;
+    bool helperReportsWatch = true;
+    std::map<uint32_t, std::wstring> watchNames;
+    int watchSections = 0;
     std::atomic<int> provisionsDone{0};
     std::map<uint32_t, uint32_t> inputSeqAtRemoval;
     LogSink log;
@@ -194,9 +212,10 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         if (f.micView) UnmapViewOfFile(f.micView);
         if (f.hapticView) UnmapViewOfFile(f.hapticView);
         if (f.versionView) UnmapViewOfFile(f.versionView);
+        if (f.watchView) UnmapViewOfFile(f.watchView);
         for (HANDLE h : {f.inputSection, f.outputSection, f.inputEvent, f.companionEvent,
                          f.outputEvent, f.speakerSection, f.micSection, f.speakerEvent, f.micEvent,
-                         f.hapticSection, f.hapticEvent, f.versionSection}) {
+                         f.hapticSection, f.hapticEvent, f.versionSection, f.watchSection}) {
             if (h) CloseHandle(h);
         }
         f = Fake{};
@@ -231,6 +250,85 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         return OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
     }
 
+    // Read-only handle to a fresh named watch block, as the helper creates it:
+    // layout 1, nothing looked at yet.
+    HANDLE openWatchSection(uint32_t serial, Fake& f) {
+        if (!withWatch) return nullptr;
+        const std::wstring name = L"Local\\satellite-hm-adapter-test-watch-" +
+                                  std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                  std::to_wstring(reinterpret_cast<uintptr_t>(this)) + L"-" +
+                                  std::to_wstring(watchSections++);
+        watchNames[serial] = name;
+        f.watchSection = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                            WATCH_BLOCK_SIZE, name.c_str());
+        f.watchView = static_cast<uint8_t*>(
+            MapViewOfFile(f.watchSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0));
+        storeU32(f.watchView + WATCH_LAYOUT_OFFSET, static_cast<uint32_t>(WATCH_LAYOUT));
+        return OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+    }
+
+    // What the helper's watcher finds of every presentation the pad has, written
+    // with its next look.
+    void watchSays(uint32_t serial, uint32_t condition, uint32_t devnode = WATCH_DEVNODE_DEVICE,
+                   uint32_t problem = 0) {
+        Fake& f = live.at(serial);
+        f.hid = f.xinput = f.audio = {condition, devnode, problem};
+        lookAt(f);
+    }
+
+    // What it finds of one presentation, WATCH_PRESENTS_HID, _XINPUT or _AUDIO.
+    void partSays(uint32_t serial, uint32_t part, uint32_t condition, uint32_t devnode,
+                  uint32_t problem = 0) {
+        Fake& f = live.at(serial);
+        std::array<uint32_t, 3>& which = part == WATCH_PRESENTS_XINPUT  ? f.xinput
+                                         : part == WATCH_PRESENTS_AUDIO ? f.audio
+                                                                        : f.hid;
+        which = {condition, devnode, problem};
+        lookAt(f);
+    }
+
+    // The helper's watcher, one look at every live pad: a seqlock write of what
+    // it finds, which moves the sequence whether or not anything changed.
+    void look() {
+        for (auto& [serial, f] : live) lookAt(f);
+    }
+
+    // The helper's heartbeat thread, one beat on every live pad.
+    void beat() {
+        for (auto& [serial, f] : live) {
+            if (f.watchView == nullptr) continue;
+            storeU32(f.watchView + WATCH_HEARTBEAT_OFFSET,
+                     u32at(f.watchView, WATCH_HEARTBEAT_OFFSET) + 1);
+        }
+    }
+
+    void lookAt(Fake& f) {
+        if (f.watchView == nullptr) return;
+        storeU32(f.watchView + WATCH_SEQ_OFFSET, ++f.watchSeq);
+        std::atomic_thread_fence(std::memory_order_release);
+        storeU32(f.watchView + WATCH_PRESENTS_OFFSET, f.presents);
+        writePart(f.watchView + WATCH_HID_OFFSET, f.hid);
+        writePart(f.watchView + WATCH_XINPUT_OFFSET, f.xinput);
+        writePart(f.watchView + WATCH_AUDIO_OFFSET, f.audio);
+        std::atomic_thread_fence(std::memory_order_release);
+        storeU32(f.watchView + WATCH_SEQ_OFFSET, ++f.watchSeq);
+    }
+
+    static void writePart(uint8_t* at, const std::array<uint32_t, 3>& part) {
+        storeU32(at + WATCH_FIELD_CONDITION_OFFSET, part[0]);
+        storeU32(at + WATCH_FIELD_DEVNODE_OFFSET, part[1]);
+        storeU32(at + WATCH_FIELD_PROBLEM_OFFSET, part[2]);
+    }
+
+    bool watchSectionAlive(uint32_t serial) const {
+        const auto it = watchNames.find(serial);
+        if (it == watchNames.end()) return false;
+        HANDLE opened = OpenFileMappingW(FILE_MAP_READ, FALSE, it->second.c_str());
+        if (opened == nullptr) return false;
+        CloseHandle(opened);
+        return true;
+    }
+
     void writeVersion(uint32_t serial, const fx::VersionImage& image) {
         const auto it = live.find(serial);
         if (it != live.end()) std::memcpy(it->second.versionView, image.data(), image.size());
@@ -257,6 +355,11 @@ struct FakeProvisioner : IHidMaestroProvisioner {
     }
 
     bool installed() const override { return installedVal; }
+    std::vector<uint32_t> takeSettledSerials() override { return std::exchange(settled, {}); }
+    uint64_t liveChannel() const override { return channelNow; }
+    // The helper connection plugs are served on; a test replaces it or lets it
+    // go (0) as a helper that died would.
+    uint64_t channelNow = 1;
     bool isReady() const override { return ready; }
     bool ensureReady() override {
         if (!ensureReadyResult) return false;
@@ -345,6 +448,14 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         out.versionSection = readOnlyVersion ? reinterpret_cast<uint64_t>(dup(readOnlyVersion)) : 0;
         if (readOnlyVersion) CloseHandle(readOnlyVersion);
         out.versionReported = helperReportsVersion;
+        HANDLE readOnlyWatch = openWatchSection(serial, f);
+        f.presents = WATCH_PRESENTS_HID |
+                     (!composite && reportsCompanion(identity) ? WATCH_PRESENTS_XINPUT : 0) |
+                     (composite ? WATCH_PRESENTS_AUDIO : 0);
+        out.watchSection = readOnlyWatch ? reinterpret_cast<uint64_t>(dup(readOnlyWatch)) : 0;
+        out.channel = channelNow;
+        if (readOnlyWatch) CloseHandle(readOnlyWatch);
+        out.watchReported = helperReportsWatch;
         out.identityTag = tagFor(serial);
         out.usbip = composite;
         out.companion = !composite && reportsCompanion(identity);
@@ -357,9 +468,10 @@ struct FakeProvisioner : IHidMaestroProvisioner {
         return true;
     }
 
-    bool deprovision(uint32_t serial) override {
+    bool deprovision(uint32_t serial, Teardown why) override {
         passGate();
         deprovisionCalls++;
+        teardowns[serial] = why;
         auto it = live.find(serial);
         if (it != live.end()) {
             inputSeqAtRemoval[serial] = u32at(it->second.inputView, 0);
@@ -2312,6 +2424,500 @@ static void test_no_mic_window_follows_a_refusal_under_a_racing_writer() {
     EXPECT_EQ(leaks, 0);
 }
 
+// The device watch, run over ticks a test counts: a short policy walks a grace
+// in a few steps, and each tick the helper beats and looks before the recheck
+// reads.
+constexpr WatchPolicy SHORT_WATCH{5, 3, 7, 4};
+
+static void tick(FakeProvisioner& prov, HidMaestroAdapter& adapter, int times = 1) {
+    for (int i = 0; i < times; ++i) {
+        prov.beat();
+        prov.look();
+        adapter.recheckDrivers();
+    }
+}
+
+static void silentTicks(HidMaestroAdapter& adapter, int times) {
+    for (int i = 0; i < times; ++i) adapter.recheckDrivers();
+}
+
+// Ticks on which the helper beats but its watcher, stuck in a call, never
+// finishes a look.
+static void stuckTicks(FakeProvisioner& prov, HidMaestroAdapter& adapter, int times) {
+    for (int i = 0; i < times; ++i) {
+        prov.beat();
+        adapter.recheckDrivers();
+    }
+}
+
+// A plugged pad whose devices the helper has found whole once.
+static void plugWatched(FakeProvisioner& prov, HidMaestroAdapter& adapter, uint32_t serial,
+                        GamepadIdentity identity) {
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(serial, identity));
+    prov.watchSays(serial, WATCH_CONDITION_PRESENT);
+    tick(prov, adapter);
+}
+
+static int ticksOf(uint32_t ticks) { return static_cast<int>(ticks); }
+
+static void test_probe_a_reduced_access_duplicate_refuses_a_write_view() {
+    TEST("probe: a section duplicated with FILE_MAP_READ access alone, as the helper hands over a "
+         "watch block, maps for reading and refuses a write view");
+    HANDLE owner = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                      WATCH_BLOCK_SIZE, nullptr);
+    HANDLE readOnly = nullptr;
+    const BOOL duplicated = DuplicateHandle(GetCurrentProcess(), owner, GetCurrentProcess(),
+                                            &readOnly, FILE_MAP_READ, FALSE, 0);
+    void* readView = MapViewOfFile(readOnly, FILE_MAP_READ, 0, 0, WATCH_BLOCK_SIZE);
+    void* writeView =
+        MapViewOfFile(readOnly, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, WATCH_BLOCK_SIZE);
+    const DWORD writeError = GetLastError();
+    EXPECT(owner != nullptr);
+    EXPECT(duplicated != 0);
+    EXPECT(readView != nullptr);
+    EXPECT(writeView == nullptr);
+    EXPECT_EQ(writeError, static_cast<DWORD>(ERROR_ACCESS_DENIED));
+    if (readView) UnmapViewOfFile(readView);
+    if (writeView) UnmapViewOfFile(writeView);
+    for (HANDLE h : {readOnly, owner}) {
+        if (h) CloseHandle(h);
+    }
+}
+
+static void test_a_disabled_pad_is_held_and_written_again_when_enabled() {
+    TEST("watch: a pad whose HID collection is disabled in Windows, its only input presentation, "
+         "is written nothing, keeps its slot and reads as disabled however long it stays so");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 1, GamepadIdentity::DualSense);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "Satellite watches Serial 1's devices"), 1);
+    const uint32_t before = prov.inputSeq(1);
+    prov.watchSays(1, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_HID_COLLECTION, 22);
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(1) == WriteGate::Held);
+    EXPECT(adapter.isDevicePlugged(1));
+    EXPECT(adapter.hostDisabled(1).input);
+    EXPECT(adapter.hostDisabled(1).hid);
+    GamepadReport held{};
+    held.sThumbLX = 12345;
+    held.wButtons = 0x1000;
+    EXPECT(!adapter.submitReport(1, held));
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) * 3);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT_EQ(prov.inputSeq(1), before);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "HID collection is disabled in Windows (Code 22)"), 1);
+
+    TEST("watch: enabled again, the pad is written at once with the state it was held with, and "
+         "after");
+    prov.watchSays(1, WATCH_CONDITION_PRESENT);
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(1) == WriteGate::Open);
+    EXPECT(!adapter.hostDisabled(1).input);
+    EXPECT_EQ(prov.inputSeq(1), before + 2);
+    EXPECT(padFieldsOf(prov.inputData(1)) == packedPadFields(held));
+    EXPECT(adapter.submitReport(1, held));
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "is enabled in Windows again"), 1);
+}
+
+static void test_a_composites_microphone_follows_its_audio_function() {
+    TEST("watch: a composite whose HID function is disabled is held, and its microphone, whose "
+         "audio function Windows still has, carries on");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 1, GamepadIdentity::DualSense);
+    const std::vector<int16_t> window(AUDIO_SAMPLE_RATE_HZ / 50, 1000);
+    prov.partSays(1, WATCH_PRESENTS_HID, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_HID_FUNCTION, 22);
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(1) == WriteGate::Held);
+    EXPECT(!adapter.submitReport(1, GamepadReport{}));
+    EXPECT(adapter.submitMicAudioPcm(1, window.data(), window.size()));
+    EXPECT(!prov.drainMic(1).empty());
+    EXPECT(!adapter.hostDisabled(1).audio);
+
+    TEST("watch: its audio function disabled instead holds its microphone alone, and its input "
+         "is written");
+    prov.watchSays(1, WATCH_CONDITION_PRESENT);
+    tick(prov, adapter);
+    const uint32_t written = prov.inputSeq(1);
+    prov.partSays(1, WATCH_PRESENTS_AUDIO, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_AUDIO_FUNCTION,
+                  22);
+    tick(prov, adapter);
+    EXPECT_EQ(prov.inputSeq(1), written);
+    EXPECT(adapter.gateForTest(1) == WriteGate::Open);
+    EXPECT(adapter.submitReport(1, GamepadReport{}));
+    EXPECT(!adapter.submitMicAudioPcm(1, window.data(), window.size()));
+    EXPECT(prov.drainMic(1).empty());
+    EXPECT(adapter.hostDisabled(1).audio);
+    EXPECT(!adapter.hostDisabled(1).input);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "Satellite holds its microphone"), 1);
+
+    TEST("watch: enabled again, its microphone carries on");
+    prov.watchSays(1, WATCH_CONDITION_PRESENT);
+    tick(prov, adapter);
+    EXPECT(adapter.submitMicAudioPcm(1, window.data(), window.size()));
+    EXPECT(!adapter.hostDisabled(1).audio);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "its microphone carries on"), 1);
+}
+
+static void test_an_xbox_pad_with_its_companion_disabled_is_written_on() {
+    TEST("watch: an Xbox pad whose XUSB companion is disabled is written on through its HID game "
+         "controller, never held or given up for it, and reads with its XInput device disabled");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 3, GamepadIdentity::Xbox);
+    prov.partSays(3, WATCH_PRESENTS_XINPUT, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_COMPANION, 22);
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) * 3);
+    EXPECT(adapter.gateForTest(3) == WriteGate::Open);
+    const uint32_t before = prov.inputSeq(3);
+    EXPECT(adapter.submitReport(3, GamepadReport{}));
+    EXPECT_EQ(prov.inputSeq(3), before + 2);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT(adapter.hostDisabled(3).xinput);
+    EXPECT(!adapter.hostDisabled(3).input);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN,
+                             "XUSB companion is disabled in Windows (Code 22); its HID game "
+                             "controller still takes input"),
+              1);
+
+    TEST("watch: its HID game controller then failing, the companion still disabled, is a loss "
+         "after the grace");
+    prov.partSays(3, WATCH_PRESENTS_HID, WATCH_CONDITION_FAILED, WATCH_DEVNODE_DEVICE, 43);
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) - 1);
+    EXPECT(adapter.lostSerials().empty());
+    tick(prov, adapter);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({3}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "device is still failed with problem code 43"), 1);
+}
+
+static void test_an_xbox_pad_whose_companion_failed_is_plugged_again() {
+    TEST("watch: an Xbox pad whose XUSB companion failed, its HID game controller still taking "
+         "input, is given up after its grace so its client plugs the whole pad again (Emir's "
+         "decision)");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 3, GamepadIdentity::Xbox);
+    prov.partSays(3, WATCH_PRESENTS_XINPUT, WATCH_CONDITION_FAILED, WATCH_DEVNODE_COMPANION, 10);
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) - 1);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT(adapter.submitReport(3, GamepadReport{}));
+    tick(prov, adapter);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({3}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "XUSB companion is still failed with problem code 10"),
+              1);
+}
+
+static void test_a_pad_whose_helper_connection_is_gone_is_given_up_at_once() {
+    TEST("watch: a pad whose helper connection is gone is given up on the next tick, though its "
+         "heartbeat never moved after the plug, and removed as one whose helper is gone");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+    silentTicks(adapter, 1);
+    EXPECT(adapter.lostSerials().empty());
+    prov.channelNow = 2;
+    silentTicks(adapter, 1);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({1}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "helper connection is gone"), 1);
+    adapter.unplugDevice(1);
+    EXPECT(prov.teardowns.at(1) == Teardown::HelperGone);
+}
+
+static void test_a_pad_away_within_its_grace_is_still_written() {
+    TEST("watch: a pad whose device is gone from Windows within its grace is still written, is "
+         "not given up, and carries on when it is back");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 2, GamepadIdentity::DS4);
+    prov.watchSays(2, WATCH_CONDITION_MISSING);
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) - 1);
+    EXPECT(adapter.gateForTest(2) == WriteGate::Open);
+    const uint32_t before = prov.inputSeq(2);
+    EXPECT(adapter.submitReport(2, GamepadReport{}));
+    EXPECT_EQ(prov.inputSeq(2), before + 2);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "Satellite waits up to"), 1);
+    prov.watchSays(2, WATCH_CONDITION_PRESENT);
+    tick(prov, adapter);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "is back in Windows"), 1);
+}
+
+static void test_a_pad_away_past_its_grace_is_given_up() {
+    TEST("watch: a pad whose devices stay failed for its whole grace is listed lost, still "
+         "written, and the list lets it go once it is unplugged");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 3, GamepadIdentity::Xbox);
+    prov.watchSays(3, WATCH_CONDITION_FAILED, WATCH_DEVNODE_DEVICE, 43);
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) - 1);
+    EXPECT(adapter.lostSerials().empty());
+    tick(prov, adapter);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({3}));
+    EXPECT(adapter.gateForTest(3) == WriteGate::Open);
+    EXPECT(adapter.submitReport(3, GamepadReport{}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "device is still failed with problem code 43"), 1);
+    tick(prov, adapter, 3);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "gives the controller up"), 1);
+    EXPECT(adapter.unplugDevice(3));
+    EXPECT(adapter.lostSerials().empty());
+    TEST("watch: a pad given up for its device is removed as one whose helper lives, so the "
+         "removal never waits out the helper's whole bound");
+    EXPECT(prov.teardowns.at(3) == Teardown::DeviceLost);
+}
+
+static void test_a_stale_look_freezes_the_grace() {
+    TEST("watch: a pad away whose watcher stops finishing looks, its helper still beating, is not "
+         "aged into a loss however long that lasts, and the log says why");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 2, GamepadIdentity::DS4);
+    prov.watchSays(2, WATCH_CONDITION_MISSING);
+    tick(prov, adapter);
+    stuckTicks(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) * 10);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT(adapter.gateForTest(2) == WriteGate::Open);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "has not finished a look at Serial 2's devices"), 1);
+
+    TEST("watch: once it looks again the grace runs on, and a device still gone is given up");
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks));
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({2}));
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "looks at Serial 2's devices again"), 1);
+}
+
+static void test_a_refused_pad_is_still_watched() {
+    TEST("watch: a pad the version section refused mid-life is still watched: Windows losing its "
+         "device lists it lost, so the core unplugs it and its client plugs it again");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 4, GamepadIdentity::DS4);
+    prov.writeVersion(4, fx::pinnedDriverImage(FOREIGN_TAG, false));
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(4) == WriteGate::Refused);
+    prov.watchSays(4, WATCH_CONDITION_MISSING);
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks));
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({4}));
+    EXPECT(adapter.gateForTest(4) == WriteGate::Refused);
+
+    TEST("watch: a refused pad that Windows disables and enables again reads disabled and then "
+         "not, and stays refused");
+    FakeProvisioner other;
+    HidMaestroAdapter second(other, other.log);
+    second.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(other, second, 5, GamepadIdentity::DS4);
+    other.writeVersion(5, fx::pinnedDriverImage(FOREIGN_TAG, false));
+    tick(other, second);
+    other.watchSays(5, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_DEVICE, 22);
+    tick(other, second);
+    EXPECT(second.hostDisabled(5).input);
+    EXPECT(!second.isDevicePlugged(5));
+    other.watchSays(5, WATCH_CONDITION_PRESENT);
+    tick(other, second);
+    EXPECT(!second.hostDisabled(5).input);
+    EXPECT(second.gateForTest(5) == WriteGate::Refused);
+}
+
+static void test_a_silent_helper_gives_up_every_pad() {
+    TEST("watch: a helper whose heartbeat has moved and then stops gives up every pad it serves, "
+         "after the silence and not before");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 1, GamepadIdentity::DS4);
+    plugWatched(prov, adapter, 2, GamepadIdentity::DualSense);
+    tick(prov, adapter);
+    silentTicks(adapter, ticksOf(SHORT_WATCH.helperSilenceTicks) - 1);
+    EXPECT(adapter.lostSerials().empty());
+    silentTicks(adapter, 1);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({1, 2}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "HIDMaestro helper has not beaten"), 2);
+    TEST("watch: a pad given up for its helper is removed without asking that helper anything");
+    adapter.unplugDevice(1);
+    EXPECT(prov.teardowns.at(1) == Teardown::HelperGone);
+}
+
+static void test_a_pad_let_go_by_its_client_is_removed_as_asked() {
+    TEST("teardown: a pad its client lets go is removed as a request, which waits for the helper's "
+         "answer");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 4, GamepadIdentity::DualSense);
+    EXPECT(adapter.unplugDevice(4));
+    EXPECT(prov.teardowns.at(4) == Teardown::Requested);
+
+    TEST("teardown: the serials the helper has since settled reach the core once each");
+    prov.settled = {4, 9};
+    const std::vector<SettledSerial> settled = adapter.settledSerials();
+    EXPECT(settled.size() == 2 && settled[0].serial == 4 && settled[1].serial == 9);
+    EXPECT(settled.size() == 2 && settled[0].backend == adapter.backendId());
+    EXPECT(adapter.settledSerials().empty());
+}
+
+static void test_a_helper_without_the_watch_leaves_pads_as_they_were() {
+    TEST("watch: a helper that hands over no watch block, as one on the base protocol, never "
+         "holds or gives up a pad for its devices");
+    FakeProvisioner prov;
+    prov.withWatch = false;
+    prov.helperReportsWatch = false;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
+    silentTicks(adapter, ticksOf(SHORT_WATCH.helperSilenceTicks + SHORT_WATCH.graceTicks) * 2);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT(!adapter.hostDisabled(1).input);
+    EXPECT(adapter.submitReport(1, GamepadReport{}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "watch"), 0);
+
+    TEST("watch: a helper on the watch's protocol whose plug names no block is logged once");
+    FakeProvisioner bare;
+    bare.withWatch = false;
+    HidMaestroAdapter bareAdapter(bare, bare.log);
+    EXPECT(bareAdapter.ensureBusOpen());
+    EXPECT(bareAdapter.pluginDevice(1, GamepadIdentity::DS4));
+    EXPECT_EQ(bare.log.count(LogLevel::WARN, "came with no device watch block"), 1);
+}
+
+static void test_a_composite_waits_longer_than_a_umdf2_pad() {
+    TEST("watch: with the shipped policy a UMDF2 pad is given up after 15 s of ticks and a "
+         "composite after 45 s, usbip-win2's first reattach and the import after it");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log, audioOn());
+    plugWatched(prov, adapter, 1, GamepadIdentity::DualSense);
+    EXPECT(adapter.hasSpeakerEndpoint(1));
+    plugWatched(prov, adapter, 2, GamepadIdentity::SwitchPro);
+    const WatchPolicy umdf2 = watchPolicyFor(ProfileBackend::Umdf2, 1.0);
+    const WatchPolicy usbip = watchPolicyFor(ProfileBackend::Usbip, 1.0);
+    prov.watchSays(1, WATCH_CONDITION_MISSING);
+    prov.watchSays(2, WATCH_CONDITION_MISSING);
+    tick(prov, adapter, ticksOf(umdf2.graceTicks));
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({2}));
+    tick(prov, adapter, ticksOf(usbip.graceTicks - umdf2.graceTicks) - 1);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({2}));
+    tick(prov, adapter);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({1, 2}));
+}
+
+static void test_the_watch_and_the_version_section_hold_a_pad_together() {
+    TEST("watch: a pad both the version section and the watch hold stays held until both let it "
+         "go, and the version section's line says what it waits for");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    adapter.setVersionDeadlineForTest(std::chrono::milliseconds(600000));
+    plugWatched(prov, adapter, 4, GamepadIdentity::DS4);
+    fx::VersionImage forgotten = fx::pinnedDriverImage(FakeProvisioner::tagFor(4), false);
+    fx::putI32(forgotten, VERSION_DRIVER_PROTOCOL_OFFSET, 0);
+    prov.writeVersion(4, forgotten);
+    prov.watchSays(4, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_DEVICE, 22);
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(4) == WriteGate::Held);
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "holds its input"), 1);
+    prov.writeVersion(4, fx::pinnedDriverImage(FakeProvisioner::tagFor(4), false));
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(4) == WriteGate::Held);
+    EXPECT_EQ(prov.log.count(LogLevel::INFO, "once Windows enables its device again"), 1);
+    prov.watchSays(4, WATCH_CONDITION_PRESENT);
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(4) == WriteGate::Open);
+
+    TEST("watch: a version section that refuses a disabled pad refuses it");
+    prov.writeVersion(4, fx::pinnedDriverImage(FOREIGN_TAG, false));
+    prov.watchSays(4, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_DEVICE, 22);
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(4) == WriteGate::Refused);
+    EXPECT_EQ(prov.log.count(LogLevel::ERR, "another controller's"), 1);
+}
+
+static void test_a_disable_waits_for_a_busy_pad() {
+    TEST("watch: a disable that finds the pad's input flag taken leaves the gate for the next "
+         "tick rather than spinning under hidmaestro.bus, and still says the pad is disabled");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 1, GamepadIdentity::DS4);
+    prov.watchSays(1, WATCH_CONDITION_DISABLED, WATCH_DEVNODE_HID_COLLECTION, 22);
+    std::atomic_flag& busy = adapter.inputBusyForTest(1);
+    EXPECT(!busy.test_and_set(std::memory_order_acquire));
+    std::future<void> recheck = std::async(std::launch::async, [&] { tick(prov, adapter); });
+    const bool returned =
+        recheck.wait_for(std::chrono::milliseconds(1000)) == std::future_status::ready;
+    EXPECT(returned);
+    EXPECT(adapter.gateForTest(1) == WriteGate::Open);
+    EXPECT(adapter.hostDisabled(1).input);
+    busy.clear(std::memory_order_release);
+    recheck.wait();
+    tick(prov, adapter);
+    EXPECT(adapter.gateForTest(1) == WriteGate::Held);
+}
+
+// A gate that is never reached is a failure, not a hang. The writer holds the
+// flag for nearly all of its loop, so a tick can miss it many times in a row
+// (under Wine, thousands): the bound only guards against a gate that cannot move.
+constexpr int GATE_TICK_LIMIT = 1000000;
+
+static bool watchUntil(FakeProvisioner& prov, HidMaestroAdapter& adapter, uint32_t serial,
+                       uint32_t condition, WriteGate gate) {
+    prov.watchSays(serial, condition, WATCH_DEVNODE_HID_COLLECTION, 22);
+    for (int i = 0; i < GATE_TICK_LIMIT && adapter.gateForTest(serial) != gate; ++i) {
+        tick(prov, adapter);
+    }
+    return adapter.gateForTest(serial) == gate;
+}
+
+static void test_no_frame_follows_a_disable_under_a_racing_writer() {
+    TEST("watch race: across hundreds of disables with a writer pushing frames throughout, no "
+         "frame lands once the recheck that held the pad has returned");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 5, GamepadIdentity::DS4);
+    HotWriter writer;
+    std::thread thread([&] { runInputWriter(adapter, 5, writer); });
+    int leaks = 0;
+    bool reached = true;
+    for (int round = 0; reached && round < GATE_RACE_ROUNDS; ++round) {
+        reached = watchUntil(prov, adapter, 5, WATCH_CONDITION_DISABLED, WriteGate::Held);
+        const uint32_t heldAt = prov.inputSeq(5);
+        writer.waitForAttempts(GATE_RACE_ATTEMPTS_AFTER);
+        if (prov.inputSeq(5) != heldAt) leaks++;
+        reached = reached && watchUntil(prov, adapter, 5, WATCH_CONDITION_PRESENT, WriteGate::Open);
+        writer.waitForAttempts(GATE_RACE_ATTEMPTS_AFTER);
+    }
+    writer.stop = true;
+    thread.join();
+    EXPECT(reached);
+    EXPECT_EQ(leaks, 0);
+    EXPECT(prov.inputSeq(5) > (uint32_t)(2 * GATE_RACE_ROUNDS));
+}
+
+static void test_the_watch_handle_goes_with_the_pad() {
+    TEST("watch: unplugging a pad closes its watch handle, and closing the bus closes them all");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+    EXPECT(prov.watchSectionAlive(1));
+    EXPECT(adapter.unplugDevice(1));
+    EXPECT(!prov.watchSectionAlive(1));
+    EXPECT(adapter.pluginDevice(2, GamepadIdentity::DualSense));
+    EXPECT(adapter.pluginDevice(3, GamepadIdentity::Xbox));
+    adapter.closeBus();
+    EXPECT(!prov.watchSectionAlive(2));
+    EXPECT(!prov.watchSectionAlive(3));
+}
+
 int main() {
     test_probe_a_read_only_duplicate_refuses_a_write_view();
     test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end();
@@ -2376,6 +2982,24 @@ int main() {
     test_the_recheck_passes_over_a_busy_pad();
     test_no_frame_follows_a_hold_under_a_racing_writer();
     test_no_mic_window_follows_a_refusal_under_a_racing_writer();
+    test_probe_a_reduced_access_duplicate_refuses_a_write_view();
+    test_a_disabled_pad_is_held_and_written_again_when_enabled();
+    test_a_composites_microphone_follows_its_audio_function();
+    test_an_xbox_pad_with_its_companion_disabled_is_written_on();
+    test_a_stale_look_freezes_the_grace();
+    test_an_xbox_pad_whose_companion_failed_is_plugged_again();
+    test_a_pad_whose_helper_connection_is_gone_is_given_up_at_once();
+    test_a_refused_pad_is_still_watched();
+    test_a_pad_away_within_its_grace_is_still_written();
+    test_a_pad_away_past_its_grace_is_given_up();
+    test_a_silent_helper_gives_up_every_pad();
+    test_a_pad_let_go_by_its_client_is_removed_as_asked();
+    test_a_helper_without_the_watch_leaves_pads_as_they_were();
+    test_a_composite_waits_longer_than_a_umdf2_pad();
+    test_the_watch_and_the_version_section_hold_a_pad_together();
+    test_a_disable_waits_for_a_busy_pad();
+    test_no_frame_follows_a_disable_under_a_racing_writer();
+    test_the_watch_handle_goes_with_the_pad();
 
     std::cout << "hidmaestro_adapter: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;

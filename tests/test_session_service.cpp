@@ -16,6 +16,7 @@
 #include "../src/adapters/audio/opus_codec.h"
 #include "../src/core/audio/haptic_envelope.h"
 #include <atomic>
+#include <functional>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -144,6 +145,7 @@ struct MockViGem : IGamepadPort {
         unpluggedSerials.push_back(serial);
         std::lock_guard<std::mutex> lk(pluggedMtx);
         pluggedSet.erase(serial);
+        lostSet.erase(serial);
         return unplugReturnVal;
     }
     bool isDevicePlugged(uint32_t serial) const override {
@@ -308,6 +310,55 @@ struct MockViGem : IGamepadPort {
     bool motionBackendOk(uint32_t serial) const override {
         auto it = motionBackendOkMap.find(serial);
         return it != motionBackendOkMap.end() ? it->second : true;
+    }
+
+    // What the HIDMaestro watch reports: a lost serial is listed while it is
+    // still plugged, and a disabled one is asked about by serial.
+    std::set<uint32_t> lostSet;
+    std::set<uint32_t> disabledSet;
+    mutable int lostReads = 0;
+    bool anyLost() const override {
+        std::lock_guard<std::mutex> lk(pluggedMtx);
+        for (const uint32_t serial : lostSet) {
+            if (pluggedSet.count(serial) != 0) return true;
+        }
+        return false;
+    }
+    std::vector<uint32_t> lostSerials() const override {
+        lostReads++;
+        std::vector<uint32_t> lost;
+        {
+            std::lock_guard<std::mutex> lk(pluggedMtx);
+            for (const uint32_t serial : lostSet) {
+                if (pluggedSet.count(serial) != 0) lost.push_back(serial);
+            }
+        }
+        // What happens between this read and the core acting on it.
+        if (afterLostRead) afterLostRead();
+        return lost;
+    }
+    std::function<void()> afterLostRead;
+    std::set<uint32_t> audioDisabledSet;
+    HostDisabled hostDisabled(uint32_t serial) const override {
+        HostDisabled d;
+        d.input = disabledSet.count(serial) != 0;
+        d.audio = audioDisabledSet.count(serial) != 0;
+        return d;
+    }
+
+    // The serials a new helper has since swept, reported once and named by the
+    // backend that saw them through; and how often the core asked, which it
+    // does inside topology changes only.
+    std::vector<SettledSerial> settledSet;
+    int settledCalls = 0;
+    std::vector<SettledSerial> settledSerials() override {
+        settledCalls++;
+        return std::exchange(settledSet, {});
+    }
+    // The backend a plugged serial belongs to, as the mux names it.
+    std::string serialBackend = "hidmaestro";
+    const char* backendIdForSerial(uint32_t serial) const override {
+        return isDevicePlugged(serial) ? serialBackend.c_str() : "";
     }
 };
 
@@ -1277,6 +1328,177 @@ static void test_heartbeat_reflectsInvoluntaryLoss() {
     EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b1);
 }
 
+static uint32_t serialOfPad(const SessionService& svc, size_t position) {
+    return svc.getConnectionsSnapshot().connections[0].controllers[position].serial;
+}
+
+// Every serial in use, so the next plug takes whichever one comes free.
+static std::vector<ControllerDescriptor> everyPad() {
+    std::vector<ControllerDescriptor> pads;
+    for (int i = 0; i < MAX_BACKEND_CONTROLLERS; i++) pads.push_back(makeDesc((uint8_t)i));
+    return pads;
+}
+
+static void test_lostPad_nothingLostTakesNoLock() {
+    TEST("lost pad: a tick with nothing lost asks the backend's cheap hint alone and takes no "
+         "topology lock, so it never reads the lost list");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0)});
+    for (int tick = 0; tick < 10; tick++) svc.recheckDrivers();
+    EXPECT_EQ(vigem.lostReads, 0);
+    vigem.lostSet.insert(serialOfPad(svc, 0));
+    svc.recheckDrivers();
+    EXPECT_EQ(vigem.lostReads, 1);
+    EXPECT_EQ(vigem.unplugCalls, 1);
+}
+
+static void test_lostPad_isReadUnderTheTopologyLock() {
+    TEST("lost pad: the backend's lost list is read under the topology lock, so a PUT that frees "
+         "the lost serial and plugs a fresh pad on it waits, and the fresh pad is not vacated");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    std::vector<ControllerDescriptor> pads = everyPad();
+    upsert(svc, pads);
+    const uint8_t last = (uint8_t)(MAX_BACKEND_CONTROLLERS - 1);
+    const uint32_t lost = serialOfPad(svc, last);
+    vigem.lostSet.insert(lost);
+    std::vector<ControllerDescriptor> withoutIt(pads.begin(), pads.end() - 1);
+    std::atomic<bool> putsDone{false};
+    bool raced = false;
+    std::thread puts;
+    vigem.afterLostRead = [&] {
+        if (raced) return;
+        raced = true;
+        puts = std::thread([&] {
+            upsert(svc, withoutIt);
+            upsert(svc, pads);
+            putsDone = true;
+        });
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!putsDone && std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    };
+    svc.recheckDrivers();
+    puts.join();
+    EXPECT(putsDone);
+    EXPECT_EQ(svc.totalActiveControllers(), MAX_BACKEND_CONTROLLERS);
+    EXPECT_EQ(serialOfPad(svc, last), lost);
+    EXPECT(vigem.isDevicePlugged(lost));
+}
+
+static void test_lostPad_isUnpluggedAndItsSlotVacated() {
+    TEST("lost pad: a serial the backend has lost is unplugged and its slot vacated, so the "
+         "heartbeat ack's epoch moves and its bit clears");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    const auto r = upsert(svc, {makeDesc(0), makeDesc(1)});
+    const uint32_t lost = serialOfPad(svc, 1);
+    svc.handleHeartbeat(r.token);
+    const uint16_t epochBefore = client.lastAckEpoch;
+    vigem.lostSet.insert(lost);
+    svc.recheckDrivers();
+    svc.handleHeartbeat(r.token);
+    EXPECT(client.lastAckEpoch != epochBefore);
+    EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b01);
+    EXPECT_EQ(vigem.unplugCalls, 1);
+    EXPECT(vigem.unpluggedSerials == std::vector<uint32_t>({lost}));
+    EXPECT_EQ(svc.totalActiveControllers(), 1);
+    EXPECT(log.contains("Controller #1 of TestDevice lost its virtual device"));
+
+    TEST("lost pad: frames for the vacated slot no longer reach the backend");
+    const int submits = vigem.submitCalls;
+    EXPECT(!svc.handleGamepadData(r.token, 1, InputReport{}));
+    EXPECT_EQ(vigem.submitCalls, submits);
+    EXPECT(svc.handleGamepadData(r.token, 0, InputReport{}));
+
+    TEST("lost pad: it is vacated once; a later tick has nothing left to do");
+    svc.recheckDrivers();
+    EXPECT_EQ(vigem.unplugCalls, 1);
+
+    TEST("lost pad: the client's re-PUT of the same desired set plugs a fresh controller in "
+         "the slot");
+    const auto again = upsert(svc, {makeDesc(0), makeDesc(1)});
+    svc.handleHeartbeat(again.token);
+    EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b11);
+    EXPECT_EQ((int)again.controllers[1].result, (int)APPLY_OK);
+    EXPECT(serialOfPad(svc, 1) != lost);
+}
+
+static void test_lostPad_unconfirmedUnplugQuarantinesTheSerial() {
+    TEST("lost pad: an unplug the backend cannot confirm quarantines the serial, as any other");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    upsert(svc, {makeDesc(0)});
+    const uint32_t lost = serialOfPad(svc, 0);
+    vigem.unplugReturnVal = false;
+    vigem.lostSet.insert(lost);
+    svc.recheckDrivers();
+    EXPECT_EQ(vigem.unplugCalls, 1);
+    EXPECT(log.contains("Unplug of serial " + std::to_string(lost) + " unconfirmed"));
+}
+
+static void test_lostPad_aSerialNoSessionHoldsChangesNothing() {
+    TEST("lost pad: a lost serial no session holds changes nothing");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    const auto r = upsert(svc, {makeDesc(0)});
+    svc.handleHeartbeat(r.token);
+    const uint16_t epochBefore = client.lastAckEpoch;
+    {
+        std::lock_guard<std::mutex> lk(vigem.pluggedMtx);
+        vigem.pluggedSet.insert(MAX_BACKEND_CONTROLLERS);
+    }
+    vigem.lostSet.insert(MAX_BACKEND_CONTROLLERS);
+    svc.recheckDrivers();
+    svc.handleHeartbeat(r.token);
+    EXPECT_EQ(vigem.unplugCalls, 0);
+    EXPECT_EQ(client.lastAckEpoch, epochBefore);
+    EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b1);
+}
+
+static void test_disabledPad_keepsItsSlotAndShowsDisabled() {
+    TEST("disabled pad: a pad its host disabled keeps its slot and its bit, and the snapshot "
+         "names it disabled");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+
+    const auto r = upsert(svc, {makeDesc(0)});
+    const uint32_t serial = serialOfPad(svc, 0);
+    svc.handleHeartbeat(r.token);
+    const uint16_t epochBefore = client.lastAckEpoch;
+    EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].hostDisabled.input);
+    vigem.disabledSet.insert(serial);
+    svc.recheckDrivers();
+    svc.handleHeartbeat(r.token);
+    EXPECT_EQ(vigem.unplugCalls, 0);
+    EXPECT_EQ(client.lastAckEpoch, epochBefore);
+    EXPECT_EQ(client.lastAckBitmap, (uint16_t)0b1);
+    const auto ctrl = svc.getConnectionsSnapshot().connections[0].controllers[0];
+    EXPECT(ctrl.hostDisabled.input);
+    EXPECT(ctrl.pluggedIn);
+
+    TEST("disabled pad: enabled again, the snapshot no longer names it disabled");
+    vigem.disabledSet.clear();
+    EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].hostDisabled.input);
+}
+
 static void test_applyController_standalone() {
     TEST("applyController: standalone descriptor upsert on a live session");
     MockViGem vigem;
@@ -1489,6 +1711,55 @@ static void test_serials_quarantineOnUnplugFailure() {
     upsert(svc, {});
     EXPECT(!vigem.busOpen);
     EXPECT_EQ(svc.availableSlots(), 16);
+}
+
+static uint32_t serialOfSlot(SessionService& svc, uint8_t index);
+
+static void test_serials_settledByTheBackendLeaveQuarantine() {
+    TEST("serials: a serial whose unconfirmed unplug the backend has since seen through leaves "
+         "quarantine, so helpers that die again and again do not shrink the pool while another "
+         "pad keeps the bus open");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0)});
+    for (int round = 0; round < 2 * MAX_BACKEND_CONTROLLERS; round++) {
+        upsert(svc, {makeDesc(0), makeDesc(1)});
+        const uint32_t dying = serialOfSlot(svc, 1);
+        vigem.unplugReturnVal = false;
+        upsert(svc, {makeDesc(0)});
+        vigem.unplugReturnVal = true;
+        vigem.settledSet.push_back({dying, "hidmaestro"});
+    }
+    const SessionUpsertResult last = upsert(svc, {makeDesc(0), makeDesc(1)});
+    EXPECT(vigem.busOpen);
+    EXPECT(last.controllers.size() == 2 && last.controllers[1].result == APPLY_OK);
+    EXPECT(svc.availableSlots() >= MAX_BACKEND_CONTROLLERS - 3);
+    EXPECT(log.contains("free again"));
+
+    TEST("serials: a serial another backend quarantined stays quarantined when this one settles "
+         "it, as when ViGEm reused a serial whose HIDMaestro unplug is confirmed late");
+    upsert(svc, {makeDesc(0), makeDesc(1)});
+    const uint32_t reused = serialOfSlot(svc, 1);
+    vigem.serialBackend = "vigem";
+    vigem.unplugReturnVal = false;
+    upsert(svc, {makeDesc(0)});
+    vigem.unplugReturnVal = true;
+    const int before = svc.availableSlots();
+    vigem.settledSet.push_back({reused, "hidmaestro"});
+    upsert(svc, {makeDesc(0)});
+    EXPECT_EQ(svc.availableSlots(), before);
+    vigem.settledSet.push_back({reused, "vigem"});
+    upsert(svc, {makeDesc(0)});
+    EXPECT_EQ(svc.availableSlots(), before + 1);
+    vigem.serialBackend = "hidmaestro";
+
+    TEST("serials: a serial the backend settles that was never quarantined stays as it was");
+    vigem.settledSet.push_back({serialOfSlot(svc, 0), "hidmaestro"});
+    upsert(svc, {makeDesc(0), makeDesc(1)});
+    EXPECT(serialOfSlot(svc, 0) != 0);
+    EXPECT(vigem.settledCalls > 0);
 }
 
 static void test_closeById_kick_notifiesBeforeTeardown() {
@@ -3046,6 +3317,26 @@ static void test_micAudio_aPadThatReadsAsGoneIsNotAMissingMicrophone() {
         std::lock_guard<std::mutex> lk(vigem.pluggedMtx);
         vigem.pluggedSet.erase(serial0);
     }
+    vigem.submitMicAudioReturnVal = false;
+    MicPacketSource mic;
+    for (uint16_t seq = 0; seq < 3; seq++) {
+        const auto pkt = mic.next();
+        EXPECT(deliverMic(svc, r.token, 0, seq, pkt.data(), pkt.size()));
+    }
+    EXPECT(vigem.submitMicAudioCalls >= 1);
+    EXPECT_EQ(log.countContaining("no microphone endpoint"), 0);
+}
+
+static void test_micAudio_aDisabledPadIsNotAMissingMicrophone() {
+    TEST("mic audio: a pad whose audio function its host disabled drops the audio without logging "
+         "that the pad has no microphone endpoint");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    satellite::audio::OpusCodecFactory codecs;
+    SessionService svc(vigem, client, log, {}, &codecs);
+    auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
+    vigem.audioDisabledSet.insert(serialOfSlot(svc, 0));
     vigem.submitMicAudioReturnVal = false;
     MicPacketSource mic;
     for (uint16_t seq = 0; seq < 3; seq++) {
@@ -5530,6 +5821,10 @@ int main() {
     test_heartbeat_enrichedAck();
     test_heartbeat_invalidTokenIsNoOp();
     test_heartbeat_reflectsInvoluntaryLoss();
+    test_lostPad_isUnpluggedAndItsSlotVacated();
+    test_lostPad_unconfirmedUnplugQuarantinesTheSerial();
+    test_lostPad_aSerialNoSessionHoldsChangesNothing();
+    test_disabledPad_keepsItsSlotAndShowsDisabled();
 
     test_applyController_standalone();
     test_applyController_scopedToOwner();
@@ -5546,6 +5841,9 @@ int main() {
 
     test_serials_roundRobinAvoidsInstantReuse();
     test_serials_quarantineOnUnplugFailure();
+    test_serials_settledByTheBackendLeaveQuarantine();
+    test_lostPad_isReadUnderTheTopologyLock();
+    test_lostPad_nothingLostTakesNoLock();
 
     test_closeById_kick_notifiesBeforeTeardown();
     test_closeById_clientCloseNoNotify();
@@ -5608,6 +5906,7 @@ int main() {
     test_audioPolicy_directionsAreIndependent();
     test_micAudio_decodesRealPacketsToTheBackend();
     test_micAudio_aPadThatReadsAsGoneIsNotAMissingMicrophone();
+    test_micAudio_aDisabledPadIsNotAMissingMicrophone();
     test_micAudio_withoutCodecAcceptsAndDrops();
     test_micAudio_gapConcealedAndReorderHealed();
     test_micAudio_streamsPastTheRateWindow();

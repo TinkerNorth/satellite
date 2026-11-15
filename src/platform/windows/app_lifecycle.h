@@ -18,9 +18,11 @@ std::string logDir();
 // business following the user's profile between them.
 std::string sentryDir();
 
-// True if we are the first instance. False if another is already running, in
-// which case we ping its hidden top-level window (titled `appTitle`) and the
-// caller should exit without showing UI.
+// True if we are the session's Satellite. False if another one runs and took
+// the tap on its hidden top-level window (titled `appTitle`), in which case the
+// caller should exit without showing UI. One on its way out, still waiting for
+// its helper to finish removing its controllers, is waited for, and this launch
+// then starts (single_instance.h).
 bool acquireSingleInstance(const char* appTitle);
 
 // Idempotent. Caps retained dumps so a leaky build can't fill the disk.

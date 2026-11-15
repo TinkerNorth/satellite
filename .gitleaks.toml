@@ -40,6 +40,10 @@ regexes = [
     # synthetic plaintext, tests/test_macos_platform.cpp) — scoped to the
     # exact literal so any real key material in that file still flags.
     '''0123456789abcdef0123456789abcdef''',
+    # HIDMaestro's own example identity token (DeviceIdentity.cs at v2.1.0,
+    # HM_0123456789ABCDEF's tag), which the helper's tests and check-sdk
+    # use: the name a devnode carries, not a secret.
+    '''HM_0123456789ABCDEF''',
 ]
 
 # Suppress entries by commit SHA when a finding has been reviewed and

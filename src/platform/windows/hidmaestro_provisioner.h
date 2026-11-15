@@ -15,6 +15,7 @@
 #include "core/types.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace satellite {
 namespace hidmaestro {
@@ -50,6 +51,18 @@ struct ProvisionResult {
     // the SDK's own start waits and so the adapter's wait for a driver half.
     double timeoutScale = 1.0;
 
+    // The pad's device watch block (core/hidmaestro_device_watch.h), read-only.
+    // A helper on the base protocol names none, and the pad is then never held
+    // or given up for its devices; watchReported says whether the reply named
+    // one at all.
+    uint64_t watchSection = 0;
+    bool watchReported = false;
+
+    // The helper connection the pad was plugged on, counted up per connection
+    // (0 for a provisioner that does not count them). The pad lives only as long
+    // as that connection: once liveChannel() names another, it is gone.
+    uint64_t channel = 0;
+
     // Controller-audio rings (hidmaestro_audio_wire.h), present only for a
     // composite persona that actually materialized its USB-audio function.
     // Zero on every other profile, and on a composite whose helper could not
@@ -72,6 +85,21 @@ struct ProvisionResult {
     int speakerRateHz = 0;
     int micChannels = 0;
     int micRateHz = 0;
+};
+
+// Why a pad is being removed, which decides what its removal may wait for.
+enum class Teardown : uint8_t {
+    // The client let the pad go: the helper's answer is awaited as any
+    // request's is, and a helper that misses it loses its channel.
+    Requested,
+    // Windows lost the pad's device while its helper lives: the answer is
+    // awaited only briefly, and one that comes later is read before the next
+    // request's, so a removal Windows makes wait never holds the maintenance
+    // tick or costs the helper's other pads their channel.
+    DeviceLost,
+    // The pad's helper stopped beating: nothing is asked of it, and its channel
+    // is let go, so the next plug reaches a new helper.
+    HelperGone,
 };
 
 class IHidMaestroProvisioner {
@@ -98,7 +126,16 @@ class IHidMaestroProvisioner {
 
     // Tear down the controller for `serial`. False = removal unconfirmed (the
     // caller must quarantine the serial). Idempotent.
-    virtual bool deprovision(uint32_t serial) = 0;
+    virtual bool deprovision(uint32_t serial, Teardown why) = 0;
+
+    // The serials whose unconfirmed removal has since been seen through: the
+    // helper answered it late, or a helper that started after it swept what
+    // its predecessor left. Each is reported once.
+    virtual std::vector<uint32_t> takeSettledSerials() { return {}; }
+
+    // The connection plugs are served on now, or 0 with none. Read without the
+    // provisioner's lock, from the maintenance tick.
+    virtual uint64_t liveChannel() const { return 0; }
 };
 
 } // namespace hidmaestro

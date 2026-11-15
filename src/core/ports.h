@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstddef>
 #include <functional>
+#include <vector>
 
 // Virtual gamepad synthesis. Windows: ViGEmAdapter (ViGEmBus). Linux:
 // GamepadAdapter (/dev/uinput). macOS: MacHidGamepadAdapter (IOHIDUserDevice;
@@ -83,6 +84,33 @@ class IGamepadPort {
     // checked at plug, and holds or stops a pad that no longer passes. Default
     // no-op.
     virtual void recheckDrivers() {}
+
+    // After recheckDrivers, on the same tick: the serials whose virtual device
+    // the backend has lost for good, because the host removed it, it failed
+    // and stayed failed, or the process serving it died. The core unplugs each
+    // one and vacates its slot, so its client plugs the pad again. A serial
+    // stays listed until it is unplugged. Default: none.
+    virtual std::vector<uint32_t> lostSerials() const { return {}; }
+
+    // A cheap hint, read without any lock on every maintenance tick: might a
+    // serial be lost? Only then does the tick take the topology lock and read
+    // lostSerials, which decides. Default: the list itself.
+    virtual bool anyLost() const { return !lostSerials().empty(); }
+
+    // Called inside a topology change, with service.topology alone held: the
+    // serials whose unconfirmed unplug (each one the core quarantined) the
+    // backend has since seen through, so the core may hand them out again,
+    // each named by the backend that saw it through, since only that
+    // backend's quarantine of it ends there. Each is reported once. Default:
+    // none.
+    virtual std::vector<SettledSerial> settledSerials() { return {}; }
+
+    // What the host's user has disabled of the serial's virtual device (in
+    // Windows' Device Manager). With every input presentation disabled the
+    // backend writes nothing to it until one is enabled again, and the core
+    // keeps its slot; with its audio function disabled the backend holds its
+    // microphone. Any thread. Default: nothing.
+    virtual HostDisabled hostDisabled(uint32_t /*serial*/) const { return {}; }
 
     // Rumble sink, invoked from a platform worker thread. Must stay callable
     // until the adapter is destroyed (SessionService outlives it).

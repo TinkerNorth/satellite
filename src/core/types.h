@@ -60,6 +60,7 @@ enum class ControllerState {
     Quiet,       // Live, but no input recently
     Detached,    // slot deleted, virtual being torn down
     Failed,      // descriptor apply returned an APPLY_ERR_* code
+    Disabled,    // Live, but its host's user disabled the virtual device
 };
 
 // A connection enters NotResponding after ~2 heartbeat intervals without a
@@ -107,8 +108,51 @@ inline const char* controllerStateName(ControllerState s) {
         return "detached";
     case ControllerState::Failed:
         return "failed";
+    case ControllerState::Disabled:
+        return "disabled";
     }
     return "live";
+}
+
+// What the admin API names a connection's controller: Live, Detached,
+// Disabled, or Failed for one its backend refused; the other states are not
+// threaded through SessionService yet.
+inline ControllerState controllerStateFor(bool active, bool pluggedIn, bool disabled) {
+    if (!active) return ControllerState::Detached;
+    if (!pluggedIn) return ControllerState::Failed;
+    return disabled ? ControllerState::Disabled : ControllerState::Live;
+}
+
+// A serial whose unconfirmed unplug a backend has since seen through.
+struct SettledSerial {
+    uint32_t serial = 0;
+    std::string backend;
+};
+
+// What the host's user has disabled of a virtual pad (Windows' Device
+// Manager), each of its presentations on its own: the pad is held only when
+// every presentation that takes input is.
+struct HostDisabled {
+    bool input = false;  // every input presentation: the backend writes the pad nothing
+    bool hid = false;    // its HID game controller
+    bool xinput = false; // its XInput device
+    bool audio = false;  // its audio function: the backend holds its microphone
+};
+
+// The presentations the admin API names as disabled in Windows.
+inline constexpr const char* HOST_PART_HID = "hid";
+inline constexpr const char* HOST_PART_XINPUT = "xinput";
+inline constexpr const char* HOST_PART_AUDIO = "audio";
+
+// The ones the controller's state does not already say: its HID game
+// controller or XInput device while the other still takes input, and its audio
+// function, which holds the microphone whatever the input does.
+inline std::vector<const char*> disabledInWindows(const HostDisabled& d) {
+    std::vector<const char*> parts;
+    if (!d.input && d.hid) parts.push_back(HOST_PART_HID);
+    if (!d.input && d.xinput) parts.push_back(HOST_PART_XINPUT);
+    if (d.audio) parts.push_back(HOST_PART_AUDIO);
+    return parts;
 }
 
 // REST + wire protocol versions (docs/contract.md §Versioning). The satellite accepts
@@ -484,6 +528,9 @@ struct RumbleReport {
 // partitioned host, never the mechanism that ends a held rumble.
 inline const uint16_t RUMBLE_WIRE_DURATION_MS = 500;
 inline const int RUMBLE_REFRESH_MS = 200;
+// The maintenance thread's tick (net/receiver.cpp), half the refresh so a held
+// level is re-sent within one refresh of falling due.
+inline const int MAINTENANCE_TICK_MS = RUMBLE_REFRESH_MS / 2;
 
 // DualSense adaptive-trigger effect blocks (game to controller, return path).
 // Each block is the raw 11-byte DS5 output-report field: mode byte + 10 param

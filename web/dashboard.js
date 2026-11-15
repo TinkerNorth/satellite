@@ -41,8 +41,10 @@ const DEVICE_LINK_STATE_ICON = {
   notResponding: 'dish-off.svg',
 };
 
-// The server only stamps "live" or "detached" today; the transient and
-// "failed" cases are enumerated for when SessionService threads them through.
+// The server stamps "live", "detached", "disabled" (every presentation that
+// takes input disabled in Windows) and "failed" (a pad its backend refused);
+// the transient cases are enumerated for when SessionService threads them
+// through.
 function controllerStateLabel(key) {
   switch (key) {
     case 'source':       return t('controller.state.detected');
@@ -50,10 +52,37 @@ function controllerStateLabel(key) {
     case 'allocating':   return t('controller.state.mounting');
     case 'detached':     return t('controller.state.unmounting');
     case 'failed':       return t('controller.state.blocked');
+    case 'disabled':     return t('controller.state.disabled');
     case 'live':
     case 'quiet':
     default:             return t('controller.state.mounted');
   }
+}
+
+// A presentation its host disabled while the controller still works, or its
+// audio function (disabledInWindows in /api/connections).
+function controllerNoteLabel(part) {
+  switch (part) {
+    case 'hid':    return t('controller.note.hid-disabled');
+    case 'xinput': return t('controller.note.xinput-disabled');
+    case 'audio':  return t('controller.note.audio-disabled');
+    default:       return '';
+  }
+}
+
+function controllerNotes(ctrl) {
+  return (ctrl.disabledInWindows || [])
+    .map(controllerNoteLabel)
+    .filter(Boolean)
+    .map(text => ` · <span class="ctrl-state state-disabled">${esc(text)}</span>`)
+    .join('');
+}
+
+// A pad its host disabled (Device Manager) still exists, so it is neither the
+// healthy dot nor the failed one.
+function controllerDotClass(ok, stateKey) {
+  if (stateKey === 'disabled') return 'warn';
+  return ok ? 'ok' : 'err';
 }
 
 // Keyed by (backend.id, errorCode); a new server error code falls back to a
@@ -590,8 +619,8 @@ function updateConnections(d) {
             <img class="ctrl-type-icon" src="img/icons/ctrl-${esc(ctrlArt)}.svg" alt="${esc(ctrlLabel)}" title="${esc(ctrlLabel)}"
                  onerror="this.onerror=null;this.src='img/icons/gamepad_outline.svg'">
             <div class="ctrl-info">
-              <span class="ctrl-name"><span class="ctrl-dot ${ok ? 'ok' : 'err'}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>
-              <span class="ctrl-meta">${esc(ctrl.deviceName)} · ${esc(serialLabel)} ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span></span>
+              <span class="ctrl-name"><span class="ctrl-dot ${controllerDotClass(ok, stateKey)}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>
+              <span class="ctrl-meta">${esc(ctrl.deviceName)} · ${esc(serialLabel)} ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span>${controllerNotes(ctrl)}</span>
             </div>
           </div>
           <div class="ctrl-chips">

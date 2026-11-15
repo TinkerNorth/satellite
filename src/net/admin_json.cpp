@@ -31,15 +31,16 @@ JsonOut controllerBatteryObj(const SessionService::ConnectionSnapshot::CtrlInfo&
 }
 
 JsonOut controllerSnapshotObj(const SessionService::ConnectionSnapshot::CtrlInfo& ctrl) {
-    // Only Live/Detached are surfaced today; transient states aren't yet
-    // threaded through SessionService. See ControllerState in core/types.h.
-    const char* ctrlState = ctrl.active ? controllerStateName(ControllerState::Live)
-                                        : controllerStateName(ControllerState::Detached);
+    const char* ctrlState = controllerStateName(
+        controllerStateFor(ctrl.active, ctrl.pluggedIn, ctrl.hostDisabled.input));
+    JsonOut disabledParts = JsonOut::array();
+    for (const char* part : disabledInWindows(ctrl.hostDisabled)) disabledParts.push_back(part);
     JsonOut o;
     o["controllerIndex"] = ctrl.index;
     o["serialNo"] = ctrl.serial;
     o["pluggedIn"] = ctrl.pluggedIn;
     o["state"] = ctrlState;
+    o["disabledInWindows"] = disabledParts;
     o["controllerType"] = controllerTypeName(ctrl.controllerType);
     o["controllerTypeLabel"] = controllerTypeLabel(ctrl.controllerType);
     // Resolved here so the dashboard never rebuilds an asset path from the wire enum.

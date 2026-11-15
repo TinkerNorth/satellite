@@ -16,6 +16,7 @@
 
 #include "core/audio/audio_resampler.h"
 #include "core/gamepad_backend.h"
+#include "core/hidmaestro_device_watch.h"
 #include "core/hidmaestro_version.h"
 #include "core/ports.h"
 #include "core/tracked_mutex.h"
@@ -34,6 +35,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -79,7 +81,13 @@ class HidMaestroAdapter : public IGamepadPort {
     // Re-publishes every plugged Sony pad that has gone SONY_IDLE_REPORT_MS
     // without a frame, clocks advanced, state unchanged (see the constant).
     void refreshIdleInput() override;
+    // The version section and the device watch, read again on the maintenance
+    // tick: a pad either one holds is written nothing until both let it go.
     void recheckDrivers() override;
+    std::vector<uint32_t> lostSerials() const override;
+    bool anyLost() const override;
+    std::vector<SettledSerial> settledSerials() override;
+    HostDisabled hostDisabled(uint32_t serial) const override;
     void setRumbleCallback(RumbleCallback cb) override;
     void setLightbarCallback(LightbarCallback cb) override;
     void setTriggerEffectsCallback(TriggerEffectsCallback cb) override;
@@ -112,6 +120,9 @@ class HidMaestroAdapter : public IGamepadPort {
     }
     void setVersionPinsForTest(satellite::hidmaestro::VersionPins pins) {
         versionPins_ = std::move(pins);
+    }
+    void setWatchPolicyForTest(satellite::hidmaestro::WatchPolicy policy) {
+        watchPolicyOverride_ = policy;
     }
     satellite::hidmaestro::WriteGate gateForTest(uint32_t serial) const {
         return io_[serial].gate.load();
@@ -189,6 +200,27 @@ class HidMaestroAdapter : public IGamepadPort {
         std::chrono::steady_clock::time_point pendingSince{};
         std::chrono::milliseconds halfDeadline{0};
         bool versionReported = false;
+        // What the version section alone allows, as last applied and logged.
+        satellite::hidmaestro::WriteGate versionGate = satellite::hidmaestro::WriteGate::Open;
+
+        // The helper's device watch block, read-only, and the pad's watch of
+        // it, which the maintenance recheck alone advances.
+        const uint8_t* watchView = nullptr;
+        HANDLE watchSection = nullptr;
+        satellite::hidmaestro::WatchPolicy watchPolicy{};
+        satellite::hidmaestro::WatchTracker watch{};
+        // Published for the core and the dashboard, which read them without
+        // busMtx_: the watch has given the pad up, and what of it Windows has
+        // disabled (WATCH_PRESENTS_* bits, and HOST_INPUT_HELD when every
+        // input presentation is).
+        std::atomic<bool> watchLost{false};
+        std::atomic<uint32_t> hostDisabled{0};
+        // The helper connection the pad was plugged on (ProvisionResult::channel).
+        uint64_t channel = 0;
+        // The microphone's own gate: the version section's, and the watch's
+        // for the audio function alone. The input's is `gate`.
+        std::atomic<satellite::hidmaestro::WriteGate> micGate{
+            satellite::hidmaestro::WriteGate::Open};
 
         // Atomic so isDevicePlugged can read without data races; written under
         // busMtx_ (plugin/unplug).
@@ -211,6 +243,7 @@ class HidMaestroAdapter : public IGamepadPort {
     std::chrono::milliseconds idleReportInterval_{SONY_IDLE_REPORT_MS};
     std::chrono::milliseconds versionDeadline_{satellite::hidmaestro::VERSION_HALF_DEADLINE_MS};
     satellite::hidmaestro::VersionPins versionPins_;
+    std::optional<satellite::hidmaestro::WatchPolicy> watchPolicyOverride_;
 
     std::array<IoSlot, MAX_BACKEND_CONTROLLERS + 1> io_;
 
@@ -254,6 +287,7 @@ class HidMaestroAdapter : public IGamepadPort {
         return lane == AudioLane::Speaker ? speakerWorkers_ : hapticWorkers_;
     }
     void releaseSlotLocked(IoSlot& slot);
+    static satellite::hidmaestro::Teardown teardownFor(const IoSlot& slot);
     // Map the audio rings this plug came back with. Caller holds busMtx_;
     // failure is not fatal, it just leaves the pad without audio.
     void attachAudioLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
@@ -268,6 +302,7 @@ class HidMaestroAdapter : public IGamepadPort {
                        satellite::hidmaestro::ProvisionResult& r);
     bool adoptProvisionedLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
     void attachVersionLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
+    void attachWatchLocked(IoSlot& slot, const satellite::hidmaestro::ProvisionResult& r);
     void startSlotWorkersLocked(uint32_t serial, const IoSlot& slot);
 
     // The plug's steps around the version check: adopt the helper's handles,
@@ -282,11 +317,18 @@ class HidMaestroAdapter : public IGamepadPort {
 
     void recheckSlotLocked(uint32_t serial, IoSlot& slot,
                            std::chrono::steady_clock::time_point now);
-    bool changeGateLocked(IoSlot& slot, satellite::hidmaestro::WriteGate gate);
-    void refuseSlotLocked(uint32_t serial, IoSlot& slot,
-                          const satellite::hidmaestro::VersionCheck& check);
-    void holdSlotLocked(uint32_t serial, IoSlot& slot);
-    bool openSlotLocked(uint32_t serial, IoSlot& slot);
+    satellite::hidmaestro::VersionCheck
+    settleVersionLocked(IoSlot& slot, std::chrono::steady_clock::time_point now);
+    // What the watch holds of a pad this tick: its input, its microphone.
+    struct WatchHolds {
+        bool input = false;
+        bool mic = false;
+    };
+    WatchHolds watchSlotLocked(uint32_t serial, IoSlot& slot);
+    bool changeGateLocked(IoSlot& slot, satellite::hidmaestro::WriteGate input,
+                          satellite::hidmaestro::WriteGate mic);
+    void noteVersionGateLocked(uint32_t serial, IoSlot& slot,
+                               const satellite::hidmaestro::VersionCheck& settled, bool watchHolds);
     void noteDriver(uint32_t serial, IoSlot& slot,
                     const satellite::hidmaestro::VersionCheck& check);
     void logRefusal(uint32_t serial, const IoSlot& slot,

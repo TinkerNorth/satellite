@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using HIDMaestro;
 using Satellite.HmHelper.Core;
 
@@ -10,12 +12,20 @@ internal static class SelfTest
     private const int WatchMs = 500;
     private const uint MinClockFrames = 20;
     private const string KeyPrefix = "satellite:selftest:";
+    private const int AwaitPollMs = 50;
+    private static readonly TimeSpan WatchBudget = TimeSpan.FromSeconds(15);
+    // A composite whose USB device was disabled may drop its USB/IP connection,
+    // which usbip-win2 attaches again 30 s later.
+    private static readonly TimeSpan ReattachBudget = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan HidChildBudget = TimeSpan.FromSeconds(10);
+    // How long the hold ahead of an unplug's removal lasts if nothing ends it:
+    // an unplug that waited for its removal answers only after it.
+    private static readonly TimeSpan HoldBudget = TimeSpan.FromSeconds(20);
     private static readonly byte[] SonyIdentityCalibration =
         Convert.FromHexString("000000000000401FC0E0401FC0E0401FC0E0F401F401002000E0002000E0002000E0");
     private static readonly byte[] SonyPairingMacPrefix = { 0x02, 0x48, 0x4D, 0x00, 0x00 };
 
-    public static int Run(string? logPath)
+    public static int Run(string? logPath, bool composite)
     {
         var lines = new List<string>();
         int failures = 0;
@@ -30,6 +40,9 @@ internal static class SelfTest
             if (!ok) failures++;
         }
 
+        Say("Close every program that holds a game controller open before this runs, Steam with a " +
+            "PlayStation pad among them: one that refuses a removal makes each removal wait about 5.4 s " +
+            "and fails the removal checks here (the SDK's DeviceManager.QueryRemoveSubtree).");
         try
         {
             using var ctx = new HMContext();
@@ -57,6 +70,18 @@ internal static class SelfTest
 
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualsense"), 5, calibrationReport: 0x05, pairingReport: 0x09, Say, Check);
             FeatureAnswers(ctx, SatelliteProfiles.CopyId("dualshock-4-v2"), 6, calibrationReport: 0x02, pairingReport: 0x12, Say, Check);
+
+            WatchedDevices(SatelliteProfiles.CopyId("dualsense"), 7, Say, Check);
+            WatchedDevices("xbox-360-wired", 8, Say, Check);
+            if (composite)
+            {
+                if (!HMContext.IsUsbipBackendAvailable) HMContext.InstallUsbipBackend();
+                WatchedDevices(SatelliteProfiles.CopyId("dualsense-composite"), 9, Say, Check);
+            }
+            else
+            {
+                Say("the composite's device watch is not checked; run selftest --composite to check it (installs HIDMaestro's USB/IP transport)");
+            }
         }
         catch (Exception ex)
         {
@@ -242,6 +267,195 @@ internal static class SelfTest
               pairing.AsSpan(1, SonyPairingMacPrefix.Length).SequenceEqual(SonyPairingMacPrefix) &&
               pairing[6] == controller.TransportIndex,
               $"{profileId}: feature 0x{pairingReport:X2} carries the pairing MAC ending in the transport index ({mac})");
+    }
+
+    // The device watch on a real controller, through the session satellite.exe
+    // talks to: the hello on the watch's protocol, an unplug answered while its
+    // device is still in Windows, the plug that hands over the block, the
+    // devnodes the watch derived, each presentation disabled and enabled again
+    // through the Configuration Manager on its own, and the device removed. A
+    // composite's USB device is disabled too, and what the USB/IP connection
+    // does then is reported.
+    private static void WatchedDevices(string profileId, int slot, Action<string> say, Action<bool, string> check)
+    {
+        using var session = new Session(Environment.ProcessId);
+        string hello = session.Handle(@"{""op"":""hello"",""protocol"":2}", out _);
+        check(hello.Contains(@"""protocol"":2"), $"{profileId}: the session settles on the device watch's protocol");
+        var tree = new WindowsDevnodeTree();
+        UnplugAnswersFirst(session, profileId, slot, tree, check);
+        string reply = session.Handle($@"{{""op"":""plug"",""serial"":{slot},""profile"":""{profileId}""}}", out _);
+        ulong handle = WatchHandleOf(reply);
+        PadDevnodes? devnodes = session.WatchedDevnodes((uint)slot);
+        check(handle != 0 && devnodes != null, $"{profileId}: the plug hands over a watch block ({Shorten(reply)})");
+        if (handle == 0 || devnodes == null) return;
+        say($"{profileId}: the watch looks for {devnodes.Device}{(devnodes.Companion == null ? "" : " and " + devnodes.Companion)}" +
+            (devnodes.Audio ? ", with an audio function" : ""));
+        using var block = new WatchBlockView(handle);
+
+        DeviceWatchBlock.Reading whole = block.Await(r => r.Report is { Whole: true }, WatchBudget);
+        check(whole.Report is { Whole: true }, $"{profileId}: the watch finds every presentation present, {Describe(whole)}");
+        DeviceWatchBlock.Reading before = block.Read();
+        Thread.Sleep(2 * DeviceWatchBlock.BeatMs);
+        DeviceWatchBlock.Reading after = block.Read();
+        check(after.Heartbeat != before.Heartbeat, $"{profileId}: the heartbeat moves");
+        check(after.Seq != before.Seq, $"{profileId}: the watcher looks again, so the sequence moves with nothing changed");
+        if (whole.Report is not { Whole: true }) return;
+
+        DevnodeState device = tree.Locate(devnodes.Device);
+        DevnodeState hidParent = devnodes.Usbip ? tree.ChildOfClass(device, DevnodeIds.HidClass) : device;
+        say($"{profileId}: its HID collection is {WindowsDevnodeTree.InstanceIdOf(tree.FirstChild(hidParent)) ?? "not found"}");
+        DisableAndEnable(profileId, block, tree.FirstChild(hidParent), Presents.Hid, WatchedDevnode.HidCollection, say, check);
+        if (devnodes.Usbip)
+            DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.HidClass),
+                             Presents.Hid, WatchedDevnode.HidFunction, say, check);
+        if (devnodes.Audio)
+            DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.MediaClass),
+                             Presents.Audio, WatchedDevnode.AudioFunction, say, check);
+        if (devnodes.Companion != null)
+            DisableAndEnable(profileId, block, tree.Locate(devnodes.Companion), Presents.Xinput, WatchedDevnode.Companion,
+                             say, check);
+        DisableAndEnable(profileId, block, tree.Locate(devnodes.Device), Presents.Hid, WatchedDevnode.Device, say, check);
+
+        DevnodeState parent = tree.Locate(devnodes.Device);
+        uint removed = CfgMgr.CM_Query_And_Remove_SubTreeW(parent.Handle, out int veto, null, 0, CfgMgr.CM_REMOVE_NO_RESTART);
+        check(removed == CfgMgr.CR_SUCCESS, $"{profileId}: CM_Query_And_Remove_SubTree removes {devnodes.Device} (CONFIGRET {removed}, veto {veto})");
+        DeviceWatchBlock.Reading gone = block.Await(r => r.Report?.Hid.Condition is DevnodeCondition.Missing or DevnodeCondition.Failed,
+                                                    WatchBudget);
+        bool goneOrHeld = gone.Report?.Hid is { Devnode: WatchedDevnode.Device, Condition: DevnodeCondition.Missing or DevnodeCondition.Failed };
+        check(goneOrHeld, $"{profileId}: once it is removed the watch finds its device gone, or failed as a USB device held for " +
+                          $"eject is (Code 47): {Describe(gone)}");
+    }
+
+    // A controller plugged and unplugged while its devices are all in Windows,
+    // its removal queued behind a hold of the selftest's own: the removal cannot
+    // begin before the hold ends, so an answer that came while the hold still
+    // ran did not wait for the removal. Ordering, not timing: a composite's
+    // removal can take a few milliseconds (INTERNALS.md). An unplug that removed
+    // the controller before answering would answer only once the hold gave out.
+    // The device then leaves on its own.
+    private static void UnplugAnswersFirst(Session session, string profileId, int slot, WindowsDevnodeTree tree,
+                                           Action<bool, string> check)
+    {
+        string reply = session.Handle($@"{{""op"":""plug"",""serial"":{slot},""profile"":""{profileId}""}}", out _);
+        PadDevnodes? devnodes = session.WatchedDevnodes((uint)slot);
+        ulong handle = WatchHandleOf(reply);
+        check(handle != 0 && devnodes != null, $"{profileId}: plugged for the unplug check ({Shorten(reply)})");
+        if (handle == 0 || devnodes == null) return;
+        using var block = new WatchBlockView(handle);
+        DeviceWatchBlock.Reading whole = block.Await(r => r.Report is { Whole: true }, WatchBudget);
+        check(whole.Report is { Whole: true }, $"{profileId}: every presentation reads present before the unplug, {Describe(whole)}");
+        using var release = new ManualResetEventSlim(false);
+        int holdEnded = 0;
+        session.HoldRemovals((uint)slot, () =>
+        {
+            release.Wait(HoldBudget);
+            Volatile.Write(ref holdEnded, 1);
+        });
+        var clock = Stopwatch.StartNew();
+        string unplugged = session.Handle($@"{{""op"":""unplug"",""serial"":{slot}}}", out _);
+        long answeredMs = clock.ElapsedMilliseconds;
+        bool answeredFirst = Volatile.Read(ref holdEnded) == 0;
+        bool stillThere = tree.Locate(devnodes.Device).Located;
+        check(unplugged.Contains(@"""ok"":true") && answeredFirst && stillThere,
+              $"{profileId}: the session answers its unplug in {answeredMs} ms while its removal waits behind the selftest's hold, " +
+              "the device still in Windows, so the answer never waits for the removal");
+        release.Set();
+        DevnodeCondition after = AwaitGone(tree, devnodes.Device, ReattachBudget);
+        check(after is DevnodeCondition.Missing or DevnodeCondition.Failed,
+              $"{profileId}: the device then leaves Windows, or stays held for eject (Code 47): {after}, " +
+              $"{clock.Elapsed.TotalSeconds:F1} s after the unplug");
+    }
+
+    // Until the devnode is out of the tree, or in it with a problem as a USB
+    // device held for eject is.
+    private static DevnodeCondition AwaitGone(WindowsDevnodeTree tree, string instanceId, TimeSpan budget)
+    {
+        var clock = Stopwatch.StartNew();
+        DevnodeCondition now = DevnodeStatus.Classify(tree.Locate(instanceId));
+        while (now is not (DevnodeCondition.Missing or DevnodeCondition.Failed) && clock.Elapsed < budget)
+        {
+            Thread.Sleep(AwaitPollMs);
+            now = DevnodeStatus.Classify(tree.Locate(instanceId));
+        }
+        return now;
+    }
+
+    // Disables one devnode and checks that its presentation, and only that
+    // one, reads disabled; then enables it and times the presentation's return.
+    private static void DisableAndEnable(string profileId, WatchBlockView block, DevnodeState node, Presents part,
+                                         WatchedDevnode role, Action<string> say, Action<bool, string> check)
+    {
+        string named = $"{profileId}: its {role}";
+        uint disabled = node.Located ? CfgMgr.CM_Disable_DevNode(node.Handle, CfgMgr.CM_DISABLE_UI_NOT_OK) : uint.MaxValue;
+        check(disabled == CfgMgr.CR_SUCCESS, $"{named} is disabled through CM_Disable_DevNode (CONFIGRET {disabled})");
+        if (disabled != CfgMgr.CR_SUCCESS) return;
+        var expected = new PresentationCondition(DevnodeCondition.Disabled, role, DevnodeStatus.ProblemDisabled);
+        DeviceWatchBlock.Reading off = block.Await(r => r.Report?.Of(part) == expected, WatchBudget);
+        check(off.Report?.Of(part) == expected, $"{named} disabled reads disabled with Code 22, {Describe(off)}");
+        foreach (Presents other in new[] { Presents.Hid, Presents.Xinput })
+        {
+            bool beside = other != part && off.Report is { } report && report.Presents.HasFlag(other);
+            if (beside)
+                check(off.Report!.Value.Present(other), $"{named} disabled, its {other} presentation still reads present, {Describe(off)}");
+        }
+        uint enabled = CfgMgr.CM_Enable_DevNode(node.Handle, 0);
+        check(enabled == CfgMgr.CR_SUCCESS, $"{named} is enabled again through CM_Enable_DevNode (CONFIGRET {enabled})");
+        var started = Stopwatch.StartNew();
+        DeviceWatchBlock.Reading back = block.Await(r => r.Report is { Whole: true }, ReattachBudget);
+        check(back.Report is { Whole: true },
+              $"{named} enabled again, the watch finds every presentation present after {started.Elapsed.TotalSeconds:F1} s, {Describe(back)}");
+    }
+
+    private static string Describe(DeviceWatchBlock.Reading reading) =>
+        reading.Report is PadReport r
+            ? $"HID {Part(r.Hid)}" + (r.Presents.HasFlag(Presents.Xinput) ? $"; XInput {Part(r.Xinput)}" : "") +
+              (r.Presents.HasFlag(Presents.Audio) ? $"; audio {Part(r.Audio)}" : "")
+            : "mid-write";
+
+    private static string Part(PresentationCondition p) => $"{p.Condition} {p.Devnode} problem {p.Problem}";
+
+    private static ulong WatchHandleOf(string reply)
+    {
+        using JsonDocument doc = JsonDocument.Parse(reply);
+        return doc.RootElement.TryGetProperty("watch", out JsonElement watch) && watch.TryGetUInt64(out ulong handle)
+            ? handle
+            : 0;
+    }
+
+    private static string Shorten(string reply) => reply.Length <= 120 ? reply : reply[..120] + "...";
+
+    private sealed class WatchBlockView : IDisposable
+    {
+        private readonly nint _mapping;
+        private readonly nint _view;
+
+        public WatchBlockView(ulong handle)
+        {
+            _mapping = (nint)handle;
+            _view = _mapping == 0 ? 0 : NativeMethods.MapViewOfFile(_mapping, NativeMethods.FILE_MAP_READ, 0, 0, (nuint)DeviceWatchBlock.BlockSize);
+            if (_view == 0) throw new InvalidOperationException($"could not map the watch block read-only (error {Marshal.GetLastWin32Error()})");
+        }
+
+        public unsafe DeviceWatchBlock.Reading Read() =>
+            DeviceWatchBlock.Read(new ReadOnlySpan<byte>((void*)_view, DeviceWatchBlock.BlockSize));
+
+        public DeviceWatchBlock.Reading Await(Func<DeviceWatchBlock.Reading, bool> done, TimeSpan budget)
+        {
+            var clock = Stopwatch.StartNew();
+            DeviceWatchBlock.Reading reading = Read();
+            while (!done(reading) && clock.Elapsed < budget)
+            {
+                Thread.Sleep(AwaitPollMs);
+                reading = Read();
+            }
+            return reading;
+        }
+
+        public void Dispose()
+        {
+            NativeMethods.UnmapViewOfFile(_view);
+            NativeMethods.CloseHandle(_mapping);
+        }
     }
 
     private sealed class InputSectionView : IDisposable

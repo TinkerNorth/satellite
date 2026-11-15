@@ -169,6 +169,10 @@
   "controller.state.mounted": "Mounted",
   "controller.state.unmounting": "Unmounting…",
   "controller.state.blocked": "Blocked",
+  "controller.state.disabled": "Disabled in Windows",
+  "controller.note.hid-disabled": "HID controller disabled in Windows",
+  "controller.note.xinput-disabled": "XInput disabled in Windows",
+  "controller.note.audio-disabled": "Controller audio disabled in Windows",
 
   "device.state.paired": "Paired",
   "device.state.connecting": "Connecting…",

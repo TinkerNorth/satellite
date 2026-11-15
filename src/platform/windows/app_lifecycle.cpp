@@ -5,6 +5,8 @@
 
 #include "adapters/crash_adapter.h"
 #include "autostart_rule.h"
+#include "hidmaestro_helper_client.h"
+#include "single_instance.h"
 #include "core/log_writer.h"
 #include "core/tracked_mutex.h"
 
@@ -44,6 +46,8 @@ namespace {
 
 constexpr const wchar_t* kAppFolder = L"TinkerNorth\\Satellite";
 constexpr const char* kSingletonMutex = "Local\\TinkerNorth.Satellite.Singleton.v1";
+// Held by the one launch waiting for a Satellite on its way out.
+constexpr const char* kRelaunchMutex = "Local\\TinkerNorth.Satellite.Relaunch.v1";
 constexpr const char* kRunKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 // Must match the literal Inno Setup writes (case-insensitive rename otherwise
 // collides); changing it needs a migration step.
@@ -242,20 +246,22 @@ std::string dumpDir() { return ensureSubdir(L"dumps"); }
 std::string logDir() { return ensureSubdir(L"logs"); }
 std::string sentryDir() { return ensureSubdir(L"sentry"); }
 
+// A Satellite on its way out waits for its helper's shutdown, then for the
+// helper to exit, besides the rest of its exit; a relaunch outwaits all of it
+// at any timeout scale, since the shutdown's wait has its cap.
+static_assert(satellite::hidmaestro::HELPER_SHUTDOWN_WAIT_CAP_MS +
+                      satellite::hidmaestro::HELPER_EXIT_WAIT_MS + EXIT_BESIDES_HELPER_MS <
+                  PREVIOUS_INSTANCE_EXIT_WAIT_MS,
+              "a relaunch must outwait the exit of a Satellite whose helper is still removing");
+
 bool acquireSingleInstance(const char* appTitle) {
     // Local\ namespace = per-session, so RDP sessions/fast user switching get
     // independent instances.
-    g_singletonMutex = CreateMutexA(nullptr, FALSE, kSingletonMutex);
-    if (g_singletonMutex == nullptr) return true; // best-effort; don't block startup
-
-    DWORD err = GetLastError();
-    if (err != ERROR_ALREADY_EXISTS) return true; // we won the race
-
-    // Nudge the existing instance's tray window so a second double-click isn't
-    // met with silence. tray.cpp can ignore WM_USER+100 safely.
-    HWND existing = FindWindowExA(nullptr, nullptr, "ControllerForwardTray", appTitle);
-    if (existing != nullptr) { PostMessageA(existing, WM_USER + 100, 0, 0); }
-    return false;
+    const SingleInstanceNames names{kSingletonMutex, "ControllerForwardTray", appTitle,
+                                    kRelaunchMutex};
+    const SingleInstanceWaits waits{SECOND_INSTANCE_ANSWER_MS, PREVIOUS_INSTANCE_SLICE_MS,
+                                    PREVIOUS_INSTANCE_EXIT_WAIT_MS};
+    return acquireSingleInstance(names, waits, g_singletonMutex);
 }
 
 void installCrashHandler() {

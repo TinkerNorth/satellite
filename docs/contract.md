@@ -798,9 +798,20 @@ Every 0x0003 carries the session `epoch` (u16, wraps) and a 16-bit bitmap of act
 controller indices. The client compares both against its last-known applied state
 (from the latest PUT/GET response): on mismatch → `GET /api/connections/{id}` →
 re-PUT desired state. Involuntary server-side losses (replug failure, bus death, reap
-of a sibling, kick racing a packet) are therefore SELF-HEALING within one heartbeat
-(≤2 s) without REST polling. `epoch` increments on every applied-topology change
-regardless of initiator.
+of a sibling, kick racing a packet, a virtual device the host lost) are therefore
+SELF-HEALING within one heartbeat (≤2 s) without REST polling. `epoch` increments on
+every applied-topology change regardless of initiator.
+
+A HIDMaestro pad (Windows) is given up when any one of its devices Windows removed or
+failed stays so past its grace, even while another still takes input (an Xbox pad's
+XInput device beside its HID game controller, a composite's audio function), or when
+its helper stopped: its index leaves the bitmap and the epoch moves, so the client's
+re-PUT plugs a fresh controller, whole, as often as that takes.
+A pad disabled in Windows (Device Manager) is not a loss: its index stays in the
+bitmap, and the client is not told. When every presentation of it that takes input is
+disabled, the server holds its input until Windows enables one again; when one is
+disabled while another still takes input (an Xbox pad's XInput device or its HID game
+controller), the server writes on. The dashboard shows which.
 
 ### Session-close notify 0x000F: best-effort only
 

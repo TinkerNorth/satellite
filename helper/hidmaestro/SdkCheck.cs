@@ -13,17 +13,24 @@ namespace Satellite.HmHelper;
 // which driver_pins.h pins for satellite.exe's check of that section; that
 // section's size, offsets, layout and protocols as src/core/hidmaestro_version.h
 // and VersionSection state them; the XUSB companion the helper reads off each
-// profile Satellite plugs; that the driver the SDK installs is a release
-// driver_pins.h has verified; and SdkTimeoutScale, against the SDK's own
-// TimeoutScale.Factor in child processes. verify-helper-sdk.ps1 runs it on the
-// published helper. A reflection target the SDK no longer has fails it, so an
-// SDK that renames one stops the publish. Nothing outside this check reflects
-// into the SDK's internals.
+// profile Satellite plugs; the devnodes the device watch looks at for each of
+// them (DevnodeIds), against the SDK's own create plan and synthetic serial;
+// that the driver the SDK installs is a release driver_pins.h has verified;
+// and SdkTimeoutScale, against the SDK's own TimeoutScale.Factor in child
+// processes. verify-helper-sdk.ps1 runs it on the published helper. A
+// reflection target the SDK no longer has fails it, so an SDK that renames one
+// stops the publish. Nothing outside this check reflects into the SDK's
+// internals.
 internal static class SdkCheck
 {
     private const string IdentityTypeName = "HIDMaestro.Internal.DeviceIdentity";
     private const string SharedMemoryTypeName = "HIDMaestro.Internal.SharedMemoryIO";
     private const string TimeoutScaleTypeName = "HIDMaestro.Internal.TimeoutScale";
+    private const string PlanTypeName = "HIDMaestro.Internal.PresentationPlan";
+    private const string OrchestratorTypeName = "HIDMaestro.Internal.DeviceOrchestrator";
+    private const string SoftwareDeviceTypeName = "HIDMaestro.Internal.SwdDeviceFactory";
+    // One of Satellite's own tokens, the shape every devnode name carries.
+    private static readonly string SampleToken = IdentityTags.TokenOf(SatelliteProfiles.IdentityKey(1, "dualsense"));
     public const string TimeoutScaleChildCommand = "check-sdk-timeout-scale";
     private const BindingFlags StaticMembers = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
     private static readonly uint[] Serials = { 1, 2, 9, 10, 16 };
@@ -87,6 +94,10 @@ internal static class SdkCheck
 
         CheckVersionConstants(CppConstants.Parse(File.ReadAllText(versionHeader)), versionHeader, Check);
         CheckCompanions(Check);
+        CheckDevnodes(Check);
+        foreach (string key in Keys())
+            Check(DevnodeIds.UsbSerial(IdentityTags.TokenOf(key)) == sdk.SerialFor(key),
+                  $"'{key}': DevnodeIds serves a composite the USB serial {DevnodeIds.UsbSerial(IdentityTags.TokenOf(key))}, the SDK {sdk.SerialFor(key)}");
 
         string inf = SdkInf.EmbeddedDriverVersion(typeof(HMContext).Assembly);
         Version installs = Release(Version.Parse(inf));
@@ -159,6 +170,73 @@ internal static class SdkCheck
                   $"{id}: the helper reports {(reported ? "an XUSB companion" : "no XUSB companion")}, and the SDK creates {(created ? "one" : "none")}");
         }
     }
+
+    // The devnodes DevnodeIds names for each profile Satellite plugs, against
+    // what reflection reaches of the SDK: the parent's enumerator in its create
+    // plan (PresentationPlan.Of), whether the plan makes an XUSB companion, the
+    // companion's instance id prefix as DeviceOrchestrator's code spells it (an
+    // ldstr in its IL, since the id is built from a literal there), and a
+    // composite's USB serial, which the keys loop holds to
+    // DeviceIdentity.SyntheticSerial. A profile the SDK creates on a path the
+    // watch does not know fails, as does one with a captured serial of its own.
+    // How the parent's id is put together, ROOT\<enumerator>\<token>
+    // (DeviceNodeCreator.cs:130), and that a parent's first child is its HID
+    // collection, reflection does not reach: selftest finds both on hardware.
+    private static void CheckDevnodes(Action<bool, string> check)
+    {
+        Type planType = SdkType(PlanTypeName);
+        MethodInfo of = planType.GetMethod("Of", StaticMembers, null, new[] { typeof(ControllerProfile) }, null)
+            ?? throw new InvalidOperationException($"the pinned SDK's {PlanTypeName} has no static Of(ControllerProfile)");
+        string companionPrefix = $@"SWD\{DevnodeIds.CompanionEnumerator}\";
+        check(IlScan.BuildsFrom(SdkType(OrchestratorTypeName), SdkType(SoftwareDeviceTypeName), "Create", companionPrefix),
+              $"the method of the SDK's {OrchestratorTypeName} that creates a software device ({SoftwareDeviceTypeName}.Create) builds its id from the literal '{companionPrefix}', the prefix DevnodeIds gives an XUSB companion");
+        ProfileDatabase catalog = ProfileDatabase.LoadEmbedded();
+        foreach (string id in PluggedProfiles)
+        {
+            ControllerProfile? profile = catalog.All.FirstOrDefault(p => p.Id == id);
+            if (profile == null)
+            {
+                check(false, $"{id}: the pinned SDK's catalog has no such profile");
+                continue;
+            }
+            object plan = of.Invoke(null, new object[] { profile })
+                ?? throw new InvalidOperationException($"{PlanTypeName}.Of returned no plan for '{id}'");
+            bool companion = XusbCompanion.Presents(profile.XInput?.Via, profile.RequiresUsbipBackend);
+            PadDevnodes watched = DevnodeIds.For(profile.VendorId, profile.ProductId, companion,
+                                                 profile.RequiresUsbipBackend, SampleToken);
+            CheckDevice(id, profile, plan, watched, check);
+            bool planned = PlanValue(plan, "XusbCompanion") is true;
+            string? expected = planned ? companionPrefix + SampleToken : null;
+            check(watched.Companion == expected,
+                  $"{id}: the watch looks for the XUSB companion {watched.Companion ?? "none"}, and the SDK makes {expected ?? "none"}");
+        }
+    }
+
+    private static void CheckDevice(string id, ControllerProfile profile, object plan, PadDevnodes watched,
+                                    Action<bool, string> check)
+    {
+        string path = PlanValue(plan, "Path")?.ToString() ?? "";
+        switch (path)
+        {
+            case "Root":
+                string parent = $@"ROOT\{PlanValue(plan, "Enumerator")}\{SampleToken}";
+                check(!watched.Usbip && watched.Device == parent,
+                      $"{id}: the watch looks for the parent {watched.Device}, and the SDK creates {parent}");
+                return;
+            case "Usbip":
+                string usb = $@"USB\VID_{profile.VendorId:X4}&PID_{profile.ProductId:X4}\{DevnodeIds.UsbSerial(SampleToken)}";
+                check(watched.Usbip && watched.Device == usb && profile.SerialString == null,
+                      $"{id}: the watch looks for the USB device {watched.Device} of a composite that serves the synthetic serial ({usb}), the profile's own serial '{profile.SerialString ?? "none"}'");
+                return;
+            default:
+                check(false, $"{id}: the SDK creates it on its {path} path, whose devnodes the device watch does not know");
+                return;
+        }
+    }
+
+    private static object? PlanValue(object plan, string name) =>
+        (plan.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+         ?? throw new InvalidOperationException($"the pinned SDK's {PlanTypeName} has no {name}")).GetValue(plan);
 
     private static string Pin(IReadOnlyDictionary<string, string> pins, string name, string pinsHeader) =>
         pins.TryGetValue(name, out string? value)
@@ -254,6 +332,7 @@ internal static class SdkCheck
         private readonly MethodInfo _tagOf;
         private readonly PropertyInfo _token;
         private readonly PropertyInfo _tag;
+        private readonly PropertyInfo _serial;
 
         public SdkIdentity()
         {
@@ -262,6 +341,15 @@ internal static class SdkCheck
             _tagOf = Method(type, "TagOf", typeof(string));
             _token = Property(type, "Token");
             _tag = Property(type, "Tag");
+            _serial = Property(type, "SyntheticSerial");
+        }
+
+        public string SerialFor(string key)
+        {
+            object? identity = _forKey.Invoke(null, new object[] { key, 0 });
+            return identity != null && _serial.GetValue(identity) is string serial
+                ? serial
+                : throw new InvalidOperationException($"{IdentityTypeName}.SyntheticSerial is no longer a string");
         }
 
         public (string Token, ulong Tag) ForKey(string key)

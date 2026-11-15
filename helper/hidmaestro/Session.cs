@@ -8,8 +8,14 @@ namespace Satellite.HmHelper;
 
 // Pipe protocol (one JSON line per request, one per response).
 //
-//   {"op":"hello","protocol":1}
+//   {"op":"hello","protocol":P}
 //     -> {"ok":true,"helper":"satellite-hm-helper","audio":true,"broker":B}
+//        and "protocol":2 when P is 2 or more (HelperProtocol)
+//
+//   {"op":"unplug","serial":N} -> {"ok":true}, answered at once; the
+//     controller is removed after, on a thread of its own (Disposals)
+//
+//   {"op":"shutdown"} -> {"ok":true}, once every controller is removed
 //
 //   {"op":"plug","serial":N,"profile":"<catalog id>"}
 //     -> {"ok":true,"index":N,"transportIndex":T,"input":H,"inputEvent":H,
@@ -18,6 +24,7 @@ namespace Satellite.HmHelper;
 //         "speakerAudio":H,"speakerAudioEvent":H,"micAudio":H,"micAudioEvent":H,
 //         "speakerChannels":N,"speakerRateHz":N,"micChannels":N,"micRateHz":N,
 //         "hapticAudio":H,"hapticAudioEvent":H,"hapticChannels":N}
+//        and "watch":H on protocol 2
 //
 // Every H is a handle already duplicated into the satellite process, which
 // owns it. `input` and `inputEvent` are where satellite's frames go: the
@@ -35,7 +42,10 @@ namespace Satellite.HmHelper;
 // scales the SDK's. It is left out when the SDK took a NaN, which JSON cannot
 // carry; satellite.exe then waits unscaled.
 // Satellite checks the section before its first frame
-// (src/core/hidmaestro_version.h). The audio fields are
+// (src/core/hidmaestro_version.h). `watch` is the pad's device watch block
+// (DeviceWatch, src/core/hidmaestro_device_watch.h), duplicated FILE_MAP_READ
+// alone, 0 when the helper could not make one; a session on protocol 1 is
+// answered exactly as before the watch. The audio fields are
 // present only when the profile materialized a USB-audio function, and the
 // haptic ones only when that endpoint carries the HD-haptics lanes.
 internal sealed class Session : IDisposable
@@ -48,7 +58,10 @@ internal sealed class Session : IDisposable
     private readonly bool _broker;
     private readonly HMContext _ctx = new();
     private readonly Dictionary<uint, PluggedController> _plugged = new();
+    private readonly Disposals _disposals = new();
     private ProfileSet? _profiles;
+    private DeviceWatch? _watch;
+    private int _protocol = HelperProtocol.Base;
     private bool _disposed;
 
     public Session(int parentPid, bool broker = false)
@@ -68,11 +81,13 @@ internal sealed class Session : IDisposable
             switch (op)
             {
                 case "hello":
+                    _protocol = HelperProtocol.Settle(Offered(root));
                     return Ok(w =>
                     {
                         w.WriteString("helper", "satellite-hm-helper");
                         w.WriteBoolean("audio", true);
                         w.WriteBoolean("broker", _broker);
+                        if (HelperProtocol.Watches(_protocol)) w.WriteNumber("protocol", _protocol);
                     });
                 case "plug":
                     return Plug(root.GetProperty("serial").GetUInt32(),
@@ -80,6 +95,12 @@ internal sealed class Session : IDisposable
                 case "unplug":
                     return Unplug(root.GetProperty("serial").GetUInt32());
                 case "shutdown":
+                    // Any controller still plugged is removed as an unplug
+                    // would remove it, and the answer waits for every removal,
+                    // so the process that ends after it never ends mid-removal
+                    // (satellite.exe waits HELPER_SHUTDOWN_WAIT_MS for it).
+                    foreach (uint serial in _plugged.Keys.ToList()) Unplug(serial);
+                    _disposals.AwaitAll();
                     quit = true;
                     return Ok(_ => { });
                 default:
@@ -89,6 +110,39 @@ internal sealed class Session : IDisposable
         catch (Exception ex)
         {
             return Error(ex.Message);
+        }
+    }
+
+    private static int? Offered(JsonElement hello) =>
+        hello.TryGetProperty("protocol", out JsonElement offered) && offered.TryGetInt32(out int protocol)
+            ? protocol
+            : null;
+
+    private DeviceWatch Watch() => _watch ??= new DeviceWatch(new WindowsDevnodeTree());
+
+    // What the watch looks for on a plugged pad, for the selftest, which
+    // drives this session as satellite.exe does.
+    internal PadDevnodes? WatchedDevnodes(uint serial) =>
+        _plugged.TryGetValue(serial, out PluggedController? plugged) ? plugged.Devnodes : null;
+
+    // The pad's watch block, or 0 when it could not be made: the pad then
+    // runs unwatched, as it did before the watch.
+    private ulong WatchPad(uint serial, PluggedController plugged, HMProfile profile, bool companion)
+    {
+        try
+        {
+            HMController controller = plugged.Controller;
+            PadDevnodes devnodes = DevnodeIds.For(profile.VendorId, profile.ProductId, companion,
+                                                  profile.RequiresUsbipBackend,
+                                                  IdentityTags.TokenOf(controller.IdentityKey),
+                                                  audio: controller.UsbAudio != null);
+            plugged.Devnodes = devnodes;
+            return Watch().Add(serial, devnodes, DuplicateReadOnlyForParent).Handle;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"satellite-hm-helper: serial {serial} runs unwatched: {ex.Message}");
+            return 0;
         }
     }
 
@@ -106,6 +160,9 @@ internal sealed class Session : IDisposable
     {
         ProfileSet profiles = Profiles();
         Unplug(serial);
+        // The same serial's identity key names the same devnodes, so its last
+        // controller goes first.
+        _disposals.Await(serial);
 
         HMProfile? profile = profiles.Resolve(_ctx, profileId, out string? refusal);
         if (profile == null) return Error(refusal ?? $"unknown profile '{profileId}'");
@@ -162,6 +219,8 @@ internal sealed class Session : IDisposable
             if (controller.UsbAudio != null)
                 plugged.Audio = AudioBridge.TryCreate(serial, controller.UsbAudio, DuplicateForParent);
 
+            bool watches = HelperProtocol.Watches(_protocol);
+            ulong watch = watches ? WatchPad(serial, plugged, profile, companion) : 0;
             _plugged[serial] = plugged;
             int index = checked((int)serial);
             return Ok(w =>
@@ -178,21 +237,34 @@ internal sealed class Session : IDisposable
                 w.WriteBoolean("usbip", profile.RequiresUsbipBackend);
                 w.WriteBoolean("companion", companion);
                 if (double.IsFinite(TimeoutScale)) w.WriteNumber("timeoutScale", TimeoutScale);
+                if (watches) w.WriteNumber("watch", watch);
                 plugged.Audio?.WriteHandshake(w);
             });
         }
         catch
         {
+            _watch?.Remove(serial);
             plugged.Dispose();
             throw;
         }
     }
 
+    // The watch goes first, so it never looks at devnodes the controller's
+    // teardown is removing. The SDK's removal runs off the pipe's thread
+    // (Disposals) and the answer goes at once, so a removal that Windows makes
+    // wait, a pad held open by another program or a driver that does not
+    // answer, holds up no other request and no other pad.
     private string Unplug(uint serial)
     {
-        if (_plugged.Remove(serial, out PluggedController? plugged)) plugged.Dispose();
+        _watch?.Remove(serial);
+        if (_plugged.Remove(serial, out PluggedController? plugged)) _disposals.Begin(serial, plugged.Dispose);
         return Ok(_ => { });
     }
+
+    // For selftest: `hold` runs as a removal of `serial`, so that serial's next
+    // removal begins only once it returns (Disposals runs one serial's removals
+    // in turn).
+    internal void HoldRemovals(uint serial, Action hold) => _disposals.Begin(serial, hold);
 
     public void Dispose()
     {
@@ -201,8 +273,10 @@ internal sealed class Session : IDisposable
             if (_disposed) return;
             _disposed = true;
         }
+        _watch?.Dispose();
         foreach (PluggedController plugged in _plugged.Values) plugged.Dispose();
         _plugged.Clear();
+        _disposals.AwaitAll();
         try { _ctx.Dispose(); }
         catch { }
     }
@@ -227,7 +301,15 @@ internal sealed class Session : IDisposable
 
     private ulong DuplicateForParent(nint local) => DuplicateIntoParent(local, closeLocal: false);
 
-    private ulong DuplicateIntoParent(nint local, bool closeLocal)
+    // FILE_MAP_READ alone, so satellite.exe can map the section to read and
+    // never to write.
+    private ulong DuplicateReadOnlyForParent(nint local) =>
+        DuplicateIntoParent(local, closeLocal: false, NativeMethods.FILE_MAP_READ, 0);
+
+    private ulong DuplicateIntoParent(nint local, bool closeLocal) =>
+        DuplicateIntoParent(local, closeLocal, 0, NativeMethods.DUPLICATE_SAME_ACCESS);
+
+    private ulong DuplicateIntoParent(nint local, bool closeLocal, uint access, uint options)
     {
         if (local == 0) return 0;
         try
@@ -236,8 +318,8 @@ internal sealed class Session : IDisposable
             if (parent == 0) return 0;
             try
             {
-                return NativeMethods.DuplicateHandle(NativeMethods.GetCurrentProcess(), local, parent, out nint remote, 0,
-                                                     false, NativeMethods.DUPLICATE_SAME_ACCESS)
+                return NativeMethods.DuplicateHandle(NativeMethods.GetCurrentProcess(), local, parent, out nint remote,
+                                                     access, false, options)
                     ? (ulong)remote
                     : 0;
             }
@@ -287,6 +369,7 @@ internal sealed class PluggedController : IDisposable
     }
 
     public HMController Controller { get; }
+    public PadDevnodes? Devnodes { get; set; }
     public FrameRelay? Relay { get; set; }
     public AudioBridge? Audio { get; set; }
 

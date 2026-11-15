@@ -10,6 +10,7 @@
 #include "net/mdns_responder.h"
 #include "net/pairing.h"
 #include "net/pairing_service.h"
+#include "single_instance.h"
 #include "toast.h"
 #include "ui_access.h"
 
@@ -22,8 +23,9 @@
 #include <mutex>
 #include <string>
 
-// Ping from acquireSingleInstance: a second launch attempt; we open the web UI.
-static const UINT WM_SECOND_INSTANCE = WM_USER + 100;
+// A second launch's tap (lifecycle::WM_SECOND_INSTANCE) is answered at once, so
+// it knows this Satellite took its click, and the web UI opens after, off it.
+static const UINT WM_OPEN_DASHBOARD = WM_USER + 102;
 
 // index to deviceId for tray-menu pairing items. GUI-thread only; no lock.
 static std::vector<std::string> g_menuPairIds;
@@ -45,7 +47,7 @@ static std::wstring toWide(const std::string& s) {
 void addTrayIcon(HWND hwnd) {
     const UINT taskbarCreated = trayicon::taskbarCreatedMessage();
     if (uiaccess::tokenHasUiAccess()) {
-        for (const UINT msg : {taskbarCreated, WM_TRAYICON, WM_SECOND_INSTANCE}) {
+        for (const UINT msg : {taskbarCreated, WM_TRAYICON, lifecycle::WM_SECOND_INSTANCE}) {
             ChangeWindowMessageFilterEx(hwnd, msg, MSGFLT_ALLOW, nullptr);
         }
     }
@@ -334,7 +336,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TRAYICON:
         onTrayIconEvent(hwnd, LOWORD(lp));
         return 0;
-    case WM_SECOND_INSTANCE:
+    case lifecycle::WM_SECOND_INSTANCE:
+        PostMessageW(hwnd, WM_OPEN_DASHBOARD, 0, 0);
+        return 0;
+    case WM_OPEN_DASHBOARD:
         openDashboard();
         return 0;
     case WM_POWERBROADCAST:

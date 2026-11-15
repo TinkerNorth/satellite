@@ -225,6 +225,10 @@ class SessionService {
             bool active;
             // Adapter truth, not inferred from serial > 0.
             bool pluggedIn;
+            // What the host's user has disabled of the virtual device: with
+            // every input presentation disabled the backend writes nothing to
+            // it, and the slot is kept for when one is enabled.
+            HostDisabled hostDisabled;
             uint8_t controllerType;
             uint8_t touchpadMode;
             // level/status unspecified until batteryKnown.
@@ -295,7 +299,11 @@ class SessionService {
     // reporting (IGamepadPort::refreshIdleInput).
     void refreshIdleInput();
 
-    // The same tick: IGamepadPort::recheckDrivers.
+    // The same tick: IGamepadPort::recheckDrivers, then a topology change for
+    // the pads whose virtual device the backend lost (IGamepadPort::
+    // lostSerials): each is unplugged and its slot vacated, so its client's
+    // reconcile loop plugs it again. Like the reaper it takes the topology lock
+    // with try_lock, and a tick that finds it held leaves them to the next.
     void recheckDrivers();
 
     bool isBackendAvailable() const;
@@ -406,6 +414,9 @@ class SessionService {
     // reallocated) until the backend bus closes; a zombie target on it would
     // poison the next plug. Cleared whenever the bus is (re)opened from idle.
     bool serialQuarantined_[MAX_BACKEND_CONTROLLERS] = {};
+    // Whose unconfirmed unplug each quarantine is: only that backend's word
+    // that it has since been seen through ends it.
+    std::string serialQuarantinedBy_[MAX_BACKEND_CONTROLLERS];
     // Round-robin scan start so a just-freed serial isn't reused while its PnP
     // removal may still be in flight.
     uint32_t serialScanStart_ = 0;
@@ -428,6 +439,9 @@ class SessionService {
     struct RetiredSerial {
         uint32_t serial = 0;
         bool unplugged = false;
+        // The backend that owned the serial when it was retired, before the
+        // unplug lets it go.
+        std::string backend;
     };
     struct TopologyChange {
         std::vector<PadChange> pads;
@@ -523,6 +537,9 @@ class SessionService {
     void removePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
     void bindPadLocked(Connection& conn, Controller& ctrl, const PadChange& pad);
     void vacatePadLocked(Connection& conn, Controller& ctrl, std::vector<RetiredSerial>& retired);
+    void vacateLostPads();
+    void releaseSettledSerials();
+    void vacateLostPadLocked(uint32_t serial, std::vector<RetiredSerial>& retired);
     void takeDescriptorLocked(Controller& ctrl, const ControllerDescriptor& desc);
     bool allocateWaitingLocked(TopologyChange& change);
     ControllerApplyResult applyResultLocked(const Connection& conn, const PadChange& pad) const;
@@ -537,7 +554,8 @@ class SessionService {
     uint32_t allocateSerial();
     bool claimSerialLocked(uint32_t serial);
     void releaseSerial(uint32_t serial);
-    void quarantineSerial(uint32_t serial);
+    void quarantineSerial(uint32_t serial, const std::string& backend);
+    RetiredSerial retiring(uint32_t serial) const;
     int countGlobalActiveControllers() const;
     uint32_t takePointerStampLocked();
     void releasePointerLocked(Controller& ctrl);
