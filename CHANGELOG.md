@@ -3,7 +3,7 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
+## 2.2.0
 
 Protocol 4, additive `[wire-coordinated]`: the accepted range is now [1, 4].
 A Dish that speaks 4 appends a 32-bit word of extended buttons to every
