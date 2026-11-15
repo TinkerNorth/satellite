@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
 namespace Satellite.HmHelper.Core;
@@ -9,8 +10,26 @@ public static class FrameMailbox
     public const int DataSizeOffset = 4;
     public const int DataOffset = 8;
     public const int DataCapacity = 256;
+    public const int ExtendedSizeOffset = 278;
     public const int SectionSize = 362;
     public const int Retries = 4;
+
+    public static void Write(Span<byte> section, ReadOnlySpan<byte> frame)
+    {
+        if (section.Length < SectionSize)
+            throw new ArgumentException($"a frame mailbox is {SectionSize} bytes, not {section.Length}", nameof(section));
+        if (frame.Length > DataCapacity)
+            throw new ArgumentException($"a frame holds at most {DataCapacity} bytes, not {frame.Length}", nameof(frame));
+
+        uint seq = ReadU32(section, SeqNoOffset);
+        Volatile.Write(ref Unsafe.As<byte, uint>(ref section[SeqNoOffset]), seq + 1);
+        Thread.MemoryBarrier();
+        BinaryPrimitives.WriteUInt32LittleEndian(section[DataSizeOffset..], (uint)frame.Length);
+        frame.CopyTo(section[DataOffset..]);
+        BinaryPrimitives.WriteUInt32LittleEndian(section[ExtendedSizeOffset..], 0);
+        Thread.MemoryBarrier();
+        Volatile.Write(ref Unsafe.As<byte, uint>(ref section[SeqNoOffset]), seq + 2);
+    }
 
     public static bool TryRead(ReadOnlySpan<byte> section, ref uint lastSeq, Span<byte> frame, out int length)
     {

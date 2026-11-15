@@ -3,6 +3,16 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+`satellite-hm-helper.exe selftest` now shows whether a held pad's input
+resumes: for the Sony personas it writes a frame into the controller's input
+section before anything is disabled and after each presentation is enabled
+again, and reads the controller's HID collection until an input report
+carries it. `scripts/hardware-selftest.ps1`, from an elevated PowerShell,
+runs the selftest, its `--composite` form and the devnode probe, and keeps
+their logs. Nothing in Satellite itself changes.
+
 ## 2.2.0
 
 Protocol 4, additive `[wire-coordinated]`: the accepted range is now [1, 4].

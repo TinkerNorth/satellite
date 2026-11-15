@@ -662,11 +662,11 @@ hm::VersionCheck HidMaestroAdapter::settleVersionLocked(IoSlot& slot,
 // Caller holds busMtx_. One tick of the pad's device watch: what changed goes
 // to the log, and what the core and the dashboard read goes to the flags.
 HidMaestroAdapter::WatchHolds HidMaestroAdapter::watchSlotLocked(uint32_t serial, IoSlot& slot) {
-    if (slot.watchView == nullptr) return {};
     const hm::WatchTracker was = slot.watch;
     hm::WatchReading now = hm::readWatchBlock(slot.watchView);
     now.channelGone = slot.channel != 0 && provisioner_.liveChannel() != slot.channel;
-    slot.watch = hm::advanceWatch(was, now, slot.watchPolicy);
+    slot.watch = slot.watchView != nullptr ? hm::advanceWatch(was, now, slot.watchPolicy)
+                                           : hm::advanceUnwatched(was, now.channelGone);
     for (const hm::WatchNote& note : hm::noteWatchStep(serial, was, slot.watch, slot.watchPolicy)) {
         log_.logMsg(note.level, "hidmaestro", note.text);
     }

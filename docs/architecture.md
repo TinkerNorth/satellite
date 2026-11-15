@@ -1646,16 +1646,22 @@ leaving after, the plug that hands over the block, each
 presentation's devnodes disabled and enabled on its own, with the other
 input presentation still reading present, and the device removed (a USB
 device may stay in the tree held for eject, Code 47, which the block shows
-as failed). `--composite` does the
-same for a USB/IP persona, its audio function included, and installs its
-transport. CI does not run it. Still to be seen on hardware: whether input
-resumes after a UMDF restart or a USB/IP re-import with no action from
-Satellite (the driver reopens its input section by name, and the composite's
-pump keeps reading it), how many times Windows restarts a failed UMDF host,
-what disabling a composite's USB device does to its connection, whose time
-to come back `--composite` reports, and whether a pad plugged again on a
-serial whose XUSB companion was disabled starts with it disabled (the SDK's
-`SwDeviceCreate` takes over a software device's old record).
+as failed). For the Sony personas it also writes a frame into the
+controller's input section, as satellite.exe does, before anything is
+disabled and after each presentation is enabled again, and reads the
+controller's HID collection until an input report carries that frame: this is
+what shows that input resumes after a UMDF restart or a USB/IP re-import with
+no action from Satellite, which the hold on a disabled pad relies on (the
+driver reopens its input section by name, and the composite's pump keeps
+reading it). `--composite` does the same for a USB/IP persona, its audio
+function included, and installs its transport. CI does not run either;
+`scripts/hardware-selftest.ps1`, from an elevated PowerShell, runs both and
+the devnode probe and keeps their logs. Still to be seen on hardware: how
+many times Windows restarts a failed UMDF host, what disabling a composite's
+USB device does to its connection, whose time to come back `--composite`
+reports, and whether a pad plugged again on a serial whose XUSB companion was
+disabled starts with it disabled (the SDK's `SwDeviceCreate` takes over a
+software device's old record).
 
 ### Controller audio, and the one kernel driver
 

@@ -22,8 +22,9 @@ bool awaitPrevious(const SingleInstanceNames& names, const SingleInstanceWaits& 
         if (window != nullptr) {
             const UINT message = window == tapped ? WM_NULL : WM_SECOND_INSTANCE;
             tapped = window;
-            // Answered or refused by UIPI: a running Satellite has this click.
-            if (tap(window, message, waits.answerMs) != TapAnswer::NoAnswer) return false;
+            TapAnswer answer = tap(window, message, waits.answerMs);
+            if (answer == TapAnswer::Denied) answer = tap(window, WM_NULL, waits.answerMs);
+            if (answer != TapAnswer::NoAnswer) return false;
         }
         const ULONGLONG now = GetTickCount64();
         if (now >= deadline) return false;
