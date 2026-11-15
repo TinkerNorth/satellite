@@ -58,6 +58,11 @@ struct ProvisionResult {
     uint64_t watchSection = 0;
     bool watchReported = false;
 
+    // The helper connection the pad was plugged on, counted up per connection
+    // (0 for a provisioner that does not count them). The pad lives only as long
+    // as that connection: once liveChannel() names another, it is gone.
+    uint64_t channel = 0;
+
     // Controller-audio rings (hidmaestro_audio_wire.h), present only for a
     // composite persona that actually materialized its USB-audio function.
     // Zero on every other profile, and on a composite whose helper could not
@@ -127,6 +132,10 @@ class IHidMaestroProvisioner {
     // helper answered it late, or a helper that started after it swept what
     // its predecessor left. Each is reported once.
     virtual std::vector<uint32_t> takeSettledSerials() { return {}; }
+
+    // The connection plugs are served on now, or 0 with none. Read without the
+    // provisioner's lock, from the maintenance tick.
+    virtual uint64_t liveChannel() const { return 0; }
 };
 
 } // namespace hidmaestro

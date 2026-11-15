@@ -243,11 +243,22 @@ void test_an_xbox_pad_takes_input_while_either_presentation_does() {
     EXPECT_EQ(missingCompanion.condition, DevnodeCondition::Missing);
     EXPECT_EQ(missingCompanion.part, Presentation::Xinput);
 
-    TEST("verdict: a presentation not looked at yet leaves the verdict unknown unless another "
-         "takes input");
+    TEST("verdict: a presentation gone or failed while the other takes input is away too, a loss "
+         "in the making: XInput and WGI games lose a pad whose companion failed (Emir's "
+         "decision)");
+    const InputVerdict companionFailed = inputVerdict(
+        xboxLook(PRESENT, part(DevnodeCondition::Failed, WatchedDevnode::Companion, 10)));
+    EXPECT_EQ(companionFailed.condition, DevnodeCondition::Failed);
+    EXPECT_EQ(companionFailed.part, Presentation::Xinput);
+    EXPECT_EQ(inputVerdict(xboxLook(part(DevnodeCondition::Missing),
+                                    part(DevnodeCondition::Present, WatchedDevnode::Companion)))
+                  .condition,
+              DevnodeCondition::Missing);
+
+    TEST("verdict: a presentation not looked at yet leaves the verdict unknown");
     EXPECT_EQ(inputVerdict(xboxLook(disabled(WatchedDevnode::Device), UNKNOWN)).condition,
               DevnodeCondition::Unknown);
-    EXPECT_EQ(inputVerdict(xboxLook(UNKNOWN, PRESENT)).condition, DevnodeCondition::Present);
+    EXPECT_EQ(inputVerdict(xboxLook(PRESENT, UNKNOWN)).condition, DevnodeCondition::Unknown);
 }
 
 void test_a_composites_audio_takes_no_input() {
@@ -263,6 +274,11 @@ void test_a_composites_audio_takes_no_input() {
             compositeLook(part(DevnodeCondition::Failed, WatchedDevnode::HidFunction, 10), PRESENT))
             .condition,
         DevnodeCondition::Failed);
+    TEST("verdict: a composite whose audio function failed is away, though its input works");
+    const InputVerdict audioFailed = inputVerdict(
+        compositeLook(PRESENT, part(DevnodeCondition::Failed, WatchedDevnode::AudioFunction, 10)));
+    EXPECT_EQ(audioFailed.condition, DevnodeCondition::Failed);
+    EXPECT_EQ(audioFailed.part, Presentation::Audio);
 }
 
 void test_the_disabled_parts_are_the_presented_ones() {
@@ -328,13 +344,15 @@ void test_a_pad_is_unwatched_until_it_takes_input() {
     t = steps(t, helper, sonyLook(PRESENT), 1);
     EXPECT_EQ(t.state, PadWatch::Present);
 
-    TEST("watch: an Xbox pad seen with only its XInput device taking input is armed");
+    TEST("watch: an Xbox pad seen with its HID game controller missing is not armed, though its "
+         "XInput device takes input, and is once it is whole");
     Helper other;
-    const WatchTracker xbox =
-        steps(WatchTracker{}, other,
-              xboxLook(part(DevnodeCondition::Missing),
-                       part(DevnodeCondition::Present, WatchedDevnode::Companion)),
-              1);
+    const WatchLook halfThere =
+        xboxLook(part(DevnodeCondition::Missing),
+                 part(DevnodeCondition::Present, WatchedDevnode::Companion));
+    WatchTracker xbox = steps(WatchTracker{}, other, halfThere, SHORT.graceTicks * 3);
+    EXPECT_EQ(xbox.state, PadWatch::Unwatched);
+    xbox = steps(xbox, other, xboxLook(PRESENT, PRESENT), 1);
     EXPECT_EQ(xbox.state, PadWatch::Present);
 }
 
@@ -443,13 +461,25 @@ void test_an_xbox_pad_with_one_presentation_disabled_is_written_on() {
     EXPECT_EQ(t.loss, PadLoss::Device);
 
     TEST("watch: an Xbox pad whose XUSB companion is gone while its HID game controller takes "
-         "input is written on and not given up");
+         "input is away, and lost after the grace, so the whole pad is plugged again");
     Helper other;
     WatchTracker u = armed(other, xboxLook(PRESENT, PRESENT));
-    u = steps(u, other,
-              xboxLook(PRESENT, part(DevnodeCondition::Missing, WatchedDevnode::Companion)),
-              10 * SHORT.graceTicks);
-    EXPECT_EQ(u.state, PadWatch::Present);
+    const WatchLook companionGone =
+        xboxLook(PRESENT, part(DevnodeCondition::Missing, WatchedDevnode::Companion));
+    u = steps(u, other, companionGone, SHORT.graceTicks - 1);
+    EXPECT_EQ(u.state, PadWatch::Absent);
+    u = steps(u, other, companionGone, 1);
+    EXPECT_EQ(u.state, PadWatch::Lost);
+    EXPECT_EQ(u.loss, PadLoss::Device);
+
+    TEST("watch: a composite whose audio function failed is lost after its grace too");
+    Helper composite;
+    WatchTracker c = armed(composite, compositeLook(PRESENT, PRESENT));
+    c = steps(
+        c, composite,
+        compositeLook(PRESENT, part(DevnodeCondition::Failed, WatchedDevnode::AudioFunction, 10)),
+        SHORT.graceTicks);
+    EXPECT_EQ(c.state, PadWatch::Lost);
 }
 
 void test_a_helper_that_stops_beating_is_given_up() {
@@ -470,6 +500,35 @@ void test_a_heartbeat_that_never_moved_never_gives_the_helper_up() {
     helper.beats = false;
     const WatchTracker t = steps(WatchTracker{}, helper, sonyLook(PRESENT), 100);
     EXPECT_EQ(t.state, PadWatch::Present);
+}
+
+void test_a_gone_channel_gives_the_pad_up_whatever_its_heartbeat_did() {
+    TEST("watch: a pad whose helper connection is gone is given up at once, though its heartbeat "
+         "never moved after the plug, and so is one still unwatched or held");
+    for (const WatchLook& look :
+         {sonyLook(PRESENT), sonyLook(UNKNOWN), sonyLook(disabled(WatchedDevnode::Device))}) {
+        Helper helper;
+        helper.beats = false;
+        WatchTracker t = steps(WatchTracker{}, helper, look, 1);
+        EXPECT(t.state != PadWatch::Lost);
+        WatchReading gone = helper.next(look);
+        gone.channelGone = true;
+        t = advanceWatch(t, gone, SHORT);
+        EXPECT_EQ(t.state, PadWatch::Lost);
+        EXPECT_EQ(t.loss, PadLoss::Channel);
+    }
+
+    TEST("note: a gone connection says so");
+    const WatchPolicy umdf2 = watchPolicyFor(ProfileBackend::Umdf2, 1.0);
+    Helper helper;
+    const WatchTracker was = armed(helper, sonyLook(PRESENT));
+    WatchReading gone = helper.next(sonyLook(PRESENT));
+    gone.channelGone = true;
+    const WatchTracker now = advanceWatch(was, gone, umdf2);
+    EXPECT_EQ(count(noteWatchStep(7, was, now, umdf2), LogLevel::WARN,
+                    "Serial 7's HIDMaestro helper connection is gone; Satellite gives the "
+                    "controller up"),
+              1);
 }
 
 void test_a_helper_gone_takes_unwatched_and_disabled_pads_too() {
@@ -707,19 +766,23 @@ void test_a_presentation_that_changes_while_another_takes_input_is_noted() {
                     "Serial 3's XUSB companion is enabled in Windows again"),
               1);
 
-    TEST("note: one gone while the other takes input is not given up for it, and back says so");
+    TEST("note: one gone while the other takes input starts the grace and names it, and back "
+         "says so");
     was = now;
     now = steps(was, helper,
                 xboxLook(PRESENT, part(DevnodeCondition::Missing, WatchedDevnode::Companion)), 1,
                 umdf2);
-    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::WARN,
-                    "Serial 3's XUSB companion is not in Windows' device tree; its HID game "
-                    "controller still takes input, so Satellite keeps writing the controller and "
-                    "does not give it up"),
+    const std::vector<WatchNote> gone = noteWatchStep(3, was, now, umdf2);
+    EXPECT_EQ(count(gone, LogLevel::WARN,
+                    "Serial 3's XUSB companion is not in Windows' device tree; Satellite waits up "
+                    "to 15 s for it to come back"),
               1);
+    EXPECT_EQ(gone.size(), size_t{1});
     was = now;
     now = steps(was, helper, xboxLook(PRESENT, PRESENT), 1, umdf2);
-    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::INFO, "is back in Windows"), 1);
+    EXPECT_EQ(count(noteWatchStep(3, was, now, umdf2), LogLevel::INFO,
+                    "Serial 3's XUSB companion is back in Windows"),
+              1);
 
     TEST("note: the HID game controller disabled says the XInput device still takes input");
     was = now;
@@ -762,9 +825,12 @@ void test_the_audio_function_says_what_it_does_to_the_microphone() {
         was, helper,
         compositeLook(PRESENT, part(DevnodeCondition::Missing, WatchedDevnode::AudioFunction)), 1,
         usbip);
-    EXPECT_EQ(count(noteWatchStep(6, was, now, usbip), LogLevel::WARN,
-                    "its microphone and speaker have nowhere to go"),
+    const std::vector<WatchNote> gone = noteWatchStep(6, was, now, usbip);
+    EXPECT_EQ(count(gone, LogLevel::WARN,
+                    "Serial 6's audio function is not in Windows' device tree; Satellite waits "
+                    "up to 45 s"),
               1);
+    EXPECT_EQ(gone.size(), size_t{1});
     was = now;
     now = steps(was, helper, compositeLook(PRESENT, PRESENT), 1, usbip);
     EXPECT_EQ(count(noteWatchStep(6, was, now, usbip), LogLevel::INFO,
@@ -864,6 +930,7 @@ int main() {
     test_a_helper_that_stops_beating_is_given_up();
     test_a_heartbeat_that_never_moved_never_gives_the_helper_up();
     test_a_helper_gone_takes_unwatched_and_disabled_pads_too();
+    test_a_gone_channel_gives_the_pad_up_whatever_its_heartbeat_did();
     test_a_lost_pad_stays_lost();
     test_an_unstable_reading_leaves_the_pad_as_it_was();
     test_a_block_of_another_layout_leaves_the_pad_unwatched();

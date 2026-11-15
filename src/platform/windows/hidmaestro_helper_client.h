@@ -36,11 +36,29 @@ inline constexpr DWORD HELPER_EXIT_WAIT_MS = 5000;
 // whose thread it runs. A helper answers it at once (helper Disposals); one
 // that does not is read later, before the next request's answer.
 inline constexpr DWORD HELPER_LOST_UNPLUG_WAIT_MS = 100;
+// How long the answers still owed to lost pads' unplugs get, all together,
+// ahead of the next request: the helper answers an unplug before it removes
+// anything, so one this late is a helper that no longer answers.
+inline constexpr DWORD HELPER_OWED_WAIT_MS = 2000;
+// How long a shutdown waits for its answer, which the helper gives once the
+// removals it answered early are done: HIDMaestro's INTERNALS.md gives a clean
+// removal 60 to 300 ms, and one a program refuses about 5.4 s for its query and
+// 2 s for a driver that does not answer, so 16 pads held open take about 118 s.
+inline constexpr DWORD HELPER_SHUTDOWN_WAIT_MS = 120000;
 
 enum class HelperRequest { Hello, Provision, Deprovision, Shutdown };
 
 constexpr DWORD helperRequestWaitMs(HelperRequest request) {
-    return request == HelperRequest::Provision ? HELPER_PROVISION_WAIT_MS : HELPER_PIPE_WAIT_MS;
+    switch (request) {
+    case HelperRequest::Provision:
+        return HELPER_PROVISION_WAIT_MS;
+    case HelperRequest::Shutdown:
+        return HELPER_SHUTDOWN_WAIT_MS;
+    case HelperRequest::Hello:
+    case HelperRequest::Deprovision:
+        return HELPER_PIPE_WAIT_MS;
+    }
+    return HELPER_PIPE_WAIT_MS;
 }
 
 // Split probes so the platform probeBackend() can distinguish DRIVER_MISSING
@@ -72,6 +90,7 @@ class HelperClient : public IHidMaestroProvisioner {
                    ProvisionResult& out) override;
     bool deprovision(uint32_t serial, Teardown why) override;
     std::vector<uint32_t> takeSettledSerials() override;
+    uint64_t liveChannel() const override;
 
     void connectBrokerInBackground();
 
@@ -87,6 +106,8 @@ class HelperClient : public IHidMaestroProvisioner {
     void setLaunchWaitForTest(DWORD ms);
     void setExitWaitForTest(DWORD ms);
     void setLostUnplugWaitForTest(DWORD ms);
+    void setShutdownWaitForTest(DWORD ms);
+    void setOwedWaitForTest(DWORD ms);
     bool waitForBackgroundConnectForTest(DWORD ms);
     static uint64_t pipeReadsForTest();
 #endif
@@ -107,7 +128,8 @@ class HelperClient : public IHidMaestroProvisioner {
     bool requestLocked(HelperRequest request, const std::string& line, std::string& response);
     bool deprovisionLocked(uint32_t serial, Teardown why);
     bool lostUnplugLocked(uint32_t serial, const std::string& line);
-    bool drainOwedLocked(DWORD waitMs);
+    enum class OwedAnswers { Read, Pending, Gone };
+    OwedAnswers drainOwedLocked();
     void settleLocked(uint32_t serial);
     void settleSweptLocked();
 
@@ -121,12 +143,19 @@ class HelperClient : public IHidMaestroProvisioner {
     std::atomic<DWORD> launchWaitMs_{HELPER_LAUNCH_WAIT_MS};
     std::atomic<DWORD> exitWaitMs_{HELPER_EXIT_WAIT_MS};
     std::atomic<DWORD> lostUnplugWaitMs_{HELPER_LOST_UNPLUG_WAIT_MS};
+    std::atomic<DWORD> shutdownWaitMs_{HELPER_SHUTDOWN_WAIT_MS};
+    std::atomic<DWORD> owedWaitMs_{HELPER_OWED_WAIT_MS};
     // mtx_: each channel adopted counts one up; a serial whose removal went
     // unconfirmed keeps the count it went on, and a later channel's first
     // plug, which sweeps what an earlier helper left, settles it.
     uint64_t generation_ = 0;
     std::map<uint32_t, uint64_t> unconfirmed_;
     std::vector<uint32_t> settled_;
+    // mtx_: the channel each plugged serial was served on.
+    std::map<uint32_t, uint64_t> pluggedOn_;
+    // The current channel's count, 0 with none; written under mtx_, read
+    // without it from the maintenance tick (liveChannel).
+    std::atomic<uint64_t> liveGeneration_{0};
     HANDLE cancel_ = nullptr;
     HANDLE connectDone_ = nullptr;
     std::thread connectThread_;
@@ -138,6 +167,9 @@ class HelperClient : public IHidMaestroProvisioner {
 
 #ifdef SATELLITE_BUILD_TESTS
 void notifyDriverInstalledForTest();
+// Runs once, the next time a pipe wait runs out, just before its I/O is
+// cancelled: where a test lands an answer so its read completes in that gap.
+void setBeforeCancelForTest(std::function<void()> hook);
 #endif
 
 } // namespace hidmaestro

@@ -1248,6 +1248,9 @@ class CheckedProvisioner : public hm::IHidMaestroProvisioner {
         return helper_.deprovision(serial, why);
     }
 
+    std::vector<uint32_t> takeSettledSerials() override { return helper_.takeSettledSerials(); }
+    uint64_t liveChannel() const override { return helper_.liveChannel(); }
+
   private:
     hm::HelperClient& helper_;
     LifecycleWatch& watch_;

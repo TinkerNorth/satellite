@@ -158,6 +158,9 @@ struct WatchReading {
     uint32_t seq = 0;
     uint32_t heartbeat = 0;
     WatchLook look;
+    // Not from the block: the helper connection the pad was plugged on is gone
+    // (the provisioner has let it go, or serves plugs on another).
+    bool channelGone = false;
 };
 
 inline DevnodeCondition conditionOf(uint32_t raw) {
@@ -211,8 +214,10 @@ inline WatchReading readWatchBlock(const uint8_t* view) {
     return parseWatchBlock(copy, stable);
 }
 
+// Every pad has its HID game controller, looked at or not.
 inline bool presents(const WatchLook& look, Presentation part) {
-    return (look.presents & static_cast<uint32_t>(part)) != 0;
+    const uint32_t has = look.presents | WATCH_PRESENTS_HID;
+    return (has & static_cast<uint32_t>(part)) != 0;
 }
 
 inline bool isAway(DevnodeCondition condition) {
@@ -230,37 +235,6 @@ inline bool isAway(DevnodeCondition condition) {
     return false;
 }
 
-// What a pad's input presentations amount to, and the presentation that says
-// so: present while any takes input, unknown while one has not been looked at,
-// away while one is gone or failed and the rest are disabled or gone too, and
-// disabled when every one is.
-struct InputVerdict {
-    DevnodeCondition condition = DevnodeCondition::Unknown;
-    Presentation part = Presentation::Hid;
-    PresentationReading named;
-};
-
-inline InputVerdict inputVerdict(const WatchLook& look) {
-    const bool xinput = presents(look, Presentation::Xinput);
-    if (look.hid.condition == DevnodeCondition::Present) {
-        return {DevnodeCondition::Present, Presentation::Hid, look.hid};
-    }
-    if (xinput && look.xinput.condition == DevnodeCondition::Present) {
-        return {DevnodeCondition::Present, Presentation::Xinput, look.xinput};
-    }
-    if (look.hid.condition == DevnodeCondition::Unknown) {
-        return {DevnodeCondition::Unknown, Presentation::Hid, look.hid};
-    }
-    if (xinput && look.xinput.condition == DevnodeCondition::Unknown) {
-        return {DevnodeCondition::Unknown, Presentation::Xinput, look.xinput};
-    }
-    if (isAway(look.hid.condition)) return {look.hid.condition, Presentation::Hid, look.hid};
-    if (xinput && isAway(look.xinput.condition)) {
-        return {look.xinput.condition, Presentation::Xinput, look.xinput};
-    }
-    return {DevnodeCondition::Disabled, Presentation::Hid, look.hid};
-}
-
 inline const PresentationReading& partOf(const WatchLook& look, Presentation part) {
     switch (part) {
     case Presentation::Hid:
@@ -271,6 +245,39 @@ inline const PresentationReading& partOf(const WatchLook& look, Presentation par
         return look.audio;
     }
     return look.hid;
+}
+
+// What a pad's presentations amount to, and the presentation that says so:
+// away while any is gone, failed, leaving or not started, whatever the others
+// show, since a pad missing one is a pad some games cannot reach (Emir's
+// decision: an Xbox pad whose XUSB companion failed is lost to XInput and WGI
+// games, so the whole pad is plugged again); unknown while one has not been
+// looked at; present while an input presentation takes input; disabled when
+// every input presentation is. A disabled presentation is never a loss on its
+// own.
+struct InputVerdict {
+    DevnodeCondition condition = DevnodeCondition::Unknown;
+    Presentation part = Presentation::Hid;
+    PresentationReading named;
+};
+
+inline InputVerdict inputVerdict(const WatchLook& look) {
+    constexpr Presentation every[] = {Presentation::Hid, Presentation::Xinput, Presentation::Audio};
+    for (const Presentation part : every) {
+        const PresentationReading& p = partOf(look, part);
+        if (presents(look, part) && isAway(p.condition)) return {p.condition, part, p};
+    }
+    for (const Presentation part : every) {
+        const PresentationReading& p = partOf(look, part);
+        const bool unknown = p.condition == DevnodeCondition::Unknown;
+        if (presents(look, part) && unknown) return {DevnodeCondition::Unknown, part, p};
+    }
+    for (const Presentation part : {Presentation::Hid, Presentation::Xinput}) {
+        const PresentationReading& p = partOf(look, part);
+        const bool present = p.condition == DevnodeCondition::Present;
+        if (presents(look, part) && present) return {DevnodeCondition::Present, part, p};
+    }
+    return {DevnodeCondition::Disabled, Presentation::Hid, look.hid};
 }
 
 // The presentations a look finds disabled, WATCH_PRESENTS_* bits.
@@ -339,7 +346,7 @@ inline WatchPolicy watchPolicyFor(ProfileBackend backend, double timeoutScale) {
 // Unwatched until a look first finds an input presentation taking input (or
 // every one disabled); Lost is final, and the core then unplugs the pad.
 enum class PadWatch : uint8_t { Unwatched, Present, Absent, Disabled, Lost };
-enum class PadLoss : uint8_t { None, Device, Helper };
+enum class PadLoss : uint8_t { None, Device, Helper, Channel };
 
 struct WatchTracker {
     PadWatch state = PadWatch::Unwatched;
@@ -456,6 +463,7 @@ inline WatchTracker advanceWatch(const WatchTracker& was, const WatchReading& no
                                  const WatchPolicy& policy) {
     if (was.state == PadWatch::Lost) return was;
     const WatchTracker heard = looked(heardFrom(was, now), now, policy);
+    if (now.channelGone) return lose(heard, PadLoss::Channel);
     if (helperGone(heard, policy)) return lose(heard, PadLoss::Helper);
     if (heard.stale) return unchanged(heard);
     return settleCondition(heard, policy);
@@ -572,6 +580,9 @@ inline WatchNote noteLoss(uint32_t serial, const WatchTracker& now, const WatchP
     case PadLoss::Helper:
         return {LogLevel::WARN, serialName(serial) + "'s HIDMaestro helper has not beaten for " +
                                     watchSeconds(policy.helperSilenceTicks) + consequence};
+    case PadLoss::Channel:
+        return {LogLevel::WARN,
+                serialName(serial) + "'s HIDMaestro helper connection is gone" + consequence};
     case PadLoss::Device:
     case PadLoss::None: {
         const PresentationReading named = inputVerdict(now.look).named;
@@ -660,15 +671,13 @@ inline WatchNote noteInputPart(uint32_t serial, Presentation part, const WatchLo
     case PartState::Disabled:
         return {LogLevel::WARN,
                 watchSubject(serial, p) + " is " + conditionPhrase(p.condition, p.problem) + still};
-    case PartState::Away:
-        return {LogLevel::WARN, watchSubject(serial, p) + " is " +
-                                    conditionPhrase(p.condition, p.problem) + still +
-                                    " and does not give it up"};
     case PartState::Present:
         return {LogLevel::INFO, watchSubject(serial, partOf(was, part)) +
                                     (before == PartState::Disabled ? " is enabled in Windows again"
                                                                    : " is back in Windows")};
+    case PartState::Away:
     case PartState::Unknown:
+        // A part away makes the pad absent, and the pad's own line says so.
         return {};
     }
     return {};
@@ -687,16 +696,14 @@ inline WatchNote noteAudio(uint32_t serial, const WatchLook& was, const WatchLoo
     case PartState::Disabled:
         return {LogLevel::WARN, subject + " is " + conditionPhrase(p.condition, p.problem) +
                                     "; Satellite holds its microphone until it is enabled again"};
-    case PartState::Away:
-        return {LogLevel::WARN, subject + " is " + conditionPhrase(p.condition, p.problem) +
-                                    "; its microphone and speaker have nowhere to go until it "
-                                    "is back"};
     case PartState::Present:
-        return {LogLevel::INFO, subject + (before == PartState::Disabled
-                                               ? " is enabled in Windows again; its microphone "
-                                                 "carries on"
-                                               : " is back in Windows")};
+        // Back from away is the pad's own line to say, as away was.
+        if (before != PartState::Disabled) return {};
+        return {LogLevel::INFO,
+                subject + " is enabled in Windows again; its microphone carries on"};
+    case PartState::Away:
     case PartState::Unknown:
+        // A function away makes the pad absent, and the pad's own line says so.
         return {};
     }
     return {};

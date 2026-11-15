@@ -214,6 +214,8 @@ class HidMaestroAdapter : public IGamepadPort {
         // input presentation is).
         std::atomic<bool> watchLost{false};
         std::atomic<uint32_t> hostDisabled{0};
+        // The helper connection the pad was plugged on (ProvisionResult::channel).
+        uint64_t channel = 0;
         // The microphone's own gate: the version section's, and the watch's
         // for the audio function alone. The input's is `gate`.
         std::atomic<satellite::hidmaestro::WriteGate> micGate{

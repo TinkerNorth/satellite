@@ -356,6 +356,10 @@ struct FakeProvisioner : IHidMaestroProvisioner {
 
     bool installed() const override { return installedVal; }
     std::vector<uint32_t> takeSettledSerials() override { return std::exchange(settled, {}); }
+    uint64_t liveChannel() const override { return channelNow; }
+    // The helper connection plugs are served on; a test replaces it or lets it
+    // go (0) as a helper that died would.
+    uint64_t channelNow = 1;
     bool isReady() const override { return ready; }
     bool ensureReady() override {
         if (!ensureReadyResult) return false;
@@ -449,6 +453,7 @@ struct FakeProvisioner : IHidMaestroProvisioner {
                      (!composite && reportsCompanion(identity) ? WATCH_PRESENTS_XINPUT : 0) |
                      (composite ? WATCH_PRESENTS_AUDIO : 0);
         out.watchSection = readOnlyWatch ? reinterpret_cast<uint64_t>(dup(readOnlyWatch)) : 0;
+        out.channel = channelNow;
         if (readOnlyWatch) CloseHandle(readOnlyWatch);
         out.watchReported = helperReportsWatch;
         out.identityTag = tagFor(serial);
@@ -2588,6 +2593,42 @@ static void test_an_xbox_pad_with_its_companion_disabled_is_written_on() {
     EXPECT_EQ(prov.log.count(LogLevel::WARN, "device is still failed with problem code 43"), 1);
 }
 
+static void test_an_xbox_pad_whose_companion_failed_is_plugged_again() {
+    TEST("watch: an Xbox pad whose XUSB companion failed, its HID game controller still taking "
+         "input, is given up after its grace so its client plugs the whole pad again (Emir's "
+         "decision)");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    plugWatched(prov, adapter, 3, GamepadIdentity::Xbox);
+    prov.partSays(3, WATCH_PRESENTS_XINPUT, WATCH_CONDITION_FAILED, WATCH_DEVNODE_COMPANION, 10);
+    tick(prov, adapter, ticksOf(SHORT_WATCH.graceTicks) - 1);
+    EXPECT(adapter.lostSerials().empty());
+    EXPECT(adapter.submitReport(3, GamepadReport{}));
+    tick(prov, adapter);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({3}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "XUSB companion is still failed with problem code 10"),
+              1);
+}
+
+static void test_a_pad_whose_helper_connection_is_gone_is_given_up_at_once() {
+    TEST("watch: a pad whose helper connection is gone is given up on the next tick, though its "
+         "heartbeat never moved after the plug, and removed as one whose helper is gone");
+    FakeProvisioner prov;
+    HidMaestroAdapter adapter(prov, prov.log);
+    adapter.setWatchPolicyForTest(SHORT_WATCH);
+    EXPECT(adapter.ensureBusOpen());
+    EXPECT(adapter.pluginDevice(1, GamepadIdentity::DS4));
+    silentTicks(adapter, 1);
+    EXPECT(adapter.lostSerials().empty());
+    prov.channelNow = 2;
+    silentTicks(adapter, 1);
+    EXPECT(adapter.lostSerials() == std::vector<uint32_t>({1}));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "helper connection is gone"), 1);
+    adapter.unplugDevice(1);
+    EXPECT(prov.teardowns.at(1) == Teardown::HelperGone);
+}
+
 static void test_a_pad_away_within_its_grace_is_still_written() {
     TEST("watch: a pad whose device is gone from Windows within its grace is still written, is "
          "not given up, and carries on when it is back");
@@ -2944,6 +2985,8 @@ int main() {
     test_a_composites_microphone_follows_its_audio_function();
     test_an_xbox_pad_with_its_companion_disabled_is_written_on();
     test_a_stale_look_freezes_the_grace();
+    test_an_xbox_pad_whose_companion_failed_is_plugged_again();
+    test_a_pad_whose_helper_connection_is_gone_is_given_up_at_once();
     test_a_refused_pad_is_still_watched();
     test_a_pad_away_within_its_grace_is_still_written();
     test_a_pad_away_past_its_grace_is_given_up();

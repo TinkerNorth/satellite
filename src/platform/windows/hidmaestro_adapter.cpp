@@ -162,6 +162,7 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.watchSection = nullptr;
     slot.watchPolicy = {};
     slot.watch = {};
+    slot.channel = 0;
     slot.watchLost.store(false, std::memory_order_release);
     slot.hostDisabled.store(0, std::memory_order_release);
     slot.companion = false;
@@ -220,6 +221,7 @@ void HidMaestroAdapter::attachVersionLocked(IoSlot& slot, const hm::ProvisionRes
 // block's one writer. The watch starts from what the block holds at plug, so
 // only a heartbeat that moves after it can ever stop.
 void HidMaestroAdapter::attachWatchLocked(IoSlot& slot, const hm::ProvisionResult& r) {
+    slot.channel = r.channel;
     slot.watchSection = toHandle(r.watchSection);
     if (slot.watchSection) {
         slot.watchView = static_cast<const uint8_t*>(
@@ -433,6 +435,7 @@ hm::Teardown HidMaestroAdapter::teardownFor(const IoSlot& slot) {
     if (!hm::watchLost(slot.watch)) return hm::Teardown::Requested;
     switch (slot.watch.loss) {
     case hm::PadLoss::Helper:
+    case hm::PadLoss::Channel:
         return hm::Teardown::HelperGone;
     case hm::PadLoss::Device:
     case hm::PadLoss::None:
@@ -655,7 +658,9 @@ hm::VersionCheck HidMaestroAdapter::settleVersionLocked(IoSlot& slot,
 HidMaestroAdapter::WatchHolds HidMaestroAdapter::watchSlotLocked(uint32_t serial, IoSlot& slot) {
     if (slot.watchView == nullptr) return {};
     const hm::WatchTracker was = slot.watch;
-    slot.watch = hm::advanceWatch(was, hm::readWatchBlock(slot.watchView), slot.watchPolicy);
+    hm::WatchReading now = hm::readWatchBlock(slot.watchView);
+    now.channelGone = slot.channel != 0 && provisioner_.liveChannel() != slot.channel;
+    slot.watch = hm::advanceWatch(was, now, slot.watchPolicy);
     for (const hm::WatchNote& note : hm::noteWatchStep(serial, was, slot.watch, slot.watchPolicy)) {
         log_.logMsg(note.level, "hidmaestro", note.text);
     }

@@ -12,6 +12,11 @@ namespace Satellite.HmHelper;
 //     -> {"ok":true,"helper":"satellite-hm-helper","audio":true,"broker":B}
 //        and "protocol":2 when P is 2 or more (HelperProtocol)
 //
+//   {"op":"unplug","serial":N} -> {"ok":true}, answered at once; the
+//     controller is removed after, on a thread of its own (Disposals)
+//
+//   {"op":"shutdown"} -> {"ok":true}, once every such removal is done
+//
 //   {"op":"plug","serial":N,"profile":"<catalog id>"}
 //     -> {"ok":true,"index":N,"transportIndex":T,"input":H,"inputEvent":H,
 //         "companionEvent":H,"output":H,"outputEvent":H,
@@ -90,6 +95,10 @@ internal sealed class Session : IDisposable
                 case "unplug":
                     return Unplug(root.GetProperty("serial").GetUInt32());
                 case "shutdown":
+                    // The answer waits for every removal the session answered
+                    // early, so the process that ends after it never ends
+                    // mid-removal (satellite.exe waits HELPER_SHUTDOWN_WAIT_MS).
+                    _disposals.AwaitAll();
                     quit = true;
                     return Ok(_ => { });
                 default:

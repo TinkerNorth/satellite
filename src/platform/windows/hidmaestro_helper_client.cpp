@@ -237,7 +237,12 @@ struct HelperChannel {
     std::vector<char> chunk;
     // The serials whose lost-pad unplug went without its answer yet, in the
     // order sent: those answers come ahead of any later request's.
-    std::deque<uint32_t> owed;
+    struct Owed {
+        uint32_t serial;
+        // Past this, an answer still missing is a helper that no longer answers.
+        ULONGLONG due;
+    };
+    std::deque<Owed> owed;
     // What the hello settled on; the base protocol hands over no watch blocks.
     int32_t protocol = HELPER_PROTOCOL_BASE;
 };
@@ -256,6 +261,15 @@ DWORD msLeft(const IoBudget& budget) {
     return budget.deadline > now ? static_cast<DWORD>(budget.deadline - now) : 0;
 }
 
+#ifdef SATELLITE_BUILD_TESTS
+std::function<void()> g_beforeCancel;
+
+void runBeforeCancelForTest() {
+    std::function<void()> hook = std::exchange(g_beforeCancel, nullptr);
+    if (hook) hook();
+}
+#endif
+
 bool pipeIo(HelperChannel& ch, bool write, void* buf, DWORD len, DWORD& moved,
             const IoBudget& budget) {
     OVERLAPPED ov{};
@@ -269,9 +283,14 @@ bool pipeIo(HelperChannel& ch, bool write, void* buf, DWORD len, DWORD& moved,
     HANDLE waits[2] = {ch.ioEvent, budget.cancel};
     const DWORD count = budget.cancel != nullptr ? 2 : 1;
     if (WaitForMultipleObjects(count, waits, FALSE, msLeft(budget)) != WAIT_OBJECT_0) {
+#ifdef SATELLITE_BUILD_TESTS
+        runBeforeCancelForTest();
+#endif
         CancelIoEx(ch.pipe, &ov);
-        GetOverlappedResult(ch.pipe, &ov, &moved, TRUE);
-        return false;
+        // The I/O can finish between the wait running out and the cancel:
+        // what it moved is moved, and an answer's bytes are kept.
+        const BOOL finished = GetOverlappedResult(ch.pipe, &ov, &moved, TRUE);
+        return finished != 0 && moved > 0;
     }
     return GetOverlappedResult(ch.pipe, &ov, &moved, FALSE) != 0;
 }
@@ -479,6 +498,7 @@ void HelperClient::setChannelLocked(std::unique_ptr<HelperChannel> channel) {
     channel_ = std::move(channel);
     if (channel_ != nullptr) generation_++;
     channelUp_.store(channel_ != nullptr, std::memory_order_release);
+    liveGeneration_.store(channel_ != nullptr ? generation_ : 0, std::memory_order_release);
 }
 
 bool HelperClient::startLocked() {
@@ -598,7 +618,16 @@ HANDLE HelperClient::launch(const std::wstring& pipeName) {
 }
 
 DWORD HelperClient::waitFor(HelperRequest request) const {
-    return request == HelperRequest::Provision ? provisionWaitMs_.load() : pipeWaitMs_.load();
+    switch (request) {
+    case HelperRequest::Provision:
+        return provisionWaitMs_.load();
+    case HelperRequest::Shutdown:
+        return shutdownWaitMs_.load();
+    case HelperRequest::Hello:
+    case HelperRequest::Deprovision:
+        return pipeWaitMs_.load();
+    }
+    return pipeWaitMs_.load();
 }
 
 bool HelperClient::spawnHelper(HelperChannel& channel) {
@@ -655,26 +684,38 @@ void HelperClient::stopLocked(bool sendShutdown) {
 bool HelperClient::requestLocked(HelperRequest request, const std::string& line,
                                  std::string& response) {
     if (channel_ == nullptr) return false;
-    if (drainOwedLocked(waitFor(request)) &&
-        roundTrip(*channel_, line, response, waitFor(request), nullptr)) {
-        return true;
+    switch (drainOwedLocked()) {
+    case OwedAnswers::Pending:
+        return false;
+    case OwedAnswers::Gone:
+        setChannelLocked(nullptr);
+        return false;
+    case OwedAnswers::Read:
+        break;
     }
+    if (roundTrip(*channel_, line, response, waitFor(request), nullptr)) return true;
     setChannelLocked(nullptr);
     return false;
 }
 
-// Caller holds mtx_. Each owed answer that confirms its unplug settles that
-// serial; false when the helper gives them not within `waitMs`.
-bool HelperClient::drainOwedLocked(DWORD waitMs) {
-    const IoBudget budget = budgetFor(waitMs, nullptr);
+// Caller holds mtx_. The owed answers get HELPER_OWED_WAIT_MS together, not
+// the next request's own bound, so a plug never holds the topology lock long
+// behind them; each that confirms its unplug settles that serial. One still
+// missing then fails the request unsent and keeps the channel, until it is
+// older than any unplug's own bound, when the helper no longer answers.
+HelperClient::OwedAnswers HelperClient::drainOwedLocked() {
+    const IoBudget budget = budgetFor(owedWaitMs_.load(), nullptr);
     while (!channel_->owed.empty()) {
         std::string response;
-        if (!readLine(*channel_, response, budget)) return false;
-        const uint32_t serial = channel_->owed.front();
+        if (!readLine(*channel_, response, budget)) {
+            const bool overdue = GetTickCount64() >= channel_->owed.front().due;
+            return overdue || !channel_->alive() ? OwedAnswers::Gone : OwedAnswers::Pending;
+        }
+        const uint32_t serial = channel_->owed.front().serial;
         channel_->owed.pop_front();
         if (unplugAnswered(response)) settleLocked(serial);
     }
-    return true;
+    return OwedAnswers::Read;
 }
 
 void HelperClient::settleLocked(uint32_t serial) {
@@ -761,6 +802,8 @@ bool HelperClient::provision(uint32_t serial, GamepadIdentity identity, bool aud
         closeDuplicatedHandles(out);
         return false;
     }
+    pluggedOn_[serial] = generation_;
+    out.channel = generation_;
     logMsg(LogLevel::INFO, "hidmaestro",
            "Serial " + std::to_string(serial) + " plugged as " + profile +
                " at HIDMaestro transport index " + std::to_string(out.transportIndex));
@@ -796,6 +839,10 @@ void HelperClient::setExitWaitForTest(DWORD ms) { exitWaitMs_.store(ms); }
 
 void HelperClient::setLostUnplugWaitForTest(DWORD ms) { lostUnplugWaitMs_.store(ms); }
 
+void HelperClient::setShutdownWaitForTest(DWORD ms) { shutdownWaitMs_.store(ms); }
+
+void HelperClient::setOwedWaitForTest(DWORD ms) { owedWaitMs_.store(ms); }
+
 bool HelperClient::waitForBackgroundConnectForTest(DWORD ms) {
     return WaitForSingleObject(connectDone_, ms) == WAIT_OBJECT_0;
 }
@@ -803,15 +850,25 @@ bool HelperClient::waitForBackgroundConnectForTest(DWORD ms) {
 uint64_t HelperClient::pipeReadsForTest() { return g_pipeReads.load(std::memory_order_relaxed); }
 
 void notifyDriverInstalledForTest() { notifyDriverInstalled(); }
+
+void setBeforeCancelForTest(std::function<void()> hook) { g_beforeCancel = std::move(hook); }
 #endif
 
+// A pad plugged on a helper that has since been replaced went with that
+// helper: nothing is asked of the current one, and its channel is never let go
+// for it; the current helper's first plug sweeps what its predecessor left,
+// which settles the serial.
 bool HelperClient::deprovision(uint32_t serial, Teardown why) {
     std::lock_guard<TrackedMutex> lk(mtx_);
-    const bool confirmed = deprovisionLocked(serial, why);
+    const auto on = pluggedOn_.find(serial);
+    const uint64_t servedOn = on != pluggedOn_.end() ? on->second : generation_;
+    if (on != pluggedOn_.end()) pluggedOn_.erase(on);
+    const bool current = channel_ != nullptr && servedOn == generation_;
+    const bool confirmed = current && deprovisionLocked(serial, why);
     if (confirmed) {
         unconfirmed_.erase(serial);
     } else {
-        unconfirmed_[serial] = generation_;
+        unconfirmed_[serial] = servedOn;
     }
     return confirmed;
 }
@@ -848,7 +905,7 @@ bool HelperClient::lostUnplugLocked(uint32_t serial, const std::string& line) {
         setChannelLocked(nullptr);
         return false;
     }
-    ch.owed.push_back(serial);
+    ch.owed.push_back({serial, GetTickCount64() + pipeWaitMs_.load()});
     if (ch.owed.size() > 1) return false;
     std::string response;
     if (!readLine(ch, response, budgetFor(lostUnplugWaitMs_.load(), nullptr))) {
@@ -857,6 +914,10 @@ bool HelperClient::lostUnplugLocked(uint32_t serial, const std::string& line) {
     }
     ch.owed.pop_front();
     return unplugAnswered(response);
+}
+
+uint64_t HelperClient::liveChannel() const {
+    return liveGeneration_.load(std::memory_order_acquire);
 }
 
 std::vector<uint32_t> HelperClient::takeSettledSerials() {
