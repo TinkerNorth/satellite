@@ -3,16 +3,6 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
-
-`satellite-hm-helper.exe selftest` now shows whether a held pad's input
-resumes: for the Sony personas it writes a frame into the controller's input
-section before anything is disabled and after each presentation is enabled
-again, and reads the controller's HID collection until an input report
-carries it. `scripts/hardware-selftest.ps1`, from an elevated PowerShell,
-runs the selftest, its `--composite` form and the devnode probe, and keeps
-their logs. Nothing in Satellite itself changes.
-
 ## 2.2.0
 
 Protocol 4, additive `[wire-coordinated]`: the accepted range is now [1, 4].
@@ -117,6 +107,15 @@ them, and checks what the watch reports; `--composite` does the same for a
 controller-audio pad, installing HIDMaestro's USB/IP transport for it. Close
 any program that holds a controller open (Steam, with a PlayStation pad)
 before running it.
+
+The selftest also shows whether a held pad's input resumes: for the Sony
+personas it writes a frame into the controller's input section before
+anything is disabled and after each presentation is enabled again, and reads
+the controller's HID collection until an input report carries it.
+`hardware-selftest.bat`, from an elevated prompt, runs the selftest, its
+`--composite` form and the devnode probe through
+`scripts/hardware-selftest.ps1` and keeps their logs; it refuses to start
+while Steam or DS4Windows runs unless given `-IgnoreHolders`.
 
 A game's DualSense rumble now reaches the real controller without also
 turning its light bar off. Newer DualSense firmware rumble packets (the
