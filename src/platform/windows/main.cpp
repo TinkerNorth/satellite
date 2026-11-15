@@ -291,8 +291,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     lifecycle::registerForRestart();
     if (forwardPairUri(cmd)) return 0;
 
-    // Refuse a second copy; tap the existing instance's window so it can flash
-    // a balloon, then exit (double-launch otherwise fights over ports).
+    // One Satellite per session (a second copy would fight over ports): a launch
+    // that finds one taps its window, which opens the dashboard, and exits; one
+    // that finds a Satellite on its way out waits for it to exit, then starts.
     if (!lifecycle::acquireSingleInstance(APP_TITLE)) return 0;
 
     const HRESULT hrCoInit = initShellIntegration();

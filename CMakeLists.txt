@@ -200,6 +200,7 @@ set(SATELLITE_WIN_SOURCES
     src/platform/windows/gamepad_backend.cpp
     src/platform/windows/updater_adapter.cpp
     src/platform/windows/app_lifecycle.cpp
+    src/platform/windows/single_instance.cpp
     src/platform/windows/file_log.cpp
     src/platform/windows/shell_integration.cpp
 )
@@ -1792,6 +1793,7 @@ if(WIN32)
         src/platform/windows/globals.cpp
         src/platform/windows/crypto.cpp
         src/platform/windows/app_lifecycle.cpp
+        src/platform/windows/single_instance.cpp
         src/platform/windows/file_log.cpp
         src/adapters/crash_adapter.cpp
         src/net/pin_rotation.cpp
@@ -1836,6 +1838,35 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_test(NAME windows_platform COMMAND test_windows_platform)
+endif()
+
+# A launch that finds another Satellite: the singleton mutex, the tap on the
+# other one's tray window, and the wait for one on its way out, each "other
+# Satellite" a thread of the test that holds the mutex.
+if(WIN32)
+    add_executable(test_single_instance
+        tests/test_single_instance.cpp
+        src/platform/windows/single_instance.cpp
+    )
+    target_include_directories(test_single_instance PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+    )
+    target_compile_definitions(test_single_instance PRIVATE
+        _WIN32_WINNT=0x0A00
+    )
+    target_link_libraries(test_single_instance PRIVATE
+        user32
+        Threads::Threads
+    )
+    satellite_test_warnings(test_single_instance)
+    if(MINGW)
+        target_link_options(test_single_instance PRIVATE -static)
+    endif()
+    set_target_properties(test_single_instance PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME single_instance COMMAND test_single_instance)
 endif()
 
 # Links the real vigem_adapter.cpp against an in-test fake ViGEmBus driver
