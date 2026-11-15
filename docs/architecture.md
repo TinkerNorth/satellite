@@ -1671,15 +1671,20 @@ its USB/IP connection, every presentation was back 0.4 to 0.6 s after the
 enable; the XUSB companion stays present while its HID parent is disabled;
 a removed device reads failed with problem 21 (`CM_PROB_WILL_BE_REMOVED`)
 before it leaves the tree, which the watch counts as away like Code 47; and
-Windows vetoed the XUSB companion's disable (`CR_REMOVE_VETOED`), with Steam
-running and with it closed, so the disabled-XInput reading has not been
-exercised on hardware, and Device Manager cannot disable that device on such
-a machine either. The selftest asks Windows who vetoes
-(`CM_Query_And_Remove_SubTree` on the companion, which names the veto's type
-and holder) and reports it. Still to be seen on hardware: who that holder is,
-how many times Windows restarts a failed UMDF host, and whether a pad plugged
-again on a serial whose XUSB companion was disabled starts with it disabled
-(the SDK's `SwDeviceCreate` takes over a software device's old record).
+Windows vetoed the XUSB companion's disable and its removal on its own
+(`CR_REMOVE_VETOED`, `PNP_VetoOutstandingOpen` naming the companion itself),
+with Steam running and with it closed: a background program keeps a handle
+open on every XInput device there (Windows does not say which; the GameInput
+service, Sunshine, the NVIDIA overlay and Game Bar were running), so the
+disabled-XInput reading has not been exercised on hardware, and Device Manager
+cannot disable that device on such a machine either. The SDK's own removal of
+the companion is not affected: it closes the software device rather than
+asking. The selftest reports a vetoed companion disable as a reading the
+machine cannot exercise and names the veto's type and holder. Still to be seen
+on hardware: how many times Windows restarts a failed UMDF host, and whether a
+pad plugged again on a serial whose XUSB companion was disabled starts with it
+disabled (the SDK's `SwDeviceCreate` takes over a software device's old
+record).
 
 ### Controller audio, and the one kernel driver
 
