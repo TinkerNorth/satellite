@@ -8,6 +8,7 @@ namespace Satellite.HmHelper;
 internal static class CfgMgr
 {
     public const uint CR_SUCCESS = 0x00000000;
+    public const uint CR_REMOVE_VETOED = 0x00000017;
     public const uint CM_LOCATE_DEVNODE_NORMAL = 0x00000000;
     public const uint CM_DRP_CLASSGUID = 0x00000009;
     public const uint CM_DISABLE_UI_NOT_OK = 0x00000004;

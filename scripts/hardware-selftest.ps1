@@ -15,8 +15,11 @@
       3. test_windows_devnode_probe.exe               (Plug and Play behaviour the
                                                        device watch builds on)
 
-    Close every program that holds a game controller open first (Steam with a
-    PlayStation pad refuses removals and fails the removal checks).
+    Close every program that holds a game controller open first: the script
+    refuses to start while Steam or DS4Windows runs, since Steam holds every
+    XInput device open and vetoes the companion's disable (CONFIGRET 23), and a
+    program holding a PlayStation pad refuses its removal. -IgnoreHolders runs
+    anyway.
 
         hardware-selftest.bat
         hardware-selftest.bat -SkipComposite
@@ -39,13 +42,17 @@
 
 .PARAMETER SkipComposite
     Leave out `selftest --composite`.
+
+.PARAMETER IgnoreHolders
+    Run even while a program known to hold game controllers open is running.
 #>
 [CmdletBinding()]
 param(
     [string]$Helper = '',
     [string]$Probe = '',
     [string]$LogDir = '',
-    [switch]$SkipComposite
+    [switch]$SkipComposite,
+    [switch]$IgnoreHolders
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,12 +76,15 @@ New-Item -ItemType Directory -Force $LogDir | Out-Null
 
 $holders = Get-Process -Name steam, steamwebhelper, 'DS4Windows', 'ds4windows' -ErrorAction SilentlyContinue
 if ($holders) {
-    Write-Warning ("These programs may hold a game controller open and refuse removals: " +
-        (($holders | Select-Object -ExpandProperty ProcessName -Unique) -join ', '))
+    $names = ($holders | Select-Object -ExpandProperty ProcessName -Unique) -join ', '
+    if (-not $IgnoreHolders) {
+        throw "Close these first, they hold game controllers open and veto the companion's disable and the removals: $names. Pass -IgnoreHolders to run anyway."
+    }
+    Write-Warning "Running beside programs that hold game controllers open: $names. Expect the XInput companion's disable to be vetoed (CONFIGRET 23)."
 }
 
 $results = [System.Collections.Generic.List[object]]::new()
-function Run-Step([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Log) {
+function Invoke-Step([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Log) {
     Write-Host ''
     Write-Host "=== $Name ===" -ForegroundColor Cyan
     Write-Host "    $Exe $($Arguments -join ' ')"
@@ -88,11 +98,11 @@ function Run-Step([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Lo
 
 Write-Host "helper: $Helper"
 & $Helper sdk-version
-Run-Step 'selftest' $Helper @('selftest', '--log', (Join-Path $LogDir 'selftest.helper.log')) (Join-Path $LogDir 'selftest.log')
+Invoke-Step 'selftest' $Helper @('selftest', '--log', (Join-Path $LogDir 'selftest.helper.log')) (Join-Path $LogDir 'selftest.log')
 if (-not $SkipComposite) {
-    Run-Step 'selftest --composite' $Helper @('selftest', '--composite', '--log', (Join-Path $LogDir 'selftest-composite.helper.log')) (Join-Path $LogDir 'selftest-composite.log')
+    Invoke-Step 'selftest --composite' $Helper @('selftest', '--composite', '--log', (Join-Path $LogDir 'selftest-composite.helper.log')) (Join-Path $LogDir 'selftest-composite.log')
 }
-Run-Step 'devnode probe' $Probe @() (Join-Path $LogDir 'devnode-probe.log')
+Invoke-Step 'devnode probe' $Probe @() (Join-Path $LogDir 'devnode-probe.log')
 
 Write-Host ''
 Write-Host '=== Results ===' -ForegroundColor Cyan

@@ -392,7 +392,14 @@ internal static class SelfTest
     {
         string named = $"{profileId}: its {role}";
         uint disabled = node.Located ? CfgMgr.CM_Disable_DevNode(node.Handle, CfgMgr.CM_DISABLE_UI_NOT_OK) : uint.MaxValue;
-        check(disabled == CfgMgr.CR_SUCCESS, $"{named} is disabled through CM_Disable_DevNode (CONFIGRET {disabled})");
+        string outcome = disabled switch
+        {
+            CfgMgr.CR_SUCCESS => "CONFIGRET 0",
+            CfgMgr.CR_REMOVE_VETOED => "CONFIGRET 23, CR_REMOVE_VETOED: a program holds the device open and refused to let it go, " +
+                                       "as Steam does with every XInput device while it runs; close it and run again",
+            _ => $"CONFIGRET {disabled}",
+        };
+        check(disabled == CfgMgr.CR_SUCCESS, $"{named} is disabled through CM_Disable_DevNode ({outcome})");
         if (disabled != CfgMgr.CR_SUCCESS) return;
         var expected = new PresentationCondition(DevnodeCondition.Disabled, role, DevnodeStatus.ProblemDisabled);
         DeviceWatchBlock.Reading off = block.Await(r => r.Report?.Of(part) == expected, WatchBudget);

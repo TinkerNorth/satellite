@@ -1657,12 +1657,26 @@ reading it). `--composite` does the same for a USB/IP persona, its audio
 function included, and installs its transport. CI does not run either;
 `hardware-selftest.bat` (a forwarder to `scripts/hardware-selftest.ps1`), from
 an elevated prompt, runs both and the devnode probe and keeps their logs.
-Still to be seen on hardware: how
-many times Windows restarts a failed UMDF host, what disabling a composite's
-USB device does to its connection, whose time to come back `--composite`
-reports, and whether a pad plugged again on a serial whose XUSB companion was
-disabled starts with it disabled (the SDK's `SwDeviceCreate` takes over a
-software device's old record).
+
+Run on 2026-11-15 on a Windows 11 box with driver 2.1.0.1716, it found: the
+devnodes are named as the watch restates them (`ROOT\HIDClass\<token>`,
+`ROOT\VID_045E&PID_028E&IG_00\<token>` with `SWD\HIDMAESTRO\<token>`,
+`USB\VID_054C&PID_0CE6\HM<12 hex>`), and the HID parent's first child is its
+collection; a frame written to the input section came out of the HID
+collection within the same tick after every re-enable, of the collection, the
+HID parent, a composite's HID function, its audio function and its USB
+device, so input does resume after a UMDF restart and a USB/IP re-import with
+nothing done by Satellite; disabling a composite's USB device did not drop
+its USB/IP connection, every presentation was back 0.4 to 0.6 s after the
+enable; the XUSB companion stays present while its HID parent is disabled;
+a removed device reads failed with problem 21 (`CM_PROB_WILL_BE_REMOVED`)
+before it leaves the tree, which the watch counts as away like Code 47; and
+the companion's disable is vetoed (`CR_REMOVE_VETOED`) while Steam runs,
+since Steam holds every XInput device open, so Device Manager cannot disable
+it then either. Still to be seen on hardware: how many times Windows restarts
+a failed UMDF host, and whether a pad plugged again on a serial whose XUSB
+companion was disabled starts with it disabled (the SDK's `SwDeviceCreate`
+takes over a software device's old record).
 
 ### Controller audio, and the one kernel driver
 
