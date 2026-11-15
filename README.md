@@ -628,14 +628,18 @@ without polling.
 
 ### Bumping the version
 
-Edit two files in lockstep:
+Edit three files in lockstep:
 
 1. [`/VERSION`](VERSION): consumed by CMake (`MACOSX_BUNDLE_*`, `CPACK_PACKAGE_VERSION`)
    and by `installer.iss` at preprocess time.
 2. [`src/core/version.h`](src/core/version.h): consumed by C++ and by
    `satellite.rc` (through `windres`'s preprocessor).
+3. [`vcpkg.json`](vcpkg.json): the MSVC lane's manifest, which does not read `/VERSION`.
 
-The `version-consistency` CI gate fails if the two diverge.
+The `version-consistency` CI gate fails if they diverge. Then add the version's
+`<release>` at the top of
+[`packaging/io.github.tinkernorth.satellite.metainfo.xml`](packaging/io.github.tinkernorth.satellite.metainfo.xml),
+which GNOME Software, KDE Discover and Flathub show; no gate checks that one.
 
 ## Architecture
 

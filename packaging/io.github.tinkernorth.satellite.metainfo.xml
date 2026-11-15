@@ -109,6 +109,16 @@
   -->
 
   <releases>
+    <release version="2.2.0" date="2026-11-15">
+      <description>
+        <p>Protocol 4: a Dish that speaks it can send a controller's extra buttons, and every older Dish keeps working unchanged.</p>
+        <ul>
+          <li>A virtual Switch Pro Controller presses Capture when Dish sends its pad's Capture, Share or … button</li>
+          <li>New controller type: the DualSense Edge, whose four back buttons carry the back paddles (not yet tried on a real Edge under Linux)</li>
+        </ul>
+      </description>
+      <url type="details">https://github.com/TinkerNorth/satellite/releases/tag/2.2.0</url>
+    </release>
     <release version="1.0.1" date="2026-08-23">
       <description>
         <p>Packaging release; no protocol changes.</p>
