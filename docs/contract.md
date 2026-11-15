@@ -802,9 +802,11 @@ of a sibling, kick racing a packet, a virtual device the host lost) are therefor
 SELF-HEALING within one heartbeat (≤2 s) without REST polling. `epoch` increments on
 every applied-topology change regardless of initiator.
 
-A HIDMaestro pad (Windows) whose devices Windows removed, or that stay failed past
-their grace, or whose helper stopped, is given up: its index leaves the bitmap and the
-epoch moves, so the client's re-PUT plugs a fresh controller, as often as that takes.
+A HIDMaestro pad (Windows) is given up when any one of its devices Windows removed or
+failed stays so past its grace, even while another still takes input (an Xbox pad's
+XInput device beside its HID game controller, a composite's audio function), or when
+its helper stopped: its index leaves the bitmap and the epoch moves, so the client's
+re-PUT plugs a fresh controller, whole, as often as that takes.
 A pad disabled in Windows (Device Manager) is not a loss: its index stays in the
 bitmap, and the client is not told. When every presentation of it that takes input is
 disabled, the server holds its input until Windows enables one again; when one is

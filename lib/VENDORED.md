@@ -164,8 +164,9 @@ the 90-day freshness window.
   setup classes. check-sdk holds what reflection reaches, for every profile
   Satellite plugs: the parent's enumerator in the SDK's create plan
   (`PresentationPlan.Of`), whether the plan makes a companion, the companion's
-  `SWD\HIDMAESTRO\` prefix as an ldstr in `DeviceOrchestrator`'s IL (the id
-  is built from that literal), and `SyntheticSerial`. How the parent's id is
+  `SWD\HIDMAESTRO\` prefix as the literal that the `DeviceOrchestrator`
+  method creating the software device (`SwdDeviceFactory.Create`) loads, and
+  `SyntheticSerial`. How the parent's id is
   put together (`ROOT\<enumerator>\<token>`, DeviceNodeCreator.cs:130) and
   that its first child is its HID collection are restated from the SDK and
   Windows, not checked, and `selftest` finds every one on hardware. So a bump

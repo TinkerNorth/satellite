@@ -799,8 +799,9 @@ reach, and an unplug never touches one a reader might still be using.
 4. Unplug, under `topoMtx_` only: the removed pads and the old serial of
    every replug.
 5. Settle, under `mtx_`. Release each retired serial whose unplug was
-   confirmed and quarantine the rest, decide whether the bus is now idle,
-   and build the result from the applied state and epoch.
+   confirmed and quarantine the rest, each under the backend that owned it,
+   decide whether the bus is now idle, and build the result from the
+   applied state and epoch.
 6. Close, under `topoMtx_` only: `closeBus` if the bus is idle, then,
    under `mtx_`, clear the quarantine and log.
 
@@ -976,7 +977,7 @@ adapters rely on them instead of locking against one another's calls:
    with no service lock held; `lostSerials` comes from it holding
    `service.topology` alone, and `settledSerials` from any topology change
    that plugs, before it takes `service.state`.
-   `isDevicePlugged`, `hostDisabled`, `motionBackendOk`,
+   `anyLost`, `isDevicePlugged`, `hostDisabled`, `motionBackendOk`,
    `backendIdForSerial`, `isBusOpen` and `supportsMotionForType` may come
    from any thread.
 
@@ -1051,21 +1052,30 @@ and takes neither. `busOpen_` is an atomic.
 across one request and its reply, it is held across pipe waits by design. Three
 rules make that harmless. First, every wait is bounded, the bound belongs to the
 request, and a request has one deadline for its write and its whole reply, so a
-helper that trickles bytes gets no longer than a silent one. Hello, unplug and
-shutdown get 10 s (`HELPER_PIPE_WAIT_MS`), and so does the connection to the
-broker service: a peer that has not answered a one-line request in that long is
-stalled, and the topology change waits as long as the request does. A plug gets
+helper that trickles bytes gets no longer than a silent one. Hello and unplug get
+10 s (`HELPER_PIPE_WAIT_MS`), and so does the connection to the broker service: a
+peer that has not answered a one-line request in that long is stalled, and the
+topology change waits as long as the request does. A shutdown gets 120 s
+(`HELPER_SHUTDOWN_WAIT_MS`), because the helper removes every controller it still
+holds and answers only once each removal it answered early is done, so it is
+never ended mid-removal: HIDMaestro's INTERNALS.md gives a clean removal 60 to
+300 ms, and one a program refuses about 7.4 s, 5.4 s for its query and 2 s for a
+driver that does not answer. The helper removes different pads side by side, so
+the bound is the case where Windows takes them one at a time: 16 pads held open,
+about 118 s. A plug gets
 120 s (`HELPER_PROVISION_WAIT_MS`), because the first composite plug installs
 HIDMaestro's usbip transport inside the request, which takes tens of seconds on
 a slow machine and reports no progress. A launched helper gets 120 s to connect
 (`HELPER_LAUNCH_WAIT_MS`), because that wait covers a person at the UAC prompt
 and the helper's cold start, and it ends at once if the helper exits (declined,
-crashed). After its shutdown request a helper has 5 s to exit
-(`HELPER_EXIT_WAIT_MS`) and is then killed rather than waited on, since it
-sweeps orphans on its next launch. A request that misses its deadline fails the
-call and drops the channel, and the next plug starts a fresh helper. The two
-long waits belong to a plug and a launch, which only happen inside a topology
-change. Second, every acquirer already holds `service.topology` or is the
+crashed). After it answers its shutdown a helper has 5 s to exit
+(`HELPER_EXIT_WAIT_MS`), with nothing left to remove, and is then killed rather
+than waited on, since it sweeps orphans on its next launch. A request that
+misses its deadline fails the call and drops the channel, and the next plug
+starts a fresh helper. A pipe wait that runs out cancels its I/O, and bytes the
+I/O moved before the cancel took are kept, so an answer that lands in that gap
+is read. The long waits belong to a plug and a launch, which only happen inside
+a topology change, and to the shutdown. Second, every acquirer already holds `service.topology` or is the
 shutdown path, so the lock never has a waiter that was not already waiting for
 the topology change. Third, the connection to the broker service is made ahead
 of the first plug without the lock: a Background thread opens a channel of its
@@ -1452,7 +1462,9 @@ device's child in the HIDClass setup class, and its audio function is the
 child in the MEDIA class. check-sdk holds what reflection reaches to the
 pinned SDK: the parent's enumerator in its create plan (`PresentationPlan.Of`),
 whether the plan makes a companion, the companion's `SWD\HIDMAESTRO\` prefix
-as `DeviceOrchestrator`'s IL spells it, and the synthetic serial
+as the literal that the `DeviceOrchestrator` method creating the software
+device (`SwdDeviceFactory.Create`) loads (`IlScan` walks its IL one
+instruction at a time), and the synthetic serial
 (`DeviceIdentity.SyntheticSerial`), for each profile Satellite plugs. How the
 parent's id is put together (`ROOT\<enumerator>\<token>`, DeviceNodeCreator.cs)
 and that a parent's first child is its HID collection are restated, not
@@ -1483,25 +1495,31 @@ time, so a machine that slept is not taken for a pad that went quiet.
 - *Unwatched* until a look first finds an input presentation taking input,
   or every one disabled. A pad never seen so is never given up for its
   devices, and the log names it once after 30 s.
-- *Present* while any input presentation takes input. One disabled while the
-  other still serves, an Xbox pad's XInput device or its HID game controller,
-  is written on: the dashboard notes it ("XInput disabled in Windows") and the
-  log says so, and the pad is never held or given up for it. One gone or
-  failed while the other serves is logged, and not given up either.
-- *Disabled* when every input presentation is: nothing is written to the pad;
+- *Present* while an input presentation takes input and none of the pad's
+  presentations is gone or failed. One disabled while the other still serves,
+  an Xbox pad's XInput device or its HID game controller, is written on: the
+  dashboard notes it ("XInput disabled in Windows") and the log says so, and
+  the pad is never held or given up for it.
+- *Disabled* when every input presentation is, and none is gone or failed:
+  nothing is written to the pad;
   it keeps its slot, the dashboard shows it disabled, and once Windows enables
   one again the state it was held with goes out as its first frame. It is
   never re-created, since a new controller would undo the disable. A
   composite's microphone follows its audio function alone: held while that is
   disabled, whatever the input does, and written while it is enabled.
-- *Absent* when an input presentation is gone, failed, leaving or not
-  started and the rest are disabled or gone too (a disabled XInput device
-  beside a failed parent is a loss in the making): frames keep going to the
+- *Absent* when any presentation it has is gone, failed, leaving or not
+  started, whatever the others do. A part lost while another still serves is
+  a loss all the same, which is Emir's decision: an Xbox pad whose XUSB
+  companion failed while its HID game controller works, a parent that failed
+  beside its companion, a composite whose audio function failed. Once the
+  grace runs out the pad is plugged again whole, so a controller never stays
+  half there; only a disabled part is left as it is. Frames keep going to the
   section, which a restarted UMDF driver reopens by name and a re-imported
   composite's pump reads, so a device that comes back carries on from the
   latest state. The log says when it went and when it is back.
-- *Lost*: absent for its whole grace, or its helper's heartbeat stopped for
-  5 s after it had moved at least once. On UMDF2 the grace is the SDK's own
+- *Lost*: absent for its whole grace, its helper's heartbeat stopped for 5 s
+  after it had moved at least once, or the helper connection it was plugged
+  on gone, whatever its heartbeat did. On UMDF2 the grace is the SDK's own
   budget for a device start, which Windows runs again when it restarts a
   failed host: 15 s, lengthened by a `HIDMAESTRO_TIMEOUT_SCALE` above 1 and
   never shortened by one below. On USB/IP it is 45 s: usbip-win2 imports a
@@ -1513,24 +1531,41 @@ time, so a machine that slept is not taken for a pad that went quiet.
 A look older than 1.5 s, three of the watcher's periods, is stale: a watcher
 stuck in a call, its heartbeat still beating. Nothing ages and nothing changes
 on a stale look, so a stale absence is never aged into a loss and a stale
-presence is not taken for health; the log says so once, and again when the
-watcher looks again. A pad the version section refused mid-life is still
-watched, so Windows losing its device still vacates it, and the dashboard
-shows the refusal (failed) rather than what Windows disabled.
+presence is not taken for health. The log says so, and again when the watcher
+looks again, the 1st, 2nd, 4th and 8th time and so on since the plug, with the
+count, so Plug and Play contention that keeps a watcher behind cannot flood it.
+A pad the version section refused mid-life is still watched, so Windows losing
+its device still vacates it, and the dashboard shows the refusal (failed)
+rather than what Windows disabled.
 
 **Removing a lost pad.** The maintenance tick reads `lostSerials` under the
 topology lock it took with `try_lock`, so no PUT can free a lost serial and
-plug a fresh pad on it in between. The core vacates the slot (the epoch moves
+plug a fresh pad on it in between, and it tries the lock only once `anyLost`,
+a read of atomics, says a serial may be lost. The core vacates the slot (the epoch moves
 and its bit leaves the heartbeat ack) and unplugs it; the client's reconcile
 loop then re-PUTs and plugs a fresh controller, with no cap on how often. The
 adapter tells the helper client why it removes a pad (`hm::Teardown`):
 
 - one Windows lost while its helper lives waits 100 ms for the answer; one
   that comes later is read ahead of the next request's, and the channel, and
-  every other pad on it, stays;
-- one whose helper stopped beating asks that helper nothing, and its channel
-  is let go (a spawned helper is ended), so the next plug reaches a new one;
+  every other pad on it, stays. The answers owed get 2 s together
+  (`HELPER_OWED_WAIT_MS`), not that request's own bound, so a plug never holds
+  the topology lock long behind them; one still missing fails the request
+  unsent and keeps the channel, until it is older than an unplug's 10 s and
+  the helper no longer answers. A shutdown is sent behind them all the same,
+  and they share its bound;
+- one whose helper stopped beating, or whose helper connection is gone, asks
+  that helper nothing, and its channel is let go (a spawned helper is ended),
+  so the next plug reaches a new one;
 - one the client let go keeps the ten-second bound of any request.
+
+Each pad remembers the helper connection it was plugged on
+(`ProvisionResult::channel`, which counts up per connection). A pad whose
+connection is gone is given up at once, so one plugged moments before its
+helper died, before a beat could move, is not missed. And a pad of a replaced
+helper asks the current one nothing and never lets its channel go: it went
+with the old helper, which the new one swept at its first plug, so a dead
+helper's pads cannot end its successors one after another.
 
 The helper answers every unplug at once and removes the controller on a
 thread of its own (`Disposals`; a plug of the same serial waits for it), since
@@ -1540,7 +1575,10 @@ driver that does not answer adds 2 s (DeviceManager.cs). An unplug that stays
 unconfirmed quarantines its serial, as any does; the serial is freed again
 when the helper answers late, or when a new helper's first plug has swept
 what a dead one left, so repeated helper deaths do not shrink the pool while
-a ViGEm pad keeps the bus open.
+a ViGEm pad keeps the bus open. Only the backend that quarantined a serial
+frees it (`SettledSerial` names the backend that saw an unplug through), so a
+late HIDMaestro answer never frees a serial ViGEm has since reused and
+quarantined.
 
 A helper gone takes disabled pads too: they are vacated and re-created, and
 the new controller starts enabled. This is Emir's decision: with nothing
@@ -1550,11 +1588,13 @@ and it would stay held for good.
 `satellite-hm-helper.exe selftest`, run elevated with the driver and every
 program that holds a game controller open closed (Steam with a PlayStation
 pad refuses removals), drives a real session as satellite.exe does: the hello
-on protocol 2, the plug that hands over the block, each presentation's
-devnodes disabled and enabled on its own, with the other input presentation
-still reading present, the device removed (a USB device may stay in the tree
-held for eject, Code 47, which the block shows as failed), and the unplug
-answered before the SDK has removed the controller. `--composite` does the
+on protocol 2, an unplug answered while the controller's device is still in
+Windows (an unplug that removed it before answering fails this) and the
+device leaving after, the plug that hands over the block, each
+presentation's devnodes disabled and enabled on its own, with the other
+input presentation still reading present, and the device removed (a USB
+device may stay in the tree held for eject, Code 47, which the block shows
+as failed). `--composite` does the
 same for a USB/IP persona, its audio function included, and installs its
 transport. CI does not run it. Still to be seen on hardware: whether input
 resumes after a UMDF restart or a USB/IP re-import with no action from

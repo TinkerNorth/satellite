@@ -266,15 +266,13 @@ internal static class SelfTest
               $"{profileId}: feature 0x{pairingReport:X2} carries the pairing MAC ending in the transport index ({mac})");
     }
 
-    // The device watch on a real controller, read the way satellite.exe reads
-    // it: whole, each of its devnodes disabled and enabled again through the
-    // Configuration Manager, and its device removed. A composite's USB device is
-    // disabled too, and what the USB/IP connection does then is reported.
-    // The device watch through the session satellite.exe talks to: the hello on
-    // the watch's protocol, an unplug answered while its device is still in
-    // Windows, the plug that hands over the block, the devnodes the watch
-    // derived, each presentation disabled and enabled on its own, and the
-    // device removed.
+    // The device watch on a real controller, through the session satellite.exe
+    // talks to: the hello on the watch's protocol, an unplug answered while its
+    // device is still in Windows, the plug that hands over the block, the
+    // devnodes the watch derived, each presentation disabled and enabled again
+    // through the Configuration Manager on its own, and the device removed. A
+    // composite's USB device is disabled too, and what the USB/IP connection
+    // does then is reported.
     private static void WatchedDevices(string profileId, int slot, Action<string> say, Action<bool, string> check)
     {
         using var session = new Session(Environment.ProcessId);
