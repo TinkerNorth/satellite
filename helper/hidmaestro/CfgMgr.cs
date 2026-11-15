@@ -14,6 +14,7 @@ internal static class CfgMgr
     public const uint CM_DISABLE_UI_NOT_OK = 0x00000004;
     public const uint CM_REMOVE_NO_RESTART = 0x00000002;
     public const int MAX_DEVICE_ID_LEN = 200;
+    public const int MAX_PATH = 260;
 
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     public static extern uint CM_Locate_DevNodeW(out uint devInst, string deviceId, uint flags);

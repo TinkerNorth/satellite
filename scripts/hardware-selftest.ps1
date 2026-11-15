@@ -16,10 +16,9 @@
                                                        device watch builds on)
 
     Close every program that holds a game controller open first: the script
-    refuses to start while Steam or DS4Windows runs, since Steam holds every
-    XInput device open and vetoes the companion's disable (CONFIGRET 23), and a
-    program holding a PlayStation pad refuses its removal. -IgnoreHolders runs
-    anyway.
+    refuses to start while Steam or DS4Windows runs, since a program holding a
+    pad open refuses its removal, which costs about 5.4 s each and fails the
+    removal checks. -IgnoreHolders runs anyway.
 
         hardware-selftest.bat
         hardware-selftest.bat -SkipComposite
@@ -78,9 +77,9 @@ $holders = Get-Process -Name steam, steamwebhelper, 'DS4Windows', 'ds4windows' -
 if ($holders) {
     $names = ($holders | Select-Object -ExpandProperty ProcessName -Unique) -join ', '
     if (-not $IgnoreHolders) {
-        throw "Close these first, they hold game controllers open and veto the companion's disable and the removals: $names. Pass -IgnoreHolders to run anyway."
+        throw "Close these first, a program that holds a game controller open refuses its removal, which costs about 5.4 s each and fails the removal checks: $names. Pass -IgnoreHolders to run anyway."
     }
-    Write-Warning "Running beside programs that hold game controllers open: $names. Expect the XInput companion's disable to be vetoed (CONFIGRET 23)."
+    Write-Warning "Running beside programs that may hold game controllers open: $names. A refused removal costs about 5.4 s and fails its check."
 }
 
 $results = [System.Collections.Generic.List[object]]::new()

@@ -316,10 +316,12 @@ internal static class SelfTest
         if (devnodes.Audio)
             DisableAndEnable(profileId, block, tree.ChildOfClass(tree.Locate(devnodes.Device), DevnodeIds.MediaClass),
                              Presents.Audio, WatchedDevnode.AudioFunction, input, say, check);
-        if (devnodes.Companion != null)
-            DisableAndEnable(profileId, block, tree.Locate(devnodes.Companion), Presents.Xinput, WatchedDevnode.Companion,
-                             input, say, check);
+        bool companionExercised = devnodes.Companion == null ||
+                                  DisableAndEnable(profileId, block, tree.Locate(devnodes.Companion), Presents.Xinput,
+                                                   WatchedDevnode.Companion, input, say, check);
         DisableAndEnable(profileId, block, tree.Locate(devnodes.Device), Presents.Hid, WatchedDevnode.Device, input, say, check);
+        if (devnodes.Companion != null && !companionExercised)
+            NameTheVeto(profileId, block, tree, devnodes.Companion, say, check);
 
         DevnodeState parent = tree.Locate(devnodes.Device);
         uint removed = CfgMgr.CM_Query_And_Remove_SubTreeW(parent.Handle, out int veto, null, 0, CfgMgr.CM_REMOVE_NO_RESTART);
@@ -387,20 +389,19 @@ internal static class SelfTest
 
     // Disables one devnode and checks that its presentation, and only that
     // one, reads disabled; then enables it and times the presentation's return.
-    private static void DisableAndEnable(string profileId, WatchBlockView block, DevnodeState node, Presents part,
+    private static bool DisableAndEnable(string profileId, WatchBlockView block, DevnodeState node, Presents part,
                                          WatchedDevnode role, InputProbe? input, Action<string> say, Action<bool, string> check)
     {
         string named = $"{profileId}: its {role}";
         uint disabled = node.Located ? CfgMgr.CM_Disable_DevNode(node.Handle, CfgMgr.CM_DISABLE_UI_NOT_OK) : uint.MaxValue;
-        string outcome = disabled switch
+        if (disabled == CfgMgr.CR_REMOVE_VETOED)
         {
-            CfgMgr.CR_SUCCESS => "CONFIGRET 0",
-            CfgMgr.CR_REMOVE_VETOED => "CONFIGRET 23, CR_REMOVE_VETOED: a program holds the device open and refused to let it go, " +
-                                       "as Steam does with every XInput device while it runs; close it and run again",
-            _ => $"CONFIGRET {disabled}",
-        };
-        check(disabled == CfgMgr.CR_SUCCESS, $"{named} is disabled through CM_Disable_DevNode ({outcome})");
-        if (disabled != CfgMgr.CR_SUCCESS) return;
+            say($"{named} cannot be disabled on this machine: CM_Disable_DevNode returned CR_REMOVE_VETOED (23), so its " +
+                "disabled reading is not exercised here");
+            return false;
+        }
+        check(disabled == CfgMgr.CR_SUCCESS, $"{named} is disabled through CM_Disable_DevNode (CONFIGRET {disabled})");
+        if (disabled != CfgMgr.CR_SUCCESS) return false;
         var expected = new PresentationCondition(DevnodeCondition.Disabled, role, DevnodeStatus.ProblemDisabled);
         DeviceWatchBlock.Reading off = block.Await(r => r.Report?.Of(part) == expected, WatchBudget);
         check(off.Report?.Of(part) == expected, $"{named} disabled reads disabled with Code 22, {Describe(off)}");
@@ -417,7 +418,49 @@ internal static class SelfTest
         check(back.Report is { Whole: true },
               $"{named} enabled again, the watch finds every presentation present after {started.Elapsed.TotalSeconds:F1} s, {Describe(back)}");
         input?.Check(profileId, $"after its {role} was enabled again", check);
+        return true;
     }
+
+    private static void NameTheVeto(string profileId, WatchBlockView block, WindowsDevnodeTree tree, string companionId,
+                                    Action<string> say, Action<bool, string> check)
+    {
+        DevnodeState companion = tree.Locate(companionId);
+        var vetoName = new char[CfgMgr.MAX_PATH];
+        int vetoType = 0;
+        uint removed = uint.MaxValue;
+        if (companion.Located)
+            removed = CfgMgr.CM_Query_And_Remove_SubTreeW(companion.Handle, out vetoType, vetoName, (uint)vetoName.Length, CfgMgr.CM_REMOVE_NO_RESTART);
+        string vetoer = new string(vetoName).TrimEnd('\0');
+        if (removed == CfgMgr.CR_REMOVE_VETOED)
+        {
+            say($"{profileId}: its XUSB companion's removal is vetoed as its disable was: {VetoTypeName(vetoType)} '{vetoer}' holds it");
+            return;
+        }
+        check(removed == CfgMgr.CR_SUCCESS,
+              $"{profileId}: CM_Query_And_Remove_SubTree removes {companionId} on its own (CONFIGRET {removed}, veto {VetoTypeName(vetoType)} '{vetoer}'), though its disable was vetoed");
+        if (removed != CfgMgr.CR_SUCCESS) return;
+        DeviceWatchBlock.Reading gone = block.Await(r => r.Report?.Xinput.Condition is DevnodeCondition.Missing or DevnodeCondition.Failed, WatchBudget);
+        check(gone.Report?.Xinput.Condition is DevnodeCondition.Missing or DevnodeCondition.Failed,
+              $"{profileId}: with its XUSB companion removed the watch finds the XInput presentation gone, {Describe(gone)}");
+    }
+
+    private static string VetoTypeName(int vetoType) => vetoType switch
+    {
+        0 => "PNP_VetoTypeUnknown",
+        1 => "PNP_VetoLegacyDevice",
+        2 => "PNP_VetoPendingClose",
+        3 => "PNP_VetoWindowsApp",
+        4 => "PNP_VetoWindowsService",
+        5 => "PNP_VetoOutstandingOpen",
+        6 => "PNP_VetoDevice",
+        7 => "PNP_VetoDriver",
+        8 => "PNP_VetoIllegalDeviceRequest",
+        9 => "PNP_VetoInsufficientPower",
+        10 => "PNP_VetoNonDisableable",
+        11 => "PNP_VetoLegacyDriver",
+        12 => "PNP_VetoInsufficientRights",
+        _ => $"PNP_VETO_TYPE {vetoType}",
+    };
 
     private static int TransportIndexOf(string reply)
     {
