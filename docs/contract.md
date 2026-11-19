@@ -238,6 +238,13 @@ Descriptor rules:
   DualSense Edge).
 - **Single-writer: descriptor fields are client-owned.** The admin UI displays them but
   never sets them. Admin intent is session-level (kick) or trust-level (unpair) only.
+- **The audio caps are promises the client keeps.** `mic`, `speaker` and `hapticAudio`
+  ride the descriptor only while the client can and will carry that direction now: the
+  pad's audio function reachable, the controller's own switch on, this host's
+  `controllerAudio` block granting the direction as the client last read it, and no
+  endpoint the client's platform refused to open. The host streams, or lights the mute
+  lamp, on the strength of the cap alone, so a cap the client would not honour is one it
+  never sends, and one it can no longer honour comes back off in a fresh descriptor.
 
 ### Read: `GET /api/connections/{connectionId}`
 
@@ -976,8 +983,14 @@ so a client that plays one lane but not the other never pays for both. Nothing a
 it is negotiated.
 
 **Two renderings, never both.** The cap `hapticAudio` follows the house rule: a client
-advertises it only when it can play the WAVEFORM into its pad's own audio function
-(a DualSense on USB with that function reachable). A client whose pad has plain motors,
+advertises it only when it can and will play the WAVEFORM into its pad's own audio
+function right now: a DualSense on USB with that function reachable at four channels,
+the controller's speaker switch on, this host's `controllerAudio.hapticAudio` granting
+the lane as the client last read it, and no output the client's platform refused to
+open. The host opens the lane on the strength of the claim alone and sends no reduction
+beside it, so a client never advertises a lane it has no player for; the moment one of
+those facts stops holding, the client withdraws the cap in a fresh descriptor and the
+host's next window goes out as the reduction. A client whose pad has plain motors,
 or whose platform cannot reach the pad's audio function, leaves it off and advertises
 `rumble` as it always has; the server then reduces each 20 ms window to one magnitude
 per lane (RMS, scaled so a full-scale sine reads full magnitude, floored at -40 dBFS
@@ -1002,7 +1015,11 @@ stops BOTH renderings at once, since a host that turned haptics off wants no hap
 in whatever form the client would have given them; it gates the wire, not the
 persona, so it applies to a live stream. `/api/server/capabilities`'s
 `controllerAudio.hapticAudio` reports that switch ANDed with `enabled` and with a
-listed backend being able to build the DualSense composite. Catalog: the type-feature
+listed backend being able to build the DualSense composite. Client side: the same
+word gates the cap itself (see Descriptor rules, "The audio caps are promises the
+client keeps"), and the clients read the block when they open a session, not
+continuously, so a direction switched ON reaches a connected client at its next
+session, while one switched OFF stops at this wire at once. Catalog: the type-feature
 slug `hapticAudio` is true only on the DualSense and DualSense Edge types, and only when
 the preferred materializer is HIDMaestro; the DualShock 4 v2 audio function is
 headset-only.
