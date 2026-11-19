@@ -1587,6 +1587,11 @@ target_compile_definitions(test_update_ui_contract PRIVATE
     WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
 )
 
+satellite_add_pure_test(test_debug_ui_contract tests/test_debug_ui_contract.cpp)
+target_compile_definitions(test_debug_ui_contract PRIVATE
+    WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
+)
+
 satellite_add_pure_test(test_httplib_idle tests/test_httplib_idle.cpp)
 target_compile_definitions(test_httplib_idle PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
 target_link_libraries(test_httplib_idle PRIVATE Threads::Threads)

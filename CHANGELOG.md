@@ -3,6 +3,23 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## Unreleased
+
+The contract now states what the audio caps promise. A client advertises
+`mic`, `speaker` or `hapticAudio` only while it can and will carry that
+direction right now: the pad's audio function reachable, the controller's own
+switch on, this host's `controllerAudio` block granting the direction as the
+client last read it, and no endpoint the client's platform refused to open.
+The host streams, or lights the mute lamp, on the strength of a cap alone,
+and for the haptics lane sends no rumble reduction beside the waveform, so a
+cap the client would not honour is one it never sends, and one it can no
+longer honour comes back off in a fresh descriptor. The clients read the block
+when they open a session, so a direction switched on reaches a connected
+client at its next session; one switched off stops at this wire at once. No
+wire change: the clients already send the descriptor whole on every change.
+The Debug page's row table is now held by a test to the fields `/api/debug`
+writes, the haptic counters that tell the two renderings apart included.
+
 ## 2.2.0
 
 Protocol 4, additive `[wire-coordinated]`: the accepted range is now [1, 4].
