@@ -51,6 +51,7 @@ inline ConfigPatchOutcome applyConfigPatch(const Json& body, Config& cfg) {
     // Consent reaches the SDK now rather than at the next restart, because
     // withdrawing it has to stop the very next crash from being sent.
     if (jsonTryBool(body, "crashReporting", flag)) cfg.crashReporting = flag;
+    if (jsonTryBool(body, "controllerDbUpdates", flag)) cfg.controllerDbUpdates = flag;
     if (body.contains("networkInterface")) {
         cfg.networkInterface = jsonStr(body, "networkInterface");
     }
@@ -69,6 +70,7 @@ inline std::string configPatchLogLine(const Config& cfg, bool udpPortRejected) {
     line += std::string(" mic=") + boolWord(cfg.controllerAudioMic);
     line += std::string(" speaker=") + boolWord(cfg.controllerAudioSpeaker);
     line += std::string(" haptics=") + boolWord(cfg.controllerAudioHaptics);
+    line += std::string(" controllerDbUpdates=") + boolWord(cfg.controllerDbUpdates);
     if (udpPortRejected) line += " (udpPort out of range, ignored)";
     return line;
 }

@@ -84,6 +84,62 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
     }
 }
 
+} // namespace
+
+// An ephemeral session that ignores any local cache, so a 304 is the server's
+// answer to our own If-None-Match; the platform's default user agent, and no
+// header of ours but that one.
+DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& ifNoneMatch) {
+    DbFetchResponse r;
+    @autoreleasepool {
+        NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
+        if (!nsurl) return r;
+        NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:nsurl];
+        req.timeoutInterval = 30.0;
+        req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        if (!ifNoneMatch.empty()) {
+            [req setValue:[NSString stringWithUTF8String:ifNoneMatch.c_str()]
+                forHTTPHeaderField:@"If-None-Match"];
+        }
+        NSURLSessionConfiguration* config =
+            [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        config.URLCache = nil;
+        NSURLSession* session = [NSURLSession sessionWithConfiguration:config];
+
+        __block NSData* body = nil;
+        __block NSURLResponse* resp = nil;
+        __block NSError* nserr = nil;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        NSURLSessionDataTask* task =
+            [session dataTaskWithRequest:req
+                       completionHandler:^(NSData* d, NSURLResponse* rsp, NSError* e) {
+                         body = d;
+                         resp = rsp;
+                         nserr = e;
+                         dispatch_semaphore_signal(sem);
+                       }];
+        [task resume];
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+        [session finishTasksAndInvalidate];
+
+        const bool http = [resp isKindOfClass:[NSHTTPURLResponse class]];
+        if (nserr || !http) return r;
+        NSHTTPURLResponse* httpResp = (NSHTTPURLResponse*)resp;
+        if (httpResp.statusCode == 304) {
+            r.outcome = DbFetch::NotModified;
+            return r;
+        }
+        if (httpResp.statusCode != 200) return r;
+        r.body.assign((const char*)body.bytes, body.length);
+        NSString* etag = [httpResp valueForHTTPHeaderField:@"ETag"];
+        if (etag) r.etag = etag.UTF8String;
+        r.outcome = DbFetch::Ok;
+    }
+    return r;
+}
+
+namespace {
+
 class ProgressDelegate {
   public:
     ProgressDelegate(const std::function<void(uint64_t, uint64_t)>& cb,

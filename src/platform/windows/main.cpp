@@ -19,6 +19,8 @@
 #include "hidmaestro_adapter.h"
 #include "hidmaestro_helper_client.h"
 #include "updater_adapter.h"
+#include "adapters/controller_db_adapter.h"
+#include "core/controller_db_service.h"
 #include "update_toast.h"
 #include "ui_access.h"
 #include "install_defaults_registry.h"
@@ -386,6 +388,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     g_webDir = getExeDir() + "\\web";
 
     updateService.start(); // spawns worker + timer threads internally
+
+    ControllerDbAdapter controllerDbAdapter(g_webDir + "\\controllers\\v1",
+                                            controllerDbCacheDirFor(configPath()),
+                                            controllerDbHttpGet, atomicWriteFile);
+    satellite::ControllerDbService controllerDb(controllerDbAdapter, logAdapter, *g_configStore);
+    controllerDb.load();
+    g_controllerDbService = &controllerDb;
+    controllerDb.start();
     Workers workers = startWorkers(svc, clientAdapter);
 
     runMessageLoop();
@@ -395,6 +405,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
     if (powerNotify) UnregisterSuspendResumeNotification(powerNotify);
     stopServers(updateService);
     joinWorkers(workers);
+    controllerDb.stop();
+    g_controllerDbService = nullptr;
     svc.closeAllSessions();
     lifecycle::stopFileLogger();
 

@@ -132,6 +132,10 @@ set(SATELLITE_CORE_SOURCES
     src/core/mic_worker.cpp
     src/core/config_store.cpp
     src/core/catalog.cpp
+    src/core/controller_db.cpp
+    src/core/controller_db_service.cpp
+    src/core/feedback_test.cpp
+    src/core/diagnostics_bundle.cpp
     src/core/backend_registry.cpp
     src/core/update_service.cpp
     src/core/github_release.cpp
@@ -172,6 +176,7 @@ set(SATELLITE_APP_SOURCES
 
 # Portable adapters (thin shims over platform-specific free functions).
 set(SATELLITE_ADAPTER_SOURCES
+    src/adapters/controller_db_adapter.cpp
     src/adapters/log_adapter.cpp
     src/adapters/client_adapter.cpp
     src/adapters/crash_adapter.cpp
@@ -1292,6 +1297,17 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(test_pin_rotation PRIVATE SATELLITE_BUILD_TESTS)
     satellite_link_sodium(test_pin_rotation)
 
+    # The shipped controller database held to its manifest with the real
+    # SHA-256, and the flat-file cache.
+    satellite_add_pure_test(test_controller_db_adapter
+        tests/test_controller_db_adapter.cpp
+        src/adapters/controller_db_adapter.cpp
+        src/core/controller_db.cpp
+    )
+    target_compile_definitions(test_controller_db_adapter PRIVATE
+        WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web")
+    satellite_link_sodium(test_controller_db_adapter)
+
     satellite_add_pure_test(test_client_adapter
         tests/test_client_adapter.cpp
         src/adapters/client_adapter.cpp
@@ -1494,6 +1510,7 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/net/pin_rotation.cpp
         src/net/local_iface.cpp
         src/core/config_io.cpp
+        src/adapters/controller_db_adapter.cpp
         ${SATELLITE_CORE_SOURCES}
         # routes_admin.cpp reads crash::active() and flips crash::setEnabled(),
         # so the route tests need the adapter as well as the pure policy that
@@ -1547,6 +1564,7 @@ if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_definitions(${name} PRIVATE
             CPPHTTPLIB_NO_EXCEPTIONS
             SATELLITE_BUILD_TESTS
+            WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
         )
         satellite_test_warnings(${name})
         satellite_link_sodium(${name})
@@ -1575,12 +1593,29 @@ endif()
 # at the real web/lang catalogs so every controller-type string is asserted
 # present in every supported locale (mirror of Android's MissingTranslation).
 # WEB_IMG_CATALOG_DIR does the same for the artwork gate.
-satellite_add_pure_test(test_catalog tests/test_catalog.cpp src/core/catalog.cpp)
+satellite_add_pure_test(test_catalog tests/test_catalog.cpp src/core/catalog.cpp
+                        src/core/controller_db.cpp)
 target_compile_definitions(test_catalog PRIVATE
+    WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
     WEB_LANG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/lang"
     WEB_IMG_CATALOG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/img/catalog"
     WEB_IMG_ICONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web/img/icons"
 )
+
+# The controller database parser against fixtures and against the copy
+# web/controllers/v1 ships (WEB_DIR), which every lane bundles.
+satellite_add_pure_test(test_controller_db tests/test_controller_db.cpp src/core/controller_db.cpp)
+target_compile_definitions(test_controller_db PRIVATE
+    WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
+)
+satellite_add_pure_test(test_controller_db_service tests/test_controller_db_service.cpp
+                        src/core/controller_db_service.cpp src/core/controller_db.cpp
+                        src/core/config_store.cpp)
+target_link_libraries(test_controller_db_service PRIVATE Threads::Threads)
+satellite_add_pure_test(test_diagnostics_bundle tests/test_diagnostics_bundle.cpp
+                        src/core/diagnostics_bundle.cpp src/core/controller_db_service.cpp
+                        src/core/controller_db.cpp src/core/config_store.cpp)
+target_link_libraries(test_diagnostics_bundle PRIVATE Threads::Threads)
 
 satellite_add_pure_test(test_update_ui_contract tests/test_update_ui_contract.cpp)
 target_compile_definitions(test_update_ui_contract PRIVATE
@@ -1591,6 +1626,14 @@ satellite_add_pure_test(test_debug_ui_contract tests/test_debug_ui_contract.cpp)
 target_compile_definitions(test_debug_ui_contract PRIVATE
     WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
 )
+
+satellite_add_pure_test(test_dashboard_contract tests/test_dashboard_contract.cpp
+                        src/core/controller_db_service.cpp src/core/controller_db.cpp
+                        src/core/config_store.cpp src/core/feedback_test.cpp)
+target_compile_definitions(test_dashboard_contract PRIVATE
+    WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
+)
+target_link_libraries(test_dashboard_contract PRIVATE Threads::Threads)
 
 satellite_add_pure_test(test_httplib_idle tests/test_httplib_idle.cpp)
 target_compile_definitions(test_httplib_idle PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)

@@ -5,6 +5,7 @@
 // supported locale (mirror of Android's MissingTranslation lint), while
 // feature/mode slugs stay machine-readable protocol constants.
 #include "../src/core/catalog.h"
+#include "../src/core/controller_db.h"
 #include "../src/core/json.h"
 #include "../src/core/types.h"
 
@@ -32,6 +33,18 @@ static std::string readFileAll(const std::string& path) {
 
 static std::string langPath(const std::string& locale) {
     return std::string(WEB_LANG_DIR) + "/" + locale + ".json";
+}
+
+// The controller database web/controllers/v1 ships, the one a fresh install
+// serves the catalog from.
+static const ControllerDb& bundledDb() {
+    static const ControllerDb db = [] {
+        ControllerDb parsed;
+        parseControllerDb(readFileAll(std::string(WEB_DIR) + "/controllers/v1/controllers.json"),
+                          parsed);
+        return parsed;
+    }();
+    return db;
 }
 
 static std::vector<std::string> controllerTypeElems(const std::string& json,
@@ -81,10 +94,11 @@ static void test_resolveLocale_fallbackEn() {
 }
 
 static void test_catalogETag_shape() {
-    TEST("catalogETag: version+locale, quoted");
-    EXPECT_EQ(catalogETag("1.6.0", "de"), std::string("\"1.6.0+de\""));
-    EXPECT(catalogETag("1.6.0", "de") != catalogETag("1.6.0", "en"));
-    EXPECT(catalogETag("1.6.0", "de") != catalogETag("1.6.1", "de"));
+    TEST("catalogETag: version+locale+dbVersion, quoted");
+    EXPECT_EQ(catalogETag("1.6.0", "de", 1), std::string("\"1.6.0+de+db1\""));
+    EXPECT(catalogETag("1.6.0", "de", 1) != catalogETag("1.6.0", "en", 1));
+    EXPECT(catalogETag("1.6.0", "de", 1) != catalogETag("1.6.1", "de", 1));
+    EXPECT(catalogETag("1.6.0", "de", 1) != catalogETag("1.6.0", "de", 2));
 }
 
 static void test_catalogJson_structure() {
@@ -130,7 +144,7 @@ static void test_catalogJson_structure() {
 
     const std::string enJson = readFileAll(langPath("en"));
     EXPECT(!enJson.empty());
-    std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
+    std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits, bundledDb());
 
     // Resolved locale echoed; version present.
     EXPECT(json.find("\"locale\":\"en\"") != std::string::npos);
@@ -241,7 +255,7 @@ static void test_catalogJson_inertBackend() {
     TEST("buildCatalogJson: a backend that offers nothing emits an empty type list");
     CatalogBackendTraits traits; // all false, no offers
     const std::string enJson = readFileAll(langPath("en"));
-    std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
+    std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits, bundledDb());
     EXPECT(json.find("\"mouseControl\":{\"supported\":false") != std::string::npos);
     // An inert backend returns no rumble either (RECEIVE host feature gated off).
     EXPECT(json.find("\"rumble\":{\"supported\":false}") != std::string::npos);
@@ -322,7 +336,7 @@ static void test_catalogJson_escapesLocalizedStrings() {
     const std::string needle = "\"name\":\"D\\\"S\\\\4\"";
     CatalogBackendTraits traits;
     traits.offersDS4 = true; // ds4 must be emitted to check its escaped name
-    std::string json = buildCatalogJson("en", lang, lang, "1.6.0", traits);
+    std::string json = buildCatalogJson("en", lang, lang, "1.6.0", traits, bundledDb());
     EXPECT(json.find(needle) != std::string::npos);
 }
 
@@ -410,7 +424,8 @@ static void test_emulatesNotLocalized() {
     };
     for (const auto& locale : catalogLocales()) {
         const std::string langJson = readFileAll(langPath(locale));
-        const std::string json = buildCatalogJson(locale, langJson, enJson, "1.6.0", traits);
+        const std::string json =
+            buildCatalogJson(locale, langJson, enJson, "1.6.0", traits, bundledDb());
         for (const auto& needle : needles) EXPECT(json.find(needle) != std::string::npos);
     }
 }
@@ -443,7 +458,8 @@ static void test_audioFeatureSlugsNotLocalized() {
     for (const auto& locale : catalogLocales()) {
         const std::string langJson = readFileAll(langPath(locale));
         EXPECT(!langJson.empty());
-        const std::string json = buildCatalogJson(locale, langJson, enJson, "1.6.0", traits);
+        const std::string json =
+            buildCatalogJson(locale, langJson, enJson, "1.6.0", traits, bundledDb());
         // Both offered types carry both features, in every locale.
         EXPECT_EQ(countOccurrences(json, "\"mic\":{\"supported\":true}"), size_t{2});
         EXPECT_EQ(countOccurrences(json, "\"speaker\":{\"supported\":true}"), size_t{2});
@@ -454,10 +470,80 @@ static void test_audioFeatureSlugsNotLocalized() {
     CatalogBackendTraits inert;
     inert.offersDS4 = true;
     inert.offersDualSense = true;
-    const std::string plain = buildCatalogJson("en", enJson, enJson, "1.6.0", inert);
+    const std::string plain = buildCatalogJson("en", enJson, enJson, "1.6.0", inert, bundledDb());
     EXPECT_EQ(countOccurrences(plain, "\"mic\":{\"supported\":false}"), size_t{2});
     EXPECT_EQ(countOccurrences(plain, "\"speaker\":{\"supported\":false}"), size_t{2});
     EXPECT_EQ(countOccurrences(plain, "\"mic\":{\"supported\":true}"), size_t{0});
+}
+
+// The lists the catalog served before the database existed, the ones a client
+// already matches against. Generated from the records, they must not move.
+struct EmulatesLiteral {
+    const char* slug;
+    std::vector<std::string> usb;
+};
+
+static const std::vector<EmulatesLiteral>& emulatesLiterals() {
+    static const std::vector<EmulatesLiteral> literals = {
+        {"xbox360", {"045e:028e"}},       {"ds4", {"054c:05c4", "054c:09cc"}},
+        {"dualsense", {"054c:0ce6"}},     {"switchpro", {"057e:2009"}},
+        {"dualsenseedge", {"054c:0df2"}},
+    };
+    return literals;
+}
+
+static std::string emulatesRecord(const std::string& id, const std::string& family,
+                                  const std::string& usbId) {
+    return R"({"schema":1,"id":")" + id +
+           R"(","requires":{"families":["x"],"ops":[]},"identity":{"usb":[")" + usbId +
+           R"("],"bluetooth":[]},"input":{"protocol":{"ref":")" + family +
+           R"("}},"output":{},"expect":{},"support":{"verification":{"state":"verified"}}})";
+}
+
+static ControllerDb emulatesDb(const std::vector<std::string>& records) {
+    std::string text = R"({"schema":1,"dbVersion":9,"records":[)";
+    for (size_t i = 0; i < records.size(); i++) text += (i == 0 ? "" : ",") + records[i];
+    text += "]}";
+    ControllerDb db;
+    parseControllerDb(text, db);
+    return db;
+}
+
+static void test_emulatesUsb_fromRecords() {
+    TEST("emulates.usb from the bundled records equals the lists the catalog always served");
+    for (const EmulatesLiteral& literal : emulatesLiterals()) {
+        EXPECT(catalogEmulatedUsb(literal.slug, bundledDb()) == literal.usb);
+    }
+
+    TEST("emulates.usb in the catalog body, from the bundled records, byte for byte");
+    CatalogBackendTraits traits;
+    traits.offersXbox = traits.offersDS4 = traits.offersDualSense = traits.offersSwitchPro =
+        traits.offersDualSenseEdge = true;
+    const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits, bundledDb());
+    for (const EmulatesLiteral& literal : emulatesLiterals()) {
+        std::string list;
+        for (const std::string& id : literal.usb) list += (list.empty() ? "\"" : ",\"") + id + "\"";
+        EXPECT(json.find("\"usb\":[" + list + "]") != std::string::npos);
+    }
+
+    TEST("a type whose twin family carries none of its ids has an empty list");
+    const ControllerDb withoutV2 =
+        emulatesDb({emulatesRecord("ds4-v1", "dualshock4", "054c:05c4")});
+    EXPECT(catalogEmulatedUsb("ds4", withoutV2) == std::vector<std::string>{"054c:05c4"});
+    EXPECT(catalogEmulatedUsb("dualsense", withoutV2).empty());
+
+    TEST("a record of another family carrying a type's id does not put it in the list");
+    const ControllerDb wrongFamily = emulatesDb({emulatesRecord("hid-pad", "hid", "054c:0ce6")});
+    EXPECT(catalogEmulatedUsb("dualsense", wrongFamily).empty());
+
+    TEST("a record of the twin family never widens a list past the type's own ids");
+    const ControllerDb wider = emulatesDb({emulatesRecord("ds5", "dualsense", "054c:0ce6"),
+                                           emulatesRecord("clone", "dualsense", "1234:0ce6")});
+    EXPECT(catalogEmulatedUsb("dualsense", wider) == std::vector<std::string>{"054c:0ce6"});
+    EXPECT(catalogEmulatedUsb("dualsenseedge", wider).empty());
+
+    TEST("an unknown slug has no list");
+    EXPECT(catalogEmulatedUsb("gamecube", bundledDb()).empty());
 }
 
 static void test_emulatesOnlyOnOfferedTypes() {
@@ -466,7 +552,7 @@ static void test_emulatesOnlyOnOfferedTypes() {
     traits.offersDS4 = true;
     traits.ds4TouchpadSupported = true;
     const std::string enJson = readFileAll(langPath("en"));
-    const std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits);
+    const std::string json = buildCatalogJson("en", enJson, enJson, "1.6.0", traits, bundledDb());
     EXPECT(json.find("\"emulates\":{\"sdlType\":\"ps4\",\"usb\":[\"054c:05c4\",\"054c:09cc\"]}") !=
            std::string::npos);
     EXPECT(json.find("\"sdlType\":\"xbox360\"") == std::string::npos);
@@ -508,7 +594,7 @@ static void test_catalogJson_goldenShape_uinput() {
         R"({"id":3,"slug":"switchpro","name":"catalog.type.switchpro.name","shortName":"catalog.type.switchpro.shortName","description":"catalog.type.switchpro.description","image":{"href":"/api/catalog/images/switchpro","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":false},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":false},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":true,"buttons":["misc1"]}},"emulates":{"sdlType":"switchpro","usb":["057e:2009"]}},)"
         R"({"id":4,"slug":"dualsenseedge","name":"catalog.type.dualsenseedge.name","shortName":"catalog.type.dualsenseedge.shortName","description":"catalog.type.dualsenseedge.description","image":{"href":"/api/catalog/images/dualsenseedge","etag":"\"1.6.0\""},"features":{"rumble":{"supported":true},"analogTriggers":{"supported":true},"motion":{"supported":true},"lightbar":{"supported":false},"touchpad":{"supported":true,"modes":["ds4"]},"triggerEffects":{"supported":false},"playerLeds":{"supported":false},"mic":{"supported":false},"speaker":{"supported":false},"hapticAudio":{"supported":false},"extendedButtons":{"supported":true,"buttons":["rightPaddle1","leftPaddle1","rightPaddle2","leftPaddle2"]}},"emulates":{"sdlType":"ps5","usb":["054c:0df2"]}}],)"
         R"("hostFeatures":{"mouseControl":{"supported":true,"modes":["off","ds4","mouse"]},"keyboardControl":{"supported":false},"rumble":{"supported":true}}})";
-    const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
+    const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits, bundledDb());
     EXPECT_EQ(json, golden);
 }
 
@@ -520,7 +606,7 @@ static void test_extendedButtons_listsTheSlugsATypeRenders() {
     traits.offersSwitchPro = true;
     traits.switchProExtButtons = EXT_BUTTON_MISC1 | EXT_BUTTON_RIGHT_PADDLE1;
     Json catalog;
-    EXPECT(jsonParse(buildCatalogJson("en", "", "", "1.6.0", traits), catalog));
+    EXPECT(jsonParse(buildCatalogJson("en", "", "", "1.6.0", traits, bundledDb()), catalog));
     const Json& types = catalog["controllerTypes"];
     EXPECT_EQ(types.size(), size_t{2});
     if (types.size() == 2) {
@@ -540,7 +626,7 @@ static void test_dualSenseEdgeIsNeverTheDefault() {
     traits.offersSwitchPro = true;
     traits.offersDualSenseEdge = true;
     std::vector<long> ids;
-    const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits);
+    const std::string json = buildCatalogJson("en", "", "", "1.6.0", traits, bundledDb());
     EXPECT_EQ(controllerTypeElems(json, ids).size(), size_t{5});
     if (!ids.empty()) EXPECT_EQ(ids.back(), static_cast<long>(CONTROLLER_TYPE_DUALSENSE_EDGE));
 }
@@ -565,12 +651,12 @@ static void test_catalogVersion_present() {
     full.offersDS4 = true;
     full.offersDualSense = true;
     full.offersSwitchPro = true;
-    EXPECT(buildCatalogJson("en", enJson, enJson, "1.6.0", full).find("\"catalogVersion\":2") !=
-           std::string::npos);
+    EXPECT(buildCatalogJson("en", enJson, enJson, "1.6.0", full, bundledDb())
+               .find("\"catalogVersion\":2") != std::string::npos);
     // Present even when the backend offers nothing: it versions the schema, not the offering.
     CatalogBackendTraits inert;
-    EXPECT(buildCatalogJson("en", enJson, enJson, "1.6.0", inert).find("\"catalogVersion\":2") !=
-           std::string::npos);
+    EXPECT(buildCatalogJson("en", enJson, enJson, "1.6.0", inert, bundledDb())
+               .find("\"catalogVersion\":2") != std::string::npos);
 }
 
 // CI completeness gate: every controller-TYPE string present in all supported
@@ -605,7 +691,7 @@ static void test_localizedCatalogsRenderLocalizedNames() {
     CatalogBackendTraits traits;
     for (const auto& locale : catalogLocales()) {
         const std::string langJson = readFileAll(langPath(locale));
-        std::string json = buildCatalogJson(locale, langJson, enJson, "1.6.0", traits);
+        std::string json = buildCatalogJson(locale, langJson, enJson, "1.6.0", traits, bundledDb());
         EXPECT(json.find("\"locale\":\"" + locale + "\"") != std::string::npos);
         // The missing-string marker is the raw key; it must never surface.
         EXPECT(json.find("catalog.type.xbox360.name\"") == std::string::npos ||
@@ -619,6 +705,7 @@ int main() {
     test_resolveLocale_qValueOrdering();
     test_resolveLocale_fallbackEn();
     test_catalogETag_shape();
+    test_emulatesUsb_fromRecords();
     test_catalogJson_structure();
     test_catalogJson_inertBackend();
     test_hostBlock_liveBackend();

@@ -31,3 +31,7 @@ class WindowsUpdaterAdapter : public IUpdaterPort {
     std::string owner_;
     std::string repo_;
 };
+
+// The controller database's GET (adapters/controller_db_adapter.h), over the
+// same WinHTTP the updater uses.
+DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& ifNoneMatch);

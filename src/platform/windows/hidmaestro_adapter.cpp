@@ -175,7 +175,16 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
 bool HidMaestroAdapter::provisionSlot(uint32_t serial, GamepadIdentity identity, bool wantAudio,
                                       hm::ProvisionResult& r) {
     if (provisioner_.provision(serial, identity, wantAudio, r)) return true;
-    return wantAudio && provisioner_.provision(serial, identity, false, r);
+    if (!wantAudio) return false;
+    const bool plain = provisioner_.provision(serial, identity, false, r);
+    if (plain) {
+        log_.logMsg(LogLevel::WARN, "hidmaestro",
+                    serialLabel(serial) +
+                        " fell back to the input-only persona: the composite with controller "
+                        "audio could not be created, so this pad has no microphone, speaker "
+                        "or haptics");
+    }
+    return plain;
 }
 
 // Caller holds busMtx_. The helper's handles and views become the slot's; the

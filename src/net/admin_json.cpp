@@ -2,6 +2,8 @@
 #include "admin_json.h"
 
 #include "app/app_state.h"
+#include "core/descriptor_json.h"
+#include "core/diagnostics_bundle.h"
 #include "core/json.h"
 #include "core/log_ring.h"
 #include "core/session_service.h"
@@ -74,6 +76,9 @@ JsonOut controllerSnapshotObj(const SessionService::ConnectionSnapshot::CtrlInfo
     } else {
         o["lightbar"] = nullptr;
     }
+    // What the client claimed: the Test button offers these lanes.
+    o["caps"] = satellite::capsJsonObj(ctrl.caps);
+    o["lastGameOutput"] = satellite::gameOutputJson(ctrl.lastGameOutput, ctrl.lastGameOutputAtMs);
     return o;
 }
 

@@ -12,6 +12,7 @@
 #include "pairing_service.h"
 #include "session_crypto.h"
 #include "core/catalog.h"
+#include "core/controller_db.h"
 #include "core/descriptor_json.h"
 #include "core/hex.h"
 #include "core/json.h"
@@ -506,7 +507,9 @@ static void capabilitiesRoute(const Request&, Response& res) {
 static void catalogRoute(const Request& req, Response& res) {
     const std::string locale =
         satellite::resolveCatalogLocale(req.get_header_value("Accept-Language"));
-    const std::string etag = satellite::catalogETag(SATELLITE_VERSION, locale);
+    const auto controllers = activeControllerDb();
+    const std::string etag =
+        satellite::catalogETag(SATELLITE_VERSION, locale, controllers->db.dbVersion);
     res.set_header("ETag", etag);
     res.set_header("Vary", "Accept-Language");
     if (req.get_header_value("If-None-Match") == etag) {
@@ -516,7 +519,36 @@ static void catalogRoute(const Request& req, Response& res) {
     const std::string langJson = readFile(g_webDir + "/lang/" + locale + ".json");
     const std::string enJson = (locale == "en") ? langJson : readFile(g_webDir + "/lang/en.json");
     replyJson(res, satellite::buildCatalogJson(locale, langJson, enJson, SATELLITE_VERSION,
-                                               catalogBackendTraits()));
+                                               catalogBackendTraits(), controllers->db));
+}
+
+// The active controller database, byte for byte, for a client whose network
+// cannot reach dish.tinkernorth.com. Unauthenticated like the catalog.
+static void replyMirrorFile(const Request& req, Response& res, const std::string& path) {
+    const auto snap = activeControllerDb();
+    satellite::MirrorFile file;
+    if (!satellite::controllerDbMirrorFile(*snap, path, file)) {
+        replyError(res, 404, "not in the active controller database");
+        return;
+    }
+    res.set_header("ETag", file.etag);
+    if (satellite::ifNoneMatchHits(req.get_header_value("If-None-Match"), file.etag)) {
+        res.status = 304;
+        return;
+    }
+    res.set_content(*file.bytes, JSON_MIME);
+}
+
+static void mirrorManifestRoute(const Request& req, Response& res) {
+    replyMirrorFile(req, res, satellite::CONTROLLER_DB_MANIFEST);
+}
+
+static void mirrorRecordsRoute(const Request& req, Response& res) {
+    replyMirrorFile(req, res, satellite::CONTROLLER_DB_RECORDS);
+}
+
+static void mirrorStringsRoute(const Request& req, Response& res) {
+    replyMirrorFile(req, res, "strings/" + req.matches[1].str() + ".json");
 }
 
 static void catalogImageRoute(const Request& req, Response& res) {
@@ -570,4 +602,7 @@ void registerClientRoutes(httplib::Server& server, SessionService& svc) {
     server.Get("/api/server/capabilities", capabilitiesRoute);
     server.Get("/api/catalog", catalogRoute);
     server.Get(R"(/api/catalog/images/([\w-]+))", catalogImageRoute);
+    server.Get("/api/controllers/v1/manifest.json", mirrorManifestRoute);
+    server.Get("/api/controllers/v1/controllers.json", mirrorRecordsRoute);
+    server.Get(R"(/api/controllers/v1/strings/([A-Za-z-]+)\.json)", mirrorStringsRoute);
 }

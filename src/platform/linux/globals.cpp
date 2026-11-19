@@ -16,6 +16,7 @@ httplib::Server g_httpServer;
 httplib::Server* g_clientServer = nullptr;
 std::string g_webDir;
 UpdateService* g_updateService = nullptr;
+satellite::ControllerDbService* g_controllerDbService = nullptr;
 
 std::atomic<uint64_t> g_decryptFail{0};
 std::atomic<uint64_t> g_replayDrop{0};

@@ -4,6 +4,7 @@
 // concrete adapters implement them, injected via constructor.
 #pragma once
 
+#include "controller_db.h"
 #include "types.h"
 #include "update_types.h"
 
@@ -309,4 +310,38 @@ class IUpdaterPort {
     // Stable install-lineage id: "windows", "macos", "linux-appimage",
     // "linux-deb" (manual apt), or "linux-portable" (manual upgrade).
     virtual std::string platformId() const = 0;
+};
+
+// One GET's outcome as the controller database check reads it.
+enum class DbFetch : uint8_t { Ok, NotModified, Failed };
+
+struct DbFetchResponse {
+    DbFetch outcome = DbFetch::Failed;
+    std::string body;
+    std::string etag;
+};
+
+// Controller database IO: the fetch, the digest, the bundled copy and the
+// cache. ControllerDbService runs every call on its own worker thread.
+class IControllerDbPort {
+  public:
+    virtual ~IControllerDbPort() = default;
+
+    // GET `url`, sending If-None-Match when `ifNoneMatch` is not empty. The
+    // request carries no query, no identifier and the platform's default user
+    // agent; anything but a 200 or a 304 is Failed.
+    virtual DbFetchResponse fetch(const std::string& url, const std::string& ifNoneMatch) = 0;
+
+    virtual std::string sha256Hex(const std::string& bytes) = 0;
+
+    virtual bool readBundled(satellite::ControllerDbFiles& out) = 0;
+    virtual bool readCache(satellite::ControllerDbFiles& out) = 0;
+
+    // Each file written beside its name and renamed over it, the manifest
+    // last: a reader checks every file against the manifest, so a set torn
+    // between two versions fails that check and is never loaded.
+    virtual bool writeCache(const satellite::ControllerDbFiles& files) = 0;
+
+    // Unix seconds.
+    virtual int64_t nowEpoch() = 0;
 };

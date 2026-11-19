@@ -111,16 +111,18 @@ struct HttpTimeouts {
 };
 
 // Opens `url` as a GET, up to but not including the send. GitHub's per-UA
-// rate-limit bucket keys off the user agent.
+// rate-limit bucket keys off the user agent; the controller database's GET
+// sends none (`updaterAgent` false), the contract's "nothing identifying".
 bool openGetRequest(const std::wstring& url, const HttpTimeouts& timeouts, GetRequest& out,
-                    std::string& err) {
+                    std::string& err, bool updaterAgent = true) {
     ParsedUrl u;
     if (!parseUrl(url, u)) {
         err = "Invalid URL";
         return false;
     }
     const std::wstring ua = L"Satellite/" + toWide(SATELLITE_VERSION_STRING) + L" (+updater)";
-    out.session = WinHttpHandle(WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    const wchar_t* agent = updaterAgent ? ua.c_str() : nullptr;
+    out.session = WinHttpHandle(WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
     if (!out.session) {
         err = "WinHttpOpen failed";
@@ -200,6 +202,57 @@ bool httpGetToString(const std::wstring& url, std::string& out, std::string& err
     if (!sendAndCheck(get.req, headers, err)) return false;
     return readBodyToString(get.req, out, err);
 }
+
+DWORD responseStatus(HINTERNET req) {
+    DWORD status = 0;
+    DWORD statusSize = sizeof(status);
+    if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
+                             WINHTTP_NO_HEADER_INDEX)) {
+        return 0;
+    }
+    return status;
+}
+
+std::string responseETag(HINTERNET req) {
+    wchar_t buf[256] = {};
+    DWORD size = sizeof(buf);
+    if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_ETAG, WINHTTP_HEADER_NAME_BY_INDEX, buf, &size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+        return "";
+    }
+    return fromWide(std::wstring(buf, size / sizeof(wchar_t)));
+}
+
+} // namespace
+
+DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& ifNoneMatch) {
+    DbFetchResponse r;
+    GetRequest get;
+    std::string err;
+    const HttpTimeouts timeouts{15000, 15000, 15000, 30000};
+    if (!openGetRequest(toWide(url), timeouts, get, err, /*updaterAgent=*/false)) return r;
+    const std::wstring headers =
+        ifNoneMatch.empty() ? std::wstring() : L"If-None-Match: " + toWide(ifNoneMatch) + L"\r\n";
+    const wchar_t* hdr = headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str();
+    const DWORD hdrLen = static_cast<DWORD>(headers.size());
+    if (!WinHttpSendRequest(get.req, hdr, hdrLen, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) return r;
+    if (!WinHttpReceiveResponse(get.req, nullptr)) return r;
+    const DWORD status = responseStatus(get.req);
+    if (status == 304) {
+        r.outcome = DbFetch::NotModified;
+        return r;
+    }
+    if (status != 200 || !readBodyToString(get.req, r.body, err)) {
+        r.body.clear();
+        return r;
+    }
+    r.etag = responseETag(get.req);
+    r.outcome = DbFetch::Ok;
+    return r;
+}
+
+namespace {
 
 bool httpGetToFile(const std::wstring& url, const std::wstring& dstPath,
                    const std::function<void(uint64_t, uint64_t)>& onProgress,

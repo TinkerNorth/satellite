@@ -6,10 +6,12 @@
 #pragma once
 
 #include "core/catalog.h"
+#include "core/controller_db.h"
 #include "core/gamepad_backend.h"
 #include "core/json.h"
 #include "httplib.h"
 
+#include <memory>
 #include <string>
 
 // The one content type every API route answers with.
@@ -47,3 +49,6 @@ satellite::CatalogBackendTraits catalogBackendTraits();
 // what-exists layer is /api/catalog). Served by both the admin and the
 // client API servers.
 std::string buildCapabilitiesJson();
+
+// The active controller database, or an empty one before main.cpp loads it.
+std::shared_ptr<const satellite::ControllerDbSnapshot> activeControllerDb();

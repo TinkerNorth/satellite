@@ -8,6 +8,7 @@
 // returning the applied state. UDP never mutates topology (docs/contract.md).
 #pragma once
 
+#include "feedback_test.h"
 #include "hot_table.h"
 #include "mic_worker.h"
 #include "pointer_worker.h"
@@ -185,6 +186,14 @@ class SessionService {
     // CAP_MIC: a mute lamp with no microphone behind it has nothing to report.
     void handleMicLedFromBackend(uint32_t serial, uint8_t state);
 
+    // The dashboard's Test button: each requested lane the controller's
+    // descriptor claimed goes out once as its existing message; the rest are
+    // skipped. Admin scope. False when the connection or an active controller
+    // at ctrlIdx is not there. Leaves the game's cached feedback state alone.
+    bool testController(const std::string& connectionId, uint8_t ctrlIdx,
+                        const std::vector<satellite::FeedbackLane>& lanes,
+                        satellite::FeedbackTestPlan& outPlan);
+
     // Look up a connection's key + last counter; false if token not found.
     // outSeenCounter, when given, reports whether any counter has been accepted
     // yet: until then lastCounter carries no replay information.
@@ -260,6 +269,10 @@ class SessionService {
             uint8_t lightbarB;
             MotionReport motion;
             TouchpadReport touchpad;
+            // The CAP_* word the client's descriptor claimed.
+            uint16_t caps;
+            GameOutputKind lastGameOutput;
+            int64_t lastGameOutputAtMs;
         };
         std::vector<CtrlInfo> controllers;
     };
@@ -514,6 +527,9 @@ class SessionService {
     // be reached. Never the mic lamp, rumble or audio (see the definition).
     void resendFeedbackStateLocked(const Connection& conn);
     void resendControllerFeedbackStateLocked(const Connection& conn, const Controller& ctrl);
+    void noteGameOutputLocked(Controller& ctrl, GameOutputKind kind);
+    void sendTestLaneLocked(const Connection& conn, const Controller& ctrl,
+                            satellite::FeedbackLane lane);
     Connection* findByDeviceId(const std::string& deviceId);
     Connection* findByConnectionId(const std::string& connectionId);
     const Connection* findByConnectionId(const std::string& connectionId) const;

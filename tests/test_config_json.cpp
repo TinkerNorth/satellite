@@ -204,6 +204,29 @@ static void test_legacy_pair_port_key_ignored() {
 // explicit false has to survive a save/load round-trip. Getting the absent case
 // wrong either turns audio off for everyone on upgrade or turns it on for a
 // user who switched it off.
+// Absent in every config written before the controller database existed,
+// which must read as on (the contract's default), while an explicit opt-out
+// survives a save and a load.
+static void test_controller_db_updates_default_and_persistence() {
+    TEST("controllerDbUpdates: absent reads as on");
+    Config absent;
+    absent.controllerDbUpdates = false;
+    satellite::parseConfigInto("{}", absent);
+    EXPECT(!absent.controllerDbUpdates);
+    Config fresh;
+    satellite::parseConfigInto(R"({"udpPort":9876})", fresh);
+    EXPECT(fresh.controllerDbUpdates);
+
+    TEST("controllerDbUpdates: an explicit false survives a round-trip");
+    Config off;
+    off.controllerDbUpdates = false;
+    Config out;
+    satellite::parseConfigInto(satellite::serializeConfig(off), out);
+    EXPECT(!out.controllerDbUpdates);
+    EXPECT(satellite::serializeConfig(off).find("\"controllerDbUpdates\": false") !=
+           std::string::npos);
+}
+
 static void test_install_defaults_apply_once_per_stamp() {
     TEST("applyInstallDefaults: no stamp means no change");
     Config cfg;
@@ -387,6 +410,7 @@ int main() {
     test_install_defaults_apply_once_per_stamp();
     test_controller_audio_split_directions();
     test_last_check_epoch_64bit();
+    test_controller_db_updates_default_and_persistence();
 
     std::cout << "config_json: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;

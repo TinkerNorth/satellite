@@ -11,6 +11,8 @@
 // driven with httplib::Client. SessionService runs against bare port stubs.
 // Hermeticity: HOME and XDG_CONFIG_HOME point into a per-run tmpdir (config
 // writes + autostart artifacts live there); g_webDir points at a tmp web root.
+#include "../src/adapters/controller_db_adapter.h"
+#include "../src/core/controller_db_service.h"
 #include "../src/core/json.h"
 #include "../src/core/log_writer.h"
 #include "../src/core/session_service.h"
@@ -93,16 +95,21 @@ struct StubClient : IClientPort {
     void removeClientAddr(uint32_t) override {}
     void sendHeartbeatAck(const SessionEndpoint&, bool, uint8_t, uint16_t, uint16_t) override {}
     void sendSessionClose(const Connection&, uint8_t) override { closeNotifies++; }
-    void sendRumble(const Connection&, uint8_t, const RumbleReport&) override {}
-    void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {}
+    void sendRumble(const Connection&, uint8_t, const RumbleReport&) override { rumbles++; }
+    void sendLightbar(const Connection&, uint8_t, uint8_t, uint8_t, uint8_t) override {
+        lightbars++;
+    }
     void sendTriggerEffects(const Connection&, uint8_t, const TriggerEffectsReport&) override {}
     void sendPlayerLeds(const Connection&, uint8_t, uint8_t) override {}
     void sendSpeakerAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
                           size_t) override {}
     void sendHapticAudio(const SessionEndpoint&, uint8_t, uint16_t, const uint8_t*,
                          size_t) override {}
-    void sendMicLed(const Connection&, uint8_t, uint8_t) override {}
+    void sendMicLed(const Connection&, uint8_t, uint8_t) override { micLeds++; }
     int closeNotifies = 0;
+    std::atomic<int> rumbles{0};
+    std::atomic<int> lightbars{0};
+    std::atomic<int> micLeds{0};
 };
 
 struct StubLog : ILogPort {
@@ -947,6 +954,106 @@ int main() {
                 EXPECT(res3->body.find("marker-after-seq") != std::string::npos);
             }
         }
+    }
+
+    // ---- controller database, Test button, diagnostics ---------------------------
+    {
+        TEST("GET /api/controller-db/status: 503 before the database is loaded");
+        auto res = cli.Get("/api/controller-db/status");
+        EXPECT(res && res->status == 503);
+    }
+    {
+        ControllerDbAdapter dbAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path, nullptr,
+                                      atomicWriteFile);
+        satellite::ControllerDbService controllerDb(dbAdapter, log, *g_configStore);
+        EXPECT(controllerDb.load());
+        g_controllerDbService = &controllerDb;
+
+        TEST("GET /api/controller-db/status: the bundled copy, never checked");
+        auto res = cli.Get("/api/controller-db/status");
+        EXPECT(res && res->status == 200);
+        if (res) {
+            const Json j = parseJson(res->body);
+            EXPECT_EQ(jsonInt(j, "bundledVersion"), 1L);
+            EXPECT_EQ(jsonInt(j, "activeVersion"), 1L);
+            EXPECT_EQ(jsonStr(j, "source"), std::string("bundled"));
+            EXPECT(j.contains("lastCheckAt") && j["lastCheckAt"].is_null());
+            EXPECT(jsonBool(j, "enabled"));
+        }
+
+        TEST("POST /api/controller-db/check: answers with the status at once");
+        auto check = cli.Post("/api/controller-db/check", "", "application/json");
+        EXPECT(check && check->status == 200);
+
+        const uint8_t key[CRYPTO_KEY_SIZE] = {7};
+        ControllerDescriptor pad;
+        pad.ctrlIdx = 0;
+        pad.type = CONTROLLER_TYPE_DUALSENSE;
+        pad.caps = CAP_RUMBLE | CAP_LIGHTBAR;
+        const auto session =
+            svc.upsertSession("dish-route-diag", "Route Pixel", "192.168.77.5", key, {pad}, false);
+        const std::string base = "/api/connections/" + session.connectionId + "/controllers/";
+
+        TEST("POST .../controllers/:idx/test: the claimed lanes are sent, the rest skipped");
+        auto test = cli.Post(base + "0/test", R"({"lanes":["rumble","lightbar","micLed"]})",
+                             "application/json");
+        EXPECT(test && test->status == 200);
+        if (test) {
+            const Json j = parseJson(test->body);
+            EXPECT_EQ(j["sent"].dump(), std::string(R"(["rumble","lightbar"])"));
+            EXPECT_EQ(j["skipped"].dump(), std::string(R"(["micLed"])"));
+        }
+        EXPECT_EQ(clientPort.rumbles.load(), 1);
+        EXPECT_EQ(clientPort.lightbars.load(), 1);
+        EXPECT_EQ(clientPort.micLeds.load(), 0);
+
+        TEST("POST .../test: an unknown lane is a 400, an empty slot or session a 404");
+        auto badLane = cli.Post(base + "0/test", R"({"lanes":["speaker"]})", "application/json");
+        EXPECT(badLane && badLane->status == 400);
+        auto noLanes = cli.Post(base + "0/test", "{}", "application/json");
+        EXPECT(noLanes && noLanes->status == 400);
+        auto emptySlot = cli.Post(base + "5/test", R"({"lanes":["rumble"]})", "application/json");
+        EXPECT(emptySlot && emptySlot->status == 404);
+        auto noSession = cli.Post("/api/connections/conn_nothere/controllers/0/test",
+                                  R"({"lanes":["rumble"]})", "application/json");
+        EXPECT(noSession && noSession->status == 404);
+
+        TEST("GET /api/connections: each controller carries its caps and lastGameOutput");
+        auto conns = cli.Get("/api/connections");
+        EXPECT(conns && conns->status == 200);
+        if (conns) {
+            const Json j = parseJson(conns->body);
+            const Json& c = j["connections"][0]["controllers"][0];
+            EXPECT(jsonBool(jsonObject(c, "caps"), "rumble"));
+            EXPECT(!jsonBool(jsonObject(c, "caps"), "mic"));
+            EXPECT(c.contains("lastGameOutput") && c["lastGameOutput"].is_null());
+        }
+
+        TEST("GET /api/diagnostics: the satellite bundle, with the client as Host 1");
+        logMsg(LogLevel::INFO, "client",
+               "Session from Route Pixel (dish-route-diag) at 192.168.77.5");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+        auto diag = cli.Get("/api/diagnostics");
+        EXPECT(diag && diag->status == 200);
+        if (diag) {
+            const Json j = parseJson(diag->body);
+            EXPECT_EQ(jsonInt(j, "bundle"), 1L);
+            EXPECT_EQ(jsonStr(jsonObject(j, "app"), "name"), std::string("satellite"));
+            EXPECT_EQ(jsonStr(j["hosts"][0], "alias"), std::string("Host 1"));
+            EXPECT_EQ(jsonStr(j["controllers"][0], "type"), std::string("dualsense"));
+            EXPECT(jsonBool(jsonObject(j["controllers"][0], "caps"), "lightbar"));
+            EXPECT(diag->body.find("Session from Host 1 (Host 1) at Host 1") != std::string::npos);
+            EXPECT_EQ(jsonInt(jsonObject(j, "controllerDb"), "bundledVersion"), 1L);
+            EXPECT(j.contains("debug") && j.contains("backends") && j.contains("log"));
+
+            TEST("GET /api/diagnostics: no client id, name or address anywhere in the file");
+            EXPECT(diag->body.find("dish-route-diag") == std::string::npos);
+            EXPECT(diag->body.find("Route Pixel") == std::string::npos);
+            EXPECT(diag->body.find("192.168.77.5") == std::string::npos);
+        }
+
+        svc.closeSessionById(session.connectionId, "", CLOSE_REASON_KICKED, false);
+        g_controllerDbService = nullptr;
     }
 
     // ---- SSE endpoint presence -----------------------------------------------------

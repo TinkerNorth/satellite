@@ -498,6 +498,8 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lastPlayerLedsValid = false;
     ctrl.micLedState = MIC_LED_STATE_OFF;
     ctrl.lastMicLedValid = false;
+    ctrl.lastGameOutput = GameOutputKind::None;
+    ctrl.lastGameOutputAtMs = 0;
     ctrl.plugGen = ++nextPlugGen_;
     if (ctrl.plugGen == 0) ctrl.plugGen = ++nextPlugGen_;
     ctrl.pointerStamp = takePointerStampLocked();
@@ -1082,6 +1084,7 @@ void SessionService::handleRumbleFromBackend(const uint32_t serial, const Rumble
     Connection* conn = nullptr;
     Controller* ctrl = nullptr;
     if (!findBySerialLocked(serial, conn, ctrl)) return;
+    noteGameOutputLocked(*ctrl, GameOutputKind::Rumble);
     ctrl->hidRumble.strongMagnitude = report.strongMagnitude;
     ctrl->hidRumble.weakMagnitude = report.weakMagnitude;
     forwardRumbleLocked(*conn, *ctrl, wireDurationMs, false);
@@ -1375,6 +1378,7 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
+    noteGameOutputLocked(*foundCtrl, GameOutputKind::Lightbar);
 
     // Coalesce unchanged colours (same shape as the rumble coalesce).
     if (foundCtrl->lastLightbarValid && foundCtrl->lightbarR == r && foundCtrl->lightbarG == g &&
@@ -1399,6 +1403,7 @@ void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
+    noteGameOutputLocked(*foundCtrl, GameOutputKind::TriggerEffects);
 
     if (foundCtrl->lastTriggerEffectsValid && foundCtrl->lastTriggerEffects == report) return;
     foundCtrl->lastTriggerEffects = report;
@@ -1415,6 +1420,7 @@ void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMas
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
+    noteGameOutputLocked(*foundCtrl, GameOutputKind::PlayerLeds);
 
     if (foundCtrl->lastPlayerLedsValid && foundCtrl->playerLeds == ledMask) return;
     foundCtrl->playerLeds = ledMask;
@@ -1436,6 +1442,7 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
+    noteGameOutputLocked(*foundCtrl, GameOutputKind::MicLed);
 
     if (foundCtrl->lastMicLedValid && foundCtrl->micLedState == state) return;
     foundCtrl->micLedState = state;
@@ -1939,6 +1946,9 @@ SessionService::snapshotController(const Connection& conn, const Controller& ctr
     info.lightbarR = ctrl.lightbarR;
     info.lightbarG = ctrl.lightbarG;
     info.lightbarB = ctrl.lightbarB;
+    info.caps = ctrl.caps;
+    info.lastGameOutput = ctrl.lastGameOutput;
+    info.lastGameOutputAtMs = ctrl.lastGameOutputAtMs;
     RxPadView rx;
     const bool known = ctrl.serialNo >= 1 &&
                        ctrl.serialNo <= static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS) &&
@@ -2195,4 +2205,61 @@ int SessionService::availableSlots() const {
         if (!serialInUse_[i] && !serialQuarantined_[i]) slots++;
     }
     return slots;
+}
+
+namespace {
+
+int64_t wallClockMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+} // namespace
+
+void SessionService::noteGameOutputLocked(Controller& ctrl, GameOutputKind kind) {
+    ctrl.lastGameOutput = kind;
+    ctrl.lastGameOutputAtMs = wallClockMs();
+}
+
+// Straight to the client port: the controller's caches keep what the game
+// last wrote, so a later game write is judged against the game's own state.
+void SessionService::sendTestLaneLocked(const Connection& conn, const Controller& ctrl,
+                                        satellite::FeedbackLane lane) {
+    using satellite::FeedbackLane;
+    switch (lane) {
+    case FeedbackLane::Rumble:
+        client_.sendRumble(conn, ctrl.index, satellite::testRumbleReport());
+        return;
+    case FeedbackLane::Lightbar:
+        client_.sendLightbar(conn, ctrl.index, satellite::TEST_LIGHTBAR_LEVEL,
+                             satellite::TEST_LIGHTBAR_LEVEL, satellite::TEST_LIGHTBAR_LEVEL);
+        return;
+    case FeedbackLane::PlayerLeds:
+        client_.sendPlayerLeds(conn, ctrl.index, satellite::TEST_PLAYER_LEDS_MASK);
+        return;
+    case FeedbackLane::TriggerEffects:
+        client_.sendTriggerEffects(conn, ctrl.index, satellite::testTriggerEffectsReport());
+        return;
+    case FeedbackLane::MicLed:
+        client_.sendMicLed(conn, ctrl.index, satellite::TEST_MIC_LED_STATE);
+        return;
+    }
+}
+
+bool SessionService::testController(const std::string& connectionId, uint8_t ctrlIdx,
+                                    const std::vector<satellite::FeedbackLane>& lanes,
+                                    satellite::FeedbackTestPlan& outPlan) {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    const Connection* conn = findByConnectionId(connectionId);
+    const bool inRange = ctrlIdx < MAX_CONTROLLERS_PER_CONN;
+    if (conn == nullptr || !inRange || !conn->controllers[ctrlIdx].active) return false;
+    const Controller& ctrl = conn->controllers[ctrlIdx];
+    outPlan = satellite::planFeedbackTest(ctrl.caps, lanes);
+    for (const satellite::FeedbackLane lane : outPlan.sent) sendTestLaneLocked(*conn, ctrl, lane);
+    log_.logMsg(LogLevel::INFO, "service",
+                "Test burst to controller #" + std::to_string(ctrlIdx) + " of " + conn->deviceName +
+                    ": " + std::to_string(outPlan.sent.size()) + " sent, " +
+                    std::to_string(outPlan.skipped.size()) + " skipped");
+    return true;
 }

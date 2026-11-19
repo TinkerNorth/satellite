@@ -1,6 +1,6 @@
 # Satellite: Privacy Policy
 
-**Effective date:** 2026-10-18.
+**Effective date:** 2026-11-19.
 **Canonical copy:** this file, at
 [`https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md`](https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md).
 The privacy index on [dish.tinkernorth.com](https://dish.tinkernorth.com/privacy/)
@@ -17,11 +17,15 @@ own policy; do not read one as describing another.
 ## 1. Short version
 
 - Satellite runs on your own PC and receives controller input from your own
-  Dish clients over your own network. TinkerNorth does not operate a server
-  for it, and it never contacts one during normal use.
-- **Two things can leave your PC**, and you can turn both off in Settings: an
-  update check against GitHub Releases (section 4) and, when Satellite
-  crashes, one crash report to Sentry (section 5).
+  Dish clients over your own network. The only TinkerNorth server it contacts
+  is the static site that publishes the controller database (section 5), and
+  only to ask whether a newer copy exists.
+- **Three things can leave your PC**, and you can turn each off in Settings:
+  an update check against GitHub Releases (section 4), a check for a newer
+  controller database at dish.tinkernorth.com (section 5) and, when Satellite
+  crashes, one crash report to Sentry (section 6).
+- **A diagnostics file** for support is something you save and email
+  yourself (section 7). Satellite never sends it.
 - Crash reports are on by default, the same opt-out switch every Dish client
   has. Turning it off stops the very next report. A report carries a stack
   trace and the Satellite and operating-system versions. It never carries
@@ -58,7 +62,7 @@ never reach Satellite's own handler; for those, Windows Error Reporting
 records an *Application Error* event in Event Viewer and writes its own
 minidump into the same `dumps\` folder, under the same cap of ten files.
 With crash reporting on, Windows hands such a crash to the Sentry SDK's
-handler instead (section 5) and writes no minidump of its own.
+handler instead (section 6) and writes no minidump of its own.
 Windows may also send Microsoft its own report of such a crash, exactly as it
 does for any other program on the PC; that is governed by the Windows
 diagnostics settings, not by Satellite's switch. With crash reporting on,
@@ -100,7 +104,41 @@ installer asks about the check on first install; a silent install can pass
 
 ---
 
-## 5. Crash reports (Sentry)
+## 5. Controller database updates
+
+Satellite ships a list of the controllers the Dish apps know (their USB and
+Bluetooth ids, which protocol each speaks, how well each is verified) and uses
+it to tell Dish apps which physical pads each virtual controller stands for.
+A newer copy of that list is published at `https://dish.tinkernorth.com/controllers/v1/`,
+a static site in an Amazon S3 bucket behind Amazon CloudFront, operated for
+TinkerNorth by Amazon Web Services.
+
+**What is fetched, and how often.** Ten seconds after Satellite starts, and
+then on the update check's schedule (Settings, Updates; once a day by
+default), Satellite asks for the list's manifest, a small file naming the
+published version. Only when it names a newer version does Satellite download
+the controller list and its strings in each language, check each file against
+the manifest's SHA-256, and keep them beside its configuration
+(`controllerdb-*.json`). The request carries no query, no identifier and no
+user-agent of Satellite's own; Satellite sends nothing about you, your PC or
+your controllers.
+
+**What the host sees.** Like any web server, CloudFront's access logs see your
+public IP address and the time of the request. TinkerNorth does not combine
+them with anything.
+
+**Your choice.** Settings, Updates, *Check for controller updates
+automatically*, on by default. Off means no request for the list leaves your
+PC, and *Check now* is off with it. Satellite keeps using the copy it has.
+
+**The mirror.** Satellite also serves the copy it uses to Dish apps on your
+own network at `/api/controllers/v1/` on its client port, so a Dish app on a
+network without internet access can read it. That traffic stays on your
+network.
+
+---
+
+## 6. Crash reports (Sentry)
 
 **What is sent, and when.** Settings, Diagnostics, has a *Share crash reports*
 switch, on by default; on Windows the installer asks about it on first install
@@ -155,12 +193,38 @@ builds to Sentry at release time. They describe the program, not you.
 
 ---
 
-## 6. Your choices
+## 7. Diagnostics by email
+
+The Debug page has *Save diagnostics*. When you press it, Satellite builds one
+file, `dish-diagnostics-satellite-<date>-<time>.json`, and your browser saves
+it. Beside the button, *Email support@tinkernorth.com* opens your own mail
+app with a subject and a short summary filled in. Nothing is sent unless you
+attach the file yourself and press Send.
+
+**What the file holds:** the Satellite version and build, the operating
+system and CPU architecture, the controller database's versions and last
+check, the virtual controllers (their type, the backend that runs them, which
+features the Dish app said its controller has, and the kind and time of the
+last output a game sent), the connected Dish apps as "Host 1", "Host 2" with
+their protocol version and link state, the counters the Debug page shows, the
+backends' status, your settings, and the last 500 log lines.
+
+**What it never holds:** pairing keys, pairing secrets or PINs, IP addresses
+(log lines have them masked), the network interface you chose, the names or
+ids of your Dish apps and devices (log lines have them replaced by "Host 1",
+"Host 2"), and nothing from the microphone or the speaker. Read the file
+before you send it; it is plain JSON.
+
+---
+
+## 8. Your choices
 
 - **Stop crash reports being sent.** Settings, Diagnostics, *Share crash
   reports*, off; or untick it on the Windows installer's Privacy page.
 - **Stop the update check.** Settings, Updates; or untick it on the Windows
   installer's Privacy page.
+- **Stop the controller database check.** Settings, Updates, *Check for
+  controller updates automatically*, off.
 - **Unpair a device.** Removing a Dish client from the paired list deletes
   its key from the configuration.
 - **Uninstall.** The Windows uninstaller removes the program files. The
@@ -175,7 +239,7 @@ builds to Sentry at release time. They describe the program, not you.
 
 ---
 
-## 7. Children's privacy
+## 9. Children's privacy
 
 Satellite is suitable for general audiences. It collects nothing from anyone,
 of any age, beyond the crash report described above, so there is no
@@ -184,15 +248,17 @@ have not anticipated, contact `privacy@tinkernorth.com`.
 
 ---
 
-## 8. International transfers
+## 10. International transfers
 
 Crash reports, when enabled, are stored by Sentry in the United States
-(section 5). The update check goes to GitHub, also in the United States.
-Nothing else leaves your machine to us.
+(section 6). The update check goes to GitHub, also in the United States. The
+controller database check goes to dish.tinkernorth.com, served by Amazon
+CloudFront from the edge location nearest you, from a bucket in the United
+States. Nothing else leaves your machine to us.
 
 ---
 
-## 9. Changes to this policy
+## 11. Changes to this policy
 
 We will update the *Effective date* at the top whenever this policy changes.
 Material changes, such as any new analytics backend, will be made here before
@@ -202,7 +268,7 @@ of this file.
 
 ---
 
-## 10. Contact
+## 12. Contact
 
 - Privacy questions: `privacy@tinkernorth.com`
 - Security disclosures: see [`SECURITY.md`](SECURITY.md)

@@ -905,6 +905,31 @@ struct ControllerApplyResult {
     std::string backendId;
 };
 
+// The kinds of output report a game writes that the backend hands to
+// SessionService, as the dashboard's "Last from game" names them.
+enum class GameOutputKind : uint8_t { None, Rumble, Lightbar, TriggerEffects, PlayerLeds, MicLed };
+
+struct GameOutputName {
+    GameOutputKind kind;
+    const char* name;
+};
+
+inline constexpr GameOutputName GAME_OUTPUT_NAMES[] = {
+    {GameOutputKind::None, ""},
+    {GameOutputKind::Rumble, "rumble"},
+    {GameOutputKind::Lightbar, "lightbar"},
+    {GameOutputKind::TriggerEffects, "triggerEffects"},
+    {GameOutputKind::PlayerLeds, "playerLeds"},
+    {GameOutputKind::MicLed, "micLed"},
+};
+
+inline const char* gameOutputName(GameOutputKind kind) {
+    for (const GameOutputName& n : GAME_OUTPUT_NAMES) {
+        if (n.kind == kind) return n.name;
+    }
+    return "";
+}
+
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // backend serial (1..16), 0 = not plugged
@@ -957,6 +982,10 @@ struct Controller {
     // Mic-mute LED last forwarded; same coalesce shape again.
     uint8_t micLedState = MIC_LED_STATE_OFF;
     bool lastMicLedValid = false;
+    // The last output report the game wrote, coalesced or not, and when
+    // (Unix milliseconds).
+    GameOutputKind lastGameOutput = GameOutputKind::None;
+    int64_t lastGameOutputAtMs = 0;
 };
 
 struct HotSlot;
@@ -1041,6 +1070,9 @@ struct Config {
     bool autoInstall = false;
     int updateCheckIntervalHours = UPDATE_DEFAULT_CHECK_INTERVAL_HOURS;
     int64_t lastCheckEpoch = 0;
+    // Fetch newer controller database copies from dish.tinkernorth.com, on the
+    // update check's cadence. Off means no request leaves the host.
+    bool controllerDbUpdates = true;
     std::string lastSeenVersion;
     std::string skipVersion;
     std::string networkInterface;

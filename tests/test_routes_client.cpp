@@ -12,6 +12,8 @@
 // bare port stubs, so no virtual-gamepad backend is needed. Hermeticity: HOME
 // and XDG_CONFIG_HOME are redirected into a per-run tmpdir, so saveConfig()
 // inside the pairing routes never touches the real user profile.
+#include "../src/adapters/controller_db_adapter.h"
+#include "../src/core/controller_db_service.h"
 #include "../src/core/json.h"
 #include "../src/core/session_service.h"
 #include "../src/net/pairing_service.h"
@@ -25,6 +27,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <string>
 #include <system_error>
@@ -879,6 +883,65 @@ int main() {
         TEST("recovers once running again");
         auto ok = cli.Put("/api/connections", auth, R"({"protocolVersion":2})", "application/json");
         EXPECT(ok && ok->status == 200);
+    }
+
+    // ---- controller database mirror and the catalog it feeds --------------------
+    {
+        ControllerDbAdapter dbAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path, nullptr,
+                                      atomicWriteFile);
+        satellite::ControllerDbService controllerDb(dbAdapter, log, *g_configStore);
+        EXPECT(controllerDb.load());
+        g_controllerDbService = &controllerDb;
+        const std::string shippedManifest = [] {
+            std::ifstream f(std::string(WEB_DIR) + "/controllers/v1/manifest.json",
+                            std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
+        }();
+
+        TEST("GET /api/controllers/v1/manifest.json: the active manifest, byte for byte, "
+             "with an ETag");
+        auto manifest = cli.Get("/api/controllers/v1/manifest.json");
+        EXPECT(manifest && manifest->status == 200);
+        std::string etag;
+        if (manifest) {
+            EXPECT(manifest->body == shippedManifest);
+            etag = manifest->get_header_value("ETag");
+            EXPECT(etag.size() == 66 && etag.front() == '"' && etag.back() == '"');
+        }
+
+        TEST("GET .../manifest.json with its ETag in If-None-Match: 304");
+        auto again =
+            cli.Get("/api/controllers/v1/manifest.json", httplib::Headers{{"If-None-Match", etag}});
+        EXPECT(again && again->status == 304);
+
+        TEST("GET .../controllers.json and .../strings/<locale>.json: served under the "
+             "manifest's digest");
+        auto records = cli.Get("/api/controllers/v1/controllers.json");
+        EXPECT(records && records->status == 200);
+        if (records) {
+            satellite::ControllerDbManifest m;
+            satellite::parseControllerDbManifest(shippedManifest, m);
+            EXPECT_EQ(records->get_header_value("ETag"),
+                      "\"" + m.files["controllers.json"].sha256 + "\"");
+            EXPECT_EQ(records->body.size(), m.files["controllers.json"].bytes);
+        }
+        auto de = cli.Get("/api/controllers/v1/strings/de.json");
+        EXPECT(de && de->status == 200);
+        auto ptBr = cli.Get("/api/controllers/v1/strings/pt-BR.json");
+        EXPECT(ptBr && ptBr->status == 200);
+
+        TEST("GET .../strings/<locale>.json for a locale the manifest does not list: 404");
+        auto ja = cli.Get("/api/controllers/v1/strings/ja.json");
+        EXPECT(ja && ja->status == 404);
+
+        TEST("GET /api/catalog: the ETag names the active dbVersion and emulates comes from it");
+        auto catalog = cli.Get("/api/catalog");
+        EXPECT(catalog && catalog->status == 200);
+        if (catalog) {
+            EXPECT(catalog->get_header_value("ETag").find("+db1\"") != std::string::npos);
+        }
+        g_controllerDbService = nullptr;
     }
 
     server.stop();

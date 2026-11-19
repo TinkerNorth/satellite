@@ -6,6 +6,8 @@
 // string-in/string-out so it unit tests without platform code.
 #pragma once
 
+#include "controller_db.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -99,18 +101,27 @@ std::string catalogString(const std::string& langJson, const std::string& enJson
                           const std::string& key);
 
 // The full /api/catalog response body. `langJson`/`enJson` are the raw contents
-// of the resolved locale's and English's web/lang files.
+// of the resolved locale's and English's web/lang files; `controllers` is the
+// active controller database, which the `emulates.usb` lists are read from.
 std::string buildCatalogJson(const std::string& locale, const std::string& langJson,
                              const std::string& enJson, const std::string& serverVersion,
-                             const CatalogBackendTraits& traits);
+                             const CatalogBackendTraits& traits, const ControllerDb& controllers);
+
+// A type's `emulates.usb`: of the ids the type stands for, in that order, the
+// ones a record of the type's physical twin family carries. Records can drop
+// an id from the list, never add one. Empty for an unknown slug.
+std::vector<std::string> catalogEmulatedUsb(const std::string& slug,
+                                            const ControllerDb& controllers);
 
 // The /api/server/capabilities `host` block, readable pre-pairing. `supported`
 // mirrors the catalog hostFeatures; `available` ANDs it with live backend
 // liveness so a feature can read present-but-currently-down.
 std::string buildHostBlockJson(const CatalogBackendTraits& traits, bool backendAvailable);
 
-// Catalog ETag: content varies only by server version and locale.
-std::string catalogETag(const std::string& serverVersion, const std::string& locale);
+// Catalog ETag: content varies by server version, locale and the active
+// controller database's dbVersion.
+std::string catalogETag(const std::string& serverVersion, const std::string& locale,
+                        long dbVersion);
 
 // Slugs of the types the catalog serves images for, in catalog-id order.
 const std::vector<std::string>& catalogImageSlugs();

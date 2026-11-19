@@ -630,13 +630,43 @@ to present it (static, localized) → **capabilities** = what is true right now
 response echoes the resolved `locale`. Locale set is kept in lockstep with dish-android
 (`en`, `es`, `fr`, `de`, `bs`, `pt-BR`) with a CI completeness gate.
 
-**Caching**: `ETag = "<serverVersion>+<locale>"`; `If-None-Match` → 304. Content changes
-only on server upgrade, so a client fetches once per satellite version per language.
+**Caching**: `ETag = "<serverVersion>+<locale>+db<dbVersion>"`; `If-None-Match` → 304.
+Content changes on a server upgrade and when a newer controller database becomes active (the
+`emulates.usb` lists are read from it), so a client fetches once per satellite version,
+database version and language.
+
+**`emulates.usb` comes from the controller database.** Each type's list is the ids the type
+stands for, in this order, that a record of the type's physical twin family carries in the
+active controller database (`xbox360` from family `xinput360`, `ds4` from `dualshock4`,
+`dualsense` and `dualsenseedge` from `dualsense`, `switchpro` from `switchProUsb`). A record
+can drop an id from a list, never add one: the lists above are the most a type ever claims,
+and `tests/test_catalog.cpp` holds the lists generated from the bundled database to them byte
+for byte.
 
 ### `GET /api/catalog/images/{slug}`: SVG, ETag'd
 
 Theme-neutral SVG served by the satellite itself (works fully offline). `ETag =
 "<serverVersion>"`, `If-None-Match` → 304. 404 for unknown slugs.
+
+### `GET /api/controllers/v1/<file>`: the controller database mirror, ETag'd
+
+Unauthenticated on 9443, like the catalog. Satellite serves the controller database it is
+using (the copy it ships, or a newer verified download from
+`https://dish.tinkernorth.com/controllers/v1/`), byte for byte, so a client on a network
+without internet access can take it from the host it is paired with. REST only: no UDP
+message changed.
+
+| Route | Body |
+|---|---|
+| `GET /api/controllers/v1/manifest.json` | the active copy's manifest |
+| `GET /api/controllers/v1/controllers.json` | its records |
+| `GET /api/controllers/v1/strings/<locale>.json` | its strings for `en`, `bs`, `de`, `es`, `fr`, `pt-BR` |
+
+`ETag` is the quoted SHA-256 of the body (the manifest's own digest for the manifest, the
+digest the manifest pins for every other file); `If-None-Match` with it, a list holding it, a
+weak copy of it or `*` → 304. A path the active manifest does not list → 404. The file shapes
+are the fleet's controller database contract (`dish-website`, `docs/controller-db.md`).
+Clients do not read the mirror in schema 1.
 
 ## Crypto
 
@@ -1057,6 +1087,56 @@ hostFeatures; the server drops streams for ungranted features.
 | `DELETE /api/connections/{connectionId}` | Kick (notify `kicked`); transient, client may reconnect |
 | `GET /api/backend/status` | Preferred backend plus the per-host `backends` array (identity, availability, driver/bundled version, lifecycle) |
 | `GET /api/debug` | Wire, audio and host telemetry for the diagnostics page |
+| `POST /api/connections/{connectionId}/controllers/{ctrlIdx}/test` | The Test button: one burst of existing feedback messages to that controller's client (see below) |
+| `GET /api/diagnostics` | The `dish-diagnostics.v1` file the Debug page saves (see below) |
+| `GET /api/controller-db/status` | Bundled and active controller database versions, source, the switch, and the last check's time and result |
+| `POST /api/controller-db/check` | "Check now": wakes the check (nothing is sent while `controllerDbUpdates` is off) and answers with the status at once |
+
+### `POST /api/connections/{connectionId}/controllers/{ctrlIdx}/test`
+
+Body `{ "lanes": [ ... ] }`, any subset of `rumble`, `lightbar`, `playerLeds`,
+`triggerEffects`, `micLed`. For each requested lane the controller's applied descriptor
+claimed, the server sends the existing message once, over the session's normal path:
+
+| Lane | Gate | Message |
+|---|---|---|
+| `rumble` | `rumble` | RUMBLE 0x0009, strong and weak 0x8000, `durationMs` 500 |
+| `lightbar` | `lightbar` | LIGHTBAR 0x000D, 255, 255, 255 |
+| `playerLeds` | `playerLeds` | PLAYER_LEDS 0x0011, mask 0x01 |
+| `triggerEffects` | `triggerEffects` | TRIGGER_EFFECTS 0x0010, both blocks mode 0x01 (continuous resistance), start 0x00, force 0x40, the rest 0 |
+| `micLed` | `mic` | MIC_LED 0x0014, state 2 (pulse) |
+
+Lanes the descriptor did not claim are skipped and never sent, the same gate the game's own
+writes pass. Answer: `{ "sent": [...], "skipped": [...] }`, both in the table's order. 400 when
+`lanes` is absent, not an array or names another lane; 404 when the session or an active
+controller at `ctrlIdx` is not there. The `tx` counters of `/api/debug` count the burst like
+any other send. The burst leaves the game's own feedback state alone: the light bar a game set
+is still the one the dashboard shows, and the next unchanged game write is still coalesced
+against it, so a client keeps the test's colour, LEDs or trigger effect until the game writes a
+different one. No wire change: every message is one a client already handles.
+
+### `GET /api/connections`: `caps` and `lastGameOutput`
+
+Each controller carries `caps` (the descriptor's caps object, as a client sends it) and
+`lastGameOutput`: `{ "kind": "rumble" | "lightbar" | "triggerEffects" | "playerLeds" |
+"micLed", "atMs": <Unix ms> }` for the last output report the game wrote to that virtual
+controller, recorded where the backend hands it to the service (before coalescing, with or
+without the cap), or `null` until the game writes one. A replug clears it.
+
+### `GET /api/diagnostics`
+
+The fleet's `dish-diagnostics.v1` file (`dish-website`, `docs/diagnostics-bundle.md`) with
+`app.name` `satellite`: `controllerDb` as `/api/controller-db/status` writes it,
+`controllers` (host alias, `ctrlIdx`, `type`, `backend`, `pluggedIn`, `caps`,
+`lastGameOutput`, `record` null), `hosts` (`alias` "Host 1", "Host 2" in connection order,
+`kind` `dish`, `protocol`, `link`), `debug` and `backends` as `/api/debug` and
+`/api/backend/status` write them, `config` the settings, and `log` the last 500 lines of the
+recent ring. Before anything is written every key named in
+`DIAGNOSTICS_FORBIDDEN_KEYS` (`core/diagnostics_bundle.h`: pairing keys, PINs, proofs,
+addresses, device ids and names, the network interface) is removed at any depth; the paired
+list becomes `pairedDeviceCount` and the interface `networkInterfaceChosen`; in log lines each
+client's id, name and address become its alias and every other dotted-quad IPv4 address
+becomes `x.x.x.x`.
 
 ### `GET /api/debug`
 

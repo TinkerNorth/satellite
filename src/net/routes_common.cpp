@@ -6,6 +6,7 @@
 #include "routes_common.h"
 
 #include "app/app_state.h"
+#include "core/controller_db_service.h"
 #include "core/types.h"
 
 #include <fstream>
@@ -59,8 +60,9 @@ static bool controllerAudioEnabled() { return g_configStore->current()->controll
 
 // The per-direction wire gates, for the capabilities block below. Separate from
 // the master switch on purpose: the client learns what will actually flow, and
-// the catalog stays static identity (its ETag is version+locale, so a runtime
-// setting must never reach it).
+// the catalog stays static identity (its ETag is version, locale and the
+// active controller database's dbVersion, so a runtime setting must never
+// reach it).
 static ControllerAudioPolicy controllerAudioPolicy() { return g_configStore->audioPolicy(); }
 
 std::string buildBackendStatusJson() {
@@ -126,4 +128,9 @@ std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
     return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+std::shared_ptr<const satellite::ControllerDbSnapshot> activeControllerDb() {
+    if (g_controllerDbService != nullptr) return g_controllerDbService->active();
+    return std::make_shared<const satellite::ControllerDbSnapshot>();
 }

@@ -289,6 +289,24 @@
       <p class="settings-save-status" id="settings-update-prefs-status" role="status"></p>
 
       <div id="settings-update-slot" class="settings-update-slot"></div>
+
+      <h3 class="section-subtitle" data-i18n="settings.controller-db.title">Controller database</h3>
+      <div class="stat">
+        <span class="label" data-i18n="settings.controller-db.version">Version</span>
+        <span class="value" id="settings-cdb-version">—</span>
+      </div>
+      <div class="stat">
+        <span class="label" data-i18n="settings.controller-db.last-check">Last check</span>
+        <span class="value" id="settings-cdb-last" data-i18n="settings.controller-db.never">never</span>
+      </div>
+      <div class="toggle-row">
+        <span data-i18n="settings.controller-db.auto">Check for controller updates automatically</span>
+        <label class="switch"><input type="checkbox" id="settings-controllerDbUpdates" onchange="controllerDbToggle()"><span class="slider"></span></label>
+      </div>
+      <p class="hint" data-i18n="settings.controller-db.hint">Satellite asks dish.tinkernorth.com for a newer list of controllers on the update check's schedule. The request carries nothing about you or this computer.</p>
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn btn-save" id="settings-btnCdbCheck" onclick="controllerDbCheck()" data-i18n="settings.controller-db.check">Check now</button>
+      </div>
     </div>
   </div>
 
@@ -332,6 +350,16 @@
     <div class="section">
       <h2 class="section-title" data-i18n="debug.section.backends">Backends</h2>
       <div id="debug-backends" class="debug-backends"></div>
+    </div>
+
+    <div class="section">
+      <h2 class="section-title" data-i18n="debug.diagnostics.title">Diagnostics file</h2>
+      <p class="hint" data-i18n="debug.diagnostics.hint">Saves one file for support. You attach it to the email yourself; nothing is sent until you press Send in your mail app.</p>
+      <div class="btn-row">
+        <button class="btn btn-save" id="debug-btnDiagnostics" onclick="diagnosticsSave()" data-i18n="debug.diagnostics.save">Save diagnostics</button>
+        <a class="btn-link" id="debug-diagnostics-mail" href="mailto:support@tinkernorth.com" data-i18n="debug.diagnostics.email">Email support@tinkernorth.com</a>
+      </div>
+      <p class="hint" id="debug-diagnostics-status" role="status"></p>
     </div>
 
     <div class="section">
@@ -513,6 +541,7 @@
   <script src="dashboard.js"></script>
   <script src="settings.js"></script>
   <script src="debug.js"></script>
+  <script src="diagnostics.js"></script>
   <script src="logs.js"></script>
   <script src="donate.js"></script>
 </body>

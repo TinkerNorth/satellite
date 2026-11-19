@@ -13,7 +13,11 @@
 #include "pairing_service.h"
 #include "adapters/crash_adapter.h"
 #include "core/config_effects.h"
+#include "core/config_json.h"
 #include "core/config_patch.h"
+#include "core/controller_db_service.h"
+#include "core/diagnostics_bundle.h"
+#include "core/feedback_test.h"
 #include "core/event_broadcaster.h"
 #include "core/json.h"
 #include "core/session_service.h"
@@ -28,7 +32,9 @@
 #include "origin_guard.h"
 #include "status_json.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <ctime>
 #include <memory>
 #include <string>
 
@@ -42,6 +48,7 @@ using satellite::ConfigEffectSinks;
 using satellite::configPatchLogLine;
 using satellite::ConfigPatchOutcome;
 using satellite::EventBroadcaster;
+using satellite::feedbackLaneName;
 using satellite::Json;
 using satellite::jsonBool;
 using satellite::jsonDump;
@@ -420,9 +427,9 @@ static void capabilitiesRoute(const Request&, Response& res) {
     replyJson(res, buildCapabilitiesJson());
 }
 
-static void debugRoute(SessionService& svc, const Request&, Response& res) {
-    // Read-and-reset: the figure is the worst loop since the last look.
-    const uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed);
+// The /api/debug fields. `maxUs` is the loop figure the caller read; the
+// route reads and resets it, the diagnostics file only reads it.
+static StatusFields readDebugFields(SessionService& svc, uint64_t maxUs) {
     StatusFields f;
     f.backend = backendJsonObj(probeBackend());
     f.backendAvailable = svc.isBackendAvailable();
@@ -439,7 +446,152 @@ static void debugRoute(SessionService& svc, const Request&, Response& res) {
     readWireStatus(f);
     f.audio = svc.audioCounts();
     f.pointer = svc.pointerCounts();
-    replyJson(res, buildDebugJson(f));
+    return f;
+}
+
+static void debugRoute(SessionService& svc, const Request&, Response& res) {
+    // Read-and-reset: the figure is the worst loop since the last look.
+    const uint64_t maxUs = g_maxLoopUs.exchange(0, std::memory_order_relaxed);
+    replyJson(res, buildDebugJson(readDebugFields(svc, maxUs)));
+}
+
+static JsonOut planLanesJson(const std::vector<satellite::FeedbackLane>& lanes) {
+    JsonOut out = JsonOut::array();
+    for (const satellite::FeedbackLane lane : lanes) out.push_back(feedbackLaneName(lane));
+    return out;
+}
+
+// POST /api/connections/:id/controllers/:idx/test: one burst of the existing
+// feedback messages, each lane only when the descriptor claimed it.
+static void testControllerRoute(SessionService& svc, const Request& req, Response& res) {
+    Json body;
+    std::vector<satellite::FeedbackLane> lanes;
+    std::string bad;
+    const bool parsed = satellite::jsonRequestBody(req.body, body) &&
+                        satellite::parseFeedbackLanes(body, lanes, bad);
+    if (!parsed) {
+        replyError(res, 400, "lanes must be an array of known lanes (" + bad + ")");
+        return;
+    }
+    const long idx = strtol(req.matches[2].str().c_str(), nullptr, 10);
+    satellite::FeedbackTestPlan plan;
+    const bool found =
+        idx >= 0 && idx < MAX_CONTROLLERS_PER_CONN &&
+        svc.testController(req.matches[1].str(), static_cast<uint8_t>(idx), lanes, plan);
+    if (!found) {
+        replyError(res, 404, "controller not found");
+        return;
+    }
+    JsonOut j;
+    j["sent"] = planLanesJson(plan.sent);
+    j["skipped"] = planLanesJson(plan.skipped);
+    replyJson(res, jsonDump(j));
+}
+
+static satellite::ControllerDbService* controllerDbOr503(Response& res) {
+    if (g_controllerDbService == nullptr) replyError(res, 503, "controller database not loaded");
+    return g_controllerDbService;
+}
+
+static void controllerDbStatusRoute(const Request&, Response& res) {
+    if (satellite::ControllerDbService* db = controllerDbOr503(res)) {
+        replyJson(res, jsonDump(satellite::controllerDbStatusJson(db->status())));
+    }
+}
+
+// Wakes the worker and answers at once; the dashboard reads the result from
+// the status route.
+static void controllerDbCheckRoute(const Request&, Response& res) {
+    if (satellite::ControllerDbService* db = controllerDbOr503(res)) {
+        db->requestCheck();
+        replyJson(res, jsonDump(satellite::controllerDbStatusJson(db->status())));
+    }
+}
+
+static const char* hostPlatformName() {
+#if defined(_WIN32)
+    return "Windows";
+#elif defined(__APPLE__)
+    return "macOS";
+#else
+    return "Linux";
+#endif
+}
+
+static const char* hostArch() {
+#if defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return "arm64";
+#else
+    return "unknown";
+#endif
+}
+
+// The connected clients as hosts and their pads, aliased in connection order;
+// the paired devices that are not connected follow, for the log's sake.
+static void readDiagnosticsSessions(SessionService& svc, const Config& cfg,
+                                    satellite::DiagnosticsInput& in) {
+    const auto snap = svc.getConnectionsSnapshot();
+    std::vector<satellite::HostIdentity> connected;
+    for (size_t i = 0; i < snap.connections.size(); i++) {
+        const auto& cs = snap.connections[i];
+        const std::string alias = satellite::hostAlias(i);
+        connected.push_back({cs.deviceId, cs.deviceName, cs.clientIP});
+        in.hosts.push_back({alias, cs.protocolVersion, deviceLinkStateName(cs.linkState)});
+        for (const auto& c : cs.controllers) {
+            satellite::DiagnosticsController d;
+            d.host = alias;
+            d.ctrlIdx = c.index;
+            d.type = controllerTypeName(c.controllerType);
+            d.backend = c.backendId;
+            d.pluggedIn = c.pluggedIn;
+            d.caps = c.caps;
+            d.lastGameOutput = c.lastGameOutput;
+            d.lastGameOutputAtMs = c.lastGameOutputAtMs;
+            in.controllers.push_back(d);
+        }
+    }
+    std::vector<satellite::HostIdentity> pairedOnly;
+    for (const auto& d : cfg.pairedDevices) {
+        const bool isConnected =
+            std::any_of(connected.begin(), connected.end(),
+                        [&d](const satellite::HostIdentity& h) { return h.deviceId == d.id; });
+        if (!isConnected) pairedOnly.push_back({d.id, d.name, d.lastIP});
+    }
+    in.aliases = satellite::aliasHosts(connected, pairedOnly);
+}
+
+static void readDiagnosticsLog(satellite::DiagnosticsInput& in) {
+    std::vector<satellite::LogRingEntry> entries;
+    logWriter().recent().copySince(0, entries);
+    for (const auto& e : entries) {
+        in.log.push_back({e.record.timestampNs / 1'000'000,
+                          satellite::logLevelLabel(e.record.level),
+                          std::string(e.record.sourceText()), std::string(e.record.messageText())});
+    }
+}
+
+// GET /api/diagnostics: the dish-diagnostics.v1 file, redacted in
+// core/diagnostics_bundle before it leaves.
+static void diagnosticsRoute(SessionService& svc, const Request&, Response& res) {
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    satellite::DiagnosticsInput in;
+    in.nowEpoch = static_cast<int64_t>(std::time(nullptr));
+    in.version = SATELLITE_VERSION;
+    in.build = SATELLITE_VERSION_DOTTED;
+    in.flavor = g_updateService ? g_updateService->snapshot().platformId : "unknown";
+    in.deviceModel = hostPlatformName();
+    in.os = hostPlatformName();
+    in.arch = hostArch();
+    if (g_controllerDbService != nullptr) in.controllerDb = g_controllerDbService->status();
+    readDiagnosticsSessions(svc, *cfg, in);
+    const uint64_t maxUs = g_maxLoopUs.load(std::memory_order_relaxed);
+    satellite::jsonParse(buildDebugJson(readDebugFields(svc, maxUs)), in.debug);
+    satellite::jsonParse(buildBackendStatusJson(), in.backends);
+    satellite::jsonParse(satellite::serializeConfig(*cfg), in.config);
+    readDiagnosticsLog(in);
+    replyJson(res, jsonDump(satellite::buildDiagnosticsBundle(in)));
 }
 
 static void connectionsRoute(SessionService& svc, const Request&, Response& res) {
@@ -545,6 +697,12 @@ void registerAdminRoutes(httplib::Server& server, SessionService& svc) {
     server.Delete(R"(/api/connections/(\w+))", [&svc](const Request& req, Response& res) {
         kickConnectionRoute(svc, req, res);
     });
+    server.Post(R"(/api/connections/(\w+)/controllers/(\d+)/test)",
+                [&svc](const Request& req, Response& res) { testControllerRoute(svc, req, res); });
+    server.Get("/api/diagnostics",
+               [&svc](const Request& req, Response& res) { diagnosticsRoute(svc, req, res); });
+    server.Get("/api/controller-db/status", controllerDbStatusRoute);
+    server.Post("/api/controller-db/check", controllerDbCheckRoute);
     server.Get("/api/logs", logsRoute);
     serveEventStreams(server, "/api/events", streams);
 }

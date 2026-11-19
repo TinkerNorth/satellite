@@ -3,7 +3,54 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
-## Unreleased
+## 2.3.0
+
+Satellite reads the Dish fleet's controller database. It ships a copy of
+dbVersion 1 (272 controllers, the data set every Dish app now carries) and,
+ten seconds after start and then on the update check's schedule, asks
+`https://dish.tinkernorth.com/controllers/v1/manifest.json` whether a newer
+copy exists. A newer one is downloaded, every file checked against the
+manifest's size and SHA-256, parsed, written beside Satellite's config and
+made active; a check that fails at any step keeps the copy in use. Settings,
+Updates gains *Check for controller updates automatically* (the new
+`controllerDbUpdates`, on by default; off sends nothing) with *Check now* and
+the last check's time and result. The request carries no query, no identifier
+and no user agent of Satellite's own; `PRIVACY.md` says what the host sees.
+
+The catalog's `emulates.usb` lists now come from the active database: each
+type lists the ids it stands for that a record of its physical twin family
+carries, so served data can drop an id but never add one, and a test holds
+the lists generated from the bundled copy to the ones the catalog always
+served. The catalog's ETag now carries the database version
+(`"<version>+<locale>+db<N>"`). Satellite mirrors the copy it uses at
+`GET /api/controllers/v1/manifest.json`, `.../controllers.json` and
+`.../strings/<locale>.json` on the client port, with `ETag` and
+`If-None-Match`, for a Dish on a network without internet access; no client
+reads it yet.
+
+Each controller card on the dashboard has a *Test* button. It sends that
+controller's Dish one RUMBLE (both motors at half for 500 ms), one LIGHTBAR
+(white), one PLAYER_LEDS (the first LED), one TRIGGER_EFFECTS (a mild constant
+resistance on both triggers) and one MIC_LED (pulse), each only when the
+Dish said the controller has it, and shows what was sent and what was skipped.
+The route is `POST /api/connections/{id}/controllers/{idx}/test`; the messages
+are the ones every Dish already handles, so no wire change. The card also
+shows the last output the game wrote to the virtual controller and when
+("Last from game: rumble, 3 s ago"), from the new `lastGameOutput` and
+`caps` fields of `/api/connections`.
+
+The Debug page gains *Save diagnostics*: one `dish-diagnostics.v1` file from
+the new `GET /api/diagnostics`, with the virtual controllers, the connected
+Dish apps as "Host 1", "Host 2", the debug counters, the backends, the
+settings and the last 500 log lines, and with every pairing key, PIN,
+address, device id and name and the network interface removed (log lines have
+them replaced or masked). Beside it, an email link to support@tinkernorth.com
+fills in the subject and a summary; the file is attached by hand and nothing
+is sent by Satellite.
+
+On Windows, a DualSense, DualSense Edge or DualShock 4 whose composite
+persona with controller audio could not be created, and that fell back to the
+input-only persona, now says so in the log.
 
 The contract now states what the audio caps promise. A client advertises
 `mic`, `speaker` or `hapticAudio` only while it can and will carry that
