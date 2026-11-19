@@ -17170,7 +17170,7 @@
         }
       },
       "output": {
-        "route": "setReport",
+        "route": "interruptOut",
         "init": {
           "kind": "steamTritonQuiet"
         },
@@ -17186,7 +17186,7 @@
       "expect": {
         "endpoints": {
           "in": true,
-          "out": false
+          "out": null
         }
       },
       "support": {
@@ -17232,7 +17232,7 @@
         }
       },
       "output": {
-        "route": "setReport",
+        "route": "interruptOut",
         "init": {
           "kind": "steamTritonQuiet"
         },
@@ -17248,7 +17248,7 @@
       "expect": {
         "endpoints": {
           "in": true,
-          "out": false
+          "out": null
         }
       },
       "support": {
@@ -17294,7 +17294,7 @@
         }
       },
       "output": {
-        "route": "setReport",
+        "route": "interruptOut",
         "init": {
           "kind": "steamTritonQuiet"
         },
@@ -17310,7 +17310,7 @@
       "expect": {
         "endpoints": {
           "in": true,
-          "out": false
+          "out": null
         }
       },
       "support": {
@@ -17418,7 +17418,7 @@
         }
       },
       "output": {
-        "route": "setReport",
+        "route": "interruptOut",
         "init": {
           "kind": "steamTritonQuiet"
         },
@@ -17434,7 +17434,7 @@
       "expect": {
         "endpoints": {
           "in": true,
-          "out": false
+          "out": null
         }
       },
       "support": {

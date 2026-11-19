@@ -2137,7 +2137,9 @@ copy replaces the whole snapshot; records are never merged.
 Settings) gates it: off sends nothing and records `off`. The first check runs
 ten seconds after start, the next ones every `updateCheckIntervalHours` (at
 least one) after the last, and "Check now" (`POST /api/controller-db/check`)
-wakes it at once. The manifest is fetched with the last manifest's `ETag` in
+wakes it at once. As the contract requires, "Check now" is disabled while the
+switch is off, and a check the route wakes then records `off` and sends
+nothing (`tests/test_routes_admin.cpp` counts the requests). The manifest is fetched with the last manifest's `ETag` in
 `If-None-Match`; a 304 or a `dbVersion` at or below the active one is
 `upToDate`; a failed GET is `offline`; a manifest or file that does not parse
 or verify is `invalid`. A newer copy is downloaded file by file, built into a
@@ -2165,9 +2167,10 @@ records for the catalog and the mirror only, so:
   `output`; a record of a family Satellite does not know matches no catalog
   type and changes nothing.
 - The cadence is the update check's (section 7 of the contract), not six hours.
-- "Check now" is disabled while the switch is off: the contract says off means
-  no request leaves the device, and Satellite reads that as covering the
-  button.
+- Satellite shows no issues and keeps no outcomes, so the contract's issue rule
+  (shown only while `status` is `open`, `os` keyed `android`, `ios`, `macos`,
+  `windows`, `linux`) and its outcome results (`worked`, `didNotWork`) have no
+  consumer here; the parser keeps each issue's `status` for a later one.
 - The contract's compiled-table rule (a table generated at build time, a test
   holding it to the file) becomes a runtime read with a test holding the
   generated lists to the lists the catalog served before the database existed.

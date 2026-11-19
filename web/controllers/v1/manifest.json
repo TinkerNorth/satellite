@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "dbVersion": 1,
-  "publishedAt": "2026-11-19T22:32:33Z",
+  "publishedAt": "2026-11-19T23:09:54Z",
   "files": {
     "controllers.json": {
-      "sha256": "b84614f30e30f94bc5242d97cfa98de31d1f4a181d543762d8f6d226bae26026",
-      "bytes": 369724
+      "sha256": "b2949f9bf45342fa27979ea23cb02eca1d7b1d0f98c9c68cad68bee991c9672e",
+      "bytes": 369732
     },
     "strings/en.json": {
       "sha256": "ccb8e4770c649983a76156094f9f458c923fd8b6df45698a3ccbb6e12b4d2d22",

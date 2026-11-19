@@ -985,6 +985,46 @@ int main() {
         auto check = cli.Post("/api/controller-db/check", "", "application/json");
         EXPECT(check && check->status == 200);
 
+        // A live worker over a GET that counts, so "nothing leaves the PC" is
+        // observed rather than inferred.
+        std::atomic<int> gets{0};
+        const DbHttpGet countingGet = [&gets](const std::string&, const std::string&) {
+            gets++;
+            return DbFetchResponse{};
+        };
+        ControllerDbAdapter liveAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path,
+                                        countingGet, atomicWriteFile);
+        satellite::ControllerDbService live(liveAdapter, log, *g_configStore);
+        live.load();
+        g_controllerDbService = &live;
+        live.start();
+        const auto checkSettles = [&cli](const std::string& want) {
+            for (int i = 0; i < 200; i++) {
+                auto r = cli.Get("/api/controller-db/status");
+                if (r && jsonStr(parseJson(r->body), "lastCheckResult") == want) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return false;
+        };
+
+        TEST("POST /api/controller-db/check with the switch off: no request leaves, result off");
+        auto off = cli.Post("/api/config", R"({"controllerDbUpdates":false})", "application/json");
+        EXPECT(off && off->status == 200);
+        auto offCheck = cli.Post("/api/controller-db/check", "", "application/json");
+        EXPECT(offCheck && offCheck->status == 200);
+        if (offCheck) EXPECT(!jsonBool(parseJson(offCheck->body), "enabled", true));
+        EXPECT(checkSettles("off"));
+        EXPECT_EQ(gets.load(), 0);
+
+        TEST("POST /api/controller-db/check with the switch on: one manifest request");
+        auto on = cli.Post("/api/config", R"({"controllerDbUpdates":true})", "application/json");
+        EXPECT(on && on->status == 200);
+        cli.Post("/api/controller-db/check", "", "application/json");
+        EXPECT(checkSettles("offline"));
+        EXPECT_EQ(gets.load(), 1);
+        live.stop();
+        g_controllerDbService = &controllerDb;
+
         const uint8_t key[CRYPTO_KEY_SIZE] = {7};
         ControllerDescriptor pad;
         pad.ctrlIdx = 0;

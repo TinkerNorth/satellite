@@ -346,7 +346,7 @@ static void test_manifest_parse() {
     EXPECT(parseControllerDbManifest(readFileAll(bundledPath("manifest.json")), m) == DbParse::Ok);
     EXPECT_EQ(m.dbVersion, 1L);
     EXPECT_EQ(m.files.size(), size_t{7});
-    EXPECT_EQ(m.files["controllers.json"].bytes, uint64_t{369724});
+    EXPECT_EQ(m.files["controllers.json"].bytes, uint64_t{369732});
 
     TEST("a manifest entry for a path the contract does not define is ignored");
     const std::string sha(64, 'a');

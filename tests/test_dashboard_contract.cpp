@@ -154,7 +154,18 @@ static void test_new_surfaces_are_translated() {
     }
 }
 
+static void test_check_now_follows_the_switch() {
+    TEST("Settings disables Check now while the automatic check is off, and while one runs");
+    const std::string js = web("settings.js");
+    EXPECT(js.find("check.disabled = s.enabled !== true || s.checking === true;") !=
+           std::string::npos);
+    const std::string html = web("index.html");
+    EXPECT(html.find("id=\"settings-btnCdbCheck\"") != std::string::npos);
+    EXPECT(html.find("id=\"settings-controllerDbUpdates\"") != std::string::npos);
+}
+
 int main() {
+    test_check_now_follows_the_switch();
     test_test_lanes_match_the_server();
     test_server_names_have_strings();
     test_new_surfaces_are_translated();
