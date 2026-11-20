@@ -271,6 +271,60 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
 }
 ```
 
+### Read: `GET /api/connections/{connectionId}/diagnostics`
+
+Client-scoped to its OWN session, authenticated exactly as the reconcile read (`X-Device-Id`
++ `X-Hmac-Proof`; 401 `NOT_PAIRED` or `BAD_PROOF` without a valid proof; 404 for an unknown
+id or someone else's). Satellite 2.3.0 and later. A client asks for it when the person reports
+a problem and puts the answer in its own `dish-diagnostics.v1` file as the host's `snapshot`
+(`dish-website`, `docs/diagnostics-bundle.md` "The hosts, from both ends"); a Satellite that
+answers 404 to a valid proof for a live session is older, and the client falls back to what it
+already read from `/api/server/capabilities`. Not a wire change: nothing on UDP moves.
+
+```jsonc
+{
+  "format": "satellite-connection-diagnostics.v1",
+  "satellite": { "version": "2.3.0", "platform": "windows", "protocol": [1, 4], "uptimeS": 3600 },
+  "backends": [ { "id": "hidmaestro", "available": true, "driver": "2.1.0.1716",
+                  "bundled": "2.1.0.1716", "preferred": true, "lifecycle": "supported" } ],
+  "controllers": [ {
+    "ctrlIdx": 0, "requestedType": "dualsense", "appliedType": "dualsense",
+    "backend": "hidmaestro", "composite": true, "pluggedIn": true,
+    "caps": { "rumble": true, "...": false }, "touchpadMode": "ds4",
+    "motion": { "sinkSupportedForType": true, "backendOk": true },
+    "input": { "frames": 12345, "rateHz": 250, "lastAtMs": 1763586000000 },
+    "output": {
+      "rumble": { "count": 12, "last": { "strong": 32768, "weak": 0, "atMs": 1763586000000 } },
+      "lightbar": { "count": 2, "last": { "r": 0, "g": 0, "b": 255, "atMs": 1763586000000 } },
+      "triggerEffects": { "count": 1, "last": { "left": "<22 hex>", "right": "<22 hex>", "atMs": 1763586000000 } },
+      "playerLeds": { "count": 1, "last": { "mask": "01", "atMs": 1763586000000 } },
+      "micLed": { "count": 0, "last": null } },
+    "lastGameOutput": { "kind": "rumble", "atMs": 1763586000000 } } ],
+  "grants": { "controllerAudio": { "enabled": true, "mic": false, "speaker": true, "hapticAudio": false } },
+  "counters": { "rx": { ... }, "tx": { ... }, "audio": { ... }, "rejected": { ... }, "scope": "process" },
+  "controllerDb": { "bundledVersion": 1, "activeVersion": 1, "source": "bundled", "...": "..." },
+  "log": [ { "atMs": 1763585900000, "level": "INFO", "tag": "service", "message": "..." } ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `satellite` | Version, `platform` (`windows` \| `macos` \| `linux`), the protocol range this server accepts, seconds since start |
+| `backends` | The host's backends, most preferred first: availability, installed and bundled driver versions (null when unknown), `preferred` for the one the host picks now, the registry's `lifecycle` |
+| `controllers` | This session's active controllers only. `requestedType` is what the client last asked for and `appliedType` what is in force, which differ after a failed replug. `composite` is true when the backend presented the persona that carries the pad's audio function (HIDMaestro's composite), false after its fallback to the input-only one and on every other backend |
+| `input` | Frames the receiver handed to the backend for this pad since it was plugged, the rate over the last maintenance second, and `lastAtMs` (Unix ms) the second it last saw frames arrive, or null before the first |
+| `output` | Per lane, how many output reports the game wrote to the virtual pad since it was plugged (before coalescing, with or without the cap) and the last value, or `last: null` before the first |
+| `grants` | The host's `controllerAudio` block as `/api/server/capabilities` writes it |
+| `counters` | `/api/debug`'s `rx`, `tx` and `audio`, and `rejected` (`decryptFail`, `replayDrop`, `malformed`, `unknownType`, `runt`, `unknownToken`, `authNotPaired`, `authBadProof`). Satellite keeps these per process, so `scope` is `process`; the per-session counts are each controller's `input` and `output` |
+| `controllerDb` | As `GET /api/controller-db/status` writes it |
+| `log` | Up to the last 200 lines of the recent ring that name this connection's id, device id, name or address, or one of its pads' serials since that pad was plugged, oldest first |
+
+The document is built in `core/connection_diagnostics` and holds nothing about any other
+client. In log text the requester's id, name and address become `this connection`, every
+other connected or paired client's become `another client`, the host's name `this PC`, any
+pairing key `[redacted]`, and any other dotted-quad IPv4 address `x.x.x.x`; every key named in
+`DIAGNOSTICS_FORBIDDEN_KEYS` is removed from the embedded blocks.
+
 ### Delete: `DELETE /api/connections/{connectionId}`
 
 - From the client (authed): graceful close. No notify (the closer already knows).
@@ -1128,15 +1182,18 @@ without the cap), or `null` until the game writes one. A replug clears it.
 The fleet's `dish-diagnostics.v1` file (`dish-website`, `docs/diagnostics-bundle.md`) with
 `app.name` `satellite`: `controllerDb` as `/api/controller-db/status` writes it,
 `controllers` (host alias, `ctrlIdx`, `type`, `backend`, `pluggedIn`, `caps`,
-`lastGameOutput`, `record` null), `hosts` (`alias` "Host 1", "Host 2" in connection order,
+`lastGameOutput`, `record` null, and `input` and `output` exactly as
+`GET /api/connections/{connectionId}/diagnostics` writes them), `hosts` (`alias` "Host 1", "Host 2" in connection order,
 `kind` `dish`, `protocol`, `link`), `debug` and `backends` as `/api/debug` and
 `/api/backend/status` write them, `config` the settings, and `log` the last 500 lines of the
 recent ring. Before anything is written every key named in
 `DIAGNOSTICS_FORBIDDEN_KEYS` (`core/diagnostics_bundle.h`: pairing keys, PINs, proofs,
 addresses, device ids and names, the network interface) is removed at any depth; the paired
 list becomes `pairedDeviceCount` and the interface `networkInterfaceChosen`; in log lines each
-client's id, name and address become its alias and every other dotted-quad IPv4 address
-becomes `x.x.x.x`.
+client's id, name and address become its alias, the host's name `this PC`, and every other
+dotted-quad IPv4 address becomes `x.x.x.x`. The dashboard adds the person's
+`report: { category, text, controller: null }` to the file it downloads; the server never
+writes it.
 
 ### `GET /api/debug`
 

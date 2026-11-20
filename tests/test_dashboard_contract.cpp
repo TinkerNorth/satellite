@@ -7,6 +7,7 @@
 // results, database sources).
 #include "../src/core/controller_db_service.h"
 #include "../src/core/descriptor_json.h"
+#include "../src/core/diagnostics_bundle.h"
 #include "../src/core/feedback_test.h"
 #include "../src/core/json.h"
 #include "../src/core/types.h"
@@ -88,7 +89,73 @@ void expectInEveryLocale(const std::string& key) {
     }
 }
 
+std::vector<std::string> quotedList(const std::string& body) {
+    std::vector<std::string> out;
+    const std::regex item("'([A-Za-z]+)'");
+    for (std::sregex_iterator it(body.begin(), body.end(), item), end; it != end; ++it) {
+        out.push_back((*it)[1].str());
+    }
+    return out;
+}
+
+std::vector<std::string> dashboardReportCategories() {
+    const std::string js = web("diagnostics.js");
+    const std::regex table("const REPORT_CATEGORIES = \\[([^\\]]*)\\];");
+    std::smatch m;
+    if (!std::regex_search(js, m, table)) return {};
+    return quotedList(m[1].str());
+}
+
+std::vector<std::string> formReportCategories() {
+    std::vector<std::string> out;
+    const std::string html = web("index.html");
+    const size_t select = html.find("<select id=\"debug-report-category\"");
+    const size_t close = html.find("</select>", select);
+    if (select == std::string::npos || close == std::string::npos) return out;
+    const std::string body = html.substr(select, close - select);
+    const std::regex option("<option value=\"([A-Za-z]+)\"");
+    for (std::sregex_iterator it(body.begin(), body.end(), option), end; it != end; ++it) {
+        out.push_back((*it)[1].str());
+    }
+    return out;
+}
+
+std::vector<std::string> coreReportCategories() {
+    std::vector<std::string> out;
+    for (const char* name : REPORT_CATEGORIES) out.push_back(name);
+    return out;
+}
+
 } // namespace
+
+static void test_report_categories_match_the_contract() {
+    TEST("the report's categories are the contract's six, in order, in the script and the form");
+    const std::vector<std::string> core = coreReportCategories();
+    EXPECT_EQ(core.size(), size_t{6});
+    EXPECT(dashboardReportCategories() == core);
+    EXPECT(formReportCategories() == core);
+
+    TEST("every report category has its label in all six locales");
+    for (const std::string& name : core) expectInEveryLocale("report.category." + name);
+    expectInEveryLocale("debug.report.text-placeholder");
+
+    TEST("the support subject keeps its English prefix in every locale, so support can filter on "
+         "it");
+    for (const char* name : LOCALES) {
+        const Json j = locale(name);
+        const std::string subject = jsonStr(j, "mail.support-subject");
+        EXPECT(subject.rfind("Dish support: %1$s · Satellite %2$s ", 0) == 0);
+        EXPECT(subject.find("%3$s") != std::string::npos);
+    }
+
+    TEST("the file carries the report as category, text and a null controller, and the mail "
+         "starts with the person's words");
+    const std::string js = web("diagnostics.js");
+    EXPECT(js.find("return { category, text: text ? text.value.trim() : '', controller: null };") !=
+           std::string::npos);
+    EXPECT(js.find("const words = report.text ? [report.text, ''] : [];") != std::string::npos);
+    EXPECT(js.find("t('mail.support-subject',") != std::string::npos);
+}
 
 static void test_test_lanes_match_the_server() {
     TEST("the dashboard's TEST_LANES are FEEDBACK_LANES, in order, each with its wire cap name");
@@ -148,7 +215,7 @@ static void test_new_surfaces_are_translated() {
     for (const std::string& key : keys) expectInEveryLocale(key);
     const std::string html = web("index.html");
     const std::regex attr(
-        "data-i18n=\"((?:settings\\.controller-db|debug\\.diagnostics)[a-z.-]*)\"");
+        "data-i18n=\"((?:settings\\.controller-db|debug\\.report|report\\.category)[A-Za-z.-]*)\"");
     for (std::sregex_iterator it(html.begin(), html.end(), attr), end; it != end; ++it) {
         expectInEveryLocale((*it)[1].str());
     }
@@ -169,6 +236,7 @@ int main() {
     test_test_lanes_match_the_server();
     test_server_names_have_strings();
     test_new_surfaces_are_translated();
+    test_report_categories_match_the_contract();
     std::cout << "dashboard_contract: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

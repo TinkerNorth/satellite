@@ -1,9 +1,14 @@
-// diagnostics.js: the Debug page's "Save diagnostics". Downloads
-// GET /api/diagnostics as dish-diagnostics-satellite-<yyyyMMdd-HHmmss>.json and
-// points the mail link at support@tinkernorth.com with the contract's subject
-// and a summary; the person attaches the file themselves.
+// diagnostics.js: the Debug page's "Report a problem". Downloads
+// GET /api/diagnostics with the person's report added as
+// dish-diagnostics-satellite-<yyyyMMdd-HHmmss>.json and points the mail link at
+// support@tinkernorth.com with the contract's subject and the person's words
+// first; the person attaches the file themselves.
 
 const DIAGNOSTICS_SUPPORT = 'support@tinkernorth.com';
+
+// docs/diagnostics-bundle.md "The report"; core/diagnostics_bundle.h holds the
+// same list and the dashboard contract test holds the two together.
+const REPORT_CATEGORIES = ['notRecognised', 'noFeedback', 'connection', 'audio', 'other', 'question'];
 
 function diagnosticsStamp(d) {
   const p = (n) => String(n).padStart(2, '0');
@@ -36,9 +41,31 @@ function diagnosticsSummary(bundle) {
   return lines;
 }
 
+function reportCategoryLabel(category) {
+  return t('report.category.' + category);
+}
+
+function readReport() {
+  const select = document.getElementById('debug-report-category');
+  const text = document.getElementById('debug-report-text');
+  const picked = select ? select.value : 'other';
+  const category = REPORT_CATEGORIES.includes(picked) ? picked : 'other';
+  return { category, text: text ? text.value.trim() : '', controller: null };
+}
+
+// The report rides third, after the envelope's own two fields, so a reader
+// opening the file sees the person's words first.
+function withReport(bundle, report) {
+  return Object.assign({ bundle: bundle.bundle, createdAt: bundle.createdAt, report }, bundle);
+}
+
 function diagnosticsMailto(bundle, fileName) {
-  const subject = t('mail.subject', [bundle.app.name, bundle.app.version, bundle.device.model]);
-  const body = [t('mail.attach-instruction', [fileName]), '']
+  const report = bundle.report;
+  const subject = t('mail.support-subject',
+                    [reportCategoryLabel(report.category), bundle.app.version, bundle.device.os]);
+  const words = report.text ? [report.text, ''] : [];
+  const body = words
+    .concat([t('mail.attach-instruction', [fileName]), ''])
     .concat(diagnosticsSummary(bundle))
     .concat(['', t('mail.attachment')])
     .join('\n');
@@ -59,15 +86,17 @@ function diagnosticsDownload(bundle, fileName) {
 }
 
 async function diagnosticsSave() {
-  const status = document.getElementById('debug-diagnostics-status');
-  const mail = document.getElementById('debug-diagnostics-mail');
+  const status = document.getElementById('debug-report-status');
+  const mail = document.getElementById('debug-report-mail');
   const res = await api('/api/diagnostics');
   if (!res.ok) {
-    if (status) status.textContent = t('debug.diagnostics.failed');
+    if (status) status.textContent = t('debug.report.failed');
     return;
   }
-  const fileName = diagnosticsFileName(res.data, new Date());
-  diagnosticsDownload(res.data, fileName);
-  if (mail) mail.href = diagnosticsMailto(res.data, fileName);
-  if (status) status.textContent = t('debug.diagnostics.saved', [fileName]);
+  const bundle = withReport(res.data, readReport());
+  const fileName = diagnosticsFileName(bundle, new Date());
+  diagnosticsDownload(bundle, fileName);
+  const href = diagnosticsMailto(bundle, fileName);
+  if (mail) mail.href = href;
+  if (status) status.textContent = t('debug.report.saved', [fileName]);
 }

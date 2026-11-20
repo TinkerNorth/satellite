@@ -326,8 +326,10 @@ preserve:
   gamepad frame does not touch `mtx_` whatever the cold path is doing.
   Per frame that is a
   scan of the packed tokens, two seqlock reads of a few words, two plain
-  stores to the receive epoch, two to the slot (counter and time), and
-  the submit. On ViGEm, HIDMaestro and uinput the submit takes no
+  stores to the receive epoch, two to the slot (counter and time), one
+  relaxed load and store to the serial's input count (`inputFrames_`,
+  which the connection diagnostics read; not a read-modify-write, since
+  the receive thread is its only writer), and the submit. On ViGEm, HIDMaestro and uinput the submit takes no
   adapter-wide mutex either (see "Backend locking"); HIDMaestro's takes
   its slot's input flag, one uncontended test-and-set unless the idle
   re-publish is writing that slot. The receive side runs no fence on
@@ -2193,15 +2195,67 @@ alias and masks every other dotted-quad address. The Debug page's "Save
 diagnostics" downloads it as `dish-diagnostics-satellite-<yyyyMMdd-HHmmss>.json`
 and points a `mailto:support@tinkernorth.com` link at the contract's subject
 and a localized summary; the person attaches the file. Satellite sends nothing.
+Since the second cut the form is "Report a problem": the person's category and
+words ride in the file as `report` and lead the mail body, and the host's own
+names are replaced by "this PC" in log lines.
 
 Departures from `docs/diagnostics-bundle.md`, all because Satellite's pads are
 virtual: `controllers[]` carries the virtual pad (`type`, `backend`, `caps`,
-`lastGameOutput`, `pluggedIn`) with `record` null and no `hardware`,
+`lastGameOutput`, `pluggedIn`, and `input` and `output` as in "Connection diagnostics"
+below) with `record` null and no `hardware`,
 `expectMismatch`, `probe`, `lastFeedback`, `lastWrite`, `outcomes` or
 `capture`; `device.model` and `device.os` are the platform name, since
 Satellite reads no hardware model; there is no `extra`. Log lines are scrubbed
 of IPv4 addresses by pattern; an IPv6 address in a log line is removed only when
 it is a known client's address.
+
+## Connection diagnostics
+
+`GET /api/connections/{connectionId}/diagnostics` on the client port answers a paired Dish
+with the `satellite-connection-diagnostics.v1` document about its own connection, which the
+Dish puts in its own diagnostics file as the host's `snapshot`. The route authenticates like
+the session routes and reads one connection snapshot; the document is built in
+`core/connection_diagnostics.{h,cpp}`, a pure function of what the route gathers: that
+connection's controllers, the other clients' and the paired devices' identities and keys (to
+scrub, never to write), the host's names, the backends, the capabilities' `controllerAudio`
+block, the process counters, the controller database status and the recent log ring. The core
+keeps the ring's lines that name the connection's id, device id, name or address, or one of its
+pads' serials from that pad's plug on (a serial passes between clients), takes the last 200,
+and scrubs them with the Debug file's `scrubDiagnosticsText` over a different alias table: the
+requester is "this connection", every other client "another client", the host "this PC", each
+pairing key "[redacted]".
+
+The per-controller `input` and `output` blocks are shared with the Debug page's file
+(`controllerInputJson`, `controllerOutputJson` in `core/diagnostics_bundle`), so both ends
+describe a pad the same way. `output` is `Controller::output`, a `GameOutputRecord` each
+`handle*FromBackend` updates under `service.state` beside `lastGameOutput`, before coalescing.
+`input` comes from `inputFrames_`, one count per serial that the receive thread bumps for every
+frame it hands to the backend; the plug records the count as the pad's baseline, and the
+maintenance thread's once-a-second `sampleInputActivity` turns the count into the rate and the
+last arrival (`core/controller_activity.h`).
+
+Departures from `docs/diagnostics-bundle.md`:
+
+- `counters` are Satellite's process-wide `rx`, `tx`, `audio` and rejection counters with
+  `"scope": "process"`; Satellite keeps no wire counter per session. The per-session counts are
+  each controller's `input` and `output`.
+- `input.lastAtMs` is the maintenance second that first saw the count move, so it is accurate to
+  about a second, and `rateHz` is the rate over the last such second; the receive thread stores
+  no time per frame. `input` carries no `last` frame: the receive thread keeps no copy of it.
+- `output` counts what the game wrote to the virtual pad, not what reached the client (the
+  coalesce and the cap gate come after), and has no `target`, `lastWrite`, `speaker` or
+  `haptics` entries: Satellite's lanes end at the wire, and the audio lanes' totals are in
+  `counters.audio`.
+- `grants.controllerAudio` is the host's grant as `/api/server/capabilities` writes it; Satellite
+  grants audio per host, not per connection, and a pad's lanes follow its `caps`.
+- `composite` is true only on HIDMaestro, for a pad whose persona mapped an audio ring; every
+  other backend says false.
+- `backends[].lifecycle` is the registry's (`supported`, `maintenance`, `eol`), and `preferred`
+  marks the backend `probeBackend` picks now.
+- The Debug page's form is "Report a problem" with the contract's categories; it has no
+  "Preview file" (the downloaded file is the preview) and the report's `controller` is always
+  null, since Satellite's pads are virtual. The mail subject keeps "Dish support:" in English in
+  every locale so support can filter on it; the category is in the person's language.
 
 ## Testing every level
 

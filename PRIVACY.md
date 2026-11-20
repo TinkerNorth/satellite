@@ -195,16 +195,20 @@ builds to Sentry at release time. They describe the program, not you.
 
 ## 7. Diagnostics by email
 
-The Debug page has *Save diagnostics*. When you press it, Satellite builds one
-file, `dish-diagnostics-satellite-<date>-<time>.json`, and your browser saves
-it. Beside the button, *Email support@tinkernorth.com* opens your own mail
-app with a subject and a short summary filled in. Nothing is sent unless you
-attach the file yourself and press Send.
+The Debug page has *Report a problem*. You pick what it is about, write what
+happened, and press *Save the file and write the email*. Satellite builds one
+file, `dish-diagnostics-satellite-<date>-<time>.json`, with your category and
+your words in it, and your browser saves it. Beside the button, *Email
+support@tinkernorth.com* opens your own mail app with a subject, your words
+and a short summary filled in. Nothing is sent unless you attach the file
+yourself and press Send.
 
-**What the file holds:** the Satellite version and build, the operating
-system and CPU architecture, the controller database's versions and last
-check, the virtual controllers (their type, the backend that runs them, which
-features the Dish app said its controller has, and the kind and time of the
+**What the file holds:** your category and your words, the Satellite version
+and build, the operating system and CPU architecture, the controller
+database's versions and last check, the virtual controllers (their type, the
+backend that runs them, which features the Dish app said its controller has,
+how many input frames arrived and at what rate, how many times a game set
+each feedback lane and the last value it set, and the kind and time of the
 last output a game sent), the connected Dish apps as "Host 1", "Host 2" with
 their protocol version and link state, the counters the Debug page shows, the
 backends' status, your settings, and the last 500 log lines.
@@ -212,8 +216,26 @@ backends' status, your settings, and the last 500 log lines.
 **What it never holds:** pairing keys, pairing secrets or PINs, IP addresses
 (log lines have them masked), the network interface you chose, the names or
 ids of your Dish apps and devices (log lines have them replaced by "Host 1",
-"Host 2"), and nothing from the microphone or the speaker. Read the file
-before you send it; it is plain JSON.
+"Host 2"), this PC's name (log lines have it replaced by "this PC"), and
+nothing from the microphone or the speaker. Read the file before you send it;
+it is plain JSON.
+
+- **A Dish app may ask Satellite about its own connection.** When you report
+  a problem from a paired Dish app, the app may ask Satellite, over the
+  paired, encrypted connection and with the same pairing proof every session
+  request carries, for a document about that app's own connection, and put
+  it in the file the app saves for you. Satellite answers only the app that
+  owns the connection, never a stranger and never another paired app. The
+  document holds the Satellite version, the platform and how long Satellite
+  has run, the backends' status, that connection's virtual controllers (their
+  type, backend, features, input counts and the feedback a game set), the
+  audio switches this PC grants, the counters the Debug page shows, the
+  controller database's versions, and up to 200 log lines about that
+  connection. It never holds another app's name, id or address, this PC's
+  name, an IP address, a pairing key, a PIN or any other secret: the asking
+  app is called "this connection", every other app "another client" and the
+  PC "this PC". Satellite sends it to nobody else; the app, like Satellite,
+  sends nothing until you press Send.
 
 ---
 

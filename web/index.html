@@ -353,13 +353,38 @@
     </div>
 
     <div class="section">
-      <h2 class="section-title" data-i18n="debug.diagnostics.title">Diagnostics file</h2>
-      <p class="hint" data-i18n="debug.diagnostics.hint">Saves one file for support. You attach it to the email yourself; nothing is sent until you press Send in your mail app.</p>
-      <div class="btn-row">
-        <button class="btn btn-save" id="debug-btnDiagnostics" onclick="diagnosticsSave()" data-i18n="debug.diagnostics.save">Save diagnostics</button>
-        <a class="btn-link" id="debug-diagnostics-mail" href="mailto:support@tinkernorth.com" data-i18n="debug.diagnostics.email">Email support@tinkernorth.com</a>
+      <h2 class="section-title" data-i18n="debug.report.title">Report a problem</h2>
+      <p class="hint" data-i18n="debug.report.hint">Tell us what happened. Satellite saves one file for support and opens your mail app; you attach the file yourself, and nothing is sent until you press Send.</p>
+      <div class="form-group">
+        <label class="form-label" for="debug-report-category" data-i18n="debug.report.category">What is it about?</label>
+        <select id="debug-report-category" class="form-input">
+          <option value="notRecognised" data-i18n="report.category.notRecognised">A controller is not recognised</option>
+          <option value="noFeedback" data-i18n="report.category.noFeedback">No rumble or feedback</option>
+          <option value="connection" data-i18n="report.category.connection">Connection or latency</option>
+          <option value="audio" data-i18n="report.category.audio">Audio</option>
+          <option value="other" data-i18n="report.category.other">Something else</option>
+          <option value="question" data-i18n="report.category.question">A question</option>
+        </select>
       </div>
-      <p class="hint" id="debug-diagnostics-status" role="status"></p>
+      <div class="form-group">
+        <label class="form-label" for="debug-report-text" data-i18n="debug.report.text">What happened?</label>
+        <textarea id="debug-report-text" class="form-input" rows="4" data-i18n-attr="placeholder:debug.report.text-placeholder" placeholder="Which game, which controller, what you expected and what you saw."></textarea>
+      </div>
+      <p class="form-label" data-i18n="debug.report.holds">The file will hold:</p>
+      <ul class="hint debug-report-holds">
+        <li data-i18n="debug.report.holds.report">your category and your words</li>
+        <li data-i18n="debug.report.holds.version">the Satellite version, the operating system and the controller database's versions</li>
+        <li data-i18n="debug.report.holds.controllers">the virtual controllers: type, backend, features, how much input arrived and what the game sent back</li>
+        <li data-i18n="debug.report.holds.hosts">the connected Dish apps as "Host 1", "Host 2"</li>
+        <li data-i18n="debug.report.holds.counters">the counters on this page, the backends and your settings</li>
+        <li data-i18n="debug.report.holds.log">the last 500 log lines</li>
+      </ul>
+      <p class="hint" data-i18n="debug.report.never">It never holds pairing keys, fingerprints, IP addresses, Wi-Fi names or PC names.</p>
+      <div class="btn-row">
+        <button class="btn btn-save" id="debug-btnReport" onclick="diagnosticsSave()" data-i18n="debug.report.save">Save the file and write the email</button>
+        <a class="btn-link" id="debug-report-mail" href="mailto:support@tinkernorth.com" data-i18n="debug.report.email">Email support@tinkernorth.com</a>
+      </div>
+      <p class="hint" id="debug-report-status" role="status"></p>
     </div>
 
     <div class="section">

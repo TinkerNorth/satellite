@@ -48,6 +48,38 @@ them replaced or masked). Beside it, an email link to support@tinkernorth.com
 fills in the subject and a summary; the file is attached by hand and nothing
 is sent by Satellite.
 
+The Debug page's form is now *Report a problem*: the person picks a category
+(controller not recognised, no rumble or feedback, connection or latency,
+audio, something else, a question), writes what happened and reads what the
+file will hold before saving it. The file carries their words as
+`report: { category, text, controller: null }`, the mail's subject is
+`Dish support: <category> · Satellite <version> on <platform>` and its body
+starts with their words. Log lines in the file now have this PC's name
+replaced by "this PC".
+
+Every virtual controller in that file, and in the new connection document
+below, carries an `input` block (frames handed to the backend since the plug,
+the rate over the last second, the second they last arrived) and an `output`
+block (per lane, how many reports the game wrote, coalesced or not, and the
+last value: rumble strong and weak, the light bar's colour, the trigger
+effect blocks, the player LEDs mask, the mute lamp's state), so the PC side
+and a Dish's own file describe the same pad the same way. The receive thread
+counts the frames with one relaxed load and store per frame, its only
+addition; the maintenance thread turns the count into a rate once a second.
+
+A paired Dish can ask for `GET /api/connections/{connectionId}/diagnostics`
+on the client port, with the same pairing proof the session routes take, and
+gets the `satellite-connection-diagnostics.v1` document about its own
+connection and nothing about any other: the Satellite version, platform,
+protocol range and uptime, the backends, that connection's controllers
+(requested and applied type, backend, whether HIDMaestro's composite with
+controller audio is in place or fell back, caps, touchpad mode, motion, input
+and output), the host's audio grants, the counters (process-wide, and marked
+`"scope": "process"`), the controller database status and the last 200 log
+lines about the connection, with the asking client named "this connection",
+every other one "another client" and the PC "this PC". 401 without a valid
+proof, 404 for an unknown connection or someone else's. Not a wire change.
+
 On Windows, a DualSense, DualSense Edge or DualShock 4 whose composite
 persona with controller audio could not be created, and that fell back to the
 input-only persona, now says so in the log.
