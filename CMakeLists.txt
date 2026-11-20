@@ -1420,6 +1420,8 @@ if(WIN32)
             src/core/mic_worker.cpp
             src/core/pointer_worker.cpp
             src/core/session_service.cpp
+            src/core/feedback_test.cpp
+            src/core/diagnostics_bundle.cpp
             src/net/admin_json.cpp
             src/net/inner_dispatch.cpp
             src/net/pairing.cpp

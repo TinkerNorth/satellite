@@ -189,7 +189,7 @@ std::string isoUtc(int64_t epochSeconds) {
     unsigned m = 0;
     unsigned d = 0;
     civilFromDays(days, y, m, d);
-    char buf[32];
+    char buf[128];
     std::snprintf(buf, sizeof(buf), "%04lld-%02u-%02uT%02lld:%02lld:%02lldZ",
                   static_cast<long long>(y), m, d, static_cast<long long>(secs / 3600),
                   static_cast<long long>((secs % 3600) / 60), static_cast<long long>(secs % 60));
