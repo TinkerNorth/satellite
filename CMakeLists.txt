@@ -1422,6 +1422,8 @@ if(WIN32)
             src/core/session_service.cpp
             src/core/feedback_test.cpp
             src/core/diagnostics_bundle.cpp
+            src/core/controller_db.cpp
+            src/core/controller_db_service.cpp
             src/net/admin_json.cpp
             src/net/inner_dispatch.cpp
             src/net/pairing.cpp
