@@ -11,7 +11,10 @@
 #include "pairing_keys.h"
 #include "pairing_service.h"
 #include "session_crypto.h"
+#include "status_json.h"
+#include "app/app_state.h"
 #include "core/catalog.h"
+#include "core/connection_diagnostics.h"
 #include "core/controller_db.h"
 #include "core/descriptor_json.h"
 #include "core/hex.h"
@@ -503,6 +506,146 @@ static void capabilitiesRoute(const Request&, Response& res) {
     replyJson(res, buildCapabilitiesJson());
 }
 
+static const char* platformSlug() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#else
+    return "linux";
+#endif
+}
+
+static satellite::ConnectionController
+connectionController(const SessionService::ConnectionSnapshot::CtrlInfo& c) {
+    satellite::ConnectionController out;
+    out.ctrlIdx = c.index;
+    out.requestedType = c.requestedType;
+    out.appliedType = c.controllerType;
+    out.backend = c.backendId;
+    out.composite = c.composite;
+    out.pluggedIn = c.pluggedIn;
+    out.caps = c.caps;
+    out.touchpadMode = c.touchpadMode;
+    out.motionSinkSupportedForType = c.motionSinkSupportedForType;
+    out.motionBackendOk = c.motionBackendOk;
+    out.serial = c.serial;
+    out.pluggedAtMs = c.pluggedAtMs;
+    out.input = c.input;
+    out.output = c.output;
+    out.lastGameOutput = c.lastGameOutput;
+    out.lastGameOutputAtMs = c.lastGameOutputAtMs;
+    return out;
+}
+
+static std::vector<satellite::ConnectionBackend> connectionBackends() {
+    const std::string preferred = probeBackend().id;
+    std::vector<satellite::ConnectionBackend> out;
+    for (const satellite::BackendRuntimeStatus& st : enumerateBackends()) {
+        satellite::ConnectionBackend b;
+        b.id = st.id;
+        b.available = st.available;
+        b.driver = st.driverVersion;
+        b.bundled = st.bundledVersion;
+        b.preferred = st.id == preferred;
+        const satellite::BackendDescriptor* d = satellite::backendDescriptorById(st.id);
+        if (d != nullptr) b.lifecycle = d->lifecycle;
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+// The process-wide counters /api/debug breaks down, regrouped: what came in,
+// what went out, the audio lanes, and what was turned away.
+static Json connectionCounters(SessionService& svc) {
+    const satellite::WireCounts w = satellite::g_wire.snapshot();
+    satellite::RxCounts rx = w.rx;
+    rx.input = g_submitOk.load() + g_submitFail.load();
+    JsonOut rejected;
+    rejected["decryptFail"] = g_decryptFail.load();
+    rejected["replayDrop"] = g_replayDrop.load();
+    rejected["malformed"] = w.rx.malformed;
+    rejected["unknownType"] = w.rx.unknownType;
+    rejected["runt"] = w.rx.runt;
+    rejected["unknownToken"] = w.rx.unknownToken;
+    rejected["authNotPaired"] = w.authNotPaired;
+    rejected["authBadProof"] = w.authBadProof;
+    JsonOut j;
+    j["rx"] = satellite::rxCountsJson(rx);
+    j["tx"] = satellite::txCountsJson(w.tx);
+    j["audio"] = satellite::audioCountsJson(svc.audioCounts());
+    j["rejected"] = std::move(rejected);
+    Json out;
+    satellite::jsonParse(jsonDump(j), out);
+    return out;
+}
+
+static Json controllerAudioGrants() {
+    Json caps;
+    satellite::jsonParse(buildCapabilitiesJson(), caps);
+    return jsonObject(caps, "controllerAudio");
+}
+
+// Everyone but the requester, connected or only paired, and every pairing key
+// as text, so a log line can be scrubbed of all of them.
+static void readOtherClients(const SessionService::ConnectionsSnapshot& snap,
+                             const std::string& connectionId,
+                             satellite::ConnectionDiagnosticsInput& in) {
+    for (const auto& cs : snap.connections) {
+        if (cs.connectionId != connectionId) {
+            in.others.push_back({cs.deviceId, cs.deviceName, cs.clientIP});
+        }
+    }
+    const std::shared_ptr<const Config> cfg = g_configStore->current();
+    for (const PairedDevice& d : cfg->pairedDevices) {
+        in.secrets.push_back(d.sharedKeyHex);
+        if (d.id != in.self.deviceId) in.others.push_back({d.id, d.name, d.lastIP});
+    }
+}
+
+// False when the connection is not there or is not the requester's own.
+static bool readConnectionDiagnostics(SessionService& svc, const std::string& connectionId,
+                                      const std::string& deviceId,
+                                      satellite::ConnectionDiagnosticsInput& in) {
+    const SessionService::ConnectionsSnapshot snap = svc.getConnectionsSnapshot();
+    const auto own =
+        std::find_if(snap.connections.begin(), snap.connections.end(),
+                     [&](const SessionService::ConnectionSnapshot& cs) {
+                         return cs.connectionId == connectionId && cs.deviceId == deviceId;
+                     });
+    if (own == snap.connections.end()) return false;
+    in.connectionId = own->connectionId;
+    in.self = {own->deviceId, own->deviceName, own->clientIP};
+    for (const auto& c : own->controllers) in.controllers.push_back(connectionController(c));
+    readOtherClients(snap, connectionId, in);
+    in.version = SATELLITE_VERSION;
+    in.platform = platformSlug();
+    in.protocolMin = PROTOCOL_VERSION_MIN;
+    in.protocolMax = PROTOCOL_VERSION;
+    in.uptimeS = svc.uptimeSeconds();
+    in.backends = connectionBackends();
+    in.grants = controllerAudioGrants();
+    in.counters = connectionCounters(svc);
+    if (g_controllerDbService != nullptr) in.controllerDb = g_controllerDbService->status();
+    in.machineNames = machineNames();
+    in.log = recentLogLines();
+    return true;
+}
+
+// GET /api/connections/:id/diagnostics: the satellite-connection-diagnostics.v1
+// document about the requester's OWN connection, scrubbed in
+// core/connection_diagnostics before it leaves.
+static void connectionDiagnosticsRoute(SessionService& svc, const Request& req, Response& res) {
+    ClientAuth auth;
+    if (!clientAuthed(req, res, auth)) return;
+    satellite::ConnectionDiagnosticsInput in;
+    if (!readConnectionDiagnostics(svc, req.matches[1].str(), auth.deviceId, in)) {
+        replyError(res, 404, "connection not found");
+        return;
+    }
+    replyJson(res, jsonDump(satellite::buildConnectionDiagnostics(in)));
+}
+
 // Catalog routes are unauthenticated: the UI renders BEFORE pairing.
 static void catalogRoute(const Request& req, Response& res) {
     const std::string locale =
@@ -592,6 +735,9 @@ void registerClientRoutes(httplib::Server& server, SessionService& svc) {
                [&svc](const Request& req, Response& res) { sessionViewRoute(svc, req, res); });
     server.Delete(R"(/api/connections/(\w+))",
                   [&svc](const Request& req, Response& res) { closeSessionRoute(svc, req, res); });
+    server.Get(R"(/api/connections/(\w+)/diagnostics)", [&svc](const Request& req, Response& res) {
+        connectionDiagnosticsRoute(svc, req, res);
+    });
     server.Put(R"(/api/connections/(\w+)/controllers/(\d+))",
                [&svc](const Request& req, Response& res) { putControllerRoute(svc, req, res); });
     server.Delete(

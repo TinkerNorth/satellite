@@ -9,6 +9,7 @@
 // appear as "Host 1", "Host 2".
 #pragma once
 
+#include "controller_activity.h"
 #include "controller_db_service.h"
 #include "json.h"
 #include "types.h"
@@ -24,6 +25,14 @@ inline constexpr int DIAGNOSTICS_BUNDLE_VERSION = 1;
 inline constexpr const char* DIAGNOSTICS_APP_NAME = "satellite";
 inline constexpr size_t DIAGNOSTICS_LOG_LINES = 500;
 inline constexpr const char* DIAGNOSTICS_MASKED_IP = "x.x.x.x";
+
+// The report's categories (docs/diagnostics-bundle.md "The report"), in the
+// order the dashboard offers them. The server writes none of them: the
+// dashboard adds the report to the file it downloads, and a test holds its
+// list to this one.
+inline constexpr const char* REPORT_CATEGORIES[] = {
+    "notRecognised", "noFeedback", "connection", "audio", "other", "question",
+};
 
 // Keys removed wherever they appear, at any depth, before anything is written.
 inline constexpr const char* DIAGNOSTICS_FORBIDDEN_KEYS[] = {
@@ -61,6 +70,12 @@ std::vector<HostAlias> aliasHosts(const std::vector<HostIdentity>& connected,
 
 std::string hostAlias(size_t index);
 
+inline constexpr const char* DIAGNOSTICS_THIS_PC = "this PC";
+
+// Each non-empty machine name (the host name, the mDNS instance) becomes
+// "this PC" in log text.
+void aliasMachine(std::vector<HostAlias>& aliases, const std::vector<std::string>& names);
+
 // Log text with every alias text replaced (longest first, so a name that
 // contains another is replaced whole) and every dotted-quad IPv4 address
 // masked.
@@ -84,6 +99,8 @@ struct DiagnosticsController {
     uint16_t caps = 0;
     GameOutputKind lastGameOutput = GameOutputKind::None;
     int64_t lastGameOutputAtMs = 0;
+    InputFacts input;
+    GameOutputRecord output;
 };
 
 struct DiagnosticsLogLine {
@@ -121,5 +138,13 @@ JsonOut controllerDbStatusJson(const ControllerDbStatus& status);
 // {kind, atMs}, or null when the game has written nothing; the bundle and
 // /api/connections both write it.
 JsonOut gameOutputJson(GameOutputKind kind, int64_t atMs);
+
+// A controller's `input` block, {frames, rateHz, lastAtMs}, with lastAtMs null
+// until a frame arrived; both diagnostics documents write it.
+JsonOut controllerInputJson(const InputFacts& input);
+
+// A controller's `output` block: per lane {count, last}, last null until the
+// game wrote that lane; both diagnostics documents write it.
+JsonOut controllerOutputJson(const GameOutputRecord& output);
 
 } // namespace satellite

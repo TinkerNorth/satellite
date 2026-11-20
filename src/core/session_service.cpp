@@ -162,6 +162,12 @@ void publishRxTouchpad(RxPad& rx, const TouchpadReport& report, uint8_t mode, ui
     rx.endWrite();
 }
 
+int64_t wallClockMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
 bool readRxPad(const RxPad& rx, RxPadView& out) {
     for (int attempt = 0; attempt < RX_READ_ATTEMPTS; attempt++) {
         if (rx.read(out)) return true;
@@ -500,6 +506,9 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lastMicLedValid = false;
     ctrl.lastGameOutput = GameOutputKind::None;
     ctrl.lastGameOutputAtMs = 0;
+    ctrl.output = GameOutputRecord{};
+    ctrl.pluggedAtMs = wallClockMs();
+    ctrl.input = satellite::startInputActivity(inputCountFor(ctrl), ctrl.pluggedAtMs);
     ctrl.plugGen = ++nextPlugGen_;
     if (ctrl.plugGen == 0) ctrl.plugGen = ++nextPlugGen_;
     ctrl.pointerStamp = takePointerStampLocked();
@@ -693,6 +702,7 @@ void SessionService::updatePadLocked(Controller& ctrl, const ControllerDescripto
     const uint8_t mode = safeTouchpadMode(desc.touchpadMode);
     if (mode != ctrl.touchpadMode) releasePointerLocked(ctrl);
     ctrl.controllerType = desc.type;
+    ctrl.requestedType = desc.type;
     ctrl.caps = desc.caps;
     ctrl.touchpadMode = mode;
     ctrl.preferredBackend = desc.preferredBackend;
@@ -700,6 +710,7 @@ void SessionService::updatePadLocked(Controller& ctrl, const ControllerDescripto
 
 void SessionService::takeDescriptorLocked(Controller& ctrl, const ControllerDescriptor& desc) {
     ctrl.controllerType = desc.type;
+    ctrl.requestedType = desc.type;
     ctrl.identity = controllerIdentity(desc.type);
     ctrl.caps = desc.caps;
     ctrl.touchpadMode = safeTouchpadMode(desc.touchpadMode);
@@ -743,6 +754,7 @@ void SessionService::replugPadLocked(Connection& conn, Controller& ctrl, PadChan
     if (!pad.plugged) {
         pad.result = APPLY_ERR_REPLUG_FAIL;
         pad.appliedType = ctrl.controllerType;
+        ctrl.requestedType = pad.desc.type;
         if (pad.serial == 0) return;
         releaseSerial(pad.serial);
         log_.logMsg(LogLevel::ERR, "service",
@@ -1084,7 +1096,8 @@ void SessionService::handleRumbleFromBackend(const uint32_t serial, const Rumble
     Connection* conn = nullptr;
     Controller* ctrl = nullptr;
     if (!findBySerialLocked(serial, conn, ctrl)) return;
-    noteGameOutputLocked(*ctrl, GameOutputKind::Rumble);
+    const int64_t atMs = noteGameOutputLocked(*ctrl, GameOutputKind::Rumble);
+    satellite::recordGameRumble(ctrl->output, report, atMs);
     ctrl->hidRumble.strongMagnitude = report.strongMagnitude;
     ctrl->hidRumble.weakMagnitude = report.weakMagnitude;
     forwardRumbleLocked(*conn, *ctrl, wireDurationMs, false);
@@ -1378,7 +1391,8 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
-    noteGameOutputLocked(*foundCtrl, GameOutputKind::Lightbar);
+    const int64_t atMs = noteGameOutputLocked(*foundCtrl, GameOutputKind::Lightbar);
+    satellite::recordGameLightbar(foundCtrl->output, r, g, b, atMs);
 
     // Coalesce unchanged colours (same shape as the rumble coalesce).
     if (foundCtrl->lastLightbarValid && foundCtrl->lightbarR == r && foundCtrl->lightbarG == g &&
@@ -1403,7 +1417,8 @@ void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
-    noteGameOutputLocked(*foundCtrl, GameOutputKind::TriggerEffects);
+    const int64_t atMs = noteGameOutputLocked(*foundCtrl, GameOutputKind::TriggerEffects);
+    satellite::recordGameTriggerEffects(foundCtrl->output, report, atMs);
 
     if (foundCtrl->lastTriggerEffectsValid && foundCtrl->lastTriggerEffects == report) return;
     foundCtrl->lastTriggerEffects = report;
@@ -1420,7 +1435,8 @@ void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMas
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
-    noteGameOutputLocked(*foundCtrl, GameOutputKind::PlayerLeds);
+    const int64_t atMs = noteGameOutputLocked(*foundCtrl, GameOutputKind::PlayerLeds);
+    satellite::recordGamePlayerLeds(foundCtrl->output, ledMask, atMs);
 
     if (foundCtrl->lastPlayerLedsValid && foundCtrl->playerLeds == ledMask) return;
     foundCtrl->playerLeds = ledMask;
@@ -1442,7 +1458,8 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     Connection* foundConn = nullptr;
     Controller* foundCtrl = nullptr;
     if (!findBySerialLocked(serial, foundConn, foundCtrl)) return;
-    noteGameOutputLocked(*foundCtrl, GameOutputKind::MicLed);
+    const int64_t atMs = noteGameOutputLocked(*foundCtrl, GameOutputKind::MicLed);
+    satellite::recordGameMicLed(foundCtrl->output, state, atMs);
 
     if (foundCtrl->lastMicLedValid && foundCtrl->micLedState == state) return;
     foundCtrl->micLedState = state;
@@ -1900,7 +1917,12 @@ bool SessionService::submitHotFrame(uint32_t token, uint8_t ctrlIdx, const Input
     if (!stable || slotToken != token) return false;
     if (record) recordDatagram(slot, keyEpoch, counter, clientAddr);
     if ((word & HOT_CTRL_ACTIVE) == 0) return false;
-    return backend_.submitInput(word & HOT_CTRL_SERIAL_MASK, input);
+    const uint32_t serial = word & HOT_CTRL_SERIAL_MASK;
+    // The one hot-path addition of the diagnostics snapshot: a relaxed
+    // increment by the counter's only writer.
+    std::atomic<uint64_t>& frames = inputFrames_[serial];
+    frames.store(frames.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    return backend_.submitInput(serial, input);
 }
 
 void SessionService::updatePostDecrypt(uint32_t token, uint32_t counter,
@@ -1949,6 +1971,11 @@ SessionService::snapshotController(const Connection& conn, const Controller& ctr
     info.caps = ctrl.caps;
     info.lastGameOutput = ctrl.lastGameOutput;
     info.lastGameOutputAtMs = ctrl.lastGameOutputAtMs;
+    info.requestedType = ctrl.requestedType;
+    info.composite = backend_.hasAudioPersona(ctrl.serialNo);
+    info.pluggedAtMs = ctrl.pluggedAtMs;
+    info.input = satellite::inputFacts(ctrl.input, inputCountFor(ctrl));
+    info.output = ctrl.output;
     RxPadView rx;
     const bool known = ctrl.serialNo >= 1 &&
                        ctrl.serialNo <= static_cast<uint32_t>(MAX_BACKEND_CONTROLLERS) &&
@@ -2082,6 +2109,11 @@ int SessionService::reapTimedOut() {
 
 bool SessionService::isBackendAvailable() const { return backend_.isBusOpen(); }
 
+int64_t SessionService::uptimeSeconds() const {
+    const auto elapsed = std::chrono::steady_clock::now() - startedAt_;
+    return std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+}
+
 int SessionService::activeSessionCount() const {
     std::lock_guard<TrackedMutex> lk(mtx_);
     return static_cast<int>(connections_.size());
@@ -2207,19 +2239,26 @@ int SessionService::availableSlots() const {
     return slots;
 }
 
-namespace {
-
-int64_t wallClockMs() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::system_clock::now().time_since_epoch())
-        .count();
+int64_t SessionService::noteGameOutputLocked(Controller& ctrl, GameOutputKind kind) {
+    const int64_t atMs = wallClockMs();
+    ctrl.lastGameOutput = kind;
+    ctrl.lastGameOutputAtMs = atMs;
+    return atMs;
 }
 
-} // namespace
+void SessionService::sampleInputActivity(int64_t nowMs) {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    for (auto& [token, conn] : connections_) {
+        for (Controller& ctrl : conn.controllers) {
+            if (!ctrl.active) continue;
+            const uint64_t count = inputCountFor(ctrl);
+            satellite::sampleInputActivity(ctrl.input, count, nowMs);
+        }
+    }
+}
 
-void SessionService::noteGameOutputLocked(Controller& ctrl, GameOutputKind kind) {
-    ctrl.lastGameOutput = kind;
-    ctrl.lastGameOutputAtMs = wallClockMs();
+uint64_t SessionService::inputCountFor(const Controller& ctrl) const {
+    return inputFrames_[ctrl.serialNo & HOT_CTRL_SERIAL_MASK].load(std::memory_order_relaxed);
 }
 
 // Straight to the client port: the controller's caches keep what the game

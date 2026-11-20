@@ -53,6 +53,7 @@ struct MockPort : IGamepadPort {
     std::vector<uint32_t> lost;
     std::vector<uint32_t> settled;
     std::set<uint32_t> disabled;
+    std::set<uint32_t> audioPersonas;
 
     explicit MockPort(std::string n, std::set<GamepadIdentity> ids)
         : name(std::move(n)), identities(std::move(ids)) {}
@@ -148,6 +149,9 @@ struct MockPort : IGamepadPort {
         d.input = disabled.count(serial) != 0;
         d.audio = d.input;
         return d;
+    }
+    bool hasAudioPersona(uint32_t serial) const override {
+        return audioPersonas.count(serial) != 0;
     }
 };
 
@@ -356,6 +360,20 @@ static void test_settled_serials_come_from_every_child() {
     EXPECT(settled.size() == 3 && settled[0].serial == 5 && settled[0].backend == a.backendId());
     EXPECT(settled.size() == 3 && settled[2].serial == 7 && settled[2].backend == b.backendId());
     EXPECT(mux.settledSerials().empty());
+}
+
+static void test_an_audio_persona_is_asked_of_its_owner() {
+    TEST("hasAudioPersona defers to the owner; a serial nobody owns has none");
+    MockPort a = makeVigemLike();
+    MockPort b = makeHidMaestroLike();
+    GamepadMux mux({&a, &b});
+    a.audioPersonas = {4};
+    b.audioPersonas = {4};
+    EXPECT(!mux.hasAudioPersona(4));
+    EXPECT(mux.pluginDevice(4, GamepadIdentity::DualSense));
+    EXPECT(mux.hasAudioPersona(4));
+    b.audioPersonas.clear();
+    EXPECT(!mux.hasAudioPersona(4));
 }
 
 static void test_a_disabled_device_is_asked_of_its_owner() {
@@ -609,6 +627,7 @@ int main() {
     test_lost_serials_come_from_their_owners();
     test_settled_serials_come_from_every_child();
     test_a_disabled_device_is_asked_of_its_owner();
+    test_an_audio_persona_is_asked_of_its_owner();
     test_unplug_clears_owner();
     test_unplug_unconfirmed_keeps_owner();
     test_unplug_unowned_serial_is_gone();

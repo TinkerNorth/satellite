@@ -23,6 +23,7 @@
 #include "crypto.h"
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -1072,6 +1073,10 @@ int main() {
         TEST("GET /api/diagnostics: the satellite bundle, with the client as Host 1");
         logMsg(LogLevel::INFO, "client",
                "Session from Route Pixel (dish-route-diag) at 192.168.77.5");
+        char host[256] = {};
+        gethostname(host, sizeof(host) - 1);
+        const std::string hostName(host);
+        logMsg(LogLevel::INFO, "mdns", "Announcing " + hostName + "._satellite._udp.local.");
         EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
         auto diag = cli.Get("/api/diagnostics");
         EXPECT(diag && diag->status == 200);
@@ -1090,6 +1095,18 @@ int main() {
             EXPECT(diag->body.find("dish-route-diag") == std::string::npos);
             EXPECT(diag->body.find("Route Pixel") == std::string::npos);
             EXPECT(diag->body.find("192.168.77.5") == std::string::npos);
+
+            TEST("GET /api/diagnostics: the machine's name is \"this PC\" in the log");
+            EXPECT(diag->body.find("Announcing this PC._satellite._udp.local.") !=
+                   std::string::npos);
+            if (hostName.size() >= 6) EXPECT(diag->body.find(hostName) == std::string::npos);
+
+            TEST("GET /api/diagnostics: each virtual controller carries its input and output");
+            const Json& c = j["controllers"][0];
+            EXPECT(jsonObject(c, "input").contains("frames"));
+            EXPECT(jsonObject(c, "input").contains("rateHz"));
+            EXPECT(jsonObject(jsonObject(c, "output"), "rumble").contains("count"));
+            EXPECT(jsonObject(jsonObject(c, "output"), "micLed").contains("last"));
         }
 
         svc.closeSessionById(session.connectionId, "", CLOSE_REASON_KICKED, false);

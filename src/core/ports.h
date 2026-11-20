@@ -113,6 +113,11 @@ class IGamepadPort {
     // microphone. Any thread. Default: nothing.
     virtual HostDisabled hostDisabled(uint32_t /*serial*/) const { return {}; }
 
+    // The serial's persona carries the pad's audio function (HIDMaestro's
+    // composite), as plugged: false after a fallback to the input-only one.
+    // Any thread, without a lock. Default: no backend but HIDMaestro has one.
+    virtual bool hasAudioPersona(uint32_t /*serial*/) const { return false; }
+
     // Rumble sink, invoked from a platform worker thread. Must stay callable
     // until the adapter is destroyed (SessionService outlives it).
     using RumbleCallback = std::function<void(uint32_t serial, const RumbleReport& report)>;

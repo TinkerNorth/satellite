@@ -930,6 +930,41 @@ inline const char* gameOutputName(GameOutputKind kind) {
     return "";
 }
 
+// The receive thread counts a pad's input frames per serial and nothing else;
+// the maintenance tick turns the count into a rate once a second.
+struct InputActivity {
+    // The serial's count when this pad was plugged: frames are counted from it.
+    uint64_t baseline = 0;
+    uint64_t sampled = 0;
+    int64_t sampledAtMs = 0;
+    uint32_t rateHz = 0;
+    // The first sample that saw the count move, so to within a sample period.
+    int64_t lastAtMs = 0;
+};
+
+struct OutputLane {
+    uint64_t count = 0;
+    int64_t atMs = 0;
+};
+
+// Every output report the game wrote, coalesced or not, with or without the
+// cap, and the last value of each lane.
+struct GameOutputRecord {
+    OutputLane rumble;
+    uint16_t rumbleStrong = 0;
+    uint16_t rumbleWeak = 0;
+    OutputLane lightbar;
+    uint8_t lightbarR = 0;
+    uint8_t lightbarG = 0;
+    uint8_t lightbarB = 0;
+    OutputLane triggerEffects;
+    TriggerEffectsReport triggers{};
+    OutputLane playerLeds;
+    uint8_t playerLedsMask = 0;
+    OutputLane micLed;
+    uint8_t micLedState = MIC_LED_STATE_OFF;
+};
+
 struct Controller {
     uint8_t index = 0;     // 0-based index within the connection
     uint32_t serialNo = 0; // backend serial (1..16), 0 = not plugged
@@ -986,6 +1021,14 @@ struct Controller {
     // (Unix milliseconds).
     GameOutputKind lastGameOutput = GameOutputKind::None;
     int64_t lastGameOutputAtMs = 0;
+    // The type the client last asked for; differs from controllerType after a
+    // failed replug left the old pad in place.
+    uint8_t requestedType = CONTROLLER_TYPE_XBOX;
+    // When this pad was plugged (Unix milliseconds): a log line naming its
+    // serial is about this pad only from then on.
+    int64_t pluggedAtMs = 0;
+    InputActivity input;
+    GameOutputRecord output;
 };
 
 struct HotSlot;

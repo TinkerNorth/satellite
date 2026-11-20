@@ -355,6 +355,11 @@ struct MockViGem : IGamepadPort {
         settledCalls++;
         return std::exchange(settledSet, {});
     }
+    // The serials whose persona carries the pad's audio function.
+    std::set<uint32_t> audioPersonaSet;
+    bool hasAudioPersona(uint32_t serial) const override {
+        return audioPersonaSet.count(serial) != 0;
+    }
     // The backend a plugged serial belongs to, as the mux names it.
     std::string serialBackend = "hidmaestro";
     const char* backendIdForSerial(uint32_t serial) const override {
@@ -5993,6 +5998,139 @@ static void test_lastGameOutput_recordsEachKind() {
     }
 }
 
+static void test_gameOutput_countsEveryLaneWithItsLastValue() {
+    TEST("game output: each lane counts every write, coalesced or not, with its last value");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_RUMBLE)});
+    const uint32_t serial = serialOf(svc, 0);
+    RumbleReport rumble;
+    rumble.strongMagnitude = 32768;
+    rumble.weakMagnitude = 12;
+    vigem.fireRumble(serial, rumble);
+    vigem.fireRumble(serial, rumble);
+    vigem.fireLightbar(serial, 0, 0, 255);
+    vigem.fireTriggerEffects(serial, makeTriggerEffects(0x21, 0x26));
+    vigem.firePlayerLeds(serial, 0x05);
+    vigem.firePlayerLeds(serial, 0x05);
+    vigem.firePlayerLeds(serial, 0x01);
+    vigem.fireMicLed(serial, MIC_LED_STATE_PULSE);
+    const auto snap = svc.getConnectionsSnapshot();
+    const auto* info = ctrlInfo(snap, 0);
+    EXPECT(info != nullptr);
+    if (info == nullptr) return;
+    const GameOutputRecord& out = info->output;
+    EXPECT_EQ(out.rumble.count, uint64_t{2});
+    EXPECT_EQ(out.rumbleStrong, uint16_t{32768});
+    EXPECT_EQ(out.rumbleWeak, uint16_t{12});
+    EXPECT(out.rumble.atMs > 0);
+    EXPECT_EQ(out.lightbar.count, uint64_t{1});
+    EXPECT_EQ((int)out.lightbarB, 255);
+    EXPECT_EQ(out.triggerEffects.count, uint64_t{1});
+    EXPECT(out.triggers == makeTriggerEffects(0x21, 0x26));
+    EXPECT_EQ(out.playerLeds.count, uint64_t{3});
+    EXPECT_EQ((int)out.playerLedsMask, 0x01);
+    EXPECT_EQ(out.micLed.count, uint64_t{1});
+    EXPECT_EQ(out.micLedState, MIC_LED_STATE_PULSE);
+
+    TEST("game output: a replug starts the counts again");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const auto after = svc.getConnectionsSnapshot();
+    const auto* replugged = ctrlInfo(after, 0);
+    EXPECT(replugged != nullptr && replugged->output.rumble.count == 0);
+    EXPECT(replugged != nullptr && replugged->output.playerLeds.count == 0);
+}
+
+static void test_input_countsFramesPerPadAndSamplesARate() {
+    TEST("input: each pad counts the frames it was handed, and none of another pad's");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0), makeDesc(1)});
+    for (int i = 0; i < 30; i++) EXPECT(svc.handleGamepadData(r.token, 0, InputReport{}));
+    for (int i = 0; i < 5; i++) EXPECT(svc.handleGamepadData(r.token, 1, InputReport{}));
+    EXPECT(!svc.handleGamepadData(r.token, 7, InputReport{}));
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* first = ctrlInfo(snap, 0);
+        const auto* second = ctrlInfo(snap, 1);
+        EXPECT(first != nullptr && first->input.frames == 30);
+        EXPECT(second != nullptr && second->input.frames == 5);
+        EXPECT(first != nullptr && first->input.rateHz == 0);
+        EXPECT(first != nullptr && first->input.lastAtMs == 0);
+    }
+
+    TEST("input: the maintenance sample turns the frames into a rate and a last arrival");
+    const int64_t now = wallMs();
+    svc.sampleInputActivity(now + 1000);
+    for (int i = 0; i < 50; i++) EXPECT(svc.handleGamepadData(r.token, 0, InputReport{}));
+    svc.sampleInputActivity(now + 1500);
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* first = ctrlInfo(snap, 0);
+        const auto* second = ctrlInfo(snap, 1);
+        EXPECT(first != nullptr && first->input.frames == 80);
+        EXPECT(first != nullptr && first->input.rateHz == 100);
+        EXPECT(first != nullptr && first->input.lastAtMs == now + 1500);
+        EXPECT(second != nullptr && second->input.lastAtMs == now + 1000);
+        EXPECT(second != nullptr && second->input.rateHz == 0);
+    }
+
+    TEST("input: a replug counts from zero again");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION), makeDesc(1)});
+    const auto snap = svc.getConnectionsSnapshot();
+    const auto* replugged = ctrlInfo(snap, 0);
+    EXPECT(replugged != nullptr && replugged->input.frames == 0);
+    EXPECT(replugged != nullptr && replugged->input.rateHz == 0);
+}
+
+static void test_snapshot_requestedTypeCompositeAndPlugTime() {
+    TEST("snapshot: a failed replug shows the type asked for beside the one in force");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const int64_t before = wallMs();
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX)});
+    const int64_t after = wallMs();
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr && info->requestedType == CONTROLLER_TYPE_XBOX);
+        EXPECT(info != nullptr && info->pluggedAtMs >= before && info->pluggedAtMs <= after);
+        EXPECT(info != nullptr && !info->composite);
+    }
+    vigem.pluginReturnVal = false;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION)});
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr && info->requestedType == CONTROLLER_TYPE_PLAYSTATION);
+        EXPECT(info != nullptr && info->controllerType == CONTROLLER_TYPE_XBOX);
+    }
+
+    TEST("snapshot: composite is the backend's word that the persona carries audio");
+    vigem.pluginReturnVal = true;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE)});
+    vigem.audioPersonaSet.insert(serialOf(svc, 0));
+    const auto snap = svc.getConnectionsSnapshot();
+    const auto* info = ctrlInfo(snap, 0);
+    EXPECT(info != nullptr && info->composite);
+    EXPECT(info != nullptr && info->requestedType == CONTROLLER_TYPE_DUALSENSE);
+}
+
+static void test_uptime_countsFromConstruction() {
+    TEST("uptime: whole seconds since the service was built, 0 at first");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    const SessionService svc(vigem, client, log);
+    EXPECT_EQ(svc.uptimeSeconds(), int64_t{0});
+}
+
 int main() {
     test_feedbackTest_plan();
     test_feedbackTest_names_and_bytes();
@@ -6001,6 +6139,10 @@ int main() {
     test_testController_unknownTargets();
     test_testController_leavesGameStateAlone();
     test_lastGameOutput_recordsEachKind();
+    test_gameOutput_countsEveryLaneWithItsLastValue();
+    test_input_countsFramesPerPadAndSamplesARate();
+    test_snapshot_requestedTypeCompositeAndPlugTime();
+    test_uptime_countsFromConstruction();
     test_pointer_closeReleasesButtons();
     test_pointer_timeoutReleasesButtons();
     test_pointer_shutdownReleasesButtons();

@@ -96,6 +96,11 @@ class GamepadMux : public IGamepadPort {
         return p != nullptr && p->isDevicePlugged(serial);
     }
 
+    bool hasAudioPersona(uint32_t serial) const override {
+        const IGamepadPort* p = ownerOf(serial);
+        return p != nullptr && p->hasAudioPersona(serial);
+    }
+
     bool submitReport(uint32_t serial, const GamepadReport& report) override {
         IGamepadPort* p = ownerOf(serial);
         return p != nullptr && p->submitReport(serial, report);

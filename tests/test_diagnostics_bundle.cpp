@@ -103,6 +103,19 @@ DiagnosticsInput inputFixture() {
     c.caps = CAP_RUMBLE | CAP_LIGHTBAR;
     c.lastGameOutput = GameOutputKind::Rumble;
     c.lastGameOutputAtMs = 1763586000000;
+    c.input.frames = 12345;
+    c.input.rateHz = 250;
+    c.input.lastAtMs = 1763586000500;
+    c.output.rumble = {12, 1763586000000};
+    c.output.rumbleStrong = 32768;
+    c.output.lightbar = {2, 1763585999000};
+    c.output.lightbarB = 255;
+    c.output.playerLeds = {1, 1763585998000};
+    c.output.playerLedsMask = 0x01;
+    c.output.triggerEffects = {1, 1763585997000};
+    c.output.triggers.left[0] = 0x21;
+    c.output.micLed = {3, 1763585996000};
+    c.output.micLedState = MIC_LED_STATE_PULSE;
     in.controllers = {c};
     jsonParse(R"({"packets":12,"senderIP":"192.168.1.47","tx":{"rumble":3}})", in.debug);
     jsonParse(R"({"id":"hidmaestro","backends":[{"id":"vigem","available":false}]})", in.backends);
@@ -185,6 +198,21 @@ static void test_scrub_text() {
               std::string("999.1.1.1 is no address"));
 }
 
+static void test_alias_machine() {
+    TEST("aliasMachine: the machine's names become \"this PC\" in log text, the bundle's log "
+         "included");
+    std::vector<HostAlias> aliases = aliasHosts({{SECRETS[1], SECRETS[2], SECRETS[3]}}, {});
+    aliasMachine(aliases, {"EMIR-DESKTOP", ""});
+    EXPECT_EQ(scrubDiagnosticsText("Announcing EMIR-DESKTOP._satellite._udp.local.", aliases),
+              std::string("Announcing this PC._satellite._udp.local."));
+    DiagnosticsInput in = inputFixture();
+    in.aliases = aliases;
+    in.log = {{1, "INFO", "mdns", "Announcing EMIR-DESKTOP on 192.168.1.47"}};
+    EXPECT_EQ(buildDiagnosticsBundle(in)["log"][0].value("message", std::string()),
+              std::string("Announcing this PC on Host 1"));
+    for (const HostAlias& a : aliases) EXPECT(!a.text.empty());
+}
+
 static void test_iso_utc() {
     TEST("isoUtc: Unix seconds in UTC, second precision");
     EXPECT_EQ(isoUtc(0), std::string("1970-01-01T00:00:00Z"));
@@ -261,6 +289,46 @@ static void test_bundle_envelope() {
     EXPECT_EQ(b["log"][1].value("atMs", int64_t{0}), int64_t{2});
 }
 
+static void test_bundle_controller_input_output() {
+    TEST("bundle: each controller carries its input: frames, rate and last arrival");
+    const JsonOut b = buildDiagnosticsBundle(inputFixture());
+    const JsonOut& input = b["controllers"][0]["input"];
+    EXPECT_EQ(input.value("frames", uint64_t{0}), uint64_t{12345});
+    EXPECT_EQ(input.value("rateHz", 0), 250);
+    EXPECT_EQ(input.value("lastAtMs", int64_t{0}), int64_t{1763586000500});
+
+    TEST("bundle: each controller carries its output: a count and the last value per lane");
+    const JsonOut& out = b["controllers"][0]["output"];
+    EXPECT_EQ(out["rumble"].value("count", 0), 12);
+    EXPECT_EQ(out["rumble"]["last"].value("strong", 0), 32768);
+    EXPECT_EQ(out["rumble"]["last"].value("weak", -1), 0);
+    EXPECT_EQ(out["rumble"]["last"].value("atMs", int64_t{0}), int64_t{1763586000000});
+    EXPECT_EQ(out["lightbar"].value("count", 0), 2);
+    EXPECT_EQ(out["lightbar"]["last"].value("b", 0), 255);
+    EXPECT_EQ(out["lightbar"]["last"].value("r", -1), 0);
+    EXPECT_EQ(out["playerLeds"]["last"].value("mask", std::string()), std::string("01"));
+    EXPECT_EQ(out["triggerEffects"].value("count", 0), 1);
+    EXPECT_EQ(out["triggerEffects"]["last"].value("left", std::string()).substr(0, 2),
+              std::string("21"));
+    EXPECT_EQ(out["triggerEffects"]["last"].value("right", std::string()).size(),
+              size_t{2 * TRIGGER_EFFECT_BLOCK_BYTES});
+    EXPECT_EQ(out["micLed"].value("count", 0), 3);
+    EXPECT_EQ(out["micLed"]["last"].value("state", std::string()), std::string("pulse"));
+
+    TEST("bundle: a lane the game never wrote has count 0 and a null last value, and a pad that "
+         "never sent input a null last arrival");
+    DiagnosticsInput quiet = inputFixture();
+    quiet.controllers[0].output = GameOutputRecord{};
+    quiet.controllers[0].input = InputFacts{};
+    const JsonOut q = buildDiagnosticsBundle(quiet)["controllers"][0];
+    for (const char* lane : {"rumble", "lightbar", "triggerEffects", "playerLeds", "micLed"}) {
+        EXPECT_EQ(q["output"][lane].value("count", -1), 0);
+        EXPECT(q["output"][lane]["last"].is_null());
+    }
+    EXPECT(q["input"]["lastAtMs"].is_null());
+    EXPECT_EQ(q["input"].value("frames", -1), 0);
+}
+
 static void test_bundle_log_tail() {
     TEST("bundle: only the last 500 log lines are written, oldest first");
     DiagnosticsInput in = inputFixture();
@@ -277,8 +345,10 @@ int main() {
     test_redact_any_document();
     test_alias_hosts();
     test_scrub_text();
+    test_alias_machine();
     test_iso_utc();
     test_bundle_envelope();
+    test_bundle_controller_input_output();
     test_bundle_log_tail();
     std::cout << "diagnostics_bundle: " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;

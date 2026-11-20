@@ -2,6 +2,7 @@
 #include "diagnostics_bundle.h"
 
 #include "descriptor_json.h"
+#include "hex.h"
 
 #include <algorithm>
 #include <cctype>
@@ -112,6 +113,58 @@ void civilFromDays(int64_t days, int64_t& y, unsigned& m, unsigned& d) {
     y = static_cast<int64_t>(yoe) + era * 400 + (m <= 2 ? 1 : 0);
 }
 
+constexpr const char* MIC_LED_STATE_NAMES[MIC_LED_STATE_COUNT] = {"off", "on", "pulse"};
+
+const char* micLedStateName(uint8_t state) {
+    return state < MIC_LED_STATE_COUNT ? MIC_LED_STATE_NAMES[state] : "unknown";
+}
+
+JsonOut laneJson(const OutputLane& lane, JsonOut last) {
+    JsonOut j;
+    j["count"] = lane.count;
+    if (lane.count == 0) {
+        j["last"] = nullptr;
+        return j;
+    }
+    last["atMs"] = lane.atMs;
+    j["last"] = std::move(last);
+    return j;
+}
+
+JsonOut rumbleLast(const GameOutputRecord& r) {
+    JsonOut j;
+    j["strong"] = r.rumbleStrong;
+    j["weak"] = r.rumbleWeak;
+    return j;
+}
+
+JsonOut lightbarLast(const GameOutputRecord& r) {
+    JsonOut j;
+    j["r"] = r.lightbarR;
+    j["g"] = r.lightbarG;
+    j["b"] = r.lightbarB;
+    return j;
+}
+
+JsonOut triggerEffectsLast(const GameOutputRecord& r) {
+    JsonOut j;
+    j["left"] = hexEncode(r.triggers.left, TRIGGER_EFFECT_BLOCK_BYTES);
+    j["right"] = hexEncode(r.triggers.right, TRIGGER_EFFECT_BLOCK_BYTES);
+    return j;
+}
+
+JsonOut playerLedsLast(const GameOutputRecord& r) {
+    JsonOut j;
+    j["mask"] = hexEncode(&r.playerLedsMask, 1);
+    return j;
+}
+
+JsonOut micLedLast(const GameOutputRecord& r) {
+    JsonOut j;
+    j["state"] = micLedStateName(r.micLedState);
+    return j;
+}
+
 JsonOut controllerJson(const DiagnosticsController& c) {
     JsonOut j;
     j["host"] = c.host;
@@ -122,6 +175,8 @@ JsonOut controllerJson(const DiagnosticsController& c) {
     j["pluggedIn"] = c.pluggedIn;
     j["caps"] = capsJsonObj(c.caps);
     j["lastGameOutput"] = gameOutputJson(c.lastGameOutput, c.lastGameOutputAtMs);
+    j["input"] = controllerInputJson(c.input);
+    j["output"] = controllerOutputJson(c.output);
     return j;
 }
 
@@ -172,6 +227,10 @@ std::vector<HostAlias> aliasHosts(const std::vector<HostIdentity>& connected,
     return out;
 }
 
+void aliasMachine(std::vector<HostAlias>& aliases, const std::vector<std::string>& names) {
+    for (const std::string& name : names) addAlias(aliases, name, DIAGNOSTICS_THIS_PC);
+}
+
 std::string scrubDiagnosticsText(const std::string& text, const std::vector<HostAlias>& aliases) {
     std::vector<HostAlias> longestFirst = aliases;
     std::stable_sort(
@@ -218,6 +277,28 @@ JsonOut gameOutputJson(GameOutputKind kind, int64_t atMs) {
     JsonOut j;
     j["kind"] = gameOutputName(kind);
     j["atMs"] = atMs;
+    return j;
+}
+
+JsonOut controllerInputJson(const InputFacts& input) {
+    JsonOut j;
+    j["frames"] = input.frames;
+    j["rateHz"] = input.rateHz;
+    if (input.lastAtMs == 0) {
+        j["lastAtMs"] = nullptr;
+    } else {
+        j["lastAtMs"] = input.lastAtMs;
+    }
+    return j;
+}
+
+JsonOut controllerOutputJson(const GameOutputRecord& output) {
+    JsonOut j;
+    j["rumble"] = laneJson(output.rumble, rumbleLast(output));
+    j["lightbar"] = laneJson(output.lightbar, lightbarLast(output));
+    j["triggerEffects"] = laneJson(output.triggerEffects, triggerEffectsLast(output));
+    j["playerLeds"] = laneJson(output.playerLeds, playerLedsLast(output));
+    j["micLed"] = laneJson(output.micLed, micLedLast(output));
     return j;
 }
 

@@ -549,6 +549,8 @@ static void readDiagnosticsSessions(SessionService& svc, const Config& cfg,
             d.caps = c.caps;
             d.lastGameOutput = c.lastGameOutput;
             d.lastGameOutputAtMs = c.lastGameOutputAtMs;
+            d.input = c.input;
+            d.output = c.output;
             in.controllers.push_back(d);
         }
     }
@@ -560,16 +562,7 @@ static void readDiagnosticsSessions(SessionService& svc, const Config& cfg,
         if (!isConnected) pairedOnly.push_back({d.id, d.name, d.lastIP});
     }
     in.aliases = satellite::aliasHosts(connected, pairedOnly);
-}
-
-static void readDiagnosticsLog(satellite::DiagnosticsInput& in) {
-    std::vector<satellite::LogRingEntry> entries;
-    logWriter().recent().copySince(0, entries);
-    for (const auto& e : entries) {
-        in.log.push_back({e.record.timestampNs / 1'000'000,
-                          satellite::logLevelLabel(e.record.level),
-                          std::string(e.record.sourceText()), std::string(e.record.messageText())});
-    }
+    satellite::aliasMachine(in.aliases, machineNames());
 }
 
 // GET /api/diagnostics: the dish-diagnostics.v1 file, redacted in
@@ -590,7 +583,7 @@ static void diagnosticsRoute(SessionService& svc, const Request&, Response& res)
     satellite::jsonParse(buildDebugJson(readDebugFields(svc, maxUs)), in.debug);
     satellite::jsonParse(buildBackendStatusJson(), in.backends);
     satellite::jsonParse(satellite::serializeConfig(*cfg), in.config);
-    readDiagnosticsLog(in);
+    in.log = recentLogLines();
     replyJson(res, jsonDump(satellite::buildDiagnosticsBundle(in)));
 }
 

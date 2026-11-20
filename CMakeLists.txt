@@ -136,6 +136,7 @@ set(SATELLITE_CORE_SOURCES
     src/core/controller_db_service.cpp
     src/core/feedback_test.cpp
     src/core/diagnostics_bundle.cpp
+    src/core/connection_diagnostics.cpp
     src/core/backend_registry.cpp
     src/core/update_service.cpp
     src/core/github_release.cpp
@@ -1422,6 +1423,7 @@ if(WIN32)
             src/core/session_service.cpp
             src/core/feedback_test.cpp
             src/core/diagnostics_bundle.cpp
+            src/core/connection_diagnostics.cpp
             src/core/controller_db.cpp
             src/core/controller_db_service.cpp
             src/net/admin_json.cpp
@@ -1616,6 +1618,12 @@ satellite_add_pure_test(test_controller_db_service tests/test_controller_db_serv
                         src/core/controller_db_service.cpp src/core/controller_db.cpp
                         src/core/config_store.cpp)
 target_link_libraries(test_controller_db_service PRIVATE Threads::Threads)
+satellite_add_pure_test(test_controller_activity tests/test_controller_activity.cpp)
+satellite_add_pure_test(test_connection_diagnostics tests/test_connection_diagnostics.cpp
+                        src/core/connection_diagnostics.cpp src/core/diagnostics_bundle.cpp
+                        src/core/controller_db_service.cpp src/core/controller_db.cpp
+                        src/core/config_store.cpp)
+target_link_libraries(test_connection_diagnostics PRIVATE Threads::Threads)
 satellite_add_pure_test(test_diagnostics_bundle tests/test_diagnostics_bundle.cpp
                         src/core/diagnostics_bundle.cpp src/core/controller_db_service.cpp
                         src/core/controller_db.cpp src/core/config_store.cpp)
