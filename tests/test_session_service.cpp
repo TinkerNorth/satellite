@@ -355,6 +355,11 @@ struct MockViGem : IGamepadPort {
         settledCalls++;
         return std::exchange(settledSet, {});
     }
+    // The serials whose persona carries the pad's audio function.
+    std::set<uint32_t> audioPersonaSet;
+    bool hasAudioPersona(uint32_t serial) const override {
+        return audioPersonaSet.count(serial) != 0;
+    }
     // The backend a plugged serial belongs to, as the mux names it.
     std::string serialBackend = "hidmaestro";
     const char* backendIdForSerial(uint32_t serial) const override {
@@ -5746,7 +5751,398 @@ static void test_rumble_levelOnAFreeSerialIsNotInherited() {
     EXPECT_EQ(svc.refreshRumble(), 0);
 }
 
+// The Test button (core/feedback_test.h): the plan, the bytes, and the burst
+// SessionService sends through the client port.
+using satellite::FEEDBACK_LANES;
+using satellite::FeedbackLane;
+using satellite::FeedbackTestPlan;
+
+static const uint16_t ALL_FEEDBACK_CAPS =
+    CAP_RUMBLE | CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_TRIGGER_EFFECTS | CAP_MIC;
+
+static std::vector<FeedbackLane> everyLane() {
+    std::vector<FeedbackLane> lanes;
+    for (const auto& info : FEEDBACK_LANES) lanes.push_back(info.lane);
+    return lanes;
+}
+
+static void test_feedbackTest_plan() {
+    TEST("test plan: every lane the caps claim is sent, in table order");
+    FeedbackTestPlan plan = satellite::planFeedbackTest(ALL_FEEDBACK_CAPS, everyLane());
+    EXPECT(plan.sent == everyLane());
+    EXPECT(plan.skipped.empty());
+
+    TEST("test plan: lanes the caps do not claim are skipped");
+    plan = satellite::planFeedbackTest(0, everyLane());
+    EXPECT(plan.sent.empty());
+    EXPECT(plan.skipped == everyLane());
+
+    TEST("test plan: a lane not asked for is neither sent nor skipped");
+    plan = satellite::planFeedbackTest(ALL_FEEDBACK_CAPS,
+                                       {FeedbackLane::Lightbar, FeedbackLane::Rumble});
+    EXPECT((plan.sent == std::vector<FeedbackLane>{FeedbackLane::Rumble, FeedbackLane::Lightbar}));
+    EXPECT(plan.skipped.empty());
+
+    TEST("test plan: a lane asked for twice goes out once");
+    plan = satellite::planFeedbackTest(CAP_RUMBLE, {FeedbackLane::Rumble, FeedbackLane::Rumble});
+    EXPECT((plan.sent == std::vector<FeedbackLane>{FeedbackLane::Rumble}));
+
+    TEST("test plan: the mic lamp rides CAP_MIC, the way the game's lamp does");
+    plan = satellite::planFeedbackTest(CAP_MIC, {FeedbackLane::MicLed, FeedbackLane::Lightbar});
+    EXPECT((plan.sent == std::vector<FeedbackLane>{FeedbackLane::MicLed}));
+    EXPECT((plan.skipped == std::vector<FeedbackLane>{FeedbackLane::Lightbar}));
+}
+
+static void test_feedbackTest_names_and_bytes() {
+    TEST("test lanes: every lane reads back from its name, and an unknown name does not");
+    for (const auto& info : FEEDBACK_LANES) {
+        FeedbackLane parsed = FeedbackLane::MicLed;
+        EXPECT(satellite::parseFeedbackLane(info.name, parsed));
+        EXPECT(parsed == info.lane);
+        EXPECT_EQ(std::string(satellite::feedbackLaneName(info.lane)), std::string(info.name));
+    }
+    FeedbackLane unused = FeedbackLane::Rumble;
+    EXPECT(!satellite::parseFeedbackLane("speaker", unused));
+
+    TEST("test bytes: rumble at half on both motors for 500 ms");
+    const RumbleReport r = satellite::testRumbleReport();
+    EXPECT_EQ(r.strongMagnitude, uint16_t{0x8000});
+    EXPECT_EQ(r.weakMagnitude, uint16_t{0x8000});
+    EXPECT_EQ(r.durationMs, uint16_t{500});
+
+    TEST("test bytes: a mild constant resistance on both triggers, the rest zero");
+    const TriggerEffectsReport t = satellite::testTriggerEffectsReport();
+    TriggerEffectsReport expected{};
+    expected.left[0] = expected.right[0] = 0x01;
+    expected.left[2] = expected.right[2] = 0x40;
+    EXPECT((t == expected));
+}
+
+static void test_feedbackTest_parseLanes() {
+    using satellite::Json;
+    std::vector<FeedbackLane> lanes;
+    std::string bad;
+
+    TEST("test lanes: the body's lanes array reads as lanes, in its order");
+    Json body = Json::parse(R"({"lanes":["micLed","rumble"]})");
+    EXPECT(satellite::parseFeedbackLanes(body, lanes, bad));
+    EXPECT((lanes == std::vector<FeedbackLane>{FeedbackLane::MicLed, FeedbackLane::Rumble}));
+
+    TEST("test lanes: an empty array is an empty request");
+    EXPECT(satellite::parseFeedbackLanes(Json::parse(R"({"lanes":[]})"), lanes, bad));
+    EXPECT(lanes.empty());
+
+    TEST("test lanes: no lanes array, or a lane nobody defined, is refused and named");
+    EXPECT(!satellite::parseFeedbackLanes(Json::parse("{}"), lanes, bad));
+    EXPECT(!satellite::parseFeedbackLanes(Json::parse(R"({"lanes":"rumble"})"), lanes, bad));
+    EXPECT(!satellite::parseFeedbackLanes(Json::parse(R"({"lanes":["rumble","speaker"]})"), lanes,
+                                          bad));
+    EXPECT_EQ(bad, std::string("speaker"));
+    EXPECT(!satellite::parseFeedbackLanes(Json::parse(R"({"lanes":[3]})"), lanes, bad));
+}
+
+static uint32_t serialOf(SessionService& svc, uint8_t index) {
+    const auto snap = svc.getConnectionsSnapshot();
+    for (const auto& c : snap.connections[0].controllers) {
+        if (c.index == index) return c.serial;
+    }
+    return 0;
+}
+
+static const SessionService::ConnectionSnapshot::CtrlInfo*
+ctrlInfo(const SessionService::ConnectionsSnapshot& snap, uint8_t index) {
+    for (const auto& c : snap.connections[0].controllers) {
+        if (c.index == index) return &c;
+    }
+    return nullptr;
+}
+
+static void test_testController_sendsClaimedLanes() {
+    TEST("test burst: each claimed lane leaves once as its existing message");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(1, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 1, everyLane(), plan));
+    EXPECT(plan.sent == everyLane());
+    EXPECT_EQ(client.rumbleCalls, 1);
+    EXPECT_EQ((int)client.lastRumbleCtrlIdx, 1);
+    EXPECT_EQ(client.lastRumble.strongMagnitude, uint16_t{0x8000});
+    EXPECT_EQ(client.lastRumble.weakMagnitude, uint16_t{0x8000});
+    EXPECT_EQ(client.lastRumble.durationMs, uint16_t{500});
+    EXPECT_EQ(client.lightbarCalls, 1);
+    EXPECT_EQ((int)client.lastLightbarR, 255);
+    EXPECT_EQ((int)client.lastLightbarG, 255);
+    EXPECT_EQ((int)client.lastLightbarB, 255);
+    EXPECT_EQ(client.playerLedsCalls, 1);
+    EXPECT_EQ((int)client.lastPlayerLeds, 1);
+    EXPECT_EQ(client.triggerEffectsCalls, 1);
+    EXPECT((client.lastTriggerEffects == satellite::testTriggerEffectsReport()));
+    EXPECT_EQ(client.micLedCalls, 1);
+    EXPECT_EQ((int)client.lastMicLedState, (int)MIC_LED_STATE_PULSE);
+    EXPECT_EQ((int)client.lastMicLedCtrlIdx, 1);
+
+    TEST("test burst: a lane the descriptor did not claim is skipped and never sent");
+    MockClient client2;
+    SessionService svc2(vigem, client2, log);
+    const auto r2 = upsert(svc2, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)}, "dev2");
+    FeedbackTestPlan plan2;
+    EXPECT(svc2.testController(r2.connectionId, 0, everyLane(), plan2));
+    EXPECT((plan2.sent == std::vector<FeedbackLane>{FeedbackLane::Rumble}));
+    EXPECT_EQ(plan2.skipped.size(), size_t{4});
+    EXPECT_EQ(client2.rumbleCalls, 1);
+    EXPECT_EQ(client2.lightbarCalls + client2.playerLedsCalls + client2.triggerEffectsCalls +
+                  client2.micLedCalls,
+              0);
+}
+
+static void test_testController_unknownTargets() {
+    TEST("test burst: an unknown connection or an empty slot is not found and sends nothing");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    FeedbackTestPlan plan;
+    EXPECT(!svc.testController("conn_nothere", 0, everyLane(), plan));
+    EXPECT(!svc.testController(r.connectionId, 3, everyLane(), plan));
+    EXPECT_EQ(client.rumbleCalls + client.lightbarCalls, 0);
+}
+
+static void test_testController_leavesGameStateAlone() {
+    TEST("test burst: the game's light bar and last output stay what the game wrote");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    const uint32_t serial = serialOf(svc, 0);
+    vigem.fireLightbar(serial, 255, 0, 0);
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    const auto snap = svc.getConnectionsSnapshot();
+    const auto* info = ctrlInfo(snap, 0);
+    EXPECT(info != nullptr);
+    if (info == nullptr) return;
+    EXPECT_EQ((int)info->lightbarR, 255);
+    EXPECT_EQ((int)info->lightbarG, 0);
+    EXPECT(info->lastGameOutput == GameOutputKind::Lightbar);
+}
+
+static int64_t wallMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+static void test_lastGameOutput_recordsEachKind() {
+    TEST("last game output: none until the game writes");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_RUMBLE | CAP_MIC)});
+    const uint32_t serial = serialOf(svc, 0);
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr && info->lastGameOutput == GameOutputKind::None);
+        EXPECT(info != nullptr && info->lastGameOutputAtMs == 0);
+        EXPECT(info != nullptr && info->caps == (CAP_RUMBLE | CAP_MIC));
+    }
+
+    struct Write {
+        GameOutputKind kind;
+        std::function<void()> fire;
+    };
+    RumbleReport rumble;
+    rumble.strongMagnitude = 1000;
+    const std::vector<Write> writes = {
+        {GameOutputKind::Rumble, [&] { vigem.fireRumble(serial, rumble); }},
+        {GameOutputKind::Lightbar, [&] { vigem.fireLightbar(serial, 1, 2, 3); }},
+        {GameOutputKind::TriggerEffects,
+         [&] { vigem.fireTriggerEffects(serial, makeTriggerEffects(0x21, 0x26)); }},
+        {GameOutputKind::PlayerLeds, [&] { vigem.firePlayerLeds(serial, 0x04); }},
+        {GameOutputKind::MicLed, [&] { vigem.fireMicLed(serial, MIC_LED_STATE_ON); }},
+    };
+    for (const Write& w : writes) {
+        TEST(std::string("last game output: a ") + gameOutputName(w.kind) +
+             " write is recorded with its time, cap or not");
+        const int64_t before = wallMs();
+        w.fire();
+        const int64_t after = wallMs();
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr);
+        if (info == nullptr) continue;
+        EXPECT(info->lastGameOutput == w.kind);
+        EXPECT(info->lastGameOutputAtMs >= before && info->lastGameOutputAtMs <= after);
+    }
+
+    TEST("last game output: a write the wire coalesces away is still what the game sent");
+    vigem.fireRumble(serial, rumble);
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr && info->lastGameOutput == GameOutputKind::Rumble);
+    }
+
+    TEST("last game output: a stray serial records nothing");
+    vigem.fireLightbar(9999, 9, 9, 9);
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr && info->lastGameOutput == GameOutputKind::Rumble);
+    }
+}
+
+static void test_gameOutput_countsEveryLaneWithItsLastValue() {
+    TEST("game output: each lane counts every write, coalesced or not, with its last value");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_RUMBLE)});
+    const uint32_t serial = serialOf(svc, 0);
+    RumbleReport rumble;
+    rumble.strongMagnitude = 32768;
+    rumble.weakMagnitude = 12;
+    vigem.fireRumble(serial, rumble);
+    vigem.fireRumble(serial, rumble);
+    vigem.fireLightbar(serial, 0, 0, 255);
+    vigem.fireTriggerEffects(serial, makeTriggerEffects(0x21, 0x26));
+    vigem.firePlayerLeds(serial, 0x05);
+    vigem.firePlayerLeds(serial, 0x05);
+    vigem.firePlayerLeds(serial, 0x01);
+    vigem.fireMicLed(serial, MIC_LED_STATE_PULSE);
+    const auto snap = svc.getConnectionsSnapshot();
+    const auto* info = ctrlInfo(snap, 0);
+    EXPECT(info != nullptr);
+    if (info == nullptr) return;
+    const GameOutputRecord& out = info->output;
+    EXPECT_EQ(out.rumble.count, uint64_t{2});
+    EXPECT_EQ(out.rumbleStrong, uint16_t{32768});
+    EXPECT_EQ(out.rumbleWeak, uint16_t{12});
+    EXPECT(out.rumble.atMs > 0);
+    EXPECT_EQ(out.lightbar.count, uint64_t{1});
+    EXPECT_EQ((int)out.lightbarB, 255);
+    EXPECT_EQ(out.triggerEffects.count, uint64_t{1});
+    EXPECT(out.triggers == makeTriggerEffects(0x21, 0x26));
+    EXPECT_EQ(out.playerLeds.count, uint64_t{3});
+    EXPECT_EQ((int)out.playerLedsMask, 0x01);
+    EXPECT_EQ(out.micLed.count, uint64_t{1});
+    EXPECT_EQ(out.micLedState, MIC_LED_STATE_PULSE);
+
+    TEST("game output: a replug starts the counts again");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX, CAP_RUMBLE)});
+    const auto after = svc.getConnectionsSnapshot();
+    const auto* replugged = ctrlInfo(after, 0);
+    EXPECT(replugged != nullptr && replugged->output.rumble.count == 0);
+    EXPECT(replugged != nullptr && replugged->output.playerLeds.count == 0);
+}
+
+static void test_input_countsFramesPerPadAndSamplesARate() {
+    TEST("input: each pad counts the frames it was handed, and none of another pad's");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0), makeDesc(1)});
+    for (int i = 0; i < 30; i++) EXPECT(svc.handleGamepadData(r.token, 0, InputReport{}));
+    for (int i = 0; i < 5; i++) EXPECT(svc.handleGamepadData(r.token, 1, InputReport{}));
+    EXPECT(!svc.handleGamepadData(r.token, 7, InputReport{}));
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* first = ctrlInfo(snap, 0);
+        const auto* second = ctrlInfo(snap, 1);
+        EXPECT(first != nullptr && first->input.frames == 30);
+        EXPECT(second != nullptr && second->input.frames == 5);
+        EXPECT(first != nullptr && first->input.rateHz == 0);
+        EXPECT(first != nullptr && first->input.lastAtMs == 0);
+    }
+
+    TEST("input: the maintenance sample turns the frames into a rate and a last arrival");
+    const int64_t now = wallMs();
+    svc.sampleInputActivity(now + 1000);
+    for (int i = 0; i < 50; i++) EXPECT(svc.handleGamepadData(r.token, 0, InputReport{}));
+    svc.sampleInputActivity(now + 1500);
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* first = ctrlInfo(snap, 0);
+        const auto* second = ctrlInfo(snap, 1);
+        EXPECT(first != nullptr && first->input.frames == 80);
+        EXPECT(first != nullptr && first->input.rateHz == 100);
+        EXPECT(first != nullptr && first->input.lastAtMs == now + 1500);
+        EXPECT(second != nullptr && second->input.lastAtMs == now + 1000);
+        EXPECT(second != nullptr && second->input.rateHz == 0);
+    }
+
+    TEST("input: a replug counts from zero again");
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION), makeDesc(1)});
+    const auto snap = svc.getConnectionsSnapshot();
+    const auto* replugged = ctrlInfo(snap, 0);
+    EXPECT(replugged != nullptr && replugged->input.frames == 0);
+    EXPECT(replugged != nullptr && replugged->input.rateHz == 0);
+}
+
+static void test_snapshot_requestedTypeCompositeAndPlugTime() {
+    TEST("snapshot: a failed replug shows the type asked for beside the one in force");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const int64_t before = wallMs();
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_XBOX)});
+    const int64_t after = wallMs();
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr && info->requestedType == CONTROLLER_TYPE_XBOX);
+        EXPECT(info != nullptr && info->pluggedAtMs >= before && info->pluggedAtMs <= after);
+        EXPECT(info != nullptr && !info->composite);
+    }
+    vigem.pluginReturnVal = false;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION)});
+    {
+        const auto snap = svc.getConnectionsSnapshot();
+        const auto* info = ctrlInfo(snap, 0);
+        EXPECT(info != nullptr && info->requestedType == CONTROLLER_TYPE_PLAYSTATION);
+        EXPECT(info != nullptr && info->controllerType == CONTROLLER_TYPE_XBOX);
+    }
+
+    TEST("snapshot: composite is the backend's word that the persona carries audio");
+    vigem.pluginReturnVal = true;
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE)});
+    vigem.audioPersonaSet.insert(serialOf(svc, 0));
+    const auto snap = svc.getConnectionsSnapshot();
+    const auto* info = ctrlInfo(snap, 0);
+    EXPECT(info != nullptr && info->composite);
+    EXPECT(info != nullptr && info->requestedType == CONTROLLER_TYPE_DUALSENSE);
+}
+
+static void test_uptime_countsFromConstruction() {
+    TEST("uptime: whole seconds since the service was built, 0 at first");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    const SessionService svc(vigem, client, log);
+    EXPECT_EQ(svc.uptimeSeconds(), int64_t{0});
+}
+
 int main() {
+    test_feedbackTest_plan();
+    test_feedbackTest_names_and_bytes();
+    test_feedbackTest_parseLanes();
+    test_testController_sendsClaimedLanes();
+    test_testController_unknownTargets();
+    test_testController_leavesGameStateAlone();
+    test_lastGameOutput_recordsEachKind();
+    test_gameOutput_countsEveryLaneWithItsLastValue();
+    test_input_countsFramesPerPadAndSamplesARate();
+    test_snapshot_requestedTypeCompositeAndPlugTime();
+    test_uptime_countsFromConstruction();
     test_pointer_closeReleasesButtons();
     test_pointer_timeoutReleasesButtons();
     test_pointer_shutdownReleasesButtons();

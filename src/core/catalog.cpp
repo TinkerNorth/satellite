@@ -111,8 +111,9 @@ const std::vector<std::string>& catalogStringKeys() {
     return keys;
 }
 
-std::string catalogETag(const std::string& serverVersion, const std::string& locale) {
-    return "\"" + serverVersion + "+" + locale + "\"";
+std::string catalogETag(const std::string& serverVersion, const std::string& locale,
+                        long dbVersion) {
+    return "\"" + serverVersion + "+" + locale + "+db" + std::to_string(dbVersion) + "\"";
 }
 
 namespace {
@@ -145,39 +146,56 @@ JsonOut extendedButtonsJson(uint32_t bits) {
 }
 
 // Physical-pad identity this virtual type is the natural default for. Carried
-// for a FUTURE client-side matcher: the physical->virtual mapping policy lives
-// here on the host, not in each client's switch. Current clients ignore it and
-// default to the first offered type. Protocol constants, never localized;
-// sdlType mirrors the clients' SDL_GameControllerType vocabulary, usb is
-// lowercase "vid:pid" (array admits more hardware revisions without a bump).
-JsonOut emulatesJson(const std::string& slug) {
-    JsonOut j;
-    if (slug == "xbox360") {
-        j["sdlType"] = "xbox360";
-        j["usb"] = JsonOut::array({"045e:028e"});
-    } else if (slug == "ds4") {
-        j["sdlType"] = "ps4";
-        // Both revisions: ViGEm materializes the v1 identity (05c4), HIDMaestro's
-        // dualshock-4-v2 profiles the v2 (09cc) - and only the v2 hardware carries
-        // the USB audio function the mic/speaker feature slugs describe.
-        j["usb"] = JsonOut::array({"054c:05c4", "054c:09cc"});
-    } else if (slug == "dualsense") {
-        j["sdlType"] = "ps5";
-        j["usb"] = JsonOut::array({"054c:0ce6"});
-    } else if (slug == "switchpro") {
-        j["sdlType"] = "switchpro";
-        j["usb"] = JsonOut::array({"057e:2009"});
-    } else if (slug == "dualsenseedge") {
-        // Only the Edge itself: a matcher must not default another pad (a
-        // Steam Controller among them) to it.
-        j["sdlType"] = "ps5";
-        j["usb"] = JsonOut::array({"054c:0df2"});
+// for a client-side matcher: the physical->virtual mapping policy lives here on
+// the host, not in each client's switch. Current clients ignore it and default
+// to the first offered type. Protocol constants, never localized; sdlType
+// mirrors the clients' SDL_GameControllerType vocabulary, usb is lowercase
+// "vid:pid" (an array admits more hardware revisions without a bump).
+struct EmulatedType {
+    const char* slug;
+    const char* sdlType;
+    // input.protocol.ref of the physical pad this type stands in for.
+    const char* twinFamily;
+    std::vector<std::string> usb;
+};
+
+// ds4 lists both revisions: ViGEm materializes the v1 identity (05c4),
+// HIDMaestro's dualshock-4-v2 profiles the v2 (09cc), and only the v2 hardware
+// carries the USB audio function the mic/speaker feature slugs describe. The
+// Edge lists only itself, so a matcher never defaults another pad (a Steam
+// Controller among them) to it.
+const std::vector<EmulatedType>& emulatedTypes() {
+    static const std::vector<EmulatedType> types = {
+        {"xbox360", "xbox360", "xinput360", {"045e:028e"}},
+        {"ds4", "ps4", "dualshock4", {"054c:05c4", "054c:09cc"}},
+        {"dualsense", "ps5", "dualsense", {"054c:0ce6"}},
+        {"switchpro", "switchpro", "switchProUsb", {"057e:2009"}},
+        {"dualsenseedge", "ps5", "dualsense", {"054c:0df2"}},
+    };
+    return types;
+}
+
+const EmulatedType* findEmulatedType(const std::string& slug) {
+    for (const EmulatedType& t : emulatedTypes()) {
+        if (slug == t.slug) return &t;
     }
+    return nullptr;
+}
+
+JsonOut emulatesJson(const std::string& slug, const ControllerDb& controllers) {
+    JsonOut j;
+    const EmulatedType* type = findEmulatedType(slug);
+    if (type == nullptr) return j;
+    j["sdlType"] = type->sdlType;
+    JsonOut usb = JsonOut::array();
+    for (const std::string& id : catalogEmulatedUsb(slug, controllers)) usb.push_back(id);
+    j["usb"] = std::move(usb);
     return j;
 }
 
 JsonOut typeJson(int id, const std::string& slug, const Json& lang, const Json& en,
-                 const std::string& serverVersion, JsonOut features) {
+                 const std::string& serverVersion, const ControllerDb& controllers,
+                 JsonOut features) {
     const std::string base = "catalog.type." + slug + ".";
     JsonOut j;
     j["id"] = id;
@@ -191,7 +209,7 @@ JsonOut typeJson(int id, const std::string& slug, const Json& lang, const Json& 
     j["image"] = std::move(image);
     j["features"] = std::move(features);
     // Only offered types are built here, so emulates rides only offered types.
-    JsonOut emulates = emulatesJson(slug);
+    JsonOut emulates = emulatesJson(slug, controllers);
     if (!emulates.empty()) j["emulates"] = std::move(emulates);
     return j;
 }
@@ -200,7 +218,7 @@ JsonOut typeJson(int id, const std::string& slug, const Json& lang, const Json& 
 
 std::string buildCatalogJson(const std::string& locale, const std::string& langJson,
                              const std::string& enJson, const std::string& serverVersion,
-                             const CatalogBackendTraits& traits) {
+                             const CatalogBackendTraits& traits, const ControllerDb& controllers) {
     Json lang, en;
     if (!jsonParse(langJson, lang)) lang = Json::object();
     if (!jsonParse(enJson, en)) en = Json::object();
@@ -247,14 +265,15 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         xbox["speaker"] = featureJson(false);
         xbox["hapticAudio"] = featureJson(false);
         xbox["extendedButtons"] = extendedButtonsJson(traits.xboxExtButtons);
-        types.push_back(typeJson(0, "xbox360", lang, en, serverVersion, std::move(xbox)));
+        types.push_back(
+            typeJson(0, "xbox360", lang, en, serverVersion, controllers, std::move(xbox)));
     }
     if (traits.offersDS4) {
         // DS4 has no adaptive triggers and no player LEDs (lightbar only), but
         // the v2 pad does carry a headset audio function, so mic/speaker ride
         // the traits like the rest.
         types.push_back(
-            typeJson(1, "ds4", lang, en, serverVersion,
+            typeJson(1, "ds4", lang, en, serverVersion, controllers,
                      ds4LikeFeatures(traits.ds4MotionSupported, traits.ds4MotionRequires,
                                      traits.ds4TouchpadSupported, traits.ds4LightbarSupported,
                                      false, false, traits.ds4MicSupported,
@@ -262,7 +281,7 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     }
     if (traits.offersDualSense) {
         types.push_back(typeJson(
-            2, "dualsense", lang, en, serverVersion,
+            2, "dualsense", lang, en, serverVersion, controllers,
             ds4LikeFeatures(traits.dualsenseMotionSupported, traits.dualsenseMotionRequires,
                             traits.dualsenseTouchpadSupported, traits.dualsenseLightbarSupported,
                             traits.dualsenseTriggerEffectsSupported,
@@ -284,13 +303,14 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
         sw["speaker"] = featureJson(false);
         sw["hapticAudio"] = featureJson(false);
         sw["extendedButtons"] = extendedButtonsJson(traits.switchProExtButtons);
-        types.push_back(typeJson(3, "switchpro", lang, en, serverVersion, std::move(sw)));
+        types.push_back(
+            typeJson(3, "switchpro", lang, en, serverVersion, controllers, std::move(sw)));
     }
     if (traits.offersDualSenseEdge) {
         // Last on purpose: a client defaults to the first offered type, and the
         // Edge is never the default.
         types.push_back(typeJson(
-            4, "dualsenseedge", lang, en, serverVersion,
+            4, "dualsenseedge", lang, en, serverVersion, controllers,
             ds4LikeFeatures(
                 traits.dualsenseEdgeMotionSupported, traits.dualsenseEdgeMotionRequires,
                 traits.dualsenseEdgeTouchpadSupported, traits.dualsenseEdgeLightbarSupported,
@@ -318,6 +338,28 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
     host["rumble"] = std::move(rumble);
     j["hostFeatures"] = std::move(host);
     return jsonDump(j);
+}
+
+namespace {
+
+bool twinCarries(const EmulatedType& type, const std::string& id, const ControllerDb& controllers) {
+    for (const ControllerRecord* record : controllers.findAll(id)) {
+        if (record->family == type.twinFamily) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+std::vector<std::string> catalogEmulatedUsb(const std::string& slug,
+                                            const ControllerDb& controllers) {
+    std::vector<std::string> usb;
+    const EmulatedType* type = findEmulatedType(slug);
+    if (type == nullptr) return usb;
+    for (const std::string& id : type->usb) {
+        if (twinCarries(*type, id, controllers)) usb.push_back(id);
+    }
+    return usb;
 }
 
 std::string buildHostBlockJson(const CatalogBackendTraits& traits, bool backendAvailable) {

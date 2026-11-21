@@ -12,8 +12,12 @@
 // bare port stubs, so no virtual-gamepad backend is needed. Hermeticity: HOME
 // and XDG_CONFIG_HOME are redirected into a per-run tmpdir, so saveConfig()
 // inside the pairing routes never touches the real user profile.
+#include "../src/adapters/controller_db_adapter.h"
+#include "../src/core/controller_db_service.h"
 #include "../src/core/json.h"
+#include "../src/core/log_writer.h"
 #include "../src/core/session_service.h"
+#include "../src/core/version.h"
 #include "../src/net/pairing_service.h"
 #include "../src/net/routes_client.h"
 #include "../src/net/session_crypto.h"
@@ -22,11 +26,15 @@
 
 #include <sodium.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 
@@ -35,6 +43,7 @@
 using satellite::Json;
 using satellite::jsonBool;
 using satellite::jsonInt;
+using satellite::jsonObject;
 using satellite::jsonParse;
 using satellite::jsonStr;
 
@@ -97,6 +106,15 @@ struct StubClient : IClientPort {
 struct StubLog : ILogPort {
     void logMsg(LogLevel, const std::string&, const std::string&) override {}
 };
+
+struct DiscardingLogSink : satellite::ILogSink {
+    bool write(std::string_view) override { return true; }
+    bool flush() override { return true; }
+    bool rotateIfDue() override { return false; }
+    void purge() override {}
+};
+
+constexpr std::chrono::seconds LOG_FLUSH_DEADLINE{5};
 
 static Json parseJson(const std::string& body) {
     Json j;
@@ -161,6 +179,7 @@ int main() {
     TempHome home;
     g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
     g_appRunning = true;
+    logWriter().start(std::make_unique<DiscardingLogSink>());
 
     StubGamepad gamepad;
     StubClient clientPort;
@@ -555,6 +574,83 @@ int main() {
         auto res = cli.Get("/api/connections/conn_ffffffff", auth);
         EXPECT(res && res->status == 404);
     }
+    // ---- GET /api/connections/:id/diagnostics ---------------------------------
+    {
+        TEST("GET /api/connections/:id/diagnostics without credentials: 401");
+        const std::string path = "/api/connections/" + connId + "/diagnostics";
+        auto none = cli.Get(path.c_str());
+        EXPECT(none && none->status == 401);
+        if (none) EXPECT_EQ(jsonStr(parseJson(none->body), "code"), std::string("NOT_PAIRED"));
+
+        TEST("GET /api/connections/:id/diagnostics with a proof of the wrong key: 401 BAD_PROOF");
+        uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
+        httplib::Headers wrong = {{"X-Device-Id", devId},
+                                  {"X-Hmac-Proof", computeHmacProof(otherKey, devId)}};
+        auto bad = cli.Get(path.c_str(), wrong);
+        EXPECT(bad && bad->status == 401);
+        if (bad) EXPECT_EQ(jsonStr(parseJson(bad->body), "code"), std::string("BAD_PROOF"));
+
+        TEST("GET /api/connections/:id/diagnostics for an unknown connection: 404");
+        auto unknown = cli.Get("/api/connections/conn_ffffffff/diagnostics", auth);
+        EXPECT(unknown && unknown->status == 404);
+
+        TEST("GET /api/connections/:id/diagnostics for another device's connection: 404");
+        const std::string otherId = "dev-routes-other";
+        uint8_t secondKey[CRYPTO_KEY_SIZE];
+        for (int i = 0; i < CRYPTO_KEY_SIZE; i++) secondKey[i] = static_cast<uint8_t>(0x3C ^ i);
+        putPairedDevice(otherId, hexEncode(secondKey, CRYPTO_KEY_SIZE));
+        const httplib::Headers otherAuth = {{"X-Device-Id", otherId},
+                                            {"X-Hmac-Proof", computeHmacProof(secondKey, otherId)}};
+        auto foreign = cli.Get(path.c_str(), otherAuth);
+        EXPECT(foreign && foreign->status == 404);
+
+        TEST("GET /api/connections/:id/diagnostics: the connection's own document");
+        auto put = cli.Put("/api/connections", auth,
+                           R"({"protocolVersion":4,
+                               "controllers":[{"ctrlIdx":0,"type":2,
+                               "caps":{"rumble":true,"lightbar":true},"touchpadMode":"ds4"}]})",
+                           "application/json");
+        EXPECT(put && put->status == 200);
+        logMsg(LogLevel::INFO, "client", "Session from " + devId + " at 192.168.77.5");
+        logMsg(LogLevel::INFO, "client", "Session from " + otherId + " at 192.168.77.9");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+        auto diag = cli.Get(path.c_str(), auth);
+        EXPECT(diag && diag->status == 200);
+        if (diag) {
+            const Json j = parseJson(diag->body);
+            EXPECT_EQ(jsonStr(j, "format"), std::string("satellite-connection-diagnostics.v1"));
+            EXPECT_EQ(jsonStr(jsonObject(j, "satellite"), "version"),
+                      std::string(SATELLITE_VERSION));
+            EXPECT_EQ(jsonObject(j, "satellite")["protocol"][1].get<long>(),
+                      static_cast<long>(PROTOCOL_VERSION));
+            EXPECT(j["backends"].is_array());
+            EXPECT_EQ(j["controllers"].size(), size_t{1});
+            if (j["controllers"].size() == 1) {
+                const Json& c = j["controllers"][0];
+                EXPECT_EQ(jsonStr(c, "appliedType"), std::string("dualsense"));
+                EXPECT_EQ(jsonStr(c, "requestedType"), std::string("dualsense"));
+                EXPECT_EQ(jsonStr(c, "touchpadMode"), std::string("ds4"));
+                EXPECT(jsonBool(jsonObject(c, "caps"), "lightbar"));
+                EXPECT(jsonObject(c, "input").contains("frames"));
+                EXPECT(jsonObject(c, "output").contains("rumble"));
+            }
+            EXPECT(jsonObject(j, "grants").contains("controllerAudio"));
+            EXPECT_EQ(jsonStr(jsonObject(j, "counters"), "scope"), std::string("process"));
+            for (const char* block : {"rx", "tx", "audio", "rejected"}) {
+                EXPECT(jsonObject(j, "counters").contains(block));
+            }
+            EXPECT(j.contains("controllerDb") && j["log"].is_array());
+
+            TEST("GET /api/connections/:id/diagnostics: its log lines name the requester "
+                 "\"this connection\" and nothing about the other client");
+            EXPECT(diag->body.find("Session from this connection at x.x.x.x") != std::string::npos);
+            EXPECT(diag->body.find(devId) == std::string::npos);
+            EXPECT(diag->body.find("192.168.77.5") == std::string::npos);
+            EXPECT(diag->body.find(otherId) == std::string::npos);
+            EXPECT(diag->body.find("192.168.77.9") == std::string::npos);
+            EXPECT(diag->body.find("RouteTester") == std::string::npos);
+        }
+    }
     {
         TEST("per-slot PUT: full descriptor upsert, path index wins");
         auto res = cli.Put(("/api/connections/" + connId + "/controllers/5").c_str(), auth,
@@ -881,8 +977,68 @@ int main() {
         EXPECT(ok && ok->status == 200);
     }
 
+    // ---- controller database mirror and the catalog it feeds --------------------
+    {
+        ControllerDbAdapter dbAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path, nullptr,
+                                      atomicWriteFile);
+        satellite::ControllerDbService controllerDb(dbAdapter, log, *g_configStore);
+        EXPECT(controllerDb.load());
+        g_controllerDbService = &controllerDb;
+        const std::string shippedManifest = [] {
+            std::ifstream f(std::string(WEB_DIR) + "/controllers/v1/manifest.json",
+                            std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
+        }();
+
+        TEST("GET /api/controllers/v1/manifest.json: the active manifest, byte for byte, "
+             "with an ETag");
+        auto manifest = cli.Get("/api/controllers/v1/manifest.json");
+        EXPECT(manifest && manifest->status == 200);
+        std::string etag;
+        if (manifest) {
+            EXPECT(manifest->body == shippedManifest);
+            etag = manifest->get_header_value("ETag");
+            EXPECT(etag.size() == 66 && etag.front() == '"' && etag.back() == '"');
+        }
+
+        TEST("GET .../manifest.json with its ETag in If-None-Match: 304");
+        auto again =
+            cli.Get("/api/controllers/v1/manifest.json", httplib::Headers{{"If-None-Match", etag}});
+        EXPECT(again && again->status == 304);
+
+        TEST("GET .../controllers.json and .../strings/<locale>.json: served under the "
+             "manifest's digest");
+        auto records = cli.Get("/api/controllers/v1/controllers.json");
+        EXPECT(records && records->status == 200);
+        if (records) {
+            satellite::ControllerDbManifest m;
+            satellite::parseControllerDbManifest(shippedManifest, m);
+            EXPECT_EQ(records->get_header_value("ETag"),
+                      "\"" + m.files["controllers.json"].sha256 + "\"");
+            EXPECT_EQ(records->body.size(), m.files["controllers.json"].bytes);
+        }
+        auto de = cli.Get("/api/controllers/v1/strings/de.json");
+        EXPECT(de && de->status == 200);
+        auto ptBr = cli.Get("/api/controllers/v1/strings/pt-BR.json");
+        EXPECT(ptBr && ptBr->status == 200);
+
+        TEST("GET .../strings/<locale>.json for a locale the manifest does not list: 404");
+        auto ja = cli.Get("/api/controllers/v1/strings/ja.json");
+        EXPECT(ja && ja->status == 404);
+
+        TEST("GET /api/catalog: the ETag names the active dbVersion and emulates comes from it");
+        auto catalog = cli.Get("/api/catalog");
+        EXPECT(catalog && catalog->status == 200);
+        if (catalog) {
+            EXPECT(catalog->get_header_value("ETag").find("+db1\"") != std::string::npos);
+        }
+        g_controllerDbService = nullptr;
+    }
+
     server.stop();
     serverThread.join();
+    logWriter().stop();
     g_configStore.reset();
     home.cleanup();
 

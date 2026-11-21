@@ -96,6 +96,8 @@ class HidMaestroAdapter : public IGamepadPort {
     void setHapticAudioCallback(HapticAudioCallback cb) override;
     void setMicLedCallback(MicLedCallback cb) override;
     bool submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) override;
+    // Published at plug, read without busMtx_: the core asks under service.state.
+    bool hasAudioPersona(uint32_t serial) const override;
 
     // True once this serial's persona actually presented the endpoint, i.e.
     // the composite materialized and the helper handed over the ring. Exposed
@@ -225,6 +227,8 @@ class HidMaestroAdapter : public IGamepadPort {
         // Atomic so isDevicePlugged can read without data races; written under
         // busMtx_ (plugin/unplug).
         std::atomic<bool> plugged{false};
+        // Any audio view mapped at publish: the composite persona.
+        std::atomic<bool> audioPersona{false};
         std::atomic_flag inputBusy = ATOMIC_FLAG_INIT;
         std::atomic_flag micBusy = ATOMIC_FLAG_INIT;
         // What the version section allows, changed only while inputBusy and

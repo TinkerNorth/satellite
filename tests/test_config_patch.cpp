@@ -36,6 +36,7 @@ const BoolKey BOOL_KEYS[] = {
     {"controllerAudioHaptics", &Config::controllerAudioHaptics},
     {"controllerAudioKeepDefaultDevice", &Config::controllerAudioKeepDefaultDevice},
     {"crashReporting", &Config::crashReporting},
+    {"controllerDbUpdates", &Config::controllerDbUpdates},
 };
 constexpr int BOOL_KEY_COUNT = static_cast<int>(sizeof(BOOL_KEYS) / sizeof(BOOL_KEYS[0]));
 
@@ -142,9 +143,11 @@ int main() {
         cfg.controllerAudioMic = false;
         cfg.controllerAudioSpeaker = true;
         cfg.controllerAudioHaptics = false;
+        cfg.controllerDbUpdates = false;
         const std::string line = configPatchLogLine(cfg, false);
         EXPECT_EQ(line, std::string("Config updated: udpPort=9876 autoStart=true broadcast=false "
-                                    "controllerAudio=true mic=false speaker=true haptics=false"));
+                                    "controllerAudio=true mic=false speaker=true haptics=false "
+                                    "controllerDbUpdates=false"));
         EXPECT_EQ(configPatchLogLine(cfg, true), line + " (udpPort out of range, ignored)");
     }
 

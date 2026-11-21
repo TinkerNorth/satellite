@@ -6,11 +6,15 @@
 #pragma once
 
 #include "core/catalog.h"
+#include "core/controller_db.h"
+#include "core/diagnostics_bundle.h"
 #include "core/gamepad_backend.h"
 #include "core/json.h"
 #include "httplib.h"
 
+#include <memory>
 #include <string>
+#include <vector>
 
 // The one content type every API route answers with.
 inline constexpr const char* JSON_MIME = "application/json";
@@ -47,3 +51,13 @@ satellite::CatalogBackendTraits catalogBackendTraits();
 // what-exists layer is /api/catalog). Served by both the admin and the
 // client API servers.
 std::string buildCapabilitiesJson();
+
+// The active controller database, or an empty one before main.cpp loads it.
+std::shared_ptr<const satellite::ControllerDbSnapshot> activeControllerDb();
+
+// This host's name and its first label, for the diagnostics documents to
+// replace; empty when the host has none.
+std::vector<std::string> machineNames();
+
+// The recent log ring, oldest first, as the diagnostics documents read it.
+std::vector<satellite::DiagnosticsLogLine> recentLogLines();

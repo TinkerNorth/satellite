@@ -48,6 +48,12 @@ void reportUnknownTokenTraffic(satellite::UnknownTokenLog& unknownTokens) {
 // Session maintenance off the hot path: the motor-state tick every
 // MAINTENANCE_TICK_MS, the idle-input re-publish and the backend's driver
 // recheck on the same tick, the reaper once a second.
+int64_t unixMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
 void maintenanceLoop(SessionService& svc) {
     ScopedThreadRole role(ThreadRole::Maintenance);
     const int tickMs = MAINTENANCE_TICK_MS;
@@ -61,6 +67,7 @@ void maintenanceLoop(SessionService& svc) {
         sinceReapMs += tickMs;
         if (sinceReapMs < 1000) continue;
         sinceReapMs = 0;
+        svc.sampleInputActivity(unixMs());
         const int reaped = svc.reapTimedOut();
         if (reaped > 0) {
             g_wire.sessionsReaped.fetch_add(static_cast<uint64_t>(reaped),

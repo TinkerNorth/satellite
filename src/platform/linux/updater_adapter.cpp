@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <fstream>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -102,6 +103,69 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
     }
     return true;
 }
+
+// ETag from one response header line; curl hands headers one line at a time.
+size_t etagHeaderCb(char* buffer, size_t size, size_t nitems, void* ud) {
+    auto* etag = static_cast<std::string*>(ud);
+    const size_t n = size * nitems;
+    const std::string line(buffer, n);
+    const std::string name = "etag:";
+    const bool isEtag =
+        line.size() > name.size() && strncasecmp(line.c_str(), name.c_str(), name.size()) == 0;
+    if (isEtag) {
+        const size_t begin = line.find_first_not_of(" \t", name.size());
+        const size_t end = line.find_last_not_of(" \t\r\n");
+        if (begin != std::string::npos && end != std::string::npos && end >= begin) {
+            *etag = line.substr(begin, end - begin + 1);
+        }
+    }
+    return n;
+}
+
+} // namespace
+
+// No user agent of our own and no header but If-None-Match: the contract's
+// "nothing identifying" request.
+DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& ifNoneMatch) {
+    DbFetchResponse r;
+    CURL* c = curl_easy_init();
+    if (!c) return r;
+    CurlWriteCtx ctx;
+    ctx.str = &r.body;
+    struct curl_slist* headers = nullptr;
+    if (!ifNoneMatch.empty()) {
+        const std::string inm = "If-None-Match: " + ifNoneMatch;
+        headers = curl_slist_append(headers, inm.c_str());
+    }
+    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeStringCb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, etagHeaderCb);
+    curl_easy_setopt(c, CURLOPT_HEADERDATA, &r.etag);
+    curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
+    const CURLcode rc = curl_easy_perform(c);
+    long status = 0;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(c);
+    if (rc != CURLE_OK) {
+        r.outcome = DbFetch::Failed;
+    } else if (status == 304) {
+        r.outcome = DbFetch::NotModified;
+    } else if (status == 200) {
+        r.outcome = DbFetch::Ok;
+    } else {
+        r.outcome = DbFetch::Failed;
+    }
+    if (r.outcome != DbFetch::Ok) r.body.clear();
+    return r;
+}
+
+namespace {
 
 bool httpGetToFile(const std::string& url, const std::string& dstPath,
                    const std::function<void(uint64_t, uint64_t)>& onProgress,

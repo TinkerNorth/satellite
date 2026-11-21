@@ -8,6 +8,8 @@
 // returning the applied state. UDP never mutates topology (docs/contract.md).
 #pragma once
 
+#include "controller_activity.h"
+#include "feedback_test.h"
 #include "hot_table.h"
 #include "mic_worker.h"
 #include "pointer_worker.h"
@@ -185,6 +187,14 @@ class SessionService {
     // CAP_MIC: a mute lamp with no microphone behind it has nothing to report.
     void handleMicLedFromBackend(uint32_t serial, uint8_t state);
 
+    // The dashboard's Test button: each requested lane the controller's
+    // descriptor claimed goes out once as its existing message; the rest are
+    // skipped. Admin scope. False when the connection or an active controller
+    // at ctrlIdx is not there. Leaves the game's cached feedback state alone.
+    bool testController(const std::string& connectionId, uint8_t ctrlIdx,
+                        const std::vector<satellite::FeedbackLane>& lanes,
+                        satellite::FeedbackTestPlan& outPlan);
+
     // Look up a connection's key + last counter; false if token not found.
     // outSeenCounter, when given, reports whether any counter has been accepted
     // yet: until then lastCounter carries no replay information.
@@ -260,6 +270,17 @@ class SessionService {
             uint8_t lightbarB;
             MotionReport motion;
             TouchpadReport touchpad;
+            // The CAP_* word the client's descriptor claimed.
+            uint16_t caps;
+            GameOutputKind lastGameOutput;
+            int64_t lastGameOutputAtMs;
+            uint8_t requestedType;
+            // The backend presented the persona that carries the pad's audio
+            // function (HIDMaestro's composite).
+            bool composite;
+            int64_t pluggedAtMs;
+            satellite::InputFacts input;
+            GameOutputRecord output;
         };
         std::vector<CtrlInfo> controllers;
     };
@@ -275,6 +296,8 @@ class SessionService {
     PointerCounts pointerCounts() const;
 
     int activeSessionCount() const;
+    // Whole seconds since this service was built, which is process start.
+    int64_t uptimeSeconds() const;
 
     bool isDeviceConnected(const std::string& deviceId) const;
 
@@ -294,6 +317,10 @@ class SessionService {
     // out, and sends the stop for a haptic reduction whose stream ended
     // without a silent window. Returns the number of packets sent.
     int refreshRumble();
+
+    // Once a second, from the maintenance thread: each active pad's input
+    // count becomes its rate and last arrival. `nowMs` is Unix milliseconds.
+    void sampleInputActivity(int64_t nowMs);
 
     // The same tick's other half: lets the backend keep an idle pad
     // reporting (IGamepadPort::refreshIdleInput).
@@ -396,6 +423,11 @@ class SessionService {
     bool handOverMicFrame(const PadRead& pad, uint8_t ctrlIdx, uint16_t seq, const uint8_t* opus,
                           size_t opusLen);
     std::array<RxPad, MAX_BACKEND_CONTROLLERS + 1> rxPads_{};
+    // Per serial, the input frames handed to the backend. The receive thread
+    // is the only writer; indexed by the hot word's masked serial, so the
+    // frame path needs no bound check. The cold side reads it to count from a
+    // pad's plug.
+    std::array<std::atomic<uint64_t>, HOT_CTRL_SERIAL_MASK + 1> inputFrames_{};
     std::array<RxSession, MAX_SESSIONS> rxSessions_{};
     std::atomic<int> activePads_{0};
     std::array<std::atomic<uint32_t>, MAX_BACKEND_CONTROLLERS + 1> hidMotors_{};
@@ -421,6 +453,7 @@ class SessionService {
     // removal may still be in flight.
     uint32_t serialScanStart_ = 0;
     uint32_t nextPlugGen_ = 0;
+    const std::chrono::steady_clock::time_point startedAt_ = std::chrono::steady_clock::now();
     uint32_t nextRow_ = 0;
     uint32_t nextPointerStamp_ = 0;
 
@@ -514,6 +547,11 @@ class SessionService {
     // be reached. Never the mic lamp, rumble or audio (see the definition).
     void resendFeedbackStateLocked(const Connection& conn);
     void resendControllerFeedbackStateLocked(const Connection& conn, const Controller& ctrl);
+    // The time it recorded, Unix milliseconds.
+    int64_t noteGameOutputLocked(Controller& ctrl, GameOutputKind kind);
+    uint64_t inputCountFor(const Controller& ctrl) const;
+    void sendTestLaneLocked(const Connection& conn, const Controller& ctrl,
+                            satellite::FeedbackLane lane);
     Connection* findByDeviceId(const std::string& deviceId);
     Connection* findByConnectionId(const std::string& connectionId);
     const Connection* findByConnectionId(const std::string& connectionId) const;

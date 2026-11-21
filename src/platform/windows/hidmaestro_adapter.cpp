@@ -118,6 +118,7 @@ bool HidMaestroAdapter::supportsIdentity(GamepadIdentity identity) const {
 // Caller holds busMtx_. Unmaps + closes everything; plugged must already be false.
 void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
     slot.plugged.store(false, std::memory_order_release);
+    slot.audioPersona.store(false, std::memory_order_release);
     if (slot.inputView) UnmapViewOfFile(slot.inputView);
     if (slot.outputView) UnmapViewOfFile(const_cast<uint8_t*>(slot.outputView));
     if (slot.speakerView) UnmapViewOfFile(const_cast<uint8_t*>(slot.speakerView));
@@ -175,7 +176,16 @@ void HidMaestroAdapter::releaseSlotLocked(IoSlot& slot) {
 bool HidMaestroAdapter::provisionSlot(uint32_t serial, GamepadIdentity identity, bool wantAudio,
                                       hm::ProvisionResult& r) {
     if (provisioner_.provision(serial, identity, wantAudio, r)) return true;
-    return wantAudio && provisioner_.provision(serial, identity, false, r);
+    if (!wantAudio) return false;
+    const bool plain = provisioner_.provision(serial, identity, false, r);
+    if (plain) {
+        log_.logMsg(LogLevel::WARN, "hidmaestro",
+                    serialLabel(serial) +
+                        " fell back to the input-only persona: the composite with controller "
+                        "audio could not be created, so this pad has no microphone, speaker "
+                        "or haptics");
+    }
+    return plain;
 }
 
 // Caller holds busMtx_. The helper's handles and views become the slot's; the
@@ -326,6 +336,9 @@ bool HidMaestroAdapter::publishSlot(uint32_t serial) {
     // (GamepadReport{} is centred on the signed XUSB scale; the Sony packers
     // centre their byte sticks from it).
     packAndWrite(slot);
+    const bool audio =
+        slot.speakerView != nullptr || slot.micView != nullptr || slot.hapticView != nullptr;
+    slot.audioPersona.store(audio, std::memory_order_release);
     slot.plugged.store(true, std::memory_order_release);
     startSlotWorkersLocked(serial, slot);
     return slot.speakerView != nullptr;
@@ -856,6 +869,10 @@ void HidMaestroAdapter::setHapticAudioCallback(HapticAudioCallback cb) {
 void HidMaestroAdapter::setMicLedCallback(MicLedCallback cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
     micLedCb_ = std::move(cb);
+}
+
+bool HidMaestroAdapter::hasAudioPersona(uint32_t serial) const {
+    return isValidSerial(serial) && io_[serial].audioPersona.load(std::memory_order_acquire);
 }
 
 bool HidMaestroAdapter::hasSpeakerEndpoint(uint32_t serial) const {

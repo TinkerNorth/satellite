@@ -21,6 +21,7 @@ inline std::string serializeConfig(const Config& cfg) {
     j["autoInstall"] = cfg.autoInstall;
     j["updateCheckIntervalHours"] = cfg.updateCheckIntervalHours;
     j["lastCheckEpoch"] = cfg.lastCheckEpoch;
+    j["controllerDbUpdates"] = cfg.controllerDbUpdates;
     j["lastSeenVersion"] = cfg.lastSeenVersion;
     j["skipVersion"] = cfg.skipVersion;
     j["networkInterface"] = cfg.networkInterface;
@@ -94,6 +95,9 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     int64_t epoch = 0;
     if (jsonTryI64(j, "lastCheckEpoch", epoch) && epoch >= 0) cfg.lastCheckEpoch = epoch;
 
+    // Absent in every config written before the controller database existed;
+    // reads as the contract's default (on).
+    cfg.controllerDbUpdates = jsonBool(j, "controllerDbUpdates", cfg.controllerDbUpdates);
     cfg.lastSeenVersion = jsonStr(j, "lastSeenVersion");
     cfg.skipVersion = jsonStr(j, "skipVersion");
     cfg.networkInterface = jsonStr(j, "networkInterface");

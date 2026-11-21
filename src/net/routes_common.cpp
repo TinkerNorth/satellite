@@ -4,8 +4,12 @@
 // functions lost their `static` (they are now shared across the two route
 // TUs); their bodies are unchanged.
 #include "routes_common.h"
+#include "net_compat.h"
 
 #include "app/app_state.h"
+#include "core/controller_db_service.h"
+#include "core/log_ring.h"
+#include "core/log_writer.h"
 #include "core/types.h"
 
 #include <fstream>
@@ -59,8 +63,9 @@ static bool controllerAudioEnabled() { return g_configStore->current()->controll
 
 // The per-direction wire gates, for the capabilities block below. Separate from
 // the master switch on purpose: the client learns what will actually flow, and
-// the catalog stays static identity (its ETag is version+locale, so a runtime
-// setting must never reach it).
+// the catalog stays static identity (its ETag is version, locale and the
+// active controller database's dbVersion, so a runtime setting must never
+// reach it).
 static ControllerAudioPolicy controllerAudioPolicy() { return g_configStore->audioPolicy(); }
 
 std::string buildBackendStatusJson() {
@@ -126,4 +131,31 @@ std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
     return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+std::shared_ptr<const satellite::ControllerDbSnapshot> activeControllerDb() {
+    if (g_controllerDbService != nullptr) return g_controllerDbService->active();
+    return std::make_shared<const satellite::ControllerDbSnapshot>();
+}
+
+std::vector<std::string> machineNames() {
+    char hostname[256] = {};
+    const bool named = netGetHostname(hostname, sizeof(hostname) - 1) && hostname[0] != '\0';
+    if (!named) return {};
+    const std::string full(hostname);
+    const std::string label = full.substr(0, full.find('.'));
+    if (label == full) return {full};
+    return {full, label};
+}
+
+std::vector<satellite::DiagnosticsLogLine> recentLogLines() {
+    std::vector<satellite::LogRingEntry> entries;
+    logWriter().recent().copySince(0, entries);
+    std::vector<satellite::DiagnosticsLogLine> out;
+    out.reserve(entries.size());
+    for (const auto& e : entries) {
+        out.push_back({e.record.timestampNs / 1'000'000, satellite::logLevelLabel(e.record.level),
+                       std::string(e.record.sourceText()), std::string(e.record.messageText())});
+    }
+    return out;
 }

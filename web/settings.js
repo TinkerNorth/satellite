@@ -164,6 +164,7 @@ function settingsRenderMdnsStatus(active) {
 }
 
 async function initSettings() {
+  controllerDbRefresh();
   // Re-seed the updates form from the next snapshot in case prefs changed in
   // another tab while we were on /dashboard.
   if (typeof updatesResetForm === 'function') updatesResetForm();
@@ -320,4 +321,54 @@ function settingsRenderCrashReportingHint(active, wanted) {
   if (!wanted) { el.textContent = t('settings.crash.status.off'); return; }
   el.textContent = active ? t('settings.crash.status.on')
                           : t('settings.crash.status.unavailable');
+}
+
+// The controller database block beside the update check: version and source,
+// the last check's time and result, its own switch and "Check now".
+const CONTROLLER_DB_POLL_MS = 1000;
+const CONTROLLER_DB_POLL_LIMIT = 30;
+
+function controllerDbLastText(s) {
+  if (s.checking) return t('settings.controller-db.checking');
+  if (!s.lastCheckAt) return t('settings.controller-db.never');
+  const when = new Date(s.lastCheckAt).toLocaleString();
+  return when + ' · ' + t('settings.controller-db.result.' + s.lastCheckResult);
+}
+
+function controllerDbRender(s) {
+  const version = document.getElementById('settings-cdb-version');
+  const last = document.getElementById('settings-cdb-last');
+  const toggle = document.getElementById('settings-controllerDbUpdates');
+  const check = document.getElementById('settings-btnCdbCheck');
+  const source = t('settings.controller-db.source.' + s.source);
+  if (version) version.textContent = t('settings.controller-db.version-value', [s.activeVersion, source]);
+  if (last) last.textContent = controllerDbLastText(s);
+  if (toggle) toggle.checked = s.enabled === true;
+  // Off means no request leaves the host, "Check now" included.
+  if (check) check.disabled = s.enabled !== true || s.checking === true;
+}
+
+async function controllerDbRefresh() {
+  const res = await apiRequest('/api/controller-db/status');
+  if (res.ok) controllerDbRender(res.data);
+  return res;
+}
+
+async function controllerDbToggle() {
+  const toggle = document.getElementById('settings-controllerDbUpdates');
+  await apiPost('/api/config', { controllerDbUpdates: toggle.checked });
+  controllerDbRefresh();
+}
+
+// The check runs on Satellite's worker; poll until it settles.
+async function controllerDbCheck() {
+  const before = await apiRequest('/api/controller-db/status');
+  const startedAt = before.ok ? before.data.lastCheckAt : null;
+  await apiPostQuiet('/api/controller-db/check', {}, 5000);
+  for (let i = 0; i < CONTROLLER_DB_POLL_LIMIT; i++) {
+    await new Promise((resolve) => setTimeout(resolve, CONTROLLER_DB_POLL_MS));
+    const res = await controllerDbRefresh();
+    const settled = res.ok && !res.data.checking && res.data.lastCheckAt !== startedAt;
+    if (settled) return;
+  }
 }

@@ -14,6 +14,8 @@
 #include "tray.h"
 #include "mac_hid_gamepad_adapter.h"
 #include "updater_adapter.h"
+#include "adapters/controller_db_adapter.h"
+#include "core/controller_db_service.h"
 
 #include "net/receiver.h"
 #include "net/webserver.h"
@@ -179,6 +181,15 @@ int main() {
         g_webDir = resolveWebDir();
         updateService.start();
 
+        ControllerDbAdapter controllerDbAdapter(g_webDir + "/controllers/v1",
+                                                controllerDbCacheDirFor(configPath()),
+                                                controllerDbHttpGet, atomicWriteFile);
+        satellite::ControllerDbService controllerDb(controllerDbAdapter, logAdapter,
+                                                    *g_configStore);
+        controllerDb.load();
+        g_controllerDbService = &controllerDb;
+        controllerDb.start();
+
         Workers workers = startWorkers(svc, clientAdapter);
         SatelliteAppDelegate* delegate = [[SatelliteAppDelegate alloc] init];
         runApp(delegate);
@@ -187,6 +198,8 @@ int main() {
         updateService.stop();
         g_updateService = nullptr;
         joinWorkers(workers);
+        controllerDb.stop();
+        g_controllerDbService = nullptr;
 
         svc.closeAllSessions();
         lifecycle::stopFileLogger();

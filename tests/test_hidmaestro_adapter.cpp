@@ -1111,6 +1111,9 @@ static void test_audio_request_matrix() {
         EXPECT(prov.lastAudioRequested);
         EXPECT(adapter.hasSpeakerEndpoint(1));
         EXPECT(adapter.hasMicEndpoint(1));
+        EXPECT(adapter.hasAudioPersona(1));
+        EXPECT(adapter.unplugDevice(1));
+        EXPECT(!adapter.hasAudioPersona(1));
 
         EXPECT(adapter.pluginDevice(2, GamepadIdentity::DS4));
         EXPECT(prov.lastAudioRequested);
@@ -1134,6 +1137,8 @@ static void test_audio_request_matrix() {
         EXPECT_EQ(prov.audioProvisionCalls, 0);
         EXPECT(!adapter.hasSpeakerEndpoint(1));
         EXPECT(!adapter.hasMicEndpoint(2));
+        EXPECT(!adapter.hasAudioPersona(1));
+        EXPECT(!adapter.hasAudioPersona(2));
     }
 
     TEST("audio setting off: not even a DualSense asks");
@@ -1226,6 +1231,7 @@ static void test_composite_plug_hooks() {
         EXPECT(adapter.ensureBusOpen());
         EXPECT(adapter.pluginDevice(1, GamepadIdentity::DualSense));
         EXPECT(adapter.hasSpeakerEndpoint(1));
+        EXPECT_EQ(prov.log.count(LogLevel::WARN, "fell back to the input-only persona"), 0);
     }
 }
 
@@ -1239,8 +1245,10 @@ static void test_audio_provision_failure_falls_back() {
     EXPECT_EQ(prov.provisionCalls, 2); // one with audio, one without
     EXPECT(!prov.lastAudioRequested);
     EXPECT(adapter.isDevicePlugged(4));
+    EXPECT_EQ(prov.log.count(LogLevel::WARN, "fell back to the input-only persona"), 1);
     EXPECT(!adapter.hasSpeakerEndpoint(4));
     EXPECT(!adapter.hasMicEndpoint(4));
+    EXPECT(!adapter.hasAudioPersona(4));
 
     // Input still works on the fallback pad.
     GamepadReport rpt{};
@@ -1255,6 +1263,7 @@ static void test_audio_provision_failure_falls_back() {
     EXPECT(!adapter2.pluginDevice(1, GamepadIdentity::DualSense));
     EXPECT_EQ(dead.provisionCalls, 2); // audio attempt, then the plain retry
     EXPECT(!adapter2.isDevicePlugged(1));
+    EXPECT_EQ(dead.log.count(LogLevel::WARN, "fell back to the input-only persona"), 0);
 }
 
 static void test_speaker_ring_to_callback() {

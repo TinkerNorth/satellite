@@ -271,6 +271,60 @@ else's id). This is the **reconcile endpoint**: applied descriptors, epoch, live
 }
 ```
 
+### Read: `GET /api/connections/{connectionId}/diagnostics`
+
+Client-scoped to its OWN session, authenticated exactly as the reconcile read (`X-Device-Id`
++ `X-Hmac-Proof`; 401 `NOT_PAIRED` or `BAD_PROOF` without a valid proof; 404 for an unknown
+id or someone else's). Satellite 2.3.0 and later. A client asks for it when the person reports
+a problem and puts the answer in its own `dish-diagnostics.v1` file as the host's `snapshot`
+(`dish-website`, `docs/diagnostics-bundle.md` "The hosts, from both ends"); a Satellite that
+answers 404 to a valid proof for a live session is older, and the client falls back to what it
+already read from `/api/server/capabilities`. Not a wire change: nothing on UDP moves.
+
+```jsonc
+{
+  "format": "satellite-connection-diagnostics.v1",
+  "satellite": { "version": "2.3.0", "platform": "windows", "protocol": [1, 4], "uptimeS": 3600 },
+  "backends": [ { "id": "hidmaestro", "available": true, "driver": "2.1.0.1716",
+                  "bundled": "2.1.0.1716", "preferred": true, "lifecycle": "supported" } ],
+  "controllers": [ {
+    "ctrlIdx": 0, "requestedType": "dualsense", "appliedType": "dualsense",
+    "backend": "hidmaestro", "composite": true, "pluggedIn": true,
+    "caps": { "rumble": true, "...": false }, "touchpadMode": "ds4",
+    "motion": { "sinkSupportedForType": true, "backendOk": true },
+    "input": { "frames": 12345, "rateHz": 250, "lastAtMs": 1763586000000 },
+    "output": {
+      "rumble": { "count": 12, "last": { "strong": 32768, "weak": 0, "atMs": 1763586000000 } },
+      "lightbar": { "count": 2, "last": { "r": 0, "g": 0, "b": 255, "atMs": 1763586000000 } },
+      "triggerEffects": { "count": 1, "last": { "left": "<22 hex>", "right": "<22 hex>", "atMs": 1763586000000 } },
+      "playerLeds": { "count": 1, "last": { "mask": "01", "atMs": 1763586000000 } },
+      "micLed": { "count": 0, "last": null } },
+    "lastGameOutput": { "kind": "rumble", "atMs": 1763586000000 } } ],
+  "grants": { "controllerAudio": { "enabled": true, "mic": false, "speaker": true, "hapticAudio": false } },
+  "counters": { "rx": { ... }, "tx": { ... }, "audio": { ... }, "rejected": { ... }, "scope": "process" },
+  "controllerDb": { "bundledVersion": 1, "activeVersion": 1, "source": "bundled", "...": "..." },
+  "log": [ { "atMs": 1763585900000, "level": "INFO", "tag": "service", "message": "..." } ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `satellite` | Version, `platform` (`windows` \| `macos` \| `linux`), the protocol range this server accepts, seconds since start |
+| `backends` | The host's backends, most preferred first: availability, installed and bundled driver versions (null when unknown), `preferred` for the one the host picks now, the registry's `lifecycle` |
+| `controllers` | This session's active controllers only. `requestedType` is what the client last asked for and `appliedType` what is in force, which differ after a failed replug. `composite` is true when the backend presented the persona that carries the pad's audio function (HIDMaestro's composite), false after its fallback to the input-only one and on every other backend |
+| `input` | Frames the receiver handed to the backend for this pad since it was plugged, the rate over the last maintenance second, and `lastAtMs` (Unix ms) the second it last saw frames arrive, or null before the first |
+| `output` | Per lane, how many output reports the game wrote to the virtual pad since it was plugged (before coalescing, with or without the cap) and the last value, or `last: null` before the first |
+| `grants` | The host's `controllerAudio` block as `/api/server/capabilities` writes it |
+| `counters` | `/api/debug`'s `rx`, `tx` and `audio`, and `rejected` (`decryptFail`, `replayDrop`, `malformed`, `unknownType`, `runt`, `unknownToken`, `authNotPaired`, `authBadProof`). Satellite keeps these per process, so `scope` is `process`; the per-session counts are each controller's `input` and `output` |
+| `controllerDb` | As `GET /api/controller-db/status` writes it |
+| `log` | Up to the last 200 lines of the recent ring that name this connection's id, device id, name or address, or one of its pads' serials since that pad was plugged, oldest first |
+
+The document is built in `core/connection_diagnostics` and holds nothing about any other
+client. In log text the requester's id, name and address become `this connection`, every
+other connected or paired client's become `another client`, the host's name `this PC`, any
+pairing key `[redacted]`, and any other dotted-quad IPv4 address `x.x.x.x`; every key named in
+`DIAGNOSTICS_FORBIDDEN_KEYS` is removed from the embedded blocks.
+
 ### Delete: `DELETE /api/connections/{connectionId}`
 
 - From the client (authed): graceful close. No notify (the closer already knows).
@@ -630,13 +684,43 @@ to present it (static, localized) → **capabilities** = what is true right now
 response echoes the resolved `locale`. Locale set is kept in lockstep with dish-android
 (`en`, `es`, `fr`, `de`, `bs`, `pt-BR`) with a CI completeness gate.
 
-**Caching**: `ETag = "<serverVersion>+<locale>"`; `If-None-Match` → 304. Content changes
-only on server upgrade, so a client fetches once per satellite version per language.
+**Caching**: `ETag = "<serverVersion>+<locale>+db<dbVersion>"`; `If-None-Match` → 304.
+Content changes on a server upgrade and when a newer controller database becomes active (the
+`emulates.usb` lists are read from it), so a client fetches once per satellite version,
+database version and language.
+
+**`emulates.usb` comes from the controller database.** Each type's list is the ids the type
+stands for, in this order, that a record of the type's physical twin family carries in the
+active controller database (`xbox360` from family `xinput360`, `ds4` from `dualshock4`,
+`dualsense` and `dualsenseedge` from `dualsense`, `switchpro` from `switchProUsb`). A record
+can drop an id from a list, never add one: the lists above are the most a type ever claims,
+and `tests/test_catalog.cpp` holds the lists generated from the bundled database to them byte
+for byte.
 
 ### `GET /api/catalog/images/{slug}`: SVG, ETag'd
 
 Theme-neutral SVG served by the satellite itself (works fully offline). `ETag =
 "<serverVersion>"`, `If-None-Match` → 304. 404 for unknown slugs.
+
+### `GET /api/controllers/v1/<file>`: the controller database mirror, ETag'd
+
+Unauthenticated on 9443, like the catalog. Satellite serves the controller database it is
+using (the copy it ships, or a newer verified download from
+`https://dish.tinkernorth.com/controllers/v1/`), byte for byte, so a client on a network
+without internet access can take it from the host it is paired with. REST only: no UDP
+message changed.
+
+| Route | Body |
+|---|---|
+| `GET /api/controllers/v1/manifest.json` | the active copy's manifest |
+| `GET /api/controllers/v1/controllers.json` | its records |
+| `GET /api/controllers/v1/strings/<locale>.json` | its strings for `en`, `bs`, `de`, `es`, `fr`, `pt-BR` |
+
+`ETag` is the quoted SHA-256 of the body (the manifest's own digest for the manifest, the
+digest the manifest pins for every other file); `If-None-Match` with it, a list holding it, a
+weak copy of it or `*` → 304. A path the active manifest does not list → 404. The file shapes
+are the fleet's controller database contract (`dish-website`, `docs/controller-db.md`).
+Clients do not read the mirror in schema 1.
 
 ## Crypto
 
@@ -1057,6 +1141,59 @@ hostFeatures; the server drops streams for ungranted features.
 | `DELETE /api/connections/{connectionId}` | Kick (notify `kicked`); transient, client may reconnect |
 | `GET /api/backend/status` | Preferred backend plus the per-host `backends` array (identity, availability, driver/bundled version, lifecycle) |
 | `GET /api/debug` | Wire, audio and host telemetry for the diagnostics page |
+| `POST /api/connections/{connectionId}/controllers/{ctrlIdx}/test` | The Test button: one burst of existing feedback messages to that controller's client (see below) |
+| `GET /api/diagnostics` | The `dish-diagnostics.v1` file the Debug page saves (see below) |
+| `GET /api/controller-db/status` | Bundled and active controller database versions, source, the switch, and the last check's time and result |
+| `POST /api/controller-db/check` | "Check now": wakes the check (nothing is sent while `controllerDbUpdates` is off) and answers with the status at once |
+
+### `POST /api/connections/{connectionId}/controllers/{ctrlIdx}/test`
+
+Body `{ "lanes": [ ... ] }`, any subset of `rumble`, `lightbar`, `playerLeds`,
+`triggerEffects`, `micLed`. For each requested lane the controller's applied descriptor
+claimed, the server sends the existing message once, over the session's normal path:
+
+| Lane | Gate | Message |
+|---|---|---|
+| `rumble` | `rumble` | RUMBLE 0x0009, strong and weak 0x8000, `durationMs` 500 |
+| `lightbar` | `lightbar` | LIGHTBAR 0x000D, 255, 255, 255 |
+| `playerLeds` | `playerLeds` | PLAYER_LEDS 0x0011, mask 0x01 |
+| `triggerEffects` | `triggerEffects` | TRIGGER_EFFECTS 0x0010, both blocks mode 0x01 (continuous resistance), start 0x00, force 0x40, the rest 0 |
+| `micLed` | `mic` | MIC_LED 0x0014, state 2 (pulse) |
+
+Lanes the descriptor did not claim are skipped and never sent, the same gate the game's own
+writes pass. Answer: `{ "sent": [...], "skipped": [...] }`, both in the table's order. 400 when
+`lanes` is absent, not an array or names another lane; 404 when the session or an active
+controller at `ctrlIdx` is not there. The `tx` counters of `/api/debug` count the burst like
+any other send. The burst leaves the game's own feedback state alone: the light bar a game set
+is still the one the dashboard shows, and the next unchanged game write is still coalesced
+against it, so a client keeps the test's colour, LEDs or trigger effect until the game writes a
+different one. No wire change: every message is one a client already handles.
+
+### `GET /api/connections`: `caps` and `lastGameOutput`
+
+Each controller carries `caps` (the descriptor's caps object, as a client sends it) and
+`lastGameOutput`: `{ "kind": "rumble" | "lightbar" | "triggerEffects" | "playerLeds" |
+"micLed", "atMs": <Unix ms> }` for the last output report the game wrote to that virtual
+controller, recorded where the backend hands it to the service (before coalescing, with or
+without the cap), or `null` until the game writes one. A replug clears it.
+
+### `GET /api/diagnostics`
+
+The fleet's `dish-diagnostics.v1` file (`dish-website`, `docs/diagnostics-bundle.md`) with
+`app.name` `satellite`: `controllerDb` as `/api/controller-db/status` writes it,
+`controllers` (host alias, `ctrlIdx`, `type`, `backend`, `pluggedIn`, `caps`,
+`lastGameOutput`, `record` null, and `input` and `output` exactly as
+`GET /api/connections/{connectionId}/diagnostics` writes them), `hosts` (`alias` "Host 1", "Host 2" in connection order,
+`kind` `dish`, `protocol`, `link`), `debug` and `backends` as `/api/debug` and
+`/api/backend/status` write them, `config` the settings, and `log` the last 500 lines of the
+recent ring. Before anything is written every key named in
+`DIAGNOSTICS_FORBIDDEN_KEYS` (`core/diagnostics_bundle.h`: pairing keys, PINs, proofs,
+addresses, device ids and names, the network interface) is removed at any depth; the paired
+list becomes `pairedDeviceCount` and the interface `networkInterfaceChosen`; in log lines each
+client's id, name and address become its alias, the host's name `this PC`, and every other
+dotted-quad IPv4 address becomes `x.x.x.x`. The dashboard adds the person's
+`report: { category, text, controller: null }` to the file it downloads; the server never
+writes it.
 
 ### `GET /api/debug`
 

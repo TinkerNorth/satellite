@@ -693,6 +693,49 @@ h2.section-title { font-size: 12px; }
   background: transparent;
 }
 
+.ctrl-last-output {
+  display: block;
+  margin-top: 2px;
+}
+
+.ctrl-test-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.btn-test {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.ctrl-test-result {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ctrl-test-chip {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: var(--corner-chip);
+  border: 1px solid var(--outline);
+  white-space: nowrap;
+}
+.ctrl-test-chip.test-sent {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.ctrl-test-chip.test-skipped {
+  color: var(--text-muted);
+  background: transparent;
+}
+
 .lightbar-swatch {
   width: 11px;
   height: 11px;
@@ -1970,4 +2013,12 @@ h2.section-title { font-size: 12px; }
 @media (max-width: 540px) {
   .donate-bar { bottom: 12px; right: 12px; left: 12px; }
   .donate-pill { flex: 1; }
+}
+
+.section-subtitle {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+  color: var(--text);
 }

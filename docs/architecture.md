@@ -142,7 +142,7 @@ derive from.
 A port exists for what the domain core needs, not for every piece of
 infrastructure. `SessionService` needs gamepad, client, and log I/O, so those
 are ports (`IGamepadPort` / `IClientPort` / `ILogPort`); `UpdateService` adds
-`IUpdaterPort`. Configuration is not a port: the core never reads it. The
+`IUpdaterPort`, and `ControllerDbService` adds `IControllerDbPort`. Configuration is not a port: the core never reads it. The
 webserver and `UpdateService` are themselves adapters/infrastructure and touch
 `g_configStore` (plus `loadConfig`/`saveConfig`) directly. Inverting that behind a
 port would add a seam with no domain consumer. (An earlier unused `IConfigPort` /
@@ -326,8 +326,10 @@ preserve:
   gamepad frame does not touch `mtx_` whatever the cold path is doing.
   Per frame that is a
   scan of the packed tokens, two seqlock reads of a few words, two plain
-  stores to the receive epoch, two to the slot (counter and time), and
-  the submit. On ViGEm, HIDMaestro and uinput the submit takes no
+  stores to the receive epoch, two to the slot (counter and time), one
+  relaxed load and store to the serial's input count (`inputFrames_`,
+  which the connection diagnostics read; not a read-modify-write, since
+  the receive thread is its only writer), and the submit. On ViGEm, HIDMaestro and uinput the submit takes no
   adapter-wide mutex either (see "Backend locking"); HIDMaestro's takes
   its slot's input flag, one uncontended test-and-set unless the idle
   re-publish is writing that slot. The receive side runs no fence on
@@ -2101,3 +2103,170 @@ no longer hang the handler, as it could while `logMsg` took a mutex.
   streams (see "GET /api/events"); `status` includes `logSeq` so the frontend
   knows when new logs are available without polling the log endpoint
 
+## Controller database
+
+The fleet keeps what it knows about physical controllers in one data set,
+published at `https://dish.tinkernorth.com/controllers/v1/` and specified in
+`dish-website`'s `docs/controller-db.md`. Satellite ships a copy of one
+published `dbVersion` under `web/controllers/v1/` (`manifest.json`,
+`controllers.json`, `strings/<locale>.json`), installed wherever `web/` is:
+the Windows installer's `{app}\web`, `share/satellite/web` on Linux, the
+`.app`'s `Contents/Resources/web`. `.gitattributes` marks the directory
+`-text`, because the manifest pins each file's SHA-256 and a checkout that
+rewrote line endings would ship a copy that fails its own manifest. The
+schema files are not data and are not shipped.
+
+| Pure core (tested directly) | I/O shell |
+|---|---|
+| `core/controller_db.{h,cpp}`: records, index, strings with `en` fallback, manifest, snapshot, mirror lookup, `If-None-Match` | `adapters/controller_db_adapter.cpp`: bundled and cached files, libsodium SHA-256 |
+| `core/controller_db_service.{h,cpp}`: the manifest decision, which copy is active, the cadence, the check | the platform GET: `controllerDbHttpGet` in each `platform/<os>/updater_adapter`, over the updater's libcurl, WinHTTP or NSURLSession |
+| `core/catalog.cpp` `catalogEmulatedUsb` | `net/routes_client.cpp` catalog and mirror routes |
+
+**Parse.** A record is kept when it carries every section schema 1 requires
+(`schema` 1, `id`, `requires`, `identity` with both id lists, `input` with
+`protocol.ref`, `output`, `expect`, `support` with a known verification state)
+and is dropped alone otherwise; a document whose `schema` is not 1 is refused
+whole. Fields schema 1 does not name are ignored. The index maps every usb and
+bluetooth `vid:pid` to the records that carry it in file order; `find` returns
+the first.
+
+**Active copy.** At startup the bundled copy is built into an immutable
+`ControllerDbSnapshot` (every file checked against the manifest, then parsed),
+then the cache over it when it builds and its `dbVersion` is greater. A later
+copy replaces the whole snapshot; records are never merged.
+
+**Check.** `controllerDbUpdates` (default on, beside the update check in
+Settings) gates it: off sends nothing and records `off`. The first check runs
+ten seconds after start, the next ones every `updateCheckIntervalHours` (at
+least one) after the last, and "Check now" (`POST /api/controller-db/check`)
+wakes it at once. As the contract requires, "Check now" is disabled while the
+switch is off, and a check the route wakes then records `off` and sends
+nothing (`tests/test_routes_admin.cpp` counts the requests). The manifest is fetched with the last manifest's `ETag` in
+`If-None-Match`; a 304 or a `dbVersion` at or below the active one is
+`upToDate`; a failed GET is `offline`; a manifest or file that does not parse
+or verify is `invalid`. A newer copy is downloaded file by file, built into a
+snapshot (which verifies every size and SHA-256 and checks the records'
+`dbVersion` against the manifest's), written to the cache and made active:
+`updated`. The cache is flat files in the config directory,
+`controllerdb-manifest.json`, `controllerdb-controllers.json` and
+`controllerdb-strings-<locale>.json`, each written beside its name and renamed
+over it, the manifest last; a set torn by a crash between two renames fails the
+manifest check at the next start and the previous copy stays in use. A copy
+that verifies but cannot be written is used for the run and logged. The
+manifest's paths become file names, so only the paths the contract defines are
+read from it; anything else in it is ignored.
+
+**Uses.** The catalog's `emulates.usb` lists are read from the active records:
+for each type, the ids it stands for that a record of its physical twin family
+carries, so records can only drop an id (see `docs/contract.md`). The catalog's
+ETag carries the active `dbVersion`. The mirror (`GET /api/controllers/v1/...`)
+serves the active copy's bytes under their digests.
+
+**Where Satellite departs from the fleet contract.** Satellite reads the
+records for the catalog and the mirror only, so:
+
+- `requires` is not evaluated. Satellite applies no record's `input` or
+  `output`; a record of a family Satellite does not know matches no catalog
+  type and changes nothing.
+- The cadence is the update check's (section 7 of the contract), not six hours.
+- Satellite shows no issues and keeps no outcomes, so the contract's issue rule
+  (shown only while `status` is `open`, `os` keyed `android`, `ios`, `macos`,
+  `windows`, `linux`) and its outcome results (`worked`, `didNotWork`) have no
+  consumer here; the parser keeps each issue's `status` for a later one.
+- The contract's compiled-table rule (a table generated at build time, a test
+  holding it to the file) becomes a runtime read with a test holding the
+  generated lists to the lists the catalog served before the database existed.
+- The dashboard card does not name an attached pad's record: no client reports
+  its physical pad's ids to Satellite in schema 1, so there is nothing to look
+  up yet.
+
+## Diagnostics file
+
+`GET /api/diagnostics` returns the fleet's `dish-diagnostics.v1` file, built in
+`core/diagnostics_bundle.{h,cpp}` from what the route gathers: the connection
+snapshot, the paired devices, the `/api/debug` fields (the loop figure read, not
+reset), `/api/backend/status`, the serialized config, the recent log ring and
+the controller database status. The core removes every key in
+`DIAGNOSTICS_FORBIDDEN_KEYS` at any depth from everything it embeds, turns the
+paired list into a count and the interface into a flag, aliases the connected
+clients "Host 1", "Host 2" in connection order and the paired-only ones after
+them, and in each log line replaces every alias's id, name and address with the
+alias and masks every other dotted-quad address. The Debug page's "Save
+diagnostics" downloads it as `dish-diagnostics-satellite-<yyyyMMdd-HHmmss>.json`
+and points a `mailto:support@tinkernorth.com` link at the contract's subject
+and a localized summary; the person attaches the file. Satellite sends nothing.
+Since the second cut the form is "Report a problem": the person's category and
+words ride in the file as `report` and lead the mail body, and the host's own
+names are replaced by "this PC" in log lines.
+
+Departures from `docs/diagnostics-bundle.md`, all because Satellite's pads are
+virtual: `controllers[]` carries the virtual pad (`type`, `backend`, `caps`,
+`lastGameOutput`, `pluggedIn`, and `input` and `output` as in "Connection diagnostics"
+below) with `record` null and no `hardware`,
+`expectMismatch`, `probe`, `lastFeedback`, `lastWrite`, `outcomes` or
+`capture`; `device.model` and `device.os` are the platform name, since
+Satellite reads no hardware model; there is no `extra`. Log lines are scrubbed
+of IPv4 addresses by pattern; an IPv6 address in a log line is removed only when
+it is a known client's address.
+
+## Connection diagnostics
+
+`GET /api/connections/{connectionId}/diagnostics` on the client port answers a paired Dish
+with the `satellite-connection-diagnostics.v1` document about its own connection, which the
+Dish puts in its own diagnostics file as the host's `snapshot`. The route authenticates like
+the session routes and reads one connection snapshot; the document is built in
+`core/connection_diagnostics.{h,cpp}`, a pure function of what the route gathers: that
+connection's controllers, the other clients' and the paired devices' identities and keys (to
+scrub, never to write), the host's names, the backends, the capabilities' `controllerAudio`
+block, the process counters, the controller database status and the recent log ring. The core
+keeps the ring's lines that name the connection's id, device id, name or address, or one of its
+pads' serials from that pad's plug on (a serial passes between clients), takes the last 200,
+and scrubs them with the Debug file's `scrubDiagnosticsText` over a different alias table: the
+requester is "this connection", every other client "another client", the host "this PC", each
+pairing key "[redacted]".
+
+The per-controller `input` and `output` blocks are shared with the Debug page's file
+(`controllerInputJson`, `controllerOutputJson` in `core/diagnostics_bundle`), so both ends
+describe a pad the same way. `output` is `Controller::output`, a `GameOutputRecord` each
+`handle*FromBackend` updates under `service.state` beside `lastGameOutput`, before coalescing.
+`input` comes from `inputFrames_`, one count per serial that the receive thread bumps for every
+frame it hands to the backend; the plug records the count as the pad's baseline, and the
+maintenance thread's once-a-second `sampleInputActivity` turns the count into the rate and the
+last arrival (`core/controller_activity.h`).
+
+Departures from `docs/diagnostics-bundle.md`:
+
+- `counters` are Satellite's process-wide `rx`, `tx`, `audio` and rejection counters with
+  `"scope": "process"`; Satellite keeps no wire counter per session. The per-session counts are
+  each controller's `input` and `output`.
+- `input.lastAtMs` is the maintenance second that first saw the count move, so it is accurate to
+  about a second, and `rateHz` is the rate over the last such second; the receive thread stores
+  no time per frame. `input` carries no `last` frame: the receive thread keeps no copy of it.
+- `output` counts what the game wrote to the virtual pad, not what reached the client (the
+  coalesce and the cap gate come after), and has no `target`, `lastWrite`, `speaker` or
+  `haptics` entries: Satellite's lanes end at the wire, and the audio lanes' totals are in
+  `counters.audio`.
+- `grants.controllerAudio` is the host's grant as `/api/server/capabilities` writes it; Satellite
+  grants audio per host, not per connection, and a pad's lanes follow its `caps`.
+- `composite` is true only on HIDMaestro, for a pad whose persona mapped an audio ring; every
+  other backend says false.
+- `backends[].lifecycle` is the registry's (`supported`, `maintenance`, `eol`), and `preferred`
+  marks the backend `probeBackend` picks now.
+- The Debug page's form is "Report a problem" with the contract's categories; it has no
+  "Preview file" (the downloaded file is the preview) and the report's `controller` is always
+  null, since Satellite's pads are virtual. The mail subject keeps "Dish support:" in English in
+  every locale so support can filter on it; the category is in the person's language.
+
+## Testing every level
+
+| Level | Satellite's part |
+|---|---|
+| Host to client | The controller card's "Test" button: `POST /api/connections/{id}/controllers/{idx}/test` sends RUMBLE, LIGHTBAR, PLAYER_LEDS, TRIGGER_EFFECTS and MIC_LED once each over the real wire, each only when the descriptor claimed it (`core/feedback_test.h` plans the lanes and the bytes). The client's "Last feedback" row shows arrival. |
+| Game to host | `Controller::lastGameOutput` records the kind and time of the last output report the game wrote, in each `handle*FromBackend` once the serial resolves and before any coalescing; `/api/connections` serves it and the card shows "Last from game". |
+| Data | Settings shows the active `dbVersion` and source and the last check; "Check now". |
+
+On Windows the HIDMaestro adapter logs, once per plug, when a composite persona
+could not be created and the pad fell back to the input-only one
+(`provisionSlot`). The decision is the adapter's own (it calls the provisioner
+port twice), so it is tested in `tests/test_hidmaestro_adapter.cpp` against the
+fake provisioner, which builds on the Windows lanes only.

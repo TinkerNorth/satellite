@@ -344,6 +344,73 @@ function lightbarChip(ctrl) {
 }
 
 let dashNoticeTimer = null;
+// The Test button's lanes, in the order the server plans them; each is shown
+// only when the controller's client claimed its cap (caps in /api/connections).
+const TEST_LANES = [
+  { lane: 'rumble', cap: 'rumble' },
+  { lane: 'lightbar', cap: 'lightbar' },
+  { lane: 'playerLeds', cap: 'playerLeds' },
+  { lane: 'triggerEffects', cap: 'triggerEffects' },
+  { lane: 'micLed', cap: 'mic' },
+];
+const TEST_RESULT_MS = 6000;
+
+// Per controller (connectionId:index), the last Test answer and when it lapses.
+const testResults = new Map();
+let lastConnections = null;
+
+function testKey(connId, idx) { return connId + ':' + idx; }
+
+function laneLabel(lane) { return t('controllers.lane.' + lane); }
+
+function testChipsHtml(connId, idx) {
+  const r = testResults.get(testKey(connId, idx));
+  if (!r || Date.now() > r.until) return '';
+  const sent = r.sent.map(l => `<span class="ctrl-test-chip test-sent" title="${esc(t('controllers.test.sent'))}">${esc(laneLabel(l))}</span>`);
+  const skipped = r.skipped.map(l => `<span class="ctrl-test-chip test-skipped" title="${esc(t('controllers.test.skipped'))}">${esc(laneLabel(l))}</span>`);
+  const error = r.error ? `<span class="ctrl-test-chip test-skipped">${esc(r.error)}</span>` : '';
+  return `<div class="ctrl-test-result">${sent.join('')}${skipped.join('')}${error}</div>`;
+}
+
+function agoText(atMs) {
+  const s = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+  if (s < 60) return t('controllers.ago.seconds', [s]);
+  const m = Math.round(s / 60);
+  if (m < 60) return t('controllers.ago.minutes', [m]);
+  return t('controllers.ago.hours', [Math.round(m / 60)]);
+}
+
+function lastGameOutputText(ctrl) {
+  const o = ctrl.lastGameOutput;
+  if (!o || !o.kind) return t('controllers.last-from-game.none');
+  return t('controllers.last-from-game', [laneLabel(o.kind), agoText(o.atMs)]);
+}
+
+async function testController(connId, idx, btn) {
+  const restore = setButtonLoading(btn);
+  const lanes = TEST_LANES.map(l => l.lane);
+  const res = await apiPostQuiet('/api/connections/' + encodeURIComponent(connId) +
+                                 '/controllers/' + idx + '/test', { lanes }, 5000);
+  restore();
+  const entry = { sent: [], skipped: [], error: '', until: Date.now() + TEST_RESULT_MS };
+  if (res.ok) {
+    entry.sent = res.data.sent || [];
+    entry.skipped = res.data.skipped || [];
+  } else {
+    entry.error = apiErrorText(res, t('controllers.test.failed'));
+  }
+  testResults.set(testKey(connId, idx), entry);
+  if (lastConnections) updateConnections(lastConnections);
+  setTimeout(() => { if (lastConnections) updateConnections(lastConnections); }, TEST_RESULT_MS + 100);
+}
+
+function handleControllerListClick(e) {
+  const btn = e.target.closest('[data-act="test-controller"]');
+  if (!btn) return;
+  testController(btn.getAttribute('data-conn-id') || '',
+                 parseInt(btn.getAttribute('data-idx') || '0', 10), btn);
+}
+
 function showDashError(msg) {
   const el = document.getElementById('dash-notice');
   const txt = document.getElementById('dash-notice-text');
@@ -376,6 +443,8 @@ function initDashboard() {
     if (closeBtn) closeBtn.addEventListener('click', hideDashError);
     const devList = document.getElementById('device-list');
     if (devList) devList.addEventListener('click', handleDeviceListClick);
+    const ctrlList = document.getElementById('controller-list');
+    if (ctrlList) ctrlList.addEventListener('click', handleControllerListClick);
     const pairList = document.getElementById('pair-request-list');
     if (pairList) pairList.addEventListener('click', handlePairRequestClick);
     const driverActs = document.getElementById('driver-banner-actions');
@@ -571,6 +640,7 @@ function setHTML(el, html) {
 }
 
 function updateConnections(d) {
+  lastConnections = d;
   const ctrlEl = document.getElementById('controller-list');
   const countEl = document.getElementById('controller-count');
 
@@ -621,6 +691,11 @@ function updateConnections(d) {
             <div class="ctrl-info">
               <span class="ctrl-name"><span class="ctrl-dot ${controllerDotClass(ok, stateKey)}"></span>${esc(ctrlHeading)} · ${esc(ctrlLabel)}${staleTag}</span>
               <span class="ctrl-meta">${esc(ctrl.deviceName)} · ${esc(serialLabel)} ${ctrl.serialNo} · <span class="ctrl-state state-${esc(stateKey)}">${esc(stateText)}</span>${controllerNotes(ctrl)}</span>
+              <span class="ctrl-meta ctrl-last-output">${esc(lastGameOutputText(ctrl))}</span>
+              <div class="ctrl-test-row">
+                <button class="btn btn-save btn-test" type="button" data-act="test-controller" data-conn-id="${esc(ctrl.connectionId)}" data-idx="${ctrl.controllerIndex}" title="${esc(t('controllers.test.hint'))}">${esc(t('controllers.test'))}</button>
+                ${testChipsHtml(ctrl.connectionId, ctrl.controllerIndex)}
+              </div>
             </div>
           </div>
           <div class="ctrl-chips">

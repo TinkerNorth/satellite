@@ -1,1 +1,4 @@
 vcpkg/ports/** text eol=lf
+# The controller database ships byte for byte: its manifest pins each
+# file's SHA-256, so a checkout must never rewrite line endings.
+web/controllers/** -text

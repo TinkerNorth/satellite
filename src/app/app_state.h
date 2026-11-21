@@ -59,6 +59,13 @@ extern std::string g_webDir;
 class UpdateService;
 extern UpdateService* g_updateService;
 
+// Owned by main.cpp per platform; null until it is loaded, which is before
+// either HTTP server starts.
+namespace satellite {
+class ControllerDbService;
+}
+extern satellite::ControllerDbService* g_controllerDbService;
+
 satellite::LogWriter& logWriter();
 
 void logMsg(LogLevel level, const std::string& source, const std::string& message);
