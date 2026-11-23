@@ -1165,9 +1165,13 @@ writes pass. Answer: `{ "sent": [...], "skipped": [...] }`, both in the table's 
 `lanes` is absent, not an array or names another lane; 404 when the session or an active
 controller at `ctrlIdx` is not there. The `tx` counters of `/api/debug` count the burst like
 any other send. The burst leaves the game's own feedback state alone: the light bar a game set
-is still the one the dashboard shows, and the next unchanged game write is still coalesced
-against it, so a client keeps the test's colour, LEDs or trigger effect until the game writes a
-different one. No wire change: every message is one a client already handles.
+is still the one the dashboard shows, and the test's messages are not counted as the game's.
+The light bar, player LEDs, trigger effects and mic lamp are the game's state, so the burst
+holds each lane it sent for 2 s: a game write meanwhile is recorded and cached, not sent. When
+the hold ends, the maintenance tick sends each held lane once more with the game's last value,
+or off (black, no LEDs, all-zero effect blocks, lamp off) where the game never set it. The mic
+lamp goes back too, because a client mutes the pad's microphone with it. Rumble is not held:
+its 500 ms run out on their own. No wire change: every message is one a client already handles.
 
 ### `GET /api/connections`: `caps` and `lastGameOutput`
 

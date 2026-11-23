@@ -33,6 +33,10 @@ controller's Dish one RUMBLE (both motors at half for 500 ms), one LIGHTBAR
 (white), one PLAYER_LEDS (the first LED), one TRIGGER_EFFECTS (a mild constant
 resistance on both triggers) and one MIC_LED (pulse), each only when the
 Dish said the controller has it, and shows what was sent and what was skipped.
+The light bar, LEDs, trigger effect and lamp show for 2 s; then the Dish gets
+back the last value the game sent for each (a value the game writes during
+those 2 s included), or off where the game never set one, so a test never
+leaves the pad white or the Dish's microphone muted.
 The route is `POST /api/connections/{id}/controllers/{idx}/test`; the messages
 are the ones every Dish already handles, so no wire change. The card also
 shows the last output the game wrote to the virtual controller and when

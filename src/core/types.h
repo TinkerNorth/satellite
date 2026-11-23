@@ -1017,6 +1017,11 @@ struct Controller {
     // Mic-mute LED last forwarded; same coalesce shape again.
     uint8_t micLedState = MIC_LED_STATE_OFF;
     bool lastMicLedValid = false;
+    // The state lanes a Test burst holds (feedbackLaneBit), and when the hold
+    // ends. While held, the game's writes fill the caches above unsent; the
+    // maintenance tick then gives the caches back (bench rule 2).
+    uint8_t testHeldLanes = 0;
+    std::chrono::steady_clock::time_point testHoldEndsAt{};
     // The last output report the game wrote, coalesced or not, and when
     // (Unix milliseconds).
     GameOutputKind lastGameOutput = GameOutputKind::None;

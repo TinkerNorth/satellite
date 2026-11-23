@@ -22,15 +22,25 @@ struct FeedbackLaneInfo {
     // The descriptor cap that admits the lane's message, the same gate the
     // game's own writes pass. MIC_LED rides CAP_MIC (see MSG_MIC_LED).
     uint16_t cap;
+    // State the game set: the test holds the surface for TEST_HOLD_MS, then
+    // the game's last value (or off) goes back. Rumble simply runs out.
+    bool held;
 };
 
 inline constexpr FeedbackLaneInfo FEEDBACK_LANES[] = {
-    {FeedbackLane::Rumble, "rumble", CAP_RUMBLE},
-    {FeedbackLane::Lightbar, "lightbar", CAP_LIGHTBAR},
-    {FeedbackLane::PlayerLeds, "playerLeds", CAP_PLAYER_LEDS},
-    {FeedbackLane::TriggerEffects, "triggerEffects", CAP_TRIGGER_EFFECTS},
-    {FeedbackLane::MicLed, "micLed", CAP_MIC},
+    {FeedbackLane::Rumble, "rumble", CAP_RUMBLE, false},
+    {FeedbackLane::Lightbar, "lightbar", CAP_LIGHTBAR, true},
+    {FeedbackLane::PlayerLeds, "playerLeds", CAP_PLAYER_LEDS, true},
+    {FeedbackLane::TriggerEffects, "triggerEffects", CAP_TRIGGER_EFFECTS, true},
+    {FeedbackLane::MicLed, "micLed", CAP_MIC, true},
 };
+
+// The bench's time for the lamp and the triggers, long enough to see.
+inline constexpr int TEST_HOLD_MS = 2000;
+
+constexpr uint8_t feedbackLaneBit(FeedbackLane lane) {
+    return static_cast<uint8_t>(1u << static_cast<uint8_t>(lane));
+}
 
 // Half of each motor's u16 range, for half a second.
 inline constexpr uint16_t TEST_RUMBLE_MAGNITUDE = 0x8000;
@@ -58,6 +68,9 @@ struct FeedbackTestPlan {
 bool parseFeedbackLanes(const Json& body, std::vector<FeedbackLane>& out, std::string& bad);
 
 FeedbackTestPlan planFeedbackTest(uint16_t caps, const std::vector<FeedbackLane>& requested);
+
+// The Controller::testHeldLanes bits a burst of `sent` holds.
+uint8_t heldFeedbackLanes(const std::vector<FeedbackLane>& sent);
 
 RumbleReport testRumbleReport();
 TriggerEffectsReport testTriggerEffectsReport();

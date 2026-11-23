@@ -5931,6 +5931,126 @@ static void test_testController_leavesGameStateAlone() {
     EXPECT(info->lastGameOutput == GameOutputKind::Lightbar);
 }
 
+// What a game set before a Test burst, for the give-back tests.
+struct GameFeedbackState {
+    TriggerEffectsReport trigger{};
+    uint8_t ledMask = 0x04;
+    uint8_t micLed = MIC_LED_STATE_ON;
+    GameFeedbackState() {
+        trigger.left[0] = 0x02;
+        trigger.right[0] = 0x02;
+    }
+};
+
+static void fireGameState(MockViGem& vigem, uint32_t serial, const GameFeedbackState& game) {
+    vigem.fireLightbar(serial, 0, 0, 255);
+    vigem.firePlayerLeds(serial, game.ledMask);
+    vigem.fireTriggerEffects(serial, game.trigger);
+    vigem.fireMicLed(serial, game.micLed);
+}
+
+static void expectClientHoldsGameState(const MockClient& client, const GameFeedbackState& game) {
+    EXPECT_EQ((int)client.lastLightbarR, 0);
+    EXPECT_EQ((int)client.lastLightbarG, 0);
+    EXPECT_EQ((int)client.lastLightbarB, 255);
+    EXPECT_EQ((int)client.lastPlayerLeds, (int)game.ledMask);
+    EXPECT((client.lastTriggerEffects == game.trigger));
+    EXPECT_EQ((int)client.lastMicLedState, (int)game.micLed);
+}
+
+static void test_testController_givesTheGameStateBack() {
+    TEST("test burst: when the hold ends the client gets back each state the game last sent");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    const uint32_t serial = serialOf(svc, 0);
+    const GameFeedbackState game;
+    fireGameState(vigem, serial, game);
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    EXPECT_EQ((int)client.lastLightbarR, 255);
+    svc.refreshRumble();
+    EXPECT_EQ((int)client.lastLightbarR, 255);
+    EXPECT_EQ((int)client.lastMicLedState, (int)MIC_LED_STATE_PULSE);
+    svc.endFeedbackTestHoldForTest(r.token, 0);
+    svc.refreshRumble();
+    expectClientHoldsGameState(client, game);
+
+    TEST("test burst: the give-back is sent once, not on every later tick");
+    const int sends = client.lightbarCalls + client.playerLedsCalls + client.triggerEffectsCalls +
+                      client.micLedCalls;
+    svc.refreshRumble();
+    EXPECT_EQ(client.lightbarCalls + client.playerLedsCalls + client.triggerEffectsCalls +
+                  client.micLedCalls,
+              sends);
+}
+
+static void test_testController_gameRewriteDuringTheHold() {
+    TEST("test burst: the game rewriting its same state during the hold still gets it back");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    const uint32_t serial = serialOf(svc, 0);
+    const GameFeedbackState game;
+    fireGameState(vigem, serial, game);
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    fireGameState(vigem, serial, game);
+    svc.endFeedbackTestHoldForTest(r.token, 0);
+    svc.refreshRumble();
+    expectClientHoldsGameState(client, game);
+
+    TEST("test burst: a new game value during the hold is held back, then given back");
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    vigem.fireLightbar(serial, 0, 128, 0);
+    EXPECT_EQ((int)client.lastLightbarR, 255);
+    EXPECT_EQ((int)client.lastLightbarG, 255);
+    svc.endFeedbackTestHoldForTest(r.token, 0);
+    svc.refreshRumble();
+    EXPECT_EQ((int)client.lastLightbarR, 0);
+    EXPECT_EQ((int)client.lastLightbarG, 128);
+    EXPECT_EQ((int)client.lastLightbarB, 0);
+}
+
+static void test_testController_untouchedSurfacesGoIdle() {
+    TEST("test burst: a surface the game never set goes back to off, the mic lamp included");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    svc.endFeedbackTestHoldForTest(r.token, 0);
+    svc.refreshRumble();
+    EXPECT_EQ(client.lightbarCalls, 2);
+    EXPECT_EQ((int)client.lastLightbarR + client.lastLightbarG + client.lastLightbarB, 0);
+    EXPECT_EQ(client.playerLedsCalls, 2);
+    EXPECT_EQ((int)client.lastPlayerLeds, 0);
+    EXPECT_EQ(client.triggerEffectsCalls, 2);
+    EXPECT((client.lastTriggerEffects == TriggerEffectsReport{}));
+    EXPECT_EQ(client.micLedCalls, 2);
+    EXPECT_EQ((int)client.lastMicLedState, (int)MIC_LED_STATE_OFF);
+
+    TEST("test burst: a surface the test did not hold keeps following the game");
+    MockClient client2;
+    SessionService svc2(vigem, client2, log);
+    const auto r2 =
+        upsert(svc2, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)}, "dev2");
+    const uint32_t serial2 = serialOf(svc2, 0);
+    EXPECT(svc2.testController(r2.connectionId, 0, {FeedbackLane::Lightbar}, plan));
+    vigem.firePlayerLeds(serial2, 0x08);
+    EXPECT_EQ(client2.playerLedsCalls, 1);
+    EXPECT_EQ((int)client2.lastPlayerLeds, 0x08);
+    svc2.endFeedbackTestHoldForTest(r2.token, 0);
+    svc2.refreshRumble();
+    EXPECT_EQ(client2.playerLedsCalls, 1);
+}
+
 static int64_t wallMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -6138,6 +6258,9 @@ int main() {
     test_testController_sendsClaimedLanes();
     test_testController_unknownTargets();
     test_testController_leavesGameStateAlone();
+    test_testController_givesTheGameStateBack();
+    test_testController_gameRewriteDuringTheHold();
+    test_testController_untouchedSurfacesGoIdle();
     test_lastGameOutput_recordsEachKind();
     test_gameOutput_countsEveryLaneWithItsLastValue();
     test_input_countsFramesPerPadAndSamplesARate();
