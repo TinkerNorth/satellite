@@ -47,8 +47,11 @@ if (-not (Test-Path $iscc)) {
     if (-not (Test-Path $iscc)) { throw "Inno Setup $version installed no ISCC.exe at $iscc" }
 }
 
-$installed = (Get-Item $iscc).VersionInfo.ProductVersion
-if (-not $installed -or -not $installed.StartsWith($version)) {
-    throw "ISCC.exe at $iscc is Inno Setup '$installed', expected $version"
+# ISCC.exe's version resource: its file version reads 6.7.4.0 and its
+# product version a display string, so the pin is matched in either.
+$info = (Get-Item $iscc).VersionInfo
+$stamped = "$($info.FileVersion) | $($info.ProductVersion)"
+if ($stamped -notmatch ('(^|\D)' + [regex]::Escape($version) + '(\D|$)')) {
+    throw "ISCC.exe at $iscc carries version '$stamped', expected Inno Setup $version"
 }
 Write-Output $iscc

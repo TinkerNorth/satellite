@@ -7,7 +7,7 @@
 # the one that was packaged (makepkg's strip step once cut the squashfs
 # payload off it, so the 2.3.0 package installed a runtime that could not
 # start), and the installed `satellite` comes up far enough to load its
-# bundled controller database, then exits 0 on SIGTERM.
+# bundled controller database, then stops on SIGTERM.
 #
 # The repository is signed with a throwaway key made here and trusted only
 # by this container's pacman; nothing is published. Runs as root in an Arch
@@ -115,5 +115,12 @@ done
 [ "${#problems[@]}" -eq 0 ] || exit 1
 [ "${alive}" = 1 ] || fail "the installed satellite exited on its own (${rc})"
 [ "${loaded}" = 1 ] || fail "the installed satellite never logged 'Controller database N (bundled), M records'"
-[ "${rc}" = 0 ] || fail "the installed satellite did not exit 0 on SIGTERM (got ${rc})"
+# 143 is death by SIGTERM as the AppImage runtime in extract-and-run mode
+# reports it (observed in CI), not Satellite's own exit status.
+# Satellite's own clean SIGTERM exit is check-package.sh's to hold, on the
+# .deb and the .rpm, where nothing stands between the signal and it.
+case "${rc}" in
+    0 | 143) ;;
+    *) fail "the installed satellite exited ${rc} on SIGTERM" ;;
+esac
 echo "check-arch-package: satellite-bin installs from a signed repository, carries the packaged AppImage unchanged, and starts"
