@@ -16,8 +16,9 @@ cache is swapped in by one rename, so a write that fails part-way leaves the
 previous cache whole. Settings,
 Updates gains *Check for controller updates automatically* (the new
 `controllerDbUpdates`, on by default; off sends nothing) with *Check now* and
-the last check's time and result. The request carries no query, no identifier
-and no user agent of Satellite's own; `PRIVACY.md` says what the host sees.
+the last check's time and result. The request carries no query and no
+identifier, and on Windows and Linux no user agent; `PRIVACY.md` says what the
+host sees.
 
 The catalog's `emulates.usb` lists now come from the active database: each
 type lists the ids it stands for that a record of its physical twin family
