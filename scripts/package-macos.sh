@@ -12,6 +12,7 @@
 #   scripts/package-macos.sh check                  mount the staged .dmg and run
 #                                                   the .app inside it
 #
+# `stage` honours SATELLITE_DMG_NO_FINDER=1 (see below).
 # `build` reads SATELLITE_VERSION (the release passes the tag; without it the
 # build is labelled <VERSION>-dev) and SATELLITE_SENTRY_DSN (empty unless the
 # release exported the repository secret). `stage` needs create-dmg
@@ -50,8 +51,15 @@ stage() {
     # /Applications link: the drag-to-Applications install. A signed build's
     # .app is already signed, notarized and stapled by then, so the image
     # only wraps it; Gatekeeper checks the .app at first launch.
+    # SATELLITE_DMG_NO_FINDER=1 skips create-dmg's Finder AppleScript (the
+    # window layout), which times out where no one can grant Finder
+    # automation; the image's contents are the same.
+    local finder=()
+    if [ "${SATELLITE_DMG_NO_FINDER:-0}" = 1 ]; then
+        finder=(--skip-jenkins)
+    fi
     echo "=== Stage the .dmg ==="
-    create-dmg \
+    create-dmg "${finder[@]+"${finder[@]}"}" \
         --volname "Satellite ${label}" \
         --window-size 540 360 \
         --icon-size 128 \

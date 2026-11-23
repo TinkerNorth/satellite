@@ -122,7 +122,8 @@ if [ "$WITH_BUNDLE" -eq 1 ]; then
   fi
   step "macOS release bundle, unsigned (macos-ci.yml bundle job)"
   bash scripts/package-macos.sh build
-  bash scripts/package-macos.sh stage "$(tr -d '[:space:]' < VERSION)-dev" "-unsigned"
+  # No Finder automation from a script run: the image's layout is CI's.
+  SATELLITE_DMG_NO_FINDER=1 bash scripts/package-macos.sh stage "$(tr -d '[:space:]' < VERSION)-dev" "-unsigned"
   bash scripts/package-macos.sh check
 fi
 
