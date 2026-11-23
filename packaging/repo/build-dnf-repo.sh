@@ -53,7 +53,9 @@ else
 fi
 
 # Regenerate metadata from scratch (cheap at our scale).
-createrepo_c --update --no-database "$repo_dir"
+# gzip, which the check below reads and every dnf accepts; newer createrepo_c
+# defaults to zstd.
+createrepo_c --update --no-database --general-compress-type=gz "$repo_dir"
 for rpm in "${rpms[@]}"; do
     version="$(basename "$rpm")"
     version="${version#satellite-}"
