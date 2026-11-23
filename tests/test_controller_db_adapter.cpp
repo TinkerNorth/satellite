@@ -29,7 +29,11 @@ bool writeBesideAndRename(const std::string& path, const std::string& bytes) {
         if (!f.is_open()) return false;
         f << bytes;
     }
-    return std::rename(tmp.c_str(), path.c_str()) == 0;
+    // std::rename refuses an existing target on Windows; this replaces it on every lane, as the
+    // production writers do.
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    return !ec;
 }
 
 // Portable: the suite runs on the Windows lanes too.
