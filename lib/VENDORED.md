@@ -26,8 +26,8 @@ the 90-day freshness window.
 
 - Component: yhirose/cpp-httplib
 - Upstream: https://github.com/yhirose/cpp-httplib
-- Pinned-commit: v0.58.0
-- Last-vendored: 2026-09-30
+- Pinned-commit: v0.67.0
+- Last-vendored: 2026-11-23
 - License: MIT
 - Notes: vendored as a single header, byte-identical to the upstream tag
   (modulo CRLF in the working tree; git stores it LF). No local
@@ -52,6 +52,23 @@ the 90-day freshness window.
   WebSocket route. No API Satellite calls changed. Re-checked 2026-09-30:
   v0.58.0 is still the newest release and the header is byte-identical to
   the tag's.
+  v0.58.0 -> v0.67.0 review (2026-11-23): nine releases, every note read.
+  The ones that reach Satellite: on Windows a junction or symbolic link inside
+  a mount point no longer serves a file outside it (0.67.0, #2670), and the
+  dashboard is served through `set_mount_point("/", ...)`; a mount point now
+  serves only canonical paths and refuses segments ending in `.` or a space
+  (0.63.0, 0.64.0), which no dashboard file has; the request line is read
+  strictly and an HTTP/1.1 request without `Host` gets 400 (0.62.0), which
+  every browser and every Dish client sends; a content setter replaces an
+  earlier `Content-Type` and the library works out `Content-Length` itself
+  (0.62.0), and no route sets either by hand; an exception handler that sets
+  no status answers 500 (0.64.0), and Satellite installs none. The client
+  side changes (redirect parameters, kept-alive reuse, stale
+  `Content-Length`) do not reach Satellite, which uses only the server
+  classes (`git grep httplib::Client` finds nothing in `src/`). No API Satellite calls changed or was
+  deprecated; `set_hostname_addr_map()` (deprecated in 0.64.0) is not used.
+  No GitHub security advisory is open against a release after v0.58.0. The
+  header is byte-identical to the v0.67.0 tag (commit 7800c3dc).
 
 ## nlohmann/json (`lib/nlohmann/json.hpp`)
 
