@@ -124,7 +124,7 @@ struct FailingWriter {
 ControllerDbFiles nextCopy(ControllerDbAdapter& a, const ControllerDbFiles& shipped) {
     ControllerDbFiles next = shipped;
     const std::string oldSha = a.sha256Hex(next.files["strings/de.json"]);
-    next.files["strings/de.json"] += " ";
+    next.files["strings/de.json"] += ' ';
     const std::string newSha = a.sha256Hex(next.files["strings/de.json"]);
     const size_t at = next.manifest.find(oldSha);
     if (at != std::string::npos) next.manifest.replace(at, oldSha.size(), newSha);

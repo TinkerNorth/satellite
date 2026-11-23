@@ -302,6 +302,7 @@ void testTheFrameLockNestsWithNothing() {
     CountingBuild build(true);
     EventBroadcaster hub([&build] { return build(); }, timed());
     std::vector<std::thread> viewers;
+    viewers.reserve(3);
     for (int i = 0; i < 3; ++i) {
         viewers.emplace_back([&hub] {
             const std::unique_ptr<Subscription> stream = hub.subscribe();

@@ -306,6 +306,7 @@ void test_readersNeverSeeATornSnapshot() {
     std::atomic<bool> stop{false};
     ReaderTally tally;
     std::vector<std::thread> readers;
+    readers.reserve(READER_THREADS);
     for (int i = 0; i < READER_THREADS; ++i) {
         readers.emplace_back(readCounters, std::ref(store), std::cref(stop), std::ref(tally));
     }
@@ -325,6 +326,7 @@ void test_concurrentUpdatesAreNeverLost() {
     TEST("updates from several threads are all applied, none lost to a race");
     ConfigStore store(counterConfig(0), nullptr);
     std::vector<std::thread> writers;
+    writers.reserve(WRITER_THREADS);
     for (int i = 0; i < WRITER_THREADS; ++i) {
         writers.emplace_back(incrementCounter, std::ref(store), INCREMENTS_PER_WRITER);
     }

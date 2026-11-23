@@ -243,8 +243,9 @@ static void test_bounds_and_saturation() {
     RationalResampler loud;
     loud.configure(32000, 48000, 1);
     std::vector<int16_t> square(2000);
-    for (size_t i = 0; i < square.size(); ++i)
+    for (size_t i = 0; i < square.size(); ++i) {
         square[i] = (i / 8) % 2 ? static_cast<int16_t>(-32768) : static_cast<int16_t>(32767);
+    }
     std::vector<int16_t> loudOut;
     loud.process(square.data(), square.size(), loudOut);
     bool signFlipSpike = false;

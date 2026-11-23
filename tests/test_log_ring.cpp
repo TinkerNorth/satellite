@@ -41,6 +41,7 @@ std::vector<uint64_t> seqsSince(const LogRing& ring, uint64_t since) {
     std::vector<LogRingEntry> entries;
     ring.copySince(since, entries);
     std::vector<uint64_t> seqs;
+    seqs.reserve(entries.size());
     for (const LogRingEntry& e : entries) seqs.push_back(e.seq);
     return seqs;
 }
@@ -145,6 +146,7 @@ void testRace() {
     std::atomic<uint64_t> seen{0};
     std::atomic<uint64_t> overlapping{0};
     std::vector<std::thread> readers;
+    readers.reserve(RACE_READERS);
     for (int r = 0; r < RACE_READERS; ++r) {
         readers.emplace_back([&] {
             uint64_t since = 0;

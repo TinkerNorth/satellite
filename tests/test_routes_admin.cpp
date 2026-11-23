@@ -900,7 +900,7 @@ int main() {
     {
         TEST("admin kick: DELETE /api/connections/:id closes WITH close-notify");
         int notifiesBefore = clientPort.closeNotifies;
-        auto res = cli.Delete(("/api/connections/" + connId).c_str());
+        auto res = cli.Delete("/api/connections/" + connId);
         EXPECT(res && res->status == 200);
         if (res) {
             Json j = parseJson(res->body);
@@ -931,7 +931,7 @@ int main() {
         }
 
         TEST("GET /api/logs?since=<head>: nothing new");
-        auto res2 = cli.Get(("/api/logs?since=" + std::to_string(seq)).c_str());
+        auto res2 = cli.Get("/api/logs?since=" + std::to_string(seq));
         EXPECT(res2 && res2->status == 200);
         if (res2) {
             Json j = parseJson(res2->body);
@@ -943,7 +943,7 @@ int main() {
         TEST("GET /api/logs?since=<seq>: the entry written after that seq is the first back");
         logMsg(LogLevel::INFO, "route-test", "marker-after-seq");
         EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto res3 = cli.Get(("/api/logs?since=" + std::to_string(seq)).c_str());
+        auto res3 = cli.Get("/api/logs?since=" + std::to_string(seq));
         EXPECT(res3 && res3->status == 200);
         if (res3) {
             Json j = parseJson(res3->body);

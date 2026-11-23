@@ -76,6 +76,7 @@ template <typename Queue> Delivery deliverConcurrently(Queue& queue) {
     std::atomic<int> finished{0};
     std::atomic<uint64_t> abandoned{0};
     std::vector<std::thread> producers;
+    producers.reserve(PRODUCERS);
     for (int p = 0; p < PRODUCERS; ++p) {
         producers.emplace_back([&queue, &finished, &abandoned, deadline, p] {
             for (uint64_t i = 0; i < RECORDS_PER_PRODUCER; ++i) {

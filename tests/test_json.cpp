@@ -112,7 +112,7 @@ static std::string hostFeaturesNested(size_t depth) {
     for (size_t level = 0; level < depth; ++level) body += "{\"a\":";
     body += "true";
     body.append(depth, '}');
-    body += "}";
+    body += '}';
     return body;
 }
 
@@ -135,7 +135,7 @@ static std::string arraysNested(size_t depth) {
 static std::string objectsNested(size_t depth) {
     std::string text;
     for (size_t level = 0; level < depth; ++level) text += "{\"a\":";
-    text += "0";
+    text += '0';
     text.append(depth, '}');
     return text;
 }
@@ -144,7 +144,7 @@ static std::string objectsNested(size_t depth) {
 static std::string siblingArrays(size_t count) {
     std::string text = "[";
     for (size_t i = 0; i < count; ++i) text += (i == 0) ? "[]" : ",[]";
-    text += "]";
+    text += ']';
     return text;
 }
 
@@ -247,7 +247,7 @@ static void test_dump_pretty() {
     JsonOut j;
     j["a"] = 1;
     const std::string s = jsonDumpPretty(j);
-    EXPECT(s.find("\n") != std::string::npos);
+    EXPECT(s.find('\n') != std::string::npos);
     EXPECT(s.find("    \"a\": 1") != std::string::npos ||
            s.find("  \"a\": 1") != std::string::npos);
 }

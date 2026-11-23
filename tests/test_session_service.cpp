@@ -123,10 +123,11 @@ struct MockViGem : IGamepadPort {
     bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
         // Split the tally by identity so existing Xbox-vs-DS4 plug-count asserts
         // still read; DualSense/SwitchPro plugs are asserted via identityFor.
-        if (identity == GamepadIdentity::DS4)
+        if (identity == GamepadIdentity::DS4) {
             pluginDS4Calls++;
-        else
+        } else {
             pluginCalls++;
+        }
         lastIdentity = identity;
         identityBySerial[serial] = identity;
         pluggedSerials.push_back(serial);
@@ -160,10 +161,11 @@ struct MockViGem : IGamepadPort {
     bool submitInput(uint32_t serial, const InputReport& input) override {
         // Route the tally by the serial's plugged identity so "XUSB vs DS4"
         // stays observable under the unified submit.
-        if (identityFor(serial) == GamepadIdentity::DS4)
+        if (identityFor(serial) == GamepadIdentity::DS4) {
             submitDS4Calls++;
-        else
+        } else {
             submitCalls++;
+        }
         lastSubmittedReport = input.pad;
         lastSubmittedExtButtons = input.extButtons;
         return submitReturnVal;
@@ -665,7 +667,7 @@ static void test_upsert_idempotent_stableConnectionId_rotatingToken() {
     EXPECT_EQ((int)snap.connections.size(), 1);
     // The old token is dead, the new one routes.
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(!svc.getDecryptInfo(r1.token, key, ctr));
     EXPECT(svc.getDecryptInfo(r2.token, key, ctr));
 }
@@ -791,7 +793,7 @@ static void test_upsert_keyDeriverIsUsed() {
 
     auto r = upsert(svc);
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(svc.getDecryptInfo(r.token, key, ctr));
     uint8_t expected[CRYPTO_KEY_SIZE];
     for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
@@ -810,7 +812,7 @@ static void test_upsert_defaultDeriverCopiesPairingKey() {
 
     auto r = upsert(svc);
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(svc.getDecryptInfo(r.token, key, ctr));
     EXPECT(std::memcmp(key, TEST_KEY, CRYPTO_KEY_SIZE) == 0);
 }
@@ -827,7 +829,7 @@ static void test_upsert_keyCopiedNotAliased() {
     auto r = svc.upsertSession("dev1", "D", "1.1.1.1", volatileKey, {}, false);
     std::memset(volatileKey, 0xEE, CRYPTO_KEY_SIZE);
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(svc.getDecryptInfo(r.token, key, ctr));
     EXPECT(std::memcmp(key, TEST_KEY, CRYPTO_KEY_SIZE) == 0);
 }
@@ -1054,6 +1056,7 @@ static void test_converge_fullBus_fallsBackToUnplugFirst() {
     SessionService svc(vigem, client, log);
 
     std::vector<ControllerDescriptor> sixteen;
+    sixteen.reserve(16);
     for (int i = 0; i < 16; i++) sixteen.push_back(makeDesc((uint8_t)i, CONTROLLER_TYPE_XBOX));
     upsert(svc, sixteen);
     EXPECT_EQ(svc.availableSlots(), 0);
@@ -1340,6 +1343,7 @@ static uint32_t serialOfPad(const SessionService& svc, size_t position) {
 // Every serial in use, so the next plug takes whichever one comes free.
 static std::vector<ControllerDescriptor> everyPad() {
     std::vector<ControllerDescriptor> pads;
+    pads.reserve(MAX_BACKEND_CONTROLLERS);
     for (int i = 0; i < MAX_BACKEND_CONTROLLERS; i++) pads.push_back(makeDesc((uint8_t)i));
     return pads;
 }
@@ -2014,7 +2018,7 @@ static void test_fusedHotPath() {
     svc.handleHeartbeat(r.token);
     EXPECT_EQ(client.lastAckAddr, packClientAddr(0x0100007f, 4242));
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     svc.getDecryptInfo(r.token, key, ctr);
     EXPECT_EQ(ctr, (uint32_t)5);
     EXPECT_EQ(vigem.lastSubmittedReport.sThumbLX, (int16_t)7777);
@@ -2056,7 +2060,7 @@ static void test_fusedHotPath_guards() {
     svc.handleHeartbeat(r.token);
     EXPECT_EQ(client.lastAckAddr, packClientAddr(0x0100007f, 1));
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     svc.getDecryptInfo(r.token, key, ctr);
     EXPECT_EQ(ctr, (uint32_t)7);
     EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 8, 0x0100007f, 1, 20, rpt));
@@ -2502,6 +2506,7 @@ static void test_streamCaches_followThePadThroughReplug() {
     const uint32_t movingSerial = info.serial;
     upsert(svc, {});
     std::vector<ControllerDescriptor> everySerial;
+    everySerial.reserve(MAX_BACKEND_CONTROLLERS);
     for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
         everySerial.push_back(
             makeDesc(idx, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4));
@@ -3437,6 +3442,7 @@ static void test_micAudio_gapConcealedAndReorderHealed() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     MicPacketSource mic;
     std::vector<std::vector<uint8_t>> pkts;
+    pkts.reserve(12);
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
@@ -3722,6 +3728,7 @@ static void test_audioCounts_trackTheMicStream() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     MicPacketSource mic;
     std::vector<std::vector<uint8_t>> pkts;
+    pkts.reserve(12);
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
@@ -4420,6 +4427,7 @@ static void test_audioLanes_followASerialToItsNextSession() {
 
     TEST("audio lanes: the new owner gets the serial's audio with none of the old lane's state");
     std::vector<ControllerDescriptor> everySerial;
+    everySerial.reserve(MAX_BACKEND_CONTROLLERS);
     for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
         everySerial.push_back(makeDesc(idx, CONTROLLER_TYPE_DUALSENSE, caps));
     }
@@ -5584,6 +5592,7 @@ static void test_rumble_retiredSerialDiscardsPendingState() {
     TEST("rumble: retired controller notifications never reach its replacement");
     ContendedRumbleFixture f;
     std::vector<ControllerDescriptor> occupied;
+    occupied.reserve(MAX_BACKEND_CONTROLLERS - 1);
     for (uint8_t slot = 0; slot < MAX_BACKEND_CONTROLLERS - 1; slot++) {
         occupied.push_back(makeDesc(slot));
     }

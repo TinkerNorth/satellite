@@ -299,6 +299,7 @@ void testRacingFlipsEndWithTheFinalSnapshotApplied() {
     effects.apply(store);
 
     std::vector<std::thread> threads;
+    threads.reserve(RACING_THREADS);
     for (int t = 0; t < RACING_THREADS; ++t) {
         threads.emplace_back([&, t] {
             for (int round = 0; round < ROUNDS_PER_THREAD; ++round) {

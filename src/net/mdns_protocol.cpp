@@ -47,10 +47,11 @@ size_t readDnsName(const uint8_t* packet, size_t packetLen, size_t offset, std::
         if (b == 0) {
             // Terminator. After a compression jump, only bytes up to the first
             // jump count toward consumption.
-            if (!jumped)
+            if (!jumped) {
                 consumedBeforeJump = pos - offset + 1;
-            else if (consumedBeforeJump == 0)
+            } else if (consumedBeforeJump == 0) {
                 return 0;
+            }
             return consumedBeforeJump;
         }
         if ((b & 0xC0) == 0xC0) {
@@ -231,8 +232,9 @@ bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std:
         if (x.size() != y.size()) return false;
         for (size_t i = 0; i < x.size(); ++i) {
             if (std::tolower(static_cast<unsigned char>(x[i])) !=
-                std::tolower(static_cast<unsigned char>(y[i])))
+                std::tolower(static_cast<unsigned char>(y[i]))) {
                 return false;
+            }
         }
         return true;
     };
@@ -514,8 +516,9 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     // is a response-side directive, meaningless in a query's authority.
     for (const auto& r : proposed) {
         if (!writeAuthorityRecord(out, outCap, pos, r.name, r.type, CLASS_IN, r.ttl, r.rdata.data(),
-                                  r.rdata.size()))
+                                  r.rdata.size())) {
             return 0;
+        }
     }
     return pos;
 }
@@ -608,8 +611,9 @@ bool authorityHasRecordFor(const std::vector<ProbeRecord>& authority, const std:
         if (x.size() != y.size()) return false;
         for (size_t i = 0; i < x.size(); ++i) {
             if (std::tolower(static_cast<unsigned char>(x[i])) !=
-                std::tolower(static_cast<unsigned char>(y[i])))
+                std::tolower(static_cast<unsigned char>(y[i]))) {
                 return false;
+            }
         }
         return true;
     };

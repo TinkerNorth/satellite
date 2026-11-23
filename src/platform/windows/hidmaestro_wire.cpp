@@ -10,13 +10,13 @@ namespace hidmaestro {
 namespace {
 
 uint32_t loadU32(const uint8_t* p) {
-    uint32_t v;
+    uint32_t v = 0;
     std::memcpy(&v, p, sizeof(v));
     return v;
 }
 
 uint16_t loadU16(const uint8_t* p) {
-    uint16_t v;
+    uint16_t v = 0;
     std::memcpy(&v, p, sizeof(v));
     return v;
 }
@@ -75,8 +75,9 @@ bool readNextOutputPacket(const uint8_t* section, uint32_t& lastSeq, OutputPacke
     if (head == lastSeq) return false;
 
     uint32_t nextSeq = lastSeq + 1;
-    if (head > nextSeq + static_cast<uint32_t>(OUTPUT_RING_SLOTS) - 1)
+    if (head > nextSeq + static_cast<uint32_t>(OUTPUT_RING_SLOTS) - 1) {
         nextSeq = head - static_cast<uint32_t>(OUTPUT_RING_SLOTS) + 1;
+    }
 
     const size_t slotBase =
         OUTPUT_HEADER_SIZE +

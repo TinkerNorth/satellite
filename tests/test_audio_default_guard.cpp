@@ -586,6 +586,7 @@ static void test_chain_cycle_guard() {
 static void test_chain_hop_cap() {
     TEST("a chain longer than the cap stops at the cap without a verdict");
     std::vector<DevNode> deep;
+    deep.reserve(20);
     for (int i = 0; i < 20; ++i) deep.push_back(node("USB\\N\\" + std::to_string(i), "usbhub3"));
     ChainResult r = classifyParentChain(deep);
     EXPECT(!r.isOurs());
@@ -600,8 +601,9 @@ static void test_chain_hop_cap() {
 
     TEST("our devnode on the last allowed hop is still found");
     std::vector<DevNode> justInside;
-    for (size_t i = 0; i + 1 < MAX_PARENT_HOPS; ++i)
+    for (size_t i = 0; i + 1 < MAX_PARENT_HOPS; ++i) {
         justInside.push_back(node("USB\\N\\" + std::to_string(i), "usbhub3"));
+    }
     justInside.push_back(node("ROOT\\USB\\0000", "usbip2_ude"));
     r = classifyParentChain(justInside);
     EXPECT(r.verdict == ChainVerdict::OursByService);

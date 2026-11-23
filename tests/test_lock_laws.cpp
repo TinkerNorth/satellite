@@ -799,6 +799,7 @@ class LawRun {
             [this] { return buildConnectionsJson(svc_) + buildDevicesJson(svc_); },
             satellite::EventBroadcasterOptions{DASHBOARD_STREAMS, DASHBOARD_TICK, true});
         std::vector<std::thread> viewers;
+        viewers.reserve(DASHBOARD_STREAMS);
         for (size_t i = 0; i < DASHBOARD_STREAMS; ++i) {
             viewers.emplace_back([&] { runViewer(dashboard, tally_); });
         }

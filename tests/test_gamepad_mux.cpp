@@ -140,8 +140,9 @@ struct MockPort : IGamepadPort {
     std::vector<uint32_t> lostSerials() const override { return lost; }
     std::vector<SettledSerial> settledSerials() override {
         std::vector<SettledSerial> out;
-        for (const uint32_t serial : std::exchange(settled, {}))
+        for (const uint32_t serial : std::exchange(settled, {})) {
             out.push_back({serial, backendId()});
+        }
         return out;
     }
     HostDisabled hostDisabled(uint32_t serial) const override {

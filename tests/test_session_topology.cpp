@@ -273,6 +273,7 @@ void test_lifecycleCallsRunWithTheServiceLockFree() {
 
     put(svc, "dish", {padAt(0)});
     std::vector<ControllerDescriptor> full;
+    full.reserve(FULL_BUS_SECOND_SESSION_PADS);
     for (uint8_t idx = 0; idx < FULL_BUS_SECOND_SESSION_PADS; idx++) full.push_back(padAt(idx));
     put(svc, "full", full);
     EXPECT_EQ(svc.availableSlots(), 0);

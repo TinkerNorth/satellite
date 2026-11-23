@@ -34,8 +34,9 @@ std::string ensureMachineId() {
         std::string persisted;
         if (in && std::getline(in, persisted)) {
             while (!persisted.empty() && (persisted.back() == '\n' || persisted.back() == '\r' ||
-                                          persisted.back() == ' '))
+                                          persisted.back() == ' ')) {
                 persisted.pop_back();
+            }
             // Regenerate on corruption rather than advertise a junk id.
             if (isValidMachineId(persisted)) {
                 g_machineId = persisted;

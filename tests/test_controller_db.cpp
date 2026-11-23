@@ -413,7 +413,7 @@ static void test_snapshot_builds() {
 
     TEST("a file that does not match its manifest entry fails the snapshot");
     SnapshotFixture badFile;
-    badFile.files.files["strings/en.json"] += " ";
+    badFile.files.files["strings/en.json"] += ' ';
     EXPECT(buildControllerDbSnapshot(badFile.files, DbSource::Cache, fakeSha, snap) ==
            SnapshotBuild::BadFile);
 

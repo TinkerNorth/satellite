@@ -275,8 +275,9 @@ ProbeResult runProbeSequence(SOCKET sock, DatagramReceiver& rx, const sockaddr_i
             // §8.1 rate limit: 15 conflicts in the trailing 10 s window → wait
             // >=5 s before each probe send.
             while (!conflictTimes.empty() &&
-                   std::chrono::steady_clock::now() - conflictTimes.front() > kRateLimitWindow)
+                   std::chrono::steady_clock::now() - conflictTimes.front() > kRateLimitWindow) {
                 conflictTimes.pop_front();
+            }
             if (conflictTimes.size() >= kRateLimitConflicts) {
                 logMsg(LogLevel::WARN, "mdns",
                        "mDNS probing rate-limited: 15+ conflicts in 10 s; "
@@ -317,9 +318,10 @@ ProbeResult runProbeSequence(SOCKET sock, DatagramReceiver& rx, const sockaddr_i
 
         if (!conflict && !lostTiebreak) {
             // Three clean probes: the name is ours (§8.1).
-            if (attempt > 0)
+            if (attempt > 0) {
                 logMsg(LogLevel::INFO, "mdns",
                        "mDNS probing succeeded; claimed '" + result.instance + "' after rename");
+            }
             return result;
         }
 

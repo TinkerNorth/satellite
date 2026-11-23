@@ -26,15 +26,17 @@ static bool contains(const std::string& hay, const std::string& needle) {
 static int countOccur(const std::string& hay, const std::string& needle) {
     int n = 0;
     for (size_t p = hay.find(needle); p != std::string::npos;
-         p = hay.find(needle, p + needle.size()))
+         p = hay.find(needle, p + needle.size())) {
         ++n;
+    }
     return n;
 }
 
 static LatencyTier tierFor(const BackendDescriptor* d, uint8_t type) {
     for (size_t i = 0; i < d->supportCount; ++i) {
-        if (d->support[i].controllerType == type)
+        if (d->support[i].controllerType == type) {
             return tierForScore(estimateCost(d->support[i].facts).score);
+        }
     }
     return LatencyTier::High;
 }
@@ -77,8 +79,9 @@ static void test_cross_backend_latency_is_comparable() {
     EXPECT(vigem != nullptr && hm != nullptr);
 
     auto rankFor = [](const BackendDescriptor* d, uint8_t type) -> int {
-        for (size_t i = 0; i < d->supportCount; ++i)
+        for (size_t i = 0; i < d->supportCount; ++i) {
             if (d->support[i].controllerType == type) return latencyTierRank(tierFor(d, type));
+        }
         return -1;
     };
 
@@ -95,8 +98,9 @@ static void test_hidmaestro_widens_the_windows_type_set() {
     EXPECT(vigem != nullptr && hm != nullptr);
 
     auto supports = [](const BackendDescriptor* d, uint8_t type) {
-        for (size_t i = 0; i < d->supportCount; ++i)
+        for (size_t i = 0; i < d->supportCount; ++i) {
             if (d->support[i].controllerType == type) return true;
+        }
         return false;
     };
 

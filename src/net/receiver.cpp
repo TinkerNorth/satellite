@@ -185,7 +185,7 @@ inline void handleDatagram(SessionService& svc, uint8_t* buf, int n, const socka
 
     // Look up connection key.
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t lastCounter;
+    uint32_t lastCounter = 0;
     bool seenCounter = false;
     if (!svc.getDecryptInfo(token, key, lastCounter, &seenCounter)) {
         g_wire.rxUnknownToken.fetch_add(1, std::memory_order_relaxed);

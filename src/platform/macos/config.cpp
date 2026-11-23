@@ -82,7 +82,7 @@ static void launchctlSetLoaded(bool load, const std::string& plist) {
     const char* argv[] = {"/bin/launchctl", verb, "-w", plist.c_str(), nullptr};
     const std::string what = std::string("launchctl ") + verb + " -w " + plist;
 
-    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_t actions{};
     int rc = posix_spawn_file_actions_init(&actions);
     if (rc != 0) {
         logMsg(LogLevel::WARN, "config", what + " could not start: " + std::strerror(rc));
@@ -103,7 +103,7 @@ static void launchctlSetLoaded(bool load, const std::string& plist) {
     }
 
     int status = 0;
-    pid_t waited;
+    pid_t waited = 0;
     do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
     if (waited < 0) {
         const int err = errno;

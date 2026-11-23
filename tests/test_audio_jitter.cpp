@@ -39,7 +39,7 @@ std::string shape(const AudioJitterWindow::Result& r) {
     std::string s;
     for (int i = 0; i < r.count; i++) {
         const AudioJitterWindow::Event& e = r.events[i];
-        if (!s.empty()) s += " ";
+        if (!s.empty()) s += ' ';
         s += (e.kind == Kind::Packet ? "P" : "G");
         s += std::to_string(e.seq);
         if (e.kind == Kind::Gap && e.fecCarrier != nullptr) s += "/F";
@@ -273,10 +273,11 @@ void test_longDropout_concealsThenResyncs() {
     int gaps = 0;
     int packets = 0;
     for (int i = 0; i < resume.count; i++) {
-        if (resume.events[i].kind == Kind::Gap)
+        if (resume.events[i].kind == Kind::Gap) {
             gaps++;
-        else
+        } else {
             packets++;
+        }
     }
     EXPECT_EQ(gaps, AUDIO_JITTER_MAX_CONCEAL_FRAMES);
     EXPECT_EQ(packets, 1);

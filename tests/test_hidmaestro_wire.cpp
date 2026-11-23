@@ -19,7 +19,7 @@
 using namespace satellite::hidmaestro;
 
 static uint32_t u32at(const uint8_t* sec, size_t off) {
-    uint32_t v;
+    uint32_t v = 0;
     std::memcpy(&v, sec + off, sizeof(v));
     return v;
 }

@@ -132,7 +132,7 @@ static std::string hostFeaturesNested(size_t depth) {
     for (size_t level = 0; level < depth; ++level) body += "{\"a\":";
     body += "true";
     body.append(depth, '}');
-    body += "}";
+    body += '}';
     return body;
 }
 
@@ -422,7 +422,7 @@ int main() {
                                "touchpadMode":"ds4"}]})",
                            "application/json");
         EXPECT(res && res->status == 200);
-        auto view = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view && view->status == 200);
         if (view) {
             Json j = parseJson(view->body);
@@ -447,7 +447,7 @@ int main() {
                                "caps":{"rumble":true,"triggerEffects":true,"playerLeds":true}}]})",
                            "application/json");
         EXPECT(res && res->status == 200);
-        auto view = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view && view->status == 200);
         if (view) {
             Json j = parseJson(view->body);
@@ -466,7 +466,7 @@ int main() {
                             R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
                             "application/json");
         EXPECT(res2 && res2->status == 200);
-        auto view2 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view2 = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view2 && view2->status == 200);
         if (view2) {
             Json j = parseJson(view2->body);
@@ -488,7 +488,7 @@ int main() {
                                "caps":{"mic":true,"speaker":false}}]})",
                            "application/json");
         EXPECT(res && res->status == 200);
-        auto view = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view && view->status == 200);
         if (view) {
             Json j = parseJson(view->body);
@@ -512,7 +512,7 @@ int main() {
                                 "caps":{"speaker":true}}]})",
                             "application/json");
         EXPECT(res2 && res2->status == 200);
-        auto view2 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view2 = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view2 && view2->status == 200);
         if (view2) {
             Json j = parseJson(view2->body);
@@ -532,7 +532,7 @@ int main() {
                                 "caps":{"extendedButtons":true}}]})",
                             "application/json");
         EXPECT(res4 && res4->status == 200);
-        auto view4 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view4 = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view4 && view4->status == 200);
         if (view4) {
             Json j = parseJson(view4->body);
@@ -554,7 +554,7 @@ int main() {
                                 "caps":{"hapticAudio":true,"rumble":true}}]})",
                             "application/json");
         EXPECT(res3 && res3->status == 200);
-        auto view3 = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view3 = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view3 && view3->status == 200);
         if (view3) {
             Json j = parseJson(view3->body);
@@ -578,7 +578,7 @@ int main() {
     {
         TEST("GET /api/connections/:id/diagnostics without credentials: 401");
         const std::string path = "/api/connections/" + connId + "/diagnostics";
-        auto none = cli.Get(path.c_str());
+        auto none = cli.Get(path);
         EXPECT(none && none->status == 401);
         if (none) EXPECT_EQ(jsonStr(parseJson(none->body), "code"), std::string("NOT_PAIRED"));
 
@@ -586,7 +586,7 @@ int main() {
         uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
         httplib::Headers wrong = {{"X-Device-Id", devId},
                                   {"X-Hmac-Proof", computeHmacProof(otherKey, devId)}};
-        auto bad = cli.Get(path.c_str(), wrong);
+        auto bad = cli.Get(path, wrong);
         EXPECT(bad && bad->status == 401);
         if (bad) EXPECT_EQ(jsonStr(parseJson(bad->body), "code"), std::string("BAD_PROOF"));
 
@@ -601,7 +601,7 @@ int main() {
         putPairedDevice(otherId, hexEncode(secondKey, CRYPTO_KEY_SIZE));
         const httplib::Headers otherAuth = {{"X-Device-Id", otherId},
                                             {"X-Hmac-Proof", computeHmacProof(secondKey, otherId)}};
-        auto foreign = cli.Get(path.c_str(), otherAuth);
+        auto foreign = cli.Get(path, otherAuth);
         EXPECT(foreign && foreign->status == 404);
 
         TEST("GET /api/connections/:id/diagnostics: the connection's own document");
@@ -614,7 +614,7 @@ int main() {
         logMsg(LogLevel::INFO, "client", "Session from " + devId + " at 192.168.77.5");
         logMsg(LogLevel::INFO, "client", "Session from " + otherId + " at 192.168.77.9");
         EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto diag = cli.Get(path.c_str(), auth);
+        auto diag = cli.Get(path, auth);
         EXPECT(diag && diag->status == 200);
         if (diag) {
             const Json j = parseJson(diag->body);
@@ -661,7 +661,7 @@ int main() {
         logMsg(LogLevel::INFO, "client", "Key check for " + devId + " beside CANARY-STRANGER");
         logMsg(LogLevel::INFO, "client", "Key check for " + devId + " from fe80::1%en0");
         EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto again = cli.Get(path.c_str(), auth);
+        auto again = cli.Get(path, auth);
         EXPECT(again && again->status == 200);
         if (again) {
             EXPECT(again->body.find("CANARY-STRANGER") == std::string::npos);
@@ -674,7 +674,7 @@ int main() {
     }
     {
         TEST("per-slot PUT: full descriptor upsert, path index wins");
-        auto res = cli.Put(("/api/connections/" + connId + "/controllers/5").c_str(), auth,
+        auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth,
                            R"({"type":0,"caps":{"rumble":true}})", "application/json");
         EXPECT(res && res->status == 200);
         if (res) {
@@ -689,22 +689,22 @@ int main() {
     }
     {
         TEST("per-slot PUT without type: 400");
-        auto res = cli.Put(("/api/connections/" + connId + "/controllers/5").c_str(), auth,
+        auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth,
                            R"({"caps":{"rumble":true}})", "application/json");
         EXPECT(res && res->status == 400);
     }
     {
         TEST("per-slot PUT carries no version gate: the session already settled it");
-        auto res = cli.Put(("/api/connections/" + connId + "/controllers/5").c_str(), auth,
-                           R"({"type":0})", "application/json");
+        auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth, R"({"type":0})",
+                           "application/json");
         EXPECT(res && res->status == 200);
     }
     {
         TEST("per-slot DELETE removes the slot, session lives on");
-        auto res = cli.Delete(("/api/connections/" + connId + "/controllers/5").c_str(), auth);
+        auto res = cli.Delete("/api/connections/" + connId + "/controllers/5", auth);
         EXPECT(res && res->status == 200);
         if (res) EXPECT(jsonBool(parseJson(res->body), "ok"));
-        auto view = cli.Get(("/api/connections/" + connId).c_str(), auth);
+        auto view = cli.Get("/api/connections/" + connId, auth);
         EXPECT(view && view->status == 200);
     }
     {
@@ -715,13 +715,13 @@ int main() {
     {
         TEST("DELETE /api/connections/:id: own-session close, no close-notify");
         int notifiesBefore = clientPort.closeNotifies;
-        auto res = cli.Delete(("/api/connections/" + connId).c_str(), auth);
+        auto res = cli.Delete("/api/connections/" + connId, auth);
         EXPECT(res && res->status == 200);
         if (res) EXPECT(jsonBool(parseJson(res->body), "ok"));
         EXPECT_EQ(clientPort.closeNotifies, notifiesBefore);
 
         TEST("DELETE of the already-closed session: 404");
-        auto res2 = cli.Delete(("/api/connections/" + connId).c_str(), auth);
+        auto res2 = cli.Delete("/api/connections/" + connId, auth);
         EXPECT(res2 && res2->status == 404);
     }
 

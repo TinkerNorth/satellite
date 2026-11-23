@@ -280,7 +280,7 @@ static void test_load() {
     TEST("a bundled copy that does not build fails the load and leaves an empty database");
     {
         Fixture f;
-        f.port.bundled.files["controllers.json"] += " ";
+        f.port.bundled.files["controllers.json"] += ' ';
         EXPECT(!f.svc.load());
         EXPECT(f.svc.active()->db.records.empty());
         EXPECT(f.log.count(LogLevel::ERR) > 0);

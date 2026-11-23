@@ -77,17 +77,21 @@ int countVirtualPads(uint32_t serial, int deadlineMs, int expected) {
                 CFTypeRef pid = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDProductIDKey));
                 CFTypeRef ser = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDSerialNumberKey));
                 int32_t vidV = 0, pidV = 0;
-                if (vid != nullptr && CFGetTypeID(vid) == CFNumberGetTypeID())
+                if (vid != nullptr && CFGetTypeID(vid) == CFNumberGetTypeID()) {
                     CFNumberGetValue((CFNumberRef)vid, kCFNumberSInt32Type, &vidV);
-                if (pid != nullptr && CFGetTypeID(pid) == CFNumberGetTypeID())
+                }
+                if (pid != nullptr && CFGetTypeID(pid) == CFNumberGetTypeID()) {
                     CFNumberGetValue((CFNumberRef)pid, kCFNumberSInt32Type, &pidV);
+                }
                 char serBuf[32] = {};
-                if (ser != nullptr && CFGetTypeID(ser) == CFStringGetTypeID())
+                if (ser != nullptr && CFGetTypeID(ser) == CFStringGetTypeID()) {
                     CFStringGetCString((CFStringRef)ser, serBuf, sizeof(serBuf),
                                        kCFStringEncodingUTF8);
+                }
                 if (vidV == DS4V2_VENDOR_ID && pidV == DS4V2_PRODUCT_ID &&
-                    std::strcmp(serBuf, serialStr.c_str()) == 0)
+                    std::strcmp(serBuf, serialStr.c_str()) == 0) {
                     found++;
+                }
             }
             CFRelease(devs);
         }

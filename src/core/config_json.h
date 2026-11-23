@@ -89,8 +89,9 @@ inline void parseConfigInto(const std::string& text, Config& cfg) {
     if (jsonTryBool(j, "autoCheck", b)) cfg.autoCheck = b;
     if (jsonTryBool(j, "autoDownload", b)) cfg.autoDownload = b;
     if (jsonTryBool(j, "autoInstall", b)) cfg.autoInstall = b;
-    if (jsonTryInt(j, "updateCheckIntervalHours", n) && n > 0)
+    if (jsonTryInt(j, "updateCheckIntervalHours", n) && n > 0) {
         cfg.updateCheckIntervalHours = static_cast<int>(n);
+    }
 
     int64_t epoch = 0;
     if (jsonTryI64(j, "lastCheckEpoch", epoch) && epoch >= 0) cfg.lastCheckEpoch = epoch;

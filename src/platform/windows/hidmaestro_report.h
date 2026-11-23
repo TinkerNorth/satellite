@@ -514,8 +514,9 @@ inline DecodedOutput decodeXboxOutput(const OutputPacket& pkt) {
 
 inline DecodedOutput decodeDs4Output(const OutputPacket& pkt) {
     DecodedOutput out;
-    if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || pkt.reportId != DS4V2_OUTPUT_REPORT_ID)
+    if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || pkt.reportId != DS4V2_OUTPUT_REPORT_ID) {
         return out;
+    }
     const Ds4OutputReport rpt = ds4ParseOutputReport(pkt.reportId, pkt.data, pkt.size);
     if (rpt.valid && rpt.rumbleValid) {
         out.hasRumble = true;

@@ -181,7 +181,7 @@ static void promptForPairing(const std::string& deviceId) {
 // buttons of its own) opens the Accept/Reject alert.
 - (void)userNotificationCenter:(UNUserNotificationCenter*)center
     didReceiveNotificationResponse:(UNNotificationResponse*)response
-             withCompletionHandler:(void (^)(void))completionHandler {
+             withCompletionHandler:(void (^)())completionHandler {
     UNNotificationRequest* request = response.notification.request;
     [center removeDeliveredNotificationsWithIdentifiers:@[ request.identifier ]];
     NSString* devId = request.content.userInfo[@"deviceId"];

@@ -291,7 +291,7 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     CC_SHA256_CTX ctx;
     CC_SHA256_Init(&ctx);
     unsigned char buf[64 * 1024];
-    size_t n;
+    size_t n = 0;
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
         CC_SHA256_Update(&ctx, buf, (CC_LONG)n);
     }

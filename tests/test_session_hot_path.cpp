@@ -495,6 +495,7 @@ void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, std::mt1993
 
 std::vector<ControllerDescriptor> everyPad(int tag) {
     std::vector<ControllerDescriptor> descriptors;
+    descriptors.reserve(PADS_PER_SESSION);
     for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
         descriptors.push_back(descriptorFor(tag, idx, CONTROLLER_TYPE_XBOX));
     }

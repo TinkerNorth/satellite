@@ -394,7 +394,7 @@ void SessionService::closeBusIfIdle(bool idle) {
 }
 
 uint32_t SessionService::generateUniqueToken() {
-    uint32_t token;
+    uint32_t token = 0;
     do { token = makeRandomToken(); } while (connections_.count(token));
     return token;
 }

@@ -71,7 +71,7 @@ std::string stripTagPrefix(const std::string& tag) {
 int64_t isoToEpoch(const std::string& iso) {
     if (iso.size() < 19) return 0;
     struct tm t{};
-    int y, mo, d, h, mi, se;
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
 #ifdef _MSC_VER
     if (sscanf_s(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
 #else

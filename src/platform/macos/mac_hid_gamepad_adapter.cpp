@@ -296,8 +296,9 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     IOHIDUserDeviceRegisterSetReportBlock(dev, ^IOReturn(IOHIDReportType type, uint32_t reportID,
                                                          const uint8_t* report,
                                                          CFIndex reportLength) {
-      if (type != kIOHIDReportTypeOutput || report == nullptr || reportLength <= 0)
+      if (type != kIOHIDReportTypeOutput || report == nullptr || reportLength <= 0) {
           return kIOReturnUnsupported;
+      }
       std::shared_ptr<CallbackHub> hub = weakHub.lock();
       if (hub == nullptr) return kIOReturnUnsupported;
       hub->dispatchOutputReport(serial, reportID, report, static_cast<size_t>(reportLength));
@@ -466,10 +467,12 @@ bool MacHidGamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport&
 
     // Fresh tracking id on each up->down transition so consumers read a new
     // contact rather than a teleporting drag (same policy as ViGEm/uinput).
-    if (report.finger0.active && !st.finger0.active)
+    if (report.finger0.active && !st.finger0.active) {
         st.touchTrackingId0 = static_cast<uint8_t>((st.touchTrackingId0 + 1) & 0x7F);
-    if (report.finger1.active && !st.finger1.active)
+    }
+    if (report.finger1.active && !st.finger1.active) {
         st.touchTrackingId1 = static_cast<uint8_t>((st.touchTrackingId1 + 1) & 0x7F);
+    }
     st.finger0 = report.finger0;
     st.finger1 = report.finger1;
     st.touchpadButtonPressed = report.buttonPressed;

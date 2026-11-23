@@ -166,15 +166,17 @@ struct alignas(HOT_CACHE_LINE) HotSlot {
         const size_t length = utf8Prefix(text, HOT_NAME_BYTES);
         uint64_t raw[HOT_NAME_WORDS] = {};
         std::memcpy(raw, text.data(), length);
-        for (size_t i = 0; i < HOT_NAME_WORDS; i++)
+        for (size_t i = 0; i < HOT_NAME_WORDS; i++) {
             name[i].store(raw[i], std::memory_order_relaxed);
+        }
         nameLength.store(static_cast<uint32_t>(length), std::memory_order_relaxed);
     }
 
     std::string loadName() const {
         uint64_t raw[HOT_NAME_WORDS] = {};
-        for (size_t i = 0; i < HOT_NAME_WORDS; i++)
+        for (size_t i = 0; i < HOT_NAME_WORDS; i++) {
             raw[i] = name[i].load(std::memory_order_relaxed);
+        }
         const size_t length =
             std::min<size_t>(nameLength.load(std::memory_order_relaxed), HOT_NAME_BYTES);
         return std::string(reinterpret_cast<const char*>(raw), length);

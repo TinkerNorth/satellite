@@ -28,7 +28,7 @@ std::vector<int16_t> ramp(size_t n, int16_t start = 0) {
 }
 
 uint32_t u32at(const uint8_t* p, size_t off) {
-    uint32_t v;
+    uint32_t v = 0;
     std::memcpy(&v, p + off, sizeof(v));
     return v;
 }

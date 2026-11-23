@@ -177,8 +177,9 @@ ConnectionLogScope connectionLogScope(const ConnectionDiagnosticsInput& in) {
 std::vector<HostAlias> connectionAliases(const ConnectionDiagnosticsInput& in) {
     std::vector<HostAlias> out;
     addIdentityAs(out, in.self, DIAGNOSTICS_THIS_CONNECTION);
-    for (const HostIdentity& other : in.others)
+    for (const HostIdentity& other : in.others) {
         addIdentityAs(out, other, DIAGNOSTICS_ANOTHER_CLIENT);
+    }
     aliasMachine(out, in.machineNames);
     for (const std::string& secret : in.secrets) addAliasText(out, secret, DIAGNOSTICS_REDACTED);
     return out;

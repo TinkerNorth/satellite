@@ -1072,8 +1072,9 @@ static void test_buildProposedRecords_includesAWhenIpv4Supplied() {
     std::vector<mdns::ProbeRecord> recs = mdns::buildProposedRecords(in);
     EXPECT_EQ(recs.size(), 3u);
     const mdns::ProbeRecord* a = nullptr;
-    for (const auto& r : recs)
+    for (const auto& r : recs) {
         if (r.type == mdns::TYPE_A) a = &r;
+    }
     EXPECT(a != nullptr);
     if (a != nullptr) {
         EXPECT_EQ(a->name, std::string("satellite-host.local."));

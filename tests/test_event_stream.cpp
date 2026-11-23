@@ -168,6 +168,7 @@ void testEveryStreamSharesTheBuilds() {
     EXPECT(rig.up());
     if (!rig.up()) return;
     std::vector<std::unique_ptr<Viewer>> viewers;
+    viewers.reserve(STREAM_COUNT);
     for (int i = 0; i < STREAM_COUNT; ++i) {
         viewers.push_back(std::make_unique<Viewer>(rig.port(), STREAM_PATH));
     }
@@ -192,6 +193,7 @@ void testTheNinthStreamIsRefusedUntilOneLeaves() {
     EXPECT(rig.up());
     if (!rig.up()) return;
     std::vector<std::unique_ptr<Viewer>> viewers;
+    viewers.reserve(STREAM_COUNT);
     for (int i = 0; i < STREAM_COUNT; ++i) {
         viewers.push_back(std::make_unique<Viewer>(rig.port(), STREAM_PATH));
     }
@@ -231,6 +233,7 @@ void testStoppingTheServerEndsTheOpenStreams() {
     EXPECT(rig.up());
     if (!rig.up()) return;
     std::vector<std::unique_ptr<Viewer>> viewers;
+    viewers.reserve(STREAM_COUNT);
     for (int i = 0; i < STREAM_COUNT; ++i) {
         viewers.push_back(std::make_unique<Viewer>(rig.port(), STREAM_PATH));
     }
