@@ -12,6 +12,7 @@
 #
 #   source scripts/tools.sh
 #   fetch_clang_format     # puts the pinned clang-format first on PATH
+#   fetch_clang_tidy       # puts the pinned clang-tidy first on PATH
 #   fetch_sentry_cli       # prints the path of the pinned sentry-cli
 #   fetch_linuxdeploy      # prints the path of the pinned linuxdeploy AppImage
 
@@ -23,6 +24,14 @@ CLANG_FORMAT_SHA256_MACOS_X86_64="32ec7498f9f1672dff2e65624cf317a1fd64e48a4f582d
 CLANG_FORMAT_SHA256_LINUX_X86_64="d97ce49911ba8c89ef3f3c0735a9c7818e4780ab4812c67d1c5fcd829d16ae52"
 CLANG_FORMAT_SHA256_LINUX_AARCH64="e8037e12eae19a9779e01ca6719b8d7f6a939ade8869b061912551c9748a27ad"
 CLANG_FORMAT_SHA256_WINDOWS_AMD64="18a4a1a698dd52ed4e288c97d99e93910f8f9d0128b266f65021ecf39c85d034"
+
+# clang-tidy, the fleet's pin (dish-windows' scripts/tools.ps1 carries the
+# same version), installed the way clang-format is: PyPI wheels, hash-checked.
+CLANG_TIDY_VERSION="23.1.4"
+CLANG_TIDY_SHA256_MACOS_ARM64="08e977575e9f800c1c806f2001a3cdfd01323491aec05e86dd24be9a5c2585f4"
+CLANG_TIDY_SHA256_LINUX_X86_64="6bb31e4f319ecbe14acb75f23c3050d0f1d4b1d92ea1c66091bc76e4eac2c1ac"
+CLANG_TIDY_SHA256_LINUX_AARCH64="87596cd77dedfdea23ced1d13e57e869dcaee99745bfe942796196da3c197671"
+CLANG_TIDY_SHA256_WINDOWS_AMD64="8107e05930f53dc477dbb5fb8108d7c10464176fc95d3e58f4ee7317887aed59"
 
 SENTRY_CLI_VERSION="3.8.2"
 SENTRY_CLI_SHA256_LINUX_X86_64="c958865f9d4000183509ea21b1f04925d5390de6d8d87386b9e69f2b305070c3"
@@ -226,4 +235,35 @@ fetch_pyyaml_python() {
             --only-binary=:all: --require-hashes -r "$requirements" >&2
     fi
     echo "$venv/bin/python"
+}
+
+# A venv holding exactly the pinned clang-tidy wheel; its bin directory goes
+# first on PATH for the caller's process.
+fetch_clang_tidy() {
+    local venv="$TOOLS/clang-tidy-$CLANG_TIDY_VERSION"
+    local bin="$venv/bin"
+    local python="python3"
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*)
+            bin="$venv/Scripts"
+            python="python"
+            ;;
+    esac
+    if [ ! -x "$bin/clang-tidy" ] && [ ! -x "$bin/clang-tidy.exe" ]; then
+        local requirements="$TOOLS/clang-tidy-requirements.txt"
+        mkdir -p "$TOOLS"
+        {
+            printf 'clang-tidy==%s' "$CLANG_TIDY_VERSION"
+            local digest
+            for digest in "$CLANG_TIDY_SHA256_MACOS_ARM64" "$CLANG_TIDY_SHA256_LINUX_X86_64" \
+                "$CLANG_TIDY_SHA256_LINUX_AARCH64" "$CLANG_TIDY_SHA256_WINDOWS_AMD64"; do
+                printf ' --hash=sha256:%s' "$digest"
+            done
+            printf '\n'
+        } >"$requirements"
+        "$python" -m venv "$venv"
+        "$bin/python" -m pip install --quiet --disable-pip-version-check \
+            --only-binary=:all: --require-hashes -r "$requirements"
+    fi
+    export PATH="$bin:$PATH"
 }
