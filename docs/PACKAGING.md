@@ -170,7 +170,12 @@ replace bytes that physically cannot be replaced.
 
 The `satellite-bin` package from the pacman repository installs the same
 `/opt/satellite/` layout, so it is detected as the AUR lineage, and the
-instruction the updater shows still names the AUR helpers.
+instruction the updater shows still names the AUR helpers; for the pacman
+repository the upgrade is `sudo pacman -Syu`. The package carries the
+release's AppImage unstripped (`options=('!strip' '!debug')` in the
+PKGBUILD): makepkg's strip step cut the AppImage's payload off in 2.3.0, and
+linux-ci.yml's arch job now installs the package and compares the installed
+AppImage with the packaged one on every pull request.
 
 `/.flatpak-info` is preferred over `$FLATPAK_ID` because a child process
 inherits the environment variable and can outlive the sandbox it describes.

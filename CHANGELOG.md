@@ -44,6 +44,21 @@ documents name (the protocol number, the C++ standard), and the release
 checks its tag against `VERSION`. `THIRD_PARTY.md` and `CODE_OF_CONDUCT.md`
 are added, and the stale documents are corrected.
 
+### Fixed
+
+- The Arch package from Satellite's pacman repository shipped an AppImage
+  that could not start: makepkg's strip step cut the squashfs image off the
+  AppImage runtime, so `satellite-bin` 2.3.0 (946,553 bytes installed)
+  carried the runtime alone instead of the 16,931,320-byte AppImage, and a needless
+  `satellite-bin-debug` package was built beside it. The PKGBUILD now sets
+  `options=('!strip' '!debug')`, publishing builds the package with
+  `scripts/build-arch-package.sh`, and every pull request installs the
+  package from a signed repository in an Arch container and fails unless the
+  installed AppImage is byte for byte the packaged one and starts.
+- The MinGW build failed against OpenSSL 4, which returns a certificate's
+  subject name as const; the self-signed certificate now gets a name of its
+  own, which OpenSSL 3 accepts too.
+
 ## 2.3.0
 
 Satellite reads the Dish fleet's controller database. It ships a copy of
