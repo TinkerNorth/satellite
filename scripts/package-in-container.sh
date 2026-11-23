@@ -54,7 +54,12 @@ if [ "${kind}" = arch ]; then
     # Arch publishes x86_64 images only, and the AppImage is x86_64.
     platform=(--platform linux/amd64)
     cp "${appimage_src}" "${src}/satellite-x86_64.AppImage"
-    lane="pacman -Syu --noconfirm git pacman-contrib
+    # Under qemu's x86_64 emulation pacman cannot install its seccomp
+    # download sandbox (EINVAL), so the emulated container turns it off;
+    # linux-ci.yml's arch job runs natively and keeps it.
+    lane="sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf
+        grep -qx DisableSandbox /etc/pacman.conf || echo DisableSandbox >>/etc/pacman.conf
+        pacman -Syu --noconfirm git pacman-contrib
         bash scripts/build-arch-package.sh satellite-x86_64.AppImage \"\$(tr -d '[:space:]' < VERSION)\" arch-packages
         bash scripts/check-arch-package.sh arch-packages satellite-x86_64.AppImage
         cp arch-packages/*.pkg.tar.zst /out/"
