@@ -27,12 +27,19 @@ step() { echo ""; echo "=== $1 ==="; }
 
 step "Packages built"
 ls -l "${pkgdir}"
-packages=("${pkgdir}"/*.pkg.tar.zst)
-[ "${#packages[@]}" -eq 1 ] || fail "expected one package, found ${#packages[@]} (a split debug package means makepkg's debug option is on)"
-case "$(basename "${packages[0]}")" in
-    satellite-bin-[0-9]*) ;;
-    *) fail "unexpected package $(basename "${packages[0]}")" ;;
-esac
+# Every finding is collected and reported at the end, so one run names them
+# all (a split debug package and a stripped AppImage came together).
+problems=()
+package=""
+for candidate in "${pkgdir}"/*.pkg.tar.zst; do
+    case "$(basename "${candidate}")" in
+        satellite-bin-debug-*) problems+=("makepkg built a split $(basename "${candidate}"); the PKGBUILD needs options=('!debug')") ;;
+        satellite-bin-[0-9]*) package="${candidate}" ;;
+        *) problems+=("unexpected package $(basename "${candidate}")") ;;
+    esac
+done
+[ -n "${package}" ] || fail "no satellite-bin package in ${pkgdir}"
+packages=("${package}")
 
 step "A pacman repository signed with a throwaway key"
 export GNUPGHOME
@@ -58,7 +65,7 @@ want="$(sha256sum "${appimage}" | cut -d' ' -f1)"
 got="$(sha256sum /opt/satellite/satellite.AppImage | cut -d' ' -f1)"
 echo "packaged  ${want} ($(wc -c <"${appimage}") bytes)"
 echo "installed ${got} ($(wc -c </opt/satellite/satellite.AppImage) bytes)"
-[ "${got}" = "${want}" ] || fail "the installed AppImage differs from the packaged one (makepkg stripped it?)"
+[ "${got}" = "${want}" ] || problems+=("the installed AppImage is not the packaged one: makepkg stripped it, and the PKGBUILD needs options=('!strip')")
 
 step "Launch the installed satellite"
 # No FUSE in a container: the AppImage runtime extracts itself instead.
@@ -90,6 +97,10 @@ wait "${app}"
 rc=$?
 set -e
 sed 's/^/[satellite] /' "${log}"
+for problem in "${problems[@]+"${problems[@]}"}"; do
+    echo "::error::check-arch-package: ${problem}" >&2
+done
+[ "${#problems[@]}" -eq 0 ] || exit 1
 [ "${alive}" = 1 ] || fail "the installed satellite exited on its own (${rc})"
 [ "${loaded}" = 1 ] || fail "the installed satellite never logged 'Controller database N (bundled), M records'"
 [ "${rc}" = 0 ] || fail "the installed satellite did not exit 0 on SIGTERM (got ${rc})"

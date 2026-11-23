@@ -44,8 +44,11 @@ fi
 echo "=== Configure (preset package) ==="
 cmake --preset package "${release_args[@]}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN:-}"
 
+# Every target, not only satellite: cpack's install step builds `all` anyway,
+# and building it here puts a warning the distro's compiler raises in the
+# log, under the warnings-as-errors the preset sets.
 echo "=== Build ==="
-cmake --build --preset package --target satellite -j "$(nproc)"
+cmake --build --preset package -j "$(nproc)"
 
 echo "=== Package (cpack -G DEB) ==="
 mkdir -p "${dist_dir}"
