@@ -5,22 +5,28 @@
 .DESCRIPTION
     Mirrors .github/workflows/windows-ci.yml, so a green run here means a
     green run there: scripts/check-format.sh (the pinned clang-format, CI's file set),
-    the action-pin lint from _security.yml, configure + build + ctest via the
+    scripts/check-action-pins.sh, scripts/check-version-consistency.sh,
+    scripts/check-vendored-freshness.sh, configure + build + ctest via the
     windows-mingw preset (MSYS2 MINGW64, the toolchain CI installs), the
     satellite.exe check, the redist script tests (tests/test_fetch_redist.ps1),
     the HIDMaestro helper publish and the helper's SDK check
     (scripts/verify-helper-sdk.ps1).
 
-        scripts/ci-local.ps1
-        scripts/ci-local.ps1 -AllowMissing   # downgrade a missing tool to a notice
+        scripts/ci-local.ps1                 every gate windows-ci.yml runs
+        scripts/ci-local.ps1 -Quick          format, pins, version consistency,
+                                             vendored freshness: no build
+        scripts/ci-local.ps1 -WithMsvc       also windows-msvc-ci.yml: the MSVC
+                                             build, its tests, the installer and
+                                             its silent round-trip (elevated)
+        scripts/ci-local.ps1 -AllowMissing   downgrade a missing tool to a notice
 
     Without -AllowMissing a gate whose tool is absent FAILS rather than
-    printing a notice and continuing: a "green" run that silently skipped a
-    gate is worse than no run at all. Exception: the .NET SDK, where CI's
-    setup-dotnet has no local equivalent, skips with a warning.
+    printing a notice and continuing: a green run that silently skipped a
+    gate is worse than no run at all.
 
-    The MSVC A/B lane (windows-msvc-ci.yml) is not mirrored here; run
-    scripts/build.ps1 -Msvc for that. The Linux/macOS equivalent is
+    CI-only, with the reason: the MSVC lane's CFG/CET dumpbin read-back and
+    the UIAccess compile check (they need the runner's Visual Studio layout;
+    -WithMsvc runs the rest of that lane). The Linux/macOS equivalent is
     scripts/ci-local.sh.
 
 .PARAMETER AllowMissing
@@ -29,7 +35,9 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$AllowMissing
+    [switch]$AllowMissing,
+    [switch]$Quick,
+    [switch]$WithMsvc
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,32 +69,36 @@ if (Have 'bash') {
 }
 
 Step 'Action pin lint (40-char SHA required)'
-# PowerShell port of the awk in _security.yml's action-pin-lint job.
-$pinFail = $false
-Get-ChildItem -Path .github\workflows -Recurse -File -Include *.yml, *.yaml | ForEach-Object {
-    $file = $_
-    foreach ($raw in (Get-Content $file.FullName)) {
-        if ($raw -match '^\s*#') { continue }
-        $line = $raw -replace '\s+#.*$', ''
-        if ($line -notmatch '^\s*-?\s*uses:\s+(\S.*)$') { continue }
-        $ref = ($line -replace '^\s*-?\s*uses:\s+', '').TrimEnd()
-        if ($ref -match '^\./') { continue }
-        if ($ref -match '^docker://[^@]+@sha256:[0-9a-f]{64}$') { continue }
-        if ($ref -notmatch '@[0-9a-f]{40}(\s|$)') {
-            Write-Output "$($file.FullName): $ref"
-            $script:pinFail = $true
-        } elseif ($ref -match '@0{40}(\s|$)') {
-            Write-Output "$($file.FullName): $ref (forbidden all-zero placeholder pin)"
-            $script:pinFail = $true
-        }
-    }
+if (Have 'bash') {
+    & bash scripts/check-action-pins.sh
+    if ($LASTEXITCODE -ne 0) { throw 'action pin lint failed' }
 }
-if ($pinFail) { throw 'unpinned action reference' }
-Write-Output 'action pins: OK'
+
+Step 'Version consistency (version-consistency.yml)'
+if (Have 'bash') {
+    & bash scripts/check-version-consistency.sh
+    if ($LASTEXITCODE -ne 0) { throw 'version consistency failed' }
+}
+
+Step 'Vendored components <= 90 days old (security.yml)'
+if (Have 'bash') {
+    & bash scripts/check-vendored-freshness.sh
+    if ($LASTEXITCODE -ne 0) { throw 'vendored freshness failed' }
+}
+
+if ($Quick) {
+    Write-Output ''
+    Write-Output 'Quick gates passed (no build: drop -Quick for the full run).'
+    exit 0
+}
 
 Step 'Script tests (tests/test_fetch_redist.ps1)'
 & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'tests\test_fetch_redist.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'test_fetch_redist.ps1 failed' }
+
+Step 'Script tests (tests/test_measurements_report.ps1)'
+& (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'tests\test_measurements_report.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'test_measurements_report.ps1 failed' }
 
 # windows-ci.yml runs inside the MSYS2 MINGW64 shell; get the same toolchain
 # by putting mingw64\bin first. Never ucrt64: different toolchain than CI's.
@@ -120,7 +132,7 @@ if ($toolchainReady) {
 }
 
 Step 'Build HIDMaestro helper (dotnet publish)'
-if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+if (Have 'dotnet') {
     # fetch-redist.ps1 stages the hash-pinned HIDMaestro SDK the helper
     # project references and the catalog files the profile copies are cut
     # from, which the helper's tests read; CI runs it before both.
@@ -138,8 +150,23 @@ if (Get-Command dotnet -ErrorAction SilentlyContinue) {
     }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'verify-helper-sdk.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'verify-helper-sdk.ps1 failed' }
-} else {
-    Write-Output '::warning:: no .NET SDK on PATH; skipping the helper publish CI runs (install-deps.ps1 installs SDK 10).'
+}
+
+if ($WithMsvc) {
+    Step 'MSVC lane: build and test (preset windows-msvc)'
+    & (Join-Path $PSScriptRoot 'build.ps1') release test -Msvc
+    if (-not $?) { throw 'the MSVC build failed' }
+
+    Step 'MSVC lane: smoke the built app'
+    & (Join-Path $PSScriptRoot 'smoke-windows-app.ps1')
+    if (-not $?) { throw 'smoke-windows-app.ps1 failed' }
+
+    Step 'MSVC lane: the installer, unsigned, and its silent round-trip'
+    $iscc = & (Join-Path $PSScriptRoot 'install-inno-setup.ps1')
+    & (Join-Path $PSScriptRoot 'build-installer.ps1') -Iscc $iscc
+    if (-not $?) { throw 'build-installer.ps1 failed' }
+    & (Join-Path $PSScriptRoot 'test-installer-roundtrip.ps1') -Setup dist\SatelliteSetup.exe
+    if (-not $?) { throw 'test-installer-roundtrip.ps1 failed' }
 }
 
 Write-Output ''

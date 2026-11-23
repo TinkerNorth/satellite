@@ -34,6 +34,11 @@ LINUXDEPLOY_VERSION="1-alpha-20251107-1"
 LINUXDEPLOY_SHA256_X86_64="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
 
 TOOLS="${TOOLS:-${RUNNER_TEMP:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.build}/tools}"
+# Git for Windows' bash: RUNNER_TEMP arrives as D:\a\_temp; work in the POSIX
+# form so every path below means the same thing to bash and to the tools.
+if command -v cygpath >/dev/null 2>&1; then
+    TOOLS="$(cygpath -u "$TOOLS")"
+fi
 
 tools_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -44,8 +49,8 @@ tools_sha256() {
 }
 
 # A venv holding exactly the pinned wheel, installed with --require-hashes.
-# The venv is rebuilt when the pin changes; its bin directory goes first on
-# PATH, and onto GITHUB_PATH in CI so later steps see the same binary.
+# The venv is named for the pin, so a bump builds a new one; its bin
+# directory goes first on PATH for the caller's process.
 fetch_clang_format() {
     local venv="$TOOLS/clang-format-$CLANG_FORMAT_VERSION"
     local bin="$venv/bin"
@@ -74,9 +79,6 @@ fetch_clang_format() {
             --only-binary=:all: --require-hashes -r "$requirements"
     fi
     export PATH="$bin:$PATH"
-    if [ -n "${GITHUB_PATH:-}" ]; then
-        echo "$bin" >>"$GITHUB_PATH"
-    fi
 }
 
 # Downloads the pinned sentry-cli for this platform into $TOOLS, checks its

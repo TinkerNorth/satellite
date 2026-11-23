@@ -1,15 +1,22 @@
 name: Windows MSVC CI
 
-# Hardened A/B of the Windows binary, built alongside the MinGW windows-ci.yml.
-# MSVC unlocks control-flow-integrity mitigations GCC/binutils MinGW cannot emit:
+# The shipping Windows build, on every pull request: what release.yml's
+# windows job builds and packages, through the same preset and the same
+# scripts, minus the signing secrets. MSVC unlocks control-flow-integrity
+# mitigations GCC/binutils MinGW cannot emit:
 #   /guard:cf   Control Flow Guard      (forward-edge CFI: validates indirect calls)
 #   /CETCOMPAT  Intel CET shadow stack  (backward-edge CFI: validates returns / ROP)
 #   /Qspectre   Spectre v1 mitigations
-# Dependencies come from vcpkg's x64-windows-static triplet so their CRT linkage
-# matches the app's /MT (MSVC_RUNTIME_LIBRARY MultiThreaded in CMakeLists.txt).
+# Dependencies come from vcpkg's x64-windows-static triplet at vcpkg.json's
+# builtin-baseline, so their CRT linkage matches the app's /MT
+# (MSVC_RUNTIME_LIBRARY MultiThreaded in CMakeLists.txt).
 #
-# This job does NOT publish; it proves the hardened build stays green. Promoting
-# it to the shipping artifact is a one-job swap in release.yml's `windows` job.
+# After the build and its checks, the installer job compiles
+# SatelliteSetup.exe with scripts/build-installer.ps1 and runs the silent
+# install, launch, repair and uninstall round-trip on it, then rebuilds
+# satellite.exe with -DSATELLITE_UIACCESS=ON (what a signed release ships)
+# and compiles that installer too, to inspect: an unsigned uiAccess
+# executable does not start, so that one is checked, not run.
 
 on:
   push:
@@ -17,30 +24,35 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   msvc:
     name: Build, test (MSVC + vcpkg, hardened)
-    runs-on: windows-latest
-    timeout-minutes: 60
+    runs-on: windows-2022
+    timeout-minutes: 75
     env:
-      # The image's vcpkg ships with no binary cache configured, so every run
-      # rebuilt static OpenSSL from source (~6 min of a ~15 min job). The
-      # files provider is backed by the actions/cache step below.
+      # The files provider is backed by the actions/cache step below, so a
+      # warm run restores static OpenSSL and sentry-native instead of
+      # building them from source.
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # ImageVersion is in the cache key because a runner-image update can
-      # bump MSVC or the image's own vcpkg checkout, either of which changes
-      # vcpkg's ABI hashes: under a fixed key the cache would go permanently
-      # stale (restored but never hit, rebuilt but never saved, since
-      # actions/cache does not update an existing key). The directory must
-      # exist before vcpkg first writes into it.
+      # bump MSVC, which changes vcpkg's ABI hashes: under a fixed key the
+      # cache would go permanently stale (restored but never hit, rebuilt but
+      # never saved, since actions/cache does not update an existing key).
+      # vcpkg.json carries the baseline, so a baseline bump changes the key
+      # too. The directory must exist before vcpkg first writes into it.
       - name: Prepare vcpkg binary cache
         shell: pwsh
         run: |
@@ -58,16 +70,13 @@ jobs:
           restore-keys: |
             vcpkg-bin-${{ runner.os }}-
 
-      # windows-latest ships VS (MSVC + Spectre-mitigated libs) and a vcpkg
-      # checkout at VCPKG_INSTALLATION_ROOT, the same image release.yml builds
-      # on. The configure step's vcpkg toolchain auto-installs libsodium,
-      # openssl and opus (static) from vcpkg.json, restored from the binary
-      # cache above; only a cold cache still builds OpenSSL from source, and
-      # the archives that run stores serve every later run on the same image.
+      - name: Check out vcpkg at the manifest's baseline
+        shell: pwsh
+        run: ./scripts/setup-vcpkg.ps1
+
       - name: Configure (MSVC + vcpkg static, hardened release)
         shell: pwsh
         run: |
-          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $generator = ./scripts/windows-vs-generator.ps1
           cmake --preset windows-msvc -G $generator
 
@@ -122,3 +131,51 @@ jobs:
           retention-days: 14
           # A missing binary is a failed lane, not a warning annotation.
           if-no-files-found: error
+
+      # From here: the release's installer steps, unsigned.
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install the pinned Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = ./scripts/install-inno-setup.ps1
+          Add-Content $env:GITHUB_ENV "SATELLITE_ISCC=$iscc"
+
+      - name: Build the installer (unsigned)
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -Iscc $env:SATELLITE_ISCC
+
+      # The same class of assertions dish-windows runs. Both drivers are
+      # skipped (/VIGEM=skip /HIDMAESTRO=skip): a driver install has no
+      # business succeeding-or-hanging inside a CI assertion.
+      - name: Installer silent round-trip + launch smoke (no UI)
+        shell: pwsh
+        run: ./scripts/test-installer-roundtrip.ps1 -Setup dist/SatelliteSetup.exe
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: satellite-windows-installer-unsigned
+          path: dist/SatelliteSetup.exe
+          retention-days: 14
+          if-no-files-found: error
+
+      # What a signed release builds: satellite.exe requesting uiAccess and
+      # the installer compiled with /DUiAccess=1. Only the link of
+      # satellite.exe reruns. Neither can run unsigned, so the check is that
+      # both build and that the executable carries the request.
+      - name: Rebuild satellite.exe with SATELLITE_UIACCESS=ON
+        shell: pwsh
+        run: |
+          $generator = ./scripts/windows-vs-generator.ps1
+          cmake --preset windows-msvc -G $generator -DSATELLITE_UIACCESS=ON
+          cmake --build --preset windows-msvc --target satellite
+          $exe = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Resolve-Path satellite.exe).Path))
+          if (-not $exe.Contains('uiAccess="true"')) { throw 'satellite.exe does not carry uiAccess="true"' }
+
+      - name: Compile the UIAccess installer (inspect only)
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -Iscc $env:SATELLITE_ISCC -UiAccess -Unsigned

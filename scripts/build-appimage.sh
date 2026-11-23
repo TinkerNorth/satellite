@@ -10,11 +10,11 @@
 # glibc you support (CI: ubuntu-22.04, glibc 2.35): an AppImage's floor is the
 # glibc it linked against.
 #
-#   scripts/build-appimage.sh
-#   SATELLITE_VERSION=1.2.3 scripts/build-appimage.sh   # CI passes the tag
+#   scripts/build-appimage.sh                            # a -dev build
+#   SATELLITE_VERSION=1.2.3 scripts/build-appimage.sh   # the release passes the tag
 #
-# Needs the Linux build deps (scripts/install-deps.sh) plus wget, file and
-# ImageMagick (convert).
+# Needs the Linux build deps (scripts/install-deps.sh) plus curl, file and
+# ImageMagick (convert). linuxdeploy is the release scripts/tools.sh pins.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,25 +26,32 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 
 version="${SATELLITE_VERSION:-}"
-if [ -z "${version}" ]; then
+# Only the release names a version: without one the build is labelled
+# <VERSION>-dev (the file name still carries VERSION), so a pull-request or
+# hand-built AppImage never files itself under a real release.
+release_args=()
+if [ -n "${version}" ]; then
+    release_args=(-DSATELLITE_RELEASE_VERSION="${version#v}")
+else
     version="$(tr -d '[:space:]' < VERSION)"
 fi
 version="${version#v}"
 
-build_dir="${BUILD_DIR:-build-appimage}"
 tmp_dir="${RUNNER_TEMP:-$(mktemp -d)}"
 appdir="${tmp_dir}/Satellite.AppDir"
 
 echo "==> satellite ${version} AppImage (x86_64)"
 
-# SATELLITE_SENTRY_DSN is empty unless release.yml exported it from the
-# repository secret, so a hand-run of this script still produces a build
-# that cannot transmit, even though it stamps a release version.
-cmake -S . -B "${build_dir}" -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${version}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN:-}"
-cmake --build "${build_dir}" --config Release --target satellite -j "$(nproc)"
+# The package preset: the release flags and warnings-as-errors every lane
+# builds with. SATELLITE_SENTRY_DSN is empty unless release.yml exported it
+# from the repository secret, so a hand-run produces a build that cannot
+# transmit.
+cmake --preset package "${release_args[@]}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN:-}"
+cmake --build --preset package --target satellite -j "$(nproc)"
 
-wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
-chmod +x linuxdeploy
+# shellcheck source=scripts/tools.sh
+source scripts/tools.sh
+linuxdeploy="$(fetch_linuxdeploy)"
 
 mkdir -p "${appdir}/usr/share/applications" "${appdir}/usr/share/icons/hicolor/256x256/apps"
 convert web/img/satellite-icon.png -resize 256x256 "${tmp_dir}/satellite.png"
@@ -62,7 +69,7 @@ export LDAI_UPDATE_INFORMATION="gh-releases-zsync|TinkerNorth|satellite|latest|s
 
 mkdir -p stage
 out="stage/satellite-${version}-x86_64.AppImage"
-OUTPUT="${out}" ./linuxdeploy --appimage-extract-and-run --appdir "${appdir}" \
+OUTPUT="${out}" "${linuxdeploy}" --appimage-extract-and-run --appdir "${appdir}" \
     --executable satellite \
     --desktop-file packaging/debian/satellite.desktop \
     --icon-file "${tmp_dir}/satellite.png" \
