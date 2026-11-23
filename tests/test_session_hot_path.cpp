@@ -29,8 +29,13 @@ constexpr int SLOW_PLUG_PHASE = 1;
 constexpr int DONE_PHASE = 2;
 constexpr auto STRESS_SPAN = std::chrono::seconds(1);
 constexpr int SLOW_PLUGS = 4;
-constexpr int SLOW_PLUG_MS = 200;
-constexpr auto BLOCKED_CALL_LIMIT = std::chrono::milliseconds(50);
+// A slow plug holds until the steady session has submitted this many frames
+// after it began: frames that arrive during a plug prove the hot path did not
+// wait behind it, on a busy machine or an idle one. If it did wait, the plug
+// gives up at PLUG_HOLD_LIMIT and counts as starved.
+constexpr uint64_t FRAMES_DURING_PLUG = 50;
+constexpr auto PLUG_HOLD_LIMIT = std::chrono::seconds(20);
+constexpr int STEADY_TAG = 1;
 constexpr auto THREAD_TIMEOUT = std::chrono::seconds(60);
 constexpr uint32_t SENDER_IPV4 = 0x0100007fu;
 constexpr uint16_t SENDER_PORT = 40100;
@@ -52,7 +57,9 @@ int parseOwner(const std::string& name) {
 
 class OwnershipBackend : public IGamepadPort {
   public:
-    std::atomic<int> slowPlugMs{0};
+    std::atomic<bool> holdPlugs{false};
+    std::atomic<uint64_t> starvedPlugs{0};
+    std::array<std::atomic<uint64_t>, SESSION_COUNT + 1> frameSubmits{};
     std::atomic<bool> flaky{true};
     std::atomic<uint64_t> violations{0};
     std::atomic<uint64_t> plugs{0};
@@ -92,8 +99,7 @@ class OwnershipBackend : public IGamepadPort {
         plugState_.store((plugNumber << 1) | 1u);
         if (s.submitting.load()) violations++;
         if (s.plugged.load()) violations++;
-        const int sleepMs = slowPlugMs.load();
-        if (sleepMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        if (holdPlugs.load()) holdUntilSteadyFrames();
         const bool ok = !flaky.load() || rng_() % PLUG_FAILURE_ONE_IN != 0;
         if (ok) {
             s.owner.store(parseOwner(preferredBackend));
@@ -129,6 +135,8 @@ class OwnershipBackend : public IGamepadPort {
     }
 
     bool submitReport(uint32_t serial, const GamepadReport& report) override {
+        const int tag = report.sThumbLX;
+        if (tag >= 1 && tag <= SESSION_COUNT) frameSubmits[static_cast<size_t>(tag)]++;
         return ownedSubmit(serial, report.sThumbLX, report.sThumbLY);
     }
 
@@ -174,6 +182,19 @@ class OwnershipBackend : public IGamepadPort {
     };
 
     static bool valid(uint32_t serial) { return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS; }
+
+    void holdUntilSteadyFrames() {
+        std::atomic<uint64_t>& steady = frameSubmits[STEADY_TAG];
+        const uint64_t target = steady.load() + FRAMES_DURING_PLUG;
+        const auto deadline = Clock::now() + PLUG_HOLD_LIMIT;
+        while (steady.load() < target) {
+            if (Clock::now() >= deadline) {
+                starvedPlugs++;
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
 
     bool ownedSubmit(uint32_t serial, int tag, int ctrlIdx) {
         if (!valid(serial)) {
@@ -507,7 +528,7 @@ void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
     upsert(svc, changing, sh, {});
 
     sh.phase.store(SLOW_PLUG_PHASE, std::memory_order_release);
-    backend.slowPlugMs.store(SLOW_PLUG_MS);
+    backend.holdPlugs.store(true);
     for (int i = 0; i < SLOW_PLUGS; i++) {
         ControllerApplyResult applied;
         uint16_t epoch = 0;
@@ -515,7 +536,7 @@ void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
         svc.applyController(changing.connectionId, changing.deviceId, desc, applied, epoch);
         svc.removeController(changing.connectionId, changing.deviceId, 0, epoch);
     }
-    backend.slowPlugMs.store(0);
+    backend.holdPlugs.store(false);
     sh.phase.store(DONE_PHASE, std::memory_order_release);
     sh.coldDone.store(true, std::memory_order_release);
 }
@@ -588,12 +609,13 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
               << sh.submits[STRESS_PHASE][1] << " B " << sh.submits[STRESS_PHASE][2]
               << ", violations " << backend.violations.load() << "\n";
 
-    TEST("hot path: a 50 ms plug for one session never blocks another session's frames");
+    TEST("hot path: a slow plug for one session never blocks another session's frames");
     EXPECT(sh.submits[SLOW_PLUG_PHASE][1] > 0);
-    EXPECT(sh.longest[SLOW_PLUG_PHASE] < BLOCKED_CALL_LIMIT);
-    std::cout << "  slow plugs: longest receive-thread call " << micros(sh.longest[SLOW_PLUG_PHASE])
-              << " us across " << SLOW_PLUGS << " plugs of " << SLOW_PLUG_MS
-              << " ms; steady session submits " << sh.submits[SLOW_PLUG_PHASE][1] << "\n";
+    EXPECT_EQ(backend.starvedPlugs.load(), 0u);
+    std::cout << "  slow plugs: " << SLOW_PLUGS << " plugs each held until " << FRAMES_DURING_PLUG
+              << " steady frames arrived, starved " << backend.starvedPlugs.load()
+              << "; longest receive-thread call " << micros(sh.longest[SLOW_PLUG_PHASE])
+              << " us (wall clock, not asserted)\n";
 
     TEST("hot path: a session's own lookups are never refused while its plug runs");
     EXPECT(sh.lookupsInPlug[SLOW_PLUG_PHASE][2] > 0);
