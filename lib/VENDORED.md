@@ -75,19 +75,21 @@ the 90-day freshness window.
 - Component: nlohmann/json
 - Upstream: https://github.com/nlohmann/json
 - Pinned-commit: v3.12.0
-- Last-vendored: 2026-09-30
+- Last-vendored: 2026-11-23
 - License: MIT
 - Notes: vendored as the single-header amalgamation. No local modifications.
   Used project-wide via `src/core/json.h` for response building and request /
   config / GitHub-API parsing. Re-checked 2026-09-30: v3.12.0 is still the
   newest release and the header is byte-identical to its `json.hpp` asset.
+  Re-checked 2026-11-23: v3.12.0 is still the newest release, and
+  `json.hpp` is byte-identical to the tag's `single_include/nlohmann/json.hpp`.
 
 ## libsodium (`lib/libsodium/`)
 
 - Component: jedisct1/libsodium
 - Upstream: https://github.com/jedisct1/libsodium
 - Pinned-commit: 1.0.22-RELEASE
-- Last-vendored: 2026-09-30
+- Last-vendored: 2026-11-23
 - License: ISC
 - Notes: bundled MinGW prebuilt archives (`libsodium-mingw.tar.gz`,
   `libsodium-win32/`, `libsodium-win64/`) consumed by the Windows
@@ -103,14 +105,17 @@ the 90-day freshness window.
   release bytes so the pin names what is actually here. Re-checked
   2026-09-30: 1.0.22 is still the newest release, the archive's SHA-256 is
   the one above, and the two directories are its contents (the working
-  tree's line endings aside, which git normalises).
+  tree's line endings aside, which git normalises). Re-checked 2026-11-23:
+  1.0.22 is still the newest release, the minisign signature verifies, the
+  archive's SHA-256 is the one above, and both directories equal its
+  contents.
 
 ## ViGEm Bus Driver SDK (`vigem/include/ViGEm/`)
 
 - Component: ViGEm/ViGEmClient (the SDK submodule of nefarius/ViGEmBus)
 - Upstream: https://github.com/ViGEm/ViGEmClient
 - Pinned-commit: v1.21.222.0 (driver ABI targeted: ViGEmBus v1.22.0)
-- Last-vendored: 2026-09-30 (upstream archived 2023-09-08 at b66d02d; each
+- Last-vendored: 2026-11-23 (upstream archived 2023-09-08 at b66d02d; each
   re-stamp is a check that nothing moved upstream, and nothing has)
 - License: MIT
 - Notes: **not** a verbatim upstream copy — a hand-maintained minimal
@@ -134,6 +139,10 @@ the 90-day freshness window.
   read the LED slot as the small motor), and the DS4 notification carries the
   small motor first. `test_vigem_adapter` now pins every IOCTL code, both
   notification sizes and both layouts.
+  Re-checked 2026-11-23: ViGEmClient is still archived (last push
+  2023-09-08), v1.21.222.0 is still its newest tag and ViGEmBus v1.22.0 its
+  driver's newest release, so the header this subset is diffed against has
+  not moved and the 2026-09-29 review above still holds.
 
 ## HIDMaestro shared-memory protocol (`src/platform/windows/hidmaestro_wire.h`)
 
