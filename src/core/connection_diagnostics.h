@@ -26,7 +26,6 @@ inline constexpr const char* CONNECTION_DIAGNOSTICS_FORMAT = "satellite-connecti
 inline constexpr size_t CONNECTION_DIAGNOSTICS_LOG_LINES = 200;
 inline constexpr const char* DIAGNOSTICS_THIS_CONNECTION = "this connection";
 inline constexpr const char* DIAGNOSTICS_ANOTHER_CLIENT = "another client";
-inline constexpr const char* DIAGNOSTICS_REDACTED = "[redacted]";
 // Satellite keeps its wire, audio and rejection counters per process, not per
 // session; the per-session counts are the controllers' input and output.
 inline constexpr const char* CONNECTION_COUNTERS_SCOPE = "process";

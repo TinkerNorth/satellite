@@ -529,7 +529,8 @@ static const char* hostArch() {
 }
 
 // The connected clients as hosts and their pads, aliased in connection order;
-// the paired devices that are not connected follow, for the log's sake.
+// the paired devices that are not connected and the devices only met follow,
+// for the log's sake, and every pairing key is "[redacted]" in log text.
 static void readDiagnosticsSessions(SessionService& svc, const Config& cfg,
                                     satellite::DiagnosticsInput& in) {
     const auto snap = svc.getConnectionsSnapshot();
@@ -554,15 +555,20 @@ static void readDiagnosticsSessions(SessionService& svc, const Config& cfg,
             in.controllers.push_back(d);
         }
     }
-    std::vector<satellite::HostIdentity> pairedOnly;
+    std::vector<satellite::HostIdentity> absent;
     for (const auto& d : cfg.pairedDevices) {
         const bool isConnected =
             std::any_of(connected.begin(), connected.end(),
                         [&d](const satellite::HostIdentity& h) { return h.deviceId == d.id; });
-        if (!isConnected) pairedOnly.push_back({d.id, d.name, d.lastIP});
+        if (!isConnected) absent.push_back({d.id, d.name, d.lastIP});
     }
-    in.aliases = satellite::aliasHosts(connected, pairedOnly);
+    // Then every device the pairing and session routes met this run, paired
+    // now or not: a rejected requester's name is in the log too.
+    const std::vector<satellite::HostIdentity> seen = g_seenDevices.all();
+    absent.insert(absent.end(), seen.begin(), seen.end());
+    in.aliases = satellite::aliasHosts(connected, absent);
     satellite::aliasMachine(in.aliases, machineNames());
+    for (const auto& d : cfg.pairedDevices) satellite::aliasSecret(in.aliases, d.sharedKeyHex);
 }
 
 // GET /api/diagnostics: the dish-diagnostics.v1 file, redacted in

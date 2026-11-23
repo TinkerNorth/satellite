@@ -98,6 +98,73 @@ size_t ipv4At(const std::string& s, size_t pos) {
     return trailingOctet ? 0 : cursor - pos;
 }
 
+bool isHex(char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; }
+
+bool isIpv6Char(char c) { return isHex(c) || c == ':' || c == '.'; }
+
+// Groups of one to four hex digits, split on ':'; false on an empty group.
+bool readHexGroups(const std::string& part, size_t& groups) {
+    groups = 0;
+    if (part.empty()) return true;
+    size_t start = 0;
+    while (true) {
+        const size_t colon = part.find(':', start);
+        const size_t end = colon == std::string::npos ? part.size() : colon;
+        const size_t len = end - start;
+        if (len == 0 || len > 4) return false;
+        for (size_t i = start; i < end; i++) {
+            if (!isHex(part[i])) return false;
+        }
+        groups++;
+        if (colon == std::string::npos) return true;
+        start = colon + 1;
+    }
+}
+
+// RFC 4291's text forms: eight groups, or fewer around one "::", the last two
+// optionally a dotted quad. A time (20:47:13) or a MAC address has no "::" and
+// too few groups.
+bool isIpv6(std::string candidate) {
+    size_t extra = 0;
+    const size_t lastColon = candidate.rfind(':');
+    if (lastColon == std::string::npos) return false;
+    const std::string tail = candidate.substr(lastColon + 1);
+    if (tail.find('.') != std::string::npos) {
+        if (ipv4At(tail, 0) != tail.size()) return false;
+        candidate = candidate.substr(0, lastColon + 1) + "0";
+        extra = 1;
+    }
+    if (candidate.find('.') != std::string::npos) return false;
+    const size_t gap = candidate.find("::");
+    const bool compressed = gap != std::string::npos;
+    if (compressed && candidate.find("::", gap + 1) != std::string::npos) return false;
+    size_t left = 0;
+    size_t right = 0;
+    if (compressed) {
+        const bool sides = readHexGroups(candidate.substr(0, gap), left) &&
+                           readHexGroups(candidate.substr(gap + 2), right);
+        return sides && left + right + extra <= 7;
+    }
+    return readHexGroups(candidate, left) && left + extra == 8;
+}
+
+// The length of an IPv6 address (with any "%zone") starting at `pos`, or 0.
+size_t ipv6At(const std::string& s, size_t pos) {
+    const bool startsWord = pos == 0 || !(isNameChar(s[pos - 1]) || isIpv6Char(s[pos - 1]));
+    if (!startsWord) return 0;
+    size_t end = pos;
+    while (end < s.size() && isIpv6Char(s[end])) end++;
+    while (end > pos && s[end - 1] == '.') end--;
+    if (!isIpv6(s.substr(pos, end - pos))) return 0;
+    const bool zoned = end + 1 < s.size() && s[end] == '%' && isNameChar(s[end + 1]);
+    if (zoned) {
+        end++;
+        while (end < s.size() && isNameChar(s[end])) end++;
+    }
+    const bool endsWord = end == s.size() || !isNameChar(s[end]);
+    return endsWord ? end - pos : 0;
+}
+
 // Howard Hinnant's days-to-civil, for a UTC date without the C library's
 // thread-unsafe gmtime.
 void civilFromDays(int64_t days, int64_t& y, unsigned& m, unsigned& d) {
@@ -217,13 +284,27 @@ Json redactForDiagnostics(const Json& doc) { return withoutForbiddenKeys(doc); }
 
 std::string hostAlias(size_t index) { return "Host " + std::to_string(index + 1); }
 
+// The alias an identity already took by its device id, or a fresh one.
+static std::string aliasFor(const std::vector<HostAlias>& taken, const HostIdentity& id,
+                            size_t& next) {
+    const auto same = std::find_if(taken.begin(), taken.end(), [&id](const HostAlias& a) {
+        return !id.deviceId.empty() && a.text == id.deviceId;
+    });
+    if (same != taken.end()) return same->alias;
+    return hostAlias(next++);
+}
+
 std::vector<HostAlias> aliasHosts(const std::vector<HostIdentity>& connected,
                                   const std::vector<HostIdentity>& pairedOnly) {
     std::vector<HostAlias> out;
     size_t next = 0;
-    for (const HostIdentity& id : connected) addIdentity(out, id, hostAlias(next++));
-    for (const HostIdentity& id : pairedOnly) addIdentity(out, id, hostAlias(next++));
+    for (const HostIdentity& id : connected) addIdentity(out, id, aliasFor(out, id, next));
+    for (const HostIdentity& id : pairedOnly) addIdentity(out, id, aliasFor(out, id, next));
     return out;
+}
+
+void aliasSecret(std::vector<HostAlias>& aliases, const std::string& secret) {
+    addAlias(aliases, secret, DIAGNOSTICS_REDACTED);
 }
 
 void aliasMachine(std::vector<HostAlias>& aliases, const std::vector<std::string>& names) {
@@ -243,6 +324,12 @@ std::string scrubDiagnosticsText(const std::string& text, const std::vector<Host
         if (alias != nullptr) {
             out += alias->alias;
             i += alias->text.size();
+            continue;
+        }
+        const size_t ip6Len = isIpv6Char(text[i]) ? ipv6At(text, i) : 0;
+        if (ip6Len > 0) {
+            out += DIAGNOSTICS_MASKED_IPV6;
+            i += ip6Len;
             continue;
         }
         const size_t ipLen = isDigit(text[i]) ? ipv4At(text, i) : 0;

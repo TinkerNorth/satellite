@@ -231,6 +231,33 @@ static void test_scrub_text_one_pass() {
               std::string("401 (BAD_PROOF, deviceId Host 1)"));
 }
 
+static void test_scrub_ipv6() {
+    TEST("scrubDiagnosticsText: an IPv6 address is masked, compressed, bracketed or zoned");
+    EXPECT_EQ(scrubDiagnosticsText("now [2001:db8::77]:47998 via fe80::1%en0", {}),
+              std::string("now [x:x:x:x:x:x:x:x]:47998 via x:x:x:x:x:x:x:x"));
+    EXPECT_EQ(scrubDiagnosticsText("at 2001:0db8:0000:0000:0000:ff00:0042:8329.", {}),
+              std::string("at x:x:x:x:x:x:x:x."));
+    EXPECT_EQ(scrubDiagnosticsText("mapped ::ffff:10.0.0.1 and ::1", {}),
+              std::string("mapped x:x:x:x:x:x:x:x and x:x:x:x:x:x:x:x"));
+
+    TEST("scrubDiagnosticsText: a time, a MAC address or a C++ name is no IPv6 address");
+    EXPECT_EQ(scrubDiagnosticsText("at 20:47:13 bt C0:FF:EE:CA:4A:77 in std::vector", {}),
+              std::string("at 20:47:13 bt C0:FF:EE:CA:4A:77 in std::vector"));
+}
+
+static void test_alias_hosts_reuse() {
+    TEST("aliasHosts: a device met again under another name keeps its host's alias");
+    const std::vector<HostAlias> aliases =
+        aliasHosts({{"dish-a", "Pixel", ""}}, {{"dish-a", "Old Pixel", ""}, {"dish-z", "Z", ""}});
+    EXPECT_EQ(scrubDiagnosticsText("Old Pixel, Pixel, Z", aliases),
+              std::string("Host 1, Host 1, Host 2"));
+
+    TEST("aliasSecret: a pairing key in log text is redacted");
+    std::vector<HostAlias> secret;
+    aliasSecret(secret, "c0ffee00c0ffee00");
+    EXPECT_EQ(scrubDiagnosticsText("key c0ffee00c0ffee00", secret), std::string("key [redacted]"));
+}
+
 static void test_alias_machine() {
     TEST("aliasMachine: the machine's names become \"this PC\" in log text, the bundle's log "
          "included");
@@ -379,6 +406,8 @@ int main() {
     test_alias_hosts();
     test_scrub_text();
     test_scrub_text_one_pass();
+    test_scrub_ipv6();
+    test_alias_hosts_reuse();
     test_alias_machine();
     test_iso_utc();
     test_bundle_envelope();

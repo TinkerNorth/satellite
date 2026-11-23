@@ -1109,6 +1109,35 @@ int main() {
             EXPECT(jsonObject(jsonObject(c, "output"), "micLed").contains("last"));
         }
 
+        TEST("GET /api/diagnostics: a device met but not paired or connected has an alias");
+        g_seenDevices.note("dish-canary-gone", "CANARY-STRANGER-2");
+        const std::string canaryKey(64, 'c');
+        g_configStore->update([&canaryKey](Config& cfg) {
+            PairedDevice d;
+            d.id = "dish-canary-keyed";
+            d.name = "CANARY-KEYED";
+            d.sharedKeyHex = canaryKey;
+            cfg.pairedDevices.push_back(d);
+            return true;
+        });
+        logMsg(LogLevel::INFO, "pairing", "Pairing request from CANARY-STRANGER-2 (10.0.0.9)");
+        logMsg(LogLevel::INFO, "pairing", "Key check: " + canaryKey);
+        logMsg(LogLevel::INFO, "client", "UDP endpoint now [2001:db8::77]:47998");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+        auto canary = cli.Get("/api/diagnostics");
+        EXPECT(canary && canary->status == 200);
+        if (canary) {
+            EXPECT(canary->body.find("CANARY-STRANGER-2") == std::string::npos);
+            EXPECT(canary->body.find("Pairing request from Host ") != std::string::npos);
+
+            TEST("GET /api/diagnostics: a pairing key in log text is redacted");
+            EXPECT(canary->body.find(canaryKey) == std::string::npos);
+            EXPECT(canary->body.find("Key check: [redacted]") != std::string::npos);
+
+            TEST("GET /api/diagnostics: an IPv6 address in log text is masked");
+            EXPECT(canary->body.find("2001:db8::77") == std::string::npos);
+        }
+
         svc.closeSessionById(session.connectionId, "", CLOSE_REASON_KICKED, false);
         g_controllerDbService = nullptr;
     }

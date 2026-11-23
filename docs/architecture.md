@@ -2206,8 +2206,9 @@ below) with `record` null and no `hardware`,
 `expectMismatch`, `probe`, `lastFeedback`, `lastWrite`, `outcomes` or
 `capture`; `device.model` and `device.os` are the platform name, since
 Satellite reads no hardware model; there is no `extra`. Log lines are scrubbed
-of IPv4 addresses by pattern; an IPv6 address in a log line is removed only when
-it is a known client's address.
+of IPv4 and IPv6 addresses by pattern, of every pairing key, and of every device
+id and name the pairing and session routes met this run (`g_seenDevices`), paired
+now or not, as well as the connected and paired ones.
 
 ## Connection diagnostics
 
