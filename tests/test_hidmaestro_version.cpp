@@ -78,7 +78,7 @@ static void test_the_pinned_image_decodes_field_for_field() {
     EXPECT_EQ(s.layoutVersion, 1);
     EXPECT_EQ(s.sdkProtocolMin, 4);
     EXPECT_EQ(s.sdkProtocolMax, 4);
-    EXPECT(sameVersion(s.sdkVersion, 2, 1, 0, 0));
+    EXPECT(sameVersion(s.sdkVersion, 2, 3, 0, 0));
     EXPECT_EQ(s.driverProtocol, 5);
     EXPECT(sameVersion(s.driverVersion, 2, 1, 0, 0));
     EXPECT_EQ(s.driverCapabilities, 3);
@@ -438,7 +438,7 @@ static void test_the_hold_lasts_as_long_as_the_sdk_would_wait() {
 static void test_the_log_names_what_the_section_holds() {
     TEST("log: a section is described by what each writer put in it");
     EXPECT_EQ(describeVersionSection(parseVersionSection(PINNED_XBOX_IMAGE.data())),
-              std::string("layout 1, SDK 2.1.0 protocols 4 to 4, driver 2.1.0 protocols 4 to 5 "
+              std::string("layout 1, SDK 2.3.0 protocols 4 to 4, driver 2.1.0 protocols 4 to 5 "
                           "error 0, companion protocols 4 to 4 error 0, tag 1fd048916b8d461f"));
 
     TEST("log: a version's fourth field shows only when it is set");
