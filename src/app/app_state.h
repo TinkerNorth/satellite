@@ -5,6 +5,7 @@
 
 #include "core/config_store.h"
 #include "core/log_writer.h"
+#include "core/seen_devices.h"
 #include "core/tracked_mutex.h"
 #include "core/types.h"
 #include "net/net_compat.h"
@@ -44,6 +45,10 @@ extern std::atomic<uint64_t> g_submitFail;
 extern std::atomic<uint64_t> g_lastLoopUs;
 extern std::atomic<uint64_t> g_maxLoopUs;
 extern std::atomic<uint32_t> g_senderIP;
+// The device ids and names the pairing and session routes have met this run,
+// for the diagnostics scrubbers (core/seen_devices.h).
+extern satellite::SeenDevices g_seenDevices;
+
 extern std::atomic<uint64_t> g_decryptFail;
 extern std::atomic<uint64_t> g_replayDrop;
 

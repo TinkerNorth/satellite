@@ -1036,23 +1036,31 @@ int main() {
         const std::string base = "/api/connections/" + session.connectionId + "/controllers/";
 
         TEST("POST .../controllers/:idx/test: the claimed lanes are sent, the rest skipped");
-        auto test = cli.Post(base + "0/test", R"({"lanes":["rumble","lightbar","micLed"]})",
+        auto test = cli.Post(base + "0/test", R"({"lanes":["rumble","lightbar","playerLeds"]})",
                              "application/json");
         EXPECT(test && test->status == 200);
         if (test) {
             const Json j = parseJson(test->body);
             EXPECT_EQ(j["sent"].dump(), std::string(R"(["rumble","lightbar"])"));
-            EXPECT_EQ(j["skipped"].dump(), std::string(R"(["micLed"])"));
+            EXPECT_EQ(j["skipped"].dump(), std::string(R"(["playerLeds"])"));
         }
         EXPECT_EQ(clientPort.rumbles.load(), 1);
         EXPECT_EQ(clientPort.lightbars.load(), 1);
-        EXPECT_EQ(clientPort.micLeds.load(), 0);
 
         TEST("POST .../test: an unknown lane is a 400, an empty slot or session a 404");
         auto badLane = cli.Post(base + "0/test", R"({"lanes":["speaker"]})", "application/json");
         EXPECT(badLane && badLane->status == 400);
         auto noLanes = cli.Post(base + "0/test", "{}", "application/json");
         EXPECT(noLanes && noLanes->status == 400);
+
+        TEST("POST .../test: naming micLed is a 400 that names it, and sends nothing");
+        const int rumblesBefore = clientPort.rumbles.load();
+        auto micLed =
+            cli.Post(base + "0/test", R"({"lanes":["rumble","micLed"]})", "application/json");
+        EXPECT(micLed && micLed->status == 400);
+        if (micLed) EXPECT(micLed->body.find("micLed") != std::string::npos);
+        EXPECT_EQ(clientPort.rumbles.load(), rumblesBefore);
+        EXPECT_EQ(clientPort.micLeds.load(), 0);
         auto emptySlot = cli.Post(base + "5/test", R"({"lanes":["rumble"]})", "application/json");
         EXPECT(emptySlot && emptySlot->status == 404);
         auto noSession = cli.Post("/api/connections/conn_nothere/controllers/0/test",
@@ -1107,6 +1115,44 @@ int main() {
             EXPECT(jsonObject(c, "input").contains("rateHz"));
             EXPECT(jsonObject(jsonObject(c, "output"), "rumble").contains("count"));
             EXPECT(jsonObject(jsonObject(c, "output"), "micLed").contains("last"));
+        }
+
+        TEST("GET /api/diagnostics: a device met but not paired or connected has an alias");
+        g_seenDevices.note("dish-canary-gone", "CANARY-STRANGER-2");
+        const std::string canaryKey(64, 'c');
+        g_configStore->update([&canaryKey](Config& cfg) {
+            PairedDevice d;
+            d.id = "dish-canary-keyed";
+            d.name = "CANARY-KEYED";
+            d.sharedKeyHex = canaryKey;
+            cfg.pairedDevices.push_back(d);
+            return true;
+        });
+        logMsg(LogLevel::INFO, "pairing", "Pairing request from CANARY-STRANGER-2 (10.0.0.9)");
+        logMsg(LogLevel::INFO, "pairing", "Key check: " + canaryKey);
+        logMsg(LogLevel::INFO, "client", "UDP endpoint now [2001:db8::77]:47998");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+        auto canary = cli.Get("/api/diagnostics");
+        EXPECT(canary && canary->status == 200);
+        if (canary) {
+            EXPECT(canary->body.find("CANARY-STRANGER-2") == std::string::npos);
+            EXPECT(canary->body.find("Pairing request from Host ") != std::string::npos);
+
+            TEST("GET /api/diagnostics: a pairing key in log text is redacted");
+            EXPECT(canary->body.find(canaryKey) == std::string::npos);
+            EXPECT(canary->body.find("Key check: [redacted]") != std::string::npos);
+
+            TEST("GET /api/diagnostics: an IPv6 address in log text is masked");
+            EXPECT(canary->body.find("2001:db8::77") == std::string::npos);
+
+            TEST(
+                "GET /api/diagnostics: each log line's level is lowercase, as /api/logs writes it");
+            const Json j = parseJson(canary->body);
+            EXPECT(!j["log"].empty());
+            for (const Json& line : j["log"]) {
+                const std::string level = jsonStr(line, "level");
+                EXPECT(level == "info" || level == "warn" || level == "error");
+            }
         }
 
         svc.closeSessionById(session.connectionId, "", CLOSE_REASON_KICKED, false);

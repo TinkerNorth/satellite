@@ -39,10 +39,23 @@ bool namesSerial(const std::string& text, uint32_t serial) {
     return false;
 }
 
-bool namesAnyText(const std::string& text, const std::vector<std::string>& needles) {
-    return std::any_of(needles.begin(), needles.end(), [&text](const std::string& needle) {
-        return text.find(needle) != std::string::npos;
-    });
+// An id runs on through letters, digits, '-' and '_' ("conn_ab12cd34",
+// "dish-self-41"), so a token is matched only where neither neighbour is one.
+bool isIdChar(char c) { return isWordChar(c) || c == '-' || c == '_'; }
+
+bool namesToken(const std::string& text, const std::string& token) {
+    for (size_t pos = text.find(token); pos != std::string::npos; pos = text.find(token, pos + 1)) {
+        const size_t end = pos + token.size();
+        const bool starts = pos == 0 || !isIdChar(text[pos - 1]);
+        const bool ends = end == text.size() || !isIdChar(text[end]);
+        if (starts && ends) return true;
+    }
+    return false;
+}
+
+bool namesAnyToken(const std::string& text, const std::vector<std::string>& tokens) {
+    return std::any_of(tokens.begin(), tokens.end(),
+                       [&text](const std::string& token) { return namesToken(text, token); });
 }
 
 bool namesClaimedSerial(const DiagnosticsLogLine& line, const std::vector<SerialClaim>& claims) {
@@ -147,7 +160,7 @@ JsonOut logJson(const ConnectionDiagnosticsInput& in) {
 } // namespace
 
 bool logLineConcernsConnection(const DiagnosticsLogLine& line, const ConnectionLogScope& scope) {
-    const bool namesConnection = namesAnyText(line.message, scope.texts);
+    const bool namesConnection = namesAnyToken(line.message, scope.texts);
     return namesConnection || namesClaimedSerial(line, scope.serials);
 }
 
@@ -155,8 +168,6 @@ ConnectionLogScope connectionLogScope(const ConnectionDiagnosticsInput& in) {
     ConnectionLogScope scope;
     addText(scope.texts, in.connectionId);
     addText(scope.texts, in.self.deviceId);
-    addText(scope.texts, in.self.deviceName);
-    addText(scope.texts, in.self.address);
     for (const ConnectionController& c : in.controllers) {
         if (c.serial != 0) scope.serials.push_back({c.serial, c.pluggedAtMs});
     }

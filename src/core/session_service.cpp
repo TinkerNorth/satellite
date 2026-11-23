@@ -483,6 +483,12 @@ void SessionService::publishControllersLocked(Connection& conn) {
     sendSeededRumbleLocked(conn);
 }
 
+// A line about a connection carries its id: the connection's diagnostics
+// document picks its lines by that token, never by the name the client chose.
+static std::string connectionLabel(const Connection& conn) {
+    return conn.deviceName + " (" + conn.connectionId + ")";
+}
+
 void SessionService::resetControllerStreamState(Controller& ctrl) {
     // A (re)plugged controller is a fresh actuator, so the next rumble/colour
     // must not be suppressed as "same as last".
@@ -504,6 +510,7 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
     ctrl.lastPlayerLedsValid = false;
     ctrl.micLedState = MIC_LED_STATE_OFF;
     ctrl.lastMicLedValid = false;
+    ctrl.testHeldLanes = 0;
     ctrl.lastGameOutput = GameOutputKind::None;
     ctrl.lastGameOutputAtMs = 0;
     ctrl.output = GameOutputRecord{};
@@ -517,7 +524,8 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
 void SessionService::removePadLocked(Connection& conn, Controller& ctrl,
                                      std::vector<RetiredSerial>& retired) {
     log_.logMsg(LogLevel::INFO, "service",
-                "Controller #" + std::to_string(ctrl.index) + " removed from " + conn.deviceName);
+                "Controller #" + std::to_string(ctrl.index) + " removed from " +
+                    connectionLabel(conn));
     vacatePadLocked(conn, ctrl, retired);
 }
 
@@ -734,7 +742,7 @@ void SessionService::addPadLocked(Connection& conn, Controller& ctrl, PadChange&
         log_.logMsg(LogLevel::INFO, "service",
                     "Controller #" + std::to_string(pad.desc.ctrlIdx) + " plugged as " +
                         controllerTypeLabel(pad.desc.type) + " (serial " +
-                        std::to_string(pad.serial) + ") for " + conn.deviceName);
+                        std::to_string(pad.serial) + ") for " + connectionLabel(conn));
         return;
     }
     releaseSerial(pad.serial);
@@ -996,8 +1004,9 @@ int SessionService::closeSessionById(const std::string& connectionId, const std:
         if (notify) client_.sendSessionClose(*conn, reason);
         removed = conn->activeControllerCount;
         log_.logMsg(LogLevel::INFO, "service",
-                    "Connection closed for " + conn->deviceName + " (" + std::to_string(removed) +
-                        " controllers removed, " + closeReasonName(reason) + ")");
+                    "Connection closed for " + connectionLabel(*conn) + ": " +
+                        std::to_string(removed) + " controllers removed, " +
+                        closeReasonName(reason));
         const uint32_t token = conn->token;
         retireConnectionLocked(*conn, retired);
         connections_.erase(token);
@@ -1016,8 +1025,8 @@ int SessionService::closeSessionsForDevice(const std::string& deviceId, uint8_t 
             if (it->second.deviceId == deviceId) {
                 client_.sendSessionClose(it->second, reason);
                 log_.logMsg(LogLevel::INFO, "service",
-                            "Connection closed for " + it->second.deviceName + " (" +
-                                closeReasonName(reason) + ")");
+                            "Connection closed for " + connectionLabel(it->second) + ": " +
+                                closeReasonName(reason));
                 retireConnectionLocked(it->second, retired);
                 it = connections_.erase(it);
                 closed++;
@@ -1191,7 +1200,7 @@ void SessionService::vacateLostPadLocked(uint32_t serial, std::vector<RetiredSer
     Controller* ctrl = nullptr;
     if (!findBySerialLocked(serial, conn, ctrl)) return;
     log_.logMsg(LogLevel::WARN, "service",
-                "Controller #" + std::to_string(ctrl->index) + " of " + conn->deviceName +
+                "Controller #" + std::to_string(ctrl->index) + " of " + connectionLabel(*conn) +
                     " lost its virtual device; Satellite unplugs it so " + conn->deviceName +
                     " plugs it again");
     vacatePadLocked(*conn, *ctrl, retired);
@@ -1210,6 +1219,8 @@ int SessionService::refreshRumble() {
         }
         for (auto& ctrl : conn.controllers) {
             if (!ctrl.active || ctrl.serialNo == 0) continue;
+            const bool testHoldOver = ctrl.testHeldLanes != 0 && now >= ctrl.testHoldEndsAt;
+            if (testHoldOver) giveBackTestHoldLocked(conn, ctrl);
             const bool hidHeld =
                 ctrl.hidRumble.strongMagnitude != 0 || ctrl.hidRumble.weakMagnitude != 0;
             if (hidHeld) {
@@ -1385,6 +1396,12 @@ void SessionService::releaseConnectionPointerLocked(Connection& conn) {
     }
 }
 
+// A Test burst owns the surface until its hold ends: the cache takes the
+// game's write, the tick gives it back (bench rule 3).
+static bool testHolds(const Controller& ctrl, satellite::FeedbackLane lane) {
+    return (ctrl.testHeldLanes & satellite::feedbackLaneBit(lane)) != 0;
+}
+
 void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
     std::lock_guard<TrackedMutex> lk(mtx_);
 
@@ -1403,6 +1420,7 @@ void SessionService::handleLightbarFromBackend(uint32_t serial, uint8_t r, uint8
     foundCtrl->lightbarG = g;
     foundCtrl->lightbarB = b;
     foundCtrl->lastLightbarValid = true;
+    if (testHolds(*foundCtrl, satellite::FeedbackLane::Lightbar)) return;
 
     // Emit only to senders that advertised CAP_LIGHTBAR; others would drop it.
     if (foundCtrl->lightbarCapable()) {
@@ -1423,6 +1441,7 @@ void SessionService::handleTriggerEffectsFromBackend(uint32_t serial,
     if (foundCtrl->lastTriggerEffectsValid && foundCtrl->lastTriggerEffects == report) return;
     foundCtrl->lastTriggerEffects = report;
     foundCtrl->lastTriggerEffectsValid = true;
+    if (testHolds(*foundCtrl, satellite::FeedbackLane::TriggerEffects)) return;
 
     if (foundCtrl->triggerEffectsCapable()) {
         client_.sendTriggerEffects(*foundConn, foundCtrl->index, report);
@@ -1441,6 +1460,7 @@ void SessionService::handlePlayerLedsFromBackend(uint32_t serial, uint8_t ledMas
     if (foundCtrl->lastPlayerLedsValid && foundCtrl->playerLeds == ledMask) return;
     foundCtrl->playerLeds = ledMask;
     foundCtrl->lastPlayerLedsValid = true;
+    if (testHolds(*foundCtrl, satellite::FeedbackLane::PlayerLeds)) return;
 
     if (foundCtrl->playerLedsCapable()) {
         client_.sendPlayerLeds(*foundConn, foundCtrl->index, ledMask);
@@ -2081,7 +2101,7 @@ int SessionService::reapTimedOut() {
         // flapping through here.
         if (now - lastPacket > timeout && now > conn.graceUntil) {
             log_.logMsg(LogLevel::INFO, "service",
-                        "Reaper: timed out connection for " + conn.deviceName + " after " +
+                        "Reaper: timed out connection for " + connectionLabel(conn) + " after " +
                             std::to_string(silentFor.count()) + " s without a packet");
             retireConnectionLocked(conn, retired);
             it = connections_.erase(it);
@@ -2093,7 +2113,8 @@ int SessionService::reapTimedOut() {
                 conn.stallLogged = true;
                 const auto reapIn = timeout - silentFor;
                 log_.logMsg(LogLevel::WARN, "service",
-                            "Link to " + conn.deviceName + " has gone silent: no packet for " +
+                            "Link to " + connectionLabel(conn) +
+                                " has gone silent: no packet for " +
                                 std::to_string(silentFor.count()) + " s (reaper in " +
                                 std::to_string(reapIn.count()) + " s)");
             }
@@ -2163,6 +2184,13 @@ void SessionService::resetMicRateWindowForTest(uint32_t token, uint8_t ctrlIdx) 
     // Exactly what handleMicAudio's window lapse does, without the second.
     rx.micWindowStart = 0;
     rx.micPacketsInWindow = 0;
+}
+
+void SessionService::endFeedbackTestHoldForTest(uint32_t token, uint8_t ctrlIdx) {
+    std::lock_guard<TrackedMutex> lk(mtx_);
+    auto it = connections_.find(token);
+    if (it == connections_.end() || ctrlIdx >= MAX_CONTROLLERS_PER_CONN) return;
+    it->second.controllers[ctrlIdx].testHoldEndsAt = std::chrono::steady_clock::now();
 }
 
 void SessionService::setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq) {
@@ -2262,7 +2290,8 @@ uint64_t SessionService::inputCountFor(const Controller& ctrl) const {
 }
 
 // Straight to the client port: the controller's caches keep what the game
-// last wrote, so a later game write is judged against the game's own state.
+// last wrote, so a later game write is judged against the game's own state
+// and the give-back has the game's value to send.
 void SessionService::sendTestLaneLocked(const Connection& conn, const Controller& ctrl,
                                         satellite::FeedbackLane lane) {
     using satellite::FeedbackLane;
@@ -2280,25 +2309,65 @@ void SessionService::sendTestLaneLocked(const Connection& conn, const Controller
     case FeedbackLane::TriggerEffects:
         client_.sendTriggerEffects(conn, ctrl.index, satellite::testTriggerEffectsReport());
         return;
-    case FeedbackLane::MicLed:
-        client_.sendMicLed(conn, ctrl.index, satellite::TEST_MIC_LED_STATE);
+    }
+}
+
+// What the client shows once a test lets go: the game's last value, or off
+// for a surface the game never set (bench rule 2).
+void SessionService::giveBackTestLaneLocked(const Connection& conn, const Controller& ctrl,
+                                            satellite::FeedbackLane lane) {
+    using satellite::FeedbackLane;
+    switch (lane) {
+    case FeedbackLane::Rumble:
+        return;
+    case FeedbackLane::Lightbar: {
+        const bool set = ctrl.lastLightbarValid;
+        const uint8_t r = set ? ctrl.lightbarR : 0;
+        const uint8_t g = set ? ctrl.lightbarG : 0;
+        const uint8_t b = set ? ctrl.lightbarB : 0;
+        client_.sendLightbar(conn, ctrl.index, r, g, b);
         return;
     }
+    case FeedbackLane::PlayerLeds: {
+        const uint8_t mask = ctrl.lastPlayerLedsValid ? ctrl.playerLeds : 0;
+        client_.sendPlayerLeds(conn, ctrl.index, mask);
+        return;
+    }
+    case FeedbackLane::TriggerEffects: {
+        const TriggerEffectsReport report =
+            ctrl.lastTriggerEffectsValid ? ctrl.lastTriggerEffects : TriggerEffectsReport{};
+        client_.sendTriggerEffects(conn, ctrl.index, report);
+        return;
+    }
+    }
+}
+
+void SessionService::giveBackTestHoldLocked(const Connection& conn, Controller& ctrl) {
+    for (const satellite::FeedbackLaneInfo& info : satellite::FEEDBACK_LANES) {
+        if (testHolds(ctrl, info.lane)) giveBackTestLaneLocked(conn, ctrl, info.lane);
+    }
+    ctrl.testHeldLanes = 0;
 }
 
 bool SessionService::testController(const std::string& connectionId, uint8_t ctrlIdx,
                                     const std::vector<satellite::FeedbackLane>& lanes,
                                     satellite::FeedbackTestPlan& outPlan) {
     std::lock_guard<TrackedMutex> lk(mtx_);
-    const Connection* conn = findByConnectionId(connectionId);
+    Connection* conn = findByConnectionId(connectionId);
     const bool inRange = ctrlIdx < MAX_CONTROLLERS_PER_CONN;
     if (conn == nullptr || !inRange || !conn->controllers[ctrlIdx].active) return false;
-    const Controller& ctrl = conn->controllers[ctrlIdx];
+    Controller& ctrl = conn->controllers[ctrlIdx];
     outPlan = satellite::planFeedbackTest(ctrl.caps, lanes);
     for (const satellite::FeedbackLane lane : outPlan.sent) sendTestLaneLocked(*conn, ctrl, lane);
+    const uint8_t held = satellite::heldFeedbackLanes(outPlan.sent);
+    if (held != 0) {
+        ctrl.testHeldLanes |= held;
+        ctrl.testHoldEndsAt =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(satellite::TEST_HOLD_MS);
+    }
     log_.logMsg(LogLevel::INFO, "service",
-                "Test burst to controller #" + std::to_string(ctrlIdx) + " of " + conn->deviceName +
-                    ": " + std::to_string(outPlan.sent.size()) + " sent, " +
-                    std::to_string(outPlan.skipped.size()) + " skipped");
+                "Test burst to controller #" + std::to_string(ctrlIdx) + " of " +
+                    connectionLabel(*conn) + ": " + std::to_string(outPlan.sent.size()) +
+                    " sent, " + std::to_string(outPlan.skipped.size()) + " skipped");
     return true;
 }

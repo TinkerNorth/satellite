@@ -315,7 +315,8 @@ class SessionService {
     // The motor-state tick (RUMBLE_REFRESH_MS cadence, from the maintenance
     // thread): re-sends a held HID level before the client's duration runs
     // out, and sends the stop for a haptic reduction whose stream ended
-    // without a silent window. Returns the number of packets sent.
+    // without a silent window. Returns the number of rumble packets sent. The
+    // same pass gives back the state a Test burst held once its hold ends.
     int refreshRumble();
 
     // Once a second, from the maintenance thread: each active pad's input
@@ -351,6 +352,9 @@ class SessionService {
     void setSpeakerSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
     void setHapticSeqForTest(uint32_t token, uint8_t ctrlIdx, uint16_t seq);
     void backdatePointerRefusalLogForTest(uint32_t token, int secondsAgo);
+    // Test seam: end a Test burst's hold now, so the give-back is reachable
+    // without waiting TEST_HOLD_MS.
+    void endFeedbackTestHoldForTest(uint32_t token, uint8_t ctrlIdx);
     void bindReceiveThreadForTest();
     uint64_t foreignRxWritesForTest() const;
     struct HeartbeatAckView {
@@ -550,6 +554,9 @@ class SessionService {
     // The time it recorded, Unix milliseconds.
     int64_t noteGameOutputLocked(Controller& ctrl, GameOutputKind kind);
     uint64_t inputCountFor(const Controller& ctrl) const;
+    void giveBackTestLaneLocked(const Connection& conn, const Controller& ctrl,
+                                satellite::FeedbackLane lane);
+    void giveBackTestHoldLocked(const Connection& conn, Controller& ctrl);
     void sendTestLaneLocked(const Connection& conn, const Controller& ctrl,
                             satellite::FeedbackLane lane);
     Connection* findByDeviceId(const std::string& deviceId);

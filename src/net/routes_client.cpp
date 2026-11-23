@@ -92,9 +92,11 @@ static bool clientAuthed(const Request& req, Response& res, ClientAuth& out) {
     if (!out.deviceId.empty() && findPairedDevice(out.deviceId, out.device)) {
         const bool proven = hexDecode(out.device.sharedKeyHex, out.pairingKey, CRYPTO_KEY_SIZE) &&
                             verifyHmacProof(out.pairingKey, out.deviceId, proof);
+        g_seenDevices.note(out.deviceId, out.device.name);
         if (proven) return true;
         code = "BAD_PROOF";
     }
+    g_seenDevices.note(out.deviceId, "");
     rejectUnauthorized(req, res, code, out.deviceId);
     return false;
 }
@@ -223,6 +225,7 @@ static void upsertConnectionRoute(SessionService& svc, const Request& req, Respo
 
     std::string deviceName = jsonStr(body, "deviceName");
     if (deviceName.empty()) deviceName = auth.device.name;
+    g_seenDevices.note(auth.deviceId, deviceName);
 
     std::vector<ControllerDescriptor> descriptors;
     if (!parseControllerDescriptors(body, descriptors)) {
@@ -372,6 +375,7 @@ static void registerClientPinRequest(const PairRequest& pr, Response& res) {
 // Always 200 on the PIN paths; the sender classifies on `ok`/`pending`.
 static void pairRoute(SessionService& svc, const Request& req, Response& res) {
     PairRequest pr = readPairRequest(req);
+    g_seenDevices.note(pr.deviceId, pr.deviceName);
     if (pr.deviceId.empty()) {
         replyJson(res, R"({"ok":false,"error":"missing deviceId"})");
         return;
@@ -586,7 +590,8 @@ static Json controllerAudioGrants() {
     return jsonObject(caps, "controllerAudio");
 }
 
-// Everyone but the requester, connected or only paired, and every pairing key
+// Everyone but the requester, connected, paired or only met by the pairing and
+// session routes this run, and every pairing key
 // as text, so a log line can be scrubbed of all of them.
 static void readOtherClients(const SessionService::ConnectionsSnapshot& snap,
                              const std::string& connectionId,
@@ -600,6 +605,11 @@ static void readOtherClients(const SessionService::ConnectionsSnapshot& snap,
     for (const PairedDevice& d : cfg->pairedDevices) {
         in.secrets.push_back(d.sharedKeyHex);
         if (d.id != in.self.deviceId) in.others.push_back({d.id, d.name, d.lastIP});
+    }
+    for (const satellite::HostIdentity& seen : g_seenDevices.all()) {
+        const bool isSelf =
+            seen.deviceId == in.self.deviceId && seen.deviceName == in.self.deviceName;
+        if (!isSelf) in.others.push_back(seen);
     }
 }
 

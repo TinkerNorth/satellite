@@ -23,6 +23,14 @@ inline constexpr long CONTROLLER_DB_SCHEMA = 1;
 inline constexpr const char* CONTROLLER_DB_FALLBACK_LOCALE = "en";
 inline constexpr const char* CONTROLLER_DB_LOCALES[] = {"en", "bs", "de", "es", "fr", "pt-BR"};
 
+// input.protocol.ref's vocabulary (contract §4.1), the families requires.families
+// may name; schema 1 defines no op.
+inline constexpr const char* CONTROLLER_DB_FAMILIES[] = {
+    "xinput360", "xinput360Wireless", "xboxOneGip",   "dualshock4",
+    "dualsense", "switchProUsb",      "switchN64Usb", "stadia",
+    "hid",       "steamController",   "steamTriton",  "steamControllerBle",
+};
+
 inline constexpr const char* CONTROLLER_DB_MANIFEST = "manifest.json";
 inline constexpr const char* CONTROLLER_DB_RECORDS = "controllers.json";
 
@@ -60,6 +68,10 @@ struct ControllerRecord {
     std::string family;
     Verification verification = Verification::Imported;
     std::vector<ControllerIssue> issues;
+    // requires names a family or op this build lacks (contract §6.6): the
+    // record is named, its data is not applied, and the build's own row for
+    // its ids stays in force.
+    bool inert = false;
 };
 
 struct ControllerDb {
@@ -137,6 +149,10 @@ struct ControllerDbSnapshot {
     ControllerDbFiles files;
     ControllerDbManifest manifest;
     std::string manifestSha256;
+    // What the mirror serves as the manifest: the published one, less any
+    // file this build does not hold, so it never lists a file it cannot serve.
+    std::string mirrorManifest;
+    std::string mirrorManifestSha256;
     ControllerDb db;
     ControllerDbStrings strings;
 };

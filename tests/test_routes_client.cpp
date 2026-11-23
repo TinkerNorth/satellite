@@ -650,6 +650,27 @@ int main() {
             EXPECT(diag->body.find("192.168.77.9") == std::string::npos);
             EXPECT(diag->body.find("RouteTester") == std::string::npos);
         }
+
+        TEST("GET /api/connections/:id/diagnostics: a pairing requester's name, never paired, "
+             "is another client");
+        auto ask = cli.Post("/api/pair",
+                            R"({"deviceId":"dish-canary-stranger","deviceName":"CANARY-STRANGER",
+                                "clientPin":"5150","publicKey":"00"})",
+                            "application/json");
+        EXPECT(ask && ask->status == 200);
+        logMsg(LogLevel::INFO, "client", "Key check for " + devId + " beside CANARY-STRANGER");
+        logMsg(LogLevel::INFO, "client", "Key check for " + devId + " from fe80::1%en0");
+        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+        auto again = cli.Get(path.c_str(), auth);
+        EXPECT(again && again->status == 200);
+        if (again) {
+            EXPECT(again->body.find("CANARY-STRANGER") == std::string::npos);
+            EXPECT(again->body.find("beside another client") != std::string::npos);
+
+            TEST("GET /api/connections/:id/diagnostics: an IPv6 address is masked");
+            EXPECT(again->body.find("fe80::1") == std::string::npos);
+            EXPECT(again->body.find("en0") == std::string::npos);
+        }
     }
     {
         TEST("per-slot PUT: full descriptor upsert, path index wins");

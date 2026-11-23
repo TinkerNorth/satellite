@@ -520,7 +520,7 @@
   "_meta.locale": "es",
 
   "controllers.test": "Probar",
-  "controllers.test.hint": "Envía a la app Dish de este mando una prueba de vibración, barra de luz, LED de jugador, gatillos y luz del micrófono, cada una solo si la app indicó que el mando la tiene",
+  "controllers.test.hint": "Envía a la app Dish de este mando una prueba de vibración, barra de luz, LED de jugador y gatillos, cada una solo si la app indicó que el mando la tiene",
   "controllers.test.sent": "Enviado a la app Dish",
   "controllers.test.skipped": "Omitido: la app Dish no indicó que este mando lo tenga",
   "controllers.test.failed": "No se pudo enviar la prueba",

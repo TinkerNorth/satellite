@@ -198,6 +198,66 @@ static void test_scrub_text() {
               std::string("999.1.1.1 is no address"));
 }
 
+static void test_scrub_text_one_pass() {
+    TEST("scrubDiagnosticsText: a one-letter name is never found inside a word");
+    const std::vector<HostAlias> letter = {{"e", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("Session from this connection by e", letter),
+              std::string("Session from this connection by Host 1"));
+
+    TEST("scrubDiagnosticsText: an alias is never scanned again for another name");
+    const std::vector<HostAlias> chained = {
+        {"PC", "Host 1"}, {"Host", "Host 2"}, {"client", "another client"}, {"e", "Host 3"}};
+    EXPECT_EQ(scrubDiagnosticsText("PC and Host joined, client e left", chained),
+              std::string("Host 1 and Host 2 joined, another client Host 3 left"));
+
+    TEST("scrubDiagnosticsText: a name with a space, \"Host 1\", is replaced whole once");
+    const std::vector<HostAlias> spaced = {{"Host 1", "Host 2"}, {"Host 2", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("Host 1 then Host 2", spaced),
+              std::string("Host 2 then Host 1"));
+
+    TEST("scrubDiagnosticsText: a name that is a prefix of another loses to the longer one");
+    const std::vector<HostAlias> prefix = {{"Pixel", "Host 1"}, {"Pixel Pro", "Host 2"}};
+    EXPECT_EQ(scrubDiagnosticsText("Pixel Pro, Pixel, Pixels", prefix),
+              std::string("Host 2, Host 1, Pixels"));
+
+    TEST("scrubDiagnosticsText: an address is not found inside a longer address");
+    const std::vector<HostAlias> address = {{"10.0.0.1", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("10.0.0.1 and 10.0.0.17", address),
+              std::string("Host 1 and x.x.x.x"));
+
+    TEST("scrubDiagnosticsText: a one-letter device id does not split BAD_PROOF");
+    const std::vector<HostAlias> id = {{"B", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("401 (BAD_PROOF, deviceId B)", id),
+              std::string("401 (BAD_PROOF, deviceId Host 1)"));
+}
+
+static void test_scrub_ipv6() {
+    TEST("scrubDiagnosticsText: an IPv6 address is masked, compressed, bracketed or zoned");
+    EXPECT_EQ(scrubDiagnosticsText("now [2001:db8::77]:47998 via fe80::1%en0", {}),
+              std::string("now [x:x:x:x:x:x:x:x]:47998 via x:x:x:x:x:x:x:x"));
+    EXPECT_EQ(scrubDiagnosticsText("at 2001:0db8:0000:0000:0000:ff00:0042:8329.", {}),
+              std::string("at x:x:x:x:x:x:x:x."));
+    EXPECT_EQ(scrubDiagnosticsText("mapped ::ffff:10.0.0.1 and ::1", {}),
+              std::string("mapped x:x:x:x:x:x:x:x and x:x:x:x:x:x:x:x"));
+
+    TEST("scrubDiagnosticsText: a time, a MAC address or a C++ name is no IPv6 address");
+    EXPECT_EQ(scrubDiagnosticsText("at 20:47:13 bt C0:FF:EE:CA:4A:77 in std::vector", {}),
+              std::string("at 20:47:13 bt C0:FF:EE:CA:4A:77 in std::vector"));
+}
+
+static void test_alias_hosts_reuse() {
+    TEST("aliasHosts: a device met again under another name keeps its host's alias");
+    const std::vector<HostAlias> aliases =
+        aliasHosts({{"dish-a", "Pixel", ""}}, {{"dish-a", "Old Pixel", ""}, {"dish-z", "Z", ""}});
+    EXPECT_EQ(scrubDiagnosticsText("Old Pixel, Pixel, Z", aliases),
+              std::string("Host 1, Host 1, Host 2"));
+
+    TEST("aliasSecret: a pairing key in log text is redacted");
+    std::vector<HostAlias> secret;
+    aliasSecret(secret, "c0ffee00c0ffee00");
+    EXPECT_EQ(scrubDiagnosticsText("key c0ffee00c0ffee00", secret), std::string("key [redacted]"));
+}
+
 static void test_alias_machine() {
     TEST("aliasMachine: the machine's names become \"this PC\" in log text, the bundle's log "
          "included");
@@ -255,6 +315,11 @@ static void test_bundle_envelope() {
     EXPECT(!c["caps"].value("mic", true));
     EXPECT_EQ(c["lastGameOutput"].value("kind", std::string()), std::string("rumble"));
     EXPECT_EQ(c["lastGameOutput"].value("atMs", int64_t{0}), int64_t{1763586000000});
+
+    TEST("bundle: a pad no backend serves has a null backend, as in the connection document");
+    DiagnosticsInput orphan = inputFixture();
+    orphan.controllers[0].backend.clear();
+    EXPECT(buildDiagnosticsBundle(orphan)["controllers"][0]["backend"].is_null());
 
     TEST("bundle: a controller the game never wrote has a null lastGameOutput");
     DiagnosticsInput quiet = inputFixture();
@@ -345,6 +410,9 @@ int main() {
     test_redact_any_document();
     test_alias_hosts();
     test_scrub_text();
+    test_scrub_text_one_pass();
+    test_scrub_ipv6();
+    test_alias_hosts_reuse();
     test_alias_machine();
     test_iso_utc();
     test_bundle_envelope();

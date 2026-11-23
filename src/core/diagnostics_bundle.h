@@ -25,6 +25,7 @@ inline constexpr int DIAGNOSTICS_BUNDLE_VERSION = 1;
 inline constexpr const char* DIAGNOSTICS_APP_NAME = "satellite";
 inline constexpr size_t DIAGNOSTICS_LOG_LINES = 500;
 inline constexpr const char* DIAGNOSTICS_MASKED_IP = "x.x.x.x";
+inline constexpr const char* DIAGNOSTICS_MASKED_IPV6 = "x:x:x:x:x:x:x:x";
 
 // The report's categories (docs/diagnostics-bundle.md "The report"), in the
 // order the dashboard offers them. The server writes none of them: the
@@ -63,22 +64,28 @@ struct HostAlias {
     std::string alias;
 };
 
-// "Host 1", "Host 2" for the connected clients in order, then the paired ones
-// that are not connected, numbered on; one entry per non-empty identity text.
+// "Host 1", "Host 2" for the connected clients in order, then the ones that
+// are not connected, numbered on; an identity whose device id already has an
+// alias takes that one. One entry per non-empty identity text.
 std::vector<HostAlias> aliasHosts(const std::vector<HostIdentity>& connected,
                                   const std::vector<HostIdentity>& pairedOnly);
 
 std::string hostAlias(size_t index);
 
 inline constexpr const char* DIAGNOSTICS_THIS_PC = "this PC";
+inline constexpr const char* DIAGNOSTICS_REDACTED = "[redacted]";
+
+// A pairing key, as text, becomes "[redacted]" in log text.
+void aliasSecret(std::vector<HostAlias>& aliases, const std::string& secret);
 
 // Each non-empty machine name (the host name, the mDNS instance) becomes
 // "this PC" in log text.
 void aliasMachine(std::vector<HostAlias>& aliases, const std::vector<std::string>& names);
 
-// Log text with every alias text replaced (longest first, so a name that
-// contains another is replaced whole) and every dotted-quad IPv4 address
-// masked.
+// Log text with every alias text replaced and every IPv4 and IPv6 address
+// masked, in one pass over the original: at each position the longest alias
+// text that stands whole there (never inside a longer word or number), and
+// replaced text is never scanned again.
 std::string scrubDiagnosticsText(const std::string& text, const std::vector<HostAlias>& aliases);
 
 // Unix seconds as 2026-11-19T21:04:11Z.

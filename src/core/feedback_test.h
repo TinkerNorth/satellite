@@ -14,23 +14,34 @@
 
 namespace satellite {
 
-enum class FeedbackLane : uint8_t { Rumble, Lightbar, PlayerLeds, TriggerEffects, MicLed };
+enum class FeedbackLane : uint8_t { Rumble, Lightbar, PlayerLeds, TriggerEffects };
 
 struct FeedbackLaneInfo {
     FeedbackLane lane;
     const char* name;
     // The descriptor cap that admits the lane's message, the same gate the
-    // game's own writes pass. MIC_LED rides CAP_MIC (see MSG_MIC_LED).
+    // game's own writes pass.
     uint16_t cap;
+    // State the game set: the test holds the surface for TEST_HOLD_MS, then
+    // the game's last value (or off) goes back. Rumble simply runs out.
+    bool held;
 };
 
+// No mic lamp: on a client it also mutes the pad's microphone, so a test's
+// lamp write could undo the user's own mute (the replay skips it for the same reason).
 inline constexpr FeedbackLaneInfo FEEDBACK_LANES[] = {
-    {FeedbackLane::Rumble, "rumble", CAP_RUMBLE},
-    {FeedbackLane::Lightbar, "lightbar", CAP_LIGHTBAR},
-    {FeedbackLane::PlayerLeds, "playerLeds", CAP_PLAYER_LEDS},
-    {FeedbackLane::TriggerEffects, "triggerEffects", CAP_TRIGGER_EFFECTS},
-    {FeedbackLane::MicLed, "micLed", CAP_MIC},
+    {FeedbackLane::Rumble, "rumble", CAP_RUMBLE, false},
+    {FeedbackLane::Lightbar, "lightbar", CAP_LIGHTBAR, true},
+    {FeedbackLane::PlayerLeds, "playerLeds", CAP_PLAYER_LEDS, true},
+    {FeedbackLane::TriggerEffects, "triggerEffects", CAP_TRIGGER_EFFECTS, true},
 };
+
+// The bench's time for the lights and the triggers, long enough to see.
+inline constexpr int TEST_HOLD_MS = 2000;
+
+constexpr uint8_t feedbackLaneBit(FeedbackLane lane) {
+    return static_cast<uint8_t>(1u << static_cast<uint8_t>(lane));
+}
 
 // Half of each motor's u16 range, for half a second.
 inline constexpr uint16_t TEST_RUMBLE_MAGNITUDE = 0x8000;
@@ -42,7 +53,6 @@ inline constexpr uint8_t TEST_PLAYER_LEDS_MASK = 0x01;
 inline constexpr uint8_t TEST_TRIGGER_MODE_RESISTANCE = 0x01;
 inline constexpr uint8_t TEST_TRIGGER_START = 0x00;
 inline constexpr uint8_t TEST_TRIGGER_FORCE = 0x40;
-inline constexpr uint8_t TEST_MIC_LED_STATE = MIC_LED_STATE_PULSE;
 
 const char* feedbackLaneName(FeedbackLane lane);
 bool parseFeedbackLane(const std::string& name, FeedbackLane& out);
@@ -58,6 +68,9 @@ struct FeedbackTestPlan {
 bool parseFeedbackLanes(const Json& body, std::vector<FeedbackLane>& out, std::string& bad);
 
 FeedbackTestPlan planFeedbackTest(uint16_t caps, const std::vector<FeedbackLane>& requested);
+
+// The Controller::testHeldLanes bits a burst of `sent` holds.
+uint8_t heldFeedbackLanes(const std::vector<FeedbackLane>& sent);
 
 RumbleReport testRumbleReport();
 TriggerEffectsReport testTriggerEffectsReport();

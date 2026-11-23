@@ -520,7 +520,7 @@
   "_meta.locale": "fr",
 
   "controllers.test": "Tester",
-  "controllers.test.hint": "Envoie à l'app Dish de cette manette un test de vibration, barre lumineuse, LED de joueur, gâchettes et témoin du micro, chacun seulement si l'app a indiqué que la manette l'a",
+  "controllers.test.hint": "Envoie à l'app Dish de cette manette un test de vibration, barre lumineuse, LED de joueur et gâchettes, chacun seulement si l'app a indiqué que la manette l'a",
   "controllers.test.sent": "Envoyé à l'app Dish",
   "controllers.test.skipped": "Ignoré : l'app Dish n'a pas indiqué que cette manette l'a",
   "controllers.test.failed": "Le test n'a pas pu être envoyé",

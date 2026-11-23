@@ -520,7 +520,7 @@
   "_meta.locale": "bs",
 
   "controllers.test": "Testiraj",
-  "controllers.test.hint": "Šalje Dish aplikaciji ovog kontrolera po jedan test vibracije, svjetlosne trake, LED-ica igrača, okidača i lampice mikrofona, svaki samo ako je aplikacija javila da ga kontroler ima",
+  "controllers.test.hint": "Šalje Dish aplikaciji ovog kontrolera po jedan test vibracije, svjetlosne trake, LED-ica igrača i okidača, svaki samo ako je aplikacija javila da ga kontroler ima",
   "controllers.test.sent": "Poslano Dish aplikaciji",
   "controllers.test.skipped": "Preskočeno: Dish aplikacija nije javila da ga ovaj kontroler ima",
   "controllers.test.failed": "Test nije bilo moguće poslati",

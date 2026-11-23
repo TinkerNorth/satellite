@@ -2147,27 +2147,34 @@ nothing (`tests/test_routes_admin.cpp` counts the requests). The manifest is fet
 or verify is `invalid`. A newer copy is downloaded file by file, built into a
 snapshot (which verifies every size and SHA-256 and checks the records'
 `dbVersion` against the manifest's), written to the cache and made active:
-`updated`. The cache is flat files in the config directory,
-`controllerdb-manifest.json`, `controllerdb-controllers.json` and
-`controllerdb-strings-<locale>.json`, each written beside its name and renamed
-over it, the manifest last; a set torn by a crash between two renames fails the
-manifest check at the next start and the previous copy stays in use. A copy
+`updated`. The cache is flat files in the config directory:
+`controllerdb-manifest.json` and, for each file it lists, `controllerdb-<sha256>-<path>`
+(`controllerdb-<sha256>-strings-de.json`), each written beside its name and renamed over it.
+A file's name is fixed by its hash, so a new copy's files never land on the ones the cached
+manifest names, and the manifest, written last, is the one rename that swaps the set in: a
+write that fails or a crash at any earlier step leaves the previous cache whole (contract
+§6.3). After the swap the previous set's files the new manifest does not name are removed. A copy
 that verifies but cannot be written is used for the run and logged. The
 manifest's paths become file names, so only the paths the contract defines are
 read from it; anything else in it is ignored.
 
 **Uses.** The catalog's `emulates.usb` lists are read from the active records:
 for each type, the ids it stands for that a record of its physical twin family
-carries, so records can only drop an id (see `docs/contract.md`). The catalog's
-ETag carries the active `dbVersion`. The mirror (`GET /api/controllers/v1/...`)
-serves the active copy's bytes under their digests.
+carries, so records can only drop an id (see `docs/contract.md`). An inert
+record (below) decides nothing: an id only inert records carry stays listed, the
+build's own row in force. The catalog's ETag carries the active `dbVersion`. The
+mirror (`GET /api/controllers/v1/...`) serves the active copy's bytes under their
+digests; its manifest is the published one byte for byte, or, when that lists a
+file this build does not take (a locale it does not ship), the same document
+without that entry, so the mirror never lists a file it cannot serve.
 
 **Where Satellite departs from the fleet contract.** Satellite reads the
 records for the catalog and the mirror only, so:
 
-- `requires` is not evaluated. Satellite applies no record's `input` or
-  `output`; a record of a family Satellite does not know matches no catalog
-  type and changes nothing.
+- Satellite applies no record's `input` or `output`. A record whose
+  `requires` names a family outside the contract's vocabulary or any op
+  (schema 1 defines none), or whose own family is outside it, is inert
+  (`ControllerRecord::inert`): named, and ignored by the catalog's lists.
 - The cadence is the update check's (section 7 of the contract), not six hours.
 - Satellite shows no issues and keeps no outcomes, so the contract's issue rule
   (shown only while `status` is `open`, `os` keyed `android`, `ios`, `macos`,
@@ -2206,8 +2213,9 @@ below) with `record` null and no `hardware`,
 `expectMismatch`, `probe`, `lastFeedback`, `lastWrite`, `outcomes` or
 `capture`; `device.model` and `device.os` are the platform name, since
 Satellite reads no hardware model; there is no `extra`. Log lines are scrubbed
-of IPv4 addresses by pattern; an IPv6 address in a log line is removed only when
-it is a known client's address.
+of IPv4 and IPv6 addresses by pattern, of every pairing key, and of every device
+id and name the pairing and session routes met this run (`g_seenDevices`), paired
+now or not, as well as the connected and paired ones.
 
 ## Connection diagnostics
 
@@ -2219,8 +2227,10 @@ the session routes and reads one connection snapshot; the document is built in
 connection's controllers, the other clients' and the paired devices' identities and keys (to
 scrub, never to write), the host's names, the backends, the capabilities' `controllerAudio`
 block, the process counters, the controller database status and the recent log ring. The core
-keeps the ring's lines that name the connection's id, device id, name or address, or one of its
-pads' serials from that pad's plug on (a serial passes between clients), takes the last 200,
+keeps the ring's lines that name the connection's id or its paired device's id as a whole token,
+or one of its pads' serials from that pad's plug on (a serial passes between clients), never by
+the name the client chose or an address, which another client's lines can hold too (the
+session's lines about a connection carry its id beside its name for this). It takes the last 200
 and scrubs them with the Debug file's `scrubDiagnosticsText` over a different alias table: the
 requester is "this connection", every other client "another client", the host "this PC", each
 pairing key "[redacted]".

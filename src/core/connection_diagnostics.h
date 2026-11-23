@@ -26,7 +26,6 @@ inline constexpr const char* CONNECTION_DIAGNOSTICS_FORMAT = "satellite-connecti
 inline constexpr size_t CONNECTION_DIAGNOSTICS_LOG_LINES = 200;
 inline constexpr const char* DIAGNOSTICS_THIS_CONNECTION = "this connection";
 inline constexpr const char* DIAGNOSTICS_ANOTHER_CLIENT = "another client";
-inline constexpr const char* DIAGNOSTICS_REDACTED = "[redacted]";
 // Satellite keeps its wire, audio and rejection counters per process, not per
 // session; the per-session counts are the controllers' input and output.
 inline constexpr const char* CONNECTION_COUNTERS_SCOPE = "process";
@@ -68,7 +67,9 @@ struct SerialClaim {
 };
 
 struct ConnectionLogScope {
-    // The connection's id, its device's id and name, and its address.
+    // The tokens Satellite itself writes for the connection: its id and its
+    // paired device's id, each matched whole. Never the name the client chose
+    // or an address, which other clients' lines can hold too.
     std::vector<std::string> texts;
     std::vector<SerialClaim> serials;
 };

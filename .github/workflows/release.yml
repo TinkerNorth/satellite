@@ -538,8 +538,9 @@ jobs:
             grep -qE " ${path}\$" <<<"${contents}" \
               || { echo "::error::${path} missing from the .deb"; exit 1; }
           done
-          grep -qE ' \./usr/share/satellite/web/' <<<"${contents}" \
-            || { echo "::error::web UI assets missing from the .deb"; exit 1; }
+          payload="$(mktemp -d)"
+          dpkg-deb -x dist/*.deb "$payload"
+          bash scripts/check-web-payload.sh "$payload/usr/share/satellite/web"
           # Without the reload + modprobe a fresh install cannot open
           # /dev/uinput until the next reboot.
           extract="$(mktemp -d)"
@@ -629,7 +630,7 @@ jobs:
             gcc-c++ cmake make pkgconf-pkg-config rpm-build \
             libsodium-devel openssl-devel libcurl-devel opus-devel \
             gtk3-devel libayatana-appindicator-gtk3-devel libnotify-devel \
-            gzip
+            gzip cpio gawk diffutils
           dnf -y install --allowerasing curl
 
       - name: Checkout
@@ -700,6 +701,9 @@ jobs:
             || { echo "::error::rpm carries no udev reload scriptlet"; exit 1; }
           grep -q 'modprobe uinput' <<<"${scripts}" \
             || { echo "::error::rpm carries no modprobe uinput scriptlet"; exit 1; }
+          payload="$(mktemp -d)"
+          rpm2cpio dist/*.rpm | (cd "$payload" && cpio -idm --quiet)
+          bash scripts/check-web-payload.sh "$payload/usr/share/satellite/web"
 
       - name: Install the package and launch it
         run: |

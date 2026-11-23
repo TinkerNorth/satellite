@@ -303,7 +303,7 @@ already read from `/api/server/capabilities`. Not a wire change: nothing on UDP 
   "grants": { "controllerAudio": { "enabled": true, "mic": false, "speaker": true, "hapticAudio": false } },
   "counters": { "rx": { ... }, "tx": { ... }, "audio": { ... }, "rejected": { ... }, "scope": "process" },
   "controllerDb": { "bundledVersion": 1, "activeVersion": 1, "source": "bundled", "...": "..." },
-  "log": [ { "atMs": 1763585900000, "level": "INFO", "tag": "service", "message": "..." } ]
+  "log": [ { "atMs": 1763585900000, "level": "info", "tag": "service", "message": "..." } ]
 }
 ```
 
@@ -1149,7 +1149,7 @@ hostFeatures; the server drops streams for ungranted features.
 ### `POST /api/connections/{connectionId}/controllers/{ctrlIdx}/test`
 
 Body `{ "lanes": [ ... ] }`, any subset of `rumble`, `lightbar`, `playerLeds`,
-`triggerEffects`, `micLed`. For each requested lane the controller's applied descriptor
+`triggerEffects`. For each requested lane the controller's applied descriptor
 claimed, the server sends the existing message once, over the session's normal path:
 
 | Lane | Gate | Message |
@@ -1158,16 +1158,21 @@ claimed, the server sends the existing message once, over the session's normal p
 | `lightbar` | `lightbar` | LIGHTBAR 0x000D, 255, 255, 255 |
 | `playerLeds` | `playerLeds` | PLAYER_LEDS 0x0011, mask 0x01 |
 | `triggerEffects` | `triggerEffects` | TRIGGER_EFFECTS 0x0010, both blocks mode 0x01 (continuous resistance), start 0x00, force 0x40, the rest 0 |
-| `micLed` | `mic` | MIC_LED 0x0014, state 2 (pulse) |
 
 Lanes the descriptor did not claim are skipped and never sent, the same gate the game's own
 writes pass. Answer: `{ "sent": [...], "skipped": [...] }`, both in the table's order. 400 when
-`lanes` is absent, not an array or names another lane; 404 when the session or an active
-controller at `ctrlIdx` is not there. The `tx` counters of `/api/debug` count the burst like
+`lanes` is absent, not an array or names another lane (`micLed` among them), nothing sent; 404
+when the session or an active controller at `ctrlIdx` is not there. The `tx` counters of `/api/debug` count the burst like
 any other send. The burst leaves the game's own feedback state alone: the light bar a game set
-is still the one the dashboard shows, and the next unchanged game write is still coalesced
-against it, so a client keeps the test's colour, LEDs or trigger effect until the game writes a
-different one. No wire change: every message is one a client already handles.
+is still the one the dashboard shows, and the test's messages are not counted as the game's.
+The light bar, player LEDs and trigger effects are the game's state, so the burst holds each
+lane it sent for 2 s: a game write meanwhile is recorded and cached, not sent. When the hold
+ends, the maintenance tick sends each held lane once more with the game's last value, or off
+(black, no LEDs, all-zero effect blocks) where the game never set it. The mic lamp is no lane
+of the burst for the reason "Feedback state on a session's first datagram" never replays it: a
+test's lamp write is no write from the game, and it would undo a mute the user made on the pad.
+The game's own MIC_LED writes go out as always, during a test too. Rumble is not held:
+its 500 ms run out on their own. No wire change: every message is one a client already handles.
 
 ### `GET /api/connections`: `caps` and `lastGameOutput`
 

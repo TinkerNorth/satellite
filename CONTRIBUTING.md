@@ -211,7 +211,7 @@ Build + style workflows run on every PR:
 
 | Workflow | Runner | What it does |
 |---|---|---|
-| `linux-ci.yml` | ubuntu-24.04 | clang-format check, tray-enabled + headless builds, ctest, AppIndicator link verification, fuzz smoke, Sentry SDK build, build-reproducibility gate (two Release builds must match byte for byte) |
+| `linux-ci.yml` | ubuntu-24.04, ubuntu-22.04 | clang-format check, tray-enabled + headless builds, ctest, AppIndicator link verification, fuzz smoke, Sentry SDK build, build-reproducibility gate (two Release builds must match byte for byte), the release's AppImage built and its content asserted (`scripts/check-web-payload.sh`), then run headless |
 | `macos-ci.yml` | macos-15 | clang-format check, build + ctest, .app layout verification, uploads `satellite-macos-stub.app` |
 | `windows-ci.yml` | windows-latest | clang-format check, MinGW MSYS2 build, ctest, redist script tests (`tests/test_fetch_redist.ps1`), HIDMaestro helper publish held to `driver_pins.h`, uploads `satellite.exe` |
 

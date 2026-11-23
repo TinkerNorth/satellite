@@ -520,7 +520,7 @@
   "_meta.locale": "pt-BR",
 
   "controllers.test": "Testar",
-  "controllers.test.hint": "Envia ao app Dish deste controle um teste de vibração, barra de luz, LEDs de jogador, gatilhos e luz do microfone, cada um só se o app informou que o controle o tem",
+  "controllers.test.hint": "Envia ao app Dish deste controle um teste de vibração, barra de luz, LEDs de jogador e gatilhos, cada um só se o app informou que o controle o tem",
   "controllers.test.sent": "Enviado ao app Dish",
   "controllers.test.skipped": "Ignorado: o app Dish não informou que este controle o tem",
   "controllers.test.failed": "Não foi possível enviar o teste",

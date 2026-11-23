@@ -57,6 +57,15 @@ FeedbackTestPlan planFeedbackTest(uint16_t caps, const std::vector<FeedbackLane>
     return plan;
 }
 
+uint8_t heldFeedbackLanes(const std::vector<FeedbackLane>& sent) {
+    uint8_t held = 0;
+    for (const FeedbackLaneInfo& info : FEEDBACK_LANES) {
+        const bool wasSent = std::find(sent.begin(), sent.end(), info.lane) != sent.end();
+        if (wasSent && info.held) held |= feedbackLaneBit(info.lane);
+    }
+    return held;
+}
+
 RumbleReport testRumbleReport() {
     RumbleReport r;
     r.strongMagnitude = TEST_RUMBLE_MAGNITUDE;
