@@ -2147,11 +2147,13 @@ nothing (`tests/test_routes_admin.cpp` counts the requests). The manifest is fet
 or verify is `invalid`. A newer copy is downloaded file by file, built into a
 snapshot (which verifies every size and SHA-256 and checks the records'
 `dbVersion` against the manifest's), written to the cache and made active:
-`updated`. The cache is flat files in the config directory,
-`controllerdb-manifest.json`, `controllerdb-controllers.json` and
-`controllerdb-strings-<locale>.json`, each written beside its name and renamed
-over it, the manifest last; a set torn by a crash between two renames fails the
-manifest check at the next start and the previous copy stays in use. A copy
+`updated`. The cache is flat files in the config directory:
+`controllerdb-manifest.json` and, for each file it lists, `controllerdb-<sha256>-<path>`
+(`controllerdb-<sha256>-strings-de.json`), each written beside its name and renamed over it.
+A file's name is fixed by its hash, so a new copy's files never land on the ones the cached
+manifest names, and the manifest, written last, is the one rename that swaps the set in: a
+write that fails or a crash at any earlier step leaves the previous cache whole (contract
+§6.3). After the swap the previous set's files the new manifest does not name are removed. A copy
 that verifies but cannot be written is used for the run and logged. The
 manifest's paths become file names, so only the paths the contract defines are
 read from it; anything else in it is ignored.

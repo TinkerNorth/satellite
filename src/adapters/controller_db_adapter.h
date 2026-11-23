@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 using DbHttpGet =
     std::function<DbFetchResponse(const std::string& url, const std::string& ifNoneMatch)>;
@@ -20,6 +21,11 @@ using DbWriteFile = std::function<bool(const std::string& path, const std::strin
 // The cache file for a manifest path: "controllerdb-" and the path with each
 // '/' as '-', so the cache needs no directory of its own.
 std::string controllerDbCacheName(const std::string& manifestPath);
+
+// A listed file's cache name, fixed by its SHA-256 as the manifest gives it
+// ("controllerdb-<sha256>-strings-de.json"): a new copy's files never land on
+// the ones the cache's manifest still names.
+std::string controllerDbCacheFileName(const std::string& manifestPath, const std::string& sha256);
 
 // The directory a config file lives in: where the cache is kept.
 std::string controllerDbCacheDirFor(const std::string& configFilePath);
@@ -37,6 +43,10 @@ class ControllerDbAdapter : public IControllerDbPort {
     int64_t nowEpoch() override;
 
   private:
+    std::string cacheManifestPath() const;
+    void removeUnnamed(const std::vector<std::string>& before,
+                       const std::vector<std::string>& now) const;
+
     const std::string bundledDir_;
     const std::string cacheDir_;
     const DbHttpGet get_;
