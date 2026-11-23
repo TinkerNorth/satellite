@@ -267,6 +267,8 @@ jobs:
     runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 30
+    outputs:
+      built: ${{ steps.handed.outcome == 'success' }}
     # A container job's default shell is `sh`; every step here assumes bash.
     defaults:
       run:
@@ -283,16 +285,19 @@ jobs:
       - name: Build the .deb
         run: bash scripts/build-deb.sh
 
-      - name: Check, install and launch the .deb
-        run: bash scripts/check-package.sh deb "$(ls dist/satellite_*.deb)"
-
+      # Before the checks, so the hardening dry run gets the package the
+      # build produced whatever the checks then find; the job still fails.
       - name: Hand the .deb to the hardening dry run
+        id: handed
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-deb
           path: dist/*.deb
           retention-days: 3
           if-no-files-found: error
+
+      - name: Check, install and launch the .deb
+        run: bash scripts/check-package.sh deb "$(ls dist/satellite_*.deb)"
 
   rpm:
     name: Package (.rpm, Fedora 44) and launch it
@@ -405,6 +410,9 @@ jobs:
   release-dry-run:
     name: Release hardening, dry run (linux)
     needs: [deb, rpm, appimage]
+    # The packages, not their checks: a .deb whose lintian or launch check
+    # failed still went through the build, and the hardening runs on it.
+    if: ${{ !cancelled() && needs.deb.outputs.built == 'true' && needs.rpm.result == 'success' && needs.appimage.result == 'success' }}
     permissions:
       contents: read
     uses: ./.github/workflows/_release_harden.yml
