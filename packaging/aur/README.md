@@ -29,7 +29,7 @@ Or build it yourself from this directory with `makepkg -si`.
 The package re-bundles the official x86_64 AppImage under `/opt/satellite/`
 and ships a `satellite` shim in `/usr/bin` that forwards to it. The
 in-app OTA updater detects that install lineage and shows a manual
-upgrade instruction (it names `yay -Syu satellite-bin`) rather than trying
+upgrade instruction (`sudo pacman -Syu satellite-bin`) rather than trying
 to swap the binary itself.
 
 ## How maintainers would bump it on the AUR

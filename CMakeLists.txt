@@ -1182,6 +1182,10 @@ satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
+satellite_add_pure_test(test_linux_upgrade_commands tests/test_linux_upgrade_commands.cpp)
+target_compile_definitions(test_linux_upgrade_commands PRIVATE
+    PACKAGING_MD="${CMAKE_CURRENT_SOURCE_DIR}/docs/PACKAGING.md"
+)
 satellite_add_pure_test(test_pause_detector tests/test_pause_detector.cpp)
 target_include_directories(test_pause_detector PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/bench

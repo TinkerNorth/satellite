@@ -5,6 +5,7 @@
 #include "update_helper_script.h"
 #include "core/github_release.h"
 #include "core/hex.h"
+#include "core/linux_upgrade_commands.h"
 #include "core/version.h"
 
 #include <curl/curl.h>
@@ -451,7 +452,7 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         }
         method = InstallMethod::Manual;
         // Correct once the APT repo is added (per the install instructions).
-        manual = "sudo apt update && sudo apt install --only-upgrade satellite";
+        manual = satellite::linux_upgrade::DEB;
         break;
     case InstallType::Rpm:
         if (!pickRpmAsset(pick, asset)) {
@@ -459,17 +460,17 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
             return false;
         }
         method = InstallMethod::Manual;
-        manual = "sudo dnf upgrade --refresh satellite";
+        manual = satellite::linux_upgrade::RPM;
         break;
     case InstallType::Aur:
-        // AUR -bin wraps the AppImage; surface metadata for release notes only,
-        // never download it; user upgrades via their AUR helper.
+        // satellite-bin wraps the AppImage; surface metadata for release notes
+        // only, never download it; pacman upgrades it from Satellite's repository.
         if (!pickAppImageAsset(pick, asset)) {
             outError = "No AppImage asset in release " + pick.tagName;
             return false;
         }
         method = InstallMethod::Manual;
-        manual = "yay -Syu satellite-bin   # or: paru -Syu satellite-bin";
+        manual = satellite::linux_upgrade::PACMAN;
         break;
     case InstallType::Snap:
     case InstallType::Flatpak:
@@ -479,9 +480,8 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         // GitHub assets at all.
         haveAsset = pickAppImageAsset(pick, asset);
         method = InstallMethod::Manual;
-        manual = (installType_ == InstallType::Snap)
-                     ? "sudo snap refresh satellite"
-                     : "flatpak update io.github.tinkernorth.satellite";
+        manual = (installType_ == InstallType::Snap) ? satellite::linux_upgrade::SNAP
+                                                     : satellite::linux_upgrade::FLATPAK;
         break;
     case InstallType::Portable:
         if (pickAppImageAsset(pick, asset)) {

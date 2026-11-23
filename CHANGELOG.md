@@ -55,6 +55,11 @@ are added, and the stale documents are corrected.
   `scripts/build-arch-package.sh`, and every pull request installs the
   package from a signed repository in an Arch container and fails unless the
   installed AppImage is byte for byte the packaged one and starts.
+- The Linux updater told an Arch install to upgrade with `yay -Syu
+  satellite-bin`, an AUR helper command for a package the AUR does not carry;
+  it now shows `sudo pacman -Syu satellite-bin`, which upgrades it from
+  Satellite's pacman repository. The commands live in one header that a test
+  holds to `docs/PACKAGING.md`.
 - The MinGW build failed against OpenSSL 4, which returns a certificate's
   subject name as const; the self-signed certificate now gets a name of its
   own, which OpenSSL 3 accepts too.

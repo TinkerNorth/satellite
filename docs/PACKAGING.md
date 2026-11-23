@@ -166,12 +166,13 @@ replace bytes that physically cannot be replaced.
 | Flatpak | `/.flatpak-info` exists | `flatpak update io.github.tinkernorth.satellite` |
 | AppImage | `$APPIMAGE` | Self-install (swap and re-exec) |
 | Deb / Rpm | exe path + package DB | `apt` / `dnf` command |
-| AUR / pacman | `/opt/satellite/satellite.AppImage` | `yay -Syu satellite-bin` |
+| pacman (`satellite-bin`) | `/opt/satellite/satellite.AppImage` | `sudo pacman -Syu satellite-bin` |
 
 The `satellite-bin` package from the pacman repository installs the same
-`/opt/satellite/` layout, so it is detected as the AUR lineage, and the
-instruction the updater shows still names the AUR helpers; for the pacman
-repository the upgrade is `sudo pacman -Syu`. The package carries the
+`/opt/satellite/` layout the AUR package would, and the updater shows the
+pacman command above
+(`src/core/linux_upgrade_commands.h`, held to this table by
+`test_linux_upgrade_commands`). The package carries the
 release's AppImage unstripped (`options=('!strip' '!debug')` in the
 PKGBUILD): makepkg's strip step cut the AppImage's payload off in 2.3.0, and
 linux-ci.yml's arch job now installs the package and compares the installed
