@@ -45,7 +45,7 @@ jobs:
         run: bash scripts/check-format.sh
 
       # MinGW-w64 toolchain (matches the local build documented in
-      # docs/architecture.md and the -mwindows / -static link flags in
+      # docs/ARCHITECTURE.md and the -mwindows / -static link flags in
       # CMakeLists.txt). The shipped satellite.exe is the MSVC build
       # (windows-msvc-ci.yml); this lane keeps the MinGW build, whose
       # libsodium is the vendored MinGW archive under lib/, green.

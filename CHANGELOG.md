@@ -3,6 +3,47 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## [Unreleased]
+
+Every pin at its latest release, one build path for local runs and CI, and
+the documents made true. No protocol change.
+
+cpp-httplib goes from 0.58.0 to 0.67.0. Among nine releases of fixes, the
+one that reaches Satellite directly is on Windows: a junction or symbolic
+link inside the dashboard's mount point could serve a file outside it. The
+Windows build ships the HIDMaestro 2.3.0 SDK, which embeds the same 2.1.0
+driver (2.1.0.1716), so no machine reinstalls a driver and the version check
+still verifies driver release 2.1.0; the seven profile copies are cut from
+2.3.0's catalog files. sentry-native goes to 0.17.6 in both the vcpkg overlay
+port and the Linux build; none of the 0.17.0 API changes touches a call
+Satellite makes. The MSVC lane's libsodium, OpenSSL, opus and the ports
+sentry-native pulls in are pinned by a `builtin-baseline` in `vcpkg.json`
+instead of moving with the runner image. The Flatpak template builds
+libsodium 1.0.22 and opus 1.6.1, the versions every other build ships.
+
+The tools are pinned once, by SHA-256, in `scripts/tools.sh`: clang-format
+23.1.5 (it finds nothing to change in the tree, so there is no reformat), sentry-cli 3.8.2 and linuxdeploy 1-alpha-20251107-1 (it was the
+unpinned `continuous` build). Inno Setup is installed at 6.7.4 from its
+checksum by `scripts/install-inno-setup.ps1` instead of whatever Chocolatey
+served. The `.rpm` is built on Fedora 44 (Fedora 42 reached its end of life),
+the Windows jobs run on `windows-2022`, and the macOS jobs name Xcode 16.4.
+
+The CMake presets are now `release`, `debug` and `package`, with
+`windows-mingw`, `windows-mingw-debug` and `windows-msvc` where the
+toolchain differs, and the release builds every artifact through the same
+preset and warnings-as-errors as pull requests. Work that ran only on a tag
+now runs on every pull request through the same scripts, without signing or
+publishing: the `.deb` and `.rpm` are built, installed and launched in their
+containers, the Windows installer is compiled and taken through its silent
+install round-trip, the `-DSATELLITE_UIACCESS=ON` build and its installer
+are compiled, and the macOS bundle's `.dmg` is staged, mounted and run.
+`scripts/package-in-container.sh` runs the Linux package lanes locally.
+CodeQL now blocks and uploads its results. The version check also covers the
+CHANGELOG heading, the AppStream release, the repeated pins and the facts the
+documents name (the protocol number, the C++ standard), and the release
+checks its tag against `VERSION`. `THIRD_PARTY.md` and `CODE_OF_CONDUCT.md`
+are added, and the stale documents are corrected.
+
 ## 2.3.0
 
 Satellite reads the Dish fleet's controller database. It ships a copy of

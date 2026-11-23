@@ -9,8 +9,8 @@ points here, so the code and the policy ship together.
 This document describes what data Satellite stores, what it sends, to whom,
 and the choices you have over it. Satellite is the receiver half of Dish: it
 runs on the gaming PC and turns controller input from your Dish clients into
-a virtual gamepad. The Dish clients (Android, Windows, Linux) each have their
-own policy; do not read one as describing another.
+a virtual gamepad. The Dish clients (Dish for Android, Dish for iOS, Dish for macOS, Dish for
+Windows and Dish for Linux) each have their own policy; do not read one as describing another.
 
 ---
 
@@ -120,8 +120,8 @@ published version. Only when it names a newer version does Satellite download
 the controller list and its strings in each language, check each file against
 the manifest's SHA-256, and keep them beside its configuration
 (`controllerdb-*.json`). The request carries no query and no identifier, and
-on Windows and Linux no user-agent at all (the macOS build, which is not
-released, sends the system's default one, which names the app and its
+on Windows and Linux no user-agent at all (the macOS build, a stub released
+without virtual gamepads, sends the system's default one, which names the app and its
 version); Satellite sends nothing about you,
 your PC or your controllers.
 

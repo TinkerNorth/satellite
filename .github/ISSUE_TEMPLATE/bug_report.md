@@ -21,16 +21,23 @@ assignees: ''
 ## Actual Behavior
 <!-- A clear description of what actually happened -->
 
-## Screenshots / Logs
-<!-- If applicable, add screenshots or log output from the Logs view -->
+## Diagnostics file
+<!-- On the dashboard's Debug page, "Report a problem" saves
+     dish-diagnostics-satellite-<date>-<time>.json. Attach it here (it describes your
+     setup; read it before you attach it). If you cannot, paste the
+     relevant lines from the Logs view, or from %LOCALAPPDATA%\TinkerNorth\Satellite\logs\
+     on Windows or `journalctl --user -e` on Linux. -->
+
+## Screenshots
+<!-- If applicable, add screenshots to help explain your problem -->
 
 ## Environment
-- OS: [e.g. Windows 11 23H2, macOS 14.5 Sonoma]
-- Machine: [e.g. Desktop PC, MacBook Pro M3 2024]
-- Satellite version / commit: [e.g. 1.0.0 / 8a3f2c]
-- ViGEmBus version (Windows only): [e.g. 1.22.0]
-- Client app: [e.g. dish-android 0.3, dish-mac 0.1]
-- Controller used by client: [e.g. Xbox Series X, DualSense]
+- OS: [e.g. Windows 11 25H2, Ubuntu 24.04, macOS 15.6]
+- Satellite version / commit: [e.g. 2.3.0 / 8a3f2c]
+- Install: [e.g. installer, .deb, .rpm, pacman repository, AppImage, source build]
+- Windows only, virtual gamepad driver: [e.g. HIDMaestro 2.1.0 driver, ViGEmBus 1.22.0]
+- Dish client and version: [e.g. Dish for Android 2.7.0, Dish for macOS 1.4.0]
+- Controller used by the client: [e.g. Xbox Series X, DualSense]
 
 ## Additional Context
 <!-- Add any other context about the problem here -->

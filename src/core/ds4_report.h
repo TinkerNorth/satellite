@@ -5,7 +5,7 @@
 // feature-report blobs served on get-report.
 //
 // OS-free by design (same pure-codec/IO-shell doctrine as the rest of src/:
-// see docs/architecture.md "a pure codec, separate from its I/O"), and shared
+// see docs/ARCHITECTURE.md "a pure codec, separate from its I/O"), and shared
 // by two shells: the macOS IOHIDUserDevice adapter
 // (mac_hid_gamepad_adapter.cpp) and the Windows HIDMaestro adapter's report
 // packer (platform/windows/hidmaestro_report.h) — HIDMaestro's dualshock-4-v2

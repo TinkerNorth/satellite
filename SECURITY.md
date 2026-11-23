@@ -1,12 +1,15 @@
 # Security policy: TinkerNorth
 
-This file covers all four TinkerNorth repositories that ship the
-wireless-gamepad product end-to-end:
+This file covers the six TinkerNorth repositories that ship the
+wireless-gamepad product end-to-end (the website is
+https://dish.tinkernorth.com):
 
-- [`satellite`](https://github.com/TinkerNorth/satellite): server (Windows / Linux / macOS)
-- [`dish-android`](https://github.com/TinkerNorth/dish-android): Android client
-- [`dish-linux`](https://github.com/TinkerNorth/dish-linux): Linux client (Qt6 / SDL2)
-- [`dish-mac`](https://github.com/TinkerNorth/dish-mac): macOS client (SwiftUI)
+- [`satellite`](https://github.com/TinkerNorth/satellite): Satellite, the server (Windows / Linux / macOS)
+- [`dish-android`](https://github.com/TinkerNorth/dish-android): Dish for Android
+- [`dish-ios`](https://github.com/TinkerNorth/dish-ios): Dish for iOS (SwiftUI)
+- [`dish-mac`](https://github.com/TinkerNorth/dish-mac): Dish for macOS (SwiftUI)
+- [`dish-windows`](https://github.com/TinkerNorth/dish-windows): Dish for Windows (Qt6 / SDL2)
+- [`dish-linux`](https://github.com/TinkerNorth/dish-linux): Dish for Linux (Qt6 / SDL2)
 
 Each repo has its own `CONTRIBUTING.md#security` section with
 ecosystem-specific local commands; this file is the single source of
@@ -49,9 +52,9 @@ date regardless. We'd rather know than not know.
 
 In scope:
 
-- All four repos in this directory.
-- Release artifacts attached to GitHub Releases for any of the four repos.
-- The wire protocol (protocol 1; the single source of truth is
+- All six repos above.
+- Release artifacts attached to GitHub Releases for any of the six repos.
+- The wire protocol (protocol 4; the single source of truth is
   [`docs/contract.md`](docs/contract.md)): the HTTPS `:9443` control plane
   (TOFU-pinned self-signed TLS, HMAC proof-of-key headers, declarative
   session PUT) and the UDP `:9876` data plane (ChaCha20-Poly1305-IETF under
@@ -62,7 +65,7 @@ In scope:
 - On Windows, the `SatelliteHmBroker` service boundary: the LocalSystem
   broker that creates HIDMaestro virtual devices for the unelevated
   `satellite.exe` over `\\.\pipe\satellite-hm-broker` (interactive-logon
-  DACL, client image-path check; see `docs/architecture.md`, "Elevation
+  DACL, client image-path check; see `docs/ARCHITECTURE.md`, "Elevation
   story"). A way for a non-interactive or remote caller to reach it, or to
   obtain anything beyond virtual controller / audio device creation through
   it, is in scope.
@@ -86,10 +89,12 @@ Out of scope:
 
 | Repo | Supported | Notes |
 |---|---|---|
-| `satellite` | latest minor on `main`; previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS virtual pads require the virtual-HID entitlement (unentitled builds fall back to an inert backend) |
-| `dish-android` | latest minor on `main`; previous minor for 90 days | minSdk 24 |
-| `dish-linux` | latest minor on `main`; previous minor for 90 days | tracks the oldest LTS the release CI builds against |
-| `dish-mac` | latest minor on `main`; previous minor for 90 days | macOS 13+ |
+| `satellite` | latest minor on `main` (2.3.0 today); previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS ships as a stub with no virtual gamepad (an unentitled build falls back to an inert backend) |
+| `dish-android` | latest minor on `main` (2.7.0 today); previous minor for 90 days | minSdk 24 |
+| `dish-ios` | latest minor on `main` (no release tagged yet); previous minor for 90 days | iOS 26.0+ |
+| `dish-mac` | latest minor on `main` (1.4.0 today); previous minor for 90 days | macOS 13+ |
+| `dish-windows` | latest minor on `main` (2.8.0 today); previous minor for 90 days | Windows 10 1809 (build 17763)+ |
+| `dish-linux` | latest minor on `main` (2.8.1 today); previous minor for 90 days | tracks the oldest LTS the release CI builds against |
 
 Patch releases (`X.Y.Z+1`) are issued on demand for the latest minor;
 the previous minor only receives backports for high/critical fixes.
@@ -154,10 +159,12 @@ Each repo runs the same shape of gates:
 
 **On every tagged release** (also blocking):
 
+- The tag must name `/VERSION`, and `CHANGELOG.md` must have its heading
+  (`scripts/check-version-consistency.sh --tag`).
 - Re-run of every PR-time gate against the tagged commit.
 - Required-secrets gate: reports which platform signing secrets are
   missing for a tag (Windows Authenticode, Apple Developer ID +
-  notarization, Android keystore). It is **advisory by default** —
+  notarization, Android keystore). It is **advisory by default**:
   `satellite` currently ships without those certificates, so releases
   degrade to `-unsigned` artifacts instead of failing, and authenticity
   rests on cosign + SLSA provenance rather than an OS-vendor
@@ -187,19 +194,18 @@ only the artifact filenames change.
 ### 0) Pre-requisites
 
 ```bash
-# cosign 2.x
+# cosign (2.x or 3.x; 3.x warns that --signature is deprecated, and still verifies)
 brew install cosign            # macOS
-go install github.com/sigstore/cosign/v2/cmd/cosign@latest
+go install github.com/sigstore/cosign/v3/cmd/cosign@latest
 
-# slsa-verifier (for the SLSA provenance step)
+# slsa-verifier (brew install slsa-verifier) (for the SLSA provenance step)
 go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
 ```
 
 ### 1) Download every file from the Release
 
 For tag `X.Y.Z` of `<repo>` (one of `satellite`, `dish-android`,
-`dish-linux`, `dish-mac`; releases before satellite 1.0.0 used `vX.Y.Z`
-tags):
+`dish-mac`, `dish-windows`, `dish-linux`; tags are bare `X.Y.Z`):
 
 ```bash
 gh release download X.Y.Z -R TinkerNorth/<repo> -D ./release
@@ -237,27 +243,29 @@ modified after release.
 cosign verify-blob \
   --certificate SHA256SUMS.crt \
   --signature   SHA256SUMS.sig \
-  --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
+  --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/_release_harden\.yml@refs/tags/[0-9].*$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   SHA256SUMS
 ```
 
 Output ends with `Verified OK`. The `--certificate-identity-regexp`
-binds the signature to a specific workflow path on `TinkerNorth/<repo>`;
-substitute the actual GitHub organisation. A match means the signature
-came from a tagged-release run of `release.yml` on the public commit
-that produced these artifacts; the Sigstore transparency log
+binds the signature to a specific workflow path. Satellite signs in the
+reusable `_release_harden.yml` that `release.yml` calls, so the certificate
+names that file at the tag (dish-windows and dish-linux call the same
+reusable; a repo that signs inside `release.yml` itself names that file
+instead). A match means the signature came from a tagged-release run on the
+public commit that produced these artifacts; the Sigstore transparency log
 (`https://search.sigstore.dev/`) carries the same record.
 
 To verify each artifact individually (not just `SHA256SUMS`):
 
 ```bash
-for f in *.exe *.zip *.deb *.AppImage *.apk *.aab; do
-  [ -f "$f" ] || continue
+for f in *.exe *.dmg *.zip *.deb *.rpm *.AppImage *.zsync *.json; do
+  [ -f "$f.sig" ] || continue
   cosign verify-blob \
     --certificate "$f.crt" \
     --signature   "$f.sig" \
-    --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
+    --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/_release_harden\.yml@refs/tags/[0-9].*$' \
     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
     "$f"
 done
@@ -273,9 +281,14 @@ slsa-verifier verify-artifact \
   <artifact-filename>
 ```
 
-This proves the artifact was produced by a tagged run of `release.yml`
-on the named source repo. Output ends with
-`PASSED: SLSA verification passed`.
+This is meant to prove the artifact was produced by a tagged run of
+`release.yml` on the named source repo, ending with
+`PASSED: SLSA verification passed`. For Satellite it does not pass today:
+slsa-verifier 2.7.1 against the 2.3.0 release stops with
+`invalid ref: "f7dd8c54..." unexpected ref type`, because release.yml calls
+the SLSA generator by commit SHA and slsa-verifier accepts only a generator
+called by its release tag. Steps 2 and 3 are the verification that holds;
+see Known gaps.
 
 ### 5) (Optional) Inspect the SBOM
 
@@ -293,11 +306,15 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
 
 ## Known gaps
 
-- **Branch protection on `main`.** Three of the four repos run on a
-  free org plan that does not expose required-status-check enforcement
-  for private repositories. Direct pushes to `main` are blocked by
-  convention only; the per-repo CI workflows are the de-facto gate.
-  See the matching `README.md` in each repo for the full text.
+- **SLSA provenance does not verify with slsa-verifier.** The provenance
+  is generated (`satellite.intoto.jsonl` is on every release) by the
+  SHA-pinned generator, which slsa-verifier refuses (step 4 above). Until
+  the generator call and the verifier agree, the checksums and the cosign
+  signatures are what a consumer can check.
+- **Branch protection on `main`.** Changes land through pull requests.
+  On `satellite`, `main` requires the CI, security and CodeQL checks to pass
+  and the branch to be up to date before a merge; the other repos carry
+  their own rules, which this file does not restate.
 - **Vendored-header scanners.** `satellite/lib/` and
   `satellite/vigem/include/` are not understood by ecosystem scanners.
   `scripts/vendored-osv-lockfile.sh` hands OSV-Scanner the upstream
@@ -346,8 +363,8 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
 - **macOS virtual pads are entitlement-gated.** The macOS backend
   synthesizes virtual DualShock 4 controllers via `IOHIDUserDevice`,
   which requires the `com.apple.developer.hid.virtual.device`
-  entitlement. Production (signed) builds carry it; CI artifacts and
-  local unentitled builds detect the missing entitlement at runtime
+  entitlement. No entitled build has shipped: the released
+  `satellite-macos-stub-*` artifacts, CI artifacts and local builds detect the missing entitlement at runtime
   and fall back to the historical inert backend: the protocol stack
   runs, but every controller descriptor applies as
   `backendUnavailable`. The CI artifact name

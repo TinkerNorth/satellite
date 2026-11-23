@@ -4,7 +4,7 @@
 // document a paired Dish asks for about its own connection, to put beside its
 // own view of the session in its diagnostics file. Pure: the route gathers the
 // facts, this picks the log lines about the connection, scrubs them and builds
-// the document (docs/architecture.md "Connection diagnostics").
+// the document (docs/ARCHITECTURE.md "Connection diagnostics").
 //
 // The document never names another client, the machine, an address or a
 // secret: the requester is "this connection", every other client "another

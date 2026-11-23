@@ -752,7 +752,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # files: they land inside the sandbox prefix where neither udev nor
     # systemd ever reads them, so they are dead weight that also confuses
     # packaging linters. The host rule stays the user's responsibility on
-    # those channels -- see docs/packaging.md.
+    # those channels -- see docs/PACKAGING.md.
     if(NOT SATELLITE_SANDBOXED)
         install(FILES   ${SATELLITE_PKG_DIR}/70-satellite-uinput.rules
                 DESTINATION lib/udev/rules.d)

@@ -82,7 +82,7 @@
 ;                                uiAccess="true" (CMake SATELLITE_UIACCESS=ON),
 ;                                so Setup accepts only a destination under
 ;                                Program Files and relocates an install found
-;                                elsewhere (docs/packaging.md)
+;                                elsewhere (docs/PACKAGING.md)
 ; ============================================================================
 
 #define MyAppName "Satellite"

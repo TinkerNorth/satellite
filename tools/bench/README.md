@@ -14,7 +14,7 @@ the question "how does this compare to Apollo/Artemis remote input + cakama3a/Po
 | 2 | Network (one way) | Wi-Fi/USB-tether transit dish -> satellite | ½ × heartbeat RTT (ping-send to ack-recv, one clock) | device |
 | 3 | Satellite processing | `recvfrom` -> decrypt -> parse -> ViGEm submit returns | telemetry `lastLoopUs` (`GET /api/debug`) | PC |
 | 4 | Driver -> game-visible | ViGEm submit -> state visible to XInput | `dish_bench` XInput reader (derived: e2e − stage 3) | PC |
-| — | **Poll cadence** | update interval the PC actually sees — **the cakama3a/Polling metric** | `dish_bench` XInput inter-update interval | PC |
+| n/a | **Poll cadence** | update interval the PC actually sees, **the cakama3a/Polling metric** | `dish_bench` XInput inter-update interval | PC |
 
 Stages 3, 4 and the poll cadence are all measured on **one PC on one clock**, so no
 cross-device clock sync is needed. Stages 0-2 are measured on the phone. Add the two
@@ -35,7 +35,7 @@ halves for the glass-to-glass budget.
 
 ---
 
-## Part A — PC-side (satellite receive path). Runnable on the PC alone.
+## Part A: PC-side (satellite receive path). Runnable on the PC alone.
 
 `dish_bench` impersonates a paired dish: opens a real protocol-1 session
 (`PUT /api/connections` over HTTPS:9443), streams `MSG_GAMEPAD_DATA` to UDP:9876 with
@@ -82,23 +82,23 @@ ucrt64 build, ViGEmBus running, Xbox360 virtual pad on XInput slot 0:
 | 8000 Hz   | 0.016 / 0.030 ms             | 0.125 ms (8019 Hz)            | 0.013 ms               | all / 0                |
 
 **Reading:** the satellite receive path adds ~0.02 ms (median) and never throttles the
-cadence — at 8 kHz the PC still sees ~8019 distinct updates/s. So the PC sees whatever
+cadence: at 8 kHz the PC still sees ~8019 distinct updates/s. So the PC sees whatever
 rate the source controller delivers, plus ~20 µs. The poll-interval floor is the
 *source* rate, not satellite.
 
 Caveats: this is loopback (network ≈ 0; the real LAN leg is stage 2, measured on the
 device). `stage3` is sparse (telemetry `lastLoopUs` polled at 5 Hz) so it is indicative,
 not a full distribution; `e2e` is the robust per-packet number. The XInput reader spins,
-so stage-4 is best-case observation latency — a real game adds at most its own frame
+so stage-4 is best-case observation latency; a real game adds at most its own frame
 interval, which is identical for any input method.
 
 ---
 
-## Part B — device-side (stages 0-2). Run on the phone.
+## Part B: device-side (stages 0-2). Run on the phone.
 
 See `dish-android` `tools/bench/` and the `hotpath_latency` instrumentation. In short:
 
-- **Stage 0 (poll interval):** already exposed — `PollRateSampler` / `getDeviceUrbCount`
+- **Stage 0 (poll interval):** already exposed: `PollRateSampler` / `getDeviceUrbCount`
   give the USB URB rate per controller. A 1 kHz pad reads ~1000 Hz.
 - **Stage 1 (Android hot path):** the instrumentation captures `CLOCK_MONOTONIC` at URB
   reap and just before `sendto`, accumulating per-controller percentiles, surfaced via
@@ -124,7 +124,7 @@ total ≈ stage0(sampling) + stage1(android) + stage2(network) + stage3(satellit
 ```
 
 PC-measured stages 3+4 are ~0.02 ms combined. The dominant terms are the source poll
-interval (stage 0, intrinsic to the controller — same for everyone) and the network
+interval (stage 0, intrinsic to the controller, the same for everyone) and the network
 leg (stage 2). The relay's own software overhead is in the tens of microseconds.
 
 ---
@@ -141,7 +141,7 @@ S6 to S8 add the cold paths that shared a lock with the receive thread in 2.1.8.
 
 S6 saves the config for real, so the bench points `configPath()` somewhere harmless before it runs anything: unless `SATELLITE_CONFIG_DIR` is already set, it creates `%TEMP%\satellite-bench-<pid>`, sets the variable to it and removes the directory on exit, and the banner prints the path in use. `configPath()` honours `SATELLITE_CONFIG_DIR` on Windows, Linux and macOS: when it names a directory, the config file, the TLS certificate and the machine id go there instead of the per-user default.
 
-Build it with `cmake --build <build dir> --target bench_frame_path`; the binary lands at the repo root, `--csv <path>` also writes the rows and `--json <path>` writes them, with the settings and the machine, as JSON. `bench_frame_path_lockstats` is the same bench compiled with `SATELLITE_LOCK_STATS` (see "Lock laws" in `docs/architecture.md`): after the table it prints, for the reported rep of every scenario, each lock and thread role that touched a lock, with its acquisitions, contended acquisitions, failed `try_lock`s, maximum wait, p99 wait from the log2 histogram and maximum hold, and its `--json` carries those rows too. The instrumentation costs a few clock reads per lock, which is why the latency figures come from `bench_frame_path` and only the lock figures from the stats build. `bench_frame_path --smoke` runs every scenario for 0.2 s on both backends with the cold-thread schedule compressed to fit, and ctest runs it as `frame_path_bench_smoke` and the stats build, with `--json`, as `frame_path_bench_lockstats_smoke`; the exit code reflects the harness's own accounting (and usage errors), never a latency, and `--help` lists the options. The pacing is part of that accounting: in a smoke run every producer must send each frame at or after its own deadline, the scenario's start plus the frame's index over its rate (`--rate-a`, `--rate-b`, `--motion-hz`, `--mic-hz`), and its median frame across every scenario on both backends within 1 ms of that deadline. A frame before its deadline means the pacer was not applied, and a median past 1 ms across the run means the pacer cannot keep up, as a coarse timer shows in every scenario (about 7 ms). The median is not judged per scenario because a stall delays every frame due while it lasts: a runner that freezes for 120 ms of a 0.2 s scenario puts that scenario's median past 1 ms with nothing wrong in the pacer, as the Windows CI runner did on 2026-11-01. Such a scenario prints a warning with its median and latest frame instead. A producer with fewer than 8 frames across the run is not judged on its median. The process keeps the default priority class and timer resolution, which the application raises, so compare runs of the same binary on the same machine.
+Build it with `cmake --build <build dir> --target bench_frame_path`; the binary lands at the repo root, `--csv <path>` also writes the rows and `--json <path>` writes them, with the settings and the machine, as JSON. `bench_frame_path_lockstats` is the same bench compiled with `SATELLITE_LOCK_STATS` (see "Lock laws" in `docs/ARCHITECTURE.md`): after the table it prints, for the reported rep of every scenario, each lock and thread role that touched a lock, with its acquisitions, contended acquisitions, failed `try_lock`s, maximum wait, p99 wait from the log2 histogram and maximum hold, and its `--json` carries those rows too. The instrumentation costs a few clock reads per lock, which is why the latency figures come from `bench_frame_path` and only the lock figures from the stats build. `bench_frame_path --smoke` runs every scenario for 0.2 s on both backends with the cold-thread schedule compressed to fit, and ctest runs it as `frame_path_bench_smoke` and the stats build, with `--json`, as `frame_path_bench_lockstats_smoke`; the exit code reflects the harness's own accounting (and usage errors), never a latency, and `--help` lists the options. The pacing is part of that accounting: in a smoke run every producer must send each frame at or after its own deadline, the scenario's start plus the frame's index over its rate (`--rate-a`, `--rate-b`, `--motion-hz`, `--mic-hz`), and its median frame across every scenario on both backends within 1 ms of that deadline. A frame before its deadline means the pacer was not applied, and a median past 1 ms across the run means the pacer cannot keep up, as a coarse timer shows in every scenario (about 7 ms). The median is not judged per scenario because a stall delays every frame due while it lasts: a runner that freezes for 120 ms of a 0.2 s scenario puts that scenario's median past 1 ms with nothing wrong in the pacer, as the Windows CI runner did on 2026-11-01. Such a scenario prints a warning with its median and latest frame instead. A producer with fewer than 8 frames across the run is not judged on its median. The process keeps the default priority class and timer resolution, which the application raises, so compare runs of the same binary on the same machine.
 
 ### Before: 2.1.7 lock path
 
@@ -302,7 +302,7 @@ In S7 the four loggers contend for `log` with each other and with the logs reade
 
 ### After: lock-free logging
 
-S7 again, on the same machine with the same settings, after `logMsg` stopped taking `log`: it pushes a record into the log writer's queue, and the writer, which runs for the whole bench with the Windows file sink in a temporary directory, formats and writes the batches and feeds the ring the logs JSON builder copies from (see "Logging Infrastructure" in `docs/architecture.md`). One `bench_frame_path` invocation per backend for the latency rows and one `bench_frame_path_lockstats` invocation per backend for the lock rows, as above.
+S7 again, on the same machine with the same settings, after `logMsg` stopped taking `log`: it pushes a record into the log writer's queue, and the writer, which runs for the whole bench with the Windows file sink in a temporary directory, formats and writes the batches and feeds the ring the logs JSON builder copies from (see "Logging Infrastructure" in `docs/ARCHITECTURE.md`). One `bench_frame_path` invocation per backend for the latency rows and one `bench_frame_path_lockstats` invocation per backend for the lock rows, as above.
 
 | backend | scenario | dish | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops | refused |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -328,11 +328,11 @@ S7 again, on the same machine with the same settings, after `logMsg` stopped tak
 | vigem | S7 | service.state | HttpAdmin | 12 | 0 | 0 | 0.4 | 0.5 | 9.4 |
 | vigem | S7 | service.state | HttpClient | 4 | 0 | 0 | 0.1 | 0.1 | 8.3 |
 
-No role waits on a log lock, because there is none: the four loggers (Background), the logs reader and the writer (Logger) take no lock at all, so S7's rows are exactly S5's, the HttpAdmin one being the sse thread. Before this change, measured in the same session with this branch's previous build, the loggers waited up to 1,019.2 us (mock) and 1,006.4 us (vigem) on `log`, 5,935 and 6,310 of their 24,000 acquisitions contended, and the reader held it for up to 1,005.5 us and 990.6 us while it built the JSON. Dish A's rows stay inside S5's spread, as they did: the receive thread logged nothing in either version's S7, so what changed is that a line it logs, or one the mic handler logs under `service.state`, no longer queues behind a reader or the file.
+No role waits on a log lock, because there is none: the four loggers (Background), the logs reader and the writer (Logger) take no lock at all, so S7's rows are exactly S5's, the HttpAdmin one being the sse thread. Before this change, measured in the same session with the previous build, the loggers waited up to 1,019.2 us (mock) and 1,006.4 us (vigem) on `log`, 5,935 and 6,310 of their 24,000 acquisitions contended, and the reader held it for up to 1,005.5 us and 990.6 us while it built the JSON. Dish A's rows stay inside S5's spread, as they did: the receive thread logged nothing in either version's S7, so what changed is that a line it logs, or one the mic handler logs under `service.state`, no longer queues behind a reader or the file.
 
-### After: this branch
+### After: 2.1.10
 
-S1 to S8 again, on the same machine and with the same settings as the 2.1.8 table (`--submit-us 15`, `--plug-ms 200`, everything else at its default; AMD Ryzen 9 7900X 12-Core Processor, Release build), with the receive thread taking no lock for any message (see "Thread Safety" in `docs/architecture.md`), the config, logging, helper, tray, audio-guard and dashboard changes of this branch, and the bench pacing its cold producers on a timer. The runs are the ones a release makes (see "Release measurements" below): `bench_frame_path` and `bench_frame_path_lockstats`, each at its defaults with `--backend mock` and with `--backend vigem`, and once more per backend with `--mic-hz 1000`, of which only S6 is kept, every one with `--json`. The `bench_frame_path --backend mock` run was repeated once: its first pass had a p99 of 20 to 37 us in S1 to S5 against medians of 15.4 and 15.5 us, which is the machine and not the relay, and the repeat below has a p99 of 15.5 us in every 8 kHz scenario. The medians of S1 to S3 are 15.4 or 15.5 us in all eight runs.
+S1 to S8 again, on the same machine and with the same settings as the 2.1.8 table (`--submit-us 15`, `--plug-ms 200`, everything else at its default; AMD Ryzen 9 7900X 12-Core Processor, Release build), with the receive thread taking no lock for any message (see "Thread Safety" in `docs/ARCHITECTURE.md`), the config, logging, helper, tray, audio-guard and dashboard changes of 2.1.10, and the bench pacing its cold producers on a timer. The runs are the ones a release makes (see "Release measurements" below): `bench_frame_path` and `bench_frame_path_lockstats`, each at its defaults with `--backend mock` and with `--backend vigem`, and once more per backend with `--mic-hz 1000`, of which only S6 is kept, every one with `--json`. The `bench_frame_path --backend mock` run was repeated once: its first pass had a p99 of 20 to 37 us in S1 to S5 against medians of 15.4 and 15.5 us, which is the machine and not the relay, and the repeat below has a p99 of 15.5 us in every 8 kHz scenario. The medians of S1 to S3 are 15.4 or 15.5 us in all eight runs.
 
 | backend | scenario | dish | rate Hz | frames | p50 us | p99 us | p99.9 us | max us | over 1 ms | longest gap ms | drops | refused |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -357,7 +357,7 @@ S1 to S8 again, on the same machine and with the same settings as the 2.1.8 tabl
 
 No dish A frame is over 1 ms in any row and no ring drops a frame, with the 200 ms plug running in S4 to S8 and in the 1 kHz S6 row. The longest gap in a scenario with a PUT is 0.315 ms (vigem S7), against the 100 ms the release gate would allow for a 200 ms plug, half the plug; the S1 rows' 1.0 ms gap is their own 1 kHz frame interval. The worst dish A frame in any row is 47.8 us (vigem S5).
 
-The 15 us submit hides what the service itself costs, so the two binaries were also run with `--submit-us 0 --backend vigem`, on this machine in one sitting. With `--pace spin`, the pacing of the 2.1.8 bench, dish A in S2 at 8 kHz measures 0.4 us at the median, 1.4 us at p99 and 2.6 us at p99.9 on this branch, against 0.6, 5.3 and 19.9 us on the 2.1.8 binary; S1 to S5 read the same way (p99.9 between 1.9 and 2.9 us here, between 12.5 and 21.1 us there). The default hybrid pacing changes none of that on this machine (p99.9 between 1.5 and 2.7 us); it matters on a small runner, where it took the no-plug scenarios from 26 ms gaps to under 0.5 ms.
+The 15 us submit hides what the service itself costs, so the two binaries were also run with `--submit-us 0 --backend vigem`, on this machine in one sitting. With `--pace spin`, the pacing of the 2.1.8 bench, dish A in S2 at 8 kHz measures 0.4 us at the median, 1.4 us at p99 and 2.6 us at p99.9 on 2.1.10, against 0.6, 5.3 and 19.9 us on the 2.1.8 binary; S1 to S5 read the same way (p99.9 between 1.9 and 2.9 us here, between 12.5 and 21.1 us there). The default hybrid pacing changes none of that on this machine (p99.9 between 1.5 and 2.7 us); it matters on a small runner, where it took the no-plug scenarios from 26 ms gaps to under 0.5 ms.
 
 The locks touched in the reported rep of every scenario, from one `bench_frame_path_lockstats` invocation per backend and one more per backend with `--mic-hz 1000` (so its reps are not the ones above):
 

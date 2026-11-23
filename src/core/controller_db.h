@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-// The fleet's controller database (docs/architecture.md "Controller
+// The fleet's controller database (docs/ARCHITECTURE.md "Controller
 // database"): the schema-1 files parsed into what Satellite reads of them.
 // Pure: text in, immutable records out; the bundle, the cache and the fetch
 // live in adapters/controller_db_adapter.cpp.

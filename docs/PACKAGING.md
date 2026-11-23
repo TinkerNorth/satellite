@@ -1,7 +1,7 @@
 # Packaging and distribution channels
 
-How Satellite reaches Linux users, which channels are viable, and — for the
-ones that are not — why, so the question does not get re-litigated later.
+How Satellite reaches Linux users, which channels are viable, and, for the
+ones that are not, why, so the question does not get re-litigated later.
 
 Everything here turns on one constraint.
 
@@ -10,7 +10,7 @@ Everything here turns on one constraint.
 Satellite's core function is creating a virtual Xbox 360 pad through
 `/dev/uinput`. On a stock system that node is `root:root 0600`: systemd ships
 no rule for it, and `50-udev-default.rules` grants `GROUP="input"` only to
-`SUBSYSTEM=="input"` — while uinput is `SUBSYSTEM=="misc"`. Being in the
+`SUBSYSTEM=="input"`, while uinput is `SUBSYSTEM=="misc"`. Being in the
 `input` group therefore does nothing on its own.
 
 Access must be granted by a udev rule installed on the host. That single fact
@@ -18,7 +18,7 @@ partitions the channels:
 
 | | Can install a udev rule? | Consequence |
 |---|---|---|
-| `.deb`, `.rpm`, AUR | **Yes** — privileged install scriptlets | Works out of the box |
+| `.deb`, `.rpm`, pacman (`satellite-bin`) | **Yes**: privileged install scriptlets | Works out of the box |
 | Flatpak, Snap | **No** | Works only where the host is already configured |
 
 A sandboxed package cannot fix this and should not pretend to. `--device=all`
@@ -51,18 +51,56 @@ This is the same rule Valve ships in `steam-devices`, plus the group fallback.
 
 | Channel | Status | Notes |
 |---|---|---|
-| **APT/DNF repo** (gh-pages) | Wired, needs activation | Publisher is written; needs `GPG_PRIVATE_KEY`, `GPG_KEY_ID`, and Pages enabled |
-| **`.deb` / `.rpm`** | Shipping | CPack, built in release CI |
-| **AppImage** | Shipping | Built in release CI |
-| **AUR** (`satellite-bin`) | Ready, not submitted | Needs an AUR account + SSH key |
-| **Flatpak** | Manifest written, **unbuilt** | Self-hosted/sideload only. Not Flathub — see below |
-| **Snap** | Manifest written, **unbuilt** | Sideload only. Not the Snap Store — see below |
+| **`.deb` / `.rpm`** | Shipping | CPack through the `package` preset, built by release.yml in a debian:trixie and a fedora:44 container and attached to every release |
+| **AppImage** | Shipping | Built by release.yml on ubuntu-22.04 (the glibc 2.35 floor), with zsync update metadata |
+| **APT repository** (gh-pages) | Shipping | `https://tinkernorth.github.io/satellite/debian`, regenerated and signed by `publish-repos.yml`, which release.yml calls after every stable tag publishes |
+| **DNF repository** (gh-pages) | Shipping | `https://tinkernorth.github.io/satellite/rpm`, same workflow |
+| **pacman repository** (gh-pages) | Shipping | `https://tinkernorth.github.io/satellite/arch/$arch`, same workflow: it builds `satellite-bin` from [`packaging/aur/PKGBUILD`](../packaging/aur/PKGBUILD) in an Arch container and signs the package and the database |
+| **AUR** (`satellite-bin`) | Not published | AUR account registration is closed. `packaging/aur/` stays AUR-ready; the pacman repository above is the Arch channel |
+| **Flatpak** | Unpublished template | [`packaging/flatpak/`](../packaging/flatpak/) sits at placeholder version 1.0.0. No workflow builds, tests or publishes it. Not Flathub, see below |
+| **Snap** | Unpublished template | [`packaging/snap/snapcraft.yaml`](../packaging/snap/snapcraft.yaml) sits at placeholder version 1.0.0. No workflow builds it. Not the Snap Store, see below |
+| **winget** | Unpublished template | `scripts/winget/*.yaml` sit at placeholder version 1.0.0 with an all-zero installer hash, and point at an installer name (`SatelliteSetup-1.0.0.exe` under the version tag) that predates the current asset names. No workflow submits them |
 | **Launchpad PPA** | Not started | Would need a full hand-written `debian/` tree |
 | **Fedora COPR** | Not started | Would need a hand-written `.spec` |
 
-Neither sandbox manifest has been built or run. No `flatpak-builder` or
-`snapcraft` was available on the machine they were authored on, so treat both
-as reviewed-but-unverified until someone builds them.
+The three unpublished templates are kept on purpose while the maintainer
+decides whether to finish or remove them. Neither sandbox manifest has been
+built or run: no `flatpak-builder` or `snapcraft` was available on the machine
+they were authored on, so treat both as reviewed but unverified until someone
+builds them. Each carries an "Unpublished template" comment on its first line.
+
+The repositories are signed with the key in
+[`packaging/repo/gpg.key`](../packaging/repo/gpg.key) (secrets `GPG_PRIVATE_KEY`
+and `GPG_KEY_ID`); [`packaging/repo/README.md`](../packaging/repo/README.md)
+covers the layout and a manual re-run, and
+[`packaging/repo/index.html`](../packaging/repo/index.html), the page at
+`https://tinkernorth.github.io/satellite/`, carries the install steps for each
+distribution. Prerelease tags never reach the repositories.
+
+## Building the packages
+
+Every Linux artifact is built through one script per artifact, and the same
+script runs on a pull request and on a tag:
+
+| Artifact | Script | Pull request (linux-ci.yml) | Tag (release.yml) |
+|---|---|---|---|
+| `.deb` | `scripts/build-deb.sh`, then `scripts/check-package.sh deb` | job `deb`, debian:trixie | job `deb`, debian:trixie |
+| `.rpm` | `scripts/build-rpm.sh`, then `scripts/check-package.sh rpm` | job `rpm`, fedora:44 | job `rpm`, fedora:44 |
+| AppImage | `scripts/build-appimage.sh`, then `scripts/smoke-alive.sh` | job `appimage`, ubuntu-22.04 | job `appimage`, ubuntu-22.04 |
+
+`scripts/install-package-deps.sh deb|rpm|appimage` installs each lane's
+packages. `scripts/check-package.sh` holds a package to its contents and
+scriptlets (the udev reload and `modprobe uinput`), checks the dashboard and
+the bundled controller database it ships with `scripts/check-web-payload.sh`,
+installs it, launches the installed `/usr/bin/satellite` headless and requires
+it to stay up, to log `Controller database N (bundled), M records`, and to exit
+0 on SIGTERM. `build-appimage.sh` runs the same payload check on the
+AppImage's own content. The tag adds only the release version, the Sentry DSN
+and the debug-symbol upload.
+
+`scripts/package-in-container.sh deb|rpm|appimage` runs a lane locally in the
+same image (docker), and `scripts/ci-local.sh --with-packages` and
+`--with-appimage` call it.
 
 ## Why not Flathub
 
@@ -71,10 +109,10 @@ applications, system utilities "generally used on host", applications relying
 on "complicated post installation setups for core functionality", and projects
 with "insufficient development history". Satellite matches four of four.
 
-The two closest precedents were both closed unmerged — `turbo-clicker` (a
+The two closest precedents were both closed unmerged: `turbo-clicker` (a
 Flathub admin answered the uinput-permissions question with "no this is not
-possible") and `Plover`. Apps that *do* ship with uinput on Flathub — Steam,
-Solaar, AntiMicroX, Sunshine — are all mature upstream projects, and every one
+possible") and `Plover`. Apps that *do* ship with uinput on Flathub (Steam,
+Solaar, AntiMicroX, Sunshine) are all mature upstream projects, and every one
 of them documents a manual host udev step anyway.
 
 Flathub also has a **generative-AI policy**: submission PRs must not be
@@ -92,7 +130,7 @@ with no setup. That is what
 `allow-installation: false` on the plug, so a store-published snap declaring it
 cannot be installed until Canonical hand-signs a declaration.
 
-Of every snap published in the store, **three** plug `uinput` — two of them
+Of every snap published in the store, **three** plug `uinput`, two of them
 Canonical's own (`steam`, `bluez`). Third-party auto-connection has been
 refused every time it has been requested since 2020; the one recent approval
 (`aiche-desktop`) took ~99 days, covered manual connection only, and required
@@ -119,7 +157,7 @@ Set it for Snap and Flatpak builds; leave it off everywhere else.
 
 `LinuxUpdaterAdapter::detectInstallType()` decides how the in-app updater
 behaves. Snap and Flatpak are checked **first**, because both mount their
-payload read-only — misdetecting either as `Portable` would tell the user to
+payload read-only, and misdetecting either as `Portable` would tell the user to
 replace bytes that physically cannot be replaced.
 
 | Type | Detected by | Update method |
@@ -128,7 +166,11 @@ replace bytes that physically cannot be replaced.
 | Flatpak | `/.flatpak-info` exists | `flatpak update io.github.tinkernorth.satellite` |
 | AppImage | `$APPIMAGE` | Self-install (swap and re-exec) |
 | Deb / Rpm | exe path + package DB | `apt` / `dnf` command |
-| AUR | `/opt/satellite/satellite.AppImage` | `yay -Syu satellite-bin` |
+| AUR / pacman | `/opt/satellite/satellite.AppImage` | `yay -Syu satellite-bin` |
+
+The `satellite-bin` package from the pacman repository installs the same
+`/opt/satellite/` layout, so it is detected as the AUR lineage, and the
+instruction the updater shows still names the AUR helpers.
 
 `/.flatpak-info` is preferred over `$FLATPAK_ID` because a child process
 inherits the environment variable and can outlive the sandbox it describes.
@@ -150,7 +192,7 @@ Two traps worth knowing:
   hard validation error; the file uses `FSFAP`, with the real license in
   `project_license`.
 - The filename must equal the component `<id>`. Plain `validate` does not catch
-  a mismatch — only `validate-tree` against a staged install does.
+  a mismatch; only `validate-tree` against a staged install does.
 
 **Screenshots are deliberately absent.** Screenshot URLs must resolve over
 HTTPS or networked validation fails, and none are published yet. Any Flathub

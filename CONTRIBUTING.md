@@ -3,29 +3,86 @@
 Thanks for your interest in improving Satellite! This document captures the
 conventions that aren't obvious from skimming the code.
 
+## Code of conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By
+participating, you agree to uphold it. Report unacceptable behavior to
+`security@tinkernorth.com`.
+
 ## Getting set up
 
 ```bash
 # 1) Install the toolchain CI uses (Windows: scripts\install-deps.ps1)
 scripts/install-deps.sh
-# 2) Build + run the test suite via the CI presets
+# 2) Build and run the test suite through the CI preset
 #    (Windows: scripts\build.ps1 release test)
 scripts/build.sh release test
 # 3) Point git at the in-tree pre-commit hook
 ./scripts/setup-hooks.sh
+# 4) Run every CI gate against your worktree, in CI's order
+scripts/ci-local.sh            # Windows: scripts\ci-local.ps1
 ```
 
-`CMakePresets.json` is the single source of configure truth: each CI lane
-(`windows-mingw`, `linux`, `macos`, `windows-msvc`) is a preset, the
-workflows and the `scripts/build.*` wrappers both drive them, and
-`scripts/ci-local.ps1` / `scripts/ci-local.sh` re-run every PR gate locally
-in CI's order. Add `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` on top of a preset
-if you want `compile_commands.json` for clangd.
+`CMakePresets.json` is the single source of configure truth: `release`
+(the Linux and macOS lane; `scripts/build.sh` and `scripts/ci-local.sh`),
+`debug`, `package` (what every shipped Linux artifact and the macOS bundle
+are built from), and, where the toolchain differs, `windows-mingw`,
+`windows-mingw-debug` and `windows-msvc` (the hardened MSVC + vcpkg build the
+release ships; `scripts/setup-vcpkg.ps1` checks vcpkg out at the commit
+`vcpkg.json`'s `builtin-baseline` names). Every preset sets warnings as
+errors. Add `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` on top of a preset if you
+want `compile_commands.json` for clangd.
 
-The pre-commit hook runs `clang-format -i` (autofix, re-stages) on staged
-C/C++/Objective-C++ files. It skips gracefully if the tool isn't installed.
-CI re-runs `clang-format --dry-run --Werror` in strict mode on Linux,
-macOS, and Windows runners, so anything that slips locally fails the PR.
+`scripts/ci-local.sh` (Linux and macOS) runs what the main CI jobs run:
+
+| Flag | Adds or changes |
+|---|---|
+| (none) | format, action pins, version consistency, vendored freshness, core purity, preset `release` build and ctest, and on macOS the `.app` checks and the alive smoke |
+| `--quick` | only the gates before the build |
+| `--with-packages` | the `.deb` and `.rpm` lanes in debian:trixie and fedora:44 (`scripts/package-in-container.sh`, docker) |
+| `--with-appimage` | the AppImage lane in ubuntu:22.04 (docker) |
+| `--with-bundle` | macOS: the release bundle lane, unsigned |
+| `--allow-missing` | a missing tool becomes a notice instead of a failure |
+
+`scripts/ci-local.ps1` (Windows) runs `windows-ci.yml`'s gates;
+`-Quick` stops before the build, `-WithMsvc` adds the MSVC build, its tests,
+the app smoke and the unsigned installer with its round-trip (elevated), and
+`-AllowMissing` is the same downgrade. Without it, a gate whose tool is
+missing fails: a green run must not hide a skipped gate.
+
+The pre-commit hook formats the staged C, C++ and Objective-C++ files with
+the clang-format `scripts/tools.sh` pins and re-stages them; CI runs the same
+formatter in check mode, so anything that slips locally fails the PR.
+
+## Where code goes
+
+- Hexagonal architecture: `core/` is pure domain logic with no platform
+  deps. Anything that touches sockets, files, the registry, the Cocoa
+  runtime, ViGEm, etc. lives in `adapters/` or `platform/<os>/`.
+  `SessionService` only depends on the abstract port interfaces in
+  `core/ports.h`. `scripts/check_core_purity.sh` holds `src/core/` to the
+  standard library, other core headers and nlohmann/json.
+- New ports must be testable from `tests/test_session_service.cpp` with a
+  mock implementation. Don't add framework dependencies to the test suite;
+  the tiny in-tree assertion macros are enough for the current scope.
+- The design is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), the
+  threading rules in [`docs/threading.md`](docs/threading.md), and the wire
+  contract in [`docs/contract.md`](docs/contract.md).
+
+## Touching the UI
+
+The dashboard under `web/` takes every color from the tokens
+[`DESIGN.md`](DESIGN.md) lists. What a page reads of the server is held to
+what the server writes by `tests/test_dashboard_contract.cpp`,
+`tests/test_debug_ui_contract.cpp` and `tests/test_update_ui_contract.cpp`.
+
+## Translations
+
+The dashboard's strings live in `web/lang/<locale>.json` (`en`, `bs`, `de`,
+`es`, `fr`, `pt-BR`), with English as the source. A string the dashboard
+looks up must exist in all six: the dashboard contract tests check each new
+surface's strings against every locale, and the controller-type strings are
+asserted against the real catalogs.
 
 ## License headers
 
@@ -40,22 +97,14 @@ description block (the path names the file; authorship lives in git). New
 files must include the SPDX line. Don't introduce code under a different
 license: the project is LGPL-3.0-or-later end-to-end (`LICENSE`,
 `COPYING.GPL3`, source headers). Vendored third-party components under
-`lib/` and `vigem/include/` keep their original (MIT-compatible) licenses
-and are noted in the README.
+`lib/` and `vigem/include/` keep their original licenses (MIT and ISC), listed
+with every other third-party component in [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 ## Style
 
-- C++17, four-space indent, 100-column soft limit. The same `.clang-format`
-  ships with `dish-android` (JNI) and `dish-linux`; run `clang-format -i`
-  if you're unsure.
-- Hexagonal architecture: `core/` is pure domain logic with no platform
-  deps. Anything that touches sockets, files, the registry, the Cocoa
-  runtime, ViGEm, etc. lives in `adapters/` or `platform/<os>/`.
-  `SessionService` only depends on the abstract port interfaces in
-  `core/ports.h`.
-- New ports must be testable from `tests/test_session_service.cpp` with a
-  mock implementation. Don't add framework dependencies to the test suite;
-  the tiny in-tree assertion macros are enough for the current scope.
+- C++20, four-space indent, 100-column soft limit. The same `.clang-format`
+  ships with `dish-android` (JNI), `dish-windows` and `dish-linux`; run
+  `scripts/check-format.sh --fix` to format with the pinned clang-format.
 
 ### Comments: why, not what
 
@@ -79,10 +128,10 @@ essay at the top of a file.
 
 ### Shape of the code
 
-These rules come from the Parchment library and are adapted where C++17 or
+These rules come from the Parchment library and are adapted where C++20 or
 the hexagonal layout make the literal form worse than the thing it is meant
 to achieve. They apply to `src/` and `tests/` alike, and they are the rules
-the three Dish clients follow, so a fact ported between a client and this
+the Dish clients follow, so a fact ported between a client and this
 server keeps its shape.
 
 - **As immutable and as static as possible.** `const` on every local and
@@ -159,6 +208,8 @@ server keeps its shape.
   narrates what the next line does. The "why, not what" rule above is the
   same rule from the other side.
 
+## Tests
+
 ### Test-driven, every flow
 
 The suite under `tests/` uses the in-tree `TEST` / `EXPECT` / `EXPECT_EQ`
@@ -207,27 +258,42 @@ work at all.
 
 ## What CI runs
 
-Build + style workflows run on every PR:
+Every pull request runs these; a failure blocks the merge.
 
-| Workflow | Runner | What it does |
+| Workflow | Job (required-check name) | What it does |
 |---|---|---|
-| `linux-ci.yml` | ubuntu-24.04, ubuntu-22.04 | clang-format check, tray-enabled + headless builds, ctest, AppIndicator link verification, fuzz smoke, Sentry SDK build, build-reproducibility gate (two Release builds must match byte for byte), the release's AppImage built and its content asserted (`scripts/check-web-payload.sh`), then run headless |
-| `macos-ci.yml` | macos-15 | clang-format check, build + ctest, .app layout verification, uploads `satellite-macos-stub.app` |
-| `windows-ci.yml` | windows-latest | clang-format check, MinGW MSYS2 build, ctest, redist script tests (`tests/test_fetch_redist.ps1`), HIDMaestro helper publish held to `driver_pins.h`, uploads `satellite.exe` |
+| `linux-ci.yml` | `Build, test, lint, format (linux)` | `scripts/check-format.sh`, the core purity gate, preset `release` build and ctest, the uinput smoke as root, the AppIndicator link check |
+| | `Verify headless fallback build` | The build and tests without the tray libraries |
+| | `Fuzz smoke (decrypt->dispatch robustness, bounded)` | clang and libFuzzer: the committed corpus, then a 10 s run |
+| | `Build reproducibility` | Two preset `package` builds from differently named directories must be bit-identical |
+| | `Build with the Sentry SDK (dummy DSN)` | The only pull-request build that compiles and links sentry-native |
+| | `Package (.deb, Debian 13) and launch it` | In debian:trixie: `scripts/build-deb.sh`, then `scripts/check-package.sh deb` (contents, lintian, scriptlets, web payload, install, launch, the bundled controller database's start-up line, exit 0 on SIGTERM) |
+| | `Package (.rpm, Fedora 44) and launch it` | The same in fedora:44 with `scripts/build-rpm.sh` |
+| | `AppImage (as the release builds it)` | On ubuntu-22.04 (the glibc floor): `scripts/build-appimage.sh` with its content check, then the AppImage stays up headless |
+| `macos-ci.yml` | `Build, test, lint, format (macos)` | On macos-15 with Xcode 16.4: the format check, preset `release` build and ctest, the `.app` layout, a 45 s alive smoke, uploads `satellite-macos-stub.app` |
+| | `macOS bundle (as the release builds it, unsigned)` | `scripts/package-macos.sh build`, `stage` and `check`: the release's `.dmg` and `.zip`, the `.dmg` mounted and its app run |
+| `windows-ci.yml` | `Build, test, lint, format (windows)` | MSYS2 MINGW64: the format check, preset `windows-mingw` build and ctest, the redist and measurements script tests, the HIDMaestro helper's tests and publish held to `driver_pins.h` |
+| `windows-msvc-ci.yml` | `Build, test (MSVC + vcpkg, hardened)` | The shipping build: vcpkg at the manifest's baseline (`scripts/setup-vcpkg.ps1`), preset `windows-msvc`, ctest, the app smoke, the CFG and CET bits read back with dumpbin, then `scripts/build-installer.ps1` (unsigned) and the installer's silent install, launch, repair and uninstall round-trip, then a `-DSATELLITE_UIACCESS=ON` rebuild and its installer compiled to inspect (an unsigned UIAccess build cannot start) |
+| `version-consistency.yml` | `Version, pins and documented facts agree` | `scripts/check-version-consistency.sh`: the version and its mirrors, the CHANGELOG heading, the driver pins, every repeated tool and dependency pin, the protocol number and C++ standard the documents name |
+| `security.yml` | `shared / ...` (action-pin lint, allowlist expiry, OSV-Scanner, dependency review, gitleaks) | The shared `_security.yml` gates; OSV-Scanner reads the upstream commit each `lib/VENDORED.md` pin names (`scripts/vendored-osv-lockfile.sh`) |
+| | `Vendored components <= 90 days old` | `scripts/check-vendored-freshness.sh` |
+| `codeql.yml` | `Analyze (cpp)` | CodeQL `security-extended` and `security-and-quality` over the preset `release` build; blocking, results uploaded to code scanning |
+| `measurements.yml` | `Measure (MSVC + vcpkg, Release)` | Pull requests touching `src/`, `tools/bench/`, the lock-law test or `CMakeLists.txt`: the frame-path benches and the lock laws, with the report's gates |
 
-All three workflows install clang-format **pinned to 22.1.4** so verdicts
-match across runners, run the same `scripts/check-format.sh` gate, and
-configure through the same `CMakePresets.json` presets the local scripts
-drive. If any step fails, the PR is blocked. To get the same verdict before
-pushing, run `scripts/ci-local.ps1` (Windows) or `scripts/ci-local.sh`
-(Linux / macOS).
+`release.yml` and `publish-repos.yml` run only for a tag or a dispatch; see
+"Cutting a release". Every build lane configures through a
+`CMakePresets.json` preset, and every gate is a script under `scripts/` that
+the workflow and `scripts/ci-local.sh` / `scripts/ci-local.ps1` both call.
+What the local scripts cannot run is listed in their headers with the
+reason: the root uinput smoke and the AppIndicator check (the runner's
+kernel module and package set), the headless, fuzz, reproducibility and
+Sentry jobs (their own toolchains), CodeQL, the shared security gates and the
+measurements (GitHub's services or the Windows runner), and the MSVC lane's
+dumpbin read-back and UIAccess compile.
 
-Security gates also run on every PR:
-
-| Workflow | What it does |
-|---|---|
-| `security.yml` | action-pin lint, vulnerability allowlist expiry, OSV-Scanner against the upstream commit each `lib/VENDORED.md` pin names (`scripts/vendored-osv-lockfile.sh`), gitleaks secret scan, GitHub `dependency-review-action`, vendored-component freshness check (`lib/VENDORED.md` <= 90 days). |
-| `codeql.yml` | CodeQL `cpp` analysis (security-extended + security-and-quality query packs). |
+The format gate uses clang-format **23.1.5**, the hash-checked PyPI wheel
+`scripts/tools.sh` pins; `scripts/check-format.sh` fetches it on first use,
+so every runner and every local run formats with the same binary.
 
 An OSV advisory whose git range covers a vendored component's pinned
 commit fails the next PR, and the Monday run, without code changes. OSV
@@ -303,12 +369,11 @@ successor (NVGE) supersedes it, the bump procedure is documented in
 ### Running security checks locally
 
 ```bash
-# Action-pin lint (40-char SHA enforcement on every uses: line)
-.github/workflows/_security.yml      # source of truth: read the action-pin-lint job
-# Quick local equivalent:
-grep -REn '^\s*uses:' .github/workflows/ \
-  | grep -vE '@[0-9a-f]{40}\b' \
-  || echo "all pinned"
+# Action-pin lint (40-char SHA on every uses: line), as _security.yml runs it
+bash scripts/check-action-pins.sh
+
+# Vendored components <= 90 days old, as security.yml's vendored-freshness job runs it
+bash scripts/check-vendored-freshness.sh
 
 # Allowlist expiry
 python3 - <<'PY'
@@ -326,47 +391,63 @@ osv-scanner --config=osv-scanner.toml --lockfile "osv-scanner:${TMPDIR:-/tmp}/ve
 
 # Gitleaks
 gitleaks detect --no-banner --redact --source .
-
-# CodeQL (requires the CodeQL CLI; see https://docs.github.com/en/code-security/codeql-cli)
-codeql database create build-db --language=cpp --command='cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j'
-codeql database analyze build-db --format=sarif-latest --output=codeql.sarif \
-  cpp-security-extended.qls cpp-security-and-quality.qls
 ```
+
+`scripts/ci-local.sh` and `scripts/ci-local.ps1` run the first two.
 
 ### Verifying a release artifact
 
-Each GitHub Release ships:
+Each GitHub Release ships the platform installers and packages
+(`SatelliteSetup-X.Y.Z.exe`, `satellite-macos-stub-X.Y.Z.dmg` and `.zip`,
+`satellite_X.Y.Z_amd64.deb`, `satellite-X.Y.Z-1.x86_64.rpm`,
+`satellite-X.Y.Z-x86_64.AppImage`, each with an `-unsigned` suffix where no
+platform certificate signed it, plus their stable-name copies), a cosign
+`.sig` and `.crt` for every file, `SHA256SUMS` with its own signature, the
+SPDX and CycloneDX SBOMs and `satellite.intoto.jsonl`. The verification
+recipe, with the certificate identity the signatures carry, is in
+[`SECURITY.md`](SECURITY.md), "Verifying a release artifact".
 
-- the platform installer / binary (`SatelliteSetup-X.Y.Z.exe`, `satellite-macos-stub-X.Y.Z.zip`, `satellite_X.Y.Z_amd64.deb`, `satellite-X.Y.Z-x86_64.AppImage`)
-- per-artifact `*.sig` + `*.crt` (cosign keyless signature + certificate)
-- `SHA256SUMS` + `SHA256SUMS.sig` + `SHA256SUMS.crt`
-- `satellite.sbom.spdx.json` + `satellite.sbom.cdx.json` (Syft)
-- `satellite.intoto.jsonl` (SLSA L3 provenance)
+## Cutting a release
 
-Verify with:
+`release.yml` runs on a bare `MAJOR.MINOR.PATCH` tag (no `v`; a prerelease
+such as `1.2.3-rc.1` publishes marked as a prerelease) or a
+`workflow_dispatch` with a tag input.
 
-```bash
-# 1) Checksums match
-sha256sum -c SHA256SUMS
+1. **Bump the version** in a pull request of its own: `VERSION`,
+   `src/core/version.h`, `vcpkg.json`'s `version`, a new `<release>` at the
+   top of `packaging/io.github.tinkernorth.satellite.metainfo.xml`, and the
+   `## X.Y.Z` heading in `CHANGELOG.md`. `version-consistency.yml` fails the
+   PR when one of them disagrees. Update `PRIVACY.md` first if anything about
+   data collection changed.
+2. **Merge it**, then push a lightweight tag on the squash commit:
+   `git tag X.Y.Z <sha> && git push origin X.Y.Z`.
+3. **The workflow then runs in this order**: the tag is checked against
+   `VERSION` and the CHANGELOG heading; every pull-request security gate
+   re-runs against the tagged commit; the signing-secret report (advisory:
+   without the certificates the artifacts carry `-unsigned`); the builds
+   (the Windows installer, the macOS stub, the `.deb`, the `.rpm`, the
+   AppImage, each through the script its pull-request lane runs, each
+   installed or launched before upload); the shared hardening (Grype,
+   the SBOMs, `SHA256SUMS`, cosign); the SLSA provenance; the release
+   uploaded as a draft; the measurements attached; the draft flipped to
+   published; the Sentry release; and, for a stable tag, the APT, DNF and
+   pacman repositories regenerated on `gh-pages` by `publish-repos.yml`.
 
-# 2) cosign verifies SHA256SUMS came from the right workflow
-cosign verify-blob \
-  --certificate SHA256SUMS.crt \
-  --signature   SHA256SUMS.sig \
-  --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  SHA256SUMS
+**The fleet order.** The website (dish-website) is tagged first. Satellite
+and the Dish clients are tagged once
+`https://dish.tinkernorth.com/controllers/v1/manifest.json` serves the
+controller database the release carries.
 
-# 3) Provenance attests this artifact came from the tagged release
-slsa-verifier verify-artifact \
-  --provenance-path satellite.intoto.jsonl \
-  --source-uri      github.com/TinkerNorth/satellite \
-  --source-tag      X.Y.Z \
-  SatelliteSetup-X.Y.Z.exe
-```
-
-Replace `TinkerNorth` with the GitHub org/owner. The exact recipe is also
-documented in [`TinkerNorth/SECURITY.md`](SECURITY.md).
+**After a bad release.** The repository has no rollback procedure. What the
+tree gives you: a release is published only after every asset is attached
+(draft, then flip), so a failure before the flip leaves the previous release
+as `latest`; the stable names (`SatelliteSetup.exe`, `satellite-amd64.deb`,
+`satellite-x86_64.rpm`, `satellite-x86_64.AppImage`) under
+`releases/latest/download/` follow whichever release is newest, so
+demoting or deleting a bad release moves them back; and
+`gh workflow run publish-repos.yml --ref main -f tag=X.Y.Z` regenerates the
+package repositories for a named release
+([`packaging/repo/README.md`](packaging/repo/README.md)).
 
 ## Touching the hot path
 
@@ -381,8 +462,9 @@ take a long lock. From `net/receiver.cpp`:
 
 ## Touching the wire protocol
 
-The server and all three Dish clients (Android, macOS, Linux) must
-produce byte-identical traffic:
+Satellite and the five Dish clients (Dish for Android, Dish for iOS, Dish
+for macOS, Dish for Windows, Dish for Linux) must produce byte-identical
+traffic:
 
 - AEAD: ChaCha20-Poly1305 IETF. The 12-byte nonce carries a direction
   byte in byte 0 and the per-session counter (big-endian) in bytes 8..11;
@@ -395,8 +477,8 @@ produce byte-identical traffic:
   HTTP UI on 9877 is loopback-only and not part of the wire contract. See
   [`docs/contract.md`](docs/contract.md) for the authoritative port map.
 
-Any change here must be coordinated with `dish-android`, `dish-linux`,
-and `dish-mac` in the same PR / release cycle.
+Any change here must be coordinated with `dish-android`, `dish-ios`,
+`dish-mac`, `dish-windows` and `dish-linux` in the same release cycle.
 
 ## Platform notes
 

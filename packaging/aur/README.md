@@ -1,36 +1,42 @@
 # Arch User Repository: `satellite-bin`
 
 This directory holds the [PKGBUILD](PKGBUILD) and [.SRCINFO](.SRCINFO)
-files that mirror Satellite to the [AUR](https://aur.archlinux.org/) as
-the `satellite-bin` package. The AUR repository itself is a separate
-git remote: the files here are the source of truth, and a release-time
-job syncs them across.
+for the `satellite-bin` package. Today they feed Satellite's own signed
+pacman repository, not the [AUR](https://aur.archlinux.org/): AUR account
+registration is closed, so `satellite-bin` is not on the AUR.
+`publish-repos.yml`'s `arch-publish` job, which release.yml calls after every
+stable tag publishes, builds this PKGBUILD in an Arch container against the
+release's assets (it rewrites `pkgver` and the checksums at build time, which
+is why the `pkgver=1.0.0` here is a placeholder) and publishes it under
+`https://tinkernorth.github.io/satellite/arch/$arch`. The files stay
+AUR-ready for when registration reopens.
 
 ## How users install
 
-```bash
-# Via an AUR helper
-yay -S satellite-bin
-# or
-paru -S satellite-bin
+From the pacman repository (the steps
+[`packaging/repo/index.html`](../repo/index.html) publishes):
 
-# Or manually with makepkg
-git clone https://aur.archlinux.org/satellite-bin.git
-cd satellite-bin
-makepkg -si
+```bash
+curl -fsSL https://tinkernorth.github.io/satellite/gpg.key | sudo pacman-key --add -
+sudo pacman-key --lsign-key 4371E67B00CB54E69ED34D70428695F4ED61D3A8
+printf '\n[satellite]\nSigLevel = Required DatabaseOptional\nServer = https://tinkernorth.github.io/satellite/arch/$arch\n' \
+  | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu satellite-bin
 ```
+
+Or build it yourself from this directory with `makepkg -si`.
 
 The package re-bundles the official x86_64 AppImage under `/opt/satellite/`
 and ships a `satellite` shim in `/usr/bin` that forwards to it. The
-in-app OTA updater detects the AUR install lineage and surfaces the
-right manual upgrade instruction (`yay -Syu satellite-bin`) rather than
-trying to swap the binary itself.
+in-app OTA updater detects that install lineage and shows a manual
+upgrade instruction (it names `yay -Syu satellite-bin`) rather than trying
+to swap the binary itself.
 
-## How maintainers bump it
+## How maintainers would bump it on the AUR
 
-The `release.yml` workflow regenerates the SHA-256 sums on tag, but does
-**not** push to the AUR: AUR pushes require a per-maintainer SSH key
-which we don't want sitting in CI secrets. After a release publishes:
+Nothing in CI pushes to the AUR: AUR pushes need a per-maintainer SSH key,
+which does not belong in CI secrets. Once registration reopens and the
+package exists there, after a release publishes:
 
 1. Pull the freshly-tagged files:
    ```bash
@@ -75,4 +81,4 @@ the conventions of similar AUR packages (e.g. `signal-desktop-bin`,
 `obsidian-bin`).
 
 Power users who want a source build can clone the upstream repository
-and run the standard `./build-satellite.sh` flow.
+and run `scripts/build.sh`.

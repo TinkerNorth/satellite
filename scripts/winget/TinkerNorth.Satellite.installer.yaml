@@ -1,4 +1,5 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# Unpublished template: version 1.0.0 is a placeholder, no workflow builds or submits this channel (docs/PACKAGING.md).
 #
 # WinGet installer manifest for Satellite. This is the per-version
 # manifest -- bump PackageVersion and InstallerSha256 each release, then

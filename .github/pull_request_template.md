@@ -1,27 +1,34 @@
-## Description
-<!-- Briefly describe the changes in this PR -->
+## What changes, and why
 
-## Type of Change
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Refactor (code change that neither fixes a bug nor adds a feature)
-- [ ] Documentation update
+<!-- Two or three sentences. Name the behaviour a user or a developer sees, not the files. -->
 
-## How Has This Been Tested?
-<!-- Describe the tests you ran to verify your changes -->
+## Kind of change
 
-- [ ] Unit tests (`ctest` / `test_session_service` / `test_linux_platform` / `test_windows_platform`)
-- [ ] Manual testing on Windows
-- [ ] Manual testing on macOS
-- [ ] Manual testing on Linux
-- [ ] Tested against a paired client end-to-end
+- [ ] Fix
+- [ ] Feature
+- [ ] Refactor (behaviour unchanged)
+- [ ] Docs, CI or repo plumbing
+- [ ] Wire protocol or pairing flow (`docs/contract.md` changes; the five Dish clients need the matching change in the same release cycle)
 
-## Checklist
-- [ ] My code follows the project's style guidelines (`clang-format` clean, `.clang-tidy` respected)
-- [ ] I have performed a self-review of my code
-- [ ] I have commented my code in hard-to-understand areas
-- [ ] I have made corresponding changes to documentation
-- [ ] My changes generate no new compiler warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
+## Shape of the code (CONTRIBUTING, "Shape of the code")
+
+- [ ] Immutable by default; one flow per function; named steps instead of comments.
+- [ ] Every `switch` over an enum is exhaustive, with no `default`.
+- [ ] No singleton, no mutable static, no discarded result, no warning or lint suppression.
+- [ ] `src/core/` stays platform-free (`scripts/check_core_purity.sh`); sockets, files and OS calls stay in `adapters/` or `platform/<os>/`.
+
+## Tests
+
+- [ ] Red first: a test failed before the change and passes after it.
+- [ ] Every new flow has a test (`ctest`; the suites include `test_session_service`, `test_linux_platform`, `test_windows_platform`).
+- [ ] A new dashboard string exists in all six `web/lang/*.json` locales.
+- [ ] `scripts/ci-local.sh` (or `scripts\ci-local.ps1`) passes, with the `--with-` lanes the change touches.
+- [ ] Manual check on Windows / macOS / Linux: <!-- which, with or without ViGEmBus or HIDMaestro -->
+- [ ] Tested against a paired Dish client end to end: <!-- which client and version -->
+
+## Bookkeeping
+
+- [ ] `CHANGELOG.md` has a line under `[Unreleased]`.
+- [ ] `tests/PARITY.md` is updated if a platform row changed.
+- [ ] `docs/ARCHITECTURE.md`, `docs/contract.md` or `DESIGN.md` is updated if a rule, the wire or a token changed.
+- [ ] `THIRD_PARTY.md` and `lib/VENDORED.md` are updated if a third-party component moved.

@@ -1,8 +1,9 @@
+# Unpublished template: version 1.0.0 is a placeholder, no workflow builds or submits this channel (docs/PACKAGING.md).
 # Flatpak manifest for Satellite.
 #
 # SCOPE: this targets a self-hosted Flatpak repo / sideloaded bundle, aimed at
 # Steam Deck, Bazzite and Nobara. It is NOT a Flathub submission -- see
-# docs/packaging.md for why that route is closed today.
+# docs/PACKAGING.md for why that route is closed today.
 #
 # THE PERMISSION MODEL, stated plainly: --device=all bind-mounts /dev into the
 # sandbox, which grants VISIBILITY, not AUTHORITY. The host's own DAC/ACL on
