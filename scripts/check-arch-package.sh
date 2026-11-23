@@ -74,12 +74,14 @@ step "Launch the installed satellite"
 # No FUSE in a container: the AppImage runtime extracts itself instead.
 home="$(mktemp -d)"
 log="${home}/launch.log"
-HOME="${home}" APPIMAGE_EXTRACT_AND_RUN=1 /usr/bin/satellite >"${log}" 2>&1 &
+XDG_STATE_HOME="${home}/state" HOME="${home}" APPIMAGE_EXTRACT_AND_RUN=1 /usr/bin/satellite >"${log}" 2>&1 &
 app=$!
 loaded=0
 for _ in $(seq 1 30); do
     kill -0 "${app}" 2>/dev/null || break
-    if grep -qE 'Controller database [0-9]+ \(bundled\), [0-9]+ records' "${log}"; then
+    # Satellite logs to its file under XDG_STATE_HOME, not to stdout.
+    if cat "${home}"/state/satellite/logs/* 2>/dev/null \
+        | grep -qE 'Controller database [0-9]+ \(bundled\), [0-9]+ records'; then
         loaded=1
         break
     fi
@@ -100,6 +102,13 @@ wait "${app}"
 rc=$?
 set -e
 sed 's/^/[satellite] /' "${log}"
+cat "${home}"/state/satellite/logs/* 2>/dev/null | sed 's/^/[satellite log] /' || true
+# The file sink writes in the background; read it again once the process
+# has flushed it on exit.
+if cat "${home}"/state/satellite/logs/* 2>/dev/null \
+    | grep -qE 'Controller database [0-9]+ \(bundled\), [0-9]+ records'; then
+    loaded=1
+fi
 for problem in "${problems[@]+"${problems[@]}"}"; do
     echo "::error::check-arch-package: ${problem}" >&2
 done

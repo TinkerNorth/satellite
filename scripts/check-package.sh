@@ -100,14 +100,16 @@ step "Launch the installed satellite"
 # so the start-up reads no cache a previous run left.
 home="$(mktemp -d)"
 log="${home}/launch.log"
-HOME="${home}" /usr/bin/satellite >"${log}" 2>&1 &
+XDG_STATE_HOME="${home}/state" HOME="${home}" /usr/bin/satellite >"${log}" 2>&1 &
 app=$!
 started=0
 loaded=0
 for _ in $(seq 1 20); do
     if ! kill -0 "${app}" 2>/dev/null; then break; fi
     started=1
-    if grep -qE 'Controller database [0-9]+ \(bundled\), [0-9]+ records' "${log}"; then
+    # Satellite logs to its file under XDG_STATE_HOME, not to stdout.
+    if cat "${home}"/state/satellite/logs/* 2>/dev/null \
+        | grep -qE 'Controller database [0-9]+ \(bundled\), [0-9]+ records'; then
         loaded=1
         break
     fi
@@ -128,11 +130,18 @@ wait "${app}"
 rc=$?
 set -e
 sed 's/^/[satellite] /' "${log}"
+cat "${home}"/state/satellite/logs/* 2>/dev/null | sed 's/^/[satellite log] /' || true
+# The file sink writes in the background; read it again once the process
+# has flushed it on exit.
+if cat "${home}"/state/satellite/logs/* 2>/dev/null \
+    | grep -qE 'Controller database [0-9]+ \(bundled\), [0-9]+ records'; then
+    loaded=1
+fi
 if grep -qiE 'error while loading shared libraries|cannot open shared object' "${log}"; then
     fail "the installed package cannot load its shared libraries"
 fi
 [ "${started}" = 1 ] && [ "${alive}" = 1 ] || fail "satellite exited on its own (${rc}) instead of staying up"
 [ "${loaded}" = 1 ] || fail "satellite never logged 'Controller database N (bundled), M records'"
 [ "${rc}" = 0 ] || fail "satellite did not exit 0 on SIGTERM (got ${rc})"
-grep -E 'Controller database [0-9]+ \(bundled\), [0-9]+ records' "${log}" | head -1
+cat "${home}"/state/satellite/logs/* | grep -E 'Controller database [0-9]+ \(bundled\), [0-9]+ records' | head -1
 echo "check-package: the installed ${kind} came up headless, loaded its bundled controller database, and exited 0 on SIGTERM"
