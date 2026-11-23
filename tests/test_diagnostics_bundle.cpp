@@ -316,6 +316,11 @@ static void test_bundle_envelope() {
     EXPECT_EQ(c["lastGameOutput"].value("kind", std::string()), std::string("rumble"));
     EXPECT_EQ(c["lastGameOutput"].value("atMs", int64_t{0}), int64_t{1763586000000});
 
+    TEST("bundle: a pad no backend serves has a null backend, as in the connection document");
+    DiagnosticsInput orphan = inputFixture();
+    orphan.controllers[0].backend.clear();
+    EXPECT(buildDiagnosticsBundle(orphan)["controllers"][0]["backend"].is_null());
+
     TEST("bundle: a controller the game never wrote has a null lastGameOutput");
     DiagnosticsInput quiet = inputFixture();
     quiet.controllers[0].lastGameOutput = GameOutputKind::None;

@@ -237,7 +237,7 @@ JsonOut controllerJson(const DiagnosticsController& c) {
     j["ctrlIdx"] = c.ctrlIdx;
     j["record"] = nullptr;
     j["type"] = c.type;
-    j["backend"] = c.backend;
+    j["backend"] = c.backend.empty() ? JsonOut(nullptr) : JsonOut(c.backend);
     j["pluggedIn"] = c.pluggedIn;
     j["caps"] = capsJsonObj(c.caps);
     j["lastGameOutput"] = gameOutputJson(c.lastGameOutput, c.lastGameOutputAtMs);

@@ -303,7 +303,7 @@ already read from `/api/server/capabilities`. Not a wire change: nothing on UDP 
   "grants": { "controllerAudio": { "enabled": true, "mic": false, "speaker": true, "hapticAudio": false } },
   "counters": { "rx": { ... }, "tx": { ... }, "audio": { ... }, "rejected": { ... }, "scope": "process" },
   "controllerDb": { "bundledVersion": 1, "activeVersion": 1, "source": "bundled", "...": "..." },
-  "log": [ { "atMs": 1763585900000, "level": "INFO", "tag": "service", "message": "..." } ]
+  "log": [ { "atMs": 1763585900000, "level": "info", "tag": "service", "message": "..." } ]
 }
 ```
 

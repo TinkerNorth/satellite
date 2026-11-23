@@ -1136,6 +1136,15 @@ int main() {
 
             TEST("GET /api/diagnostics: an IPv6 address in log text is masked");
             EXPECT(canary->body.find("2001:db8::77") == std::string::npos);
+
+            TEST(
+                "GET /api/diagnostics: each log line's level is lowercase, as /api/logs writes it");
+            const Json j = parseJson(canary->body);
+            EXPECT(!j["log"].empty());
+            for (const Json& line : j["log"]) {
+                const std::string level = jsonStr(line, "level");
+                EXPECT(level == "info" || level == "warn" || level == "error");
+            }
         }
 
         svc.closeSessionById(session.connectionId, "", CLOSE_REASON_KICKED, false);
