@@ -89,7 +89,13 @@ check() {
         test -f "${mount}/satellite.app/Contents/Resources/web/index.html" || fail "${dmg}'s satellite.app carries no web/"
         bash scripts/smoke-alive.sh "${mount}/satellite.app/Contents/MacOS/satellite" 45
     ) || status=$?
-    hdiutil detach "${mount}" >/dev/null
+    # The app the smoke ran can hold the volume for a moment after it exits.
+    local tries=0
+    until hdiutil detach "${mount}" >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        [ "${tries}" -lt 10 ] || fail "${dmg} stays mounted at ${mount}"
+        sleep 1
+    done
     [ "${status}" -eq 0 ] || exit "${status}"
     echo "package-macos: ${dmg} mounts, holds satellite.app and /Applications, and its app stays up"
 }
