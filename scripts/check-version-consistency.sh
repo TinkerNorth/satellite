@@ -195,6 +195,7 @@ else
   expect "THIRD_PARTY.md ViGEmBus" "$(third_party ViGEmBus)" "$(define SATELLITE_VIGEMBUS_BUNDLED_VERSION "$pins")"
   expect "THIRD_PARTY.md vcpkg" "$(third_party vcpkg)" "$baseline"
   expect "THIRD_PARTY.md clang-format" "$(third_party clang-format)" "$(tools_pin CLANG_FORMAT_VERSION)"
+  expect "THIRD_PARTY.md clang-tidy" "$(third_party clang-tidy)" "$(tools_pin CLANG_TIDY_VERSION)"
   expect "THIRD_PARTY.md sentry-cli" "$(third_party sentry-cli)" "$(tools_pin SENTRY_CLI_VERSION)"
   expect "THIRD_PARTY.md linuxdeploy" "$(third_party linuxdeploy)" "$(tools_pin LINUXDEPLOY_VERSION)"
   expect "THIRD_PARTY.md Inno Setup" "$(third_party 'Inno Setup')" "$(grep -m1 -E '^\$version = ' scripts/install-inno-setup.ps1 | cut -d"'" -f2)"

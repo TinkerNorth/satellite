@@ -153,13 +153,14 @@ Each repo runs the same shape of gates:
 - Allowlist (`scripts/security-allowlist.py`): `.security/allowlist.yaml`
   entries must be complete, unexpired and at most 90 days out; they are the
   only place a vulnerability is accepted, and OSV-Scanner reads them.
-- Dependency review: GitHub advisory DB (PR-only). Off on every repository
-  until the Dependency graph setting is switched on.
+- Dependency review: GitHub advisory DB (PR-only), blocking on a high-severity
+  finding.
 - OSV-Scanner 2.7.1 (`scripts/osv-scan.sh`): the tree's manifests (for
   Satellite, the helper's NuGet test packages) and the vendored components
   by upstream commit; a scan that finds no package fails.
 - Gitleaks 8.30.1: secret scanning over the full history.
-- CodeQL: `cpp` for `satellite` / `dish-linux`, `swift` for `dish-mac`,
+- CodeQL: `cpp` for `satellite` (first-party code; the byte-identical vendored
+  components are OSV-Scanner's and the freshness gate's) / `dish-linux`, `swift` for `dish-mac`,
   `java-kotlin` + `cpp` for `dish-android`.
 
 **On every tagged release** (also blocking):

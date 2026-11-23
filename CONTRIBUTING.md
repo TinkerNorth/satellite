@@ -270,14 +270,19 @@ Every pull request runs these; a failure blocks the merge.
 | | `Package (.deb, Debian 13) and launch it` | In debian:trixie: `scripts/build-deb.sh`, then `scripts/check-package.sh deb` (contents, lintian, scriptlets, web payload, install, launch, the bundled controller database's start-up line, exit 0 on SIGTERM) |
 | | `Package (.rpm, Fedora 44) and launch it` | The same in fedora:44 with `scripts/build-rpm.sh` |
 | | `AppImage (as the release builds it)` | On ubuntu-22.04 (the glibc floor): `scripts/build-appimage.sh` with its content check, then the AppImage stays up headless |
+| | `Package (pacman, Arch) and launch it` | In an Arch container: `scripts/build-arch-package.sh` around the AppImage above, then `scripts/check-arch-package.sh` installs it from a repository signed with a throwaway key, holds the installed AppImage to the packaged bytes and starts it |
+| | `Install from the APT repository (Debian 13)`, `Install from the DNF repository (Fedora 44)` | `scripts/check-repo-install.sh`: the publishing script builds the repository around this pull request's package with a throwaway key, it is added the way `packaging/repo/index.html` says, and `satellite` is installed with every signature check on (`gpgcheck=1` for dnf) and started |
+| | `Release hardening, dry run (linux)` | The shared `_release_harden.yml` over the deb, rpm and AppImage: Grype, the SBOMs, `SHA256SUMS`, a Sigstore bundle per file signed with a throwaway key |
 | `macos-ci.yml` | `Build, test, lint, format (macos)` | On macos-15 with Xcode 16.4: the format check, preset `release` build and ctest, the `.app` layout, a 45 s alive smoke, uploads `satellite-macos-stub.app` |
 | | `macOS bundle (as the release builds it, unsigned)` | `scripts/package-macos.sh build`, `stage` and `check`: the release's `.dmg` and `.zip`, the `.dmg` mounted and its app run |
+| | `Release hardening, dry run (macos)` | The same over the .dmg and .zip |
 | `windows-ci.yml` | `Build, test, lint, format (windows)` | MSYS2 MINGW64: the format check, preset `windows-mingw` build and ctest, the redist and measurements script tests, the HIDMaestro helper's tests and publish held to `driver_pins.h` |
 | `windows-msvc-ci.yml` | `Build, test (MSVC + vcpkg, hardened)` | The shipping build: vcpkg at the manifest's baseline (`scripts/setup-vcpkg.ps1`), preset `windows-msvc`, ctest, the app smoke, the CFG and CET bits read back with dumpbin, then `scripts/build-installer.ps1` (unsigned) and the installer's silent install, launch, repair and uninstall round-trip, then a `-DSATELLITE_UIACCESS=ON` rebuild and its installer compiled to inspect (an unsigned UIAccess build cannot start) |
+| | `Release hardening, dry run (windows)` | The same over the installer |
 | `version-consistency.yml` | `Version, pins and documented facts agree` | `scripts/check-version-consistency.sh`: the version and its mirrors, the CHANGELOG heading, the driver pins, every repeated tool and dependency pin, the protocol number and C++ standard the documents name |
 | `security.yml` | `shared / ...` (action-pin lint, allowlist expiry, OSV-Scanner, dependency review, gitleaks) | The shared `_security.yml` gates; OSV-Scanner reads the upstream commit each `lib/VENDORED.md` pin names (`scripts/vendored-osv-lockfile.sh`) |
 | | `Vendored components <= 90 days old` | `scripts/check-vendored-freshness.sh` |
-| `codeql.yml` | `Analyze (cpp)` | CodeQL `security-extended` and `security-and-quality` over the preset `release` build; blocking, results uploaded to code scanning |
+| `codeql.yml` | `Analyze (cpp)` | CodeQL `security-extended` and `security-and-quality` over the preset `release` build; blocking, results uploaded to code scanning. First-party code only: `.github/codeql/codeql-config.yml` leaves out the byte-identical vendored components, which OSV-Scanner and the freshness gate watch |
 | `measurements.yml` | `Measure (MSVC + vcpkg, Release)` | Pull requests touching `src/`, `tools/bench/`, the lock-law test or `CMakeLists.txt`: the frame-path benches and the lock laws, with the report's gates |
 
 `release.yml` and `publish-repos.yml` run only for a tag or a dispatch; see
