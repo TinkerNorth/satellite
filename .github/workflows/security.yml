@@ -16,15 +16,19 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
-  pull-requests: read
-  security-events: write
 
 jobs:
   shared:
+    # The reusable's jobs read pull requests (dependency review) and upload
+    # SARIF; a workflow grant is the ceiling for what they can ask.
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
     # The reusable workflow lives in this repo, so call by local relative path.
     uses: ./.github/workflows/_security.yml
     with:
@@ -40,39 +44,12 @@ jobs:
   vendored-freshness:
     name: Vendored components <= 90 days old
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Check lib/VENDORED.md last-vendored timestamps
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f lib/VENDORED.md ]; then
-            echo "::error::lib/VENDORED.md is missing; vendored components must be inventoried."
-            exit 1
-          fi
-          # Each component block must contain a `Last-vendored: YYYY-MM-DD` line.
-          today_epoch=$(date -u +%s)
-          fail=0
-          while IFS= read -r line; do
-            d="${line#*: }"
-            d="${d## }"
-            d="${d%% *}"
-            ts=$(date -u -d "$d" +%s 2>/dev/null || true)
-            if [ -z "$ts" ]; then
-              echo "::error::lib/VENDORED.md: unparseable date '$d' in line: $line"
-              fail=1
-              continue
-            fi
-            age_days=$(( (today_epoch - ts) / 86400 ))
-            if [ "$age_days" -gt 90 ]; then
-              echo "::error::lib/VENDORED.md: entry dated $d is ${age_days} days old (>90). Refresh upstream and update the timestamp."
-              fail=1
-            fi
-          done < <(grep -E '^[[:space:]]*-?[[:space:]]*Last-vendored:' lib/VENDORED.md || true)
-          if ! grep -qE '^[[:space:]]*-?[[:space:]]*Last-vendored:' lib/VENDORED.md; then
-            echo "::error::lib/VENDORED.md must contain at least one 'Last-vendored: YYYY-MM-DD' line."
-            exit 1
-          fi
-          exit "$fail"
+        run: bash scripts/check-vendored-freshness.sh

@@ -20,7 +20,13 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+# The three jobs push to one gh-pages branch in turn; two runs at once would
+# race on it. Never cancelled: a publish half-done is worse than a late one.
+concurrency:
+  group: publish-repos
+  cancel-in-progress: false
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
@@ -42,6 +48,8 @@ jobs:
       - name: Checkout main (for build scripts)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The gh-pages pushes clone with their own token URL.
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           path: main
 
@@ -155,6 +163,8 @@ jobs:
       - name: Checkout main (for build scripts)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The gh-pages pushes clone with their own token URL.
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           path: main
 
@@ -249,7 +259,10 @@ jobs:
     needs: [rpm-publish]
     timeout-minutes: 20
     runs-on: ubuntu-24.04
-    container: archlinux:base-devel
+    # A dated snapshot tag rather than the rolling base-devel, so the image
+    # a publish starts from is the one named here; `pacman -Syu` below still
+    # brings it current.
+    container: archlinux:base-devel-20261108.0.623074
     permissions:
       contents: write
     if: ${{ !contains(inputs.tag, '-') }}
@@ -278,6 +291,8 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The gh-pages pushes clone with their own token URL.
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           path: main
 
