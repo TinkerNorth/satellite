@@ -96,7 +96,7 @@ class OwnershipBackend : public IGamepadPort {
         Serial& s = serials_[serial];
         s.busy.store(true);
         const uint64_t plugNumber = plugNumber_.fetch_add(1) + 1;
-        plugState_.store((plugNumber << 1) | 1u);
+        plugState_.store((plugNumber << 1U) | 1u);
         if (s.submitting.load()) violations++;
         if (s.plugged.load()) violations++;
         if (holdPlugs.load()) holdUntilSteadyFrames();
@@ -107,7 +107,7 @@ class OwnershipBackend : public IGamepadPort {
             plugs++;
         }
         if (s.submitting.load()) violations++;
-        plugState_.store(plugNumber << 1);
+        plugState_.store(plugNumber << 1U);
         s.busy.store(false);
         return ok;
     }

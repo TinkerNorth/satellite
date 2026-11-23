@@ -282,7 +282,7 @@ static void test_pack_touchpad_12bit() {
     EXPECT_EQ(r[35], (uint8_t)0x05); // active -> lift bit clear + id
     // 12-bit reconstruction: x = 960, y = 471.
     const int gotX = r[36] | ((r[37] & 0x0F) << 8);
-    const int gotY = (r[37] >> 4) | (r[38] << 4);
+    const int gotY = (r[37] >> 4U) | (r[38] << 4U);
     EXPECT_EQ(gotX, 960);
     EXPECT_EQ(gotY, 471);
 
@@ -410,7 +410,7 @@ static void test_calibration_usb_consumer_parse() {
     EXPECT_EQ(ds4FeatureReport(0x02, 3, buf), (size_t)37);
     auto le16 = [&buf](int off) {
         return static_cast<int16_t>(static_cast<uint16_t>(buf[off]) |
-                                    (static_cast<uint16_t>(buf[off + 1]) << 8));
+                                    (static_cast<uint16_t>(buf[off + 1]) << 8U));
     };
     const int pitchDenom = le16(7) - le16(9);
     const int yawDenom = le16(11) - le16(13);

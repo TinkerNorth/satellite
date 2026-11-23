@@ -116,7 +116,7 @@ inline void packX360Report(const GamepadReport& pad, uint8_t out[X360_REPORT_BYT
     std::memset(out, 0, X360_REPORT_BYTES);
     auto le16 = [&out](int off, uint16_t v) {
         out[off] = static_cast<uint8_t>(v & 0xFF);
-        out[off + 1] = static_cast<uint8_t>(v >> 8);
+        out[off + 1] = static_cast<uint8_t>(v >> 8U);
     };
     le16(0, x360StickX(pad.sThumbLX));
     le16(2, x360StickY(pad.sThumbLY));
@@ -155,7 +155,7 @@ inline void packX360Report(const GamepadReport& pad, uint8_t out[X360_REPORT_BYT
 inline void packGip(const GamepadReport& pad, uint8_t out[INPUT_GIP_LENGTH]) {
     auto le16 = [&out](int off, uint16_t v) {
         out[off] = static_cast<uint8_t>(v & 0xFF);
-        out[off + 1] = static_cast<uint8_t>(v >> 8);
+        out[off + 1] = static_cast<uint8_t>(v >> 8U);
     };
     le16(0, x360StickX(pad.sThumbLX));
     le16(2, x360StickY(pad.sThumbLY));
@@ -291,7 +291,7 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
     const uint16_t b = st.pad.wButtons;
     const uint16_t buttons = sonyButtonsFromXusb(b, st.pad.bLeftTrigger, st.pad.bRightTrigger);
     out[7] = static_cast<uint8_t>(buttons & 0xFF);
-    out[8] = static_cast<uint8_t>(buttons >> 8);
+    out[8] = static_cast<uint8_t>(buttons >> 8U);
 
     uint8_t meta = 0;
     if (b & 0x0400) meta |= 0x01; // Guide -> PS
@@ -389,8 +389,8 @@ inline uint16_t switchStickRaw(int16_t v) {
 
 inline void switchPackStick(uint8_t* dst, uint16_t x, uint16_t y) {
     dst[0] = static_cast<uint8_t>(x & 0xFF);
-    dst[1] = static_cast<uint8_t>(((x >> 8) & 0x0F) | ((y & 0x0F) << 4));
-    dst[2] = static_cast<uint8_t>(y >> 4);
+    dst[1] = static_cast<uint8_t>(((x >> 8U) & 0x0F) | ((y & 0x0F) << 4));
+    dst[2] = static_cast<uint8_t>(y >> 4U);
 }
 
 inline int16_t switchImuRaw(float value, float scale) {
@@ -456,7 +456,7 @@ inline void packSwitchBody(const InputReport& input, const MotionReport& motion,
         uint8_t* p = out + 12 + frame * 12;
         auto le16 = [&p](int off, int16_t v) {
             p[off] = static_cast<uint8_t>(static_cast<uint16_t>(v) & 0xFF);
-            p[off + 1] = static_cast<uint8_t>(static_cast<uint16_t>(v) >> 8);
+            p[off + 1] = static_cast<uint8_t>(static_cast<uint16_t>(v) >> 8U);
         };
         le16(0, ax);
         le16(2, ay);

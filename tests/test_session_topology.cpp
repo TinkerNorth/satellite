@@ -319,11 +319,11 @@ class SlowPlugBackend : public IGamepadPort {
     bool pluginDevicePreferring(uint32_t serial, GamepadIdentity, const std::string&) override {
         if (!valid(serial)) return false;
         const uint64_t number = plugNumber_.fetch_add(1) + 1;
-        plugState_.store((number << 1) | 1u);
+        plugState_.store((number << 1U) | 1u);
         const std::atomic<uint64_t>* progress = holdFor.load();
         if (progress != nullptr) holdUntilProgress(*progress);
         plugged_[serial].store(true);
-        plugState_.store(number << 1);
+        plugState_.store(number << 1U);
         return true;
     }
 

@@ -636,7 +636,7 @@ static void test_dispatch_deletedRegistrationOpcodesAreDropped() {
 
     // 0x000E CAPS_UPDATE (idx 0, CAP_MOTION): must not rewrite caps.
     const uint16_t caps = CAP_MOTION;
-    std::vector<uint8_t> capsMsg = {0x00, (uint8_t)(caps >> 8), (uint8_t)(caps & 0xFF)};
+    std::vector<uint8_t> capsMsg = {0x00, (uint8_t)(caps >> 8U), (uint8_t)(caps & 0xFF)};
     dispatchTight(svc, token, 0x000E, capsMsg);
     EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].motionCapable);
 

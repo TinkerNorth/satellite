@@ -28,15 +28,15 @@ inline constexpr uint32_t hotCtrlWord(bool active, uint32_t serial) {
 }
 
 inline constexpr uint32_t hotPadInfo(uint16_t caps, uint8_t type, uint8_t touchpadMode) {
-    return static_cast<uint32_t>(caps) | (static_cast<uint32_t>(type) << 16) |
-           (static_cast<uint32_t>(touchpadMode) << 24);
+    return static_cast<uint32_t>(caps) | (static_cast<uint32_t>(type) << 16U) |
+           (static_cast<uint32_t>(touchpadMode) << 24U);
 }
 
 inline constexpr uint16_t hotPadCaps(uint32_t info) { return static_cast<uint16_t>(info); }
 
-inline constexpr uint8_t hotPadType(uint32_t info) { return static_cast<uint8_t>(info >> 16); }
+inline constexpr uint8_t hotPadType(uint32_t info) { return static_cast<uint8_t>(info >> 16U); }
 
-inline constexpr uint8_t hotPadMode(uint32_t info) { return static_cast<uint8_t>(info >> 24); }
+inline constexpr uint8_t hotPadMode(uint32_t info) { return static_cast<uint8_t>(info >> 24U); }
 
 inline constexpr uint32_t hotSessionWord(uint16_t epoch, bool mouseGranted) {
     return static_cast<uint32_t>(epoch) | (mouseGranted ? HOT_SESSION_MOUSE : 0u);
@@ -47,10 +47,10 @@ inline constexpr uint16_t hotSessionEpoch(uint32_t word) { return static_cast<ui
 inline constexpr bool hotSessionMouse(uint32_t word) { return (word & HOT_SESSION_MOUSE) != 0; }
 
 inline constexpr uint32_t hotPadOwner(int slot, uint8_t ctrlIdx) {
-    return (static_cast<uint32_t>(slot + 1) << 8) | ctrlIdx;
+    return (static_cast<uint32_t>(slot + 1) << 8U) | ctrlIdx;
 }
 
-inline constexpr int hotOwnerSlot(uint32_t owner) { return static_cast<int>(owner >> 8) - 1; }
+inline constexpr int hotOwnerSlot(uint32_t owner) { return static_cast<int>(owner >> 8U) - 1; }
 
 inline constexpr uint8_t hotOwnerIndex(uint32_t owner) { return static_cast<uint8_t>(owner); }
 
@@ -78,11 +78,11 @@ inline size_t utf8Prefix(const std::string& text, size_t limit) {
 }
 
 inline constexpr uint64_t packClientAddr(uint32_t ipv4NetworkOrder, uint16_t port) {
-    return (static_cast<uint64_t>(ipv4NetworkOrder) << 16) | port;
+    return (static_cast<uint64_t>(ipv4NetworkOrder) << 16U) | port;
 }
 
 inline constexpr uint32_t clientAddrIPv4(uint64_t addr) {
-    return static_cast<uint32_t>(addr >> 16);
+    return static_cast<uint32_t>(addr >> 16U);
 }
 
 inline constexpr uint16_t clientAddrPort(uint64_t addr) { return static_cast<uint16_t>(addr); }
@@ -181,10 +181,10 @@ struct alignas(HOT_CACHE_LINE) HotSlot {
     }
 };
 
-inline constexpr uint32_t RX_PAD_MOTION = 1u << 0;
-inline constexpr uint32_t RX_PAD_MOTION_SINK = 1u << 1;
-inline constexpr uint32_t RX_PAD_BATTERY = 1u << 2;
-inline constexpr uint32_t RX_PAD_TOUCHPAD = 1u << 3;
+inline constexpr uint32_t RX_PAD_MOTION = 1u << 0U;
+inline constexpr uint32_t RX_PAD_MOTION_SINK = 1u << 1U;
+inline constexpr uint32_t RX_PAD_BATTERY = 1u << 2U;
+inline constexpr uint32_t RX_PAD_TOUCHPAD = 1u << 3U;
 inline constexpr size_t RX_MOTION_WORDS = (sizeof(MotionReport) + 7) / 8;
 inline constexpr size_t RX_TOUCHPAD_WORDS = (sizeof(TouchpadReport) + 7) / 8;
 
@@ -232,7 +232,7 @@ struct alignas(HOT_CACHE_LINE) RxPad {
         out.touchpadKeyEpoch = touchpadKeyEpoch.load(std::memory_order_relaxed);
         const uint32_t level = battery.load(std::memory_order_relaxed);
         out.battery.level = static_cast<uint8_t>(level);
-        out.battery.status = static_cast<uint8_t>(level >> 8);
+        out.battery.status = static_cast<uint8_t>(level >> 8U);
         out.motion = loadWords<MotionReport>(motion);
         out.touchpad = loadWords<TouchpadReport>(touchpad);
         std::atomic_thread_fence(std::memory_order_acquire);

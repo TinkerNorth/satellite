@@ -38,7 +38,7 @@ inline void putU16(VersionImage& image, size_t offset, uint16_t value) {
 
 inline void putU64(VersionImage& image, size_t offset, uint64_t value) {
     writeLE32(image.data() + offset, static_cast<uint32_t>(value));
-    writeLE32(image.data() + offset + 4, static_cast<uint32_t>(value >> 32));
+    writeLE32(image.data() + offset + 4, static_cast<uint32_t>(value >> 32U));
 }
 
 inline void putVersion(VersionImage& image, size_t offset, uint16_t major, uint16_t minor,

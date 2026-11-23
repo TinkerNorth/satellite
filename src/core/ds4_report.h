@@ -170,19 +170,19 @@ struct XusbToSonyButton {
     uint16_t sony;
 };
 inline constexpr XusbToSonyButton XUSB_TO_SONY_BUTTONS[] = {
-    {0x4000, 1u << 4},  // X      -> Square
-    {0x1000, 1u << 5},  // A      -> Cross
-    {0x2000, 1u << 6},  // B      -> Circle
-    {0x8000, 1u << 7},  // Y      -> Triangle
-    {0x0100, 1u << 8},  // LB     -> L1
-    {0x0200, 1u << 9},  // RB     -> R1
-    {0x0020, 1u << 12}, // Back   -> Share / Create
-    {0x0010, 1u << 13}, // Start  -> Options
-    {0x0040, 1u << 14}, // LS     -> L3
-    {0x0080, 1u << 15}, // RS     -> R3
+    {0x4000, 1u << 4U},  // X      -> Square
+    {0x1000, 1u << 5U},  // A      -> Cross
+    {0x2000, 1u << 6U},  // B      -> Circle
+    {0x8000, 1u << 7U},  // Y      -> Triangle
+    {0x0100, 1u << 8U},  // LB     -> L1
+    {0x0200, 1u << 9U},  // RB     -> R1
+    {0x0020, 1u << 12U}, // Back   -> Share / Create
+    {0x0010, 1u << 13U}, // Start  -> Options
+    {0x0040, 1u << 14U}, // LS     -> L3
+    {0x0080, 1u << 15U}, // RS     -> R3
 };
-inline constexpr uint16_t SONY_BUTTON_L2 = 1u << 10;
-inline constexpr uint16_t SONY_BUTTON_R2 = 1u << 11;
+inline constexpr uint16_t SONY_BUTTON_L2 = 1u << 10U;
+inline constexpr uint16_t SONY_BUTTON_R2 = 1u << 11U;
 
 // The table looked up one XUSB bit at a time, at compile time, so a shell can
 // hold another API's button constants to it with a static_assert. 0 for a bit

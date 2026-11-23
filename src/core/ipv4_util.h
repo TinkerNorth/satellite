@@ -38,17 +38,17 @@ inline uint32_t parseIPv4Nbo(const std::string& s) {
     parts[idx] = static_cast<uint8_t>(val);
     // Network byte order: leftmost octet in the low byte, so a memcpy into
     // sockaddr_in.sin_addr matches what inet_pton would have written.
-    return static_cast<uint32_t>(parts[0]) | (static_cast<uint32_t>(parts[1]) << 8) |
-           (static_cast<uint32_t>(parts[2]) << 16) | (static_cast<uint32_t>(parts[3]) << 24);
+    return static_cast<uint32_t>(parts[0]) | (static_cast<uint32_t>(parts[1]) << 8U) |
+           (static_cast<uint32_t>(parts[2]) << 16U) | (static_cast<uint32_t>(parts[3]) << 24U);
 }
 
 // Format a NETWORK-byte-order uint32 as "a.b.c.d". <=15 chars, so SSO means no
 // heap touch.
 inline std::string formatIPv4Nbo(uint32_t nbo) {
     const uint8_t a = static_cast<uint8_t>(nbo & 0xFF);
-    const uint8_t b = static_cast<uint8_t>((nbo >> 8) & 0xFF);
-    const uint8_t c = static_cast<uint8_t>((nbo >> 16) & 0xFF);
-    const uint8_t d = static_cast<uint8_t>((nbo >> 24) & 0xFF);
+    const uint8_t b = static_cast<uint8_t>((nbo >> 8U) & 0xFF);
+    const uint8_t c = static_cast<uint8_t>((nbo >> 16U) & 0xFF);
+    const uint8_t d = static_cast<uint8_t>((nbo >> 24U) & 0xFF);
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
     return std::string(buf);

@@ -11,11 +11,11 @@
 
 #include "test_util.h"
 
-static uint16_t readBE16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
+static uint16_t readBE16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8U) | p[1]); }
 
 static uint32_t readBE32(const uint8_t* p) {
-    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
-           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+    return (static_cast<uint32_t>(p[0]) << 24U) | (static_cast<uint32_t>(p[1]) << 16U) |
+           (static_cast<uint32_t>(p[2]) << 8U) | static_cast<uint32_t>(p[3]);
 }
 
 // One decoded RR from an encodeResponse() packet. `cls` keeps the cache-flush
@@ -216,21 +216,21 @@ static void test_readDnsName_rejectsPointerPastEnd() {
 static size_t appendQuestion(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
                              uint16_t qtype, uint16_t qclass) {
     pos += mdns::writeDnsName(buf + pos, cap - pos, name);
-    buf[pos++] = static_cast<uint8_t>(qtype >> 8);
+    buf[pos++] = static_cast<uint8_t>(qtype >> 8U);
     buf[pos++] = static_cast<uint8_t>(qtype & 0xFF);
-    buf[pos++] = static_cast<uint8_t>(qclass >> 8);
+    buf[pos++] = static_cast<uint8_t>(qclass >> 8U);
     buf[pos++] = static_cast<uint8_t>(qclass & 0xFF);
     return pos;
 }
 
 static void writeQueryHeader(uint8_t* buf, uint16_t id, uint16_t qd, uint16_t an) {
-    buf[0] = static_cast<uint8_t>(id >> 8);
+    buf[0] = static_cast<uint8_t>(id >> 8U);
     buf[1] = static_cast<uint8_t>(id & 0xFF);
     buf[2] = 0x00;
     buf[3] = 0x00; // flags: query
-    buf[4] = static_cast<uint8_t>(qd >> 8);
+    buf[4] = static_cast<uint8_t>(qd >> 8U);
     buf[5] = static_cast<uint8_t>(qd & 0xFF);
-    buf[6] = static_cast<uint8_t>(an >> 8);
+    buf[6] = static_cast<uint8_t>(an >> 8U);
     buf[7] = static_cast<uint8_t>(an & 0xFF);
     buf[8] = buf[9] = buf[10] = buf[11] = 0x00; // NS / AR counts
 }
@@ -242,15 +242,15 @@ static size_t appendAnswer(uint8_t* buf, size_t cap, size_t pos, const std::stri
                            uint16_t rtype, uint16_t rclass, uint32_t ttl, const uint8_t* rdata,
                            uint16_t rdlen) {
     pos += mdns::writeDnsName(buf + pos, cap - pos, name);
-    buf[pos++] = static_cast<uint8_t>(rtype >> 8);
+    buf[pos++] = static_cast<uint8_t>(rtype >> 8U);
     buf[pos++] = static_cast<uint8_t>(rtype & 0xFF);
-    buf[pos++] = static_cast<uint8_t>(rclass >> 8);
+    buf[pos++] = static_cast<uint8_t>(rclass >> 8U);
     buf[pos++] = static_cast<uint8_t>(rclass & 0xFF);
-    buf[pos++] = static_cast<uint8_t>((ttl >> 24) & 0xFF);
-    buf[pos++] = static_cast<uint8_t>((ttl >> 16) & 0xFF);
-    buf[pos++] = static_cast<uint8_t>((ttl >> 8) & 0xFF);
+    buf[pos++] = static_cast<uint8_t>((ttl >> 24U) & 0xFF);
+    buf[pos++] = static_cast<uint8_t>((ttl >> 16U) & 0xFF);
+    buf[pos++] = static_cast<uint8_t>((ttl >> 8U) & 0xFF);
     buf[pos++] = static_cast<uint8_t>(ttl & 0xFF);
-    buf[pos++] = static_cast<uint8_t>(rdlen >> 8);
+    buf[pos++] = static_cast<uint8_t>(rdlen >> 8U);
     buf[pos++] = static_cast<uint8_t>(rdlen & 0xFF);
     for (uint16_t i = 0; i < rdlen; ++i) buf[pos++] = rdata != nullptr ? rdata[i] : 0;
     return pos;
@@ -402,8 +402,8 @@ static void test_encodeResponse_minimumPacketShape() {
     std::vector<Rr> rrs;
     EXPECT(parseResponseRecords(buf, n, h, rrs));
     EXPECT_EQ(h.id, 0xBEEFu);
-    EXPECT_EQ((h.flags >> 15) & 1, 1); // QR
-    EXPECT_EQ((h.flags >> 10) & 1, 1); // AA
+    EXPECT_EQ((h.flags >> 15U) & 1, 1); // QR
+    EXPECT_EQ((h.flags >> 10U) & 1, 1); // AA
     EXPECT_EQ(h.qdCount, 0u);
     EXPECT_EQ(h.anCount, 3u);
     EXPECT_EQ(rrs.size(), 3u);
@@ -603,8 +603,8 @@ static void test_encodeAnnouncement_recordSetAndShape() {
     EXPECT(parseResponseRecords(buf, n, h, rrs));
     // §8.3: an announcement answers no query → transaction ID is 0.
     EXPECT_EQ(h.id, 0u);
-    EXPECT_EQ((h.flags >> 15) & 1, 1); // QR
-    EXPECT_EQ((h.flags >> 10) & 1, 1); // AA
+    EXPECT_EQ((h.flags >> 15U) & 1, 1); // QR
+    EXPECT_EQ((h.flags >> 10U) & 1, 1); // AA
     EXPECT_EQ(h.qdCount, 0u);
     EXPECT_EQ(h.anCount, 4u);
     EXPECT(findRr(rrs, mdns::TYPE_PTR) != nullptr);
@@ -727,8 +727,8 @@ static void test_encodeProbeQuery_shape() {
     std::vector<mdns::Answer> ans;
     std::vector<mdns::ProbeRecord> authority;
     EXPECT(mdns::parsePacket(buf, n, h, qs, ans, authority));
-    EXPECT_EQ(h.id, 0u);               // mDNS query → txn id 0
-    EXPECT_EQ((h.flags >> 15) & 1, 0); // QR clear → it is a query
+    EXPECT_EQ(h.id, 0u);                // mDNS query → txn id 0
+    EXPECT_EQ((h.flags >> 15U) & 1, 0); // QR clear → it is a query
     EXPECT_EQ(h.qdCount, 1u);
     EXPECT_EQ(h.anCount, 0u);
     EXPECT_EQ(qs.size(), 1u);
@@ -787,7 +787,7 @@ static void test_encodeProbeQuery_authorityNamesAndSrvRdata() {
             EXPECT_EQ(r.name, std::string("satellite-host._satellite._udp.local."));
             // SRV rdata: priority(2) weight(2) port(2) + uncompressed target.
             EXPECT(r.rdata.size() > 6);
-            const uint16_t port = static_cast<uint16_t>((r.rdata[4] << 8) | r.rdata[5]);
+            const uint16_t port = static_cast<uint16_t>((r.rdata[4] << 8U) | r.rdata[5]);
             EXPECT_EQ(port, 50505u);
         }
         if (r.type == mdns::TYPE_TXT) {

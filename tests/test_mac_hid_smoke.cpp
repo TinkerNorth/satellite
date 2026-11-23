@@ -139,7 +139,7 @@ int main() {
         });
         adapter.setLightbarCallback([&](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
             if (serial != 7) return;
-            rgb.store((uint32_t)r << 16 | (uint32_t)g << 8 | b, std::memory_order_release);
+            rgb.store((uint32_t)r << 16U | (uint32_t)g << 8U | b, std::memory_order_release);
             lightbarSeen.store(true, std::memory_order_release);
         });
 

@@ -41,7 +41,7 @@ static void test_ds4Pack_roundtrips_coordinates() {
     const int expX = touchpadWireToRange(f.x, DS4_TOUCHPAD_RES_X);
     const int expY = touchpadWireToRange(f.y, DS4_TOUCHPAD_RES_Y);
     const int gotX = b[1] | ((b[2] & 0x0F) << 8);
-    const int gotY = (b[2] >> 4) | (b[3] << 4);
+    const int gotY = (b[2] >> 4U) | (b[3] << 4U);
     EXPECT_EQ(gotX, expX);
     EXPECT_EQ(gotY, expY);
 }

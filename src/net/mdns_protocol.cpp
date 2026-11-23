@@ -57,7 +57,7 @@ size_t readDnsName(const uint8_t* packet, size_t packetLen, size_t offset, std::
             // Compression pointer: 2 bytes total, target is the low 14 bits.
             if (pos + 1 >= packetLen) return 0;
             const uint16_t target =
-                (static_cast<uint16_t>(b & 0x3F) << 8) | static_cast<uint16_t>(packet[pos + 1]);
+                (static_cast<uint16_t>(b & 0x3F) << 8U) | static_cast<uint16_t>(packet[pos + 1]);
             if (!jumped) consumedBeforeJump = pos - offset + 2;
             jumped = true;
             if (target >= packetLen || target >= pos) return 0; // forbid forward jumps to here
@@ -132,9 +132,9 @@ bool parseAnswerSection(const uint8_t* data, size_t len, uint16_t count,
         if (pos + 10 > len) return false;
         a.type = readBE16(data + pos);
         a.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
-        a.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
-                (static_cast<uint32_t>(data[pos + 5]) << 16) |
-                (static_cast<uint32_t>(data[pos + 6]) << 8) | static_cast<uint32_t>(data[pos + 7]);
+        a.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24U) |
+                (static_cast<uint32_t>(data[pos + 5]) << 16U) |
+                (static_cast<uint32_t>(data[pos + 6]) << 8U) | static_cast<uint32_t>(data[pos + 7]);
         const uint16_t rdlen = readBE16(data + pos + 8);
         pos += 10;
         if (pos + rdlen > len) return false; // rdata overruns the packet
@@ -210,9 +210,9 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Qu
         if (pos + 10 > len) return false;
         r.type = readBE16(data + pos);
         r.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
-        r.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
-                (static_cast<uint32_t>(data[pos + 5]) << 16) |
-                (static_cast<uint32_t>(data[pos + 6]) << 8) | static_cast<uint32_t>(data[pos + 7]);
+        r.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24U) |
+                (static_cast<uint32_t>(data[pos + 5]) << 16U) |
+                (static_cast<uint32_t>(data[pos + 6]) << 8U) | static_cast<uint32_t>(data[pos + 7]);
         const uint16_t rdlen = readBE16(data + pos + 8);
         pos += 10;
         if (pos + rdlen > len) return false; // rdata overruns the packet

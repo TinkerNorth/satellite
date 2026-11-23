@@ -126,8 +126,8 @@ std::vector<uint8_t> inputFrame(const std::vector<uint8_t>& tail) {
 }
 
 std::vector<uint8_t> le32(uint32_t v) {
-    return {static_cast<uint8_t>(v), static_cast<uint8_t>(v >> 8), static_cast<uint8_t>(v >> 16),
-            static_cast<uint8_t>(v >> 24)};
+    return {static_cast<uint8_t>(v), static_cast<uint8_t>(v >> 8U), static_cast<uint8_t>(v >> 16U),
+            static_cast<uint8_t>(v >> 24U)};
 }
 
 std::string readFile(const char* path) {
@@ -277,7 +277,7 @@ void testExtButtonTable() {
     for (const auto& button : EXT_BUTTON_NAMES) {
         EXPECT_EQ(button.bit, expected);
         seen |= button.bit;
-        expected <<= 1;
+        expected <<= 1U;
     }
     EXPECT_EQ(seen, ALL_EXT_BUTTONS);
 

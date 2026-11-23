@@ -20,7 +20,7 @@ using namespace satellite::hidmaestro;
 namespace {
 
 uint16_t u16at(const uint8_t* p, size_t off) {
-    return static_cast<uint16_t>(p[off] | (p[off + 1] << 8));
+    return static_cast<uint16_t>(p[off] | (p[off + 1] << 8U));
 }
 
 int16_t s16at(const uint8_t* p, size_t off) { return static_cast<int16_t>(u16at(p, off)); }
@@ -141,7 +141,7 @@ static void test_x360_buttons_and_hat() {
     EXPECT_EQ(out[15], (uint8_t)(0x01 | (1 << 2))); // LS + hat N (1)
     pad.wButtons = 0x0002 | 0x0004;                 // dpad down+left -> SW (6)
     packX360Report(pad, out);
-    EXPECT_EQ(out[15] >> 2, 6);
+    EXPECT_EQ(out[15] >> 2U, 6);
 }
 
 static void test_x360_triggers() {
@@ -554,7 +554,7 @@ static void test_switch_body_sticks_and_imu() {
     MotionReport motion{};
     packSwitchBody(input, motion, out);
     const uint16_t lx = static_cast<uint16_t>(out[5] | ((out[6] & 0x0F) << 8));
-    const uint16_t ly = static_cast<uint16_t>((out[6] >> 4) | (out[7] << 4));
+    const uint16_t ly = static_cast<uint16_t>((out[6] >> 4U) | (out[7] << 4U));
     EXPECT_EQ(lx, (uint16_t)0xE00); // 0x800 + full-scale 0x600
     EXPECT_EQ(ly, (uint16_t)0xE00);
 

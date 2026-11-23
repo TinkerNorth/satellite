@@ -44,7 +44,7 @@ uint16_t ds5ButtonWord(uint16_t wButtons, uint8_t lt, uint8_t rt) {
     st.pad.bRightTrigger = rt;
     uint8_t out[DS5_PAYLOAD_BYTES];
     packDs5Payload(st, out);
-    return static_cast<uint16_t>(out[7] | (out[8] << 8));
+    return static_cast<uint16_t>(out[7] | (out[8] << 8U));
 }
 
 } // namespace
@@ -68,8 +68,8 @@ int main() {
     }
     {
         TEST("sonyBitFor answers from the table, at compile time, and 0 for anything unmapped");
-        static_assert(sonyBitFor(0x1000) == (1u << 5), "Cross");
-        static_assert(sonyBitFor(0x0080) == (1u << 15), "R3");
+        static_assert(sonyBitFor(0x1000) == (1u << 5U), "Cross");
+        static_assert(sonyBitFor(0x0080) == (1u << 15U), "R3");
         static_assert(sonyBitFor(0x0400) == 0, "Guide has no place in the word");
         for (const auto& m : XUSB_TO_SONY_BUTTONS) EXPECT_EQ(sonyBitFor(m.xusb), m.sony);
         EXPECT_EQ(sonyBitFor(0x0001), 0);          // the d-pad is the hat
@@ -113,7 +113,7 @@ int main() {
         const uint16_t word =
             sonyButtonsFromXusb(0x1000 | 0x8000 | 0x0100 | 0x0020 | 0x0008, 0, 55);
         EXPECT_EQ(word & 0xFF, 2 | 0x20 | 0x80);
-        EXPECT_EQ(word >> 8, 0x01 | 0x08 | 0x10);
+        EXPECT_EQ(word >> 8U, 0x01 | 0x08 | 0x10);
         EXPECT_EQ(ds4ButtonWord(0x1000 | 0x8000 | 0x0100 | 0x0020 | 0x0008, 0, 55), word);
     }
 

@@ -19,14 +19,14 @@ void ClientAdapter::removeClientAddr(uint32_t) {}
 
 namespace {
 
-constexpr uint64_t ACK_PRESENT = uint64_t{1} << 63;
+constexpr uint64_t ACK_PRESENT = uint64_t{1} << 63U;
 constexpr size_t ACK_PAYLOAD_BYTES = 6;
 
 uint64_t packAck(bool backendAvailable, uint8_t totalActiveControllers, uint16_t epoch,
                  uint16_t activeBitmap) {
     return ACK_PRESENT | (backendAvailable ? 1u : 0u) |
-           (static_cast<uint64_t>(totalActiveControllers) << 8) |
-           (static_cast<uint64_t>(epoch) << 16) | (static_cast<uint64_t>(activeBitmap) << 32);
+           (static_cast<uint64_t>(totalActiveControllers) << 8U) |
+           (static_cast<uint64_t>(epoch) << 16U) | (static_cast<uint64_t>(activeBitmap) << 32U);
 }
 
 bool tryHoldGate(HotSlot& slot) {
@@ -57,16 +57,16 @@ void ClientAdapter::releaseGate(uint32_t token, const uint8_t* key, HotSlot& slo
         const uint64_t ack = slot.txDeferredAck.exchange(0, std::memory_order_seq_cst);
         if (ack != 0) {
             uint8_t inner[INNER_HEADER_SIZE + ACK_PAYLOAD_BYTES];
-            inner[0] = (uint8_t)(MSG_HEARTBEAT_ACK >> 8);
+            inner[0] = (uint8_t)(MSG_HEARTBEAT_ACK >> 8U);
             inner[1] = (uint8_t)(MSG_HEARTBEAT_ACK);
             inner[2] = 0;
             inner[3] = (uint8_t)ACK_PAYLOAD_BYTES;
             inner[4] = (uint8_t)(ack & 1u);
-            inner[5] = (uint8_t)(ack >> 8);
-            inner[6] = (uint8_t)(ack >> 24);
-            inner[7] = (uint8_t)(ack >> 16);
-            inner[8] = (uint8_t)(ack >> 40);
-            inner[9] = (uint8_t)(ack >> 32);
+            inner[5] = (uint8_t)(ack >> 8U);
+            inner[6] = (uint8_t)(ack >> 24U);
+            inner[7] = (uint8_t)(ack >> 16U);
+            inner[8] = (uint8_t)(ack >> 40U);
+            inner[9] = (uint8_t)(ack >> 32U);
             sealAndSend(token, key, slot, inner, sizeof(inner));
         }
         slot.txGate.store(0, std::memory_order_seq_cst);
@@ -121,13 +121,13 @@ void ClientAdapter::sealAndSend(uint32_t token, const uint8_t* key, HotSlot& slo
     static_assert(sizeof(pkt) == UDP_DATAGRAM_MAX_BYTES,
                   "the framed packet must land exactly on the datagram ceiling");
     uint32_t t = token;
-    pkt[0] = (uint8_t)(t >> 24);
-    pkt[1] = (uint8_t)(t >> 16);
-    pkt[2] = (uint8_t)(t >> 8);
+    pkt[0] = (uint8_t)(t >> 24U);
+    pkt[1] = (uint8_t)(t >> 16U);
+    pkt[2] = (uint8_t)(t >> 8U);
     pkt[3] = (uint8_t)(t);
-    pkt[4] = (uint8_t)(counter >> 24);
-    pkt[5] = (uint8_t)(counter >> 16);
-    pkt[6] = (uint8_t)(counter >> 8);
+    pkt[4] = (uint8_t)(counter >> 24U);
+    pkt[5] = (uint8_t)(counter >> 16U);
+    pkt[6] = (uint8_t)(counter >> 8U);
     pkt[7] = (uint8_t)(counter);
     memcpy(pkt + HEADER_SIZE, ct, ctLen);
 
@@ -156,7 +156,7 @@ void ClientAdapter::sendSessionClose(const Connection& conn, uint8_t reason) {
     // Wire: reason(1). Best-effort; must go out BEFORE teardown while the
     // session key and address still exist.
     uint8_t inner[INNER_HEADER_SIZE + 1];
-    inner[0] = (uint8_t)(MSG_SESSION_CLOSE >> 8);
+    inner[0] = (uint8_t)(MSG_SESSION_CLOSE >> 8U);
     inner[1] = (uint8_t)(MSG_SESSION_CLOSE);
     inner[2] = 0;
     inner[3] = 1;
@@ -171,16 +171,16 @@ void ClientAdapter::sendRumble(const Connection& conn, uint8_t ctrlIdx,
     const uint16_t payloadLen = 7;
 
     uint8_t inner[4 + 7];
-    inner[0] = (uint8_t)(MSG_RUMBLE >> 8);
+    inner[0] = (uint8_t)(MSG_RUMBLE >> 8U);
     inner[1] = (uint8_t)(MSG_RUMBLE);
-    inner[2] = (uint8_t)(payloadLen >> 8);
+    inner[2] = (uint8_t)(payloadLen >> 8U);
     inner[3] = (uint8_t)(payloadLen);
     inner[4] = ctrlIdx;
-    inner[5] = (uint8_t)(report.strongMagnitude >> 8);
+    inner[5] = (uint8_t)(report.strongMagnitude >> 8U);
     inner[6] = (uint8_t)(report.strongMagnitude);
-    inner[7] = (uint8_t)(report.weakMagnitude >> 8);
+    inner[7] = (uint8_t)(report.weakMagnitude >> 8U);
     inner[8] = (uint8_t)(report.weakMagnitude);
-    inner[9] = (uint8_t)(report.durationMs >> 8);
+    inner[9] = (uint8_t)(report.durationMs >> 8U);
     inner[10] = (uint8_t)(report.durationMs);
     sendEncryptedPacket(conn, inner, sizeof(inner));
 }
@@ -189,7 +189,7 @@ void ClientAdapter::sendLightbar(const Connection& conn, uint8_t ctrlIdx, uint8_
                                  uint8_t b) {
     // Wire: ctrlIdx(1)+r(1)+g(1)+b(1)=4 bytes.
     uint8_t inner[4 + 4];
-    inner[0] = (uint8_t)(MSG_LIGHTBAR >> 8);
+    inner[0] = (uint8_t)(MSG_LIGHTBAR >> 8U);
     inner[1] = (uint8_t)(MSG_LIGHTBAR);
     inner[2] = 0;
     inner[3] = 4;
@@ -206,9 +206,9 @@ void ClientAdapter::sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
     // effect bytes forwarded verbatim.
     const uint16_t payloadLen = 1 + TRIGGER_EFFECTS_WIRE_PAYLOAD_BYTES;
     uint8_t inner[4 + 1 + TRIGGER_EFFECTS_WIRE_PAYLOAD_BYTES];
-    inner[0] = (uint8_t)(MSG_TRIGGER_EFFECTS >> 8);
+    inner[0] = (uint8_t)(MSG_TRIGGER_EFFECTS >> 8U);
     inner[1] = (uint8_t)(MSG_TRIGGER_EFFECTS);
-    inner[2] = (uint8_t)(payloadLen >> 8);
+    inner[2] = (uint8_t)(payloadLen >> 8U);
     inner[3] = (uint8_t)(payloadLen);
     inner[4] = ctrlIdx;
     std::memcpy(inner + 5, report.left, TRIGGER_EFFECT_BLOCK_BYTES);
@@ -219,7 +219,7 @@ void ClientAdapter::sendTriggerEffects(const Connection& conn, uint8_t ctrlIdx,
 void ClientAdapter::sendPlayerLeds(const Connection& conn, uint8_t ctrlIdx, uint8_t ledMask) {
     // Wire: ctrlIdx(1) + ledMask(1) = 2 bytes.
     uint8_t inner[4 + 2];
-    inner[0] = (uint8_t)(MSG_PLAYER_LEDS >> 8);
+    inner[0] = (uint8_t)(MSG_PLAYER_LEDS >> 8U);
     inner[1] = (uint8_t)(MSG_PLAYER_LEDS);
     inner[2] = 0;
     inner[3] = 2;
@@ -250,9 +250,9 @@ void ClientAdapter::sendAudioMessage(const SessionEndpoint& to, uint16_t msgType
     if (payloadLen > (size_t)MAX_INNER_PAYLOAD_BYTES) return;
 
     uint8_t inner[INNER_HEADER_SIZE + MAX_INNER_PAYLOAD_BYTES];
-    inner[0] = (uint8_t)(msgType >> 8);
+    inner[0] = (uint8_t)(msgType >> 8U);
     inner[1] = (uint8_t)(msgType);
-    inner[2] = (uint8_t)(payloadLen >> 8);
+    inner[2] = (uint8_t)(payloadLen >> 8U);
     inner[3] = (uint8_t)(payloadLen);
     encodeAudioFrameHeader(inner + INNER_HEADER_SIZE, ctrlIdx, seq);
     std::memcpy(inner + INNER_HEADER_SIZE + AUDIO_WIRE_HEADER_BYTES, opus, opusLen);
@@ -262,7 +262,7 @@ void ClientAdapter::sendAudioMessage(const SessionEndpoint& to, uint16_t msgType
 void ClientAdapter::sendMicLed(const Connection& conn, uint8_t ctrlIdx, uint8_t state) {
     // Wire: ctrlIdx(1) + state(1) = 2 bytes, state is MIC_LED_STATE_*.
     uint8_t inner[4 + 2];
-    inner[0] = (uint8_t)(MSG_MIC_LED >> 8);
+    inner[0] = (uint8_t)(MSG_MIC_LED >> 8U);
     inner[1] = (uint8_t)(MSG_MIC_LED);
     inner[2] = 0;
     inner[3] = 2;

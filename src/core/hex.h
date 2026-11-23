@@ -11,7 +11,7 @@
 inline constexpr char HEX_DIGITS[] = "0123456789abcdef";
 
 inline void appendHexByte(std::string& out, uint8_t byte) {
-    out.push_back(HEX_DIGITS[byte >> 4]);
+    out.push_back(HEX_DIGITS[byte >> 4U]);
     out.push_back(HEX_DIGITS[byte & 0x0F]);
 }
 

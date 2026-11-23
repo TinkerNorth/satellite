@@ -247,7 +247,7 @@ inline int lockId(const char* name, std::atomic<int>& cache) {
 }
 
 inline uint32_t pairKey(int first, int second) {
-    return (static_cast<uint32_t>(first + 1) << 16) | static_cast<uint32_t>(second + 1);
+    return (static_cast<uint32_t>(first + 1) << 16U) | static_cast<uint32_t>(second + 1);
 }
 
 inline void countPair(PairTable& table, uint32_t key) {
@@ -423,7 +423,7 @@ std::vector<NamePair> readPairs(const detail::PairTable& table, NameOf firstName
         const uint32_t key = table.keys[slot].load(std::memory_order_acquire);
         const uint64_t hits = table.counts[slot].load(std::memory_order_relaxed);
         if (key == 0 || hits == 0) continue;
-        const int first = static_cast<int>(key >> 16) - 1;
+        const int first = static_cast<int>(key >> 16U) - 1;
         const int second = static_cast<int>(key & 0xFFFFu) - 1;
         out.push_back(NamePair{firstName(first), lockName(second), hits});
     }

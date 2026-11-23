@@ -34,9 +34,9 @@ void deriveSessionKey(const uint8_t pairingKey[CRYPTO_KEY_SIZE],
     static const char infoLabel[] = "satellite-session-v1";
     uint8_t info[sizeof(infoLabel) - 1 + 4 + 1];
     std::memcpy(info, infoLabel, sizeof(infoLabel) - 1);
-    info[sizeof(infoLabel) - 1 + 0] = (uint8_t)(token >> 24);
-    info[sizeof(infoLabel) - 1 + 1] = (uint8_t)(token >> 16);
-    info[sizeof(infoLabel) - 1 + 2] = (uint8_t)(token >> 8);
+    info[sizeof(infoLabel) - 1 + 0] = (uint8_t)(token >> 24U);
+    info[sizeof(infoLabel) - 1 + 1] = (uint8_t)(token >> 16U);
+    info[sizeof(infoLabel) - 1 + 2] = (uint8_t)(token >> 8U);
     info[sizeof(infoLabel) - 1 + 3] = (uint8_t)(token);
     info[sizeof(infoLabel) - 1 + 4] = 0x01;
 
@@ -85,13 +85,13 @@ void buildNonceAndAad(uint8_t direction, uint32_t counter, uint32_t token,
                       uint8_t nonce[CRYPTO_NONCE_SIZE], uint8_t aad[4]) {
     std::memset(nonce, 0, CRYPTO_NONCE_SIZE);
     nonce[0] = direction;
-    nonce[8] = (uint8_t)(counter >> 24);
-    nonce[9] = (uint8_t)(counter >> 16);
-    nonce[10] = (uint8_t)(counter >> 8);
+    nonce[8] = (uint8_t)(counter >> 24U);
+    nonce[9] = (uint8_t)(counter >> 16U);
+    nonce[10] = (uint8_t)(counter >> 8U);
     nonce[11] = (uint8_t)(counter);
-    aad[0] = (uint8_t)(token >> 24);
-    aad[1] = (uint8_t)(token >> 16);
-    aad[2] = (uint8_t)(token >> 8);
+    aad[0] = (uint8_t)(token >> 24U);
+    aad[1] = (uint8_t)(token >> 16U);
+    aad[2] = (uint8_t)(token >> 8U);
     aad[3] = (uint8_t)(token);
 }
 
