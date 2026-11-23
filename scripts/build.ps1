@@ -26,7 +26,8 @@
 .PARAMETER Msvc
     Use the hardened MSVC + vcpkg lane instead (CFG + CET + Spectre).
     Needs Visual Studio (or Build Tools) with the C++ x64 toolset and a vcpkg
-    checkout in VCPKG_ROOT (VCPKG_INSTALLATION_ROOT is accepted as fallback).
+    checkout in VCPKG_ROOT that holds vcpkg.json's builtin-baseline commit
+    (scripts/setup-vcpkg.ps1 makes one).
     The Visual Studio generator is resolved per-machine via
     scripts/windows-vs-generator.ps1 and passed as a -G override, the same
     mechanism windows-msvc-ci.yml and release.yml use.
@@ -51,11 +52,7 @@ if ($Msvc) {
         throw "The windows-msvc preset is the hardened Release lane; there is no MSVC debug preset. Use the MinGW lane for debug builds."
     }
     if (-not $env:VCPKG_ROOT) {
-        if ($env:VCPKG_INSTALLATION_ROOT) {
-            $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-        } else {
-            throw "VCPKG_ROOT is not set. Run scripts/install-deps.ps1 -Msvc, or point VCPKG_ROOT at a vcpkg checkout."
-        }
+        throw "VCPKG_ROOT is not set. Run scripts/setup-vcpkg.ps1 (or scripts/install-deps.ps1 -Msvc), which checks vcpkg out at vcpkg.json's builtin-baseline."
     }
     $generator = & (Join-Path $PSScriptRoot 'windows-vs-generator.ps1')
     $preset = 'windows-msvc'

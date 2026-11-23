@@ -48,7 +48,7 @@ permissions:
 jobs:
   measure:
     name: Measure (MSVC + vcpkg, Release)
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 60
     concurrency:
       group: measurements-${{ github.event_name }}-${{ github.ref }}
@@ -68,6 +68,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Resolve the version label
         shell: pwsh
@@ -93,10 +94,13 @@ jobs:
           restore-keys: |
             vcpkg-bin-${{ runner.os }}-
 
+      - name: Check out vcpkg at the manifest's baseline
+        shell: pwsh
+        run: ./scripts/setup-vcpkg.ps1
+
       - name: Configure (MSVC + vcpkg static, Release)
         shell: pwsh
         run: |
-          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $generator = ./scripts/windows-vs-generator.ps1
           cmake --preset windows-msvc -G $generator
 
