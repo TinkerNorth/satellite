@@ -119,9 +119,10 @@ default), Satellite asks for the list's manifest, a small file naming the
 published version. Only when it names a newer version does Satellite download
 the controller list and its strings in each language, check each file against
 the manifest's SHA-256, and keep them beside its configuration
-(`controllerdb-*.json`). The request carries no query, no identifier and no
-user-agent of Satellite's own; Satellite sends nothing about you, your PC or
-your controllers.
+(`controllerdb-*.json`). The request carries no query and no identifier, and
+on Windows and Linux no user-agent at all (the macOS build, which is not
+released, sends the system's default one); Satellite sends nothing about you,
+your PC or your controllers.
 
 **What the host sees.** Like any web server, CloudFront's access logs see your
 public IP address and the time of the request. TinkerNorth does not combine
@@ -213,11 +214,14 @@ last output a game sent), the connected Dish apps as "Host 1", "Host 2" with
 their protocol version and link state, the counters the Debug page shows, the
 backends' status, your settings, and the last 500 log lines.
 
-**What it never holds:** pairing keys, pairing secrets or PINs, IP addresses
-(log lines have them masked), the network interface you chose, the names or
-ids of your Dish apps and devices (log lines have them replaced by "Host 1",
-"Host 2"), this PC's name (log lines have it replaced by "this PC"), and
-nothing from the microphone or the speaker. Read the file before you send it;
+**What it never holds:** pairing keys, pairing secrets or PINs (a pairing key
+in a log line is replaced by "[redacted]"), IP addresses (log lines have IPv4
+and IPv6 addresses masked), the network interface you chose, the names or ids
+of your Dish apps and devices (log lines have them replaced by "Host 1",
+"Host 2": every device connected or paired, and every one that asked to pair
+or opened a session since Satellite started, paired now or not), this PC's
+name (log lines have it replaced by "this PC"), and nothing from the
+microphone or the speaker. Read the file before you send it;
 it is plain JSON.
 
 - **A Dish app may ask Satellite about its own connection.** When you report
@@ -231,10 +235,13 @@ it is plain JSON.
   type, backend, features, input counts and the feedback a game set), the
   audio switches this PC grants, the counters the Debug page shows, the
   controller database's versions, and up to 200 log lines about that
-  connection. It never holds another app's name, id or address, this PC's
-  name, an IP address, a pairing key, a PIN or any other secret: the asking
-  app is called "this connection", every other app "another client" and the
-  PC "this PC". Satellite sends it to nobody else; the app, like Satellite,
+  connection: the lines Satellite wrote naming that connection or the app's
+  own device id, never a line picked because the name the app chose appears
+  in it. It never holds another app's name, id or address (every app that
+  asked to pair or opened a session since Satellite started included), this
+  PC's name, an IP address, a pairing key, a PIN or any other secret: the
+  asking app is called "this connection", every other app "another client"
+  and the PC "this PC". Satellite sends it to nobody else; the app, like Satellite,
   sends nothing until you press Send.
 
 ---

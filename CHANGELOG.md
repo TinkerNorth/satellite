@@ -11,7 +11,9 @@ ten seconds after start and then on the update check's schedule, asks
 `https://dish.tinkernorth.com/controllers/v1/manifest.json` whether a newer
 copy exists. A newer one is downloaded, every file checked against the
 manifest's size and SHA-256, parsed, written beside Satellite's config and
-made active; a check that fails at any step keeps the copy in use. Settings,
+made active; a check that fails at any step keeps the copy in use, and the
+cache is swapped in by one rename, so a write that fails part-way leaves the
+previous cache whole. Settings,
 Updates gains *Check for controller updates automatically* (the new
 `controllerDbUpdates`, on by default; off sends nothing) with *Check now* and
 the last check's time and result. The request carries no query, no identifier
@@ -21,12 +23,15 @@ The catalog's `emulates.usb` lists now come from the active database: each
 type lists the ids it stands for that a record of its physical twin family
 carries, so served data can drop an id but never add one, and a test holds
 the lists generated from the bundled copy to the ones the catalog always
-served. The catalog's ETag now carries the database version
+served. A served record that needs a family or op this build lacks is kept by
+name but changes no list, so an id it carries stays as Satellite compiled it.
+The catalog's ETag now carries the database version
 (`"<version>+<locale>+db<N>"`). Satellite mirrors the copy it uses at
 `GET /api/controllers/v1/manifest.json`, `.../controllers.json` and
 `.../strings/<locale>.json` on the client port, with `ETag` and
 `If-None-Match`, for a Dish on a network without internet access; no client
-reads it yet.
+reads it yet. Its manifest never lists a file it cannot serve: a published
+file this build does not take (a locale it does not ship) is left out of it.
 
 Each controller card on the dashboard has a *Test* button. It sends that
 controller's Dish one RUMBLE (both motors at half for 500 ms), one LIGHTBAR
@@ -48,7 +53,10 @@ the new `GET /api/diagnostics`, with the virtual controllers, the connected
 Dish apps as "Host 1", "Host 2", the debug counters, the backends, the
 settings and the last 500 log lines, and with every pairing key, PIN,
 address, device id and name and the network interface removed (log lines have
-them replaced or masked). Beside it, an email link to support@tinkernorth.com
+them replaced or masked: IPv4 and IPv6 addresses, pairing keys, and the id and
+name of every device connected, paired, or met by the pairing and session
+routes since start, each replaced in one pass so a short name never garbles
+another word). Beside it, an email link to support@tinkernorth.com
 fills in the subject and a summary; the file is attached by hand and nothing
 is sent by Satellite.
 
@@ -80,9 +88,18 @@ protocol range and uptime, the backends, that connection's controllers
 controller audio is in place or fell back, caps, touchpad mode, motion, input
 and output), the host's audio grants, the counters (process-wide, and marked
 `"scope": "process"`), the controller database status and the last 200 log
-lines about the connection, with the asking client named "this connection",
+lines about the connection (the lines naming its connection id or its device
+id, which the session's lines now carry beside the name; never a line picked
+by the name the client chose), with the asking client named "this connection",
 every other one "another client" and the PC "this PC". 401 without a valid
 proof, 404 for an unknown connection or someone else's. Not a wire change.
+
+The AppImage now carries the dashboard and the bundled controller database
+under `usr/share/satellite/web`, where Satellite looks beside its binary.
+Every AppImage up to 2.2.0 shipped without them, so its dashboard had no
+files; the build now fails unless the AppImage holds them at the sizes and
+SHA-256 the manifest gives, Linux CI builds and runs the AppImage on every
+pull request, and the release's .deb and .rpm are held to the same files.
 
 On Windows, a DualSense, DualSense Edge or DualShock 4 whose composite
 persona with controller audio could not be created, and that fell back to the
