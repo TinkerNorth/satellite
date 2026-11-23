@@ -76,9 +76,10 @@ inline constexpr const char* DIAGNOSTICS_THIS_PC = "this PC";
 // "this PC" in log text.
 void aliasMachine(std::vector<HostAlias>& aliases, const std::vector<std::string>& names);
 
-// Log text with every alias text replaced (longest first, so a name that
-// contains another is replaced whole) and every dotted-quad IPv4 address
-// masked.
+// Log text with every alias text replaced and every dotted-quad IPv4 address
+// masked, in one pass over the original: at each position the longest alias
+// text that stands whole there (never inside a longer word or number), and
+// replaced text is never scanned again.
 std::string scrubDiagnosticsText(const std::string& text, const std::vector<HostAlias>& aliases);
 
 // Unix seconds as 2026-11-19T21:04:11Z.

@@ -198,6 +198,39 @@ static void test_scrub_text() {
               std::string("999.1.1.1 is no address"));
 }
 
+static void test_scrub_text_one_pass() {
+    TEST("scrubDiagnosticsText: a one-letter name is never found inside a word");
+    const std::vector<HostAlias> letter = {{"e", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("Session from this connection by e", letter),
+              std::string("Session from this connection by Host 1"));
+
+    TEST("scrubDiagnosticsText: an alias is never scanned again for another name");
+    const std::vector<HostAlias> chained = {
+        {"PC", "Host 1"}, {"Host", "Host 2"}, {"client", "another client"}, {"e", "Host 3"}};
+    EXPECT_EQ(scrubDiagnosticsText("PC and Host joined, client e left", chained),
+              std::string("Host 1 and Host 2 joined, another client Host 3 left"));
+
+    TEST("scrubDiagnosticsText: a name with a space, \"Host 1\", is replaced whole once");
+    const std::vector<HostAlias> spaced = {{"Host 1", "Host 2"}, {"Host 2", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("Host 1 then Host 2", spaced),
+              std::string("Host 2 then Host 1"));
+
+    TEST("scrubDiagnosticsText: a name that is a prefix of another loses to the longer one");
+    const std::vector<HostAlias> prefix = {{"Pixel", "Host 1"}, {"Pixel Pro", "Host 2"}};
+    EXPECT_EQ(scrubDiagnosticsText("Pixel Pro, Pixel, Pixels", prefix),
+              std::string("Host 2, Host 1, Pixels"));
+
+    TEST("scrubDiagnosticsText: an address is not found inside a longer address");
+    const std::vector<HostAlias> address = {{"10.0.0.1", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("10.0.0.1 and 10.0.0.17", address),
+              std::string("Host 1 and x.x.x.x"));
+
+    TEST("scrubDiagnosticsText: a one-letter device id does not split BAD_PROOF");
+    const std::vector<HostAlias> id = {{"B", "Host 1"}};
+    EXPECT_EQ(scrubDiagnosticsText("401 (BAD_PROOF, deviceId B)", id),
+              std::string("401 (BAD_PROOF, deviceId Host 1)"));
+}
+
 static void test_alias_machine() {
     TEST("aliasMachine: the machine's names become \"this PC\" in log text, the bundle's log "
          "included");
@@ -345,6 +378,7 @@ int main() {
     test_redact_any_document();
     test_alias_hosts();
     test_scrub_text();
+    test_scrub_text_one_pass();
     test_alias_machine();
     test_iso_utc();
     test_bundle_envelope();

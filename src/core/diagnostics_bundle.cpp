@@ -45,16 +45,30 @@ void addIdentity(std::vector<HostAlias>& out, const HostIdentity& id, const std:
     addAlias(out, id.address, alias);
 }
 
-std::string replaceAll(std::string text, const std::string& from, const std::string& to) {
-    size_t pos = 0;
-    while ((pos = text.find(from, pos)) != std::string::npos) {
-        text.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-    return text;
+bool isDigit(char c) { return c >= '0' && c <= '9'; }
+
+bool isNameChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; }
+
+// `name` at `pos` as a whole: where its first or last character is a letter or
+// digit, the text's neighbour on that side is not one, so "e" is not found in
+// "session" nor "10.0.0.1" in "10.0.0.17".
+bool wholeNameAt(const std::string& text, size_t pos, const std::string& name) {
+    if (text.compare(pos, name.size(), name) != 0) return false;
+    const size_t end = pos + name.size();
+    const bool joinsBefore = pos > 0 && isNameChar(name.front()) && isNameChar(text[pos - 1]);
+    const bool joinsAfter = end < text.size() && isNameChar(name.back()) && isNameChar(text[end]);
+    return !joinsBefore && !joinsAfter;
 }
 
-bool isDigit(char c) { return c >= '0' && c <= '9'; }
+// The longest alias whose text stands whole at `pos` (the first listed on a
+// tie), or null. `longestFirst` is sorted by text length, longest first.
+const HostAlias* aliasAt(const std::string& text, size_t pos,
+                         const std::vector<HostAlias>& longestFirst) {
+    for (const HostAlias& a : longestFirst) {
+        if (!a.text.empty() && wholeNameAt(text, pos, a.text)) return &a;
+    }
+    return nullptr;
+}
 
 // Reads one 0..255 octet of up to three digits at `pos`; the end past it.
 bool readOctet(const std::string& s, size_t pos, size_t& end) {
@@ -82,21 +96,6 @@ size_t ipv4At(const std::string& s, size_t pos) {
     }
     const bool trailingOctet = cursor + 1 < s.size() && s[cursor] == '.' && isDigit(s[cursor + 1]);
     return trailingOctet ? 0 : cursor - pos;
-}
-
-std::string maskIpv4(const std::string& text) {
-    std::string out;
-    size_t i = 0;
-    while (i < text.size()) {
-        const size_t len = isDigit(text[i]) ? ipv4At(text, i) : 0;
-        if (len > 0) {
-            out += DIAGNOSTICS_MASKED_IP;
-            i += len;
-        } else {
-            out += text[i++];
-        }
-    }
-    return out;
 }
 
 // Howard Hinnant's days-to-civil, for a UTC date without the C library's
@@ -236,9 +235,25 @@ std::string scrubDiagnosticsText(const std::string& text, const std::vector<Host
     std::stable_sort(
         longestFirst.begin(), longestFirst.end(),
         [](const HostAlias& a, const HostAlias& b) { return a.text.size() > b.text.size(); });
-    std::string out = text;
-    for (const HostAlias& a : longestFirst) out = replaceAll(out, a.text, a.alias);
-    return maskIpv4(out);
+    // One pass over the original text: what was replaced is never read again.
+    std::string out;
+    size_t i = 0;
+    while (i < text.size()) {
+        const HostAlias* alias = aliasAt(text, i, longestFirst);
+        if (alias != nullptr) {
+            out += alias->alias;
+            i += alias->text.size();
+            continue;
+        }
+        const size_t ipLen = isDigit(text[i]) ? ipv4At(text, i) : 0;
+        if (ipLen > 0) {
+            out += DIAGNOSTICS_MASKED_IP;
+            i += ipLen;
+            continue;
+        }
+        out += text[i++];
+    }
+    return out;
 }
 
 std::string isoUtc(int64_t epochSeconds) {
