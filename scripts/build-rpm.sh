@@ -48,7 +48,7 @@ cmake --preset package "${release_args[@]}" -DSATELLITE_PACKAGE_FORMAT=rpm \
 # and building it here puts a warning the distro's compiler raises in the
 # log, under the warnings-as-errors the preset sets.
 echo "=== Build ==="
-cmake --build --preset package -j "$(nproc)"
+cmake --build --preset package -j "${SATELLITE_JOBS:-$(nproc)}"
 
 echo "=== Package (cpack -G RPM) ==="
 mkdir -p "${dist_dir}"

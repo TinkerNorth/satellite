@@ -48,7 +48,7 @@ echo "==> satellite ${version} AppImage (x86_64)"
 # transmit.
 cmake --preset package "${release_args[@]}" -DSATELLITE_PACKAGE_FORMAT= \
     -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN:-}"
-cmake --build --preset package --target satellite -j "$(nproc)"
+cmake --build --preset package --target satellite -j "${SATELLITE_JOBS:-$(nproc)}"
 
 # shellcheck source=scripts/tools.sh
 source scripts/tools.sh
