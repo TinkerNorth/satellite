@@ -182,9 +182,9 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install createrepo_c + GPG
+      - name: Install createrepo_c, rpmsign + GPG
         if: steps.gate.outputs.skip != 'true'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends createrepo-c gnupg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends createrepo-c rpm gnupg
 
       - name: Import signing key
         if: steps.gate.outputs.skip != 'true'

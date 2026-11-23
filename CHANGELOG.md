@@ -68,6 +68,14 @@ up to 2.3.0, and the provenance check with `cosign verify-blob-attestation`.
   `scripts/build-arch-package.sh`, and every pull request installs the
   package from a signed repository in an Arch container and fails unless the
   installed AppImage is byte for byte the packaged one and starts.
+- The DNF repository refused to install 2.3.0: its `.repo` file checks
+  package signatures (`gpgcheck=1`) and the repository's rpm was unsigned, so
+  `dnf install satellite` stopped at "The package is not signed". The
+  publishing script now signs every rpm it adds with the repository key, and
+  every pull request builds the DNF and APT repositories with a throwaway key
+  and installs Satellite from them with every signature check on. The
+  release's own `satellite-x86_64.rpm` installs directly
+  (`sudo dnf install ./satellite-x86_64.rpm`) on Fedora 42 and 44.
 - The Linux updater told an Arch install to upgrade with `yay -Syu
   satellite-bin`, an AUR helper command for a package the AUR does not carry;
   it now shows `sudo pacman -Syu satellite-bin`, which upgrades it from
