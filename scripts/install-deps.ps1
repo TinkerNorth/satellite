@@ -29,8 +29,8 @@
     -Msvc additionally bootstraps the hardened lane windows-msvc-ci.yml and
     release.yml build (MSVC + vcpkg, CFG + CET + Spectre):
       * VS 2022 Build Tools with the C++ x64 toolset (winget, if no VS found)
-      * a vcpkg checkout at %USERPROFILE%\vcpkg (git clone + bootstrap, if
-        VCPKG_ROOT is not already set)
+      * a vcpkg checkout at vcpkg.json's builtin-baseline
+        (scripts/setup-vcpkg.ps1; VCPKG_ROOT, or %USERPROFILE%\vcpkg-baseline)
 
     NOT installed (runtime-only): the ViGEmBus driver. Grab it from
     https://github.com/nefarius/ViGEmBus/releases to run the receiver. The
@@ -157,22 +157,12 @@ if ($Msvc) {
     }
 
     Step '[MSVC lane] vcpkg (dependency manifest: vcpkg.json)'
-    if ($env:VCPKG_ROOT -and (Test-Path (Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'))) {
-        Write-Output "[OK]  VCPKG_ROOT already points at $env:VCPKG_ROOT"
-    } else {
-        $vcpkgRoot = Join-Path $env:USERPROFILE 'vcpkg'
-        if (-not (Test-Path (Join-Path $vcpkgRoot 'scripts\buildsystems\vcpkg.cmake'))) {
-            if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-                Write-Error 'git is required to clone vcpkg. Install git, or set VCPKG_ROOT to an existing checkout.'
-            }
-            & git clone https://github.com/microsoft/vcpkg $vcpkgRoot
-            if ($LASTEXITCODE -ne 0) { Write-Error 'git clone of vcpkg failed' }
-            & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
-            if ($LASTEXITCODE -ne 0) { Write-Error 'vcpkg bootstrap failed' }
-        }
-        [Environment]::SetEnvironmentVariable('VCPKG_ROOT', $vcpkgRoot, 'User')
-        Write-Output "[OK]  vcpkg at $vcpkgRoot; VCPKG_ROOT set in the user environment (new terminal to pick it up)"
-    }
+    # The checkout vcpkg.json's builtin-baseline names, the one CI uses.
+    $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { Join-Path $env:USERPROFILE 'vcpkg-baseline' }
+    & (Join-Path $PSScriptRoot 'setup-vcpkg.ps1') -Destination $vcpkgRoot
+    if (-not $?) { Write-Error 'scripts/setup-vcpkg.ps1 failed' }
+    [Environment]::SetEnvironmentVariable('VCPKG_ROOT', $vcpkgRoot, 'User')
+    Write-Output "[OK]  vcpkg at $vcpkgRoot; VCPKG_ROOT set in the user environment (new terminal to pick it up)"
     Write-Output ''
     Write-Output 'MSVC lane ready: scripts/build.ps1 -Msvc (dependencies build from vcpkg.json on first configure).'
 }

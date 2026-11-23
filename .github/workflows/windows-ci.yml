@@ -6,14 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci:
-    name: Build, test, lint, format
-    runs-on: windows-latest
+    name: Build, test, lint, format (windows)
+    runs-on: windows-2022
     timeout-minutes: 45
 
     # Default to git-bash so the find / xargs / test pipelines match the
@@ -26,6 +29,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -41,8 +46,9 @@ jobs:
 
       # MinGW-w64 toolchain (matches the local build documented in
       # docs/architecture.md and the -mwindows / -static link flags in
-      # CMakeLists.txt). MSVC is not used here because the ViGEmClient and
-      # libsodium static libs are vendored as MinGW-built archives.
+      # CMakeLists.txt). The shipped satellite.exe is the MSVC build
+      # (windows-msvc-ci.yml); this lane keeps the MinGW build, whose
+      # libsodium is the vendored MinGW archive under lib/, green.
       #
       # mingw-w64-x86_64-openssl is required because the client API server
       # speaks HTTPS via cpp-httplib's SSLServer (CPPHTTPLIB_OPENSSL_SUPPORT)
@@ -50,7 +56,7 @@ jobs:
       # mingw-w64-x86_64-opus is the controller-audio codec
       # (src/adapters/audio/opus_codec.cpp).
       - name: Set up MSYS2 / MinGW-w64
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        uses: msys2/setup-msys2@3c51bf698df1e37b2261f53cb67797b97761185c # v2.34.0
         with:
           msystem: MINGW64
           update: false
@@ -68,7 +74,12 @@ jobs:
         run: |
           cmake --version
           g++ --version | head -1
-          openssl version   # surface the OpenSSL the build links (MSYS2 ships latest 3.x, e.g. 3.6.x)
+          # MSYS2 is a rolling repository, so this is whatever OpenSSL it
+          # ships today (4.x since 2026). Deliberately unpinned: this lane
+          # proves the MinGW toolchain builds and tests, and ships nothing;
+          # the released satellite.exe is the MSVC build, whose OpenSSL is
+          # pinned by vcpkg.json's builtin-baseline.
+          openssl version
 
       # The configure line lives in CMakePresets.json (preset windows-mingw:
       # MinGW Makefiles, Release, warnings-as-errors) so this workflow and
