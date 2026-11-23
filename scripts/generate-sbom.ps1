@@ -88,9 +88,9 @@ try {
         },
         @{
             type      = 'library'
-            'bom-ref' = 'pkg:generic/hidmaestro@2.1.0'
+            'bom-ref' = 'pkg:generic/hidmaestro@2.3.0'
             name      = 'HIDMaestro'
-            version   = '2.1.0'
+            version   = '2.3.0'
             publisher = 'hifihedgehog'
             licenses  = @(@{ license = @{ id = 'MIT' } })
             description = 'SDK embedded in the bundled satellite-hm-helper.exe; deploys the UMDF2 driver for virtual DualSense / Switch Pro / DualShock 4 / Xbox 360 pads.'

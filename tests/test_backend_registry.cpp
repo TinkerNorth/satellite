@@ -731,7 +731,7 @@ static void test_bundled_pins_are_the_driver_binaries_not_the_installers() {
 
     TEST("driver_pins.h: the release versions are separate and are not compared");
     EXPECT_EQ(std::string(SATELLITE_VIGEMBUS_BUNDLED_VERSION), std::string("1.22.0"));
-    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_SDK_VERSION), std::string("2.1.0"));
+    EXPECT_EQ(std::string(SATELLITE_HIDMAESTRO_SDK_VERSION), std::string("2.3.0"));
     EXPECT_EQ(
         std::string(driverVersionState("1.21.442.0", SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION)),
         std::string(DRIVER_VERSION_STATE_CURRENT));

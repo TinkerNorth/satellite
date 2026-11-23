@@ -56,9 +56,9 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro
 
 - Component: hifihedgehog/HIDMaestro SDK release
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/releases/tag/v2.1.0
-- Pinned-version: `v2.1.0`
-- Filename: `HIDMaestro-v2.1.0.zip`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/releases/tag/v2.3.0
+- Pinned-version: `v2.3.0`
+- Filename: `HIDMaestro-v2.3.0.zip`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. Actively maintained; bump deliberately, re-verifying the
@@ -68,10 +68,10 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro catalog profile `dualsense`
 
 - Component: hifihedgehog/HIDMaestro `profiles/sony/dualsense.json`
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/sony/dualsense.json
-- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.3.0/profiles/sony/dualsense.json
+- Pinned-version: `v2.3.0` (the same tag as the SDK zip; `fetch-redist.ps1`
   refuses a file named for another release)
-- Filename: `HIDMaestro-v2.1.0-dualsense.json`
+- Filename: `HIDMaestro-v2.3.0-dualsense.json`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. The text the SDK zip embeds; the helper cuts
@@ -80,10 +80,10 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro catalog profile `dualsense-composite`
 
 - Component: hifihedgehog/HIDMaestro `profiles/sony/dualsense-composite.json`
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/sony/dualsense-composite.json
-- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.3.0/profiles/sony/dualsense-composite.json
+- Pinned-version: `v2.3.0` (the same tag as the SDK zip; `fetch-redist.ps1`
   refuses a file named for another release)
-- Filename: `HIDMaestro-v2.1.0-dualsense-composite.json`
+- Filename: `HIDMaestro-v2.3.0-dualsense-composite.json`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. The text the SDK zip embeds; the helper cuts
@@ -92,10 +92,10 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro catalog profile `dualsense-edge`
 
 - Component: hifihedgehog/HIDMaestro `profiles/sony/dualsense-edge.json`
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/sony/dualsense-edge.json
-- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.3.0/profiles/sony/dualsense-edge.json
+- Pinned-version: `v2.3.0` (the same tag as the SDK zip; `fetch-redist.ps1`
   refuses a file named for another release)
-- Filename: `HIDMaestro-v2.1.0-dualsense-edge.json`
+- Filename: `HIDMaestro-v2.3.0-dualsense-edge.json`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. The text the SDK zip embeds; the helper cuts
@@ -104,10 +104,10 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro catalog profile `dualsense-edge-composite`
 
 - Component: hifihedgehog/HIDMaestro `profiles/sony/dualsense-edge-composite.json`
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/sony/dualsense-edge-composite.json
-- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.3.0/profiles/sony/dualsense-edge-composite.json
+- Pinned-version: `v2.3.0` (the same tag as the SDK zip; `fetch-redist.ps1`
   refuses a file named for another release)
-- Filename: `HIDMaestro-v2.1.0-dualsense-edge-composite.json`
+- Filename: `HIDMaestro-v2.3.0-dualsense-edge-composite.json`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. The text the SDK zip embeds; the helper cuts
@@ -116,10 +116,10 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro catalog profile `dualshock-4-v2`
 
 - Component: hifihedgehog/HIDMaestro `profiles/sony/dualshock-4-v2.json`
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/sony/dualshock-4-v2.json
-- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.3.0/profiles/sony/dualshock-4-v2.json
+- Pinned-version: `v2.3.0` (the same tag as the SDK zip; `fetch-redist.ps1`
   refuses a file named for another release)
-- Filename: `HIDMaestro-v2.1.0-dualshock-4-v2.json`
+- Filename: `HIDMaestro-v2.3.0-dualshock-4-v2.json`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. The text the SDK zip embeds; the helper cuts
@@ -128,10 +128,10 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro catalog profile `dualshock-4-v2-composite`
 
 - Component: hifihedgehog/HIDMaestro `profiles/sony/dualshock-4-v2-composite.json`
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/sony/dualshock-4-v2-composite.json
-- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.3.0/profiles/sony/dualshock-4-v2-composite.json
+- Pinned-version: `v2.3.0` (the same tag as the SDK zip; `fetch-redist.ps1`
   refuses a file named for another release)
-- Filename: `HIDMaestro-v2.1.0-dualshock-4-v2-composite.json`
+- Filename: `HIDMaestro-v2.3.0-dualshock-4-v2-composite.json`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. The text the SDK zip embeds; the helper cuts
@@ -140,10 +140,10 @@ prompt, or a non-blocking warning that surfaces on the final wizard page.
 ### HIDMaestro catalog profile `switch-pro`
 
 - Component: hifihedgehog/HIDMaestro `profiles/nintendo/switch-pro.json`
-- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/profiles/nintendo/switch-pro.json
-- Pinned-version: `v2.1.0` (the same tag as the SDK zip; `fetch-redist.ps1`
+- Upstream: https://github.com/hifihedgehog/HIDMaestro/blob/v2.3.0/profiles/nintendo/switch-pro.json
+- Pinned-version: `v2.3.0` (the same tag as the SDK zip; `fetch-redist.ps1`
   refuses a file named for another release)
-- Filename: `HIDMaestro-v2.1.0-switch-pro.json`
+- Filename: `HIDMaestro-v2.3.0-switch-pro.json`
 - SHA-256: see `SHA256SUMS`
 - License: MIT
 - EOL: no. The text the SDK zip embeds; the helper cuts
@@ -204,9 +204,9 @@ files at the SDK's tag, `profiles/<vendor>/<id>.json`, which
 `redist/hidmaestro/profiles/`, and each differs from its file only in its
 `id`, its `notes` and one edit; the helper's tests hold every copy to its
 pinned file. The SDK embeds the repository's `profiles/` folder as it is
-(`HIDMaestro.Core.csproj` at v2.1.0), so a file at the tag is the text the
+(`HIDMaestro.Core.csproj` at v2.3.0), so a file at the tag is the text the
 SDK runs, and each of the seven is byte-identical to the resource the
-2.1.0 zip's `HIDMaestro.Core.dll` carries. Every publish checks that this
+2.3.0 zip's `HIDMaestro.Core.dll` carries. Every publish checks that this
 still holds: `export-profiles` reads the profile `HIDMaestro.Core.dll`
 embeds for each copy (`HIDMaestro.Profiles.<dir>\<id>.json`) and cuts no
 copy when a staged file is not that profile as parsed JSON (line endings
@@ -333,7 +333,7 @@ the number back:
 ```
 
 and put that value in `SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION`. For
-HIDMaestro (2.1.0 embeds driver `2.1.0.1716`; the two other `DriverVer`
+HIDMaestro (2.3.0 embeds driver `2.1.0.1716`, the 2.1.0 release's; the two other `DriverVer`
 lines in the assembly belong to the embedded usbip-win2 INFs),
 `scripts/fetch-redist.ps1` reads the `hidmaestro.inf` `DriverVer` out of
 the staged assembly, prints it, and fails when

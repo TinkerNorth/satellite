@@ -139,8 +139,8 @@ the 90-day freshness window.
 
 - Component: hifihedgehog/HIDMaestro (driver shared-memory + report contracts)
 - Upstream: https://github.com/hifihedgehog/HIDMaestro
-- Pinned-commit: v2.1.0
-- Last-vendored: 2026-11-01
+- Pinned-commit: v2.3.0
+- Last-vendored: 2026-11-23
 - License: MIT
 - Notes: not copied source — a hand-written re-statement of the driver's
   shared-memory contract (`driver/driver.h` `HIDMAESTRO_SHARED_INPUT` /
@@ -197,6 +197,27 @@ the 90-day freshness window.
   unopened. The runtime driver itself deploys via the bundled
   `satellite-hm-helper.exe` from the hash-pinned release zip (see
   `redist/README.md`); we ship no driver code.
+  v2.1.0 -> v2.3.0 (2026-11-23), diffed tag to tag in a full clone:
+  nothing under `driver/` changed, `driver.h`, `hm_contract.h` and both INFs
+  included, so the section sizes (362 / 16904), offsets, seqlock, events
+  and the version section hold, and the embedded driver is still the 2.1.0
+  release's `2.1.0.1716` (release notes: byte-identical driver files), which
+  is why `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES` stays "2.1.0" while
+  the SDK pin moves. `SharedMemoryIO.cs` changed no constant, offset or size
+  (the PID force-feedback seqlock now takes a lock, and USB/IP delivery
+  helpers were added; Satellite uses neither). `DeviceIdentity.cs`,
+  `TimeoutScale.cs`, the `sony-*` models and both devnode name forms
+  (`ROOT\{enumerator}\{token}`, `USB\VID_xxxx&PID_xxxx\{serial}`) are
+  unchanged. The seven catalog profiles changed: the six Sony files gain
+  `extendedReport.alwaysArmed`, read only by the SDK's own `SubmitState`
+  codec, which the helper does not use for them; both Edge files declare
+  bytes 49 to 52 (`activeProfile` and three constants) with the same
+  `inputDefaults`, which `DS5_EDGE_INPUT_DEFAULTS` already carries;
+  `switch-pro` changes only its `notes`. 2.2.0 added the `sinput` profile
+  and 2.3.0 the USB/IP backend choice and ARM64; Satellite is x64 and names
+  no backend, so `HMBackend.Auto` keeps it on the UMDF2 driver. Not run for
+  this bump: `satellite-hm-helper.exe selftest` on hardware, which the
+  maintainer runs before the release that ships it.
   v1.9.2 -> v2.1.0 (2026-11-01): `HIDMAESTRO_SHARED_INPUT` and
   `HIDMAESTRO_SHARED_OUTPUT` are byte-identical (362 / 8 + 64 x 264) and
   every Source code is the same, so the wire pins hold. What moved is
