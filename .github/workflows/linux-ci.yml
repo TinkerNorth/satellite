@@ -334,3 +334,49 @@ jobs:
 
       - name: The AppImage stays up headless
         run: bash scripts/smoke-alive.sh "${RUNNER_TEMP}/appimage-content/squashfs-root/AppRun" 45
+
+      - name: Hand the AppImage to the arch job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: satellite-appimage-pr
+          path: stage/satellite-x86_64.AppImage
+          retention-days: 3
+          if-no-files-found: error
+
+  # The pacman package publish-repos.yml builds and publishes on a tag, on
+  # every pull request, around the AppImage the job above built: the same
+  # scripts/build-arch-package.sh, then scripts/check-arch-package.sh installs
+  # it from a repository signed with a throwaway key and holds the installed
+  # AppImage to the packaged bytes and the installed satellite to its
+  # start-up line. Nothing is signed with the real key or published. 2.3.0's
+  # package shipped an AppImage makepkg had stripped of its payload.
+  arch:
+    name: Package (pacman, Arch) and launch it
+    needs: [appimage]
+    runs-on: ubuntu-24.04
+    # A dated snapshot, as publish-repos.yml's arch-publish job uses.
+    container: archlinux:base-devel-20261108.0.623074
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install tooling
+        run: pacman -Syu --noconfirm git pacman-contrib
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the AppImage
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: satellite-appimage-pr
+          path: appimage
+
+      - name: Build satellite-bin
+        run: bash scripts/build-arch-package.sh appimage/satellite-x86_64.AppImage "$(tr -d '[:space:]' < VERSION)" arch-packages
+
+      - name: Install from a signed repository and launch it
+        run: bash scripts/check-arch-package.sh arch-packages appimage/satellite-x86_64.AppImage
