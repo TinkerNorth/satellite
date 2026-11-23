@@ -819,6 +819,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${SATELLITE_PKG_DIR}/postinst;${SATELLITE_PKG_DIR}/postrm")
+    # The maintainer scripts get Debian's 0755 whatever mode the checkout
+    # gave them (a container's umask left them 0775, which lintian rejects).
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
 
     set(CPACK_DEBIAN_FILE_NAME              DEB-DEFAULT)
 
