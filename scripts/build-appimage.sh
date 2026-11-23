@@ -49,6 +49,12 @@ chmod +x linuxdeploy
 mkdir -p "${appdir}/usr/share/applications" "${appdir}/usr/share/icons/hicolor/256x256/apps"
 convert web/img/satellite-icon.png -resize 256x256 "${tmp_dir}/satellite.png"
 
+# The dashboard and the bundled controller database, where resolveWebDir()
+# looks beside usr/bin/satellite (exeDir/../share/satellite/web). linuxdeploy
+# copies only the binary, its libraries, the desktop file and the icon.
+mkdir -p "${appdir}/usr/share/satellite"
+cp -R web "${appdir}/usr/share/satellite/web"
+
 # Embed AppImageUpdate metadata so AppImageUpdate / Gear Lever can
 # delta-update off the newest release; appimagetool emits the matching
 # .zsync, and release.yml's draft-then-flip publish keeps `latest` atomic.
@@ -68,6 +74,15 @@ if [ ! -f "${out}.zsync" ] && [ -f "$(basename "${out}").zsync" ]; then
     mv "$(basename "${out}").zsync" "${out}.zsync"
 fi
 [ -f "${out}" ] || { echo "::error::linuxdeploy produced no AppImage"; exit 1; }
+
+# Assert what the AppImage itself holds, not the AppDir it came from.
+extract_dir="${tmp_dir}/appimage-content"
+rm -rf "${extract_dir}"
+mkdir -p "${extract_dir}"
+(cd "${extract_dir}" && "${repo_root}/${out}" --appimage-extract >/dev/null)
+[ -x "${extract_dir}/squashfs-root/usr/bin/satellite" ] \
+    || { echo "::error::the AppImage holds no usr/bin/satellite"; exit 1; }
+bash scripts/check-web-payload.sh "${extract_dir}/squashfs-root/usr/share/satellite/web"
 if [ ! -f "${out}.zsync" ]; then
     echo "::warning::no .zsync emitted; AppImageUpdate delta updates unavailable for this build"
 fi

@@ -254,3 +254,32 @@ jobs:
           sections="$(readelf -S satellite)"
           grep -q 'sentry_init' <<<"${syms}" || { echo "::error::sentry_init is not linked"; exit 1; }
           grep -q '\.debug_info' <<<"${sections}" || { echo "::error::no debug info for the symbol upload"; exit 1; }
+
+  # The release's appimage job, on every pull request: release.yml runs only
+  # for a tag that already exists, so a packaging mistake found there is
+  # found after the tag is public. Every AppImage up to 2.2.0 shipped without
+  # web/. build-appimage.sh asserts the AppImage's own content (the dashboard
+  # and the bundled controller database, sizes and SHA-256 as the manifest
+  # lists them); the AppImage is then run as macos-ci.yml runs its .app.
+  appimage:
+    name: AppImage (as the release builds it)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
+            libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
+            file wget imagemagick
+
+      - name: Build the AppImage and assert its content
+        run: bash scripts/build-appimage.sh
+
+      - name: The AppImage stays up headless
+        run: bash scripts/smoke-alive.sh "${RUNNER_TEMP}/appimage-content/squashfs-root/AppRun" 45
