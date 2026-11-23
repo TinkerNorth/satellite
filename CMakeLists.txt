@@ -1309,6 +1309,23 @@ if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web")
     satellite_link_sodium(test_controller_db_adapter)
 
+    # The future-reader set through the production check, index, catalog and
+    # mirror, with the real SHA-256 its manifest pins.
+    satellite_add_pure_test(test_controller_db_future
+        tests/test_controller_db_future.cpp
+        src/adapters/controller_db_adapter.cpp
+        src/core/controller_db.cpp
+        src/core/controller_db_service.cpp
+        src/core/config_store.cpp
+        src/core/catalog.cpp
+    )
+    target_compile_definitions(test_controller_db_future PRIVATE
+        WEB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/web"
+        FUTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/controller-db-future")
+    satellite_link_sodium(test_controller_db_future)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_controller_db_future PRIVATE Threads::Threads)
+
     satellite_add_pure_test(test_client_adapter
         tests/test_client_adapter.cpp
         src/adapters/client_adapter.cpp

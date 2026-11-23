@@ -2160,16 +2160,21 @@ read from it; anything else in it is ignored.
 
 **Uses.** The catalog's `emulates.usb` lists are read from the active records:
 for each type, the ids it stands for that a record of its physical twin family
-carries, so records can only drop an id (see `docs/contract.md`). The catalog's
-ETag carries the active `dbVersion`. The mirror (`GET /api/controllers/v1/...`)
-serves the active copy's bytes under their digests.
+carries, so records can only drop an id (see `docs/contract.md`). An inert
+record (below) decides nothing: an id only inert records carry stays listed, the
+build's own row in force. The catalog's ETag carries the active `dbVersion`. The
+mirror (`GET /api/controllers/v1/...`) serves the active copy's bytes under their
+digests; its manifest is the published one byte for byte, or, when that lists a
+file this build does not take (a locale it does not ship), the same document
+without that entry, so the mirror never lists a file it cannot serve.
 
 **Where Satellite departs from the fleet contract.** Satellite reads the
 records for the catalog and the mirror only, so:
 
-- `requires` is not evaluated. Satellite applies no record's `input` or
-  `output`; a record of a family Satellite does not know matches no catalog
-  type and changes nothing.
+- Satellite applies no record's `input` or `output`. A record whose
+  `requires` names a family outside the contract's vocabulary or any op
+  (schema 1 defines none), or whose own family is outside it, is inert
+  (`ControllerRecord::inert`): named, and ignored by the catalog's lists.
 - The cadence is the update check's (section 7 of the contract), not six hours.
 - Satellite shows no issues and keeps no outcomes, so the contract's issue rule
   (shown only while `status` is `open`, `os` keyed `android`, `ios`, `macos`,

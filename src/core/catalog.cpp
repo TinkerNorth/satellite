@@ -342,11 +342,21 @@ std::string buildCatalogJson(const std::string& locale, const std::string& langJ
 
 namespace {
 
+// The usable records decide: listed when one of the twin family carries the
+// id. An id only inert records carry keeps the build's own row (contract
+// §6.6): listed, as compiled.
 bool twinCarries(const EmulatedType& type, const std::string& id, const ControllerDb& controllers) {
+    bool anyUsable = false;
+    bool anyInert = false;
     for (const ControllerRecord* record : controllers.findAll(id)) {
+        if (record->inert) {
+            anyInert = true;
+            continue;
+        }
+        anyUsable = true;
         if (record->family == type.twinFamily) return true;
     }
-    return false;
+    return anyInert && !anyUsable;
 }
 
 } // namespace

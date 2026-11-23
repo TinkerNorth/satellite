@@ -487,7 +487,62 @@ static void test_if_none_match() {
     EXPECT(!ifNoneMatchHits("abc", tag));
 }
 
+static void test_requires_makes_a_record_inert() {
+    TEST("requires: a record needing only families this build has is usable");
+    ControllerDb db;
+    EXPECT(parseControllerDb(dbText({fullRecord("sony-dualsense", "054c:0ce6")}), db) ==
+           DbParse::Ok);
+    EXPECT(db.records.size() == 1 && !db.records[0].inert);
+
+    TEST("requires: a family this build lacks makes the record inert, kept and named");
+    JsonOut family = fullRecord("next-pad", "1209:0f01");
+    family["requires"]["families"] = {"futureFamily"};
+    EXPECT(parseControllerDb(dbText({family}), db) == DbParse::Ok);
+    EXPECT(db.records.size() == 1 && db.records[0].inert);
+
+    TEST("requires: any op makes the record inert, since schema 1 defines none");
+    JsonOut op = fullRecord("next-op", "1209:0f03");
+    op["requires"]["ops"] = {"futureOp"};
+    EXPECT(parseControllerDb(dbText({op}), db) == DbParse::Ok);
+    EXPECT(db.records.size() == 1 && db.records[0].inert);
+
+    TEST("requires: a protocol family outside the vocabulary is inert though requires is silent");
+    JsonOut silent = fullRecord("silent", "1209:0f06");
+    silent["input"]["protocol"]["ref"] = "futureFamily";
+    EXPECT(parseControllerDb(dbText({silent}), db) == DbParse::Ok);
+    EXPECT(db.records.size() == 1 && db.records[0].inert);
+}
+
+static void test_mirror_manifest_lists_only_held_files() {
+    TEST("mirror: a manifest listing a file this build does not hold is served without it");
+    SnapshotFixture fx;
+    Json m;
+    jsonParse(fx.files.manifest, m);
+    m["files"]["strings/it.json"] = {{"sha256", std::string(64, 'a')}, {"bytes", 2}};
+    m["signature"] = {{"alg", "ed25519"}};
+    fx.files.manifest = m.dump();
+    ControllerDbSnapshot snap;
+    EXPECT(buildControllerDbSnapshot(fx.files, DbSource::Cache, fakeSha, snap) ==
+           SnapshotBuild::Ok);
+    MirrorFile served;
+    EXPECT(controllerDbMirrorFile(snap, CONTROLLER_DB_MANIFEST, served));
+    Json offered;
+    EXPECT(served.bytes != nullptr && jsonParse(*served.bytes, offered));
+    EXPECT(!jsonObject(offered, "files").contains("strings/it.json"));
+    EXPECT(offered.contains("signature"));
+
+    TEST("mirror: a manifest whose files are all held is served byte for byte");
+    SnapshotFixture whole;
+    ControllerDbSnapshot wholeSnap;
+    EXPECT(buildControllerDbSnapshot(whole.files, DbSource::Cache, fakeSha, wholeSnap) ==
+           SnapshotBuild::Ok);
+    EXPECT(controllerDbMirrorFile(wholeSnap, CONTROLLER_DB_MANIFEST, served));
+    EXPECT(served.bytes != nullptr && *served.bytes == whole.files.manifest);
+}
+
 int main() {
+    test_requires_makes_a_record_inert();
+    test_mirror_manifest_lists_only_held_files();
     test_mirror_file();
     test_if_none_match();
     test_bundled_copy_parses_whole();

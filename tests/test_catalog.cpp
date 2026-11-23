@@ -494,8 +494,8 @@ static const std::vector<EmulatesLiteral>& emulatesLiterals() {
 
 static std::string emulatesRecord(const std::string& id, const std::string& family,
                                   const std::string& usbId) {
-    return R"({"schema":1,"id":")" + id +
-           R"(","requires":{"families":["x"],"ops":[]},"identity":{"usb":[")" + usbId +
+    return R"({"schema":1,"id":")" + id + R"(","requires":{"families":[")" + family +
+           R"("],"ops":[]},"identity":{"usb":[")" + usbId +
            R"("],"bluetooth":[]},"input":{"protocol":{"ref":")" + family +
            R"("}},"output":{},"expect":{},"support":{"verification":{"state":"verified"}}})";
 }
@@ -535,6 +535,16 @@ static void test_emulatesUsb_fromRecords() {
     TEST("a record of another family carrying a type's id does not put it in the list");
     const ControllerDb wrongFamily = emulatesDb({emulatesRecord("hid-pad", "hid", "054c:0ce6")});
     EXPECT(catalogEmulatedUsb("dualsense", wrongFamily).empty());
+
+    TEST("an id only an inert record carries stays listed: the build's own row is in force");
+    const ControllerDb inert =
+        emulatesDb({emulatesRecord("ds5-next", "futureFamily", "054c:0ce6")});
+    EXPECT(catalogEmulatedUsb("dualsense", inert) == std::vector<std::string>{"054c:0ce6"});
+
+    TEST("a usable record of another family beside an inert one still drops the id");
+    const ControllerDb both = emulatesDb({emulatesRecord("ds5-next", "futureFamily", "054c:0ce6"),
+                                          emulatesRecord("hid-pad", "hid", "054c:0ce6")});
+    EXPECT(catalogEmulatedUsb("dualsense", both).empty());
 
     TEST("a record of the twin family never widens a list past the type's own ids");
     const ControllerDb wider = emulatesDb({emulatesRecord("ds5", "dualsense", "054c:0ce6"),

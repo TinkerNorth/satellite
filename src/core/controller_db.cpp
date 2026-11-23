@@ -105,6 +105,25 @@ std::vector<ControllerIssue> readIssues(const Json& support) {
     return issues;
 }
 
+bool knowsFamily(const std::string& family) {
+    for (const char* known : CONTROLLER_DB_FAMILIES) {
+        if (family == known) return true;
+    }
+    return false;
+}
+
+// requires.families and requires.ops against what this build has: every
+// family of §4.1, and no op, since schema 1 defines none.
+bool requiresWhatThisBuildLacks(const Json& needs) {
+    const Json families = needs.contains("families") ? needs["families"] : Json::array();
+    for (const Json& f : families) {
+        if (!f.is_string() || !knowsFamily(f.get<std::string>())) return true;
+    }
+    const Json ops = needs.contains("ops") ? needs["ops"] : Json::array();
+    const bool namesAnOp = !ops.is_array() || !ops.empty();
+    return !families.is_array() || namesAnOp;
+}
+
 bool readRecord(const Json& r, ControllerRecord& out) {
     if (!r.is_object() || !hasRequiredSections(r)) return false;
     out.id = jsonStr(r, "id");
@@ -121,6 +140,7 @@ bool readRecord(const Json& r, ControllerRecord& out) {
     const std::string state = jsonStr(jsonObject(support, "verification"), "state");
     if (!parseVerification(state, out.verification)) return false;
     out.issues = readIssues(support);
+    out.inert = requiresWhatThisBuildLacks(r["requires"]) || !knowsFamily(out.family);
     return true;
 }
 
@@ -186,6 +206,23 @@ SnapshotBuild parseListedStrings(const ControllerDbFiles& files, const Controlle
         out.byLocale[locale] = std::move(table);
     }
     return SnapshotBuild::Ok;
+}
+
+// The published manifest as the mirror offers it: byte for byte when this
+// build holds every file it lists, else with the entries it does not hold (a
+// locale it does not ship) taken out and every other key kept.
+std::string mirrorManifestText(const std::string& published, const ControllerDbManifest& held) {
+    Json j;
+    if (!jsonParse(published, j) || !j.is_object()) return published;
+    const auto files = j.find("files");
+    if (files == j.end() || !files->is_object()) return published;
+    Json kept = Json::object();
+    for (auto it = files->begin(); it != files->end(); ++it) {
+        if (held.files.count(it.key()) != 0) kept[it.key()] = it.value();
+    }
+    if (kept.size() == files->size()) return published;
+    j["files"] = std::move(kept);
+    return j.dump(2) + "\n";
 }
 
 } // namespace
@@ -339,6 +376,8 @@ SnapshotBuild buildControllerDbSnapshot(const ControllerDbFiles& files, DbSource
     if (strings != SnapshotBuild::Ok) return strings;
     out.manifestSha256 = sha256(files.manifest);
     out.files = files;
+    out.mirrorManifest = mirrorManifestText(files.manifest, out.manifest);
+    out.mirrorManifestSha256 = sha256(out.mirrorManifest);
     return SnapshotBuild::Ok;
 }
 
@@ -347,8 +386,8 @@ std::string controllerDbETag(const std::string& sha256) { return "\"" + sha256 +
 bool controllerDbMirrorFile(const ControllerDbSnapshot& snap, const std::string& path,
                             MirrorFile& out) {
     if (path == CONTROLLER_DB_MANIFEST) {
-        out.bytes = &snap.files.manifest;
-        out.etag = controllerDbETag(snap.manifestSha256);
+        out.bytes = &snap.mirrorManifest;
+        out.etag = controllerDbETag(snap.mirrorManifestSha256);
         return true;
     }
     const auto listed = snap.manifest.files.find(path);
