@@ -96,8 +96,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(SENTRY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         set(SENTRY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
         FetchContent_Declare(sentry
-            URL https://github.com/getsentry/sentry-native/releases/download/0.16.3/sentry-native.zip
-            URL_HASH SHA256=21380c182dde677794a7b6c57e8d6e03d79ec5a03eec67514ffa7522f7e161b5
+            URL https://github.com/getsentry/sentry-native/releases/download/0.17.6/sentry-native.zip
+            URL_HASH SHA256=40b4b70cbada5bfae5b73f8267831dd023ec676d9676fb0d890878f31d2b5055
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
         # Third-party targets keep their own warning policy, the way the
         # vendored headers do behind SYSTEM includes: warnings-as-errors is
@@ -921,7 +921,7 @@ if(TARGET satellite)
                         "crashpad_wer.dll was found but sentry-native never registers it "
                         "with Windows Error Reporting, so a fast-fail crash (stack cookie, "
                         "CFG, CET) would never reach Sentry. The overlay port's "
-                        "fix-crashpad-wer.patch must define SENTRY_TRANSPORT_CRASHPAD_USE_WER "
+                        "fix-wer-define.patch must define SENTRY_TRANSPORT_CRASHPAD_USE_WER "
                         "for the sentry target.")
                 endif()
             endif()
