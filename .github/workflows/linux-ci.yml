@@ -330,6 +330,61 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+  # A user's install from the APT and DNF repositories publish-repos.yml
+  # builds, with every signature check on: the repository is built around
+  # this pull request's package by the publishing script, signed with a
+  # throwaway key, added the way packaging/repo/index.html says, and
+  # `satellite` is installed from it and started. 2.3.0's DNF repository
+  # refused to install because its rpm was unsigned.
+  apt-repo:
+    name: Install from the APT repository (Debian 13)
+    needs: [deb]
+    if: ${{ !cancelled() && needs.deb.outputs.built == 'true' }}
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the .deb
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-deb
+          path: packages
+
+      - name: Build a signed APT repository, add it, install and launch
+        run: bash scripts/check-repo-install.sh apt "$(ls packages/satellite_*_amd64.deb)"
+
+  dnf-repo:
+    name: Install from the DNF repository (Fedora 44)
+    needs: [rpm]
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the .rpm
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-rpm
+          path: packages
+
+      - name: Build a signed DNF repository, add it, install with gpgcheck and launch
+        run: bash scripts/check-repo-install.sh dnf "$(ls packages/satellite-*.x86_64.rpm)"
+
   # The release's appimage job, on every pull request. Every AppImage up to
   # 2.2.0 shipped without web/. build-appimage.sh asserts the AppImage's own
   # content (the dashboard and the bundled controller database, sizes and
