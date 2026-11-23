@@ -72,8 +72,25 @@ jobs:
           cmake --preset release
           cmake --build --preset release --target satellite -j 2
 
-      # Blocking, and the results go to code scanning.
+      # Analysed in full, uploaded filtered: CodeQL ignores paths-ignore for a
+      # compiled language, so the vendored components' results are dropped
+      # from the SARIF (scripts/filter-sarif.py reads the config's list) and
+      # what remains, first-party code, goes to code scanning.
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
+          category: "/language:${{ matrix.language }}"
+          upload: never
+          output: sarif-results
+
+      - name: Keep first-party results only
+        run: |
+          python3 scripts/filter-sarif.py .github/codeql/codeql-config.yml \
+            "sarif-results/${{ matrix.language }}.sarif" "sarif-results/${{ matrix.language }}.first-party.sarif"
+
+      # Blocking, and the results go to code scanning.
+      - name: Upload the first-party results
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          sarif_file: sarif-results/${{ matrix.language }}.first-party.sarif
           category: "/language:${{ matrix.language }}"

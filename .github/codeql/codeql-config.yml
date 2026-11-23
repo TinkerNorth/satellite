@@ -1,6 +1,6 @@
 name: satellite CodeQL
 
-# CodeQL analyses Satellite's own code. The paths below are vendored third-party
+# CodeQL reports on Satellite's own code. The paths below are vendored third-party
 # components kept byte-identical to their upstream tags (lib/VENDORED.md):
 # their alerts are upstream's to fix, and what watches them here is
 # OSV-Scanner, which checks the upstream commit each pin names, and the
@@ -9,6 +9,9 @@ name: satellite CodeQL
 # lib/VENDORED.md names; scripts/check-version-consistency.sh fails otherwise,
 # so this list cannot grow over first-party code. vigem/include/ is not here:
 # it carries local corrections, so its code is Satellite's to answer for.
+# CodeQL itself ignores paths-ignore for C++ (it analyses whatever the build
+# compiles), so codeql.yml drops these paths' results from the SARIF with
+# scripts/filter-sarif.py, which reads this list, before uploading.
 paths-ignore:
   - lib/httplib.h
   - lib/nlohmann/json.hpp
