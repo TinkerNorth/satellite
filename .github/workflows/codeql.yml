@@ -57,6 +57,9 @@ jobs:
           build-mode: manual
           # Default + security-extended; surface error-severity findings.
           queries: security-extended,security-and-quality
+          # First-party code only: the vendored components it leaves out, and
+          # why, are in the config file.
+          config-file: ./.github/codeql/codeql-config.yml
 
       # The release preset every Linux lane builds with. Bound `-j`: CodeQL's
       # extractor multiplies per-compile memory, and an unbounded `-j` reads

@@ -37,6 +37,9 @@
 #   _release_harden.yml pin, against scripts/tools.sh and THIRD_PARTY.md, and
 #   the SLSA generator commit SECURITY.md's recipe names, against release.yml.
 #
+#   CodeQL's paths-ignore (.github/codeql/codeql-config.yml) names only
+#   components lib/VENDORED.md lists, never first-party code.
+#
 #   Facts documents repeat from code: the protocol number (src/core/types.h)
 #   in docs/contract.md and SECURITY.md, and the C++ standard (CMakeLists.txt)
 #   in CONTRIBUTING.md.
@@ -162,6 +165,16 @@ json="$(define NLOHMANN_JSON_VERSION_MAJOR lib/nlohmann/json.hpp).$(define NLOHM
 expect "lib/VENDORED.md nlohmann/json Pinned-commit" "$(vendored_pin nlohmann/json)" "v$json"
 sodium="$(quoted '#define SODIUM_VERSION_STRING' lib/libsodium/libsodium-win64/include/sodium/version.h)"
 expect "lib/VENDORED.md libsodium Pinned-commit" "$(vendored_pin libsodium)" "$sodium-RELEASE"
+
+# ── CodeQL's ignore list names only vendored components ───────────────
+while IFS= read -r ignored; do
+  if ! grep -qE "^## .*\(\`${ignored}/?\`\)" lib/VENDORED.md; then
+    err ".github/codeql/codeql-config.yml ignores '${ignored}', which is not a component lib/VENDORED.md names"
+  fi
+  case "${ignored}" in
+    src/* | tests/* | web/* | helper/* | tools/*) err ".github/codeql/codeql-config.yml ignores first-party '${ignored}'" ;;
+  esac
+done < <(sed -nE 's/^[[:space:]]+- ([^[:space:]#]+).*/\1/p' .github/codeql/codeql-config.yml)
 
 # ── Flatpak sources ──────────────────────────────────────────────────────
 flatpak=packaging/flatpak/io.github.tinkernorth.satellite.yml

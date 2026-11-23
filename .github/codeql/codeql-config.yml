@@ -1,0 +1,15 @@
+name: satellite CodeQL
+
+# CodeQL analyses Satellite's own code. The paths below are vendored third-party
+# components kept byte-identical to their upstream tags (lib/VENDORED.md):
+# their alerts are upstream's to fix, and what watches them here is
+# OSV-Scanner, which checks the upstream commit each pin names, and the
+# vendored-freshness gate, which makes every component be re-checked against
+# upstream at least every 90 days. Every entry must be the path of a component
+# lib/VENDORED.md names; scripts/check-version-consistency.sh fails otherwise,
+# so this list cannot grow over first-party code. vigem/include/ is not here:
+# it carries local corrections, so its code is Satellite's to answer for.
+paths-ignore:
+  - lib/httplib.h
+  - lib/nlohmann/json.hpp
+  - lib/libsodium
