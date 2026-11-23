@@ -48,6 +48,9 @@ gpg --batch --pinentry-mode loopback --passphrase '' \
     --quick-generate-key 'satellite CI throwaway <ci@tinkernorth.invalid>' ed25519 sign never
 key="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
 repo="$(mktemp -d)"
+# pacman downloads as its unprivileged DownloadUser, which cannot read a
+# 0700 directory.
+chmod 755 "${repo}"
 cp "${packages[0]}" "${repo}/"
 gpg --batch --yes --default-key "${key}" --detach-sign "${repo}/$(basename "${packages[0]}")"
 repo-add --sign --key "${key}" "${repo}/satellite-ci.db.tar.gz" "${repo}/$(basename "${packages[0]}")"

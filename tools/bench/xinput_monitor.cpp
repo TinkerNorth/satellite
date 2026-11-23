@@ -34,6 +34,7 @@ using WallClock = std::chrono::system_clock;
 using Millis = std::chrono::duration<double, std::milli>;
 
 constexpr size_t SLOT_COUNT = XUSER_MAX_COUNT;
+static_assert(SLOT_COUNT == satellite::bench::PAUSE_DETECTOR_SLOTS, "the detector tracks every XInput slot");
 constexpr double DEFAULT_SECS = 30.0;
 constexpr double DEFAULT_GAP_MS = 40.0;
 constexpr double MIN_SECS = 0.1;
@@ -241,7 +242,7 @@ void printSummary(const Timeline& timeline, const PauseDetector& detector,
 
 int monitor(const Options& options, GetStateFn getState) {
     const Timeline timeline{Clock::now(), WallClock::now()};
-    PauseDetector detector(SLOT_COUNT, options.gapMs);
+    PauseDetector detector(options.gapMs);
     printLine(stampAt(timeline, 0.0) + " start, " + fixed(options.secs, 1) +
               " s, pauses of at least " + fixed(options.gapMs, 1) + " ms");
     const SweepStats stats =

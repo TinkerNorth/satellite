@@ -15,7 +15,7 @@ using satellite::bench::SlotSummary;
 
 namespace {
 
-constexpr size_t SLOT_COUNT = 4;
+constexpr size_t SLOT_COUNT = satellite::bench::PAUSE_DETECTOR_SLOTS;
 constexpr double GAP_MS = 40.0;
 constexpr size_t SLOT_A = 0;
 constexpr size_t SLOT_B = 1;
@@ -37,7 +37,7 @@ SlotObservation disconnectedReading(PauseDetector& detector, size_t slot, double
 
 static void test_steady_updates_never_pause() {
     TEST("pause detector: updates every 8 ms are counted and never reported");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     int reported = 0;
     for (int i = 0; i < STEADY_SAMPLES; ++i) {
         const double nowMs = i * STEADY_PERIOD_MS;
@@ -53,7 +53,7 @@ static void test_steady_updates_never_pause() {
 
 static void test_gap_at_threshold_is_reported() {
     TEST("pause detector: a gap of exactly --gap-ms is reported with its start and end");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     connectedReading(detector, SLOT_A, FIRST_PACKET, 0.0);
     const SlotObservation before = connectedReading(detector, SLOT_A, FIRST_PACKET + 1, 10.0);
     const SlotObservation at = connectedReading(detector, SLOT_A, FIRST_PACKET + 2, 50.0);
@@ -68,7 +68,7 @@ static void test_gap_at_threshold_is_reported() {
 
 static void test_gap_under_threshold_is_only_the_longest() {
     TEST("pause detector: a gap under --gap-ms is not reported but is the longest pause");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     connectedReading(detector, SLOT_A, FIRST_PACKET, 0.0);
     const SlotObservation seen = connectedReading(detector, SLOT_A, FIRST_PACKET + 1, 39.5);
     const SlotSummary summary = detector.summary(SLOT_A);
@@ -80,7 +80,7 @@ static void test_gap_under_threshold_is_only_the_longest() {
 
 static void test_unchanged_packet_number_extends_the_pause() {
     TEST("pause detector: readings with the same packet number are not updates");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     connectedReading(detector, SLOT_A, FIRST_PACKET, 0.0);
     const SlotObservation first = connectedReading(detector, SLOT_A, FIRST_PACKET, 20.0);
     const SlotObservation second = connectedReading(detector, SLOT_A, FIRST_PACKET, 40.0);
@@ -96,7 +96,7 @@ static void test_unchanged_packet_number_extends_the_pause() {
 
 static void test_first_reading_only_sets_the_baseline() {
     TEST("pause detector: the first reading after a connect is a baseline, not an update");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     const SlotObservation connected = connectedReading(detector, SLOT_A, FIRST_PACKET, 500.0);
     EXPECT(connected.change == SlotChange::Connected);
     EXPECT(!connected.pause);
@@ -111,7 +111,7 @@ static void test_first_reading_only_sets_the_baseline() {
 static void test_connection_changes_are_reported_once() {
     TEST("pause detector: a connect and a disconnect are each reported on the reading that "
          "shows them");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     const SlotObservation absent = disconnectedReading(detector, SLOT_A, 0.0);
     const SlotObservation joined = connectedReading(detector, SLOT_A, FIRST_PACKET, 1.0);
     const SlotObservation still = connectedReading(detector, SLOT_A, FIRST_PACKET + 1, 2.0);
@@ -126,7 +126,7 @@ static void test_connection_changes_are_reported_once() {
 
 static void test_reconnect_is_not_a_pause() {
     TEST("pause detector: the time a slot spends disconnected is not a pause");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     connectedReading(detector, SLOT_A, FIRST_PACKET, 0.0);
     connectedReading(detector, SLOT_A, FIRST_PACKET + 1, 10.0);
     disconnectedReading(detector, SLOT_A, 20.0);
@@ -144,7 +144,7 @@ static void test_reconnect_is_not_a_pause() {
 
 static void test_disconnected_slot_ignores_the_packet_number() {
     TEST("pause detector: a disconnected slot yields nothing whatever packet number it carries");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     for (int i = 0; i < 10; ++i) {
         const SlotObservation seen = detector.observe(SLOT_B, false, 1000u + i, i * 100.0);
         EXPECT(seen.change == SlotChange::None);
@@ -156,7 +156,7 @@ static void test_disconnected_slot_ignores_the_packet_number() {
 
 static void test_slots_are_independent() {
     TEST("pause detector: a pause on one slot does not touch the others");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     connectedReading(detector, SLOT_A, FIRST_PACKET, 0.0);
     connectedReading(detector, SLOT_B, FIRST_PACKET, 0.0);
     connectedReading(detector, SLOT_A, FIRST_PACKET + 1, 8.0);
@@ -173,7 +173,7 @@ static void test_slots_are_independent() {
 static void test_several_pauses_keep_the_longest() {
     TEST("pause detector: the summary counts every pause and keeps the longest and where it "
          "ended");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     std::vector<Pause> reported;
     const double times[] = {0.0, 100.0, 108.0, 400.0, 410.0, 470.0};
     uint32_t packet = FIRST_PACKET;
@@ -191,7 +191,7 @@ static void test_several_pauses_keep_the_longest() {
 
 static void test_packet_number_wraparound_is_an_update() {
     TEST("pause detector: the packet number wrapping to zero counts as a change");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     connectedReading(detector, SLOT_A, UINT32_MAX, 0.0);
     connectedReading(detector, SLOT_A, 0u, 8.0);
     EXPECT_EQ(detector.summary(SLOT_A).updates, uint64_t{1});
@@ -199,7 +199,7 @@ static void test_packet_number_wraparound_is_an_update() {
 
 static void test_unknown_slot_is_ignored() {
     TEST("pause detector: a slot past the end is ignored and summarises as empty");
-    PauseDetector detector(SLOT_COUNT, GAP_MS);
+    PauseDetector detector(GAP_MS);
     const SlotObservation seen = connectedReading(detector, SLOT_COUNT, FIRST_PACKET, 0.0);
     EXPECT(seen.change == SlotChange::None);
     EXPECT(!seen.pause);
