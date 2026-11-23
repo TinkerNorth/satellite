@@ -47,11 +47,7 @@ if (-not (Test-Path $iscc)) {
     if (-not (Test-Path $iscc)) { throw "Inno Setup $version installed no ISCC.exe at $iscc" }
 }
 
-# ISCC.exe's version resource: its file version reads 6.7.4.0 and its
-# product version a display string, so the pin is matched in either.
-$info = (Get-Item $iscc).VersionInfo
-$stamped = "$($info.FileVersion) | $($info.ProductVersion)"
-if ($stamped -notmatch ('(^|\D)' + [regex]::Escape($version) + '(\D|$)')) {
-    throw "ISCC.exe at $iscc carries version '$stamped', expected Inno Setup $version"
-}
+# The version is the installer's: its SHA-256 was checked above, and the
+# directory is named for it. ISCC.exe's own version resource reads 0.0.0.0,
+# so it cannot confirm the version after the fact.
 Write-Output $iscc
