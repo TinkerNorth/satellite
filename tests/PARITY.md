@@ -21,3 +21,20 @@ A row changes in the same pull request as the code that changes it.
 - The macOS stub links Homebrew's libsodium, OpenSSL and opus from
   `/opt/homebrew` instead of bundling them, so it starts only on a Mac with
   those formulas installed.
+
+## Third-party code built with its own warning policy
+
+No first-party file silences a warning. Two places keep a third party's code
+under its own policy, because the code is not this repository's to change:
+
+- `CMakeLists.txt` turns `CMAKE_COMPILE_WARNING_AS_ERROR` off while
+  FetchContent builds sentry-native on Linux, and restores it for
+  Satellite's targets. The SDK's warnings are upstream's; warnings-as-errors
+  stays on for every file this repository owns.
+- `vcpkg/ports/sentry-native/fix-usage-runtime.patch` adds
+  `-Wno-ignored-attributes` for the SDK's own C++ sources. The patch is
+  upstream vcpkg's, copied unchanged into the overlay so the port stays
+  comparable with upstream's.
+- `lib/` is included as `SYSTEM`, so the vendored headers' warnings are not
+  reported against Satellite's translation units; cpp-httplib and
+  nlohmann/json are byte-identical to their tags (`lib/VENDORED.md`).

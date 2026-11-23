@@ -121,7 +121,8 @@ the controller list and its strings in each language, check each file against
 the manifest's SHA-256, and keep them beside its configuration
 (`controllerdb-*.json`). The request carries no query and no identifier, and
 on Windows and Linux no user-agent at all (the macOS build, a stub released
-without virtual gamepads, sends the system's default one, which names the app and its
+without virtual gamepads that runs only with Homebrew's libsodium, OpenSSL
+and opus installed, sends the system's default one, which names the app and its
 version); Satellite sends nothing about you,
 your PC or your controllers.
 

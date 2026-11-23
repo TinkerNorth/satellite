@@ -520,7 +520,10 @@ Any change here must be coordinated with `dish-android`, `dish-ios`,
   available, so the build runs the protocol stack but applies every
   controller descriptor as `backendUnavailable`. The CI artifact
   is named `satellite-macos-stub.app` to make this explicit, and the
-  binary logs a banner at startup.
+  binary logs a banner at startup. The bundle links Homebrew's libsodium,
+  OpenSSL and opus from `/opt/homebrew` rather than bundling them, so it
+  starts only on an Apple-silicon Mac with Homebrew and those three formulas
+  installed (`brew install libsodium openssl@3 opus`).
 
 ## Reporting bugs
 
