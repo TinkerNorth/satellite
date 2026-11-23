@@ -62,9 +62,10 @@ modules:
       - --disable-static
     sources:
       - type: archive
-        url: https://download.libsodium.org/libsodium/releases/libsodium-1.0.20.tar.gz
-        # Verified against the published tarball.
-        sha256: ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19
+        url: https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz
+        # The tarball's minisign signature verifies against the key libsodium
+        # publishes (RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3).
+        sha256: adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
 
   # libopus, the controller-audio codec. Built here rather than assumed from
   # the runtime: the Platform carries a libopus for its media stack but the
@@ -79,9 +80,9 @@ modules:
       - --disable-extra-programs
     sources:
       - type: archive
-        url: https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz
+        url: https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
         # Verified against xiph's published SHA256SUMS.txt.
-        sha256: 65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1
+        sha256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
 
   - name: satellite
     buildsystem: cmake-ninja
