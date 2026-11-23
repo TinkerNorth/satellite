@@ -105,15 +105,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      security-events: write
     uses: ./.github/workflows/_security.yml
     with:
+      osv_scan_paths: .
       osv_lockfile_script: scripts/vendored-osv-lockfile.sh
-      osv_config: osv-scanner.toml
-      gitleaks_enabled: true
-      dependency_review_enabled: false # PR-only by definition
-      action_pin_lint_enabled: true
-      allowlist_expiry_enabled: true
+      dependency_review_enabled: false # pull-request-only, and the Dependency graph is off
 
   # ─────────────────────────────────────────────────────────────────────
   # Signing-secret report. Advisory by default: missing secrets downgrade
@@ -560,7 +556,6 @@ jobs:
     with:
       artifact-pattern: build-*
       product: satellite
-      grype-ignore-name-regex: "(?i)^satellite(setup)?$"
 
   # ─────────────────────────────────────────────────────────────────────
   # SLSA L3 provenance generation. The reusable workflow runs in its own

@@ -7,7 +7,8 @@
 # version-consistency.yml; the Windows equivalent is scripts/ci-local.ps1.
 #
 #   scripts/ci-local.sh                    every gate the main CI job runs
-#   scripts/ci-local.sh --quick            format, action pins, version
+#   scripts/ci-local.sh --quick            format, action pins, allowlist,
+#                                          OSV-Scanner, gitleaks, version
 #                                          consistency, vendored freshness,
 #                                          core purity: no build
 #   scripts/ci-local.sh --with-packages    also the .deb and .rpm lanes, in
@@ -27,8 +28,9 @@
 #                                                   module and package set
 #   headless build, fuzz smoke, reproducibility,    separate linux-ci.yml jobs
 #   Sentry SDK build                                with their own toolchains
-#   CodeQL, Security (OSV, gitleaks, dependency     need GitHub's services
-#   review), measurements
+#   CodeQL, dependency review, measurements,        need GitHub's services
+#   the release hardening dry run                   (or, for the dry run,
+#                                                   the PR's own artifacts)
 #   Windows lanes                                   scripts/ci-local.ps1
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -79,7 +81,26 @@ if have python3; then
 fi
 
 step "Action pin lint (40-char SHA required)"
-bash scripts/check-action-pins.sh
+sh scripts/check-action-pins.sh
+
+# The shared security gates (_security.yml), with the same pinned tools
+# (scripts/tools.sh) and the same arguments security.yml passes.
+if have python3 && have curl; then
+  # shellcheck source=scripts/tools.sh
+  source scripts/tools.sh
+  pyyaml_python="$(fetch_pyyaml_python)"
+  export PATH="$(dirname "${pyyaml_python}"):$PATH"
+
+  step "Vulnerability allowlist expiry check"
+  python3 scripts/security-allowlist.py check
+
+  step "OSV-Scanner (vendored + manifest deps)"
+  OSV_SCANNER="$(fetch_osv_scanner)" bash scripts/osv-scan.sh \
+    --lockfile-script scripts/vendored-osv-lockfile.sh -- .
+
+  step "Secret scan (gitleaks)"
+  "$(fetch_gitleaks)" git --config=.gitleaks.toml --redact --exit-code=1 .
+fi
 
 step "Version consistency"
 bash scripts/check-version-consistency.sh

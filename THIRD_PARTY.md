@@ -34,6 +34,11 @@ to the files that pin them.
 | [sentry-cli](https://github.com/getsentry/sentry-cli) | 3.8.2 | `FSL-1.1-MIT` | Release CI only, the hash-pinned binary `scripts/tools.sh` fetches to upload debug symbols. Not in the app. | None for redistributors of the app |
 | [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) | 1-alpha-20251107-1 | `MIT` | Build only, the hash-pinned AppImage `scripts/tools.sh` fetches to assemble Satellite's AppImage. Not in the app. | None for redistributors of the app |
 | [Inno Setup](https://jrsoftware.org/isinfo.php) | 6.7.4 | Inno Setup License | Build only, the hash-pinned installer `scripts/install-inno-setup.ps1` installs to compile `SatelliteSetup.exe`. Its setup runtime is part of every Windows installer. | None beyond the Inno Setup License |
+| [cosign](https://github.com/sigstore/cosign) | 3.1.4 | `Apache-2.0` | Release and pull-request CI only (`_release_harden.yml`), as a pinned release binary: signs every release file into a Sigstore bundle. Not in any artifact. | None for redistributors |
+| [Syft](https://github.com/anchore/syft) | 1.57.2 | `Apache-2.0` | Release and pull-request CI only (`_release_harden.yml`): writes the SPDX and CycloneDX SBOMs. Not in any artifact. | None for redistributors |
+| [Grype](https://github.com/anchore/grype) | 0.122.1 | `Apache-2.0` | Release and pull-request CI only (`_release_harden.yml`): scans the release files. Not in any artifact. | None for redistributors |
+| [OSV-Scanner](https://github.com/google/osv-scanner) | 2.7.1 | `Apache-2.0` | CI and `scripts/ci-local.sh` only (`_security.yml`, `scripts/tools.sh`). Not in any artifact. | None for redistributors |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | 8.30.1 | `MIT` | CI and `scripts/ci-local.sh` only (`_security.yml`, `scripts/tools.sh`). Not in any artifact. | None for redistributors |
 
 Everything else under `web/` (the dashboard, its glyphs and the bundled
 controller database under `web/controllers/v1/`, a snapshot of the one

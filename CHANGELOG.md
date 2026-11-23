@@ -44,6 +44,19 @@ documents name (the protocol number, the C++ standard), and the release
 checks its tag against `VERSION`. `THIRD_PARTY.md` and `CODE_OF_CONDUCT.md`
 are added, and the stale documents are corrected.
 
+The security gates and the release hardening are the fleet's shared
+`_security.yml` and `_release_harden.yml`, byte-identical in every
+repository. OSV-Scanner moves to 2.7.1 and now scans the tree's manifests (the
+helper's NuGet test packages) besides the vendored components, and a scan that
+finds nothing fails; `.security/allowlist.yaml` is the only place a
+vulnerability is accepted (`osv-scanner.toml` is gone). Releases are signed
+with cosign 3.1.4: every file gets one Sigstore bundle,
+`<file>.sigstore.json`, in place of the `.sig` and `.crt` pair 2.3.0 and
+earlier carry; Grype 0.122.1 and Syft 1.57.2 run as pinned binaries. Every
+pull request runs the hardening job as a dry run over the packages and the
+installer it built. `SECURITY.md` gives the new recipe, the one for releases
+up to 2.3.0, and the provenance check with `cosign verify-blob-attestation`.
+
 ### Fixed
 
 - The Arch package from Satellite's pacman repository shipped an AppImage

@@ -1,10 +1,10 @@
 name: Security
 
-# PR-time security gates for the satellite repo.
-#
-# Pulls the shared jobs from satellite/.github/workflows/_security.yml
-# (action-pin lint, allowlist-expiry, OSV-Scanner, dependency-review,
-# gitleaks). CodeQL lives in codeql.yml because it has its own matrix.
+# Security gates on every pull request, every push to main and weekly. The
+# jobs live in the shared _security.yml (action-pin lint, allowlist expiry,
+# OSV-Scanner, dependency review, gitleaks), byte-identical across the fleet;
+# CodeQL lives in codeql.yml because it has its own matrix. The
+# vendored-freshness job below is satellite's own.
 
 on:
   push:
@@ -23,23 +23,20 @@ permissions:
 
 jobs:
   shared:
-    # The reusable's jobs read pull requests (dependency review) and upload
-    # SARIF; a workflow grant is the ceiling for what they can ask.
+    # Exactly what _security.yml declares; a narrower grant fails the call at startup.
     permissions:
       contents: read
       pull-requests: read
-      security-events: write
-    # The reusable workflow lives in this repo, so call by local relative path.
     uses: ./.github/workflows/_security.yml
     with:
+      osv_scan_paths: .
       # lib/ and vigem/include/ hold no manifest OSV-Scanner can read, so the
       # vendored components are scanned by the upstream commit each pin names.
       osv_lockfile_script: scripts/vendored-osv-lockfile.sh
-      osv_config: osv-scanner.toml
-      gitleaks_enabled: true
-      dependency_review_enabled: true
-      action_pin_lint_enabled: true
-      allowlist_expiry_enabled: true
+      # Dependency review needs Settings > Code security > Dependency graph,
+      # which is off (the job logged "Dependency review is not supported on
+      # this repository"); a maintainer switches it on, then this goes true.
+      dependency_review_enabled: false
 
   vendored-freshness:
     name: Vendored components <= 90 days old

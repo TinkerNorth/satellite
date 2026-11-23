@@ -134,3 +134,25 @@ jobs:
 
       - name: Mount the .dmg and run its app
         run: bash scripts/package-macos.sh check
+
+      - name: Hand the bundle to the hardening dry run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-macos
+          path: stage/
+          retention-days: 3
+          if-no-files-found: error
+
+  # The release's harden job over the .dmg and .zip built above, signed with
+  # a throwaway key; see linux-ci.yml's release-dry-run for what a pull
+  # request cannot exercise.
+  release-dry-run:
+    name: Release hardening, dry run (macos)
+    needs: [bundle]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_release_harden.yml
+    with:
+      artifact-pattern: build-macos
+      product: satellite
+      dry-run: true

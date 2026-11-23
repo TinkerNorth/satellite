@@ -148,12 +148,17 @@ Each repo runs the same shape of gates:
 
 **On every PR** (blocking):
 
-- Action-pin lint: every `uses:` line must reference a 40-char SHA.
-- Allowlist expiry: `.security/allowlist.yaml` entries must be unexpired.
-- Dependency review: GitHub advisory DB (PR-only).
-- OSV-Scanner: vendored components + manifest deps; ecosystem-specific
-  scope (see each repo's `security.yml`).
-- Gitleaks: secret scanning over the worktree.
+- Action-pin lint (`scripts/check-action-pins.sh`): every `uses:` line
+  names a 40-character commit SHA followed by its `# vX.Y.Z`.
+- Allowlist (`scripts/security-allowlist.py`): `.security/allowlist.yaml`
+  entries must be complete, unexpired and at most 90 days out; they are the
+  only place a vulnerability is accepted, and OSV-Scanner reads them.
+- Dependency review: GitHub advisory DB (PR-only). Off on every repository
+  until the Dependency graph setting is switched on.
+- OSV-Scanner 2.7.1 (`scripts/osv-scan.sh`): the tree's manifests (for
+  Satellite, the helper's NuGet test packages) and the vendored components
+  by upstream commit; a scan that finds no package fails.
+- Gitleaks 8.30.1: secret scanning over the full history.
 - CodeQL: `cpp` for `satellite` / `dish-linux`, `swift` for `dish-mac`,
   `java-kotlin` + `cpp` for `dish-android`.
 
@@ -171,12 +176,14 @@ Each repo runs the same shape of gates:
   certificate. Setting the repository variable
   `ENFORCE_RELEASE_SIGNING=true` restores the hard failure for stable
   tags once the certificates exist.
-- Artifact-level vulnerability scan: Anchore Grype, fails on
-  CRITICAL/HIGH.
-- SBOM generation: Syft, both SPDX-JSON and CycloneDX-JSON.
-- `SHA256SUMS` over every artifact + its signatures + the SBOMs.
-- Cosign keyless signing: every artifact and `SHA256SUMS` get a `.sig`
-  + `.crt`, anchored in the Sigstore transparency log.
+- Artifact-level vulnerability scan: Grype 0.122.1, fails on HIGH and
+  CRITICAL.
+- SBOM generation: Syft 1.57.2, both SPDX-JSON and CycloneDX-JSON.
+- `SHA256SUMS` over every artifact and the SBOMs.
+- Cosign 3.1.4 keyless signing: every artifact and `SHA256SUMS` get one
+  Sigstore bundle (`<file>.sigstore.json`), anchored in the Sigstore
+  transparency log. Every pull request runs the same job as a dry run over
+  the packages and installer it built, signed with a throwaway key.
 - SLSA L3 build provenance: `slsa-framework/slsa-github-generator`
   emits `<repo>.intoto.jsonl`.
 
@@ -188,129 +195,105 @@ Release page.
 
 ## Verifying a release artifact (consumer recipe)
 
-This recipe works the same way for every release, repo, and platform;
-only the artifact filenames change.
+This recipe works the same way for every release, every repo, every
+platform; only the artifact filenames change. Releases cut after the shared
+release-hardening workflow landed carry one Sigstore bundle per file
+(`<file>.sigstore.json`); earlier releases (Satellite up to 2.3.0) carry a
+`.sig` and a `.crt` per file and are verified the second way below. The tag is
+bare `X.Y.Z` in every command.
 
 ### 0) Pre-requisites
 
 ```bash
-# cosign (2.x or 3.x; 3.x warns that --signature is deprecated, and still verifies)
-brew install cosign            # macOS
-go install github.com/sigstore/cosign/v3/cmd/cosign@latest
-
-# slsa-verifier (brew install slsa-verifier) (for the SLSA provenance step)
-go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+# cosign 3.x: brew install cosign, or a release binary from
+# github.com/sigstore/cosign/releases (check it against cosign_checksums.txt)
 ```
 
 ### 1) Download every file from the Release
 
-For tag `X.Y.Z` of `<repo>` (one of `satellite`, `dish-android`,
-`dish-mac`, `dish-windows`, `dish-linux`; tags are bare `X.Y.Z`):
+```bash
+TAG=X.Y.Z
+REPO=<repo>     # satellite, dish-android, dish-ios, dish-mac, dish-windows, dish-linux
+gh release download "$TAG" -R "TinkerNorth/$REPO" -D "$REPO-$TAG"
+cd "$REPO-$TAG"
+```
+
+You should see the platform artifacts, `SHA256SUMS` with its signature,
+`<product>.sbom.spdx.json` and `<product>.sbom.cdx.json`, and
+`<product>.intoto.jsonl` (the SLSA L3 provenance).
+
+### 2) Releases after the shared workflow: one bundle per file
 
 ```bash
-gh release download X.Y.Z -R TinkerNorth/<repo> -D ./release
-cd release
-ls
+# SHA256SUMS was signed by this repository's release workflow, on this tag.
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/TinkerNorth/$REPO/.github/workflows/_release_harden.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+
+# Every file you downloaded matches it (macOS: shasum -a 256 -c).
+sha256sum --ignore-missing -c SHA256SUMS
 ```
 
-You should see (filenames vary per repo):
+The identity is exact, not a regular expression, and names
+`_release_harden.yml` because the certificate's identity is the workflow that
+ran the signing step. To verify one file on its own, run the same
+`cosign verify-blob` with `--bundle <file>.sigstore.json` and `<file>`.
 
-```
-satellite-...        # platform binary / installer / .app / .apk / etc.
-satellite-....sig    # cosign signature
-satellite-....crt    # cosign certificate
-SHA256SUMS
-SHA256SUMS.sig
-SHA256SUMS.crt
-satellite.sbom.spdx.json
-satellite.sbom.cdx.json
-satellite.intoto.jsonl   # SLSA L3 provenance
-```
+### 3) Releases up to Satellite 2.3.0: `.sig` and `.crt`
 
-### 2) Verify the checksum bundle
-
-```bash
-sha256sum -c SHA256SUMS         # Linux / Windows
-shasum -a 256 -c SHA256SUMS     # macOS
-```
-
-Every line must say `OK`. A failure here means the artifact was
-modified after release.
-
-### 3) Verify cosign signed `SHA256SUMS` from the right workflow
+Satellite signed these in the reusable `_release_harden.yml` too, so the
+identity names that file. cosign 3 still verifies them with the deprecated
+flags (it prints two deprecation lines):
 
 ```bash
 cosign verify-blob \
-  --certificate SHA256SUMS.crt \
-  --signature   SHA256SUMS.sig \
-  --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/_release_harden\.yml@refs/tags/[0-9].*$' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  --certificate SHA256SUMS.crt --signature SHA256SUMS.sig \
+  --certificate-identity "https://github.com/TinkerNorth/$REPO/.github/workflows/_release_harden.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
+shasum -a 256 --ignore-missing -c SHA256SUMS
 ```
 
-Output ends with `Verified OK`. The `--certificate-identity-regexp`
-binds the signature to a specific workflow path. Satellite signs in the
-reusable `_release_harden.yml` that `release.yml` calls, so the certificate
-names that file at the tag (dish-windows and dish-linux call the same
-reusable; a repo that signs inside `release.yml` itself names that file
-instead). A match means the signature came from a tagged-release run on the
-public commit that produced these artifacts; the Sigstore transparency log
-(`https://search.sigstore.dev/`) carries the same record.
+(Run against Satellite 2.3.0 with cosign 3.1.4: `Verified OK` for
+`SHA256SUMS` and for `satellite_2.3.0_amd64.deb`'s own `.sig` and `.crt`,
+and the `.deb` `OK` against `SHA256SUMS`. Other repositories' earlier
+releases name `release.yml` or `_release_harden.yml` in the identity; read
+the workflow out of the certificate.)
 
-To verify each artifact individually (not just `SHA256SUMS`):
+### 4) The SLSA L3 provenance
+
+`<product>.intoto.jsonl` is a Sigstore bundle whose statement names every
+released file by SHA-256. It is signed by the SLSA generator at the exact
+commit the workflow pins, which `slsa-verifier` refuses ("invalid ref") because
+that is not a release tag, so verify it with cosign, naming the generator's
+commit from the provenance's `builder.id`:
 
 ```bash
-for f in *.exe *.dmg *.zip *.deb *.rpm *.AppImage *.zsync *.json; do
-  [ -f "$f.sig" ] || continue
-  cosign verify-blob \
-    --certificate "$f.crt" \
-    --signature   "$f.sig" \
-    --certificate-identity-regexp '^https://github\.com/TinkerNorth/satellite/\.github/workflows/_release_harden\.yml@refs/tags/[0-9].*$' \
-    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-    "$f"
-done
+cosign verify-blob-attestation \
+  --bundle "satellite.intoto.jsonl" --new-bundle-format --type slsaprovenance \
+  --certificate-identity "https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  satellite_2.3.0_amd64.deb
 ```
 
-### 4) Verify the SLSA L3 provenance
-
-```bash
-slsa-verifier verify-artifact \
-  --provenance-path <repo>.intoto.jsonl \
-  --source-uri      github.com/TinkerNorth/<repo> \
-  --source-tag      X.Y.Z \
-  <artifact-filename>
-```
-
-This is meant to prove the artifact was produced by a tagged run of
-`release.yml` on the named source repo, ending with
-`PASSED: SLSA verification passed`. For Satellite it does not pass today:
-slsa-verifier 2.7.1 against the 2.3.0 release stops with
-`invalid ref: "f7dd8c54..." unexpected ref type`, because release.yml calls
-the SLSA generator by commit SHA and slsa-verifier accepts only a generator
-called by its release tag. Steps 2 and 3 are the verification that holds;
-see Known gaps.
+(`Verified OK` against Satellite 2.3.0's `.deb`. The commit is the generator
+v2.1.0 the workflow pins; use the one in the provenance you are checking.)
 
 ### 5) (Optional) Inspect the SBOM
 
 ```bash
-# Top-level summary
-syft attestation --output spdx-json release/<repo>.sbom.spdx.json
-
-# Or just diff against last release
-diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
-     <(jq -S . release/<repo>.sbom.spdx.json) \
-  | less
+jq -S . satellite.sbom.spdx.json | less
 ```
 
 ---
 
 ## Known gaps
 
-- **SLSA provenance does not verify with slsa-verifier.** The provenance
-  is generated (`satellite.intoto.jsonl` is on every release) by the
-  SHA-pinned generator, which slsa-verifier refuses (step 4 above). Until
-  the generator call and the verifier agree, the checksums and the cosign
-  signatures are what a consumer can check.
+- **slsa-verifier refuses the provenance.** The generator is called by
+  commit SHA, which slsa-verifier rejects as "not a release tag"; cosign
+  verifies the same provenance (step 4 above).
 - **Branch protection on `main`.** Changes land through pull requests.
   On `satellite`, `main` requires the CI, security and CodeQL checks to pass
   and the branch to be up to date before a merge; the other repos carry

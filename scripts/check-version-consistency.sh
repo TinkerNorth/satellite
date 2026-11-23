@@ -33,6 +33,10 @@
 #   versions every other build ships, and every version THIRD_PARTY.md and
 #   CONTRIBUTING.md state against the file that pins it.
 #
+#   The security and hardening tools the shared _security.yml and
+#   _release_harden.yml pin, against scripts/tools.sh and THIRD_PARTY.md, and
+#   the SLSA generator commit SECURITY.md's recipe names, against release.yml.
+#
 #   Facts documents repeat from code: the protocol number (src/core/types.h)
 #   in docs/contract.md and SECURITY.md, and the C++ standard (CMakeLists.txt)
 #   in CONTRIBUTING.md.
@@ -182,6 +186,28 @@ else
   expect "THIRD_PARTY.md linuxdeploy" "$(third_party linuxdeploy)" "$(tools_pin LINUXDEPLOY_VERSION)"
   expect "THIRD_PARTY.md Inno Setup" "$(third_party 'Inno Setup')" "$(grep -m1 -E '^\$version = ' scripts/install-inno-setup.ps1 | cut -d"'" -f2)"
 fi
+# The shared workflows pin the security and hardening tools; the local copies
+# in scripts/tools.sh and the rows in THIRD_PARTY.md follow them.
+shared_pin() { grep -m1 -E "^[[:space:]]+$1: \"" "$2" | cut -d'"' -f2; }
+osv_pin="$(shared_pin OSV_SCANNER_VERSION .github/workflows/_security.yml)"
+gitleaks_pin="$(shared_pin GITLEAKS_VERSION .github/workflows/_security.yml)"
+expect "scripts/tools.sh OSV_SCANNER_VERSION" "$(grep -E '^OSV_SCANNER_VERSION=' scripts/tools.sh | cut -d'"' -f2)" "$osv_pin"
+expect "scripts/tools.sh GITLEAKS_VERSION" "$(grep -E '^GITLEAKS_VERSION=' scripts/tools.sh | cut -d'"' -f2)" "$gitleaks_pin"
+expect "scripts/tools.sh PYYAML_VERSION" "$(grep -E '^PYYAML_VERSION=' scripts/tools.sh | cut -d'"' -f2)" "$(shared_pin PYYAML_VERSION .github/workflows/_security.yml)"
+if [ -f THIRD_PARTY.md ]; then
+  expect "THIRD_PARTY.md OSV-Scanner" "$(third_party OSV-Scanner)" "$osv_pin"
+  expect "THIRD_PARTY.md gitleaks" "$(third_party gitleaks)" "$gitleaks_pin"
+  expect "THIRD_PARTY.md cosign" "$(third_party cosign)" "$(shared_pin COSIGN_VERSION .github/workflows/_release_harden.yml)"
+  expect "THIRD_PARTY.md Syft" "$(third_party Syft)" "$(shared_pin SYFT_VERSION .github/workflows/_release_harden.yml)"
+  expect "THIRD_PARTY.md Grype" "$(third_party Grype)" "$(shared_pin GRYPE_VERSION .github/workflows/_release_harden.yml)"
+fi
+
+# The SLSA generator commit SECURITY.md tells users to verify against is the
+# one release.yml calls.
+slsa_sha="$(grep -oE 'generator_generic_slsa3\.yml@[0-9a-f]{40}' .github/workflows/release.yml | head -1 | cut -d@ -f2)"
+expect "SECURITY.md's SLSA generator commit" \
+  "$(grep -oE 'generator_generic_slsa3\.yml@[0-9a-f]{40}' SECURITY.md | sort -u | cut -d@ -f2 | tr '\n' ' ' | sed 's/ $//')" "$slsa_sha"
+
 expect "CONTRIBUTING.md's clang-format version" \
   "$(grep -oE 'clang-format \*\*[0-9.]+\*\*' CONTRIBUTING.md | head -1 | grep -oE '[0-9.]+')" "$(grep -E '^CLANG_FORMAT_VERSION=' scripts/tools.sh | cut -d'"' -f2)"
 

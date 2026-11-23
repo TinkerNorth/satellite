@@ -323,9 +323,10 @@ or if it's more than 90 days in the future. Allowlist entries require a
 security-team review label before merge. Renew or remove on or before
 `expires`; there's no silent suppression.
 
-If the same CVE is also flagged by OSV-Scanner, add an `[[IgnoredVulns]]`
-block to [`osv-scanner.toml`](osv-scanner.toml) referencing the same
-expiration so both tools agree.
+The allowlist is the only place a vulnerability is accepted:
+`scripts/security-allowlist.py osv-config` turns each entry into the
+OSV-Scanner `[[IgnoredVulns]]` it reads (with `effectiveUntil` set to the
+entry's `expires`), so there is no second file to keep in step.
 
 ### Updating a vendored component
 
@@ -369,31 +370,30 @@ successor (NVGE) supersedes it, the bump procedure is documented in
 ### Running security checks locally
 
 ```bash
-# Action-pin lint (40-char SHA on every uses: line), as _security.yml runs it
-bash scripts/check-action-pins.sh
+# The pinned tools, fetched and checked by SHA-256 (scripts/tools.sh)
+source scripts/tools.sh
+export PATH="$(dirname "$(fetch_pyyaml_python)"):$PATH"
+
+# Action-pin lint, as _security.yml runs it
+sh scripts/check-action-pins.sh
+
+# Allowlist: complete, unexpired, at most 90 days out
+python3 scripts/security-allowlist.py check
+
+# OSV-Scanner 2.7.1: the tree's manifests and the vendored components by commit
+OSV_SCANNER="$(fetch_osv_scanner)" bash scripts/osv-scan.sh \
+  --lockfile-script scripts/vendored-osv-lockfile.sh -- .
+
+# gitleaks 8.30.1 over the full history
+"$(fetch_gitleaks)" git --config=.gitleaks.toml --redact --exit-code=1 .
 
 # Vendored components <= 90 days old, as security.yml's vendored-freshness job runs it
 bash scripts/check-vendored-freshness.sh
-
-# Allowlist expiry
-python3 - <<'PY'
-import datetime, yaml, sys
-data = yaml.safe_load(open('.security/allowlist.yaml').read()) or {}
-today = datetime.date.today()
-for e in data.get('exceptions', []) or []:
-    if datetime.date.fromisoformat(str(e['expires'])) < today:
-        print('EXPIRED:', e); sys.exit(1)
-PY
-
-# OSV-Scanner against the vendored components' pinned upstream commits
-bash scripts/vendored-osv-lockfile.sh > "${TMPDIR:-/tmp}/vendored-osv.json"
-osv-scanner --config=osv-scanner.toml --lockfile "osv-scanner:${TMPDIR:-/tmp}/vendored-osv.json"
-
-# Gitleaks
-gitleaks detect --no-banner --redact --source .
 ```
 
-`scripts/ci-local.sh` and `scripts/ci-local.ps1` run the first two.
+`scripts/ci-local.sh` runs all of them (`--quick` included);
+`scripts/ci-local.ps1` runs the pin lint, the version check and the
+freshness check through Git for Windows' bash.
 
 ### Verifying a release artifact
 
@@ -402,8 +402,9 @@ Each GitHub Release ships the platform installers and packages
 `satellite_X.Y.Z_amd64.deb`, `satellite-X.Y.Z-1.x86_64.rpm`,
 `satellite-X.Y.Z-x86_64.AppImage`, each with an `-unsigned` suffix where no
 platform certificate signed it, plus their stable-name copies), a cosign
-`.sig` and `.crt` for every file, `SHA256SUMS` with its own signature, the
-SPDX and CycloneDX SBOMs and `satellite.intoto.jsonl`. The verification
+Sigstore bundle (`<file>.sigstore.json`) for every file (releases up to
+2.3.0 carry a `.sig` and a `.crt` instead), `SHA256SUMS` with its own bundle,
+the SPDX and CycloneDX SBOMs and `satellite.intoto.jsonl`. The verification
 recipe, with the certificate identity the signatures carry, is in
 [`SECURITY.md`](SECURITY.md), "Verifying a release artifact".
 
@@ -411,7 +412,11 @@ recipe, with the certificate identity the signatures carry, is in
 
 `release.yml` runs on a bare `MAJOR.MINOR.PATCH` tag (no `v`; a prerelease
 such as `1.2.3-rc.1` publishes marked as a prerelease) or a
-`workflow_dispatch` with a tag input.
+`workflow_dispatch` with a tag input. Dispatch a re-release on the tag's
+own ref, `gh workflow run release.yml --ref X.Y.Z -f tag=X.Y.Z`: the
+signing certificate names the ref the run is on, and the recipe in
+`SECURITY.md` expects `refs/tags/X.Y.Z`, so the hardening job refuses to
+sign a run from a branch.
 
 1. **Bump the version** in a pull request of its own: `VERSION`,
    `src/core/version.h`, `vcpkg.json`'s `version`, a new `<release>` at the

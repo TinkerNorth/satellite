@@ -6,7 +6,7 @@
 # OSV-Scanner can match the advisories that carry git ranges:
 #
 #   bash scripts/vendored-osv-lockfile.sh [inventory.md] > vendored-osv.json
-#   osv-scanner --config=osv-scanner.toml --lockfile osv-scanner:vendored-osv.json
+#   bash scripts/osv-scan.sh --lockfile-script scripts/vendored-osv-lockfile.sh .
 #
 # A block without an Upstream or Pinned-commit line, or a pin that names no commit in its
 # upstream (a missing tag, a mistyped SHA), fails the script, so no component can drop out of
