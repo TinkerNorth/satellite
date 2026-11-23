@@ -57,6 +57,14 @@ pull request runs the hardening job as a dry run over the packages and the
 installer it built. `SECURITY.md` gives the new recipe, the one for releases
 up to 2.3.0, and the provenance check with `cosign verify-blob-attestation`.
 
+Every artifact carries a components bill of materials written from its
+build (`satellite-<lane>.components.spdx.json`, `scripts/write-sbom.py`):
+the Windows installer names every vcpkg port it links, HIDMaestro, ViGEmBus
+and usbip-win2; the AppImage every library it bundles, by its Ubuntu package;
+every build the vendored cpp-httplib and nlohmann/json. The release's product
+SBOM folds them in, where it used to name nothing but Satellite, and
+`scripts/check-sbom.py` holds each to `THIRD_PARTY.md`.
+
 ### Fixed
 
 - The Arch package from Satellite's pacman repository shipped an AppImage

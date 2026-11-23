@@ -56,4 +56,14 @@ mkdir -p "${dist_dir}"
 rm -rf build-package/cpack
 cpack -G DEB --config build-package/CPackConfig.cmake -B build-package/cpack
 cp -f build-package/cpack/satellite_*.deb "${dist_dir}/"
+
+# What the package carries, beside it, for the release's bill of materials
+# (scripts/write-sbom.py; scripts/check-sbom.py holds it to THIRD_PARTY.md).
+echo "=== Components SBOM ==="
+sbom_args=()
+if [ -n "${SATELLITE_SENTRY_DSN:-}" ]; then sbom_args=(--sentry); fi
+python3 scripts/write-sbom.py --lane deb "${sbom_args[@]+"${sbom_args[@]}"}" \
+    --out "${dist_dir}/satellite-deb.components.spdx.json"
+python3 scripts/check-sbom.py --lane deb "${sbom_args[@]+"${sbom_args[@]}"}" \
+    "${dist_dir}/satellite-deb.components.spdx.json"
 ls -l "${dist_dir}"/satellite_*.deb

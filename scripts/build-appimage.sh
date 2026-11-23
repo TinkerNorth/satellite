@@ -98,4 +98,14 @@ fi
 # Stable-name copy for the /releases/latest/download/ permalink.
 # No .zsync alias: AppImageUpdate matches the versioned pattern.
 cp "${out}" stage/satellite-x86_64.AppImage
+
+# What the AppImage carries, from its own content (the libraries linuxdeploy
+# copied, by the Ubuntu package that owns each), for the release's bill of
+# materials.
+sbom_args=()
+if [ -n "${SATELLITE_SENTRY_DSN:-}" ]; then sbom_args=(--sentry); fi
+python3 scripts/write-sbom.py --lane appimage "${sbom_args[@]+"${sbom_args[@]}"}" \
+    --appdir "${extract_dir}/squashfs-root" --out stage/satellite-appimage.components.spdx.json
+python3 scripts/check-sbom.py --lane appimage "${sbom_args[@]+"${sbom_args[@]}"}" \
+    stage/satellite-appimage.components.spdx.json
 ls -l stage/

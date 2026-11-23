@@ -22,7 +22,7 @@ case "${1:-}" in
             build-essential cmake pkg-config curl \
             libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
-            dpkg-dev fakeroot file gzip lintian
+            dpkg-dev fakeroot file gzip lintian python3
         ;;
     rpm)
         dnf -y install --setopt=install_weak_deps=False \
@@ -30,7 +30,7 @@ case "${1:-}" in
             gcc-c++ cmake make pkgconf-pkg-config rpm-build \
             libsodium-devel openssl-devel libcurl-devel opus-devel \
             gtk3-devel libayatana-appindicator-gtk3-devel libnotify-devel \
-            gzip cpio gawk diffutils procps-ng
+            gzip cpio gawk diffutils procps-ng python3
         dnf -y install --allowerasing curl
         ;;
     appimage)
@@ -44,7 +44,7 @@ case "${1:-}" in
             build-essential cmake pkg-config curl \
             libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
-            file imagemagick
+            file imagemagick python3
         ;;
     *)
         echo "usage: scripts/install-package-deps.sh deb|rpm|appimage" >&2

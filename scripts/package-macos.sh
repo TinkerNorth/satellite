@@ -72,6 +72,13 @@ stage() {
     echo "=== Stage the .zip ==="
     ditto -c -k --sequesterRsrc --keepParent satellite.app \
         "stage/satellite-macos-stub-${label}${suffix}.zip"
+    # What the bundle carries, for the release's bill of materials.
+    local sbom_args=()
+    if [ -n "${SATELLITE_SENTRY_DSN:-}" ]; then sbom_args=(--sentry); fi
+    python3 scripts/write-sbom.py --lane macos "${sbom_args[@]+"${sbom_args[@]}"}" \
+        --out stage/satellite-macos.components.spdx.json
+    python3 scripts/check-sbom.py --lane macos "${sbom_args[@]+"${sbom_args[@]}"}" \
+        stage/satellite-macos.components.spdx.json
     ls -l stage/
 }
 

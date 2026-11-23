@@ -281,6 +281,19 @@ jobs:
         shell: pwsh
         run: ./scripts/test-installer-roundtrip.ps1 -Setup dist/SatelliteSetup.exe -UiAccess:([bool]$env:WIN_SIGN_CERT_BASE64)
 
+      # What the installer carries: the vcpkg ports the build resolved, the
+      # vendored components, HIDMaestro and ViGEmBus as bundled.
+      - name: Components SBOM
+        env:
+          SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          sbom_args=()
+          if [ -n "${SATELLITE_SENTRY_DSN:-}" ]; then sbom_args=(--sentry); fi
+          python scripts/write-sbom.py --lane windows "${sbom_args[@]+"${sbom_args[@]}"}" \
+            --vcpkg-installed build-msvc/vcpkg_installed --out dist/satellite-windows.components.spdx.json
+          python scripts/check-sbom.py --lane windows "${sbom_args[@]+"${sbom_args[@]}"}" \
+            dist/satellite-windows.components.spdx.json
+
       - name: Stage
         run: |
           suffix=""
@@ -293,6 +306,7 @@ jobs:
           # Never carries the version or the -unsigned suffix; the download
           # pages declare signing state per product instead of via filename.
           cp dist/SatelliteSetup.exe stage/SatelliteSetup.exe
+          cp dist/satellite-windows.components.spdx.json stage/
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -440,7 +454,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-deb
-          path: dist/*.deb
+          path: |
+            dist/*.deb
+            dist/*.components.spdx.json
           if-no-files-found: error
 
   # =========================================================================
@@ -491,7 +507,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-rpm
-          path: dist/*.rpm
+          path: |
+            dist/*.rpm
+            dist/*.components.spdx.json
           if-no-files-found: error
 
   # =========================================================================
