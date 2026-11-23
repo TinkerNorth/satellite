@@ -32,8 +32,8 @@ class LinuxUpdaterAdapter : public IUpdaterPort {
   private:
     enum class InstallType { AppImage, Deb, Rpm, Aur, Snap, Flatpak, Portable };
     InstallType detectInstallType() const;
-    // detectInstallType's last step: a binary at a packaged path is dpkg's or
-    // rpm's, told apart by which database owns it.
+    // detectInstallType's last step: a binary at a packaged path belongs to
+    // the package this build was made for (SATELLITE_PACKAGE_FORMAT).
     static InstallType packagedInstallType();
 
     std::string owner_;

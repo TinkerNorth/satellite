@@ -6,6 +6,7 @@
 #include "core/github_release.h"
 #include "core/hex.h"
 #include "core/linux_upgrade_commands.h"
+#include "core/package_format.h"
 #include "core/version.h"
 
 #include <curl/curl.h>
@@ -345,16 +346,19 @@ LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const 
     return InstallType::Portable;
 }
 
-// dpkg or rpm, by which package database exists; with both present, whichever
-// owns the binary, dpkg's file list being the cheap check.
+// The package this build was made for (CMake SATELLITE_PACKAGE_FORMAT), not
+// a guess from which package database exists: a binary at /usr/bin from
+// neither package is a build installed by hand.
 LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::packagedInstallType() {
-    const bool hasDpkg = pathExists("/var/lib/dpkg/status");
-    const bool hasRpm = pathExists("/var/lib/rpm");
-    if (hasRpm && !hasDpkg) return InstallType::Rpm;
-    if (hasDpkg && !hasRpm) return InstallType::Deb;
-    if (hasDpkg && pathExists("/var/lib/dpkg/info/satellite.list")) return InstallType::Deb;
-    if (hasRpm) return InstallType::Rpm;
-    return InstallType::Deb;
+    switch (satellite::parsePackageFormat(SATELLITE_PACKAGE_FORMAT)) {
+    case satellite::PackageFormat::Deb:
+        return InstallType::Deb;
+    case satellite::PackageFormat::Rpm:
+        return InstallType::Rpm;
+    case satellite::PackageFormat::None:
+        return InstallType::Portable;
+    }
+    return InstallType::Portable;
 }
 
 LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)

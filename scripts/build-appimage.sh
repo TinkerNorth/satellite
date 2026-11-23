@@ -46,7 +46,8 @@ echo "==> satellite ${version} AppImage (x86_64)"
 # builds with. SATELLITE_SENTRY_DSN is empty unless release.yml exported it
 # from the repository secret, so a hand-run produces a build that cannot
 # transmit.
-cmake --preset package "${release_args[@]}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN:-}"
+cmake --preset package "${release_args[@]}" -DSATELLITE_PACKAGE_FORMAT= \
+    -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN:-}"
 cmake --build --preset package --target satellite -j "$(nproc)"
 
 # shellcheck source=scripts/tools.sh

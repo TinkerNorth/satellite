@@ -35,9 +35,6 @@ scriptlets=""
 
 case "${kind}" in
     deb)
-        step "lintian"
-        lintian --fail-on error --tag-display-limit 0 "${package}"
-
         step "Contents"
         contents="$(dpkg-deb -c "${package}")"
         for path in \
@@ -145,3 +142,12 @@ fi
 [ "${rc}" = 0 ] || fail "satellite did not exit 0 on SIGTERM (got ${rc})"
 cat "${home}"/state/satellite/logs/* | grep -E 'Controller database [0-9]+ \(bundled\), [0-9]+ records' | head -1
 echo "check-package: the installed ${kind} came up headless, loaded its bundled controller database, and exited 0 on SIGTERM"
+
+if [ "${kind}" = deb ]; then
+    # Last, so the install and launch above have run whatever it finds.
+    # Warnings fail as errors do: no override file, no tag is waved through.
+    step "lintian"
+    # As an unprivileged user: lintian warns when it runs as root.
+    chmod a+r "${package}"
+    runuser -u nobody -- env HOME=/tmp lintian --fail-on error,warning --tag-display-limit 0 "${package}"
+fi

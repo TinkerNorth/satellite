@@ -4,15 +4,19 @@ Upstream-Contact: TinkerNorth <https://github.com/TinkerNorth/satellite>
 Source: https://github.com/TinkerNorth/satellite
 
 Files: *
-Copyright: TinkerNorth contributors
+Copyright: 2026 TinkerNorth contributors
 License: LGPL-3+
 
 Files: lib/httplib.h
-Copyright: Yuji Hirose
+Copyright: 2026 Yuji Hirose
+License: Expat
+
+Files: lib/nlohmann/*
+Copyright: 2013-2025 Niels Lohmann <https://nlohmann.me>
 License: Expat
 
 Files: vigem/include/ViGEm/*
-Copyright: Benjamin "Nefarius" Hoeglinger-Stelzer and ViGEm contributors
+Copyright: 2016-2023 Nefarius Software Solutions e.U. and Contributors
 License: Expat
 
 License: LGPL-3+

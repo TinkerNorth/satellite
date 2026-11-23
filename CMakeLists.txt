@@ -619,6 +619,19 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
+    # The package this build is made for, so the updater names the right
+    # upgrade command without reading a package manager's database (lintian
+    # uses-dpkg-database-directly). scripts/build-deb.sh and build-rpm.sh set
+    # it; every other build leaves it empty.
+    set(SATELLITE_PACKAGE_FORMAT "" CACHE STRING
+        "deb or rpm: the native package this Linux build is for (empty: none)")
+    if(NOT SATELLITE_PACKAGE_FORMAT MATCHES "^(|deb|rpm)$")
+        message(FATAL_ERROR "SATELLITE_PACKAGE_FORMAT is '${SATELLITE_PACKAGE_FORMAT}'; use deb, rpm or nothing")
+    endif()
+    target_compile_definitions(satellite PRIVATE
+        SATELLITE_PACKAGE_FORMAT="${SATELLITE_PACKAGE_FORMAT}"
+    )
+
     # libsodium: resolved via pkg-config (every distro ships libsodium-dev /
     # libsodium-devel with a .pc file). Fall back to a find_library search if
     # pkg-config is absent (e.g. bespoke build with -DSODIUM_ROOT=<prefix>).
@@ -792,6 +805,19 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             VERBATIM)
         add_custom_target(satellite_gz_changelog ALL DEPENDS "${_changelog_gz}")
         install(FILES "${_changelog_gz}" DESTINATION "${CMAKE_INSTALL_DOCDIR}")
+        # The manual page every packaged command carries (lintian
+        # no-manual-page), compressed the same reproducible way.
+        set(_manpage_gz "${CMAKE_CURRENT_BINARY_DIR}/packaging-gz/satellite.1.gz")
+        add_custom_command(
+            OUTPUT "${_manpage_gz}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_CURRENT_BINARY_DIR}/packaging-gz"
+            COMMAND ${SATELLITE_GZIP} -9nc "${SATELLITE_PKG_DIR}/satellite.1"
+                    > "${_manpage_gz}"
+            DEPENDS "${SATELLITE_PKG_DIR}/satellite.1"
+            VERBATIM)
+        add_custom_target(satellite_gz_manpage ALL DEPENDS "${_manpage_gz}")
+        install(FILES "${_manpage_gz}" DESTINATION "${CMAKE_INSTALL_MANDIR}/man1")
     endif()
 
     set(CPACK_GENERATOR "DEB;RPM")
@@ -1182,6 +1208,7 @@ satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
+satellite_add_pure_test(test_package_format tests/test_package_format.cpp)
 satellite_add_pure_test(test_linux_upgrade_commands tests/test_linux_upgrade_commands.cpp)
 target_compile_definitions(test_linux_upgrade_commands PRIVATE
     PACKAGING_MD="${CMAKE_CURRENT_SOURCE_DIR}/docs/PACKAGING.md"
