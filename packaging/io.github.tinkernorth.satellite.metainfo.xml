@@ -109,15 +109,16 @@
   -->
 
   <releases>
-    <release version="2.3.0" date="2026-11-19">
+    <release version="2.3.0" date="2026-11-23">
       <description>
         <p>Satellite reads the Dish fleet's controller database and can test each controller from the dashboard.</p>
         <ul>
-          <li>A Test button on each controller sends one rumble, light bar, player LED, trigger and mic lamp test to its Dish app</li>
+          <li>A Test button on each controller sends one rumble, light bar, player LED and trigger test to its Dish app, then gives the game its state back</li>
           <li>Each controller shows the last output the game sent it, and when</li>
           <li>Report a problem on the Debug page writes one file for support with your words in it, and no keys, addresses or device names</li>
           <li>A paired Dish app can ask for a diagnostics snapshot of its own connection, for the file it saves</li>
           <li>Satellite checks dish.tinkernorth.com for a newer controller list; switch it off in Settings</li>
+          <li>The AppImage now carries the dashboard and the controller list</li>
         </ul>
       </description>
       <url type="details">https://github.com/TinkerNorth/satellite/releases/tag/2.3.0</url>

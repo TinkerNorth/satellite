@@ -1,6 +1,6 @@
 # Satellite: Privacy Policy
 
-**Effective date:** 2026-11-19.
+**Effective date:** 2026-11-22.
 **Canonical copy:** this file, at
 [`https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md`](https://github.com/TinkerNorth/satellite/blob/main/PRIVACY.md).
 The privacy index on [dish.tinkernorth.com](https://dish.tinkernorth.com/privacy/)
