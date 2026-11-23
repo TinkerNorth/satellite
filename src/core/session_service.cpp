@@ -483,6 +483,12 @@ void SessionService::publishControllersLocked(Connection& conn) {
     sendSeededRumbleLocked(conn);
 }
 
+// A line about a connection carries its id: the connection's diagnostics
+// document picks its lines by that token, never by the name the client chose.
+static std::string connectionLabel(const Connection& conn) {
+    return conn.deviceName + " (" + conn.connectionId + ")";
+}
+
 void SessionService::resetControllerStreamState(Controller& ctrl) {
     // A (re)plugged controller is a fresh actuator, so the next rumble/colour
     // must not be suppressed as "same as last".
@@ -518,7 +524,8 @@ void SessionService::resetControllerStreamState(Controller& ctrl) {
 void SessionService::removePadLocked(Connection& conn, Controller& ctrl,
                                      std::vector<RetiredSerial>& retired) {
     log_.logMsg(LogLevel::INFO, "service",
-                "Controller #" + std::to_string(ctrl.index) + " removed from " + conn.deviceName);
+                "Controller #" + std::to_string(ctrl.index) + " removed from " +
+                    connectionLabel(conn));
     vacatePadLocked(conn, ctrl, retired);
 }
 
@@ -735,7 +742,7 @@ void SessionService::addPadLocked(Connection& conn, Controller& ctrl, PadChange&
         log_.logMsg(LogLevel::INFO, "service",
                     "Controller #" + std::to_string(pad.desc.ctrlIdx) + " plugged as " +
                         controllerTypeLabel(pad.desc.type) + " (serial " +
-                        std::to_string(pad.serial) + ") for " + conn.deviceName);
+                        std::to_string(pad.serial) + ") for " + connectionLabel(conn));
         return;
     }
     releaseSerial(pad.serial);
@@ -997,8 +1004,9 @@ int SessionService::closeSessionById(const std::string& connectionId, const std:
         if (notify) client_.sendSessionClose(*conn, reason);
         removed = conn->activeControllerCount;
         log_.logMsg(LogLevel::INFO, "service",
-                    "Connection closed for " + conn->deviceName + " (" + std::to_string(removed) +
-                        " controllers removed, " + closeReasonName(reason) + ")");
+                    "Connection closed for " + connectionLabel(*conn) + ": " +
+                        std::to_string(removed) + " controllers removed, " +
+                        closeReasonName(reason));
         const uint32_t token = conn->token;
         retireConnectionLocked(*conn, retired);
         connections_.erase(token);
@@ -1017,8 +1025,8 @@ int SessionService::closeSessionsForDevice(const std::string& deviceId, uint8_t 
             if (it->second.deviceId == deviceId) {
                 client_.sendSessionClose(it->second, reason);
                 log_.logMsg(LogLevel::INFO, "service",
-                            "Connection closed for " + it->second.deviceName + " (" +
-                                closeReasonName(reason) + ")");
+                            "Connection closed for " + connectionLabel(it->second) + ": " +
+                                closeReasonName(reason));
                 retireConnectionLocked(it->second, retired);
                 it = connections_.erase(it);
                 closed++;
@@ -1192,7 +1200,7 @@ void SessionService::vacateLostPadLocked(uint32_t serial, std::vector<RetiredSer
     Controller* ctrl = nullptr;
     if (!findBySerialLocked(serial, conn, ctrl)) return;
     log_.logMsg(LogLevel::WARN, "service",
-                "Controller #" + std::to_string(ctrl->index) + " of " + conn->deviceName +
+                "Controller #" + std::to_string(ctrl->index) + " of " + connectionLabel(*conn) +
                     " lost its virtual device; Satellite unplugs it so " + conn->deviceName +
                     " plugs it again");
     vacatePadLocked(*conn, *ctrl, retired);
@@ -2094,7 +2102,7 @@ int SessionService::reapTimedOut() {
         // flapping through here.
         if (now - lastPacket > timeout && now > conn.graceUntil) {
             log_.logMsg(LogLevel::INFO, "service",
-                        "Reaper: timed out connection for " + conn.deviceName + " after " +
+                        "Reaper: timed out connection for " + connectionLabel(conn) + " after " +
                             std::to_string(silentFor.count()) + " s without a packet");
             retireConnectionLocked(conn, retired);
             it = connections_.erase(it);
@@ -2106,7 +2114,8 @@ int SessionService::reapTimedOut() {
                 conn.stallLogged = true;
                 const auto reapIn = timeout - silentFor;
                 log_.logMsg(LogLevel::WARN, "service",
-                            "Link to " + conn.deviceName + " has gone silent: no packet for " +
+                            "Link to " + connectionLabel(conn) +
+                                " has gone silent: no packet for " +
                                 std::to_string(silentFor.count()) + " s (reaper in " +
                                 std::to_string(reapIn.count()) + " s)");
             }
@@ -2367,8 +2376,8 @@ bool SessionService::testController(const std::string& connectionId, uint8_t ctr
             std::chrono::steady_clock::now() + std::chrono::milliseconds(satellite::TEST_HOLD_MS);
     }
     log_.logMsg(LogLevel::INFO, "service",
-                "Test burst to controller #" + std::to_string(ctrlIdx) + " of " + conn->deviceName +
-                    ": " + std::to_string(outPlan.sent.size()) + " sent, " +
-                    std::to_string(outPlan.skipped.size()) + " skipped");
+                "Test burst to controller #" + std::to_string(ctrlIdx) + " of " +
+                    connectionLabel(*conn) + ": " + std::to_string(outPlan.sent.size()) +
+                    " sent, " + std::to_string(outPlan.skipped.size()) + " skipped");
     return true;
 }

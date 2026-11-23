@@ -2219,8 +2219,10 @@ the session routes and reads one connection snapshot; the document is built in
 connection's controllers, the other clients' and the paired devices' identities and keys (to
 scrub, never to write), the host's names, the backends, the capabilities' `controllerAudio`
 block, the process counters, the controller database status and the recent log ring. The core
-keeps the ring's lines that name the connection's id, device id, name or address, or one of its
-pads' serials from that pad's plug on (a serial passes between clients), takes the last 200,
+keeps the ring's lines that name the connection's id or its paired device's id as a whole token,
+or one of its pads' serials from that pad's plug on (a serial passes between clients), takes the
+last 200. It never selects by the name the client chose or an address, which another client's
+lines can hold too; the session's lines about a connection carry its id beside its name for this,
 and scrubs them with the Debug file's `scrubDiagnosticsText` over a different alias table: the
 requester is "this connection", every other client "another client", the host "this PC", each
 pairing key "[redacted]".

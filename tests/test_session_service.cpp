@@ -1417,7 +1417,8 @@ static void test_lostPad_isUnpluggedAndItsSlotVacated() {
     EXPECT_EQ(vigem.unplugCalls, 1);
     EXPECT(vigem.unpluggedSerials == std::vector<uint32_t>({lost}));
     EXPECT_EQ(svc.totalActiveControllers(), 1);
-    EXPECT(log.contains("Controller #1 of TestDevice lost its virtual device"));
+    EXPECT(log.contains("Controller #1 of TestDevice (" + r.connectionId +
+                        ") lost its virtual device"));
 
     TEST("lost pad: frames for the vacated slot no longer reach the backend");
     const int submits = vigem.submitCalls;
@@ -5169,7 +5170,7 @@ static void test_reap_logsASilentLinkOnceBeforeReaping() {
     const int reapSec = HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_MAX;
     svc.backdateForTest(r.token, stalledSec, 1);
     EXPECT_EQ(svc.reapTimedOut(), 0);
-    EXPECT_EQ(log.countContaining("Link to Pixel has gone silent"), 1);
+    EXPECT_EQ(log.countContaining("Link to Pixel (" + r.connectionId + ") has gone silent"), 1);
     EXPECT(log.contains("no packet for " + std::to_string(stalledSec) + " s (reaper in " +
                         std::to_string(reapSec - stalledSec) + " s)"));
     EXPECT_EQ(svc.reapTimedOut(), 0);
@@ -5185,7 +5186,8 @@ static void test_reap_logsASilentLinkOnceBeforeReaping() {
     TEST("reap: the reaper line carries the silence duration");
     svc.backdateForTest(r.token, 60, 1);
     EXPECT_EQ(svc.reapTimedOut(), 1);
-    EXPECT(log.contains("Reaper: timed out connection for Pixel after 60 s without a packet"));
+    EXPECT(log.contains("Reaper: timed out connection for Pixel (" + r.connectionId +
+                        ") after 60 s without a packet"));
 }
 
 static void test_reap_inGraceSilenceIsNotLogged() {
@@ -6051,6 +6053,28 @@ static void test_testController_untouchedSurfacesGoIdle() {
     EXPECT_EQ(client2.playerLedsCalls, 1);
 }
 
+static void test_sessionLogLines_carryTheConnectionId() {
+    TEST("session log: every line naming a connection also names its connection id");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    upsert(svc, {});
+    EXPECT(svc.closeSessionById(r.connectionId, "", CLOSE_REASON_KICKED, false) >= 0);
+    int naming = 0;
+    for (const std::string& line : log.messages) {
+        if (line.find("TestDevice") == std::string::npos) continue;
+        naming++;
+        const bool carriesId = line.find("(" + r.connectionId + ")") != std::string::npos;
+        if (!carriesId) std::cerr << "  without the id: " << line << "\n";
+        EXPECT(carriesId);
+    }
+    EXPECT(naming >= 4);
+}
+
 static int64_t wallMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -6261,6 +6285,7 @@ int main() {
     test_testController_givesTheGameStateBack();
     test_testController_gameRewriteDuringTheHold();
     test_testController_untouchedSurfacesGoIdle();
+    test_sessionLogLines_carryTheConnectionId();
     test_lastGameOutput_recordsEachKind();
     test_gameOutput_countsEveryLaneWithItsLastValue();
     test_input_countsFramesPerPadAndSamplesARate();

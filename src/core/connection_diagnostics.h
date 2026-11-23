@@ -68,7 +68,9 @@ struct SerialClaim {
 };
 
 struct ConnectionLogScope {
-    // The connection's id, its device's id and name, and its address.
+    // The tokens Satellite itself writes for the connection: its id and its
+    // paired device's id, each matched whole. Never the name the client chose
+    // or an address, which other clients' lines can hold too.
     std::vector<std::string> texts;
     std::vector<SerialClaim> serials;
 };

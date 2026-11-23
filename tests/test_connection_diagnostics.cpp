@@ -127,7 +127,8 @@ ConnectionDiagnosticsInput inputFixture() {
                   "c0ffee00c0ffee00c0ffee00c0ffee00"};
     in.log = {
         {1000, "INFO", "service",
-         std::string("Controller #0 plugged as DualSense (serial 3) for ") + SELF_NAME},
+         std::string("Controller #0 plugged as DualSense (serial 3) for ") + SELF_NAME + " (" +
+             CONNECTION_ID + ")"},
         {1100, "INFO", "service",
          "Controller #0 plugged as Xbox (serial 4) for Living Room Shield"},
         {1200, "INFO", "mdns", "Announcing EMIR-DESKTOP._satellite._udp.local."},
@@ -231,7 +232,7 @@ static void test_grants_and_counters() {
 }
 
 static void test_log_scope() {
-    TEST("log scope: a line naming the connection's device, name, address or id is about it");
+    TEST("log scope: a line naming the connection's id or its device's id is about it");
     const ConnectionDiagnosticsInput in = inputFixture();
     const ConnectionLogScope scope = connectionLogScope(in);
     EXPECT(logLineConcernsConnection(in.log[0], scope));
@@ -251,6 +252,50 @@ static void test_log_scope() {
     EXPECT(!logLineConcernsConnection(in.log[6], scope));
 }
 
+// A log fixture where the requester's chosen name occurs inside other
+// clients' lines, as a short name or a name another client also carries.
+ConnectionDiagnosticsInput nameCanaryFixture(const std::string& selfName) {
+    ConnectionDiagnosticsInput in = inputFixture();
+    in.self.deviceName = selfName;
+    in.others = {{"dish-other-77", "CANARY-TWIN", "192.168.1.80"}};
+    in.controllers.clear();
+    in.log = {
+        {100, "INFO", "service", "Session created for " + selfName + " (" + CONNECTION_ID + ")"},
+        {200, "INFO", "service", "Session created for CANARY-TWIN (conn_99ee88dd)"},
+        {300, "INFO", "service",
+         "Controller #0 plugged as Xbox (serial 4) for CANARY-TWIN (conn_99ee88dd)"},
+        {400, "WARN", "client",
+         "401 unauthorized PUT /api/connections (BAD_PROOF, deviceId "
+         "dish-other-77)"},
+        {500, "INFO", "pairing", "Pairing request from CANARY-STRANGER-2 (10.0.0.9)"},
+        {600, "INFO", "service", "Link to CANARY-TWIN (conn_99ee88dd) has gone silent"},
+        {700, "WARN", "client",
+         std::string("device ") + SELF_ID + " speaks protocol v2 (current v4)"},
+    };
+    return in;
+}
+
+std::vector<int64_t> selectedLineTimes(const ConnectionDiagnosticsInput& in) {
+    std::vector<int64_t> out;
+    const JsonOut doc = buildConnectionDiagnostics(in);
+    for (const JsonOut& line : doc["log"]) { out.push_back(line.value("atMs", int64_t{0})); }
+    return out;
+}
+
+static void test_log_scope_ignores_chosen_names() {
+    TEST("log scope: a client named \"e\" gets only its own lines");
+    const std::vector<int64_t> own = {100, 700};
+    EXPECT((selectedLineTimes(nameCanaryFixture("e")) == own));
+
+    TEST("log scope: a client named like another client gets only its own lines");
+    EXPECT((selectedLineTimes(nameCanaryFixture("CANARY-TWIN")) == own));
+
+    TEST("log scope: the connection id is a whole token, not a prefix of another id");
+    ConnectionDiagnosticsInput prefix = nameCanaryFixture("Thor");
+    prefix.log = {{1, "INFO", "service", std::string("Kicked ") + CONNECTION_ID + "9"}};
+    EXPECT(selectedLineTimes(prefix).empty());
+}
+
 static void test_redaction() {
     TEST("connection diagnostics: no other client, machine name, address, key or secret appears");
     const JsonOut d = buildConnectionDiagnostics(inputFixture());
@@ -261,7 +306,8 @@ static void test_redaction() {
          "role");
     EXPECT_EQ(d["log"].size(), size_t{4});
     EXPECT_EQ(d["log"][0].value("message", std::string()),
-              std::string("Controller #0 plugged as DualSense (serial 3) for this connection"));
+              std::string("Controller #0 plugged as DualSense (serial 3) for this connection "
+                          "(conn_ab12cd34)"));
     EXPECT_EQ(d["log"][1].value("message", std::string()),
               std::string("Device this connection at this connection re-PUT beside another "
                           "client (another client) on this PC with key [redacted]"));
@@ -297,6 +343,7 @@ int main() {
     test_controllers();
     test_grants_and_counters();
     test_log_scope();
+    test_log_scope_ignores_chosen_names();
     test_redaction();
     test_log_tail();
     std::cout << "connection_diagnostics: " << g_pass << " passed, " << g_fail << " failed\n";
