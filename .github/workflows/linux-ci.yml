@@ -28,31 +28,19 @@ jobs:
             libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
             libayatana-appindicator3-dev libgtk-3-dev libnotify-dev
 
-      # Ubuntu 24.04 ships clang-format 18 by default, which disagrees with
-      # brew's current LLVM (used by macos-ci.yml) on braced-init lists and
-      # other subtle rules. Pin to a recent clang-format from PyPI so the
-      # Linux and macOS workflows agree on style. A venv rather than pipx, the
-      # same way macos-ci.yml installs it: the image's pipx runs a deprecated
-      # code path of its own and warns about it on every install.
-      - name: Install clang-format (pinned)
-        run: |
-          python3 -m venv "$HOME/.clang-format-venv"
-          "$HOME/.clang-format-venv/bin/pip" install clang-format==22.1.4
-          echo "$HOME/.clang-format-venv/bin" >> "$GITHUB_PATH"
-
       - name: Tool versions
         run: |
           cmake --version
           g++ --version | head -1
-          clang-format --version
           pkg-config --modversion libsodium
           pkg-config --modversion opus
           pkg-config --modversion ayatana-appindicator3-0.1
           pkg-config --modversion gtk+-3.0
 
-      # The gate itself lives in scripts/check-format.sh so this workflow,
-      # macos-ci.yml, windows-ci.yml and scripts/ci-local.sh cannot drift on
-      # the file set or the invocation.
+      # The gate lives in scripts/check-format.sh, which installs the
+      # clang-format scripts/tools.sh pins (hash-checked PyPI wheels), so the
+      # three CI workflows and both ci-local scripts run one formatter over
+      # one file set.
       - name: clang-format (check only)
         run: bash scripts/check-format.sh
 

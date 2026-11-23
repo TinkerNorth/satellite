@@ -49,14 +49,9 @@ case "$(uname -s)" in
 esac
 
 step "clang-format (check only)"
-if have clang-format; then
-  # CI pins 22.1.4; other versions disagree on braced-init lists, which is why
-  # the pin exists. Treat a surprise from another version with suspicion.
-  want=22.1.4
-  got="$(clang-format --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-  if [ "$got" != "$want" ]; then
-    echo "::notice:: clang-format $got, CI pins $want; disagreements may be the version, not the code."
-  fi
+# scripts/check-format.sh installs the clang-format scripts/tools.sh pins
+# (needs python3 with venv), the one every CI lane uses.
+if have python3; then
   bash scripts/check-format.sh
 fi
 

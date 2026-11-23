@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Mirrors .github/workflows/windows-ci.yml, so a green run here means a
-    green run there: clang-format (pinned 22.1.4) over CI's exact file set,
+    green run there: scripts/check-format.sh (the pinned clang-format, CI's file set),
     the action-pin lint from _security.yml, configure + build + ctest via the
     windows-mingw preset (MSYS2 MINGW64, the toolchain CI installs), the
     satellite.exe check, the redist script tests (tests/test_fetch_redist.ps1),
@@ -24,7 +24,7 @@
     scripts/ci-local.sh.
 
 .PARAMETER AllowMissing
-    Downgrade a missing gated tool (clang-format, cmake, g++) to a notice
+    Downgrade a missing gated tool (bash, cmake, g++) to a notice
     instead of failing.
 #>
 [CmdletBinding()]
@@ -52,26 +52,12 @@ function Have([string]$Tool) {
 }
 
 Step 'clang-format (check only)'
-if (Have 'clang-format') {
-    # CI pins 22.1.4; other versions disagree on braced-init lists, which is
-    # why the pin exists.
-    $want = '22.1.4'
-    $got = ((& clang-format --version) | Select-String -Pattern '\d+\.\d+\.\d+').Matches[0].Value
-    if ($got -ne $want) {
-        Write-Output "::notice:: clang-format $got, CI pins $want; disagreements may be the version, not the code."
-    }
-    # The exact file set scripts/check-format.sh (and every CI lane) uses:
-    # find src tests -type f ( -name '*.cpp' -o -name '*.h' -o -name '*.mm' )
-    $files = Get-ChildItem -Path src, tests -Recurse -File -Include *.cpp, *.h, *.mm |
-        ForEach-Object { $_.FullName }
-    if (-not $files) { throw 'no source files found for the format gate' }
-    # Batch to stay under the Windows command-line length limit.
-    for ($i = 0; $i -lt $files.Count; $i += 40) {
-        $chunk = $files[$i..([Math]::Min($i + 39, $files.Count - 1))]
-        & clang-format --dry-run --Werror @chunk
-        if ($LASTEXITCODE -ne 0) { throw 'clang-format check failed' }
-    }
-    Write-Output 'clang-format: OK'
+# The same script every CI lane runs, under the bash Git for Windows ships,
+# so the file set, the invocation and the pinned clang-format (scripts/tools.sh)
+# are the ones CI uses.
+if (Have 'bash') {
+    & bash scripts/check-format.sh
+    if ($LASTEXITCODE -ne 0) { throw 'clang-format check failed' }
 }
 
 Step 'Action pin lint (40-char SHA required)'
