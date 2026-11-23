@@ -1036,23 +1036,31 @@ int main() {
         const std::string base = "/api/connections/" + session.connectionId + "/controllers/";
 
         TEST("POST .../controllers/:idx/test: the claimed lanes are sent, the rest skipped");
-        auto test = cli.Post(base + "0/test", R"({"lanes":["rumble","lightbar","micLed"]})",
+        auto test = cli.Post(base + "0/test", R"({"lanes":["rumble","lightbar","playerLeds"]})",
                              "application/json");
         EXPECT(test && test->status == 200);
         if (test) {
             const Json j = parseJson(test->body);
             EXPECT_EQ(j["sent"].dump(), std::string(R"(["rumble","lightbar"])"));
-            EXPECT_EQ(j["skipped"].dump(), std::string(R"(["micLed"])"));
+            EXPECT_EQ(j["skipped"].dump(), std::string(R"(["playerLeds"])"));
         }
         EXPECT_EQ(clientPort.rumbles.load(), 1);
         EXPECT_EQ(clientPort.lightbars.load(), 1);
-        EXPECT_EQ(clientPort.micLeds.load(), 0);
 
         TEST("POST .../test: an unknown lane is a 400, an empty slot or session a 404");
         auto badLane = cli.Post(base + "0/test", R"({"lanes":["speaker"]})", "application/json");
         EXPECT(badLane && badLane->status == 400);
         auto noLanes = cli.Post(base + "0/test", "{}", "application/json");
         EXPECT(noLanes && noLanes->status == 400);
+
+        TEST("POST .../test: naming micLed is a 400 that names it, and sends nothing");
+        const int rumblesBefore = clientPort.rumbles.load();
+        auto micLed =
+            cli.Post(base + "0/test", R"({"lanes":["rumble","micLed"]})", "application/json");
+        EXPECT(micLed && micLed->status == 400);
+        if (micLed) EXPECT(micLed->body.find("micLed") != std::string::npos);
+        EXPECT_EQ(clientPort.rumbles.load(), rumblesBefore);
+        EXPECT_EQ(clientPort.micLeds.load(), 0);
         auto emptySlot = cli.Post(base + "5/test", R"({"lanes":["rumble"]})", "application/json");
         EXPECT(emptySlot && emptySlot->status == 404);
         auto noSession = cli.Post("/api/connections/conn_nothere/controllers/0/test",

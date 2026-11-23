@@ -5788,23 +5788,19 @@ static void test_feedbackTest_plan() {
     TEST("test plan: a lane asked for twice goes out once");
     plan = satellite::planFeedbackTest(CAP_RUMBLE, {FeedbackLane::Rumble, FeedbackLane::Rumble});
     EXPECT((plan.sent == std::vector<FeedbackLane>{FeedbackLane::Rumble}));
-
-    TEST("test plan: the mic lamp rides CAP_MIC, the way the game's lamp does");
-    plan = satellite::planFeedbackTest(CAP_MIC, {FeedbackLane::MicLed, FeedbackLane::Lightbar});
-    EXPECT((plan.sent == std::vector<FeedbackLane>{FeedbackLane::MicLed}));
-    EXPECT((plan.skipped == std::vector<FeedbackLane>{FeedbackLane::Lightbar}));
 }
 
 static void test_feedbackTest_names_and_bytes() {
     TEST("test lanes: every lane reads back from its name, and an unknown name does not");
     for (const auto& info : FEEDBACK_LANES) {
-        FeedbackLane parsed = FeedbackLane::MicLed;
+        FeedbackLane parsed = FeedbackLane::TriggerEffects;
         EXPECT(satellite::parseFeedbackLane(info.name, parsed));
         EXPECT(parsed == info.lane);
         EXPECT_EQ(std::string(satellite::feedbackLaneName(info.lane)), std::string(info.name));
     }
     FeedbackLane unused = FeedbackLane::Rumble;
     EXPECT(!satellite::parseFeedbackLane("speaker", unused));
+    EXPECT(!satellite::parseFeedbackLane("micLed", unused));
 
     TEST("test bytes: rumble at half on both motors for 500 ms");
     const RumbleReport r = satellite::testRumbleReport();
@@ -5826,9 +5822,10 @@ static void test_feedbackTest_parseLanes() {
     std::string bad;
 
     TEST("test lanes: the body's lanes array reads as lanes, in its order");
-    Json body = Json::parse(R"({"lanes":["micLed","rumble"]})");
+    Json body = Json::parse(R"({"lanes":["triggerEffects","rumble"]})");
     EXPECT(satellite::parseFeedbackLanes(body, lanes, bad));
-    EXPECT((lanes == std::vector<FeedbackLane>{FeedbackLane::MicLed, FeedbackLane::Rumble}));
+    EXPECT(
+        (lanes == std::vector<FeedbackLane>{FeedbackLane::TriggerEffects, FeedbackLane::Rumble}));
 
     TEST("test lanes: an empty array is an empty request");
     EXPECT(satellite::parseFeedbackLanes(Json::parse(R"({"lanes":[]})"), lanes, bad));
@@ -5882,9 +5879,6 @@ static void test_testController_sendsClaimedLanes() {
     EXPECT_EQ((int)client.lastPlayerLeds, 1);
     EXPECT_EQ(client.triggerEffectsCalls, 1);
     EXPECT((client.lastTriggerEffects == satellite::testTriggerEffectsReport()));
-    EXPECT_EQ(client.micLedCalls, 1);
-    EXPECT_EQ((int)client.lastMicLedState, (int)MIC_LED_STATE_PULSE);
-    EXPECT_EQ((int)client.lastMicLedCtrlIdx, 1);
 
     TEST("test burst: a lane the descriptor did not claim is skipped and never sent");
     MockClient client2;
@@ -5893,7 +5887,7 @@ static void test_testController_sendsClaimedLanes() {
     FeedbackTestPlan plan2;
     EXPECT(svc2.testController(r2.connectionId, 0, everyLane(), plan2));
     EXPECT((plan2.sent == std::vector<FeedbackLane>{FeedbackLane::Rumble}));
-    EXPECT_EQ(plan2.skipped.size(), size_t{4});
+    EXPECT_EQ(plan2.skipped.size(), size_t{3});
     EXPECT_EQ(client2.rumbleCalls, 1);
     EXPECT_EQ(client2.lightbarCalls + client2.playerLedsCalls + client2.triggerEffectsCalls +
                   client2.micLedCalls,
@@ -5975,7 +5969,6 @@ static void test_testController_givesTheGameStateBack() {
     EXPECT_EQ((int)client.lastLightbarR, 255);
     svc.refreshRumble();
     EXPECT_EQ((int)client.lastLightbarR, 255);
-    EXPECT_EQ((int)client.lastMicLedState, (int)MIC_LED_STATE_PULSE);
     svc.endFeedbackTestHoldForTest(r.token, 0);
     svc.refreshRumble();
     expectClientHoldsGameState(client, game);
@@ -6019,7 +6012,7 @@ static void test_testController_gameRewriteDuringTheHold() {
 }
 
 static void test_testController_untouchedSurfacesGoIdle() {
-    TEST("test burst: a surface the game never set goes back to off, the mic lamp included");
+    TEST("test burst: a surface the game never set goes back to off");
     MockViGem vigem;
     MockClient client;
     MockLog log;
@@ -6035,8 +6028,6 @@ static void test_testController_untouchedSurfacesGoIdle() {
     EXPECT_EQ((int)client.lastPlayerLeds, 0);
     EXPECT_EQ(client.triggerEffectsCalls, 2);
     EXPECT((client.lastTriggerEffects == TriggerEffectsReport{}));
-    EXPECT_EQ(client.micLedCalls, 2);
-    EXPECT_EQ((int)client.lastMicLedState, (int)MIC_LED_STATE_OFF);
 
     TEST("test burst: a surface the test did not hold keeps following the game");
     MockClient client2;
@@ -6051,6 +6042,51 @@ static void test_testController_untouchedSurfacesGoIdle() {
     svc2.endFeedbackTestHoldForTest(r2.token, 0);
     svc2.refreshRumble();
     EXPECT_EQ(client2.playerLedsCalls, 1);
+}
+
+// The mic lamp also mutes the pad's microphone on a client: a test's lamp write
+// would undo a mute the user made, the reason the replay skips the lamp too.
+static void test_testController_leavesTheMicLampAlone() {
+    TEST("test burst: a client that claims mic gets no MIC_LED, the game having set the lamp");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    vigem.fireMicLed(serialOf(svc, 0), MIC_LED_STATE_ON);
+    const int lampsBefore = client.micLedCalls;
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    EXPECT_EQ(client.micLedCalls, lampsBefore);
+    svc.endFeedbackTestHoldForTest(r.token, 0);
+    svc.refreshRumble();
+    EXPECT_EQ(client.micLedCalls, lampsBefore);
+
+    TEST("test burst: a client that claims mic gets no MIC_LED, the game never having set it");
+    MockClient client2;
+    SessionService svc2(vigem, client2, log);
+    const auto r2 =
+        upsert(svc2, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)}, "dev2");
+    EXPECT(svc2.testController(r2.connectionId, 0, everyLane(), plan));
+    EXPECT_EQ(client2.micLedCalls, 0);
+    svc2.endFeedbackTestHoldForTest(r2.token, 0);
+    svc2.refreshRumble();
+    EXPECT_EQ(client2.micLedCalls, 0);
+}
+
+static void test_testController_gameLampDuringTheHoldGoesOut() {
+    TEST("test burst: a game's lamp write during the hold on the other lanes reaches the client");
+    MockViGem vigem;
+    MockClient client;
+    MockLog log;
+    SessionService svc(vigem, client, log);
+    const auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, ALL_FEEDBACK_CAPS)});
+    FeedbackTestPlan plan;
+    EXPECT(svc.testController(r.connectionId, 0, everyLane(), plan));
+    const int lampsBefore = client.micLedCalls;
+    vigem.fireMicLed(serialOf(svc, 0), MIC_LED_STATE_ON);
+    EXPECT_EQ(client.micLedCalls, lampsBefore + 1);
+    EXPECT_EQ((int)client.lastMicLedState, (int)MIC_LED_STATE_ON);
 }
 
 static void test_sessionLogLines_carryTheConnectionId() {
@@ -6285,6 +6321,8 @@ int main() {
     test_testController_givesTheGameStateBack();
     test_testController_gameRewriteDuringTheHold();
     test_testController_untouchedSurfacesGoIdle();
+    test_testController_leavesTheMicLampAlone();
+    test_testController_gameLampDuringTheHoldGoesOut();
     test_sessionLogLines_carryTheConnectionId();
     test_lastGameOutput_recordsEachKind();
     test_gameOutput_countsEveryLaneWithItsLastValue();

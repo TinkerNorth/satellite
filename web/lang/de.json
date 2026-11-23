@@ -555,7 +555,7 @@
   "_meta.locale": "de",
 
   "controllers.test": "Test",
-  "controllers.test.hint": "Sendet der Dish-App dieses Controllers je einen Test für Vibration, Lichtleiste, Spieler-LEDs, Trigger und Mikrofonlampe, jeweils nur, wenn die App angegeben hat, dass der Controller es hat",
+  "controllers.test.hint": "Sendet der Dish-App dieses Controllers je einen Test für Vibration, Lichtleiste, Spieler-LEDs und Trigger, jeweils nur, wenn die App angegeben hat, dass der Controller es hat",
   "controllers.test.sent": "An die Dish-App gesendet",
   "controllers.test.skipped": "Übersprungen: Die Dish-App hat nicht angegeben, dass dieser Controller es hat",
   "controllers.test.failed": "Der Test konnte nicht gesendet werden",

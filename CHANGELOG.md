@@ -37,12 +37,14 @@ file this build does not take (a locale it does not ship) is left out of it.
 Each controller card on the dashboard has a *Test* button. It sends that
 controller's Dish one RUMBLE (both motors at half for 500 ms), one LIGHTBAR
 (white), one PLAYER_LEDS (the first LED), one TRIGGER_EFFECTS (a mild constant
-resistance on both triggers) and one MIC_LED (pulse), each only when the
-Dish said the controller has it, and shows what was sent and what was skipped.
-The light bar, LEDs, trigger effect and lamp show for 2 s; then the Dish gets
+resistance on both triggers), each only when the Dish said the controller
+has it, and shows what was sent and what was skipped.
+The light bar, LEDs and trigger effect show for 2 s; then the Dish gets
 back the last value the game sent for each (a value the game writes during
 those 2 s included), or off where the game never set one, so a test never
-leaves the pad white or the Dish's microphone muted.
+leaves the pad white. The test never touches the mic lamp, which on a Dish
+also mutes the pad's microphone: a request naming `micLed` is refused (400),
+and the game's own lamp writes reach the Dish as always, during a test too.
 The route is `POST /api/connections/{id}/controllers/{idx}/test`; the messages
 are the ones every Dish already handles, so no wire change. The card also
 shows the last output the game wrote to the virtual controller and when

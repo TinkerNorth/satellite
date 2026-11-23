@@ -1484,7 +1484,6 @@ void SessionService::handleMicLedFromBackend(uint32_t serial, uint8_t state) {
     if (foundCtrl->lastMicLedValid && foundCtrl->micLedState == state) return;
     foundCtrl->micLedState = state;
     foundCtrl->lastMicLedValid = true;
-    if (testHolds(*foundCtrl, satellite::FeedbackLane::MicLed)) return;
 
     // CAP_MIC, not a lamp cap of its own: the LED reports the state of a
     // microphone the client must actually have.
@@ -2310,15 +2309,11 @@ void SessionService::sendTestLaneLocked(const Connection& conn, const Controller
     case FeedbackLane::TriggerEffects:
         client_.sendTriggerEffects(conn, ctrl.index, satellite::testTriggerEffectsReport());
         return;
-    case FeedbackLane::MicLed:
-        client_.sendMicLed(conn, ctrl.index, satellite::TEST_MIC_LED_STATE);
-        return;
     }
 }
 
 // What the client shows once a test lets go: the game's last value, or off
-// for a surface the game never set (bench rule 2). The mic lamp goes back too,
-// because a client mutes the pad's microphone with it.
+// for a surface the game never set (bench rule 2).
 void SessionService::giveBackTestLaneLocked(const Connection& conn, const Controller& ctrl,
                                             satellite::FeedbackLane lane) {
     using satellite::FeedbackLane;
@@ -2342,11 +2337,6 @@ void SessionService::giveBackTestLaneLocked(const Connection& conn, const Contro
         const TriggerEffectsReport report =
             ctrl.lastTriggerEffectsValid ? ctrl.lastTriggerEffects : TriggerEffectsReport{};
         client_.sendTriggerEffects(conn, ctrl.index, report);
-        return;
-    }
-    case FeedbackLane::MicLed: {
-        const uint8_t state = ctrl.lastMicLedValid ? ctrl.micLedState : MIC_LED_STATE_OFF;
-        client_.sendMicLed(conn, ctrl.index, state);
         return;
     }
     }

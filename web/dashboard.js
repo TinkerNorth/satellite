@@ -351,7 +351,6 @@ const TEST_LANES = [
   { lane: 'lightbar', cap: 'lightbar' },
   { lane: 'playerLeds', cap: 'playerLeds' },
   { lane: 'triggerEffects', cap: 'triggerEffects' },
-  { lane: 'micLed', cap: 'mic' },
 ];
 const TEST_RESULT_MS = 6000;
 

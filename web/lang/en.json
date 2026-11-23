@@ -554,7 +554,7 @@
   "donate.thanks": "Thank you. Every dollar, every star, every shared link. They all add up. ~Emir",
 
   "controllers.test": "Test",
-  "controllers.test.hint": "Send this controller's Dish app one rumble, light bar, player LED, trigger and mic lamp test, each only if the app said the controller has it",
+  "controllers.test.hint": "Send this controller's Dish app one rumble, light bar, player LED and trigger test, each only if the app said the controller has it",
   "controllers.test.sent": "Sent to the Dish app",
   "controllers.test.skipped": "Skipped: the Dish app did not say this controller has it",
   "controllers.test.failed": "The test could not be sent",
