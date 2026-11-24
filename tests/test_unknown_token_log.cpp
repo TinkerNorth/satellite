@@ -8,7 +8,6 @@
 
 #include "test_util.h"
 
-using satellite::parseIPv4Nbo;
 using satellite::UNKNOWN_TOKEN_QUIET_PERIOD;
 using satellite::UnknownTokenLog;
 using satellite::UnknownTokenLogLine;

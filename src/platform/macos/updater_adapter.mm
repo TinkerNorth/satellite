@@ -122,7 +122,7 @@ DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& i
 
         const bool http = [resp isKindOfClass:[NSHTTPURLResponse class]];
         if (nserr != nil || !http) return r;
-        NSHTTPURLResponse* httpResp = (NSHTTPURLResponse*)resp;
+        auto* httpResp = (NSHTTPURLResponse*)resp;
         if (httpResp.statusCode == 304) {
             r.outcome = DbFetch::NotModified;
             return r;
