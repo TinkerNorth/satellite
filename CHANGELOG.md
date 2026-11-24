@@ -39,6 +39,20 @@ every pin is at its latest release. No protocol change.
 - The MinGW build failed against OpenSSL 4, which returns a certificate's
   subject name as const; the self-signed certificate now gets a name of its
   own, which OpenSSL 3 accepts too.
+- The key file's base64 encoder kept its accumulator in an int that
+  overflowed after four bytes, which is undefined behaviour; it is unsigned
+  now and writes the same text.
+- The TLS certificate and key count as written only when closing the file
+  succeeds too, so a write the disk never took is no longer taken for a
+  certificate.
+- Hashing a downloaded update fails when the read stopped on an error
+  instead of hashing part of the file. On Linux a download whose file could
+  not be written is an error rather than a finished download, and when a
+  failed download cannot be removed the error says where it was left.
+- On macOS, closing the virtual pad bus (which the adapter's destructor does)
+  allocated memory, so an allocation failure there would have ended the
+  process; it allocates nothing now. A pairing request whose device id is
+  not UTF-8 is no longer handed to a notification that cannot carry it.
 
 ### Changed
 
@@ -98,6 +112,19 @@ and usbip-win2; the AppImage every library it bundles, by its Ubuntu package;
 every build the vendored cpp-httplib and nlohmann/json. The release's product
 SBOM folds them in, where it used to name nothing but Satellite, and
 `scripts/check-sbom.py` holds each to `THIRD_PARTY.md`.
+
+clang-tidy 23.1.4 is pinned in `scripts/tools.sh` and runs the fleet's
+shared `.clang-tidy` in every lane's build, test, lint and format job and in
+`scripts/ci-local.sh` and `scripts/ci-local.ps1`, over the sources that lane
+compiles; any finding fails it. Every finding it raised was fixed at its
+cause, none suppressed. Bitwise arithmetic takes unsigned operands only,
+through `src/core/bits.h` (the Dish clients' `Bits.h`), and each converted
+area was run old against new over its boundary and random inputs with
+identical results. Every test binary's main reports an uncaught exception as
+a failed test, the macOS entry point prints what was thrown before such an
+exception ends the process, and nothing built before `main` can throw. The
+stdio results are read (`src/core/checked_io.h`), the Linux tray opens the
+web UI without a shell, and the uinput node builders have no `goto`.
 
 ## 2.3.0
 
