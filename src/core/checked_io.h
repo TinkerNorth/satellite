@@ -17,6 +17,12 @@ inline void stderrWritten(int result) noexcept {
     if (result < 0) std::clearerr(stderr);
 }
 
+// The same answer for another stream a tool writes its report to (fputs,
+// fflush): an error is cleared so the next write is still attempted.
+inline void written(std::FILE* stream, int result) noexcept {
+    if (result < 0) std::clearerr(stream);
+}
+
 // snprintf's result against the buffer it wrote: true when the whole text
 // fits. False when it was cut at the buffer's end, or could not be encoded at
 // all, in which case the buffer is emptied so nobody reads what is left in it.
