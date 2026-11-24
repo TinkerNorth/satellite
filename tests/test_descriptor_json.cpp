@@ -3,6 +3,7 @@
 // touchpad-mode name tables both directions read, and the parser's rules.
 // Until this file those rules were asserted only through the route tests,
 // which build on Linux and macOS alone.
+#include "../src/core/bits.h"
 #include "../src/core/descriptor_json.h"
 
 #include <cstdint>
@@ -31,9 +32,10 @@ Json parse(const std::string& text) {
 }
 
 constexpr size_t CAP_COUNT = sizeof(CAP_NAMES) / sizeof(CAP_NAMES[0]);
-constexpr uint16_t ALL_CAPS = CAP_RUMBLE | CAP_MOTION | CAP_ANALOG_TRIGGERS | CAP_LIGHTBAR |
-                              CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC | CAP_SPEAKER |
-                              CAP_HAPTIC_AUDIO | CAP_EXTENDED_BUTTONS;
+constexpr uint16_t ALL_CAPS =
+    satellite::bits::low16(satellite::bits::u32(CAP_RUMBLE) | CAP_MOTION | CAP_ANALOG_TRIGGERS |
+                           CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC |
+                           CAP_SPEAKER | CAP_HAPTIC_AUDIO | CAP_EXTENDED_BUTTONS);
 
 } // namespace
 
@@ -51,7 +53,7 @@ int main() {
     {
         TEST("every caps word round-trips through its JSON object");
         for (uint16_t caps = 0; caps <= ALL_CAPS; caps++) {
-            if ((caps & ~ALL_CAPS) != 0) continue;
+            if (satellite::bits::anySet(caps, ~satellite::bits::u32(ALL_CAPS))) continue;
             EXPECT_EQ(capsFromJson(parse(jsonDump(capsJsonObj(caps)))), caps);
         }
     }

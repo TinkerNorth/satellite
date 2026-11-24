@@ -70,7 +70,7 @@ static void testHmacProof() {
     TEST("verifyHmacProof: rejects a diverged key");
     uint8_t other[CRYPTO_KEY_SIZE];
     std::memcpy(other, SC_KEY, CRYPTO_KEY_SIZE);
-    other[0] ^= 0xFF;
+    other[0] ^= 0xFFU;
     EXPECT(!verifyHmacProof(other, "device-1", p1));
 
     TEST("verifyHmacProof: rejects the wrong device id");
@@ -140,16 +140,16 @@ static void testPacketAeadTampering() {
     unsigned long long ptLen = 0;
 
     TEST("packet AEAD: a flipped ciphertext bit fails authentication");
-    ct[0] ^= 0x01;
+    ct[0] ^= 0x01U;
     EXPECT(!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 7, 0x01020304, ct, (size_t)ctLen, pt,
                           &ptLen));
-    ct[0] ^= 0x01;
+    ct[0] ^= 0x01U;
 
     TEST("packet AEAD: a flipped tag bit fails authentication");
-    ct[ctLen - 1] ^= 0x80;
+    ct[ctLen - 1] ^= 0x80U;
     EXPECT(!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 7, 0x01020304, ct, (size_t)ctLen, pt,
                           &ptLen));
-    ct[ctLen - 1] ^= 0x80;
+    ct[ctLen - 1] ^= 0x80U;
 
     TEST("packet AEAD: a truncated box (shorter than the tag) is rejected");
     EXPECT(!decryptPacket(key, CRYPTO_DIR_CLIENT_TO_SERVER, 7, 0x01020304, ct,
