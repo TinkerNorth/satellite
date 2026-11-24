@@ -5,8 +5,42 @@ The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
 ## [Unreleased]
 
-Every pin at its latest release, one build path for local runs and CI, and
-the documents made true. No protocol change.
+## 2.4.0
+
+Arch and Fedora users can install Satellite from its repositories again, and
+every pin is at its latest release. No protocol change.
+
+### Fixed
+
+- The Arch package from Satellite's pacman repository shipped an AppImage
+  that could not start: makepkg's strip step cut the squashfs image off the
+  AppImage runtime, so `satellite-bin` 2.3.0 (946,553 bytes installed)
+  carried the runtime alone instead of the 16,931,320-byte AppImage, and a needless
+  `satellite-bin-debug` package was built beside it. The PKGBUILD now sets
+  `options=('!strip' '!debug')`, publishing builds the package with
+  `scripts/build-arch-package.sh`, and every pull request installs the
+  package from a signed repository in an Arch container and fails unless the
+  installed AppImage is byte for byte the packaged one and starts.
+- The DNF repository refused to install 2.3.0: its `.repo` file checks
+  package signatures (`gpgcheck=1`) and the repository's rpm was unsigned, so
+  `dnf install satellite` stopped at "The package is not signed". The
+  publishing script now signs every rpm it adds with the repository key, and
+  every pull request builds the DNF and APT repositories with a throwaway key
+  and installs Satellite from them with every signature check on. The
+  release's own `satellite-x86_64.rpm` installs directly
+  (`sudo dnf install ./satellite-x86_64.rpm`) on Fedora 42 and 44.
+- On Windows, a junction or symbolic link inside the dashboard's folder could
+  make Satellite serve a file outside it (cpp-httplib 0.67.0's fix, #2670).
+- The Linux updater told an Arch install to upgrade with `yay -Syu
+  satellite-bin`, an AUR helper command for a package the AUR does not carry;
+  it now shows `sudo pacman -Syu satellite-bin`, which upgrades it from
+  Satellite's pacman repository. The commands live in one header that a test
+  holds to `docs/PACKAGING.md`.
+- The MinGW build failed against OpenSSL 4, which returns a certificate's
+  subject name as const; the self-signed certificate now gets a name of its
+  own, which OpenSSL 3 accepts too.
+
+### Changed
 
 cpp-httplib goes from 0.58.0 to 0.67.0. Among nine releases of fixes, the
 one that reaches Satellite directly is on Windows: a junction or symbolic
@@ -64,34 +98,6 @@ and usbip-win2; the AppImage every library it bundles, by its Ubuntu package;
 every build the vendored cpp-httplib and nlohmann/json. The release's product
 SBOM folds them in, where it used to name nothing but Satellite, and
 `scripts/check-sbom.py` holds each to `THIRD_PARTY.md`.
-
-### Fixed
-
-- The Arch package from Satellite's pacman repository shipped an AppImage
-  that could not start: makepkg's strip step cut the squashfs image off the
-  AppImage runtime, so `satellite-bin` 2.3.0 (946,553 bytes installed)
-  carried the runtime alone instead of the 16,931,320-byte AppImage, and a needless
-  `satellite-bin-debug` package was built beside it. The PKGBUILD now sets
-  `options=('!strip' '!debug')`, publishing builds the package with
-  `scripts/build-arch-package.sh`, and every pull request installs the
-  package from a signed repository in an Arch container and fails unless the
-  installed AppImage is byte for byte the packaged one and starts.
-- The DNF repository refused to install 2.3.0: its `.repo` file checks
-  package signatures (`gpgcheck=1`) and the repository's rpm was unsigned, so
-  `dnf install satellite` stopped at "The package is not signed". The
-  publishing script now signs every rpm it adds with the repository key, and
-  every pull request builds the DNF and APT repositories with a throwaway key
-  and installs Satellite from them with every signature check on. The
-  release's own `satellite-x86_64.rpm` installs directly
-  (`sudo dnf install ./satellite-x86_64.rpm`) on Fedora 42 and 44.
-- The Linux updater told an Arch install to upgrade with `yay -Syu
-  satellite-bin`, an AUR helper command for a package the AUR does not carry;
-  it now shows `sudo pacman -Syu satellite-bin`, which upgrades it from
-  Satellite's pacman repository. The commands live in one header that a test
-  holds to `docs/PACKAGING.md`.
-- The MinGW build failed against OpenSSL 4, which returns a certificate's
-  subject name as const; the self-signed certificate now gets a name of its
-  own, which OpenSSL 3 accepts too.
 
 ## 2.3.0
 

@@ -89,7 +89,7 @@ Out of scope:
 
 | Repo | Supported | Notes |
 |---|---|---|
-| `satellite` | latest minor on `main` (2.3.0 today); previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS ships as a stub with no virtual gamepad (an unentitled build falls back to an inert backend) that runs only where Homebrew's libsodium, OpenSSL and opus are installed |
+| `satellite` | latest minor on `main` (2.4.0 today); previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS ships as a stub with no virtual gamepad (an unentitled build falls back to an inert backend) that runs only where Homebrew's libsodium, OpenSSL and opus are installed |
 | `dish-android` | latest minor on `main` (2.7.0 today); previous minor for 90 days | minSdk 24 |
 | `dish-ios` | latest minor on `main` (no release tagged yet); previous minor for 90 days | iOS 26.0+ |
 | `dish-mac` | latest minor on `main` (1.4.0 today); previous minor for 90 days | macOS 13+ |

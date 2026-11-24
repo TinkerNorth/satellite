@@ -6,7 +6,7 @@ Dish is made of two parts. The Dish apps run on the device that holds your contr
 
 ## Download
 
-Satellite 2.3.0 is the current release. Every link below always points at the newest one.
+Satellite 2.4.0 is the current release. Every link below always points at the newest one.
 
 Windows 10 or 11 (x64): download **[SatelliteSetup.exe](https://github.com/TinkerNorth/satellite/releases/latest/download/SatelliteSetup.exe)** and run it. It installs Satellite and the drivers it needs, and from then on Satellite can update itself.
 
@@ -29,11 +29,23 @@ sudo curl -fsSL -o /etc/yum.repos.d/satellite.repo \
 sudo dnf install satellite
 ```
 
+If you tried the repository with 2.3.0, dnf refused it with "The package is not signed": that package was unsigned, and from 2.4.0 the repository signs it.
+
 If you'd rather not add a repository, [satellite-amd64.deb](https://github.com/TinkerNorth/satellite/releases/latest/download/satellite-amd64.deb) and [satellite-x86_64.rpm](https://github.com/TinkerNorth/satellite/releases/latest/download/satellite-x86_64.rpm) install the same package once (`sudo apt install ./satellite-amd64.deb` or `sudo dnf install ./satellite-x86_64.rpm`), and you install later versions by hand. With any of the packages, log out and back in once after the first install so your user can create virtual controllers.
 
 Any other x86_64 Linux: [satellite-x86_64.AppImage](https://github.com/TinkerNorth/satellite/releases/latest/download/satellite-x86_64.AppImage) runs on glibc 2.35 or newer and can update itself. An AppImage can't install the udev rule that lets you create virtual controllers, so you grant access to `/dev/uinput` once yourself; the dashboard shows the exact commands when it's missing.
 
-Arch Linux: the 2.3.0 package in Satellite's pacman repository is broken. It installs an AppImage that cannot start. The fix is on its way with the next release; until then, use the AppImage above.
+Arch Linux: add Satellite's signed pacman repository once, and `pacman -Syu` keeps it current.
+
+```bash
+curl -fsSL https://tinkernorth.github.io/satellite/gpg.key | sudo pacman-key --add -
+sudo pacman-key --lsign-key 4371E67B00CB54E69ED34D70428695F4ED61D3A8
+printf '\n[satellite]\nSigLevel = Required DatabaseOptional\nServer = https://tinkernorth.github.io/satellite/arch/$arch\n' \
+  | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu satellite-bin
+```
+
+If you installed `satellite-bin` 2.3.0, it carried an AppImage that could not start; `sudo pacman -Syu` replaces it with 2.4.0, which does.
 
 All files and older versions are on the [releases page](https://github.com/TinkerNorth/satellite/releases), and the repositories have their own page at [tinkernorth.github.io/satellite](https://tinkernorth.github.io/satellite/).
 
@@ -103,7 +115,7 @@ sha256sum --ignore-missing -c SHA256SUMS
 
 On Windows, `Get-FileHash .\SatelliteSetup.exe` in PowerShell gives the hash to compare with the line in `SHA256SUMS`. [SECURITY.md](SECURITY.md) has the signature and build provenance checks, and how to report a vulnerability.
 
-The Windows installer is not code-signed yet. I don't have a certificate, so 2.3.0 shipped unsigned (the versioned copy on the release page is named `SatelliteSetup-2.3.0-unsigned.exe`), and SmartScreen will say the publisher is unknown. The checksum and its signature are how you can tell it came from this repository's release.
+The Windows installer is not code-signed yet. I don't have a certificate, so 2.4.0 ships unsigned (the versioned copy on the release page is named `SatelliteSetup-2.4.0-unsigned.exe`), and SmartScreen will say the publisher is unknown. The checksum and its signature are how you can tell it came from this repository's release.
 
 Satellite works on your own network and has no account, no analytics and no ads. Three things can leave your PC, and each has a switch in Settings: a daily check for a new version against GitHub, a check for a newer controller database at dish.tinkernorth.com, and, if Satellite crashes, one crash report to Sentry. Crash reports are on by default, and the Windows installer asks about them and the update check. Controller input and audio never leave your network. The diagnostics file on the Debug page is something you save and send yourself; Satellite never sends it. [PRIVACY.md](PRIVACY.md) says exactly what is stored and sent.
 

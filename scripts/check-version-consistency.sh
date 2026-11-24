@@ -37,7 +37,8 @@
 #   _release_harden.yml pin, against scripts/tools.sh and THIRD_PARTY.md, and
 #   the SLSA generator commit SECURITY.md's recipe names, against release.yml.
 #
-#   README.md: its relative links resolve, every X.Y.Z it names is /VERSION,
+#   README.md: its relative links resolve, every X.Y.Z it names is /VERSION
+#   or a release CHANGELOG.md lists,
 #   it says which release is current, and the family's shared blocks match
 #   tests/fixtures/readme-family/ word for word.
 #
@@ -238,7 +239,8 @@ named="$(grep -oE 'C\+\+[0-9]{2}' CONTRIBUTING.md | sort -u | tr '\n' ' ')"
 expect "the C++ standard CONTRIBUTING.md names" "${named% }" "C++$cxx"
 
 # ── README.md ────────────────────────────────────────────────────────────
-# Every relative link resolves, every X.Y.Z it names is the version, it says
+# Every relative link resolves, every X.Y.Z it names is the version or an
+# earlier release, it says
 # which release is current, and it carries the family's shared blocks word
 # for word (tests/fixtures/readme-family/, the same files dish-android,
 # dish-linux and dish-mac hold).
@@ -255,9 +257,12 @@ for target in re.findall(r"\]\(([^)\s]+)\)", readme):
         problems.append(f"links to {target}, which does not exist")
 if f"Satellite {ver} is the current release." not in readme:
     problems.append(f"does not say Satellite {ver} is the current release")
+# Any other X.Y.Z must be an earlier release CHANGELOG.md has a heading for
+# (a note for people still on it), never a version that does not exist.
+released = set(re.findall(r"^## \[?(\d+\.\d+\.\d+)\]?", open("CHANGELOG.md", encoding="utf-8").read(), re.M))
 for found in sorted(set(re.findall(r"\b(\d+\.\d+\.\d+)\b", readme))):
-    if found != ver:
-        problems.append(f"names version {found}; VERSION is {ver}")
+    if found != ver and found not in released:
+        problems.append(f"names version {found}, which is neither VERSION ({ver}) nor a release CHANGELOG.md lists")
 fixtures = "tests/fixtures/readme-family"
 for name in sorted(os.listdir(fixtures)):
     block = open(os.path.join(fixtures, name), encoding="utf-8").read().rstrip("\n")
