@@ -441,7 +441,7 @@ static void testDpapiKeystore() {
     std::string keyfile = tmp.path + "/Library/Application Support/satellite/keyfile";
     EXPECT(fileExists(keyfile));
     struct stat st{};
-    if (stat(keyfile.c_str(), &st) == 0) EXPECT_EQ((int)(st.st_mode & 0777), 0600);
+    if (stat(keyfile.c_str(), &st) == 0) EXPECT_EQ((int)(st.st_mode & 0777U), 0600);
 
     TEST("dpapiDecrypt: round-trips the plaintext");
     EXPECT_EQ(dpapiDecrypt(blob), secret);

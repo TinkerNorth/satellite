@@ -204,7 +204,7 @@ static void test_ring_reader_lap_skip() {
     std::vector<uint8_t> sec(OUTPUT_SECTION_SIZE, 0);
     uint32_t cursor = 0;
     for (uint32_t i = 0; i < OUTPUT_RING_SLOTS + 10; i++) {
-        ringPublish(sec.data(), OUTPUT_SOURCE_HID_OUTPUT, 0x05, {static_cast<uint8_t>(i & 0xFF)});
+        ringPublish(sec.data(), OUTPUT_SOURCE_HID_OUTPUT, 0x05, {static_cast<uint8_t>(i & 0xFFU)});
     }
     OutputPacket pkt;
     EXPECT(readNextOutputPacket(sec.data(), cursor, pkt));

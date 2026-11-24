@@ -16,6 +16,9 @@
 #include <string>
 
 #include "test_util.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 // XUSB wButtons bits (core/types.h convention, mirrors vigem_adapter.cpp).
 namespace {
@@ -121,15 +124,15 @@ static void test_pack_neutral_frame() {
 static void test_pack_buttons() {
     TEST("pack: XUSB button word maps to the DS4 bit positions");
     Ds4InputState st;
-    st.pad.wButtons = XUSB_A | XUSB_B | XUSB_X | XUSB_Y | XUSB_LB | XUSB_RB | XUSB_BACK |
-                      XUSB_START | XUSB_LS | XUSB_RS | XUSB_GUIDE;
+    st.pad.wButtons = bits::low16(bits::u32(XUSB_A) | XUSB_B | XUSB_X | XUSB_Y | XUSB_LB | XUSB_RB |
+                                  XUSB_BACK | XUSB_START | XUSB_LS | XUSB_RS | XUSB_GUIDE);
     uint8_t r[DS4V2_INPUT_REPORT_BYTES];
     ds4PackInputReport(st, r);
 
     // byte 5: hat released (0x8) + Square|Cross|Circle|Triangle.
-    EXPECT_EQ(r[5], (uint8_t)(0x08 | 0x10 | 0x20 | 0x40 | 0x80));
+    EXPECT_EQ(r[5], (uint8_t)(0x08U | 0x10U | 0x20U | 0x40U | 0x80U));
     // byte 6: L1|R1|Share|Options|L3|R3 (no analog triggers -> no L2/R2 bits).
-    EXPECT_EQ(r[6], (uint8_t)(0x01 | 0x02 | 0x10 | 0x20 | 0x40 | 0x80));
+    EXPECT_EQ(r[6], (uint8_t)(0x01U | 0x02U | 0x10U | 0x20U | 0x40U | 0x80U));
     // byte 7: PS button only.
     EXPECT_EQ(r[7], (uint8_t)0x01);
 
@@ -137,11 +140,11 @@ static void test_pack_buttons() {
     Ds4InputState a;
     a.pad.wButtons = XUSB_A; // Cross
     ds4PackInputReport(a, r);
-    EXPECT_EQ(r[5], (uint8_t)(0x08 | 0x20));
+    EXPECT_EQ(r[5], (uint8_t)(0x08U | 0x20U));
     Ds4InputState x;
     x.pad.wButtons = XUSB_X; // Square
     ds4PackInputReport(x, r);
-    EXPECT_EQ(r[5], (uint8_t)(0x08 | 0x10));
+    EXPECT_EQ(r[5], (uint8_t)(0x08U | 0x10U));
 }
 
 static void test_pack_triggers_and_digital_bits() {
@@ -153,7 +156,7 @@ static void test_pack_triggers_and_digital_bits() {
     ds4PackInputReport(st, r);
     EXPECT_EQ(r[8], (uint8_t)200);
     EXPECT_EQ(r[9], (uint8_t)1);
-    EXPECT_EQ(r[6], (uint8_t)(0x04 | 0x08)); // L2 + R2 digital (hardware derives these)
+    EXPECT_EQ(r[6], (uint8_t)(0x04U | 0x08U)); // L2 + R2 digital (hardware derives these)
 }
 
 static void test_hat_encoding() {
@@ -196,7 +199,7 @@ static void test_pack_timestamp_and_counter() {
     ds4PackInputReport(st, r);
     EXPECT_EQ(r[10], (uint8_t)0xEF);
     EXPECT_EQ(r[11], (uint8_t)0xBE);
-    EXPECT_EQ(r[7], (uint8_t)(0x3F << 2));
+    EXPECT_EQ(r[7], (uint8_t)(0x3FU << 2U));
 
     st.frameCounter = 0x40; // 7th bit must be masked off
     ds4PackInputReport(st, r);
@@ -235,7 +238,7 @@ static void test_battery_byte() {
     b.status = BATTERY_STATUS_DISCHARGING;
     EXPECT_EQ(ds4BatteryByte(b), (uint8_t)4); // 47/10, no cable bit
     b.status = BATTERY_STATUS_CHARGING;
-    EXPECT_EQ(ds4BatteryByte(b), (uint8_t)(0x10 | 4));
+    EXPECT_EQ(ds4BatteryByte(b), (uint8_t)(0x10U | 4U));
     b.status = BATTERY_STATUS_FULL;
     EXPECT_EQ(ds4BatteryByte(b), (uint8_t)0x1B); // cable + 11 sentinel
     b.status = BATTERY_STATUS_WIRED;
@@ -281,13 +284,13 @@ static void test_pack_touchpad_12bit() {
     EXPECT_EQ(r[38], f0[3]);
     EXPECT_EQ(r[35], (uint8_t)0x05); // active -> lift bit clear + id
     // 12-bit reconstruction: x = 960, y = 471.
-    const int gotX = r[36] | ((r[37] & 0x0F) << 8);
-    const int gotY = (r[37] >> 4U) | (r[38] << 4U);
+    const int gotX = bits::loadPacked12Low(r + 36);
+    const int gotY = bits::loadPacked12High(r + 37);
     EXPECT_EQ(gotX, 960);
     EXPECT_EQ(gotY, 471);
 
-    EXPECT_EQ(r[39], (uint8_t)(0x80 | 9)); // finger 1 lifted, id preserved
-    EXPECT_EQ(r[7], (uint8_t)0x02);        // touchpad click bit
+    EXPECT_EQ(r[39], (uint8_t)(0x80U | 9U)); // finger 1 lifted, id preserved
+    EXPECT_EQ(r[7], (uint8_t)0x02);          // touchpad click bit
 }
 
 static void test_output_parse_prefixed_and_bare() {
@@ -408,10 +411,7 @@ static void test_calibration_usb_consumer_parse() {
     TEST("calibration: USB per-axis parse yields non-zero symmetric gyro denominators");
     uint8_t buf[64];
     EXPECT_EQ(ds4FeatureReport(0x02, 3, buf), (size_t)37);
-    auto le16 = [&buf](int off) {
-        return static_cast<int16_t>(static_cast<uint16_t>(buf[off]) |
-                                    (static_cast<uint16_t>(buf[off + 1]) << 8U));
-    };
+    auto le16 = [&buf](int off) { return bits::asInt16(bits::loadLe16(buf + off)); };
     const int pitchDenom = le16(7) - le16(9);
     const int yawDenom = le16(11) - le16(13);
     const int rollDenom = le16(15) - le16(17);

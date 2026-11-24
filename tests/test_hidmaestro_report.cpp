@@ -10,18 +10,19 @@
 
 #include "../src/core/json.h"
 #include "../src/platform/windows/hidmaestro_report.h"
+#include "core/bits.h"
 
 #include <cstring>
 #include <set>
 #include <string>
 
+namespace bits = satellite::bits;
+
 using namespace satellite::hidmaestro;
 
 namespace {
 
-uint16_t u16at(const uint8_t* p, size_t off) {
-    return static_cast<uint16_t>(p[off] | (p[off + 1] << 8U));
-}
+uint16_t u16at(const uint8_t* p, size_t off) { return bits::loadLe16(p + off); }
 
 int16_t s16at(const uint8_t* p, size_t off) { return static_cast<int16_t>(u16at(p, off)); }
 
@@ -29,7 +30,7 @@ int16_t s16at(const uint8_t* p, size_t off) { return static_cast<int16_t>(u16at(
 // X = u16 - 32768, Y = 32767 - u16, trigger = (u16 & 0x3FF) * 255 / 1023.
 int gipToXinputX(uint16_t v) { return static_cast<int>(v) - 32768; }
 int gipToXinputY(uint16_t v) { return 32767 - static_cast<int>(v); }
-int gipToXinputTrigger(uint16_t v) { return ((v & 0x03FF) * 255) / 1023; }
+int gipToXinputTrigger(uint16_t v) { return ((v & 0x03FFU) * 255) / 1023; }
 
 } // namespace
 
@@ -134,12 +135,12 @@ static void test_x360_sticks_roundtrip_extremes() {
 static void test_x360_buttons_and_hat() {
     TEST("packX360Report — button bits and hat encoding");
     GamepadReport pad{};
-    pad.wButtons = 0x1000 | 0x0010 | 0x0040 | 0x0001; // A + Start + LS + dpad-up
+    pad.wButtons = 0x1000U | 0x0010U | 0x0040U | 0x0001U; // A + Start + LS + dpad-up
     uint8_t out[X360_REPORT_BYTES];
     packX360Report(pad, out);
-    EXPECT_EQ(out[14], (uint8_t)(0x01 | 0x80));     // A + Start
-    EXPECT_EQ(out[15], (uint8_t)(0x01 | (1 << 2))); // LS + hat N (1)
-    pad.wButtons = 0x0002 | 0x0004;                 // dpad down+left -> SW (6)
+    EXPECT_EQ(out[14], (uint8_t)(0x01U | 0x80U));      // A + Start
+    EXPECT_EQ(out[15], (uint8_t)(0x01U | (1U << 2U))); // LS + hat N (1)
+    pad.wButtons = 0x0002U | 0x0004U;                  // dpad down+left -> SW (6)
     packX360Report(pad, out);
     EXPECT_EQ(out[15] >> 2U, 6);
 }
@@ -170,7 +171,7 @@ static void test_gip_roundtrip() {
     pad.sThumbRY = 32767;
     pad.bLeftTrigger = 255;
     pad.bRightTrigger = 128;
-    pad.wButtons = 0x1000 | 0x0400 | 0x0020 | 0x0001; // A + Guide + Back + dpad-up
+    pad.wButtons = 0x1000U | 0x0400U | 0x0020U | 0x0001U; // A + Guide + Back + dpad-up
     uint8_t gip[INPUT_GIP_LENGTH];
     packGip(pad, gip);
 
@@ -182,8 +183,8 @@ static void test_gip_roundtrip() {
     // Mid-scale triggers round within the companion's 10-bit integer math.
     const int rt = gipToXinputTrigger(u16at(gip, 10));
     EXPECT(rt >= 127 && rt <= 128);
-    EXPECT_EQ(gip[12], (uint8_t)0x01);                     // A
-    EXPECT_EQ(gip[13], (uint8_t)(0x01 | (1 << 2) | 0x40)); // Back + hat N + Guide
+    EXPECT_EQ(gip[12], (uint8_t)0x01);                         // A
+    EXPECT_EQ(gip[13], (uint8_t)(0x01U | (1U << 2U) | 0x40U)); // Back + hat N + Guide
 }
 
 static void test_sony_imu_rescale() {
@@ -234,7 +235,7 @@ static void test_ds4_payload() {
     st.pad.sThumbLX = 0;
     st.pad.sThumbLY = 0;
     st.pad.bLeftTrigger = 200;
-    st.pad.wButtons = 0x1000 | 0x0001; // Cross + dpad up
+    st.pad.wButtons = 0x1000U | 0x0001U; // Cross + dpad up
     st.motion.gyroX = 100;
     st.batteryByte = 0x1B;
     uint8_t out[DS4_PAYLOAD_BYTES];
@@ -243,17 +244,17 @@ static void test_ds4_payload() {
     EXPECT_EQ(out[0], (uint8_t)127); // LX centre
     EXPECT_EQ(out[1], (uint8_t)128); // LY centre (inverted axis)
     // Byte 4 (full byte 5): hat 0 (N) | Cross bit (1<<5 in the 14-bit run).
-    EXPECT_EQ(out[4], (uint8_t)(0x00 | 0x20));
+    EXPECT_EQ(out[4], (uint8_t)(0x00U | 0x20U));
     // L2 digital bit rides byte 5 (full 6) bit 2; analog at payload 7.
-    EXPECT_EQ(out[5] & 0x04, 0x04);
+    EXPECT_EQ(bits::u32(out[5]) & 0x04U, 0x04U);
     EXPECT_EQ(out[7], (uint8_t)200);
     EXPECT_EQ(out[8], (uint8_t)0);
     EXPECT_EQ(out[11], (uint8_t)0x1B);                // battery (full byte 12)
     EXPECT_EQ(s16at(out, 12), sonyGyroFromWire(100)); // gyroX (full 13), rescaled
     EXPECT_EQ(s16at(out, 12), (int16_t)97);
-    EXPECT_EQ(out[29], (uint8_t)0x1B); // hid-sony battery mirror (full 30)
-    EXPECT_EQ(out[32], (uint8_t)1);    // one touch frame declared (full 33)
-    EXPECT_EQ(out[34] & 0x80, 0x80);   // finger 0 inactive
+    EXPECT_EQ(out[29], (uint8_t)0x1B);            // hid-sony battery mirror (full 30)
+    EXPECT_EQ(out[32], (uint8_t)1);               // one touch frame declared (full 33)
+    EXPECT_EQ(bits::u32(out[34]) & 0x80U, 0x80U); // finger 0 inactive
 }
 
 static void test_ds5_payload_neutral() {
@@ -272,15 +273,15 @@ static void test_ds5_payload_neutral() {
     EXPECT_EQ(out[7], (uint8_t)8); // hat released, no face buttons
     EXPECT_EQ(out[8], (uint8_t)0);
     EXPECT_EQ(out[9], (uint8_t)0);
-    EXPECT_EQ(out[32] & 0x80, 0x80); // touch fingers inactive
-    EXPECT_EQ(out[36] & 0x80, 0x80);
-    EXPECT_EQ(out[52], (uint8_t)(0x20 | 10)); // full/wired default
+    EXPECT_EQ(bits::u32(out[32]) & 0x80U, 0x80U); // touch fingers inactive
+    EXPECT_EQ(bits::u32(out[36]) & 0x80U, 0x80U);
+    EXPECT_EQ(out[52], (uint8_t)(0x20U | 10U)); // full/wired default
 }
 
 static void test_ds5_payload_buttons_motion_touch() {
     TEST("packDs5Payload — buttons, IMU rescale + timestamp, touch, battery");
     Ds5InputState st{};
-    st.pad.wButtons = 0x1000 | 0x8000 | 0x0100 | 0x0020 | 0x0400 | 0x0008;
+    st.pad.wButtons = 0x1000U | 0x8000U | 0x0100U | 0x0020U | 0x0400U | 0x0008U;
     // Cross + Triangle + L1 + Create + PS + dpad-right
     st.pad.bRightTrigger = 55;
     st.motion.gyroY = -200;
@@ -298,9 +299,9 @@ static void test_ds5_payload_buttons_motion_touch() {
     uint8_t out[DS5_PAYLOAD_BYTES];
     packDs5Payload(st, out);
 
-    EXPECT_EQ(out[7], (uint8_t)(2 /*hat E*/ | 0x20 /*Cross*/ | 0x80 /*Triangle*/));
-    EXPECT_EQ(out[8], (uint8_t)(0x01 /*L1*/ | 0x08 /*R2 digital*/ | 0x10 /*Create*/));
-    EXPECT_EQ(out[9], (uint8_t)(0x01 /*PS*/ | 0x02 /*touchpad click*/));
+    EXPECT_EQ(out[7], (uint8_t)(2U /*hat E*/ | 0x20U /*Cross*/ | 0x80U /*Triangle*/));
+    EXPECT_EQ(out[8], (uint8_t)(0x01U /*L1*/ | 0x08U /*R2 digital*/ | 0x10U /*Create*/));
+    EXPECT_EQ(out[9], (uint8_t)(0x01U /*PS*/ | 0x02U /*touchpad click*/));
     EXPECT_EQ(out[5], (uint8_t)55);
     EXPECT_EQ(s16at(out, 17), sonyGyroFromWire(-200)); // gyroY (full 18)
     EXPECT_EQ(s16at(out, 17), (int16_t)-195);
@@ -309,9 +310,9 @@ static void test_ds5_payload_buttons_motion_touch() {
     EXPECT_EQ(out[27], (uint8_t)0x04); // timestamp LE (full 28)
     EXPECT_EQ(out[30], (uint8_t)0x01);
     EXPECT_EQ(out[32], (uint8_t)5); // finger 0 active, id 5
-    const int touchX = out[33] | ((out[34] & 0x0F) << 8);
+    const int touchX = out[33] | ((out[34] & 0x0FU) << 8U);
     EXPECT_EQ(touchX, 960);
-    EXPECT_EQ(out[52], (uint8_t)(0x10 | 4)); // charging at 40%
+    EXPECT_EQ(out[52], (uint8_t)(0x10U | 4U)); // charging at 40%
 }
 
 // WBUTTON_MIC_MUTE is the one free bit in the XINPUT-shaped button word, and
@@ -337,18 +338,18 @@ static void test_ds5_mic_mute_button_bit() {
     }
 
     TEST("mute coexists with PS and the touchpad click in the same byte");
-    st.pad.wButtons = WBUTTON_MIC_MUTE | 0x0400; // + Guide -> PS
+    st.pad.wButtons = WBUTTON_MIC_MUTE | 0x0400U; // + Guide -> PS
     st.touchpadButtonPressed = true;
     uint8_t both[DS5_PAYLOAD_BYTES];
     packDs5Payload(st, both);
-    EXPECT_EQ(both[9], (uint8_t)(0x01 | 0x02 | 0x04));
+    EXPECT_EQ(both[9], (uint8_t)(0x01U | 0x02U | 0x04U));
 
     TEST("clearing the bit clears it again (no latched state)");
     st.pad.wButtons = 0x0400;
     st.touchpadButtonPressed = true;
     uint8_t cleared[DS5_PAYLOAD_BYTES];
     packDs5Payload(st, cleared);
-    EXPECT_EQ(cleared[9], (uint8_t)(0x01 | 0x02));
+    EXPECT_EQ(cleared[9], (uint8_t)(0x01U | 0x02U));
 }
 
 // Every other identity must ignore 0x0800: those pads have no mute button, and
@@ -408,15 +409,15 @@ static void test_ds5_edge_payload() {
 
     TEST("packDs5EdgePayload — back buttons share byte 9 with PS, the pad click and mute");
     st.extButtons = EDGE_PADDLES;
-    st.pad.wButtons = 0x0400 | WBUTTON_MIC_MUTE;
+    st.pad.wButtons = 0x0400U | WBUTTON_MIC_MUTE;
     st.touchpadButtonPressed = true;
     packDs5EdgePayload(st, edge);
-    EXPECT_EQ(edge[9], (uint8_t)(0x01 | 0x02 | 0x04 | 0x10 | 0x20 | 0x40 | 0x80));
+    EXPECT_EQ(edge[9], (uint8_t)(0x01U | 0x02U | 0x04U | 0x10U | 0x20U | 0x40U | 0x80U));
 
     TEST("packDs5EdgePayload — a frame without the back buttons lets go of them");
     st.extButtons = 0;
     packDs5EdgePayload(st, edge);
-    EXPECT_EQ(edge[9], (uint8_t)(0x01 | 0x02 | 0x04));
+    EXPECT_EQ(edge[9], (uint8_t)(0x01U | 0x02U | 0x04U));
 }
 
 constexpr uint32_t EVERY_EXT_BIT = 0xFFFFFFFFu;
@@ -530,18 +531,18 @@ static void test_switch_body_buttons_positional() {
     packSwitchBody(input, motion, out);
     EXPECT_EQ(out[2], (uint8_t)0x08);
 
-    input.pad.wButtons = 0x4000 | 0x8000; // X (west) -> Y, Y (north) -> X
+    input.pad.wButtons = 0x4000U | 0x8000U; // X (west) -> Y, Y (north) -> X
     packSwitchBody(input, motion, out);
-    EXPECT_EQ(out[2], (uint8_t)(0x01 | 0x02));
+    EXPECT_EQ(out[2], (uint8_t)(0x01U | 0x02U));
 
-    input.pad.wButtons = 0x0020 | 0x0010 | 0x0400 | 0x0040; // Back/Start/Guide/LS
+    input.pad.wButtons = 0x0020U | 0x0010U | 0x0400U | 0x0040U; // Back/Start/Guide/LS
     packSwitchBody(input, motion, out);
-    EXPECT_EQ(out[3], (uint8_t)(0x01 | 0x02 | 0x10 | 0x08));
+    EXPECT_EQ(out[3], (uint8_t)(0x01U | 0x02U | 0x10U | 0x08U));
 
-    input.pad.wButtons = 0x0001 | 0x0008 | 0x0100; // dpad up + right + LB
+    input.pad.wButtons = 0x0001U | 0x0008U | 0x0100U; // dpad up + right + LB
     input.pad.bLeftTrigger = 255;
     packSwitchBody(input, motion, out);
-    EXPECT_EQ(out[4], (uint8_t)(0x02 | 0x04 | 0x40 | 0x80));
+    EXPECT_EQ(out[4], (uint8_t)(0x02U | 0x04U | 0x40U | 0x80U));
     EXPECT_EQ(out[2], (uint8_t)0);
 }
 
@@ -553,8 +554,8 @@ static void test_switch_body_sticks_and_imu() {
     uint8_t out[SWITCH_BODY_BYTES];
     MotionReport motion{};
     packSwitchBody(input, motion, out);
-    const uint16_t lx = static_cast<uint16_t>(out[5] | ((out[6] & 0x0F) << 8));
-    const uint16_t ly = static_cast<uint16_t>((out[6] >> 4U) | (out[7] << 4U));
+    const uint16_t lx = bits::loadPacked12Low(out + 5);
+    const uint16_t ly = bits::loadPacked12High(out + 6);
     EXPECT_EQ(lx, (uint16_t)0xE00); // 0x800 + full-scale 0x600
     EXPECT_EQ(ly, (uint16_t)0xE00);
 
@@ -586,7 +587,7 @@ static void test_switch_body_capture_from_misc1() {
     TEST("packSwitchBody — Capture shares its byte with Home, each its own bit");
     input.pad.wButtons = 0x0400; // Guide -> Home
     packSwitchBody(input, motion, pressed);
-    EXPECT_EQ(pressed[3], (uint8_t)(0x10 | 0x20));
+    EXPECT_EQ(pressed[3], (uint8_t)(0x10U | 0x20U));
     input.extButtons = 0;
     packSwitchBody(input, motion, pressed);
     EXPECT_EQ(pressed[3], (uint8_t)0x10);
@@ -674,8 +675,8 @@ static void test_decode_ds5_edge_output() {
     pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
     pkt.reportId = 0x02;
     pkt.size = 63;
-    pkt.data[0] = 0x03 | 0x04; // motors + right trigger effect
-    pkt.data[1] = 0x04 | 0x10; // lightbar + player LEDs
+    pkt.data[0] = 0x03U | 0x04U; // motors + right trigger effect
+    pkt.data[1] = 0x04U | 0x10U; // lightbar + player LEDs
     pkt.data[2] = 11;
     pkt.data[3] = 22;
     for (int i = 0; i < 11; i++) pkt.data[10 + i] = (uint8_t)(0x40 + i);
@@ -701,7 +702,7 @@ static void test_decode_ds5_trigger_effects() {
     pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
     pkt.reportId = 0x02;
     pkt.size = 47;
-    pkt.data[0] = 0x04 | 0x08; // right + left trigger effect valid
+    pkt.data[0] = 0x04U | 0x08U; // right + left trigger effect valid
     for (int i = 0; i < 11; i++) pkt.data[10 + i] = (uint8_t)(0x40 + i); // right block
     for (int i = 0; i < 11; i++) pkt.data[21 + i] = (uint8_t)(0x60 + i); // left block
     DecodedOutput d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
@@ -720,7 +721,7 @@ static void test_decode_ds5_trigger_effects() {
     EXPECT(d.hasLeftTriggerEffect);
 
     // A report too short to hold the blocks decodes neither.
-    pkt.data[0] = 0x04 | 0x08;
+    pkt.data[0] = 0x04U | 0x08U;
     pkt.size = 31;
     d = decodeOutputPacket(GamepadIdentity::DualSense, pkt);
     EXPECT(!d.hasRightTriggerEffect);
@@ -904,10 +905,10 @@ static void test_decode_ds5_mic_led_coexists() {
     pkt.source = OUTPUT_SOURCE_HID_OUTPUT;
     pkt.reportId = 0x02;
     pkt.size = 47;
-    pkt.data[0] = 0x03 | 0x04 | 0x08; // motors + both trigger effects
-    pkt.data[1] = 0x01 | 0x04 | 0x10; // mute lamp + lightbar + player LEDs
-    pkt.data[2] = 11;                 // right/weak
-    pkt.data[3] = 22;                 // left/strong
+    pkt.data[0] = 0x03U | 0x04U | 0x08U; // motors + both trigger effects
+    pkt.data[1] = 0x01U | 0x04U | 0x10U; // mute lamp + lightbar + player LEDs
+    pkt.data[2] = 11;                    // right/weak
+    pkt.data[3] = 22;                    // left/strong
     pkt.data[8] = MIC_LED_STATE_PULSE;
     for (int i = 0; i < 11; i++) pkt.data[10 + i] = (uint8_t)(0x40 + i);
     for (int i = 0; i < 11; i++) pkt.data[21 + i] = (uint8_t)(0x60 + i);

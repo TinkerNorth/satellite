@@ -39,6 +39,9 @@
 #include <thread>
 
 #include "test_util.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 using satellite::Json;
 using satellite::jsonBool;
@@ -203,7 +206,8 @@ int main() {
     // Paired identity used throughout.
     const std::string devId = "dev-routes-1";
     uint8_t pairingKey[CRYPTO_KEY_SIZE];
-    for (int i = 0; i < CRYPTO_KEY_SIZE; i++) pairingKey[i] = static_cast<uint8_t>(0xA0 ^ i);
+    for (int i = 0; i < CRYPTO_KEY_SIZE; i++)
+        pairingKey[i] = bits::lowByte(0xA0U ^ static_cast<uint32_t>(i));
     putPairedDevice(devId, hexEncode(pairingKey, CRYPTO_KEY_SIZE));
     const std::string proof = computeHmacProof(pairingKey, devId);
     const httplib::Headers auth = {{"X-Device-Id", devId}, {"X-Hmac-Proof", proof}};
@@ -597,7 +601,8 @@ int main() {
         TEST("GET /api/connections/:id/diagnostics for another device's connection: 404");
         const std::string otherId = "dev-routes-other";
         uint8_t secondKey[CRYPTO_KEY_SIZE];
-        for (int i = 0; i < CRYPTO_KEY_SIZE; i++) secondKey[i] = static_cast<uint8_t>(0x3C ^ i);
+        for (int i = 0; i < CRYPTO_KEY_SIZE; i++)
+            secondKey[i] = bits::lowByte(0x3CU ^ static_cast<uint32_t>(i));
         putPairedDevice(otherId, hexEncode(secondKey, CRYPTO_KEY_SIZE));
         const httplib::Headers otherAuth = {{"X-Device-Id", otherId},
                                             {"X-Hmac-Proof", computeHmacProof(secondKey, otherId)}};

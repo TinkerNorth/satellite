@@ -11,6 +11,9 @@
 #include <vector>
 
 #include "test_util.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 using satellite::hidmaestro::DS5_PAYLOAD_BYTES;
 using satellite::hidmaestro::Ds5InputState;
@@ -23,7 +26,7 @@ constexpr uint16_t HAT_NIBBLE = 0x000F;
 constexpr uint16_t XUSB_DPAD_BITS = 0x000F;
 // Every XUSB bit the table must account for: the ten buttons the pads share.
 // The d-pad is the hat, the mute bit is the DualSense's alone.
-constexpr uint16_t XUSB_MAPPED_BITS = 0xF000 | 0x0300 | 0x0030 | 0x00C0;
+constexpr uint16_t XUSB_MAPPED_BITS = 0xF000U | 0x0300U | 0x0030U | 0x00C0U;
 
 // The button word as each packer writes it: bytes 5..6 of the DS4 report,
 // bytes 7..8 of the DS5 payload.
@@ -44,7 +47,7 @@ uint16_t ds5ButtonWord(uint16_t wButtons, uint8_t lt, uint8_t rt) {
     st.pad.bRightTrigger = rt;
     uint8_t out[DS5_PAYLOAD_BYTES];
     packDs5Payload(st, out);
-    return static_cast<uint16_t>(out[7] | (out[8] << 8U));
+    return bits::loadLe16(out + 7);
 }
 
 } // namespace
@@ -59,7 +62,7 @@ int main() {
             EXPECT((xusbSeen & m.xusb) == 0);
             EXPECT((sonySeen & m.sony) == 0);
             EXPECT((m.sony & HAT_NIBBLE) == 0);
-            EXPECT((m.sony & (SONY_BUTTON_L2 | SONY_BUTTON_R2)) == 0);
+            EXPECT(!bits::anySet(m.sony, bits::u32(SONY_BUTTON_L2) | SONY_BUTTON_R2));
             EXPECT((m.xusb & XUSB_DPAD_BITS) == 0);
             xusbSeen |= m.xusb;
             sonySeen |= m.sony;
@@ -72,9 +75,9 @@ int main() {
         static_assert(sonyBitFor(0x0080) == (1u << 15U), "R3");
         static_assert(sonyBitFor(0x0400) == 0, "Guide has no place in the word");
         for (const auto& m : XUSB_TO_SONY_BUTTONS) EXPECT_EQ(sonyBitFor(m.xusb), m.sony);
-        EXPECT_EQ(sonyBitFor(0x0001), 0);          // the d-pad is the hat
-        EXPECT_EQ(sonyBitFor(0x0800), 0);          // mute is the DualSense's alone
-        EXPECT_EQ(sonyBitFor(0x1000 | 0x2000), 0); // one bit at a time, never a mask
+        EXPECT_EQ(sonyBitFor(0x0001), 0);            // the d-pad is the hat
+        EXPECT_EQ(sonyBitFor(0x0800), 0);            // mute is the DualSense's alone
+        EXPECT_EQ(sonyBitFor(0x1000U | 0x2000U), 0); // one bit at a time, never a mask
     }
     {
         TEST("the hat rides in the low nibble and nothing else touches it");
@@ -85,14 +88,15 @@ int main() {
     }
     {
         TEST("the digital L2/R2 bits follow the analog triggers, any pressure at all");
-        EXPECT_EQ(sonyButtonsFromXusb(0, 0, 0) & (SONY_BUTTON_L2 | SONY_BUTTON_R2), 0);
-        EXPECT_EQ(sonyButtonsFromXusb(0, 1, 0) & (SONY_BUTTON_L2 | SONY_BUTTON_R2), SONY_BUTTON_L2);
-        EXPECT_EQ(sonyButtonsFromXusb(0, 0, 1) & (SONY_BUTTON_L2 | SONY_BUTTON_R2), SONY_BUTTON_R2);
+        const uint32_t triggerBits = bits::u32(SONY_BUTTON_L2) | SONY_BUTTON_R2;
+        EXPECT_EQ(bits::u32(sonyButtonsFromXusb(0, 0, 0)) & triggerBits, 0U);
+        EXPECT_EQ(bits::u32(sonyButtonsFromXusb(0, 1, 0)) & triggerBits, bits::u32(SONY_BUTTON_L2));
+        EXPECT_EQ(bits::u32(sonyButtonsFromXusb(0, 0, 1)) & triggerBits, bits::u32(SONY_BUTTON_R2));
     }
     {
         TEST("the DualShock 4 report and the DualSense payload agree on every single button");
         for (int bit = 0; bit < 16; bit++) {
-            const uint16_t b = static_cast<uint16_t>(1u << bit);
+            const uint16_t b = bits::low16(1U << static_cast<unsigned>(bit));
             EXPECT_EQ(ds4ButtonWord(b, 0, 0), ds5ButtonWord(b, 0, 0));
         }
         EXPECT_EQ(ds4ButtonWord(0, 90, 0), ds5ButtonWord(0, 90, 0));
@@ -100,8 +104,9 @@ int main() {
     }
     {
         TEST("and on combinations, including every mapped button at once");
-        const std::vector<uint16_t> combos = {0x1000 | 0x8000 | 0x0100 | 0x0020 | 0x0008, 0xF000,
-                                              0x0300 | 0x00C0, XUSB_MAPPED_BITS | 0x0005, 0xFFFF};
+        const std::vector<uint16_t> combos = {0x1000U | 0x8000U | 0x0100U | 0x0020U | 0x0008U,
+                                              0xF000, 0x0300U | 0x00C0U, XUSB_MAPPED_BITS | 0x0005U,
+                                              0xFFFF};
         for (const uint16_t b : combos) {
             EXPECT_EQ(ds4ButtonWord(b, 200, 200), ds5ButtonWord(b, 200, 200));
         }
@@ -111,10 +116,10 @@ int main() {
         // Cross + Triangle + L1 + Create + dpad-right, R2 pressed: hat E, and the bits the
         // HIDMaestro suite already pins for the DualSense.
         const uint16_t word =
-            sonyButtonsFromXusb(0x1000 | 0x8000 | 0x0100 | 0x0020 | 0x0008, 0, 55);
-        EXPECT_EQ(word & 0xFF, 2 | 0x20 | 0x80);
-        EXPECT_EQ(word >> 8U, 0x01 | 0x08 | 0x10);
-        EXPECT_EQ(ds4ButtonWord(0x1000 | 0x8000 | 0x0100 | 0x0020 | 0x0008, 0, 55), word);
+            sonyButtonsFromXusb(0x1000U | 0x8000U | 0x0100U | 0x0020U | 0x0008U, 0, 55);
+        EXPECT_EQ(word & 0xFFU, 2U | 0x20U | 0x80U);
+        EXPECT_EQ(bits::u32(word) >> 8U, 0x01U | 0x08U | 0x10U);
+        EXPECT_EQ(ds4ButtonWord(0x1000U | 0x8000U | 0x0100U | 0x0020U | 0x0008U, 0, 55), word);
     }
 
     std::cout << "test_sony_buttons: " << g_pass << " passed, " << g_fail << " failed\n";

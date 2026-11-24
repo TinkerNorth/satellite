@@ -300,12 +300,12 @@ static void test_controller_state_labels_are_in_every_catalog() {
 // function that names them, over every input it takes.
 static std::set<std::string> hostPartsWritten() {
     std::set<std::string> written;
-    for (int bits = 0; bits < 16; ++bits) {
+    for (unsigned mask = 0; mask < 16U; ++mask) {
         HostDisabled d;
-        d.input = (bits & 1) != 0;
-        d.hid = (bits & 2) != 0;
-        d.xinput = (bits & 4) != 0;
-        d.audio = (bits & 8) != 0;
+        d.input = (mask & 1U) != 0U;
+        d.hid = (mask & 2U) != 0U;
+        d.xinput = (mask & 4U) != 0U;
+        d.audio = (mask & 8U) != 0U;
         for (const char* part : disabledInWindows(d)) written.insert(part);
     }
     return written;

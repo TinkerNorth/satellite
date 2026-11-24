@@ -490,7 +490,7 @@ class LawBackend : public IGamepadPort {
         report.strongMagnitude = level;
         report.weakMagnitude = level;
         if (rumble_) rumble_(serial, report);
-        if (lightbar_) lightbar_(serial, static_cast<uint8_t>(level & 0xFF), 0, 0);
+        if (lightbar_) lightbar_(serial, static_cast<uint8_t>(level & 0xFFU), 0, 0);
     }
 
   private:

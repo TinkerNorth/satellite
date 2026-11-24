@@ -67,7 +67,7 @@ void test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition() {
     int mismatches = 0;
     for (int position = 0; position < 8; position++) {
         for (uint32_t digit = 0; digit < 16; digit++) {
-            const uint32_t value = digit << (4 * position);
+            const uint32_t value = digit << (4U * position);
             char ref[9];
             EXPECT_EQ(std::snprintf(ref, sizeof(ref), "%08x", value), 8);
             if (hexEncodeBE32(value) != ref) mismatches++;

@@ -85,7 +85,7 @@ class FakeComBackend : public GuardBackend {
     std::atomic<int> snapshotsDone_{0};
     std::atomic<int> restores_{0};
     std::atomic<bool> keepPolling_{true};
-    std::atomic<int> stopAfter_{1 << 30};
+    std::atomic<int> stopAfter_{1U << 30U};
     milliseconds snapshotDelay_{0};
     mutable std::mutex threadsMtx_;
     std::set<std::thread::id> threads_;

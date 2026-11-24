@@ -30,6 +30,9 @@
 #include <unordered_map>
 
 #include "test_util.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 // A DS4/DualSense slot has a touchpad surface; Xbox and Switch Pro do not. The
 // mock mirrors that so a touchpad routed to a non-touchpad slot reads as dropped.
@@ -787,7 +790,7 @@ static void test_upsert_keyDeriverIsUsed() {
         [](const uint8_t pairingKey[CRYPTO_KEY_SIZE], const uint8_t salt[SESSION_SALT_SIZE],
            uint32_t token, uint8_t out[CRYPTO_KEY_SIZE]) {
             for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
-                out[i] = static_cast<uint8_t>(pairingKey[i] ^ salt[i % 8] ^ (uint8_t)token);
+                out[i] = bits::lowByte(bits::u32(pairingKey[i]) ^ salt[i % 8] ^ (token & 0xFFU));
             }
         });
 
@@ -797,7 +800,8 @@ static void test_upsert_keyDeriverIsUsed() {
     EXPECT(svc.getDecryptInfo(r.token, key, ctr));
     uint8_t expected[CRYPTO_KEY_SIZE];
     for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
-        expected[i] = static_cast<uint8_t>(TEST_KEY[i] ^ r.sessionSalt[i % 8] ^ (uint8_t)r.token);
+        expected[i] =
+            bits::lowByte(bits::u32(TEST_KEY[i]) ^ r.sessionSalt[i % 8] ^ (r.token & 0xFFU));
     }
     EXPECT(std::memcmp(key, expected, CRYPTO_KEY_SIZE) == 0);
     EXPECT(std::memcmp(key, TEST_KEY, CRYPTO_KEY_SIZE) != 0);
@@ -1087,14 +1091,16 @@ static void test_converge_capsAndModeChange_noReplug() {
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE, TOUCHPAD_MODE_OFF)});
     int plugsAfterFirst = vigem.pluginDS4Calls;
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION,
-                                    CAP_RUMBLE | CAP_MOTION | CAP_LIGHTBAR, TOUCHPAD_MODE_DS4)});
+                                    bits::low16(bits::u32(CAP_RUMBLE) | CAP_MOTION | CAP_LIGHTBAR),
+                                    TOUCHPAD_MODE_DS4)});
     EXPECT_EQ(vigem.pluginDS4Calls, plugsAfterFirst); // no replug
     EXPECT_EQ(vigem.unplugCalls, 0);
     EXPECT_EQ((int)r2.controllers[0].result, (int)APPLY_OK);
     EXPECT_EQ(r2.epoch, r1.epoch);
     auto view = svc.getSessionView(r2.connectionId, "dev1");
     EXPECT_EQ((int)view.controllers[0].touchpadMode, (int)TOUCHPAD_MODE_DS4);
-    EXPECT_EQ((int)view.controllers[0].caps, (int)(CAP_RUMBLE | CAP_MOTION | CAP_LIGHTBAR));
+    EXPECT_EQ((int)view.controllers[0].caps,
+              (int)bits::low16(bits::u32(CAP_RUMBLE) | CAP_MOTION | CAP_LIGHTBAR));
 }
 
 static void test_converge_sameDescriptorIsNoOp() {
@@ -3404,7 +3410,7 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     // dropped at the decoder, no PCM.
     const auto base = mic.next();
     std::vector<uint8_t> twoFrames;
-    twoFrames.push_back((uint8_t)((base[0] & 0xFC) | 0x01));
+    twoFrames.push_back((uint8_t)((base[0] & 0xFCU) | 0x01U));
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     const int before = vigem.submitMicAudioCalls;
@@ -4037,8 +4043,8 @@ static void test_hapticAudio_waveformToCapableSender() {
     // haptic lane keeps counting from where it was while the speaker lane
     // starts from zero.
     const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
-    upsert(svc,
-           {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_HAPTIC_AUDIO | CAP_SPEAKER | CAP_RUMBLE)});
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE,
+                          bits::low16(bits::u32(CAP_HAPTIC_AUDIO) | CAP_SPEAKER | CAP_RUMBLE))});
     const uint32_t serial0b = serialOfSlot(svc, 0);
     EXPECT_EQ(serial0b, serial0);
     for (int i = 0; i < 3; i++) {
@@ -4607,7 +4613,7 @@ static void test_feedback_replugResetsCoalesce() {
     MockLog log;
     SessionService svc(vigem, client, log);
 
-    const uint16_t caps = CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+    const uint16_t caps = bits::low16(bits::u32(CAP_TRIGGER_EFFECTS) | CAP_PLAYER_LEDS | CAP_MIC);
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, caps)});
     uint32_t serial = vigem.pluggedSerials.back();
     const TriggerEffectsReport fx = makeTriggerEffects(0x21, 0x26);
@@ -4676,7 +4682,7 @@ static void test_backendCallbacks_waitForTheServiceLockAndDeliver() {
 static constexpr uint32_t CLIENT_IPV4_NBO = 0x0100007f;
 static constexpr uint16_t CLIENT_PORT = 5555;
 static constexpr uint16_t ALL_STATE_CAPS =
-    CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+    bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC);
 
 // One DualSense slot whose game set every feedback state while the first
 // session's client was reachable, so each state reached it once.
@@ -4845,8 +4851,10 @@ static void test_feedbackState_aCapTheRePutDroppedIsNotResent() {
     EXPECT_EQ(pad.client.playerLedsCalls, 1);
 }
 
-static constexpr uint16_t CAPS_WITHOUT_TRIGGER_EFFECTS = CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_MIC;
-static constexpr uint16_t CAPS_WITHOUT_PLAYER_LEDS = CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_MIC;
+static constexpr uint16_t CAPS_WITHOUT_TRIGGER_EFFECTS =
+    bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_PLAYER_LEDS | CAP_MIC);
+static constexpr uint16_t CAPS_WITHOUT_PLAYER_LEDS =
+    bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_TRIGGER_EFFECTS | CAP_MIC);
 
 static void test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStayAway() {
     TEST("rotate: a re-PUT without the trigger-effects cap keeps only the trigger effects away");
@@ -4874,7 +4882,8 @@ static void test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway() {
     EXPECT_EQ(pad.client.deliveredTriggerEffects, 2);
 }
 
-static constexpr uint16_t CAPS_WITHOUT_LIGHTBAR = CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+static constexpr uint16_t CAPS_WITHOUT_LIGHTBAR =
+    bits::low16(bits::u32(CAP_TRIGGER_EFFECTS) | CAP_PLAYER_LEDS | CAP_MIC);
 
 static void test_feedbackState_aCapTheRePutAddedBringsTheStateSetWhileItWasOff() {
     TEST("rotate: a cap the re-PUT added brings the state the game set while it was off");
@@ -5053,14 +5062,14 @@ static void test_capabilityBits() {
     EXPECT(c.micCapable());
     EXPECT(c.speakerCapable());
     // Neighbouring caps must not bleed into the audio accessors.
-    c.caps = CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS;
+    c.caps = bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS);
     EXPECT(!c.micCapable());
     EXPECT(!c.speakerCapable());
 
     // The mic-mute button is the one free bit in the XINPUT-shaped word; it
     // must not collide with Guide (0x0400), which the identity encoders map.
     // A compile-time invariant, so it fails the build rather than a test run.
-    static_assert((WBUTTON_MIC_MUTE & 0x0400) == 0,
+    static_assert((WBUTTON_MIC_MUTE & 0x0400U) == 0,
                   "WBUTTON_MIC_MUTE must not collide with the XUSB Guide bit");
     EXPECT_EQ((int)WBUTTON_MIC_MUTE, 0x0800);
     GamepadReport g;
@@ -5768,8 +5777,8 @@ using satellite::FEEDBACK_LANES;
 using satellite::FeedbackLane;
 using satellite::FeedbackTestPlan;
 
-static const uint16_t ALL_FEEDBACK_CAPS =
-    CAP_RUMBLE | CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_TRIGGER_EFFECTS | CAP_MIC;
+static const uint16_t ALL_FEEDBACK_CAPS = bits::low16(
+    bits::u32(CAP_RUMBLE) | CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_TRIGGER_EFFECTS | CAP_MIC);
 
 static std::vector<FeedbackLane> everyLane() {
     std::vector<FeedbackLane> lanes;

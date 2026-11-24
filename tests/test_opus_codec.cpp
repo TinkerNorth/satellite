@@ -20,6 +20,9 @@
 #include <vector>
 
 #include "test_util.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 namespace {
 
@@ -102,12 +105,12 @@ const int LOSS_RUN_FRAMES = 14;
 // RFC 6716 section 3.1: the top five bits of a packet's first byte are its
 // configuration, and configurations 12 to 15 are Hybrid: SILK, the layer that
 // carries in-band FEC, below CELT.
-const int TOC_CONFIG_SHIFT = 3;
+const unsigned TOC_CONFIG_SHIFT = 3U;
 const int FIRST_HYBRID_CONFIG = 12;
 const int LAST_HYBRID_CONFIG = 15;
 
 bool isHybridPacket(const uint8_t* packet) {
-    const int config = packet[0] >> TOC_CONFIG_SHIFT;
+    const auto config = static_cast<int>(bits::u32(packet[0]) >> TOC_CONFIG_SHIFT);
     return config >= FIRST_HYBRID_CONFIG && config <= LAST_HYBRID_CONFIG;
 }
 
@@ -261,7 +264,7 @@ void test_decodeRefusesAPacketLongerThanTheWireWindow() {
     // caller decodes into a fixed AUDIO_FRAME_SAMPLES buffer, so "refused" and
     // "not written past" have to be the same thing.
     std::vector<uint8_t> twoFrames;
-    twoFrames.push_back(static_cast<uint8_t>((packet[0] & 0xFC) | 0x01));
+    twoFrames.push_back(static_cast<uint8_t>((packet[0] & 0xFCU) | 0x01U));
     twoFrames.insert(twoFrames.end(), packet + 1, packet + bytes);
     twoFrames.insert(twoFrames.end(), packet + 1, packet + bytes);
 

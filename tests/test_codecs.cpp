@@ -7,6 +7,9 @@
 #include <string>
 
 #include "test_util.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 static void test_wireToRange_saturates_at_edges() {
     TEST("touchpadWireToRange: min wire maps to 0, max to res-1");
@@ -40,8 +43,8 @@ static void test_ds4Pack_roundtrips_coordinates() {
 
     const int expX = touchpadWireToRange(f.x, DS4_TOUCHPAD_RES_X);
     const int expY = touchpadWireToRange(f.y, DS4_TOUCHPAD_RES_Y);
-    const int gotX = b[1] | ((b[2] & 0x0F) << 8);
-    const int gotY = (b[2] >> 4U) | (b[3] << 4U);
+    const int gotX = bits::loadPacked12Low(b.data() + 1);
+    const int gotY = bits::loadPacked12High(b.data() + 2);
     EXPECT_EQ(gotX, expX);
     EXPECT_EQ(gotY, expY);
 }
