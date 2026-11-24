@@ -19,7 +19,10 @@ using namespace satellite::hidmaestro;
 namespace {
 
 // A section as the helper hands it over: zero-filled, head at 0.
-std::vector<uint8_t> freshSection() { return std::vector<uint8_t>(AUDIO_SECTION_SIZE, 0); }
+std::vector<uint8_t> freshSection() {
+    std::vector<uint8_t> section(AUDIO_SECTION_SIZE, 0); // a size, not a list
+    return section;
+}
 
 std::vector<int16_t> ramp(size_t n, int16_t start = 0) {
     std::vector<int16_t> v(n);

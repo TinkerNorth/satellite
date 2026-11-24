@@ -157,7 +157,7 @@ struct StubUpdater : IUpdaterPort {
 
 static Json parseJson(const std::string& body) {
     Json j;
-    if (!jsonParse(body, j)) return Json();
+    if (!jsonParse(body, j)) return {};
     return j;
 }
 

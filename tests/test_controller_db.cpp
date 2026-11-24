@@ -20,7 +20,7 @@ namespace {
 std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 std::string bundledPath(const std::string& name) {
@@ -60,7 +60,8 @@ std::string dbText(const std::vector<JsonOut>& records, long schema = 1, long db
 // The fake digest a snapshot test hands in: deterministic, and different for
 // different bytes, which is all the manifest check needs to see.
 std::string fakeSha(const std::string& bytes) {
-    return std::string(64, static_cast<char>('a' + (bytes.size() % 6)));
+    std::string digest(64, static_cast<char>('a' + (bytes.size() % 6))); // 64 copies
+    return digest;
 }
 
 struct SnapshotFixture {

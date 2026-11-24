@@ -150,5 +150,5 @@ std::string dpapiDecrypt(const std::string& encoded) {
         return "";
     }
     sodium_memzero(key, sizeof(key));
-    return std::string(reinterpret_cast<char*>(pt.data()), pt.size());
+    return {reinterpret_cast<char*>(pt.data()), pt.size()};
 }

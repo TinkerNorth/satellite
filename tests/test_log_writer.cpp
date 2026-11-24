@@ -238,7 +238,7 @@ std::string localStamp(int64_t seconds) {
 #endif
     char stamp[32];
     const size_t n = std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &tm);
-    return std::string(stamp, n);
+    return {stamp, n};
 }
 
 void testLineFormat() {

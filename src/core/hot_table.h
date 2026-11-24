@@ -179,7 +179,7 @@ struct alignas(HOT_CACHE_LINE) HotSlot {
         }
         const size_t length =
             std::min<size_t>(nameLength.load(std::memory_order_relaxed), HOT_NAME_BYTES);
-        return std::string(reinterpret_cast<const char*>(raw), length);
+        return {reinterpret_cast<const char*>(raw), length};
     }
 };
 

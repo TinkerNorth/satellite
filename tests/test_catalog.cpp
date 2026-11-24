@@ -28,7 +28,7 @@ constexpr uint32_t EDGE_PADDLES = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PAD
 static std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 static std::string langPath(const std::string& locale) {

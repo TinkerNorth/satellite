@@ -39,7 +39,7 @@ const char* const FUTURE_FILES[] = {
 
 std::string readFixture(const std::string& path) {
     std::ifstream f(std::string(FUTURE_DIR) + "/" + path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
 struct NullLog : ILogPort {

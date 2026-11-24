@@ -35,7 +35,7 @@ static std::string webPath(const std::string& relative) {
 static std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 static std::string withoutBom(const std::string& text) {
@@ -53,7 +53,7 @@ static std::vector<std::string> firstGroups(const std::string& text, const std::
 }
 
 static std::set<std::string> distinct(const std::vector<std::string>& values) {
-    return std::set<std::string>(values.begin(), values.end());
+    return {values.begin(), values.end()};
 }
 
 static std::set<std::string> snapshotFieldsRead(const SnapshotReader& reader) {

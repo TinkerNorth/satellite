@@ -120,7 +120,7 @@ constexpr std::chrono::seconds LOG_FLUSH_DEADLINE{5};
 
 static Json parseJson(const std::string& body) {
     Json j;
-    if (!jsonParse(body, j)) return Json();
+    if (!jsonParse(body, j)) return {};
     return j;
 }
 

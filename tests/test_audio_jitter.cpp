@@ -25,7 +25,8 @@ using Accept = AudioJitterWindow::Accept;
 // distinctive byte: it makes "the window handed back the packet I pushed" an
 // assertion rather than a hope.
 std::vector<uint8_t> packet(uint8_t tag, size_t bytes = 24) {
-    return std::vector<uint8_t>(bytes, tag);
+    std::vector<uint8_t> out(bytes, tag); // a count of copies, not a two-byte list
+    return out;
 }
 
 AudioJitterWindow::Result push(AudioJitterWindow& w, uint16_t seq, const std::vector<uint8_t>& p) {

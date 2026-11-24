@@ -29,7 +29,7 @@ const char* const LOCALES[] = {"en", "bs", "de", "es", "fr", "pt-BR"};
 std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 std::string web(const std::string& relative) {

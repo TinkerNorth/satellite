@@ -2717,7 +2717,10 @@ static void test_playerLeds_gatedOnCap() {
 
 // An Opus-shaped payload. SAT-1's gates never look inside a packet, so only
 // the length is load-bearing here.
-static std::vector<uint8_t> opusFrame(size_t bytes) { return std::vector<uint8_t>(bytes, 0x5A); }
+static std::vector<uint8_t> opusFrame(size_t bytes) {
+    std::vector<uint8_t> frame(bytes, 0x5A); // a count of copies, not a two-byte list
+    return frame;
+}
 
 // Serials of the slots this connection plugged, by controller index.
 static uint32_t serialOfSlot(SessionService& svc, uint8_t index) {
@@ -3318,7 +3321,7 @@ struct MicPacketSource {
         frameIndex++;
         uint8_t buf[1024];
         const size_t n = enc->encode(src.data(), AUDIO_FRAME_SAMPLES, buf, sizeof(buf));
-        return std::vector<uint8_t>(buf, buf + n);
+        return {buf, buf + n};
     }
 };
 

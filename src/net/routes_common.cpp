@@ -130,7 +130,7 @@ std::string buildCapabilitiesJson() {
 std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 std::shared_ptr<const satellite::ControllerDbSnapshot> activeControllerDb() {

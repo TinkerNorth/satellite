@@ -23,7 +23,7 @@
 namespace bits = satellite::bits;
 
 std::string randomHex(int bytes) {
-    if (bytes <= 0) return std::string();
+    if (bytes <= 0) return {};
     std::vector<uint8_t> raw(static_cast<size_t>(bytes));
     randombytes_buf(raw.data(), raw.size());
     return hexEncode(raw.data(), raw.size());
