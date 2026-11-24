@@ -102,6 +102,29 @@ and the debug-symbol upload.
 same image (docker), and `scripts/ci-local.sh --with-packages` and
 `--with-appimage` call it.
 
+## AppImage and source builds
+
+An AppImage, or a build run from the source tree, cannot install the udev
+rule a package installs, so `/dev/uinput` access is granted once by hand. The
+dashboard shows these commands when it finds the device missing or not
+writable (`web/dashboard.js`):
+
+```bash
+sudo modprobe uinput                                      # load the module now
+echo uinput | sudo tee /etc/modules-load.d/satellite.conf # and at every boot
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' \
+  | sudo tee /etc/udev/rules.d/70-satellite-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG input "$USER"                            # then log out and back in
+```
+
+The packaged rule (`packaging/debian/70-satellite-uinput.rules`) also tags the
+node `uaccess`, which grants the active seat user access without the group;
+the group covers autostart and remote sessions. A source build is
+`scripts/build.sh` (preset `release`), which leaves `./satellite` at the
+repository root; `scripts/build-appimage.sh` builds an AppImage like the
+released one, best on the oldest glibc you intend to support.
+
 ## Why not Flathub
 
 Flathub's *impermissible submissions* list rules out, verbatim: tray-only
@@ -207,6 +230,9 @@ them at a tag (not a branch), and re-run validation without `--no-net`.
 
 ## Windows: code signing and UIAccess
 
+What the installer puts on a machine, its unattended switches, upgrades and
+uninstalling are in [WINDOWS.md](WINDOWS.md).
+
 Separate from the Linux constraint above, the Windows build has one of its
 own. Satellite forwards the phone's touchpad as mouse input through
 `SendInput`, and User Interface Privilege Isolation (UIPI) discards synthesized
@@ -268,3 +294,27 @@ or `CLOUD_SIGN_TOOL`), checks that `satellite.exe` was built with
 `scripts\test-installer-roundtrip.ps1 -UiAccess` puts its sandbox under
 `%ProgramFiles%` instead of the temp directory. A self-signed certificate meets
 requirement 2 only on a machine whose Trusted Root store holds it.
+
+## Code signing policy
+
+Free code signing on Windows provided by [SignPath.io](https://signpath.io),
+certificate by [SignPath Foundation](https://signpath.org). Signed releases
+start once SignPath Foundation approves the project; until then the installer
+is unsigned and SmartScreen warns on first run.
+
+Committers, reviewers and approvers:
+[@emir-hasanbegovic](https://github.com/emir-hasanbegovic), owner of the
+[TinkerNorth](https://github.com/orgs/TinkerNorth/people?query=role%3Aowner)
+organisation. Only the release workflow signs, from a tagged commit; no local
+build is ever signed. Signed artifacts: `SatelliteSetup.exe`, `satellite.exe`,
+`crashpad_handler.exe`, `crashpad_wer.dll` and `satellite-hm-helper.exe`.
+
+Privacy: three things can leave your PC, and each can be turned off in
+Settings: the update check against GitHub Releases, the check for a newer
+controller database at dish.tinkernorth.com, and, with *Share crash reports*
+on, a crash report to Sentry. The installer asks about the update check and
+crash reports. [`PRIVACY.md`](../PRIVACY.md) lists what is stored and sent.
+Third-party components in the signed package: sentry-native and Crashpad, the
+crash reporter described in `PRIVACY.md` section 6, and the bundled ViGEmBus
+installer and HIDMaestro driver and helper, under the licences listed in
+[`THIRD_PARTY.md`](../THIRD_PARTY.md).

@@ -125,6 +125,42 @@ vendor / per-type capability + latency-tier table both the
 `/api/server/capabilities` `backends` array and the catalog traits fold
 derive from.
 
+### Project structure
+
+```
+├── src/
+│   ├── core/          pure domain logic: types, ports, the session service,
+│   │                  the catalog, the controller database, the updater state
+│   │                  machine, the codecs (no platform dependency; see
+│   │                  scripts/check_core_purity.sh)
+│   ├── net/           the shared transport: the UDP receiver and inner
+│   │                  dispatch, the HTTPS client API and the loopback admin
+│   │                  server and their routes, session crypto, pairing,
+│   │                  mDNS and the legacy beacon
+│   ├── adapters/      portable adapters (the encrypted downstream, logging,
+│   │                  audio, crash reporting)
+│   └── platform/
+│       ├── windows/   main, tray, config, the ViGEm and HIDMaestro backends
+│       ├── linux/     main, tray, config, the uinput backend, the updater
+│       ├── macos/     main, tray, config, the IOHIDUserDevice DS4 backend
+│       └── posix/     config, crypto and the file log shared by Linux and macOS
+├── helper/            satellite-hm-helper (the HIDMaestro helper and broker
+│                      service, C#), its core library and its tests
+├── tests/             one self-contained suite per area, no framework
+├── tools/bench/       the frame-path benchmarks and the XInput monitor
+├── docs/              ARCHITECTURE.md (this file), contract.md, threading.md,
+│                      PACKAGING.md, WINDOWS.md
+├── packaging/         Debian/RPM files, the pacman PKGBUILD, the APT, DNF
+│                      and pacman repository scripts, AppStream metainfo, and
+│                      the unpublished Flatpak and Snap templates
+├── scripts/           every build, package, check and CI-local script
+├── redist/            the pinned ViGEmBus and HIDMaestro redistributables
+├── web/               the dashboard, its locales and the bundled controller
+│                      database
+├── lib/               vendored cpp-httplib, nlohmann/json, MinGW libsodium
+└── vigem/include/     the hand-maintained ViGEm client header subset
+```
+
 ### Key Design Principles
 
 - `core/` contains no Win32, Winsock, ViGEm, or `httplib` `#include`s, and the
@@ -188,6 +224,30 @@ Domain logic is tested against mock ports (e.g. `MockViGem : IGamepadPort`,
 `MockUpdater : IUpdaterPort`), so the core is exercised with zero platform code.
 Socket/`httplib` loops and OpenSSL cert generation are intentionally not
 unit-tested; their pure cores (above) are the tested seams.
+
+### Suites by area
+
+Each name is a `tests/test_<name>.cpp` registered in `CMakeLists.txt`;
+`ctest -N` with the host's preset lists the ones it builds (Windows-only and
+Linux-only suites build only there).
+
+| Area | Suites |
+|---|---|
+| Sessions and the hot path | `session_service`, `session_hot_path`, `session_topology`, `hot_table`, `lock_laws`, `tracked_mutex`, `gamepad_mux`, `receiver`, `udp_receive`, `input_report`, `pointer_frame`, `unknown_token_log`, `wire_stats` |
+| Wire and crypto | `session_crypto`, `pairing`, `pin_rotation`, `byte_order`, `byte_boundaries`, `hex`, `codecs`, `sony_buttons`, `descriptor_json`, `origin_guard` |
+| Discovery and identity | `mdns_protocol`, `mdns_rejoin`, `discovery`, `machine_id`, `network_info`, `ipv4_util`, `single_instance` |
+| Routes and the dashboard | `routes_client`, `routes_admin`, `catalog`, `status_json`, `event_stream`, `event_broadcaster`, `dashboard_contract`, `debug_ui_contract`, `update_ui_contract`, `httplib_idle` |
+| Configuration and logging | `config_json`, `config_store`, `config_patch`, `config_effects`, `json`, `log_queue`, `log_ring`, `log_writer`, `crash_reporting` |
+| Controller database and diagnostics | `controller_db`, `controller_db_adapter`, `controller_db_service`, `controller_db_future`, `controller_activity`, `connection_diagnostics`, `diagnostics_bundle`, `firewall_status` |
+| Updater | `update_service`, `github_release`, `semver`, `linux_upgrade_commands`, `package_format` |
+| Audio | `audio_resampler`, `audio_jitter`, `audio_guard_worker`, `audio_default_guard`, `opus_codec`, `haptic_envelope`, `client_adapter` |
+| Backends | `backend_registry`, `vigem_adapter`, `hidmaestro_adapter`, `hidmaestro_helper_client`, `hidmaestro_report`, `hidmaestro_version`, `hidmaestro_wire`, `hidmaestro_audio_wire`, `hidmaestro_device_watch`, `driver_inf`, `windows_devnode_probe`, `macos_ds4_report`, `mac_hid_smoke`, `uinput_smoke` |
+| Platforms | `windows_platform`, `linux_platform`, `macos_platform`, `tray_indicator` |
+| Tools | `pause_detector` (the XInput monitor's bookkeeping) |
+
+The PowerShell suites `tests/test_fetch_redist.ps1` and
+`tests/test_measurements_report.ps1`, and the helper's xunit suite under
+`helper/hidmaestro-core.tests/`, run on the Windows lanes.
 
 ## Data Model
 
@@ -268,6 +328,13 @@ serial arrays. The remaining globals are:
 `receiver.cpp` is a thin infrastructure layer that owns the UDP socket
 and runs a `recvfrom` loop. It delegates all business logic to
 `SessionService`.
+
+### Why UDP?
+
+TCP's reliability guarantees cause head-of-line blocking: if one packet is
+lost, every later packet waits until it is retransmitted. For controller
+input only the latest state matters, so a lost packet is better than a late
+one. Moonlight, Parsec and Steam Remote Play make the same choice.
 
 ### Packet Processing Pipeline
 
@@ -945,6 +1012,15 @@ before the call is saved and cuts the 200 ms short; the tray's end-session
 handler flushes with its 2 s deadline. `stop()` runs at shutdown, makes one
 last attempt without backoff and joins.
 
+
+Where the file lives: `%APPDATA%\satellite\config.json` on Windows,
+`$XDG_CONFIG_HOME/satellite/config.json` (else `~/.config/satellite/`) on
+Linux and `~/Library/Application Support/satellite/config.json` on macOS, with
+the pairing keyfile (mode `0600`) beside it on Linux and macOS
+(`src/platform/posix/crypto_posix.cpp`). "Start with login" is the HKCU Run
+key on Windows, an XDG autostart entry (`$XDG_CONFIG_HOME/autostart/satellite.desktop`)
+on Linux and a LaunchAgent (`~/Library/LaunchAgents/com.tinkernorth.satellite.plist`)
+on macOS.
 ### Backend locking
 
 The service gives every adapter behind the port four guarantees, and the
@@ -1912,6 +1988,14 @@ touchpad, and motion with no per-game integration.
   → feature-blob table. A DriverKit dext transport could replace this
   file without touching the pure layer.
 
+### Files
+
+The macOS build keeps its configuration and its pairing keyfile in
+`~/Library/Application Support/satellite/` (no Keychain yet: the keyfile is
+mode `0600`, `src/platform/posix/crypto_posix.cpp`), and "Start with login" is
+the LaunchAgent `~/Library/LaunchAgents/com.tinkernorth.satellite.plist`
+(`src/platform/macos/config.cpp`).
+
 ### Entitlement story and fallback
 
 Creating the kernel device requires the
@@ -1959,6 +2043,86 @@ mutex, briefly, to snapshot callbacks); an unconfirmed cancel returns
 false so `SessionService` quarantines the serial. Taking the submits off
 the mutex is a follow-up (see "Follow-ups"). The full protocol is
 documented in `mac_hid_gamepad_adapter.h`.
+
+## Feedback return path
+
+Games drive rumble (and, on the Sony types, the light bar) by writing to the
+virtual device's output channel. Satellite takes those writes from the
+platform backend and forwards them to the dish that owns the session.
+
+### How each backend listens
+
+| Platform | Source | Mechanism |
+|---|---|---|
+| Windows | ViGEmBus | `IOCTL_XUSB_REQUEST_NOTIFICATION` (Xbox 360) and `IOCTL_DS4_REQUEST_NOTIFICATION` (DualShock 4), long-running asynchronous I/O: one worker thread per plugged virtual device waits on the IOCTL until the driver completes it with new motor and light-bar values (`src/platform/windows/vigem.cpp`). |
+| Windows | HIDMaestro | The output ring of the device's shared-memory section, which the helper reads and decodes (see "Windows second backend: HIDMaestro"). |
+| Linux | uinput | `EV_FF` events on the device fd: the game uploads an `FF_RUMBLE` effect (`UI_FF_UPLOAD`), and the reader thread for that device sees `EV_FF` when it plays or stops (`src/platform/linux/gamepad_adapter.cpp`). |
+| macOS | IOHIDUserDevice | The game writes DS4 output report `0x05`; the kernel delivers it to the device's set-report block on a per-device dispatch queue, and the adapter parses the motors and the light-bar colour (gated by its valid flag). Entitled builds only: an unentitled build has no virtual pads. |
+
+### How the light bar is produced
+
+On Windows the ViGEm DS4 driver delivers rumble and the light bar in the same
+`IOCTL_DS4_REQUEST_NOTIFICATION` completion, and the notification worker fans
+it out to the rumble callback (motors) and the light-bar callback (colour).
+`SessionService::handleLightbarFromBackend` resolves the backend serial to the
+connection and controller index, coalesces identical back-to-back colours and,
+for a dish that advertised `CAP_LIGHTBAR`, calls `IClientPort::sendLightbar`.
+The colour is cached on the `Controller` whatever the capability, so the
+dashboard's per-controller swatch stays live for every type.
+
+On macOS the DS4 output report `0x05` that carries the motors also carries the
+colour, and the set-report path fans it out when the colour-valid flag is set
+(entitled builds only). The Linux uinput backend has no host-driven light-bar
+channel (`EV_LED` is single-bit), so it never emits LIGHTBAR, and the backend
+registry advertises `lightbar: false` for its Sony types. The wire formats are
+in [contract.md](contract.md) (RUMBLE 0x0009, LIGHTBAR 0x000D).
+
+## Updater
+
+Satellite checks the GitHub Releases API on a schedule (Settings, Updates).
+When a newer release is published the dashboard shows a banner with
+**Download**, **Remind Me Later** and **Skip This Version**; the banner and the
+Updates section of Settings then follow the update live: the download and its
+progress, verification, a ready-to-install prompt, the restart, and a
+confirmation once the new version runs (or a note that it did not finish).
+**Remind Me Later** and **Install Later** hide the banner until the next
+check; Settings keeps showing the update. The tray's *Check for Updates* item
+reflects the same state and becomes *Install Update X.Y.Z* once the artifact
+is fetched and verified.
+
+The state machine (`idle`, `checking`, `up-to-date`, `update-available`,
+`downloading`, `verifying`, `downloaded`, `installing`, `error`) is
+`UpdateState` in `src/core/update_types.h`, driven by `UpdateService`
+(`src/core/update_service.h`). Platform I/O (HTTPS, SHA-256, the install
+hand-off) sits behind `IUpdaterPort`:
+
+| Platform | HTTPS | Artifact | Install |
+|---|---|---|---|
+| Windows | WinHTTP | `SatelliteSetup-X.Y.Z.exe` | Inno Setup `/VERYSILENT /OTA`, then a relaunch |
+| macOS | NSURLSession | `satellite-macos-stub-X.Y.Z.zip` | unpack, an atomic bundle swap through a helper, relaunch |
+| Linux (AppImage) | libcurl | `satellite-X.Y.Z-x86_64.AppImage` | `chmod +x`, an atomic move over `$APPIMAGE`, a `setsid` relaunch |
+| Linux (.deb) | libcurl | none (shows a command) | `sudo apt update && sudo apt install --only-upgrade satellite` |
+| Linux (.rpm) | libcurl | none (shows a command) | `sudo dnf upgrade --refresh satellite` |
+| Linux (pacman, `satellite-bin`) | libcurl | none (shows a command) | `sudo pacman -Syu satellite-bin` |
+| Linux (a build installed by hand) | libcurl | none | download the AppImage, `chmod +x`, replace the binary |
+
+The commands live in `src/core/linux_upgrade_commands.h`, which
+`test_linux_upgrade_commands` holds to [PACKAGING.md](PACKAGING.md). The
+download is checked against the `SHA256SUMS` asset of the release (Windows
+also checks the installer's Authenticode signature when it has one).
+
+Only Windows, macOS and the Linux AppImage install updates themselves. Every
+other channel belongs to its package manager: Satellite shows the command and
+never downloads or replaces anything, because self-replacing would desync the
+package database; on those builds the *Download in background* and *Install &
+restart automatically* settings are disabled.
+
+Settings, under Updates: **Channel** (*Stable*, only `X.Y.Z` releases, or
+*Pre-release*, which includes `X.Y.Z-rc.1` and similar), **Check
+automatically**, **Download in background** (fetch an available update so it
+is ready on the next visit), and **Install & restart automatically** (only with
+the other two on; it turns the banner into a restart prompt). The routes are
+in [contract.md](contract.md), "Admin API".
 
 ## Logging Infrastructure
 

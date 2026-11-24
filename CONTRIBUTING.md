@@ -492,6 +492,21 @@ Any change here must be coordinated with `dish-android`, `dish-ios`,
 
 ## Platform notes
 
+- **Windows forwarders.** `build-satellite.bat`, `build-tests.bat`,
+  `build-installer.bat`, `install-dependencies.bat` and
+  `hardware-selftest.bat` at the root are one-line forwarders to the
+  matching `scripts\*.ps1`. Each starts PowerShell with
+  `-ExecutionPolicy Bypass`, so they work from a double-click or a plain
+  `cmd` prompt on a machine whose execution policy is Restricted, where the
+  `.ps1` files themselves would be refused.
+- **MINGW64, not UCRT64.** The MinGW lane is MSYS2's MINGW64 toolchain with
+  MinGW Makefiles, exactly what `windows-ci.yml` builds and tests. An earlier
+  `install-dependencies.bat` installed the UCRT64 toolchain instead, which is
+  not what CI runs; `scripts\install-deps.ps1` puts `mingw64\bin` on PATH and
+  takes `ucrt64\bin` off it. The hardened MSVC + vcpkg lane is
+  `scripts\build.ps1 -Msvc` after a one-time `scripts\install-deps.ps1 -Msvc`.
+  What the installer then does on a user's machine is in
+  [`docs/WINDOWS.md`](docs/WINDOWS.md).
 - **Windows** is the canonical target, with virtual gamepads via ViGEmBus.
   The Inno Setup installer (`installer.iss`) bundles ViGEmBus 1.22.0 as
   a prerequisite; building the installer requires running
