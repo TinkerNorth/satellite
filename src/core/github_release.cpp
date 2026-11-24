@@ -68,15 +68,35 @@ std::string stripTagPrefix(const std::string& tag) {
     return tag;
 }
 
+namespace {
+
+// `width` decimal digits at `at` of `s`, read into `out`; false unless every one is a digit.
+bool fixedDigits(const std::string& s, size_t at, size_t width, int& out) {
+    int value = 0;
+    for (size_t i = at; i < at + width; ++i) {
+        if (std::isdigit(static_cast<unsigned char>(s[i])) == 0) return false;
+        value = value * 10 + (s[i] - '0');
+    }
+    out = value;
+    return true;
+}
+
+} // namespace
+
+// GitHub's timestamps are "YYYY-MM-DDTHH:MM:SSZ": each field is read at its
+// fixed place, and a separator out of place is no timestamp.
 int64_t isoToEpoch(const std::string& iso) {
     if (iso.size() < 19) return 0;
+    if (iso[4] != '-' || iso[7] != '-' || iso[10] != 'T' || iso[13] != ':' || iso[16] != ':') {
+        return 0;
+    }
     struct tm t{};
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
-#ifdef _MSC_VER
-    if (sscanf_s(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
-#else
-    if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
-#endif
+    if (!fixedDigits(iso, 0, 4, y) || !fixedDigits(iso, 5, 2, mo) || !fixedDigits(iso, 8, 2, d) ||
+        !fixedDigits(iso, 11, 2, h) || !fixedDigits(iso, 14, 2, mi) ||
+        !fixedDigits(iso, 17, 2, se)) {
+        return 0;
+    }
     t.tm_year = y - 1900;
     t.tm_mon = mo - 1;
     t.tm_mday = d;

@@ -101,7 +101,8 @@ static void test_silence_and_floor() {
     // -40 dBFS RMS on a sine is a peak of ~463; sweep across the threshold.
     uint16_t below = 1;
     uint16_t above = 0;
-    for (double peak = 300.0; peak < 700.0; peak += 10.0) {
+    for (int step = 0; step < 40; ++step) {
+        const double peak = 300.0 + 10.0 * step;
         const RumbleReport s = hapticWindowToRumble(window(peak, 0.0).data(), AUDIO_FRAME_SAMPLES);
         if (s.strongMagnitude == 0) {
             below = 0;

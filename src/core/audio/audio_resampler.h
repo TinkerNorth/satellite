@@ -100,7 +100,7 @@ class RationalResampler {
         if (histFrames > 0) std::copy(hist_.begin(), hist_.end(), work_.begin());
         std::copy(in, in + frames * ch, work_.begin() + static_cast<ptrdiff_t>(histFrames * ch));
 
-        const auto total = static_cast<int64_t>(histFrames + frames);
+        const int64_t total = static_cast<int64_t>(histFrames) + static_cast<int64_t>(frames);
         const int perPhase = RESAMPLER_TAPS_PER_PHASE;
         out.reserve(out.size() + maxOutputFrames(frames) * ch);
         while (pos_ / l_ <= total - 1) {
@@ -110,7 +110,8 @@ class RationalResampler {
                 float acc = 0.0f;
                 for (int t = 0; t < perPhase; ++t) {
                     const int64_t idx = newest - t;
-                    acc += taps_[static_cast<size_t>(phase * perPhase + t)] *
+                    acc += taps_[static_cast<size_t>(phase) * static_cast<size_t>(perPhase) +
+                                 static_cast<size_t>(t)] *
                            static_cast<float>(work_[static_cast<size_t>(idx) * ch + c]);
                 }
                 out.push_back(clampToI16(acc));
@@ -177,8 +178,10 @@ class RationalResampler {
         taps_.assign(static_cast<size_t>(n), 0.0f);
         for (int p = 0; p < l_; ++p) {
             for (int t = 0; t < perPhase; ++t) {
-                taps_[static_cast<size_t>(p * perPhase + t)] =
-                    proto[static_cast<size_t>(p + t * l_)];
+                taps_[static_cast<size_t>(p) * static_cast<size_t>(perPhase) +
+                      static_cast<size_t>(t)] =
+                    proto[static_cast<size_t>(p) +
+                          static_cast<size_t>(t) * static_cast<size_t>(l_)];
             }
         }
     }

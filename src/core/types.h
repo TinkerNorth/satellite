@@ -236,8 +236,9 @@ inline const char* closeReasonName(uint8_t reason) {
         return "replaced";
     case CLOSE_REASON_UNPAIRED:
         return "unpaired";
+    default: // an unknown reason reads as an orderly close
+        return "shutdown";
     }
-    return "shutdown";
 }
 
 // Controller capability bits, carried in ControllerDescriptor::caps. Every cap
@@ -284,8 +285,9 @@ inline const char* applyResultName(uint8_t code) {
         return "invalidType";
     case APPLY_ERR_INVALID_INDEX:
         return "invalidIndex";
+    default: // an unknown code reads as a failed plug
+        return "pluginFailed";
     }
-    return "pluginFailed";
 }
 
 // Wire format sizes

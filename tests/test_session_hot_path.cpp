@@ -17,6 +17,25 @@
 
 namespace {
 
+// The stress runs replay the same operation order on every run, so a failure
+// reproduces: a fixed sequence, not randomness (splitmix64).
+struct SplitMix64 {
+    using result_type = uint64_t;
+    uint64_t state;
+    static constexpr uint64_t min() { return 0; }
+    static constexpr uint64_t max() { return UINT64_MAX; }
+    uint64_t operator()() {
+        uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+        z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31U);
+    }
+};
+
+} // namespace
+
+namespace {
+
 using Clock = std::chrono::steady_clock;
 
 constexpr int SESSION_COUNT = 2;
@@ -214,7 +233,7 @@ class OwnershipBackend : public IGamepadPort {
     std::atomic<bool> busOpen_{false};
     std::atomic<uint64_t> plugNumber_{0};
     std::atomic<uint64_t> plugState_{0};
-    std::mt19937 rng_{20261026u};
+    SplitMix64 rng_{20261026U};
 };
 
 struct SilentClient : IClientPort {
@@ -427,7 +446,7 @@ ControllerDescriptor descriptorFor(int tag, uint8_t idx, uint8_t type) {
     return d;
 }
 
-uint8_t randomType(std::mt19937& rng) {
+uint8_t randomType(SplitMix64& rng) {
     return rng() % 2 == 0 ? CONTROLLER_TYPE_XBOX : CONTROLLER_TYPE_PLAYSTATION;
 }
 
@@ -448,7 +467,7 @@ void upsert(SessionService& svc, SessionState& st, Shared& sh,
     sh.tokens[st.tag].store(r.token, std::memory_order_release);
 }
 
-void randomUpsert(SessionService& svc, SessionState& st, Shared& sh, std::mt19937& rng) {
+void randomUpsert(SessionService& svc, SessionState& st, Shared& sh, SplitMix64& rng) {
     std::vector<ControllerDescriptor> descriptors;
     for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
         if (rng() % 2 == 0) descriptors.push_back(descriptorFor(st.tag, idx, randomType(rng)));
@@ -456,7 +475,7 @@ void randomUpsert(SessionService& svc, SessionState& st, Shared& sh, std::mt1993
     upsert(svc, st, sh, descriptors);
 }
 
-void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, std::mt19937& rng) {
+void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, SplitMix64& rng) {
     if (st.connectionId.empty()) {
         randomUpsert(svc, st, sh, rng);
         return;
@@ -504,7 +523,7 @@ std::vector<ControllerDescriptor> everyPad(int tag) {
 
 void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
               std::array<SessionState, SESSION_COUNT + 1>& sessions) {
-    std::mt19937 rng(7u);
+    SplitMix64 rng{7U};
     const auto stressEnd = Clock::now() + STRESS_SPAN;
     while (Clock::now() < stressEnd) {
         const int tag = 1 + static_cast<int>(rng() % SESSION_COUNT);

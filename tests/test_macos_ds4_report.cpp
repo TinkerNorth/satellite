@@ -78,6 +78,8 @@ static void test_descriptor_shape() {
         case 0x12:
             feat12++;
             break;
+        default: // any other id is not one this report declares
+            break;
         }
     }
     EXPECT_EQ(in1, 1);

@@ -354,8 +354,8 @@ static void test_manifest_parse() {
     const std::string base =
         R"({"schema":1,"dbVersion":2,"files":{"controllers.json":{"sha256":")" + sha +
         R"(","bytes":1},"strings/en.json":{"sha256":")" + sha + R"(","bytes":1})";
-    EXPECT(parseControllerDbManifest(base + R"(,"../evil":{"sha256":")" + sha + R"(","bytes":1}}})",
-                                     m) == DbParse::Ok);
+    const std::string outside = base + R"(,"../evil":{"sha256":")" + sha + R"(","bytes":1}}})";
+    EXPECT(parseControllerDbManifest(outside, m) == DbParse::Ok);
     EXPECT_EQ(m.files.size(), size_t{2});
 
     TEST("a manifest with schema other than 1 is the wrong schema");
@@ -363,18 +363,18 @@ static void test_manifest_parse() {
            DbParse::WrongSchema);
 
     TEST("a manifest without controllers.json or strings/en.json is malformed");
-    EXPECT(parseControllerDbManifest(
-               R"({"schema":1,"dbVersion":2,"files":{"controllers.json":{"sha256":")" + sha +
-                   R"(","bytes":1}}})",
-               m) == DbParse::Malformed);
+    const std::string controllersOnly =
+        R"({"schema":1,"dbVersion":2,"files":{"controllers.json":{"sha256":")" + sha +
+        R"(","bytes":1}}})";
+    EXPECT(parseControllerDbManifest(controllersOnly, m) == DbParse::Malformed);
 
     TEST("a digest that is not 64 lowercase hex digits, or bytes that are not a count, is "
          "malformed");
-    EXPECT(parseControllerDbManifest(base + R"(,"strings/de.json":{"sha256":"ABC","bytes":1}}})",
-                                     m) == DbParse::Malformed);
-    EXPECT(parseControllerDbManifest(
-               base + R"(,"strings/de.json":{"sha256":")" + sha + R"(","bytes":"1"}}})", m) ==
-           DbParse::Malformed);
+    const std::string shortDigest = base + R"(,"strings/de.json":{"sha256":"ABC","bytes":1}}})";
+    const std::string textBytes =
+        base + R"(,"strings/de.json":{"sha256":")" + sha + R"(","bytes":"1"}}})";
+    EXPECT(parseControllerDbManifest(shortDigest, m) == DbParse::Malformed);
+    EXPECT(parseControllerDbManifest(textBytes, m) == DbParse::Malformed);
 
     TEST("a manifest with no dbVersion is malformed");
     std::string unversioned = base + "}}";

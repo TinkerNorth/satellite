@@ -355,7 +355,7 @@ inline Ds4OutputReport ds4ParseOutputReport(uint32_t reportId, const uint8_t* da
     if (data == nullptr) return out;
     if (reportId != DS4V2_OUTPUT_REPORT_ID) {
         // Some transports report id 0 and leave the id byte in the payload.
-        if (!(reportId == 0 && len >= 1 && data[0] == DS4V2_OUTPUT_REPORT_ID)) return out;
+        if (reportId != 0 || len < 1 || data[0] != DS4V2_OUTPUT_REPORT_ID) return out;
     }
     const uint8_t* p = data;
     size_t n = len;

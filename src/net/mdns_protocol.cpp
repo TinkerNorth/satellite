@@ -328,7 +328,9 @@ bool txtRdata(const std::vector<std::pair<std::string, std::string>>& pairs,
         return true;
     }
     for (const auto& [k, v] : pairs) {
-        const std::string entry = k + "=" + v;
+        std::string entry = k;
+        entry += '=';
+        entry += v;
         if (entry.size() > 255) return false;
         out.push_back(static_cast<uint8_t>(entry.size()));
         out.insert(out.end(), entry.begin(), entry.end());
@@ -486,8 +488,6 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     if (out == nullptr || outCap < 12) return 0;
     const std::string serviceType = SERVICE_TYPE_DOMAIN;
     const std::string instanceFqdn = inputs.instanceName + "." + serviceType;
-    const std::string hostFqdn = inputs.hostName + ".local.";
-
     const std::vector<ProbeRecord> proposed = buildProposedRecords(inputs);
     if (proposed.empty()) return 0; // SRV + TXT are always present; defensive
 

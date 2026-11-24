@@ -76,14 +76,14 @@ bool readOctet(const std::string& s, size_t pos, size_t& end) {
     size_t i = pos;
     int value = 0;
     while (i < s.size() && i - pos < 3 && isDigit(s[i])) value = value * 10 + (s[i++] - '0');
-    const bool digits = i > pos && !(i < s.size() && isDigit(s[i]));
+    const bool digits = i > pos && (i >= s.size() || !isDigit(s[i]));
     end = i;
     return digits && value <= 255;
 }
 
 // The length of a dotted-quad address starting at `pos`, or 0.
 size_t ipv4At(const std::string& s, size_t pos) {
-    const bool startsWord = pos == 0 || !(isDigit(s[pos - 1]) || s[pos - 1] == '.');
+    const bool startsWord = pos == 0 || (!isDigit(s[pos - 1]) && s[pos - 1] != '.');
     if (!startsWord) return 0;
     size_t cursor = pos;
     for (int octet = 0; octet < 4; octet++) {

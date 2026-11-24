@@ -56,7 +56,7 @@ std::shared_ptr<const Config> ConfigStore::current() const {
 
 std::shared_ptr<const Config> ConfigStore::update(const std::function<bool(Config&)>& mutate) {
     std::lock_guard<TrackedMutex> writer(writeMtx_);
-    const std::shared_ptr<const Config> before = snapshot_;
+    std::shared_ptr<const Config> before = snapshot_; // returned, so movable
     std::shared_ptr<Config> next = std::make_shared<Config>(*before);
     if (!mutate(*next)) return before;
     const std::shared_ptr<const Config> published = std::move(next);

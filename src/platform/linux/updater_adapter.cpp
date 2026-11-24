@@ -152,11 +152,9 @@ DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& i
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
     curl_slist_free_all(headers);
     curl_easy_cleanup(c);
-    if (rc != CURLE_OK) {
-        r.outcome = DbFetch::Failed;
-    } else if (status == 304) {
+    if (rc == CURLE_OK && status == 304) {
         r.outcome = DbFetch::NotModified;
-    } else if (status == 200) {
+    } else if (rc == CURLE_OK && status == 200) {
         r.outcome = DbFetch::Ok;
     } else {
         r.outcome = DbFetch::Failed;
@@ -288,7 +286,7 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     crypto_hash_sha256_state st;
     crypto_hash_sha256_init(&st);
     unsigned char buf[64 * 1024];
-    size_t n;
+    size_t n = 0;
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) { crypto_hash_sha256_update(&st, buf, n); }
     // fread stops at a read error as it does at the end; a hash of part of the
     // file is no hash of it.

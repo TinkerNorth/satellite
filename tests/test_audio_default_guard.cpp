@@ -111,7 +111,7 @@ static void test_normalize_device_id() {
 
     TEST("surrounding whitespace and NULs are trimmed (REG_SZ reads carry them)");
     EXPECT_EQ(normalizeDeviceId("  ROOT\\USB\\0000  "), std::string("root\\usb\\0000"));
-    EXPECT_EQ(normalizeDeviceId(std::string("ROOT\\USB\\0000\0", 15)),
+    EXPECT_EQ(normalizeDeviceId(std::string("ROOT\\USB\\0000\0\0", 15)),
               std::string("root\\usb\\0000"));
     EXPECT_EQ(normalizeDeviceId("\t\r\n"), std::string(""));
     EXPECT_EQ(normalizeDeviceId(std::string("\0\0", 2)), std::string(""));
@@ -360,7 +360,7 @@ static void test_could_restore_later_drives_the_poll_window() {
     EXPECT(!couldRestoreLater(RoleSnapshot{}));
     EXPECT(!couldRestoreLater(captured(SPEAKERS, /*priorWasOurs=*/true)));
     EXPECT(!couldRestoreLater(captured("")));
-    EXPECT(!couldRestoreLater(captured("  \0", false)));
+    EXPECT(!couldRestoreLater(captured(std::string("  \0", 3), false)));
 }
 
 static void test_snapshot_roles_are_independent() {

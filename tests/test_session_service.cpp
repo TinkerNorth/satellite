@@ -214,44 +214,44 @@ struct MockViGem : IGamepadPort {
         return submitRelativeMouseReturnVal;
     }
     bool supportsRelativeMouse() const override { return supportsRelativeMouseVal; }
-    void setLightbarCallback(LightbarCallback cb) override {
+    void setLightbarCallback(const LightbarCallback& cb) override {
         setLightbarCallbackCalls++;
-        capturedLightbarCb = std::move(cb);
+        capturedLightbarCb = cb;
     }
     void fireLightbar(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         if (capturedLightbarCb) capturedLightbarCb(serial, r, g, b);
     }
-    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
+    void setTriggerEffectsCallback(const TriggerEffectsCallback& cb) override {
         setTriggerEffectsCallbackCalls++;
-        capturedTriggerEffectsCb = std::move(cb);
+        capturedTriggerEffectsCb = cb;
     }
     void fireTriggerEffects(uint32_t serial, const TriggerEffectsReport& report) {
         if (capturedTriggerEffectsCb) capturedTriggerEffectsCb(serial, report);
     }
-    void setPlayerLedsCallback(PlayerLedsCallback cb) override {
+    void setPlayerLedsCallback(const PlayerLedsCallback& cb) override {
         setPlayerLedsCallbackCalls++;
-        capturedPlayerLedsCb = std::move(cb);
+        capturedPlayerLedsCb = cb;
     }
     void firePlayerLeds(uint32_t serial, uint8_t mask) {
         if (capturedPlayerLedsCb) capturedPlayerLedsCb(serial, mask);
     }
-    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
+    void setSpeakerAudioCallback(const SpeakerAudioCallback& cb) override {
         setSpeakerAudioCallbackCalls++;
-        capturedSpeakerAudioCb = std::move(cb);
+        capturedSpeakerAudioCb = cb;
     }
     void fireSpeakerAudio(uint32_t serial, const int16_t* pcm, size_t frames) {
         if (capturedSpeakerAudioCb) capturedSpeakerAudioCb(serial, pcm, frames);
     }
-    void setHapticAudioCallback(HapticAudioCallback cb) override {
+    void setHapticAudioCallback(const HapticAudioCallback& cb) override {
         setHapticAudioCallbackCalls++;
-        capturedHapticAudioCb = std::move(cb);
+        capturedHapticAudioCb = cb;
     }
     void fireHapticAudio(uint32_t serial, const int16_t* pcm, size_t frames) {
         if (capturedHapticAudioCb) capturedHapticAudioCb(serial, pcm, frames);
     }
-    void setMicLedCallback(MicLedCallback cb) override {
+    void setMicLedCallback(const MicLedCallback& cb) override {
         setMicLedCallbackCalls++;
-        capturedMicLedCb = std::move(cb);
+        capturedMicLedCb = cb;
     }
     void fireMicLed(uint32_t serial, uint8_t state) {
         if (capturedMicLedCb) capturedMicLedCb(serial, state);
@@ -5650,7 +5650,7 @@ struct RumbleDuringPlug {
     RumbleDuringPlug() { svc.updatePostDecryptV4(session.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT); }
 
     void writeWhilePlugging(std::vector<RumbleReport> writes) {
-        vigem.onPlugged = [this, writes](uint32_t serial) {
+        vigem.onPlugged = [this, writes = std::move(writes)](uint32_t serial) {
             for (const RumbleReport& report : writes) vigem.fireRumble(serial, report);
         };
     }
