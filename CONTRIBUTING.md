@@ -105,6 +105,12 @@ with every other third-party component in [`THIRD_PARTY.md`](THIRD_PARTY.md).
 - C++20, four-space indent, 100-column soft limit. The same `.clang-format`
   ships with `dish-android` (JNI), `dish-windows` and `dish-linux`; run
   `scripts/check-format.sh --fix` to format with the pinned clang-format.
+- clang-tidy, pinned in `scripts/tools.sh`, runs the shared `.clang-tidy`
+  over every first-party translation unit the build configured:
+  `scripts/check-tidy.sh build` after `cmake --preset release` (or
+  `windows-mingw`). Each CI lane runs it over the sources it compiles, and any
+  finding fails the lane. A finding is fixed at its cause; nothing is
+  suppressed and no check is switched off here.
 - Bitwise operators take unsigned operands only (clang-tidy's
   `bugprone-signed-bitwise`). A `uint8_t` or `uint16_t` is promoted to `int`
   before an operator sees it, so bytes widen through `bits::u32()` first,

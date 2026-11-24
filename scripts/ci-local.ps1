@@ -6,7 +6,8 @@
     Mirrors .github/workflows/windows-ci.yml, so a green run here means a
     green run there: scripts/check-format.sh (the pinned clang-format, CI's file set),
     scripts/check-action-pins.sh, scripts/check-version-consistency.sh,
-    scripts/check-vendored-freshness.sh, configure + build + ctest via the
+    scripts/check-vendored-freshness.sh, configure + build + clang-tidy
+    (scripts/check-tidy.sh, the pinned clang-tidy) + ctest via the
     windows-mingw preset (MSYS2 MINGW64, the toolchain CI installs), the
     satellite.exe check, the redist script tests (tests/test_fetch_redist.ps1),
     the HIDMaestro helper publish and the helper's SDK check
@@ -121,6 +122,10 @@ if ($toolchainReady) {
     Step 'Build'
     & cmake --build --preset windows-mingw -j $env:NUMBER_OF_PROCESSORS
     if ($LASTEXITCODE -ne 0) { throw 'cmake build failed' }
+
+    Step 'clang-tidy (pinned, shared .clang-tidy)'
+    & bash scripts/check-tidy.sh build
+    if ($LASTEXITCODE -ne 0) { throw 'clang-tidy found something' }
 
     Step 'Run tests'
     & ctest --preset windows-mingw

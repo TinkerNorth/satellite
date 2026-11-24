@@ -64,6 +64,12 @@ jobs:
       - name: Build (tray enabled)
         run: cmake --build --preset release -j "$(nproc)"
 
+      # clang-tidy 23.1.4 (pinned in scripts/tools.sh) with the shared
+      # .clang-tidy over every first-party translation unit this lane
+      # configured; any finding fails the job.
+      - name: clang-tidy
+        run: bash scripts/check-tidy.sh build
+
       - name: Run tests
         run: ctest --preset release
 

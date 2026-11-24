@@ -125,6 +125,9 @@ if have cmake; then
   step "Build"
   cmake --build --preset release -j "${jobs}"
 
+  step "clang-tidy (pinned, shared .clang-tidy)"
+  bash scripts/check-tidy.sh build
+
   step "Run tests"
   ctest --preset release
 

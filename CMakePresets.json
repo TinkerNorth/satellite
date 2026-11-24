@@ -9,7 +9,7 @@
     {
       "name": "release",
       "displayName": "Release (Linux and macOS, warnings as errors)",
-      "description": "The lane linux-ci.yml and macos-ci.yml build and test, and what scripts/build.sh and scripts/ci-local.sh run. Warnings-as-errors lives here (not in CMakeLists.txt) so a casual `cmake -S . -B build` stays friendly while every preset user gets CI's verdict. Linux and macOS share it because their toolchain is the host's own compiler.",
+      "description": "The lane linux-ci.yml and macos-ci.yml build and test, and what scripts/build.sh and scripts/ci-local.sh run. Warnings-as-errors lives here (not in CMakeLists.txt), with the compile database scripts/check-tidy.sh reads, so a casual `cmake -S . -B build` stays friendly while every preset user gets CI's verdict. Linux and macOS share it because their toolchain is the host's own compiler.",
       "condition": {
         "type": "notEquals",
         "lhs": "${hostSystemName}",
@@ -18,7 +18,8 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
@@ -59,7 +60,8 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
