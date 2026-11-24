@@ -78,33 +78,42 @@ bool HidMaestroAdapter::ensureBusOpen() {
 }
 
 void HidMaestroAdapter::closeBus() {
-    std::vector<uint32_t> serials;
-    {
+    // Closing the bus (which the destructor does) allocates nothing. Stopping a
+    // worker drops busMtx_ to join it, so each pass stops the first serial
+    // still running a worker until none is.
+    for (;;) {
         std::lock_guard<TrackedMutex> lk(busMtx_);
-        serials.reserve(outputWorkers_.size() + speakerWorkers_.size() + hapticWorkers_.size());
-        for (auto& [serial, _] : outputWorkers_) serials.push_back(serial);
-        for (auto& [serial, _] : speakerWorkers_) serials.push_back(serial);
-        for (auto& [serial, _] : hapticWorkers_) serials.push_back(serial);
-    }
-    for (uint32_t serial : serials) {
-        std::lock_guard<TrackedMutex> lk(busMtx_);
+        uint32_t serial = 0;
+        if (!outputWorkers_.empty()) {
+            serial = outputWorkers_.begin()->first;
+        } else if (!speakerWorkers_.empty()) {
+            serial = speakerWorkers_.begin()->first;
+        } else if (!hapticWorkers_.empty()) {
+            serial = hapticWorkers_.begin()->first;
+        } else {
+            break;
+        }
         stopOutputWorker(serial);
         stopAudioWorker(serial, AudioLane::Speaker);
         stopAudioWorker(serial, AudioLane::Haptic);
     }
 
-    std::vector<std::pair<uint32_t, hm::Teardown>> provisioned;
+    // At most one teardown per slot, so a fixed table holds them.
+    std::array<std::pair<uint32_t, hm::Teardown>, MAX_BACKEND_CONTROLLERS> provisioned{};
+    size_t provisionedCount = 0;
     {
         std::lock_guard<TrackedMutex> lk(busMtx_);
         for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
             IoSlot& slot = io_[s];
             if (slot.plugged.load(std::memory_order_acquire)) {
-                provisioned.emplace_back(s, teardownFor(slot));
+                provisioned[provisionedCount++] = {s, teardownFor(slot)};
             }
             releaseSlotLocked(slot);
         }
     }
-    for (const auto& [s, why] : provisioned) provisioner_.deprovision(s, why);
+    for (size_t i = 0; i < provisionedCount; ++i) {
+        provisioner_.deprovision(provisioned[i].first, provisioned[i].second);
+    }
     // The helper stays resident: closeBus fires every time the session goes
     // idle, and respawning the elevated helper would mean a fresh UAC prompt
     // on every reconnect. It exits with satellite (parent watch) or in the

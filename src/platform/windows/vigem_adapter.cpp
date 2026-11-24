@@ -41,15 +41,12 @@ bool ViGEmAdapter::ensureBusOpen() {
 
 void ViGEmAdapter::closeBus() {
     // Stop notification workers first: they hold pending IOCTLs on busHandle_.
-    std::vector<uint32_t> serials;
-    {
+    // Closing the bus (which the destructor does) allocates nothing: stopping a
+    // worker drops busMtx_ to join it, so each pass stops the first one left.
+    for (;;) {
         std::lock_guard<TrackedMutex> lk(busMtx_);
-        serials.reserve(notifWorkers_.size());
-        for (auto& [serial, _] : notifWorkers_) serials.push_back(serial);
-    }
-    for (uint32_t serial : serials) {
-        std::lock_guard<TrackedMutex> lk(busMtx_);
-        stopNotificationWorker(serial);
+        if (notifWorkers_.empty()) break;
+        stopNotificationWorker(notifWorkers_.begin()->first);
     }
 
     std::lock_guard<TrackedMutex> lk(busMtx_);
