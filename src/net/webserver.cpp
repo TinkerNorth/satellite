@@ -10,14 +10,19 @@
 #include "core/tracked_mutex.h"
 #include "core/types.h"
 
+httplib::Server& adminHttpServer() {
+    static httplib::Server server;
+    return server;
+}
+
 // Admin server: web UI + admin API. Plain HTTP, 127.0.0.1, no auth.
 void adminHttpThread(SessionService& svc) {
     ScopedThreadRole role(ThreadRole::HttpAdmin);
-    registerAdminRoutes(g_httpServer, svc);
+    registerAdminRoutes(adminHttpServer(), svc);
 
     const int webPort = g_configStore->current()->webPort;
     logMsg(LogLevel::INFO, "web", "Admin web UI on 127.0.0.1:" + std::to_string(webPort));
-    g_httpServer.listen("127.0.0.1", webPort);
+    adminHttpServer().listen("127.0.0.1", webPort);
 }
 
 // Client API server: pairing + sessions + catalog. HTTPS (self-signed), 0.0.0.0.

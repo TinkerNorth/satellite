@@ -15,7 +15,8 @@ using satellite::UnknownTokenLogLine;
 
 namespace {
 
-const uint32_t kDish = parseIPv4Nbo("192.168.1.23");
+// 192.168.1.23 in network order, the first octet in the lowest byte.
+constexpr uint32_t kDish = 192U | (168U << 8U) | (1U << 16U) | (23U << 24U);
 const std::chrono::steady_clock::time_point kT0 = std::chrono::steady_clock::now();
 
 std::chrono::steady_clock::time_point at(int seconds) {

@@ -103,7 +103,7 @@ static void netlinkWatcherThread() {
 // Stops accepting: the servers close and every worker loop sees the flag.
 static void stopServers() {
     g_appRunning = false;
-    g_httpServer.stop();
+    adminHttpServer().stop();
     if (g_clientServer != nullptr) g_clientServer->stop();
 }
 

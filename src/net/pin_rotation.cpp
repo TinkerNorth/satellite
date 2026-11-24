@@ -39,8 +39,16 @@ std::string randomDigits(int n) {
 static TrackedMutex g_pinMtx("pairing.pin");
 static std::string g_currentPin;
 static std::string g_previousPin;
-static std::chrono::steady_clock::time_point g_pinRotateAt;
-static std::chrono::steady_clock::time_point g_pinPairedAt;
+// The rotation and paired deadlines, built on first use rather than before
+// main, since a time_point's constructor is not noexcept. Guarded by g_pinMtx.
+struct PinDeadlines {
+    std::chrono::steady_clock::time_point rotateAt;
+    std::chrono::steady_clock::time_point pairedAt;
+};
+static PinDeadlines& pinDeadlines() {
+    static PinDeadlines deadlines;
+    return deadlines;
+}
 static bool g_pinPairedValid = false;
 static int g_pinFailCount = 0;
 static constexpr int PIN_PAIRED_HOLD_SEC = 5;
@@ -52,7 +60,7 @@ static constexpr int PIN_MAX_FAILS = 5;
 static void resetPinsLocked() {
     g_currentPin = randomDigits(4);
     g_previousPin.clear();
-    g_pinRotateAt = std::chrono::steady_clock::now() + PIN_ROTATE_PERIOD;
+    pinDeadlines().rotateAt = std::chrono::steady_clock::now() + PIN_ROTATE_PERIOD;
     g_pinFailCount = 0;
 }
 
@@ -62,10 +70,11 @@ static void rotatePinsIfDueLocked() {
         resetPinsLocked();
         return;
     }
-    if (now < g_pinRotateAt) return;
-    g_previousPin = (now - g_pinRotateAt < PIN_ROTATE_PERIOD) ? g_currentPin : std::string();
+    if (now < pinDeadlines().rotateAt) return;
+    g_previousPin =
+        (now - pinDeadlines().rotateAt < PIN_ROTATE_PERIOD) ? g_currentPin : std::string();
     g_currentPin = randomDigits(4);
-    g_pinRotateAt = now + PIN_ROTATE_PERIOD;
+    pinDeadlines().rotateAt = now + PIN_ROTATE_PERIOD;
     g_pinFailCount = 0;
 }
 
@@ -82,7 +91,7 @@ bool verifyPin(const std::string& pin) {
     const bool okPrevious = matches(g_previousPin);
     if (okCurrent || okPrevious) {
         resetPinsLocked();
-        g_pinPairedAt = std::chrono::steady_clock::now();
+        pinDeadlines().pairedAt = std::chrono::steady_clock::now();
         g_pinPairedValid = true;
         return true;
     }
@@ -93,8 +102,8 @@ bool verifyPin(const std::string& pin) {
 #ifdef SATELLITE_BUILD_TESTS
 void backdatePinClockForTest(int seconds) {
     std::lock_guard<TrackedMutex> lk(g_pinMtx);
-    g_pinRotateAt -= std::chrono::seconds(seconds);
-    g_pinPairedAt -= std::chrono::seconds(seconds);
+    pinDeadlines().rotateAt -= std::chrono::seconds(seconds);
+    pinDeadlines().pairedAt -= std::chrono::seconds(seconds);
 }
 #endif
 
@@ -105,10 +114,12 @@ PinSnapshot pinSnapshot() {
     PinSnapshot s;
     s.currentPin = g_currentPin;
     s.previousPin = g_previousPin;
-    const auto rem = std::chrono::duration_cast<std::chrono::seconds>(g_pinRotateAt - now).count();
+    const auto rem =
+        std::chrono::duration_cast<std::chrono::seconds>(pinDeadlines().rotateAt - now).count();
     s.secondsRemaining = rem < 0 ? 0 : static_cast<int>(rem);
     // Flash PinPaired briefly after a pair so the dashboard doesn't stick on it.
-    s.state = (g_pinPairedValid && now - g_pinPairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC))
+    s.state = (g_pinPairedValid &&
+               now - pinDeadlines().pairedAt <= std::chrono::seconds(PIN_PAIRED_HOLD_SEC))
                   ? PinState::PinPaired
                   : PinState::PinActive;
     return s;

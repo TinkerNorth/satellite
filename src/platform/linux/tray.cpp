@@ -78,7 +78,7 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
 
 static void onQuit(GtkMenuItem*, gpointer) {
     g_appRunning = false;
-    g_httpServer.stop();
+    adminHttpServer().stop();
     gtk_main_quit();
 }
 

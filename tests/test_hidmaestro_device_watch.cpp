@@ -41,13 +41,14 @@ using WatchImage = std::array<uint8_t, WATCH_BLOCK_SIZE>;
 // A small policy, so a test walks a grace in a few steps.
 constexpr WatchPolicy SHORT{5, 3, 7, 4};
 
-PresentationReading part(DevnodeCondition condition,
-                         WatchedDevnode devnode = WatchedDevnode::Device, uint32_t problem = 0) {
+constexpr PresentationReading part(DevnodeCondition condition,
+                                   WatchedDevnode devnode = WatchedDevnode::Device,
+                                   uint32_t problem = 0) {
     return {condition, devnode, problem};
 }
 
-const PresentationReading PRESENT = part(DevnodeCondition::Present);
-const PresentationReading UNKNOWN = part(DevnodeCondition::Unknown);
+constexpr PresentationReading PRESENT = part(DevnodeCondition::Present);
+constexpr PresentationReading UNKNOWN = part(DevnodeCondition::Unknown);
 
 PresentationReading disabled(WatchedDevnode devnode) {
     return part(DevnodeCondition::Disabled, devnode, 22);

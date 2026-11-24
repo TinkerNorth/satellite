@@ -268,7 +268,7 @@ void runMessageLoop() {
 // callback can't fire into a torn-down server.
 void stopServers(UpdateService& updateService) {
     wakeReceiver();
-    g_httpServer.stop();
+    adminHttpServer().stop();
     if (g_clientServer) g_clientServer->stop();
     updateService.stop();
     g_updateService = nullptr;

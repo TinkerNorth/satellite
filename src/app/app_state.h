@@ -52,11 +52,12 @@ extern satellite::SeenDevices g_seenDevices;
 extern std::atomic<uint64_t> g_decryptFail;
 extern std::atomic<uint64_t> g_replayDrop;
 
-// g_httpServer is the admin UI + admin API (plain HTTP, 127.0.0.1).
+// adminHttpServer() is the admin UI + admin API (plain HTTP, 127.0.0.1),
+// built on first use rather than before main (its constructor may throw).
 // g_clientServer points at the sender-facing HTTPS server; owned by
 // clientApiThread (an httplib::SSLServer has no default ctor so can't be a
 // global) and null until that thread constructs it.
-extern httplib::Server g_httpServer;
+httplib::Server& adminHttpServer();
 extern httplib::Server* g_clientServer;
 extern std::string g_webDir;
 
