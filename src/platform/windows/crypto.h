@@ -7,9 +7,6 @@
 
 #include "net/pin_rotation.h"
 
-std::string base64Encode(const std::vector<BYTE>& data);
-std::vector<BYTE> base64Decode(const std::string& s);
-
 std::string sha256hex(const std::string& input);
 std::string dpapiEncrypt(const std::string& plaintext);
 std::string dpapiDecrypt(const std::string& encoded);

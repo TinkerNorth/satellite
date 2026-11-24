@@ -9,7 +9,7 @@
 // helpers live in net/pin_rotation.cpp.
 #include "crypto.h"
 #include "config.h"
-#include "core/bits.h"
+#include "core/base64.h"
 
 #include <sodium.h>
 
@@ -19,49 +19,6 @@
 
 #include <cerrno>
 #include <cstring>
-
-namespace bits = satellite::bits;
-
-static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static std::string base64Encode(const std::vector<uint8_t>& data) {
-    std::string out;
-    // Only the low 14 bits of the accumulator are ever read, so it may wrap.
-    uint32_t val = 0;
-    int pending = -6;
-    for (uint8_t c : data) {
-        val = (val << 8U) | bits::u32(c);
-        pending += 8;
-        while (pending >= 0) {
-            out.push_back(b64chars[(val >> static_cast<unsigned>(pending)) & 0x3FU]);
-            pending -= 6;
-        }
-    }
-    if (pending > -6) {
-        out.push_back(b64chars[((val << 8U) >> static_cast<unsigned>(pending + 8)) & 0x3FU]);
-    }
-    while ((out.size() % 4) != 0U) out.push_back('=');
-    return out;
-}
-
-static std::vector<uint8_t> base64Decode(const std::string& s) {
-    std::vector<int> T(256, -1);
-    for (int i = 0; i < 64; i++) T[(int)b64chars[i]] = i;
-    std::vector<uint8_t> out;
-    // Only the low 12 bits of the accumulator are ever read, so it may wrap.
-    uint32_t val = 0;
-    int pending = -8;
-    for (char c : s) {
-        if (T[(unsigned char)c] == -1) break;
-        val = (val << 6U) | static_cast<uint32_t>(T[(unsigned char)c]);
-        pending += 6;
-        if (pending >= 0) {
-            out.push_back(bits::lowByte(val >> static_cast<unsigned>(pending)));
-            pending -= 8;
-        }
-    }
-    return out;
-}
 
 std::string sha256hex(const std::string& input) {
     uint8_t hash[crypto_hash_sha256_BYTES];
@@ -130,11 +87,11 @@ std::string dpapiEncrypt(const std::string& plaintext) {
     blob.reserve(sizeof(nonce) + ct.size());
     blob.insert(blob.end(), nonce, nonce + sizeof(nonce));
     blob.insert(blob.end(), ct.begin(), ct.end());
-    return base64Encode(blob);
+    return satellite::base64Encode(blob);
 }
 
 std::string dpapiDecrypt(const std::string& encoded) {
-    auto blob = base64Decode(encoded);
+    auto blob = satellite::base64Decode(encoded);
     if (blob.size() < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) return "";
 
     uint8_t key[LOCAL_KEY_LEN];
