@@ -41,12 +41,12 @@ for entry in json.load(open(sys.argv[1])):
     rel = os.path.relpath(path, root)
     if rel.split(os.sep)[0] in ("src", "tests", "tools") and rel not in seen:
         seen.add(rel)
-        print(rel)
+        print(rel.replace(os.sep, "/"))
 PY
 )"
 count="$(printf '%s\n' "${files}" | grep -c .)"
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 echo "clang-tidy ${got} over ${count} translation units (${jobs} at a time)"
-printf '%s\n' "${files}" | xargs -P "${jobs}" -n 1 \
+printf '%s\n' "${files}" | tr '\n' '\0' | xargs -0 -P "${jobs}" -n 1 \
     clang-tidy -p "${build}" --quiet --warnings-as-errors='*' "${extra[@]+"${extra[@]}"}"
 echo "clang-tidy ${got}: OK"
