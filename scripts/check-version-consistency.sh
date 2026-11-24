@@ -37,6 +37,10 @@
 #   _release_harden.yml pin, against scripts/tools.sh and THIRD_PARTY.md, and
 #   the SLSA generator commit SECURITY.md's recipe names, against release.yml.
 #
+#   README.md: its relative links resolve, every X.Y.Z it names is /VERSION,
+#   it says which release is current, and the family's shared blocks match
+#   tests/fixtures/readme-family/ word for word.
+#
 #   CodeQL's paths-ignore (.github/codeql/codeql-config.yml) names only
 #   components lib/VENDORED.md lists, never first-party code.
 #
@@ -232,6 +236,39 @@ expect "SECURITY.md's protocol number" "$(grep -m1 -oE 'The wire protocol \(prot
 cxx="$(grep -E '^set\(CMAKE_CXX_STANDARD [0-9]+\)' CMakeLists.txt | grep -oE '[0-9]+')"
 named="$(grep -oE 'C\+\+[0-9]{2}' CONTRIBUTING.md | sort -u | tr '\n' ' ')"
 expect "the C++ standard CONTRIBUTING.md names" "${named% }" "C++$cxx"
+
+# ── README.md ────────────────────────────────────────────────────────────
+# Every relative link resolves, every X.Y.Z it names is the version, it says
+# which release is current, and it carries the family's shared blocks word
+# for word (tests/fixtures/readme-family/, the same files dish-android,
+# dish-linux and dish-mac hold).
+readme_out=$(python3 - "$ver" <<'PY'
+import os, re, sys
+ver = sys.argv[1]
+readme = open("README.md", encoding="utf-8").read()
+problems = []
+for target in re.findall(r"\]\(([^)\s]+)\)", readme):
+    if re.match(r"[a-z][a-z0-9+.-]*:", target) or target.startswith("#"):
+        continue
+    path = target.split("#", 1)[0]
+    if path and not os.path.exists(path):
+        problems.append(f"links to {target}, which does not exist")
+if f"Satellite {ver} is the current release." not in readme:
+    problems.append(f"does not say Satellite {ver} is the current release")
+for found in sorted(set(re.findall(r"\b(\d+\.\d+\.\d+)\b", readme))):
+    if found != ver:
+        problems.append(f"names version {found}; VERSION is {ver}")
+fixtures = "tests/fixtures/readme-family"
+for name in sorted(os.listdir(fixtures)):
+    block = open(os.path.join(fixtures, name), encoding="utf-8").read().rstrip("\n")
+    if block not in readme:
+        problems.append(f"does not carry the family's shared block {fixtures}/{name} word for word")
+print("\n".join(problems))
+PY
+)
+while IFS= read -r line; do
+  [ -n "$line" ] && err "README.md $line"
+done <<<"$readme_out"
 
 if [ "$fail" -ne 0 ]; then
   echo
