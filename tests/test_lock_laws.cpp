@@ -55,6 +55,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -84,20 +85,20 @@ struct LockPair {
     Allowance why;
 };
 
-const std::vector<LockName> RECEIVE_MAY_ACQUIRE = {};
+constexpr std::span<const LockName> RECEIVE_MAY_ACQUIRE{};
 
-const std::vector<LockName> LIFECYCLE_MAY_HOLD = {
+constexpr LockName LIFECYCLE_MAY_HOLD[] = {
     {"service.topology", Allowance::ByDesign},
 };
 
 #ifdef _WIN32
-const std::vector<LockName> HELPER_PIPE_MAY_HOLD = {
+constexpr LockName HELPER_PIPE_MAY_HOLD[] = {
     {"hidmaestro.helper", Allowance::ByDesign},
     {"service.topology", Allowance::ByDesign},
 };
 #endif
 
-const std::vector<LockPair> BLOCKING_MAY_HOLD = {
+constexpr LockPair BLOCKING_MAY_HOLD[] = {
     {"autostart.write", "config.effects", Allowance::ByDesign},
     {"backend.lifecycle", "service.topology", Allowance::ByDesign},
     {"crash.toggle", "config.effects", Allowance::ByDesign},
@@ -109,7 +110,7 @@ const std::vector<LockPair> BLOCKING_MAY_HOLD = {
 #endif
 };
 
-const std::vector<LockPair> ORDER_MAY_NEST = {
+constexpr LockPair ORDER_MAY_NEST[] = {
     {"config.effects", "config.snapshot", Allowance::ByDesign},
     {"config.write", "config.snapshot", Allowance::ByDesign},
     {"service.topology", "service.state", Allowance::ByDesign},
@@ -483,7 +484,7 @@ class LawBackend : public IGamepadPort {
     }
 
     void setRumbleCallback(RumbleCallback cb) override { rumble_ = std::move(cb); }
-    void setLightbarCallback(LightbarCallback cb) override { lightbar_ = std::move(cb); }
+    void setLightbarCallback(const LightbarCallback& cb) override { lightbar_ = cb; }
 
     void fireFeedback(uint32_t serial, uint16_t level) {
         RumbleReport report;
@@ -1530,7 +1531,7 @@ NameSet heldDuring(const lockstats::Snapshot& snap, const std::string& region) {
 #endif
 
 void expectExactly(const std::string& law, const NameSet& observed,
-                   const std::vector<LockName>& listed) {
+                   std::span<const LockName> listed) {
     TEST(law);
     NameSet names;
     for (const LockName& entry : listed) names.insert(entry.lock);
@@ -1549,7 +1550,7 @@ void expectExactly(const std::string& law, const NameSet& observed,
 }
 
 void expectExactly(const std::string& law, const PairSet& observed,
-                   const std::vector<LockPair>& listed) {
+                   std::span<const LockPair> listed) {
     TEST(law);
     PairSet pairs;
     for (const LockPair& entry : listed) pairs.insert({entry.first, entry.second});

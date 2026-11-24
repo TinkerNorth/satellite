@@ -40,7 +40,7 @@ bool relayFrames(EventBroadcaster::Subscription& stream, httplib::DataSink& sink
 } // namespace
 
 void serveEventStreams(httplib::Server& server, const std::string& path,
-                       std::shared_ptr<EventBroadcaster> streams) {
+                       const std::shared_ptr<EventBroadcaster>& streams) {
     server.new_task_queue = [streams] { return new StreamClosingQueue(streams); };
     server.Get(path, [streams](const httplib::Request&, httplib::Response& res) {
         const std::shared_ptr<EventBroadcaster::Subscription> stream = streams->subscribe();

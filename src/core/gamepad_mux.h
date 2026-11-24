@@ -197,26 +197,26 @@ class GamepadMux : public IGamepadPort {
         for (IGamepadPort* p : ports_) p->setRumbleCallback(cb);
     }
 
-    void setLightbarCallback(LightbarCallback cb) override {
+    void setLightbarCallback(const LightbarCallback& cb) override {
         for (IGamepadPort* p : ports_) p->setLightbarCallback(cb);
     }
 
-    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
+    void setTriggerEffectsCallback(const TriggerEffectsCallback& cb) override {
         for (IGamepadPort* p : ports_) p->setTriggerEffectsCallback(cb);
     }
 
-    void setPlayerLedsCallback(PlayerLedsCallback cb) override {
+    void setPlayerLedsCallback(const PlayerLedsCallback& cb) override {
         for (IGamepadPort* p : ports_) p->setPlayerLedsCallback(cb);
     }
 
-    void setHapticAudioCallback(HapticAudioCallback cb) override {
+    void setHapticAudioCallback(const HapticAudioCallback& cb) override {
         for (IGamepadPort* p : ports_) p->setHapticAudioCallback(cb);
     }
-    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
+    void setSpeakerAudioCallback(const SpeakerAudioCallback& cb) override {
         for (IGamepadPort* p : ports_) p->setSpeakerAudioCallback(cb);
     }
 
-    void setMicLedCallback(MicLedCallback cb) override {
+    void setMicLedCallback(const MicLedCallback& cb) override {
         for (IGamepadPort* p : ports_) p->setMicLedCallback(cb);
     }
 

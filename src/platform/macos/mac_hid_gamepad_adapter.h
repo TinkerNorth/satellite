@@ -112,7 +112,7 @@ class MacHidGamepadAdapter : public IGamepadPort {
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
-    void setLightbarCallback(LightbarCallback cb) override;
+    void setLightbarCallback(const LightbarCallback& cb) override;
 
     // DS4 slots only: IMU rides the same input report (no separate sink to
     // fail), so motionBackendOk is true for plugged DS4 slots and, matching

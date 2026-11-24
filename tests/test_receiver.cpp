@@ -40,7 +40,7 @@ struct StubGamepad : IGamepadPort {
         return false;
     }
     bool submitRelativeMouse(int, int, const MouseButtons&, int) override { return false; }
-    void setLightbarCallback(LightbarCallback) override {}
+    void setLightbarCallback(const LightbarCallback&) override {}
 
     bool busOpen = true;
     bool submitReturnVal = true;

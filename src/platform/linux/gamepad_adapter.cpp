@@ -807,11 +807,10 @@ void GamepadAdapter::invokeLightbarForTest(uint32_t serial, uint8_t r, uint8_t g
 }
 #endif
 
-void GamepadAdapter::setLightbarCallback(LightbarCallback cb) {
+void GamepadAdapter::setLightbarCallback(const LightbarCallback& cb) {
     // Rarely fires on uinput (no RGB readback) but keeps parity with ViGEm.
     std::lock_guard<TrackedMutex> lk(mtx_);
-    LightbarCallback inner = std::move(cb);
-    lightbarCb_ = [inner](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
+    lightbarCb_ = [inner = cb](uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         const std::string colour = upperHexColour(r, g, b);
         const bool ok = writeSysfsProxyFile(serial, "lightbar", colour + "\n");
         logMsg(ok ? LogLevel::INFO : LogLevel::WARN, "uinput",

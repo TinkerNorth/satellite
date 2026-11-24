@@ -122,15 +122,13 @@ struct MockPort : IGamepadPort {
     bool supportsMotionForType(uint8_t) const override { return motionForType; }
     bool motionBackendOk(uint32_t) const override { return true; }
     void setRumbleCallback(RumbleCallback cb) override { rumbleCb = std::move(cb); }
-    void setLightbarCallback(LightbarCallback cb) override { lightbarCb = std::move(cb); }
-    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
-        triggerEffectsCb = std::move(cb);
+    void setLightbarCallback(const LightbarCallback& cb) override { lightbarCb = cb; }
+    void setTriggerEffectsCallback(const TriggerEffectsCallback& cb) override {
+        triggerEffectsCb = cb;
     }
-    void setPlayerLedsCallback(PlayerLedsCallback cb) override { playerLedsCb = std::move(cb); }
-    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
-        speakerAudioCb = std::move(cb);
-    }
-    void setMicLedCallback(MicLedCallback cb) override { micLedCb = std::move(cb); }
+    void setPlayerLedsCallback(const PlayerLedsCallback& cb) override { playerLedsCb = cb; }
+    void setSpeakerAudioCallback(const SpeakerAudioCallback& cb) override { speakerAudioCb = cb; }
+    void setMicLedCallback(const MicLedCallback& cb) override { micLedCb = cb; }
     bool submitMicAudioPcm(uint32_t serial, const int16_t*, size_t samples) override {
         micAudioCalls++;
         lastSerial = serial;

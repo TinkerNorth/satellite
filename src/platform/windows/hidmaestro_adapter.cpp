@@ -835,19 +835,19 @@ void HidMaestroAdapter::setRumbleCallback(RumbleCallback cb) {
     rumbleCb_ = std::move(cb);
 }
 
-void HidMaestroAdapter::setLightbarCallback(LightbarCallback cb) {
+void HidMaestroAdapter::setLightbarCallback(const LightbarCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    lightbarCb_ = std::move(cb);
+    lightbarCb_ = cb;
 }
 
-void HidMaestroAdapter::setTriggerEffectsCallback(TriggerEffectsCallback cb) {
+void HidMaestroAdapter::setTriggerEffectsCallback(const TriggerEffectsCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    triggerEffectsCb_ = std::move(cb);
+    triggerEffectsCb_ = cb;
 }
 
-void HidMaestroAdapter::setPlayerLedsCallback(PlayerLedsCallback cb) {
+void HidMaestroAdapter::setPlayerLedsCallback(const PlayerLedsCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    playerLedsCb_ = std::move(cb);
+    playerLedsCb_ = cb;
 }
 
 void HidMaestroAdapter::setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after) {
@@ -856,19 +856,19 @@ void HidMaestroAdapter::setCompositePlugHooks(CompositePlugHook before, Composit
     compositePlugAfter_ = std::move(after);
 }
 
-void HidMaestroAdapter::setSpeakerAudioCallback(SpeakerAudioCallback cb) {
+void HidMaestroAdapter::setSpeakerAudioCallback(const SpeakerAudioCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    speakerAudioCb_ = std::move(cb);
+    speakerAudioCb_ = cb;
 }
 
-void HidMaestroAdapter::setHapticAudioCallback(HapticAudioCallback cb) {
+void HidMaestroAdapter::setHapticAudioCallback(const HapticAudioCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    hapticAudioCb_ = std::move(cb);
+    hapticAudioCb_ = cb;
 }
 
-void HidMaestroAdapter::setMicLedCallback(MicLedCallback cb) {
+void HidMaestroAdapter::setMicLedCallback(const MicLedCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    micLedCb_ = std::move(cb);
+    micLedCb_ = cb;
 }
 
 bool HidMaestroAdapter::hasAudioPersona(uint32_t serial) const {

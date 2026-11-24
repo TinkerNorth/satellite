@@ -373,9 +373,9 @@ void ViGEmAdapter::setRumbleCallback(RumbleCallback cb) {
     rumbleCb_ = std::move(cb);
 }
 
-void ViGEmAdapter::setLightbarCallback(LightbarCallback cb) {
+void ViGEmAdapter::setLightbarCallback(const LightbarCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    lightbarCb_ = std::move(cb);
+    lightbarCb_ = cb;
 }
 
 // Caller holds busMtx_.

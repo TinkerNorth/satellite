@@ -10,6 +10,6 @@
 namespace satellite {
 
 void serveEventStreams(httplib::Server& server, const std::string& path,
-                       std::shared_ptr<EventBroadcaster> streams);
+                       const std::shared_ptr<EventBroadcaster>& streams);
 
 } // namespace satellite

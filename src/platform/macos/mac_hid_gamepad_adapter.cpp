@@ -499,9 +499,9 @@ void MacHidGamepadAdapter::setRumbleCallback(RumbleCallback cb) {
     hub_->rumbleCb = std::move(cb);
 }
 
-void MacHidGamepadAdapter::setLightbarCallback(LightbarCallback cb) {
+void MacHidGamepadAdapter::setLightbarCallback(const LightbarCallback& cb) {
     std::lock_guard<std::mutex> lk(hub_->mtx);
-    hub_->lightbarCb = std::move(cb);
+    hub_->lightbarCb = cb;
 }
 
 void MacHidGamepadAdapter::handleOutputReport(uint32_t serial, uint32_t reportId,
@@ -548,7 +548,7 @@ bool MacHidGamepadAdapter::motionBackendOk(uint32_t) const { return true; }
 bool MacHidGamepadAdapter::submitBattery(uint32_t, const BatteryReport&) { return false; }
 bool MacHidGamepadAdapter::submitTouchpad(uint32_t, const TouchpadReport&) { return false; }
 void MacHidGamepadAdapter::setRumbleCallback(RumbleCallback) {}
-void MacHidGamepadAdapter::setLightbarCallback(LightbarCallback) {}
+void MacHidGamepadAdapter::setLightbarCallback(const LightbarCallback&) {}
 void MacHidGamepadAdapter::handleOutputReport(uint32_t, uint32_t, const uint8_t*, size_t) {}
 
 #ifdef SATELLITE_BUILD_TESTS

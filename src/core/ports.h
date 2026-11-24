@@ -166,18 +166,18 @@ class IGamepadPort {
     // Lightbar sink, independent of rumble, so a game that only sets colour
     // still drives the LED. Backends without one install a no-op stub.
     using LightbarCallback = std::function<void(uint32_t serial, uint8_t r, uint8_t g, uint8_t b)>;
-    virtual void setLightbarCallback(LightbarCallback /*cb*/) {}
+    virtual void setLightbarCallback(const LightbarCallback& /*cb*/) {}
 
     // DualSense adaptive-trigger sink: fires with the raw left/right effect
     // blocks whenever a game rewrites them on the virtual pad. Only backends
     // that surface raw DS5 output reports (HIDMaestro) ever call it.
     using TriggerEffectsCallback =
         std::function<void(uint32_t serial, const TriggerEffectsReport& report)>;
-    virtual void setTriggerEffectsCallback(TriggerEffectsCallback /*cb*/) {}
+    virtual void setTriggerEffectsCallback(const TriggerEffectsCallback& /*cb*/) {}
 
     // Player-indicator LED sink (DualSense 5-LED bar, Switch Pro 4 LEDs).
     using PlayerLedsCallback = std::function<void(uint32_t serial, uint8_t ledMask)>;
-    virtual void setPlayerLedsCallback(PlayerLedsCallback /*cb*/) {}
+    virtual void setPlayerLedsCallback(const PlayerLedsCallback& /*cb*/) {}
 
     // Controller audio: the emulated pad's OWN endpoints, never host game
     // audio. Only a backend that can materialize an audio-carrying persona
@@ -198,7 +198,7 @@ class IGamepadPort {
     // duration of the call (it aliases the backend's ring).
     using SpeakerAudioCallback =
         std::function<void(uint32_t serial, const int16_t* stereo48k, size_t frames)>;
-    virtual void setSpeakerAudioCallback(SpeakerAudioCallback /*cb*/) {}
+    virtual void setSpeakerAudioCallback(const SpeakerAudioCallback& /*cb*/) {}
 
     // Haptic sink: the PCM a game wrote to channels 3/4 of the same endpoint,
     // the two voice-coil actuators, left first. Same framing and lifetime
@@ -206,12 +206,12 @@ class IGamepadPort {
     // the haptics lanes (the DualSense composite) ever fires it.
     using HapticAudioCallback =
         std::function<void(uint32_t serial, const int16_t* stereo48k, size_t frames)>;
-    virtual void setHapticAudioCallback(HapticAudioCallback /*cb*/) {}
+    virtual void setHapticAudioCallback(const HapticAudioCallback& /*cb*/) {}
 
     // Mic-mute LED sink: the MIC_LED_STATE_* the game asked the pad's mute lamp
     // for. Separate from the player LEDs; different lamp, different report bit.
     using MicLedCallback = std::function<void(uint32_t serial, uint8_t state)>;
-    virtual void setMicLedCallback(MicLedCallback /*cb*/) {}
+    virtual void setMicLedCallback(const MicLedCallback& /*cb*/) {}
 };
 
 // Send encrypted UDP packets to clients.
