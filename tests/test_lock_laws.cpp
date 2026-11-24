@@ -67,7 +67,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-enum class Allowance { ByDesign, Debt };
+enum class Allowance : uint8_t { ByDesign, Debt };
 
 const char* allowanceName(Allowance why) {
     return why == Allowance::ByDesign ? "by design" : "debt";

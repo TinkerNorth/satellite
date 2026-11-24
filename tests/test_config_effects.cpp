@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "core/config_effects.h"
 
+#include <cstdint>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -30,7 +31,7 @@ constexpr int RACING_THREADS = 8;
 constexpr int ROUNDS_PER_THREAD = 300;
 constexpr auto WRITER_BLOCKED_FOR = 60ms;
 
-enum class Effect { AutoStart, CrashReporting };
+enum class Effect : uint8_t { AutoStart, CrashReporting };
 
 struct Call {
     Effect effect;

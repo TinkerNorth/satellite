@@ -36,7 +36,7 @@ inline const int DEFAULT_DISC_PORT = 9879;
 inline const int DEFAULT_CLIENT_PORT = 9443;
 
 // Drives the `state` strings on /api/connections, /api/devices, /api/pin/status.
-enum class DeviceLinkState {
+enum class DeviceLinkState : uint8_t {
     Paired,        // in pairedDevices, no live connection
     Linking,       // PUT /api/connections handshake in flight
     Active,        // live connection, packets arriving recently
@@ -46,14 +46,14 @@ enum class DeviceLinkState {
 
 // PINs rotate on a fixed period; the outgoing PIN stays accepted as "previous"
 // for one more period.
-enum class PinState {
+enum class PinState : uint8_t {
     PinActive, // rotating current/previous PIN pair is live
     PinPaired, // a device just consumed a PIN
 };
 
 // Per-controller pipeline state. The APPLY_* codes enumerate failures; this
 // adds the success/transient side.
-enum class ControllerState {
+enum class ControllerState : uint8_t {
     Source,      // physical pad detected on client, not yet forwarded
     Registering, // descriptor PUT in flight
     Allocating,  // descriptor accepted, backend creating the virtual device

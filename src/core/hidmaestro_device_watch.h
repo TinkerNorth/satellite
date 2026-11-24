@@ -89,13 +89,13 @@ inline constexpr uint32_t WATCH_DEVNODE_HID_COLLECTION = 2; // the HID child gam
 inline constexpr uint32_t WATCH_DEVNODE_COMPANION = 3;      // the XUSB companion
 inline constexpr uint32_t WATCH_DEVNODE_AUDIO_FUNCTION = 4; // a composite's USB-audio function
 
-enum class Presentation : uint32_t {
+enum class Presentation : uint8_t {
     Hid = WATCH_PRESENTS_HID,
     Xinput = WATCH_PRESENTS_XINPUT,
     Audio = WATCH_PRESENTS_AUDIO,
 };
 
-enum class DevnodeCondition : uint32_t {
+enum class DevnodeCondition : uint8_t {
     Unknown = WATCH_CONDITION_UNKNOWN,
     Present = WATCH_CONDITION_PRESENT,
     Disabled = WATCH_CONDITION_DISABLED,
@@ -105,7 +105,7 @@ enum class DevnodeCondition : uint32_t {
     Starting = WATCH_CONDITION_STARTING,
 };
 
-enum class WatchedDevnode : uint32_t {
+enum class WatchedDevnode : uint8_t {
     Device = WATCH_DEVNODE_DEVICE,
     HidFunction = WATCH_DEVNODE_HID_FUNCTION,
     HidCollection = WATCH_DEVNODE_HID_COLLECTION,

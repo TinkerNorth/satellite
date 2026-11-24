@@ -33,7 +33,7 @@ namespace satellite::audio {
 // and why).
 // Haptics take the speaker's settings: two actuator lanes whose waveform IS
 // the effect, so it gets the same fidelity budget as something a player hears.
-enum class Stream { Mic, Speaker, Haptic };
+enum class Stream : uint8_t { Mic, Speaker, Haptic };
 
 // Declared here, defined in opus_codec.cpp, so the unique_ptrs below work
 // against the incomplete handle types above.

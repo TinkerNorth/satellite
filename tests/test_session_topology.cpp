@@ -136,7 +136,7 @@ class ServiceLockProbe {
     std::thread worker_;
 };
 
-enum class Lifecycle { EnsureBusOpen, CloseBus, Plug, PlugPreferring, Unplug, Count };
+enum class Lifecycle : uint8_t { EnsureBusOpen, CloseBus, Plug, PlugPreferring, Unplug, Count };
 
 const char* lifecycleName(Lifecycle call) {
     switch (call) {

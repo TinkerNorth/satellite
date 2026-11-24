@@ -43,7 +43,7 @@ constexpr milliseconds PROMPTLY{2000};
 constexpr LogWriterTiming DROWSY{milliseconds(5000), milliseconds(1000)};
 constexpr size_t NOT_FOUND = static_cast<size_t>(-1);
 
-enum class Call { Write, Flush, Rotate, Purge };
+enum class Call : uint8_t { Write, Flush, Rotate, Purge };
 
 struct SinkCall {
     Call call = Call::Write;

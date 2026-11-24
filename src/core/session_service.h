@@ -15,6 +15,7 @@
 #include "pointer_worker.h"
 #include "ports.h"
 #include "tracked_mutex.h"
+#include <cstdint>
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -508,7 +509,7 @@ class SessionService {
     // they only ever see frames that belong to a bound, capable slot.
     // The two outbound lanes share one shape (stereo, 20 ms, own seq) and one
     // code path; this picks the encoder, the counters and the wire message.
-    enum class OutboundAudioLane { Speaker, Haptic };
+    enum class OutboundAudioLane : uint8_t { Speaker, Haptic };
     struct AudioLane {
         uint32_t gen = 0;
         std::unique_ptr<IAudioEncoder> encoder;
@@ -519,7 +520,7 @@ class SessionService {
         uint32_t gen = 0;
         uint16_t caps = 0;
     };
-    enum class EndpointRead { Bound, Unbound, Changing };
+    enum class EndpointRead : uint8_t { Bound, Unbound, Changing };
     AudioLane& audioLane(OutboundAudioLane lane, uint32_t serial, uint32_t gen);
     bool readAudioTarget(uint32_t serial, AudioTarget& out) const;
     EndpointRead readAudioEndpoint(uint32_t serial, uint32_t gen, SessionEndpoint& to,

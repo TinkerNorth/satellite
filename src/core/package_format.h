@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
 // The native package a Linux build was made for, as CMake's
@@ -8,7 +9,7 @@
 // package manager's database to tell a .deb install from an .rpm one.
 namespace satellite {
 
-enum class PackageFormat { None, Deb, Rpm };
+enum class PackageFormat : uint8_t { None, Deb, Rpm };
 
 constexpr PackageFormat parsePackageFormat(std::string_view name) {
     if (name == "deb") return PackageFormat::Deb;

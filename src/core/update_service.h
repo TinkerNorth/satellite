@@ -16,6 +16,7 @@
 #include "core/types.h"
 #include "core/update_types.h"
 
+#include <cstdint>
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -79,7 +80,7 @@ class UpdateService {
 
     // State-machine helpers, all invoked from the worker thread.
     // The worker's jobs, in the order they outrank each other.
-    enum class Job { Stop, Install, Download, Check };
+    enum class Job : uint8_t { Stop, Install, Download, Check };
     Job takeNextJob();
     void queueDownloadIfWanted(bool fetched);
 

@@ -10,6 +10,7 @@
 #include "net/mdns_rejoin.h"
 #include "core/tracked_mutex.h"
 
+#include <cstdint>
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -130,7 +131,7 @@ std::string nextInstanceLabel(const std::string& label) {
 }
 
 // Outcome of one inbound packet examined during our probing window.
-enum class ProbeEvent {
+enum class ProbeEvent : uint8_t {
     None,        // packet irrelevant to our probe (or no packet)
     Conflict,    // a peer RESPONSE answered our claimed name → §9 conflict
     LostTiebreak // a peer PROBE for our name and §8.2 says the peer wins

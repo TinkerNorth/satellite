@@ -10,7 +10,7 @@ inline constexpr uint32_t PROFILE_DOMAIN = 1;
 inline constexpr uint32_t PROFILE_PRIVATE = 2;
 inline constexpr uint32_t PROFILE_PUBLIC = 4;
 
-enum class FirewallState { Unknown, Configured, WrongProfile, Missing };
+enum class FirewallState : uint8_t { Unknown, Configured, WrongProfile, Missing };
 
 inline uint32_t profileBit(const std::string& category) {
     if (category == "domain") return PROFILE_DOMAIN;

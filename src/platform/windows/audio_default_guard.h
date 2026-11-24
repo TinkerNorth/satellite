@@ -35,7 +35,7 @@ namespace audioguard {
 // mmdeviceapi.h ERole values, pinned here so the pure layer never includes it.
 // Windows keeps one default render endpoint per role and a promotion moves all
 // three, so all three are watched and restored independently.
-enum class Role : int { Console = 0, Multimedia = 1, Communications = 2 };
+enum class Role : uint8_t { Console = 0, Multimedia = 1, Communications = 2 };
 
 inline constexpr size_t ROLE_COUNT = 3;
 inline constexpr Role ALL_ROLES[ROLE_COUNT] = {Role::Console, Role::Multimedia,
@@ -79,9 +79,9 @@ struct Snapshot {
     void clear() { roles = {}; }
 };
 
-enum class RestoreAction { None, Restore };
+enum class RestoreAction : uint8_t { None, Restore };
 
-enum class RestoreReason {
+enum class RestoreReason : uint8_t {
     CurrentUnknown,
     NotStolen,
     NoSnapshot,
@@ -134,7 +134,7 @@ struct DevNode {
     std::vector<std::string> hardwareIds;
 };
 
-enum class ChainVerdict { NotOurs, OursByService, OursByHardwareId };
+enum class ChainVerdict : uint8_t { NotOurs, OursByService, OursByHardwareId };
 
 struct ChainResult {
     ChainVerdict verdict = ChainVerdict::NotOurs;
@@ -185,7 +185,7 @@ struct PolicyConfigProbe {
     int64_t minPeriod = 0;
 };
 
-enum class ProbeVerdict { Usable, CoCreateFailed, ProbeCallFailed, ImplausiblePeriods };
+enum class ProbeVerdict : uint8_t { Usable, CoCreateFailed, ProbeCallFailed, ImplausiblePeriods };
 
 const char* probeVerdictName(ProbeVerdict verdict);
 ProbeVerdict evaluatePolicyConfigProbe(const PolicyConfigProbe& probe);

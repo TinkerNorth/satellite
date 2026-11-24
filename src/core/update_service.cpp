@@ -5,13 +5,14 @@
 #include "core/ports.h"
 #include "core/semver.h"
 
+#include <cstdint>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
 
 namespace {
-enum class RetryStep { None, Download, Repair, Install, Check };
+enum class RetryStep : uint8_t { None, Download, Repair, Install, Check };
 
 bool applyPreferences(Config& cfg, const std::string& channel, bool autoCheck, bool autoDownload,
                       bool autoInstall, bool& channelChanged) {
