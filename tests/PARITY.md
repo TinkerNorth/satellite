@@ -38,3 +38,8 @@ under its own policy, because the code is not this repository's to change:
 - `lib/` is included as `SYSTEM`, so the vendored headers' warnings are not
   reported against Satellite's translation units; cpp-httplib and
   nlohmann/json are byte-identical to their tags (`lib/VENDORED.md`).
+- clang-tidy (`scripts/check-tidy.sh`) checks every translation unit under
+  `src/`, `tests/` and `tools/` with the fleet's shared `.clang-tidy`, whose
+  header filter covers this repository's headers only: the vendored headers
+  in `lib/` and the HIDMaestro and ViGEm SDK headers are not reported, and
+  first-party glue around them is held to every check.
