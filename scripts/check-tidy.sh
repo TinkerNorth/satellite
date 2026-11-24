@@ -40,29 +40,7 @@ command -v python3 >/dev/null 2>&1 || python=python
 # <build>/tidy; the list of first-party translation units comes back.
 tidydb="${build}/tidy"
 mkdir -p "${tidydb}"
-files="$("${python}" - "${db}" "${tidydb}/compile_commands.json" <<'PY'
-import json, os, re, shlex, sys
-root = os.getcwd()
-seen = set()
-kept = []
-for entry in json.load(open(sys.argv[1])):
-    path = os.path.normpath(os.path.join(entry["directory"], entry["file"]))
-    rel = os.path.relpath(path, root)
-    if rel.split(os.sep)[0] not in ("src", "tests", "tools"):
-        continue
-    args = entry.get("arguments") or shlex.split(entry["command"])
-    args = ["-flto" if re.fullmatch(r"-flto=.*", a) else a for a in args]
-    compiler = args[0].replace("\\", "/")
-    if "mingw" in compiler.lower():
-        sysroot = os.path.normpath(os.path.join(os.path.dirname(compiler), ".."))
-        args = args[:1] + ["--target=x86_64-w64-mingw32", "--sysroot=" + sysroot] + args[1:]
-    kept.append({"directory": entry["directory"], "file": entry["file"], "arguments": args})
-    if rel not in seen:
-        seen.add(rel)
-        print(rel.replace(os.sep, "/"))
-json.dump(kept, open(sys.argv[2], "w"), indent=1)
-PY
-)"
+files="$("${python}" scripts/tidy-db.py "${db}" "${tidydb}/compile_commands.json")"
 count="$(printf '%s\n' "${files}" | grep -c .)"
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 echo "clang-tidy ${got} over ${count} translation units (${jobs} at a time)"
