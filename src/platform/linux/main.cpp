@@ -103,7 +103,7 @@ static void netlinkWatcherThread() {
 static void stopServers() {
     g_appRunning = false;
     g_httpServer.stop();
-    if (g_clientServer) g_clientServer->stop();
+    if (g_clientServer != nullptr) g_clientServer->stop();
 }
 
 // Block SIGINT/SIGTERM so the headless loop can sigwait them on the main thread

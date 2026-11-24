@@ -48,7 +48,7 @@ namespace crash = satellite::crash;
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
     g_appRunning = false;
     g_httpServer.stop();
-    if (g_clientServer) g_clientServer->stop();
+    if (g_clientServer != nullptr) g_clientServer->stop();
     const bool saved = g_configStore->flush(std::chrono::seconds(2));
     if (!saved) {
         logMsg(LogLevel::WARN, "app", "The configuration was not saved before the app quit");

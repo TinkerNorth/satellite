@@ -36,7 +36,7 @@ struct CurlWriteCtx {
 size_t writeStringCb(char* ptr, size_t size, size_t nmemb, void* ud) {
     auto* ctx = static_cast<CurlWriteCtx*>(ud);
     size_t n = size * nmemb;
-    if (ctx->str) ctx->str->append(ptr, n);
+    if (ctx->str != nullptr) ctx->str->append(ptr, n);
     ctx->soFar += n;
     return n;
 }
@@ -44,7 +44,7 @@ size_t writeStringCb(char* ptr, size_t size, size_t nmemb, void* ud) {
 size_t writeFileCb(char* ptr, size_t size, size_t nmemb, void* ud) {
     auto* ctx = static_cast<CurlWriteCtx*>(ud);
     size_t n = size * nmemb;
-    if (ctx->file) ctx->file->write(ptr, n);
+    if (ctx->file != nullptr) ctx->file->write(ptr, n);
     ctx->soFar += n;
     return n;
 }
@@ -56,14 +56,14 @@ struct ProgressCtx {
 
 int xferInfoCb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* ctx = static_cast<ProgressCtx*>(clientp);
-    if (ctx->cancel && ctx->cancel->load()) return 1;
+    if ((ctx->cancel != nullptr) && ctx->cancel->load()) return 1;
     if (ctx->cb) ctx->cb(static_cast<uint64_t>(dlnow), static_cast<uint64_t>(dltotal));
     return 0;
 }
 
 bool httpGetToString(const std::string& url, std::string& out, std::string& err) {
     CURL* c = curl_easy_init();
-    if (!c) {
+    if (c == nullptr) {
         err = "curl_easy_init failed";
         return false;
     }
@@ -131,7 +131,7 @@ size_t etagHeaderCb(char* buffer, size_t size, size_t nitems, void* ud) {
 DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& ifNoneMatch) {
     DbFetchResponse r;
     CURL* c = curl_easy_init();
-    if (!c) return r;
+    if (c == nullptr) return r;
     CurlWriteCtx ctx;
     ctx.str = &r.body;
     struct curl_slist* headers = nullptr;
@@ -173,7 +173,7 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
                    const std::function<void(uint64_t, uint64_t)>& onProgress,
                    const std::atomic<bool>* cancel, std::string& err) {
     CURL* c = curl_easy_init();
-    if (!c) {
+    if (c == nullptr) {
         err = "curl_easy_init failed";
         return false;
     }
@@ -276,7 +276,7 @@ std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetN
 
 bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err) {
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) {
+    if (f == nullptr) {
         err = "Cannot open file for hashing";
         return false;
     }
@@ -525,11 +525,11 @@ bool LinuxUpdaterAdapter::downloadArtifact(
     const std::atomic<bool>* cancel, std::string& outLocalPath, std::string& outError) {
     const char* xdg = std::getenv("XDG_CACHE_HOME");
     std::string dir;
-    if (xdg && xdg[0]) {
+    if ((xdg != nullptr) && (xdg[0] != '\0')) {
         dir = std::string(xdg) + "/satellite/updates";
     } else {
         const char* home = std::getenv("HOME");
-        dir = std::string(home ? home : "/tmp") + "/.cache/satellite/updates";
+        dir = std::string((home != nullptr) ? home : "/tmp") + "/.cache/satellite/updates";
     }
     for (size_t i = 1; i < dir.size(); i++) {
         if (dir[i] == '/') {
@@ -579,7 +579,7 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
 
     // $APPIMAGE is the running binary's path.
     const char* appimg = std::getenv("APPIMAGE");
-    if (!appimg || appimg[0] == '\0') {
+    if ((appimg == nullptr) || appimg[0] == '\0') {
         outError = "APPIMAGE env var missing (am I really an AppImage?)";
         return false;
     }

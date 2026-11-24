@@ -204,7 +204,7 @@ constexpr uint16_t sonyButtonsFromXusb(uint16_t wButtons, uint8_t leftTrigger,
                                        uint8_t rightTrigger) {
     uint16_t btn = ds4HatFromButtons(wButtons);
     for (const auto& m : XUSB_TO_SONY_BUTTONS) {
-        if (wButtons & m.xusb) btn |= m.sony;
+        if (satellite::bits::anySet(wButtons, m.xusb)) btn |= m.sony;
     }
     if (leftTrigger > 0) btn |= SONY_BUTTON_L2;
     if (rightTrigger > 0) btn |= SONY_BUTTON_R2;

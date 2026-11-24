@@ -99,7 +99,7 @@ std::string lookupSha256(const std::string& body, const std::string& filename) {
         // Format: "<64-hex>  <filename>" or "<64-hex> *<filename>" (binary mode).
         if (line.size() < 66) continue;
         size_t i = 0;
-        while (i < line.size() && std::isxdigit(static_cast<unsigned char>(line[i]))) ++i;
+        while (i < line.size() && (std::isxdigit(static_cast<unsigned char>(line[i])) != 0)) ++i;
         if (i != 64) continue;
         std::string digest = line.substr(0, 64);
         while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;

@@ -517,7 +517,8 @@ struct EventBatch {
 
 void addEdgePaddles(EventBatch& batch, uint32_t extButtons) {
     for (const auto& key : EDGE_PADDLE_KEYS) {
-        batch.add(EV_KEY, static_cast<uint16_t>(key.code), (extButtons & key.extButton) ? 1 : 0);
+        batch.add(EV_KEY, static_cast<uint16_t>(key.code),
+                  ((extButtons & key.extButton) != 0U) ? 1 : 0);
     }
 }
 
@@ -548,28 +549,28 @@ bool GamepadAdapter::submitInput(uint32_t serial, const InputReport& input) {
     batch.add(EV_ABS, ABS_RZ, report.bRightTrigger);
 
     int32_t hatX = 0, hatY = 0;
-    if (report.wButtons & XUSB_DPAD_LEFT)
+    if ((report.wButtons & XUSB_DPAD_LEFT) != 0)
         hatX = -1;
-    else if (report.wButtons & XUSB_DPAD_RIGHT)
+    else if ((report.wButtons & XUSB_DPAD_RIGHT) != 0)
         hatX = 1;
-    if (report.wButtons & XUSB_DPAD_UP)
+    if ((report.wButtons & XUSB_DPAD_UP) != 0)
         hatY = -1;
-    else if (report.wButtons & XUSB_DPAD_DOWN)
+    else if ((report.wButtons & XUSB_DPAD_DOWN) != 0)
         hatY = 1;
     batch.add(EV_ABS, ABS_HAT0X, hatX);
     batch.add(EV_ABS, ABS_HAT0Y, hatY);
 
-    batch.add(EV_KEY, BTN_A, (report.wButtons & XUSB_A) ? 1 : 0);
-    batch.add(EV_KEY, BTN_B, (report.wButtons & XUSB_B) ? 1 : 0);
-    batch.add(EV_KEY, BTN_X, (report.wButtons & XUSB_X) ? 1 : 0);
-    batch.add(EV_KEY, BTN_Y, (report.wButtons & XUSB_Y) ? 1 : 0);
-    batch.add(EV_KEY, BTN_TL, (report.wButtons & XUSB_LB) ? 1 : 0);
-    batch.add(EV_KEY, BTN_TR, (report.wButtons & XUSB_RB) ? 1 : 0);
-    batch.add(EV_KEY, BTN_SELECT, (report.wButtons & XUSB_BACK) ? 1 : 0);
-    batch.add(EV_KEY, BTN_START, (report.wButtons & XUSB_START) ? 1 : 0);
-    batch.add(EV_KEY, BTN_MODE, (report.wButtons & XUSB_GUIDE) ? 1 : 0);
-    batch.add(EV_KEY, BTN_THUMBL, (report.wButtons & XUSB_LS) ? 1 : 0);
-    batch.add(EV_KEY, BTN_THUMBR, (report.wButtons & XUSB_RS) ? 1 : 0);
+    batch.add(EV_KEY, BTN_A, ((report.wButtons & XUSB_A) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_B, ((report.wButtons & XUSB_B) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_X, ((report.wButtons & XUSB_X) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_Y, ((report.wButtons & XUSB_Y) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_TL, ((report.wButtons & XUSB_LB) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_TR, ((report.wButtons & XUSB_RB) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_SELECT, ((report.wButtons & XUSB_BACK) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_START, ((report.wButtons & XUSB_START) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_MODE, ((report.wButtons & XUSB_GUIDE) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_THUMBL, ((report.wButtons & XUSB_LS) != 0) ? 1 : 0);
+    batch.add(EV_KEY, BTN_THUMBR, ((report.wButtons & XUSB_RS) != 0) ? 1 : 0);
     if (dev.identity == GamepadIdentity::DualSenseEdge) addEdgePaddles(batch, input.extButtons);
 
     batch.add(EV_SYN, SYN_REPORT, 0);
@@ -585,13 +586,13 @@ bool GamepadAdapter::submitSwitch(int fd, const InputReport& input) {
     batch.add(EV_ABS, ABS_RY, -clampS16(report.sThumbRY));
 
     int32_t hatX = 0, hatY = 0;
-    if (report.wButtons & XUSB_DPAD_LEFT)
+    if ((report.wButtons & XUSB_DPAD_LEFT) != 0)
         hatX = -1;
-    else if (report.wButtons & XUSB_DPAD_RIGHT)
+    else if ((report.wButtons & XUSB_DPAD_RIGHT) != 0)
         hatX = 1;
-    if (report.wButtons & XUSB_DPAD_UP)
+    if ((report.wButtons & XUSB_DPAD_UP) != 0)
         hatY = -1;
-    else if (report.wButtons & XUSB_DPAD_DOWN)
+    else if ((report.wButtons & XUSB_DPAD_DOWN) != 0)
         hatY = 1;
     batch.add(EV_ABS, ABS_HAT0X, hatX);
     batch.add(EV_ABS, ABS_HAT0Y, hatY);
@@ -599,20 +600,20 @@ bool GamepadAdapter::submitSwitch(int fd, const InputReport& input) {
     // SWITCH_BUTTONS[i] is SDL js index i; the wire source per index follows SDL's
     // Nintendo mapping (A/B + X/Y swapped; ZL/ZR digital from the triggers).
     const uint16_t b = report.wButtons;
-    batch.add(EV_KEY, BTN_A, (b & XUSB_B) ? 1 : 0);                               // js0  B
-    batch.add(EV_KEY, BTN_B, (b & XUSB_A) ? 1 : 0);                               // js1  A
-    batch.add(EV_KEY, BTN_C, (b & XUSB_X) ? 1 : 0);                               // js2  X
-    batch.add(EV_KEY, BTN_X, (b & XUSB_Y) ? 1 : 0);                               // js3  Y
-    batch.add(EV_KEY, BTN_Y, (input.extButtons & EXT_BUTTON_MISC1) ? 1 : 0);      // js4  capture
-    batch.add(EV_KEY, BTN_Z, (b & XUSB_LB) ? 1 : 0);                              // js5  L
-    batch.add(EV_KEY, BTN_TL, (b & XUSB_RB) ? 1 : 0);                             // js6  R
-    batch.add(EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);   // js7  ZL
-    batch.add(EV_KEY, BTN_TL2, report.bRightTrigger > SWITCH_TRIGGER_ON ? 1 : 0); // js8  ZR
-    batch.add(EV_KEY, BTN_TR2, (b & XUSB_BACK) ? 1 : 0);                          // js9  minus
-    batch.add(EV_KEY, BTN_SELECT, (b & XUSB_START) ? 1 : 0);                      // js10 plus
-    batch.add(EV_KEY, BTN_START, (b & XUSB_GUIDE) ? 1 : 0);                       // js11 home
-    batch.add(EV_KEY, BTN_MODE, (b & XUSB_LS) ? 1 : 0);                           // js12 Lstick
-    batch.add(EV_KEY, BTN_THUMBL, (b & XUSB_RS) ? 1 : 0);                         // js13 Rstick
+    batch.add(EV_KEY, BTN_A, ((b & XUSB_B) != 0) ? 1 : 0);                           // js0  B
+    batch.add(EV_KEY, BTN_B, ((b & XUSB_A) != 0) ? 1 : 0);                           // js1  A
+    batch.add(EV_KEY, BTN_C, ((b & XUSB_X) != 0) ? 1 : 0);                           // js2  X
+    batch.add(EV_KEY, BTN_X, ((b & XUSB_Y) != 0) ? 1 : 0);                           // js3  Y
+    batch.add(EV_KEY, BTN_Y, ((input.extButtons & EXT_BUTTON_MISC1) != 0U) ? 1 : 0); // js4  capture
+    batch.add(EV_KEY, BTN_Z, ((b & XUSB_LB) != 0) ? 1 : 0);                          // js5  L
+    batch.add(EV_KEY, BTN_TL, ((b & XUSB_RB) != 0) ? 1 : 0);                         // js6  R
+    batch.add(EV_KEY, BTN_TR, report.bLeftTrigger > SWITCH_TRIGGER_ON ? 1 : 0);      // js7  ZL
+    batch.add(EV_KEY, BTN_TL2, report.bRightTrigger > SWITCH_TRIGGER_ON ? 1 : 0);    // js8  ZR
+    batch.add(EV_KEY, BTN_TR2, ((b & XUSB_BACK) != 0) ? 1 : 0);                      // js9  minus
+    batch.add(EV_KEY, BTN_SELECT, ((b & XUSB_START) != 0) ? 1 : 0);                  // js10 plus
+    batch.add(EV_KEY, BTN_START, ((b & XUSB_GUIDE) != 0) ? 1 : 0);                   // js11 home
+    batch.add(EV_KEY, BTN_MODE, ((b & XUSB_LS) != 0) ? 1 : 0);                       // js12 Lstick
+    batch.add(EV_KEY, BTN_THUMBL, ((b & XUSB_RS) != 0) ? 1 : 0);                     // js13 Rstick
 
     batch.add(EV_SYN, SYN_REPORT, 0);
     return batch.writeTo(fd);

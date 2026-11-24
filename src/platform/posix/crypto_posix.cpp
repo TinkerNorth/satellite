@@ -40,7 +40,7 @@ static std::string base64Encode(const std::vector<uint8_t>& data) {
     if (pending > -6) {
         out.push_back(b64chars[((val << 8U) >> static_cast<unsigned>(pending + 8)) & 0x3FU]);
     }
-    while (out.size() % 4) out.push_back('=');
+    while ((out.size() % 4) != 0U) out.push_back('=');
     return out;
 }
 

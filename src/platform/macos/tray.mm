@@ -95,7 +95,7 @@ static void promptForPairing(const std::string& deviceId) {
 }
 
 - (void)updateAction:(id)sender {
-    if (!g_updateService) return;
+    if (g_updateService == nullptr) return;
     UpdateStatusSnapshot s = g_updateService->snapshot();
     if (s.state == UpdateState::Downloaded && s.info.available) {
         g_updateService->requestInstall();
@@ -135,7 +135,7 @@ static void promptForPairing(const std::string& deviceId) {
     // Label tracks state. Disabled while in flight.
     NSString* updateTitle = @"Check for Updates…";
     BOOL updateEnabled = (g_updateService != nullptr);
-    if (g_updateService) {
+    if (g_updateService != nullptr) {
         UpdateStatusSnapshot s = g_updateService->snapshot();
         if (s.state == UpdateState::Downloaded && s.info.available) {
             updateTitle = [NSString stringWithFormat:@"Install Update %s", s.info.version.c_str()];

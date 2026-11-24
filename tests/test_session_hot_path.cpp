@@ -76,7 +76,7 @@ class OwnershipBackend : public IGamepadPort {
         for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
             Serial& s = serials_[serial];
             s.busy.store(true);
-            if (s.submitting.load()) violations++;
+            if (s.submitting.load() != 0) violations++;
             s.plugged.store(false);
             s.owner.store(NO_OWNER);
             s.busy.store(false);
@@ -97,7 +97,7 @@ class OwnershipBackend : public IGamepadPort {
         s.busy.store(true);
         const uint64_t plugNumber = plugNumber_.fetch_add(1) + 1;
         plugState_.store((plugNumber << 1U) | 1u);
-        if (s.submitting.load()) violations++;
+        if (s.submitting.load() != 0) violations++;
         if (s.plugged.load()) violations++;
         if (holdPlugs.load()) holdUntilSteadyFrames();
         const bool ok = !flaky.load() || rng_() % PLUG_FAILURE_ONE_IN != 0;
@@ -106,7 +106,7 @@ class OwnershipBackend : public IGamepadPort {
             s.plugged.store(true);
             plugs++;
         }
-        if (s.submitting.load()) violations++;
+        if (s.submitting.load() != 0) violations++;
         plugState_.store(plugNumber << 1U);
         s.busy.store(false);
         return ok;
@@ -116,7 +116,7 @@ class OwnershipBackend : public IGamepadPort {
         if (!valid(serial)) return true;
         Serial& s = serials_[serial];
         s.busy.store(true);
-        if (s.submitting.load()) violations++;
+        if (s.submitting.load() != 0) violations++;
         const bool confirmed = !flaky.load() || rng_() % UNPLUG_FAILURE_ONE_IN != 0;
         if (confirmed) {
             s.plugged.store(false);
@@ -124,7 +124,7 @@ class OwnershipBackend : public IGamepadPort {
         } else {
             s.owner.store(ZOMBIE_OWNER);
         }
-        if (s.submitting.load()) violations++;
+        if (s.submitting.load() != 0) violations++;
         s.busy.store(false);
         unplugs++;
         return confirmed;

@@ -273,7 +273,8 @@ static void configRoute(ConfigEffects& effects, const Request& req, Response& re
 static void versionRoute(const Request&, Response& res) {
     JsonOut j;
     j["version"] = SATELLITE_VERSION;
-    j["platformId"] = g_updateService ? g_updateService->snapshot().platformId : "unknown";
+    j["platformId"] =
+        (g_updateService != nullptr) ? g_updateService->snapshot().platformId : "unknown";
     replyJson(res, jsonDump(j));
 }
 
@@ -579,7 +580,7 @@ static void diagnosticsRoute(SessionService& svc, const Request&, Response& res)
     in.nowEpoch = static_cast<int64_t>(std::time(nullptr));
     in.version = SATELLITE_VERSION;
     in.build = SATELLITE_VERSION_DOTTED;
-    in.flavor = g_updateService ? g_updateService->snapshot().platformId : "unknown";
+    in.flavor = (g_updateService != nullptr) ? g_updateService->snapshot().platformId : "unknown";
     in.deviceModel = hostPlatformName();
     in.os = hostPlatformName();
     in.arch = hostArch();
@@ -636,7 +637,8 @@ static std::string sseTick(SessionService& svc) {
     // The dashboard renders one device-centric list, so it needs the paired
     // set on every tick, not just the live connections.
     frame += sseEvent("devices", buildDevicesJson(svc));
-    if (g_updateService) frame += sseEvent("update", buildUpdateJson(g_updateService->snapshot()));
+    if (g_updateService != nullptr)
+        frame += sseEvent("update", buildUpdateJson(g_updateService->snapshot()));
     // Pushed each tick so the countdown ticks and a fresh tab sees current
     // state without a parallel /api/pin/status poll.
     frame += sseEvent("pin", buildPinJson());

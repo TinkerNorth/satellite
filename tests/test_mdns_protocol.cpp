@@ -1117,7 +1117,7 @@ static std::string testNextInstanceLabel(const std::string& label) {
             const size_t digitsEnd = label.size() - 1;
             bool allDigits = true;
             for (size_t i = digitsStart; i < digitsEnd; ++i) {
-                if (!std::isdigit(static_cast<unsigned char>(label[i]))) {
+                if (std::isdigit(static_cast<unsigned char>(label[i])) == 0) {
                     allDigits = false;
                     break;
                 }

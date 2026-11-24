@@ -67,14 +67,14 @@ struct MockUpdater : IUpdaterPort {
                           std::string& outError) override {
         downloadCalls++;
         calls += "download ";
-        if (cancel && cancel->load()) {
+        if ((cancel != nullptr) && cancel->load()) {
             outError = "cancelled";
             return false;
         }
         if (blockDownloadUntilCancel) {
             onProgress(assetSize / 2, assetSize);
             for (int i = 0; i < 3000; i++) {
-                if (cancel && cancel->load()) {
+                if ((cancel != nullptr) && cancel->load()) {
                     outError = "cancelled";
                     return false;
                 }

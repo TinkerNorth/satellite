@@ -47,7 +47,7 @@ static void onOpenUI(GtkMenuItem*, gpointer) { openLocalUrl(""); }
 static void onDonate(GtkMenuItem*, gpointer) { openLocalUrl("/donate"); }
 
 static void onUpdateClick(GtkMenuItem*, gpointer) {
-    if (!g_updateService) return;
+    if (g_updateService == nullptr) return;
     UpdateStatusSnapshot s = g_updateService->snapshot();
     if (s.state == UpdateState::Downloaded && s.info.available) {
         g_updateService->requestInstall();
@@ -67,7 +67,7 @@ static void onQuit(GtkMenuItem*, gpointer) {
 }
 
 static gboolean pollMenuState(gpointer) {
-    if (g_updateService && g_updateItem) {
+    if ((g_updateService != nullptr) && (g_updateItem != nullptr)) {
         UpdateStatusSnapshot s = g_updateService->snapshot();
         if (s.state != g_lastUpdateState || s.info.version != g_lastUpdateVersion) {
             std::string label;
@@ -86,7 +86,7 @@ static gboolean pollMenuState(gpointer) {
                 label = "Check for Updates\xE2\x80\xA6";
             }
             gtk_menu_item_set_label(GTK_MENU_ITEM(g_updateItem), label.c_str());
-            gtk_widget_set_sensitive(g_updateItem, enabled);
+            gtk_widget_set_sensitive(g_updateItem, static_cast<gboolean>(enabled));
             g_lastUpdateState = s.state;
             g_lastUpdateVersion = s.info.version;
         }
@@ -160,7 +160,7 @@ bool addTrayIcon() {
     if (getenv("DISPLAY") == nullptr && getenv("WAYLAND_DISPLAY") == nullptr) { return false; }
     int argc = 0;
     char** argv = nullptr;
-    if (!gtk_init_check(&argc, &argv)) return false;
+    if (gtk_init_check(&argc, &argv) == 0) return false;
 #ifdef SATELLITE_HAS_LIBNOTIFY
     notify_init(APP_TITLE);
 #endif

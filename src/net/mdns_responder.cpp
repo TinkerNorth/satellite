@@ -114,7 +114,7 @@ std::string nextInstanceLabel(const std::string& label) {
             const size_t digitsEnd = label.size() - 1; // index of ')'
             bool allDigits = true;
             for (size_t i = digitsStart; i < digitsEnd; ++i) {
-                if (!std::isdigit(static_cast<unsigned char>(label[i]))) {
+                if (std::isdigit(static_cast<unsigned char>(label[i])) == 0) {
                     allDigits = false;
                     break;
                 }
@@ -518,7 +518,7 @@ void answerQuery(const Responder& r, const uint8_t* buf, size_t n, const sockadd
 
     // Ignore responses (QR bit set); we only answer queries.
     constexpr uint16_t QR_BIT = 0x8000;
-    if (header.flags & QR_BIT) return;
+    if ((header.flags & QR_BIT) != 0) return;
 
     const std::string serviceType = mdns::SERVICE_TYPE_DOMAIN;
     const std::string instanceFqdn = r.instance + "." + serviceType;
