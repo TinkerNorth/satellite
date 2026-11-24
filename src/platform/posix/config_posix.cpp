@@ -61,6 +61,7 @@ std::string getCurrentDate() {
     char buf[32];
     struct tm tm{};
     localtime_r(&t, &tm);
-    strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
-    return buf;
+    // strftime reports a date that does not fit as 0, leaving buf undefined.
+    const size_t n = strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+    return std::string(buf, n);
 }

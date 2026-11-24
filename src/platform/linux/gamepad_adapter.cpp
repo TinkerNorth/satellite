@@ -4,6 +4,7 @@
 #include "core/touchpad_codec.h"
 #include "core/types.h"
 #include "core/bits.h"
+#include "core/checked_io.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -432,10 +433,11 @@ bool GamepadAdapter::pluginDevice(uint32_t serial, GamepadIdentity identity) {
         if (dev.motionFd < 0) {
             // Log so a too-old kernel / missing permission / exhausted /tmp
             // doesn't look like "no game subscribed". Pairs with motionBackendOk().
-            std::fprintf(stderr,
-                         "satellite: failed to open motion uinput device for serial=%u; "
-                         "motion samples will be cached but not forwarded\n",
-                         serial);
+            satellite::io::stderrWritten(
+                std::fprintf(stderr,
+                             "satellite: failed to open motion uinput device for serial=%u; "
+                             "motion samples will be cached but not forwarded\n",
+                             serial));
         }
     }
     if (ds4Family) { dev.touchFd = openTouchpadUinputDevice(serial); }
@@ -853,8 +855,9 @@ void GamepadAdapter::stopReader(uint32_t serial, Device& dev) {
         ssize_t n;
         do { n = ::write(wakeWrite, &b, 1); } while (n < 0 && errno == EINTR);
         if (n < 0 && errno != EAGAIN) {
-            std::fprintf(stderr, "satellite: reader wake-pipe write failed for serial=%u: %s\n",
-                         serial, std::strerror(errno));
+            satellite::io::stderrWritten(
+                std::fprintf(stderr, "satellite: reader wake-pipe write failed for serial=%u: %s\n",
+                             serial, std::strerror(errno)));
         }
     }
     blockingRegion("thread.join");

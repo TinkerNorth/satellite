@@ -41,6 +41,7 @@
 
 #include "adapters/crash_adapter.h"
 #include "core/crash_reporting.h"
+#include "core/checked_io.h"
 
 namespace crash = satellite::crash;
 
@@ -129,13 +130,13 @@ static gboolean onTraySignal(gpointer) {
 
 static bool startNetwork() {
     if (netInit()) return true;
-    std::fprintf(stderr, "Failed to initialize network subsystem\n");
+    satellite::io::stderrWritten(std::fprintf(stderr, "Failed to initialize network subsystem\n"));
     return false;
 }
 
 static bool startCrypto() {
     if (sodiumInit()) return true;
-    std::fprintf(stderr, "Failed to initialize libsodium\n");
+    satellite::io::stderrWritten(std::fprintf(stderr, "Failed to initialize libsodium\n"));
     return false;
 }
 
@@ -201,7 +202,10 @@ static bool runTrayLoop() {
     if (!addTrayIcon()) return false;
 #ifdef SATELLITE_HAS_TRAY
     // Ignore SIGPIPE (httplib disconnects); bridge SIGINT/SIGTERM to GTK.
-    signal(SIGPIPE, SIG_IGN);
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        satellite::io::stderrWritten(std::fprintf(
+            stderr, "satellite: cannot ignore SIGPIPE; a dropped client may end it\n"));
+    }
     g_unix_signal_add(SIGINT, onTraySignal, nullptr);
     g_unix_signal_add(SIGTERM, onTraySignal, nullptr);
     // Reverse-pairing: a dish request raises a native notification with
@@ -270,8 +274,8 @@ int main() {
     controllerDb.start();
 
     Workers workers = startWorkers(svc, clientAdapter);
-    std::fprintf(stderr, "%s running; web UI at http://localhost:%d\n", APP_TITLE,
-                 g_configStore->current()->webPort);
+    satellite::io::stderrWritten(std::fprintf(stderr, "%s running; web UI at http://localhost:%d\n",
+                                              APP_TITLE, g_configStore->current()->webPort));
 
     if (!runTrayLoop()) runHeadlessLoop();
 

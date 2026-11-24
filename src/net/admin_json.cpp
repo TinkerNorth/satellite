@@ -8,6 +8,7 @@
 #include "core/log_ring.h"
 #include "core/session_service.h"
 #include "core/types.h"
+#include "core/hex.h"
 
 #include <cstdio>
 #include <string>
@@ -70,9 +71,11 @@ JsonOut controllerSnapshotObj(const SessionService::ConnectionSnapshot::CtrlInfo
     o["touchpadActive"] = ctrl.touchpadActive;
     o["lightbarCapable"] = ctrl.lightbarCapable;
     if (ctrl.lightbarKnown) {
-        char rgb[8];
-        snprintf(rgb, sizeof(rgb), "#%02x%02x%02x", ctrl.lightbarR, ctrl.lightbarG, ctrl.lightbarB);
-        o["lightbar"] = std::string(rgb);
+        std::string rgb = "#";
+        appendHexByte(rgb, ctrl.lightbarR);
+        appendHexByte(rgb, ctrl.lightbarG);
+        appendHexByte(rgb, ctrl.lightbarB);
+        o["lightbar"] = rgb;
     } else {
         o["lightbar"] = nullptr;
     }

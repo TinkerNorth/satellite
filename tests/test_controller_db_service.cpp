@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "test_util.h"
+#include "../src/core/hex.h"
 
 using namespace satellite;
 
@@ -24,10 +25,10 @@ namespace {
 // Deterministic and different for different bytes, which is all the
 // manifest check needs to see.
 std::string fakeSha(const std::string& bytes) {
-    char part[17];
-    std::snprintf(part, sizeof(part), "%016llx",
-                  static_cast<unsigned long long>(std::hash<std::string>{}(bytes)));
-    return std::string(part) + part + part + part;
+    const std::string part =
+        hexEncodeBE32(static_cast<uint32_t>(std::hash<std::string>{}(bytes) >> 32U)) +
+        hexEncodeBE32(static_cast<uint32_t>(std::hash<std::string>{}(bytes)));
+    return part + part + part + part;
 }
 
 std::string recordsText(long dbVersion, const std::string& usbId) {

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #pragma once
 
+#include "../src/core/checked_io.h"
+
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -50,11 +52,12 @@ template <typename Body> int runMain(const char* name, Body&& body) noexcept {
         }
     } catch (const std::exception& e) {
         g_fail++;
-        std::fprintf(stderr, "  FAIL [%s] uncaught exception: %s\n", g_currentTest.c_str(),
-                     e.what());
+        satellite::io::stderrWritten(std::fprintf(stderr, "  FAIL [%s] uncaught exception: %s\n",
+                                                  g_currentTest.c_str(), e.what()));
     } catch (...) {
         g_fail++;
-        std::fprintf(stderr, "  FAIL [%s] uncaught exception\n", g_currentTest.c_str());
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "  FAIL [%s] uncaught exception\n", g_currentTest.c_str()));
     }
     std::printf("%s: %d passed, %d failed\n", name, g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
@@ -68,9 +71,11 @@ inline void removeTestDir(const std::filesystem::path& dir) noexcept {
     if (ec) {
         g_fail++;
 #ifdef _WIN32
-        std::fprintf(stderr, "  FAIL removing %ls: error %d\n", dir.c_str(), ec.value());
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "  FAIL removing %ls: error %d\n", dir.c_str(), ec.value()));
 #else
-        std::fprintf(stderr, "  FAIL removing %s: error %d\n", dir.c_str(), ec.value());
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "  FAIL removing %s: error %d\n", dir.c_str(), ec.value()));
 #endif
     }
 }

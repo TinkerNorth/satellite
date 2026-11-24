@@ -7,6 +7,7 @@
 #pragma once
 
 #include "core/bits.h"
+#include "core/checked_io.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -52,8 +53,8 @@ inline std::string formatIPv4Nbo(uint32_t nbo) {
     const uint8_t c = bits::byteOf(nbo, 2U);
     const uint8_t d = bits::byteOf(nbo, 3U);
     char buf[16];
-    std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
-    return std::string(buf);
+    const int written = std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
+    return io::formatted(written, buf) ? std::string(buf) : std::string();
 }
 
 } // namespace satellite

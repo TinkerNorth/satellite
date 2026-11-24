@@ -76,14 +76,15 @@ bool generateSelfSigned(const std::string& certPath, const std::string& keyPath)
         FILE* cf = openWrite(certPath.c_str());
         if (cf == nullptr) break;
         const int cwrote = PEM_write_X509(cf, x509);
-        std::fclose(cf);
-        if (cwrote != 1) break;
+        // A failed close is a write that may not have reached the disk.
+        const bool cclosed = std::fclose(cf) == 0;
+        if (cwrote != 1 || !cclosed) break;
 
         FILE* kf = openWrite(keyPath.c_str());
         if (kf == nullptr) break;
         const int kwrote = PEM_write_PrivateKey(kf, pkey, nullptr, nullptr, 0, nullptr, nullptr);
-        std::fclose(kf);
-        if (kwrote != 1) break;
+        const bool kclosed = std::fclose(kf) == 0;
+        if (kwrote != 1 || !kclosed) break;
 
 #ifndef _WIN32
         ::chmod(keyPath.c_str(), 0600); // private key is owner-readable only

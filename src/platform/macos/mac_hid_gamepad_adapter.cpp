@@ -7,6 +7,7 @@
 
 #include "core/ds4_report.h"
 #include "core/bits.h"
+#include "core/checked_io.h"
 
 #include <atomic>
 #include <chrono>
@@ -186,10 +187,11 @@ void MacHidGamepadAdapter::closeBus() {
         if (!unplugDevice(serial)) unconfirmed++;
     }
     if (unconfirmed != 0) {
-        std::fprintf(stderr,
-                     "satellite: bus closed with %zu virtual pad(s) whose teardown never "
-                     "confirmed; their kernel devices are left in place\n",
-                     unconfirmed);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: bus closed with %zu virtual pad(s) whose teardown never "
+                         "confirmed; their kernel devices are left in place\n",
+                         unconfirmed));
     }
 
     busOpen_.store(false, std::memory_order_release);
@@ -259,9 +261,8 @@ std::unique_ptr<MacHidGamepadAdapter::Slot> MacHidGamepadAdapter::makeSlot(uint3
                                                                            bool isDS4) {
     auto slot = std::make_unique<Slot>();
     slot->isDS4 = isDS4;
-    char queueName[64];
-    std::snprintf(queueName, sizeof(queueName), "com.tinkernorth.satellite.machid.%u", serial);
-    slot->queue = dispatch_queue_create(queueName, DISPATCH_QUEUE_SERIAL);
+    const std::string queueName = "com.tinkernorth.satellite.machid." + std::to_string(serial);
+    slot->queue = dispatch_queue_create(queueName.c_str(), DISPATCH_QUEUE_SERIAL);
     slot->cancelled = dispatch_semaphore_create(0);
     if (slot->queue != nullptr && slot->cancelled != nullptr) return slot;
     if (slot->queue != nullptr) dispatch_release(slot->queue);
@@ -280,10 +281,11 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
 
     IOHIDUserDeviceRef dev = createDs4UserDevice(serial);
     if (dev == nullptr) {
-        std::fprintf(stderr,
-                     "satellite: IOHIDUserDevice create failed for serial=%u; "
-                     "virtual pad unavailable\n",
-                     serial);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: IOHIDUserDevice create failed for serial=%u; "
+                         "virtual pad unavailable\n",
+                         serial));
         return false;
     }
 
@@ -329,10 +331,11 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     // first real frame lands the same way), so a refusal is reported, not
     // treated as a failed plug.
     if (!submitLocked(*slot)) {
-        std::fprintf(stderr,
-                     "satellite: IOHIDUserDevice refused the priming report for serial=%u; "
-                     "the pad reads as idle only from its first real frame\n",
-                     serial);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: IOHIDUserDevice refused the priming report for serial=%u; "
+                         "the pad reads as idle only from its first real frame\n",
+                         serial));
     }
 
     slots_.emplace(serial, std::move(slot));
@@ -377,10 +380,11 @@ bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
         // to the quarantine list so the intent is ownership, not a leak: the
         // struct is reclaimed with the adapter, the kernel device it names is
         // not, and no submit can reach it (it is out of the map).
-        std::fprintf(stderr,
-                     "satellite: IOHIDUserDevice cancel timed out for serial=%u; "
-                     "serial will be quarantined\n",
-                     serial);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: IOHIDUserDevice cancel timed out for serial=%u; "
+                         "serial will be quarantined\n",
+                         serial));
         std::lock_guard<TrackedMutex> lk(mtx_);
         slot->nextQuarantined = std::move(quarantined_);
         quarantined_ = std::move(slot);

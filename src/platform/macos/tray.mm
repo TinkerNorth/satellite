@@ -11,6 +11,7 @@
 #include "core/update_service.h"
 #include "net/pairing.h"
 #include "net/pairing_service.h"
+#include "core/checked_io.h"
 
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
@@ -44,8 +45,9 @@ static UNUserNotificationCenter* notificationCenter() {
         static bool reported = false;
         if (!reported) {
             reported = true;
-            std::fprintf(stderr, "[satellite] no bundle identifier: pairing requests will not "
-                                 "raise notifications (use the web UI)\n");
+            satellite::io::stderrWritten(
+                std::fprintf(stderr, "[satellite] no bundle identifier: pairing requests will not "
+                                     "raise notifications (use the web UI)\n"));
         }
         return nil;
     }
@@ -213,11 +215,12 @@ void addTrayIcon() {
     [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
                           completionHandler:^(BOOL granted, NSError* error) {
                             if (granted) return;
-                            std::fprintf(stderr,
-                                         "[satellite] notifications not authorized%s%s; pairing "
-                                         "requests show in the web UI only\n",
-                                         error != nil ? ": " : "",
-                                         error != nil ? error.localizedDescription.UTF8String : "");
+                            satellite::io::stderrWritten(std::fprintf(
+                                stderr,
+                                "[satellite] notifications not authorized%s%s; pairing "
+                                "requests show in the web UI only\n",
+                                error != nil ? ": " : "",
+                                error != nil ? error.localizedDescription.UTF8String : ""));
                           }];
 }
 
@@ -250,8 +253,9 @@ void notifyPairRequestMac(const std::string& deviceId) {
       [center addNotificationRequest:request
                withCompletionHandler:^(NSError* error) {
                  if (error == nil) return;
-                 std::fprintf(stderr, "[satellite] pairing notification not delivered: %s\n",
-                              error.localizedDescription.UTF8String);
+                 satellite::io::stderrWritten(
+                     std::fprintf(stderr, "[satellite] pairing notification not delivered: %s\n",
+                                  error.localizedDescription.UTF8String));
                }];
     });
 }

@@ -98,9 +98,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
         return false;
     }
     if (status < 200 || status >= 300) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "HTTP %ld", status);
-        err = buf;
+        err = "HTTP " + std::to_string(status);
         return false;
     }
     return true;
@@ -210,21 +208,28 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
     curl_easy_cleanup(c);
     out.close();
 
+    // A failed download is removed. When even that fails, the next attempt
+    // overwrites it, and the error says where it was left.
+    const auto discard = [&dstPath](std::string why) {
+        if (std::remove(dstPath.c_str()) != 0 && errno != ENOENT) {
+            why += " (partial download left at " + dstPath + ")";
+        }
+        return why;
+    };
     if (rc == CURLE_ABORTED_BY_CALLBACK) {
-        std::remove(dstPath.c_str());
-        err = "cancelled";
+        err = discard("cancelled");
         return false;
     }
     if (rc != CURLE_OK) {
-        std::remove(dstPath.c_str());
-        err = curl_easy_strerror(rc);
+        err = discard(curl_easy_strerror(rc));
         return false;
     }
     if (status < 200 || status >= 300) {
-        std::remove(dstPath.c_str());
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "HTTP %ld", status);
-        err = buf;
+        err = discard("HTTP " + std::to_string(status));
+        return false;
+    }
+    if (out.fail()) {
+        err = discard("Cannot write the download to " + dstPath);
         return false;
     }
     return true;
@@ -285,7 +290,13 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     unsigned char buf[64 * 1024];
     size_t n;
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) { crypto_hash_sha256_update(&st, buf, n); }
-    std::fclose(f);
+    // fread stops at a read error as it does at the end; a hash of part of the
+    // file is no hash of it.
+    const bool readFailed = std::ferror(f) != 0;
+    if (std::fclose(f) != 0 || readFailed) {
+        err = "Cannot read file for hashing";
+        return false;
+    }
     unsigned char digest[crypto_hash_sha256_BYTES];
     crypto_hash_sha256_final(&st, digest);
     hexOut = hexEncode(digest, sizeof(digest));

@@ -33,6 +33,7 @@
 #include "core/update_service.h"
 #include "adapters/crash_adapter.h"
 #include "core/crash_reporting.h"
+#include "core/checked_io.h"
 
 namespace crash = satellite::crash;
 
@@ -63,23 +64,25 @@ namespace crash = satellite::crash;
 // stack with the historical inert-backend behavior.
 static void logBackendAvailability() {
     if (MacHidGamepadAdapter::runtimeAvailable()) {
-        fprintf(stderr, "[satellite] macOS virtual-DualShock-4 backend available "
-                        "(IOHIDUserDevice).\n");
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] macOS virtual-DualShock-4 backend available "
+                                 "(IOHIDUserDevice).\n"));
     } else {
-        fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
-                        "(controller descriptors will apply as backendUnavailable).\n");
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
+                                 "(controller descriptors will apply as backendUnavailable).\n"));
     }
 }
 
 static bool startNetwork() {
     if (netInit()) return true;
-    fprintf(stderr, "Failed to initialize network subsystem\n");
+    satellite::io::stderrWritten(std::fprintf(stderr, "Failed to initialize network subsystem\n"));
     return false;
 }
 
 static bool startCrypto() {
     if (sodiumInit()) return true;
-    fprintf(stderr, "Failed to initialize libsodium\n");
+    satellite::io::stderrWritten(std::fprintf(stderr, "Failed to initialize libsodium\n"));
     return false;
 }
 

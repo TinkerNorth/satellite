@@ -3,6 +3,7 @@
 
 #include "descriptor_json.h"
 #include "hex.h"
+#include "core/checked_io.h"
 
 #include <algorithm>
 #include <cctype>
@@ -351,10 +352,12 @@ std::string isoUtc(int64_t epochSeconds) {
     unsigned d = 0;
     civilFromDays(days, y, m, d);
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "%04lld-%02u-%02uT%02lld:%02lld:%02lldZ",
-                  static_cast<long long>(y), m, d, static_cast<long long>(secs / 3600),
-                  static_cast<long long>((secs % 3600) / 60), static_cast<long long>(secs % 60));
-    return buf;
+    const int written = std::snprintf(
+        buf, sizeof(buf), "%04lld-%02u-%02uT%02lld:%02lld:%02lldZ", static_cast<long long>(y), m, d,
+        static_cast<long long>(secs / 3600), static_cast<long long>((secs % 3600) / 60),
+        static_cast<long long>(secs % 60));
+    // A stamp that did not format is no stamp, not a cut one.
+    return satellite::io::formatted(written, buf) ? std::string(buf) : std::string();
 }
 
 JsonOut controllerDbStatusJson(const ControllerDbStatus& s) {

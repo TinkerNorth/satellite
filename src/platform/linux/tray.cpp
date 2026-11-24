@@ -10,6 +10,7 @@
 #include "net/pairing.h"
 #include "net/pairing_service.h"
 #include "tray_indicator.h"
+#include "core/checked_io.h"
 
 #include <libayatana-appindicator/app-indicator.h>
 #include <glib-unix.h>
@@ -31,14 +32,22 @@ static guint g_pollSourceId = 0;
 static UpdateState g_lastUpdateState = UpdateState::Idle;
 static std::string g_lastUpdateVersion;
 
-// `&` backgrounds xdg-open, so system() only reports shell-spawn failure.
+// xdg-open runs without a shell and without being waited for; GLib reaps it.
+// A spawn failure is the only one this side can see.
 static void openLocalUrl(const char* path) {
-    char cmd[128];
-    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d%s >/dev/null 2>&1 &",
-                  g_configStore->current()->webPort, path);
-    if (std::system(cmd) != 0) {
-        std::fprintf(stderr, "satellite: tray failed to spawn xdg-open for %s\n",
-                     path[0] != '\0' ? path : "/");
+    std::string url = "http://localhost:" + std::to_string(g_configStore->current()->webPort);
+    url += path;
+    std::string program = "xdg-open";
+    gchar* argv[] = {program.data(), url.data(), nullptr};
+    const auto flags = static_cast<GSpawnFlags>(static_cast<unsigned>(G_SPAWN_SEARCH_PATH) |
+                                                static_cast<unsigned>(G_SPAWN_STDOUT_TO_DEV_NULL) |
+                                                static_cast<unsigned>(G_SPAWN_STDERR_TO_DEV_NULL));
+    GError* error = nullptr;
+    if (g_spawn_async(nullptr, argv, nullptr, flags, nullptr, nullptr, nullptr, &error) == FALSE) {
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "satellite: tray failed to spawn xdg-open for %s: %s\n",
+                         path[0] != '\0' ? path : "/", error != nullptr ? error->message : ""));
+        g_clear_error(&error);
     }
 }
 

@@ -42,9 +42,7 @@ bool statusIsOk(NSURLResponse* resp, std::string& err) {
     if (![resp isKindOfClass:[NSHTTPURLResponse class]]) return true;
     const NSInteger status = ((NSHTTPURLResponse*)resp).statusCode;
     if (status >= 200 && status < 300) return true;
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "HTTP %ld", (long)status);
-    err = buf;
+    err = "HTTP " + std::to_string(static_cast<long>(status));
     return false;
 }
 
@@ -296,7 +294,13 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
         CC_SHA256_Update(&ctx, buf, (CC_LONG)n);
     }
-    std::fclose(f);
+    // fread stops at a read error as it does at the end; a hash of part of the
+    // file is no hash of it.
+    const bool readFailed = std::ferror(f) != 0;
+    if (std::fclose(f) != 0 || readFailed) {
+        err = "Cannot read file for hashing";
+        return false;
+    }
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256_Final(digest, &ctx);
     hexOut = hexEncode(digest, sizeof(digest));
