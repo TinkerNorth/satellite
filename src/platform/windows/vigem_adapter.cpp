@@ -5,6 +5,9 @@
 #include "core/touchpad_codec.h"
 #include "pointer_inject.h"
 #include "vigem.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 extern HANDLE openVigemBus();
 extern bool pluginTarget(HANDLE bus, unsigned long serial);
@@ -219,8 +222,8 @@ bool ViGEmAdapter::submitDS4Report(uint32_t serial, HANDLE bus, const GamepadRep
     er.wButtons = sonyButtonsFromXusb(report.wButtons, 0, 0);
     // Guide -> PS (bSpecial bit 0). Bit 1 is the touchpad click, owned by the
     // touchpad path, so it is carried over rather than cleared.
-    const UCHAR ps = (report.wButtons & 0x0400) ? 0x01 : 0x00;
-    er.bSpecial = static_cast<UCHAR>(ps | (slot.ds4.touchpadButton ? 0x02 : 0x00));
+    const uint32_t ps = bits::anySet(report.wButtons, 0x0400U) ? 0x01U : 0x00U;
+    er.bSpecial = bits::lowByte(ps | (slot.ds4.touchpadButton ? 0x02U : 0x00U));
     er.bTriggerL = report.bLeftTrigger;
     er.bTriggerR = report.bRightTrigger;
     return submitDS4(serial, bus);
@@ -275,10 +278,12 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
 
     // Bump tracking id on up->down so a consumer reads a new contact, not a
     // teleporting drag.
-    if (report.finger0.active && !st.fingerDown0)
-        st.trackingId0 = static_cast<uint8_t>((st.trackingId0 + 1) & 0x7F);
-    if (report.finger1.active && !st.fingerDown1)
-        st.trackingId1 = static_cast<uint8_t>((st.trackingId1 + 1) & 0x7F);
+    if (report.finger0.active && !st.fingerDown0) {
+        st.trackingId0 = bits::lowByte((bits::u32(st.trackingId0) + 1U) & 0x7FU);
+    }
+    if (report.finger1.active && !st.fingerDown1) {
+        st.trackingId1 = bits::lowByte((bits::u32(st.trackingId1) + 1U) & 0x7FU);
+    }
     st.fingerDown0 = report.finger0.active;
     st.fingerDown1 = report.finger1.active;
 
@@ -299,10 +304,11 @@ bool ViGEmAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& report)
     // Trackpad click is bSpecial bit 1 (bit 0 = PS button). Cache it so
     // submitReport can re-apply it on plain gamepad frames.
     st.touchpadButton = report.buttonPressed;
-    if (report.buttonPressed)
-        er.bSpecial |= 0x02;
-    else
-        er.bSpecial = static_cast<UCHAR>(er.bSpecial & ~0x02);
+    if (report.buttonPressed) {
+        er.bSpecial |= 0x02U;
+    } else {
+        er.bSpecial = bits::lowByte(bits::u32(er.bSpecial) & ~0x02U);
+    }
 
     submitDS4(serial, bus);
     return slot.exSupported.load(std::memory_order_relaxed);

@@ -89,7 +89,7 @@ struct ConfigFileSnapshot {
     }
     ~ConfigFileSnapshot() {
         if (existed) {
-            std::ofstream f(path, std::ios::binary | std::ios::trunc);
+            std::ofstream f(path, std::ios::binary);
             f.write(content.data(), static_cast<std::streamsize>(content.size()));
         } else {
             DeleteFileA(path.c_str());
@@ -256,7 +256,7 @@ static void testDiscoveryBroadcastConfig() {
     }
     {
         // A config JSON with no discoveryBroadcastEnabled key (pre-1.6 shape).
-        std::ofstream f(configPath(), std::ios::binary | std::ios::trunc);
+        std::ofstream f(configPath(), std::ios::binary);
         f << "{\r\n  \"udpPort\": 9876,\r\n  \"pairedDevices\": []\r\n}\r\n";
         f.close();
         Config in = loadConfig();

@@ -373,7 +373,7 @@ static void test_xusb_to_ds4_conversion_maps_input() {
     EXPECT(a.submitReport(1, rpt));
 
     const DS4_REPORT_EX& ex = fake::g.lastDs4Ex;
-    EXPECT((ex.Report.wButtons & DS4_BUTTON_CROSS) != 0);
+    EXPECT((ex.Report.wButtons & static_cast<unsigned>(DS4_BUTTON_CROSS)) != 0U);
     EXPECT_EQ((int)ex.Report.bTriggerR, 255);
     EXPECT_EQ((int)ex.Report.bThumbLX, 255);
     EXPECT_EQ((int)ex.Report.bThumbLY, 0);
@@ -391,7 +391,7 @@ static void test_ds4_report_is_the_shared_sony_layout() {
     TEST("DS4 report: every XUSB button lands as the shared Sony button word");
     for (int bit = 0; bit < 16; bit++) {
         GamepadReport rpt{};
-        rpt.wButtons = static_cast<uint16_t>(1u << bit);
+        rpt.wButtons = static_cast<uint16_t>(1U << static_cast<unsigned>(bit));
         EXPECT(a.submitReport(1, rpt));
         EXPECT_EQ((int)fake::g.lastDs4Ex.Report.wButtons,
                   (int)sonyButtonsFromXusb(rpt.wButtons, 0, 0));
@@ -402,7 +402,7 @@ static void test_ds4_report_is_the_shared_sony_layout() {
         GamepadReport rpt{};
         rpt.wButtons = static_cast<uint16_t>(dpad);
         EXPECT(a.submitReport(1, rpt));
-        EXPECT_EQ((int)(fake::g.lastDs4Ex.Report.wButtons & 0x000F),
+        EXPECT_EQ((int)(fake::g.lastDs4Ex.Report.wButtons & 0x000FU),
                   (int)ds4HatFromButtons(rpt.wButtons));
     }
 
@@ -413,7 +413,8 @@ static void test_ds4_report_is_the_shared_sony_layout() {
         rpt.bRightTrigger = 255;
         EXPECT(a.submitReport(1, rpt));
         const DS4_REPORT_EX& ex = fake::g.lastDs4Ex;
-        EXPECT_EQ((int)(ex.Report.wButtons & (DS4_BUTTON_TRIGGER_LEFT | DS4_BUTTON_TRIGGER_RIGHT)),
+        EXPECT_EQ((int)(ex.Report.wButtons & (static_cast<unsigned>(DS4_BUTTON_TRIGGER_LEFT) |
+                                              static_cast<unsigned>(DS4_BUTTON_TRIGGER_RIGHT))),
                   0);
         EXPECT_EQ((int)ex.Report.bTriggerL, 255);
         EXPECT_EQ((int)ex.Report.bTriggerR, 255);

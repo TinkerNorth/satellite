@@ -16,6 +16,7 @@
 #include "../src/platform/windows/driver_pins.h"
 #include "../src/platform/windows/hidmaestro_adapter.h"
 #include "hidmaestro_version_fixture.h"
+#include "../src/core/bits.h"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +33,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace bits = satellite::bits;
 
 using namespace satellite::hidmaestro;
 
@@ -771,7 +774,7 @@ static void test_xbox_submit_bytes() {
     GamepadReport rpt{};
     rpt.sThumbLX = 1000;
     rpt.bLeftTrigger = 255;
-    rpt.wButtons = 0x1000 | 0x0400; // A + Guide
+    rpt.wButtons = 0x1000U | 0x0400U; // A + Guide
     EXPECT(adapter.submitReport(1, rpt));
 
     const uint8_t* sec = prov.inputSection(1);
@@ -839,15 +842,15 @@ static void test_ds4_submit_merges_motion_touch_battery() {
     EXPECT(adapter.submitMotion(2, motion));
     const uint8_t* data = prov.inputData(2);
     EXPECT_EQ(u32at(prov.inputSection(2), INPUT_DATASIZE_OFFSET), (uint32_t)DS4_PAYLOAD_BYTES);
-    const int16_t gyro = static_cast<int16_t>(data[12] | (data[13] << 8));
+    const int16_t gyro = bits::asInt16(bits::loadLe16(data + 12));
     EXPECT_EQ(gyro, sonyGyroFromWire(100));
 
     TouchpadReport touch{};
     touch.finger0.active = true;
     touch.buttonPressed = true;
     EXPECT(adapter.submitTouchpad(2, touch));
-    EXPECT_EQ(data[34] & 0x80, 0x00); // finger 0 down
-    EXPECT_EQ(data[34] & 0x7F, 1);    // first contact bumped the tracking id
+    EXPECT_EQ(bits::u32(data[34]) & 0x80U, 0x00U); // finger 0 down
+    EXPECT_EQ(bits::u32(data[34]) & 0x7FU, 1U);    // first contact bumped the tracking id
 
     BatteryReport batt;
     batt.level = 30;
@@ -859,9 +862,9 @@ static void test_ds4_submit_merges_motion_touch_battery() {
     GamepadReport rpt{};
     rpt.wButtons = 0x1000;
     EXPECT(adapter.submitReport(2, rpt));
-    EXPECT_EQ(static_cast<int16_t>(data[12] | (data[13] << 8)), sonyGyroFromWire(100));
+    EXPECT_EQ(bits::asInt16(bits::loadLe16(data + 12)), sonyGyroFromWire(100));
     EXPECT_EQ(data[11], (uint8_t)3);
-    EXPECT_EQ(data[4] & 0x20, 0x20); // Cross
+    EXPECT_EQ(bits::u32(data[4]) & 0x20U, 0x20U); // Cross
 }
 
 static void test_ds5_submit() {
@@ -882,18 +885,18 @@ static void test_ds5_submit() {
     MotionReport motion{};
     motion.accelZ = 500;
     EXPECT(adapter.submitMotion(4, motion));
-    EXPECT_EQ(static_cast<int16_t>(data[25] | (data[26] << 8)), sonyAccelFromWire(500));
+    EXPECT_EQ(bits::asInt16(bits::loadLe16(data + 25)), sonyAccelFromWire(500));
 
     TouchpadReport touch{};
     touch.finger0.active = true;
     EXPECT(adapter.submitTouchpad(4, touch));
-    EXPECT_EQ(data[32] & 0x80, 0x00);
+    EXPECT_EQ(bits::u32(data[32]) & 0x80U, 0x00U);
 
     BatteryReport batt;
     batt.level = 70;
     batt.status = BATTERY_STATUS_CHARGING;
     EXPECT(adapter.submitBattery(4, batt));
-    EXPECT_EQ(data[52], (uint8_t)(0x10 | 7));
+    EXPECT_EQ(data[52], (uint8_t)(0x10U | 7U));
 }
 
 static void test_idle_sony_pads_keep_reporting() {
@@ -956,7 +959,7 @@ static void test_switch_submit() {
     motion.accelY = 32767;
     EXPECT(adapter.submitMotion(5, motion));
     EXPECT_EQ(data[2], (uint8_t)0x04); // pad state still merged in
-    const int16_t az = static_cast<int16_t>(data[12 + 4] | (data[12 + 5] << 8));
+    const int16_t az = bits::asInt16(bits::loadLe16(data + 12 + 4));
     EXPECT_EQ(az, (int16_t)16384);
 
     // No touchpad/battery surface on this profile.
@@ -980,16 +983,16 @@ static void test_ds5_edge_submit() {
     InputReport input{};
     input.extButtons = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE2;
     EXPECT(adapter.submitInput(4, input));
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
 
     MotionReport motion{};
     motion.gyroX = 100;
     EXPECT(adapter.submitMotion(4, motion));
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
     TouchpadReport touch{};
     touch.finger0.active = true;
     EXPECT(adapter.submitTouchpad(4, touch));
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
     BatteryReport batt;
     batt.level = 50;
     batt.status = BATTERY_STATUS_DISCHARGING;
@@ -1000,7 +1003,7 @@ static void test_ds5_edge_submit() {
     const uint32_t before = prov.inputSeq(4);
     adapter.refreshIdleInput();
     EXPECT(prov.inputSeq(4) > before);
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
     EXPECT_EQ(data[48], (uint8_t)0x80);
 
     EXPECT(adapter.submitReport(4, GamepadReport{}));
@@ -1752,7 +1755,7 @@ static void test_idle_republish_never_tears_a_frame() {
     std::thread submitter([&] {
         int64_t n = 0;
         while (!stop.load(std::memory_order_relaxed)) {
-            adapter.submitReport(1, (n & 1) != 0 ? high : low);
+            adapter.submitReport(1, n % 2 != 0 ? high : low);
             n++;
         }
         submitted = n;
@@ -1935,7 +1938,7 @@ static void test_a_plug_whose_driver_half_is_still_to_come_is_held_until_it_come
     adapter.recheckDrivers();
     EXPECT_EQ(prov.inputSeq(4), (uint32_t)2);
     const uint8_t* data = prov.inputData(4);
-    EXPECT_EQ(static_cast<int16_t>(data[25] | (data[26] << 8)), sonyAccelFromWire(500));
+    EXPECT_EQ(bits::asInt16(bits::loadLe16(data + 25)), sonyAccelFromWire(500));
     GamepadReport rpt{};
     EXPECT(adapter.submitReport(4, rpt));
     EXPECT_EQ(prov.inputSeq(4), (uint32_t)4);

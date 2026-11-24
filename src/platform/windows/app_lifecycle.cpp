@@ -113,7 +113,7 @@ void retainNewestN(const std::wstring& dir, const wchar_t* ext, size_t keep) {
     std::vector<Entry> entries;
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        ULONGLONG t = (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32) |
+        ULONGLONG t = (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32U) |
                       fd.ftLastWriteTime.dwLowDateTime;
         entries.push_back({fd.cFileName, t});
     } while (FindNextFileW(h, &fd));
@@ -149,8 +149,10 @@ DWORD WINAPI writeDumpThread(LPVOID param) {
     MINIDUMP_EXCEPTION_INFORMATION mei{job->threadId, job->ep, FALSE};
     // Small dumps that still capture locals + per-thread state.
     MINIDUMP_TYPE type =
-        static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithIndirectlyReferencedMemory |
-                                   MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
+        static_cast<MINIDUMP_TYPE>(static_cast<unsigned>(MiniDumpNormal) |
+                                   static_cast<unsigned>(MiniDumpWithIndirectlyReferencedMemory) |
+                                   static_cast<unsigned>(MiniDumpWithThreadInfo) |
+                                   static_cast<unsigned>(MiniDumpWithUnloadedModules));
     MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, type,
                       job->ep != nullptr ? &mei : nullptr, nullptr, nullptr);
     CloseHandle(f);
@@ -347,7 +349,7 @@ void hardenDllSearchPath() {
     if (sddd) {
         // 0x00000800 = LOAD_LIBRARY_SEARCH_SYSTEM32
         // 0x00000200 = LOAD_LIBRARY_SEARCH_APPLICATION_DIR
-        sddd(0x00000800 | 0x00000200);
+        sddd(0x00000800U | 0x00000200U);
     }
 }
 
@@ -365,8 +367,8 @@ void applyRuntimeMitigations() {
     struct ImageLoad {
         DWORD flags;
     } il{};
-    il.flags =
-        0x1 /*NoRemoteImages*/ | 0x2 /*NoLowMandatoryLabelImages*/ | 0x4 /*PreferSystem32Images*/;
+    il.flags = 0x1U /*NoRemoteImages*/ | 0x2U /*NoLowMandatoryLabelImages*/ |
+               0x4U /*PreferSystem32Images*/;
     set(4, &il, sizeof(il));
 
     // ProcessExtensionPointDisablePolicy (5): block legacy AppInit_DLLs/IME

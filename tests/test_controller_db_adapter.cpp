@@ -25,7 +25,7 @@ namespace {
 bool writeBesideAndRename(const std::string& path, const std::string& bytes) {
     const std::string tmp = path + ".tmp";
     {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        std::ofstream f(tmp, std::ios::binary);
         if (!f.is_open()) return false;
         f << bytes;
     }

@@ -246,7 +246,7 @@ std::string cpuName() {
 
 bool cpuAllowed(DWORD_PTR mask, int cpu) {
     const bool inRange = cpu >= 0 && cpu < MAX_CPUS;
-    return inRange && ((mask >> cpu) & 1) != 0;
+    return inRange && ((mask >> static_cast<unsigned>(cpu)) & 1U) != 0U;
 }
 
 int chooseReceiverCpu(int requested) {
@@ -1091,7 +1091,7 @@ struct ReceiverContext {
 
 void configureReceiverThread(ReceiverContext& rx) {
     if (rx.cpu == NO_CPU) return;
-    const DWORD_PTR mask = static_cast<DWORD_PTR>(1) << rx.cpu;
+    const DWORD_PTR mask = static_cast<DWORD_PTR>(1) << static_cast<unsigned>(rx.cpu);
     rx.pinned = SetThreadAffinityMask(GetCurrentThread(), mask) != 0;
     rx.raised = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0;
 }
